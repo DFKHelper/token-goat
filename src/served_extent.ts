@@ -20,11 +20,14 @@ function rangeSuffix(spec: string): { file: string; start: number; end: number }
 /** An unquoted pipe, redirect, `;` or `&` (the character class of WHOLE_FILE_READ's operand), after which the printed text is cut or sent elsewhere. */
 const SHELL_OPERATOR = /[|<>;&]/
 
+/** A trailing stderr-only redirect (`2>/dev/null`, `2>&1`, PowerShell's `2>$null`): it hides nothing the model sees on stdout, which is what a read's text is. A stdout redirect (`>/dev/null`, `1>`) is not one. */
+const STDERR_ONLY_TAIL = /(?:[ \t]+2>[ \t]*(?:\/dev\/null|&1|\$null))+[ \t]*$/
+
 /** The extents served by `token-goat <sub> <spec>` as `extractTgSurgicalRead` classified it (`spec` holds the resolved file path). Best-effort: an unresolvable or ambiguous spec yields nothing, and so does a command whose flags narrow the output. The resolvers load on demand because this runs on the hook path. */
 export async function servedExtents(sub: string, spec: string, cmd: string, projectRoot: string | null): Promise<ServedExtent[]> {
   if (NARROWING_FLAG.test(cmd)) return []
   const { maskQuotedSpans } = await import('./tool_filters/helpers.js')
-  if (SHELL_OPERATOR.test(maskQuotedSpans(cmd))) return []
+  if (SHELL_OPERATOR.test(maskQuotedSpans(cmd).replace(STDERR_ONLY_TAIL, ''))) return []
   if (sub === 'read') {
     const range = rangeSuffix(spec)
     if (range !== null) return range.end >= range.start ? [{ filePath: range.file, start: range.start, end: range.end }] : []

@@ -40,6 +40,7 @@ import {
   extractCatFile,
   extractGhViewForBatchAdvisory,
 } from '../src/bash_extractors.js'
+import { extractTgSurgicalRead } from '../src/bash_extractors.js'
 import { bashRecallKey, cdPrefixCwd, isHeadMovingGitCommand, resolveBashCall, stripCommandPrefix, stripExportPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
@@ -5234,7 +5235,14 @@ describe('stripExportPrefix — plain export statements ahead of a command', () 
     'export DYLD_INSERT_LIBRARIES=/tmp/x; cat f',
     'export BASH_ENV=/tmp/x; cat f',
     'export ENV=/tmp/x; cat f',
-    'export TOKEN_GOAT_BASH_COMPRESS=0; cat f',
+    'export TOKEN_GOAT_HOME=/x; cat f',
+    'export TOKEN_GOAT_HARNESS_OVERRIDE=vscode; cat f',
+    'export TOKEN_GOAT_BASH_COMPRESS_X=0; cat f',
+    'export token_goat_home=/x; cat f',
+    'export CDPATH=/z; cat f',
+    'export HOME=/z; cat f',
+    'export path=/z; cat f',
+    'export Ld_Preload=/z; cat f',
     'export A=1 PATH=/tmp/x; cat f',
     'export X=1; export PATH=/tmp/x; cat f',
   ])('leaves %j as written', (command) => {
@@ -5242,6 +5250,11 @@ describe('stripExportPrefix — plain export statements ahead of a command', () 
     expect(peeled === command || peeled.startsWith('export ')).toBe(true)
     expect(peeled.endsWith('cat f')).toBe(true)
     expect(peeled === 'cat f').toBe(false)
+  })
+
+  it('peels the compression opt-out, the one token-goat variable these commands are written with', () => {
+    expect(stripExportPrefix('export TOKEN_GOAT_BASH_COMPRESS=0; cat f')).toBe('cat f')
+    expect(stripExportPrefix('export token_goat_bash_compress=0 A=1; cat f')).toBe('cat f')
   })
 
   it('peels a name that only starts like a protected one', () => {
@@ -5255,7 +5268,7 @@ describe('stripExportPrefix — plain export statements ahead of a command', () 
 })
 
 describe('stripLeadingAssignments — an assignment that changes what runs is not peeled', () => {
-  it.each(['PATH=/tmp/x cat f', 'LD_PRELOAD=/tmp/x.so cat f', 'BASH_ENV=/tmp/x cat f', 'ENV=/tmp/x cat f', 'A=1 PATH=/tmp/x cat f', 'env PATH=/tmp/x cat f'])('keeps %j whole', (command) => {
+  it.each(['PATH=/tmp/x cat f', 'LD_PRELOAD=/tmp/x.so cat f', 'BASH_ENV=/tmp/x cat f', 'ENV=/tmp/x cat f', 'CDPATH=/z cat f', 'HOME=/z cat f', 'path=/tmp/x cat f', 'TOKEN_GOAT_HOME=/x cat f', 'TOKEN_GOAT_HARNESS_OVERRIDE=vscode cat f', 'A=1 PATH=/tmp/x cat f', 'env PATH=/tmp/x cat f'])('keeps %j whole', (command) => {
     expect(stripCommandPrefix(command)).toBe(command)
   })
 
@@ -5266,8 +5279,32 @@ describe('stripLeadingAssignments — an assignment that changes what runs is no
   })
 })
 
+describe('a token-goat read written behind the compression opt-out is matched, behind any other token-goat variable it is not', () => {
+  // HAND-DERIVED from the prefix every agent here starts its commands with; the second group names variables that move the index (TOKEN_GOAT_HOME) or the hook (TOKEN_GOAT_HARNESS_OVERRIDE), so a read recorded under them would land on another index.
+  it.each([
+    'export TOKEN_GOAT_BASH_COMPRESS=0; token-goat read f.ts@1-50',
+    'TOKEN_GOAT_BASH_COMPRESS=0 token-goat read f.ts@1-50',
+    'export A=1; TOKEN_GOAT_BASH_COMPRESS=0 token-goat read f.ts@1-50',
+  ])('records %j', (command) => {
+    expect(extractTgSurgicalRead(resolveBashCall(command, null).cmd, null)?.spec.endsWith('f.ts@1-50')).toBe(true)
+  })
+
+  it.each([
+    'export TOKEN_GOAT_HOME=/x; token-goat read f.ts@1-50',
+    'TOKEN_GOAT_HOME=/x token-goat read f.ts@1-50',
+    'export TOKEN_GOAT_HARNESS_OVERRIDE=vscode; token-goat read f.ts@1-50',
+  ])('records nothing for %j', (command) => {
+    expect(extractTgSurgicalRead(resolveBashCall(command, null).cmd, null)).toBeNull()
+  })
+})
+
 describe('an export ahead of a cd keeps the cd', () => {
   const start = join(tmpdir(), 'tg-export-cd')
+
+  it('does not read past an export that moves where the cd lands', () => {
+    expect(cdPrefixCwd('export CDPATH=/z; cd x && cat f', start)).toBe(start)
+    expect(cdPrefixCwd('export HOME=/z; cd x && cat f', start)).toBe(start)
+  })
 
   it.each([
     'export X=1; cd sub && cat f',

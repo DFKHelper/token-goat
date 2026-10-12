@@ -1223,8 +1223,11 @@ function walkCommandPrefix(words: readonly string[], prefixWords: ReadonlySet<st
   return { command: words.length, assignments }
 }
 
-/** Variables whose value changes which program runs or how it loads (`PATH`, the dynamic loader's `LD_*` and `DYLD_*`, the shell's `BASH_ENV` and `ENV`) or how token-goat itself behaves. A command setting one is not the command without it, so it is left as written. */
-export const CHANGES_WHAT_RUNS_NAMES = String.raw`PATH|BASH_ENV|ENV|(?:LD_|DYLD_|TOKEN_GOAT_)\w*`
+/** A literal as a regex source that matches it in either case, since Windows environment names are case-insensitive and `path=x` swaps the program like `PATH=x` does. */
+const caseless = (literal: string): string => literal.replace(/[A-Za-z]/g, (c) => `[${c.toUpperCase()}${c.toLowerCase()}]`)
+
+/** Variables whose value changes which program runs or how it loads (`PATH`, the dynamic loader's `LD_*` and `DYLD_*`, the shell's `BASH_ENV` and `ENV`), where a peeled `cd` lands (`CDPATH`, `HOME`), or what token-goat's own hook does (every `TOKEN_GOAT_*` but `TOKEN_GOAT_BASH_COMPRESS`, which only switches output compression and is the one these commands are written with). A command setting one is not the command without it, so it is left as written. Matched in either case. */
+export const CHANGES_WHAT_RUNS_NAMES = ['PATH', 'BASH_ENV', 'ENV', 'CDPATH', 'HOME'].map(caseless).join('|') + `|(?:${caseless('LD_')}|${caseless('DYLD_')})\\w*|${caseless('TOKEN_GOAT_')}(?!${caseless('BASH_COMPRESS')}\\b)\\w*`
 export const CHANGES_WHAT_RUNS = new RegExp(`^(?:${CHANGES_WHAT_RUNS_NAMES})$`)
 
 /** `cmd` past the environment assignments leading it, so an extractor anchored at `^cat` or `^python` reads `FOO=1 cat x` and `env -u X FOO=1 cat x` as the `cat x` they run. A slice of `cmd`, so the command keeps its own quoting byte for byte. `cmd` itself when nothing leads it, when nothing follows the assignments, or when the leading words fail the single-command test the compression gate applies (`FOO=1; cat x`, `FOO=1 && cat x`, `FOO=$(pwd) cat x`): what follows those is not the command the assignments belong to. Only for matching: anything run or suggested to run keeps the assignments. */
@@ -1233,8 +1236,7 @@ export function stripLeadingAssignments(cmd: string): string {
   const { command, assignments } = walkCommandPrefix(words, ENV_PREFIX_WORDS)
   const at = starts[command]
   if (at === undefined || at === 0) return cmd
-  // TOKEN_GOAT_* only steers token-goat, never which program runs, and the compression opt-out written inline is read through on purpose; the other names swap the program.
-  if (assignments.some(({ name }) => CHANGES_WHAT_RUNS.test(name) && !name.startsWith('TOKEN_GOAT_'))) return cmd
+  if (assignments.some(({ name }) => CHANGES_WHAT_RUNS.test(name))) return cmd
   // Through the command's first character too, so an operator standing where the command should be (`FOO=1 && cat x`) fails the test like one inside the assignments does.
   return isCompressibleSingleCommand(cmd.slice(0, at + 1)) ? cmd.slice(at) : cmd
 }

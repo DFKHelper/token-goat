@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { CODEX_HOOK_SCRIPT } from '../src/bridges/codex.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 
+import { copilotCapture } from './fixtures/copilot_cli_1_0_88.js'
 import { BUNDLE } from './helpers/bundle.js'
 
 const SPAWN_TIMEOUT_MS = 60_000
@@ -158,6 +159,43 @@ describe('write guards through the Copilot CLI shim (real COPILOT_CLI_HOOK_SCRIP
 
   it('an ordinary edit is not denied', () => {
     expect(call('edit', { path: path.join(base, 'small.ts'), old_str: 'b', new_str: 'c' }).permissionDecision).toBeUndefined()
+  })
+
+  // PROVENANCE: the postToolUse envelopes are the CAPTURE payloads C1a-005 (view) and C6-006 (powershell) from Copilot CLI 1.0.88 (tests/fixtures/copilot_cli_1_0_88.ts) with only the path, command and result text replaced; view_range is FORMAT-DERIVED from the shim's own toolArgs mapping (view_range [a,b] -> offset a, limit b-a+1, COPILOT_CLI_HOOK_SCRIPT in src/bridges/copilot_cli.ts), since no capture carries one.
+  describe('blind drop', () => {
+    const big = lines(200).split('\n')
+    const dropped = big.slice(0, 120).concat(big.slice(140)).join('\n') + '// edited\n'
+
+    const send = (event: string, payload: object): HookOut => {
+      const r = runShim(COPILOT_CLI_HOOK_SCRIPT, base, event, payload, env)
+      expect(r.status, r.stderr).toBe(0)
+      return r.stdout.trim() === '' ? {} : (JSON.parse(r.stdout) as HookOut)
+    }
+    const viewFirst100 = (sessionId: string, file: string): void => {
+      const args = { path: file, view_range: [1, 100] }
+      send('preToolUse', { sessionId, cwd: base, toolName: 'view', toolArgs: args })
+      const captured = copilotCapture('C1a-005-postToolUse-view', { proj: base })
+      send('postToolUse', { ...captured, sessionId, toolArgs: args, toolResult: { resultType: 'success', textResultForLlm: big.slice(0, 100).join('\n') + '\n' } })
+    }
+    const createOver = (sessionId: string, file: string): HookOut => send('preToolUse', { sessionId, cwd: base, toolName: 'create', toolArgs: { path: file, file_text: dropped } })
+
+    it('denies a create that drops lines 121-140 after a view of lines 1-100', () => {
+      const file = path.join(base, 'blind.ts')
+      fs.writeFileSync(file, lines(200))
+      viewFirst100('wg-c-blind', file)
+      const out = createOver('wg-c-blind', file)
+      expect(out.permissionDecision).toBe('deny')
+      expect(String(out.permissionDecisionReason)).toContain('(lines 121-140)')
+    })
+
+    it('does not deny once a token-goat read of the dropped lines has run through the powershell tool', () => {
+      const file = path.join(base, 'seen.ts')
+      fs.writeFileSync(file, lines(200))
+      viewFirst100('wg-c-seen', file)
+      const ran = copilotCapture('C6-006-postToolUse-powershell', { proj: base })
+      send('postToolUse', { ...ran, sessionId: 'wg-c-seen', toolArgs: { command: `token-goat read "${file}@121-140"`, description: 'read the lines' }, toolResult: { resultType: 'success', textResultForLlm: big.slice(120, 140).join('\n') + '\n<shellId: 0 completed with exit code 0>' } })
+      expect(createOver('wg-c-seen', file).permissionDecision).toBeUndefined()
+    })
   })
 })
 

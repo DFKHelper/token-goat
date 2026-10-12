@@ -161,6 +161,22 @@ describe('a whole-file token-goat read counts as the whole file seen', () => {
     }
   })
 
+  // HAND-DERIVED: a stderr-only redirect hides nothing the model sees on stdout, and agents on PowerShell hosts append `2>&1` to nearly every command; the spelling of each follows the shell that writes it (`2>/dev/null` sh, `2>$null` PowerShell, `2>&1` both).
+  it.each(['2>/dev/null', '2>&1', '2>$null', '2> /dev/null', '2>&1 2>/dev/null'])('counts a ranged read followed only by the stderr redirect %s', async (tail) => {
+    for (const spec of ['@101-200', '::101-200']) {
+      const target = seed()
+      await postBash(`token-goat read "${normalizePath(target)}${spec}" ${tail}`)
+      expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType, `${spec} ${tail}`).not.toBe('deny')
+    }
+  })
+
+  // HAND-DERIVED: each tail still sends stdout somewhere else or runs something after the read, so the lines were not all seen.
+  it.each(['>/dev/null', '1>/dev/null', '> /dev/null 2>&1', '&>/dev/null', '2>&1 | head -5', '2>&1; echo done', '2>&1 && echo done', '2>&1 &', '2>/dev/null > out.txt', '2>>err.txt'])('does not count a ranged read followed by %s', async (tail) => {
+    const target = seed()
+    await postBash(`token-goat read "${normalizePath(target)}@101-200" ${tail}`)
+    expect((await preWriteRewriteHandler(writeEvent(target, dropped))).hookType, tail).toBe('deny')
+  })
+
   it('counts a ranged read whose quoted path holds an operator character', async () => {
     const target = fresh().replace('.ts', ';x.ts')
     fs.writeFileSync(target, body)

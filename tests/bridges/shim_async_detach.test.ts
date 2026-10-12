@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../../src/bridges/claudecode.js'
+import { isAsyncDetachEligible } from '../../src/hook_adapters.js'
 import { BUNDLE } from '../helpers/bundle.js'
 
 const tempDirs: string[] = []
@@ -111,13 +112,19 @@ describe('Claude Code shim async-detach classification', () => {
     'cd /p && token-goat symbol foo',
     'TOKEN_GOAT_HOME=/h token-goat read f',
     'node /x/dist/token-goat.mjs read f@1-2',
+    'export A=1; token-goat read f@1-5',
+    'export TOKEN_GOAT_BASH_COMPRESS=0; token-goat read f@1-50',
+    'export A=1 B="x y" && cd /p && token-goat section f::Intro',
+    'cd /p && export A=1; tg read f@1-5',
+    '(cd x && token-goat read f)',
+    '( export A=1; token-goat read f@1-5 )',
   ])('never backgrounds the short result of %s, whose ledger update must land before the next call', (command) => {
     const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'x'.repeat(50) } }))
     expect(stdout).not.toContain('"async":true')
   })
 
   // HAND-DERIVED: commands that merely mention or sit beside a read, so the shim's surgical-read rule does not apply.
-  it.each(['echo token-goat read f', 'token-goat outline f', 'git status'])('still backgrounds the short result of %s', (command) => {
+  it.each(['echo token-goat read f', 'token-goat outline f', 'git status', 'export A=1; git status', 'export A=1; echo token-goat read f', '(cd x && git status)'])('still backgrounds the short result of %s', (command) => {
     const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'x'.repeat(50) } }))
     expect(stdout.split('\n')[0]).toBe('{"async":true}')
   })
@@ -125,5 +132,17 @@ describe('Claude Code shim async-detach classification', () => {
   it('never backgrounds a Bash call with no tool_response at all', () => {
     const stdout = runShim('post_tool_use', JSON.stringify({ tool_name: 'Bash' }))
     expect(stdout.split('\n')[0]).toBe('{"async":true}')
+  })
+})
+
+describe('the in-process copy of the ledger-read rule agrees with the shim', () => {
+  // HAND-DERIVED: the same commands as the shim cases above, asked of src/hook_adapters.ts directly.
+  const eligible = (command: string): boolean => isAsyncDetachEligible('post_tool_use', JSON.stringify({ tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'x'.repeat(50) } }))
+  it.each(['export A=1; token-goat read f@1-5', 'export TOKEN_GOAT_BASH_COMPRESS=0; token-goat read f@1-50', 'export A=1 B="x y" && cd /p && token-goat section f::Intro', 'cd /p && export A=1; tg read f@1-5', '(cd x && token-goat read f)', '( export A=1; token-goat read f@1-5 )'])('treats %s as a ledger read, not eligible', (command) => {
+    expect(eligible(command)).toBe(false)
+  })
+
+  it.each(['export A=1; git status', 'export A=1; echo token-goat read f', '(cd x && git status)'])('treats %s as eligible', (command) => {
+    expect(eligible(command)).toBe(true)
   })
 })
