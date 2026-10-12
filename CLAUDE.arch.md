@@ -105,7 +105,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_session_start.ts`](src/hooks_session_start.ts) | session_start hook: re-inject a short command-routing reminder every time a session starts, resumes, or restarts after compaction. |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |
 | [`src/hooks_skill.ts`](src/hooks_skill.ts) | `postSkillHandler()` captures skill bodies across compaction; `preSkillHandler()` denies a same-session re-load with a compact-recall hint |
-| [`src/hooks_stop.ts`](src/hooks_stop.ts) | The Stop hook: when the agent ends a turn with source edits that no test, lint, typecheck or build run has covered since, say so once. |
+| [`src/hooks_stop.ts`](src/hooks_stop.ts) | The Stop hook: when the agent ends a turn with source edits that no test, lint, typecheck or build run has covered since, say so once. It is an advisory, not a block (a Stop block can trap a session in a loop), so it departs from the block in the original idea spec; the switch is `hints.stop_verification_advisory` (`TOKEN_GOAT_STOP_VERIFICATION_ADVISORY`). |
 | [`src/hooks_taskoutput.ts`](src/hooks_taskoutput.ts) | TaskOutput poll-delta caching hook. |
 | [`src/hooks_tool_failure.ts`](src/hooks_tool_failure.ts) | `post_tool_use_failure` handler -- the repeat-failure brake. |
 | [`src/hooks_websearch.ts`](src/hooks_websearch.ts) | WebSearch caching/dedup hooks. |
