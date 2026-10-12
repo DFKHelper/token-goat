@@ -602,14 +602,17 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
 async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean; probe?: string }): Promise<void> {
   if (opts.probe !== undefined) {
     // Loaded on demand: a probe spawns a whole harness, and nothing else in doctor needs this module.
-    const { PROBE_COMMANDS, formatProbeReport, isProbeHarness, probePassed, runProbe } = await import('./doctor_probe.js')
+    const { PROBE_COMMANDS, formatProbeReport, isProbeHarness, probeVerdict, runProbe } = await import('./doctor_probe.js')
     const harness = opts.probe.trim().toLowerCase()
     if (!isProbeHarness(harness)) {
       throw new CliError(`no headless probe for ${echoedValue(opts.probe)}; supported: ${Object.keys(PROBE_COMMANDS).join(', ')}`)
     }
     const report = runProbe(harness)
     out(opts.json === true ? displaySafeJson(report, 0) : formatProbeReport(report))
-    if (!probePassed(report)) throw new CliError('doctor probe failed')
+    const verdict = probeVerdict(report)
+    if (verdict === 'fail') throw new CliError('doctor probe failed')
+    // Exit 2, not 1: the harness failed before its model answered, so the probe judged no hook either way.
+    if (verdict === 'inconclusive') process.exitCode = 2
     return
   }
   const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string; repair?: boolean } = {}

@@ -1,0 +1,8 @@
+error: unexpected argument '--token-goat-no-such-flag' found
+
+  tip: to pass '--token-goat-no-such-flag' as a value, use '-- --token-goat-no-such-flag'
+
+Usage: codex exec [OPTIONS] [PROMPT]
+       codex exec [OPTIONS] <COMMAND> [ARGS]
+
+For more information, try '--help'.
