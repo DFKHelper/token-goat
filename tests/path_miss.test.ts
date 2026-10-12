@@ -48,6 +48,13 @@ async function fail(base: Record<string, unknown>, over: Record<string, unknown>
 }
 
 describe('missingPathsFromStderr', () => {
+  it('skips a line past the scan bound and reads one at it', () => {
+    // HAND-DERIVED: the coreutils wording is 'ls: cannot access ' + quoted path + ': No such file or directory'; padding in front of it sets the line length to the bound (2048) and one past it.
+    const tail = "ls: cannot access 'gone.txt': No such file or directory"
+    expect(missingPathsFromStderr(`${' '.repeat(2048 - tail.length)}${tail}`)).toEqual(['gone.txt'])
+    expect(missingPathsFromStderr(`x${' '.repeat(2048 - tail.length)}${tail}`)).toEqual([])
+  })
+
   it('reads the captured ls failure', () => {
     expect(missingPathsFromStderr(CAPTURED_BASH['error'] as string)).toEqual(['nonexistent_dir'])
   })

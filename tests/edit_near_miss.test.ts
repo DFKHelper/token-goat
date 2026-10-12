@@ -230,3 +230,79 @@ describe('isNearMissAdvice', () => {
     expect(isNearMissAdvice('')).toBe(false)
   })
 })
+
+const REJECTED = 'String to replace not found in file.'
+
+describe('the print caps, at their exact edges', () => {
+  it('pins the caps the tests below are built on', () => {
+    expect(MAX_SPAN_LINES).toBe(20)
+    expect(MAX_SPAN_BYTES).toBe(1536)
+  })
+
+  it('prints a span of exactly the line cap', () => {
+    const body = Array.from({ length: MAX_SPAN_LINES }, (_, i) => `    row ${i}`).join('\n')
+    const old = Array.from({ length: MAX_SPAN_LINES }, (_, i) => `  row ${i}`).join('\n')
+    const out = diagnoseEditFailure(editEvent('Edit', { file_path: fileWith(`${body}\n`), old_string: old }), REJECTED)
+    expect(out).toContain(`lines 1-${MAX_SPAN_LINES} match, ignoring indentation. Copy the on-disk text below`)
+    expect(out).toContain('row 3')
+  })
+
+  it('prints a multibyte span of exactly the byte cap and names the range one character over', () => {
+    // HAND-DERIVED: U+00E9 is 2 bytes in UTF-8, so 768 of them are exactly 1536 bytes and 769 are 1538 while still under 1536 characters.
+    const fit = 'é'.repeat(MAX_SPAN_BYTES / 2)
+    const printed = diagnoseEditFailure(editEvent('Edit', { file_path: fileWith(`${fit}\n`), old_string: `${fit} ` }), REJECTED)
+    expect(printed).toContain('Copy the on-disk text below')
+    const over = `${fit}é`
+    const named = diagnoseEditFailure(editEvent('Edit', { file_path: fileWith(`${over}\n`), old_string: `${over} ` }), REJECTED)
+    expect(named).toContain('line 1 matches, ignoring trailing whitespace. View that range')
+    expect(named).not.toContain('éé')
+  })
+})
+
+describe('what is searched and what is echoed', () => {
+  it('skips an old_string past the line cap', () => {
+    const lines = Array.from({ length: 201 }, (_, i) => `row ${i}`)
+    expect(findNearMiss(`${lines.join('  \n')}\n`, lines.join('\n'))).toBeNull()
+    const fit = lines.slice(0, 200)
+    expect(findNearMiss(`${fit.join('  \n')}\n`, fit.join('\n'))).not.toBeNull()
+  })
+
+  it('skips an old_string past the length cap', () => {
+    // HAND-DERIVED: 16383 characters plus a tab are 16384, the cap; one more character is 16385.
+    const fit = 'x'.repeat(16383)
+    expect(findNearMiss(`${fit}  \n`, `${fit}\t`)).not.toBeNull()
+    expect(findNearMiss(`x${fit}  \n`, `x${fit}\t`)).toBeNull()
+  })
+
+  it('finds a trimmed line whose blank run is long and not at the end', () => {
+    const gap = ' '.repeat(5000)
+    expect(findNearMiss(`a${gap}b  \n`, `a${gap}b\t`)?.rung).toBe('trailing-whitespace')
+    expect(findNearMiss(`a${gap}  \n`, `a${gap}\t`)).not.toBeNull()
+  })
+
+  it('does not take a short fragment for a near miss of a long line', () => {
+    const line = 'const configuration = loadTheWholeConfiguration(path)  '
+    expect(findNearMiss(`${line}\n`, 'const co')).toBeNull()
+    expect(findNearMiss(`${line}\n`, 'const configuration = loadTheWholeConfiguration(path')).toBeNull()
+  })
+
+  it('takes a fragment covering at least half of the line', () => {
+    // HAND-DERIVED: the curly quote folds to an apostrophe, so "a" plus it is 2 of the 4 characters of "a'cd", exactly half, and a lone one is 1 of 4.
+    expect(findNearMiss("a'cd\n", 'a’')).not.toBeNull()
+    expect(findNearMiss("a'cd\n", '’')).toBeNull()
+  })
+
+  it('gives the line number but not the text for a file with a credential name', () => {
+    counter += 1
+    const path = join(dir, `.env.local${counter}`)
+    writeFileSync(path, 'PLAIN_SETTING=visible-value  \nnext\n', 'utf8')
+    const out = diagnoseEditFailure(editEvent('Edit', { file_path: path, old_string: 'PLAIN_SETTING=visible-value\nnext' }), REJECTED)
+    expect(out).toContain('lines 1-2 match, ignoring trailing whitespace. View that range')
+    expect(out).not.toContain('visible-value')
+  })
+
+  it('still echoes the same lines from a file with an ordinary name', () => {
+    const out = diagnoseEditFailure(editEvent('Edit', { file_path: fileWith('PLAIN_SETTING=visible-value  \nnext\n'), old_string: 'PLAIN_SETTING=visible-value\nnext' }), REJECTED)
+    expect(out).toContain('visible-value')
+  })
+})

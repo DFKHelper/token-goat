@@ -7,8 +7,6 @@ const ENV_TEMPLATES: ReadonlySet<string> = new Set(['.env.example', '.env.sample
 export function isSecretFileName(name: string): boolean {
   const lower = name.toLowerCase()
   if (lower === '.env' || lower.startsWith('.env.')) return !ENV_TEMPLATES.has(lower)
-  if (lower.endsWith('.pem') || lower.endsWith('.key') || lower.endsWith('.p12') || lower.endsWith('.pfx')) return true
   if (lower.startsWith('id_')) return !lower.endsWith('.pub')
-  if (lower === '.npmrc' || lower === '.netrc') return true
-  return lower.startsWith('credentials')
+  return /\.(?:pem|key|p12|pfx)$|^\.n(?:pm|et)rc$|^credentials/.test(lower)
 }

@@ -26,6 +26,9 @@ const MAX_MISSING_PATHS = 2
 /** Longest path taken out of an error message. */
 const MAX_PATH_CHARS = 512
 
+/** Longest stderr line scanned: a path of {@link MAX_PATH_CHARS} plus the program and message wording around it fits well inside, and the unanchored patterns below rescan a line from every start, so a longer one is skipped rather than searched. */
+const MAX_LINE_CHARS = 2048
+
 /** Keys a tool call carries its path under, in the order they are tried: Claude Code's file_path and notebook_path, the `path` of Grep and Glob and of Copilot CLI's file tools, and Antigravity's TargetFile. */
 const TOOL_PATH_KEYS = ['file_path', 'notebook_path', 'path', 'TargetFile'] as const
 
@@ -45,7 +48,7 @@ export function missingPathsFromStderr(errorText: string): string[] {
   const found: string[] = []
   for (const raw of errorText.split(/\r?\n/)) {
     const line = raw.trim()
-    if (!/No such file or directory/i.test(line)) continue
+    if (raw.length > MAX_LINE_CHARS || !/No such file or directory/i.test(line)) continue
     let target: string | undefined
     for (const pattern of QUOTED_PATH_PATTERNS) {
       target = pattern.exec(line)?.[1]
