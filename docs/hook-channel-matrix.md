@@ -26,7 +26,7 @@ From `serializeOutput` plus a full producer enumeration (`rg "contextOutput\(|de
 
 `visualstudio` (`install --visualstudio`) has no column in the verdicts below: Visual Studio documents no agent hooks, so the bridge writes no hooks file and every channel is **X** there. token-goat reaches that agent only through its MCP tools and the instructions block.
 
-`post_compact` handlers only ever return pass (side effects only). `subagent_stop` returns pass everywhere except Copilot CLI, where it rewrites the subagent report through `modifiedResponse` (compaction and the evidence receipt); on the other harnesses it parks the receipt for the parent's Agent result, or for Codex's `wait_agent` result. `notification` has
+`post_compact` handlers only ever return pass (side effects only). `subagent_stop` returns pass everywhere except Copilot CLI, where it rewrites the subagent report through `modifiedResponse` (compaction and the evidence receipt); on the other harnesses it parks the receipt for the parent's Agent result, or for Codex's `wait_agent` result. On VS Code the PostToolUse side of that delivery (the receipt as `additionalContext` on the result) is defensive only: VS Code 1.140.0 never parks a receipt, because its SubagentStop payload carries no report text. `notification` has
 zero registered handlers; `stop` has one (hooks_stop.ts), advisory only. `hermes` has no bridge row in `BRIDGE_CAPABILITY_MATRIX`
 and is out of scope here.
 

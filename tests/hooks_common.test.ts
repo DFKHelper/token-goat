@@ -20,7 +20,7 @@ import { makeHookEvent as makeEvent } from './helpers/hook-event.js'
 describe('emitRewrite on a host that drops a result rewrite', () => {
   afterEach(() => vi.unstubAllEnvs())
 
-  // FORMAT-DERIVED: VS Code 1.140.0 extension.js ignores updatedToolOutput on PostToolUse; src/bridges/vscode_hooks.ts serializeVscodeOutput returns {} for rewriteOutput.
+  // FORMAT-DERIVED: extension.js (<user>/AppData/Local/Programs/Microsoft VS Code/07f806f999/resources/app/extensions/copilot/dist/extension.js, VS Code 1.140.0 with Copilot Chat 0.68.0, sha256 a918eb6ed04a7fb10ab673f2243b4dbd9ac8368c8ba82a60194d74ca45c1191f) ignores updatedToolOutput on PostToolUse; src/bridges/vscode_hooks.ts serializeVscodeOutput returns {} for rewriteOutput.
   it('passes on VS Code and rewrites on Claude Code', () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'vscode')
     expect(emitRewrite('shorter', 'test').hookType).toBe('pass')

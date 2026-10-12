@@ -442,7 +442,7 @@ describe('stopHandler', () => {
     expect(stopHandler(stopEvent(unverifiedSession())).hookType).toBe('pass')
   })
 
-  // FORMAT-DERIVED: VS Code 1.140.0 extensions/copilot/dist/extension.js executeStopHook reads only hookSpecificOutput.decision === 'block' and reason; src/bridges/vscode_hooks.ts answers a stop context with {}.
+  // FORMAT-DERIVED: extension.js (<user>/AppData/Local/Programs/Microsoft VS Code/07f806f999/resources/app/extensions/copilot/dist/extension.js, VS Code 1.140.0 with Copilot Chat 0.68.0, sha256 a918eb6ed04a7fb10ab673f2243b4dbd9ac8368c8ba82a60194d74ca45c1191f) executeStopHook reads only hookSpecificOutput.decision === 'block' and reason; src/bridges/vscode_hooks.ts answers a stop context with {}.
   it.each(['copilot_cli', 'vscode'])('does nothing on %s and does not mark the advisory as given', (harness) => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', harness)
     const sid = unverifiedSession()

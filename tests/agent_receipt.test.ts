@@ -647,21 +647,26 @@ describe('the built hook entry, per host', () => {
 
   it('vscode: a long report is delivered unchanged with the receipt in additionalContext, since VS Code drops a result rewrite', () => {
     const base = { session_id: 'e2e-receipt-vs', permission_mode: 'default' }
-    // The receipt is parked by the Claude Code flow in the same session: VS Code parks none of its own (see the next test).
+    // The contextOutput delivery path is defensive only: VS Code 1.140.0 never parks a receipt (see the next test), so this parks one from the Claude Code flow in the same session to exercise it.
     hook('post_tool_use_failure', 'claudecode', { ...base, agent_id: 'sub1', agent_type: 'general-purpose', hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'toolu_1', error: 'Exit code 1\nFAIL', is_interrupt: false })
     hook('subagent_stop', 'claudecode', { ...base, agent_id: 'sub1', agent_type: 'general-purpose', hook_event_name: 'SubagentStop', stop_hook_active: false, last_assistant_message: LONG_REPORT })
     expect(fs.readdirSync(path.join(root, 'tg'), { recursive: true }).map(String).filter((n) => n.includes('.agent-receipts')).length).toBeGreaterThan(0)
-    // FORMAT-DERIVED: PostToolUse input is tool_name, tool_input, tool_response, tool_use_id (VS Code 1.140.0 extension.js, the agent-hook payload builder); runSubagent is the subagent tool (src/hooks_cli.ts VS Code tool map).
+    // FORMAT-DERIVED: PostToolUse input is tool_name, tool_input, tool_response, tool_use_id (the agent-hook payload builder in <user>/AppData/Local/Programs/Microsoft VS Code/07f806f999/resources/app/extensions/copilot/dist/extension.js, VS Code 1.140.0 with Copilot Chat 0.68.0, sha256 a918eb6ed04a7fb10ab673f2243b4dbd9ac8368c8ba82a60194d74ca45c1191f); runSubagent is the subagent tool (src/hooks_cli.ts VS Code tool map).
     const out = hook('post_tool_use', 'vscode', { ...base, hook_event_name: 'PostToolUse', tool_name: 'runSubagent', tool_input: { prompt: 'Build the widget.' }, tool_response: LONG_REPORT, tool_use_id: 'tu-1' })
     const parsed = JSON.parse(out) as { hookSpecificOutput?: { additionalContext?: string; updatedToolOutput?: string } }
     expect(parsed.hookSpecificOutput?.additionalContext ?? '').toContain('last check failed')
     expect(parsed.hookSpecificOutput?.updatedToolOutput).toBeUndefined()
   })
 
+  it('vscode: a long report with no receipt to deliver passes silently, as it did before receipts existed', () => {
+    const out = hook('post_tool_use', 'vscode', { session_id: 'e2e-receipt-vs-quiet', permission_mode: 'default', hook_event_name: 'PostToolUse', tool_name: 'runSubagent', tool_input: { prompt: 'Build the widget.' }, tool_response: LONG_REPORT, tool_use_id: 'tu-2' })
+    expect(JSON.parse(out)).toEqual({})
+  })
+
   it('vscode: a SubagentStop carries no report, so nothing is parked and the later result has no receipt', () => {
     const base = { session_id: 'e2e-receipt-vs-none', permission_mode: 'default' }
     hook('post_tool_use_failure', 'vscode', { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'run_in_terminal', tool_input: { command: 'npm test' }, tool_use_id: 'tu-0', error: 'Exit code 1' })
-    // FORMAT-DERIVED: VS Code 1.140.0 extension.js builds the SubagentStop input as agent_id, agent_type and stop_hook_active only; a search of that file for last_assistant_message finds none.
+    // FORMAT-DERIVED: extension.js (<user>/AppData/Local/Programs/Microsoft VS Code/07f806f999/resources/app/extensions/copilot/dist/extension.js, VS Code 1.140.0 with Copilot Chat 0.68.0, sha256 a918eb6ed04a7fb10ab673f2243b4dbd9ac8368c8ba82a60194d74ca45c1191f) builds the SubagentStop input as agent_id, agent_type and stop_hook_active only; a search of that file for last_assistant_message finds none.
     const stop = hook('subagent_stop', 'vscode', { ...base, hook_event_name: 'SubagentStop', agent_id: 'sub-vs', agent_type: 'Explore', stop_hook_active: false })
     expect(JSON.parse(stop)).toEqual({})
     expect(fs.readdirSync(path.join(root, 'tg'), { recursive: true }).map(String).filter((n) => n.includes('.agent-receipts'))).toEqual([])

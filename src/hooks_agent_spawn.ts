@@ -656,6 +656,9 @@ async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
       }
       // The gate declined: collapse and/or dedup rewrote something but the net savings did not clear the notice cost. Record this at (0, 0) -- like the sibling session_hint event above -- so hit-rate and near-misses are visible instead of the gate's declines being invisible, without inflating any savings total with a non-saving.
       recordStat('agent_report_compact_declined', 0, 0)
+    } else if (final !== resultText && worthwhile && spawnAdvisory === '') {
+      // A host that drops the rewrite passed silently here before the receipt existed; with nothing to deliver, the recall pointer for a report that went out unchanged would only cost tokens.
+      return passOutput()
     }
 
     return contextOutput(notice)
