@@ -1,4 +1,4 @@
-/** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same command in the same directory, same first error line) gets one line naming the fix as history once two distinct sessions have learned it, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that names token-goat, can not sit inside one backtick fence, or carries a credential, and a fix is kept only when every part starts with an allowlisted build, test or install verb (recovery_fix_policy.ts): the stored fix is replayed into the model's context, so it has to be safe to run on sight. No command line is written to disk: the failed command, its prefix and its directory-scoped shape are kept as SHA-256 digests, and a command run in between is kept as text only when it passes that allowlist and carries no credential, otherwise as {@link OTHER_STEP}, which makes the pair unlearnable; a file from before digests is ignored (STORE_VERSION, PENDING_VERSION). */
+/** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same command in the same directory, same first error line) gets one line naming the fix as history once two distinct sessions have learned it, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that names token-goat, can not sit inside one backtick fence, or carries a credential, and a fix is kept only when every part starts with an allowlisted build, test or install verb (recovery_fix_policy.ts): the stored fix is replayed into the model's context, so it has to be safe to run on sight. No command line is written to disk: the failed command, its prefix and its directory-scoped shape are kept as SHA-256 digests, and a command run in between is kept as text only when it passes that allowlist and carries no credential, otherwise as {@link OTHER_STEP}, which makes the pair unlearnable, and the failed command rerun behind a prefix is kept as that prefix and {@link RERUN_PLACEHOLDER}, never its arguments; a file from before digests is ignored (STORE_VERSION, PENDING_VERSION). */
 
 import { createHash } from 'node:crypto'
 import { readFileSync, rmSync } from 'node:fs'
@@ -16,7 +16,7 @@ import { projectHash, resolveProjectRoot } from './project.js'
 import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
 import { errorPrefix } from './tool_error_class.js'
-import { carriesCredential, fixIsAllowed } from './recovery_fix_policy.js'
+import { carriesCredential, fixIsAllowed, RERUN_PLACEHOLDER, rerunIsAllowed } from './recovery_fix_policy.js'
 import { atomicWriteText, ensureDirSync } from './util.js'
 
 /** Later Bash calls a pending pair stays open for before it is dropped. */
@@ -42,9 +42,9 @@ const MAX_FIX_COMMANDS = 2
 
 const PENDING_SUFFIX = '.recovery-pending'
 
-/** Version 2 keeps a command only as a SHA-256 digest; a version 1 file holds command lines in the clear and is dropped unread. */
-const STORE_VERSION = 2
-const PENDING_VERSION = 2
+/** Version 3 keeps a command and an error cluster only as SHA-256 digests; an older file holds command lines or error text in the clear and is dropped unread. */
+const STORE_VERSION = 3
+const PENDING_VERSION = 3
 
 /** Stands in for a command run between a failure and its success that is not an allowlisted fix: the text is never kept, and a fix that would include it is not learned. */
 export const OTHER_STEP = '<other>'
@@ -56,7 +56,7 @@ const MIN_SESSIONS = 2
 const MAX_SESSIONS = 8
 
 export interface StoredPair {
-  /** The error cluster ({@link errorPrefix} of the redacted error text). */
+  /** The digest ({@link digestOf}) of the error cluster ({@link errorPrefix} of the redacted error text): an error can echo an argument back unquoted, so its text is never kept. */
   signature: string
   /** The digest ({@link digestOf}) of the failed command's core, wrappers and prefix removed, qualified by its directory. Never the command text. */
   commandShape: string
@@ -191,16 +191,28 @@ function betweenStep(command: string): string | null {
   return text.length <= MAX_FIX_CHARS && !carriesCredential(text) && fixIsAllowed(text, '', WRAPPER) ? text : OTHER_STEP
 }
 
+/** The success that is the failed command behind a prefix or wrapper, as the text to keep: the prefix and the wrapper words, with the command itself replaced by {@link RERUN_PLACEHOLDER}, because its arguments are free text that no allowlist can vouch for. Null when the command is not one that may be rerun by name, or when there is nothing but the placeholder to say. */
+function rerunPart(success: { prefix: string; run: string; core: string }): string | null {
+  if (!rerunIsAllowed(success.core) || !success.run.endsWith(success.core)) return null
+  const lead = success.run.slice(0, success.run.length - success.core.length)
+  if (success.prefix === '' && lead === '') return null
+  return squeeze(`${success.prefix} ${lead}${RERUN_PLACEHOLDER}`)
+}
+
 /** {@link learnableFix} over a failed command kept as digests and between steps as {@link betweenStep} left them. */
 function learnFromDigest(failed: FailedDigest, success: string, steps: readonly string[]): string | null {
   const s = splitCommandPrefix(success)
   if (s.core === '' || digestOf(s.core) !== failed.core || !isLearnableCommand(success)) return null
   const wrapperDelta = digestOf(s.prefix) !== failed.prefix || digestOf(s.run) !== failed.run
   const parts = steps.slice(-MAX_FIX_COMMANDS)
-  if (wrapperDelta) parts.push(squeeze(success))
+  if (wrapperDelta) {
+    const rerun = rerunPart(s)
+    if (rerun === null) return null
+    parts.push(rerun)
+  }
   if (parts.length === 0) return null
   const fix = parts.join(' && ')
-  return isReplayable(fix, s.core) ? fix : null
+  return isReplayable(fix) ? fix : null
 }
 
 function storePath(key: string): string {
@@ -267,9 +279,9 @@ function matches(pair: StoredPair, signature: string, shape: string): boolean {
   return pair.signature === signature && pair.commandShape === shape
 }
 
-/** Whether a stored fix may still be shown for a failure of `core`: the allowlist is checked again on replay, so a file written by an older policy, or edited by hand, can not put a command into the model's context. */
-function isReplayable(fix: string, core: string): boolean {
-  return fix.length <= MAX_FIX_CHARS && !carriesCredential(fix) && fixIsAllowed(fix, core, WRAPPER)
+/** Whether a stored fix may still be shown: the allowlist is checked again on replay, so a file written by an older policy, or edited by hand, can not put a command into the model's context. */
+function isReplayable(fix: string): boolean {
+  return fix.length <= MAX_FIX_CHARS && !carriesCredential(fix) && fixIsAllowed(fix, '', WRAPPER)
 }
 
 /** The same pair an offer came from: its fix, the shape it was learned for and the failure it was learned from, so a different failure of the same command never scores it. */
@@ -399,7 +411,7 @@ function signatureOf(errorText: string): string | null {
   const picked = chosen === undefined ? informative.slice(0, 3) : [chosen]
   const text = `${exit === null ? '' : `exit ${exit[1] ?? ''}: `}${picked.map((line) => errorPrefix(line)).join(' | ')}`
   const signature = text.slice(0, MAX_FIX_CHARS)
-  return carriesCredential(signature) ? null : signature
+  return carriesCredential(signature) ? null : digestOf(signature)
 }
 
 /** Record a failed Bash command and return the one-line recurrence hint when two earlier sessions learned a fix for this exact failure in this directory. `reason` is already known not to be one the failure hook withholds advice for. */
@@ -425,7 +437,7 @@ export function recoveryAfterFailure(event: HookEvent, failure: { command: strin
         saveStore(key, pairs)
       }
     }
-    const candidates = pairs.filter((p) => matches(p, signature, shape) && !isRetired(p) && p.sessions.length >= MIN_SESSIONS && isReplayable(p.fix, core)).sort((a, b) => b.helped - b.hurt - (a.helped - a.hurt) || b.count - a.count || b.lastSeen - a.lastSeen)
+    const candidates = pairs.filter((p) => matches(p, signature, shape) && !isRetired(p) && p.sessions.length >= MIN_SESSIONS && isReplayable(p.fix)).sort((a, b) => b.helped - b.hurt - (a.helped - a.hurt) || b.count - a.count || b.lastSeen - a.lastSeen)
     const best = candidates[0]
     const open: OpenPair = { key: failed.core, shape, failedPrefix: failed.prefix, failedRun: failed.run, signature, calls: 0, between: [], ...(best === undefined ? {} : { offered: { fix: best.fix } }) }
     state.open = [...state.open.filter((o) => o.key !== failed.core), open].slice(-MAX_OPEN)

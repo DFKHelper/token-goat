@@ -1,5 +1,6 @@
 /** `post_tool_use_failure` handler -- the repeat-failure brake. Two harnesses route a *failed* tool result here instead of to their ordinary post-tool event. Claude Code sends `PostToolUseFailure` with `error`, `is_interrupt` and `duration_ms` (captured on 2.1.281: a missing-file Read and a non-zero Bash exit both arrive here, never on PostToolUse), and its `additionalContext` reached the model in the same capture. Copilot CLI routes one to its own `postToolUseFailure` hook instead of `postToolUse`, and that hook accepts only `additionalContext`: `modifiedResult` is documented as not honored there and the bundle agrees, so a failed tool result cannot be fenced, compressed or shrunk on Copilot the way a successful one can. What the event *can* do is confirmed rather than assumed -- Copilot CLI 1.0.80, app.js offset 2043380 either folds `additionalContext` into `textResultForLlm` or pushes `{content, source:'system'}` onto `toolResult.newMessages`, so the text does reach the model. That makes this the one handler in token-goat whose channel *adds* tokens instead of removing them, and it is written accordingly: it is silent unless staying silent is more expensive than speaking. The only case that clears that bar is a repeat -- the same tool failing with the same error a second time, which is the model about to spend another whole tool call re-learning what it already knows. One short line costs ~25 tokens; the retry it prevents costs the call plus its failure text. So the first failure of any signature returns `pass` and writes nothing to the model, the second returns the line, and every later one returns `pass` again -- a signature is advised at most once per session, because a model that ignored the note will ignore it twice. Every failure is classified first (tool_error_class.ts) and recorded as one `tool_failure` stat, and a reason in {@link REPEAT_NOTICE_EXEMPT} never gets the line. State is a per-session sidecar, the same mechanism `pending_context.ts` uses, and every read and write is fail-soft: a hook that cannot persist its ledger must still return a valid response. */
 
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, relative } from 'node:path'
 
@@ -320,8 +321,8 @@ function adviseOnFailure(event: HookEvent, slot: AdviceSlot): HookOutput {
     const target = ledgerPath(event.sessionId)
     if (target === null) return passOutput()
 
-    // Redact before the signature is derived, not after: this signature is the object the ledger persists to disk (writeLedger below), and a tool failure's error text is externally sourced (shell stderr, an MCP tool's own error, a fetch failure) and can carry a credential the failing call happened to echo back.
-    const signature = failureSignature(toolName, redactSecrets(errorText).text)
+    // Redact before the signature is derived, not after: this signature is the object the ledger persists to disk (writeLedger below), and a tool failure's error text is externally sourced (shell stderr, an MCP tool's own error, a fetch failure) and can carry a credential the failing call happened to echo back. Then kept only as a digest: redaction knows credential shapes, not an argument the shell printed back, so the text itself never reaches the ledger.
+    const signature = createHash('sha256').update(failureSignature(toolName, redactSecrets(errorText).text)).digest('hex')
     const ledger = readLedger(target)
     const priorState = ledger.seen[signature]
 

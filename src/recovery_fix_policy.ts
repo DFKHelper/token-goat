@@ -3,7 +3,15 @@
 import { stripLeadingAssignments } from './bash_extractors.js'
 import { hasPreciseSecret, redactSecrets } from './secret_redact.js'
 
-const FLAG = String.raw`(?:\s+--?[A-Za-z][\w-]*(?:=[\w./-]+)?)`
+/** The flags a replayed fix may carry, by name: switches that change how much is printed, whether the network is touched or which build profile runs, never one that names a file, a directory, a program or a script to run (`--prefix`, `--userconfig`, `--script-shell`, `--cwd`, `--config`, `--manifest-path`, `-exec`, `-toolexec`, `-s`). A value is allowed only as digits or `true`/`false`. */
+const SAFE_FLAG_NAMES: readonly string[] = [
+  '--ci', '--ignore-scripts', '--frozen-lockfile', '--immutable', '--no-audit', '--no-fund', '--silent', '--quiet', '--verbose', '--offline', '--prefer-offline', '--production', '--legacy-peer-deps', '--if-present', '--release',
+  '--locked', '--frozen', '--all-features', '--all-targets', '--no-default-features', '--workspace', '--lib', '--bins', '--tests', '--dev', '--no-dev', '--all-extras', '--upgrade', '--no-cache-dir', '--no-cache',
+  '--no-deps', '--no-build-isolation', '--no-install-project', '--no-fail-fast', '--fail-fast', '--info', '--stacktrace', '--no-daemon', '--batch-mode', '--no-restore', '--no-build', '--nologo',
+  '-q', '-vvv', '-vv', '-v', '-B', '-U', '-o', '-e', '-race', '-short', '-json', '-DskipTests',
+]
+const SAFE_FLAG_VALUES: readonly string[] = ['-count', '-parallel', '--jobs', '--concurrency', '--maxsockets']
+const FLAG = String.raw`(?:\s+(?:(?:${SAFE_FLAG_NAMES.join('|')})(?:=(?:true|false|\d{1,5}))?|(?:${SAFE_FLAG_VALUES.join('|')})=\d{1,5}|-j\d{1,3}|--console=plain)(?=\s|$))`
 const PATH_ARG = String.raw`[\w./-]+`
 const PIP_ARGS = String.raw`(?:${FLAG}|\s+-r\s+${PATH_ARG}|\s+-e\s+\.[\w./-]*|\s+\.)*`
 
@@ -72,10 +80,26 @@ function coreOf(segment: string, wrappers: RegExp): string {
   return core
 }
 
-/** Whether every `&&` part of `fix` is safe to show a later session as history. A part is accepted when it starts with an allowlisted verb, or is the failed command itself (`failedCore`) and a {@link RERUN_COMMAND}, behind the prefix the success added. */
+/** Stands in for the failed command itself in a stored fix: its arguments are free text (`pytest -k <anything>`) and an allowlist can not tell a test name from a secret, so the text is never kept and the fix says only that the same command was run again. */
+export const RERUN_PLACEHOLDER = '(the same command)'
+
+/** What may sit in front of {@link RERUN_PLACEHOLDER}: nothing, or a runner word with no flag of its own. A leading `VAR=value`, `env`, or a wrapper flag carries free text, so a rerun behind one is not learned. */
+const SAFE_LEAD = /^(?:(?:npx\s+(?:(?:-y|--yes|--no-install)\s+)*|bunx\s+|uv\s+run\s+|poetry\s+run\s+|pipenv\s+run\s+|pnpm\s+exec\s+))?$/
+
+/** Whether the failed command `core` may be rerun by name in a stored fix: a runner or a listing, or an allowlisted verb, with no pipe, chain, redirect or source flag. */
+export function rerunIsAllowed(core: string): boolean {
+  if (FORBIDDEN_IN_PART.test(core) || SOURCE_FLAG.test(core)) return false
+  return RERUN_COMMAND.test(core) || FIX_VERB_ALLOWLIST.some((verb) => verb.pattern.test(core))
+}
+
+/** Whether every `&&` part of `fix` is safe to show a later session as history. A part is accepted when it starts with an allowlisted verb, ends in {@link RERUN_PLACEHOLDER} behind a {@link SAFE_LEAD}, or is the failed command itself (`failedCore`) and a {@link RERUN_COMMAND}. */
 export function fixIsAllowed(fix: string, failedCore: string, wrappers: RegExp): boolean {
   for (const part of fix.split(' && ')) {
     if (part === '' || FORBIDDEN_IN_PART.test(part) || SOURCE_FLAG.test(part)) return false
+    if (part.endsWith(RERUN_PLACEHOLDER)) {
+      if (!SAFE_LEAD.test(part.slice(0, part.length - RERUN_PLACEHOLDER.length))) return false
+      continue
+    }
     if (leadingAssignmentNames(part).some((name) => DANGEROUS_ENV.test(name))) return false
     const core = coreOf(part, wrappers)
     if (core === failedCore && RERUN_COMMAND.test(core)) continue

