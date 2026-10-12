@@ -59,6 +59,7 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'hints.session_start_reminder',
   'hints.stable_doc_compacts',
   'hints.stop_verification_advisory',
+  'hints.agent_receipt',
   'hints.subagent_markdown_first_read_deny',
   'hints.truncated_read_min_lines',
   'hints.warn_unbalanced_shell_quoting',

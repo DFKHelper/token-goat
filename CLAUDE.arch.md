@@ -389,6 +389,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | Module | Role |
 |--------|------|
 | [`src/affected.ts`](src/affected.ts) | `token-goat affected` -- which test files a set of changed source files can reach. |
+| [`src/agent_receipt.ts`](src/agent_receipt.ts) | The evidence receipt a subagent's report carries when its own record gives the parent a reason to doubt it: the last check it ran failed, it edited source after its last passing ch |
 | [`src/answer_router.ts`](src/answer_router.ts) | `token-goat answer` -- a deterministic question router. |
 | [`src/archive_query.ts`](src/archive_query.ts) | Entry listing + single-member extraction for `token-goat zip-list` / `zip-read`, so a .zip/.jar/.whl/.vsix/.nupkg (all zip-format containers under the hood) never needs its whole a |
 | [`src/asset_extensions.ts`](src/asset_extensions.ts) | Extension-based classification of files whose bytes are not text, kept in one leaf module with no imports of its own so every consumer shares a single list. |

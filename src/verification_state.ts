@@ -70,6 +70,8 @@ export interface VerificationState {
   readonly failingUnresolved: boolean
   /** Source files this session edited, by display name. */
   readonly editedFiles: readonly string[]
+  /** True when the session recorded an edit to any file at all, source or not. */
+  readonly editedAnyFile: boolean
   /** Source files edited after the last run that did not fail (all of them when no such run exists). */
   readonly editedSinceLastPass: readonly string[]
 }
@@ -87,6 +89,7 @@ export function evaluateVerification(stateKey: string): VerificationState {
     ...(latestRun !== undefined ? { latestRun } : {}),
     failingUnresolved: latestRun !== undefined && latestRun.exitCode !== null && latestRun.exitCode !== 0,
     editedFiles: names(edited),
+    editedAnyFile: (state?.files ?? []).some((f) => f.wasEdited),
     editedSinceLastPass: names(edited.filter((f) => (f.lastEditedAt ?? 0) > lastPassAt)),
   }
 }

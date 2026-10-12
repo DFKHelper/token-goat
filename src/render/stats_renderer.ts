@@ -518,6 +518,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'session_hint',
       'session_hint_overhead',
       'session_hint_suppressed',
+      'agent_receipt',
       'read_count_deny',
       'read_served_deny',
       'reread_deny_identity',

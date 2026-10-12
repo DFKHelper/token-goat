@@ -22,6 +22,10 @@ import { getHarnessName } from './bridges/registry.js'
 import { isInsideRoot } from './project.js'
 import { agentTypeOf, loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
 import { echoedValue } from './hint_suggestion_guard.js'
+import type * as AgentReceiptModule from './agent_receipt.js'
+
+// Loaded on first use: the hook entry parses every eager byte on each tool call, and a receipt is only looked for when a subagent stops or its result arrives.
+const loadAgentReceipt = (): Promise<typeof AgentReceiptModule> => import('./agent_receipt.js')
 
 /** Target token budget for the entire briefing (project map + cached ids + reminder + report contract). Measured against this repo's own compact map (46 tokens) plus a realistic mid-size project's compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the imperative surgical-read reminder (136 tokens, grown from a one-liner in c574b1f6), the report contract added below (~95 tokens), and a 1-3 entry cache-ids block (26-50 tokens): worst-case realistic total lands around 400-470 tokens. 450 left too little headroom once the contract was added, so 550 leaves a real margin above that; revisit this number again if either tail block grows further. */
 const BRIEFING_TARGET_TOKENS = 550
@@ -570,8 +574,14 @@ function recordReportCompaction(resultText: string, updatedOutput: string): void
   if (savedBytes > 0) recordStat('agent_report_compact', savedBytes, savedTokensFromBytes(savedBytes))
 }
 
+/** The report with its evidence receipt appended, for a Copilot subagent whose report is not compacted. */
+function receiptRewrite(resultText: string, receipt: string): HookOutput {
+  recordStat('agent_receipt', 0, 0, undefined, 'agent')
+  return emitRewrite(`${resultText}\n\n${receipt}`, 'agent')
+}
+
 /** Copilot CLI's subagentStop hook hands over the subagent's final answer as `response`, and a `modifiedResponse` in reply replaces that answer everywhere the parent sees it: the task tool's result and the model request built from it (tg-captures C4a, Copilot CLI 1.0.88). That is the channel the compacted report goes through there. The post-tool rewrite of the task result has never been shown to be honored on Copilot for the task tool (C1b and C6 cover view and the shell tools only). Only a rewrite that pays for its notice is sent; anything less passes, and the post-tool pass handles the report as it does elsewhere. The report is cached only when the rewrite is sent, under an id computed up front, so a report the post-tool pass goes on to cache is not stored twice. */
-function subagentReportRewriteHandler(event: HookEvent): HookOutput {
+async function subagentReportRewriteHandler(event: HookEvent): Promise<HookOutput> {
   try {
     if (getHarnessName() !== 'copilot_cli' || !event.sessionId) return passOutput()
     const raw = event.raw['last_assistant_message']
@@ -579,16 +589,20 @@ function subagentReportRewriteHandler(event: HookEvent): HookOutput {
     // Redacted at arrival, for the reason postAgentHandler gives.
     const redactedReport = redactSecrets(raw)
     const resultText = redactedReport.text
-    if (resultText.length < loadConfig().agent_report.min_bytes) return passOutput()
+    // Computed here because this event IS the subagent's stop: Copilot's post-tool pass never sees the child's state key, and the report the rewrite returns is the one the parent reads.
+    const receipt = (await loadAgentReceipt()).receiptForStoppedAgent(event, resultText)
+    const receiptOnly = (): HookOutput => (receipt === null ? passOutput() : receiptRewrite(resultText, receipt))
+    if (resultText.length < loadConfig().agent_report.min_bytes) return receiptOnly()
     // Keyed on the subagent's own id: the payload names no tool call, and agentId is unique per spawn (tg-captures C4a-013).
     const toolInput: Record<string, unknown> = { agent_id: event.agentId ?? '' }
     const id = mcpOutputId(event.sessionId, mcpHash('task', toolInput))
     const recallHint = `token-goat mcp-output ${id} --full`
-    const notice = reportNotice(resultText, recallHint, '')
+    const notice = reportNotice(resultText, recallHint, receipt ?? '')
     const { final, worthwhile } = planReportCompaction(resultText, recallHint, notice)
-    if (!worthwhile) return passOutput()
-    if (storeMcpOutput(event.sessionId, 'task', toolInput, resultText) !== id) return passOutput()
+    if (!worthwhile) return receiptOnly()
+    if (storeMcpOutput(event.sessionId, 'task', toolInput, resultText) !== id) return receiptOnly()
     if (redactedReport.count > 0) recordStat('secret_redacted', 0, redactedReport.count, undefined, 'agent')
+    if (receipt !== null) recordStat('agent_receipt', 0, 0, undefined, 'agent')
     const updatedOutput = `${final}\n\n${notice}`
     recordReportCompaction(resultText, updatedOutput)
     return emitRewrite(updatedOutput, 'agent', undefined, 'counted-elsewhere')
@@ -597,7 +611,7 @@ function subagentReportRewriteHandler(event: HookEvent): HookOutput {
   }
 }
 
-function postAgentHandler(event: HookEvent): HookOutput {
+async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
   try {
     if (!isAgentTool(event.toolName) || !event.sessionId) return passOutput()
 
@@ -614,7 +628,9 @@ function postAgentHandler(event: HookEvent): HookOutput {
     if (REWRITTEN_REPORT_RE.test(resultText)) return passOutput()
     const agentReportCfg = loadConfig().agent_report
     // Built before the min_bytes early returns because the advisory is about the SPAWN, not the report: a lane that came back with a two-line answer paid the same unrestricted prefix. On the early-return paths it rides alone as the whole context output; past them it is folded into `notice` below, BEFORE the net-benefit gate prices that notice, so the gate-then-emit-extra accounting trap cannot reappear here.
-    const spawnAdvisory = buildUnrestrictedSpawnAdvisory(event.toolInput)
+    const receipt = (await loadAgentReceipt()).takeAgentReceipt(event.sessionId, resultText)
+    if (receipt !== null) recordStat('agent_receipt', 0, 0, undefined, 'agent')
+    const spawnAdvisory = [buildUnrestrictedSpawnAdvisory(event.toolInput), receipt ?? ''].filter((part) => part !== '').join('\n')
     if (!resultText || resultText.length < agentReportCfg.min_bytes) {
       return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     }
@@ -649,6 +665,7 @@ function postAgentHandler(event: HookEvent): HookOutput {
 
 registerHook('subagent_start', subagentStartHandler)
 // advisory: hooks_session.ts's subagentStopHandler shares this event and must still run, whichever module registered first.
+registerHook('subagent_stop', async (event) => (await loadAgentReceipt()).subagentReceiptHandler(event), { advisory: true })
 registerHook('subagent_stop', subagentReportRewriteHandler, { advisory: true })
 // Written out one per line, not looped over SPAWN_TOOL_BRIEF_FIELD: tests/hooks_cli.test.ts scans this source for literal registerHook toolName arguments to prove every name a harness maps to has a handler. A test here pins these lines to the table's keys.
 registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'Agent' })

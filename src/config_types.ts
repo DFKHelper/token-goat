@@ -129,6 +129,8 @@ export interface HintsConfig {
   pre_skill_advisory: boolean
   /** Stop-time note, shown to the user and never blocking, when files were edited after the last passing test, lint, typecheck or build command (verification_state.ts). */
   stop_verification_advisory: boolean
+  /** Up to three lines appended to a subagent's report when its own record shows a failed last check, source edited after its last passing check, or a claimed change it never made (agent_receipt.ts). A clean subagent gets nothing. */
+  agent_receipt: boolean
   context_threshold_advisory: boolean
   diff_hint_min_tokens_saved: number
   large_read_redirect_bytes: number

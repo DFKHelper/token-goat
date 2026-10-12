@@ -194,6 +194,11 @@ function claimsUnnegatedChange(message: string): boolean {
   });
 }
 
+// True when the message claims a commit or push, which explains a clean working tree.
+function claimsCommittedChange(message: string): boolean {
+  return CLAIMED_COMMIT_VERBS_RE.test(message);
+}
+
 function subagentStopHandler(event: HookEvent): HookOutput {
   try {
     if (!event.sessionId) {
@@ -236,4 +241,4 @@ registerHook('subagent_stop', subagentStopHandler);
 // followsMatcher: this handler filters no tool, but it must not force the catch-all matcher. On Claude Code it is a no-op anyway, and on Copilot CLI -- the harness it exists for -- the installed matcher plays no part, since that shim receives every postToolUse event regardless. So accepting the event's existing narrowed matcher costs the delivery nothing and keeps every other harness from paying a hook spawn on tool calls no handler wants.
 registerHook('post_tool_use', pendingContextHandler, { advisory: true, followsMatcher: true });
 
-export { pendingContextHandler, subagentStopHandler, userPromptSubmitHandler };
+export { claimsCommittedChange, claimsUnnegatedChange, pendingContextHandler, subagentStopHandler, userPromptSubmitHandler };

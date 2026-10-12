@@ -83,6 +83,16 @@ describe('evaluateVerification', () => {
     expect(state.failingUnresolved).toBe(false)
   })
 
+  // HAND-DERIVED: Codex records no exit status for a shell run, so a null status after the edit must count as a check that ran.
+  it('a run with no recorded status after the edit covers it', () => {
+    const sid = newSession()
+    inSession(sid, () => {
+      recordFileEdit('C:/proj/src/a.ts')
+      recordVerificationRun('npm test', null, T0 + 1000)
+    })
+    expect(evaluateVerification(sid).editedSinceLastPass).toEqual([])
+  })
+
   it('an edit after the last passing run is unverified again', () => {
     const sid = newSession()
     inSession(sid, () => recordVerificationRun('npm test', 0, T0 - 1000))
@@ -240,7 +250,7 @@ describe('stopHandler', () => {
   })
 
   it('quotes a file name that carries a backtick instead of opening a code span', () => {
-    const text = stopAdvisoryText({ runs: [], failingUnresolved: false, editedFiles: ['a`b.ts'], editedSinceLastPass: ['a`b.ts'] })
+    const text = stopAdvisoryText({ runs: [], failingUnresolved: false, editedFiles: ['a`b.ts'], editedAnyFile: true, editedSinceLastPass: ['a`b.ts'] })
     expect(text).not.toContain('`')
   })
 })
