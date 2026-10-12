@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { stopAdvisoryText, stopHandler } from '../src/hooks_stop.js'
+import { mayBeVerificationCommand } from '../src/hooks_verification.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
@@ -50,6 +51,22 @@ describe('isVerificationCommand', () => {
     ['cat package.json', false],
   ])('%s -> %s', (command, expected) => {
     expect(isVerificationCommand(command)).toBe(expected)
+  })
+})
+
+describe('mayBeVerificationCommand', () => {
+  // HAND-DERIVED: one command per accepting rule in verification_state.ts (the test-runner, lint and OTHER_VERIFICATION_PATTERNS lists), so the keyword gate cannot be narrower than the verdict it guards.
+  it.each([
+    'pytest -x', 'npx jest', 'vitest run', 'go test ./...', 'cargo test', 'dotnet test', 'npm run test', 'yarn test', 'pnpm run test', 'eslint src', 'npx eslint .', 'ruff check .', 'uv run ruff format',
+    'tsc', 'npx tsc --noEmit', 'npm run build', 'pnpm typecheck', 'yarn run type-check', 'npm run check', 'npm run compile', 'npm run verify', 'npm run lint:fix', 'cargo build', 'cargo check', 'cargo clippy', 'go build ./...', 'go vet ./...', 'dotnet build', 'mypy src', 'pyright', 'python -m mypy src', 'python3 -m pytest', 'python -m ruff check',
+  ])('lets %j through', (command) => {
+    expect(isVerificationCommand(command)).toBe(true)
+    expect(mayBeVerificationCommand(command)).toBe(true)
+  })
+
+  it('turns away a command no check could be', () => {
+    expect(mayBeVerificationCommand('git status')).toBe(false)
+    expect(mayBeVerificationCommand('ls -la src')).toBe(false)
   })
 })
 

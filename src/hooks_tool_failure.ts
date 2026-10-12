@@ -7,8 +7,8 @@ import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
+import { noteFailedVerificationHandler } from './hooks_verification.js'
 import { contextOutput, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
-import { noteFailedVerificationRun } from './verification_state.js'
 import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
 import { ensureDirSync } from './util.js'
@@ -211,7 +211,6 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
     const executed = getToolInput(event)['command']
     // A command the pre-hook rewrote into a `token-goat compress` wrapper arrives here as that wrapper, so classify the command inside it: otherwise every wrapped grep that found nothing reads as an unknown failure.
     const command = typeof executed === 'string' ? (unwrapCompressCommand(executed) ?? executed) : executed
-    if (toolName?.toLowerCase() === 'bash' && typeof command === 'string') noteFailedVerificationRun(command, errorText, event.raw['is_interrupt'] === true)
     const verdict = classifyToolError(toolName, errorText, { isInterrupt: event.raw['is_interrupt'] === true, ...(typeof command === 'string' ? { command } : {}) })
     recordStat('tool_failure', 0, 0, undefined, `tool=${(toolName ?? 'unknown').replace(/\s+/g, '_')} class=${verdict.kind} reason=${verdict.reason}`)
     // Only a `search_no_match` can produce a line here, and that reason is exempt below, so the brake never competes with the repeat notice.
@@ -276,4 +275,5 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
   }
 }
 
+registerHook('post_tool_use_failure', noteFailedVerificationHandler, { advisory: true })
 registerHook('post_tool_use_failure', postToolUseFailureHandler)

@@ -108,6 +108,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_stop.ts`](src/hooks_stop.ts) | The Stop hook: when the agent ends a turn with source edits that no test, lint, typecheck or build run has covered since, say so once. It is an advisory, not a block (a Stop block can trap a session in a loop), so it departs from the block in the original idea spec; the switch is `hints.stop_verification_advisory` (`TOKEN_GOAT_STOP_VERIFICATION_ADVISORY`). |
 | [`src/hooks_taskoutput.ts`](src/hooks_taskoutput.ts) | TaskOutput poll-delta caching hook. |
 | [`src/hooks_tool_failure.ts`](src/hooks_tool_failure.ts) | `post_tool_use_failure` handler -- the repeat-failure brake. |
+| [`src/hooks_verification.ts`](src/hooks_verification.ts) | The eager half of the verification bookkeeping: a keyword gate and the registrations. |
 | [`src/hooks_websearch.ts`](src/hooks_websearch.ts) | WebSearch caching/dedup hooks. |
 | [`src/hooks_write.ts`](src/hooks_write.ts) | pre_tool_use hook for the Write tool: full-rewrite detector (feature-queue #302). |
 | [`src/image_shrink.ts`](src/image_shrink.ts) | `preReadImageHandler()` — intercepts large image Read events, shrinks via system tools, injects the smaller bytes |

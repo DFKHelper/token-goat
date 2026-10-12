@@ -6,7 +6,7 @@ import { dirname } from 'node:path'
 
 import { loadConfig } from './config.js'
 import type { HookEvent } from './hook_registry.js'
-import { registerHook, sessionStateKey } from './hook_registry.js'
+import { sessionStateKey } from './hook_registry.js'
 import { nameSubject, quotedArg } from './hint_suggestion_guard.js'
 import { dropsStopContext } from './harness_channels.js'
 import { contextOutput, passOutput } from './hooks_common.js'
@@ -68,5 +68,3 @@ export function stopHandler(event: HookEvent): HookOutput {
     return passOutput()
   }
 }
-
-registerHook('stop', stopHandler, { advisory: true })

@@ -103,10 +103,10 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
     expect(hits).toBe(0)
   })
 
-  it('stop has exactly one registerHook call site, the unverified-work advisory in hooks_stop.ts', () => {
+  it('stop has exactly one registerHook call site, the lazy entry for the unverified-work advisory in hooks_verification.ts', () => {
     const src = fs.readdirSync(path.join(REPO_ROOT, 'src')).filter((f) => f.endsWith('.ts'))
     const sites = src.filter((file) => /registerHook\(\s*'stop'/.test(fs.readFileSync(path.join(REPO_ROOT, 'src', file), 'utf8')))
-    expect(sites).toEqual(['hooks_stop.ts'])
+    expect(sites).toEqual(['hooks_verification.ts'])
   })
 
   it('claudecode and codex install the stop hook, and copilot_cli routes agentStop to it; no other bridge claims stop', () => {
