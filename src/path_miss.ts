@@ -1,9 +1,10 @@
 /** The nudge after a tool call named a path that does not exist: when an existing path is plausibly the one meant (path_suggest.ts), say so once, so the model does not spend a `ls` and a retry finding it. Silent when nothing close exists. Only reached for a failure tool_error_class.ts classed `path_not_found`. */
 
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 
+import { splitShellSegments } from './bash_extractors.js'
 import type { HookEvent } from './hook_registry.js'
 import { sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
@@ -60,8 +61,12 @@ export function missingPathsFromStderr(errorText: string): string[] {
   return found
 }
 
-/** The path a non-Bash tool call named, or undefined. */
-function pathFromToolInput(event: HookEvent): string | undefined {
+/** The tools whose `path`-like argument is a file or directory the call reads, searches or writes, under the names each host reaches the hooks with (folded to lower case): Claude Code's, Copilot CLI's `view`/`create`/`str_replace_editor`, Antigravity's and VS Code's file tools. Any other tool, an MCP server's included, can use `path` for something else (a URL path, a JSON pointer, a remote key), so its argument is never taken for a file. */
+const FILE_TOOLS: ReadonlySet<string> = new Set(['read', 'view', 'edit', 'multiedit', 'write', 'create', 'notebookedit', 'grep', 'glob', 'str_replace_editor', 'str_replace_based_edit_tool', 'view_file', 'read_file', 'write_to_file', 'replace_file_content', 'create_file', 'replace_string_in_file', 'list_dir'])
+
+/** The path a call to the file tool `toolName` named, or undefined for any other tool. */
+function pathFromToolInput(event: HookEvent, toolName: string | undefined): string | undefined {
+  if (toolName === undefined || !FILE_TOOLS.has(toolName.toLowerCase())) return undefined
   for (const key of TOOL_PATH_KEYS) {
     const value = event.toolInput[key]
     if (typeof value === 'string' && value !== '') return value
@@ -103,14 +108,26 @@ function fencedCandidate(candidate: string): string | null {
   return fencedCommand(quotedArg(shown))
 }
 
+/** The words of a shell command line: each segment split on blanks, with a quoted run kept whole and its quotes removed. */
+function commandWords(command: string): string[] {
+  return splitShellSegments(command).flatMap((segment) => Array.from(segment.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g), (m) => m[1] ?? m[2] ?? m[3] ?? ''))
+}
+
+/** Whether `path`, taken out of output that says nothing about success, is a real miss of `command`: one of the command's own arguments, and absent from disk. The first rules out the output of a search that merely printed the phrase, the second a file that exists and holds it. */
+function isMissingArgument(path: string, command: string, cwd: string): boolean {
+  return commandWords(command).includes(path) && !existsSync(resolve(cwd, path))
+}
+
 /** The line to append to a `path_not_found` failure's advice, or null when no path was named, nothing close exists, or this miss was already answered this session. */
-export function pathMissAfterFailure(event: HookEvent, failure: { toolName: string | undefined; errorText: string }): string | null {
+export function pathMissAfterFailure(event: HookEvent, failure: { toolName: string | undefined; errorText: string; ranCommand?: string }): string | null {
   try {
     const target = seenPath(event)
     if (target === null) return null
-    const named = failure.toolName === 'Bash' ? missingPathsFromStderr(failure.errorText) : [pathFromToolInput(event)].filter((p): p is string => p !== undefined)
-    if (named.length === 0) return null
     const cwd = getCwd(event) ?? process.cwd()
+    const reported = failure.toolName === 'Bash' ? missingPathsFromStderr(failure.errorText) : [pathFromToolInput(event, failure.toolName)].filter((p): p is string => p !== undefined)
+    const ranCommand = failure.ranCommand
+    const named = ranCommand === undefined ? reported : reported.filter((p) => isMissingArgument(p, ranCommand, cwd))
+    if (named.length === 0) return null
     const rootDir = resolveProjectRoot({ project: cwd })
     const seen = readSeen(target)
     const lines: string[] = []

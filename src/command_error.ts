@@ -20,7 +20,12 @@ export function setCliInvocation(argv: readonly string[]): void {
   invocation = argv.slice(2)
 }
 
-/** The arguments of the command being run, after the entry script: what `run` recorded, else this process's own. */
+/** Forgets the recorded arguments when `run` ends, so a later reader in a process that outlives the command (the hook server, a batch server) falls back to its own arguments, not the last command's. */
+export function clearCliInvocation(): void {
+  invocation = null
+}
+
+/** The arguments of the command being run, after the entry script: what `run` recorded while it runs, else this process's own. */
 export function cliInvocation(): readonly string[] {
   return invocation ?? process.argv.slice(2)
 }

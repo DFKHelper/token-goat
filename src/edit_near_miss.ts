@@ -152,7 +152,7 @@ export function describeNearMiss(fileText: string, display: string, miss: NearMi
   }
   const range = only.startLine === only.endLine ? `line ${only.startLine} matches` : `lines ${only.startLine}-${only.endLine} match`
   const span = redactSecrets(fileText.slice(only.start, only.end)).text
-  if (isSecretFileName(display.split(/[\\/]/).pop() as string) || only.endLine - only.startLine + 1 > MAX_SPAN_LINES || Buffer.byteLength(span, 'utf8') > MAX_SPAN_BYTES) {
+  if (isSecretFileName(display) || only.endLine - only.startLine + 1 > MAX_SPAN_LINES || Buffer.byteLength(span, 'utf8') > MAX_SPAN_BYTES) {
     return `${head}, but ${range}, ${note}. View that range to copy the exact text.`
   }
   return `${head}, but ${range}, ${note}. Copy the on-disk text below into old_string exactly:\n${fenceFileText(span)}`

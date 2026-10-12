@@ -110,6 +110,18 @@ describe('the nudge on a failed tool call', async () => {
     expect(out).toContain('`"src/hooks_tool_failure.ts"`')
   })
 
+  it.each([['mcp__github__get_file'], ['mcp__fs__list'], ['WebFetch'], ['Task']])('does not treat the path argument of %s as a file', async (tool) => {
+    // HAND-DERIVED: the rule is that only a file tool's path key names a file; an MCP or other tool's `path` is its own business. The path is the one the Copilot case above resolves, so the only thing that differs is the tool name.
+    const out = await fail(CAPTURED_READ, { tool_name: tool, tool_input: { path: join(project, 'src', 'hooks_tool_failur.ts') } })
+    expect(out).not.toContain('Existing paths')
+  })
+
+  it.each([['view'], ['Edit'], ['Write'], ['str_replace_based_edit_tool']])('still reads the path of the %s file tool', async (tool) => {
+    // HAND-DERIVED: these are the file tools the hosts canonicalize to, listed in FILE_TOOLS in src/path_miss.ts.
+    const out = await fail(CAPTURED_READ, { tool_name: tool, tool_input: { path: join(project, 'src', 'hooks_tool_failur.ts') } })
+    expect(out).toContain('`"src/hooks_tool_failure.ts"`')
+  })
+
   it('says nothing when no existing path is close', async () => {
     expect(await fail(CAPTURED_READ, { tool_input: { file_path: join(project, 'zzqq_nothing_like_it.rs') } })).not.toContain('Existing paths')
   })
@@ -178,6 +190,18 @@ describe('the nudge on a Codex Bash result', () => {
     expect((await textPathMiss(codexEvent({ tool_response: { stdout: '', stderr: CODEX_BASH['tool_response'] } }))).hookType).toBe('pass')
   })
 
+  it('says nothing for a successful search whose output merely holds the phrase', async () => {
+    // HAND-DERIVED: grep -r prints `file:line` matches, and a log line in the searched tree can read `open foo: No such file or directory`; the command's own words are grep, -r, the pattern and src, none of them the reported `foo`.
+    const out = await textPathMiss(codexEvent({ tool_input: { command: 'grep -r "No such file or directory" src' }, tool_response: 'src/log.txt:3:open nonexistent_dirs: No such file or directory\nsrc/log.txt:4:cat: nonexistent_dir: No such file or directory\n' }))
+    expect(out.hookType).toBe('pass')
+  })
+
+  it('says nothing when the reported path is an argument that exists', async () => {
+    // HAND-DERIVED: `src` is a command word and a real directory (created in beforeAll), so the phrase in the output is from something else.
+    const out = await textPathMiss(codexEvent({ tool_input: { command: 'cat src notes.txt' }, tool_response: 'cat: src: No such file or directory\n' }))
+    expect(out.hookType).toBe('pass')
+  })
+
   it('says nothing on another harness', async () => {
     delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
     try {
@@ -212,6 +236,12 @@ describe('the nudge on a VS Code terminal result', () => {
 
   it('says nothing for output that is not a missing-path message', async () => {
     expect((await textPathMiss(vscodeEvent({ tool_response: 'ok\n' }))).hookType).toBe('pass')
+  })
+
+  it('says nothing for a successful search whose output merely holds the phrase', async () => {
+    // HAND-DERIVED: same reasoning as the Codex case; the reported path is not among the command's own words.
+    const out = await textPathMiss(vscodeEvent({ tool_input: { command: 'grep -rn "No such file or directory" .', mode: 'sync' }, tool_response: "./log.txt:3:ls: cannot access 'nonexistent_dir': No such file or directory\n" }))
+    expect(out.hookType).toBe('pass')
   })
 })
 

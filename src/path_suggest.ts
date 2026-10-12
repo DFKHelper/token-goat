@@ -75,7 +75,7 @@ function scopeFor(cwd: string, rootDir: string | null): Scope {
 
 /** Whether `abs` may be offered: inside the scope (links resolved), not a credential file name, not under a vendored or generated tree, a configured `skip_dirs` directory or an excluded project root. */
 function permitted(abs: string, scope: Scope): boolean {
-  if (isSecretFileName(path.basename(abs))) return false
+  if (isSecretFileName(abs)) return false
   if (isIgnoredIndexPath(abs, scope.root) || hasSkipSegmentBelowRoot(abs, scope.root, (segment) => scope.skipDirs.includes(segment))) return false
   if (isUnderBlockedRoot(abs, scope.blockedRoots)) return false
   return isInsideRoot(abs, scope.root)
