@@ -169,6 +169,14 @@ describe('a global option before the command', () => {
     expect(suggestForUnknownOption(argvOf('--cwd', 'X', 'search', 'foo', '--top', '3', '--max', '4'))).toBe('Did you mean: `token-goat search "foo" --limit 3 --limit 4`?')
   })
 
+  // HAND-DERIVED: after the command the value of a global option is not a second positional spec, so `read --cwd P f.ts --lines 1-5` still has exactly one spec, f.ts.
+  it('does not count the value of a global option after the command as a second spec', () => {
+    expect(rewriteLineRangeFlag(argvOf('read', '--cwd', 'P', 'f.ts', '--lines', '1-5'))?.argv).toEqual(argvOf('read', '--cwd', 'P', 'f.ts@1-5'))
+    expect(rewriteLineRangeFlag(argvOf('read', 'f.ts', '--notice', 'hi', '--lines', '1-5'))?.argv).toEqual(argvOf('read', 'f.ts@1-5', '--notice', 'hi'))
+    expect(rewriteLineRangeFlag(argvOf('read', '--cwd=P', 'f.ts', '--lines', '1-5'))?.argv).toEqual(argvOf('read', '--cwd=P', 'f.ts@1-5'))
+    expect(rewriteLineRangeFlag(argvOf('read', '--cwd', 'P', 'f.ts', 'g.ts', '--lines', '1-5'))).toBeNull()
+  })
+
   it('leaves a global option that is itself named like a guess alone', () => {
     expect(rewriteFlagRename(argvOf('--notice', '--top', 'search', 'foo'))).toBeNull()
     expect(suggestForUnknownOption(argvOf('--notice', '--top', 'search', 'foo', '--bogus'))).toBeNull()

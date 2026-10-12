@@ -30,7 +30,7 @@ const MISLEADING_ENV = ['TOKEN_GOAT_HARNESS_OVERRIDE', 'CLAUDE_CODE_SESSION_ID',
 const PROBE_TIMEOUT_MS = 240_000
 
 export type ProbeEventResult = 'reached' | 'fired_not_delivered' | 'not_fired' | 'not_wired' | 'inconclusive'
-export type ProbeRunStatus = 'ok' | 'not_installed' | 'timeout' | 'failed'
+export type ProbeRunStatus = 'ok' | 'not_installed' | 'timeout' | 'failed' | 'spawn_failed'
 
 export interface ProbeReport {
   readonly harness: HarnessName
@@ -40,6 +40,8 @@ export interface ProbeReport {
   readonly events: ReadonlyArray<{ readonly event: HookEventName; readonly result: ProbeEventResult }>
   /** The last lines of stderr, when the run did not finish cleanly. */
   readonly detail?: string
+  /** The captured harness-side cause found anywhere in the run's output, which `detail` (its last lines) may not show. */
+  readonly knownCause?: { readonly cause: string; readonly remedy: string } | null
 }
 
 /** Whether a failed run still carried a model reply: the prompt asks for marker lines or `NONE`, so the reply holds the nonce or the word NONE. Non-empty stdout is not enough: claude -p was captured printing `Not logged in · Please run /login` on stdout with exit 1. */
@@ -103,12 +105,16 @@ export function runProbe(harness: HarnessName, opts: { cwd?: string; resolve?: (
     const receipts = receiptTags(nonce)
     const timedOut = (run.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT'
     const status: ProbeRunStatus = timedOut ? 'timeout' : run.status === 0 ? 'ok' : 'failed'
-    const detail = tail(`${run.stderr ?? ''}\n${stdout}`.trim() || run.error?.message || '')
+    const output = `${run.stderr ?? ''}\n${stdout}`.trim()
+    const detail = tail(output || run.error?.message || '')
+    const spawnError = run.error !== undefined && !timedOut ? (run.error as NodeJS.ErrnoException) : undefined
+    if (spawnError !== undefined) return { harness, command, status: 'spawn_failed', exitCode: null, events: probed.map((event) => ({ event, result: implemented.has(event) ? 'not_fired' : 'not_wired' })), detail: tail(`${spawnError.code ?? 'error'}: ${spawnError.message}`) }
+    const knownCause = probeCause(output)
     // A clean exit with an empty stdout is still judged on its receipts: that is the hook-ran-but-nothing-came-back case the probe exists to catch. A failed run is set aside only when its output names a captured harness-side cause; a timeout, or a failure with no such text, may be a hook that hung or blocked the prompt, so it is judged.
-    const replied = status === 'ok' || modelReplied(stdout, nonce) || status === 'timeout' || probeCause(detail) === null
+    const replied = status === 'ok' || modelReplied(stdout, nonce) || status === 'timeout' || knownCause === null
     const events = probed.map((event) => ({ event, result: classifyProbeEvent({ wired: implemented.has(event), nonce, tag: PROBE_EVENT_TAGS[event] ?? '', stdout, receipts, modelReplied: replied }) }))
     const report: ProbeReport = { harness, command, status, exitCode: run.status, events }
-    return status === 'ok' ? report : { ...report, detail }
+    return status === 'ok' ? report : { ...report, detail, knownCause }
   } finally {
     removeReceipts(nonce)
   }
@@ -135,15 +141,19 @@ export function probePassed(report: ProbeReport): boolean {
   return probeVerdict(report) === 'pass'
 }
 
-/** Why a harness failed before its model replied, matched in order against the tail of its output. Each pattern is backed by a captured run (tests/fixtures/doctor_probe, PROVENANCE.tsv); a rate-limit or HTTP-status pattern is left out until one is captured. */
+/** Why a harness failed before its model replied, matched in order against the whole of its output. Each pattern is anchored to the start of a line and to the wording of one captured run (the fixture named beside it, tests/fixtures/doctor_probe, PROVENANCE.tsv), so a failing hook's own `unknown option` message echoed mid-line by the harness is not read as the harness rejecting a flag; a rate-limit or HTTP-status pattern is left out until one is captured. */
 const PROBE_CAUSES: ReadonlyArray<{ readonly re: RegExp; readonly cause: string; readonly remedy: string }> = [
-  { re: /skip-git-repo-check|trusted directory/i, cause: 'the harness refused to run in an untrusted directory', remedy: 'run the probe from a git repository or a directory the harness trusts' },
-  { re: /unknown option|unexpected argument|unrecognized/i, cause: 'the harness rejected a command-line flag', remedy: 'its CLI changed; update token-goat, or report the harness version' },
-  { re: /access denied by policy/i, cause: 'the account or its organization policy denied the harness', remedy: 'check the Copilot access and policy settings of the signed-in account' },
-  { re: /not logged in|\/login/i, cause: 'the harness is not logged in', remedy: 'sign in to the harness, then run the probe again' },
+  // codex_untrusted_directory.stderr
+  { re: /^Not inside a trusted directory and --skip-git-repo-check was not specified\./m, cause: 'the harness refused to run in an untrusted directory', remedy: 'run the probe from a git repository or a directory the harness trusts' },
+  // claude_unknown_option.stderr and codex_unexpected_argument.stderr
+  { re: /^error: (?:unknown option|unexpected argument) '/m, cause: 'the harness rejected a command-line flag', remedy: 'its CLI changed; update token-goat, or report the harness version' },
+  // copilot_access_denied.stderr
+  { re: /^Error: Access denied by policy settings/m, cause: 'the account or its organization policy denied the harness', remedy: 'check the Copilot access and policy settings of the signed-in account' },
+  // claude_not_logged_in.stdout and copilot_no_authentication.stderr
+  { re: /^(?:Not logged in · Please run \/login|Error: No authentication information found\.)/m, cause: 'the harness is not logged in', remedy: 'sign in to the harness, then run the probe again' },
 ]
 
-/** The first known cause in a failed run's output tail, or null when none matches. */
+/** The first known cause in a failed run's output, or null when none matches. */
 export function probeCause(detail: string): { readonly cause: string; readonly remedy: string } | null {
   const hit = PROBE_CAUSES.find((c) => c.re.test(detail))
   return hit === undefined ? null : { cause: hit.cause, remedy: hit.remedy }
@@ -156,20 +166,21 @@ export function formatProbeReport(report: ProbeReport): string {
   const mark = inconclusive ? '[WARN]' : '[FAIL]'
   if (report.status === 'not_installed') lines.push(`  [FAIL] ${PROBE_COMMANDS[report.harness]?.bin ?? report.harness} is not on PATH`)
   else if (report.status === 'timeout') lines.push(`  ${mark} the harness did not finish in time`)
+  else if (report.status === 'spawn_failed') lines.push(displaySafeText(`  [FAIL] the harness could not be started: ${report.detail ?? 'unknown error'}`))
   else if (report.status === 'failed') lines.push(`  ${mark} the harness exited with code ${report.exitCode ?? 'unknown'}`)
   if (inconclusive) {
-    const known = probeCause(report.detail ?? '')
+    const known = report.knownCause !== undefined ? report.knownCause : probeCause(report.detail ?? '')
     // The table's own text, never the harness output the lookup matched against; displaySafeText keeps the sink guard's rule uniform.
     lines.push(displaySafeText(known === null ? '  Probe inconclusive: the harness failed before the model replied; see its output below' : `  Probe inconclusive: ${known.cause}. ${known.remedy}`))
   }
 
-  if (report.status !== 'not_installed') {
+  if (report.status !== 'not_installed' && report.status !== 'spawn_failed') {
     for (const e of report.events) {
       const eventMark = e.result === 'reached' ? '[OK]  ' : e.result === 'not_wired' ? '[--]  ' : e.result === 'inconclusive' ? '[??]  ' : '[FAIL]'
       lines.push(`  ${eventMark} ${e.event.padEnd(19)} ${RESULT_TEXT[e.result]}`)
     }
   }
   // The harness's stderr: its text, not token-goat's, so it is escaped before it lands in a report that also reaches the model as an MCP tool result.
-  if (report.detail !== undefined && report.detail !== '') lines.push(...displaySafeText(report.detail).split('\n').map((l) => `         ${l}`))
+  if (report.status !== 'spawn_failed' && report.detail !== undefined && report.detail !== '') lines.push(...displaySafeText(report.detail).split('\n').map((l) => `         ${l}`))
   return lines.join('\n')
 }

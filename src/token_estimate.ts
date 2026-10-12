@@ -39,13 +39,33 @@ const WIDE_CHAR = /^[㐀-鿿぀-ヿ가-힯]$/
 /** A sample is wide when at least this share of its non-whitespace characters is wide-script. Below it, a few CJK words inside English stay text. */
 const WIDE_SHARE = 0.3
 
-/** Every wide-script character of a string, the same set as {@link WIDE_CHAR}, for counting rather than testing one. */
-const WIDE_CHARS = new RegExp(WIDE_CHAR.source.slice(1, -1), 'g')
+/** Whether a UTF-16 code unit is in the same set as {@link WIDE_CHAR} (3400-9FFF, 3040-30FF, AC00-D7AF), for counting a long string without allocating a match array. */
+function isWideCode(code: number): boolean {
+  return (code >= 0x3400 && code <= 0x9fff) || (code >= 0x3040 && code <= 0x30ff) || (code >= 0xac00 && code <= 0xd7af)
+}
+
+/** How many wide-script characters a string holds. */
+export function countWide(text: string): number {
+  let wide = 0
+  for (let i = 0; i < text.length; i++) if (isWideCode(text.charCodeAt(i))) wide++
+  return wide
+}
+
+/** Guard cost in integer ninths of a token: a wide character is 10 (1 / 0.9 tokens) and any other 3 (1 / 3), so a budget compared as `guardUnits(text) <= tokens * GUARD_UNITS_PER_TOKEN` is exact where a float sum of tokens can land a hair past a boundary that integer length arithmetic holds. Valid while the `text` and `wide` guard divisors are 3.0 and 0.9. */
+export const GUARD_UNITS_PER_TOKEN = 9
+export const WIDE_GUARD_UNITS = 10
+export const TEXT_GUARD_UNITS = 3
+
+/** The guard cost of a string in {@link GUARD_UNITS_PER_TOKEN}ths of a token. */
+export function guardUnits(text: string): number {
+  const wide = countWide(text)
+  return wide * WIDE_GUARD_UNITS + (text.length - wide) * TEXT_GUARD_UNITS
+}
 
 /** Estimated guard tokens for a string, pricing each part at its own rate: wide-script characters at the `wide` guard divisor and the rest at the `text` one, or the whole string at the `dense` divisor when the caller has classified the payload dense. Proportional on purpose: a class chosen for the whole string made the ASCII share of a mixed text pay the wide rate above the {@link WIDE_SHARE} cliff and the CJK share pay the text rate below it. */
 export function guardTokens(text: string, dense = false): number {
   if (dense) return text.length / guardDivisor('dense')
-  const wide = text.match(WIDE_CHARS)?.length ?? 0
+  const wide = countWide(text)
   return wide / guardDivisor('wide') + (text.length - wide) / guardDivisor('text')
 }
 

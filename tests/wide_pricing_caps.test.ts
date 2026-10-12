@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { invalidateConfigCache } from '../src/config.js'
 import { capListField } from '../src/fence_cap.js'
 import { capJsonRows, estimateTokens, trimToBudget } from '../src/overflow_guard.js'
-import { guardTokens } from '../src/token_estimate.js'
+import { GUARD_UNITS_PER_TOKEN, TEXT_GUARD_UNITS, WIDE_GUARD_UNITS, countWide, guardDivisor, guardTokens } from '../src/token_estimate.js'
 
 /** An ASCII filler of exactly `n` characters with word breaks, so it classifies as text. */
 const ascii = (n: number): string => 'abcdefghi '.repeat(Math.ceil(n / 10)).slice(0, n)
@@ -70,6 +70,83 @@ describe('CJK --json caps', () => {
       expect(kept).toBeGreaterThanOrEqual(26)
       expect(kept).toBeLessThanOrEqual(27)
       expect(guardTokens(text)).toBeLessThanOrEqual(1000)
+    })
+  })
+})
+
+describe('the wide-character count', () => {
+  // HAND-DERIVED: one code unit on each side of every range edge (3400-9FFF, 3040-30FF, AC00-D7AF), plus ASCII, a surrogate pair and a space. Inside: U+3400, U+9FFF, U+3040, U+30FF, U+AC00, U+D7AF is 6. Outside: U+33FF, U+A000, U+303F, U+3100, U+ABFF, U+D7B0, the emoji's two units, 'a' and ' '.
+  it('counts the edges of each range and nothing past them', () => {
+    const inside = ['㐀', '鿿', '぀', 'ヿ', '가', '힯'].join('')
+    const outside = ['㏿', 'ꀀ', '〿', '㄀', '꯿', 'ힰ', '\u{1f600}', 'a', ' '].join('')
+    expect(countWide(inside + outside)).toBe(6)
+    expect(countWide(outside)).toBe(0)
+  })
+
+  it('agrees with a regex count over mixed input and prices it from that count', () => {
+    const text = 'Hello 世界, こんにちは 안녕 \u{1f600} done'
+    expect(countWide(text)).toBe(text.match(/[㐀-鿿぀-ヿ가-힯]/g)?.length)
+    expect(countWide(text)).toBe(9)
+    expect(guardTokens(text)).toBeCloseTo(9 / 0.9 + (text.length - 9) / 3, 10)
+  })
+
+  it('counts a large input without a match array per character', () => {
+    expect(countWide('日a'.repeat(2_000_000))).toBe(2_000_000)
+  })
+
+  it('keeps the integer units equal to the divisors', () => {
+    expect(WIDE_GUARD_UNITS / GUARD_UNITS_PER_TOKEN).toBeCloseTo(1 / guardDivisor('wide'), 12)
+    expect(TEXT_GUARD_UNITS / GUARD_UNITS_PER_TOKEN).toBeCloseTo(1 / guardDivisor('text'), 12)
+  })
+})
+
+describe('exact boundaries of the row caps', () => {
+  // HAND-DERIVED: an item whose JSON is 3 characters (a number such as 100) costs 3 + 2 = 5 length units, and a budget of 25 tokens holds 25 * 3 = 75 of them, so 15 items fit exactly and `used + cost > budget` is false on the 15th. main kept all 15; a float sum of tokens dropped the 15th.
+  it('keeps the item that lands exactly on the budget', () => {
+    const items = Array.from({ length: 20 }, () => 100)
+    expect(capJsonRows(items, 25).items.length).toBe(15)
+    expect(capJsonRows(items.slice(0, 15), 25).truncated).toBe(false)
+  })
+
+  it('drops the item one unit past the budget', () => {
+    // 3-character items cost 5; 14 items are 70 of 75 and a 15th that is 4 characters costs 6, which is 76.
+    const items = [...Array.from({ length: 14 }, () => 100), 1000]
+    expect(capJsonRows(items, 25).items.length).toBe(14)
+  })
+
+  describe('capListField', () => {
+    beforeEach(() => {
+      process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS'] = '1000'
+      invalidateConfigCache()
+    })
+    afterEach(() => {
+      delete process.env['TOKEN_GOAT_OVERFLOW_MAX_TOKENS']
+      invalidateConfigCache()
+    })
+
+    // HAND-DERIVED: the 20th row is padded until twenty rows print exactly 3000 characters, the 3 * 1000 the budget holds, so the cap must keep all twenty and a strict comparison would keep nineteen.
+    it('keeps the row that lands exactly on 3 characters per token', () => {
+      const render = (o: { items: unknown[]; truncated?: true; totalCount?: number }): string => JSON.stringify(o)
+      const all = Array.from({ length: 400 }, () => ({ t: 'x'.repeat(30) }))
+      const printed = (n: number): number => render({ items: all.slice(0, n), truncated: true, totalCount: all.length }).length
+      all[19] = { t: 'x'.repeat(30 + 3000 - printed(20)) }
+      expect(printed(20)).toBe(3000)
+      const out = JSON.parse(capListField({ items: all }, 'items', render)) as { items: unknown[] }
+      expect(out.items.length).toBe(20)
+    })
+
+    // HAND-DERIVED: the largest n whose printed text is at most 3 * 1000 = 3000 characters, found by brute force over the same render, not by the cap's own search. ASCII only, so length units are the whole price.
+    it('keeps exactly the rows that fit 3 characters per token for ASCII text', () => {
+      for (const pad of [0, 1, 2]) {
+        const all = Array.from({ length: 400 }, (_, i) => ({ t: 'x'.repeat(30 + ((i + pad) % 3)) }))
+        const render = (o: { items: unknown[]; truncated?: true; totalCount?: number }): string => JSON.stringify(o)
+        let expected = 1
+        for (let n = 1; n < all.length; n++) {
+          if (render({ items: all.slice(0, n), truncated: true, totalCount: all.length }).length <= 3000) expected = n
+        }
+        const out = JSON.parse(capListField({ items: all }, 'items', render)) as { items: unknown[] }
+        expect(out.items.length, `pad ${pad}`).toBe(expected)
+      }
     })
   })
 })

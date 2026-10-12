@@ -1,6 +1,6 @@
 /** Translation of a flag an agent guesses into the one token-goat has. `read "f.ts" --lines 1-5` and `search "x" --top 3` each fail with commander's bare `unknown option` (for `--start` it adds a misleading `Did you mean --stats?`), and the caller spends a round trip finding the real spelling. Two outcomes, split by whether the intent survives translation. A line range on `read` is lossless (`f.ts@1-5` is the spec grammar), and so is a rename that carries its value over unchanged (`--top 3` to `--limit 3`, `--search X` to `--grep X`): both are rewritten and run, with a stderr note naming the real form. Whatever fails the checks for that (a value that is not a positive integer, the real flag already given, several spellings at once) is not run, since a guessed value is not ours to complete, and the failure gains the corrected command. `section` has no range grammar, so a line range there only gets the `read` command that has one. Every alias is verified absent from its command's registered options by tests/option_intent.test.ts, so this never shadows a real flag: like command_intent.ts, it only annotates a failure that has already happened or rewrites one that would have. */
 
-import { attemptedCommandName, commandWordIndex } from './command_intent.js'
+import { attemptedCommandName, commandWordIndex, GLOBAL_VALUE_OPTIONS } from './command_intent.js'
 import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { displaySafeText } from './paths.js'
 import { parseLineRange } from './read_spec.js'
@@ -106,7 +106,7 @@ function readLineRangeFlags(rest: readonly string[]): { kept: string[]; range: s
   }
   if (flags.length === 0) return null
   const range = joinRange(given)
-  const positional = kept.filter((arg) => !arg.startsWith('-'))
+  const positional = kept.filter((arg, i) => !arg.startsWith('-') && !GLOBAL_VALUE_OPTIONS.includes(kept[i - 1] ?? ''))
   if (range === null || positional.length !== 1 || specNamesAPlace(positional[0]!)) return null
   return { kept, range, flags, spec: positional[0]! }
 }

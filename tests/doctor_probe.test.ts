@@ -193,9 +193,26 @@ describe('probeCause on captured harness failures', () => {
     expect(probeCause(fixture(name))?.cause).toBe(cause)
   })
 
-  // HAND-DERIVED: each spelling alone, so dropping either alternative of the login pattern is caught; the captured fixture above holds both.
-  it.each(['Not logged in', 'please run /login to continue'])('names a login cause for %s alone', (text) => {
+  // HAND-DERIVED: each captured spelling alone, so dropping either alternative of the login pattern is caught; the fixtures above hold one each.
+  it.each(['Not logged in · Please run /login', 'Error: No authentication information found.'])('names a login cause for %s alone', (text) => {
     expect(probeCause(text)?.cause).toBe('the harness is not logged in')
+  })
+
+  // HAND-DERIVED: a failing token-goat hook prints its own `unknown option` and a harness may echo it mid-line or after a prefix; none of these is the harness rejecting its own flag, so none may name a cause.
+  it.each([
+    "token-goat: unknown option '--top'",
+    "hook failed: error: unknown option '--top'",
+    'the docs say to run /login if prompted',
+    'hook said: Not logged in · Please run /login',
+    'wrapper: Error: No authentication information found.',
+    "unrecognized subcommand 'x'",
+  ])('does not read %s as a harness cause', (text) => {
+    expect(probeCause(text)).toBeNull()
+  })
+
+  it('finds a cause that is not in the last five lines of the output', () => {
+    const output = [fixture('claude_unknown_option.stderr').trim(), ...Array.from({ length: 12 }, (_, i) => `later line ${i}`)].join('\n')
+    expect(probeCause(output)?.cause).toBe('the harness rejected a command-line flag')
   })
 
   it('names no cause for output it has no captured pattern for', () => {
@@ -231,9 +248,11 @@ describe('runProbe end to end through the built bundle', () => {
       `if (process.argv[2] !== '-p' || process.argv[3] !== ${JSON.stringify(PROBE_PROMPT)}) { console.error('prompt mangled: ' + JSON.stringify(process.argv.slice(2))); process.exit(3) }`,
       "const mode = process.env.FAKE_MODE ?? 'echo'",
       "if (mode === 'die') { console.error(\"error: unknown option '--x'\"); process.exit(1) }",
-      "if (mode === 'loggedout') { console.log('Not logged in - Please run /login'); process.exit(1) }",
+      "if (mode === 'loggedout') { console.log('Not logged in · Please run /login'); process.exit(1) }",
+      "if (mode === 'hangloggedout') { console.log('Not logged in · Please run /login'); setTimeout(() => process.exit(1), 8000); await new Promise(() => {}) }",
       "if (mode === 'hang') { setTimeout(() => process.exit(0), 8000); await new Promise(() => {}) }",
       "if (mode === 'blocked') process.exit(1)",
+      "if (mode === 'dieburied') { console.error(\"error: unknown option '--x'\"); for (let i = 0; i < 8; i++) console.error('usage line ' + i); process.exit(1) }",
       'const contexts = []',
       "if (mode !== 'skip') {",
       "  for (const [event, payload] of [['session_start', { hook_event_name: 'SessionStart', source: 'startup' }], ['user_prompt_submit', { hook_event_name: 'UserPromptSubmit', prompt: process.argv[3] }]]) {",
@@ -310,6 +329,13 @@ describe('runProbe end to end through the built bundle', () => {
     expect(formatProbeReport(report)).toContain('Probe inconclusive: the harness rejected a command-line flag.')
   })
 
+  it('finds the cause when the harness printed eight more lines after it', () => {
+    const report = probe('dieburied')
+    expect(report.detail).not.toContain('unknown option')
+    expect(report.events.map((e) => e.result)).toEqual(['inconclusive', 'inconclusive'])
+    expect(formatProbeReport(report)).toContain('Probe inconclusive: the harness rejected a command-line flag.')
+  })
+
   it('does not take a not-logged-in notice on stdout for a model reply', () => {
     const report = probe('loggedout')
     expect(report.events.map((e) => e.result)).toEqual(['inconclusive', 'inconclusive'])
@@ -329,6 +355,25 @@ describe('runProbe end to end through the built bundle', () => {
     expect(report.status).toBe('timeout')
     expect(report.events.map((e) => e.result)).toEqual(['not_fired', 'not_fired'])
     expect(probeVerdict(report)).toBe('fail')
+  })
+
+  // HAND-DERIVED: with the timeout clause gone, the captured login notice printed before the hang would be set aside as inconclusive; a hung run must still be judged.
+  it('fails a run that printed a login notice and then timed out', () => {
+    const report = probe('hangloggedout', 2_000)
+    expect(report.status).toBe('timeout')
+    expect(probeVerdict(report)).toBe('fail')
+  })
+
+  it('reports a harness that could not be started as its own status, not as hooks that did not fire', () => {
+    const missing = join(dirname(harnessPath), 'no-such-dir', 'claude.exe')
+    const report = runProbe('claudecode', { cwd, resolve: () => missing })
+    expect(report.status).toBe('spawn_failed')
+    expect(report.exitCode).toBeNull()
+    expect(probeVerdict(report)).toBe('fail')
+    const text = formatProbeReport(report)
+    expect(text).toContain('[FAIL] the harness could not be started: ')
+    expect(text).toMatch(/ENOENT|EACCES|EINVAL/)
+    expect(text).not.toContain('hook did not run')
   })
 
   it('fails a run that exited non-zero with empty output and no known cause', () => {

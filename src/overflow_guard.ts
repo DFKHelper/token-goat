@@ -4,7 +4,7 @@ import { stripAnsiEscapes } from './render/ansi.js'
 import { safeSlice } from './util.js'
 import { forClient } from './mcp_client_text.js'
 import type { ContentClass } from './token_estimate.js'
-import { classifyContent, guardDivisor, guardTokens } from './token_estimate.js'
+import { GUARD_UNITS_PER_TOKEN, TEXT_GUARD_UNITS, classifyContent, guardDivisor, guardTokens, guardUnits } from './token_estimate.js'
 
 /** Estimate tokens from a character count: ~3 chars/token (conservative). Split out from {@link estimateTokens} so a caller that only has a size -- a byte count read from a file stat or a transcript line length, with no string in hand -- estimates against the same ratio instead of reimplementing it or materializing a throwaway string of that length. The two have drifted apart in this codebase before; this keeps the arithmetic in one place. */
 /** Never use this to credit a saving. It divides by three at the default class, which over-estimates on purpose: this is an overflow guard's estimator, and guessing high is its safe direction. Crediting a saving reverses that, so savings go through `stats.ts::savedTokensFromBytes` instead. A guard test pins the separation. Pass `cls` when the caller knows the bytes are a dense payload; omitted, it prices them as text, which is what this function has always done. */
@@ -88,11 +88,11 @@ export interface JsonRowCapResult<T> {
 /** Cap a JSON-serializable array to fit within a token budget, keeping as many leading whole items as fit. Unlike {@link trimToBudget}, this never truncates mid-item -- truncating inside a serialized JSON value would corrupt the payload -- so callers must surface the cap via the returned `truncated` flag (e.g. an added `truncated`/`totalCount` field in the JSON response) rather than a trailing text marker. The first item is always kept even if it alone exceeds the budget, matching {@link trimToBudget}'s "never return nothing" behavior. */
 export function capJsonRows<T>(items: readonly T[], budgetTokens: number): JsonRowCapResult<T> {
   const totalCount = items.length
-  const budget = Math.max(1 / guardDivisor(), budgetTokens)
+  const budget = Math.max(TEXT_GUARD_UNITS, budgetTokens * GUARD_UNITS_PER_TOKEN)
   const kept: T[] = []
   let used = 0
   for (const item of items) {
-    const cost = guardTokens(JSON.stringify(item)) + 2 / guardDivisor()
+    const cost = guardUnits(JSON.stringify(item)) + 2 * TEXT_GUARD_UNITS
     if (kept.length > 0 && used + cost > budget) break
     kept.push(item)
     used += cost

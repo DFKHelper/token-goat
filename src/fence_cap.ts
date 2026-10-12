@@ -1,7 +1,7 @@
 import { loadConfig } from './config.js'
 import { scanForInjectionPatterns, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { estimateTokens, trimToBudget } from './overflow_guard.js'
-import { guardTokens } from './token_estimate.js'
+import { GUARD_UNITS_PER_TOKEN, guardUnits } from './token_estimate.js'
 import { redactSecrets } from './secret_redact.js'
 import { fenceUntrusted, fenceWithMatches } from './untrusted_fence.js'
 
@@ -53,15 +53,15 @@ export function capListField<K extends string, T extends Record<K, unknown[]>>(o
   const full = render(obj)
   const cfg = loadConfig()
   if (!cfg.overflow_guard.enabled) return full
-  const budget = cfg.overflow_guard.max_tokens
+  const budget = cfg.overflow_guard.max_tokens * GUARD_UNITS_PER_TOKEN
   const items = obj[key]
-  if (guardTokens(full) <= budget || items.length <= 1) return full
+  if (guardUnits(full) <= budget || items.length <= 1) return full
   const cut = (kept: number): string => render({ ...obj, [key]: items.slice(0, kept), truncated: true, totalCount: items.length })
   let lo = 1
   let hi = items.length - 1
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1
-    if (guardTokens(cut(mid)) <= budget) lo = mid
+    if (guardUnits(cut(mid)) <= budget) lo = mid
     else hi = mid - 1
   }
   return cut(lo)
