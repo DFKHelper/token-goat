@@ -103,11 +103,12 @@ export function runProbe(harness: HarnessName, opts: { cwd?: string; resolve?: (
     const receipts = receiptTags(nonce)
     const timedOut = (run.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT'
     const status: ProbeRunStatus = timedOut ? 'timeout' : run.status === 0 ? 'ok' : 'failed'
-    // A clean exit with an empty stdout is still judged on its receipts: that is the hook-ran-but-nothing-came-back case the probe exists to catch.
-    const replied = status === 'ok' || modelReplied(stdout, nonce)
+    const detail = tail(`${run.stderr ?? ''}\n${stdout}`.trim() || run.error?.message || '')
+    // A clean exit with an empty stdout is still judged on its receipts: that is the hook-ran-but-nothing-came-back case the probe exists to catch. A failed run is set aside only when its output names a captured harness-side cause; a timeout, or a failure with no such text, may be a hook that hung or blocked the prompt, so it is judged.
+    const replied = status === 'ok' || modelReplied(stdout, nonce) || status === 'timeout' || probeCause(detail) === null
     const events = probed.map((event) => ({ event, result: classifyProbeEvent({ wired: implemented.has(event), nonce, tag: PROBE_EVENT_TAGS[event] ?? '', stdout, receipts, modelReplied: replied }) }))
     const report: ProbeReport = { harness, command, status, exitCode: run.status, events }
-    return status === 'ok' ? report : { ...report, detail: tail(`${run.stderr ?? ''}\n${stdout}`.trim() || run.error?.message || '') }
+    return status === 'ok' ? report : { ...report, detail }
   } finally {
     removeReceipts(nonce)
   }

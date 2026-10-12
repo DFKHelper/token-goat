@@ -380,7 +380,7 @@ const SAFE_BARE: ReadonlyArray<{ key: string; reason: string }> = [
   { key: 'cli_install.ts::leftover.flag', reason: 'an install flag such as `--codex` from the fixed leftoverIntegrations table' },
   ...['cli_install.ts::removal.label', 'cli_install.ts::leftover.label'].map((key) => ({ key, reason: 'a fixed integration label in a status line (`Removed token-goat Codex CLI integration.`), not a command' })),
   ...['hooks_bash.ts::filterName', 'hooks_bash.ts::cfg.timeout_seconds', 'hooks_bash.ts::capArgs', 'hooks_bash.ts::shellQuoteSingle(rawCmd)'].map((key) => ({ key, reason: 'the compress wrapper command line the hook executes, built from a filter name, numbers and a shellQuoteSingle-quoted command' })),
-  { key: "option_intent.ts::words.join(' ')", reason: 'the suggestion words built just above: each value went through quotedArg, and the rest are flags, a plain integer or the command name' },
+  { key: "option_intent.ts::words.join(' ')", reason: 'the words of renderCommand built just above: the command word is a registered command, a flag is matched by PLAIN_FLAG, and every other token, including the value split off a --flag=value, is a plain integer or went through quotedArg; its callers wrap the result in fencedCommand and displaySafeText' },
   ...['bridges/antigravity_install.ts::eventArg', 'bridges/antigravity_install.ts::SHIM_MARKER', 'bridges/gemini_install.ts::eventArg', 'bridges/qwen_install.ts::eventArg'].map((key) => ({ key, reason: 'a hook command line written into the harness config, carrying a fixed event name and marker' })),
 ]
 

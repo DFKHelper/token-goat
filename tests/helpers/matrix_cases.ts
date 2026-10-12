@@ -311,7 +311,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       expect(ranged.stdout).toBe(spec.stdout)
       expect(ranged.stdout).toContain('return 2')
       expect(ranged.stdout).not.toContain('return 1')
-      expect(ranged.stderr).toContain('Note: ran as `read "src/mod.ts@5-6"`')
+      expect(ranged.stderr).toContain('Note: ran as `token-goat read "src/mod.ts@5-6"`')
     }
   },
   section: () => {

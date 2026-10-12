@@ -40,9 +40,19 @@ export function suggestForUnknownCommand(name: string): string | null {
 
 /** The command name commander tried to resolve: the first bare argv entry after the node binary and the script path. Skips leading flags (`token-goat --foo lookup`) and anything that looks like a flag value, so the hint keys on the same token commander rejected. Returns null when argv carries no command at all. */
 export function attemptedCommandName(argv: readonly string[]): string | null {
-  for (const arg of argv.slice(2)) {
-    if (arg.startsWith('-')) continue
-    return arg
+  const at = commandWordIndex(argv)
+  return at === -1 ? null : argv[at]!
+}
+
+/** The program-level options that take a separate value (`--cwd <path>`, `--notice <text>`, src/cli.ts buildProgram): the word after one is that option's value, never the command. */
+export const GLOBAL_VALUE_OPTIONS: readonly string[] = ['--cwd', '--notice']
+
+/** Where the command word sits in argv, or -1 when there is none: the first bare entry after the node binary and the script path, stepping over leading flags and the value of a global option written as `--cwd X`. */
+export function commandWordIndex(argv: readonly string[]): number {
+  for (let i = 2; i < argv.length; i++) {
+    const arg = argv[i]!
+    if (GLOBAL_VALUE_OPTIONS.includes(arg)) i++
+    else if (!arg.startsWith('-')) return i
   }
-  return null
+  return -1
 }

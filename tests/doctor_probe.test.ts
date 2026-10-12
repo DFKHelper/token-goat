@@ -232,6 +232,8 @@ describe('runProbe end to end through the built bundle', () => {
       "const mode = process.env.FAKE_MODE ?? 'echo'",
       "if (mode === 'die') { console.error(\"error: unknown option '--x'\"); process.exit(1) }",
       "if (mode === 'loggedout') { console.log('Not logged in - Please run /login'); process.exit(1) }",
+      "if (mode === 'hang') { setTimeout(() => process.exit(0), 8000); await new Promise(() => {}) }",
+      "if (mode === 'blocked') process.exit(1)",
       'const contexts = []',
       "if (mode !== 'skip') {",
       "  for (const [event, payload] of [['session_start', { hook_event_name: 'SessionStart', source: 'startup' }], ['user_prompt_submit', { hook_event_name: 'UserPromptSubmit', prompt: process.argv[3] }]]) {",
@@ -254,11 +256,11 @@ describe('runProbe end to end through the built bundle', () => {
     }
   })
 
-  function probe(mode: string) {
+  function probe(mode: string, timeoutMs = 60_000) {
     const saved = process.env['FAKE_MODE']
     process.env['FAKE_MODE'] = mode
     try {
-      return runProbe('claudecode', { cwd, resolve: () => harnessPath, timeoutMs: 60_000 })
+      return runProbe('claudecode', { cwd, resolve: () => harnessPath, timeoutMs })
     } finally {
       if (saved === undefined) delete process.env['FAKE_MODE']
       else process.env['FAKE_MODE'] = saved
@@ -321,12 +323,33 @@ describe('runProbe end to end through the built bundle', () => {
     expect(probeVerdict(report)).toBe('fail')
   })
 
+  // HAND-DERIVED: a hook that hangs or blocks the prompt looks, from outside, like a harness that timed out or exited non-zero with nothing to say; neither names a captured harness-side cause, so both are judged on the receipts and fail rather than warn.
+  it('fails a run that timed out, since a hung hook looks the same', () => {
+    const report = probe('hang', 2_000)
+    expect(report.status).toBe('timeout')
+    expect(report.events.map((e) => e.result)).toEqual(['not_fired', 'not_fired'])
+    expect(probeVerdict(report)).toBe('fail')
+  })
+
+  it('fails a run that exited non-zero with empty output and no known cause', () => {
+    const report = probe('blocked')
+    expect(report.status).toBe('failed')
+    expect(report.events.map((e) => e.result)).toEqual(['not_fired', 'not_fired'])
+    expect(probeVerdict(report)).toBe('fail')
+  })
+
   const doctorProbe = (mode: string) => spawnSync(process.execPath, [BUNDLE, 'doctor', '--probe', 'claudecode'], { cwd, encoding: 'utf8', env: { ...process.env, FAKE_MODE: mode, PATH: `${dirname(harnessPath)}${delimiter}${process.env['PATH'] ?? ''}` } })
 
   it('exits 2 from doctor --probe when the harness failed before the model replied', () => {
     const res = doctorProbe('loggedout')
     expect(res.stdout).toContain('Probe inconclusive: the harness is not logged in.')
     expect(res.status).toBe(2)
+  })
+
+  it('exits 1 from doctor --probe when the run died with empty output and no known cause', () => {
+    const res = doctorProbe('blocked')
+    expect(res.stdout).toContain('[FAIL] the harness exited with code 1')
+    expect(res.status).toBe(1)
   })
 
   it('exits 1 from doctor --probe when a hook ran but the model never saw its output', () => {

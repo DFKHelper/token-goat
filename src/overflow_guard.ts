@@ -4,7 +4,7 @@ import { stripAnsiEscapes } from './render/ansi.js'
 import { safeSlice } from './util.js'
 import { forClient } from './mcp_client_text.js'
 import type { ContentClass } from './token_estimate.js'
-import { classifyContent, guardDivisor } from './token_estimate.js'
+import { classifyContent, guardDivisor, guardTokens } from './token_estimate.js'
 
 /** Estimate tokens from a character count: ~3 chars/token (conservative). Split out from {@link estimateTokens} so a caller that only has a size -- a byte count read from a file stat or a transcript line length, with no string in hand -- estimates against the same ratio instead of reimplementing it or materializing a throwaway string of that length. The two have drifted apart in this codebase before; this keeps the arithmetic in one place. */
 /** Never use this to credit a saving. It divides by three at the default class, which over-estimates on purpose: this is an overflow guard's estimator, and guessing high is its safe direction. Crediting a saving reverses that, so savings go through `stats.ts::savedTokensFromBytes` instead. A guard test pins the separation. Pass `cls` when the caller knows the bytes are a dense payload; omitted, it prices them as text, which is what this function has always done. */
@@ -15,7 +15,19 @@ export function estimateTokensFromLength(length: number, cls: ContentClass = 'te
 /** Estimate tokens from text, at ~3 chars/token for ordinary text and ~1.1 for a dense payload. Strips ANSI color codes before counting to avoid inflating token estimates. Classifies rather than taking the class from the caller: this overload is the one that has the string in hand, so the one thing it can do that a byte count cannot is look. A base64 blob costs nearly three times what the flat estimate said, and a guard that under-estimates by that much fires after the context it was protecting is already spent. */
 export function estimateTokens(text: string): number {
   const stripped = stripAnsiEscapes(text)
-  return estimateTokensFromLength(stripped.length, classifyContent(stripped))
+  return Math.max(1, Math.floor(guardTokens(stripped, classifyContent(stripped) === 'dense')) + 1)
+}
+
+/** The longest prefix of `text` whose {@link guardTokens} price is within `tokens`, cut on a whole character. Prices each character as {@link guardTokens} does, so the cut agrees with the cost that decided to make it. */
+function sliceToGuardTokens(text: string, tokens: number, dense: boolean): string {
+  let used = 0
+  let end = 0
+  for (const ch of text) {
+    used += guardTokens(ch, dense)
+    if (used > tokens) break
+    end += ch.length
+  }
+  return safeSlice(text, end)
 }
 
 /** Trim text to fit within a token budget, keeping leading lines. Preserves as many leading whole lines as fit within the budget, appending a marker line that explains the cap and suggests remediation. @param text The text to trim. @param budgetTokens The maximum allowed tokens. @param command Optional command label for tailored hint text. @param opts.reserveTokens Tokens of the budget a caller will spend around the result (a fence's tags and notice), kept out of both the entry check and the body; the marker still names `budgetTokens`. @returns Trimmed text with marker, or original text if within budget. */
@@ -25,8 +37,8 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
 
   // Classify once and spend the same divisor the entry check measured with. These were two different divisors: the check classified, while the char budget below multiplied by guardDivisor()'s `text` default, so a base64 payload was priced at ~1.09 bytes/token on the way in and at 3.0 on the way out. A 1000-token cap then emitted 2583 tokens of it -- an overflow guard overshooting by 2.6x is the one failure it exists to prevent.
   const strippedAll = stripAnsiEscapes(text)
-  const contentClass = classifyContent(strippedAll)
-  const totalTokens = estimateTokensFromLength(strippedAll.length, contentClass)
+  const dense = classifyContent(strippedAll) === 'dense'
+  const totalTokens = Math.max(1, Math.floor(guardTokens(strippedAll, dense)) + 1)
   if (totalTokens <= budgetTokens - reserve) {
     return text
   }
@@ -43,16 +55,12 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
 
   for (const ln of lines) {
     const stripped = stripAnsiEscapes(ln)
-    // Price the line by its own class so a CJK line costs what it does among English ones. A whole-text dense class stays: a 76-column base64 line is too short to classify on its own and was priced dense before.
-    const lineClass = contentClass === 'dense' ? contentClass : classifyContent(stripped)
-    // Charge the RAW line length, not the ANSI-stripped length: kept.push(ln) below retains the raw (un-stripped) line, so accounting must match what is actually emitted.
-    const cost = ln.length + 1
-    const costTokens = cost / guardDivisor(lineClass)
+    // Price the line character by character, as the entry check does, so a CJK line costs what it does among English ones and a hash line in English text stays priced as text. A whole-text dense class stays: a 76-column base64 line is too short to classify on its own. Charge the RAW line length, not the ANSI-stripped length: kept.push(ln) below retains the raw (un-stripped) line, so accounting must match what is actually emitted.
+    const costTokens = guardTokens(`${ln}\n`, dense)
 
     if (kept.length === 0 && costTokens > bodyBudget) {
       // Slice the stripped string so the budget is measured and cut on visible characters; avoids ANSI bytes silently consuming budget and dangling escape sequences from a mid-code cut. safeSlice never splits a UTF-16 surrogate pair.
-      const charBudget = bodyBudget * guardDivisor(lineClass)
-      const truncated = safeSlice(stripped, charBudget)
+      const truncated = sliceToGuardTokens(stripped, bodyBudget, dense)
       kept.push(truncated)
       break
     }
@@ -80,12 +88,12 @@ export interface JsonRowCapResult<T> {
 /** Cap a JSON-serializable array to fit within a token budget, keeping as many leading whole items as fit. Unlike {@link trimToBudget}, this never truncates mid-item -- truncating inside a serialized JSON value would corrupt the payload -- so callers must surface the cap via the returned `truncated` flag (e.g. an added `truncated`/`totalCount` field in the JSON response) rather than a trailing text marker. The first item is always kept even if it alone exceeds the budget, matching {@link trimToBudget}'s "never return nothing" behavior. */
 export function capJsonRows<T>(items: readonly T[], budgetTokens: number): JsonRowCapResult<T> {
   const totalCount = items.length
-  const charBudget = Math.max(1, budgetTokens * guardDivisor())
+  const budget = Math.max(1 / guardDivisor(), budgetTokens)
   const kept: T[] = []
   let used = 0
   for (const item of items) {
-    const cost = JSON.stringify(item).length + 2
-    if (kept.length > 0 && used + cost > charBudget) break
+    const cost = guardTokens(JSON.stringify(item)) + 2 / guardDivisor()
+    if (kept.length > 0 && used + cost > budget) break
     kept.push(item)
     used += cost
   }

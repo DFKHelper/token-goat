@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { buildProgram } from '../src/cli.js'
+import { GLOBAL_VALUE_OPTIONS } from '../src/command_intent.js'
 import { FLAG_RENAMES, LINE_RANGE_FLAGS, rewriteFlagRename, rewriteLineRangeFlag, rewriteOptionIntent, suggestForUnknownOption } from '../src/option_intent.js'
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
@@ -15,7 +16,7 @@ describe('rewriteLineRangeFlag', () => {
   it('turns a whole-range flag into the spec suffix', () => {
     const r = rewriteLineRangeFlag(argvOf('read', 'f.ts', '--lines', '1-5'))
     expect(r?.argv).toEqual(argvOf('read', 'f.ts@1-5'))
-    expect(r?.note).toBe('Note: ran as `read "f.ts@1-5"` (--lines is not an option; a line range goes in the spec as @A-B).')
+    expect(r?.note).toBe('Note: ran as `token-goat read "f.ts@1-5"` (--lines is not an option; a line range goes in the spec as @A-B).')
   })
 
   it('accepts the inline form, a single line, the other spellings, and a flag before the file', () => {
@@ -124,6 +125,56 @@ describe('rewriteFlagRename', () => {
   })
 })
 
+// HAND-DERIVED: each argv is one invocation written out by hand; the expected notes are the argv with the flag swapped, escaped the way displaySafeText escapes a control character (ESC is \x1b).
+describe('what the rewrites echo back', () => {
+  it('escapes a control character in the spec and refuses a spec that would break the fence', () => {
+    expect(rewriteLineRangeFlag(argvOf('read', 'a\u001b[31m.ts', '--lines', '1-2'))?.note).toBe('Note: ran as `token-goat read "a\\x1b[31m.ts@1-2"` (--lines is not an option; a line range goes in the spec as @A-B).')
+    expect(rewriteLineRangeFlag(argvOf('read', 'a`b.ts', '--lines', '1-2'))).toBeNull()
+    expect(rewriteLineRangeFlag(argvOf('read', 'a\nb.ts', '--lines', '1-2'))).toBeNull()
+    expect(rewriteLineRangeFlag(argvOf('read', 'a\rb.ts', '--lines', '1-2'))).toBeNull()
+  })
+
+  it('quotes an inline value and escapes a control character in a renamed flag', () => {
+    expect(rewriteFlagRename(argvOf('bash-output', 'ab12', '--search=\u001b[31mERR'))?.note).toBe('Note: ran as `token-goat bash-output "ab12" --grep "\\x1b[31mERR"` (--search is not an option; the flag is --grep).')
+    expect(rewriteFlagRename(argvOf('web-output', 'ab12', '--filter=$(id)'))?.note).toBe("Note: ran as `token-goat web-output \"ab12\" --grep '$(id)'` (--filter is not an option; the flag is --grep).")
+    expect(rewriteFlagRename(argvOf('search', 'foo', '--top=3'))?.note).toBe('Note: ran as `token-goat search "foo" --limit 3` (--top is not an option; the flag is --limit).')
+  })
+})
+
+describe('a path that holds an @', () => {
+  // HAND-DERIVED: only a trailing @N or @N-M is a line range (parseLineRange); an @ inside a path is part of the name.
+  it('still gets its line range, since only a trailing @N or @N-M names a place', () => {
+    expect(rewriteLineRangeFlag(argvOf('read', 'node_modules/@types/node/index.d.ts', '--lines', '3-4'))?.argv).toEqual(argvOf('read', 'node_modules/@types/node/index.d.ts@3-4'))
+    expect(rewriteLineRangeFlag(argvOf('read', 'C:/Users/a@b.com/x.ts', '--lines', '3'))?.argv).toEqual(argvOf('read', 'C:/Users/a@b.com/x.ts@3'))
+    expect(suggestForUnknownOption(argvOf('section', 'node_modules/@types/node/index.d.ts', '--lines', '1-2'))).toBe('Did you mean: `token-goat read "node_modules/@types/node/index.d.ts@1-2"`?')
+  })
+
+  it('leaves a spec that already ends in a line range alone', () => {
+    expect(rewriteLineRangeFlag(argvOf('read', 'f.ts@1-5', '--lines', '3'))).toBeNull()
+    expect(rewriteLineRangeFlag(argvOf('read', 'f.ts@7', '--lines', '3'))).toBeNull()
+  })
+})
+
+describe('a global option before the command', () => {
+  it('names the program options that take a value, as the program registers them', () => {
+    const takesValue = buildProgram().options.filter((o) => o.required || o.optional).map((o) => o.long)
+    expect([...takesValue].sort()).toEqual([...GLOBAL_VALUE_OPTIONS].sort())
+  })
+
+  it('does not mistake the value of --cwd or --notice for the command', () => {
+    expect(rewriteLineRangeFlag(argvOf('--cwd', 'X', 'read', 'f.ts', '--lines', '1-5'))?.argv).toEqual(argvOf('--cwd', 'X', 'read', 'f.ts@1-5'))
+    expect(rewriteFlagRename(argvOf('--notice', 'hi', 'search', 'foo', '--top', '3'))?.argv).toEqual(argvOf('--notice', 'hi', 'search', 'foo', '--limit', '3'))
+    expect(rewriteFlagRename(argvOf('--cwd', 'X', 'search', 'foo', '--top', '3'))?.note).toBe('Note: ran as `token-goat search "foo" --limit 3` (--top is not an option; the flag is --limit).')
+    expect(suggestForUnknownOption(argvOf('--cwd', 'X', 'section', 'README.md', '--lines', '1-5'))).toBe('Did you mean: `token-goat read "README.md@1-5"`?')
+    expect(suggestForUnknownOption(argvOf('--cwd', 'X', 'search', 'foo', '--top', '3', '--max', '4'))).toBe('Did you mean: `token-goat search "foo" --limit 3 --limit 4`?')
+  })
+
+  it('leaves a global option that is itself named like a guess alone', () => {
+    expect(rewriteFlagRename(argvOf('--notice', '--top', 'search', 'foo'))).toBeNull()
+    expect(suggestForUnknownOption(argvOf('--notice', '--top', 'search', 'foo', '--bogus'))).toBeNull()
+  })
+})
+
 describe('rewriteOptionIntent', () => {
   it('picks the line-range rewrite for read and the rename rewrite for the rest', () => {
     expect(rewriteOptionIntent(argvOf('read', 'f.ts', '--lines', '1-5'))?.command).toBe('read')
@@ -143,19 +194,35 @@ describe('suggestForUnknownOption', () => {
     expect(suggestForUnknownOption(argvOf('section', 'README.md'))).toBeNull()
   })
 
-  it('still gives the command with the real flag when a value stopped the rewrite', () => {
-    expect(suggestForUnknownOption(argvOf('search', 'foo', '--top', 'abc'))).toBe('Did you mean: `token-goat search "foo" --limit "abc"`?')
+  it('still gives the command with the real flag when a choice, not the value, stopped the rewrite', () => {
+    expect(suggestForUnknownOption(argvOf('search', 'foo', '--top', '3', '--max', '4'))).toBe('Did you mean: `token-goat search "foo" --limit 3 --limit 4`?')
+    expect(suggestForUnknownOption(argvOf('search', 'foo', '--top', '3', '--limit', '5'))).toBe('Did you mean: `token-goat search "foo" --limit 3 --limit 5`?')
+  })
+
+  // The real flag would refuse these values, so the corrected command would fail again.
+  it('gives no corrected command for a value the real flag would refuse', () => {
+    for (const argv of [argvOf('search', 'foo', '--top', 'abc'), argvOf('search', 'foo', '--top', '0'), argvOf('search', 'foo', '--top'), argvOf('search', 'foo', '--top=-3'), argvOf('bash-output', 'ab12', '--search'), argvOf('bash-output', 'ab12', '--search', '--json'), argvOf('bash-output', 'ab12', '--search=')]) {
+      expect(suggestForUnknownOption(argv), argv.join(' ')).toBeNull()
+    }
   })
 
   it('gives the command with the real flag for a renamed limit', () => {
     expect(suggestForUnknownOption(argvOf('search', 'foo', '--top', '3'))).toBe('Did you mean: `token-goat search "foo" --limit 3`?')
     expect(suggestForUnknownOption(argvOf('recall', 'x', '-k', '5'))).toBe('Did you mean: `token-goat recall "x" --limit 5`?')
-    expect(suggestForUnknownOption(argvOf('semantic', 'x y', '--max=4'))).toBe('Did you mean: `token-goat semantic "x y" --limit=4`?')
+    expect(suggestForUnknownOption(argvOf('semantic', 'x y', '--max=4'))).toBe('Did you mean: `token-goat semantic "x y" --limit 4`?')
   })
 
   it('gives the command with the real flag for a renamed filter on a cached output', () => {
     expect(suggestForUnknownOption(argvOf('bash-output', 'ab12', '--search', 'ERR'))).toBe('Did you mean: `token-goat bash-output "ab12" --grep "ERR"`?')
-    expect(suggestForUnknownOption(argvOf('web-output', 'ab12', '--filter=ERR'))).toBe('Did you mean: `token-goat web-output "ab12" --grep=ERR`?')
+    expect(suggestForUnknownOption(argvOf('web-output', 'ab12', '--filter=ERR'))).toBe('Did you mean: `token-goat web-output "ab12" --grep "ERR"`?')
+  })
+
+  // A `--flag=value` token is the caller's text in a hint typed back into a shell, so the value is quoted like any other value.
+  it('quotes the value of an inline flag, and escapes control characters in the whole hint', () => {
+    expect(suggestForUnknownOption(argvOf('web-output', 'ab12', '--filter=$(id)'))).toBe("Did you mean: `token-goat web-output \"ab12\" --grep '$(id)'`?")
+    const hint = suggestForUnknownOption(argvOf('bash-output', 'ab12', '--search=\u001b[31mERR')) ?? ''
+    expect(hint).toBe('Did you mean: `token-goat bash-output "ab12" --grep "\\x1b[31mERR"`?')
+    expect(suggestForUnknownOption(argvOf('section', 'a\u001b.md', '--lines', '1-2'))).toBe('Did you mean: `token-goat read "a\\x1b.md@1-2"`?')
   })
 
   it('keeps flags it does not rename exactly as given', () => {
@@ -241,7 +308,7 @@ describe('through the built bundle', () => {
       const r = runBundle(['read', 'f.ts', ...flags], { cwd: base, env })
       expect(r.status).toBe(0)
       expect(r.stdout).toBe(spec.stdout)
-      expect(r.stderr).toContain('Note: ran as `read "f.ts@2-4"`')
+      expect(r.stderr).toContain('Note: ran as `token-goat read "f.ts@2-4"`')
     }
   })
 
@@ -264,12 +331,38 @@ describe('through the built bundle', () => {
     }
   })
 
-  it('keeps commander’s failure and appends the corrected command when the value stops the rename', () => {
+  it('keeps commander’s failure and appends the corrected command when two guesses stop the rename', () => {
+    const r = runBundle(['search', 'foo', '--top', '3', '--max', '4'], { cwd: base, env })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain("unknown option '--top'")
+    expect(r.stderr).toContain('Did you mean: `token-goat search "foo" --limit 3 --limit 4`?')
+    expect(r.stderr).not.toContain('Note: ran as')
+  })
+
+  // CAPTURE (dogfood of this branch's previous build, 2026-10-12): `search zzqq --top abc` printed commander's `unknown option '--top'` plus ``Did you mean: `token-goat search "zzqq" --limit "abc"`?``, and that command fails again, so no corrected command is offered for a value the real flag would refuse.
+  it('offers no corrected command for a limit that is not a positive integer', () => {
     const r = runBundle(['search', 'foo', '--top', 'abc'], { cwd: base, env })
     expect(r.status).toBe(1)
     expect(r.stderr).toContain("unknown option '--top'")
-    expect(r.stderr).toContain('Did you mean: `token-goat search "foo" --limit "abc"`?')
+    expect(r.stderr).not.toContain('Did you mean: `')
     expect(r.stderr).not.toContain('Note: ran as')
+  })
+
+  it('rewrites a command that follows a global option and its value', () => {
+    const r = runBundle(['--cwd', base, 'read', 'f.ts', '--lines', '2-3'], { cwd: os.tmpdir(), env })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('line2')
+    expect(r.stderr).toContain('Note: ran as `token-goat read "f.ts@2-3"`')
+  })
+
+  it('prints nothing raw to the terminal for an escape in a spec or a pattern', () => {
+    const noteOf = (stderr: string): string => stderr.split('\n').find((l) => l.startsWith('Note: ran as')) ?? ''
+    const spec = noteOf(runBundle(['read', 'e\u001b[31mx.ts', '--lines', '1-2'], { cwd: base, env }).stderr)
+    expect(spec).toContain('token-goat read "e\\x1b[31mx.ts@1-2"')
+    expect(spec).not.toContain('\u001b')
+    const grep = noteOf(runBundle(['bash-output', 'zz00', '--search=\u001b[31mERR'], { cwd: base, env }).stderr)
+    expect(grep).toContain('--grep "\\x1b[31mERR"')
+    expect(grep).not.toContain('\u001b')
   })
 
   it('leaves the real --lines of a cached output command alone', () => {
@@ -292,7 +385,7 @@ describe('through the built bundle', () => {
     runBundle(['read', 'f.ts', '--lines', '2-4'], { cwd: base, env: own })
     runBundle(['search', 'foo', '--top', '3'], { cwd: base, env: own })
     runBundle(['read', 'f.ts', '--lines', 'abc'], { cwd: base, env: own })
-    runBundle(['search', 'foo', '--top', 'abc'], { cwd: base, env: own })
+    runBundle(['search', 'foo', '--top', '3', '--max', '4'], { cwd: base, env: own })
     const stats = JSON.parse(runBundle(['stats', '--json'], { cwd: base, env: own }).stdout) as { by_kind: Record<string, { events: number }> }
     expect(stats.by_kind['cli_option_alias']?.events).toBe(3)
   })

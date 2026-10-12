@@ -1,7 +1,8 @@
 /** Translation of a flag an agent guesses into the one token-goat has. `read "f.ts" --lines 1-5` and `search "x" --top 3` each fail with commander's bare `unknown option` (for `--start` it adds a misleading `Did you mean --stats?`), and the caller spends a round trip finding the real spelling. Two outcomes, split by whether the intent survives translation. A line range on `read` is lossless (`f.ts@1-5` is the spec grammar), and so is a rename that carries its value over unchanged (`--top 3` to `--limit 3`, `--search X` to `--grep X`): both are rewritten and run, with a stderr note naming the real form. Whatever fails the checks for that (a value that is not a positive integer, the real flag already given, several spellings at once) is not run, since a guessed value is not ours to complete, and the failure gains the corrected command. `section` has no range grammar, so a line range there only gets the `read` command that has one. Every alias is verified absent from its command's registered options by tests/option_intent.test.ts, so this never shadows a real flag: like command_intent.ts, it only annotates a failure that has already happened or rewrites one that would have. */
 
-import { attemptedCommandName } from './command_intent.js'
+import { attemptedCommandName, commandWordIndex } from './command_intent.js'
 import { fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { displaySafeText } from './paths.js'
 import { parseLineRange } from './read_spec.js'
 
 /** A guessed flag spelling per command family, and the real flag each stands for. */
@@ -27,6 +28,7 @@ export const LINE_RANGE_FLAGS = { whole: ['--lines', '--line', '--range'], start
 const WHOLE_RANGE = /^[1-9]\d*(?:-[1-9]\d*)?$/
 const LINE_NUMBER = /^[1-9]\d*$/
 const DIGITS = /^\d+$/
+const PLAIN_FLAG = /^--?[A-Za-z][\w-]*$/
 const RANGE_KINDS =['whole', 'start', 'end', 'offset', 'count'] as const
 /** A backtick ends the fence a suggested command is wrapped in, and a line break splits the hint, so a value holding either gets no suggestion at all rather than a mangled one. */
 const FENCE_BREAKER = /[`\r\n]/
@@ -37,9 +39,15 @@ function splitFlag(token: string): { name: string; value: string | undefined } {
   return eq === -1 ? { name: token, value: undefined } : { name: token.slice(0, eq), value: token.slice(eq + 1) }
 }
 
-/** Whether a spec already says where in the file to read (`f::symbol`, `f@A-B`, `f:A-B`), so a line-range flag has nothing to add and the two would contradict. */
+/** Whether a spec already says where in the file to read (`f::symbol`, `f@A-B`, `f:A-B`), so a line-range flag has nothing to add and the two would contradict. An `@` elsewhere is just part of a path (`node_modules/@types/node/index.d.ts`), which parseLineRange leaves alone because it matches only a trailing `@N` or `@N-M`. */
 function specNamesAPlace(spec: string): boolean {
-  return spec.includes('::') || spec.includes('@') || parseLineRange(spec) !== null || /:\d+(?:-\d+)?$/.test(spec)
+  return spec.includes('::') || parseLineRange(spec) !== null || /:\d+(?:-\d+)?$/.test(spec)
+}
+
+/** Whether a guessed flag's value is one the real flag takes as it stands, so the corrected command can run. A missing value never fits. */
+function valueFits(rename: FlagRename, text: string | undefined, inline: boolean): boolean {
+  if (text === undefined || text === '') return false
+  return rename.value === 'integer' ? LINE_NUMBER.test(text) : inline || !text.startsWith('-')
 }
 
 /** What a rewrite hands back: the whole argv to parse, the one-line note to print on stderr, the command it applies to, and the guessed spellings it replaced. */
@@ -52,7 +60,7 @@ export interface OptionRewrite {
 
 /** The arguments after the command word when argv runs `name`, or null for any other command. */
 function argumentsOf(argv: readonly string[], name: string): { commandAt: number; rest: string[] } | null {
-  const commandAt = argv.findIndex((arg, i) => i >= 2 && !arg.startsWith('-'))
+  const commandAt = commandWordIndex(argv)
   if (commandAt === -1 || argv[commandAt] !== name) return null
   return { commandAt, rest: argv.slice(commandAt + 1) }
 }
@@ -107,11 +115,11 @@ function readLineRangeFlags(rest: readonly string[]): { kept: string[]; range: s
 export function rewriteLineRangeFlag(argv: readonly string[]): OptionRewrite | null {
   const found = argumentsOf(argv, 'read')
   const parsed = found === null ? null : readLineRangeFlags(found.rest)
-  if (found === null || parsed === null) return null
+  if (found === null || parsed === null || FENCE_BREAKER.test(parsed.spec)) return null
   const spec = `${parsed.spec}@${parsed.range}`
   const rewritten = [...argv.slice(0, found.commandAt + 1), ...parsed.kept.map((arg) => (arg === parsed.spec ? spec : arg))]
   const { flags } = parsed
-  return { argv: rewritten, command: 'read', flags, note: `Note: ran as ${fencedCommand(`read ${quotedArg(spec)}`)} (${flags.join(' and ')} ${flags.length === 1 ? 'is' : 'are'} not ${flags.length === 1 ? 'an option' : 'options'}; a line range goes in the spec as @A-B).` }
+  return { argv: rewritten, command: 'read', flags, note: displaySafeText(`Note: ran as ${fencedCommand(`token-goat read ${quotedArg(spec)}`)} (${flags.join(' and ')} ${flags.length === 1 ? 'is' : 'are'} not ${flags.length === 1 ? 'an option' : 'options'}; a line range goes in the spec as @A-B).`) }
 }
 
 /** The `read` command for a line range given to `section`, which has no range grammar of its own, or null when this is some other invocation. Only a suggestion: `section` fails on its own unknown option, and what the caller wanted was lines, not a heading. */
@@ -119,14 +127,15 @@ function suggestReadForSectionRange(argv: readonly string[]): string | null {
   const found = argumentsOf(argv, 'section')
   const parsed = found === null ? null : readLineRangeFlags(found.rest)
   if (parsed === null || FENCE_BREAKER.test(parsed.spec)) return null
-  return `Did you mean: ${fencedCommand(`token-goat read ${quotedArg(`${parsed.spec}@${parsed.range}`)}`)}?`
+  return displaySafeText(`Did you mean: ${fencedCommand(`token-goat read ${quotedArg(`${parsed.spec}@${parsed.range}`)}`)}?`)
 }
 
-/** The argv with every guessed spelling the renames cover swapped for the real flag, keeping any inline value. */
+/** The argv with every guessed spelling the renames cover swapped for the real flag, keeping any inline value. Only the words after the command are touched. */
 function replaceAliases(argv: readonly string[], renames: readonly FlagRename[]): { argv: string[]; changed: boolean } {
   let changed = false
+  const commandAt = commandWordIndex(argv)
   const next = argv.map((token, i) => {
-    if (i < 2) return token
+    if (i <= commandAt) return token
     const { name, value } = splitFlag(token)
     const rename = renames.find((r) => r.aliases.includes(name))
     if (rename === undefined) return token
@@ -136,16 +145,15 @@ function replaceAliases(argv: readonly string[], renames: readonly FlagRename[])
   return { argv: next, changed }
 }
 
-/** The command as it would be typed: flags as given, a plain number bare, every other value quoted the way the other suggestions quote it. */
-function renderCommand(argv: readonly string[], command: string): string {
-  let commandSeen = false
-  const words = argv.slice(2).map((token) => {
-    if (token.startsWith('-')) return token
-    if (token === command && !commandSeen) {
-      commandSeen = true
-      return token
-    }
-    return DIGITS.test(token) ? token : quotedArg(token)
+/** The command as it would be typed, from the command word on: a plain flag name as given, a plain number bare, every other word quoted the way the other suggestions quote it. A `--flag=value` token is split into the flag and its quoted value, since the value is the caller's text and must not ride along unquoted. */
+function renderCommand(argv: readonly string[]): string {
+  const commandAt = commandWordIndex(argv)
+  const words = argv.slice(commandAt).flatMap((token, i) => {
+    if (i === 0) return [token]
+    if (PLAIN_FLAG.test(token)) return [token]
+    const { name, value } = splitFlag(token)
+    if (value !== undefined && PLAIN_FLAG.test(name)) return [name, DIGITS.test(value) ? value : quotedArg(value)]
+    return [DIGITS.test(token) ? token : quotedArg(token)]
   })
   return `token-goat ${words.join(' ')}`
 }
@@ -156,8 +164,7 @@ export function rewriteFlagRename(argv: readonly string[]): OptionRewrite | null
   if (command === null) return null
   const renames = FLAG_RENAMES.filter((r) => r.commands.includes(command))
   if (renames.length === 0) return null
-  const commandAt = argv.findIndex((arg, i) => i >= 2 && !arg.startsWith('-'))
-  const rest = argv.slice(commandAt + 1)
+  const rest = argv.slice(commandWordIndex(argv) + 1)
   if (rest.includes('--') || argv.some((token) => FENCE_BREAKER.test(token))) return null
 
   const hits = rest.flatMap((token, i) => (renames.some((r) => r.aliases.includes(splitFlag(token).name)) ? [i] : []))
@@ -166,12 +173,10 @@ export function rewriteFlagRename(argv: readonly string[]): OptionRewrite | null
   const { name, value } = splitFlag(rest[at]!)
   const rename = renames.find((r) => r.aliases.includes(name))!
   if (rest.some((token) => rename.targetSpellings.includes(splitFlag(token).name))) return null
-  const text = value ?? rest[at + 1]
-  if (text === undefined || text === '') return null
-  if (rename.value === 'integer' ? !LINE_NUMBER.test(text) : value === undefined && text.startsWith('-')) return null
+  if (!valueFits(rename, value ?? rest[at + 1], value !== undefined)) return null
 
   const replaced = replaceAliases(argv, renames).argv
-  return { argv: replaced, command, flags: [name], note: `Note: ran as ${fencedCommand(renderCommand(replaced, command))} (${name} is not an option; the flag is ${rename.target}).` }
+  return { argv: replaced, command, flags: [name], note: displaySafeText(`Note: ran as ${fencedCommand(renderCommand(replaced))} (${name} is not an option; the flag is ${rename.target}).`) }
 }
 
 /** The rewrite for a guessed flag that is certain enough to run, or null when commander should see argv as given. */
@@ -199,6 +204,13 @@ export function suggestForUnknownOption(argv: readonly string[]): string | null 
   const renames = FLAG_RENAMES.filter((r) => r.commands.includes(command))
   if (renames.length === 0) return null
   if (argv.slice(2).some((token) => FENCE_BREAKER.test(token))) return null
+  const rest = argv.slice(commandWordIndex(argv) + 1)
+  const unusable = rest.some((token, i) => {
+    const { name, value } = splitFlag(token)
+    const rename = renames.find((r) => r.aliases.includes(name))
+    return rename !== undefined && !valueFits(rename, value ?? rest[i + 1], value !== undefined)
+  })
+  if (unusable) return null
   const replaced = replaceAliases(argv, renames)
-  return replaced.changed ? `Did you mean: ${fencedCommand(renderCommand(replaced.argv, command))}?` : null
+  return replaced.changed ? displaySafeText(`Did you mean: ${fencedCommand(renderCommand(replaced.argv))}?`) : null
 }
