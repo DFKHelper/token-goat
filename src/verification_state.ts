@@ -61,26 +61,34 @@ function successImpliedWithoutStatus(): boolean {
 
 const STORED_COMMAND_MAX_CHARS = 200
 
-/** The command as the session blob keeps it: secrets redacted, whitespace collapsed, capped. Two runs of one command must collapse to one entry, so this is also the identity. */
+/** The command as the session blob keeps it: only the check segments, without their leading `NAME=value` assignments, then secrets redacted, whitespace collapsed, capped. The rest of the line (`export GH_PAT=...`, `mysqldump -p...`, `sshpass -p ...`, a curl header) never reaches disk or the model, whatever its spelling, which a list of secret shapes cannot promise. Two runs of one command must collapse to one entry, so this is also the identity. */
 function storedCommand(command: string): string {
-  return maskCommandCredentials(redactSecrets(command.replace(/\s+/g, ' ').trim()).text).slice(0, STORED_COMMAND_MAX_CHARS)
+  const checks = command
+    .split(COMMAND_SEPARATOR)
+    .filter((_part, i) => i % 2 === 0)
+    .map((segment) => segment.trim())
+    .filter(isVerificationSegment)
+    .map((segment) => segment.replace(ENV_ASSIGNMENT_PREFIX, '').replace(/\s+/g, ' '))
+  return maskCommandCredentials(redactSecrets(checks.join('; ')).text).slice(0, STORED_COMMAND_MAX_CHARS)
 }
 
-const SECRET_ENV_NAME = /TOKEN|KEY|SECRET|PASS(?:WD|WORD)?|AUTH|COOKIE|CREDENTIAL/i
+const SECRET_ENV_NAME = /TOKEN|KEY|SECRET|PASS(?:WD|WORD)?|PWD|AUTH|COOKIE|CREDENTIAL|BEARER/i
 // An unquoted value stops at a separator, so `TOKEN=abc; npm test` keeps its `;`.
 const ENV_ASSIGNMENT = /(^|[\s;&|])([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|[^\s;&|]+)/g
-const SECRET_FLAG = /(--[\w-]*(?:password|passwd|token|secret|api-?key|auth)[\w-]*(?:=|\s+))("[^"]*"|'[^']*'|\S+)/gi
+const LONG_FLAG = /(--[\w-]+(?:=|\s+))("[^"]*"|'[^']*'|\S+)/g
+// A flag name says it takes a secret when it contains one of these words, or is exactly `pass`, `pwd` or `key` or ends in `-key`: `--passWithNoTests` and `--keyboard` stay as they are.
+const SECRET_FLAG_NAME = /password|passwd|passphrase|token|secret|api-?key|auth|bearer|credential|cookie|^pass$|^pwd$|(?:^|-)key$|-(?:pass|pwd)$/i
 const BASIC_AUTH_FLAG = /(^|\s)(-u\s+)\S+:\S+/g
 const DB_CLIENT = /\b(?:mysql|psql|mariadb)\b/
 const DB_PASSWORD_FLAG = /(^|\s)-p\s*(?!-)\S+/g
 const QUOTED_AUTH_HEADER = /(["'])((?:proxy-)?authorization|cookie|x-api-key)(\s*:)[^"']*\1/gi
 const BARE_AUTH_HEADER = /(^|\s)((?:proxy-)?authorization|cookie|x-api-key)(\s*:\s*)\S+/gi
 
-/** The command with the secret-looking values masked: `NAME=value` where the name says it is a secret, any `--*password*`/`--*token*`/`--*secret*`/`--*api-key*`/`--*auth*` flag value, `-u user:pass`, an Authorization or Cookie header value, and `-p<password>` on a mysql, psql or mariadb command. secret_redact.ts matches value shapes and misses `API_TOKEN=abcd1234 npm test`; the receipt and the Stop advisory repeat this text to the model, so it is masked here, where it is stored. */
+/** Second layer over {@link storedCommand}'s segment filter, for what sits on the check itself: `NAME=value` where the name says it is a secret, the value of a long flag whose name says it takes one (`--password`, `--token`, `--private-key`, `--pass`, `--bearer`, `--credentials`), `-u user:pass`, an Authorization or Cookie header value, and `-p<password>` on a mysql, psql or mariadb command. secret_redact.ts matches value shapes and misses `API_TOKEN=abcd1234 npm test`; the receipt and the Stop advisory repeat this text to the model, so it is masked here, where it is stored. */
 export function maskCommandCredentials(command: string): string {
   const masked = command
     .replace(ENV_ASSIGNMENT, (whole, lead: string, name: string) => (SECRET_ENV_NAME.test(name) ? `${lead}${name}=***` : whole))
-    .replace(SECRET_FLAG, (_whole, flag: string) => `${flag}***`)
+    .replace(LONG_FLAG, (whole, flag: string, value: string) => (SECRET_FLAG_NAME.test(flag.replace(/^--/, '').replace(/[=\s]+$/, '')) && !value.startsWith('--') ? `${flag}***` : whole))
     .replace(BASIC_AUTH_FLAG, (_whole, lead: string, flag: string) => `${lead}${flag}***`)
     .replace(QUOTED_AUTH_HEADER, (_whole, quote: string, header: string, colon: string) => `${quote}${header}${colon} ***${quote}`)
     .replace(BARE_AUTH_HEADER, (_whole, lead: string, header: string, colon: string) => `${lead}${header}${colon}***`)

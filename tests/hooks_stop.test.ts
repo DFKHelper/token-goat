@@ -7,6 +7,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { receiptLines } from '../src/agent_receipt.js'
 import { stopAdvisoryText, stopHandler } from '../src/hooks_stop.js'
 import { mayBeVerificationCommand } from '../src/hooks_verification.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -276,15 +277,72 @@ describe('stored command credentials', () => {
     ['mysql -p -e x && npm test', 'mysql -p -e x && npm test'],
     ['curl -H "Authorization: Bearer abc12345" x', 'curl -H "Authorization: ***" x'],
     ['curl Authorization:abc12345 x', 'curl Authorization:*** x'],
+    ['npm test --token --watch', 'npm test --token --watch'],
+    ['npm test --private-key=abc12345', 'npm test --private-key=***'],
   ])('maskCommandCredentials turns %j into %j', (command, expected) => {
     expect(maskCommandCredentials(command)).toBe(expected)
   })
 
-  it('leaves a command with no secret-looking assignment as it was', () => {
+  it('keeps the check and drops its leading assignments, which are not part of what ran', () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
     const sid = newSession()
     inSession(sid, () => noteVerificationRun('NODE_ENV=test CI=1 npm test', 0, false))
-    expect(evaluateVerification(sid).runs[0]?.command).toBe('NODE_ENV=test CI=1 npm test')
+    expect(evaluateVerification(sid).runs[0]?.command).toBe('npm test')
+  })
+
+  // HAND-DERIVED: every spelling a reviewer found leaking through the secret-shape lists, each with `hunter2` as the value. The ones before `npm test` are not part of the check and must never be stored; the flags on the check itself go through the mask.
+  it.each([
+    ['GITHUB_PAT=hunter2 npm test'],
+    ['DB_PWD=hunter2 npm test'],
+    ['export GH_PAT=hunter2 && npm test'],
+    ['npm test --passphrase hunter2'],
+    ['npm test --private-key hunter2'],
+    ['npm test --key hunter2'],
+    ['npm test --bearer hunter2'],
+    ['npm test --pwd hunter2'],
+    ['npm test --credentials hunter2'],
+    ['npm test --pass hunter2'],
+    ['npm test --pass=hunter2'],
+    ['mysqldump -phunter2 db && npm test'],
+    ['pg_dump -W hunter2 db && npm test'],
+    ['redis-cli -a hunter2 ping && npm test'],
+    ['sshpass -p hunter2 ssh h; npm test'],
+    ['curl -H "X-Auth-Token: hunter2" u && npm test'],
+    ['X=hunter2 mysqldump -phunter2 db && npm test'],
+    ['echo hunter2\nnpm test'],
+  ])('lets hunter2 reach neither the session blob, the receipt nor the Stop advisory from %j', (command) => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => noteVerificationRun(command, 1, false))
+    const state = evaluateVerification(sid)
+    expect(state.runs).toHaveLength(1)
+    expect(state.runs[0]?.command).toContain('npm test')
+    const blob = fs.readFileSync(sessionSidecarPath(sid, '.json') ?? '', 'utf8')
+    expect([blob, receiptLines(state, false).join('\n'), stopAdvisoryText(state) ?? '']).toSatisfy((texts: string[]) => texts.every((t) => !t.includes('hunter2')))
+    expect(receiptLines(state, false).join('\n')).toContain('npm test')
+  })
+
+  it('keeps every check of a chain, joined, and nothing between them', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => noteVerificationRun('cd app && npm run lint && FOO=1 npm test', 0, false))
+    expect(evaluateVerification(sid).runs[0]?.command).toBe('npm run lint; npm test')
+  })
+
+  it('does not mask a flag that only contains the word pass', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => noteVerificationRun('npx jest --passWithNoTests src/a.test.ts', 0, false))
+    expect(evaluateVerification(sid).runs[0]?.command).toBe('npx jest --passWithNoTests src/a.test.ts')
+  })
+
+  it('stores the failed-run path the same way', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => noteFailedVerificationRun('X=hunter2 mysqldump -phunter2 db && npm test', 'Exit code 1', false))
+    const blob = fs.readFileSync(sessionSidecarPath(sid, '.json') ?? '', 'utf8')
+    expect(blob).not.toContain('hunter2')
+    expect(evaluateVerification(sid).runs[0]?.command).toBe('npm test')
   })
 })
 
