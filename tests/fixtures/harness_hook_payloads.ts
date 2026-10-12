@@ -56,6 +56,7 @@ export const HARNESS_HOOK_PAYLOADS: readonly HookPayloadCase[] = [
   { name: 'manual compaction', harness: 'claudecode', event: 'pre_compact', provenance: CC_DOC, payload: { ...ccBase, hook_event_name: 'PreCompact', trigger: 'manual', custom_instructions: null } },
   { name: 'after compaction', harness: 'claudecode', event: 'post_compact', provenance: CC_DOC, payload: { ...ccBase, hook_event_name: 'PostCompact', trigger: 'manual', compact_summary: 'Summary of the compacted conversation...' } },
   { name: 'prompt', harness: 'claudecode', event: 'user_prompt_submit', provenance: CC_DOC, payload: { ...ccBase, hook_event_name: 'UserPromptSubmit', prompt: 'Write a function to calculate the factorial of a number' } },
+  { name: 'main agent finished', harness: 'claudecode', event: 'stop', provenance: CC_DOC, payload: { ...ccBase, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'All set.' } },
   { name: 'subagent finished (async detach)', harness: 'claudecode', event: 'subagent_stop', provenance: CC_DOC, payload: { ...ccBase, hook_event_name: 'SubagentStop', stop_hook_active: false, agent_id: 'def456', agent_type: 'Explore', agent_transcript_path: '{{PROJ}}/agent-def456.jsonl', last_assistant_message: 'Analysis complete. Found 3 potential issues...', background_tasks: [], session_crons: [] } },
   { name: 'resumed session', harness: 'claudecode', event: 'session_start', provenance: CC_DOC, payload: { ...ccBase, hook_event_name: 'SessionStart', source: 'resume', model: 'claude-opus-5', seconds_since_last_response: 5400, context_tokens: 182340, prompt_cache_likely_expired: true, estimated_cache_write_usd: 1.1396 } },
   { name: 'unknown event', harness: 'claudecode', event: 'bogus_event', provenance: EDGE, payload: { ...ccBase, hook_event_name: 'Bogus' } },
@@ -70,6 +71,7 @@ export const HARNESS_HOOK_PAYLOADS: readonly HookPayloadCase[] = [
   { name: 'Bash result', harness: 'codex', event: 'post_tool_use', provenance: CODEX_DOC, payload: { ...codexBase, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 'call_4', tool_input: { command: 'echo hi' }, tool_response: 'hi\n' } },
   { name: 'compaction', harness: 'codex', event: 'pre_compact', provenance: CODEX_DOC, payload: { ...codexBase, hook_event_name: 'PreCompact', trigger: 'auto' } },
   { name: 'prompt', harness: 'codex', event: 'user_prompt_submit', provenance: CODEX_DOC, payload: { ...codexBase, hook_event_name: 'UserPromptSubmit', prompt: 'Refactor the parser' } },
+  { name: 'turn finished', harness: 'codex', event: 'stop', provenance: CODEX_DOC, payload: { ...codexBase, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'All set.' } },
   { name: 'subagent finished', harness: 'codex', event: 'subagent_stop', provenance: CODEX_DOC, payload: { ...codexBase, hook_event_name: 'SubagentStop', agent_id: 'agent-1', agent_type: 'default', agent_transcript_path: null, stop_hook_active: false, last_assistant_message: 'Done.' } },
   { name: 'unknown event', harness: 'codex', event: 'bogus_event', provenance: EDGE, payload: { ...codexBase, hook_event_name: 'Bogus' } },
 

@@ -168,9 +168,9 @@ const DERIVED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
 
 /** Hand-authored spec of the same cross product, read directly off each bridge's source at the time this file was written. Cross-checked against DERIVED_SUPPORTED_EVENTS below so a genuine wiring change in source -- not just a bug in the regex scanners above -- also fails loudly with a clear per-harness diff. */
 const EXPECTED_SUPPORTED_EVENTS: Record<HarnessName, HookEventName[]> = {
-  claudecode: ['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
-  grok: ['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
-  hermes: ['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start'],
+  claudecode: ['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'stop', 'subagent_stop', 'session_start'],
+  grok: ['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'stop', 'subagent_stop', 'session_start'],
+  hermes: ['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'stop', 'subagent_stop', 'session_start'],
   codex: ['pre_tool_use', 'post_tool_use'],
   gemini: ['pre_tool_use', 'post_tool_use', 'pre_compact'],
   qwen: ['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop'],
