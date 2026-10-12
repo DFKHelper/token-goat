@@ -47,8 +47,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Wraps a diagnostic diagnoseEditFailure built. The near-miss shape echoes the edited path (displaySafeText in diagnoseEditFailure) and a span of the on-disk file, which describeNearMiss redacts and then fences with fenceFileText before it is joined into the string, so the file text never reaches the channel unfenced. Interpolates nothing of its own.',
   'path_miss.ts::pathMissAfterFailure':
     'Echoes the path a failed tool call named, which is whatever the model or a command typed, and offers paths read off the disk and the index, which a repository names. The missing path goes through echoedValue and each candidate through displaySafeText, quoted with quotedArg and set inside one backtick fence by fencedCommand; a candidate holding a backtick is dropped rather than shown.',
-  'hooks_recovery.ts::codexMissingPathHandler':
-    'Passes the line pathMissAfterFailure returns for the text of a Codex shell result, which is whatever the command printed. Interpolates nothing of its own; the missing path and each candidate are escaped and fenced under pathMissAfterFailure.',
+  'hooks_recovery.ts::textPathMiss':
+    'Passes the line pathMissAfterFailure returns for the text of a Codex or VS Code shell result, which is whatever the command printed. Interpolates nothing of its own; the missing path and each candidate are escaped and fenced under pathMissAfterFailure.',
   'recovery_pairs.ts::recoveryAfterFailure':
     'Echoes a fix command a model ran in an earlier session, so the text is session-influenced. It is stored only if isLearnableCommand passed it (one line, no backtick or control character, no credential, nothing about token-goat, and every part starting with a verb on the build, test and install allowlist in recovery_fix_policy.ts), worded as unverified history, escaped with displaySafeText and set inside one backtick fence by fencedCommand.',
   'call_streak.ts::trackedLine':
