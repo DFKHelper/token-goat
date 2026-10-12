@@ -204,8 +204,8 @@ describe('VS Code edit tools are checked, except the one whose contract is parti
 })
 
 describe('line endings', () => {
-  // HAND-DERIVED: a file on disk with CRLF and a Write that repeats its own marker with CRLF.
-  it('treats a marker the CRLF file already holds as the file own content', async () => {
+  // HAND-DERIVED. Characterization test: pins that a marker a CRLF file already holds is not reported as new; splitLines and the guard's trim() each strip the CR, so no single line removal turns it red.
+  it('characterization: a marker the CRLF file already holds is the file own content', async () => {
     const target = fresh()
     fs.writeFileSync(target, 'a\r\n// ... existing code ...\r\nb\r\n')
     expect((await preWriteRewriteHandler(writeEvent(target, 'a\r\n// ... existing code ...\r\nb changed\r\n'))).hookType).toBe('pass')
