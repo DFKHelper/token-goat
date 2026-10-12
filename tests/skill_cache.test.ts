@@ -1275,6 +1275,22 @@ describe('Compact staleness tracking', () => {
     // compactStale is computed against the CURRENT body's contentSha, and the second storeOutput call above changed the body after the compact was stored against the original SHA, so it must be true here -- pin the real value instead of just "defined", which the old (inverted) inline comment's claimed "should be false" would also have silently passed under.
     expect(skill!.compactStale).toBe(true)
   })
+
+  it('keeps the newer body when two versions of a skill are stored in one millisecond', async () => {
+    // Provenance: HAND-DERIVED. A Linux pre-push run stored both bodies of the test above inside one millisecond, and listSkills reported the older one as current.
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000)
+    try {
+      const first = await storeOutput('tie-session', 'tieskill', 'first body')
+      await storeCompact('tie-session', 'tieskill', 'compact', contentHash('first body').slice(0, 12))
+      const second = await storeOutput('tie-session', 'tieskill', 'second body')
+      expect(second!.ts).toBeGreaterThan(first!.ts)
+      const skill = (await listSkills('tie-session')).find((s) => s.name === 'tieskill')
+      expect(skill!.bodyLen).toBe(Buffer.byteLength('second body'))
+      expect(skill!.compactStale).toBe(true)
+    } finally {
+      now.mockRestore()
+    }
+  })
 })
 
 describe('Age formatting', () => {

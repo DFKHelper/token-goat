@@ -413,6 +413,14 @@ export async function findCrossSessionEntry(skillName: string, contentSha: strin
   return null
 }
 
+let lastStoreTs = 0
+
+/** Date.now(), but strictly after the previous store in this process: listSkills keeps the newest version of a skill by ts, and two versions stored in one millisecond otherwise tie and fall back to directory order. */
+function nextStoreTs(): number {
+  lastStoreTs = Math.max(Date.now(), lastStoreTs + 1)
+  return lastStoreTs
+}
+
 export async function storeOutput(
   sessionId: string,
   skillName: string,
@@ -428,7 +436,7 @@ export async function storeOutput(
     const sha = contentHash(body)
     const outId = outputIdFor(sessionId, skillName, sha)
     const dir = skillOutputsDir()
-    const ts = Date.now()
+    const ts = nextStoreTs()
     const existing = await findCrossSessionEntry(skillName, sha)
     if (existing) {
       // The body is already stored, by this session or another. Another session's copy is reused, and this session records its own load of it so the reload deny sees this session loaded the skill.
