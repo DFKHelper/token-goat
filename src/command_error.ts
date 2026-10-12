@@ -12,6 +12,18 @@ export class CliError extends Error {
   }
 }
 
+let invocation: readonly string[] | null = null
+
+/** Records the arguments `run` was handed, after the entry script. A command answered inside the hook server runs with that server's `process.argv`, so the arguments the reader typed are only here. */
+export function setCliInvocation(argv: readonly string[]): void {
+  invocation = argv.slice(2)
+}
+
+/** The arguments of the command being run, after the entry script: what `run` recorded, else this process's own. */
+export function cliInvocation(): readonly string[] {
+  return invocation ?? process.argv.slice(2)
+}
+
 /** The stderr rendering of a command failure: one `token-goat:` line, then any further lines a CliError was built from. */
 export function formatCommandError(e: unknown): string {
   if (e instanceof CliError && e.lines !== undefined) return 'token-goat: ' + e.lines.map(displaySafeText).join('\n')

@@ -8,8 +8,8 @@ import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { recoveryBashHandler, recoveryEditHandler } from '../src/hooks_recovery.js'
-import { postToolUseFailureHandler } from '../src/hooks_tool_failure.js'
-import { isLearnableCommand, learnableFix, loadRecoveryPairs, MAX_FIX_CHARS, recoveryProjectKey, recoveryStorePath, splitCommandPrefix } from '../src/recovery_pairs.js'
+import { postToolUseFailureWithExtras } from '../src/hooks_tool_failure.js'
+import { isLearnableCommand, isRetired, learnableFix, loadRecoveryPairs, MAX_FIX_CHARS, recoveryProjectKey, recoveryStorePath, splitCommandPrefix } from '../src/recovery_pairs.js'
 import type { HookOutput } from '../src/types.js'
 
 const CAPTURED_FAILURE = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'claude_code_2_1_281', 'bash_failure.json'), 'utf8')) as Record<string, unknown>
@@ -27,20 +27,20 @@ function session(): string {
   return `recovery-session-${process.pid}-${counter}`
 }
 
-function failed(sessionId: string, cwd: string, command: string, error = 'Exit code 1\nModuleNotFoundError: No module named foo'): HookOutput {
+async function failed(sessionId: string, cwd: string, command: string, error = 'Exit code 1\nModuleNotFoundError: No module named foo'): Promise<HookOutput> {
   const raw = { ...CAPTURED_FAILURE, session_id: sessionId, cwd, tool_input: { command }, error }
   const event: HookEvent = { eventName: 'post_tool_use_failure', toolName: 'Bash', toolInput: { command }, sessionId, agentId: undefined, raw }
-  return postToolUseFailureHandler(event)
+  return postToolUseFailureWithExtras(event)
 }
 
-function succeeded(sessionId: string, cwd: string, command: string): void {
+async function succeeded(sessionId: string, cwd: string, command: string): Promise<void> {
   const raw = { session_id: sessionId, cwd, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'ok', stderr: '', interrupted: false } }
-  recoveryBashHandler({ eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId, agentId: undefined, raw })
+  await recoveryBashHandler({ eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId, agentId: undefined, raw })
 }
 
-function edited(sessionId: string, cwd: string): void {
+async function edited(sessionId: string, cwd: string): Promise<void> {
   const raw = { session_id: sessionId, cwd, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: join(cwd, 'a.py') } }
-  recoveryEditHandler({ eventName: 'post_tool_use', toolName: 'Edit', toolInput: { file_path: join(cwd, 'a.py') }, sessionId, agentId: undefined, raw })
+  await recoveryEditHandler({ eventName: 'post_tool_use', toolName: 'Edit', toolInput: { file_path: join(cwd, 'a.py') }, sessionId, agentId: undefined, raw })
 }
 
 function contextOf(out: HookOutput): string {
@@ -98,6 +98,17 @@ describe('learnableFix', () => {
   it('refuses a fix carrying a credential', () => {
     expect(learnableFix('deploy', 'deploy', ['export GH_TOKEN=ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'])).toBeNull()
   })
+
+  it('refuses a fix whose generic secret assignment redaction rewrites, though no precise credential pattern matches it', () => {
+    // HAND-DERIVED: a password assignment is the recall-tuned kind in src/secret_redact.ts, which hasPreciseSecret skips and redactSecrets masks, so only the redaction check on the joined fix can refuse it.
+    expect(learnableFix('deploy', 'deploy', ['export DB_PASSWORD=correcthorsebatterystaple'])).toBeNull()
+  })
+
+  it('refuses to learn from a failed command that carries a credential, though the fix itself is clean', () => {
+    // HAND-DERIVED: the credential sits in a leading assignment that splitCommandPrefix peels off, so the cores match and the fix is only the clean install between the two runs.
+    expect(learnableFix('GH_TOKEN=ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 pytest', 'pytest', ['pip install foo'])).toBeNull()
+    expect(learnableFix('pytest', 'pytest', ['pip install foo'])).toBe('pip install foo')
+  })
 })
 
 describe('isLearnableCommand', () => {
@@ -110,118 +121,126 @@ describe('isLearnableCommand', () => {
 })
 
 describe('the pending pair through the hooks', () => {
-  it('learns an intervening install, then tells a later session', () => {
+  it('learns an intervening install, then tells a later session', async () => {
     const { cwd } = freshProject()
     const first = session()
-    expect(contextOf(failed(first, cwd, 'pytest'))).toBe('')
-    succeeded(first, cwd, 'pip install foo')
-    succeeded(first, cwd, 'pytest')
+    expect(contextOf(await failed(first, cwd, 'pytest'))).toBe('')
+    await succeeded(first, cwd, 'pip install foo')
+    await succeeded(first, cwd, 'pytest')
     const second = session()
-    const line = contextOf(failed(second, cwd, 'pytest'))
+    const line = contextOf(await failed(second, cwd, 'pytest'))
     expect(line).toContain('This failed before; it was fixed by running: `pip install foo` (seen 1 time)')
   })
 
-  it('counts a second learning of the same fix and speaks once per session', () => {
+  it('counts a second learning of the same fix and speaks once per session', async () => {
     const { cwd } = freshProject()
     for (let i = 0; i < 2; i++) {
       const s = session()
-      failed(s, cwd, 'pytest')
-      succeeded(s, cwd, 'pip install foo')
-      succeeded(s, cwd, 'pytest')
+      await failed(s, cwd, 'pytest')
+      await succeeded(s, cwd, 'pip install foo')
+      await succeeded(s, cwd, 'pytest')
     }
     const third = session()
-    expect(contextOf(failed(third, cwd, 'pytest'))).toContain('(seen 2 times)')
-    expect(contextOf(failed(third, cwd, 'pytest', 'Exit code 1\nModuleNotFoundError: No module named foo'))).not.toContain('This failed before')
+    expect(contextOf(await failed(third, cwd, 'pytest'))).toContain('(seen 2 times)')
+    expect(contextOf(await failed(third, cwd, 'pytest', 'Exit code 1\nModuleNotFoundError: No module named foo'))).not.toContain('This failed before')
   })
 
-  it('learns a prefix delta from the captured Bash failure shape', () => {
+  it('learns a prefix delta from the captured Bash failure shape', async () => {
     const { cwd } = freshProject()
     const first = session()
     const raw = { ...CAPTURED_FAILURE, session_id: first, cwd }
-    postToolUseFailureHandler({ eventName: 'post_tool_use_failure', toolName: 'Bash', toolInput: { command: 'ls nonexistent_dir' }, sessionId: first, agentId: undefined, raw })
-    succeeded(first, cwd, 'cd src && ls nonexistent_dir')
+    await postToolUseFailureWithExtras({ eventName: 'post_tool_use_failure', toolName: 'Bash', toolInput: { command: 'ls nonexistent_dir' }, sessionId: first, agentId: undefined, raw })
+    await succeeded(first, cwd, 'cd src && ls nonexistent_dir')
     const second = session()
-    const line = contextOf(postToolUseFailureHandler({ eventName: 'post_tool_use_failure', toolName: 'Bash', toolInput: { command: 'ls nonexistent_dir' }, sessionId: second, agentId: undefined, raw: { ...raw, session_id: second } }))
+    const line = contextOf(await postToolUseFailureWithExtras({ eventName: 'post_tool_use_failure', toolName: 'Bash', toolInput: { command: 'ls nonexistent_dir' }, sessionId: second, agentId: undefined, raw: { ...raw, session_id: second } }))
     expect(line).toContain('`cd src && ls nonexistent_dir`')
   })
 
-  it('learns nothing when an edit landed in between', () => {
+  it('learns nothing when an edit landed in between', async () => {
     const { cwd } = freshProject()
     const first = session()
-    failed(first, cwd, 'pytest')
-    succeeded(first, cwd, 'pip install foo')
-    edited(first, cwd)
-    succeeded(first, cwd, 'pytest')
-    expect(contextOf(failed(session(), cwd, 'pytest'))).toBe('')
+    await failed(first, cwd, 'pytest')
+    await succeeded(first, cwd, 'pip install foo')
+    await edited(first, cwd)
+    await succeeded(first, cwd, 'pytest')
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toBe('')
   })
 
-  it('learns nothing from a flaky rerun', () => {
+  it('learns nothing from a flaky rerun', async () => {
     const { cwd } = freshProject()
     const first = session()
-    failed(first, cwd, 'pytest')
-    succeeded(first, cwd, 'pytest')
-    expect(contextOf(failed(session(), cwd, 'pytest'))).toBe('')
+    await failed(first, cwd, 'pytest')
+    await succeeded(first, cwd, 'pytest')
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toBe('')
   })
 
-  it('learns nothing once the window has passed', () => {
+  it('learns nothing once the window has passed', async () => {
     const { cwd } = freshProject()
     const first = session()
-    failed(first, cwd, 'pytest')
-    for (let i = 0; i < 7; i++) succeeded(first, cwd, `pip install pkg${i}`)
-    succeeded(first, cwd, 'pytest')
-    expect(contextOf(failed(session(), cwd, 'pytest'))).toBe('')
+    await failed(first, cwd, 'pytest')
+    for (let i = 0; i < 7; i++) await succeeded(first, cwd, `pip install pkg${i}`)
+    await succeeded(first, cwd, 'pytest')
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toBe('')
   })
 
-  it('keeps projects apart', () => {
+  it('keeps projects apart', async () => {
     const a = freshProject()
     const b = freshProject()
     const first = session()
-    failed(first, a.cwd, 'pytest')
-    succeeded(first, a.cwd, 'pip install foo')
-    succeeded(first, a.cwd, 'pytest')
-    expect(contextOf(failed(session(), b.cwd, 'pytest'))).toBe('')
+    await failed(first, a.cwd, 'pytest')
+    await succeeded(first, a.cwd, 'pip install foo')
+    await succeeded(first, a.cwd, 'pytest')
+    expect(contextOf(await failed(session(), b.cwd, 'pytest'))).toBe('')
   })
 
-  it('never stores a credential, even one straddling a truncation point', () => {
+  it('never stores a credential, even one straddling a truncation point', async () => {
     const { cwd } = freshProject()
     const token = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8'
     const first = session()
-    failed(first, cwd, 'pytest', `Exit code 1\n${'x'.repeat(40)} ${token}`)
-    succeeded(first, cwd, 'pip install foo')
-    succeeded(first, cwd, 'pytest')
+    await failed(first, cwd, 'pytest', `Exit code 1\n${'x'.repeat(40)} ${token}`)
+    await succeeded(first, cwd, 'pip install foo')
+    await succeeded(first, cwd, 'pytest')
     const stored = readFileSync(recoveryStorePath(recoveryProjectKey(cwd) ?? ''), 'utf8')
     expect(stored).toContain('pip install foo')
     expect(stored).not.toContain('ghp_')
     expect(stored).not.toContain(token)
   })
 
-  it('scores an offered fix, retires one that keeps failing, and stops offering it', () => {
+  it('retires a pair only when it hurt at least twice and hurt more than it helped', () => {
+    // HAND-DERIVED: the three boundaries of hurt >= 2 && hurt > helped.
+    const pair = { signature: 's', commandShape: 'c', fix: 'f', count: 1, lastSeen: 0 }
+    expect(isRetired({ ...pair, helped: 1, hurt: 2 })).toBe(true)
+    expect(isRetired({ ...pair, helped: 2, hurt: 2 })).toBe(false)
+    expect(isRetired({ ...pair, helped: 0, hurt: 1 })).toBe(false)
+  })
+
+  it('scores an offered fix, retires one that keeps failing, and stops offering it', async () => {
     const { cwd } = freshProject()
     const seed = session()
-    failed(seed, cwd, 'pytest')
-    succeeded(seed, cwd, 'pip install foo')
-    succeeded(seed, cwd, 'pytest')
+    await failed(seed, cwd, 'pytest')
+    await succeeded(seed, cwd, 'pip install foo')
+    await succeeded(seed, cwd, 'pytest')
     const helped = session()
-    expect(contextOf(failed(helped, cwd, 'pytest'))).toContain('`pip install foo`')
-    succeeded(helped, cwd, 'pip install foo')
-    succeeded(helped, cwd, 'pytest')
+    expect(contextOf(await failed(helped, cwd, 'pytest'))).toContain('`pip install foo`')
+    await succeeded(helped, cwd, 'pip install foo')
+    await succeeded(helped, cwd, 'pytest')
     expect(loadRecoveryPairs(cwd).map((p) => [p.helped, p.hurt])).toEqual([[1, 0]])
     for (let i = 0; i < 2; i++) {
       const s = session()
-      expect(contextOf(failed(s, cwd, 'pytest'))).toContain('`pip install foo`')
-      succeeded(s, cwd, 'pip install foo')
-      failed(s, cwd, 'pytest')
+      expect(contextOf(await failed(s, cwd, 'pytest'))).toContain('`pip install foo`')
+      await succeeded(s, cwd, 'pip install foo')
+      await failed(s, cwd, 'pytest')
     }
     expect(loadRecoveryPairs(cwd).map((p) => [p.helped, p.hurt])).toEqual([[1, 2]])
-    expect(contextOf(failed(session(), cwd, 'pytest'))).toBe('')
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toBe('')
   })
 
-  it('does not open a pair for a Copilot-shaped failure of a command it should not learn from', () => {
+  it('does not open a pair for a Copilot-shaped failure of a command it should not learn from', async () => {
     const { cwd } = freshProject()
     const s = session()
     const raw = { session_id: s, cwd, tool_name: 'Bash', tool_input: { command: 'rm -rf build && make' }, error: 'command not found: make' }
-    postToolUseFailureHandler({ eventName: 'post_tool_use_failure', toolName: 'Bash', toolInput: { command: 'rm -rf build && make' }, sessionId: s, agentId: undefined, raw })
-    succeeded(s, cwd, 'rm -rf build && make')
+    await postToolUseFailureWithExtras({ eventName: 'post_tool_use_failure', toolName: 'Bash', toolInput: { command: 'rm -rf build && make' }, sessionId: s, agentId: undefined, raw })
+    await succeeded(s, cwd, 'rm -rf build && make')
     expect(loadRecoveryPairs(cwd)).toEqual([])
   })
 })

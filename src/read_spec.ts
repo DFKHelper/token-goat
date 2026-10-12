@@ -21,7 +21,8 @@ import {
 } from './read_suggest.js'
 import { countNoun, foldPath } from './util.js'
 import { CliError, formatCommandError } from './command_error.js'
-import { couldNotRead, echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { couldNotReadError } from './could_not_read.js'
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
@@ -160,7 +161,7 @@ export function runLineRange(
   }
   const text = readFileText(diskPath)
   if (text === null) {
-    return { text: couldNotRead(file), code: 1 }
+    return { text: couldNotReadError(file).message, code: 1 }
   }
   const allLines = text.split(/\r?\n/)
   if (allLines.length > 1 && allLines[allLines.length - 1] === '') allLines.pop()
@@ -194,7 +195,7 @@ export function runLineRegion(
   const confined = fileConfinementRefusal('This file', file, opts.projectRoot)
   if (confined !== null) return { text: confined, code: 1 }
   const text = readFileText(resolveAgainstProjectRoot(file, opts.projectRoot))
-  if (text === null) return { text: couldNotRead(file), code: 1 }
+  if (text === null) return { text: couldNotReadError(file).message, code: 1 }
   const allLines = text.split(/\r?\n/)
   if (allLines.length > 1 && allLines[allLines.length - 1] === '') allLines.pop()
   if (start > allLines.length) {

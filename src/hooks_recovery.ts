@@ -4,18 +4,21 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
 import { extractExitCode } from './hooks_bash_post.js'
 import { getToolInput, passOutput } from './hooks_common.js'
-import { recoveryAfterEdit, recoveryAfterSuccess } from './recovery_pairs.js'
 import type { HookOutput } from './types.js'
 
-export function recoveryBashHandler(event: HookEvent): HookOutput {
+export async function recoveryBashHandler(event: HookEvent): Promise<HookOutput> {
   const executed = getToolInput(event)['command']
   const exit = extractExitCode(event.raw)
   // A nonzero exit reaching post_tool_use (hosts that report one there) is a failure, not a success to learn from.
-  if (typeof executed === 'string' && (exit === null || exit === 0)) recoveryAfterSuccess(event, unwrapCompressCommand(executed) ?? executed)
+  if (typeof executed === 'string' && (exit === null || exit === 0)) {
+    const { recoveryAfterSuccess } = await import('./recovery_pairs.js')
+    recoveryAfterSuccess(event, unwrapCompressCommand(executed) ?? executed)
+  }
   return passOutput()
 }
 
-export function recoveryEditHandler(event: HookEvent): HookOutput {
+export async function recoveryEditHandler(event: HookEvent): Promise<HookOutput> {
+  const { recoveryAfterEdit } = await import('./recovery_pairs.js')
   recoveryAfterEdit(event)
   return passOutput()
 }

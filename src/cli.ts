@@ -81,7 +81,7 @@ import { runBenchCommand } from './cli_bench.js'
 import { expandGlobs } from './cli_diagnostics.js'
 export { expandGlobs }
 import { compressText, createHandoff, resolveHandoff, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
-import { CliError, formatCommandError, formatFailedResultText, formatParseError } from './command_error.js'
+import { CliError, formatCommandError, formatFailedResultText, formatParseError, setCliInvocation } from './command_error.js'
 
 // Defined in a leaf so command modules cli.ts imports can render an error the same way without importing cli.ts back; re-exported here for the many modules that already take CliError from cli.js.
 export { CliError, formatCommandError }
@@ -1521,6 +1521,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     return
   }
   // Any command that reads or indexes a file can reach a synchronous parse, and the regex language adapters live behind a dynamic import so the hook path never compiles them (see loadRegexExtractors). Load them once here rather than at each of the call sites below it.
+  setCliInvocation(argv)
   await loadRegexExtractors()
   const program = buildProgram()
   // Commander's exitOverride lets us catch its internal exits (help, version, unknown command) instead of letting it call process.exit() mid-flush. Applied to every subcommand, not just the program. Commander copies the exit callback to a subcommand when that subcommand is CREATED (copyInheritedSettings, called from .command()), and buildProgram() has already created all of them by the time this runs -- so they each inherited "no callback" and `token-goat <subcommand> --help` called process.exit() for real, which is exactly what main.ts's docblock says this binary must never do, because an exit mid-flush can truncate output already written to a pipe.

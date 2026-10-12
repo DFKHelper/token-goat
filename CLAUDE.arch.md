@@ -440,6 +440,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/copilot_skill_path.ts`](src/copilot_skill_path.ts) | Exports: `copilotSkillPath` |
 | [`src/copilot_tool_names.ts`](src/copilot_tool_names.ts) | Copilot CLI's built-in tool names, mapped to the canonical token-goat names every hook gates on. |
 | [`src/copilot_waste.ts`](src/copilot_waste.ts) | Waste analysis for Copilot CLI sessions. |
+| [`src/could_not_read.ts`](src/could_not_read.ts) | The failure for a file no command could open, followed by a Did-you-mean list of existing paths it may have been meant to name. |
 | [`src/coverage_query.ts`](src/coverage_query.ts) | Narrow "gaps only" extraction for `token-goat coverage-report-gaps`, so a code-coverage report (which can run to tens of thousands of lines for a real project) never needs a full ` |
 | [`src/csv_query.ts`](src/csv_query.ts) | Narrow CSV projection/filter for `token-goat csv-query`, so a multi-thousand row CSV never needs a full `Read` just to answer "what's in column X where Y = Z". |
 | [`src/delivering_deny.ts`](src/delivering_deny.ts) | The wording that marks a token-goat deny as the delivery of content rather than a refusal. |
@@ -492,6 +493,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/index_freshness.ts`](src/index_freshness.ts) | Whether the index's record of a file still matches what is on disk. |
 | [`src/index_health.ts`](src/index_health.ts) | Shared "this project has zero indexed files" diagnosis, reused by doctor's Symbols check (cli_doctor_index.ts's checkSymbolCount) and by every query command that can dead-end on an empty |
 | [`src/index_reclaim.ts`](src/index_reclaim.ts) | Index-space reclamation (`token-goat reclaim-index`). |
+| [`src/indexed_file_names.ts`](src/indexed_file_names.ts) | The index's file list for a project looked up by name, shared by `answer`'s subject resolution and the path-miss suggestions; vendored trees are never returned. |
 | [`src/indexed_roots.ts`](src/indexed_roots.ts) | Which projects were indexed on purpose: by `token-goat index`, or by the first index `install` queues. |
 | [`src/indexed_source.ts`](src/indexed_source.ts) | Resolves the document a stored symbol line range actually addresses. |
 | [`src/injection_scan.ts`](src/injection_scan.ts) | Lexical scan for prompt-injection attack patterns in untrusted fetched content. |
@@ -528,6 +530,8 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/overflow_guard.ts`](src/overflow_guard.ts) | Overflow guard — cap oversized output to protect the model's context. |
 | [`src/own_lookup.ts`](src/own_lookup.ts) | Own-property lookup for plain-object maps whose keys arrive from outside this process. |
 | [`src/path_containment.ts`](src/path_containment.ts) | Path canonicalization and the symlink-resolving containment test. |
+| [`src/path_miss.ts`](src/path_miss.ts) | `post_tool_use_failure` nudge for a tool call that named a path which does not exist: names the existing path plausibly meant, once per signature, silent when none is close. |
+| [`src/path_suggest.ts`](src/path_suggest.ts) | Existing paths a missing one was probably meant to name: spelling variants, same name in the index, a near name, a case-only mismatch; every candidate is checked on disk. |
 | [`src/pending_context.ts`](src/pending_context.ts) | Deferred hint delivery, for harnesses that run a prompt-submit hook but discard its response. |
 | [`src/pinned_fetch.ts`](src/pinned_fetch.ts) | Hashing, copying and downloading files pinned by digest and length. |
 | [`src/pinned_file.ts`](src/pinned_file.ts) | Files held to a SHA-256 and byte length recorded in this repository. |

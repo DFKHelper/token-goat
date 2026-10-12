@@ -373,6 +373,17 @@ export const cases: Record<string, () => void | Promise<void>> = {
   },
   outline: () => {
     expectRead(['outline', 'src/mod.ts'], 'alphaSym')
+    // A mistyped path names the indexed file it was probably meant to be, and a bare name that exists only under a directory finds it there. HAND-DERIVED: src/mod.ts is written by setupMatrixFixture above.
+    const typo = run(['outline', 'src/modd.ts'])
+    expect(typo.status).toBe(1)
+    expect(typo.stderr).toContain('Could not read: "src/modd.ts"')
+    expect(typo.stderr).toContain('Did you mean:\n  - token-goat outline "src/mod.ts"')
+    const bare = run(['outline', 'mod.ts'])
+    expect(bare.status).toBe(1)
+    expect(bare.stderr).toContain('Did you mean:\n  - token-goat outline "src/mod.ts"')
+    const nothing = run(['outline', 'zzqq_nothing_like_it.rs'])
+    expect(nothing.stderr).toContain('Could not read: "zzqq_nothing_like_it.rs"')
+    expect(nothing.stderr).not.toContain('Did you mean')
     const r = run(['outline', 'src/mod.ts', '--stats'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/\d+ refs?/)
@@ -712,6 +723,11 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('name: string')
   },
   'json-query': () => {
+    // HAND-DERIVED: pkg.json is written by setupMatrixFixture above; a one-letter typo of it is offered, and the command still fails.
+    const typo = run(['json-query', 'pkg.jsn', 'version'])
+    expect(typo.status).toBe(1)
+    expect(typo.stderr).toContain('Could not read: "pkg.jsn"')
+    expect(typo.stderr).toContain('Did you mean:\n  - token-goat json-query "pkg.json"')
     const dir = mkIsolated('tg-matrix-jsonquery-')
     const jsonPath = path.join(dir, 'people.json')
     fs.writeFileSync(
@@ -1797,7 +1813,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       manualEffective: number
       manualIneffective: number
     }>
-    expect(rows.length).toBe(11)
+    expect(rows.length).toBe(12)
     expect(rows.every((row) => row.emitted === 0 && row.suppressed === false)).toBe(true)
     expect(rows.map((row) => row.category).sort()).toEqual([
       'bash_recall',
@@ -1806,6 +1822,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       'edit_reread_suggest',
       'glob_dedup_hint',
       'grep_dedup_hint',
+      'path_miss',
       'read_batch',
       'read_reread_dedup',
       'read_structural_nav',

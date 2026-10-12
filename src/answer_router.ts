@@ -1,8 +1,8 @@
 /** `token-goat answer` -- a deterministic question router. Classifies a plain-English question to one of a small set of high-precision intents, resolves the question's subject against the index (is it a symbol? is it a file?), and delegates in-process to the existing command that already answers that intent. No model call, no inference, no file bodies. The routing rule is precision over recall: a question that does not match an intent confidently, or whose subject does not resolve to a real index row, is refused with a reason and a suggested command rather than answered approximately. An answer the agent trusts and stops checking is far more expensive than a refusal it can act on. */
 
-import { getFileEntry, getOwnProjectFileEntries, querySymbols } from './index_reader.js'
+import { getFileEntry, querySymbols } from './index_reader.js'
 import { isIgnoredIndexPath } from './baseline.js'
-import { foldPath } from './path_containment.js'
+import { indexedFilesNamed } from './indexed_file_names.js'
 import { displaySafeText, toDisplayPath } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { ambiguityPicks, resolveSymbolSpec } from './read_spec.js'
@@ -195,15 +195,7 @@ function resolveFileHit(subject: string, rootDir: string): ResolvedSubject | nul
   if (exact) return exact
   if (subject.includes('/') || subject.includes('\\')) return null
 
-  const want = foldPath(subject)
-  const matches: string[] = []
-  for (const [folded, indexed] of getOwnProjectFileEntries(rootDir)) {
-    if (isIgnoredIndexPath(folded, rootDir)) continue
-    const base = folded.slice(Math.max(folded.lastIndexOf('/'), folded.lastIndexOf('\\')) + 1)
-    const dot = base.lastIndexOf('.')
-    if (base === want || (dot > 0 && base.slice(0, dot) === want)) matches.push(indexed.filePath)
-  }
-  const paths = [...new Set(matches)].sort()
+  const paths = indexedFilesNamed(subject, rootDir)
   if (paths.length === 0) return null
   if (paths.length === 1 && paths[0] !== undefined) return { kind: 'file', path: paths[0] }
   return { kind: 'ambiguous', candidates: paths }

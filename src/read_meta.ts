@@ -9,7 +9,8 @@ import {
 } from './parser_types.js'
 import { countNoun } from './util.js'
 import { supportRequestLine } from './version.js'
-import { couldNotRead, echoedValue } from './hint_suggestion_guard.js'
+import { echoedValue } from './hint_suggestion_guard.js'
+import { couldNotReadError } from './could_not_read.js'
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
@@ -33,7 +34,7 @@ export function symbolExtractorGap(displayPath: string, resolvedPath: string): s
 
 export function noSymbolsMessage(displayPath: string, resolvedPath: string): string {
   if (!fs.existsSync(resolvedPath)) {
-    return couldNotRead(displayPath)
+    return couldNotReadError(displayPath).message
   }
   return symbolExtractorGap(displayPath, resolvedPath) ?? `No indexed symbols found in ${echoedValue(displayPath)}`
 }

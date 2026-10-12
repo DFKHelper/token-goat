@@ -38,9 +38,15 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_tool_failure.ts::adviseOnFailure':
     'Names the tool that failed twice, and an MCP server chooses the names it advertises. Escaped in repeatFailureNotice.',
   'hooks_tool_failure.ts::postToolUseFailureHandler':
-    'Joins the line recoveryAfterFailure returns onto the advice adviseOnFailure produced. Interpolates nothing of its own; the line is adjudicated under recovery_pairs.ts::recoveryAfterFailure.',
+    'Returns what adviseOnFailure produced without the recovery and path-miss lines, which postToolUseFailureWithExtras adds. Interpolates nothing of its own.',
+  'hooks_tool_failure.ts::postToolUseFailureWithExtras':
+    'The registered form of postToolUseFailureHandler: it loads recovery_pairs.ts and path_miss.ts on demand and appends the lines recoveryAfterFailure and pathMissAfterFailure return. Interpolates nothing of its own; the lines are adjudicated under those two functions.',
+  'hooks_tool_failure.ts::withExtraLines':
+    'Joins the lines the two handlers above collected onto the advice adviseOnFailure produced. Interpolates nothing of its own.',
   'hooks_tool_failure.ts::editAdviceOutput':
     'Wraps a diagnostic diagnoseEditFailure built. The near-miss shape echoes the edited path (displaySafeText in diagnoseEditFailure) and a span of the on-disk file, which describeNearMiss redacts and then fences with fenceFileText before it is joined into the string, so the file text never reaches the channel unfenced. Interpolates nothing of its own.',
+  'path_miss.ts::pathMissAfterFailure':
+    'Echoes the path a failed tool call named, which is whatever the model or a command typed, and offers paths read off the disk and the index, which a repository names. The missing path goes through echoedValue and each candidate through displaySafeText, quoted with quotedArg and set inside one backtick fence by fencedCommand; a candidate holding a backtick is dropped rather than shown.',
   'recovery_pairs.ts::recoveryAfterFailure':
     'Echoes a fix command a model ran in an earlier session, so the text is session-influenced. It is stored only if isLearnableCommand passed it (one line, no backtick or control character, no credential, nothing destructive or about token-goat), escaped with displaySafeText and set inside one backtick fence by fencedCommand.',
   'call_streak.ts::trackedLine':

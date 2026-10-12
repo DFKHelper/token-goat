@@ -37,7 +37,8 @@ import {
 } from './graph_traversal.js'
 import { emit, emitErr } from './emit.js'
 import { formatCommandError } from './command_error.js'
-import { couldNotRead, echoedValue } from './hint_suggestion_guard.js'
+import { echoedValue } from './hint_suggestion_guard.js'
+import { couldNotReadError } from './could_not_read.js'
 
 // ---- dead -------------------------------------------------------------------
 
@@ -242,7 +243,7 @@ export function runDeps(opts: DepsOptions): number {
   try {
     text = decodeSource(fs.readFileSync(opts.file))
   } catch {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
   if (opts.importers === true) return runDepsImporters(opts)
@@ -377,7 +378,7 @@ export function runTypes(opts: TypesOptions): number {
 
   if (results.length === 0) {
     if (opts.file !== undefined && !fs.existsSync(opts.file)) {
-      emitErr(formatCommandError(couldNotRead(opts.file)))
+      emitErr(formatCommandError(couldNotReadError(opts.file)))
       return 1
     }
     const ctx = opts.file !== undefined ? ` in ${echoedValue(opts.file)}` : ''
@@ -484,7 +485,7 @@ export function runScope(opts: ScopeOptions): number {
   if (enclosing.length === 0) {
     if (querySymbols({ filePath, limit: 1 }).length === 0) {
       if (!fs.existsSync(filePath)) {
-        emitErr(formatCommandError(couldNotRead(file)))
+        emitErr(formatCommandError(couldNotReadError(file)))
         return 1
       }
       emitErr(

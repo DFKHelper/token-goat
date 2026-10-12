@@ -7,7 +7,6 @@ import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { describeNearMiss, findNearMiss, isNearMissAdvice } from './edit_near_miss.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
-import { recoveryAfterFailure } from './recovery_pairs.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
 import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { contextOutput, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
@@ -233,16 +232,56 @@ function editAdviceOutput(event: HookEvent, text: string): HookOutput {
 /** Reasons a failed Bash command opens no recovery pair, beyond {@link REPEAT_NOTICE_EXEMPT}: a syntax error or a blocked sleep is fixed by rewriting the command, so the fix is a different C rather than something run in between. */
 const RECOVERY_SKIPPED: ReadonlySet<string> = new Set(['shell_syntax_error', 'sleep_blocked'])
 
-/** The failure handler's answer, with the failed-command recovery line (recovery_pairs.ts) appended to whatever it says. The line is computed inside {@link adviseOnFailure}, which knows the classification, and handed back through `slot`. */
-export function postToolUseFailureHandler(event: HookEvent): HookOutput {
-  const slot: { line: string | null } = { line: null }
-  const base = adviseOnFailure(event, slot)
-  if (slot.line === null) return base
-  if (base.hookType === 'context') return contextOutput([base.context, slot.line].join('\n'), base.correlators)
-  return base.hookType === 'pass' ? contextOutput(slot.line) : base
+/** What a failed call needs from the modules {@link postToolUseFailureWithExtras} loads on demand. */
+interface ExtrasRequest {
+  readonly toolName: string | undefined
+  readonly errorText: string
 }
 
-function adviseOnFailure(event: HookEvent, slot: { line: string | null }): HookOutput {
+interface AdviceSlot {
+  lines: string[]
+  recovery: (ExtrasRequest & { command: string }) | null
+  pathMiss: ExtrasRequest | null
+}
+
+function newSlot(): AdviceSlot {
+  return { lines: [], recovery: null, pathMiss: null }
+}
+
+function withExtraLines(base: HookOutput, lines: readonly string[]): HookOutput {
+  if (lines.length === 0) return base
+  const extra = lines.join('\n')
+  if (base.hookType === 'context') return contextOutput([base.context, extra].join('\n'), base.correlators)
+  return base.hookType === 'pass' ? contextOutput(extra) : base
+}
+
+/** The failure handler's answer without the two lines that need a module of their own: the failed-command recovery line (recovery_pairs.ts) and the missing-path suggestion (path_miss.ts). {@link postToolUseFailureWithExtras}, the registered handler, adds both. */
+export function postToolUseFailureHandler(event: HookEvent): HookOutput {
+  return adviseOnFailure(event, newSlot())
+}
+
+/** {@link postToolUseFailureHandler} plus the recovery line and the missing-path suggestion, each appended to whatever it says. {@link adviseOnFailure}, which knows the classification, records what each needs in `slot`; the modules are imported here only when asked for, because recovery_pairs.ts and path_miss.ts (with the index reader under it) would otherwise be parsed by the hook entry on every tool call. */
+export async function postToolUseFailureWithExtras(event: HookEvent): Promise<HookOutput> {
+  const slot = newSlot()
+  const base = adviseOnFailure(event, slot)
+  try {
+    if (slot.recovery !== null) {
+      const { recoveryAfterFailure } = await import('./recovery_pairs.js')
+      const recovery = recoveryAfterFailure(event, { command: slot.recovery.command, errorText: slot.recovery.errorText })
+      if (recovery !== null) slot.lines.push(recovery)
+    }
+    if (slot.pathMiss !== null) {
+      const { pathMissAfterFailure } = await import('./path_miss.js')
+      const pathMiss = pathMissAfterFailure(event, slot.pathMiss)
+      if (pathMiss !== null) slot.lines.push(pathMiss)
+    }
+  } catch {
+    // The two lines are extras; a failure to produce one leaves the advice already computed.
+  }
+  return withExtraLines(base, slot.lines)
+}
+
+function adviseOnFailure(event: HookEvent, slot: AdviceSlot): HookOutput {
   try {
     const errorText = extractFailureText(event.raw)
     if (errorText === '') return passOutput()
@@ -256,7 +295,10 @@ function adviseOnFailure(event: HookEvent, slot: { line: string | null }): HookO
     // Only a `search_no_match` can produce a line here, and that reason is exempt below, so the brake never competes with the repeat notice.
     const streakLine = callStreakAfterFailure(event, verdict.reason)
     if (toolName === 'Bash' && typeof command === 'string' && event.raw['is_interrupt'] !== true && !REPEAT_NOTICE_EXEMPT.has(verdict.reason) && !RECOVERY_SKIPPED.has(verdict.reason)) {
-      slot.line = recoveryAfterFailure(event, { command, errorText })
+      slot.recovery = { toolName, errorText, command }
+    }
+    if (verdict.reason === 'path_not_found' && event.raw['is_interrupt'] !== true) {
+      slot.pathMiss = { toolName, errorText }
     }
     if (REPEAT_NOTICE_EXEMPT.has(verdict.reason)) return streakLine ?? passOutput()
 
@@ -318,4 +360,4 @@ function adviseOnFailure(event: HookEvent, slot: { line: string | null }): HookO
   }
 }
 
-registerHook('post_tool_use_failure', postToolUseFailureHandler)
+registerHook('post_tool_use_failure', postToolUseFailureWithExtras)

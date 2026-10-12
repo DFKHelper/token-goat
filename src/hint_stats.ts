@@ -26,6 +26,8 @@ export const HINT_CATEGORIES = [
   'recovery_pair',
   // edit_near_miss.ts: a failed Edit whose old_string differs from the file only by whitespace, punctuation or indentation. Logged with no correlator: the corrected edit may be retyped in any spelling, so it counts as spend and emissions but never a verdict.
   'edit_near_miss',
+  // path_miss.ts: a tool call named a path that does not exist and an existing path is plausibly the one meant. Logged with no correlator: the corrected call may name the path in any spelling, so it counts as spend and emissions but never a verdict.
+  'path_miss',
 ] as const
 
 export type HintCategory = (typeof HINT_CATEGORIES)[number]
