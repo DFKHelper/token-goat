@@ -47,6 +47,13 @@ const NOT_A_CLAIM = [
   'Quoted:\n```\nI fixed it\n~~~\nstill inside the backtick fence\n```',
   'Quoted:\n```\n~~~\nI fixed the parser\n```',
   '~~~\n```\nI fixed the parser\n~~~',
+  'Added the following notes: a',
+  'I noted the following issues I found:\n- a',
+  'Changes:\n- Recommend renaming foo to bar',
+  'Changes:\n- Should rename foo to bar',
+  'Changes: I only read files',
+  'Changes: none made, read-only review',
+  '+ item one\n+ item two',
 ]
 
 const A_CLAIM = ['I renamed foo to bar.', "I've also added a guard.", 'We fixed the parser bug in x.ts', 'Changes made: added a guard to y.ts', 'Changes made:\n- Updated the README.', 'I have implemented the new feature',
@@ -60,6 +67,17 @@ const A_CLAIM = ['I renamed foo to bar.', "I've also added a guard.", 'We fixed 
   'Changes made:\n\n- widget.ts',
   'I made the changes in widget.ts',
   'I made some edits',
+  'I updated the following files: a.ts, b.ts',
+  'I fixed the following bugs:\n- a',
+  'I added the following tests:\n- a',
+  'I created the following files: a.ts',
+  'Added the following tests to a.ts',
+  'I made the following changes:\n- a',
+  'I made the following edits:\n- a',
+  'Fixed the parser bug.\n+ item one',
+  'diff --git a/x b/x\n+ a\nFixed the parser bug.',
+  'Changes:\n- Renamed foo to bar',
+  'Done:\n+ I fixed the parser',
 ]
 
 describe('claimsOwnChange', () => {
