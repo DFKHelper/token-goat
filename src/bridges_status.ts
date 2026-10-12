@@ -26,7 +26,7 @@ export interface BridgeCapabilityRow {
 const NO_SERVER_HANDLER_REASON =
   "token-goat has no registered server-side handler for this event (zero registerHook('notification', ...) call sites in src/) -- wiring it client-side would currently be a no-op"
 
-/** `stop` has a server-side handler (the unverified-work advisory in src/hooks_stop.ts) and is installed on Claude Code and Codex CLI; Copilot CLI routes agentStop to it but its response channel drops the advisory (see STOP_CONTEXT_DROPPED). A bridge that cites this reason has not had its own stop hook wired or checked. */
+/** `stop` has a server-side handler (the unverified-work advisory in src/hooks_stop.ts) and is installed on Claude Code and Codex CLI; Copilot CLI and VS Code run an agentStop entry but their response channels drop the advisory, so both list it as unsupported (see STOP_CONTEXT_DROPPED). A bridge that cites this reason has not had its own stop hook wired or checked. */
 const NO_STOP_WIRING_REASON =
   'the stop handler (src/hooks_stop.ts) exists, but this bridge does not install a stop hook and its harness has not been checked for one that accepts a non-blocking message'
 
@@ -131,7 +131,6 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       'pre_tool_use',
       'post_tool_use',
       'pre_compact',
-      'stop',
       'subagent_stop',
       'subagent_start',
       'user_prompt_submit',
@@ -139,6 +138,11 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     ]),
     reasons: [
       { events: ['post_compact'], reason: COPILOT_NO_POST_COMPACT_REASON },
+      {
+        events: ['stop'],
+        reason:
+          'Copilot CLI runs the agentStop entry of its hooks file, but agentStop and subagentStop read only a {decision, reason} answer (copilot_cli.ts), so the unverified-work advisory has no channel and the handler passes there (STOP_CONTEXT_DROPPED)',
+      },
       {
         events: ['notification'],
         reason:

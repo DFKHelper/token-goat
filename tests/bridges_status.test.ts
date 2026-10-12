@@ -109,9 +109,9 @@ describe('BRIDGE_CAPABILITY_MATRIX (static data)', () => {
     expect(sites).toEqual(['hooks_verification.ts'])
   })
 
-  it('claudecode and codex install the stop hook, and copilot_cli routes agentStop to it; no other bridge claims stop', () => {
+  it('claudecode and codex install the stop hook; copilot_cli and vscode list it as unsupported with a reason, and no other bridge claims it', () => {
     const implementers = BRIDGE_CAPABILITY_MATRIX.filter((r) => r.implemented.has('stop')).map((r) => r.harness)
-    expect(implementers.sort()).toEqual(['claudecode', 'codex', 'copilot_cli'])
+    expect(implementers.sort()).toEqual(['claudecode', 'codex'])
   })
 })
 
@@ -162,10 +162,10 @@ describe('formatBridgesStatus', () => {
     expect(text).toMatch(/opencode:.*tool\.execute\.before/)
   })
 
-  it('shows a 9/11 score for copilot_cli and claudecode, 6/11 for kimi, vscode and codex, 5/11 for grok/qwen, 3/11 for opencode/gemini/openclaw/pi, 2/11 for antigravity', () => {
+  it('shows a 9/11 score for claudecode, 8/11 for copilot_cli, 6/11 for kimi, vscode and codex, 5/11 for grok/qwen, 3/11 for opencode/gemini/openclaw/pi, 2/11 for antigravity', () => {
     const text = formatBridgesStatus(BRIDGE_CAPABILITY_MATRIX)
-    // copilot_cli and claudecode both wire post_tool_use_failure, their own event on both harnesses. claudecode and copilot_cli both reach the stop handler now (claudecode through its settings.json Stop entry); claudecode's edge is post_compact, which no other harness has a confirmed equivalent event for. subagent_start is wired only on copilot_cli and vscode, the two harnesses whose subagent-start hook was shown to deliver the briefing into the subagent.
-    expect(text).toMatch(/copilot_cli\s+.*\s9\/11/)
+    // copilot_cli and claudecode both wire post_tool_use_failure, their own event on both harnesses. claudecode reaches the stop handler through its settings.json Stop entry, while copilot_cli drops the advisory (STOP_CONTEXT_DROPPED) and lists stop as unsupported; claudecode's edge is post_compact, which no other harness has a confirmed equivalent event for. subagent_start is wired only on copilot_cli and vscode, the two harnesses whose subagent-start hook was shown to deliver the briefing into the subagent.
+    expect(text).toMatch(/copilot_cli\s+.*\s8\/11/)
     expect(text).toMatch(/claudecode\s+.*\s9\/11/)
     expect(text).toMatch(/kimi\s+.*\s6\/11/)
     expect(text).toMatch(/vscode\s+.*\s6\/11/)
