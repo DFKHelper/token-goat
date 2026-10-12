@@ -1,4 +1,4 @@
-/** Edit near-miss ladder (src/edit_near_miss.ts) and its use in diagnoseEditFailure. Fixtures: the Claude Code failed-Edit payloads are FORMAT-DERIVED (tests/fixtures/claude_code_2_1_281/edit_not_found.json and edit_multiple_matches.json, PROVENANCE.tsv: real tool_input and error text from a Claude Code transcript inside the envelope of the bash_failure.json CAPTURE); the Copilot CLI payload is FORMAT-DERIVED from the schema cited in tests/fixtures/harness_hook_payloads.ts ('edit failure (old_str not found)': toolName edit, toolArgs path/old_str/new_str, error); the MultiEdit and Antigravity payloads are FORMAT-DERIVED from the tool_input shapes in src/hooks_cli.ts (AGY_EDIT_KEYS) and the Claude Code MultiEdit `edits[]` array. Every file body and every old_string pair below is HAND-DERIVED: written to differ from its partner by exactly one named rung. */
+/** Edit near-miss ladder (src/edit_near_miss.ts) and its use in diagnoseEditFailure. Fixtures: the Claude Code failed-Edit payloads are FORMAT-DERIVED (tests/fixtures/claude_code_2_1_281/edit_not_found.json and edit_multiple_matches.json, PROVENANCE.tsv: tool_input and error text shaped on a failed Edit in a Claude Code transcript, with the private paths and text replaced by neutral values, inside the envelope of the scrubbed bash_failure.json); the Copilot CLI payload is FORMAT-DERIVED from the schema cited in tests/fixtures/harness_hook_payloads.ts ('edit failure (old_str not found)': toolName edit, toolArgs path/old_str/new_str, error); the MultiEdit and Antigravity payloads are FORMAT-DERIVED from the tool_input shapes in src/hooks_cli.ts (AGY_EDIT_KEYS) and the Claude Code MultiEdit `edits[]` array. Every file body and every old_string pair below is HAND-DERIVED: written to differ from its partner by exactly one named rung. */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -85,11 +85,11 @@ describe('findNearMiss', () => {
 
 describe('diagnoseEditFailure on a near miss', () => {
   it('names the exact on-disk line for the captured not-found payload and fences it', () => {
-    const path = fileWith('# notes\n- log it as an observation only, never\u00A0dispatched from.\n- next\n')
+    const path = fileWith('# notes\n- keep it as a note only, never\u00A0sent from here.\n- next\n')
     const input = { ...(NOT_FOUND['tool_input'] as Record<string, unknown>), file_path: path }
     const out = diagnoseEditFailure(editEvent('Edit', input), claudeError(NOT_FOUND))
     expect(out).toContain('but line 2 matches, ignoring quote, dash and space-character differences')
-    expect(out).toContain('- log it as an observation only, never\u00A0dispatched from.')
+    expect(out).toContain('- keep it as a note only, never\u00A0sent from here.')
     expect(out).toContain('untrusted')
     expect(out).toContain('Copy the on-disk text below into old_string exactly')
   })
@@ -104,8 +104,8 @@ describe('diagnoseEditFailure on a near miss', () => {
   })
 
   it('falls back to the similar-line advice when no rung matches', () => {
-    const path = fileWith('# notes\nlog it as an observation only, never dispatched from the team.\n')
-    const input = { ...(NOT_FOUND['tool_input'] as Record<string, unknown>), file_path: path, old_string: 'log it as an observation only, never dispatched TO.' }
+    const path = fileWith('# notes\nkeep it as a note only, never sent from the team.\n')
+    const input = { ...(NOT_FOUND['tool_input'] as Record<string, unknown>), file_path: path, old_string: 'keep it as a note only, never sent TO.' }
     expect(diagnoseEditFailure(editEvent('Edit', input), 'String to replace not found in file.')).toContain('View the target lines')
   })
 
@@ -205,11 +205,11 @@ describe('the built bundle', () => {
 
   it('answers the captured Claude Code payload with the on-disk line', () => {
     const file = join(project, 'orchestrator.md')
-    writeFileSync(file, '- log it as an observation only, never\u00A0dispatched from.\n', 'utf8')
+    writeFileSync(file, '- keep it as a note only, never\u00A0sent from here.\n', 'utf8')
     const payload = { ...NOT_FOUND, session_id: 'nm-claude', cwd: project, tool_input: { ...(NOT_FOUND['tool_input'] as Record<string, unknown>), file_path: file } }
     const out = failure(payload)
     expect(out).toContain('but line 1 matches, ignoring quote, dash and space-character differences')
-    expect(out).toContain('- log it as an observation only, never\u00A0dispatched from.')
+    expect(out).toContain('- keep it as a note only, never\u00A0sent from here.')
   })
 
   it('answers the payload the Copilot adapter canonicalizes from postToolUseFailure', () => {
