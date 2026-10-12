@@ -406,6 +406,20 @@ harness is the closest real signal available.
 
 Two categories are scored on a pattern of calls rather than a named command. `read_batch` (three or more reads or searches in a row, each sent a full turn after the previous result) counts as acted on when the first later turn that makes read-only calls makes at least two of them together. `search_brake` (three searches in a row found nothing) counts as acted on when the next search from a later turn is `token-goat answer` or `token-goat semantic`. Until that later call arrives the emission stays pending (`+N`) and is counted neither way. `grep_dedup_hint` and `glob_dedup_hint` (an identical Grep or Glob already ran this session) are never scored: the note rides on the re-run it describes, so no later call can show whether it was heeded. They appear in `spent-bytes` and as the `~N` beside `emitted`, never in `emitted` itself or the efficacy figure.
 
+### Failure hints by host: `recovery_pair`, `edit_near_miss`, `path_miss`
+
+Which host gets which of the three failure hints depends on what the host reports after a tool call, not on token-goat.
+
+| Host | `recovery_pair` (the fix a failed command had before) | `edit_near_miss` (exact lines for a missed Edit) | `path_miss` (the path you probably meant) |
+|---|---|---|---|
+| Claude Code | yes, from the failure event | yes | yes, for Read, Grep, Edit, Write and Bash |
+| Copilot CLI | yes, from `postToolUseFailure` | yes | yes |
+| Codex | no: a shell result is always a success and carries no exit code | no: a failed `apply_patch` sends no hook | Bash only, from the `No such file or directory` text of the result |
+| VS Code Chat | no: a tool that throws sends no hook | no | Bash only (`run_in_terminal`), from the text of the result |
+| Visual Studio, JetBrains | no hooks: only the command-line `Did you mean:` list reaches them, through the MCP tools and the file commands | no | the `Did you mean:` list only |
+
+The `Did you mean:` list printed by the read commands (`outline`, `skeleton`, `read`, `section` and the others) is the same on every host, since it is command output rather than a hook.
+
 ### Scoring the compressors — `token-goat bench`
 
 `token-goat bench` replays a fixed corpus of captured command output through the same function

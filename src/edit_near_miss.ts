@@ -1,8 +1,8 @@
+/** Near-miss search for an Edit whose `old_string` is not in the file. The model's copy of the text usually differs from the disk by something invisible in a transcript (trailing blanks, a curly quote, a dash, a non-breaking space, a re-indented block), so the diagnostic that names the exact on-disk lines saves the read-and-retry round trip. findNearMiss is pure; the caller owns the file read and its size cap, and describeNearMiss owns the redaction, caps and fencing of what is printed. */
+
 import { isSecretFileName } from './secret_file_names.js'
 import { redactSecrets } from './secret_redact.js'
 import { fenceFileText } from './untrusted_fence.js'
-
-/** Near-miss search for an Edit whose `old_string` is not in the file. The model's copy of the text usually differs from the disk by something invisible in a transcript (trailing blanks, a curly quote, a dash, a non-breaking space, a re-indented block), so the diagnostic that names the exact on-disk lines saves the read-and-retry round trip. findNearMiss is pure; the caller owns the file read and its size cap, and describeNearMiss owns the redaction, caps and fencing of what is printed. */
 
 /** The three ladders, in the order they are tried. A later rung is only reached when every earlier one found nothing. */
 export type NearMissRung = 'trailing-whitespace' | 'unicode-punctuation' | 'indentation'

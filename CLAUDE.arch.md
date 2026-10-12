@@ -456,7 +456,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/document_refusal.ts`](src/document_refusal.ts) | How long any one document's extraction may run, whatever format it is. |
 | [`src/docx_extract.ts`](src/docx_extract.ts) | Word (.docx) narrow-slice reader. |
 | [`src/dotenv_redact.ts`](src/dotenv_redact.ts) | Value redaction for dotenv files. |
-| [`src/edit_near_miss.ts`](src/edit_near_miss.ts) | Exports: `NearMissRung`, `NearMissHit`, `NearMiss`, `findNearMiss` |
+| [`src/edit_near_miss.ts`](src/edit_near_miss.ts) | Near-miss search for an Edit whose `old_string` is not in the file: three looser matches (trailing blanks, Unicode punctuation, indentation) name the exact on-disk lines; bounded by line and character caps, a one-line fragment must cover half its line, and a credential-named file gets the line range only. |
 | [`src/embedding_boundaries.ts`](src/embedding_boundaries.ts) | Exports: `buildEmbeddingBoundaries` |
 | [`src/emit.ts`](src/emit.ts) | The two writers every command surface uses to put its result on stdout and its diagnostics on stderr. |
 | [`src/encoding.ts`](src/encoding.ts) | Source file character encoding and BOM detection / transcoding. |
@@ -635,6 +635,8 @@ All index data and stats live in a single `global.db`. [`src/db.ts`](src/db.ts) 
 | `skills/` | Skill body/compact cache keyed by `(session, name, content_sha)` ([`src/skill_cache.ts`](src/skill_cache.ts)) |
 | `bash_outputs/{id}.json` | Content-addressed bash stdout cache for cross-process `bash-output <id>` recall ([`src/bash_output_cache.ts`](src/bash_output_cache.ts) via [`src/disk_cache.ts`](src/disk_cache.ts)); pruned by age (24h) and count (200) |
 | `web_outputs/{id}.json` | Content-addressed web body cache for cross-process `web-output <id>` recall ([`src/web_cache.ts`](src/web_cache.ts) via [`src/disk_cache.ts`](src/disk_cache.ts)); same prune policy |
+| `recovery_pairs/{projectHash}.json` | Failed Bash commands and the allowlisted fix that followed them, per project (50 pairs, 90 days), replayed once two sessions have learned the same fix ([`src/recovery_pairs.ts`](src/recovery_pairs.ts), allowlist in [`src/recovery_fix_policy.ts`](src/recovery_fix_policy.ts)) |
+| `sessions/{session_id}.recovery-pending`, `sessions/{session_id}.path-miss` | Per-session sidecars next to the session state, written by [`src/recovery_pairs.ts`](src/recovery_pairs.ts) (failures still waiting for a fix) and [`src/path_miss.ts`](src/path_miss.ts) (paths already answered this session); like the other `sessionSidecarPath` sidecars, nothing removes them when a session ends |
 
 Project hash = `crypto.createHash('sha1').update(canonicalRoot)` from [`src/project.ts::projectHash`](src/project.ts).
 
