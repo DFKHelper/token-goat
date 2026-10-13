@@ -5279,6 +5279,11 @@ describe('stripLeadingAssignments — an assignment that changes what runs is no
     expect(stripCommandPrefix('LANG=C cat f')).toBe('cat f')
     expect(stripCommandPrefix('TOKEN_GOAT_BASH_COMPRESS=0 cat f')).toBe('cat f')
   })
+
+  // HAND-DERIVED: these four switch Python's text encoding, buffering and bytecode cache, none of which moves the module path or the program that runs.
+  it.each(['PYTHONIOENCODING=utf-8', 'PYTHONUTF8=1', 'PYTHONUNBUFFERED=1', 'PYTHONDONTWRITEBYTECODE=1'])('peels %s', (assignment) => {
+    expect(stripCommandPrefix(`${assignment} cat f`)).toBe('cat f')
+  })
 })
 
 describe('a token-goat read written behind the compression opt-out is matched, behind any other token-goat variable it is not', () => {
