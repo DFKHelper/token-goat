@@ -55,23 +55,23 @@ export function fenceFileText(text: string): string {
   return fenceUntrusted(redactSecrets(text).text, UNTRUSTED_FILE_TAG)
 }
 
-/** `text` fenced under `tag` when the scan flags it, else `text` as given: the per-field gate a `--json` envelope uses, since a fence around a whole envelope would stop it being JSON. The caller redacts first when its text was not redacted upstream. */
-export function fenceIfScanMatched(text: string, tag: string, enabled?: boolean): string {
+/** `text` fenced under `tag` when the scan flags it, else `text` as given: the per-field gate a `--json` envelope uses, since a fence around a whole envelope would stop it being JSON. The caller redacts first when its text was not redacted upstream. `enabled` is {@link injectionFencingEnabled}, read once by the caller for the whole envelope rather than once per string. */
+export function fenceIfScanMatched(text: string, tag: string, enabled: boolean): string {
   const matches = scanAndRecord(text, enabled)
   if (matches.length === 0) return text
   return fenceUntrustedContent(text, matches, tag)
 }
 
-/** One string of a `--json` envelope from a source the user named rather than wrote: redacted, then fenced under `tag` only when the scan flags it, and escaped for display when it does not. */
-export function fenceFieldIfMatched(text: string, tag: string, config: Config = loadConfig()): string {
+/** One string of a `--json` envelope from a source the user named rather than wrote: redacted, then fenced under `tag` only when the scan flags it, and escaped for display when it does not. `config` is required, and read by the caller once per envelope: loadConfig re-reads both config files and every config env var on each call, so a default here cost two reads per string, which a listing of thousands of strings paid in seconds. */
+export function fenceFieldIfMatched(text: string, tag: string, config: Config): string {
   const redacted = redactSecrets(text, config).text
   const fenced = fenceIfScanMatched(redacted, tag, injectionFencingEnabled(config))
   return fenced === redacted ? displaySafeText(redacted) : fenced
 }
 
-/** {@link fenceFieldIfMatched} under the file tag, in the one-argument shape {@link fenceJsonStrings} takes. */
-export function fenceFileFieldIfMatched(text: string): string {
-  return fenceFieldIfMatched(text, UNTRUSTED_FILE_TAG)
+/** {@link fenceFieldIfMatched} under the file tag. */
+export function fenceFileFieldIfMatched(text: string, config: Config): string {
+  return fenceFieldIfMatched(text, UNTRUSTED_FILE_TAG, config)
 }
 
 /** `value` with every string in it, keys included, passed through `field`: the per-field form of a fence for a `--json` envelope, which a fence around the whole would stop being JSON. A fence cannot wrap a key in place, so a flagged key's fenced form is the key, its notice escaped by `displaySafeJson` as token-goat's markers are in every key. */
@@ -84,8 +84,8 @@ export function fenceJsonStrings(value: unknown, field: (text: string) => string
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [field(k), fenceJsonStrings(v, field)]))
 }
 
-/** {@link fenceJsonStrings} with {@link fenceFileFieldIfMatched} on every string, the config read once for the whole envelope. loadConfig re-reads both config files and the config env vars on every call, and the per-string form calls it twice per string, so a 401-table `sqlite-schema --json` spent 30 s there, once more for each size the overflow cap tried. */
+/** {@link fenceJsonStrings} with {@link fenceFileFieldIfMatched} on every string, the config read once for the whole envelope. A per-string read made a 401-table `sqlite-schema --json` spend 30 s in loadConfig, once more for each size the overflow cap tried. */
 export function fenceFileJsonStrings(value: unknown): unknown {
   const config = loadConfig()
-  return fenceJsonStrings(value, (text) => fenceFieldIfMatched(text, UNTRUSTED_FILE_TAG, config))
+  return fenceJsonStrings(value, (text) => fenceFileFieldIfMatched(text, config))
 }

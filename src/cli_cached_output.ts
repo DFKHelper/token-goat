@@ -20,7 +20,8 @@ import { redactSecrets } from './secret_redact.js'
 import { AMBIGUOUS_HEADING_LIMIT } from './read_section.js'
 import { extractSection } from './section_reader.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
-import { fenceIfScanMatched, fenceJsonStrings, fenceUntrusted } from './untrusted_fence.js'
+import { fenceIfScanMatched, fenceJsonStrings, fenceUntrusted, injectionFencingEnabled } from './untrusted_fence.js'
+import { loadConfig, type Config } from './config.js'
 import { countNoun, decodeSource, isWindows, safeSlice } from './util.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 
@@ -419,8 +420,8 @@ function extractJsonFromMcpOutput(text: string): unknown {
 }
 
 /** Per-field variant for the `mcp-output --json-query --json` output, still gated on a scan hit. The printed form of the same query is fenced whole, by provenance; a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers. Same deliberate exception as `fenceFileFieldIfMatched` in untrusted_fence.ts and `fenceGithubFieldIfMatched` in read_commands.ts. */
-function fenceToolFieldIfMatched(text: string): string {
-  return fenceIfScanMatched(redactSecrets(text).text, UNTRUSTED_TOOL_TAG)
+function fenceToolFieldIfMatched(text: string, config: Config): string {
+  return fenceIfScanMatched(redactSecrets(text, config).text, UNTRUSTED_TOOL_TAG, injectionFencingEnabled(config))
 }
 
 // MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.
@@ -469,7 +470,8 @@ export function cmdMcpOutput(
     if (!queryResult.fanned) {
       const val = queryResult.items[0]
       if (opts.json === true) {
-        out(displaySafeJson(fenceJsonStrings(val, fenceToolFieldIfMatched), 0))
+        const config = loadConfig()
+        out(displaySafeJson(fenceJsonStrings(val, (field) => fenceToolFieldIfMatched(field, config)), 0))
         return
       }
       _applyFiltersAndPrint(displaySafeJson(val), printOpts, true, UNTRUSTED_TOOL_TAG, recall)
@@ -489,7 +491,8 @@ export function cmdMcpOutput(
     const headTruncated = limited.length < totalCount
 
     if (opts.json === true) {
-      const capped = guardJsonRows(limited.map((v) => fenceJsonStrings(v, fenceToolFieldIfMatched)))
+      const config = loadConfig()
+      const capped = guardJsonRows(limited.map((v) => fenceJsonStrings(v, (field) => fenceToolFieldIfMatched(field, config))))
       out(displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated || queryResult.truncated, totalCount }, 0))
     } else {
       const lines = limited.map((item) => displaySafeJson(item, 0))

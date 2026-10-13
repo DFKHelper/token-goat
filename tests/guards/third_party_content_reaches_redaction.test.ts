@@ -117,7 +117,7 @@ describe('every function reaching third-party content is adjudicated for redacti
     // Mechanism check, not prose: confirms the actual fix (redactSecrets calls added to the diff, comments, and description cases) stays present rather than being silently dropped by a future edit.
     const src = fs.readFileSync(path.join(SRC_DIR, 'read_commands.ts'), 'utf8')
     expect(src).toContain('const fileDiff = redactSecrets(rawFileDiff).text')
-    expect(src).toContain('body: redactSecrets(c.body).text')
+    expect(src).toContain('body: redactSecrets(c.body, config).text')
     expect(src).toContain('title: redactSecrets(rawDesc.title).text')
   })
 

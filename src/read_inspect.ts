@@ -47,6 +47,7 @@ import {
 } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { fenceFileFieldIfMatched, fenceFileJsonStrings, fenceJsonStrings } from './untrusted_fence.js'
+import { loadConfig } from './config.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
@@ -89,7 +90,8 @@ export async function runZipList(opts: ZipListCliOptions): Promise<number> {
 
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = displaySafeJson(entries.map((e) => ({ ...e, path: fenceFileFieldIfMatched(e.path) })), 0)
+    const config = loadConfig()
+    const jsonText = displaySafeJson(entries.map((e) => ({ ...e, path: fenceFileFieldIfMatched(e.path, config) })), 0)
     emit(jsonText)
     recordReadStat('zip_list', fullSourceBytes, jsonText, opts.file)
   } else {
@@ -153,7 +155,7 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
   const fullSourceBytes = sumFileSizes([opts.file])
 
   if (opts.json === true) {
-    const jsonText = displaySafeJson({ path: opts.entry, text: text === null ? BINARY_ENTRY_ELIDED : fenceFileFieldIfMatched(text) }, 0)
+    const jsonText = displaySafeJson({ path: opts.entry, text: text === null ? BINARY_ENTRY_ELIDED : fenceFileFieldIfMatched(text, loadConfig()) }, 0)
     emit(jsonText)
     recordReadStat('zip_read', fullSourceBytes, jsonText, opts.entry)
   } else {
@@ -242,9 +244,11 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
     const rows = head !== undefined ? result.rows.slice(0, head) : result.rows
 
     if (opts.json === true) {
-      const capped = guardJsonRows(rows.map((r) => fenceJsonStrings(r, fenceFileFieldIfMatched)))
+      const config = loadConfig()
+      const field = (text: string): string => fenceFileFieldIfMatched(text, config)
+      const capped = guardJsonRows(rows.map((r) => fenceJsonStrings(r, field)))
       const jsonText = displaySafeJson({
-        columns: result.columns.map(fenceFileFieldIfMatched),
+        columns: result.columns.map(field),
         items: capped.items,
         truncated: capped.truncated || headTruncated || result.rowCapped,
         totalCount,

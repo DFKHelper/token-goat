@@ -17,6 +17,7 @@ import {
   runPdfMeta,
   runPdfOutline,
 } from './read_commands.js'
+import { loadConfig } from './config.js'
 import { guardAndFenceFileText } from './fence_cap.js'
 import { redactSecrets } from './secret_redact.js'
 import { parseShareUrl, resolveLocalPath } from './sharepoint_resolve.js'
@@ -114,7 +115,8 @@ export async function cmdPdfLocate(
   const pages = matches.map((m) => m.page)
   let printed: string
   if (opts.json === true) {
-    const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileFieldIfMatched(m.snippet) }))
+    const config = loadConfig()
+    const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileFieldIfMatched(m.snippet, config) }))
     printed = displaySafeJson({ file, pattern, matchCount: fencedMatches.length, truncated, pages, matches: fencedMatches })
     out(printed)
   } else if (matches.length === 0) {
@@ -144,10 +146,13 @@ export async function cmdPdfOutline(file: string, opts: { json?: boolean }): Pro
     }
     return
   }
-  const text =
-    opts.json === true
-      ? displaySafeJson(entries.map((e) => ({ ...e, title: fenceFileFieldIfMatched(e.title) })))
-      : guardAndFenceFileText(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'), 'pdf-outline')
+  let text: string
+  if (opts.json === true) {
+    const config = loadConfig()
+    text = displaySafeJson(entries.map((e) => ({ ...e, title: fenceFileFieldIfMatched(e.title, config) })))
+  } else {
+    text = guardAndFenceFileText(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'), 'pdf-outline')
+  }
   out(text)
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
@@ -156,7 +161,8 @@ export async function cmdPdfOutline(file: string, opts: { json?: boolean }): Pro
 
 export async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}): Promise<void> {
   const meta = await runPdfMeta(file)
-  const safeField = (v: string | null): string | null => (v === null ? null : fenceFileFieldIfMatched(v))
+  const config = loadConfig()
+  const safeField = (v: string | null): string | null => (v === null ? null : fenceFileFieldIfMatched(v, config))
   const lines = [
     `Pages: ${meta.pageCount}`,
     `Title: ${safeField(meta.title) ?? '(none)'}`,
@@ -227,7 +233,13 @@ export function cmdSharepointResolve(url: string): void {
 
 export async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}): Promise<void> {
   const sheets = await xlsxListSheets(file)
-  const text = opts.json === true ? displaySafeJson(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name), ref: s.ref, rows: s.rows, cols: s.cols }))) : guardAndFenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'), 'xlsx-sheets')
+  let text: string
+  if (opts.json === true) {
+    const config = loadConfig()
+    text = displaySafeJson(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name, config), ref: s.ref, rows: s.rows, cols: s.cols })))
+  } else {
+    text = guardAndFenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'), 'xlsx-sheets')
+  }
   out(text)
   recordXlsxStat('xlsx_sheets', file, text)
 }
@@ -246,10 +258,11 @@ export async function cmdXlsxColumns(file: string, opts: { sheet?: string; head?
   const maxRows = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 100
   const result = await xlsxColumns(file, opts.sheet, maxRows)
   if (opts.json === true) {
+    const config = loadConfig()
     const text = displaySafeJson({
       ...result,
-      sheetName: fenceFileFieldIfMatched(result.sheetName),
-      columns: result.columns.map((c) => ({ ...c, name: fenceFileFieldIfMatched(c.name), sampleValues: c.sampleValues.map(fenceFileFieldIfMatched) })),
+      sheetName: fenceFileFieldIfMatched(result.sheetName, config),
+      columns: result.columns.map((c) => ({ ...c, name: fenceFileFieldIfMatched(c.name, config), sampleValues: c.sampleValues.map((v) => fenceFileFieldIfMatched(v, config)) })),
     })
     out(text)
     recordXlsxStat('xlsx_columns', file, text)
@@ -283,8 +296,9 @@ export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns
   })
   if (opts.json === true) {
     // The header row is the sheet author's text as much as any cell, and it becomes every row's keys, so it goes through the same per-field fence once: a fence cannot wrap a key in place, so a flagged header's fenced form is the key.
-    const keys = result.header.map((h) => fenceFileFieldIfMatched(h))
-    const rowsJson = result.rows.map((r) => Object.fromEntries(keys.map((k, i) => [k, fenceFileFieldIfMatched(r[i] ?? '')])))
+    const config = loadConfig()
+    const keys = result.header.map((h) => fenceFileFieldIfMatched(h, config))
+    const rowsJson = result.rows.map((r) => Object.fromEntries(keys.map((k, i) => [k, fenceFileFieldIfMatched(r[i] ?? '', config)])))
     const headTruncated = result.rows.length < result.totalRows
     const capped = guardJsonRows(rowsJson)
     const text = displaySafeJson(
@@ -307,15 +321,18 @@ export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns
 
 export async function cmdPptxOutline(file: string, opts: { json?: boolean }): Promise<void> {
   const slides = await pptxOutline(file)
-  const text =
-    opts.json === true
-      ? displaySafeJson(slides.map((s) => ({ ...s, title: fenceFileFieldIfMatched(s.title) })))
-      : guardAndFenceFileText(
-          slides
-            .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
-            .join('\n'),
-          'pptx-outline',
-        )
+  let text: string
+  if (opts.json === true) {
+    const config = loadConfig()
+    text = displaySafeJson(slides.map((s) => ({ ...s, title: fenceFileFieldIfMatched(s.title, config) })))
+  } else {
+    text = guardAndFenceFileText(
+      slides
+        .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
+        .join('\n'),
+      'pptx-outline',
+    )
+  }
   out(text)
   recordDocStat('pptx_outline', file, text)
 }
@@ -356,10 +373,13 @@ export async function cmdDocxOutline(file: string, opts: { json?: boolean }): Pr
     }
     return
   }
-  const text =
-    opts.json === true
-      ? displaySafeJson(headings.map((h) => ({ ...h, text: fenceFileFieldIfMatched(h.text) })))
-      : guardAndFenceFileText(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'), 'docx-outline')
+  let text: string
+  if (opts.json === true) {
+    const config = loadConfig()
+    text = displaySafeJson(headings.map((h) => ({ ...h, text: fenceFileFieldIfMatched(h.text, config) })))
+  } else {
+    text = guardAndFenceFileText(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'), 'docx-outline')
+  }
   out(text)
   recordDocStat('docx_outline', file, text)
 }
@@ -385,7 +405,8 @@ export async function cmdDocxTables(file: string, opts: { table?: string; json?:
   }
 
   if (opts.json === true) {
-    const fenced = selected.map((t) => ({ ...t, rows: t.rows.map((r) => r.map(fenceFileFieldIfMatched)) }))
+    const config = loadConfig()
+    const fenced = selected.map((t) => ({ ...t, rows: t.rows.map((r) => r.map((cell) => fenceFileFieldIfMatched(cell, config))) }))
     const text = displaySafeJson(tableIdx !== undefined ? fenced[0] : fenced)
     out(text)
     recordDocStat('docx_tables', file, text)

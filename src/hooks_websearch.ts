@@ -38,14 +38,15 @@ function fenceWebSearchResults(toolResponse: unknown, injectionMatches: readonly
   const results = webSearchResults(toolResponse)
   if (results === null) return null
   let changed = false
+  const config = loadConfig()
   const clean = (text: string): string => {
-    const cleaned = neutralizeFenceMarkers(redactSecrets(text).text)
+    const cleaned = neutralizeFenceMarkers(redactSecrets(text, config).text)
     if (cleaned !== text) changed = true
     return cleaned
   }
   const fenced = results.map((element: unknown) => {
     if (typeof element !== 'string') return fenceJsonStrings(element, clean)
-    const rewritten = fenceWithMatches(redactSecrets(element).text, injectionMatches)
+    const rewritten = fenceWithMatches(redactSecrets(element, config).text, injectionMatches)
     if (rewritten !== element) changed = true
     return rewritten
   })

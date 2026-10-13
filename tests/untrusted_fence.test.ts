@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { UNTRUSTED_FILE_TAG, UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
-import { invalidateConfigCache } from '../src/config.js'
+import { invalidateConfigCache, loadConfig } from '../src/config.js'
 import type * as StatsModule from '../src/stats.js'
 
 vi.mock('../src/stats.js', async () => {
@@ -132,13 +132,13 @@ describe('fenceIfScanMatched', () => {
   it('returns text that matches no pattern unchanged, markers included', async () => {
     const { fenceIfScanMatched } = await import('../src/untrusted_fence.js')
     const text = `[tg] ${BENIGN}`
-    expect(fenceIfScanMatched(text, UNTRUSTED_TOOL_TAG)).toBe(text)
+    expect(fenceIfScanMatched(text, UNTRUSTED_TOOL_TAG, true)).toBe(text)
     expect(recordStat).not.toHaveBeenCalled()
   })
 
   it('fences a match under the tag it is given and books the stat once', async () => {
     const { fenceIfScanMatched } = await import('../src/untrusted_fence.js')
-    const fenced = fenceIfScanMatched(HOSTILE, UNTRUSTED_TOOL_TAG)
+    const fenced = fenceIfScanMatched(HOSTILE, UNTRUSTED_TOOL_TAG, true)
     expect(fenced).toContain(`<${UNTRUSTED_TOOL_TAG}>`)
     expect(fenced).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
     expect(fenced).toContain('ignore-previous-instructions')
@@ -147,10 +147,10 @@ describe('fenceIfScanMatched', () => {
 
   it('is what fenceFieldIfMatched fences with, which still escapes the markers of a miss', async () => {
     const { fenceFieldIfMatched } = await import('../src/untrusted_fence.js')
-    const miss = fenceFieldIfMatched(`[tg] ${BENIGN}`, UNTRUSTED_FILE_TAG)
+    const miss = fenceFieldIfMatched(`[tg] ${BENIGN}`, UNTRUSTED_FILE_TAG, loadConfig())
     expect(miss).not.toContain('[tg]')
     expect(miss).toContain(BENIGN)
-    expect(fenceFieldIfMatched(HOSTILE, UNTRUSTED_FILE_TAG)).toContain(`<${UNTRUSTED_FILE_TAG}>`)
+    expect(fenceFieldIfMatched(HOSTILE, UNTRUSTED_FILE_TAG, loadConfig())).toContain(`<${UNTRUSTED_FILE_TAG}>`)
   })
 
   it('has no copy left outside untrusted_fence.ts', () => {

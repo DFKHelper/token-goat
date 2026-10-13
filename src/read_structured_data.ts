@@ -29,6 +29,7 @@ import { CliError, formatCommandError } from './command_error.js'
 import { emit, emitErr } from './emit.js'
 import { headElidedNotice, traversalLimitNotice } from './query_notices.js'
 import { fenceFieldIfMatched, fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
+import { loadConfig, type Config } from './config.js'
 import { extractErrorMessage, requireNonNegativeStrictInt } from './util.js'
 import {
   formatXmlOutline,
@@ -42,8 +43,8 @@ import {
 import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
 
 /** {@link fenceFieldIfMatched} under the HTML tag, for one string of an html-query or html-outline `--json` envelope. */
-function fenceHtmlFieldIfMatched(text: string): string {
-  return fenceFieldIfMatched(text, UNTRUSTED_HTML_TAG)
+function fenceHtmlFieldIfMatched(text: string, config: Config): string {
+  return fenceFieldIfMatched(text, UNTRUSTED_HTML_TAG, config)
 }
 
 export interface CsvQueryCliOptions {
@@ -93,8 +94,9 @@ export function runCsvQuery(opts: CsvQueryCliOptions): number {
     }
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const keys = result.header.map((h) => fenceFileFieldIfMatched(h))
-      const rowsJson = result.rows.map((r) => Object.fromEntries(keys.map((k, i) => [k, fenceFileFieldIfMatched(r[i] ?? '')])))
+      const config = loadConfig()
+      const keys = result.header.map((h) => fenceFileFieldIfMatched(h, config))
+      const rowsJson = result.rows.map((r) => Object.fromEntries(keys.map((k, i) => [k, fenceFileFieldIfMatched(r[i] ?? '', config)])))
       const headTruncated = result.rows.length < result.totalRows
       const capped = guardJsonRows(rowsJson)
       const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount: result.totalRows, ...(result.totalRows === 0 && result.preFilterRows > 0 ? { filteredFromRows: result.preFilterRows } : {}) }, 0)
@@ -622,7 +624,8 @@ export function runHtmlOutline(opts: HtmlOutlineCliOptions): number {
   const summary = outlineHtml(text)
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = displaySafeJson(fenceJsonStrings(summary, fenceHtmlFieldIfMatched))
+    const config = loadConfig()
+    const jsonText = displaySafeJson(fenceJsonStrings(summary, (field) => fenceHtmlFieldIfMatched(field, config)))
     emit(jsonText)
     recordReadStat('html_outline', fullSourceBytes, jsonText, opts.file)
   } else {
@@ -679,7 +682,8 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
       const headTruncated = limited.length < totalCount
 
       if (opts.json === true) {
-        const capped = guardJsonRows(limited.map(fenceHtmlFieldIfMatched))
+        const config = loadConfig()
+        const capped = guardJsonRows(limited.map((value) => fenceHtmlFieldIfMatched(value, config)))
         const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount }, 0)
         emit(jsonText)
         recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
@@ -711,13 +715,14 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
     const headTruncated = limited.length < totalCount
 
     if (opts.json === true) {
+      const config = loadConfig()
       const jsonItems = limited.map((n) => fenceJsonStrings({
         tag: n.tag,
         attributes: n.attributes,
         text: extractNodeText(n, text),
         line: n.line,
         endLine: n.endLine,
-      }, fenceHtmlFieldIfMatched))
+      }, (field) => fenceHtmlFieldIfMatched(field, config)))
       const capped = guardJsonRows(jsonItems)
       const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
       emit(jsonText)

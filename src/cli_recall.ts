@@ -3,7 +3,7 @@
 import { listRecentRecall, searchRecall, RECALL_DEFAULT_LIMIT, type RecallCacheType, type RecallHit } from './recall_index.js'
 import { pad } from './util.js'
 import { UNTRUSTED_WEB_TAG, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
-import { fenceIfScanMatched, fenceUntrusted } from './untrusted_fence.js'
+import { fenceIfScanMatched, fenceUntrusted, injectionFencingEnabled } from './untrusted_fence.js'
 import { displaySafeJson } from './paths.js'
 
 export interface RecallCommandOptions {
@@ -34,8 +34,8 @@ function fenceRecallListing(text: string, hits: readonly RecallHit[]): string {
 }
 
 /** Scan one hit's snippet and, on a match, return it fenced under its cache type's provenance tag. Per-field and still match-gated, for the `--json` envelope only: see the note at its call site in {@link runRecallCommand}, and `fenceFileFieldIfMatched` in untrusted_fence.ts for the same tradeoff. */
-function fenceSnippetIfMatched(hit: RecallHit): string {
-  return fenceIfScanMatched(hit.snippet, fenceTagForCacheType(hit.cacheType))
+function fenceSnippetIfMatched(hit: RecallHit, enabled: boolean): string {
+  return fenceIfScanMatched(hit.snippet, fenceTagForCacheType(hit.cacheType), enabled)
 }
 
 function printHits(query: string | undefined, hits: readonly RecallHit[]): void {
@@ -83,7 +83,8 @@ export function runRecallCommand(query: string | undefined, opts: RecallCommandO
 
   if (opts.json === true) {
     // Fence only the `snippet` field's value, not the envelope: it stays the same string type at the same key, so a script parsing this JSON for id/cacheType/label/storedAt is unaffected, and one wrapped in fence markup that is itself scanned is safer than one silently unfenced. Still match-gated, unlike the printed branch: fencing the envelope once would be O(1) and provenance-correct, but a fence wrapped around JSON is no longer JSON, and a per-field wrapper on a 160-char snippet costs a large fraction of the snippet, once per hit.
-    const fenced = hits.map((hit) => ({ ...hit, snippet: fenceSnippetIfMatched(hit) }))
+    const enabled = injectionFencingEnabled()
+    const fenced = hits.map((hit) => ({ ...hit, snippet: fenceSnippetIfMatched(hit, enabled) }))
     process.stdout.write(`${displaySafeJson(fenced, 0)}\n`)
     return
   }
