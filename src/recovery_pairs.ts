@@ -1,7 +1,7 @@
 /** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same command in the same directory, same first error line) gets one line naming the fix as history once two distinct sessions have learned it, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that names token-goat, can not sit inside one backtick fence, or carries a credential, and a fix is kept only when every part starts with an allowlisted build, test or install verb (recovery_fix_policy.ts): the stored fix is replayed into the model's context, so it has to be safe to run on sight. No command line is written to disk: the failed command, its prefix and its directory-scoped shape are kept as HMAC-SHA-256 digests under a per-install key, and a command run in between is kept as text only when it passes that allowlist and carries no credential, otherwise as {@link OTHER_STEP}, which makes the pair unlearnable, and the failed command rerun behind a prefix is kept as that prefix and {@link RERUN_PLACEHOLDER}, never its arguments; a file from before digests is ignored (STORE_VERSION, PENDING_VERSION). */
 
 import { createHash, createHmac, randomBytes } from 'node:crypto'
-import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { linkSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, posix, relative, sep } from 'node:path'
 
 import { stripLeadingAssignments } from './bash_extractors.js'
@@ -17,7 +17,7 @@ import { registerReset } from './reset.js'
 import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
 import { errorPrefix } from './tool_error_class.js'
-import { carriesCredential, fixIsAllowed, RERUN_PLACEHOLDER, rerunIsAllowed } from './recovery_fix_policy.js'
+import { carriesCredential, fixIsAllowed, leadFitsCore, RERUN_PLACEHOLDER, rerunIsAllowed } from './recovery_fix_policy.js'
 import { atomicWriteText, ensureDirSync } from './util.js'
 
 /** Later Bash calls a pending pair stays open for before it is dropped. */
@@ -187,14 +187,14 @@ registerReset(() => {
   digestKeyCache = undefined
 })
 
-/** The random key every digest is keyed with, created on first use and read once per process. Without it a digest is a bare SHA-256, and a leaked store lets anyone test guesses at a low-entropy command against it. The file is created owner-only where the platform honours a mode, and its value is never logged or returned to a caller outside this module. A file that is there but is not a valid key, or is not a regular file (a symlink or a directory), is looked at without following a link and replaced with a fresh key by a temporary file and a rename, because a key that stays broken would stop all learning for good; the stores digested under the old key simply no longer match. When it can neither be read nor written the key is random for this process alone, so nothing learned in this process matches a later one: no pair is learned, which is the safe way to fail. */
+/** The random key every digest is keyed with, created on first use and read once per process. Without it a digest is a bare SHA-256, and a leaked store lets anyone test guesses at a low-entropy command against it. The file is created owner-only where the platform honours a mode, and its value is never logged or returned to a caller outside this module. A file that is there but is not a valid key, or is not a regular file (a symlink or a directory), is looked at without following a link and replaced with a fresh key by a random temporary file linked into place (see {@link installKey}), because a key that stays broken would stop all learning for good; the stores digested under the old key simply no longer match. When it can neither be read nor written the key is random for this process alone, so nothing learned in this process matches a later one: no pair is learned, which is the safe way to fail. */
 function digestKey(): string {
   const path = digestKeyPath()
   if (digestKeyCache?.path === path) return digestKeyCache.key
   let key = readRegularKey(path)
   if (key === null) {
     const fresh = randomBytes(32).toString('hex')
-    key = installKey(path, fresh) ? fresh : (readRegularKey(path) ?? fresh)
+    key = installKey(path, fresh) ?? readRegularKey(path) ?? fresh
   }
   digestKeyCache = { path, key }
   return key
@@ -211,22 +211,44 @@ function readRegularKey(path: string): string | null {
   }
 }
 
-/** Puts `key` at `path` through a temporary file in the same directory and a rename; whatever sits there that is not a regular file (a symlink is removed itself, not followed) is cleared first. False when it could not be done. */
-function installKey(path: string, key: string): boolean {
-  const temp = `${path}.${process.pid}.tmp`
+/** Writes `key` to a new file beside `path` under a random name and returns that name. The file is created exclusively (`wx`), which never follows a symlink planted at the name, and a name that is taken is retried a few times with a new suffix. */
+function writeTempKey(path: string, key: string): string {
+  for (let attempt = 0; ; attempt++) {
+    const temp = `${path}.${randomBytes(8).toString('hex')}.tmp`
+    try {
+      writeFileSync(temp, key, { flag: 'wx', mode: 0o600 })
+      return temp
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST' || attempt >= 3) throw error
+    }
+  }
+}
+
+/** Puts `key` at `path` unless another process got a valid key there first, and returns the key that is on disk afterwards, or null when none could be put there. The key is written to a random temporary file and linked into place, which fails when the name is taken instead of replacing it, so of two processes that both found the key bad one wins and the other adopts the winner's key; whatever sits at `path` that is not a valid key (a symlink is removed itself, not followed) is cleared first, and a file system without hard links falls back to a rename. */
+export function installKey(path: string, key: string): string | null {
+  let temp: string | undefined
   try {
     ensureDirSync(dirname(path))
-    try {
-      if (!lstatSync(path).isFile()) rmSync(path, { recursive: true, force: true })
-    } catch {
-      // Nothing there yet.
+    temp = writeTempKey(path, key)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const present = readRegularKey(path)
+      if (present !== null) return present
+      rmSync(path, { recursive: true, force: true })
+      try {
+        linkSync(temp, path)
+        return readRegularKey(path)
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code === 'EEXIST') continue
+        renameSync(temp, path)
+        return readRegularKey(path)
+      }
     }
-    writeFileSync(temp, key, { flag: 'w', mode: 0o600 })
-    renameSync(temp, path)
-    return true
+    return readRegularKey(path)
   } catch {
-    rmSync(temp, { force: true })
-    return false
+    return null
+  } finally {
+    if (temp !== undefined) rmSync(temp, { force: true })
   }
 }
 
@@ -252,6 +274,7 @@ function rerunPart(success: { prefix: string; run: string; core: string }): stri
   if (!rerunIsAllowed(success.core) || !success.run.endsWith(success.core)) return null
   const lead = success.run.slice(0, success.run.length - success.core.length)
   if (success.prefix === '' && lead === '') return null
+  if (!leadFitsCore(lead, success.core)) return null
   return squeeze(`${success.prefix} ${lead}${RERUN_PLACEHOLDER}`)
 }
 
@@ -338,6 +361,12 @@ function matches(pair: StoredPair, signature: string, shape: string): boolean {
 /** Whether a stored fix may still be shown: the allowlist is checked again on replay, so a file written by an older policy, or edited by hand, can not put a command into the model's context. */
 function isReplayable(fix: string): boolean {
   return fix.length <= MAX_FIX_CHARS && !carriesCredential(fix) && fixIsAllowed(fix, WRAPPER)
+}
+
+/** Whether the last part of `fix`, when it is the failed command rerun behind a lead, may wrap the command `core` that failed now: a store learned before the runner rule, or edited by hand, can hold `npx -y (the same command)` for a Python tool. */
+function placeholderLeadFits(fix: string, core: string): boolean {
+  const last = fix.split(' && ').pop() ?? ''
+  return !last.endsWith(RERUN_PLACEHOLDER) || leadFitsCore(last.slice(0, last.length - RERUN_PLACEHOLDER.length), core)
 }
 
 /** The same pair an offer came from: its fix, the shape it was learned for and the failure it was learned from, so a different failure of the same command never scores it. */
@@ -493,7 +522,7 @@ export function recoveryAfterFailure(event: HookEvent, failure: { command: strin
         saveStore(key, pairs)
       }
     }
-    const candidates = pairs.filter((p) => matches(p, signature, shape) && !isRetired(p) && p.sessions.length >= MIN_SESSIONS && isReplayable(p.fix)).sort((a, b) => b.helped - b.hurt - (a.helped - a.hurt) || b.count - a.count || b.lastSeen - a.lastSeen)
+    const candidates = pairs.filter((p) => matches(p, signature, shape) && !isRetired(p) && p.sessions.length >= MIN_SESSIONS && isReplayable(p.fix) && placeholderLeadFits(p.fix, core)).sort((a, b) => b.helped - b.hurt - (a.helped - a.hurt) || b.count - a.count || b.lastSeen - a.lastSeen)
     const best = candidates[0]
     const open: OpenPair = { key: failed.core, shape, failedPrefix: failed.prefix, failedRun: failed.run, signature, calls: 0, between: [], ...(best === undefined ? {} : { offered: { fix: best.fix } }) }
     state.open = [...state.open.filter((o) => o.key !== failed.core), open].slice(-MAX_OPEN)

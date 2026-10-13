@@ -54,6 +54,10 @@ export const FIX_VERB_ALLOWLIST: readonly FixVerbClass[] = [
 /** The failed command itself, rerun behind an allowlisted prefix (`source .venv/bin/activate && pytest`): a test or lint runner, or a plain directory listing. Its arguments are free text, so {@link FORBIDDEN_IN_PART} is what keeps a pipe, a chain or a redirect out of it. Any other command is replayed only when it is on {@link FIX_VERB_ALLOWLIST}. */
 export const RERUN_COMMAND: RegExp = /^(?:python3?\s+-m\s+)?(?:pytest|vitest|jest|mocha|tsc|eslint|ruff|mypy|flake8)(?:\s+\S.*)?$|^ls(?:\s+[\w./-]+)*$/
 
+/** A line break or any other control character (`\r`, `\n`, U+0085, U+2028 and U+2029 included). A fix is one line joined by ` && `, so none belongs in it, and whitespace squeezing would turn a newline into the space that lets a second command through. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/
+
 /** Anything that pipes, chains, redirects, substitutes, fetches or escalates. A match refuses the part whatever verb it starts with. */
 const FORBIDDEN_IN_PART = /[|;<>&$`]|\b(?:curl|wget|sudo|iex|eval|base64)\b|Invoke-Expression/i
 
@@ -73,8 +77,8 @@ function setsUnsafeVariable(word: string): boolean {
   return assign === null || !SAFE_ENV_NAMES.has(assign[1] ?? '') || !SAFE_ENV_VALUE.test(assign[2] ?? '')
 }
 
-/** The only option words a peeled wrapper may carry: `env -i` (start from an empty environment) and the `npx` switches that only skip a prompt. Any other word starting with `-` (`env -C DIR`, `-P PATH`, `-S`, `-u NAME`, `--chdir=`, `uv run --directory`, `npx --package=`) can move the directory, the program search path or the environment, attached to its value or not. */
-const SAFE_WRAPPER_FLAGS: ReadonlySet<string> = new Set(['-i', '--ignore-environment', '-y', '--yes', '--no-install'])
+/** The only option words a peeled wrapper may carry: the `npx` switches that only skip a prompt. `env -i` and `env --ignore-environment` are refused: a replayed build in an empty environment has no `PATH` to run in, and `-i` is also a source flag ({@link SOURCE_FLAG}), so one spelling was already refused and the other is closed to match. Any other word starting with `-` (`env -C DIR`, `-P PATH`, `-S`, `-u NAME`, `--chdir=`, `uv run --directory`, `npx --package=`) can move the directory, the program search path or the environment, attached to its value or not. */
+const SAFE_WRAPPER_FLAGS: ReadonlySet<string> = new Set(['-y', '--yes', '--no-install'])
 
 /** The wrapper words a part may be run behind; `sudo` is not one, because a replayed suggestion never escalates privilege. */
 const WRAPPER_WORDS: ReadonlySet<string> = new Set(['env', 'npx', 'bunx', 'uv', 'run', 'poetry', 'pipenv', 'pnpm', 'exec'])
@@ -105,6 +109,14 @@ export const RERUN_PLACEHOLDER = '(the same command)'
 /** What may sit in front of {@link RERUN_PLACEHOLDER}: nothing, or a runner word with no flag of its own. A leading `VAR=value`, `env`, or a wrapper flag carries free text, so a rerun behind one is not learned. */
 const SAFE_LEAD = /^(?:(?:npx\s+(?:(?:-y|--yes|--no-install)\s+)*|bunx\s+|uv\s+run\s+|poetry\s+run\s+|pipenv\s+run\s+|pnpm\s+exec\s+))?$/
 
+/** The tools that may be run behind `npx`, `bunx` or `pnpm exec`: the JavaScript test and lint runners of {@link RERUN_COMMAND}. `pytest`, `ruff`, `mypy` and `flake8` are Python tools, and the npm packages of those names are unrelated third-party code that a replayed `npx -y pytest` would fetch and run. */
+const JS_RUNNER_CORE = /^(?:vitest|jest|mocha|tsc|eslint)(?:\s|$)/
+
+/** Whether the lead in front of {@link RERUN_PLACEHOLDER} may wrap `core`: a lead with no `npx`, `bunx` or `pnpm exec` in it wraps anything the rerun rules accept, and one with them wraps only a {@link JS_RUNNER_CORE}. */
+export function leadFitsCore(lead: string, core: string): boolean {
+  return !/(?:^|\s)(?:npx|bunx|pnpm\s+exec)(?:\s|$)/.test(lead) || JS_RUNNER_CORE.test(core)
+}
+
 /** Whether the failed command `core` may be rerun by name in a stored fix: a runner or a listing, or an allowlisted verb, with no pipe, chain, redirect or source flag. */
 export function rerunIsAllowed(core: string): boolean {
   if (FORBIDDEN_IN_PART.test(core) || SOURCE_FLAG.test(core)) return false
@@ -116,6 +128,7 @@ const MAKE_ENV_OVERRIDE = /^make\b.*\s(?:-e|--environment-overrides)(?=\s|$)/
 
 /** Whether every `&&` part of `fix` is safe to show a later session as history. A part is accepted when it starts with an allowlisted verb or ends in {@link RERUN_PLACEHOLDER} behind a {@link SAFE_LEAD}; the failed command is never kept as text, so there is no third way in. */
 export function fixIsAllowed(fix: string, wrappers: RegExp): boolean {
+  if (CONTROL_CHARS.test(fix)) return false
   for (const part of fix.split(' && ')) {
     if (part === '' || FORBIDDEN_IN_PART.test(part) || SOURCE_FLAG.test(part)) return false
     if (part.endsWith(RERUN_PLACEHOLDER)) {
