@@ -73,6 +73,12 @@ function hook(box: Sandbox, toolName: string, toolInput: Record<string, unknown>
   return (JSON.parse(res.stdout) as { hookSpecificOutput?: Record<string, unknown> }).hookSpecificOutput
 }
 
+/** The files in the sandbox's image-shrink cache (`<TOKEN_GOAT_HOME>/image_shrink_cache`), none when it was never created. A shrunk copy left there is a file no Read rule covers, so a refused image must never reach it. */
+function cachedShrinks(box: Sandbox): string[] {
+  const dir = path.join(box.home, 'tg', 'image_shrink_cache')
+  return fs.existsSync(dir) ? fs.readdirSync(dir) : []
+}
+
 function shrinkEvents(box: Sandbox): number {
   const res = spawnSync(process.execPath, [BUNDLE, 'stats', '--json'], { cwd: box.project, env: box.env, encoding: 'utf8' })
   expect(res.status, res.stderr).toBe(0)
@@ -117,12 +123,14 @@ describe('shell rewrites honor Claude Code permission rules (built bundle)', () 
 })
 
 describe('image Read rewrites honor Claude Code Read rules (built bundle)', () => {
-  it('a Read deny rule on the image keeps the original Read, writes no copy and books no saving', async () => {
+  it('a Read deny rule on the image keeps the original Read, writes no copy, caches no shrink and books no saving', async () => {
     const box = sandbox('deny-private', undefined, { permissions: { deny: ['Read(./private/**)'] } })
     const image = path.join(box.project, 'private', 'shot.jpg')
     await writeNoiseJpeg(image)
     expect(hook(box, 'Read', { file_path: image })).toBeUndefined()
     expect(fs.readdirSync(box.temp).filter((n) => n.startsWith('token-goat-shrink-'))).toEqual([])
+    // Claude Code refuses the original, but nothing refuses a Read of the shrink cache: a cached copy there would hand the model the image the rule denied.
+    expect(cachedShrinks(box)).toEqual([])
     expect(shrinkEvents(box)).toBe(0)
   }, 60_000)
 
@@ -134,6 +142,8 @@ describe('image Read rewrites honor Claude Code Read rules (built bundle)', () =
     expect(hso?.['permissionDecision']).toBe('allow')
     const file = (hso?.['updatedInput'] as Record<string, unknown> | undefined)?.['file_path']
     expect(typeof file === 'string' && path.basename(file).startsWith('token-goat-shrink-')).toBe(true)
+    // The control for the deny case above: the cache path is the one a shipped shrink fills.
+    expect(cachedShrinks(box).length).toBe(1)
     expect(shrinkEvents(box)).toBe(1)
   }, 60_000)
 })
@@ -289,6 +299,32 @@ describe('rewrites in every permission mode (built bundle)', () => {
     expect(outcome(hook(box, 'Read', { file_path: image }, 'bypassPermissions', claudeEnv(box, { CLAUDE_CODE_ENTRYPOINT: 'sdk-py' })))).toBe('skip')
     expect(outcome(hook(box, 'Read', { file_path: image }, 'bypassPermissions', claudeEnv(box)))).toBe('approve')
   }, 120_000)
+
+  // HAND-DERIVED from https://code.claude.com/docs/en/permission-modes: bypassPermissions skips the prompt a Read outside the working directory gets in every other mode, and a deny rule still applies there. An image in the Claude scratchpad or on another drive is read with no prompt, so its shrunk copy may say allow on exactly the conditions any bypass rewrite meets.
+  it('an image outside the working directory is shrunk with allow in bypassPermissions alone, and not past a Read rule or a PermissionRequest hook', async () => {
+    const box = sandbox('bypass-outside')
+    const image = path.join(path.dirname(box.project), 'elsewhere', 'shot.jpg')
+    await writeNoiseJpeg(image)
+    const hso = hook(box, 'Read', { file_path: image }, 'bypassPermissions', claudeEnv(box))
+    expect(outcome(hso)).toBe('approve')
+    const file = (hso?.['updatedInput'] as Record<string, unknown> | undefined)?.['file_path']
+    expect(typeof file).toBe('string')
+    expect(path.dirname(file as string)).toBe(box.temp)
+    expect(fs.statSync(file as string).size).toBeLessThan(fs.statSync(image).size)
+    for (const mode of ['default', 'acceptEdits', 'plan', 'dontAsk']) expect(outcome(hook(box, 'Read', { file_path: image }, mode, claudeEnv(box))), mode).toBe('skip')
+    const denied = sandbox('bypass-outside-deny', { permissions: { deny: ['Read(**/elsewhere/**)'] } })
+    const deniedImage = path.join(path.dirname(denied.project), 'elsewhere', 'shot.jpg')
+    await writeNoiseJpeg(deniedImage)
+    expect(outcome(hook(denied, 'Read', { file_path: deniedImage }, 'bypassPermissions', claudeEnv(denied)))).toBe('skip')
+    expect(fs.readdirSync(denied.temp).filter((n) => n.startsWith('token-goat-shrink-'))).toEqual([])
+    expect(cachedShrinks(denied)).toEqual([])
+    const hooked = sandbox('bypass-outside-hook', { hooks: { PermissionRequest: [{ hooks: [{ type: 'command', command: 'node x.js' }] }] } })
+    const hookedImage = path.join(path.dirname(hooked.project), 'elsewhere', 'shot.jpg')
+    await writeNoiseJpeg(hookedImage)
+    expect(outcome(hook(hooked, 'Read', { file_path: hookedImage }, 'bypassPermissions', claudeEnv(hooked)))).toBe('skip')
+    // No Read rule stops the shrink here, so the image is decoded, but a rewrite that does not ship leaves nothing in the cache either.
+    expect(cachedShrinks(hooked)).toEqual([])
+  }, 180_000)
 
   it('the Agent prompt rewrite defers in default mode, is approved in bypassPermissions only with no hidden rule source, and is skipped in auto', () => {
     const box = sandbox('matrix-agent')

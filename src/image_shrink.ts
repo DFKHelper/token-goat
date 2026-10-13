@@ -30,7 +30,7 @@ import { VSCODE_TOOL_NAME_KEY } from './hooks_cli.js'
 import { contextOutput, passOutput } from './hooks_common.js'
 import { materializeShrunkImageFile } from './bridges/vscode_hooks.js'
 import { detectHarness } from './bridges/registry.js'
-import { agentTypeOf, loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
+import { agentTypeOf, loadingHiddenRuleCheck, permissionNeutralRewrite, readHintCrossesRule } from './rewrite_permission.js'
 import type { HarnessName } from './bridges/types.js'
 import { displaySafePath } from './paths.js'
 import { recordFileRead } from './session.js'
@@ -503,11 +503,14 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
   if (!isImagePath(filePath)) return passOutput()
   // Before any stat or read of the path: see preToolPathDeclined.
   if (preToolPathDeclined(event, filePath)) return passOutput()
-  // Claude Code's Read of the shrunk copy, which lives outside the working directory, needs permissionDecision "allow" to avoid a prompt, and an allow is only honest for an original Read that would not have prompted either (https://code.claude.com/docs/en/permissions), so only an image inside the working directory is shrunk there; rewrite_permission.ts makes the same check before the allow is sent. Copilot CLI gets the same gate: it asks before a view outside the working directory, its added directories, and the system temp dir, and its permission engine is native code whose order against a preToolUse modifiedArgs no hook can read, so a copy in the temp dir could take an outside image past that prompt; an added directory is invisible to the hook, so an image there is left alone too.
+  // Claude Code's Read of the shrunk copy, which lives outside the working directory, needs permissionDecision "allow" to avoid a prompt, and an allow is only honest for an original Read that would not have prompted either (https://code.claude.com/docs/en/permissions), so only an image inside the working directory is shrunk there, except in bypassPermissions, where a Read outside it never prompts either; rewrite_permission.ts makes the same check, and the bypass mode's own, before the allow is sent. Copilot CLI gets the same gate in every mode: it asks before a view outside the working directory, its added directories, and the system temp dir, and its permission engine is native code whose order against a preToolUse modifiedArgs no hook can read, so a copy in the temp dir could take an outside image past that prompt; an added directory is invisible to the hook, so an image there is left alone too.
   const harness = detectHarness()
-  if ((harness === 'claudecode' || harness === 'copilot_cli') && !vscodePathAllowed(filePath, getCwd(event))) return passOutput()
+  const promptsOutsideCwd = harness === 'copilot_cli' || (harness === 'claudecode' && event.raw['permission_mode'] !== 'bypassPermissions')
+  if (promptsOutsideCwd && !vscodePathAllowed(filePath, getCwd(event))) return passOutput()
   // Before any shrink work, so a harness whose Read the copy cannot replace is not handed a megabyte of base64 text beside the original either.
   if (!shrinkCanReplaceRead(harness)) return passOutput()
+  // Before the original or the shrink cache is opened: a Read deny or ask rule that could cover the image or its real path, blocked reads outside the working directory, or settings that cannot be read all keep the original Read, and shrinking first left the image decoded into a cache file no rule covers, which the model could read once Claude Code refused the original. permissionNeutralRewrite decides the rest once the copy exists.
+  if (readHintCrossesRule(harness, getCwd(event) ?? process.cwd(), [filePath])) return passOutput()
 
   pruneShrinkCache()
 
@@ -574,9 +577,10 @@ export async function preReadImageHandler(event: HookEvent): Promise<HookOutput>
     return passOutput()
   }
 
-  writeCachedShrink(filePath, result, stat.mtimeMs, quality)
-
-  return finalizeShrinkResult(result, filePath, event)
+  const output = await finalizeShrinkResult(result, filePath, event)
+  // Cached only once a delivery ships: a rewrite permissionNeutralRewrite declined (a PermissionRequest hook, a rule source the hook cannot read, a rule on the copy's path) would otherwise still leave the shrunk image in the cache.
+  if (output.hookType !== 'pass') writeCachedShrink(filePath, result, stat.mtimeMs, quality)
+  return output
 }
 
 registerHook('pre_tool_use', loadingHiddenRuleCheck(preReadImageHandler), { toolName: 'Read' })
