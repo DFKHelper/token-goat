@@ -1389,8 +1389,9 @@ export const cases: Record<string, () => void | Promise<void>> = {
     fs.writeFileSync(big, `${Array.from({ length: 600 }, (_, i) => `row ${i + 1} ${'filler '.repeat(14)}`).join('\n')}\n`)
     const capped = run(['bash-output', '--file', big, '--head', '600'])
     expect(capped.status, capped.stderr).toBe(0)
-    expect(capped.stdout.length).toBeLessThanOrEqual(24_000)
-    expect(capped.stdout).toMatch(/<\/untrusted-tool-output nonce=[0-9a-f]{12}>\n\[token-goat: output capped at 24000 chars[^\n]*--lines \d+-600`\]/)
+    // HAND-DERIVED: the measured inline limit, 29,706, less the 4,096 kept for the notice and stderr.
+    expect(capped.stdout.length).toBeLessThanOrEqual(25_610)
+    expect(capped.stdout).toMatch(/<\/untrusted-tool-output nonce=[0-9a-f]{12}>\n\[token-goat: output capped at 25610 chars[^\n]*--lines \d+-600`\]/)
   },
   'web-output': () => {
     // Reachability: process-local cache is always empty in a fresh process, so a bogus id is a graceful miss (exit 1), not an "unknown command" / crash.

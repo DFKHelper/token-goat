@@ -20,7 +20,7 @@ import { makeHookEvent } from './helpers/hook-event.js'
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 // PROVENANCE: CAPTURE the Claude Code Bash delivery cap, CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES in src/delivery_cap.ts, restated so the bound is not read off the code under test.
-const CAP = 20_000
+const CAP = 29_706
 
 /** File line N as a colouring tool prints it: a 24-bit SGR before the text and a reset after, about a quarter of the line's bytes. */
 function colouredLine(n: number): string {

@@ -5,6 +5,7 @@ import { safeSlice } from './util.js'
 import { forClient } from './mcp_client_text.js'
 import type { ContentClass } from './token_estimate.js'
 import { classifyContent, guardDivisor } from './token_estimate.js'
+import { CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES } from './delivery_cap.js'
 
 /** Estimate tokens from a character count: ~3 chars/token (conservative). Split out from {@link estimateTokens} so a caller that only has a size -- a byte count read from a file stat or a transcript line length, with no string in hand -- estimates against the same ratio instead of reimplementing it or materializing a throwaway string of that length. The two have drifted apart in this codebase before; this keeps the arithmetic in one place. */
 /** Never use this to credit a saving. It divides by three at the default class, which over-estimates on purpose: this is an overflow guard's estimator, and guessing high is its safe direction. Crediting a saving reverses that, so savings go through `stats.ts::savedTokensFromBytes` instead. A guard test pins the separation. Pass `cls` when the caller knows the bytes are a dense payload; omitted, it prices them as text, which is what this function has always done. */
@@ -66,8 +67,11 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   return kept.join('\n') + '\n' + forClient(marker)
 }
 
-/** Characters of a token-goat command's own answer that stay inline in Claude Code's Bash tool. CAPTURE from this machine's session transcripts on Claude Code 2.1.29x: results up to 26,588 characters came back inline, while one whose stdout reached 29,926 was persisted to a file and the model shown a 2 KB preview of it. A token-goat answer past that line cost the agent a second call to read the persisted file, and often a third: `section` returned 52.5 KB, `skill-body humanizer` 49 KB and `bash-output --file --grep` 48 KB. 24,000 leaves room for the continuation notice and for stderr. */
-export const HARNESS_INLINE_CEILING_CHARS = 24_000
+/** Characters of the inline limit ({@link CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES}) kept back from a token-goat answer, for its continuation notice and for stderr. */
+const INLINE_CEILING_RESERVE_CHARS = 4096
+
+/** Characters of a token-goat command's own answer that stay inline in Claude Code's Bash tool: the measured inline limit ({@link CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES}, where its provenance lives) less {@link INLINE_CEILING_RESERVE_CHARS}. A token-goat answer past that limit cost the agent a second call to read the persisted file, and often a third: `section` returned 52.5 KB, `skill-body humanizer` 49 KB and `bash-output --file --grep` 48 KB. */
+export const HARNESS_INLINE_CEILING_CHARS = CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES - INLINE_CEILING_RESERVE_CHARS
 
 /** Result of capping a JSON-serializable array to a token budget. */
 export interface JsonRowCapResult<T> {

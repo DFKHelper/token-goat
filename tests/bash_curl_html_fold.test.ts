@@ -24,9 +24,12 @@ const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 const ARTICLE_MARKER = 'QUICK_BROWN_FOX_ARTICLE_BODY_MARKER_7f3a'
 
-/** Head/CSS/script filler comfortably past the ~20,000-byte harness delivery cap. */
-const HEAD_PADDING = '<style>.filler{color:#000;}</style>\n'.repeat(700)
-if (HEAD_PADDING.length <= 20000) throw new Error('HEAD_PADDING must exceed the 20,000-byte delivery cap for this test to be meaningful')
+/** The harness delivery cap, restated (CAPTURE, see CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES in src/delivery_cap.ts) so the bound is not read off the code under test. */
+const CAP = 29_706
+
+/** Head/CSS/script filler comfortably past the harness delivery cap. */
+const HEAD_PADDING = '<style>.filler{color:#000;}</style>\n'.repeat(1000)
+if (HEAD_PADDING.length <= CAP) throw new Error('HEAD_PADDING must exceed the delivery cap for this test to be meaningful')
 
 const LARGE_HTML_PAGE =
   `<!DOCTYPE html><html><head><title>Test Article</title>${HEAD_PADDING}</head>` +
@@ -93,8 +96,8 @@ describe('postBashHandler: curl HTML body cleaned via extractCleanText', () => {
     if (res.hookType !== 'rewriteOutput') throw new Error('unreachable')
     expect(res.updatedOutput.length).toBeLessThan(LARGE_HTML_PAGE.length * 0.5)
 
-    // The marker never appears in the first 20,000 bytes of the raw fixture: the harness's own delivery cap would have shown zero article content without this fold.
-    expect(LARGE_HTML_PAGE.slice(0, 20000)).not.toContain(ARTICLE_MARKER)
+    // The marker never appears in the first CAP bytes of the raw fixture: the harness's own delivery cap would have shown zero article content without this fold.
+    expect(LARGE_HTML_PAGE.slice(0, CAP)).not.toContain(ARTICLE_MARKER)
     expect(res.updatedOutput).toContain(ARTICLE_MARKER)
     expect(res.updatedOutput).not.toContain('<style>')
     expect(res.updatedOutput).not.toContain('<article>')
@@ -148,12 +151,12 @@ describe('postBashHandler: curl HTML body cleaned via extractCleanText', () => {
       clearModuleCaches()
       invalidateConfigCache()
       // Precondition, not the oracle: calling the producer here only establishes that this fixture actually reaches the clip path. The assertions below are independent of it -- they check a byte ceiling, a leading notice and a closed fence, none of which extractCleanText computes.
-      expect(Buffer.byteLength(extractCleanText(PROSE_HEAVY_PAGE), 'utf-8')).toBeGreaterThan(20000)
+      expect(Buffer.byteLength(extractCleanText(PROSE_HEAVY_PAGE), 'utf-8')).toBeGreaterThan(CAP)
 
       const res = await postBashHandler(postEvent('curl -s https://example.com/long', PROSE_HEAVY_PAGE, 0, 'clip'))
       expect(res.hookType).toBe('rewriteOutput')
       if (res.hookType !== 'rewriteOutput') throw new Error('unreachable')
-      expect(Buffer.byteLength(res.updatedOutput, 'utf-8')).toBeLessThanOrEqual(20000)
+      expect(Buffer.byteLength(res.updatedOutput, 'utf-8')).toBeLessThanOrEqual(CAP)
       expect(res.updatedOutput.startsWith('[token-goat: curl HTML body cleaned')).toBe(true)
       expect(res.updatedOutput).toMatch(/token-goat bash-output [0-9a-f]+ --full/)
       expect(withoutFenceNonces(res.updatedOutput)).toContain('</untrusted-tool-output>')
