@@ -1190,8 +1190,8 @@ const ASSIGNMENT_PREFIX_WORDS = new Set(['env', 'export', 'time', 'command', 'no
 /** `env` flags whose value is the next word, which would otherwise end the scan before the assignments that follow it. */
 const ENV_VALUE_FLAGS = new Set(['-u', '--unset', '-C', '--chdir'])
 
-/** An `env` flag that runs the command in another directory: `-C DIR`, `-CDIR`, a short cluster ending in `C`, `--chdir DIR` or `--chdir=DIR`. */
-const ENV_CHDIR_FLAG = /^(?:--chdir(?:=|$)|-[A-BD-Za-z]*C)/
+/** An `env` flag that runs the command in another directory: `-C DIR`, `-CDIR`, a short cluster ending in `C`, or `--chdir` in any spelling GNU getopt accepts, which includes every prefix (`--ch=DIR`). Fails closed on any `--c*`: no other `env` long option starts with `c`. */
+const ENV_CHDIR_FLAG = /^(?:--c|-[A-BD-Za-z]*C)/
 
 /** The one prefix word that exists only to set a command's environment: `env -u X FOO=1 cat x` runs `cat x` just as `FOO=1 cat x` does. */
 const ENV_PREFIX_WORDS = new Set(['env'])

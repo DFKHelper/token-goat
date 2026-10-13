@@ -385,6 +385,8 @@ describe('a read that ran elsewhere or printed less than the lines is not record
     `env -C ${normalizePath(other)} FOO=1 token-goat read src/a.ts@101-200`,
     `env --chdir=${normalizePath(other)} token-goat read src/a.ts@101-200`,
     `env --chdir ${normalizePath(other)} token-goat read src/a.ts@101-200`,
+    `env --ch=${normalizePath(other)} token-goat read src/a.ts@101-200`,
+    `env --chd ${normalizePath(other)} token-goat read src/a.ts@101-200`,
     `env -iC ${normalizePath(other)} token-goat read src/a.ts@101-200`,
     `env -C${normalizePath(other)} token-goat read src/a.ts@101-200`,
     `FOO=1 env -C ${normalizePath(other)} token-goat read src/a.ts@101-200`,
@@ -429,6 +431,40 @@ describe('a read that ran elsewhere or printed less than the lines is not record
     expect(await denied()).toBe(true)
     await post('env FOO=1 token-goat read src/a.ts@101-200')
     expect(await denied()).toBe(false)
+  })
+
+  // FORMAT-DERIVED: the Copilot CLI input as src/bridges/copilot_cli.ts hands it to the hook once it has built its canonical payload (session_id, cwd, tool_name through resolveCanonicalToolName, tool_input, and tool_response set from toolResult.textResultForLlm, a string; the camelCase wire of schemas/copilot_cli.hooks.json never reaches normalizePayload), and the VS Code PostToolUse envelope (hook_event_name, session_id, cwd, tool_name run_in_terminal, tool_input.command, tool_use_id) of the 'VS Code read_file' case in tests/fixtures/harness_hook_payloads.ts, whose tool-name map is VSCODE_TOOL_NAME_MAP in src/hooks_cli.ts. Both run through the normalizePayload step the hook entry applies.
+  const HOST_WIRES: ReadonlyArray<readonly [string, 'copilot_cli' | 'vscode', (command: string, toolUseId: string) => Record<string, unknown>]> = [
+    ['Copilot CLI', 'copilot_cli', (command) => ({ session_id: 'test', cwd: project, tool_name: 'Bash', tool_input: { command }, tool_response: 'served\n' })],
+    ['VS Code', 'vscode', (command, toolUseId) => ({ timestamp: '2026-09-11T00:00:00.000Z', hook_event_name: 'PostToolUse', session_id: 'test', cwd: project, tool_name: 'run_in_terminal', tool_input: { command }, tool_use_id: toolUseId, tool_response: 'served\n' })],
+  ]
+
+  describe.each(HOST_WIRES)('on a %s payload', (_label, harness, wire) => {
+    const post = (command: string, toolUseId = 'tu-host'): Promise<unknown> => {
+      const normalized = normalizePayload(wire(command, toolUseId), harness) as Record<string, unknown>
+      return postBashHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: normalized['tool_name'] as string, toolInput: normalized['tool_input'] as Record<string, unknown>, sessionId: 'test', raw: normalized }))
+    }
+
+    it('control: a plain range read is recorded', async () => {
+      seed()
+      await post('token-goat read src/a.ts@101-200')
+      expect(await denied()).toBe(false)
+    })
+
+    it.each([`env -C ${normalizePath(other)} token-goat read src/a.ts@101-200`, 'token-goat read src/a.ts@101-200 --help'])('records nothing for %s', async (command) => {
+      seed()
+      await post(command)
+      expect(await denied()).toBe(true)
+    })
+
+    // HAND-DERIVED: the pre hook held the directory the call started in, so the post hook resolves the `cd` prefix from it alone; the path a failed `cd` would name is one no file sits at.
+    it.each(['cd missing && token-goat read src/a.ts@101-200', 'cd - && token-goat read src/a.ts@101-200'])('records no path that does not exist for %s', async (command) => {
+      seed()
+      recordBashStartCwd('tu-host-cd', project)
+      await post(command, 'tu-host-cd')
+      expect(getFileLineRanges(path.join(project, 'missing', 'src', 'a.ts')).length).toBe(0)
+      expect(getFileLineRanges(path.join(project, '-', 'src', 'a.ts')).length).toBe(0)
+    })
   })
 
   // HAND-DERIVED: each flag below stops the body being printed in full (usage text, JSON, a heading list, a cut, statistics), read off the option lists of `read` and `section` in src/cli.ts; `-j` and `-h` are the short spellings.

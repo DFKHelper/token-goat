@@ -110,7 +110,7 @@ function bashResultByteLength(resp) {
 }
 // A token-goat read|section|symbol result is never detached, however short: see isAsyncDetachEligible in src/hook_adapters.ts.
 const TG_LEDGER_PREFIX_RE = /^(?:(?:cd\\s+(?:"[^"]*"|'[^']*'|\\S+)|export[ \\t]+[A-Za-z_]\\w*=(?:"[^"]*"|'[^']*'|[^\\s"'])*(?:[ \\t]+[A-Za-z_]\\w*=(?:"[^"]*"|'[^']*'|[^\\s"'])*)*)[ \\t]*(?:&&|;|\\r?\\n)\\s*)+/
-const TG_LEDGER_READ_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\\S+\\s+)*(?:env\\s+(?:(?:(?:-u|--unset)\\s+\\S+|-(?![A-Za-z]*C|-chdir)\\S*|[A-Za-z_][A-Za-z0-9_]*=\\S+)\\s+)*)?(?:token-goat|tg|node(?:\\.exe)?\\s+["']?(?:\\S*[\\\\/])?token-goat(?:\\.mjs)?["']?)\\s+(?:read|section|symbol)\\b/i
+const TG_LEDGER_READ_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\\S+\\s+)*(?:env\\s+(?:(?:(?:-u|--unset)\\s+\\S+|-(?![A-Za-z]*C|-c)\\S*|[A-Za-z_][A-Za-z0-9_]*=\\S+)\\s+)*)?(?:token-goat|tg|node(?:\\.exe)?\\s+["']?(?:\\S*[\\\\/])?token-goat(?:\\.mjs)?["']?)\\s+(?:read|section|symbol)\\b/i
 function isLedgerReadCommand(cmd) {
   if (typeof cmd !== 'string') return false
   const body = cmd.trim().replace(/^\\(\\s*/, '')
