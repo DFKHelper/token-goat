@@ -109,9 +109,9 @@ function readGateFloorBytes(filePath: string): number {
   return READ_GATE_FLOOR_BYTES[path.extname(filePath).slice(1).toLowerCase()] ?? FILE_TYPE_THRESHOLDS.txt
 }
 
-// Runs an inline interpreter file read under a token cap instead of refusing it. Many are projections, `json.load(open('r.json'))['118615']`, that print a few lines no token-goat command beats by a second round trip; refused, each cost the agent a retry and often a second refusal before it found a spelling the hook let through. A projection now passes whole, and a whole-file dump comes back capped with its recall id and the same surgical command the refusal named. The refusal stays wherever the wrapper cannot run: compression off, a pipeline or chain, a background `&`, a script past the command-line ceiling, VS Code. The hint passes the suggestion guard here because the relay only guards a refusal: printed after the capped output, a path that broke its quoting would reach the model unguarded.
-function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hint: string, denial: string): HookOutput {
-  return maybeCompressRewrite(event, rawCmd, cmd, { maxTokens: INTERPRETER_READ_TOKEN_CAP, hint: stripUnsafeSuggestions(hint) }) ?? denyOutput(denial)
+// Runs an inline interpreter file read under a token cap instead of refusing it. Many are projections, `json.load(open('r.json'))['118615']`, that print a few lines no token-goat command beats by a second round trip; refused, each cost the agent a retry and often a second refusal before it found a spelling the hook let through. A projection now passes whole, and a whole-file dump comes back capped with its recall id and the same surgical command the refusal named. Wherever the wrapper cannot run (compression off, a background `&`, a script past the command-line ceiling, VS Code, or rewrite_permission.ts withholding the rewrite, as it does in auto mode and under a rule that could match) `fallback` answers instead: the refusal for a read that prints the file, advice for one that hands it to a parser. The hint passes the suggestion guard here because the relay only guards a refusal: printed after the capped output, a path that broke its quoting would reach the model unguarded.
+function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hint: string, fallback: HookOutput): HookOutput {
+  return maybeCompressRewrite(event, rawCmd, cmd, { maxTokens: INTERPRETER_READ_TOKEN_CAP, hint: stripUnsafeSuggestions(hint) }) ?? fallback
 }
 
 /** A rewrite of this Bash call's command, or null when rewrite_permission.ts finds it could change the permission outcome of the command the model wrote. */
@@ -534,7 +534,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const pyRead = extractPythonFileRead(cmd)
   if (pyRead !== null) {
-    const { filePath, isDoc, isConfig, isEnv, isSql, isXml, isOutputFile } = pyRead
+    const { filePath, isDoc, isConfig, isEnv, isSql, isXml, isOutputFile, feedsParser } = pyRead
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isOutputFile) {
@@ -553,7 +553,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const target = targetFor(hintPath, isEnv ? 'key' : undefined)
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml ?? false, target)
     const denial = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml ?? false, target, reason)
-    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denial)
+    // A script that parses the file computes on it rather than printing it, so where the cap cannot run it gets the advice and runs: refused, every measured one came back as the same script from a file, the file on stdin or a copy elsewhere, a turn later.
+    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, feedsParser ? pathHint(hintPath, denial) : denyOutput(denial))
   }
 
   const tailResult = extractTailFile(cmd)
@@ -589,7 +590,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hint = surgicalHintFor(hintPath, false, isConfig, isDoc, false, target)
     const denial = surgicalHintFor(hintPath, false, isConfig, isDoc, false, target, lead)
     recordStat('session_hint', 0, 0)
-    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denial)
+    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denyOutput(denial))
   }
 
   const psMethodRead = extractPowerShellFileMethodRead(cmd, event)
@@ -605,7 +606,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, target)
     const denial = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, target, lead)
     recordStat('session_hint', 0, 0)
-    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denial)
+    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denyOutput(denial))
   }
 
   // A plain-enumeration rg/grep structural search (whole-file symbols, headings, imports) has an exact index answer -- rewrite the command to it instead of just hinting, so the model gets the answer in this one tool result. Checked on rawCmd (not the cd-stripped cmd) ahead of the hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape rather than something this call needs to special-case.
