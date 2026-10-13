@@ -237,14 +237,40 @@ export function sanitizeControlChars(text: string): string {
   return text.replace(CONTROL_CHAR_RE, '')
 }
 
-/** Collapse `\r`-overwrite progress lines to their final rendered state. Keeps only the segment after the last `\r` within each line. A line whose only `\r` is its own trailing character (e.g. curl on Windows emits `\r\n` per verbose line, and the preceding CRLF→LF pass only ever consumes one `\r` of a `\r\r\n` run, leaving a lone trailing `\r`) is real content with leftover line-ending debris, not a terminal overwrite — strip that single trailing `\r` first so it isn't mistaken for an overwrite marker that wipes the whole line to empty. */
+/** What a terminal redraw prints and a data row rarely does: a percentage, a spinner or bar glyph, a `[==>` or `[###` bar, a transfer rate, an ETA or clock, an `n/m` or `n of m` counter that is not part of a date or path, or a spinner character opening the line. */
+const PROGRESS_SEGMENT_RE =
+  /\d ?%|[▀-▟━⠀-⣿◐-◓◴-◷]|\[(?:=+>|#{2})|\beta\b|\d ?[kmgt]?i?b\/s\b|\b(?:it\/s|s\/it)\b|--:--|\b\d{1,2}:\d{2}:\d{2}\b|(?<![\d./])\d+ ?\/ ?\d+(?![\d./])|\b\d+ of \d+\b|^\s*[|/\\-](?:\s|$)/i
+
+/** Separators a `tr '\n' X` or `paste -sd X` join leaves directly after each line's stray `\r`. */
+const JOIN_SEPARATORS = ',; \t|'
+
+/** True when the `\r`-separated segments of one line are redraws of a single status line rather than separate pieces of data. Every earlier segment has to look like a redraw on its own -- a progress marker, or the final segment's own template with different numbers -- because a false yes deletes data while a false no only leaves a few bytes of stale progress text in place. A list that `tr '\n' ','` joined across CRLF line endings is ruled out first by its shape: each `\r` is followed by the same separator, which the first entry does not start with. */
+function isRedraw(segments: string[]): boolean {
+  const last = segments[segments.length - 1] as string
+  const first = segments[0] as string
+  const sep = (segments[1] as string)[0]
+  if (first.trim() !== '' && sep !== undefined && JOIN_SEPARATORS.includes(sep) && first[0] !== sep && segments.slice(1).every((s) => s[0] === sep)) return false
+  return segments.slice(0, -1).every((s) => s.trim() === '' || PROGRESS_SEGMENT_RE.test(s) || isSameTemplate(s, last))
+}
+
+/** True when `a` and `b` are one line rendered twice with different numbers (`Processed 100 rows` / `Processed 2000 rows`): the same text once every digit run is folded, and a shared opening of at least four characters that carries a letter, so a list of order numbers or of `user1@`, `user2@` addresses does not qualify. */
+function isSameTemplate(a: string, b: string): boolean {
+  let p = 0
+  while (p < a.length && p < b.length && a[p] === b[p]) p++
+  if (p < 4 || !/[A-Za-z]/.test(a.slice(0, p))) return false
+  return a.replace(/\d+/g, '0') === b.replace(/\d+/g, '0')
+}
+
+/** Collapse `\r`-overwrite progress lines to their final rendered state, and keep every piece of a line whose `\r`s are data. A redraw (see {@link isRedraw}) keeps only the segment after the last `\r`. Anything else loses the `\r`s and keeps all of its text: a CRLF file joined onto one line by `tr '\n' ','` used to come back as its last entry alone, which reads as a plausible, wrong answer. A line whose only `\r` is its own trailing character (e.g. curl on Windows emits `\r\n` per verbose line, and the preceding CRLF→LF pass only ever consumes one `\r` of a `\r\r\n` run, leaving a lone trailing `\r`) is real content with leftover line-ending debris, not a terminal overwrite — strip that single trailing `\r` first so it isn't mistaken for an overwrite marker that wipes the whole line to empty. */
 export function stripProgress(text: string): string {
   if (!text.includes('\r')) return text
   return text
     .split('\n')
     .map((line) => {
       const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line
-      return trimmed.includes('\r') ? trimmed.slice(trimmed.lastIndexOf('\r') + 1) : trimmed
+      if (!trimmed.includes('\r')) return trimmed
+      const segments = trimmed.split('\r')
+      return isRedraw(segments) ? (segments[segments.length - 1] as string) : segments.join('')
     })
     .join('\n')
 }
