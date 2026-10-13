@@ -52,16 +52,26 @@ describe('parseColonLineSpec', () => {
     expect(parseColonLineSpec('src/answer_router.ts:200-240')).toEqual({ file: 'src/answer_router.ts', start: 200, end: 240 })
   })
 
+  // HAND-DERIVED: the directory is one no checkout has. parseColonLineSpec stats the whole spec (a file really named `x:142` wins over the line reading), so a path inside a real checkout is not a pure input: an NTFS stream named `142` on that file made the old spelling of this test return null.
   it('keeps the drive letter on a Windows absolute path', () => {
-    expect(parseColonLineSpec('C:/Projects/token-goat/src/answer_router.ts:142')).toEqual({
-      file: 'C:/Projects/token-goat/src/answer_router.ts',
+    expect(parseColonLineSpec('C:/tg-no-such-checkout-9k/src/answer_router.ts:142')).toEqual({
+      file: 'C:/tg-no-such-checkout-9k/src/answer_router.ts',
       start: 142,
       end: 142,
     })
-    expect(parseColonLineSpec('C:\\Projects\\token-goat\\src\\answer_router.ts:142-160')).toEqual({
-      file: 'C:\\Projects\\token-goat\\src\\answer_router.ts',
+    expect(parseColonLineSpec('C:\\tg-no-such-checkout-9k\\src\\answer_router.ts:142-160')).toEqual({
+      file: 'C:\\tg-no-such-checkout-9k\\src\\answer_router.ts',
       start: 142,
       end: 160,
+    })
+  })
+
+  // HAND-DERIVED: writing `<file>:142` creates an NTFS alternate data stream on Windows (the file exists, so the write succeeds) and a plain file of that literal name elsewhere. Either way the whole spec names something that exists, which the guard must leave to the file reader.
+  it('declines a spec whose whole text names an existing file or stream', () => {
+    withSample((file) => {
+      expect(parseColonLineSpec(`${file}:142`)).toEqual({ file, start: 142, end: 142 })
+      writeFileSync(`${file}:142`, 'stream')
+      expect(parseColonLineSpec(`${file}:142`)).toBeNull()
     })
   })
 
