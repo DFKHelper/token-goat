@@ -332,8 +332,9 @@ read_batch            6             -            4         66.7%       no       
 search_brake          2             -            1         50.0%       no               0        0        330
 grep_dedup_hint       0 ~4          -            0         n/a         no               0        0        240
 glob_dedup_hint       0 ~1          -            0         n/a         no               0        0        60
+bash_large_output     4             -            1         25.0%       no               0        0        410
 
-TOTAL   saved-bytes=48200 (all-time, every hint kind)   spent-bytes=7020 (hint_emissions ledger only)
+TOTAL   saved-bytes=48200 (all-time, every hint kind)   spent-bytes=7430 (hint_emissions ledger only)
 ```
 
 `spent-bytes` (and the `TOTAL` line's `spent-bytes`) render `n/a` instead of a fake `0` whenever a
@@ -401,7 +402,7 @@ Note that what this feature calls "harness" (Claude Code, Codex, Gemini, ...) is
 "which LLM model" — no bridge in this codebase exposes an LLM model identifier to hooks, so
 harness is the closest real signal available.
 
-Two categories are scored on a pattern of calls rather than a named command. `read_batch` (three or more reads or searches in a row, each sent a full turn after the previous result) counts as acted on when the first later turn that makes read-only calls makes at least two of them together. `search_brake` (three searches in a row found nothing) counts as acted on when the next search from a later turn is `token-goat answer` or `token-goat semantic`. Until that later call arrives the emission stays pending (`+N`) and is counted neither way. `grep_dedup_hint` and `glob_dedup_hint` (an identical Grep or Glob already ran this session) are never scored: the note rides on the re-run it describes, so no later call can show whether it was heeded. They appear in `spent-bytes` and as the `~N` beside `emitted`, never in `emitted` itself or the efficacy figure.
+Two categories are scored on a pattern of calls rather than a named command. `read_batch` (three or more reads or searches in a row, each sent a full turn after the previous result) counts as acted on when the first later turn that makes read-only calls makes at least two of them together. `search_brake` (three searches in a row found nothing) counts as acted on when the next search from a later turn is `token-goat answer` or `token-goat semantic`. Until that later call arrives the emission stays pending (`+N`) and is counted neither way. `grep_dedup_hint` and `glob_dedup_hint` (an identical Grep or Glob already ran this session) are never scored: the note rides on the re-run it describes, so no later call can show whether it was heeded. They appear in `spent-bytes` and as the `~N` beside `emitted`, never in `emitted` itself or the efficacy figure. `bash_large_output` is the note on a large Bash output nothing compressed: it gives a `token-goat bash-output <id>` recall pointer only when the harness did not show the whole output (Claude Code persisted it), and a `token-goat compress -c "<command>"` suggestion only when the same command produced a large output earlier in the session, each at most once per command per session. It counts as acted on when a later `token-goat` command names that id or runs that command.
 
 ### Scoring the compressors — `token-goat bench`
 

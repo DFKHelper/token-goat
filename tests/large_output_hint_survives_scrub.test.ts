@@ -11,8 +11,9 @@ import { BUNDLE, ROOT } from './helpers/bundle.js'
 const home = mkdtempSync(join(tmpdir(), 'tg-4k-hint-'))
 const env = { ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: home, XDG_DATA_HOME: home, TOKEN_GOAT_NO_WORKER_SPAWN: '1', TOKEN_GOAT_BASH_COMPRESS: '1' }
 
+/** Every result here is reported persisted, as Claude Code reports one past its inline limit, because the hint gives its recall pointer only for a result the model did not see whole. The path names no file, so the hook reads `stdout`. */
 function hintFor(command: string, sessionId: string, stdout = 'y'.repeat(5000), cwd = home): string {
-  const payload = { session_id: sessionId, hook_event_name: 'PostToolUse', cwd, tool_name: 'Bash', tool_input: { command }, tool_response: { stdout, stderr: '', interrupted: false } }
+  const payload = { session_id: sessionId, hook_event_name: 'PostToolUse', cwd, tool_name: 'Bash', tool_input: { command }, tool_response: { stdout, stderr: '', interrupted: false, persistedOutputPath: join(home, 'not-a-tool-result.txt'), persistedOutputSize: 0 } }
   const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: JSON.stringify(payload), encoding: 'utf-8', env })
   expect(res.status).toBe(0)
   const parsed = JSON.parse(res.stdout || '{}') as { hookSpecificOutput?: { additionalContext?: string } }
@@ -26,7 +27,9 @@ describe('large uncompressed output hint', () => {
     expect(hint).not.toContain('command omitted')
   })
 
-  it('still offers compress -c for a command it can quote', () => {
+  it('still offers compress -c for a command it can quote, once it has run before', () => {
+    // The suggestion is about the next run, so it waits for a command that produced a large output earlier in the session; the session state carries that from one hook process to the next.
+    expect(hintFor('curl http://example.com/api && echo done', 'plain')).not.toContain('compress -c')
     const hint = hintFor('curl http://example.com/api && echo done', 'plain')
     expect(hint).toContain('`token-goat compress -c "curl http://example.com/api && echo done"`')
   })

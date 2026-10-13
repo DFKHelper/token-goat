@@ -11,8 +11,9 @@ import { BUNDLE, ROOT } from './helpers/bundle.js'
 const home = mkdtempSync(join(tmpdir(), 'tg-4k-fileread-'))
 const env = { ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: home, XDG_DATA_HOME: home, TOKEN_GOAT_NO_WORKER_SPAWN: '1', TOKEN_GOAT_BASH_COMPRESS: '1' }
 
+/** Every result is reported persisted, as Claude Code reports one past its inline limit: the hint gives its recall pointer only for output the model did not see whole, so silence below is the file-read exemption and not an output the hint would have passed over anyway. The path names no file, so the hook reads `stdout`. */
 function run(command: string, sessionId: string, stdout: string): { hint: string; rewritten: boolean; raw: string } {
-  const payload = { session_id: sessionId, hook_event_name: 'PostToolUse', cwd: ROOT, tool_name: 'Bash', tool_input: { command }, tool_response: { stdout, stderr: '', interrupted: false } }
+  const payload = { session_id: sessionId, hook_event_name: 'PostToolUse', cwd: ROOT, tool_name: 'Bash', tool_input: { command }, tool_response: { stdout, stderr: '', interrupted: false, persistedOutputPath: join(home, 'not-a-tool-result.txt'), persistedOutputSize: 0 } }
   const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: JSON.stringify(payload), encoding: 'utf-8', env })
   expect(res.status).toBe(0)
   const parsed = JSON.parse(res.stdout || '{}') as { hookSpecificOutput?: { additionalContext?: string; updatedToolOutput?: unknown } }

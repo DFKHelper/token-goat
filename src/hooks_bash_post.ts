@@ -13,7 +13,8 @@ import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './
 import { storeBashOutput, getBashOutput, isScopedGitStatusOrDiffStatCommand, commandHash, bashOutputIdSync, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
-import { deliveredOutputBytes, clipToDeliveryCap } from './delivery_cap.js'
+import { bashOutputCapBytes, deliveredOutputBytes, clipToDeliveryCap } from './delivery_cap.js'
+import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { foldDelivery, foldingEnabled, type FoldRow } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton } from './fold_structure.js'
 import { fileSubject, quotedArg } from './hint_suggestion_guard.js'
@@ -607,6 +608,7 @@ function recordBashFileReadsForSessionCache(cmd: string, runDir: string | null):
   // An inline interpreter read (`python -c`, `node -e`, PowerShell `[IO.File]::ReadAllText`) is deliberately absent: what reaches the conversation is whatever the script printed, and of 217 such commands measured in real transcripts about 203 printed a key, a count or a slice. Recorded as a full read, one printed key armed the Read hook's unchanged-file denies against a file the model had never seen.
 }
 
+/** The advisory for a large output nothing compressed, which offers two things, each at most once per session per command. A recall pointer, only when the harness did not show the whole output: Claude Code persists a result past its inline limit and hands the model a short preview, so a pointer there names bytes the model has not read, while under that limit it names bytes already in context. Measured over the recorded sessions, the pointer was shown 80 times on outputs that had arrived whole and recalled 0 times. And a `token-goat compress -c` suggestion, only once the same command has produced a large output before in this session, since it is the next run it would compress and a one-off command has none. Routed through hint tracking as `bash_large_output`, so hint-stats scores it on the pointer or the suggestion being followed and backs it off when they are not. */
 async function maybeEmitLargeUncompressedHint(
   cmd: string,
   rawCmd: string,
@@ -617,6 +619,7 @@ async function maybeEmitLargeUncompressedHint(
   isUnwrapped: boolean,
   event: HookEvent,
   ansiResult: HookOutput | null,
+  persisted: boolean,
 ): Promise<HookOutput | null> {
   const outputBytes = Buffer.byteLength(output, 'utf-8')
   if (
@@ -633,25 +636,40 @@ async function maybeEmitLargeUncompressedHint(
   ) {
     return null
   }
-  const key = `bash-uncompressed-4k:${event.sessionId ?? ''}:${shortFingerprint(cmd)}`
-  if (wasHintShown(key)) return null
-  markHintShown(key)
-  recordStat('session_hint', 0, 0)
-  // Under the directory the command ran in, as the cache branch stores the same output: under the hook's cwd instead, a later run of the same command there would find this copy and read it as its own prior run.
-  const id = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
-  const kb = Math.round(outputBytes / 1024)
-  // The recall pointer leads and each suggestion sits in its own backticks: the suggestion scrubber cuts from an unsafe suggestion to the last backtick on the line, so a compress suggestion ahead of it took the pointer down with it. A command holding a quote, backtick, `$` or line break cannot be wrapped in the double quotes below at all, so it gets no compress suggestion. The suggestion is a command to run, so it keeps the leading assignments `cmd` dropped: `FOO=1 build` suggested back as `build` would run without FOO. It keeps a `cd DIR &&` prefix for the same reason, as the directory the prefix resolved to rather than as written: without it the next run happens wherever the shell is, and a relative DIR names the wrong place once the shell is in it, which is where Claude Code's main thread leaves it after this call. That directory sits in single quotes, which keep a space in it whole and cannot hold a single quote, so a directory containing one gets no compress suggestion either. Nor does one that is not there as resolved: the directory is resolved as a path with no `~` expanded, so `cd ~/pkg` names a `~` under the start directory, and a suggestion naming it fails at its cd before the command runs. The resolved directory is an index key, which spells a WSL drive mount `/mnt/c/x` as `c:/x`, a path the shell there cannot cd to, so the suggestion names the directory where the host finds it.
+  const keySuffix = `${event.sessionId ?? ''}:${shortFingerprint(cmd)}`
+  const seenKey = `bash-uncompressed-seen:${keySuffix}`
+  const recallKey = `bash-uncompressed-recall:${keySuffix}`
+  const compressKey = `bash-uncompressed-4k:${keySuffix}`
+  const repeat = wasHintShown(seenKey)
+  markHintShown(seenKey)
+  const cap = bashOutputCapBytes()
+  const recall = (persisted || (cap !== null && outputBytes > cap)) && !wasHintShown(recallKey)
+  // Each suggestion sits in its own backticks: the suggestion scrubber cuts from an unsafe suggestion to the last backtick on the line, so a compress suggestion ahead of the recall pointer took the pointer down with it. A command holding a quote, backtick, `$` or line break cannot be wrapped in the double quotes below at all, so it gets no compress suggestion. The suggestion is a command to run, so it keeps the leading assignments `cmd` dropped: `FOO=1 build` suggested back as `build` would run without FOO. It keeps a `cd DIR &&` prefix for the same reason, as the directory the prefix resolved to rather than as written: without it the next run happens wherever the shell is, and a relative DIR names the wrong place once the shell is in it, which is where Claude Code's main thread leaves it after this call. That directory sits in single quotes, which keep a space in it whole and cannot hold a single quote, so a directory containing one gets no compress suggestion either. Nor does one that is not there as resolved: the directory is resolved as a path with no `~` expanded, so `cd ~/pkg` names a `~` under the start directory, and a suggestion naming it fails at its cd before the command runs. The resolved directory is an index key, which spells a WSL drive mount `/mnt/c/x` as `c:/x`, a path the shell there cannot cd to, so the suggestion names the directory where the host finds it.
   const bare = stripCdPrefix(rawCmd)
   const cdDir = bare === rawCmd ? null : runDir
   const cdHost = cdDir === null ? null : dirAtIndexKey(cdDir)
   const runCmd = cdHost === null ? bare : `cd '${cdHost}' && ${bare}`
   const compressable = !/["`$\r\n]/.test(runCmd) && (cdDir === null || (cdHost !== null && !cdHost.includes("'")))
-  const msg = `[tg] Output was ${kb}KB uncompressed; \`token-goat bash-output ${id}\` recalls it` + (compressable ? `, and \`token-goat compress -c ${quotedArg(displaySafeText(runCmd))}\` compresses the next run.` : '.')
+  const compress = repeat && compressable && !wasHintShown(compressKey)
+  if (!recall && !compress) return null
+  if (recall) markHintShown(recallKey)
+  if (compress) markHintShown(compressKey)
+  // The id is the one storeBashOutput below returns for this output, under the directory the command ran in, as the cache branch stores the same output: under the hook's cwd instead, a later run of the same command there would find this copy and read it as its own prior run. Known before the store, so a hint that hint tracking holds back costs no cache write.
+  const id = bashOutputIdSync(cmd, output, runDir)
+  const kb = Math.round(outputBytes / 1024)
+  const suggestion = `\`token-goat compress -c ${quotedArg(displaySafeText(runCmd))}\``
+  const msg = recall
+    ? `[tg] Output was ${kb}KB uncompressed, more than the harness shows inline; \`token-goat bash-output ${id}\` recalls it` + (compress ? `, and ${suggestion} compresses the next run.` : '.')
+    : `[tg] Output was ${kb}KB uncompressed again; ${suggestion} compresses the next run.`
+  const tracked = applyHintTracking(event, contextOutput(msg, [...(recall ? [id] : []), ...(compress ? [runCmd] : [])]), uncorrelatedHint('bash_large_output'))
+  if (tracked.hookType !== 'context') return null
+  recordStat('session_hint', 0, 0)
+  if (recall) await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
   if (ansiResult !== null && ansiResult.hookType === 'rewriteOutput') {
     // The ansi strip already emitted through emitRewrite and booked its own saving there, so this re-emit carries the same text and books no saving of its own -- the hint is the session_hint stat recorded above, and double-booking those bytes would inflate every total that sums them. Routing through emitRewrite rather than constructing the object here is also what applies the vscode guard: that harness has no field which replaces a tool result, so a hand-built rewrite was silently dropped while still reading as an emit. maybeStripAnsiOnly may ship those bytes unfenced because it adds nothing of ours to them, but this block does add a marker, so the command output is fenced here and the marker stays outside it: otherwise the model cannot tell which of the two voices in the block is token-goat's, and output that forged the marker wording would read as ours. The marker leads rather than trails because it carries the only pointer back to the full output, and the harness truncates from the end.
     return emitRewrite(msg + '\n' + fenceUntrusted(ansiResult.updatedOutput, UNTRUSTED_TOOL_TAG), 'large uncompressed output hint', undefined, 'counted-elsewhere')
   }
-  return contextOutput(msg)
+  return tracked
 }
 
 /** post_tool_use handler for the Bash tool. Caches the output of monitoring and build commands so that `preBashHandler` can emit a recall hint the next time the same command is run, avoiding a redundant re-execution and the token cost of re-reading the output. A wrapped command's result first loses the heartbeat lines `token-goat compress` wrote to stderr while the command was quiet: they were for whoever watched the run, and Claude Code merges stderr into the finished result. */
@@ -877,7 +895,7 @@ async function postBashResultHandler(event: HookEvent, output: string): Promise<
       }
       // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
       const ansiStripped = optedOut ? null : maybeStripAnsiOnly(output)
-      const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiStripped)
+      const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiStripped, persisted)
       if (largeHint !== null) return largeHint
       return ansiStripped ?? passOutput()
     }
@@ -905,7 +923,7 @@ async function postBashResultHandler(event: HookEvent, output: string): Promise<
     if (curlHtmlFold !== null) return curlHtmlFold
     // Deliberately after the delta hint, which keeps its existing priority: a hook returns one channel, and the delta is only reachable on a rerun whose output actually changed. Every other cached command -- including the colourised build runs `isBuildCommand` routes here -- reaches this line, so this is where most escape bytes are removed.
     const ansiOnly = optedOut ? null : maybeStripAnsiOnly(output)
-    const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiOnly)
+    const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiOnly, persisted)
     if (largeHint !== null) return largeHint
     if (ansiOnly !== null) return ansiOnly
   } catch {

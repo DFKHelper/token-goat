@@ -1829,9 +1829,10 @@ export const cases: Record<string, () => void | Promise<void>> = {
       manualEffective: number
       manualIneffective: number
     }>
-    expect(rows.length).toBe(9)
+    expect(rows.length).toBe(10)
     expect(rows.every((row) => row.emitted === 0 && row.suppressed === false)).toBe(true)
     expect(rows.map((row) => row.category).sort()).toEqual([
+      'bash_large_output',
       'bash_recall',
       'bash_redirect',
       'edit_reread_suggest',

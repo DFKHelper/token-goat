@@ -121,7 +121,8 @@ describe('postBashHandler', () => {
     expect(getBashOutputId('anything')).toBeNull()
   })
 
-  it('emits an advisory compress hint when vscode harness runs a command with >=4KB uncompressed output', async () => {
+  // The advisory waits for a second large run of the same command: the suggestion is about the next run, which a one-off command does not have. Neither output here was cut by the harness, so neither carries a recall pointer (tests/large_output_hint_needs_a_cut.test.ts covers that half).
+  it('emits an advisory compress hint when vscode harness runs a command a second time with >=4KB uncompressed output', async () => {
     const event: HookEvent = {
       eventName: 'post_tool_use',
       toolName: 'Bash',
@@ -135,21 +136,23 @@ describe('postBashHandler', () => {
         _tg_harness: 'vscode',
       },
     }
+    expect((await postBashHandler(event)).hookType).toBe('pass')
     const result = await postBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('`token-goat compress -c "curl http://example.com/api"`')
-      expect(result.context).toContain('token-goat bash-output')
+      expect(result.context).not.toContain('token-goat bash-output')
     }
   })
 
-  it('emits an advisory compress hint on compound command with >=4KB uncompressed output', async () => {
-    const event = makePostBashEvent('curl http://example.com/api && echo done', 'y'.repeat(5000))
+  it('emits an advisory compress hint on a compound command run a second time with >=4KB uncompressed output', async () => {
+    const event = makeHookEvent({ ...makePostBashEvent('curl http://example.com/api && echo done', 'y'.repeat(5000)), sessionId: 'test-session-compound-hint' })
+    expect((await postBashHandler(event)).hookType).toBe('pass')
     const result = await postBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('`token-goat compress -c "curl http://example.com/api && echo done"`')
-      expect(result.context).toContain('token-goat bash-output')
+      expect(result.context).not.toContain('token-goat bash-output')
     }
   })
 
@@ -159,13 +162,15 @@ describe('postBashHandler', () => {
     const noisy = (esc + '[31m' + 'z'.repeat(60) + esc + '[0m').repeat(120)
     // Its own session and command: the hint fires once per session per command fingerprint, and the shared 'test-session' id is already spent on this command by the compound-command test above.
     const command = 'curl http://example.com/ansi-fence && echo done'
+    // Persisted, as Claude Code reports a result it did not show inline, so the hint carries its recall pointer on this first run. The path names no file, so the hook reads the output from `stdout`.
+    const toolResponse = { stdout: noisy, stderr: '', interrupted: false, isImage: false, persistedOutputPath: 'C:/nowhere/tool-results/ansi.txt', persistedOutputSize: noisy.length }
     const event = makeHookEvent({
       eventName: 'post_tool_use',
       toolName: 'Bash',
       toolInput: { command },
       sessionId: 'test-session-ansi-fence',
       agentId: undefined,
-      raw: { tool_name: 'Bash', tool_input: { command }, tool_response: noisy },
+      raw: { tool_name: 'Bash', tool_input: { command }, tool_response: toolResponse },
     })
     const result = await postBashHandler(event)
     expect(result.hookType).toBe('rewriteOutput')
