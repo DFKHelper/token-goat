@@ -21,6 +21,7 @@ const REDACTING_FENCE_HELPERS: ReadonlyArray<{ file: string; fn: string }> = [
   { file: 'untrusted_fence.ts', fn: 'fenceFileText' },
   { file: 'untrusted_fence.ts', fn: 'fenceFieldIfMatched' },
   { file: 'untrusted_fence.ts', fn: 'fenceFileFieldIfMatched' },
+  { file: 'untrusted_fence.ts', fn: 'fenceFileJsonStrings' },
   { file: 'fence_cap.ts', fn: 'guardRedactAndFence' },
   { file: 'fence_cap.ts', fn: 'guardAndFenceFileText' },
 ]

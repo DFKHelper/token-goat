@@ -30,7 +30,7 @@ import {
   readTranscript,
   sliceTranscript,
 } from './transcript_extract.js'
-import { fenceFileFieldIfMatched } from './untrusted_fence.js'
+import { fenceFileFieldIfMatched, fenceFileJsonStrings, recordInjectionDetected } from './untrusted_fence.js'
 import { cappedSourceBytesSaved, countNoun, isWindows, redactUrlQuery } from './util.js'
 import { extractVideoChapters } from './video_chapters.js'
 import {
@@ -437,17 +437,24 @@ export function cmdTranscriptOutline(file: string, opts: { json?: boolean }): vo
     }
     return
   }
-  const outline = buildTranscriptOutline(cues)
+  // Read once for the whole outline: loadConfig re-reads both config files and every config env var on each call, so a read per cue grew with the transcript.
+  const config = loadConfig()
+  // Redacted per cue before the outline cuts each preview to 60 characters: a cut can leave a credential's prefix too short for its pattern to match.
+  const outline = buildTranscriptOutline(
+    cues.map((c) => ({ ...c, text: redactSecrets(c.text, config).text, speaker: c.speaker === null ? null : redactSecrets(c.speaker, config).text })),
+  )
   let text: string
   if (opts.json === true) {
-    text = displaySafeJson(outline)
+    const held: string[][] = []
+    text = displaySafeJson(fenceFileJsonStrings(outline, held))
+    for (const matches of held) recordInjectionDetected(matches)
   } else {
     const lines = [`Duration: ${formatTimestamp(outline.durationSeconds)}  (${cues.length} cues)`]
     if (outline.speakers.length > 0) {
       lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${displaySafeText(s.name)}  (${s.cueCount} cues)`))
     }
     lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${displaySafeText(m.preview)}`))
-    text = lines.join('\n')
+    text = guardAndFenceFileText(lines.join('\n'), 'transcript-outline')
   }
   out(text)
   recordDocStat('transcript_outline', file, text)

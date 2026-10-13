@@ -131,6 +131,8 @@ async function buildFixtures(dir: string, n: number): Promise<void> {
   })()
   db.close()
 
+  fs.writeFileSync(path.join(dir, 'talk.vtt'), ['WEBVTT', '', ...Array.from({ length: n }, (_, i) => `00:00:${String(i).padStart(2, '0')}.000 --> 00:00:${String(i).padStart(2, '0')}.500\n<v Speaker ${i}>${value(i)}\n`)].join('\n'))
+
   fs.writeFileSync(path.join(dir, 'data.csv'), ['id,note', ...Array.from({ length: n }, (_, i) => `${i},"${value(i)}"`)].join('\n') + '\n')
 
   const elements = Array.from({ length: n }, (_, i) => `<h2>${xmlEscape(value(i))}</h2><p data-x="${xmlEscape(value(i))}">${xmlEscape(value(i))}</p>`).join('\n')
@@ -193,6 +195,7 @@ const CASES: Readonly<Record<string, Case>> = {
   'pdf-locate': { command: 'pdf-locate', covers: ['cli_office.ts::cmdPdfLocate'], run: (d) => cli('pdf-locate', path.join(d, 'doc.pdf'), 'needle', '--json') },
   'pdf-outline': { command: 'pdf-outline', covers: ['cli_office.ts::cmdPdfOutline'], run: (d) => cli('pdf-outline', path.join(d, 'doc.pdf'), '--json') },
   'pdf-meta': { command: 'pdf-meta', covers: ['cli_office.ts::cmdPdfMeta'], flaggedOnlyInLarge: true, run: (d) => cli('pdf-meta', path.join(d, 'doc.pdf'), '--json') },
+  'transcript-outline': { command: 'transcript-outline', covers: ['cli_office.ts::cmdTranscriptOutline'], run: (d) => cli('transcript-outline', path.join(d, 'talk.vtt'), '--json') },
   'xlsx-sheets': { command: 'xlsx-sheets', covers: ['cli_office.ts::cmdXlsxSheets'], run: (d) => cli('xlsx-sheets', path.join(d, 'book.xlsx'), '--json') },
   'xlsx-columns': { command: 'xlsx-columns', covers: ['cli_office.ts::cmdXlsxColumns'], run: (d) => cli('xlsx-columns', path.join(d, 'book.xlsx'), '--json') },
   'xlsx-query': { command: 'xlsx-query', covers: ['cli_office.ts::cmdXlsxQuery'], run: (d) => cli('xlsx-query', path.join(d, 'book.xlsx'), '--json') },
