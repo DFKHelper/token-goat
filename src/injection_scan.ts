@@ -231,10 +231,10 @@ function nextSeen(text: string, i: number, spaces: boolean, readings: Readings):
   return i
 }
 
-/** Where `word` (lower case) ends when the text read from `i` spells it, each character taken as {@link readAs} reads it and any {@link UNSEEN_CHAR} between them passed over, or -1 when it does not. A character NFKC expands to several letters (`\uFB06`) spells all of them. */
+/** Where `word` (lower case) ends when the text read from `i` spells it, each character taken as {@link readAs} reads it and any {@link UNSEEN_CHAR} or space between them passed over, or -1 when it does not. A character NFKC expands to several letters (`\uFB06`) spells all of them. A space inside the word is passed over because a narrow one is not seen at all: `</untru` followed by a hair, thin or six-per-em space and `sted-tool-output>` reads as the closing tag, and so does the same word split by an ideographic or an ordinary space, which a reader closes up as readily as a typo. A line break was already passed over, as the control character it is. */
 function spelledEnd(text: string, i: number, word: string, readings: Readings): number {
   for (let at = 0; at < word.length; ) {
-    i = nextSeen(text, i, false, readings)
+    i = nextSeen(text, i, true, readings)
     const code = text.charCodeAt(i)
     // An ASCII code unit is a whole character that reads as one letter, so it is compared as a code with no string built for it.
     if (code < 0x80) {
