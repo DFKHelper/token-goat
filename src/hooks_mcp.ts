@@ -128,9 +128,9 @@ async function postMcpHandler(event: HookEvent): Promise<HookOutput> {
   const resultText = extractToolResultText(raw)
   if (!resultText) {
     if (browser === null) return passOutput()
-    // An image-only result: nothing of the server's to fence, only token-goat's notes and the smaller images.
+    // An image-only result: nothing of the server's to fence, only token-goat's notes and the smaller images. Its textual blocks are dropped by the same filter the fenced path uses below: one can still reach here carrying words blocksToText does not read (a resource_link whose only text is its `title`), and shipping the block array whole put those words in front of the model outside any fence.
     const notes = emitRewrite([...browser.own].map((b) => String(b['text'])).join('\n'), 'mcp')
-    return notes.hookType === 'rewriteOutput' ? { ...notes, updatedBlocks: browser.blocks } : notes
+    return notes.hookType === 'rewriteOutput' ? { ...notes, updatedBlocks: browser.blocks.filter((b) => browser.own.has(b) || !isTextualContentBlock(b)) } : notes
   }
   // An MCP result is a remote server's output: the least trusted text in the pipeline, and the one surface a page-only injection scan never covered. Scanned before every early return below, because each of those returns was a way for the same hostile text to reach the model unmarked: an in-band error response carries text just as a success does, a harness that omits the session id still shows the model the result, and the read-only dedup return fires on the SECOND of two identical calls -- whose result a hostile or time-varying server is free to make different from the first. Caching is what those guards exist to gate; the fence is not.
   const injectionMatches = scanAndRecord(resultText)
