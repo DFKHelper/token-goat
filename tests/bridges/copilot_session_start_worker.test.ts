@@ -25,8 +25,7 @@ afterEach(() => {
 it.runIf(process.platform === 'win32').each(['installed', 'direct'] as const)(
   'keeps the default index worker alive after the %s startup tree exits',
   async (surface) => {
-    // OS-temp projects are intentionally never queued. This owned ignored tree
-    // has its own Git root and data directory, outside that exclusion.
+    // OS-temp projects are intentionally never queued. This owned ignored tree has its own Git root and data directory, outside that exclusion.
     const parent = join(process.cwd(), 'artifacts', 'session-start-worker-fixtures')
     mkdirSync(parent, { recursive: true })
     const fixture = treeFixture(parent)
@@ -51,8 +50,8 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
     try {
       expect(db.prepare('SELECT name FROM symbols WHERE name = ?').get('startupWorkerRecoveredSymbol')).toBeUndefined()
       const run = surface === 'installed'
-        ? runInstalledStartup({ fixture, entry: BUNDLE })
-        : runTreeShim({ fixture, entry: BUNDLE, endInput: false })
+        ? runInstalledStartup({ fixture, entry: BUNDLE, quietLimitMs: 40_000 })
+        : runTreeShim({ fixture, entry: BUNDLE, endInput: false, quietLimitMs: 40_000 })
       const result = await run.done
       expect(result.elapsed).toBeLessThan(5000)
       expect(alive(run.child.pid ?? 0), 'startup root still alive before worker observation').toBe(false)
@@ -78,12 +77,11 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
       const queued = existsSync(queue) ? readFileSync(queue, 'utf8') : ''
       expect({ indexed, workerAlive: pid > 0 && alive(pid), queued }, `worker PID ${pid} after startup exit; ${result.stdout}`)
         .toEqual({ indexed: true, workerAlive: true, queued: '' })
-      // A worker already outside the jobs keeps its lease. The next startup
-      // must queue and drain its edit without killing or replacing that daemon.
+      // A worker already outside the jobs keeps its lease. The next startup must queue and drain its edit without killing or replacing that daemon.
       writeFileSync(source, 'export function startupWorkerSecondSymbol() { return 43 }\n')
       const second = surface === 'installed'
-        ? runInstalledStartup({ fixture, entry: BUNDLE })
-        : runTreeShim({ fixture, entry: BUNDLE, endInput: false })
+        ? runInstalledStartup({ fixture, entry: BUNDLE, quietLimitMs: 40_000 })
+        : runTreeShim({ fixture, entry: BUNDLE, endInput: false, quietLimitMs: 40_000 })
       const secondResult = await second.done
       expect(secondResult.elapsed).toBeLessThan(5000)
       expect(secondResult.stderr).toBe('')

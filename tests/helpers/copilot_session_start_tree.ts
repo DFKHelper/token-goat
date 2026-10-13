@@ -12,10 +12,30 @@ import { nativeHookCommandLine } from '../../src/native_hook.js'
 import { endpointFor, readServerKey } from '../../src/hook_ipc.js'
 import { slotStatus } from './hook_server_probe.js'
 import { buildNative } from './native_bin.js'
+import { startWatchdog, type Watchdog } from './stall_proof_watchdog.js'
 
 export const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 export const ownedRoots: string[] = []
 export const ownedPids: number[] = []
+const watchdogs = new Map<string, { watchdog: Watchdog; quietLimitMs: number }>()
+
+/** The one progress watchdog of a fixture's test: created by the first watched runner, shared by every later wait in that test, and stopped by cleanupTrees. */
+export function fixtureWatchdog(fixture: { root: string }, quietLimitMs: number, label: string): Watchdog {
+  const existing = watchdogs.get(fixture.root)
+  if (existing) {
+    if (existing.quietLimitMs !== quietLimitMs) throw new Error(`watchdog for ${fixture.root} already started with a quiet limit of ${String(existing.quietLimitMs)} ms, not ${String(quietLimitMs)} ms`)
+    return existing.watchdog
+  }
+  const watchdog = startWatchdog({ quietLimitMs, label })
+  watchdogs.set(fixture.root, { watchdog, quietLimitMs })
+  return watchdog
+}
+
+function watchdogOf(fixture: { root: string }): Watchdog {
+  const existing = watchdogs.get(fixture.root)
+  if (!existing) throw new Error(`no watchdog started for ${fixture.root}; start one with a watched runner or fixtureWatchdog first`)
+  return existing.watchdog
+}
 
 export function installStartupOwner(root: string): string {
   const relative = join('native', `win32-${process.arch}`, 'tg-hook.exe')
@@ -70,11 +90,12 @@ export function assertTreeDead(fixture: ReturnType<typeof treeFixture>): void {
 }
 
 /** Resolves when `path` exists, by directory watch rather than a clock; the caller races it against the process closing. */
-export function fileAppears(path: string): { appeared: Promise<void>; stop: () => void } {
+export function fileAppears(path: string, watchdog?: Watchdog): { appeared: Promise<void>; stop: () => void } {
   let watcher: ReturnType<typeof watch> | undefined
   const appeared = new Promise<void>((resolve) => {
-    watcher = watch(dirname(path), () => { if (existsSync(path)) resolve() })
-    if (existsSync(path)) resolve()
+    const found = (): void => { watchdog?.progress(`file appeared: ${path}`); resolve() }
+    watcher = watch(dirname(path), () => { if (existsSync(path)) found() })
+    if (existsSync(path)) found()
   })
   return { appeared, stop: () => watcher?.close() }
 }
@@ -99,7 +120,8 @@ export function reminderCount(stdout: string): number {
 
 /** The first post_tool_use of a session on a host whose start may be deferred: the shipping bundle, isolated, no worker. */
 export function runOwedToolCall(fixture: ReturnType<typeof treeFixture>, harness: 'copilot_cli' | 'vscode', sessionId: string): Promise<string> {
-  return new Promise((resolve, reject) => {
+  const watchdog = watchdogOf(fixture)
+  const exited = new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], {
       cwd: fixture.project, windowsHide: true, stdio: 'pipe',
       env: { ...fixture.env, TOKEN_GOAT_HARNESS_OVERRIDE: harness, TOKEN_GOAT_NO_WORKER_SPAWN: '1', TOKEN_GOAT_HOOK_SERVER: '0' },
@@ -107,13 +129,15 @@ export function runOwedToolCall(fixture: ReturnType<typeof treeFixture>, harness
     if (child.pid !== undefined) ownedPids.push(child.pid)
     let stdout = ''
     let stderr = ''
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    watchdog.progress('post_tool_use spawned')
+    child.stdout.on('data', (chunk: Buffer) => { watchdog.progress('post_tool_use stdout'); stdout += chunk.toString() })
+    child.stderr.on('data', (chunk: Buffer) => { watchdog.progress('post_tool_use stderr'); stderr += chunk.toString() })
     child.stdin.on('error', () => undefined)
     child.once('error', reject)
-    child.once('close', (code) => { if (code === 0) resolve(stdout); else reject(new Error(`post_tool_use exited ${String(code)}: ${stderr}`)) })
+    child.once('close', (code) => { watchdog.progress('post_tool_use closed'); if (code === 0) resolve(stdout); else reject(new Error(`post_tool_use exited ${String(code)}: ${stderr}`)) })
     child.stdin.end(JSON.stringify({ session_id: sessionId, cwd: fixture.project, hook_event_name: 'PostToolUse', tool_name: 'TgDeferredProbe', tool_input: {}, tool_response: { output: 'raw' } }))
   })
+  return Promise.race([exited, watchdog.failed])
 }
 
 /** The owed path for a start that failed open: two concurrent first tool calls carry the reminder exactly once between them. Returns the stdout that carried it. */
@@ -159,6 +183,8 @@ function removeWhenReleased(root: string): void {
 }
 
 export function cleanupTrees(): void {
+  for (const { watchdog } of watchdogs.values()) watchdog.stop()
+  watchdogs.clear()
   // Also recover PIDs if an observation rejected before the assertion registered them. Only this fixture's own root-level PID files are considered.
   for (const root of ownedRoots) {
     for (const name of readdirSync(root).filter((name) => name.endsWith('.pid'))) {
@@ -228,9 +254,10 @@ export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void 
 }
 
 export function runTreeShim(options: {
-  fixture: ReturnType<typeof treeFixture>; entry: string; delayMs?: number; payload?: Record<string, unknown>; endInput?: boolean; deadline?: number
+  fixture: ReturnType<typeof treeFixture>; entry: string; quietLimitMs: number; delayMs?: number; payload?: Record<string, unknown>; endInput?: boolean; deadline?: number
 }): { child: ChildProcessWithoutNullStreams; done: Promise<{ stdout: string; stderr: string; elapsed: number }> } {
   const { fixture, entry } = options
+  const watchdog = fixtureWatchdog(fixture, options.quietLimitMs, 'tree shim')
   const started = performance.now()
   const deadlineArgs = options.deadline === undefined ? [] : [`--session-start-deadline=${String(options.deadline)}`]
   const child = spawn(process.execPath, [fixture.shim, 'sessionStart', entry, ...deadlineArgs], {
@@ -241,17 +268,21 @@ export function runTreeShim(options: {
   let stdout = ''
   let stderr = ''
   let inputTimer: ReturnType<typeof setTimeout> | undefined
-  child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-  const done = new Promise<{ stdout: string; stderr: string; elapsed: number }>((resolve, reject) => {
+  child.stdout.on('data', (chunk: Buffer) => { watchdog.progress('child stdout'); stdout += chunk.toString() })
+  child.stderr.on('data', (chunk: Buffer) => { watchdog.progress('child stderr'); stderr += chunk.toString() })
+  child.once('spawn', () => watchdog.progress('child spawned'))
+  const closed = new Promise<{ stdout: string; stderr: string; elapsed: number }>((resolve, reject) => {
     child.once('error', (error) => { clearTimeout(inputTimer); reject(error) })
     child.once('close', (code) => {
+      watchdog.progress('child closed')
       clearTimeout(inputTimer)
       if (code !== 0) reject(new Error(`shim exited ${String(code)}: ${stderr}`))
       else resolve({ stdout, stderr, elapsed: performance.now() - started })
     })
   })
+  const done = Promise.race([closed, watchdog.failed])
   const send = (): void => {
+    watchdog.progress('input sent')
     const input = JSON.stringify(options.payload ?? { sessionId: 'owned-tree', workingDirectory: fixture.project })
     if (options.endInput === false) child.stdin.write(input)
     else child.stdin.end(input)
@@ -265,7 +296,7 @@ export function runTreeShim(options: {
 export function runInstalledStartup(options: {
   fixture: ReturnType<typeof treeFixture>; entry: string; payload?: Record<string, unknown>
   shell?: 'cmd' | 'powershell'; alias?: boolean; input?: string; delayMs?: number
-  endInput?: boolean; event?: 'sessionStart' | 'preToolUse'
+  endInput?: boolean; event?: 'sessionStart' | 'preToolUse'; quietLimitMs: number
 }): ReturnType<typeof runTreeShim> {
   const { fixture, entry } = options
   const previousEntry = process.argv[1]
@@ -287,6 +318,7 @@ export function runInstalledStartup(options: {
     if (previousNative === undefined) delete process.env['TOKEN_GOAT_NATIVE_HOOKS']
     else process.env['TOKEN_GOAT_NATIVE_HOOKS'] = previousNative
   }
+  const watchdog = fixtureWatchdog(fixture, options.quietLimitMs, 'installed startup')
   const started = performance.now()
   const child = options.shell === 'powershell'
     ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
@@ -300,18 +332,22 @@ export function runInstalledStartup(options: {
   let stdout = ''
   let stderr = ''
   let inputTimer: ReturnType<typeof setTimeout> | undefined
-  child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
-  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-  const done = new Promise<{ stdout: string; stderr: string; elapsed: number }>((resolve, reject) => {
+  child.stdout.on('data', (chunk: Buffer) => { watchdog.progress('child stdout'); stdout += chunk.toString() })
+  child.stderr.on('data', (chunk: Buffer) => { watchdog.progress('child stderr'); stderr += chunk.toString() })
+  child.once('spawn', () => watchdog.progress('child spawned'))
+  const closed = new Promise<{ stdout: string; stderr: string; elapsed: number }>((resolve, reject) => {
     child.once('error', error => { clearTimeout(inputTimer); reject(error) })
     child.once('close', code => {
+      watchdog.progress('child closed')
       clearTimeout(inputTimer)
       child.stdin.destroy()
       if (code !== 0) reject(new Error(`installed startup exited ${String(code)}: ${stderr}`))
       else resolve({ stdout, stderr, elapsed: performance.now() - started })
     })
   })
+  const done = Promise.race([closed, watchdog.failed])
   const send = (): void => {
+    watchdog.progress('input sent')
     const input = options.input ?? JSON.stringify(options.payload ?? {
       sessionId: 'installed-startup', workingDirectory: fixture.project,
     })
@@ -323,14 +359,15 @@ export function runInstalledStartup(options: {
   return { child, done }
 }
 
-export async function assertInstalledResidentBypass(fixture: ReturnType<typeof treeFixture>): Promise<void> {
+export async function assertInstalledResidentBypass(fixture: ReturnType<typeof treeFixture>, quietLimitMs: number): Promise<void> {
+  const watchdog = fixtureWatchdog(fixture, quietLimitMs, 'resident bypass')
   fixture.env['TOKEN_GOAT_HOOK_SERVER'] = '1'
   const server = spawn(process.execPath, [BUNDLE, 'hook-server', 'run', '--slot', '0'], {
     cwd: fixture.project, env: fixture.env, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true,
   })
   if (server.pid !== undefined) ownedPids.push(server.pid)
   let diagnostics = ''
-  server.stderr?.on('data', (chunk: Buffer) => { diagnostics += chunk.toString() })
+  server.stderr?.on('data', (chunk: Buffer) => { watchdog.progress('resident stderr'); diagnostics += chunk.toString() })
   const data = join(fixture.root, 'home', 'dfk-helper', 'token-goat')
   const endpoint = endpointFor(0, data, dirname(BUNDLE))
   let key: Buffer | undefined
@@ -338,19 +375,20 @@ export async function assertInstalledResidentBypass(fixture: ReturnType<typeof t
     key = readServerKey(data)
     if (key && await slotStatus(endpoint, key)) break
     if (server.exitCode !== null) throw new Error(`resident did not start: ${diagnostics}`)
-    await new Promise(resolve => setTimeout(resolve, 20))
+    await Promise.race([new Promise(resolve => setTimeout(resolve, 20)), watchdog.failed])
   }
+  watchdog.progress('resident answered')
   const initial = await slotStatus(endpoint, key)
   expect(initial).toBeDefined()
   const ordinary = await runInstalledStartup({
-    fixture, entry: BUNDLE, event: 'preToolUse', endInput: true,
+    fixture, entry: BUNDLE, event: 'preToolUse', endInput: true, quietLimitMs,
     payload: { sessionId: 'ordinary-positive-control', workingDirectory: fixture.project, toolName: 'view', toolArgs: { path: 'example.ts' } },
   }).done
   expect(ordinary.stderr).toBe('')
   const before = await slotStatus(endpoint, key)
   expect(before?.served).toBe((initial?.served ?? -1) + 1)
   for (const endInput of [false, true]) {
-    const startup = await runInstalledStartup({ fixture, entry: BUNDLE, endInput }).done
+    const startup = await runInstalledStartup({ fixture, entry: BUNDLE, endInput, quietLimitMs }).done
     if (startup.stdout === '{}') await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'installed-startup')
     else {
       expect(startup.stderr).toBe('')
