@@ -172,6 +172,8 @@ const NEUTRALIZERS: readonly string[] = [
   'filteredToEmptyNotice(',
   // hint_suggestion_guard.ts's quoting of a value a message echoes: displaySafeText first, then quotedArg. Pinned to that shape further down.
   'echoedValue(',
+  // echoedValue plus an escape of the blank-looking characters it leaves, for a command line a message echoes. Pinned to that shape further down.
+  'echoedCommand(',
 ]
 
 /** Fences delimit a payload instead of escaping it, which is the other correct answer. */
@@ -945,6 +947,12 @@ describe('project-supplied text reaches no report sink unescaped', () => {
     expect(
       /function echoedValue\(value: string\): string \{\s*const safe = displaySafeText\(value\)\s*const quoted = quotedArg\(safe\)\s*return quoted\.includes\(UNQUOTABLE\) \? safe : quoted/.test(all),
       'echoedValue is listed in NEUTRALIZERS as escaping the value it quotes, but its body no longer applies displaySafeText first.',
+    ).toBe(true)
+
+    // echoedCommand is listed because it escapes the blank-looking characters and then hands the rest to echoedValue.
+    expect(
+      /function echoedCommand\(value: string\): string \{\s*return echoedValue\(value\.replace\(BLANK_LOOKING,/.test(all),
+      'echoedCommand is listed in NEUTRALIZERS as escaping the command it echoes, but its body no longer escapes BLANK_LOOKING before echoedValue.',
     ).toBe(true)
 
     // pipelineDivergenceNote is listed in WRAPPING_NEUTRALIZERS because it prints the cached command it is handed inside a backtick span, so its body must still escape that preview.

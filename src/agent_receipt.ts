@@ -8,7 +8,7 @@ import { getHarnessName } from './bridges/registry.js'
 import { loadConfig } from './config.js'
 import type { HookEvent } from './hook_registry.js'
 import { sessionStateKey } from './hook_registry.js'
-import { echoedValue, nameSubject } from './hint_suggestion_guard.js'
+import { echoedCommand, echoedValue, nameSubject } from './hint_suggestion_guard.js'
 import { contextOutput, getCwd, passOutput } from './hooks_common.js'
 import { claimsOwnChange } from './change_claim.js'
 import { claimsCommittedChange } from './hooks_session.js'
@@ -70,7 +70,7 @@ function reportHash(trimmedReport: string): string {
 export function receiptLines(state: VerificationState, claimsChangeWithoutEdit: boolean): string[] {
   const lines: string[] = []
   if (state.failingUnresolved && state.latestRun !== undefined) {
-    lines.push(`${LINE_PREFIX} this subagent's last check failed: ${echoedValue(state.latestRun.command)} (exit ${state.latestRun.exitCode}).`)
+    lines.push(`${LINE_PREFIX} this subagent's last check failed: ${echoedCommand(state.latestRun.command)} (exit ${state.latestRun.exitCode}).`)
   }
   if (state.editedSinceLastPass.length > 0) {
     const named = state.editedSinceLastPass.slice(0, MAX_NAMED_FILES).map((name) => nameSubject('file', name)).join(', ')

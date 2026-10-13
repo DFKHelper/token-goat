@@ -63,6 +63,15 @@ describe('receiptLines', () => {
     expect(lines[0]).toContain('exit 1')
   })
 
+  // HAND-DERIVED: the four characters are chosen from the Unicode blank-looking set (U+00A0, U+FE0F, U+3164, U+2800) and the expected text is their \uXXXX spelling, computed by hand, not read off echoedCommand.
+  it('a failed command hides no word behind a blank: no-break space, VS16, a Hangul filler and a braille blank come out escaped', () => {
+    const command = 'npm test️ㅤ⠀'
+    const lines = receiptLines(state({ failingUnresolved: true, latestRun: { command, exitCode: 1, at: T0 }, runs: [] }), false)
+    expect(lines).toHaveLength(1)
+    for (const ch of [' ', '️', 'ㅤ', '⠀']) expect(lines[0]).not.toContain(ch)
+    for (const spelled of ['\\u00a0', '\\ufe0f', '\\u3164', '\\u2800']) expect(lines[0]).toContain(spelled)
+  })
+
   it('an edit after the last passing check names the file', () => {
     const lines = receiptLines(state({ editedFiles: ['a.ts'], editedSinceLastPass: ['a.ts'] }), false)
     expect(lines).toHaveLength(1)
