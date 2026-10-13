@@ -2,7 +2,7 @@ import * as os from 'node:os'
 
 import { defineConfig } from 'vitest/config'
 
-import { resolveMaxWorkers } from './tests/setup/max-workers.js'
+import { machineSwapGb, resolveMaxWorkers } from './tests/setup/max-workers.js'
 import RetryVisibilityReporter from './tests/setup/retry-visibility-reporter.js'
 
 export default defineConfig({
@@ -37,9 +37,10 @@ export default defineConfig({
     minWorkers: 1,
     // Derived from the machine: the known-stable 4 (Windows) / 6 (Linux, macOS) on anything the
     // size of a CI runner, more only on a machine large enough that the heap exhaustion those
-    // numbers protect against cannot recur. Why those numbers and where the bar sits:
+    // numbers protect against cannot recur, fewer only on a Linux machine whose memory plus swap
+    // cannot hold them. Why those numbers and where the bar sits:
     // tests/setup/max-workers.ts.
-    maxWorkers: resolveMaxWorkers(process.platform, os.cpus().length, os.totalmem() / 2 ** 30),
+    maxWorkers: resolveMaxWorkers(process.platform, os.cpus().length, os.totalmem() / 2 ** 30, machineSwapGb(process.platform)),
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
