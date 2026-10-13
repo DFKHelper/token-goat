@@ -18,7 +18,11 @@ export const RESET = `${_E}[0m`
 
 /** Full VT/ANSI escape sequence pattern — covers CSI (colour, cursor, erase), OSC (title/hyperlink sequences used by pip/docker/cargo progress UIs), DCS/SOS/PM/APC strings, and bare 2-byte ESC sequences. The OSC alternative also accepts end-of-string as a terminator (alongside BEL/ST): a truncated hyperlink/title sequence with no closing BEL/ST — output cut off mid-write, a stream chopped mid-hyperlink — would otherwise never match, leaking the raw, unprintable ESC byte (and the rest of the dangling sequence) straight into the stripped text. DCS/SOS/PM/APC strings intentionally do NOT get the same end-of-string fallback: unlike OSC they can legitimately appear mid-stream with real text still to follow, and treating "no terminator found yet" as "consume to end of string" there would risk swallowing real trailing content; the bare 2-byte fallback below still guarantees no raw ESC byte leaks even when they're truncated, it just leaves any dangling payload text behind as plain text rather than removing it. Their payload stops at the first ESC, as a VT parser aborts a control string on one, rather than lazily spanning to the next ST: the lazy form scanned to the end of the input from every opener that had no ST after it, so a line of `ESC P` took 1.5 s at 80,000 characters and four times that at twice the length, and the fence builders strip third-party bytes from an MCP server or a file on every hook. That bare fallback covers the full Fe escape range (`@`-`_`, 0x40-0x5F) rather than a hand-picked subset that dropped `[`, `]`, and `^`, so any single-character escape not claimed by CSI/OSC/DCS above still gets removed instead of leaking. */
 // eslint-disable-next-line no-control-regex
-const _ANSI_ESCAPE_RE = /\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\|$)|\x1B[PX^_][^\x1B]*\x1B\\|\x1B[@-_]/gs
+const _ANSI_ESCAPE_RE = /\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\|$)|\x1B[PX^_][\s\S]*?\x1B\\|\x1B[@-_]/gs
+
+/** {@link _ANSI_ESCAPE_RE} without its control-string alternative, for the text after the last string terminator, where no control string can end. */
+// eslint-disable-next-line no-control-regex
+const _ANSI_ESCAPE_NO_ST_RE = /\x1B\[[0-?]*[ -/]*[@-~]|\x1B\].*?(?:\x07|\x1B\\|$)|\x1B[@-_]/gs
 
 /** Unicode Private Use Area regex: strips U+E000–U+F8FF (BMP) and U+F0000–U+FFFFD (supplementary). */
 const _PUA_RE = /[\u{E000}-\u{F8FF}\u{F0000}-\u{FFFFD}]/gu
@@ -28,7 +32,10 @@ export function stripAnsiEscapes(s: string): string {
   if (!s.includes('\x1b')) {
     return s
   }
-  return s.replace(_ANSI_ESCAPE_RE, '')
+  // A control string runs to its terminator, ESC bytes in its payload included, so tmux's passthrough goes whole rather than leaving `tmux;` behind. Searched for only before the last terminator in the text: an opener after it can find none, and letting each such opener scan to the end was quadratic on a line of `ESC P`.
+  const lastSt = s.lastIndexOf('\x1b\\')
+  if (lastSt === -1) return s.replace(_ANSI_ESCAPE_NO_ST_RE, '')
+  return s.slice(0, lastSt + 2).replace(_ANSI_ESCAPE_RE, '') + s.slice(lastSt + 2).replace(_ANSI_ESCAPE_NO_ST_RE, '')
 }
 
 /** Format a byte count as a plain-text human-readable string (B/KB/MB/GB/TB/PB). No ANSI codes — safe for use in Rich table cells and fallback renderers. */
