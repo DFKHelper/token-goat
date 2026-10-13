@@ -302,6 +302,8 @@ export abstract class ToolFilter {
         // Step 7: structural compression.
         body = this.compress(normOut, normErr, exitCode, argv, { inputTruncated: soClamped !== null || seClamped !== null, maxLines, ...(opts.outputLineBound !== undefined ? { outputLineBound: opts.outputLineBound } : {}) })
       }
+      // Step 7.5: per-line cap. Step 8 below counts lines and step 9 measures the whole body, so a single enormous line passed both and shipped at full length: the grep filter grew its own centred clip for exactly that reason, and every other filter still had nothing. Applied here, once, for all of them rather than per filter. Idempotent, so grep's already-clipped lines are left as they are. Inside the try, so a line this cap cannot handle falls back to the truncated view like a filter that raised, instead of throwing out of apply() and losing the output of a command that has already run.
+      body = capLongLines(body.split('\n'), LONG_LINE_MAX_CHARS).join('\n')
     } catch (exc) {
       const kind = exc instanceof Error ? exc.constructor.name : 'Error'
       notes.push(`${this.name} filter raised ${kind}; truncated raw`)
@@ -310,8 +312,6 @@ export abstract class ToolFilter {
       body = fallbackTruncate(fbOut, fbErr, maxLines)
     }
 
-    // Step 7.5: per-line cap. Step 8 below counts lines and step 9 measures the whole body, so a single enormous line passed both and shipped at full length: the grep filter grew its own centred clip for exactly that reason, and every other filter still had nothing. Applied here, once, for all of them rather than per filter. Idempotent, so grep's already-clipped lines are left as they are.
-    body = capLongLines(body.split('\n'), LONG_LINE_MAX_CHARS).join('\n')
     // Step 8: line cap (error-preserving).
     const lines = body.split('\n')
     if (lines.length > maxLines) body = truncateMiddleSmart(lines, maxLines).join('\n')

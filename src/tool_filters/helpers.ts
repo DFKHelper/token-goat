@@ -942,24 +942,110 @@ export function shlexSplit(cmd: string): string[] {
 /** Fewest chars a cut must drop before {@link capLongLines} writes its marker; a smaller overflow is cheaper left in place. */
 const CLIP_MIN_OVERFLOW = 64
 
-/** Truncate individual lines exceeding `maxChars` with an inline marker. */
+/** Truncate individual lines exceeding `maxChars` with an inline marker. A line that is one whole JSON object or array is laid out over several lines first (see {@link layOutJsonLine}), and only a piece still over the cap is cut: keeping the head of a one-line document cut it inside a string and dropped every element after the cut, and the recorded follow-up was a full recall parsed with `json.loads`. */
 export function capLongLines(lines: string[], maxChars = FALLBACK_MAX_LINE_CHARS): string[] {
-  return lines.map((line) => {
-    if (line.length <= maxChars) return line
-    // A line the grep clip already shortened still exceeds a smaller cap, and cutting it again would append a second marker whose count is measured against the first marker's text rather than against the original line: two elision notices on one line, the second one wrong. One clip per line, whoever made it.
-    if (ELIDED_MARKER_RE.test(line)) return line
-    // The input clip at step 2b runs four times wider than this cap, so its lines arrive here still over it and have to be cut again. Its marker records what it already dropped; carry that figure into this one, or the notice reports only what this cut removed from an already-shortened line -- a 10,000-char line came out saying 3,030 chars elided when 9,000 were gone. Only when the whole marker falls beyond the cut: otherwise part of it survives into the kept text and its characters would be counted on both sides.
-    const priorClip = CLIPPED_MARKER_RE.exec(line)
-    let cut = maxChars
-    // Never split a surrogate pair: `maxChars` counts UTF-16 code units, so a cut landing between a high surrogate and its low surrogate (e.g. inside an emoji) leaves a lone surrogate that serializes as U+FFFD on UTF-8 output. Back off by one code unit so the pair stays whole.
-    const high = line.charCodeAt(cut - 1)
-    const low = line.charCodeAt(cut)
-    if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) cut -= 1
-    // The marker costs 21 bytes plus the digits of its count, so a clip that drops fewer than CLIP_MIN_OVERFLOW chars grows the line while losing content: emit it whole. Measured before the carried count is added, since that figure describes what an earlier clip already dropped, not what this cut saves.
-    if (line.length - cut <= CLIP_MIN_OVERFLOW) return line
-    const carried = priorClip !== null && priorClip.index >= cut ? Number(priorClip[1]) - priorClip[0].length : 0
-    return `${line.slice(0, cut)}  … [${line.length - cut + carried} chars elided]`
+  return lines.flatMap((line) => {
+    if (line.length <= maxChars) return [line]
+    const laidOut = layOutJsonLine(line, maxChars)
+    return laidOut === null ? [capLine(line, maxChars)] : laidOut.map((piece) => capLine(piece, maxChars))
   })
+}
+
+/** `line` laid out as indented JSON, or null when it is not exactly one JSON object or array (after any leading indent, which every output line keeps). A container is opened onto one line per member, two spaces deeper, only while it is wider than `maxChars`; a member that fits stays whole on its line. So an array of records becomes one line per record, which keeps every record's first keys in view and adds a handful of lines rather than one per scalar, a cost the line cap that runs next would otherwise collect from the middle of the document. Laid out from the source text, token by token, after JSON.parse has confirmed it is JSON. Re-stringifying the parsed value would change the data: an integer past 2^53 loses digits, `1.0` becomes `1`, `é` becomes `é`, and a repeated key disappears. */
+function layOutJsonLine(line: string, maxChars: number): string[] | null {
+  const body = line.trim()
+  if (body[0] !== '{' && body[0] !== '[') return null
+  try {
+    JSON.parse(body)
+  } catch {
+    return null
+  }
+  // Insignificant whitespace goes, so a member's width is its tokens alone and a member kept whole reads the same whatever separators the producer used.
+  let src = ''
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === '"') {
+      const end = jsonStringEnd(body, i)
+      src += body.slice(i, end)
+      i = end - 1
+    } else if (!/\s/.test(body[i] as string)) {
+      src += body[i]
+    }
+  }
+  const out: string[] = []
+  layOutJsonValue(src, 0, src.length, line.slice(0, line.length - line.trimStart().length), '', '', maxChars, out)
+  return out
+}
+
+/** Index just past the string token that opens at `start` (a `"`), escapes included. */
+function jsonStringEnd(src: string, start: number): number {
+  let i = start + 1
+  while (src[i] !== '"') i += src[i] === '\\' ? 2 : 1
+  return i + 1
+}
+
+/** How deep {@link layOutJsonValue} opens containers. Past it a value stays on one line and is cut like any long line. Nesting alone is enough to make a document wide at every level, and opening it level by level costs one stack frame and two spaces of indent per level on every line below: `[[[...]]]` at depth D comes to about 2·D² characters, and at the depth a 500 KB line can reach, a stack overflow. Records worth reading whole sit a few levels down, not dozens. */
+const JSON_LAYOUT_MAX_DEPTH = 32
+
+/** Lines {@link layOutJsonValue} writes before it stops opening anything, so the work it does stays proportional to what the line cap after it can keep. Twice the largest configurable line cap; the rest of an open container goes onto one line, cut like any long line. */
+const JSON_LAYOUT_MAX_LINES = 2000
+
+/** Append the value `src[start, end)` to `out`, behind `indent` and `prefix` (a member's `"key": `) and followed by `suffix` (its comma), opening it onto its members when it is a container too wide for one line, and while the depth, indent and line budgets above allow. */
+function layOutJsonValue(src: string, start: number, end: number, indent: string, prefix: string, suffix: string, maxChars: number, out: string[], depth = 0): void {
+  const open = src[start]
+  const fits = indent.length + prefix.length + (end - start) + suffix.length <= maxChars
+  const mayOpen = depth < JSON_LAYOUT_MAX_DEPTH && indent.length < maxChars / 2 && out.length < JSON_LAYOUT_MAX_LINES
+  if ((open !== '{' && open !== '[') || end - start <= 2 || fits || !mayOpen) {
+    out.push(indent + prefix + src.slice(start, end) + suffix)
+    return
+  }
+  out.push(indent + prefix + open)
+  const members: Array<[number, number]> = []
+  let nesting = 0
+  let from = start + 1
+  for (let i = start + 1; i < end - 1; i++) {
+    const ch = src[i]
+    if (ch === '"') i = jsonStringEnd(src, i) - 1
+    else if (ch === '{' || ch === '[') nesting++
+    else if (ch === '}' || ch === ']') nesting--
+    else if (ch === ',' && nesting === 0) {
+      members.push([from, i])
+      from = i + 1
+    }
+  }
+  members.push([from, end - 1])
+  for (let k = 0; k < members.length; k++) {
+    const [ms, me] = members[k] as [number, number]
+    if (out.length >= JSON_LAYOUT_MAX_LINES) {
+      out.push(indent + '  ' + src.slice(ms, end - 1))
+      break
+    }
+    const comma = k < members.length - 1 ? ',' : ''
+    if (open === '[') {
+      layOutJsonValue(src, ms, me, indent + '  ', '', comma, maxChars, out, depth + 1)
+      continue
+    }
+    const keyEnd = jsonStringEnd(src, ms)
+    layOutJsonValue(src, keyEnd + 1, me, indent + '  ', src.slice(ms, keyEnd) + ': ', comma, maxChars, out, depth + 1)
+  }
+  out.push(indent + (open === '{' ? '}' : ']') + suffix)
+}
+
+/** One line cut back to `maxChars` with an inline marker, or the line itself when it fits or the cut would not pay. */
+function capLine(line: string, maxChars: number): string {
+  if (line.length <= maxChars) return line
+  // A line the grep clip already shortened still exceeds a smaller cap, and cutting it again would append a second marker whose count is measured against the first marker's text rather than against the original line: two elision notices on one line, the second one wrong. One clip per line, whoever made it.
+  if (ELIDED_MARKER_RE.test(line)) return line
+  // The input clip at step 2b runs four times wider than this cap, so its lines arrive here still over it and have to be cut again. Its marker records what it already dropped; carry that figure into this one, or the notice reports only what this cut removed from an already-shortened line -- a 10,000-char line came out saying 3,030 chars elided when 9,000 were gone. Only when the whole marker falls beyond the cut: otherwise part of it survives into the kept text and its characters would be counted on both sides.
+  const priorClip = CLIPPED_MARKER_RE.exec(line)
+  let cut = maxChars
+  // Never split a surrogate pair: `maxChars` counts UTF-16 code units, so a cut landing between a high surrogate and its low surrogate (e.g. inside an emoji) leaves a lone surrogate that serializes as U+FFFD on UTF-8 output. Back off by one code unit so the pair stays whole.
+  const high = line.charCodeAt(cut - 1)
+  const low = line.charCodeAt(cut)
+  if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) cut -= 1
+  // The marker costs 21 bytes plus the digits of its count, so a clip that drops fewer than CLIP_MIN_OVERFLOW chars grows the line while losing content: emit it whole. Measured before the carried count is added, since that figure describes what an earlier clip already dropped, not what this cut saves.
+  if (line.length - cut <= CLIP_MIN_OVERFLOW) return line
+  const carried = priorClip !== null && priorClip.index >= cut ? Number(priorClip[1]) - priorClip[0].length : 0
+  return `${line.slice(0, cut)}  … [${line.length - cut + carried} chars elided]`
 }
 
 // Per-line char cap for grep/rg output that passes through uncompressed. 1000, not FALLBACK_MAX_LINE_CHARS' 400: measured over 4,664 real transcripts (32,720 unmarked grep/rg-headed Bash results, 42.8 MB), 2.89 MB sits beyond 1000 chars across 1,872 results (5.7%), versus 6.9 MB beyond 400. The 400 tier starts clipping ordinary long source lines, whereas past 1000 chars is effectively minified-bundle / base64 territory, where the characters flanking the match carry nothing a reader can use.

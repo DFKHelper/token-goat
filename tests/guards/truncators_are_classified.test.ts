@@ -126,6 +126,16 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'capLine',
+    {
+      bucket: 'operates-on-already-redacted-input',
+      reason:
+        'The per-line cut capLongLines makes, split out so a one-line JSON document can be laid out ' +
+        'first and each piece cut alone. capLongLines is its only caller, so it inherits that ' +
+        'function\'s ordering: apply() Step 7.5, after Step 1.5\'s redaction.',
+    },
+  ],
+  [
     'truncateMiddleSmart',
     {
       bucket: 'operates-on-already-redacted-input',
