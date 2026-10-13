@@ -1,4 +1,7 @@
 /** Two Bash rewrites clip their body to the harness delivery cap before fencing it, reserving what the fence adds, and they priced that as the fenced length minus the raw length. The fence used to only add bytes. It now strips terminal escapes too, so on coloured output that difference shrank or went negative, the clip kept more than the cap holds, and the harness, which truncates a Bash result from the end, would cut off the clip note and with it the closing tag. The other direction failed too. On output dense in markers the neutralizer doubles the body, the reserve priced off the whole text came to more than the cap, and the clip then handed the text back whole: 54,259 bytes shipped. A single line cut just after `[token-goat` escapes a marker the whole line did not, and shipped 4 bytes over. Both rewrites now frame each cut, measure it, and cut again until it fits. */
+import { spawnSync } from 'node:child_process'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -9,6 +12,7 @@ import { clipToDeliveryCap, fitToDeliveryCap } from '../src/delivery_cap.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import { fenceUntrustedContent, UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { BUNDLE } from './helpers/bundle.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -193,6 +197,74 @@ describe('a fitted rewrite keeps a body, cut on a whole character', () => {
     // Each width at every alignment, so the longest cut that fits lands inside a character at least once: a 4-byte emoji cut after its first byte decodes to a 3-byte U+FFFD that can fit where the whole emoji does not.
     for (const [label, unit, count] of [['U+4E2D', '\u{4E2D}', 10_000], ['U+1F600', '\u{1F600}', 15_000], ['U+0436', '\u{436}', 20_000]] as const) {
       for (let pad = 0; pad < 4; pad++) expectWholeBody(fitToDeliveryCap('a'.repeat(pad) + unit.repeat(count), frame), `${count} ${label} after ${pad}`)
+    }
+  })
+})
+
+describe('a fitted rewrite uses the budget rather than stopping at the last line break', () => {
+  const frame = (body: string, clipped: boolean): string => fenceUntrustedContent(body, [], UNTRUSTED_TOOL_TAG) + (clipped ? '\n[note]' : '')
+  const bodyOf = (fitted: string): string => fitted.slice(fitted.indexOf(`<${UNTRUSTED_TOOL_TAG}>\n`) + UNTRUSTED_TOOL_TAG.length + 3, fitted.lastIndexOf(`\n</${UNTRUSTED_TOOL_TAG}>`))
+
+  it('cuts inside a long last line instead of dropping it', () => {
+    // PROVENANCE: HAND-DERIVED from the audit's informational finding. A short line and then one long one shipped the short line alone, under 1% of the cap.
+    const text = `header line\n${'y'.repeat(60_000)}`
+    const fitted = fitToDeliveryCap(text, frame)
+    expectWholeBody(fitted, 'short line, long line')
+    expect(fitted.endsWith('\n[note]')).toBe(true)
+    expect(text.startsWith(bodyOf(fitted))).toBe(true)
+    expect(Buffer.byteLength(fitted, 'utf-8')).toBeGreaterThan(CAP * 0.95)
+  })
+
+  it('ships at least seven eighths of the cap whatever the line lengths, cut on a whole character', () => {
+    // A fixed LCG, so every run walks the same shapes: lines from 1 to 4,000 characters of ASCII, 2-byte, 3-byte and 4-byte text.
+    let seed = 0x2545f491
+    const next = (n: number): number => {
+      seed = (Math.imul(seed, 1_103_515_245) + 12_345) >>> 0
+      return seed % n
+    }
+    const units = ['x', '\u{436}', '\u{4E2D}', '\u{1F600}']
+    for (let trial = 0; trial < 200; trial++) {
+      const rows: string[] = []
+      let bytes = 0
+      while (bytes < 3 * CAP) {
+        const row = (units[next(units.length)] ?? 'x').repeat(1 + next(4_000))
+        rows.push(row)
+        bytes += Buffer.byteLength(row, 'utf-8') + 1
+      }
+      const text = rows.join('\n')
+      const fitted = fitToDeliveryCap(text, frame)
+      expectWholeBody(fitted, `trial ${trial}`)
+      expect(text.startsWith(bodyOf(fitted)), `trial ${trial}: the body is a prefix of the text`).toBe(true)
+      expect(Buffer.byteLength(fitted, 'utf-8'), `trial ${trial}`).toBeGreaterThanOrEqual(CAP * 0.875)
+    }
+  })
+
+  it('still ends on a whole line when that gives up little', () => {
+    const text = Array.from({ length: 1_000 }, (_, i) => `row ${i}: ${'z'.repeat(40)}`).join('\n')
+    const body = bodyOf(fitToDeliveryCap(text, frame))
+    expect(text.startsWith(`${body}\n`), 'the cut lands on a line break').toBe(true)
+  })
+
+  it('clipToDeliveryCap keeps the long line too', () => {
+    const clipped = clipToDeliveryCap(`header line\n${'y'.repeat(60_000)}`, 500)
+    expect(clipped.clipped).toBe(true)
+    expect(Buffer.byteLength(clipped.text, 'utf-8')).toBe(CAP - 500)
+  })
+
+  it('an oversized MCP result through the built bundle keeps its long line', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-cap-'))
+    try {
+      const text = `header line\n${'y'.repeat(60_000)}`
+      const payload = { session_id: 'mcp-cap-budget', hook_event_name: 'PostToolUse', cwd: home, tool_name: 'mcp__fixture__fetch_page', tool_input: { url: 'https://example.com' }, tool_response: [{ type: 'text', text }] }
+      const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: JSON.stringify(payload), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env: { ...process.env, TOKEN_GOAT_HOME: home, TOKEN_GOAT_HARNESS_OVERRIDE: 'claudecode' } })
+      expect(res.status, res.stderr.slice(0, 400)).toBe(0)
+      const shipped = (JSON.parse(res.stdout) as { hookSpecificOutput?: { updatedToolOutput?: unknown } }).hookSpecificOutput?.updatedToolOutput
+      expect(typeof shipped).toBe('string')
+      // PROVENANCE: CAPTURE MCP_OVERSIZED_THRESHOLD_BYTES in src/hooks_mcp.ts, restated: the rewrite must stay under it.
+      expect(Buffer.byteLength(String(shipped), 'utf-8')).toBeLessThan(25_000)
+      expect((String(shipped).match(/y/g) ?? []).length).toBeGreaterThan(20_000)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
     }
   })
 })

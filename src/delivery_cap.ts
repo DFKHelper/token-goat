@@ -24,13 +24,15 @@ export function clipToDeliveryCap(text: string, reserveBytes: number): { text: s
   return { text: cutToBytes(Buffer.from(text, 'utf-8'), room), clipped: true }
 }
 
-/** The longest run of whole lines of `bytes` within `room` of them, or the cut first line when not even one line fits. The cut backs off to the first byte of a character, so it never ends in the replacement character a split one decodes to, nor between the halves of a surrogate pair: a cut through a 2-byte letter decoded to a 3-byte U+FFFD that overran by the byte it was meant to save. */
+/** The longest prefix of `bytes` within `room` of them, ending on a whole line when that gives up no more than an eighth of the cut. Cutting back to the last line break whatever it cost shipped well under the cap: a short line followed by one long one kept the short line alone, and about one clipped output in sixteen came to less than half the cap. The cut backs off to the first byte of a character, so it never ends in the replacement character a split one decodes to, nor between the halves of a surrogate pair: a cut through a 2-byte letter decoded to a 3-byte U+FFFD that overran by the byte it was meant to save. */
 function cutToBytes(bytes: Buffer, room: number): string {
   let end = Math.min(Math.max(0, room), bytes.length)
   while (end > 0 && end < bytes.length && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--
-  const sliced = bytes.subarray(0, end).toString('utf-8')
-  const lastNewline = sliced.lastIndexOf('\n')
-  return lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced
+  if (end > 0 && end < bytes.length && bytes[end] !== 0x0a) {
+    const newline = bytes.lastIndexOf(0x0a, end - 1)
+    if (newline > 0 && (end - newline) * 8 <= end) end = newline
+  }
+  return bytes.subarray(0, end).toString('utf-8')
 }
 
 /** `frame(text, false)` when it fits within `cap` bytes, the harness delivery cap unless a caller names another, or else `frame(cut, true)` for the longest cut of `text` this finds whose framed result does. For a rewrite whose framing does not cost a fixed number of bytes, which is every fenced one: the neutralizer can double a marker-dense body (`[tg]` becomes `&#91;tg]`), the escape strip can shrink a coloured one, and a cut can end inside a marker the whole text spelled differently, so a reserve priced off the whole text let a cut of it overrun the cap. Each candidate is framed and measured instead, and the next cut is scaled down by how far the last one ran over, and by at least a byte, for eight tries. A single long line approaches the fit from above and can still be over after eight, so the cut is then found by halving between the empty body, which fits, and the shortest cut that did not. The frame around an empty body is the floor: it still closes, and its pointer still recalls the original. */
