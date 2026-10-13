@@ -1057,10 +1057,25 @@ export function extractToolResultsFile(cmd: string): { path: string } | null {
   return null
 }
 
-/** Returns true when the command is a directory listing (eza --long or ls … | head) for which `token-goat map --compact` is a cheaper alternative. */
+/** The flags of each listing command that ask for something about the files besides their names: sizes, times, owners, permissions, inodes, or an order by one of them. Short ones may come bundled (`-la`, `-lhS`). */
+const LISTING_METADATA_FLAGS: Readonly<Record<string, { short: RegExp; long: RegExp }>> = {
+  ls: { short: /[lgnoshtSiuc]/, long: /^--(?:format=(?:long|verbose)|full-time|time|size|human-readable|si|inode|author|numeric-uid-gid|sort=(?:size|time)|block-size)/ },
+  eza: { short: /[lghBmuUiS]/, long: /^--(?:long|git|bytes|binary|header|group|modified|accessed|created|changed|inode|blocksize|links|octal-permissions|time|total-size)/ },
+  tree: { short: /[hspugD]/, long: /^--(?:du|si|timefmt)/ },
+}
+
+/** True when a listing asks for metadata. `token-goat map` lists files and symbols, never a size, time or permission, so it cannot stand in for `ls -la dist/`. */
+function listingAsksForMetadata(cmd: string): boolean {
+  const words = splitCommandWords(splitShellSegments(cmd)[0] ?? '')
+  const flags = LISTING_METADATA_FLAGS[words[0] ?? '']
+  if (flags === undefined) return false
+  return words.slice(1).some((w) => (w.startsWith('--') ? flags.long.test(w) : /^-[A-Za-z]/.test(w) && flags.short.test(w.slice(1))))
+}
+
+/** Returns true when the command is a directory listing (eza --tree, tree, a recursive ls, or ls … | head) for which `token-goat map --compact` is a cheaper alternative, and it asks only for names. */
 export function extractDirectoryListing(cmd: string): boolean {
+  if (listingAsksForMetadata(cmd)) return false
   return (
-    /^eza\s+.*--long\s+\S+/.test(cmd) ||
     /^eza\s+.*--tree/.test(cmd) ||
     /^tree(\s|$)/.test(cmd) ||
     /^ls\s+(?:\S+\s+)*-[a-zA-Z]*R[a-zA-Z]*(?:\s|$)/.test(cmd) ||

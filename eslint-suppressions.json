@@ -1,7 +1,7 @@
 {
   "src/bash_extractors.ts": {
     "regexp/no-super-linear-backtracking": {
-      "count": 18
+      "count": 17
     }
   },
   "src/cli_bootstrap_audit.ts": {

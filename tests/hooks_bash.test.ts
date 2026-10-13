@@ -2612,16 +2612,25 @@ describe('preBashHandler — directory listing map hint', () => {
     clearModuleCaches()
   })
 
-  it('emits map hint for eza --long on a path', () => {
-    const result = preBashHandler(makeBashEvent('eza --git --long src/'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat map')
-    }
+  // CAPTURE (a research session, 2026-10): `ls -la dist/` got "Use `token-goat map --compact`", and map lists files and symbols, not the sizes, times and permissions a long listing asks for. The other spellings are HAND-DERIVED from each tool's metadata flags.
+  it.each([
+    'ls -la dist/',
+    'ls -la dist/ | head -20',
+    'ls -lh dist/ | wc -l',
+    'ls -lt src/ | head',
+    'ls --full-time src/ | grep .ts',
+    'ls -lR src/',
+    'ls -laR',
+    'eza --git --long src/',
+    'eza -l --tree src/',
+    'tree -h src/',
+  ])('names no map for a listing that asks for metadata: %s', (command) => {
+    const result = preBashHandler(makeBashEvent(command))
+    expect(result.hookType === 'context' ? result.context : '').not.toContain('token-goat map')
   })
 
-  it('emits map hint for ls -la piped to head', () => {
-    const result = preBashHandler(makeBashEvent('ls -la src/ | head -20'))
+  it('emits map hint for ls piped to head', () => {
+    const result = preBashHandler(makeBashEvent('ls -a src/ | head -20'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat map')
@@ -2658,24 +2667,8 @@ describe('preBashHandler — directory listing map hint', () => {
     }
   })
 
-  it('emits map hint for ls -lR', () => {
-    const result = preBashHandler(makeBashEvent('ls -lR src/'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat map')
-    }
-  })
-
-  it('emits map hint for ls -laR', () => {
-    const result = preBashHandler(makeBashEvent('ls -laR'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat map')
-    }
-  })
-
-  it('still fires for eza --long (existing path)', () => {
-    const result = preBashHandler(makeBashEvent('eza --git --long src/'))
+  it('emits map hint for ls -aR', () => {
+    const result = preBashHandler(makeBashEvent('ls -aR'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat map')
