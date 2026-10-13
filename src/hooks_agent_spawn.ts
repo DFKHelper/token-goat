@@ -551,6 +551,13 @@ function reportNotice(resultText: string, recallHint: string, spawnAdvisory: str
 /** A report that already ends in the notice of a rewrite token-goat made. On Copilot CLI the subagentStop rewrite replaces the subagent's answer before the parent's task result is built (tg-captures C4a-014), so the post-tool pass then sees token-goat's own output, and compacting and caching it again would store the compacted copy as if it were the report. */
 const REWRITTEN_REPORT_RE = /\n\n\[token-goat\] This subagent report \([0-9.]+KB\) is cached for later recall: token-goat mcp-output mcp_[0-9a-f]{16} --full$/
 
+/** True when an Agent `tool_response` is the receipt of a background launch (`run_in_background`), not a report. CAPTURE, Claude Code toolUseResult: `{isAsync: true, status: 'async_launched', agentId, description, resolvedModel, prompt, outputFile, canReadOutputFile, canContinueAgent}`. It carries no content blocks, so the text extracted from it is the whole receipt serialized, mostly the prompt the model just wrote; the report itself arrives later, outside this tool call. */
+function isAsyncLaunchReceipt(toolResponse: unknown): boolean {
+  if (toolResponse === null || typeof toolResponse !== 'object' || Array.isArray(toolResponse)) return false
+  const r = toolResponse as Record<string, unknown>
+  return r['status'] === 'async_launched' || r['isAsync'] === true
+}
+
 /** The compacted report and whether it pays for `notice`. Fence collapse, then intra-report cross-fence dedup, then blank-run collapse, judged by ONE combined net-benefit check rather than a gate each: sub-threshold rewrites could each decline alone when their sum would pass, and firing the notice cost more than once would double-charge it. Shared by the post-tool pass and Copilot's subagentStop rewrite so the two cannot drift. */
 function planReportCompaction(resultText: string, recallHint: string, notice: string): { final: string; worthwhile: boolean } {
   const cfg = loadConfig().agent_report
@@ -620,7 +627,8 @@ function postAgentHandler(event: HookEvent): HookOutput {
     const agentReportCfg = loadConfig().agent_report
     // Built before the min_bytes early returns because the advisory is about the SPAWN, not the report: a lane that came back with a two-line answer paid the same unrestricted prefix. On the early-return paths it rides alone as the whole context output; past them it is folded into `notice` below, BEFORE the net-benefit gate prices that notice, so the gate-then-emit-extra accounting trap cannot reappear here.
     const spawnAdvisory = buildUnrestrictedSpawnAdvisory(event.toolInput, event.sessionId)
-    if (!resultText || resultText.length < agentReportCfg.min_bytes) {
+    // A background launch receipt is not a report: cached, it filed the model's own prompt under "This subagent report is cached for later recall".
+    if (!resultText || resultText.length < agentReportCfg.min_bytes || isAsyncLaunchReceipt(event.raw['tool_response'])) {
       return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     }
     const id = storeMcpOutput(event.sessionId, event.toolName ?? 'Agent', event.toolInput, resultText)

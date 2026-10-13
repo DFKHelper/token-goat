@@ -13,6 +13,8 @@ import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.j
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import { sessionsDir } from '../src/sessions_dir.js'
 import { sweepCacheRoots } from '../src/disk_cache.js'
+import { getMcpOutput } from '../src/mcp_cache.js'
+import { loadConfig } from '../src/config.js'
 import { collapseFencedBlocks, dedupeFencedBlocks, collapseBlankRunsInFences, parseAgentDefinition, findRestrictedAgentNames } from '../src/hooks_agent_spawn.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
 import { rmInSandbox } from './helpers/sandbox-rm.js'
@@ -434,6 +436,53 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
   function postPayload(toolResponse: unknown): Record<string, unknown> {
     return { tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_response: toolResponse }
   }
+
+  // CAPTURE — the key set and value types of Claude Code's toolUseResult for an Agent call with run_in_background: true (this repository's own orchestrator session, 126db975 line 188) and for a completed foreground one (C--Projects-Website 41690f23 line 596). Values are placeholders; the prompt is sized past agent_report.min_bytes, as the six real 12 KB launches were.
+  const longPrompt = 'Mine the recorded sessions for hook defects and report each with its evidence.\n'.repeat(160)
+  function asyncLaunch(): Record<string, unknown> {
+    return {
+      isAsync: true,
+      status: 'async_launched',
+      agentId: 'aa7d2902087affac8',
+      description: 'Analyze token-goat CLI invocations',
+      resolvedModel: 'claude-opus-5-5',
+      prompt: longPrompt,
+      outputFile: 'C:/Users/u/AppData/Local/Temp/claude/tasks/aa7d2902087affac8.output',
+      canReadOutputFile: true,
+      canContinueAgent: true,
+    }
+  }
+
+  it('does not cache a background launch receipt as a report, and adds no recall hint', async () => {
+    // The launch receipt echoes the prompt the model just wrote; caching it filed that echo under "This subagent report (12KB) is cached for later recall" on six of six background spawns.
+    expect(JSON.stringify(asyncLaunch()).length).toBeGreaterThan(loadConfig().agent_report.min_bytes)
+    const result = await runHook(buildEvent('post_tool_use', postPayload(asyncLaunch())))
+    expect(result.hookType).toBe('pass')
+    expect(getMcpOutput(sessionId, 'Agent', toolInput)).toBeNull()
+  })
+
+  it('positive control: a completed report of the same size is still cached, with its hint', async () => {
+    const report = 'Detailed finding line.\n'.repeat(400)
+    const completed = {
+      status: 'completed',
+      prompt: longPrompt,
+      agentId: 'a1b2c3d4e5f6a7b8c',
+      agentType: 'general-purpose',
+      content: [{ type: 'text', text: report }],
+      resolvedModel: 'claude-opus-5-5',
+      toolStats: {},
+      totalDurationMs: 1000,
+      totalTokens: 1000,
+      totalToolUseCount: 3,
+      usage: {},
+    }
+    const result = await runHook(buildEvent('post_tool_use', postPayload(completed)))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') expect(result.context).toMatch(/This subagent report \([\d.]+KB\) is cached for later recall: token-goat mcp-output mcp_[0-9a-f]{16} --full/)
+    const id = getMcpOutput(sessionId, 'Agent', toolInput)
+    expect(id).not.toBeNull()
+    expect(getBashOutput(id as string)?.output).toBe(report)
+  })
 
   it('passes through an Agent report under the cache threshold untouched (regression: the average real report is ~2,220 chars, well under the 8000-char floor -- this must never fire on a typical report)', async () => {
     const smallReport = 'Found and fixed the bug.'.repeat(50) // well under 8000 chars
