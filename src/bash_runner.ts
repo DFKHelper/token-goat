@@ -18,6 +18,8 @@ import { recordStat } from './stats.js'
 import { PassthroughFilter } from './tool_filters/generic.js'
 import {
   type CompressedOutput,
+  type CompressOptions,
+  type DeliveredCompression,
   type ToolFilter,
   compressedTokensSaved,
   capTokens,
@@ -70,6 +72,31 @@ export function runnerRecallId(text: string): string | null {
 /** Digest of a result {@link run} printed, stored with the output it stands for, so the post hook can tell that result from output that only ends with the same recall line. Line endings and surrounding whitespace are left out, since the harness may normalize either on the way to the hook. */
 export function runnerResultDigest(text: string): string {
   return shortFingerprint(text.replace(/\r\n/g, '\n').trim())
+}
+
+/** The recall line {@link run} appends under a result it compressed or capped, naming the stored copy `id`, followed by the cap hint line when there is one. */
+export function runnerTrailer(id: string, capHint?: string): string {
+  return '\n[token-goat] full output: bash-output ' + id + ' --full' + (capHint ? '\n[token-goat] ' + capHint : '')
+}
+
+/** {@link deliverCompressed} priced and framed the way {@link run} ships a rewrite: the net-benefit gate charges the rewrite for `trailer` and for the untrusted-content fence on the exact body it will wrap, on top of the marker, and `frame` builds the printed result from the command's bytes that survive any cap: those bytes inside the fence, then token-goat's own lines, the marker and `trailer` after the closing tag. `scan` supplies the fence's matches. `token-goat bench` scores through this same function, so its savings are net of the fence and the recall line the runner pays for rather than of the marker alone. */
+export function deliverAsRunner(
+  filter: ToolFilter,
+  stdout: string,
+  stderr: string,
+  exitCode: number,
+  argv: string[],
+  trailer: string,
+  scan: (untrusted: string) => string[],
+  opts: CompressOptions = {},
+): DeliveredCompression & { frame: (shown: string, notices?: string) => string } {
+  const delivery = deliverCompressed(filter, stdout, stderr, exitCode, argv, {
+    ...opts,
+    trailerBytes: Buffer.byteLength(trailer, 'utf8'),
+    framingBytes: (body) => Buffer.byteLength(fenceWithMatches(body, scan(body), UNTRUSTED_TOOL_TAG), 'utf8') - Buffer.byteLength(body, 'utf8'),
+  })
+  const frame = (shown: string, notices = ''): string => fenceWithMatches(shown, scan(shown), UNTRUSTED_TOOL_TAG) + delivery.ownNotices + notices + delivery.marker + trailer
+  return { ...delivery, frame }
 }
 
 /** Options for {@link run}. */
@@ -400,18 +427,17 @@ async function wrapAndCompress(
   const limits = resolveCompressLimits()
   const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
   // The lines appended under every shipped rewrite, known before the gate runs: the recall id is bashOutputIdSync over the same arguments storeBashOutputSync is called with below, so it names the body that call will store.
-  const trailer = '\n[token-goat] full output: bash-output ' + bashOutputIdSync(command, fullRaw, opts.cwd ?? null) + ' --full' + (opts.capHint ? '\n[token-goat] ' + opts.capHint : '')
+  const trailer = runnerTrailer(bashOutputIdSync(command, fullRaw, opts.cwd ?? null), opts.capHint)
   // The injection scan runs once, on the first body it is asked about: the gate measures the fence on the compressed body, and the fence below reuses those matches whether or not a token cap then shortens the body, so a match is recorded once and never for a body that ships unfenced.
   let matches: string[] | null = null
   const scan = (untrusted: string): string[] => (matches ??= scanAndRecord(untrusted))
-  // The net-benefit gate lives in `deliverCompressed`: a rewrite whose bytesSaved doesn't clear the marker's own cost, the trailer's, the fence's and the configured floor destabilises the bytes (breaks provider prefix caching) for a saving too small to be worth it, so below the floor that function returns the ORIGINAL streams with no marker -- exactly as though no filter had matched. Priced on the marker alone, a rewrite inside the trailer's ~62 bytes of the floor shipped and cost more than it saved; the fence is priced the same way, on the exact body it will wrap, so the gate cannot ship a rewrite its own protection makes a loss. `token-goat bench` measures delivery through the same function, so a benchmark cannot drift from what actually ships.
-  const { applied, marker, compressed, untrusted, ownNotices } = deliverCompressed(filter, stdoutText, stderrText, exitCode, argv, {
+  // The net-benefit gate lives in `deliverCompressed`: a rewrite whose bytesSaved doesn't clear the marker's own cost, the trailer's, the fence's and the configured floor destabilises the bytes (breaks provider prefix caching) for a saving too small to be worth it, so below the floor that function returns the ORIGINAL streams with no marker -- exactly as though no filter had matched. Priced on the marker alone, a rewrite inside the trailer's ~62 bytes of the floor shipped and cost more than it saved; the fence is priced the same way, on the exact body it will wrap, so the gate cannot ship a rewrite its own protection makes a loss.
+  const delivery = deliverAsRunner(filter, stdoutText, stderrText, exitCode, argv, trailer, scan, {
     compressionProfile: profile,
     maxLines: limits.maxLines,
     maxBytes: limits.maxBytes,
-    trailerBytes: Buffer.byteLength(trailer, 'utf8'),
-    framingBytes: (body) => Buffer.byteLength(fenceWithMatches(body, scan(body), UNTRUSTED_TOOL_TAG), 'utf8') - Buffer.byteLength(body, 'utf8'),
   })
+  const { applied, compressed, untrusted } = delivery
   // Apply the pressure-scaled token cap to the command's bytes BEFORE the fence and the marker, so the closing tag, the savings marker and the recall line all survive truncation and stay visible to the agent. The cap's own notice is token-goat's and joins the others after the closing tag.
   let shown = untrusted
   let capNotice = ''
@@ -426,7 +452,7 @@ async function wrapAndCompress(
   // A cap that cut the output is a loss the same as a filter that did, so it gets the same recall. Keyed on `applied` alone, a passthrough run capped to 2,000 tokens dropped the rest with nothing to recover it from.
   if (applied || capped) {
     // What is printed here is token-goat's account of the output, not the output, so the command's bytes go inside the untrusted-content fence and every line token-goat wrote (the filter's closing notices, the cap notice, the run's own notes, the marker, the recall line) after the closing tag. Fenced by provenance: the split between the two is the own-notice tag apply() and capTokens put on token-goat's lines, never their wording. Output the runner passes through untouched (below the floor, uncapped) stays unfenced, as the harness would have delivered it; see CLAUDE.arch.md's Security Boundaries.
-    body = fenceWithMatches(shown, scan(shown), UNTRUSTED_TOOL_TAG) + ownNotices + capNotice + notes + marker + trailer
+    body = delivery.frame(shown, capNotice + notes)
     // The marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, and a rerun carrying it as a prefix is left unwrapped by the pre-hook, but that costs the command a second run. A recall of the untruncated bytes is the cheaper follow-up, so store them the same way the compound post-hook path already does and point at it, with the digest of what is printed here: the recall line is how the post hook knows this result is the runner's, and a command can print that line too.
     storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null, runnerResultDigest(body))
   } else {

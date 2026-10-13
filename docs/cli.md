@@ -408,19 +408,21 @@ Two categories are scored on a pattern of calls rather than a named command. `re
 
 `token-goat bench` replays a fixed corpus of captured command output through the same function
 that decides what a real shell command hands back to the model, and reports how much smaller the
-result is. It exists so a change to a compressor can be measured instead of guessed at:
+result is. The `out` column counts everything the model receives for a compressed result: the
+untrusted-content fence around the command's bytes, the savings marker and the recall line, not
+just the compressed text. It exists so a change to a compressor can be measured instead of guessed at:
 
 ```
 $ token-goat bench
 case          filter           in        out    saved  fidelity
 ---------------------------------------------------------------
-git-log-stat  git-log       57227       3027    94.7%  2/2
-npm-ls-all    dep-list      34546       1060    96.9%  2/2
-vitest-run    vitest        22684        322    98.6%  2/2
+git-log-stat  git-log       57227      12882    77.5%  2/2
+npm-ls-all    dep-list      34546       1245    96.4%  2/2
+vitest-run    vitest        22684        511    97.7%  2/2
 ---------------------------------------------------------------
-TOTAL                      114457       4409    96.1%  6/6
+TOTAL                      114457      14638    87.2%  6/6
 
-ratio    96.1% saved  (PRIMARY -- must improve; measured floor 0.0%, headroom 3.9%)
+ratio    87.2% saved  (PRIMARY -- must improve; measured floor 0.0%, headroom 12.8%)
 fidelity 6/6 kept   (GUARD -- must not regress; any miss exits 1)
 coverage 3/157 filters exercised, 3/3 cases compressed
 ```

@@ -14,7 +14,11 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { displaySafeText, displaySafeJson } from './paths.js'
-import { CompressedOutput, TOOL_FILTERS, ToolFilter, combineStreams, deliverCompressed, detectFromCommand } from './tool_filters/index.js'
+import { bashOutputIdSync } from './bash_output_cache.js'
+import { deliverAsRunner, runnerTrailer } from './bash_runner.js'
+import { scanForInjectionPatterns } from './injection_scan.js'
+import { CompressedOutput, TOOL_FILTERS, ToolFilter, combineStreams, detectFromCommand } from './tool_filters/index.js'
+import { injectionFencingEnabled } from './untrusted_fence.js'
 import { runGit, countNoun } from './util.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
@@ -43,7 +47,7 @@ export interface BenchCaseResult {
   /** True when the rewrite cleared the net-benefit floor and the compressed body actually ships. */
   readonly applied: boolean
   readonly originalBytes: number
-  /** Bytes the model receives: the compressed body plus its marker, or the original when nothing applied. */
+  /** Bytes the model receives: the fenced compressed body plus its marker and recall line, or the original when nothing applied. */
   readonly deliveredBytes: number
   readonly savedPercent: number
   readonly kept: number
@@ -162,14 +166,16 @@ export function loadCorpus(dir: string): BenchCase[] {
   return cases
 }
 
-/** Score one case through the real delivery path. Routing and the net-benefit gate both come from the shipping code (`detectFromCommand` + `deliverCompressed`), never from a local re-derivation: a benchmark that re-implements the gate measures a copy, and a change to what ships would move delivery without moving the benchmark. */
+/** Score one case through the real delivery path. Routing, the net-benefit gate and the framing all come from the shipping code (`detectFromCommand` + the runner's `deliverAsRunner`), never from a local re-derivation: a benchmark that re-implements the gate measures a copy, and a change to what ships would move delivery without moving the benchmark. A shipped rewrite is scored with the untrusted-content fence and the recall line the runner prints around it, since the model pays for both. */
 export function runCase(c: BenchCase, control: ControlKind = 'none'): BenchCaseResult {
   const detected = detectFromCommand(c.command)
   const filter = control === 'none' ? detected?.filter : CONTROL_FILTERS[control]
   const argv = detected?.argv ?? []
-  // Captured output is the combined stream a harness already merged, so it is passed as stdout.
-  const delivery = filter ? deliverCompressed(filter, c.output, '', c.exitCode, argv) : null
-  const body = delivery ? delivery.text + delivery.marker : c.output
+  // Captured output is the combined stream a harness already merged, so it is passed as stdout. The recall line names the id the runner would store this output under; the scan feeds the fence without recording a detection, since a benchmark replay is not a session.
+  const trailer = runnerTrailer(bashOutputIdSync(c.command, c.output.trim()))
+  const scan = (text: string): string[] => (injectionFencingEnabled() ? scanForInjectionPatterns(text) : [])
+  const delivery = filter ? deliverAsRunner(filter, c.output, '', c.exitCode, argv, trailer, scan) : null
+  const body = delivery ? (delivery.applied ? delivery.frame(delivery.untrusted) : delivery.text) : c.output
   const originalBytes = Buffer.byteLength(c.output, 'utf8')
   const deliveredBytes = Buffer.byteLength(body, 'utf8')
   const missing = c.mustKeep.filter((needle) => !body.includes(needle))

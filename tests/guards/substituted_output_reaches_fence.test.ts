@@ -243,9 +243,6 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
   // Backs the hooks_common.ts::emitRewriteWithContext exemption. Provenance: HAND-DERIVED -- the caller set is read off the source by name, and each caller must neutralise in place itself or be emitStructuralFold, whose producers must. The same-file walk above cannot see this: foldCodeBodies also reaches fenceUntrustedFileContent through its compact branch, so it reads as fenced whatever its aligned branch does.
   // The compress runner substitutes without going through emitRewrite: it prints its compressed view of a wrapped command to stdout, and the harness hands that to the model as the command's result. So the walk above, keyed on the emit boundary, never saw it, and for as long as the post hook skipped wrapped commands that view reached the model with no fence at all. Every caller of deliverCompressed is therefore walked here too, and must reach a fence or be named with why it prints nothing to a model.
   it('every caller of deliverCompressed fences the command bytes it prints, or is named', () => {
-    const notShown: ReadonlyMap<string, string> = new Map([
-      ['cli_bench.ts::runCase', 'Scores the compressors over a captured corpus and reports sizes and ratios; the delivered text is measured, never printed to a model.'],
-    ])
     const callers: { key: string; fenced: boolean }[] = []
     for (const file of srcFiles()) {
       if (path.basename(file) === 'dispatch.ts') continue
@@ -257,15 +254,15 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
         if (codeOnly(fn.body).includes('deliverCompressed(')) callers.push({ key: `${path.basename(file)}::${fn.name}`, fenced: reaches(fn, byName, callsFence) })
       }
     }
-    expect(callers.map((c) => c.key), 'the runner is the caller this check exists for; if it is not found, the walk is broken').toContain('bash_runner.ts::wrapAndCompress')
-    for (const key of notShown.keys()) expect(callers.map((c) => c.key), `${key} is named as not printing to a model but no longer calls deliverCompressed`).toContain(key)
+    expect(callers.map((c) => c.key), 'the runner is the caller this check exists for; if it is not found, the walk is broken').toContain('bash_runner.ts::deliverAsRunner')
     expect(
-      callers.filter((c) => !c.fenced && !notShown.has(c.key)).map((c) => c.key),
+      callers.filter((c) => !c.fenced).map((c) => c.key),
       'These print a compressed view of command output to a model without fencing the command bytes in it. Fence them (fenceWithMatches/fenceUntrusted) with token-goat\'s own lines after the closing tag, as bash_runner.ts::wrapAndCompress does.',
     ).toEqual([])
-    // Reaching a fence is not enough on its own here: the runner also measures the fence for its net-benefit gate, so a call that only prices it would satisfy the walk while the printed body went out bare. The body it prints for a substituted result has to be built by the fence call itself.
-    const runner = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'bash_runner.ts'), 'utf8')).find((f) => f.name === 'wrapAndCompress')
-    expect(codeOnly(runner?.body ?? ''), 'bash_runner.ts::wrapAndCompress must assign the substituted body from the fence call').toMatch(/\bbody = fence(?:WithMatches|Untrusted)\(/)
+    // Reaching a fence is not enough on its own here: the runner also measures the fence for its net-benefit gate, so a call that only prices it would satisfy the walk while the printed body went out bare. The body it prints for a substituted result has to be built by the fence call itself: deliverAsRunner's `frame` starts with it, and wrapAndCompress assigns the substituted body from `frame`.
+    const runnerFns = functionMap(parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'bash_runner.ts'), 'utf8')))
+    expect(codeOnly(runnerFns.get('deliverAsRunner') ?? ''), 'bash_runner.ts::deliverAsRunner must build `frame` from the fence call').toMatch(/\bframe = \([^)]*\)[^=]*=> fence(?:WithMatches|Untrusted)\(/)
+    expect(codeOnly(runnerFns.get('wrapAndCompress') ?? ''), 'bash_runner.ts::wrapAndCompress must assign the substituted body from the fenced frame').toMatch(/\bbody = delivery\.frame\(/)
   })
 
   it('every aligned rewrite neutralises the file bytes it keeps in place', () => {
