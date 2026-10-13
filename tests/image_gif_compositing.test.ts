@@ -179,7 +179,7 @@ describe('the shrink path delivers composited, transparency-preserving GIFs', ()
     const file = path.join(dir, `${tag}.gif`)
     fs.writeFileSync(file, buf)
     // A harness that takes the shrink as a data-URL payload, so the delivered GIF is in the result; Claude Code gets a rewritten Read path instead (tests/image_shrink_claudecode_delivery.test.ts).
-    const out = await withHarnessOverride('generic', () => preReadImageHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file } })))
+    const out = await withHarnessOverride('openclaw', () => preReadImageHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file } })))
     const text = JSON.stringify(out ?? {})
     const m = /data:image\/gif;base64,([A-Za-z0-9+/=]+)/.exec(text)
     return { text, gif: m ? Buffer.from(m[1]!, 'base64') : null }

@@ -437,7 +437,7 @@ function pruneShrinkCache(): void {
 }
 
 /** Shared tail of {@link preReadImageHandler}: saving accounting and the delivered output, given a {@link ShrinkResult} regardless of whether it came from a fresh `shrinkImage()` call or a cache hit. Keeping one code path here is what keeps a cache hit's `recordStat` honest -- it reports the same savings a fresh shrink would have, because the model receives the same bytes either way; only the (unmeasured) re-encode CPU cost differs, and this function has no visibility into that. */
-/** Harnesses whose host writes the shrunk copy to a temp file in its own process (MATERIALIZE_SHRUNK_IMAGE_JS in bridges/shrink_block.ts, and pi.ts's typed twin) after this hook has answered. OpenClaw pins no harness when it calls the hook, so it is recognized from its environment or not at all. opencode is left out: its read tool asks the `read` permission against the path the plugin hands it, so a copy's temp path would slip past a rule on the original. */
+/** Harnesses whose host writes the shrunk copy to a temp file in its own process (MATERIALIZE_SHRUNK_IMAGE_JS in bridges/shrink_block.ts, and pi.ts's typed twin) after this hook has answered. The OpenClaw plugin pins its harness through TOKEN_GOAT_HARNESS_OVERRIDE, since OpenClaw sets no environment variable of its own. opencode is left out: its read tool asks the `read` permission against the path the plugin hands it, so a copy's temp path would slip past a rule on the original. */
 const HOST_MATERIALIZED_HARNESSES: ReadonlySet<HarnessName> = new Set<HarnessName>(['copilot_cli', 'pi', 'openclaw'])
 
 /** Harnesses whose PreToolUse honours a rewritten tool input, so this process writes the shrunk copy and points the read at it. Claude Code caps additionalContext at 10,000 characters (https://code.claude.com/docs/en/hooks), so the data URL the context channel used to carry there arrived as a 2,000-character base64 preview while the Read loaded the original. */
@@ -468,7 +468,7 @@ async function finalizeShrinkResult(result: ShrinkResult, filePath: string, even
     recordFileRead(filePath)
     return rewrite
   }
-  // A host (or generic, an OpenClaw host that pinned no harness) writes the copy in its own process after this one has answered and falls back to the original image if that write fails, so this process never sees the delivery and books nothing. No OCR text either: the host finds no data URL in it and sends the original image, so the text would only add to what the model receives.
+  // A host writes the copy in its own process after this one has answered and falls back to the original image if that write fails, so this process never sees the delivery and books nothing. No OCR text either: the host finds no data URL in it and sends the original image, so the text would only add to what the model receives.
   const { summary, dataUrl } = formatShrinkSummary(result, basename)
   // Recorded for the same reason as the rewrite above: the host delivers the copy or falls back to the original, and either way the model has read this image.
   recordFileRead(filePath)
@@ -480,9 +480,9 @@ function deliveryReplacesRead(harness: HarnessName, output: HookOutput): boolean
   return output.hookType === 'rewriteInput' && PATH_REWRITE_HARNESSES.has(harness)
 }
 
-/** Whether a shrunk copy can take the original image's place on this harness at all. Every other harness only appends hook context beside a Read that still loads the original: Codex spills context over 2,500 tokens to a file behind a preview (https://developers.openai.com/codex/hooks) and Gemini's BeforeTool has no context field (https://geminicli.com/docs/hooks/reference/), so a 2.6 MB data URL there was pure added cost. */
+/** Whether a shrunk copy can take the original image's place on this harness at all. Every other harness only appends hook context beside a Read that still loads the original: Codex spills context over 2,500 tokens to a file behind a preview (https://developers.openai.com/codex/hooks) and Gemini's BeforeTool has no context field (https://geminicli.com/docs/hooks/reference/), so a 2.6 MB data URL there was pure added cost. A generic harness is no different: nothing on its side is known to turn the data URL into an image, so it reached the model as text, and naming the copy's path instead would only invite a second Read after the original had already loaded. */
 function shrinkCanReplaceRead(harness: HarnessName): boolean {
-  return PATH_REWRITE_HARNESSES.has(harness) || HOST_MATERIALIZED_HARNESSES.has(harness) || harness === 'generic'
+  return PATH_REWRITE_HARNESSES.has(harness) || HOST_MATERIALIZED_HARNESSES.has(harness)
 }
 
 /** Books the original-to-shrunk saving. The token figure prices both sides as 28x28-pixel vision patches, downscale included, rather than bytes/4, which credited a megabyte-scale byte delta as a quarter-million tokens. */

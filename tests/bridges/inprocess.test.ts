@@ -27,8 +27,12 @@ import { indexableDir } from '../helpers/temp-config.js'
 
 const tempDirs: string[] = []
 let sharedHookFixture: { entryPath: string; markerPath: string; dir: string } | undefined
+// The OpenClaw plugin pins TOKEN_GOAT_HARNESS_OVERRIDE on the host process when it registers, which here is this test process.
+const harnessAtLoad = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
 
 afterEach(() => {
+  if (harnessAtLoad === undefined) delete process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
+  else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = harnessAtLoad
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()
     if (dir) rmSync(dir, { recursive: true, force: true })
@@ -856,50 +860,60 @@ describe('image shrink materialization: the shrink payload becomes a rewritten p
   })
 
   it('openclaw: before_tool_call returns rewritten params with OpenClaw\'s own "path" key pointing at the shrunk copy, preserving every other original param', async () => {
-    const cwd = mkIsolated()
-    const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
-    writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
-    const transformed = OPENCLAW_PLUGIN_SCRIPT.replace(
-      'import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";',
-      'function definePluginEntry(cfg) { return cfg }',
-    )
-    expect(transformed).not.toBe(OPENCLAW_PLUGIN_SCRIPT)
-    const pluginPath = join(cwd, 'plugin.mjs')
-    writeFileSync(pluginPath, transformed, 'utf8')
+    // Every harness signal cleared, the way a real OpenClaw gateway runs: it exports nothing detectHarness() knows it by, so the plugin's own TOKEN_GOAT_HARNESS_OVERRIDE is all that keeps this call from answering as a generic harness, which gets no shrink.
+    const saved = new Map(HARNESS_DETECTION_ENV_KEYS.map((k) => [k, process.env[k]]))
+    for (const k of HARNESS_DETECTION_ENV_KEYS) delete process.env[k]
+    try {
+      const cwd = mkIsolated()
+      const { entryPath, markerPath } = setupPoisonedEntryWithRealHookLib(cwd)
+      writeFileSync(join(cwd, 'token-goat-entry.json'), JSON.stringify({ entryPath }), 'utf8')
+      const transformed = OPENCLAW_PLUGIN_SCRIPT.replace(
+        'import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";',
+        'function definePluginEntry(cfg) { return cfg }',
+      )
+      expect(transformed).not.toBe(OPENCLAW_PLUGIN_SCRIPT)
+      const pluginPath = join(cwd, 'plugin.mjs')
+      writeFileSync(pluginPath, transformed, 'utf8')
 
-    // A stale previously-materialized copy in the OS temp dir: the materialize step's best-effort sweep must remove it (prefix-confined, age-gated), proving temp files from prior calls do not accumulate forever.
-    const stalePath = join(tmpdir(), `token-goat-shrink-999999-0-staletest${Math.random().toString(36).slice(2)}.jpeg`)
-    writeFileSync(stalePath, 'stale')
-    const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
-    utimesSync(stalePath, old, old)
+      // A stale previously-materialized copy in the OS temp dir: the materialize step's best-effort sweep must remove it (prefix-confined, age-gated), proving temp files from prior calls do not accumulate forever.
+      const stalePath = join(tmpdir(), `token-goat-shrink-999999-0-staletest${Math.random().toString(36).slice(2)}.jpeg`)
+      writeFileSync(stalePath, 'stale')
+      const old = new Date(Date.now() - 2 * 60 * 60 * 1000)
+      utimesSync(stalePath, old, old)
 
-    const imgPath = await makeLargeJpegFixture(cwd)
-    const mod = (await import(pathToFileURL(pluginPath).href)) as {
-      default: { register: (api: { on: (event: string, handler: (...args: unknown[]) => unknown) => void }) => void }
+      const imgPath = await makeLargeJpegFixture(cwd)
+      const mod = (await import(pathToFileURL(pluginPath).href)) as {
+        default: { register: (api: { on: (event: string, handler: (...args: unknown[]) => unknown) => void }) => void }
+      }
+      const handlers: Record<string, (...args: unknown[]) => unknown> = {}
+      mod.default.register({
+        on(event, handler) {
+          handlers[event] = handler
+        },
+      })
+      const ctx = { sessionId: 'inprocess-shrink-test-' + Math.random().toString(36).slice(2) }
+
+      // The params use OpenClaw's REAL read-tool input key ("path", from openclaw/openclaw src/agents/sessions/tools/read-tool-contract.ts), not token-goat's file_path -- deriving the fixture from the harness's own schema rather than from this bridge's forwarding code.
+      const result = (await handlers['before_tool_call']!(
+        { toolName: 'read', params: { path: imgPath, offset: 1 } },
+        ctx,
+      )) as { block?: boolean; params?: Record<string, unknown> }
+      expect(result.block).toBeFalsy()
+      const rewritten = result.params?.['path'] as string
+      expect(typeof rewritten).toBe('string')
+      expect(rewritten).not.toBe(imgPath)
+      expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9-]+\.(jpeg|webp)$/)
+      expect(existsSync(rewritten)).toBe(true)
+      expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
+      expect(result.params?.['offset']).toBe(1)
+      expect(existsSync(stalePath)).toBe(false)
+      expect(existsSync(markerPath)).toBe(false)
+    } finally {
+      for (const [k, v] of saved) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
     }
-    const handlers: Record<string, (...args: unknown[]) => unknown> = {}
-    mod.default.register({
-      on(event, handler) {
-        handlers[event] = handler
-      },
-    })
-    const ctx = { sessionId: 'inprocess-shrink-test-' + Math.random().toString(36).slice(2) }
-
-    // The params use OpenClaw's REAL read-tool input key ("path", from openclaw/openclaw src/agents/sessions/tools/read-tool-contract.ts), not token-goat's file_path -- deriving the fixture from the harness's own schema rather than from this bridge's forwarding code.
-    const result = (await handlers['before_tool_call']!(
-      { toolName: 'read', params: { path: imgPath, offset: 1 } },
-      ctx,
-    )) as { block?: boolean; params?: Record<string, unknown> }
-    expect(result.block).toBeFalsy()
-    const rewritten = result.params?.['path'] as string
-    expect(typeof rewritten).toBe('string')
-    expect(rewritten).not.toBe(imgPath)
-    expect(basename(rewritten)).toMatch(/^token-goat-shrink-\d+-\d+-[a-z0-9-]+\.(jpeg|webp)$/)
-    expect(existsSync(rewritten)).toBe(true)
-    expect(statSync(rewritten).size).toBeLessThan(statSync(imgPath).size)
-    expect(result.params?.['offset']).toBe(1)
-    expect(existsSync(stalePath)).toBe(false)
-    expect(existsSync(markerPath)).toBe(false)
   })
 
   it('openclaw: a re-read arriving under OpenClaw\'s real "path" key is denied on the second call (the inbound path -> file_path mapping feeds getFilePath)', async () => {

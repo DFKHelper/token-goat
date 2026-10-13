@@ -109,7 +109,7 @@ afterAll(() => {
 const priorHarness = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']
 const priorEntrypoint = process.env['CLAUDE_CODE_ENTRYPOINT']
 beforeEach(() => {
-  process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
+  process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'openclaw'
   try {
     fs.unlinkSync(_testConfigPath)
   } catch {
@@ -350,7 +350,7 @@ describe('preReadImageHandler', () => {
     expect(after?.bytes_saved ?? 0).toBe(beforeBytesSaved + fs.statSync(largePngPath).size - rewrittenBytes(out).length)
   })
 
-  it('books nothing for the data URL it hands a generic harness, since only the host writing that copy can tell whether the original was replaced', async () => {
+  it('books nothing for the data URL it hands a host that writes the copy, since only the host writing that copy can tell whether the original was replaced', async () => {
     const before = summarize(30).by_kind['image_shrink']?.events ?? 0
     const out = await preReadImageHandler(makeEvent(largePngPath))
     expect(out.hookType).toBe('context')
@@ -759,7 +759,7 @@ describe('preReadImageHandler runs no OCR', () => {
   }
 
   // OCR text in hook context sits beside a Read that still loads the image, and a host that writes the copy from a data URL finds none in it and sends the original, so a text-heavy image is shrunk like any other and no image_ocr row is booked.
-  it('hands a text-heavy image the shrunk data URL on a generic harness, never its recognized text, and books no image_ocr row', async () => {
+  it('hands a text-heavy image the shrunk data URL on a host that writes the copy, never its recognized text, and books no image_ocr row', async () => {
     const stub = textHeavyStub('text-heavy')
     setTesseractEntryForTesting(stub.entry)
     const ocrBefore = summarize(30).by_kind['image_ocr']?.events ?? 0
@@ -866,7 +866,7 @@ describe('a delivered shrink is recorded as a read of the original image (real r
   })
 
   it('records the original once when the shrink goes to a host as context', async () => {
-    const out = await runHook(readOf(largePngPath, 'shrink-read-generic'))
+    const out = await runHook(readOf(largePngPath, 'shrink-read-host'))
     expect(out.hookType).toBe('context')
     expect(getSessionFileEntry(largePngPath)).toMatchObject({ readCount: 1, fullReadCount: 1 })
   })
