@@ -30,6 +30,14 @@ issueRules:
   # positive introduced in 7.0.0, and zlibjs@0.3.1, a zero-dependency library last published in
   # 2022.
   #
+  # Holding the core back holds tesseract.js back with it. tesseract.js 7.0.0 declares
+  # tesseract.js-core ^7.0.0 and loads the relaxed-SIMD build whenever the engine supports it, which
+  # Node 24 does, so against core 6.1.2 every OCR call failed. tesseract.js is therefore ^6.0.1,
+  # whose own tesseract.js-core range (^6.0.0) the pin satisfies; and unlike the override, which npm
+  # applies only in this repository, that range keeps a consumer's install on core 6 as well.
+  # tests/guards/an_override_pin_stays_inside_its_dependents_range.test.ts fails if the pin and the
+  # range drift apart again.
+  #
   # Turning this rule off would silence those five, and would equally silence a genuinely malicious
   # minified payload in some future dependency, which is the case the rule exists for. Five
   # documented instances are cheaper than that blind spot.

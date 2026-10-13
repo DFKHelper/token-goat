@@ -122,7 +122,7 @@
     "pdfjs-dist": "^6.1.200",
     "puppeteer-core": "^25.8.0",
     "sqlite-vec": "^0.1.9",
-    "tesseract.js": "^7.0.0",
+    "tesseract.js": "^6.0.1",
     "tree-sitter": "^0.25.1",
     "tree-sitter-c": "^0.24.1",
     "tree-sitter-cpp": "^0.23.4",
