@@ -52,12 +52,18 @@ function spawnFailure(res: SpawnSyncReturns<string>): string {
 const SH_CHUNK = 16
 
 /** Builtins only, since a process per argument made a few hundred commands take minutes under Git Bash: a call is `C<argc>` then each argument, every field NUL-terminated (no value holds NUL), `E<n>` ends command n's run, and `X` ends a chunk. Each chunk runs in a subshell, so a command that ends it cannot end the other chunks; a command can only change what its chunk mates see by smuggling in a statement, which already changes its own argv. */
-const SH_SCRIPT = [
+export const SH_SCRIPT = [
   "token-goat() { printf '\\0C%d\\0' \"$#\"; printf '%s\\0' \"$@\"; }",
+  '[ -n "${TG_N+x}" ] || exit 1',
+  'case "$TG_N" in *[!0-9]*) exit 1 ;; esac',
+  '[ -n "${TG_CHUNK+x}" ] || TG_CHUNK=16',
+  '[ "$TG_CHUNK" -gt 0 ] 2>/dev/null || exit 1',
+  'case "$TG_CHUNK" in *[!0-9]*) exit 1 ;; esac',
+  'tg_chunk=$((10#$TG_CHUNK))',
   'tg_i=0',
   'while [ "$tg_i" -lt "$TG_N" ]; do',
   '  (',
-  '    tg_end=$((tg_i + TG_CHUNK))',
+  '    tg_end=$((tg_i + tg_chunk))',
   '    while [ "$tg_i" -lt "$TG_N" ] && [ "$tg_i" -lt "$tg_end" ]; do',
   '      tg_k=$tg_i',
   '      eval "tg_c=\\"\\$TG_CMD_$tg_k\\""',
@@ -67,7 +73,9 @@ const SH_SCRIPT = [
   '    done',
   '  ) 2>/dev/null',
   "  printf '\\0X\\0'",
-  '  tg_i=$((tg_i + TG_CHUNK))',
+  '  tg_next=$((tg_i + tg_chunk))',
+  '  [ "$tg_next" -gt "$tg_i" ] 2>/dev/null || exit 1',
+  '  tg_i=$tg_next',
   'done',
 ].join('\n')
 
@@ -136,7 +144,7 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
     })
     const res = spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: opts.timeoutMs ?? 120_000 })
     // A timeout kills the outer shell only, orphaning the chunk subshell and anything a command started under it.
-    const reapFailure = res.error || res.signal ? reapOwned(sh, token) : null
+    let reapFailure = res.error || res.signal || (res.status !== null && res.status !== 0) ? reapOwned(sh, token) : null
     const fields = (res.stdout ?? '').split('\0')
     const rerun: number[] = []
     let chunkEnd = Math.min(SH_CHUNK, pending.length)
@@ -164,6 +172,7 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
         cur = { calls: [], stray: [] }
       } else if (f !== '') cur.stray.push(f)
     }
+    if (next < pending.length && reapFailure === null) reapFailure = reapOwned(sh, token)
     const cleanup = reapFailure === null ? '' : `; cleanup after the kill failed: ${reapFailure}`
     if (next < pending.length) {
       const ran = runs.filter((r) => r !== undefined).length
