@@ -30,6 +30,34 @@ function pdfBytes(): Uint8Array {
   return new Uint8Array(Buffer.from(MINIMAL_PDF, 'latin1'));
 }
 
+// Same shape, but the page only paints a 2x2 grayscale image, so it has no text layer: what a scanned page looks like to pdfjs.
+const IMAGE_ONLY_PDF = `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im1 4 0 R >> >> /MediaBox [0 0 200 200] /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 9 >>
+stream
+00FFFF00>
+endstream
+endobj
+5 0 obj
+<< /Length 30 >>
+stream
+q 200 0 0 200 0 0 cm /Im1 Do Q
+endstream
+endobj
+trailer
+<< /Size 6 /Root 1 0 R >>
+%%EOF
+`;
+
 // Same shape as MINIMAL_PDF, but with three text objects: two on the same row at different x (a simulated two-column line) and one on a row below, to exercise --layout's row-grouping + left-to-right reconstruction.
 const LAYOUT_PDF = `%PDF-1.4
 1 0 obj
@@ -203,6 +231,13 @@ describe('extractPdfText', () => {
     expect(result.pageCount).toBe(1);
     expect(result.pagesExtracted).toBe(1);
     expect(result.text).toContain('Hello PDF');
+  });
+
+  // pdf-extract's no-text-layer note keys on this: a page that only paints an image extracts to nothing at all, not to whitespace.
+  it('extracts nothing from a page that only paints an image, the shape of a scan', async () => {
+    const result = await extractPdfText(new Uint8Array(Buffer.from(IMAGE_ONLY_PDF, 'latin1')));
+    expect(result.pagesExtracted).toBe(1);
+    expect(result.text).toBe('');
   });
 
   it('respects a --pages range beyond the document, clamped to what exists', async () => {

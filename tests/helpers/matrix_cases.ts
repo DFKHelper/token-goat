@@ -215,6 +215,15 @@ export const MINIMAL_PDF = '%PDF-1.4\n' +
   '5 0 obj\n<< /Length 44 >>\nstream\nBT /F1 24 Tf 20 100 Td (Hello PDF) Tj ET\nendstream\nendobj\n' +
   'trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n'
 
+// Minimal hand-authored single-page PDF that only paints a 2x2 grayscale image, so its page has no text layer: the shape of a scanned document, for the pdf-extract case below.
+export const IMAGE_ONLY_PDF = '%PDF-1.4\n' +
+  '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+  '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
+  '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im1 4 0 R >> >> /MediaBox [0 0 200 200] /Contents 5 0 R >>\nendobj\n' +
+  '4 0 obj\n<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 9 >>\nstream\n00FFFF00>\nendstream\nendobj\n' +
+  '5 0 obj\n<< /Length 30 >>\nstream\nq 200 0 0 200 0 0 cm /Im1 Do Q\nendstream\nendobj\n' +
+  'trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n'
+
 // Two-font single-line PDF for the pdf-locate case below: pdfjs 6.3.289 only emits separate text items with no space item between them when adjacent Tj operators switch fonts (same-font runs get merged into one item), so a MINIMAL_PDF-style single-Tj fixture never exercises the item join this smoke test is here to cover.
 export const MIXED_FONTS_PDF = '%PDF-1.4\n' +
   '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
@@ -1024,6 +1033,16 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const rLayout = run(['pdf-extract', pdfPath, '--layout'])
     expect(rLayout.status, rLayout.stderr).toBe(0)
     expect(rLayout.stdout).toContain('Hello PDF')
+    // A scanned page used to come back as an empty fence at exit 0. Now it exits 1 so `|| fallback` fires, and stdout alone (as under `2>/dev/null`) names the pages and a rasterize route instead of a fence.
+    const scanPath = path.join(dir, 'scan.pdf')
+    fs.writeFileSync(scanPath, Buffer.from(IMAGE_ONLY_PDF, 'latin1'))
+    const rScan = run(['pdf-extract', scanPath])
+    expect(rScan.status).toBe(1)
+    expect(rScan.stdout).toContain('No text layer on page 1 of 1 page')
+    expect(rScan.stdout).toContain('-dFirstPage=1 -dLastPage=1')
+    expect(rScan.stdout).toContain('token-goat image-text')
+    expect(rScan.stdout).not.toContain('<untrusted-file-content>')
+    expect(rScan.stderr).toContain('no text layer on the requested pages')
   },
   'pdf-locate': () => {
     const dir = mkIsolated('tg-matrix-pdfl-')

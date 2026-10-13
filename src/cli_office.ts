@@ -5,7 +5,9 @@ import { _applyFiltersAndPrint } from './cli_cached_output.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
 import { docxOutline, docxTables, docxText, formatDocxTables } from './docx_extract.js'
 import { emitErr } from './emit.js'
+import { parsePageRange } from './pdf_extract.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
+import { canQuoteArg, echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
 import { pptxNotesText, pptxOutline, pptxSlideText, pptxTextGrep } from './pptx_extract.js'
 import {
@@ -28,7 +30,7 @@ import {
   sliceTranscript,
 } from './transcript_extract.js'
 import { fenceFileFieldIfMatched } from './untrusted_fence.js'
-import { cappedSourceBytesSaved, countNoun, redactUrlQuery } from './util.js'
+import { cappedSourceBytesSaved, countNoun, isWindows, redactUrlQuery } from './util.js'
 import { extractVideoChapters } from './video_chapters.js'
 import {
   formatXlsxColumns,
@@ -60,11 +62,33 @@ export function recordXlsxStat(kind: string, file: string, emitted: string): voi
   recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
+/** What pdf-extract prints instead of an empty fence when no requested page has a text layer: which pages, why, and two rasterizers whose page images the model can Read or `image-text` can OCR. Ghostscript's console binary is `gswin64c` on Windows and `gs` elsewhere. A path no quote mark holds in both shells gets the explanation without the commands. */
+function noTextLayerNote(file: string, first: number, last: number, pageCount: number): string {
+  const pages = first === last ? `page ${first}` : `pages ${first}-${last}`
+  const lines = [`No text layer on ${pages} of ${countNoun(pageCount, 'page')} in ${echoedValue(file)}: it looks scanned or image-only, and pdf-extract reads only a PDF's text layer, it does not OCR.`]
+  if (!canQuoteArg(file)) return lines[0]!
+  const pdf = quotedArg(file)
+  lines.push(
+    'Rasterize the pages, then Read each page image, or run token-goat image-text on it for its text:',
+    `  pdftoppm -r 150 -png -f ${first} -l ${last} ${pdf} page`,
+    `  ${isWindows() ? 'gswin64c' : 'gs'} -q -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r150 -dFirstPage=${first} -dLastPage=${last} -sOutputFile=page-%d.png ${pdf}`,
+  )
+  return lines.join('\n')
+}
+
 export async function cmdPdfExtract(
   file: string,
   opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean; full?: boolean; lines?: string },
 ): Promise<void> {
   const result = await runPdfExtractText(file, opts.pages, opts.layout === true)
+  // Every page's text is trimmed before the join, so an empty result means no requested page holds a visible character: the test pdf-meta's hasTextLayer applies, so one real glyph still counts as text.
+  if (result.pagesExtracted > 0 && result.text.trim() === '') {
+    if (result.pagesNote !== undefined) emitErr(result.pagesNote)
+    const range = parsePageRange(opts.pages, result.pageCount) ?? { start: 1, end: result.pageCount }
+    // On stdout as well as the exit code: an empty fence at exit 0 read as a broken command (an agent spent three calls doubting it), and an agent's `2>/dev/null` or `| head` would hide a note written only to stderr.
+    out(noTextLayerNote(file, range.start, range.end, result.pageCount))
+    throw new CliError(`no text layer on the requested pages of ${echoedValue(file)}; it looks scanned or image-only`)
+  }
   const text = redactSecrets(result.text).text
   const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
   // On stderr after the body, as the recall filters' own notes are: stdout is fenced document text, where a token-goat line would read as part of the document.
