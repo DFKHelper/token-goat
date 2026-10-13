@@ -3,12 +3,14 @@
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
 import type { HookOutput } from './types.js'
-import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText, isMcpErrorResponse, emitRewriteIfChanged } from './hooks_common.js'
+import { passOutput, denyOutput, getToolName, getToolInput, extractToolResultText, isMcpErrorResponse, emitRewrite, emitRewriteIfChanged } from './hooks_common.js'
 import { storeMcpOutput, getMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { recordStat } from './stats.js'
-import { scanAndRecord, fenceWithMatches } from './untrusted_fence.js'
-import { redactSecrets } from './secret_redact.js'
+import { scanAndRecord, fenceWithMatches, fenceJsonStrings } from './untrusted_fence.js'
+import { neutralizeFenceMarkers, UNTRUSTED_WEB_TAG } from './injection_scan.js'
+import { countRedactionPlaceholders, redactSecrets } from './secret_redact.js'
+import { detectHarness } from './bridges/registry.js'
 
 /** Collapse whitespace and case so "React hooks" and "  react   HOOKS  " dedup as the same query, mirroring grepSignature's normalization intent in hooks_grep.ts. */
 function normalizeQuery(query: string): string {
@@ -29,6 +31,32 @@ function webSearchSignatureInput(toolInput: Record<string, unknown>): Record<str
     canonical['blocked_domains'] = [...blocked].sort()
   }
   return canonical
+}
+
+/** Claude Code's WebSearch result with every string element of `results` (the model's own summary of the pages) redacted and fenced in place, every string inside a hit object redacted and neutralized in place, and every other key left exactly as the harness built it. The harness validates a rewrite against the tool's output schema (claude.exe 2.1.296: `query` string, `results` an array of `{tool_use_id, content}` objects and/or strings, `durationSeconds` number, `searchCount` optional number) and keeps the original on a mismatch, so the fence has to go inside each string rather than around the whole result. Each string is redacted and fenced on its own: the text the rest of this handler works on is the whole result serialized as JSON, which cannot be split back into the elements it came from. A hit object reaches the model as `Links: <json>` beside the fenced summary, outside any fence, and fencing a title or a URL would break what it is, so its strings are cleaned where they sit instead: redacted, and stripped of the web fence's tag and of token-goat's own voice, either of which a page title can print. Its keys and nesting are kept, so the copy still validates. Null when the response is not that shape, or when no string in it changes: there is then nothing a valid rewrite would carry. */
+function fenceWebSearchResults(toolResponse: unknown, injectionMatches: readonly string[]): Record<string, unknown> | null {
+  const results = webSearchResults(toolResponse)
+  if (results === null) return null
+  let changed = false
+  const clean = (text: string): string => {
+    const cleaned = neutralizeFenceMarkers(redactSecrets(text).text, UNTRUSTED_WEB_TAG)
+    if (cleaned !== text) changed = true
+    return cleaned
+  }
+  const fenced = results.map((element: unknown) => {
+    if (typeof element !== 'string') return fenceJsonStrings(element, clean)
+    const rewritten = fenceWithMatches(redactSecrets(element).text, injectionMatches)
+    if (rewritten !== element) changed = true
+    return rewritten
+  })
+  return changed ? { ...(toolResponse as Record<string, unknown>), results: fenced } : null
+}
+
+/** The `results` array of Claude Code's WebSearch result object, or null when `toolResponse` is not that shape. */
+function webSearchResults(toolResponse: unknown): unknown[] | null {
+  if (toolResponse === null || typeof toolResponse !== 'object' || Array.isArray(toolResponse)) return null
+  const results = (toolResponse as Record<string, unknown>)['results']
+  return Array.isArray(results) ? results : null
 }
 
 export function preWebSearchDedupHandler(event: HookEvent): HookOutput {
@@ -59,9 +87,22 @@ export function postWebSearchHandler(event: HookEvent): HookOutput {
     const injectionMatches = scanAndRecord(resultText)
     // Redact secrets on the same live path the fence above protects, computed here at the same point ahead of every early-return guard below rather than folded into any one of them -- a large WebSearch result can carry a credential (an API key pasted into a forum answer, a leaked token in an indexed gist) that trips no injection pattern at all, so gating redaction on injectionMatches would leave it unredacted. redactSecrets() is pure/synchronous and its own doc comment says it does not swallow a regex-engine failure itself, so it relies on this handler's outer try/catch the same way hooks_mcp.ts's postMcpHandler calls it unwrapped too.
     const redacted = redactSecrets(resultText)
+    // Claude Code rejects any rewrite that is not its own result shape, so there the redacted, fenced strings travel inside a copy of that shape. Built here, beside the string form, for the same ordering reason as the two lines above.
+    const shapedResponse = fenceWebSearchResults(event.raw['tool_response'], injectionMatches)
+    const shipsShaped = detectHarness() === 'claudecode' && webSearchResults(event.raw['tool_response']) !== null
     // Unconditional: a WebSearch result is third-party web content by provenance, so it is fenced whether or not the eight deliberately-narrow patterns matched. It used to pass through unfenced on a clean scan, which meant any payload those patterns miss reached the model unmarked -- the fence's whole job is to survive a miss. The scan result now only decides whether the notice names pattern(s).
-    const passOrFence = (): HookOutput =>
-      emitRewriteIfChanged(resultText, fenceWithMatches(redacted.text, injectionMatches), 'websearch')
+    const passOrFence = (): HookOutput => {
+      const fenced = fenceWithMatches(redacted.text, injectionMatches)
+      if (!shipsShaped) return emitRewriteIfChanged(resultText, fenced, 'websearch')
+      // On Claude Code the shaped copy is the whole rewrite: with nothing in it to change, nothing ships.
+      if (shapedResponse === null) return passOutput()
+      // 'counted-elsewhere': the secret_redacted count is booked just below from the shaped copy, which is what Claude Code receives, rather than from the fenced string, which it never sees.
+      const out = emitRewrite(fenced, 'websearch', undefined, 'counted-elsewhere')
+      if (out.hookType !== 'rewriteOutput') return out
+      const shippedRedactions = countRedactionPlaceholders(JSON.stringify(shapedResponse))
+      if (shippedRedactions > 0) recordStat('secret_redacted', 0, shippedRedactions, undefined, 'websearch')
+      return { ...out, updatedToolResponse: shapedResponse }
+    }
 
     if (!event.sessionId) return passOrFence()
     const signature = webSearchSignatureInput(getToolInput(event))

@@ -14,7 +14,8 @@ vi.mock('../src/stats.js', async (importOriginal) => {
 
 // Importing relay registers every hook module, so runHook dispatches through the production registry rather than a directly-imported handler reference.
 import { buildEvent } from '../src/relay.js'
-import { runHook } from '../src/hook_registry.js'
+import type { HookEvent } from '../src/hook_registry.js'
+import { runHook, serializeOutput } from '../src/hook_registry.js'
 import { recordStat } from '../src/stats.js'
 import { countRedactionPlaceholders } from '../src/secret_redact.js'
 
@@ -94,6 +95,40 @@ describe('secret_redacted counts the emitted text, not the redaction input', () 
     const only = await runHook(buildEvent('post_tool_use', poll(`${BULK}\nexport AWS_KEY=${SECRET}`)))
     expect(only.hookType).toBe('pass')
     expect(redactionStats(), 'on a pass the model sees the raw result, so nothing was protected').toEqual([])
+  })
+})
+
+// On Claude Code a WebSearch rewrite ships as a copy of the result object (updatedToolResponse); the fenced string of the whole result never reaches the model there, so it is not what the count may describe.
+describe('WebSearch on Claude Code books the placeholders in the result it ships', () => {
+  /** CAPTURE key set of Claude Code's WebSearch tool_response, `{query, results, durationSeconds, searchCount}`; values are placeholders. */
+  function search(results: unknown[]): HookEvent {
+    return buildEvent('post_tool_use', {
+      tool_name: 'WebSearch',
+      tool_input: { query: 'deploy notes' },
+      session_id: sessionId,
+      tool_response: { query: 'deploy notes', results, durationSeconds: 1.2, searchCount: 1 },
+    })
+  }
+
+  async function shipped(event: HookEvent): Promise<string> {
+    const wire = JSON.parse(serializeOutput(await runHook(event), 'post_tool_use', 'claudecode', event)) as { hookSpecificOutput?: { updatedToolOutput?: unknown } }
+    return JSON.stringify(wire.hookSpecificOutput?.updatedToolOutput ?? null)
+  }
+
+  const booked = (): number => redactionStats().reduce((n, [count]) => n + (count as number), 0)
+
+  it('a credential only in a hit URL is redacted where it ships and booked once', async () => {
+    const out = await shipped(search([{ tool_use_id: 'srvtoolu_01', content: [{ title: 'Deploy notes', url: `https://example.com/deploy?key=${SECRET}` }] }]))
+    expect(out).not.toContain(SECRET)
+    expect(countRedactionPlaceholders(out)).toBe(1)
+    expect(booked()).toBe(countRedactionPlaceholders(out))
+  })
+
+  it('credentials in the summary and in a hit are both booked, and only as many as ship', async () => {
+    const out = await shipped(search([{ tool_use_id: 'srvtoolu_01', content: [{ title: 'Deploy notes', url: `https://example.com/deploy?key=${SECRET}` }] }, `The config sets AWS_KEY=${SECRET}.`]))
+    expect(out).not.toContain(SECRET)
+    expect(countRedactionPlaceholders(out)).toBe(2)
+    expect(booked()).toBe(countRedactionPlaceholders(out))
   })
 })
 

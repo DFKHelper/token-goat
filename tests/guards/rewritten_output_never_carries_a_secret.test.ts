@@ -77,7 +77,21 @@ function responseShapePairs(): { first: Record<string, unknown>; second: Record<
     { first: { content: [{ type: 'text', text: report }] }, second: { content: [{ type: 'text', text: report }] } },
     { first: { output: plan }, second: { output: plan } },
     { first: { output: grepHits.join('\n') }, second: { output: grepHits.join('\n') } },
+    // Claude Code's real WebSearch shape, whose summary strings sit inside `results` beside the hit objects, so the WebSearch handler rewrites them in place through `updatedToolResponse` rather than through any field `updatedOutput` stands in for.
+    { first: webSearchResponse(withSecret), second: webSearchResponse(withSecret) },
+    // The credential only in a hit object's URL: hit objects reach the model as "Links: <json>", outside the fence, so they are redacted where they sit.
+    { first: webSearchResponse(clean, `https://example.com/deploy?key=${SECRET}`), second: webSearchResponse(clean, `https://example.com/deploy?key=${SECRET}`) },
   ]
+}
+
+/** CAPTURE — Claude Code's WebSearch `tool_response` key set, `{query, results, durationSeconds, searchCount}`, with `results` holding a hit object and the model's summary string. */
+function webSearchResponse(summary: string, url = 'https://example.com/deploy'): Record<string, unknown> {
+  return {
+    query: 'deploy config',
+    results: [{ tool_use_id: 'srvtoolu_01', content: [{ title: 'Deploy notes', url }] }, summary],
+    durationSeconds: 1.5,
+    searchCount: 1,
+  }
 }
 
 /** Tool inputs picked so each handler's own command/id gate is satisfied where it has one. */
@@ -134,7 +148,8 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
           rewrote++
           rewroteTools.add(toolName)
           // updatedBlocks is scanned beside updatedOutput, not instead of it: a rewrite that emits blocks ships them in place of the string, so reading only the string would certify a payload the model never receives while the one it does receive goes unread. The blocks are copied out of the tool's own result, which is exactly where a live credential would be.
-          const emitted = result.updatedOutput + JSON.stringify(result.updatedBlocks ?? [])
+          // updatedToolResponse likewise: on Claude Code it replaces the string outright.
+          const emitted = result.updatedOutput + JSON.stringify(result.updatedBlocks ?? []) + JSON.stringify(result.updatedToolResponse ?? {})
           if (emitted.includes(SECRET)) leaked.push(`${toolName} (shape ${i}, call ${call + 1})`)
         }
       }
