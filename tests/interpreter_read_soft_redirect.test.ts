@@ -23,7 +23,7 @@ function capHint(command: string): string {
 }
 
 // CAPTURE: two of the 217 refused commands, verbatim from the transcripts (the first a Claude Code session, the second one line of a multi-line one); both project a few fields out of one JSON file.
-const PROJECTION_ONE_LINE = `python -c "import json;d=json.load(open('C:/Users/zelys/AppData/Local/Temp/tweet.json',encoding='utf-8'));t=d.get('tweet',d);print(t.get('text') or t.get('raw_text',{}).get('text'))"`
+const PROJECTION_ONE_LINE = `python -c "import json;d=json.load(open('C:/Users/dev/AppData/Local/Temp/tweet.json',encoding='utf-8'));t=d.get('tweet',d);print(t.get('text') or t.get('raw_text',{}).get('text'))"`
 const PROJECTION_MULTI_LINE = `python -c "\nimport json\nd=json.load(open('.selfimprove/targets.json'))\nfor i,t in enumerate(d['targets']): print(i, t['id'], '|', t['title'][:78])\n"`
 
 describe('inline interpreter file reads run capped instead of refused', () => {
@@ -38,7 +38,7 @@ describe('inline interpreter file reads run capped instead of refused', () => {
     expect(command).toMatch(/^token-goat compress -f passthrough --timeout \d+ --max-tokens 2000 --cap-hint-b64 \S+ -c '/)
     expect(command).toContain('tweet.json')
     const hint = capHint(command)
-    expect(hint).toContain('token-goat json-outline "C:/Users/zelys/AppData/Local/Temp/tweet.json"')
+    expect(hint).toContain('token-goat json-outline "C:/Users/dev/AppData/Local/Temp/tweet.json"')
     // The refusal's lead says the read bypasses the hooks; printed after output that ran, it would be false.
     expect(hint).not.toContain('bypass')
   })
@@ -60,7 +60,7 @@ describe('inline interpreter file reads run capped instead of refused', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('Python `open()` file reads bypass read hooks.')
-      expect(result.message).toContain('token-goat json-outline "C:/Users/zelys/AppData/Local/Temp/tweet.json"')
+      expect(result.message).toContain('token-goat json-outline "C:/Users/dev/AppData/Local/Temp/tweet.json"')
     }
   })
 

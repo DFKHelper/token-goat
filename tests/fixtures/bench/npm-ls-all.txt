@@ -881,4 +881,4 @@ npm error extraneous: @emnapi/runtime@1.11.3 C:\Projects\token-goat\node_modules
 npm error extraneous: @img/sharp-wasm32@0.35.4 C:\Projects\token-goat\node_modules\@img\sharp-wasm32
 npm error invalid: tree-sitter@0.25.1 C:\Projects\token-goat\node_modules\tree-sitter
 npm error extraneous: tslib@2.8.1 C:\Projects\token-goat\node_modules\tslib
-npm error A complete log of this run can be found in: C:\Users\zelys\AppData\Local\npm-cache\_logs\2026-09-04T13_15_25_454Z-debug-0.log
+npm error A complete log of this run can be found in: C:\Users\dev\AppData\Local\npm-cache\_logs\2026-09-04T13_15_25_454Z-debug-0.log

@@ -131,7 +131,7 @@ const CORPUS = [
   'SELECT COUNT(*) c FROM chunk_vectors WHERE rowid = ?',
   'git rev-parse HEAD~1',
   '0x1f 1e-9 3.14159 1_000_000',
-  'C:\\Users\\zelys\\AppData\\Local\\Temp',
+  'C:\\Users\\dev\\AppData\\Local\\Temp',
   '/usr/local/lib/node_modules/token-goat',
   'e2e i18n a11y k8s',
 

@@ -280,7 +280,7 @@ Any window of 35 consecutive occasions must contain a multiple of 30, so at leas
 The mechanism, traced to source:
 
 1. `bumpSuppressionStreak` (`src/hint_stats.ts`) writes to `hint_suppression_probes` in the global DB.
-2. That table does not exist. `C:\Users\zelys\.token-goat\global.db` reports **zero tables**.
+2. That table does not exist. `C:\Users\<user>\.token-goat\global.db` reports **zero tables**.
 3. The `INSERT` therefore throws, and the function's own `catch` returns `0`.
 4. `isProbeOccasion(0, [1, 3, 10, 30])` checks `sorted.includes(0)` (false), then `0 > 30` (false), and returns **false**.
 5. Every suppressed occasion is occasion zero, which is never a probe occasion, so no hint is ever let through.
@@ -293,7 +293,7 @@ This also explains, without appeal to any classifier gap, why the mining report 
 
 ## Correction to the diagnostic addendum, and to the chairman's step 1
 
-The addendum above asserted that the `hint_suppression_probes` table was missing, that `bumpSuppressionStreak` therefore threw and returned 0, and that `isProbeOccasion(0, ...)` was consequently always false. **That mechanism is wrong.** It was inferred from a stale, empty `global.db` at `C:\Users\zelys\.token-goat\global.db`, which is not the database the product actually uses. The real one is at `C:\Users\zelys\AppData\Local\dfk-helper\token-goat\global.db`, and it is healthy: the table exists, `user_version` is 11, and the streak counters are live and correct.
+The addendum above asserted that the `hint_suppression_probes` table was missing, that `bumpSuppressionStreak` therefore threw and returned 0, and that `isProbeOccasion(0, ...)` was consequently always false. **That mechanism is wrong.** It was inferred from a stale, empty `global.db` at `C:\Users\<user>\.token-goat\global.db`, which is not the database the product actually uses. The real one is at `C:\Users\<user>\AppData\Local\dfk-helper\token-goat\global.db`, and it is healthy: the table exists, `user_version` is 11, and the streak counters are live and correct.
 
 Measured directly, the counter works exactly as designed:
 
@@ -304,7 +304,7 @@ bash_redirect=23000       bash_redirect=23040
 
 Exactly +40. So the classifier fires, the hint is built, `shouldSuppress` returns true, and `bumpSuppressionStreak` records the occasion without error, all forty times.
 
-The real cause is in configuration, not code. The persisted config at `C:\Users\zelys\AppData\Local\dfk-helper\token-goat\config.toml` contains:
+The real cause is in configuration, not code. The persisted config at `C:\Users\<user>\AppData\Local\dfk-helper\token-goat\config.toml` contains:
 
 ```toml
 [hints]

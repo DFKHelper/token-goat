@@ -16,7 +16,7 @@ const BATCH_MARK = 'reads/searches in a row each waited a full turn'
 const BRAKE_MARK = 'searches in a row found nothing'
 const BRAKE_LINE = '[token-goat] 3 searches in a row found nothing. Search by meaning instead of guessing literals: `token-goat answer "<question>"` or `token-goat semantic "<description>"`.'
 
-// CAPTURE: Claude Code, C:/Users/zelys/AppData/Local/Temp/tg_capture/events_run1.jsonl. Three Greps issued in one assistant message ran pre,post,pre,post,pre,post at these epoch ms, then the next message's Grep pre came 2,442 ms after the previous post.
+// CAPTURE: Claude Code, C:/Users/<user>/AppData/Local/Temp/tg_capture/events_run1.jsonl. Three Greps issued in one assistant message ran pre,post,pre,post,pre,post at these epoch ms, then the next message's Grep pre came 2,442 ms after the previous post.
 const T0 = 1790231703231
 const CAPTURED_BATCH = [
   { pre: T0, post: T0 + 136 },

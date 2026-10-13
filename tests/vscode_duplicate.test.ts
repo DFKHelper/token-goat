@@ -18,7 +18,7 @@ function sessionStartPayload(cwd: string): Record<string, unknown> {
     hook_event_name: 'SessionStart',
     session_id: 'ddd6fe11-9a9c-4b87-9802-dc480037808c',
     transcript_path:
-      'c:\\Users\\zelys\\AppData\\Roaming\\Code\\User\\workspaceStorage\\e4dbeb13983c33fa15ddf37322d74ca4\\GitHub.copilot-chat\\transcripts\\ddd6fe11-9a9c-4b87-9802-dc480037808c.jsonl',
+      'c:\\Users\\dev\\AppData\\Roaming\\Code\\User\\workspaceStorage\\e4dbeb13983c33fa15ddf37322d74ca4\\GitHub.copilot-chat\\transcripts\\ddd6fe11-9a9c-4b87-9802-dc480037808c.jsonl',
     source: 'new',
     model: 'auto',
     cwd,

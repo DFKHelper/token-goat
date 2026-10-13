@@ -30,12 +30,12 @@ Sub-agent briefs carry this gate verbatim: their reads cost the same budget.
 
 - NEVER `git stash`. NEVER `git checkout -- <file>`. Both have destroyed uncommitted work in
   this repo. To back up a file before mutating it, `cp` it to
-  `/c/Users/zelys/AppData/Local/Temp/`. To revert one file for a mutation test, use
+  `/c/Users/<user>/AppData/Local/Temp/`. To revert one file for a mutation test, use
   `git show HEAD:path > path` with a `cp` backup taken first.
 - NEVER `git push`. Commit locally only, leave the tree clean, and end with a plain readiness
   statement. Pushing is the user's call; a green CI gate is not authorization.
 - Never write outside `C:\Projects\token-goat`, except scratch under
-  `/c/Users/zelys/AppData/Local/Temp/` and any named toolchain directory declared in advance.
+  `/c/Users/<user>/AppData/Local/Temp/` and any named toolchain directory declared in advance.
 - Never spawn a second writer against this tree. Serial only.
 - Do NOT use a bash heredoc or `python -c` for any string containing backslashes: this harness
   collapses `\n` to a real newline and `\1` to a control character, so the edit silently fails
@@ -54,7 +54,7 @@ Sub-agent briefs carry this gate verbatim: their reads cost the same budget.
 - Any new stat kind must be registered in the kind-to-source map and grouped in `_KIND_GROUPS`.
   A new command must be added to the command matrix, json-envelope, three-state and
   guidance-coverage guards. All four stat guards fail otherwise, which is their purpose.
-- Session transcripts under `C:\Users\zelys\.claude\projects\` are the user's real work. Read
+- Session transcripts under `C:\Users\<user>\.claude\projects\` are the user's real work. Read
   for structure, shape and counts only. No transcript content in fixtures, commits, CHANGELOG,
   memory files, or reports. Project names and paths are content too: aggregate them. Never
   send any of it to a third-party host.

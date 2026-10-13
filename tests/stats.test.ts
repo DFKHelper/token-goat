@@ -882,21 +882,21 @@ describe('stats', () => {
       const dbPath = path.join(tempDir, 'prune-leak-test.db')
       const db = openStatsDb(dbPath)
       const insert = db.prepare(`INSERT INTO stats (ts, kind, bytes_saved, tokens_saved, detail, tg_version) VALUES (?, ?, 0, 0, ?, ?)`)
-      insert.run(windowTs, 'large_read_redirect', 'C:\\Users\\zelys\\AppData\\Local\\Temp\\pytest-of-zelys\\pytest-1333\\popen-gw0\\test_large_image_additional_co0\\large.jpg', null)
+      insert.run(windowTs, 'large_read_redirect', 'C:\\Users\\dev\\AppData\\Local\\Temp\\pytest-of-dev\\pytest-1333\\popen-gw0\\test_large_image_additional_co0\\large.jpg', null)
       insert.run(windowTs, 'session_hint_suppressed', '/fake/src/foo.py', null)
-      insert.run(windowTs, 'large_read_redirect', 'C:\\Users\\zelys\\pytest-of-zelys\\real-read.log', '2.9.20') // in-window, pytest-of- shape, but a real row (tg_version set) -- must survive
+      insert.run(windowTs, 'large_read_redirect', 'C:\\Users\\dev\\pytest-of-dev\\real-read.log', '2.9.20') // in-window, pytest-of- shape, but a real row (tg_version set) -- must survive
       insert.run(outsideWindowTs, 'session_hint_suppressed', '/fake/src/bar.py', null) // /fake/ shape, NULL tg_version, but outside the window -- must survive
       insert.run(windowTs, 'large_read_redirect', 'C:\\Projects\\real-project\\src\\index.ts size=112648', '2.9.20') // a genuine project path, must survive
-      insert.run(windowTs, 'indexed_cat_deny', '/home/zelys/real-project/src/foo.py', '2.9.20') // contains "real" but not the /fake/ shape, must survive
+      insert.run(windowTs, 'indexed_cat_deny', '/home/dev/real-project/src/foo.py', '2.9.20') // contains "real" but not the /fake/ shape, must survive
 
       pruneTestIsolationLeakRows(db)
 
       const remaining = db.prepare(`SELECT detail FROM stats ORDER BY id`).all() as Array<{ detail: string }>
       expect(remaining.map((r) => r.detail)).toEqual([
-        'C:\\Users\\zelys\\pytest-of-zelys\\real-read.log',
+        'C:\\Users\\dev\\pytest-of-dev\\real-read.log',
         '/fake/src/bar.py',
         'C:\\Projects\\real-project\\src\\index.ts size=112648',
-        '/home/zelys/real-project/src/foo.py',
+        '/home/dev/real-project/src/foo.py',
       ])
       db.close()
     })

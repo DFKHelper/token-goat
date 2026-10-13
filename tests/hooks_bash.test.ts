@@ -355,8 +355,8 @@ describe('postBashHandler', () => {
 
   // CAPTURE: the two commands verbatim from a real session's transcript (Bash calls whose results came back fenced and capped at ~2,000 tokens despite the prefix, before the opt-out learned to read past the first pipeline stage). The output is shaped like theirs, numbered lines of distinct prose, which nothing dedupes: only the size cap could have touched it, so the control row proves the cap is live for exactly this output.
   it.each([
-    `cd C:/Users/zelys/.claude/skills/humanizer && TOKEN_GOAT_BASH_COMPRESS=0 awk 'NR>=246 && NR<=313 {print "L"NR"| "$0}' SKILL.md | cut -c1-900`,
-    `cd C:/Users/zelys/.claude/skills/humanizer && TOKEN_GOAT_BASH_COMPRESS=0 awk 'NR>=9 && NR<=108 {print "H"NR"| "$0}' humanizer.md | cut -c1-600`,
+    `cd C:/Users/dev/.claude/skills/humanizer && TOKEN_GOAT_BASH_COMPRESS=0 awk 'NR>=246 && NR<=313 {print "L"NR"| "$0}' SKILL.md | cut -c1-900`,
+    `cd C:/Users/dev/.claude/skills/humanizer && TOKEN_GOAT_BASH_COMPRESS=0 awk 'NR>=9 && NR<=108 {print "H"NR"| "$0}' humanizer.md | cut -c1-600`,
   ])('passes the captured piped awk read through whole: %s', async (command) => {
     const numbered = Array.from({ length: 1200 }, (_, i) => `L${i + 1}| sentence ${i} of a skill body, with its own words: ${'w'.repeat(i % 17)} and a clause ${i * 7}`).join('\n') + '\n'
     expect((await postBashHandler(makePostBashEvent(command.replace('TOKEN_GOAT_BASH_COMPRESS=0 ', ''), numbered))).hookType).toBe('rewriteOutput')
@@ -1988,7 +1988,7 @@ describe('preBashHandler — python read-modify-write exemption', () => {
   })
 })
 
-// CAPTURE (this machine, 2026-09-24): the first line of a real agent-task transcript under %TEMP%/claude/C--Projects-claude-agents/0d84f3c6-.../tasks/a2af08af400178684.output, cut after the message content opens and closed so the line stays valid JSON.
+// CAPTURE (this machine, 2026-09-24): the first line of a real agent-task transcript under %TEMP%/claude/C--Projects-other-repo/0d84f3c6-.../tasks/a2af08af400178684.output, cut after the message content opens and closed so the line stays valid JSON.
 const CAPTURED_TRANSCRIPT_HEAD = '{"parentUuid":null,"isSidechain":true,"promptId":"b790d192-f714-471f-86c8-b986260e9595","agentId":"a2af08af400178684","type":"user","message":{"role":"user","content":"You are the advisory pass"}}\n'
 // CAPTURE (same scan): heads of background Bash tasks' `.output` files in the same tasks directories, plain stdout from commands that print JSON, compact and pretty-printed.
 const CAPTURED_PLAIN_JSON_HEADS = [

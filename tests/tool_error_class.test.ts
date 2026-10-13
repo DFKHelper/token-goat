@@ -33,7 +33,7 @@ const CENSUS_CASES: readonly Case[] = [
   { reason: 'shell_syntax_error', tool: 'Bash', text: 'Exit code 2\n/usr/bin/bash: eval: line 1: unexpected EOF while looking for matching `"\'', flags: { command: 'ls "C:\\Projects\\claude-skills\\game-audio\\"' } },
   { reason: 'sleep_blocked', tool: 'Bash', text: '<tool_use_error>Blocked: standalone sleep 60. To wait for a condition, use Monitor with an until-loop (e.g. `until <check>; do sleep 2; done`). To wait for a command you started, use run_in_background: true. Do not chain shorter sleeps to work around this block.</tool_use_error>', flags: { command: 'sleep 60' } },
   { reason: 'subagent_limit', tool: 'Agent', text: 'Concurrent subagent limit reached. You can run 20 subagents at once. Do not retry. If the user wants more concurrent subagents, ask them to increase CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS.' },
-  { reason: 'test_or_build_failed', tool: 'Bash', text: 'Exit code 1\n.F..\r\n======================================================================\r\nFAIL: test_calibration_totals_match_the_emitters (tools.test_selfdescribing_counts.ContractCheckCalibration.test_calibration_totals_match_the_emitters)', flags: { command: 'cd C:/Projects/claude-agents && python -m unittest tools.test_selfdescribing_counts.ContractCheckCalibration 2>&1' } },
+  { reason: 'test_or_build_failed', tool: 'Bash', text: 'Exit code 1\n.F..\r\n======================================================================\r\nFAIL: test_calibration_totals_match_the_emitters (tools.test_selfdescribing_counts.ContractCheckCalibration.test_calibration_totals_match_the_emitters)', flags: { command: 'cd C:/Projects/other-repo && python -m unittest tools.test_selfdescribing_counts.ContractCheckCalibration 2>&1' } },
   { reason: 'tg_deny', tool: 'Glob', text: 'PreToolUse:Glob hook error: [tg] test deny', flags: { denialKind: 'permission-rule' } },
   // Transcript C--Projects-token-goat-mem/252ee8fa-5f72-4499-af02-5fc825e4a5e2.jsonl, Claude Code 2.1.240: the inlined slice after the first paragraph is cut.
   { reason: 'tg_content_delivered', tool: 'Skill', text: 'Skill `brainstorming` is large (66612 bytes); its compact slice (11566 bytes) is inlined below instead of the full body. Run `token-goat skill-body brainstorming` if you need the full body.', flags: { denialKind: 'permission-rule' } },
@@ -43,7 +43,7 @@ const CENSUS_CASES: readonly Case[] = [
 ]
 
 // CAPTURE: the `error` field of the two PostToolUseFailure payloads Claude Code 2.1.281 sent on 2026-09-24 (a missing-file Read and `ls nonexistent_dir`).
-const HOOK_READ_ERROR = 'File does not exist. Note: your current working directory is C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_capture\\proj.'
+const HOOK_READ_ERROR = 'File does not exist. Note: your current working directory is C:\\Users\\dev\\AppData\\Local\\Temp\\tg_capture\\proj.'
 const HOOK_BASH_ERROR = "Exit code 2\nls: cannot access 'nonexistent_dir': No such file or directory"
 
 describe('classifyToolError', () => {
@@ -141,7 +141,7 @@ describe('unwrapToolError', () => {
 describe('errorPrefix', () => {
   it('keys a Bash failure on its exit code and first output line, with paths, quotes and digits masked', () => {
     expect(errorPrefix(HOOK_BASH_ERROR)).toBe('exit 2: ls: cannot access <q>: No such file or directory')
-    expect(errorPrefix('File does not exist. Note: cwd is C:\\Users\\zelys\\proj.')).toBe('File does not exist. Note: cwd is <path>')
+    expect(errorPrefix('File does not exist. Note: cwd is C:\\Users\\dev\\proj.')).toBe('File does not exist. Note: cwd is <path>')
     expect(errorPrefix('Exit code 1\nTraceback (most recent call last):\n  File "x.py", line 3')).toBe('exit 1: Traceback (most recent call last):')
     expect(errorPrefix('Error: ENOENT: no such file, open /home/u/a/b.txt')).toBe('Error: ENOENT: no such file, open <path>')
   })

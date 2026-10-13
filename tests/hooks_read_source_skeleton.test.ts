@@ -195,7 +195,7 @@ describe('large-source structural-skeleton replacement on the real Read hook pat
 
   /** Fixture provenance: CAPTURE. Produced by generating a 1,601-line scratch file (97,600 bytes of random hex) and calling Claude Code's Read tool on it with no offset/limit, which overran the 25,000-token cap; this is the notice byte-for-byte as the harness emitted it. */
   const HARNESS_TRUNCATION_NOTICE =
-    '[Truncated: PARTIAL view — C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_trunc_probe\\probe.text: showing lines 1-529 of 1601 total (64247 tokens, cap 25000). Call Read with offset=530 limit=529 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.]'
+    '[Truncated: PARTIAL view — C:\\Users\\dev\\AppData\\Local\\Temp\\tg_trunc_probe\\probe.text: showing lines 1-529 of 1601 total (64247 tokens, cap 25000). Call Read with offset=530 limit=529 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.]'
 
   it('declines to fold when the harness truncation notice opens the delivered body', () => {
     const body = tsFile(12, 12)

@@ -284,9 +284,9 @@ describe('preGrepDedupHandler', () => {
     }
   })
 
-  // A files_with_matches Grep on Claude Code answers with structured fields and no text, so a count read from text keys alone recorded 0 and the note never fired. CAPTURE: C:/Users/zelys/AppData/Local/Temp/tg_capture/events_run1.jsonl lines 1-2 (Claude Code 2.1.281), transcript_path dropped. The threshold is lowered to the one file that capture matched.
+  // A files_with_matches Grep on Claude Code answers with structured fields and no text, so a count read from text keys alone recorded 0 and the note never fired. CAPTURE: C:/Users/<user>/AppData/Local/Temp/tg_capture/events_run1.jsonl lines 1-2 (Claude Code 2.1.281), transcript_path dropped. The threshold is lowered to the one file that capture matched.
   it('counts a structured files_with_matches response, so the note fires on the identical repeat', () => {
-    const envelope = { session_id: 'b0d08203-e7fb-4b9c-b06c-63ee7efc746a', cwd: 'C:\\Users\\zelys\\AppData\\Local\\Temp\\tg_capture\\proj', prompt_id: 'a5d4b644-942c-4453-ad2e-8cb4ea1ca6cd', permission_mode: 'bypassPermissions', tool_name: 'Grep', tool_input: { pattern: 'alpha', path: 'src' }, tool_use_id: 'toolu_01AaJzK9t4i43Zc2R7jHfoou' }
+    const envelope = { session_id: 'b0d08203-e7fb-4b9c-b06c-63ee7efc746a', cwd: 'C:\\Users\\dev\\AppData\\Local\\Temp\\tg_capture\\proj', prompt_id: 'a5d4b644-942c-4453-ad2e-8cb4ea1ca6cd', permission_mode: 'bypassPermissions', tool_name: 'Grep', tool_input: { pattern: 'alpha', path: 'src' }, tool_use_id: 'toolu_01AaJzK9t4i43Zc2R7jHfoou' }
     const post = { ...envelope, hook_event_name: 'PostToolUse', tool_response: { mode: 'files_with_matches', filenames: ['src\\a.ts'], numFiles: 1, totalFiles: 1 }, duration_ms: 45 }
     const pre = { ...envelope, hook_event_name: 'PreToolUse' }
     const cfg = defaultConfig()

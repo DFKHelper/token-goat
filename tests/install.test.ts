@@ -122,7 +122,7 @@ describe('installHooks', () => {
 
   it('wires PostToolUseFailure beside a foreign entry under the same key without clobbering it, and a re-install leaves both untouched', () => {
     // CAPTURE: the PostToolUseFailure group another tool (Orca) wrote into a real ~/.claude/settings.json on this machine, 2026-09-24.
-    const foreign = [{ matcher: '*', hooks: [{ type: 'command', command: "if [ -f 'C:/Users/zelys/.orca/agent-hooks/claude-hook.cmd' ]; then 'C:/Users/zelys/.orca/agent-hooks/claude-hook.cmd'; else cat >/dev/null 2>&1 || :; fi", timeout: 10 }] }]
+    const foreign = [{ matcher: '*', hooks: [{ type: 'command', command: "if [ -f 'C:/Users/dev/.orca/agent-hooks/claude-hook.cmd' ]; then 'C:/Users/dev/.orca/agent-hooks/claude-hook.cmd'; else cat >/dev/null 2>&1 || :; fi", timeout: 10 }] }]
     const p = settingsPath('project')
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, JSON.stringify({ hooks: { PostToolUseFailure: foreign } }))
