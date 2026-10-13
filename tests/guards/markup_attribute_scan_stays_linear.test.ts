@@ -156,6 +156,7 @@ function tempDir(prefix: string): string {
 
 describe('critical path: a component with the pathological shape still indexes', () => {
   // Provenance: HAND-DERIVED. A real attribute declaration followed by a tag that never closes, repeated; realAttr is the one name present in the file.
+  // These pin the wiring, not the speed. The extractor both paths run on a .cmp file, extractSalesforceMarkup, is held linear on this exact shape by the '.cmp: attribute tag starts, name quote open, no >' case above, while a stopwatch around a drain or a spawned CLI reads the machine's load as much as the scan: the CLI index of this file took 3.5 s on a quiet machine and 7 to 52 s with the guards running in parallel.
   const body = (): string => '<aura:component>\n  <aura:attribute name="realAttr" type="String"/>\n</aura:component>\n' + '<aura:attribute name="'.repeat(1500)
 
   it('the worker default path drains it and realAttr resolves', async () => {
@@ -168,9 +169,7 @@ describe('critical path: a component with the pathological shape still indexes',
     const queue = path.join(dataDir, 'queue', 'dirty.txt')
     fs.mkdirSync(path.dirname(queue), { recursive: true })
     fs.writeFileSync(queue, `${file}\n`)
-    const started = performance.now()
     expect(drainOnce(dataDir)).toBe(1)
-    const elapsed = performance.now() - started
     await pendingEmbeddings()
     const dbPath = path.join(dataDir, 'global.db')
     try {
@@ -179,7 +178,6 @@ describe('critical path: a component with the pathological shape still indexes',
     } finally {
       closeDb(dbPath)
     }
-    expect(elapsed, `drainOnce took ${elapsed.toFixed(0)} ms`).toBeLessThan(5000)
   })
 
   it('the built CLI indexes it and resolves realAttr', () => {
@@ -192,14 +190,11 @@ describe('critical path: a component with the pathological shape still indexes',
     execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
     execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
     const env = tgIsolatedEnv(dataBase)
-    const started = performance.now()
     const indexed = runBundle(['index', repo], { cwd: repo, env })
-    const elapsed = performance.now() - started
     expect(indexed.status, indexed.stderr).toBe(0)
     const found = runBundle(['symbol', 'realAttr'], { cwd: repo, env })
     expect(found.status, found.stderr).toBe(0)
     expect(found.stdout).toContain('realAttr')
-    expect(elapsed, `index took ${elapsed.toFixed(0)} ms`).toBeLessThan(10000)
   })
 })
 
