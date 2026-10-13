@@ -22,7 +22,7 @@ import { fileIsGone, findSpecSeparator, guardText, indexFreshness, readFileText,
 import { emit, emitErr } from './emit.js'
 import { formatAmbiguity, parseCrossFileMultiSpec, parseReadSpec, resolveSymbolSpec, specScopeRoot } from './read_spec.js'
 import { formatBareNameSpecError, trimBlankLines } from './read_suggest.js'
-import { formatCommandError, formatFailedResultText } from './command_error.js'
+import { failureSuggestion, formatCommandError, formatFailedResultText } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
 export interface BriefOptions {
@@ -225,6 +225,12 @@ export function runBriefCrossFile(pairs: { file: string; symbol: string }[], opt
   return { text, code: anyFound ? 0 : 1 }
 }
 
+/** A failed result's Did you mean / Try: lines repeated on stdout below its stderr message, as `runExitText`'s `echoSuggestion` does for the other read commands, so `2>/dev/null` cannot hide them. */
+function echoSuggestion(text: string): void {
+  const suggestion = failureSuggestion(text)
+  if (suggestion !== null) emit(suggestion)
+}
+
 /** Handle ``token-goat brief "file::symbol"``: dispatches to {@link runBriefCrossFile} for a cross-file `a.ts::x,b.ts::y` spec, to {@link runBriefMulti} for a comma-separated same-file `file::a,b` spec, otherwise runs the single-symbol {@link runBriefCore} path, then emits the result -- `emitErr` on a nonzero code, `emit` on success. */
 export function runBrief(opts: BriefOptions): number {
   // Same reasoning as runRefs/runFind/runTypes: a limit of 0 (or negative) would silently slice the caller list down to zero entries instead of surfacing a clear "you asked for nothing" error, consistent with every other --limit flag in this codebase. Validated once here rather than inside runBriefCore because --limit applies to the whole invocation, so a multi-symbol spec must report it once, not once per symbol.
@@ -239,6 +245,7 @@ export function runBrief(opts: BriefOptions): number {
     const { text, code } = runBriefCrossFile(crossFilePairs, opts)
     if (code === 0) emit(text)
     else emitErr(formatFailedResultText(text))
+    if (code !== 0) echoSuggestion(text)
     return code
   }
 
@@ -249,6 +256,7 @@ export function runBrief(opts: BriefOptions): number {
       const { text, code } = runBriefMulti(file, multiSymbols, opts)
       if (code === 0) emit(text)
       else emitErr(formatFailedResultText(text))
+      if (code !== 0) echoSuggestion(text)
       return code
     }
   }
@@ -256,5 +264,6 @@ export function runBrief(opts: BriefOptions): number {
   const { text, code } = runBriefCore(opts)
   if (code === 0) emit(text)
   else emitErr(formatFailedResultText(text))
+  if (code !== 0) echoSuggestion(text)
   return code
 }

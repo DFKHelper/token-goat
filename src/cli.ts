@@ -968,6 +968,7 @@ export function buildProgram(): Command {
           // `symbol` searches one name; there is no comma form that would search several.
           { noun: 'spec', mergeable: false },
         ),
+        { echoSuggestion: true },
       )
     })
 
@@ -995,6 +996,7 @@ export function buildProgram(): Command {
           // Whether the comma form the note names would actually run depends on the specs themselves, not on the command: `read` merges `::` specs and nothing else.
           { noun: 'spec', mergeable: readSpecsMergeable([spec, ...more]) },
         ),
+        { echoSuggestion: true },
       ),
     )
 
@@ -1055,6 +1057,7 @@ export function buildProgram(): Command {
                 }),
               { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) },
             ),
+            { echoSuggestion: true },
           )
     })
 
@@ -1108,6 +1111,7 @@ export function buildProgram(): Command {
                 ...(opts.stats === true ? { stats: true } : {}),
               }),
             ),
+            { echoSuggestion: true },
           ),
       )
   }

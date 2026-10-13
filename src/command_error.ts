@@ -43,6 +43,13 @@ export function formatFailedResultText(text: string): string {
   return isJsonBody(text) ? text : formatCommandError(new CliError(text.split('\n')))
 }
 
+/** The part of a read command's failure text that says what to do next: every line after the first, which states the miss, escaped line by line as {@link displaySafeFailureText} does. That is where each miss puts its `Did you mean:` list, its `Try: token-goat ...` line, the file a symbol is really defined in, or the qualified commands an ambiguous name needs. Null for a one-line failure and for a JSON body. The read commands repeat it on stdout because their misses went only to stderr: 14 of about 50 recorded agent calls ran them with `2>/dev/null`, so a miss piped into `head` printed nothing at all, and in one the `||` fallback then put a raw file holding a live API token into context. */
+export function failureSuggestion(text: string): string | null {
+  if (isJsonBody(text)) return null
+  const rest = text.split('\n').slice(1)
+  return rest.some((line) => line.trim() !== '') ? rest.map(displaySafeText).join('\n') : null
+}
+
 /** The same failure text with each line escaped on its own and no `token-goat:` label, for a surface that is not stderr: the MCP server hands it back as a tool result. A JSON body passes through untouched. */
 export function displaySafeFailureText(text: string): string {
   return isJsonBody(text) ? text : text.split('\n').map(displaySafeText).join('\n')
