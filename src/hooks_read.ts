@@ -1281,7 +1281,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const activeRanges = getFileLineRanges(normalized)
     const activeSpan = requestedSliceSpan(pagingWindow)
     const isSequentialNote = activeSpan !== undefined && isSequentialPagingChain([...activeRanges, [activeSpan.start, activeSpan.end]], 3)
-    const pagingNote = (pagingWindow.isExplicitSlice && activeRanges.length >= 2 && isSequentialNote)
+    // Source files only, as with the paging deny's symbol hint above: skeleton and a symbol read are the tools for a file the indexer extracts symbols from, and a .txt or a log has none, so the note named a command with nothing to show.
+    const pagingNote = (pagingWindow.isExplicitSlice && activeRanges.length >= 2 && isSequentialNote && isSourceExt)
       ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + quotedArg(shown) + '` or ' +
         realSymbolReadHint(normalized, shown, activeSpan) + '.'
       : ''

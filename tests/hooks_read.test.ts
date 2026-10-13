@@ -4292,6 +4292,18 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
+    // CAPTURE (findings_markers.md "Q4 summary: hints"): paging through a plain .txt drew "Prefer `token-goat skeleton ...`", and a .txt has no symbols for skeleton to show. The same three slices of a .ts file still draw the note (the case above).
+    it('does not point a paged plain-text file at skeleton or a symbol read', () => {
+      const p = path.join(os.tmpdir(), `tg-paging-txt-${process.pid}-${Math.random().toString(36).slice(2)}.txt`)
+      fs.writeFileSync(p, Array.from({ length: 150 }, (_, i) => `plain line ${i}`).join('\n'))
+      tmpFiles.push(p)
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [1, 20] }, sessionId: 'test' }))
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [21, 40] }, sessionId: 'test' }))
+      const r3 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [41, 60] }, sessionId: 'test' }))
+      expect(r3.hookType).not.toBe('deny')
+      expect(r3.hookType === 'context' ? r3.context : '').not.toMatch(/skeleton|Sequential line-range paging/)
+    })
+
     // HAND-DERIVED: a 600-line function. Paging still locks inside it, but the hint must preserve
     // the requested window rather than redirecting to the entire much-larger function.
     it('denies the 4th ranged read inside a much-larger indexed symbol with a window-sized command', () => {
