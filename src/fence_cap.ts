@@ -3,7 +3,7 @@ import { scanForInjectionPatterns, UNTRUSTED_FILE_TAG } from './injection_scan.j
 import { estimateTokens, trimToBudget } from './overflow_guard.js'
 import { guardDivisor } from './token_estimate.js'
 import { redactSecrets } from './secret_redact.js'
-import { fenceUntrusted, fenceWithMatches } from './untrusted_fence.js'
+import { fenceUntrusted, fenceWithMatches, recordInjectionDetected } from './untrusted_fence.js'
 
 /** {@link guardText}, then a fence under `tag` around what the cap kept, with the cap's marker below the closing tag. The cap keeps leading lines only, so fencing first lets it cut the closing tag off and leaves token-goat's marker inside the fence. */
 export function guardThenFence(text: string, command: string, tag: string): string {
@@ -49,20 +49,32 @@ export function guardAndFenceFileText(text: string, command: string): string {
 }
 
 /** The text a `--json` listing prints, with its `key` list held to the cap by dropping trailing whole items, so it stays valid JSON. `render` is the caller's own serializer (fence, escape, indent), and the cap is measured on what it returns, so the printed text is what is held to the budget, not an estimate of it; a cut result carries `truncated` and `totalCount`, and an uncut one is rendered unchanged. */
-export function capListField<K extends string, T extends Record<K, unknown[]>>(obj: T, key: K, render: (o: T & { truncated?: true; totalCount?: number }) => string): string {
-  const full = render(obj)
+export function capListField<K extends string, T extends Record<K, unknown[]>>(obj: T, key: K, render: (o: T & { truncated?: true; totalCount?: number }, held: string[][]) => string): string {
+  const full = rendered(obj, render)
   const cfg = loadConfig()
-  if (!cfg.overflow_guard.enabled) return full
+  if (!cfg.overflow_guard.enabled) return printed(full)
   const charBudget = Math.max(1, cfg.overflow_guard.max_tokens * guardDivisor())
   const items = obj[key]
-  if (full.length <= charBudget || items.length <= 1) return full
-  const cut = (kept: number): string => render({ ...obj, [key]: items.slice(0, kept), truncated: true, totalCount: items.length })
+  if (full.text.length <= charBudget || items.length <= 1) return printed(full)
+  const cut = (kept: number): { text: string; held: string[][] } => rendered({ ...obj, [key]: items.slice(0, kept), truncated: true, totalCount: items.length }, render)
   let lo = 1
   let hi = items.length - 1
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1
-    if (cut(mid).length <= charBudget) lo = mid
+    if (cut(mid).text.length <= charBudget) lo = mid
     else hi = mid - 1
   }
-  return cut(lo)
+  return printed(cut(lo))
+}
+
+/** One candidate render, with the injection matches its fence held back instead of booking them. */
+function rendered<O>(o: O, render: (o: O, held: string[][]) => string): { text: string; held: string[][] } {
+  const held: string[][] = []
+  return { text: render(o, held), held }
+}
+
+/** The text of the candidate that is printed, its held injection matches booked now: the cap renders up to a dozen candidates to find the one that fits, and booking each would count one flagged string once per candidate. */
+function printed(candidate: { text: string; held: string[][] }): string {
+  for (const matches of candidate.held) recordInjectionDetected(matches)
+  return candidate.text
 }

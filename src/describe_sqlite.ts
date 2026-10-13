@@ -19,7 +19,7 @@ export async function describeSqliteFile(target: string, absPath: string, table:
           return { exitCode: 1, text: `Table ${echoedValue(table)} not found in SQLite database ${displaySafePath(target)}. Available tables: ${avail}` }
         }
         if (json === true) {
-          return { exitCode: 0, text: fenceCap.capListField(found, 'columns', (o) => displaySafeJson(fenceFileJsonStrings(o))) }
+          return { exitCode: 0, text: fenceCap.capListField(found, 'columns', (o, held) => displaySafeJson(fenceFileJsonStrings(o, held))) }
         }
         const lines = [
           `# SQLite Table: ${displaySafeText(found.name)} (${displaySafeText(found.kind)}) in ${displaySafePath(target)}`,
@@ -36,7 +36,7 @@ export async function describeSqliteFile(target: string, absPath: string, table:
         return { exitCode: 0, text: capAndFence(lines.join('\n')) }
       }
       if (json === true) {
-        return { exitCode: 0, text: fenceCap.capListField(schema, 'tables', (o) => displaySafeJson(fenceFileJsonStrings(o))) }
+        return { exitCode: 0, text: fenceCap.capListField(schema, 'tables', (o, held) => displaySafeJson(fenceFileJsonStrings(o, held))) }
       }
       return { exitCode: 0, text: capAndFence(formatSqliteSchema(schema)) }
     }

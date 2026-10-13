@@ -37,8 +37,8 @@ export function fenceWithMatches(text: string, matches: readonly string[], tag?:
     : fenceUntrustedContent(text, matches, tag)
 }
 
-/** The scan half on its own, for the hook handlers that need the matches before choosing a return shape (pass through, redact-only, or fence). Returns `[]` when the subsystem is switched off, so a caller that gates its own fence on {@link injectionFencingEnabled} sees no matches either way. `enabled` is that switch, passed in by a caller that read the config once for many strings. */
-export function scanAndRecord(text: string, enabled: boolean = injectionFencingEnabled()): string[] {
+/** The scan half on its own, for the hook handlers that need the matches before choosing a return shape (pass through, redact-only, or fence). Returns `[]` when the subsystem is switched off, so a caller that gates its own fence on {@link injectionFencingEnabled} sees no matches either way. `enabled` is that switch, passed in by a caller that read the config once for many strings. A hit is booked as an injection_detected stat, or, when `held` is given, appended to it for {@link recordInjectionDetected} to book later. */
+export function scanAndRecord(text: string, enabled: boolean = injectionFencingEnabled(), held?: string[][]): string[] {
   if (!enabled) return []
   let matches: string[]
   try {
@@ -46,8 +46,16 @@ export function scanAndRecord(text: string, enabled: boolean = injectionFencingE
   } catch {
     matches = []
   }
-  if (matches.length > 0) recordStat('injection_detected', 0, 0, undefined, matches.join(','))
+  if (matches.length > 0) {
+    if (held !== undefined) held.push(matches)
+    else recordInjectionDetected(matches)
+  }
   return matches
+}
+
+/** Book the injection_detected stat for one flagged string's matches. */
+export function recordInjectionDetected(matches: readonly string[]): void {
+  recordStat('injection_detected', 0, 0, undefined, matches.join(','))
 }
 
 /** Text from a file the user named rather than wrote (a document, a spreadsheet, an archive member, a database row), redacted and then fenced under the file tag. A path given on the command line says where the bytes are, not who wrote them. */
@@ -56,22 +64,22 @@ export function fenceFileText(text: string): string {
 }
 
 /** `text` fenced under `tag` when the scan flags it, else `text` as given: the per-field gate a `--json` envelope uses, since a fence around a whole envelope would stop it being JSON. The caller redacts first when its text was not redacted upstream. `enabled` is {@link injectionFencingEnabled}, read once by the caller for the whole envelope rather than once per string. */
-export function fenceIfScanMatched(text: string, tag: string, enabled: boolean): string {
-  const matches = scanAndRecord(text, enabled)
+export function fenceIfScanMatched(text: string, tag: string, enabled: boolean, held?: string[][]): string {
+  const matches = scanAndRecord(text, enabled, held)
   if (matches.length === 0) return text
   return fenceUntrustedContent(text, matches, tag)
 }
 
 /** One string of a `--json` envelope from a source the user named rather than wrote: redacted, then fenced under `tag` only when the scan flags it, and escaped for display when it does not. `config` is required, and read by the caller once per envelope: loadConfig re-reads both config files and every config env var on each call, so a default here cost two reads per string, which a listing of thousands of strings paid in seconds. */
-export function fenceFieldIfMatched(text: string, tag: string, config: Config): string {
+export function fenceFieldIfMatched(text: string, tag: string, config: Config, held?: string[][]): string {
   const redacted = redactSecrets(text, config).text
-  const fenced = fenceIfScanMatched(redacted, tag, injectionFencingEnabled(config))
+  const fenced = fenceIfScanMatched(redacted, tag, injectionFencingEnabled(config), held)
   return fenced === redacted ? displaySafeText(redacted) : fenced
 }
 
 /** {@link fenceFieldIfMatched} under the file tag. */
-export function fenceFileFieldIfMatched(text: string, config: Config): string {
-  return fenceFieldIfMatched(text, UNTRUSTED_FILE_TAG, config)
+export function fenceFileFieldIfMatched(text: string, config: Config, held?: string[][]): string {
+  return fenceFieldIfMatched(text, UNTRUSTED_FILE_TAG, config, held)
 }
 
 /** `value` with every string in it, keys included, passed through `field`: the per-field form of a fence for a `--json` envelope, which a fence around the whole would stop being JSON. A fence cannot wrap a key in place, so a flagged key's fenced form is the key, its notice escaped by `displaySafeJson` as token-goat's markers are in every key. */
@@ -84,8 +92,8 @@ export function fenceJsonStrings(value: unknown, field: (text: string) => string
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [field(k), fenceJsonStrings(v, field)]))
 }
 
-/** {@link fenceJsonStrings} with {@link fenceFileFieldIfMatched} on every string, the config read once for the whole envelope. A per-string read made a 401-table `sqlite-schema --json` spend 30 s in loadConfig, once more for each size the overflow cap tried. */
-export function fenceFileJsonStrings(value: unknown): unknown {
+/** {@link fenceJsonStrings} with {@link fenceFileFieldIfMatched} on every string, the config read once for the whole envelope. A per-string read made a 401-table `sqlite-schema --json` spend 30 s in loadConfig, once more for each size the overflow cap tried. Each flagged string's matches go to `held` rather than the stats table: this is the render `capListField` hands its candidates to, and only the candidate it prints should be booked. */
+export function fenceFileJsonStrings(value: unknown, held: string[][]): unknown {
   const config = loadConfig()
-  return fenceJsonStrings(value, (text) => fenceFileFieldIfMatched(text, config))
+  return fenceJsonStrings(value, (text) => fenceFileFieldIfMatched(text, config, held))
 }
