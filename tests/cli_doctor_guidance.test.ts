@@ -215,7 +215,8 @@ describe('cli_doctor_guidance', () => {
 
     it('counts Copilot CLI hooks installed at user level', () => {
       fs.mkdirSync(path.join(project, '.vscode'))
-      installCopilotCli()
+      // projectRoot pins the project-instructions sync to the temp project: a user-scope install rewrites an existing <cwd>/.github/copilot-instructions.md, which under vitest is this checkout's tracked file.
+      installCopilotCli({ projectRoot: project })
       const result = checkHarnessCacheEfficiency(project)
       expect(result?.status).toBe('ok')
       expect(result?.message).toBe('CLI harness configured (Copilot CLI)')

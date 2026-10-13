@@ -139,7 +139,8 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
   })
 
   it("Copilot CLI: a powershell field without the exit suffix reads as outdated, and a reinstall rewrites it, one entry per event", () => {
-    installCopilotCli()
+    // projectRoot pins the project-instructions sync to the temp dir: a user-scope install rewrites an existing <cwd>/.github/copilot-instructions.md, which under vitest is this checkout tracked file.
+    installCopilotCli({ projectRoot: TMP })
     const configPath = copilotCliConfigPath()
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { hooks: Record<string, Array<{ command: string; powershell: string }>> }
     const events = Object.keys(config.hooks)
@@ -150,7 +151,7 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
     expect(before.status).toBe('warn')
     expect(before.message).toContain(`${events.length} of ${events.length} hook entries are not the command this build writes; run \`token-goat install --copilot\` to rewrite them`)
 
-    expect(installCopilotCli().alreadyInstalled).toBe(false)
+    expect(installCopilotCli({ projectRoot: TMP }).alreadyInstalled).toBe(false)
 
     const after = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { hooks: Record<string, Array<{ powershell: string }>> }
     expect(Object.keys(after.hooks)).toEqual(events)
