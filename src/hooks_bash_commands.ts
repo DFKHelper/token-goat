@@ -32,10 +32,23 @@ import {
   extractLineRangeReadsCompound,
   isTscCommand,
   stripLeadingAssignments,
+  CHANGES_WHAT_RUNS_NAMES,
 } from './bash_extractors.js'
 import type { HookEvent } from './hook_registry.js'
 
 const CD_PREFIX_RE = /^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)[ \t]*(?:&&|;|\r?\n)\s*)+/
+
+// A value that expands to nothing but itself: bare word characters, or a quote holding no `$`, backtick or backslash. Anything else (`$(cmd)`, `$VAR`, a backtick) can run or read something, so it is not peeled.
+const EXPORT_VALUE = String.raw`(?:[\w./:@%+,=-]*|"[^"$\`\\\r\n]*"|'[^'\r\n]*')`
+// A name that changes what runs (see CHANGES_WHAT_RUNS) is not a plain export either: `export PATH=/tmp/x; cat f` runs another `cat`.
+const EXPORT_NAME = String.raw`(?!(?:${CHANGES_WHAT_RUNS_NAMES})=)[A-Za-z_]\w*`
+const EXPORT_PREFIX_RE = new RegExp(String.raw`^(?:export[ \t]+${EXPORT_NAME}=${EXPORT_VALUE}(?:[ \t]+${EXPORT_NAME}=${EXPORT_VALUE})*[ \t]*(?:&&|;|\r?\n)\s*)+`)
+
+/** Strip one or more leading `export NAME=value` statements (several names per statement, `;`, `&&` or a newline between statements) whose values are plain, so `export X=0; token-goat read f` is matched as the `token-goat read f` it runs. A value that substitutes or expands anything is left, and so is the whole command. */
+export function stripExportPrefix(cmd: string): string {
+  const stripped = cmd.replace(EXPORT_PREFIX_RE, '')
+  return stripped.trim() || cmd
+}
 
 /** Strip one or more leading `cd <dir>` prefixes so interceptors match the actual command. */
 export function stripCdPrefix(cmd: string): string {
@@ -57,9 +70,14 @@ export function stripSubshellGroup(cmd: string): string {
   return cmd
 }
 
-/** The command the extractors match: `rawCmd` out of a subshell group wrapping all of it, past its `cd <dir> &&` prefixes and then its leading environment assignments, so `( cd src && FOO=1 cat x )` is read as `cat x`. Whatever runs, or is suggested to run, is built from `rawCmd`, which keeps all three, and a compression opt-out is read from `rawCmd` for the same reason: `TOKEN_GOAT_BASH_COMPRESS=0` is one of the assignments this drops. */
+/** `rawCmd` past a subshell group wrapping all of it and past its leading plain exports: where a `cd <dir>` prefix is looked for, by the extractors here and by the pre hook's own check. Both go through this, so the order stripCommandPrefix peels in cannot drift from the order the cd directories are read in. */
+export function stripGroupAndExports(rawCmd: string): string {
+  return stripExportPrefix(stripSubshellGroup(rawCmd))
+}
+
+/** The command the extractors match: `rawCmd` out of a subshell group wrapping all of it, past its plain `export NAME=value` statements and `cd <dir> &&` prefixes and then its leading environment assignments, so `( cd src && FOO=1 cat x )` is read as `cat x`. Whatever runs, or is suggested to run, is built from `rawCmd`, which keeps all three, and a compression opt-out is read from `rawCmd` for the same reason: `TOKEN_GOAT_BASH_COMPRESS=0` is one of the assignments this drops. */
 export function stripCommandPrefix(rawCmd: string): string {
-  return stripLeadingAssignments(stripCdPrefix(stripSubshellGroup(rawCmd)))
+  return stripLeadingAssignments(stripExportPrefix(stripCdPrefix(stripGroupAndExports(rawCmd))))
 }
 
 export function stripTrailingStderrRedirect(cmd: string): string {
@@ -80,7 +98,7 @@ export function isDirectTestRunnerCommand(cmd: string): boolean {
 /** Extracts each `cd <dir>` target from a leading `cd <dir> && cd <dir2> && ...` prefix, in the order stripCdPrefix consumes them. Used to resolve a relative filePath extracted from the remaining command against the directory the shell would actually land in — not this hook's own cwd — before that path is embedded in a suggested follow-up command. */
 function extractCdPrefixDirs(rawCmd: string): string[] {
   // Must stay in step with CD_PREFIX_RE: this names the directories that one consumes, and a prefix stripped there but not extracted here resolves the file against the hook's own cwd instead of the directory the shell actually landed in. A `cd` inside a subshell group wrapping the whole command still moves the directory the rest of the group runs in.
-  const prefixMatch = stripSubshellGroup(rawCmd).match(CD_PREFIX_RE)
+  const prefixMatch = stripGroupAndExports(rawCmd).match(CD_PREFIX_RE)
   if (prefixMatch === null) return []
   const dirs: string[] = []
   const segmentPattern = /cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))[ \t]*(?:&&|;|\r?\n)/g

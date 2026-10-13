@@ -105,6 +105,8 @@ export interface PromptTrigger {
 
 export type FirstReadSymbolPolicy = 'warn' | 'deny' | 'off'
 
+export type WriteBlindDropPolicy = 'deny' | 'warn' | 'off'
+
 export interface HintsConfig {
   quiet_hours: string
   json_sidecar: boolean
@@ -138,6 +140,12 @@ export interface HintsConfig {
   first_read_symbol_bytes: number
   /** What that advice does: `warn` adds a note naming the file's size and symbols, `deny` refuses the whole-file read, `off` does nothing. Project-locked for the same reason as the size. */
   first_read_symbol_policy: FirstReadSymbolPolicy
+  /** What the Write/Edit pre-hook does with a call that carries a placeholder line (`// ... rest unchanged`) the file does not already hold, or a whole-file Write that deletes lines the session never read: `deny` refuses it once (an identical retry passes), `warn` adds a note, `off` says nothing. Quiet hours silence `warn` only. */
+  write_blind_drop: WriteBlindDropPolicy
+  /** Whether a Write that creates a new file named like a copy of an existing one (`solver_v2.py`, `app_fixed.ts`, `notes.md.bak`) and is mostly that file's content is told once to edit the original instead. Advice only. */
+  write_sibling_copy: boolean
+  /** Globs (`*` within a path segment, `**` across segments) of new-file paths the sibling-copy advice never speaks about, matched against the path with forward slashes. Built in already: files under migrations, versions, fixtures, `__snapshots__` and any `vN` directory. */
+  write_sibling_copy_allow: string[]
   reread_deny: boolean
   reread_deny_min_bytes: number
   stable_doc_compacts: boolean

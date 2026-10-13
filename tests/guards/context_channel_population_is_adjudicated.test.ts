@@ -69,7 +69,17 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_edit.ts::postEditHandlerInner':
     'Names the edited file. Already routed through displaySafePath before the backtick escaping, with a comment saying why that order matters.',
   'hooks_write.ts::preWriteRewriteHandler':
-    'Interpolates only a line count and a percentage. The path and both file contents are read for arithmetic and never echoed.',
+    'Interpolates line counts and a percentage, plus two file-derived strings from the partial-view guard: a placeholder line from the written text, shown through echoedValue (display-safe and quoted), and the path, shown through displaySafePath inside quotedArg and fileSubject. Nothing else from a file is echoed.',
+  'write_guard_hooks.ts::guardVerdict':
+    'Forwards a message the caller composed in write_guards.ts (placeholderMessage, blindDropMessage), both adjudicated above; interpolates nothing of its own.',
+  'write_guard_hooks.ts::placeholderGuard':
+    'Passes placeholderMessage through guardVerdict. That message shows the placeholder line through echoedValue, which is display-safe and quoted.',
+  'write_guard_hooks.ts::blindDropGuard':
+    'Passes blindDropMessage through guardVerdict. That message shows the path through displaySafePath and fileSubject, inside quotedArg for the suggested read commands, and otherwise only line numbers.',
+  'write_guard_hooks.ts::siblingCopyGuard':
+    'Passes siblingCopyMessage through contextOutput. That message shows the original file path only inside a token-goat outline command, from displaySafePath through quotedArg (left out when canQuoteArg refuses it); the rest is a percentage.',
+  'write_guard_hooks.ts::preEditPlaceholderGuard':
+    'Returns the verdict of placeholderGuard for Edit, MultiEdit and apply_patch text; interpolates nothing of its own.',
   'hooks_compact.ts::preCompactHandler':
     'Emits the manifest, every row of which routes its file-derived text through displaySafePath or displaySafeText, the web-fetch row included since 2.9.7, and the SAFE_TO_DISCARD bash-command rows (entry.command only ever passes through redactSecrets, never marker neutralization) run through neutralizeSpokenMarkers as of the security-loop fix that closed this same gap.',
   'hooks_session.ts::pendingContextHandler':

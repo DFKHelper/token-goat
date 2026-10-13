@@ -753,6 +753,20 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         const narrowing = tgRead.spec.slice(tgRead.filePath.length)
         if (narrowing.length > 0) recordSymbolRead(tgRead.filePath, narrowing.replace(/^::/, ''))
       }
+      // A `cd` the shell could not follow (`cd missing`, `cd -`, `cd $VAR`) leaves a path no file sits at, and nothing was shown from it.
+      if (tgRead.filePath !== null && isFileAtIndexKey(tgRead.filePath)) {
+        try {
+          const { servedExtents, isWholeFileRead } = await import('./served_extent.js')
+          const { isCappedOutput } = await import('./overflow_guard.js')
+          // A persisted result reached the model as a 2 KB preview and a capped one stops short of its last lines, so neither shows the lines the command named.
+          if (!persisted && !isCappedOutput(output)) {
+            for (const extent of await servedExtents(tgRead.sub, tgRead.spec, cmd, runDir)) recordFileLineRange(extent.filePath, extent.start, extent.end)
+            if (isWholeFileRead(tgRead.sub, tgRead.spec, tgRead.filePath, cmd)) recordFileRead(tgRead.filePath, true)
+          }
+        } catch {
+          // Best-effort bookkeeping: an index that cannot answer leaves the ledger as it was.
+        }
+      }
       if (tgRead.filePath !== null && loadConfig().hints.log_large_file_hint_outcomes) {
         const pendingSize = takePendingLargeFileHint(tgRead.filePath)
         if (pendingSize !== null) {

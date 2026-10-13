@@ -89,7 +89,8 @@ export { COPILOT_CLI_TOOL_NAME_MAP }
 /** Copilot CLI tool_input key -> internal key, per remapped tool. */
 export const COPILOT_CLI_INPUT_KEY_MAP: Record<string, Record<string, string>> = {
   Read: { path: 'file_path' },
-  Write: { path: 'file_path' },
+  // CAPTURE: the real Copilot CLI `create` arguments {path, file_text} in a session log (events.jsonl, tool.execution_start, toolName "create"); the `edit` entry below is FORMAT-DERIVED from the tool description in a Copilot CLI 1.0.88 session log.
+  Write: { path: 'file_path', file_text: 'content' },
   Edit: { path: 'file_path', old_str: 'old_string', new_str: 'new_string' },
   BashOutput: { shellId: 'bash_id' },
 }

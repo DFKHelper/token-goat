@@ -25,7 +25,7 @@ import * as path from 'node:path'
 import {
   stripCdPrefix,
   stripCommandPrefix,
-  stripSubshellGroup,
+  stripGroupAndExports,
   stripTrailingStderrRedirect,
   hasTestRunScopeOrBudget,
   isDirectTestRunnerCommand,
@@ -208,7 +208,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (rawCmd === undefined) return passOutput()
   const cmd = stripCommandPrefix(rawCmd)
   // Only a stripped `cd` moves the directory a relative path resolves against; a stripped assignment or subshell group does not, though a `cd` inside the group does.
-  const grouped = stripSubshellGroup(rawCmd)
+  const grouped = stripGroupAndExports(rawCmd)
   const cdStripped = stripCdPrefix(grouped) !== grouped
   // The bash event's cwd, used to resolve any relative file path the same way the CLI/shell itself would — hoisted here (rather than computed right before its first use) so every path-keyed dedup check below (sed line-ranges, CLI surgical reads) shares one resolution.
   const preHookCwd = getCwd(event) ?? null

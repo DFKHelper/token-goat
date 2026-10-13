@@ -76,9 +76,10 @@ describe('installGemini', () => {
 
     const settings = readSettings()
 
-    // BeforeTool: Bash/Read/Grep/WebFetch/Glob/WebSearch/Write all have a pre_tool_use handler (hooks_write.ts's preWriteRewriteHandler registers on 'Write' too, src/hooks_write.ts:162); Edit is the one Gemini-mapped internal tool with no pre_tool_use handler anywhere.
+    // BeforeTool: Bash/Read/Grep/WebFetch/Glob/WebSearch/Write all have a pre_tool_use handler (hooks_write.ts's preWriteRewriteHandler registers on 'Write' too, src/hooks_write.ts:162); Edit has one too (preEditPlaceholderGuard), which Gemini names `replace`. MultiEdit has no Gemini tool name, so it adds no matcher here.
     const beforeMatchers = matchersFor(settings, 'BeforeTool')
     expect(beforeMatchers).toContain('^(run_shell_command)$')
+    expect(beforeMatchers).toContain('^(replace)$')
     expect(beforeMatchers).toContain('^(read_file|read_many_files|list_directory)$')
     expect(beforeMatchers).toContain('^(grep_search|search_file_content)$')
     expect(beforeMatchers).toContain('^(web_fetch)$')

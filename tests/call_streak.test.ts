@@ -153,6 +153,23 @@ describe('call streak through the real relay (clock pinned to captured timings)'
     expect(third.pre).toBe('[token-goat] 3 reads/searches in a row each waited a full turn. Issue independent reads and searches together in one message.')
   })
 
+  // HAND-DERIVED: `export X=1; rg foo` runs the same read-only search as `rg foo`; the post event is the captured failure envelope, whose only use here is to close each call.
+  it.each([
+    ['export X=1; rg foo', true],
+    ['export X=1 && cd src && rg foo', true],
+    ['export PATH=/tmp/x; rg foo', false],
+  ])('counts %j as a serial read-only call: %s', async (command, hints) => {
+    const ctx = newSession()
+    let t = T0
+    const pres: string[] = []
+    for (let i = 0; i < 3; i += 1) {
+      pres.push(contextOf(await at(t, 'pre_tool_use', bashPre(ctx, command))))
+      await at(t + POST_AFTER, 'post_tool_use', bashGrepMissFailure(ctx, command))
+      t += POST_AFTER + SERIAL_STEP
+    }
+    expect(pres[2]!.includes(BATCH_MARK)).toBe(hints)
+  })
+
   it('replaying the captured run (three Greps in one message, then one more) never hints', async () => {
     const ctx = newSession()
     const seen: string[] = []

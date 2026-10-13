@@ -1190,19 +1190,23 @@ const ASSIGNMENT_PREFIX_WORDS = new Set(['env', 'export', 'time', 'command', 'no
 /** `env` flags whose value is the next word, which would otherwise end the scan before the assignments that follow it. */
 const ENV_VALUE_FLAGS = new Set(['-u', '--unset', '-C', '--chdir'])
 
+/** An `env` flag that runs the command in another directory: `-C DIR`, `-CDIR`, a short cluster ending in `C`, `--chdir DIR` or `--chdir=DIR`. */
+const ENV_CHDIR_FLAG = /^(?:--chdir(?:=|$)|-[A-BD-Za-z]*C)/
+
 /** The one prefix word that exists only to set a command's environment: `env -u X FOO=1 cat x` runs `cat x` just as `FOO=1 cat x` does. */
 const ENV_PREFIX_WORDS = new Set(['env'])
 
 /** Walks the assignments leading one simple command, and the `prefixWords` (with their own flags) that can stand in front of them. Returns each assignment met and the index of the first word that is the command itself, `words.length` when there is none. A PowerShell `$env:NAME = value` is a statement of its own rather than a prefix, so the walk ends at it; its name comes back upper-cased because PowerShell names are case-insensitive, while a POSIX assignment is neither case-insensitive nor spaced around `=`. */
-function walkCommandPrefix(words: readonly string[], prefixWords: ReadonlySet<string>): { command: number; assignments: Array<{ name: string; value: string | undefined }> } {
+function walkCommandPrefix(words: readonly string[], prefixWords: ReadonlySet<string>): { command: number; assignments: Array<{ name: string; value: string | undefined }>; chdir: boolean } {
   const assignments: Array<{ name: string; value: string | undefined }> = []
   let prefixed = false
+  let chdir = false
   for (let i = 0; i < words.length; i++) {
     const word = words[i] as string
     const pwsh = /^\$env:([A-Za-z_]\w*)(?:=(.*))?$/i.exec(word)
     if (pwsh !== null) {
       assignments.push({ name: pwsh[1]!.toUpperCase(), value: pwsh[2] ?? (words[i + 1] === '=' ? words[i + 2] : undefined) })
-      return { command: i, assignments }
+      return { command: i, assignments, chdir }
     }
     const posix = /^([A-Za-z_]\w*)=(.*)$/.exec(word)
     if (posix !== null) {
@@ -1215,19 +1219,31 @@ function walkCommandPrefix(words: readonly string[], prefixWords: ReadonlySet<st
     }
     // A prefix's own flags (`env -i`, `time -p`) sit between it and the assignments it sets.
     if (prefixed && word.startsWith('-')) {
-      if (ENV_VALUE_FLAGS.has(word)) i++
+      if (ENV_CHDIR_FLAG.test(word)) chdir = true
+      if (ENV_VALUE_FLAGS.has(word) || /^-[A-Za-z]+C$/.test(word)) i++
       continue
     }
-    return { command: i, assignments }
+    return { command: i, assignments, chdir }
   }
-  return { command: words.length, assignments }
+  return { command: words.length, assignments, chdir }
 }
+
+/** A literal as a regex source that matches it in either case, since Windows environment names are case-insensitive and `path=x` swaps the program like `PATH=x` does. */
+const caseless = (literal: string): string => literal.replace(/[A-Za-z]/g, (c) => `[${c.toUpperCase()}${c.toLowerCase()}]`)
+
+/** Variables whose value changes which program runs or how it loads (`PATH`, the dynamic loader's `LD_*` and `DYLD_*`, the shell's `BASH_ENV` and `ENV`), where a peeled `cd` lands (`CDPATH`, `HOME`), or what token-goat's own hook does (every `TOKEN_GOAT_*` but `TOKEN_GOAT_BASH_COMPRESS`, which only switches output compression and is the one these commands are written with). A command setting one is not the command without it, so it is left as written. Matched in either case. */
+export const CHANGES_WHAT_RUNS_NAMES = ['PATH', 'BASH_ENV', 'ENV', 'CDPATH', 'HOME'].map(caseless).join('|') + `|(?:${caseless('LD_')}|${caseless('DYLD_')})\\w*|${caseless('TOKEN_GOAT_')}(?!${caseless('BASH_COMPRESS')}\\b)\\w*`
+export const CHANGES_WHAT_RUNS = new RegExp(`^(?:${CHANGES_WHAT_RUNS_NAMES})$`)
 
 /** `cmd` past the environment assignments leading it, so an extractor anchored at `^cat` or `^python` reads `FOO=1 cat x` and `env -u X FOO=1 cat x` as the `cat x` they run. A slice of `cmd`, so the command keeps its own quoting byte for byte. `cmd` itself when nothing leads it, when nothing follows the assignments, or when the leading words fail the single-command test the compression gate applies (`FOO=1; cat x`, `FOO=1 && cat x`, `FOO=$(pwd) cat x`): what follows those is not the command the assignments belong to. Only for matching: anything run or suggested to run keeps the assignments. */
 export function stripLeadingAssignments(cmd: string): string {
   const { words, starts } = splitCommandWordsAt(cmd)
-  const at = starts[walkCommandPrefix(words, ENV_PREFIX_WORDS).command]
+  const { command, assignments, chdir } = walkCommandPrefix(words, ENV_PREFIX_WORDS)
+  const at = starts[command]
   if (at === undefined || at === 0) return cmd
+  // `env -C DIR cmd` runs `cmd` in DIR, which a caller resolving paths against its own directory would get wrong, so the command is left as written.
+  if (chdir) return cmd
+  if (assignments.some(({ name }) => CHANGES_WHAT_RUNS.test(name))) return cmd
   // Through the command's first character too, so an operator standing where the command should be (`FOO=1 && cat x`) fails the test like one inside the assignments does.
   return isCompressibleSingleCommand(cmd.slice(0, at + 1)) ? cmd.slice(at) : cmd
 }

@@ -101,6 +101,10 @@ const KIND_TO_SOURCE: Record<string, string> = {
   grep_dedup_hint: SOURCE_HINT,
   glob_dedup_hint: SOURCE_HINT,
   write_rewrite_hint: SOURCE_HINT,
+  // hooks_write.ts's partial-view guard (hints.write_blind_drop): a placeholder line or a blind whole-file overwrite, booked at 0 bytes / 0 tokens because the guard prevents a loss rather than saving output.
+  write_blind_drop: SOURCE_HINT,
+  // hooks_write.ts's sibling-copy advice (hints.write_sibling_copy): a new file that is mostly an existing sibling, booked at 0 bytes / 0 tokens because the advice can be ignored.
+  write_sibling_copy: SOURCE_HINT,
   websearch_dedup_hint: SOURCE_HINT,
   large_file_hint_followed: SOURCE_HINT,
   large_file_hint_ignored: SOURCE_HINT,
