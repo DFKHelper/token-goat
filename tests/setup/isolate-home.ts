@@ -123,6 +123,10 @@ if (!process.env['TOKEN_GOAT_HOOK_SERVER']) {
 if (!process.env['TOKEN_GOAT_NATIVE_HOOKS']) {
   process.env['TOKEN_GOAT_NATIVE_HOOKS'] = '0'
 }
+// A spawned `index` lowers itself to worker.priority, below_normal by default (src/process_priority.ts), and on a loaded machine that took a one-file index from a few seconds to 33-59 s against the 60 s test limit. The tests that index are about what gets indexed, not the priority it runs at; tests/process_priority.test.ts and tests/cmdindex_priority_after_enumeration.test.ts delete this to exercise the shipped default.
+if (!process.env['TOKEN_GOAT_WORKER_PRIORITY']) {
+  process.env['TOKEN_GOAT_WORKER_PRIORITY'] = 'normal'
+}
 // src/rewrite_permission.ts reads Claude Code's settings from the machine's managed policy and from every `.claude` directory above a hook's cwd, which for an event with no cwd is this repository. A developer's own untracked `.claude/settings.local.json` here then decided whether an in-process test saw a rewrite. In-process reads are confined to the run root, where every fixture lives; spawned bundles do not inherit this and pass their own cwd.
 const permissionRoot = path.resolve(runRoot())
 // The predicate lives in permission-source-filter.cjs so the in-process hook and the preload given to spawned node processes cannot diverge (tests/guards/permission_filter_single_predicate.test.ts).

@@ -1,13 +1,23 @@
 /** The indexing-priority lever. Provenance: the priority numbers asserted below are CAPTURE, read off a real round-trip on the development host (Windows 11, Node 24) rather than off Node's documentation or off this module's own table: os.constants.priority -> {"PRIORITY_LOW":19,"PRIORITY_BELOW_NORMAL":10,"PRIORITY_NORMAL":0, "PRIORITY_ABOVE_NORMAL":-7,"PRIORITY_HIGH":-14,"PRIORITY_HIGHEST":-20} os.getPriority() before                      -> 0 os.setPriority(0, PRIORITY_BELOW_NORMAL) then -> 10 os.setPriority(0, PRIORITY_LOW)          then -> 19 The `applyIndexingPriority` test re-reads `os.getPriority()` after the call rather than trusting that capture, so a platform where the class does not actually move fails here instead of quietly reporting success while changing nothing. */
 import * as os from 'node:os'
 
-import { describe, expect, it, vi, afterEach } from 'vitest'
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 
 import { DEFAULT_PRIORITY_NAME, applyIndexingPriority, resolveWorkerPriority } from '../src/process_priority.js'
 import { defaultConfig } from '../src/config.js'
 
+let savedPriority: string | undefined
+
+beforeEach(() => {
+  savedPriority = process.env['TOKEN_GOAT_WORKER_PRIORITY']
+  // tests/setup/isolate-home.ts pins this to normal for every other file; the shipped default is below_normal, so it is unset here.
+  delete process.env['TOKEN_GOAT_WORKER_PRIORITY']
+})
+
 afterEach(() => {
   vi.restoreAllMocks()
+  if (savedPriority === undefined) delete process.env['TOKEN_GOAT_WORKER_PRIORITY']
+  else process.env['TOKEN_GOAT_WORKER_PRIORITY'] = savedPriority
 })
 
 describe('resolveWorkerPriority', () => {

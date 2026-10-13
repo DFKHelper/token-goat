@@ -30,15 +30,21 @@ import { cmdIndex } from '../src/cli.js'
 import { closeAllDbs } from '../src/db.js'
 
 let TMP: string
+let savedPriority: string | undefined
 
 beforeEach(() => {
   events.list.length = 0
+  savedPriority = process.env['TOKEN_GOAT_WORKER_PRIORITY']
+  // tests/setup/isolate-home.ts pins this to normal for every other file; the shipped default is below_normal, so it is unset here.
+  delete process.env['TOKEN_GOAT_WORKER_PRIORITY']
   TMP = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cmdindex-prio-')))
   fs.writeFileSync(path.join(TMP, 'a.ts'), 'export function zqPrio(): number {\n  return 1\n}\n')
 })
 
 afterEach(() => {
   vi.restoreAllMocks()
+  if (savedPriority === undefined) delete process.env['TOKEN_GOAT_WORKER_PRIORITY']
+  else process.env['TOKEN_GOAT_WORKER_PRIORITY'] = savedPriority
   closeAllDbs()
   fs.rmSync(TMP, { recursive: true, force: true })
 })
