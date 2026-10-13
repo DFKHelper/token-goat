@@ -1,6 +1,6 @@
 /** HAND-DERIVED owned-process fixtures; all stores and process IDs are isolated per test. */
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -45,14 +45,95 @@ export function treeFixture(parent: string = tmpdir()): { root: string; project:
   const home = join(root, 'home')
   mkdirSync(project)
   mkdirSync(home)
+  const scratch = Object.fromEntries(['user', 'tmp', 'appdata', 'claude', 'copilot', 'codex', 'xdgconfig'].map((name) => [name, join(root, 'iso', name)]))
+  for (const dir of Object.values(scratch)) mkdirSync(dir, { recursive: true })
   const shim = join(root, 'shim.cjs')
   writeFileSync(shim, COPILOT_CLI_HOOK_SCRIPT)
   installStartupOwner(root)
   return {
     root, project, shim,
     env: { ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: home, XDG_DATA_HOME: home,
+      HOME: scratch['user'], USERPROFILE: scratch['user'], APPDATA: scratch['appdata'], XDG_CONFIG_HOME: scratch['xdgconfig'],
+      CLAUDE_CONFIG_DIR: scratch['claude'], COPILOT_HOME: scratch['copilot'], CODEX_HOME: scratch['codex'], TEMP: scratch['tmp'], TMP: scratch['tmp'],
       TOKEN_GOAT_HOOK_SERVER: '0', TOKEN_GOAT_NATIVE_HOOKS: '0', TOKEN_GOAT_EMBED: '0' },
   }
+}
+
+/** Every pid file this fixture wrote names a process that is gone; the invariant holds whether or not the run reached its interesting step. */
+export function assertTreeDead(fixture: ReturnType<typeof treeFixture>): void {
+  for (const name of readdirSync(fixture.root).filter((entry) => entry.endsWith('.pid'))) {
+    const pid = Number(readFileSync(join(fixture.root, name), 'utf8'))
+    if (!Number.isInteger(pid) || pid <= 0) continue
+    if (!ownedPids.includes(pid)) ownedPids.push(pid)
+    expect(alive(pid), `${name} names pid ${String(pid)}, which survived the run`).toBe(false)
+  }
+}
+
+/** Resolves when `path` exists, by directory watch rather than a clock; the caller races it against the process closing. */
+export function fileAppears(path: string): { appeared: Promise<void>; stop: () => void } {
+  let watcher: ReturnType<typeof watch> | undefined
+  const appeared = new Promise<void>((resolve) => {
+    watcher = watch(dirname(path), () => { if (existsSync(path)) resolve() })
+    if (existsSync(path)) resolve()
+  })
+  return { appeared, stop: () => watcher?.close() }
+}
+
+const OWED_REMINDER_PHRASE = 'must outlive a compaction'
+
+function collectStrings(value: unknown, into: string[]): string[] {
+  if (typeof value === 'string') into.push(value)
+  else if (Array.isArray(value)) for (const item of value) collectStrings(item, into)
+  else if (value !== null && typeof value === 'object') for (const item of Object.values(value)) collectStrings(item, into)
+  return into
+}
+
+/** The text a hook's JSON stdout carries, with JSON escaping removed; `{}` and non-JSON yield an empty string. */
+export function contextText(stdout: string): string {
+  try { return collectStrings(JSON.parse(stdout), []).join('\n') } catch { return '' }
+}
+
+export function reminderCount(stdout: string): number {
+  return contextText(stdout).split(OWED_REMINDER_PHRASE).length - 1
+}
+
+/** The first post_tool_use of a session on a host whose start may be deferred: the shipping bundle, isolated, no worker. */
+export function runOwedToolCall(fixture: ReturnType<typeof treeFixture>, harness: 'copilot_cli' | 'vscode', sessionId: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], {
+      cwd: fixture.project, windowsHide: true, stdio: 'pipe',
+      env: { ...fixture.env, TOKEN_GOAT_HARNESS_OVERRIDE: harness, TOKEN_GOAT_NO_WORKER_SPAWN: '1' },
+    })
+    if (child.pid !== undefined) ownedPids.push(child.pid)
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+    child.stdin.on('error', () => undefined)
+    child.once('error', reject)
+    child.once('close', (code) => { if (code === 0) resolve(stdout); else reject(new Error(`post_tool_use exited ${String(code)}: ${stderr}`)) })
+    child.stdin.end(JSON.stringify({ session_id: sessionId, cwd: fixture.project, hook_event_name: 'PostToolUse', tool_name: 'TgDeferredProbe', tool_input: {}, tool_response: { output: 'raw' } }))
+  })
+}
+
+/** The owed path for a start that failed open: the first tool call carries the reminder once and the next carries none. Returns the first call's stdout. */
+export async function assertOwedDeliveredOnce(fixture: ReturnType<typeof treeFixture>, harness: 'copilot_cli' | 'vscode', sessionId: string): Promise<string> {
+  const first = await runOwedToolCall(fixture, harness, sessionId)
+  expect(reminderCount(first), `first tool call after a missed start: ${first}`).toBe(1)
+  const second = await runOwedToolCall(fixture, harness, sessionId)
+  expect(reminderCount(second), `second tool call: ${second}`).toBe(0)
+  return first
+}
+
+/** A hung-helper test whose premise files may not exist if the startup deadline fired first: that is a skip only when the start failed open with exactly `{}` and the owed path delivers for this session. */
+export async function skipUnlessPremiseReached(
+  context: { skip: () => never }, fixture: ReturnType<typeof treeFixture>,
+  result: { stdout: string }, premise: string[], sessionId: string,
+): Promise<void> {
+  if (premise.every((path) => existsSync(path))) return
+  expect(result.stdout, `premise ${premise.join(', ')} was not reached and the start did not fail open`).toBe('{}')
+  await assertOwedDeliveredOnce(fixture, 'copilot_cli', sessionId)
+  context.skip()
 }
 
 export function alive(pid: number): boolean {
@@ -149,11 +230,12 @@ export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void 
 }
 
 export function runTreeShim(options: {
-  fixture: ReturnType<typeof treeFixture>; entry: string; delayMs?: number; payload?: Record<string, unknown>; endInput?: boolean
+  fixture: ReturnType<typeof treeFixture>; entry: string; delayMs?: number; payload?: Record<string, unknown>; endInput?: boolean; deadline?: number
 }): { child: ChildProcessWithoutNullStreams; done: Promise<{ stdout: string; stderr: string; elapsed: number }> } {
   const { fixture, entry } = options
   const started = performance.now()
-  const child = spawn(process.execPath, [fixture.shim, 'sessionStart', entry], {
+  const deadlineArgs = options.deadline === undefined ? [] : [`--session-start-deadline=${String(options.deadline)}`]
+  const child = spawn(process.execPath, [fixture.shim, 'sessionStart', entry, ...deadlineArgs], {
     cwd: fixture.project, env: fixture.env, stdio: 'pipe', windowsHide: true,
   })
   if (child.pid !== undefined) ownedPids.push(child.pid)

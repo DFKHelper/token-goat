@@ -1,5 +1,4 @@
-/** HAND-DERIVED adversity: actual built hook -> reconcileProject -> getTrackedFiles -> runGit,
- * with only the Git executable boundary replaced. This is not a healthy-handler substitute. */
+/** HAND-DERIVED adversity: actual built hook -> reconcileProject -> getTrackedFiles -> runGit, with only the Git executable boundary replaced. This is not a healthy-handler substitute. No row asserts elapsed time: a healthy start is delivered at startup OR is owed and delivered by the first post_tool_use, exactly once (HAND-DERIVED from the deferral contract, FORMAT-DERIVED from src/hooks_session.ts::deliverOwedSessionStart; the reminder phrase is read off src/session_reminder.ts NOTE_REMINDER). A hung-helper row holds the invariant that every pid file names a dead process, and skips only when its premise was never reached, the start failed open with exactly `{}` and the owed path delivers. */
 import { spawn, spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
@@ -12,7 +11,7 @@ import { afterEach, expect, it } from 'vitest'
 import { COPILOT_SESSION_START_HELPERS } from '../../src/bridges/copilot_session_start.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { buildLegacyStartupOwner } from '../helpers/legacy_startup_owner.js'
-import { alive, assertInstalledResidentBypass, BUNDLE, buildWindowsBoundary, cleanupTrees, indexTreeFixture, installStartupOwner, ownedPids, readOwnedPid, runInstalledStartup, runTreeShim, treeFixture } from '../helpers/copilot_session_start_tree.js'
+import { alive, assertInstalledResidentBypass, assertOwedDeliveredOnce, assertTreeDead, BUNDLE, buildWindowsBoundary, cleanupTrees, contextText, fileAppears, indexTreeFixture, installStartupOwner, ownedPids, readOwnedPid, runInstalledStartup, runTreeShim, skipUnlessPremiseReached, treeFixture } from '../helpers/copilot_session_start_tree.js'
 
 afterEach(cleanupTrees)
 
@@ -29,21 +28,29 @@ require('node:fs').writeFileSync(${JSON.stringify(payloadFile)}, require('node:f
 process.stdout.write('{"hookSpecificOutput":{"additionalContext":"installed-owned"}}')
 `)
     const vscode = surface === 'vscode' || surface === 'alias'
-    const result = await runInstalledStartup({
+    const sessionId = vscode ? 'installed-vscode' : 'installed-cli'
+    const run = runInstalledStartup({
       fixture, entry, shell: surface === 'powershell' ? 'powershell' : 'cmd', alias: surface === 'alias',
       payload: vscode
-        ? { hook_event_name: 'SessionStart', session_id: 'installed-vscode', cwd: fixture.project }
-        : { sessionId: 'installed-cli', workingDirectory: fixture.project },
-    }).done
-    expect(result.stdout).toBe(vscode
-      ? '{"hookSpecificOutput":{"additionalContext":"installed-owned"}}'
-      : '{"additionalContext":"installed-owned"}')
-    expect(result.stderr).toBe('')
-    expect(alive(readOwnedPid(entered)), 'installed canonical helper survived before teardown').toBe(false)
-    expect(JSON.parse(readFileSync(payloadFile, 'utf8'))).toMatchObject({
-      session_id: vscode ? 'installed-vscode' : 'installed-cli', cwd: fixture.project,
+        ? { hook_event_name: 'SessionStart', session_id: sessionId, cwd: fixture.project }
+        : { sessionId, workingDirectory: fixture.project },
     })
-    expect(result.elapsed).toBeLessThan(5000)
+    // Framing without EOF: the entry reads its stdin to the end, so the payload file appearing while this test still holds the outer stdin open proves a framed payload reached it.
+    const watch = fileAppears(payloadFile)
+    await Promise.race([watch.appeared, run.done.catch(() => undefined)])
+    watch.stop()
+    const result = await run.done
+    assertTreeDead(fixture)
+    if (result.stdout === '{}') {
+      await assertOwedDeliveredOnce(fixture, vscode ? 'vscode' : 'copilot_cli', sessionId)
+    } else {
+      expect(result.stdout).toBe(vscode
+        ? '{"hookSpecificOutput":{"additionalContext":"installed-owned"}}'
+        : '{"additionalContext":"installed-owned"}')
+      expect(result.stderr).toBe('')
+      expect(alive(readOwnedPid(entered)), 'installed canonical helper survived before teardown').toBe(false)
+      expect(JSON.parse(readFileSync(payloadFile, 'utf8'))).toMatchObject({ session_id: sessionId, cwd: fixture.project })
+    }
   }, 20_000,
 )
 
@@ -56,7 +63,6 @@ it.runIf(process.platform === 'win32').each(['', '{"sessionId":'])('bounds insta
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toContain('startup input deadline exceeded')
   expect(existsSync(entered)).toBe(false)
-  expect(result.elapsed).toBeLessThan(5000)
 }, 12_000)
 
 it.runIf(process.platform === 'win32')('bypasses an available real resident for installed startup with and without EOF', async () => {
@@ -70,8 +76,13 @@ it.runIf(process.platform === 'win32')('allows bounded owner metadata around a n
   const entry = join(fixture.root, 'entry.cjs')
   writeFileSync(entry, "process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:'x'.repeat(1024 * 1024 - 100)}}))")
   const result = await runInstalledStartup({ fixture, entry }).done
-  expect(result.stderr).toBe('')
-  expect(result.stdout).toBe(JSON.stringify({ additionalContext: 'x'.repeat(1024 * 1024 - 100) }))
+  assertTreeDead(fixture)
+  if (result.stdout === '{}') {
+    await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'installed-startup')
+  } else {
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe(JSON.stringify({ additionalContext: 'x'.repeat(1024 * 1024 - 100) }))
+  }
 }, 12_000)
 
 it('keeps the exact cleanup-reserve boundary before starting the supervisor', () => {
@@ -104,7 +115,7 @@ runBoundedSessionStart('entry.cjs', 'sessionStart', {}, 'copilot_cli', remaining
   expect(observeSupervisorSpawn(1001)).toHaveLength(1)
 })
 
-it.each(['direct', ...(process.platform === 'win32' ? ['installed'] : [])])('terminates the real indexed SessionStart helper and its blocked Git descendant (%s)', async (surface) => {
+it.for(['direct', ...(process.platform === 'win32' ? ['installed'] : [])])('terminates the real indexed SessionStart helper and its blocked Git descendant (%s)', { timeout: 40_000 }, async (surface, ctx) => {
   const fixture = treeFixture()
   indexTreeFixture(fixture)
   const helperFile = join(fixture.root, 'helper.pid')
@@ -138,6 +149,8 @@ process.argv[1] = ${JSON.stringify(BUNDLE)}
 import(${JSON.stringify(pathToFileURL(BUNDLE).href)})
 `)
   const result = await (surface === 'installed' ? runInstalledStartup({ fixture, entry }) : runTreeShim({ fixture, entry })).done
+  assertTreeDead(fixture)
+  await skipUnlessPremiseReached(ctx, fixture, result, [helperFile, gitFile, invocation], surface === 'installed' ? 'installed-startup' : 'owned-tree')
   const helperPid = readOwnedPid(helperFile)
   const gitPid = readOwnedPid(gitFile)
   const reached: unknown = JSON.parse(readFileSync(invocation, 'utf8'))
@@ -148,8 +161,7 @@ import(${JSON.stringify(pathToFileURL(BUNDLE).href)})
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toMatch(/timed out/)
   expect(result.stderr).not.toContain('cleanup failed')
-  expect(result.elapsed).toBeLessThan(5000)
-}, 40_000)
+})
 
 it.runIf(process.platform === 'win32')('contains an independent native breakaway attempt across nested jobs', async () => {
   const fixture = treeFixture()
@@ -166,8 +178,7 @@ process.stdout.write('{"hookSpecificOutput":{"additionalContext":"breakaway-deni
   // Check before teardown: a passing outer harness job must not clean up for us.
   const attempt = readFileSync(attempted, 'utf8')
   if (attempt.startsWith('created:')) {
-    // Windows may break away from libuv's inner permissive job, but not the
-    // owner's strict ancestor job. Successful creation is not proof of escape.
+    // Windows may break away from libuv's inner permissive job, but not the owner's strict ancestor job. Successful creation is not proof of escape.
     const pid = Number(attempt.slice('created:'.length))
     ownedPids.push(pid)
     expect(Number.isInteger(pid) && pid > 0).toBe(true)
@@ -235,8 +246,7 @@ require('node:child_process').spawnSync(${JSON.stringify(boundary)}, ['hold', ${
     expect(alive(readOwnedPid(rootPidFile))).toBe(true)
     expect(alive(readOwnedPid(descendantFile))).toBe(true)
   } else if (phase === 'at-creation') {
-    // Race owner termination against canonical process creation, without a
-    // spawn-then-assign seam or a test-only pause in the production owner.
+    // Race owner termination against canonical process creation, without a spawn-then-assign seam or a test-only pause in the production owner.
     owner.stdin.end('{}')
     await new Promise((resolve) => setTimeout(resolve, 5))
   } else {
@@ -312,10 +322,10 @@ it.runIf(process.platform === 'win32')('fails open on native atomic process-crea
   expect(existsSync(entered)).toBe(false)
 })
 
-it.each([
+it.for([
   ['blocks', false], ['exits', false],
   ...(process.platform === 'win32' ? [['blocks', true], ['exits', true], ['crashes', true]] as const : []),
-] as const)('cleans descendants retaining stdout when the helper %s (installed=%s)', async (behavior, installed) => {
+] as const)('cleans descendants retaining stdout when the helper %s (installed=%s)', { timeout: 12_000 }, async ([behavior, installed], ctx) => {
   const fixture = treeFixture()
   const helperFile = join(fixture.root, 'helper.pid')
   const descendantFile = join(fixture.root, 'descendant.pid')
@@ -332,39 +342,45 @@ process.stdout.write('{"hookSpecificOutput":{"additionalContext":"completed-owne
 ${behavior === 'exits' ? 'process.exit(0)' : behavior === 'crashes' ? 'process.exit(1)' : 'setInterval(() => {}, 1000)'}
 `)
   const result = await (installed ? runInstalledStartup({ fixture, entry }) : runTreeShim({ fixture, entry })).done
+  assertTreeDead(fixture)
+  const sessionId = installed ? 'installed-startup' : 'owned-tree'
+  await skipUnlessPremiseReached(ctx, fixture, result, [helperFile, descendantFile], sessionId)
   const helperPid = readOwnedPid(helperFile)
   const descendantPid = readOwnedPid(descendantFile)
-  expect(result.elapsed).toBeLessThan(5000)
-  if (behavior === 'exits') expect(result.stderr).toBe('')
-  else expect(result.stderr).not.toContain('cleanup failed')
-  expect(result.stdout).toBe(behavior === 'exits' ? '{"additionalContext":"completed-owned-lifecycle"}' : '{}')
+  if (behavior === 'exits' && result.stdout === '{}') {
+    await assertOwedDeliveredOnce(fixture, 'copilot_cli', sessionId)
+  } else {
+    if (behavior === 'exits') expect(result.stderr).toBe('')
+    else expect(result.stderr).not.toContain('cleanup failed')
+    expect(result.stdout).toBe(behavior === 'exits' ? '{"additionalContext":"completed-owned-lifecycle"}' : '{}')
+  }
   expect(alive(helperPid)).toBe(false)
   expect(alive(descendantPid), 'pipe-inheriting descendant survived').toBe(false)
-}, 12_000)
+})
 
-it('uses one input-plus-handler deadline, discarding complete stdout from a hung child', async () => {
+it('uses one input-plus-handler deadline, discarding complete stdout from a hung child', async (ctx) => {
   const fixture = treeFixture()
   const entry = join(fixture.root, 'entry.cjs')
   const entered = join(fixture.root, 'entry.started')
   writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, 'yes'); process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`)
   const result = await runTreeShim({ fixture, entry, delayMs: 1500 }).done
-  expect(existsSync(entered)).toBe(true)
+  assertTreeDead(fixture)
+  await skipUnlessPremiseReached(ctx, fixture, result, [entered], 'owned-tree')
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toMatch(/timed out/)
-  expect(result.elapsed).toBeLessThan(5000)
 }, 12_000)
 
-it.runIf(process.platform === 'win32')('inherits the earliest installed native deadline across delayed input and helper work', async () => {
+it.runIf(process.platform === 'win32')('inherits the earliest installed native deadline across delayed input and helper work', async (ctx) => {
   const fixture = treeFixture()
   const entry = join(fixture.root, 'entry.cjs')
   const entered = join(fixture.root, 'helper.pid')
   writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, String(process.pid)); process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`)
   const result = await runInstalledStartup({ fixture, entry, delayMs: 1500 }).done
-  expect(existsSync(entered)).toBe(true)
+  assertTreeDead(fixture)
+  await skipUnlessPremiseReached(ctx, fixture, result, [entered], 'installed-startup')
   expect(alive(readOwnedPid(entered))).toBe(false)
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toMatch(/timed out/)
-  expect(result.elapsed).toBeLessThan(3500)
 }, 12_000)
 
 it('does not spawn the supervisor when input arrives inside the cleanup reserve', async () => {
@@ -397,10 +413,9 @@ it('does not spawn the supervisor when input arrives inside the cleanup reserve'
     existsSync(spawnAttempt) ? `supervisor started with ${readFileSync(spawnAttempt, 'utf8')} ms remaining` : 'supervisor was not spawned',
   ).toBe(false)
   expect(result.stderr).toContain('insufficient time for process-tree cleanup')
-  expect(result.elapsed).toBeLessThan(5000)
 }, 12_000)
 
-it.each(['stdout', 'stderr'])('bounds %s overflow and terminates the owned helper', async (stream) => {
+it.for(['stdout', 'stderr'])('bounds %s overflow and terminates the owned helper', { timeout: 12_000 }, async (stream, ctx) => {
   const fixture = treeFixture()
   const pidFile = join(fixture.root, 'helper.pid')
   const entry = join(fixture.root, 'entry.cjs')
@@ -411,11 +426,12 @@ function flood() { while (process.${stream}.write(chunk)) {} }
 process.${stream}.on('drain', flood); flood(); setInterval(() => {}, 1000)
 `)
   const result = await runTreeShim({ fixture, entry }).done
+  assertTreeDead(fixture)
+  await skipUnlessPremiseReached(ctx, fixture, result, [pidFile], 'owned-tree')
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toMatch(/exceeded 1 MiB/)
-  expect(result.elapsed).toBeLessThan(5000)
   expect(alive(readOwnedPid(pidFile))).toBe(false)
-}, 12_000)
+})
 
 it('refuses unavailable ownership without a Windows canonical fallback', async () => {
   const fixture = treeFixture()
@@ -437,7 +453,6 @@ it('refuses unavailable ownership without a Windows canonical fallback', async (
     expect(result.stderr).toContain('descendant termination not verified')
     expect(alive(readOwnedPid(pidFile))).toBe(false)
   }
-  expect(result.elapsed).toBeLessThan(5000)
 }, 12_000)
 
 it.each(['copilot_cli', 'vscode'])('preserves real indexed reminder, notes and drift context for %s', async (harness) => {
@@ -452,12 +467,26 @@ it.each(['copilot_cli', 'vscode'])('preserves real indexed reminder, notes and d
     ? { hook_event_name: 'SessionStart', session_id: 'notes-vscode', cwd: fixture.project }
     : { sessionId: 'notes-cli', workingDirectory: fixture.project }
   const result = await runTreeShim({ fixture, entry: BUNDLE, payload }).done
-  const parsed = JSON.parse(result.stdout) as { additionalContext?: string; hookSpecificOutput?: { additionalContext?: string } }
-  const context = harness === 'vscode' ? parsed.hookSpecificOutput?.additionalContext : parsed.additionalContext
+  assertTreeDead(fixture)
+  const sessionId = harness === 'vscode' ? 'notes-vscode' : 'notes-cli'
+  // Delivered at startup, or the start failed open with `{}` and the first tool call carries the same context once.
+  const delivered = result.stdout === '{}' ? await assertOwedDeliveredOnce(fixture, harness as 'copilot_cli' | 'vscode', sessionId) : result.stdout
+  const context = contextText(delivered)
   expect(context).toContain('token-goat: this project is indexed.')
   expect(context).toContain('read "file::symbol"')
   expect(context).toContain('startup-contract')
   expect(context).toContain('keep-owned-tree-bounded')
   expect(context).toContain('changed outside this session')
-  expect(result.elapsed).toBeLessThan(5000)
+}, 40_000)
+
+it('an expired startup deadline fails open with {} and no helper, and the first tool call delivers the owed reminder once', async () => {
+  const fixture = treeFixture()
+  const entry = join(fixture.root, 'entry.cjs')
+  const entered = join(fixture.root, 'entry.started')
+  writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, 'yes'); process.stdout.write('{"additionalContext":"never"}')`)
+  const result = await runTreeShim({ fixture, entry, deadline: Date.now() - 60_000 }).done
+  expect(result.stdout).toBe('{}')
+  expect(existsSync(entered), 'no helper may start past the deadline').toBe(false)
+  assertTreeDead(fixture)
+  await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'owned-tree')
 }, 40_000)
