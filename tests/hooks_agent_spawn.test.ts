@@ -111,6 +111,8 @@ let cwdSandbox = ''
 beforeEach(() => {
   prevTestCwd = process.cwd()
   cwdSandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-')))
+  // Five source files, the fewest for which a spawn briefing carries its project map, so the briefing-budget tests below still price a map the way a real project's briefing does.
+  for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(cwdSandbox, `src${i}.ts`), `export const v${i} = ${i}\n`)
   process.chdir(cwdSandbox)
 })
 afterEach(() => {
@@ -1131,6 +1133,74 @@ describe('Copilot CLI task tool support', () => {
       else process.env['XDG_DATA_HOME'] = prevXdg
       _resetDataDirCacheForTesting()
     }
+  })
+})
+
+// 10 of 63 recorded spawn briefings described a project of 0 to 4 files, e.g. "# Project map: LCF2026 / Files: 0 / ## Top symbols: none ... run 'token-goat index . --walk'", which told every subagent to index a directory.
+describe('spawn briefing project map: left out for a near-empty project, and never an index instruction', () => {
+  let project: string
+  let prevCwd: string
+
+  beforeEach(() => {
+    prevCwd = process.cwd()
+    project = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-briefing-map-'))
+  })
+
+  afterEach(() => {
+    process.chdir(prevCwd)
+    fs.rmSync(project, { recursive: true, force: true })
+  })
+
+  function writeSources(count: number): void {
+    for (let i = 0; i < count; i++) fs.writeFileSync(path.join(project, `mod${i}.ts`), `export const value${i} = ${i}\n`)
+  }
+
+  /** The prompt the PreToolUse:Agent rewrite hands the subagent, built the way a real spawn builds it: the briefing walks process.cwd(). */
+  async function briefedPrompt(sid: string): Promise<string> {
+    process.chdir(project)
+    const result = await runHook(buildEvent('pre_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look into the parser.', description: 'd' }, session_id: sid }))
+    process.chdir(prevCwd)
+    expect(result.hookType).toBe('rewriteInput')
+    const prompt = result.hookType === 'rewriteInput' ? result.updatedInput['prompt'] : undefined
+    expect(typeof prompt).toBe('string')
+    return prompt as string
+  }
+
+  function expectBriefingKept(prompt: string): void {
+    expect(prompt).toContain('## Session briefing (for context)')
+    expect(prompt).toContain('Before your first read of any file')
+    expect(prompt).toContain('Report contract')
+  }
+
+  it('a 0-file project gets the briefing without the map or an index instruction', async () => {
+    const prompt = await briefedPrompt(`${sessionId}-map-empty`)
+    expectBriefingKept(prompt)
+    expect(prompt).not.toContain('Project map')
+    expect(prompt).not.toContain('index . --walk')
+    expect(prompt).not.toContain('token-goat index')
+  })
+
+  it('a 4-file project gets no map either, and the subagent_start briefing agrees', async () => {
+    writeSources(4)
+    const prompt = await briefedPrompt(`${sessionId}-map-four`)
+    expectBriefingKept(prompt)
+    expect(prompt).not.toContain('Project map')
+    const started = await runHook(buildEvent('subagent_start', { session_id: `${sessionId}-map-four-start`, cwd: project }))
+    expect(started.hookType).toBe('context')
+    if (started.hookType === 'context') {
+      expect(started.context).toContain('Report contract')
+      expect(started.context).not.toContain('Project map')
+    }
+  })
+
+  it('a project of 5 or more files still gets the map, but an unindexed one is not told to index', async () => {
+    writeSources(6)
+    const prompt = await briefedPrompt(`${sessionId}-map-six`)
+    expectBriefingKept(prompt)
+    expect(prompt).toContain('# Project map: ' + path.basename(project))
+    expect(prompt).toContain('Files: 6')
+    expect(prompt).not.toContain('index . --walk')
+    expect(prompt).not.toContain('token-goat index')
   })
 })
 

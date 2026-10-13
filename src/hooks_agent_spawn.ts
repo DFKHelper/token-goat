@@ -26,6 +26,9 @@ import { echoedValue } from './hint_suggestion_guard.js'
 /** Target token budget for the entire briefing (project map + cached ids + reminder + report contract). Measured against this repo's own compact map (46 tokens) plus a realistic mid-size project's compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the imperative surgical-read reminder (136 tokens, grown from a one-liner in c574b1f6), the report contract added below (~95 tokens), and a 1-3 entry cache-ids block (26-50 tokens): worst-case realistic total lands around 400-470 tokens. 450 left too little headroom once the contract was added, so 550 leaves a real margin above that; revisit this number again if either tail block grows further. */
 const BRIEFING_TARGET_TOKENS = 550
 
+/** Fewest walked files for which the briefing carries a project map. Below it the map names a handful of files the subagent will see in its first listing, plus, when none is indexed, an empty symbol list: 10 of 63 recorded briefings described projects of 0 to 4 files. */
+const BRIEFING_MAP_MIN_FILES = 5
+
 /** How many cached outputs the briefing names. */
 const CACHED_IDS_LISTED = 3
 
@@ -52,8 +55,8 @@ function buildSubagentBriefing(projectRoot: string | null): string {
     try {
       if (projectRoot === null) throw new Error('no project root')
       const map = buildProjectMap(projectRoot, { compact: true })
-      const mapText = formatProjectMap(map, map.compact)
-      head.push(mapText)
+      // suggestIndex: false because indexing the parent's project is not the subagent's job, and a briefing that said so had every subagent spawned in an unindexed directory start by indexing it.
+      if (map.fileCount >= BRIEFING_MAP_MIN_FILES) head.push(formatProjectMap(map, map.compact, { suggestIndex: false }))
     } catch {
       // Project map unavailable — skip it and continue with cached ids/reminder
     }
