@@ -73,6 +73,18 @@ function setsUnsafeVariable(word: string): boolean {
   return assign === null || !SAFE_ENV_NAMES.has(assign[1] ?? '') || !SAFE_ENV_VALUE.test(assign[2] ?? '')
 }
 
+/** The only option words a peeled wrapper may carry: `env -i` (start from an empty environment) and the `npx` switches that only skip a prompt. Any other word starting with `-` (`env -C DIR`, `-P PATH`, `-S`, `-u NAME`, `--chdir=`, `uv run --directory`, `npx --package=`) can move the directory, the program search path or the environment, attached to its value or not. */
+const SAFE_WRAPPER_FLAGS: ReadonlySet<string> = new Set(['-i', '--ignore-environment', '-y', '--yes', '--no-install'])
+
+/** The wrapper words a part may be run behind; `sudo` is not one, because a replayed suggestion never escalates privilege. */
+const WRAPPER_WORDS: ReadonlySet<string> = new Set(['env', 'npx', 'bunx', 'uv', 'run', 'poetry', 'pipenv', 'pnpm', 'exec'])
+
+/** Whether a word peeled off in front of a command is a wrapper word, a closed-list option or a safe assignment. Any other word (an option with its value, a quoted word, an unlisted program) fails closed. */
+function peeledWordIsSafe(word: string): boolean {
+  if (word === '' || SAFE_WRAPPER_FLAGS.has(word) || WRAPPER_WORDS.has(word)) return true
+  return /^[A-Za-z_]\w*=/.test(word) && !setsUnsafeVariable(word)
+}
+
 /** The command `segment` runs once leading assignments and wrappers are peeled, and whether every word peeled off was free of an unsafe variable. Read from the peeled prefix itself rather than from the leading words, so an assignment behind a wrapper (`npx -y XDG_CONFIG_HOME=x npm ci`) or after an `env` flag (`env -u A B=1 npm ci`) is seen like a leading one. */
 function peelPart(segment: string, wrappers: RegExp): { core: string; envIsSafe: boolean } {
   const squeezed = segment.replace(/\s+/g, ' ').trim()
@@ -84,7 +96,7 @@ function peelPart(segment: string, wrappers: RegExp): { core: string; envIsSafe:
   }
   core = core.replace(/\s+/g, ' ').trim()
   if (!squeezed.endsWith(core)) return { core, envIsSafe: false }
-  return { core, envIsSafe: !squeezed.slice(0, squeezed.length - core.length).split(' ').some(setsUnsafeVariable) }
+  return { core, envIsSafe: squeezed.slice(0, squeezed.length - core.length).split(' ').every(peeledWordIsSafe) }
 }
 
 /** Stands in for the failed command itself in a stored fix: its arguments are free text (`pytest -k <anything>`) and an allowlist can not tell a test name from a secret, so the text is never kept and the fix says only that the same command was run again. */

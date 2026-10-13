@@ -1,7 +1,7 @@
 /** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same command in the same directory, same first error line) gets one line naming the fix as history once two distinct sessions have learned it, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that names token-goat, can not sit inside one backtick fence, or carries a credential, and a fix is kept only when every part starts with an allowlisted build, test or install verb (recovery_fix_policy.ts): the stored fix is replayed into the model's context, so it has to be safe to run on sight. No command line is written to disk: the failed command, its prefix and its directory-scoped shape are kept as HMAC-SHA-256 digests under a per-install key, and a command run in between is kept as text only when it passes that allowlist and carries no credential, otherwise as {@link OTHER_STEP}, which makes the pair unlearnable, and the failed command rerun behind a prefix is kept as that prefix and {@link RERUN_PLACEHOLDER}, never its arguments; a file from before digests is ignored (STORE_VERSION, PENDING_VERSION). */
 
 import { createHash, createHmac, randomBytes } from 'node:crypto'
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, posix, relative, sep } from 'node:path'
 
 import { stripLeadingAssignments } from './bash_extractors.js'
@@ -13,6 +13,7 @@ import { contextOutput, getCwd } from './hooks_common.js'
 import { fencedCommand } from './hint_suggestion_guard.js'
 import { displaySafeText } from './paths.js'
 import { projectHash, resolveProjectRoot } from './project.js'
+import { registerReset } from './reset.js'
 import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
 import { errorPrefix } from './tool_error_class.js'
@@ -112,7 +113,7 @@ const VERSION_PROBE = /\s(?:--version|-v|-V|version)\s*$/
 const DESTRUCTIVE = /\brm\s+-[a-z]*[rf]|\bgit\s+reset\s+--hard\b|\bgit\s+clean\s+-[a-z]*f|\bgit\s+push\b[^|;&]*(?:--force|\s-f\b)|\b(?:drop|truncate)\s+(?:table|database|schema)\b|\bRemove-Item\b[^|;&]*-Recurse|\bdel\s+\/[sq]|\bformat\s+[a-z]:|\bmkfs\b|\bdd\s+if=/i
 // eslint-disable-next-line no-control-regex
 const UNFENCEABLE = /[`\u0000-\u001f\u007f-\u009f\u2028\u2029]/
-const WRAPPER = /^(?:env\s+(?:-\S+\s+)*|npx\s+(?:(?:-y|--yes|--no-install)\s+)*|bunx\s+|uv\s+run\s+(?:--\S+\s+)*|poetry\s+run\s+|pipenv\s+run\s+|pnpm\s+exec\s+|sudo\s+(?:-\S+\s+)*)/
+export const WRAPPER = /^(?:env\s+(?:(?:-i|--ignore-environment)\s+)*|npx\s+(?:(?:-y|--yes|--no-install)\s+)*|bunx\s+|uv\s+run\s+|poetry\s+run\s+|pipenv\s+run\s+|pnpm\s+exec\s+)/
 
 function squeeze(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
@@ -182,35 +183,51 @@ function digestKeyPath(): string {
 const DIGEST_KEY_HEX = /^[0-9a-f]{64}$/
 
 let digestKeyCache: { path: string; key: string } | undefined
+registerReset(() => {
+  digestKeyCache = undefined
+})
 
-/** The random key every digest is keyed with, created on first use and read once per process. Without it a digest is a bare SHA-256, and a leaked store lets anyone test guesses at a low-entropy command against it. The file is created exclusively and owner-only where the platform honours a mode, and its value is never logged or returned to a caller outside this module. When it can neither be read nor created the key is random for this process alone, so nothing learned in this process matches a later one: no pair is learned, which is the safe way to fail. */
+/** The random key every digest is keyed with, created on first use and read once per process. Without it a digest is a bare SHA-256, and a leaked store lets anyone test guesses at a low-entropy command against it. The file is created owner-only where the platform honours a mode, and its value is never logged or returned to a caller outside this module. A file that is there but is not a valid key, or is not a regular file (a symlink or a directory), is looked at without following a link and replaced with a fresh key by a temporary file and a rename, because a key that stays broken would stop all learning for good; the stores digested under the old key simply no longer match. When it can neither be read nor written the key is random for this process alone, so nothing learned in this process matches a later one: no pair is learned, which is the safe way to fail. */
 function digestKey(): string {
   const path = digestKeyPath()
   if (digestKeyCache?.path === path) return digestKeyCache.key
-  let key = ''
-  try {
-    key = readFileSync(path, 'utf8').trim()
-  } catch {
-    // Absent or unreadable: try to create it below.
-  }
-  if (!DIGEST_KEY_HEX.test(key)) {
+  let key = readRegularKey(path)
+  if (key === null) {
     const fresh = randomBytes(32).toString('hex')
-    try {
-      ensureDirSync(dirname(path))
-      writeFileSync(path, fresh, { flag: 'wx', mode: 0o600 })
-      key = fresh
-    } catch {
-      // Lost a race to another hook process, or the directory is not writable: use whichever key is on disk now, else this process's own.
-      try {
-        key = readFileSync(path, 'utf8').trim()
-      } catch {
-        key = ''
-      }
-      if (!DIGEST_KEY_HEX.test(key)) key = fresh
-    }
+    key = installKey(path, fresh) ? fresh : (readRegularKey(path) ?? fresh)
   }
   digestKeyCache = { path, key }
   return key
+}
+
+/** The key in the file at `path` when it is a regular file holding a valid key, else null. Never follows a symlink. */
+function readRegularKey(path: string): string | null {
+  try {
+    if (!lstatSync(path).isFile()) return null
+    const key = readFileSync(path, 'utf8').trim()
+    return DIGEST_KEY_HEX.test(key) ? key : null
+  } catch {
+    return null
+  }
+}
+
+/** Puts `key` at `path` through a temporary file in the same directory and a rename; whatever sits there that is not a regular file (a symlink is removed itself, not followed) is cleared first. False when it could not be done. */
+function installKey(path: string, key: string): boolean {
+  const temp = `${path}.${process.pid}.tmp`
+  try {
+    ensureDirSync(dirname(path))
+    try {
+      if (!lstatSync(path).isFile()) rmSync(path, { recursive: true, force: true })
+    } catch {
+      // Nothing there yet.
+    }
+    writeFileSync(temp, key, { flag: 'w', mode: 0o600 })
+    renameSync(temp, path)
+    return true
+  } catch {
+    rmSync(temp, { force: true })
+    return false
+  }
 }
 
 /** The HMAC-SHA-256 of `text` under {@link digestKey}, as hex: how a command is compared and keyed without being kept. */

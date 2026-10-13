@@ -1,7 +1,7 @@
 /** Failure-recovery pairs (src/recovery_pairs.ts, src/recovery_fix_policy.ts). Fixtures: the failed Bash payload is FORMAT-DERIVED (tests/fixtures/claude_code_2_1_281/bash_failure.json, scrubbed from a Claude Code 2.1.281 capture with key names unchanged, PROVENANCE.tsv); the successful Bash payload is FORMAT-DERIVED from https://code.claude.com/docs/en/hooks (PostToolUse: tool_name, tool_input.command, tool_response); the Copilot payload is FORMAT-DERIVED from tests/fixtures/harness_hook_payloads.ts (COPILOT_SCHEMA, PostToolUseFailureHookInput) as src/hook_adapters.ts canonicalizes it; command strings, error texts, credential shapes and expected fixes are HAND-DERIVED from the pairing rule and the allowlist. UNVERIFIED for Copilot CLI: no postToolUseFailure payload has been captured, the `Exit code 2` error wording in the Copilot test below is HAND-DERIVED (it is Claude Code's wording), and Copilot CLI's own session logs (events.jsonl under its session-state directory) record a shell command that exited 1 as `resultType: success` with the text `completed with exit code 1`, which suggests a non-zero shell exit reaches a hook as a success and never as postToolUseFailure. */
 import { execFileSync } from 'node:child_process'
 import { createHash, createHmac } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -15,8 +15,9 @@ import { sessionStateKey } from '../src/hook_registry.js'
 import { recoveryBashHandler, recoveryEditHandler } from '../src/hooks_recovery.js'
 import { postToolUseFailureWithExtras } from '../src/hooks_tool_failure.js'
 import { purgeRoots } from '../src/purge.js'
+import { clearModuleCaches } from '../src/reset.js'
 import { carriesCredential, FIX_VERB_ALLOWLIST, fixIsAllowed } from '../src/recovery_fix_policy.js'
-import { isLearnableCommand, isRetired, learnableFix, loadRecoveryPairs, MAX_FIX_CHARS, OTHER_STEP, recoveryProjectKey, recoveryStorePath, splitCommandPrefix } from '../src/recovery_pairs.js'
+import { isLearnableCommand, isRetired, learnableFix, loadRecoveryPairs, MAX_FIX_CHARS, OTHER_STEP, recoveryProjectKey, recoveryStorePath, splitCommandPrefix, WRAPPER } from '../src/recovery_pairs.js'
 import { sessionSidecarPath } from '../src/session_store.js'
 import type { HookOutput } from '../src/types.js'
 
@@ -862,7 +863,7 @@ describe('the tightened allowlist', () => {
 })
 
 describe('the allowlist fails closed on environment and paths', () => {
-  const wrappers = /^(?:env\s+(?:-\S+\s+)*|npx\s+(?:(?:-y|--yes|--no-install)\s+)*|uv\s+run\s+(?:--\S+\s+)*)/
+  const wrappers = WRAPPER
 
   // HAND-DERIVED: each fix is a way to point a replayed install or build at a program or file outside the project. The first two are the forms a security review confirmed passed the previous deny-list and `[\w./-]+` path check; the rest are the other variables that move a home, a config dir, a module path or the shell, and each shape of path that leaves the working directory.
   it.each([
@@ -882,6 +883,23 @@ describe('the allowlist fails closed on environment and paths', () => {
     'uv run PYTHONPATH=/tmp/x pip install -r requirements.txt',
     'CI=1 HOME=/tmp/x npm ci',
     'env -S "A=b npm ci"',
+    'env -C/tmp npm ci',
+    'env -C../.. npm ci',
+    'env -P/tmp/evil npm ci',
+    'env -P/tmp/evil pip install -r requirements.txt',
+    'env -S/tmp npm ci',
+    'env -iC/tmp npm ci',
+    'env -u HOME npm ci',
+    'env -uPATH npm ci',
+    'env --unset=HOME npm ci',
+    'env -C /tmp npm ci',
+    'env --chdir=/x npm ci',
+    'env --chdir /x npm ci',
+    'sudo npm ci',
+    'sudo -u root npm ci',
+    'uv run --directory /tmp pytest',
+    'uv run --with evil pytest',
+    'npx --package=evil npm ci',
     'CI=$(id) npm ci',
     'NODE_ENV=/tmp/x npm ci',
     'cd ..',
@@ -931,13 +949,14 @@ describe('the allowlist fails closed on environment and paths', () => {
     'NODE_ENV=test npm test',
     'LANG=C.UTF-8 LC_ALL=C make test',
     'env CI=true NO_COLOR=1 npm ci',
+    'env CI=1 npm ci',
     'cd services/api && npm ci',
   ])('still accepts %s', (command) => {
     expect(fixIsAllowed(command, wrappers)).toBe(true)
   })
 
   // PROVENANCE: HAND-DERIVED store contents. The fix text is what an older build, whose deny-list and path check let it through, would have written; the signature and shape digests come from a real two-session lesson, so only the fix is swapped.
-  it.each(['HOME=/tmp/x pip install -r /tmp/r.txt', 'cd ../x && npm ci', 'XDG_CONFIG_HOME=/tmp/x npm ci'])('never replays %s from a store an older build wrote', async (refused) => {
+  it.each(['HOME=/tmp/x pip install -r /tmp/r.txt', 'cd ../x && npm ci', 'XDG_CONFIG_HOME=/tmp/x npm ci', 'env -C/tmp npm ci', 'env -P/tmp/evil npm ci'])('never replays %s from a store an older build wrote', async (refused) => {
     const { cwd } = freshProject()
     await teachTwice(cwd, 'pytest', [INSTALL])
     expect(contextOf(await failed(session(), cwd, 'pytest'))).toContain(INSTALL)
@@ -955,6 +974,19 @@ describe('the allowlist fails closed on environment and paths', () => {
     expect(storeText(cwd)).not.toContain('/tmp/r.txt')
   })
 })
+
+/** Whether this account may create a symlink: some Windows accounts may not, and the symlink row has nothing to test there. */
+function canSymlink(): boolean {
+  const dir = mkdtempSync(join(tmpdir(), 'tg-symlink-probe-'))
+  try {
+    symlinkSync(join(dir, 'a'), join(dir, 'b'), 'file')
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
 
 describe('the digests are keyed per install', () => {
   // HAND-DERIVED: the error line the lesson is keyed on is `exit 1: ModuleNotFoundError: No module named foo` (the captured failure's first error line, as the scoring test above spells it); an unsalted SHA-256 of it is what a leaked store would let a guesser confirm.
@@ -986,6 +1018,30 @@ describe('the digests are keyed per install', () => {
     for (const text of [...shown, storeText(cwd), sidecarText(s)]) expect(text).not.toContain(key)
     await teachTwice(cwd, 'pytest', [INSTALL])
     expect(readFileSync(installKeyPath(), 'utf8')).toBe(key)
+  })
+
+  // HAND-DERIVED: a key file is valid only as 64 lowercase hex characters in a regular file; each row is a way the file on disk can be something else.
+  it.each<[string, (path: string) => void]>([
+    ['garbage', (path: string) => writeFileSync(path, 'not a key')],
+    ['empty', (path: string) => writeFileSync(path, '')],
+    ...(canSymlink() ? [['symlink', (path: string) => symlinkSync(join(dirname(path), 'elsewhere.txt'), path, 'file')] as [string, (path: string) => void]] : []),
+    ['directory', (path: string) => mkdirSync(path)],
+  ])('replaces a %s key file with a fresh regular key and still learns and replays', async (_name, damage) => {
+    const path = installKeyPath()
+    rmSync(path, { recursive: true, force: true })
+    const target = join(dirname(path), 'elsewhere.txt')
+    writeFileSync(target, 'untouched')
+    damage(path)
+    clearModuleCaches()
+    const { cwd } = freshProject()
+    await teachTwice(cwd, 'pytest', [INSTALL])
+    expect(lstatSync(path).isFile()).toBe(true)
+    const key = readFileSync(path, 'utf8')
+    expect(key).toMatch(/^[0-9a-f]{64}$/)
+    expect(readFileSync(target, 'utf8')).toBe('untouched')
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toContain(INSTALL)
+    expect(storeText(cwd)).not.toContain(key)
+    expect(readdirSync(dirname(path)).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
 
   // HAND-DERIVED: a store marked with the previous version number is what an older build left; it holds bare digests this build can not reproduce, so it is dropped unread rather than mixed in.
