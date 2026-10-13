@@ -38,6 +38,11 @@ export function stripAnsiEscapes(s: string): string {
   return s.slice(0, lastSt + 2).replace(_ANSI_ESCAPE_RE, '') + s.slice(lastSt + 2).replace(_ANSI_ESCAPE_NO_ST_RE, '')
 }
 
+/** {@link stripAnsiEscapes} that removes a DCS/SOS/PM/APC string's opener and terminator but keeps its payload, as the strip did before it took control strings whole, and as a strip that knows no control strings still does. Redaction reads this view as well, since a credential split inside a control string by a colour code is whole here and absent from the other strip. */
+export function stripAnsiEscapesKeepingStrings(s: string): string {
+  return s.includes('\x1b') ? s.replace(_ANSI_ESCAPE_NO_ST_RE, '') : s
+}
+
 /** Format a byte count as a plain-text human-readable string (B/KB/MB/GB/TB/PB). No ANSI codes — safe for use in Rich table cells and fallback renderers. */
 export function fmtBytes(n: number): string {
   let value = n

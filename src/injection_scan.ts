@@ -3,7 +3,7 @@
 import { randomBytes } from 'node:crypto'
 
 import { ASCII_CONFUSABLES, CONFUSABLE_CLASSES, CONFUSABLE_READINGS } from './fence_confusables.js'
-import { stripAnsiEscapes } from './render/ansi.js'
+import { stripAnsiEscapes, stripAnsiEscapesKeepingStrings } from './render/ansi.js'
 
 interface InjectionPattern {
   readonly name: string
@@ -358,9 +358,18 @@ function spokenMarkerAt(text: string, after: number, readings: Readings): boolea
 
 /** `text` with every terminal escape sequence gone, so nothing downstream can assemble a marker out of bytes the neutralizer passed. `out()` and `emit()` strip ANSI from whatever they print to a pipe, which under an agent is every time, and `stripAnsiEscapes` is not idempotent: `ESC ESC[0m[0m` strips to `ESC[0m`. A neutralizer running before that strip read `<ESC[0m/untrusted-tool-output>`, which spells nothing, and the strip then printed an exact closing tag; a `[` the same way became a raw `[tg]` deny voice. Stripped here to a fixpoint first, with any ESC no sequence claimed dropped after, the body holds no ESC at all, so a later strip changes nothing and what the neutralizer read is what the model reads. The 8-bit introducers are rewritten to their 7-bit forms before the strip and every C1 control left after it is dropped with the ESC bytes, for the same reason one level down: the neutralizer passes over a C1 control as unseen but reads the parameter bytes after it, so `<` U+009B `0m/untrusted-tool-output>` spelled nothing to it, and any strip that knows CSI's 8-bit form, as the common ANSI patterns do, turned it into an exact closing tag. Line by line, so a sequence with no terminator stops at the end of its line and the line count stays what it was. The passes are capped because each unwraps one layer, and an uncapped loop is quadratic on a payload nested as deep as it is long; past the cap the ESC bytes left are dropped all the same, leaving the inner layers as printable text the attacker could have typed directly, which the neutralizer reads as it stands. Since a fence now removes bytes as well as adding them, a caller sizing one measures what the fence returns, not the raw text, and a redaction reads this view of the text, since this is the one a tool-output fence ships. */
 export function withoutEscapes(text: string): string {
+  return escapeFreeView(text, stripAnsiEscapes)
+}
+
+/** {@link withoutEscapes} with each control string's payload kept (see {@link stripAnsiEscapesKeepingStrings}). Not a fence body: redaction reads it beside {@link withoutEscapes}, because a credential split inside a control string is whole only here. */
+export function withoutEscapesKeepingStrings(text: string): string {
+  return escapeFreeView(text, stripAnsiEscapesKeepingStrings)
+}
+
+function escapeFreeView(text: string, strip: (line: string) => string): string {
   if (!text.includes('\x1b') && !/[\x80-\x9f]/.test(text)) return text
   return sevenBitIntroducers(text).split('\n').map((line) => {
-    for (let pass = 0; pass < 8 && line.includes('\x1b'); pass++) line = stripAnsiEscapes(line)
+    for (let pass = 0; pass < 8 && line.includes('\x1b'); pass++) line = strip(line)
     return dropEscapeBytes(line)
   }).join('\n')
 }
