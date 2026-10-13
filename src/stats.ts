@@ -196,6 +196,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   known_root_record_failed: SOURCE_OTHER,
   // Same fail-soft shape, from hooks_session_start.ts's reconcileNote: a thrown reconcile sweep must not block session start, but it also must not vanish silently, so the catch that swallows it records why instead of returning null with nothing recorded.
   reconcile_note_failed: SOURCE_OTHER,
+  // A session start the Copilot shim answered with `{}` after its deadline, delivered on the first tool call instead (hooks_session.ts pendingContextHandler). A census of how often a slow machine needed the deferral, always recorded at (0, 0): the text was owed, not saved.
+  session_start_deferred: SOURCE_OTHER,
   // Measurement of what a compaction produced (hooks_compact.ts postCompactHandler): summary size and how many manifest paths survived into it. SOURCE_OTHER and always recorded at (0, 0) -- the summary was written whether or not token-goat was watching, so there is no counterfactual in which those bytes were saved. Filing it anywhere with a savings total would credit token-goat for the whole summary, which is the accounting mistake this registry exists to prevent.
   compact_summary: SOURCE_OTHER,
   // One row per failed tool call the post_tool_use_failure hook sees (hooks_tool_failure.ts), with its tool_error_class.ts verdict in `detail` so failure rates by reason accumulate going forward. A measurement at (0, 0): a failure saves nothing.

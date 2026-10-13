@@ -21,6 +21,7 @@ const _testConfigPath = tempConfigPath('tg-hooks-session-config-test.toml');
 
 import { subagentStopHandler } from '../src/agent_receipt.js';
 import { pendingContextHandler, userPromptSubmitHandler } from '../src/hooks_session.js';
+import { recordSessionStartSettled } from '../src/session_start_owed.js';
 import { clearModuleCaches } from '../src/reset.js';
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
 import { getDb } from '../src/db.js';
@@ -913,8 +914,9 @@ describe('prompt-submit hint routing by harness', () => {
     expect(submitted.hookType).toBe('context');
     expect((submitted as { context: string }).context).toContain('TaskUpdate');
 
-    // Queuing as well would deliver the same hint twice, once per channel -- the specific bug a half-applied version of this change would produce.
-    expect(pendingContextHandler(toolEvent(sessionId)).hookType).toBe('pass');
+    // Queuing as well would deliver the same hint twice, once per channel -- the specific bug a half-applied version of this change would produce. The session start is marked settled first: Copilot CLI's first tool call otherwise delivers the owed session start (tests/session_start_deferred_delivery.test.ts), which is not what this row is about.
+    recordSessionStartSettled(toolEvent(sessionId), { finishedAtMs: 1, deadlineEpoch: null });
+    expect((await pendingContextHandler(toolEvent(sessionId))).hookType).toBe('pass');
   });
 
   it('returns the hint directly on Claude Code, and leaves nothing queued behind it', async () => {
@@ -926,6 +928,6 @@ describe('prompt-submit hint routing by harness', () => {
     expect((submitted as { context: string }).context).toContain('TaskUpdate');
 
     // Queuing here as well would deliver the same hint twice, once per channel.
-    expect(pendingContextHandler(toolEvent(sessionId)).hookType).toBe('pass');
+    expect((await pendingContextHandler(toolEvent(sessionId))).hookType).toBe('pass');
   });
 });

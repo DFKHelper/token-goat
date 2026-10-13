@@ -12,6 +12,7 @@ const UNGROUPED_KIND_ALLOWLIST: Record<string, string> = {
   worker_healthcheck_failed: 'Fail-soft diagnostic counter from hooks_edit.ts: it records that a side task threw, never a byte saving, so "Other" is exactly where a reader should find it.',
   known_root_record_failed: 'Fail-soft diagnostic counter from hooks_edit.ts: it records that a side task threw, never a byte saving, so "Other" is exactly where a reader should find it.',
   reconcile_note_failed: 'Fail-soft diagnostic counter from hooks_session_start.ts: it records that reconcileNote\'s sweep threw, never a byte saving, so "Other" is exactly where a reader should find it.',
+  session_start_deferred: 'Census of session starts delivered on the first tool call because the shim missed its deadline (hooks_session.ts), always recorded at zero bytes and zero tokens: the text was owed, not saved, so no savings group applies to it.',
   tool_failure: 'One row per failed tool call from hooks_tool_failure.ts, always at zero bytes and zero tokens, carrying the tool_error_class.ts classification in detail: a failure census, not a saving, so no savings group applies to it.',
   compact_summary: 'Measurement of what a compaction produced, always recorded at zero bytes and zero tokens because the summary was written whether or not token-goat was watching; grouping it under a savings heading would imply a counterfactual that does not exist.',
   'hook:': "relay.ts's per-invocation duration_ms latency measurement, always recorded at zero bytes and zero tokens: it times token-goat's own hook overhead, not a saving, so no savings group's siblings apply to it. Surfaced separately by `token-goat stats --hooks`/`doctor`, not by the by-source/by-kind savings breakdown.",
@@ -48,7 +49,7 @@ describe('every stat kind registered in stats.ts is grouped by the renderer', ()
 
   it('keeps the allowlist honest: every entry names a kind or prefix that is still registered and still ungrouped', () => {
     const registered = new Set([..._registeredKinds(), ..._registeredKindPrefixes()])
-    expect(Object.keys(UNGROUPED_KIND_ALLOWLIST).length, 'the allowlist changed size -- every entry has to be argued for individually, so a blanket addition should show up here').toBe(9)
+    expect(Object.keys(UNGROUPED_KIND_ALLOWLIST).length, 'the allowlist changed size -- every entry has to be argued for individually, so a blanket addition should show up here').toBe(10)
     for (const [name, reason] of Object.entries(UNGROUPED_KIND_ALLOWLIST)) {
       expect(registered.has(name), `${name} is allowlisted but stats.ts no longer registers it -- drop the entry`).toBe(true)
       const probe = name.endsWith(':') ? `${name}sample` : name

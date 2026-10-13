@@ -571,6 +571,26 @@ const MIN_LATENCY_SAMPLES = 20
 /** A pair whose newest call is older than this is reported but not judged. */
 const LATENCY_RECENT_WINDOW_SECONDS = 24 * 3600
 
+/** How many session starts the Copilot shim cut off and the first tool call delivered instead, from the `session_start_deferred` rows `recordStat` writes plus whatever the daily rollup folded in. Informational: a nonzero count says the machine is slow enough to miss the shim's budget, and the delivery already made good the loss. */
+export function checkDeferredSessionStarts(dbPath: string): DoctorResult {
+  const name = 'Deferred session starts'
+  if (!fs.existsSync(dbPath)) {
+    return { name, status: 'ok', message: 'no database yet' }
+  }
+  try {
+    const db = getDb(dbPath)
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('stats', 'stats_daily_rollup')").all() as Array<{ name: string }>
+    const has = (table: string): boolean => tables.some((t) => t.name === table)
+    let deferred = 0
+    if (has('stats')) deferred += (db.prepare("SELECT count(*) AS n FROM stats WHERE kind = 'session_start_deferred'").get() as { n: number }).n
+    if (has('stats_daily_rollup')) deferred += (db.prepare("SELECT coalesce(sum(events), 0) AS n FROM stats_daily_rollup WHERE kind = 'session_start_deferred'").get() as { n: number }).n
+    if (deferred === 0) return { name, status: 'ok', message: 'none -- every session start finished inside its budget' }
+    return { name, status: 'ok', message: `${countNoun(deferred, 'session start')} missed the shim deadline and ${deferred === 1 ? 'was' : 'were'} delivered on the first tool call` }
+  } catch (e) {
+    return { name, status: 'warn', message: `could not read stats: ${extractErrorMessage(e)}` }
+  }
+}
+
 /** Is any single (event, harness) pair's hook latency running hot? Reads the same `stats.duration_ms` rows `token-goat stats --hooks` renders, via {@link hookLatencyBreakdown}, so this and that view can never disagree about what "hot" means. The p95 ceiling is `hooks.latency_budget_ms`, whose 1500ms default was measured as follows. `duration_ms` reads `performance.now()` inside `relayInProcess`'s finally block for a synchronous call -- total time since process start, Node bootstrap and bundle import included, not just dispatch -- which measured ~86-92ms total on this machine against a ~28ms dispatch-only figure the old threshold was calibrated for. Re-examined after the fix that made a Claude Code async-detached call (post_tool_use on Edit/Write/MultiEdit/NotebookEdit outside markdown, and every subagent_stop) record what the harness actually waited on instead: that population now measures ~20-30ms, since the harness stops waiting at the shim's early `{"async":true}` marker rather than at process exit. Left at 1500ms rather than lowered for that smaller floor: this is a ceiling meant to catch a genuine regression, not a tight bound on either population's normal range, and 1500ms is already 16-60x either one -- lowering it would only invite false positives from ordinary variance in the still-larger synchronous population, which this column measures unchanged. */
 export function checkHookLatency(dbPath: string): DoctorResult {
   const name = 'Hook latency'
@@ -732,6 +752,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   results.push(checkDirtyQueueHealth(actualDataDir))
   results.push(checkCompactionChannel(path.join(actualDataDir, 'global.db')))
   results.push(checkHookLatency(path.join(actualDataDir, 'global.db')))
+  results.push(checkDeferredSessionStarts(path.join(actualDataDir, 'global.db')))
   results.push(checkUnmappedTools(path.join(actualDataDir, 'global.db')))
   results.push(checkSavingsReceipt(path.join(actualDataDir, 'global.db')))
 

@@ -8,7 +8,10 @@ import { loadConfig } from './config.js';
 import { checkSkillVersionDrift } from './skill_version_drift.js';
 import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js';
 import { peekPendingContext, queuePendingContext } from './pending_context.js';
-import { dropsPreCompactContext, dropsPromptSubmitContext, resumesCompactionOnPrompt } from './harness_channels.js';
+import { dropsPreCompactContext, dropsPromptSubmitContext, resumesCompactionOnPrompt, sessionStartMayBeDeferred } from './harness_channels.js';
+import { getHarnessName } from './bridges/registry.js';
+import { claimOwedSessionStart, readSessionStartSettled, sessionStartOwed } from './session_start_owed.js';
+import { sessionStartOutput } from './hooks_session_start.js';
 import { recordStat } from './stats.js';
 import {
   accumulateResidentLines,
@@ -19,10 +22,28 @@ import {
   taskListPruneHint,
 } from './resident_context.js';
 
-/** Deliver anything the prompt-submit hook queued, on the first tool call that follows. Advisory and tool-agnostic: it adds context and never decides a tool's fate. It peeks rather than consumes, and relay.ts clears the queue once the emitted output is confirmed to carry the text -- which is what makes this a no-op for every later call in the turn, and what keeps the text queued on the calls where an advisory result loses to another handler's. See pending_context.ts. The gate names every producer that writes to the queue, not just the one this handler was built for. Gating on the prompt-submit set alone was correct while that set was the only writer; once pre_compact began queuing on a harness that discards its own response, an empty prompt-submit set would have stranded every queued manifest on disk -- nothing failing, and the hint still counted as emitted. */
-function pendingContextHandler(event: HookEvent): HookOutput {
+/** On the first tool call of a session on a harness whose session-start hook can miss its shim deadline, queue the output that hook owed so the peek below delivers it. Read the marker, claim, and only then compute: the claim is an exclusive create, so of two concurrent first calls one delivers, and a call that lost the claim computes nothing. A subagent is skipped outright, because it never ran a session start of its own and the parent's entry is not its to take. Advisory like the handler around it: a throw is swallowed. */
+async function deliverOwedSessionStart(event: HookEvent): Promise<void> {
   try {
-    if (!event.sessionId || (!dropsPromptSubmitContext() && !dropsPreCompactContext())) return passOutput();
+    if (event.agentId !== undefined || !sessionStartMayBeDeferred(getHarnessName())) return;
+    const stateKey = sessionStateKey(event);
+    const gateKey = `session-start-deferred:${stateKey}`;
+    if (wasHintShown(gateKey)) return;
+    markHintShown(gateKey);
+    if (!sessionStartOwed(readSessionStartSettled(event), Date.now()) || !claimOwedSessionStart(event)) return;
+    const owed = await sessionStartOutput(event, { skipRecovery: true });
+    if (owed.hookType === 'context') queuePendingContext(stateKey, owed.context);
+    recordStat('session_start_deferred', 0, 0);
+  } catch {
+    // Advisory: a failed deferral costs the owed text, never the tool call.
+  }
+}
+
+/** Deliver anything the prompt-submit hook queued, on the first tool call that follows. Advisory and tool-agnostic: it adds context and never decides a tool's fate. It peeks rather than consumes, and relay.ts clears the queue once the emitted output is confirmed to carry the text -- which is what makes this a no-op for every later call in the turn, and what keeps the text queued on the calls where an advisory result loses to another handler's. See pending_context.ts. The gate names every producer that writes to the queue, not just the one this handler was built for, and a deferred session start is one: on VS Code neither drop set applies, so without it the owed text would be queued and never peeked. Gating on the prompt-submit set alone was correct while that set was the only writer; once pre_compact began queuing on a harness that discards its own response, an empty prompt-submit set would have stranded every queued manifest on disk -- nothing failing, and the hint still counted as emitted. */
+async function pendingContextHandler(event: HookEvent): Promise<HookOutput> {
+  try {
+    if (event.sessionId) await deliverOwedSessionStart(event);
+    if (!event.sessionId || (!dropsPromptSubmitContext() && !dropsPreCompactContext() && !sessionStartMayBeDeferred(getHarnessName()))) return passOutput();
     const pending = peekPendingContext(sessionStateKey(event));
     return pending === null ? passOutput() : contextOutput(pending);
   } catch {
