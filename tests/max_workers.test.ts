@@ -1,9 +1,20 @@
 /** `maxWorkers` is derived from the machine, and the risk of deriving it is that a formula change silently raises it on a CI runner. That is not a hypothetical: 6 workers on the 4-vCPU windows-latest runner pushed ordinary tests past the 30s bound across three consecutive workflow attempts. So the runner shapes are pinned here by value, not left to be re-reasoned about. */
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { resolveMaxWorkers, ROOMY_CPUS, ROOMY_MEMORY_GB, WORKER_CEILING } from './setup/max-workers.js'
 
 describe('resolveMaxWorkers', () => {
+  // TOKEN_GOAT_TEST_MAX_WORKERS is the knob a developer sets to run the suite narrower, and it outranks every other input, so a run with it set failed every case below that is about the machine's shape.
+  let savedOverride: string | undefined
+  beforeEach(() => {
+    savedOverride = process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+    delete process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+  })
+  afterEach(() => {
+    if (savedOverride === undefined) delete process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+    else process.env['TOKEN_GOAT_TEST_MAX_WORKERS'] = savedOverride
+  })
+
   // The exact shapes CI runs on. Each must resolve to the value the suite was last green on.
   it.each([
     ['windows-latest', 'win32', 4, 16, 4],
