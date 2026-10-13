@@ -17,6 +17,7 @@ const { resolveFilter, run, runRaw, unknownFilterNotice } = await import('../src
 const { defaultConfig, invalidateConfigCache, saveConfig } = await import('../src/config.js')
 const { configPath } = await import('../src/constants.js')
 const { getBashOutput } = await import('../src/bash_output_cache.js')
+const { compressOutput, filterByName } = await import('../src/tool_filters/index.js')
 // DATA_DIR is now frozen to the temp dir; restore env to avoid leaking the override into sibling test modules that run in the same worker.
 if (_savedLocal === undefined) delete process.env['LOCALAPPDATA']
 else process.env['LOCALAPPDATA'] = _savedLocal
@@ -256,6 +257,32 @@ describe('bash_runner.run — net-benefit floor (bash_compress.min_net_savings_b
     expect(out.trim()).toBe('compiling...\ncompiling...\ndone')
   })
 
+  it('prices the recall line it appends, so a saving that pays for the marker alone but not for the marker and the recall line ships the original', async () => {
+    // HAND-DERIVED margin: 17 repeats dedupe to a saving that clears the 72-byte marker plus the default 100-byte floor with 28 bytes to spare, and the 62-byte `[token-goat] full output: bash-output <id> --full` line every shipped rewrite also carries takes that back out.
+    const raw = 'compiling...\n'.repeat(17) + 'done\n'
+    const generic = filterByName('generic')
+    expect(generic).not.toBeNull()
+    // Precondition on the same bytes: priced on the marker alone, this rewrite would ship, so only the recall line's cost can decline it.
+    expect(compressOutput(generic!, raw, '', 0, []).worthApplying(100)).toBe(true)
+    const s = script('margin-dup.js', "for (let i = 0; i < 17; i++) console.log('compiling...')\nconsole.log('done')\n")
+    let out = ''
+    const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    expect(code).toBe(0)
+    expect(out).not.toContain('×17')
+    expect(out).not.toContain('full output: bash-output')
+    expect(out.trim()).toBe(raw.trim())
+  })
+
+  it('a saving that pays for the marker and the recall line still ships', async () => {
+    // Calibration for the case above: 20 repeats clear the floor with the recall line priced in, so the case above is declined by the line's cost and not by some other part of the gate.
+    const s = script('margin-dup-ok.js', "for (let i = 0; i < 20; i++) console.log('compiling...')\nconsole.log('done')\n")
+    let out = ''
+    const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
+    expect(code).toBe(0)
+    expect(out).toContain('×20')
+    expect(out).toContain('full output: bash-output')
+  })
+
   it('an above-floor saving still compresses exactly as today, marker included', async () => {
     // 60 repeats produces a large, unambiguous dedupe win that clears the default 100-byte floor by a wide margin.
     const s = script('big-dup.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
@@ -271,12 +298,12 @@ describe('bash_runner.run — net-benefit floor (bash_compress.min_net_savings_b
     cfg.bash_compress.min_net_savings_bytes = 0
     saveConfig(cfg)
 
-    // 10 repeats dedupes under the default floor's own math (bytesSaved clears the marker cost) but not the default's extra 100-byte margin -- with min_net_savings_bytes=0 it should ship.
-    const s = script('tiny-dup2.js', "for (let i = 0; i < 10; i++) console.log('compiling...')\nconsole.log('done')\n")
+    // 13 repeats save 148 bytes, which clears the 72-byte marker and the 62-byte recall line but not the default's extra 100-byte margin -- with min_net_savings_bytes=0 it should ship. (10 repeats used to serve here, back when the gate priced the marker alone; their 109 bytes do not pay for the recall line.)
+    const s = script('tiny-dup2.js', "for (let i = 0; i < 13; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
     const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
-    expect(out).toContain('×10')
+    expect(out).toContain('×13')
   })
 
   it('the config key actually moves the threshold: raising it suppresses a rewrite the default floor would have shipped', async () => {

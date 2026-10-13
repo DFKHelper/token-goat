@@ -118,12 +118,12 @@ export class CompressedOutput {
     return this.bytesSaved - this.markerBytes
   }
 
-  /** Single definition of "is this rewrite worth shipping". `minNetSavingsBytes` is the configured floor (`bash_compress.min_net_savings_bytes`) below which a rewrite is considered too trivial to justify destabilising the bytes (breaks provider prefix caching) for — every consumer that chooses between the compressed body and the original output must go through this, not re-derive its own `bytesSaved > 0` check. */
-  worthApplying(minNetSavingsBytes: number): boolean {
+  /** Single definition of "is this rewrite worth shipping". `minNetSavingsBytes` is the configured floor (`bash_compress.min_net_savings_bytes`) below which a rewrite is considered too trivial to justify destabilising the bytes (breaks provider prefix caching) for — every consumer that chooses between the compressed body and the original output must go through this, not re-derive its own `bytesSaved > 0` check. `trailerBytes` is whatever the caller appends after the marker whenever the rewrite ships, such as the runner's recall line: it is paid for out of the same saving, so a gate that leaves it out ships rewrites that cost more than they save. */
+  worthApplying(minNetSavingsBytes: number, trailerBytes = 0): boolean {
     return isRewriteWorthwhile({
       originalBytes: this.originalBytes,
       rewrittenBytes: this.compressedBytes,
-      noticeBytes: this.markerBytes,
+      noticeBytes: this.markerBytes + trailerBytes,
       minNetSavingsBytes,
     })
   }

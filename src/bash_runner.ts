@@ -7,7 +7,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import * as os from 'node:os'
 
-import { storeBashOutputSync } from './bash_output_cache.js'
+import { bashOutputIdSync, storeBashOutputSync } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { displaySafeText } from './paths.js'
@@ -368,11 +368,15 @@ async function wrapAndCompress(
   }
 
   const limits = resolveCompressLimits()
-  // The net-benefit gate lives in `deliverCompressed`: a rewrite whose bytesSaved doesn't clear the marker's own cost plus the configured floor destabilises the bytes (breaks provider prefix caching) for a saving too small to be worth it, so below the floor that function returns the ORIGINAL streams with no marker -- exactly as though no filter had matched. `token-goat bench` measures delivery through the same function, so a benchmark cannot drift from what actually ships.
+  const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
+  // The lines appended under every shipped rewrite, known before the gate runs: the recall id is bashOutputIdSync over the same arguments storeBashOutputSync is called with below, so it names the body that call will store.
+  const trailer = '\n[token-goat] full output: bash-output ' + bashOutputIdSync(command, fullRaw, opts.cwd ?? null) + ' --full' + (opts.capHint ? '\n[token-goat] ' + opts.capHint : '')
+  // The net-benefit gate lives in `deliverCompressed`: a rewrite whose bytesSaved doesn't clear the marker's own cost, the trailer's, and the configured floor destabilises the bytes (breaks provider prefix caching) for a saving too small to be worth it, so below the floor that function returns the ORIGINAL streams with no marker -- exactly as though no filter had matched. Priced on the marker alone, a rewrite inside the trailer's ~62 bytes of the floor shipped and cost more than it saved. `token-goat bench` measures delivery through the same function, so a benchmark cannot drift from what actually ships.
   const { applied, marker, compressed, text: delivered } = deliverCompressed(filter, stdoutText, stderrText, exitCode, argv, {
     compressionProfile: profile,
     maxLines: limits.maxLines,
     maxBytes: limits.maxBytes,
+    trailerBytes: Buffer.byteLength(trailer, 'utf8'),
   })
   // Apply the pressure-scaled token cap to the body BEFORE appending the marker so the savings marker survives truncation and stays visible to the agent.
   let text = delivered
@@ -384,10 +388,8 @@ async function wrapAndCompress(
   // A cap that cut the output is a loss the same as a filter that did, so it gets the same recall. Keyed on `applied` alone, a passthrough run capped to 2,000 tokens dropped the rest with nothing to recover it from.
   if (applied || capped) {
     // The marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, and a rerun carrying it as a prefix is left unwrapped by the pre-hook, but that costs the command a second run. A recall of the untruncated bytes is the cheaper follow-up, so store them the same way the compound post-hook path already does and point at it.
-    const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
-    const recallId = storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null)
-    body += '\n[token-goat] full output: bash-output ' + recallId + ' --full'
-    if (opts.capHint) body +='\n[token-goat] ' + opts.capHint
+    storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null)
+    body += trailer
   }
   writeStdout(body.endsWith('\n') ? body : body + '\n')
 

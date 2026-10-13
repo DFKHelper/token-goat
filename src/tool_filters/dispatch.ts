@@ -187,11 +187,11 @@ export function deliverCompressed(
   stderr: string,
   exitCode: number,
   argv: string[],
-  opts: CompressOptions = {},
+  opts: CompressOptions & { /** Bytes the caller appends after the marker whenever the rewrite ships (the runner's recall line), priced into the gate with the marker. */ trailerBytes?: number } = {},
 ): DeliveredCompression {
   const compressed = compressOutput(filter, stdout, stderr, exitCode, argv, opts)
   const minNet = resolveMinNetSavingsBytes()
-  const applied = compressed.worthApplying(minNet)
+  const applied = compressed.worthApplying(minNet, opts.trailerBytes ?? 0)
   const text = applied ? compressed.text : redactSecrets(combineStreams(stdout, stderr)).text
   const marker = applied ? compressed.withMarker(minNet).slice(compressed.text.length) : ''
   return { applied, text, marker, compressed }
