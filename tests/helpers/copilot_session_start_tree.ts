@@ -87,20 +87,53 @@ export function cleanupTrees(): void {
       if (Number.isInteger(pid) && pid > 0 && !ownedPids.includes(pid)) ownedPids.push(pid)
     }
   }
-  const killed: number[] = []
-  for (const pid of ownedPids.splice(0).reverse()) {
-    if (!alive(pid)) continue
-    killed.push(pid)
-    if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 2000, windowsHide: true })
-    } else {
-      process.kill(pid, 'SIGKILL')
+  const table = listProcesses()
+  const victims = new Map<number, string>()
+  const walk = (pid: number): void => {
+    if (victims.has(pid)) return
+    victims.set(pid, table.get(pid)?.args ?? '')
+    for (const [child, entry] of table) if (entry.ppid === pid) walk(child)
+  }
+  for (const pid of ownedPids.splice(0).reverse()) if (alive(pid)) walk(pid)
+  killAndVerify(victims)
+  // Sweep what the fixture started that no recorded pid reaches, such as an owner that outlived its dead parent.
+  const roots = ownedRoots.map((root) => root.toLowerCase().replaceAll('/', '\\'))
+  const strays = new Map<number, string>()
+  for (const [pid, entry] of listProcesses()) {
+    if (pid !== process.pid && roots.some((root) => entry.args.toLowerCase().replaceAll('/', '\\').includes(root))) strays.set(pid, entry.args)
+  }
+  killAndVerify(strays)
+  // The delete retry covers handle rundown only (12-25 ms measured on a quiet machine); the long EPERM locks came from a time-boxed taskkill that left the worker alive and from an owner orphaned outside the kill list.
+  for (const root of ownedRoots.splice(0)) removeWhenReleased(root)
+}
+
+function listProcesses(): Map<number, { ppid: number; args: string }> {
+  const win = process.platform === 'win32'
+  const listing = win
+    ? spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      'Get-CimInstance Win32_Process | ForEach-Object { [string]$_.ProcessId + [char]9 + $_.ParentProcessId + [char]9 + $_.CommandLine }'],
+    { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 })
+    : spawnSync('ps', ['-eo', 'pid=,ppid=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  if (listing.status !== 0) throw new Error(`process listing failed: ${listing.error?.message ?? listing.stderr}`)
+  const table = new Map<number, { ppid: number; args: string }>()
+  for (const line of listing.stdout.split(/\r?\n/)) {
+    const match = win ? /^(\d+)\t(\d+)\t(.*)$/.exec(line) : /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)
+    if (match) table.set(Number(match[1]), { ppid: Number(match[2]), args: match[3] })
+  }
+  return table
+}
+
+// TerminateProcess/SIGKILL, never a time-boxed taskkill; ESRCH means already dead. A target that stays alive is a defect, reported with its command line.
+function killAndVerify(victims: Map<number, string>): void {
+  for (const pid of victims.keys()) {
+    try { process.kill(pid, 'SIGKILL') } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
     }
   }
-  // taskkill /F only requests termination, and a killed worker's SQLite files stay locked on Windows for a while after the pid is gone (CAPTURE from instrumented runs of copilot_session_start_worker.test.ts: Restart Manager listed no holder, no process of the fixture was left running, and the folder became deletable about 1.3 s after the kill in one run and 56 ms after in another; the cause of the delay itself is not established). Wait for the pids, then retry the delete on EPERM/EBUSY until it succeeds or 15 s pass, well inside the 60 s test timeout. Any other error, and the final one, still throws.
   const gone = Date.now() + 5000
-  while (killed.some(alive) && Date.now() < gone) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
-  for (const root of ownedRoots.splice(0)) removeWhenReleased(root)
+  while ([...victims.keys()].some(alive) && Date.now() < gone) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+  const survivors = [...victims].filter(([pid]) => alive(pid)).map(([pid, args]) => `${pid} ${args}`)
+  if (survivors.length > 0) throw new Error(`fixture process still alive 5 s after SIGKILL: ${survivors.join('; ')}`)
 }
 
 export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void {
