@@ -336,6 +336,15 @@ function copilotContext(resp: unknown): string | undefined {
   return undefined
 }
 
+/** The image and audio entries of a Copilot `binaryResultsForLlm` array, each cut to `type`, `data` and `mimeType`. copilot-sdk's convertMcpCallToolResult passes a blob resource of any mimeType through and sets its `description` to the resource's URI, so a `text/*` blob or a description is the MCP server's own text, and returning it beside a fenced rewrite delivered it unfenced and unredacted. */
+function copilotMediaResults(binary: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(binary)) return []
+  return binary
+    .filter((b): b is Record<string, unknown> => b !== null && typeof b === 'object')
+    .filter((b) => typeof b['data'] === 'string' && typeof b['mimeType'] === 'string' && /^(?:image|audio)\//i.test(b['mimeType']))
+    .map((b) => ({ type: b['type'], data: b['data'], mimeType: b['mimeType'] }))
+}
+
 function copilotTranslate(copilotEvent: string, resp: unknown, toolName: unknown, originalToolArgs: object, toolResult?: unknown): Record<string, unknown> {
   if (copilotEvent === 'preToolUse') {
     const hso = resp && get(resp, 'hookSpecificOutput')
@@ -363,9 +372,9 @@ function copilotTranslate(copilotEvent: string, resp: unknown, toolName: unknown
     const context = copilotContext(resp)
     const out: Record<string, unknown> = {}
     if (typeof updatedToolOutput === 'string') {
-      // The rewrite is text only; an MCP result's images ride beside it in binaryResultsForLlm, handed back untouched as the installed shim's translate() does.
-      const binary = toolResult && typeof toolResult === 'object' ? get(toolResult, 'binaryResultsForLlm') : undefined
-      out['modifiedResult'] = { resultType: 'success', textResultForLlm: updatedToolOutput, ...(Array.isArray(binary) && binary.length > 0 ? { binaryResultsForLlm: binary } : {}) }
+      // The rewrite is text only; an MCP result's images ride beside it in binaryResultsForLlm, handed back as the installed shim's translate() does: image and audio entries only, without the server-chosen description.
+      const media = copilotMediaResults(toolResult && typeof toolResult === 'object' ? get(toolResult, 'binaryResultsForLlm') : undefined)
+      out['modifiedResult'] = { resultType: 'success', textResultForLlm: updatedToolOutput, ...(media.length > 0 ? { binaryResultsForLlm: media } : {}) }
     }
     if (context) out['additionalContext'] = context
     return out
