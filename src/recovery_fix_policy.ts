@@ -92,8 +92,11 @@ export function rerunIsAllowed(core: string): boolean {
   return RERUN_COMMAND.test(core) || FIX_VERB_ALLOWLIST.some((verb) => verb.pattern.test(core))
 }
 
-/** Whether every `&&` part of `fix` is safe to show a later session as history. A part is accepted when it starts with an allowlisted verb, ends in {@link RERUN_PLACEHOLDER} behind a {@link SAFE_LEAD}, or is the failed command itself (`failedCore`) and a {@link RERUN_COMMAND}. */
-export function fixIsAllowed(fix: string, failedCore: string, wrappers: RegExp): boolean {
+/** `make -e` (or `--environment-overrides`) lets the caller's environment override the Makefile's own variables, which {@link DANGEROUS_ENV} does not see in a part that sets none. */
+const MAKE_ENV_OVERRIDE = /^make\b.*\s(?:-e|--environment-overrides)(?=\s|$)/
+
+/** Whether every `&&` part of `fix` is safe to show a later session as history. A part is accepted when it starts with an allowlisted verb or ends in {@link RERUN_PLACEHOLDER} behind a {@link SAFE_LEAD}; the failed command is never kept as text, so there is no third way in. */
+export function fixIsAllowed(fix: string, wrappers: RegExp): boolean {
   for (const part of fix.split(' && ')) {
     if (part === '' || FORBIDDEN_IN_PART.test(part) || SOURCE_FLAG.test(part)) return false
     if (part.endsWith(RERUN_PLACEHOLDER)) {
@@ -102,8 +105,7 @@ export function fixIsAllowed(fix: string, failedCore: string, wrappers: RegExp):
     }
     if (leadingAssignmentNames(part).some((name) => DANGEROUS_ENV.test(name))) return false
     const core = coreOf(part, wrappers)
-    if (core === failedCore && RERUN_COMMAND.test(core)) continue
-    if (!FIX_VERB_ALLOWLIST.some((verb) => verb.pattern.test(core))) return false
+    if (MAKE_ENV_OVERRIDE.test(core) || !FIX_VERB_ALLOWLIST.some((verb) => verb.pattern.test(core))) return false
   }
   return true
 }

@@ -209,7 +209,7 @@ const UNTRUSTED_CALLS: readonly string[] = [
 const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
   [
     'hooks_tool_failure.ts:base.context',
-    'the advice adviseOnFailure already built, joined with one more line. Each value interpolated into that advice is adjudicated where it is built (context_channel_population_is_adjudicated), and the line it is joined with is escaped and fenced by fencedCommand( in recoveryAfterFailure.',
+    'the advice adviseOnFailure already built, joined with up to two more lines. Each value interpolated into that advice is adjudicated where it is built (context_channel_population_is_adjudicated). The recovery line is escaped and fenced by fencedCommand( in recoveryAfterFailure, and the path-miss line is fenced under pathMissAfterFailure in path_miss.ts.',
   ],
   [
     'hooks_bash_post.ts:rewrite.text',

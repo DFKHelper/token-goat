@@ -167,7 +167,7 @@ describe('the fix allowlist', () => {
   const wrappers = /^(?:npx\s+)/
 
   it.each(FIX_VERB_ALLOWLIST.map((verb) => [verb.name, verb.example] as const))('accepts the %s class (%s)', (_name, example) => {
-    expect(fixIsAllowed(example, 'zzz', wrappers)).toBe(true)
+    expect(fixIsAllowed(example, wrappers)).toBe(true)
   })
 
   it('names every class once, each with an example its own pattern accepts', () => {
@@ -175,9 +175,10 @@ describe('the fix allowlist', () => {
     for (const verb of FIX_VERB_ALLOWLIST) expect(verb.pattern.test(verb.example)).toBe(true)
   })
 
-  it('accepts the failed command itself behind an environment prefix', () => {
-    expect(fixIsAllowed('source .venv/bin/activate && pytest -q', 'pytest -q', wrappers)).toBe(true)
-    expect(fixIsAllowed('env PYTHONPATH=src pytest', 'pytest', /^env\s+/)).toBe(true)
+  it('accepts the failed command only as the placeholder, behind an allowlisted prefix', () => {
+    expect(fixIsAllowed('source .venv/bin/activate && (the same command)', wrappers)).toBe(true)
+    expect(fixIsAllowed('source .venv/bin/activate && pytest -q', wrappers)).toBe(false)
+    expect(fixIsAllowed('env PYTHONPATH=src pytest', /^env\s+/)).toBe(false)
   })
 
   it.each([
@@ -215,15 +216,25 @@ describe('the fix allowlist', () => {
     'python setup.py install',
     'npx some-package',
   ])('refuses %s', (command) => {
-    expect(fixIsAllowed(command, 'zzz', /^(?:npx\s+)/)).toBe(false)
+    expect(fixIsAllowed(command, /^(?:npx\s+)/)).toBe(false)
   })
 
-  it('replays the failed command itself only when it is a runner, and only without a chain, pipe or redirect', () => {
-    expect(fixIsAllowed('pytest -q -k "a or b"', 'pytest -q -k "a or b"', wrappers)).toBe(true)
-    expect(fixIsAllowed('pytest -q; rm -rf x', 'pytest -q; rm -rf x', wrappers)).toBe(false)
-    expect(fixIsAllowed('pytest | sh', 'pytest | sh', wrappers)).toBe(false)
-    expect(fixIsAllowed('pytest > out.txt', 'pytest > out.txt', wrappers)).toBe(false)
-    expect(fixIsAllowed('git push origin +main', 'git push origin +main', wrappers)).toBe(false)
+  it('never replays the failed command as text, whatever it looks like', () => {
+    expect(fixIsAllowed('pytest -q -k "a or b"', wrappers)).toBe(false)
+    expect(fixIsAllowed('pytest -q; rm -rf x', wrappers)).toBe(false)
+    expect(fixIsAllowed('pytest | sh', wrappers)).toBe(false)
+    expect(fixIsAllowed('pytest > out.txt', wrappers)).toBe(false)
+    expect(fixIsAllowed('git push origin +main', wrappers)).toBe(false)
+  })
+
+  // HAND-DERIVED: make -e lets the environment override the Makefile's variables, so it is refused in every spelling; the same switch on a verb that does not read it is unaffected.
+  it.each(['make -e', 'make test -e', 'make -e build', 'make build --environment-overrides'])('refuses %s', (command) => {
+    expect(fixIsAllowed(command, wrappers)).toBe(false)
+  })
+
+  it('still accepts a make target with other switches', () => {
+    expect(fixIsAllowed('make test -j4', wrappers)).toBe(true)
+    expect(fixIsAllowed('pip install -e .', wrappers)).toBe(true)
   })
 
   it('refuses a bypass end to end, as the fix of a learned pair', () => {
@@ -782,11 +793,11 @@ describe('the tightened allowlist', () => {
   const wrappers = /^(?:npx\s+)/
 
   it.each(['make deploy', 'make publish', 'make release', 'make db-reset', 'make clean', 'make push', 'make migrate', 'make install-hooks-and-deploy', 'npm run deploy', 'npm run db:reset', 'pnpm run publish', 'yarn run seed', 'bun run wipe', 'npm run build && npm run deploy'])('refuses the task %s', (command) => {
-    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(false)
+    expect(fixIsAllowed(command, wrappers)).toBe(false)
   })
 
   it.each(['make build', 'make test', 'make tests', 'make lint', 'make typecheck', 'make check', 'make setup', 'make install', 'make generate', 'make compile', 'npm run build', 'npm run test:matrix', 'npm run typecheck:tests', 'pnpm run lint', 'yarn run codegen', 'bun run gen'])('accepts the task %s', (command) => {
-    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(true)
+    expect(fixIsAllowed(command, wrappers)).toBe(true)
   })
 
   it.each([
@@ -803,7 +814,7 @@ describe('the tightened allowlist', () => {
     'cargo build --registry evil',
     'npm ci --proxy=http://evil.example',
   ])('refuses the source flag in %s', (command) => {
-    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(false)
+    expect(fixIsAllowed(command, wrappers)).toBe(false)
   })
 
   // HAND-DERIVED: flags that make an install or build run a program, read another config, or work in another directory. The first nine are the forms a review probed; the allowlist names the safe flags, so none of these can be admitted by shape.
@@ -823,11 +834,11 @@ describe('the tightened allowlist', () => {
     'pip install -r requirements.txt --target=/tmp/x',
     'uv sync --directory=/tmp/x',
   ])('refuses the flag in %s', (command) => {
-    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(false)
+    expect(fixIsAllowed(command, wrappers)).toBe(false)
   })
 
   it.each(['npm ci --ignore-scripts', 'npm ci --no-audit --no-fund', 'npm install --legacy-peer-deps', 'yarn install --frozen-lockfile', 'pnpm install --frozen-lockfile', 'cargo build --release --locked', 'cargo test --workspace --all-features', 'go test -race -count=1 ./...', 'go build -v ./cmd/tool', 'uv sync --frozen --no-dev', 'pip install -r requirements.txt --no-cache-dir -q', 'mvn -B -q clean install -DskipTests', 'make -j4 build', 'dotnet test --no-build --nologo'])('accepts the legitimate flags in %s', (command) => {
-    expect(fixIsAllowed(command, 'zzz', wrappers)).toBe(true)
+    expect(fixIsAllowed(command, wrappers)).toBe(true)
   })
 
   it('re-checks a stored fix when it is about to be shown', async () => {

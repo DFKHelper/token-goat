@@ -188,7 +188,7 @@ function digestFailed(command: string): FailedDigest {
 function betweenStep(command: string): string | null {
   if (isDiagnostic(command)) return null
   const text = squeeze(command)
-  return text.length <= MAX_FIX_CHARS && !carriesCredential(text) && fixIsAllowed(text, '', WRAPPER) ? text : OTHER_STEP
+  return text.length <= MAX_FIX_CHARS && !carriesCredential(text) && fixIsAllowed(text, WRAPPER) ? text : OTHER_STEP
 }
 
 /** The success that is the failed command behind a prefix or wrapper, as the text to keep: the prefix and the wrapper words, with the command itself replaced by {@link RERUN_PLACEHOLDER}, because its arguments are free text that no allowlist can vouch for. Null when the command is not one that may be rerun by name, or when there is nothing but the placeholder to say. */
@@ -281,7 +281,7 @@ function matches(pair: StoredPair, signature: string, shape: string): boolean {
 
 /** Whether a stored fix may still be shown: the allowlist is checked again on replay, so a file written by an older policy, or edited by hand, can not put a command into the model's context. */
 function isReplayable(fix: string): boolean {
-  return fix.length <= MAX_FIX_CHARS && !carriesCredential(fix) && fixIsAllowed(fix, '', WRAPPER)
+  return fix.length <= MAX_FIX_CHARS && !carriesCredential(fix) && fixIsAllowed(fix, WRAPPER)
 }
 
 /** The same pair an offer came from: its fix, the shape it was learned for and the failure it was learned from, so a different failure of the same command never scores it. */

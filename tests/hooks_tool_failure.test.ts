@@ -161,6 +161,25 @@ describe('postToolUseFailureHandler', () => {
     const raw = readFileSync(target as string, 'utf8')
     expect(raw).not.toContain('AKIAIOSFODNN7EXAMPLE')
   })
+
+  // HAND-DERIVED: the shape of a ledger written before the file carried a version, `{seen, order}` keyed by the failure text; the key holds a password the way an older writer could have stored it.
+  it('drops a ledger with no version, so an old file holding hunter2 is neither read nor kept', () => {
+    const session = uniqueSession()
+    const target = sessionSidecarPath(session, '.tool-failures') as string
+    const oldKey = 'Bash :: login failed --password hunter2'
+    writeFileSync(target, JSON.stringify({ seen: { [oldKey]: false }, order: [oldKey] }), 'utf8')
+    postToolUseFailureHandler(failureEvent(session, 'Bash', 'something else failed'))
+    const raw = readFileSync(target, 'utf8')
+    expect(raw).not.toContain('hunter2')
+    expect(JSON.parse(raw)).toMatchObject({ version: 2 })
+  })
+
+  it('keeps reading a ledger that carries the current version', () => {
+    const session = uniqueSession()
+    postToolUseFailureHandler(failureEvent(session, 'Read', 'ENOENT: no such file'))
+    expect(JSON.parse(readFileSync(sessionSidecarPath(session, '.tool-failures') as string, 'utf8'))).toMatchObject({ version: 2 })
+    expect(postToolUseFailureHandler(failureEvent(session, 'Read', 'ENOENT: no such file')).hookType).toBe('context')
+  })
 })
 
 describe('diagnoseEditFailure', () => {

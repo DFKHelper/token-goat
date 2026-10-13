@@ -29,6 +29,9 @@ export const MAX_TRACKED_FAILURES = 64
 /** Truncation point for the error text inside a signature. */
 const SIGNATURE_ERROR_CHARS = 200
 
+/** Bumped when the stored shape changes meaning. A file without this number, or with another, is an older writer's and is dropped unread: the first version stored the failure text itself, not its digest, so reading one back would keep text that may hold a secret. */
+const LEDGER_VERSION = 2
+
 interface FailureLedger {
   /** Signature -> whether the advisory has already been emitted for it. */
   seen: Record<string, boolean>
@@ -66,6 +69,7 @@ function readLedger(target: string): FailureLedger {
   try {
     const parsed: unknown = JSON.parse(readFileSync(target, 'utf8'))
     if (parsed !== null && typeof parsed === 'object') {
+      if ((parsed as { version?: unknown }).version !== LEDGER_VERSION) return { seen: {}, order: [] }
       const seen = (parsed as FailureLedger).seen
       const order = (parsed as FailureLedger).order
       if (seen !== null && typeof seen === 'object' && Array.isArray(order)) {
@@ -81,7 +85,7 @@ function readLedger(target: string): FailureLedger {
 function writeLedger(target: string, ledger: FailureLedger): void {
   try {
     ensureDirSync(dirname(target))
-    writeFileSync(target, JSON.stringify(ledger), 'utf8')
+    writeFileSync(target, JSON.stringify({ version: LEDGER_VERSION, ...ledger }), 'utf8')
   } catch {
     // Best-effort: a ledger that cannot be stored degrades to "every failure looks like the first", which is the silent direction, never a spurious advisory.
   }
