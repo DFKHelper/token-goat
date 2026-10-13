@@ -18,12 +18,22 @@ const SUBSTITUTION_CALLS: readonly string[] = ['emitRewrite(', 'emitRewriteIfCha
 /** The in-place form a harness-numbered Read uses instead of a fence. Deliberately not a FENCE_TERMINAL: it neutralises the fence markers in the file bytes but adds no enclosing tags (they would sit on numbered lines), so it is checked by name at its own call sites below rather than counted as delimiting anything. */
 const NUMBERED_FENCE_CALL = 'fenceNumberedFileContent('
 
+/** fold_delivery.ts's Read-fold forms of the two file fences, which show a marker source code spells inside a line as written. Each counts as the fence it wraps, and the test below checks that it calls it. */
+const FOLD_FENCE_CALL = 'fenceFoldedFile('
+const FOLD_NUMBERED_FENCE_CALL = 'fenceFoldedNumberedFile('
+
+/** True when `body` neutralises file bytes in place, directly or through the Read-fold form. */
+function neutralisesInPlace(body: string | undefined): boolean {
+  return body !== undefined && (body.includes(NUMBERED_FENCE_CALL) || body.includes(FOLD_NUMBERED_FENCE_CALL))
+}
+
 /** Same terminals the provenance guard uses; kept in sync by the cross-check test below. */
 const FENCE_TERMINALS: readonly string[] = [
   'fenceUntrustedContent(',
   'fenceUntrusted(',
   // Spelled out rather than left to `fenceUntrusted(` to cover: that entry is a whole call including its own `(`, so it does not match a longer name sharing its prefix. This is the fencer most of the read path actually calls, and it was matching nothing.
   'fenceUntrustedFileContent(',
+  FOLD_FENCE_CALL,
   'fenceWithMatches(',
   'fenceUntrustedOcrText(',
   // The interleaved-body fencer. It takes spans rather than one string, so a caller declares which spans token-goat wrote and the neutralizer runs on the rest -- which is what makes a fence possible around a block our markers are spliced into. See the class note below.
@@ -259,6 +269,12 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
     expect(codeOnly(runnerFns.get('wrapAndCompress') ?? ''), 'bash_runner.ts::wrapAndCompress must assign the substituted body from the fenced frame').toMatch(/\bbody = delivery\.frame\(/)
   })
 
+  it('the Read-fold fence forms end at the fences they stand for', () => {
+    const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'fold_delivery.ts'), 'utf-8'))
+    expect(codeOnly(fns.find((f) => f.name === 'fenceFoldedFile')?.body ?? '')).toContain('fenceUntrustedFileContent(')
+    expect(codeOnly(fns.find((f) => f.name === 'fenceFoldedNumberedFile')?.body ?? '')).toContain(NUMBERED_FENCE_CALL)
+  })
+
   it('every aligned rewrite neutralises the file bytes it keeps in place', () => {
     const readPost = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'hooks_read_post.ts'), 'utf-8'))
     const callers = readPost.filter((f) => codeOnly(f.body).includes('emitRewriteWithContext(')).map((f) => f.name).sort()
@@ -268,12 +284,12 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
       'foldCodeBodies',
     ])
     const foldCodeBodies = readPost.find((f) => f.name === 'foldCodeBodies')
-    expect(foldCodeBodies?.body.includes(NUMBERED_FENCE_CALL)).toBe(true)
+    expect(neutralisesInPlace(foldCodeBodies?.body)).toBe(true)
     // elideAlreadyServedLines fences the same way in both layouts, not only its aligned branch (unlike foldCodeBodies, whose compact branch reaches fenceUntrustedFileContent instead): the fenced body is built once and shared, so a hostile file line spelling out its own served-elision notice is neutralised regardless of which layout emits it.
     const elideAlreadyServedLines = readPost.find((f) => f.name === 'elideAlreadyServedLines')
-    expect(elideAlreadyServedLines?.body.includes(NUMBERED_FENCE_CALL)).toBe(true)
+    expect(neutralisesInPlace(elideAlreadyServedLines?.body)).toBe(true)
     const structural = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'fold_structure.ts'), 'utf-8')).filter((f) => f.body.includes('context: '))
     expect(structural.map((f) => f.name).sort(), 'The set of StructuralFold producers setting `context` changed.').toEqual(['planMarkdownOutline', 'planSourceSkeleton'])
-    for (const fn of structural) expect(fn.body.includes(NUMBERED_FENCE_CALL), `${fn.name} sets an aligned fold's context without neutralising the file bytes`).toBe(true)
+    for (const fn of structural) expect(neutralisesInPlace(fn.body), `${fn.name} sets an aligned fold's context without neutralising the file bytes`).toBe(true)
   })
 })

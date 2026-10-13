@@ -12,8 +12,75 @@ import { getFileEntry, querySymbols } from './index_reader.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { detectLanguage } from './parser_types.js'
+import { fenceNumberedFileContent, fenceUntrustedFileContent, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import { displaySafeText, hostPathOfIndexKey } from './paths.js'
 import { findContainingSection } from './section_reader.js'
+
+/** {@link fenceUntrustedFileContent} for a Read fold, with source code's own spoken markers shown as written where they cannot pass for token-goat's voice; see {@link keepInlineMarkers}. */
+export function fenceFoldedFile(text: string): string {
+  const fenced = fenceUntrustedFileContent(text)
+  const open = `<${UNTRUSTED_FILE_TAG}>\n`
+  const close = `\n</${UNTRUSTED_FILE_TAG}>`
+  const start = fenced.indexOf(open) + open.length
+  const end = fenced.length - close.length
+  return fenced.slice(0, start) + keepInlineMarkers(text, fenced.slice(start, end)) + fenced.slice(end)
+}
+
+/** {@link fenceNumberedFileContent} for a Read fold, with source code's own spoken markers shown as written where they cannot pass for token-goat's voice; see {@link keepInlineMarkers}. */
+export function fenceFoldedNumberedFile(text: string, layout: string): { body: string; preamble: string } {
+  const fenced = fenceNumberedFileContent(text, layout)
+  return { ...fenced, body: keepInlineMarkers(text, fenced.body) }
+}
+
+/** `body`, a file fence's neutralisation of `text`, with each `[` it wrote as `&#91;` for a spoken marker put back where text stands before the marker on its line. The fence escapes `&#91;tg]` and `&#91;token-goat:` wherever they sit, and source code spells them in string literals and comments (`const NOTE = '[tg] cached'`), so an Edit built from a fold missed the file or wrote the entity into it. token-goat speaks only at the start of a line, so a marker behind a letter, digit, quote or other visible character on its own line cannot read as its voice, and only a marker with nothing visible before it keeps the escape: a Read column (`12\t`), an opening bracket (`[[tg]` reads as the marker too), whitespace, a format character, or a carriage return or other break a renderer starts a line at. A line holding an escape byte keeps every escape, since a strip can remove whatever stood before its marker. The fence's substitutions are one character for an entity or for U+241B, so the two texts walk in step; if they do not, the body comes back as the fence wrote it. */
+export function keepInlineMarkers(text: string, body: string): string {
+  if (!body.includes('&#91;')) return body
+  const lines = text.split('\n')
+  const fencedLines = body.split('\n')
+  if (lines.length !== fencedLines.length) return body
+  const kept: string[] = []
+  for (const [i, fencedLine] of fencedLines.entries()) {
+    const line = keepInlineMarkersOnLine(lines[i] ?? '', fencedLine)
+    if (line === null) return body
+    kept.push(line)
+  }
+  return kept.join('\n')
+}
+
+/** {@link keepInlineMarkers} for one line, or null when `fenced` is not `line` with the fence's substitutions. */
+function keepInlineMarkersOnLine(line: string, fenced: string): string | null {
+  if (!fenced.includes('&#91;')) return fenced
+  // eslint-disable-next-line no-control-regex -- ESC and the C1 controls are what it looks for
+  const restore = !/[\x1b\x80-\x9f]/.test(line)
+  const column = /^\s*\d+(?:\t|\u2192)/.exec(line)?.[0].length ?? 0
+  let out = ''
+  let visible = false
+  let j = 0
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i] ?? ''
+    if (fenced[j] === ch) {
+      out += ch
+      j++
+      if (/[\r\v\f\u0085\u2028\u2029]/.test(ch)) visible = false
+      else if (i >= column && /[\p{L}\p{N}\p{P}\p{S}]/u.test(ch) && !/[[﹇［【⟦〔]/.test(ch)) visible = true
+      continue
+    }
+    if (fenced.startsWith('&#91;', j)) {
+      out += restore && visible ? ch : '&#91;'
+      j += 5
+    } else if (fenced.startsWith('&lt;', j) || fenced.startsWith('&gt;', j)) {
+      out += fenced.slice(j, j + 4)
+      j += 4
+    } else if (fenced[j] === '\u241b') {
+      out += '\u241b'
+      j++
+    } else {
+      return null
+    }
+    visible = true
+  }
+  return j === fenced.length ? out : null
+}
 
 /** Lines kept at the head of each folded body: the declaration plus enough to judge the rest. */
 export const BODY_FOLD_KEEP_LINES = 8

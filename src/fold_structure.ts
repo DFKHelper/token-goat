@@ -1,9 +1,8 @@
 /** Turning a whole-file delivery into a structural view of it: a heading tree for a document, a declaration skeleton for source. Split out of hooks_read.ts for the same reason fold_delivery.ts was, and with the same division of labour. The two surfaces that deliver a whole file gate very differently -- a Read arrives as a numbered rendering with an offset/limit the harness reports, a shell read arrives as the bare stdout of a command that has to be recognised as a whole-file read before any of this applies -- but everything between "here are the delivered rows" and "here is the structural replacement" is identical, and that middle is where the size floors, the count floors and the notice wording live. One copy, so a change to either reaches both. Everything here is built from the DELIVERED text, never the index. That is what lets it serve a first read of a file the indexer has never touched, and what keeps it working where fold_delivery.ts's body fold cannot: measured on a real index, the parser stamp sits stale on 95% of this project's own rows, and a stale row yields no spans at all. */
-import { ALIGNED_LAYOUT_NOTE, alignedPaddingBytes, foldDelivery, isProseFoldablePath, pushWithheld, type FoldLayout, type FoldRow } from './fold_delivery.js'
+import { ALIGNED_LAYOUT_NOTE, alignedPaddingBytes, fenceFoldedFile, fenceFoldedNumberedFile, foldDelivery, isProseFoldablePath, pushWithheld, type FoldLayout, type FoldRow } from './fold_delivery.js'
 import { bodyFoldNotice } from './fold_delivery.js'
 import { loadConfig } from './config.js'
 import { extractMarkdownHeadings, type MarkdownHeading } from './hints/markdown_hints.js'
-import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
 import { headingTreeParts, hintTarget } from './hint_target.js'
 import { displaySafeText } from './paths.js'
 import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
@@ -77,7 +76,7 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
   const headingCount = `at least ${headings.length} heading${headings.length === 1 ? '' : 's'} found`
   const heading = hintTarget(normalizedPath, 'section', { headings, content: fileText, placeholder: '<Heading>' }).name
   if (layout === 'aligned') {
-    const body = fenceNumberedFileContent([...leadInNumbered, ...planOutlineAlignedRows(rows, headings, leadInNumbered.length, shownPath, normalizedPath)].join('\n'), ALIGNED_LAYOUT_NOTE)
+    const body = fenceFoldedNumberedFile([...leadInNumbered, ...planOutlineAlignedRows(rows, headings, leadInNumbered.length, shownPath, normalizedPath)].join('\n'), ALIGNED_LAYOUT_NOTE)
     const alignedNotice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was cut down to ${leadInRows.length > 0 ? 'its lead-in and ' : ''}its headings (${headingCount}), each on its real line, with the text under each heading withheld behind a pointer. Run token-goat section ${quotedArg(`${shownPath}::${heading}`)} to read one section verbatim.`
     return { numbered: [body.body], raw: leadInRaw, kind: 'read:markdown_outline', detail: shownPath, ratioCap: OUTLINE_MAX_REPLACEMENT_RATIO, context: `${body.preamble}\n${alignedNotice}` }
   }
@@ -90,10 +89,10 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
     // The notice leads so that token-goat speaks first: emitting the lead-in above it let a document open with forged `[token-goat: ...]` or `[tg]` lines that read as this rewrite's own preamble. The lead-in is file bytes like the heading tree, so it gets its own fence rather than riding in the tree's; both fences are part of `numbered`, so their cost is priced by the ratioCap gate below along with everything else.
     numbered: [
       notice,
-      ...(leadInNumbered.length > 0 ? [fenceUntrustedFileContent(leadInNumbered.join('\n'))] : []),
+      ...(leadInNumbered.length > 0 ? [fenceFoldedFile(leadInNumbered.join('\n'))] : []),
       ...(capNotice !== null ? [capNotice] : []),
       guidance,
-      fenceUntrustedFileContent(sectionsList),
+      fenceFoldedFile(sectionsList),
     ],
     raw: leadInRaw,
     kind: 'read:markdown_outline',
@@ -228,10 +227,10 @@ export function planSourceSkeleton(rows: readonly FoldRow[], normalizedPath: str
 
   // The notice leads so token-goat speaks first, and everything after it is fenced: `plan.numbered` is file bytes -- the preamble verbatim, one declaration line per symbol -- interleaved with this rewrite's own `... N more lines ... folded` pointers. It shipped unfenced, which let a source file's first line arrive as an unlabelled `[tg]`-prefixed instruction wearing token-goat's voice, and let a planted `</untrusted-file-content>` close a fence it was never inside. Fencing the interleaved block escapes nothing token-goat authored: the pointers spell `token-goat read "..."` with no bracket, and neutralizeSpokenMarkers only matches the bracketed forms.
   if (layout === 'aligned') {
-    const body = fenceNumberedFileContent(plan.numbered.join('\n'), ALIGNED_LAYOUT_NOTE)
+    const body = fenceFoldedNumberedFile(plan.numbered.join('\n'), ALIGNED_LAYOUT_NOTE)
     return { numbered: [body.body], raw: plan.raw, kind: 'read:source_skeleton', detail: shownPath, ratioCap: SKELETON_MAX_REPLACEMENT_RATIO, context: `${body.preamble}\n${notice}` }
   }
-  return { numbered: [notice, fenceUntrustedFileContent(plan.numbered.join('\n'))], raw: plan.raw, kind: 'read:source_skeleton', detail: shownPath, ratioCap: SKELETON_MAX_REPLACEMENT_RATIO }
+  return { numbered: [notice, fenceFoldedFile(plan.numbered.join('\n'))], raw: plan.raw, kind: 'read:source_skeleton', detail: shownPath, ratioCap: SKELETON_MAX_REPLACEMENT_RATIO }
 }
 
 /** The shared acceptance gate both structural folds pass through: the fold's own ratio cap on top of the generic net-benefit floor every rewrite in the codebase answers to. Kept beside the planners rather than at each call site so the two surfaces cannot price the same rewrite differently -- a Bash read and a Read of identical bytes either both ship the skeleton or both decline it. */
