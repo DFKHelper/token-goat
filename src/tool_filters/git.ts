@@ -648,7 +648,7 @@ function _compressGitDiffBody(stdout: string, stderr: string, maxHunksPerFile = 
             (hunkLines[0] ?? '') +
               `\n[token-goat: repetitive JSON/JSONL block (${parts.join(', ')}); 2-line sample:]\n` +
               sample.join('\n') +
-              '\n[use `token-goat bash-output <id>` for full content]',
+              '\n[full content: `token-goat bash-output` with this result\'s recall id]',
           )
         } else {
           const head = hunkLines.slice(0, HUNK_HEAD_KEEP)

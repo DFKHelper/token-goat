@@ -180,7 +180,7 @@ describe('read hints honor Claude Code Read rules (built bundle)', () => {
       for (const dir of ['secrets', 'open']) {
         const shown = dir === 'open'
         const lockAnswer = answer(box, 'Read', { file_path: path.join(box.project, dir, 'package-lock.json') })
-        expect(lockAnswer.includes('token-goat json-outline'), lockAnswer).toBe(shown)
+        expect(lockAnswer.includes('token-goat lockdeps'), lockAnswer).toBe(shown)
         const modulesAnswer = answer(box, 'Read', { file_path: path.join(box.project, dir, 'node_modules', 'x', 'index.js') })
         expect(modulesAnswer.includes('node_modules is typically noise'), modulesAnswer).toBe(shown)
         const grepAnswer = answer(box, 'Grep', { pattern: '^export function', path: path.join(box.project, dir, 'app.ts') })

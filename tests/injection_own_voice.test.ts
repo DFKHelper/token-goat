@@ -81,7 +81,8 @@ describe('the source skeleton fold delimits the file bytes it keeps', () => {
     expect(delivered.split('</untrusted-file-content>').length - 1).toBe(1)
     // token-goat's own notice stays outside the fence, and stays readable rather than escaped.
     expect(delivered.indexOf('Partial view:')).toBeLessThan(delivered.indexOf('<untrusted-file-content>'))
-    expect(delivered).toContain('token-goat read "fixture.ts::SymbolName"')
+    expect(delivered).toMatch(/token-goat read "fixture\.ts::decl\d+"/)
+    expect(delivered).not.toContain('SymbolName')
   })
 })
 

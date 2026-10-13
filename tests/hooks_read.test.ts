@@ -274,8 +274,9 @@ describe('preReadHandler', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('already read this session')
-      expect(result.message).toContain('token-goat read')
-      expect(result.message).toContain('SymbolName')
+      // A file of one repeated character holds no symbol, so the hint leads with skeleton rather than a read of a stand-in name.
+      expect(result.message).toContain('token-goat skeleton')
+      expect(result.message).not.toContain('SymbolName')
       expect(result.message).not.toContain('To edit it anyway')
       expect(result.message).not.toContain('token-goat replace')
     }
@@ -2412,7 +2413,7 @@ content here` },
     if (result.hookType === 'deny') {
       expect(result.message).toContain('truncated on last read')
       expect(result.message).toContain('token-goat skeleton')
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).not.toContain('SymbolName')
     }
   })
 
@@ -3196,7 +3197,7 @@ content here` },
     })
   })
 
-  it('flag ON: re-read of an unchanged .txt names a grep, never section (a .txt has no headings)', () => {
+  it('flag ON: re-read of an unchanged .txt names a read of its first lines, never section (a .txt has no headings)', () => {
     pinProtectRecentReadsToZero()
     withDiffFlag(true, () => {
       const content = 'plain line one\nplain line two\nplain line three\n'
@@ -3207,9 +3208,10 @@ content here` },
       expect(result.hookType).toBe('deny')
       if (result.hookType === 'deny') {
         expect(result.message).toContain('unchanged since last read')
-        // HAND-DERIVED from the CAPTURE in tests/bash_deny_names_a_runnable_target.test.ts: `section` on a .txt exits 1 ("has no headings"), `grep` exits 0
-        expect(result.message).toContain('token-goat grep')
+        // HAND-DERIVED from the CAPTURE in tests/bash_deny_names_a_runnable_target.test.ts: `section` on a .txt exits 1 ("has no headings"); a grep would need a pattern the hook does not have, so a read of the first lines leads.
+        expect(result.message).toContain('token-goat read "' + normalizePath(p) + '::1-80"')
         expect(result.message).not.toContain('token-goat section')
+        expect(result.message).not.toContain('<pattern>')
       }
     })
   })
@@ -4137,12 +4139,13 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
         expect(result.context).not.toContain('[tg]')
         expect(result.context).not.toContain('[token-goat:')
         expect(result.context).not.toContain('&#91;')
-        expect(result.context).toContain('SymbolName')
+        expect(result.context).toContain('token-goat skeleton')
+        expect(result.context).not.toContain('SymbolName')
       }
     })
 
     // HAND-DERIVED: a 400-line function body computed independently of the threshold this test pins. Regression: surgicalHint's fileContent-available branch (extractQuickSymbolSamples) named a real symbol for `token-goat read "file::Symbol"` with no size check at all, even though the DB already knew the symbol's true span -- so a file this large in the large-file quietContextOutput channel pointed at a whole-body read of a symbol nearly as big as the file itself. The fix consults the index as a size check even on this content-derived path and swaps in a grep -C slice once the named symbol clears the large-symbol threshold.
-    it('swaps a whole-body read for a grep -C slice when the fileContent-derived symbol name resolves to an oversized indexed span', () => {
+    it('swaps a whole-body read for a read of its opening lines when the fileContent-derived symbol name resolves to an oversized indexed span', () => {
       const p = path.join(os.tmpdir(), `tg-large-symbol-content-${process.pid}-${Math.random().toString(36).slice(2)}.js`)
       const bodyLines = Array.from({ length: 400 }, (_, i) => `  step${i}()`).join('\n')
       const content = `function bigFn() {\n${bodyLines}\n}\n` + '// ' + 'x'.repeat(150 * 1024)
@@ -4156,7 +4159,8 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(result.hookType).toBe('context')
       if (result.hookType === 'context') {
         expect(result.context).not.toContain('read "' + normalizePath(p) + '::bigFn"')
-        expect(result.context).toContain('grep "<pattern>" "' + normalizePath(p) + '" -C 15 --symbol')
+        expect(result.context).toContain('read "' + normalizePath(p) + '@1-80"')
+        expect(result.context).not.toContain('<pattern>')
         expect(result.context).toContain('scope "' + normalizePath(p) + ':')
       }
     })

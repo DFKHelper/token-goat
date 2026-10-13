@@ -2,7 +2,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { leadWithCommand, docSectionHint, fileSubject, nameSubject, quotedArg, quotedArgs, sentenceStart, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { leadWithCommand, docTargetHint, fileSubject, nameSubject, quotedArg, sentenceStart, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
@@ -19,7 +19,7 @@ import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
 import { agentTypeOf, loadCodexRules, loadingHiddenRuleCheck, permissionNeutralRewrite, readHintCrossesRule, shellPathWords } from './rewrite_permission.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
-import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
+import { hintTarget, sectionOrRangeCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 import {
@@ -255,7 +255,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // Every hint below that names a file returns through this instead of a bare contextOutput, so the efficacy ledger is handed the path the hint was built from rather than regex-scraping one back out of the rendered sentence (see extractPathCorrelator's doc comment for what that scrape actually recorded). Measurement only -- relay.ts drops the field before the harness sees the output, so the hint text is byte-identical either way. The `token-goat bash-output <id>` recall branches near the end deliberately do NOT use this: their correlator is a cache id, which classifyBashHint already reads straight out of the command it printed, not a path.
   const pathHint = (paths: string | readonly string[], text: string): HookOutput =>
     contextOutput(text, typeof paths === 'string' ? [paths] : paths)
-  // The name a surgical-read suggestion below carries, resolved against the directory the command would run in: a heading, key, table or symbol the file holds, or hint_target.ts's placeholder.
+  // The name a surgical-read suggestion below carries, resolved against the directory the command would run in: a heading, key, table or symbol the file holds, or none.
   const targetFor = (hintPath: string, slice: HintSlice = sliceForPath(hintPath)): HintTarget => hintTarget(hintPath, slice, { cwd: hintCwd, event })
   // A task `.output` path as the shell would open it, against the directory the command runs in rather than this hook's own cwd, and as a recall command should name it: a relative one comes back absolute, so the suggested command runs as printed from any directory.
   const taskOutputPath = (typed: string): { probe: string; shown: string } | null => {
@@ -372,7 +372,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     if (isXargsGrepL) {
       return denyOutput(
         '`find | xargs grep -l` is a slow symbol search. ' +
-        'Use `token-goat refs <symbol>` or `rg -l <symbol>` for faster symbol-file discovery.',
+        'Use `token-goat refs` with the symbol name, or `rg -l` with the pattern, for faster symbol-file discovery.',
       )
     }
     const fdHint = extGlob
@@ -380,7 +380,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       : 'Use `fd` for faster file discovery (respects .gitignore).'
     return contextOutput(
       '`find` is slow and ignores .gitignore. ' + fdHint +
-      ' For symbol definitions, use `token-goat symbol <Name>`.',
+      ' For symbol definitions, use `token-goat symbol` with the name.',
     )
   }
 
@@ -388,7 +388,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (extractDirectoryListing(cmd)) {
     recordStat('session_hint', 0, 0)
     return contextOutput(
-      'Use `token-goat map --compact` (~300 tokens) for a repo overview, or `token-goat map <dir>` for a subdirectory.',
+      'Use `token-goat map --compact` (~300 tokens) for a repo overview, or `token-goat map` with a directory for a subdirectory.',
     )
   }
 
@@ -396,7 +396,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (extractForLoopWcL(cmd)) {
     recordStat('session_hint', 0, 0)
     return contextOutput(
-      'Use `token-goat outline <file>` to see symbol names and line counts without loading files.',
+      'Use `token-goat outline` on a file to see its symbol names and line counts without loading it.',
     )
   }
 
@@ -405,9 +405,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (terminalXml !== null) {
     const { filePath, toolOrScript } = terminalXml
     recordStat('session_hint', 0, 0)
-    const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : '<file>'
-    return pathHint(filePath ? [target] : [],
-      `token-goat available for this file type, consider \`token-goat xml-query ${quotedArgs(target, '<xpath>').join(' ')}\` or \`token-goat xml-outline ${quotedArg(target)}\` first instead of terminal XML parsing (${nameSubject('tool', toolOrScript)}).`,
+    const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : null
+    return pathHint(target !== null ? [target] : [],
+      target !== null
+        ? `token-goat available for this file type, consider \`token-goat xml-outline ${quotedArg(target)}\` first instead of terminal XML parsing (${nameSubject('tool', toolOrScript)}).`
+        : `token-goat available for this file type: its xml-outline and xml-query commands read an XML file without terminal XML parsing (${nameSubject('tool', toolOrScript)}).`,
     )
   }
 
@@ -505,11 +507,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     if (psJsonPipe.filePath) {
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, psJsonPipe.filePath, hintCwd) : psJsonPipe.filePath)
       return pathHint(hintPath,
-        'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query ' + quotedArgs(hintPath, '<selector>').join(' ') + '` to extract fields directly without shell conversion scripts.',
+        'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-outline ' + quotedArg(hintPath) + '` for its keys, then its json-query command to extract fields directly without shell conversion scripts.',
       )
     }
     return contextOutput(
-      'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query <file> "<selector>"` or `token-goat web-output` to extract fields directly.',
+      'PowerShell `ConvertFrom-Json` pipeline detected. token-goat\'s json-outline and json-query commands, or web-output for a fetched response, extract fields directly.',
     )
   }
 
@@ -659,7 +661,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     return contextOutput(
       'Collapse `grep | grep` into `rg -e PAT1 -e PAT2` (single pass). ' +
-      'For symbol discovery: `token-goat refs <symbol>` or `token-goat semantic`.',
+      'For symbol discovery: `token-goat refs` with the symbol name, or `token-goat semantic`.',
     )
   }
 
@@ -669,7 +671,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath } = mdHeadingGrep
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return pathHint(hintPath, docSectionHint(hintPath, targetFor(hintPath, 'section').name))
+    return pathHint(hintPath, docTargetHint(hintPath, targetFor(hintPath, 'section')))
   }
 
   // Bare identifier search on a single source file — symbol lookup is cheaper
@@ -713,7 +715,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         return contextOutput(
           'Prior output from `' + cmd + '`' + pipelineDivergenceNote(cmd, monEntry.command) + ' is cached. ' +
           'Use `token-goat bash-output ' + monOutputId + '` to recall the full file, or ' +
-          '`' + sliceCommand(displaySafePath(catFile), targetFor(displaySafePath(catFile))) + '` to extract only the part you need.'
+          '`' + sectionOrRangeCommand(displaySafePath(catFile), targetFor(displaySafePath(catFile))) + '` to extract only the part you need.'
         )
       }
       const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57).trimEnd() + '...' : cmd
@@ -738,9 +740,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     } else if (prevPath !== null && prevOnDisk !== null && statSync(prevOnDisk).size >= loadConfig().hints.bash_dedup_min_bytes) {
       recordStat('session_hint', 0, 0)
       const shownPrev = displaySafePath(prevPath)
-      const read = sliceCommand(shownPrev, targetFor(prevPath))
-      const search = 'rg \'<pattern>\' ' + quotedArg(shownPrev)
-      return denyOutput(leadWithCommand(read, 'to read a part of it, or `' + search + '` to search it', sentenceStart(fileSubject(read + search, shownPrev, prevPath)) + ' was already downloaded earlier this session.'))
+      const read = sectionOrRangeCommand(shownPrev, targetFor(prevPath))
+      return denyOutput(leadWithCommand(read, 'to read a part of it', sentenceStart(fileSubject(read, shownPrev, prevPath)) + ' was already downloaded earlier this session.'))
     }
   }
 
@@ -761,7 +762,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         'curl response cached (`' + curlPreview + '`).' + pipelineDivergenceNote(cmd, curlEntry.command) + ' ' +
         (curlHeading.real
           ? leadWithCommand('token-goat bash-output ' + curlOutputId + ' --section ' + quotedArg(curlHeading.name), 'to read one markdown section, or `token-goat bash-output ' + curlOutputId + '` to recall it all (`--grep PATTERN` filters)')
-          : 'Use `token-goat bash-output ' + curlOutputId + '` to recall it. Append `--grep PATTERN` to filter or `--section HeadingName` for a markdown section.'),
+          : 'Use `token-goat bash-output ' + curlOutputId + '` to recall it. Append `--grep PATTERN` to filter.'),
       )
     }
   }

@@ -347,9 +347,10 @@ describe('oversized MCP result recovery', () => {
     const content = output.updatedOutput ?? ''
     expect(content).toContain('[token-goat: oversized MCP result')
     expect(content).toContain('cached as mcp_')
-    expect(content).toContain('--json-query')
-    expect(content).toContain('--section')
-    expect(content).toContain('--grep')
+    // HAND-DERIVED: the payload's first top-level key is `description`; it carries no heading and no pattern is known, so only the key query and --head are named, never a stand-in.
+    expect(content).toContain('--json-query "description"')
+    expect(content).toContain('--head 50')
+    expect(content).not.toMatch(/<path>|<heading>|<regex>/)
     expect(content).toContain('preview truncated by token-goat')
   })
 })
@@ -385,7 +386,9 @@ describe('spilled JSON file read intercepts', () => {
     expect(second.hookType).toBe('deny')
     if (second.hookType !== 'deny') return
     expect(second.message).toContain('already read this session')
-    expect(second.message).toContain('json-query')
-    expect(second.message).toContain('mcp-output --file')
+    // HAND-DERIVED: the spill holds `{ "a": 1 }`, so the query names its key `a`.
+    expect(second.message).toContain('json-query "')
+    expect(second.message).toContain('" "a"')
+    expect(second.message).not.toContain('<path>')
   })
 })

@@ -305,3 +305,8 @@ export function docSectionHint(shownPath: string, heading: string, reason = ''):
   if (!nav.section) return headLinesHint(shownPath, reason)
   return leadWithCommand('token-goat section ' + quotedArg(shownPath + '::' + heading), 'to read one section' + (nav.outline ? ', or ' + fencedCommand('token-goat outline ' + quotedArg(shownPath)) + ' for every heading with line ranges' : ''), reason)
 }
+
+/** The hint for one section of a prose document when `heading` is real, else for its first lines, which is every document a heading search found nothing usable in. */
+export function docTargetHint(shownPath: string, heading: { readonly real: true; readonly name: string } | { readonly real: false }, reason = ''): string {
+  return heading.real ? docSectionHint(shownPath, heading.name, reason) : headLinesHint(shownPath, reason)
+}

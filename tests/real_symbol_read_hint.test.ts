@@ -61,13 +61,14 @@ describe('realSymbolReadHint', () => {
   })
 
   // HAND-DERIVED: a 400-line function body computed independently of the threshold this test pins, to confirm an oversized symbol is never named for a whole-body read.
-  it('points at a grep -C slice instead of naming an oversized symbol for a whole-body read', () => {
+  it('points at a read of its opening lines instead of naming an oversized symbol for a whole-body read', () => {
     const body = Array.from({ length: 400 }, (_, i) => `  step${i + 1}()`).join('\n')
     const file = write('big.js', `function bigFn() {\n${body}\n}\n`)
     indexFileSync(file)
     const hint = realSymbolReadHint(file, 'big.js')
     expect(hint).not.toContain('::bigFn"')
-    expect(hint).toContain('token-goat grep "<pattern>" "big.js" -C 15 --symbol')
+    expect(hint).toContain('token-goat read "big.js@1-80"')
+    expect(hint).not.toContain('<pattern>')
     expect(hint).toContain('token-goat scope "big.js:')
   })
 

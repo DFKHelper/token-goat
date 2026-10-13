@@ -8,7 +8,7 @@ import { indexMatchesDisk } from './index_freshness.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
-import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint, configGetCommand, headLinesCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
+import { stripUnsafeSuggestions, leadWithCommand, configGetCommand, headLinesCommand, headLinesHint, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
@@ -18,26 +18,21 @@ import type { HookOutput } from './types.js'
 /** What a suggested command slices out of a file: a markdown/TOML/INI section, a code symbol, a config key, or a SQL CREATE block. */
 export type HintSlice = 'section' | 'symbol' | 'key' | 'table'
 
-/** The name a suggested command carries, and whether it is one the file really holds or the slice's placeholder. */
-export interface HintTarget {
-  readonly name: string
-  readonly real: boolean
-  readonly slice: HintSlice
-}
+/** The name a suggested command carries, when the file really holds one. An unresolved target has no name at all, so a hint cannot paste a stand-in such as `::SymbolName` into a command: a command naming a part no file holds exits 1, and the agent runs what the hint printed. */
+export type HintTarget = { readonly name: string; readonly real: true; readonly slice: HintSlice } | { readonly real: false; readonly slice: HintSlice }
 
-/** What the caller already has in hand. `cwd` marks `filePath` as written in a command (resolved against it and gated before any fs touch); without it the path is taken as already resolved by the hook. `placeholder` replaces the slice's default fill-in when a site printed a different one before this module. */
+/** A target that names a part the file really holds. */
+export type RealHintTarget = Extract<HintTarget, { real: true }>
+
+/** What the caller already has in hand. `cwd` marks `filePath` as written in a command (resolved against it and gated before any fs touch); without it the path is taken as already resolved by the hook. */
 export interface HintTargetSource {
   readonly cwd?: string
   readonly event?: HookEvent
   readonly content?: string | undefined
   readonly headings?: readonly MarkdownHeading[]
-  readonly placeholder?: string
   /** The regex or text a Grep call searched for: a symbol slice then prefers the symbol that pattern names over the file's first one. */
   readonly pattern?: string
 }
-
-/** The fill-in-the-blank each slice fell back to before this module, kept as the answer when no real name is found so an unresolvable file reads exactly as it did. */
-export const HINT_PLACEHOLDERS: Readonly<Record<HintSlice, string>> = { section: 'SectionHeading', symbol: 'SymbolName', key: 'KEY_NAME', table: 'table_name' }
 
 /** Bytes of a file read to find a name when neither the caller nor the index supplies one: the first headings, keys or CREATE statements sit near the top, and this runs on the hook path. */
 const HINT_TARGET_SCAN_BYTES = 32 * 1024
@@ -217,9 +212,15 @@ function indexedCandidates(resolved: string, onDisk: string, slice: HintSlice): 
 
 const MORE_HEADINGS_LINE_RE = /^ {2}\.\.\. \(\d+ more headings\)$/
 
+/** formatHeadingTreeParts with its sample command cut: it shows `section "file::Heading Name"`, a heading no file holds, and an agent runs the command it is handed. The cut is made here, the one place a hint takes that guidance from, because markdown_hints.ts is an embedding fingerprint source, and an edit there would re-embed every markdown file on upgrade. A caller with a real heading leads with its own section command. */
+function withoutSampleCommand(parts: { guidance: string; sectionsList: string }): { guidance: string; sectionsList: string } {
+  const lines = parts.guidance.split('\n').filter((line) => !/^ {2}token-goat section /.test(line))
+  return { ...parts, guidance: lines.join('\n').replace('Use token-goat section to read a specific section:', 'Use token-goat section with a heading from the list below to read that section.') }
+}
+
 /** formatHeadingTreeParts over a heading list the display extraction cut short: when `content` holds more H1-H3 headings than `headings`, the guidance says it shows the first N of the true total and the list ends with a count of the rest, instead of presenting the cut list as the whole file. (markdown_hints.ts is an embedding-fingerprinted source, so the true count is applied here.) */
 export function headingTreeParts(headings: MarkdownHeading[], filePath: string, content: string): { guidance: string; sectionsList: string } {
-  const parts = formatHeadingTreeParts(headings, filePath)
+  const parts = withoutSampleCommand(formatHeadingTreeParts(headings, filePath))
   const total = extractMarkdownHeadings(content, Number.MAX_SAFE_INTEGER).length
   if (total <= headings.length) return parts
   const guidance = parts.guidance.replace(`Large markdown file (${headings.length} headings)`, () => `Large markdown file (showing the first ${headings.length} of ${total} headings)`)
@@ -228,13 +229,13 @@ export function headingTreeParts(headings: MarkdownHeading[], filePath: string, 
   return { guidance, sectionsList: [...kept, `  ... (${countNoun(total - kept.length, 'more heading')})`].join('\n') }
 }
 
-/** A real name for `slice` out of names a caller already read off the index, else the slice's placeholder. The names are walked the way hintTarget walks its own, so an unusable first one falls through to the next safe one; a name with whitespace around it is passed over, never trimmed into a different name than the index holds. */
+/** A real name for `slice` out of names a caller already read off the index, else an unresolved target. The names are walked the way hintTarget walks its own, so an unusable first one falls through to the next safe one; a name with whitespace around it is passed over, never trimmed into a different name than the index holds. */
 export function hintTargetFromNames(names: readonly string[], slice: HintSlice): HintTarget {
   const found = pick(names.filter((name) => name === name.trim()).map((name) => ({ name, level: 0 })), slice)
-  return found === null ? { name: HINT_PLACEHOLDERS[slice], real: false, slice } : { name: found, real: true, slice }
+  return found === null ? { real: false, slice } : { name: found, real: true, slice }
 }
 
-/** A real name for `slice` inside `filePath`, else the slice's placeholder. Looks, in order, at what the caller already holds (a heading tree, the text), then the index, then the first HINT_TARGET_SCAN_BYTES of the file. A path as written in a command (`source.cwd` set) is gated with commandPathIsTouchable before resolveIndexPath, which is itself an fs call on Windows (an 8.3 segment expands through realpathSync.native), so a UNC path is refused before anything dials it. */
+/** A real name for `slice` inside `filePath`, else an unresolved target. Looks, in order, at what the caller already holds (a heading tree, the text), then the index, then the first HINT_TARGET_SCAN_BYTES of the file. A path as written in a command (`source.cwd` set) is gated with commandPathIsTouchable before resolveIndexPath, which is itself an fs call on Windows (an 8.3 segment expands through realpathSync.native), so a UNC path is refused before anything dials it. */
 export function hintTarget(filePath: string, slice: HintSlice, source: HintTargetSource = {}): HintTarget {
   const found = ((): string | null => {
     try {
@@ -255,15 +256,15 @@ export function hintTarget(filePath: string, slice: HintSlice, source: HintTarge
       const scanned = scanText(readHead(onDisk), resolved, slice)
       return byPattern(scanned) ?? pick(scanned, slice)
     } catch {
-      // A name that cannot be resolved is a reason to keep the placeholder, never to guess one.
+      // A name that cannot be resolved is a reason to name none, never to guess one.
       return null
     }
   })()
-  return found === null ? { name: source.placeholder ?? HINT_PLACEHOLDERS[slice], real: false, slice } : { name: found, real: true, slice }
+  return found === null ? { real: false, slice } : { name: found, real: true, slice }
 }
 
 /** The token-goat command that returns `target` out of `shownPath`: `section` for a heading or TOML/INI table, the format's query command for a JSON/YAML key (config-get prints nothing for a YAML mapping, and reads a dot as nesting where the query takes `['a.b']`), config-get for any other key, `read` for a symbol or a SQL CREATE block (`section` finds no headings in a .sql file). */
-export function sliceCommand(shownPath: string, target: HintTarget): string {
+export function sliceCommand(shownPath: string, target: RealHintTarget): string {
   switch (target.slice) {
     case 'section':
       return 'token-goat section ' + quotedArg(shownPath + '::' + target.name)
@@ -280,7 +281,7 @@ export function sliceCommand(shownPath: string, target: HintTarget): string {
   }
 }
 
-/** The command that reads one part of `shownPath` when the hint is about a section: `section` on `heading` when it is a real heading, else a read of the file's first lines. A file with no headings (`section` exits 1 on it, and `::HeadingName` is a name no file holds) still gets a command that runs. */
+/** The command that reads one part of `shownPath`: the slice command for `heading` when the file really holds it (a heading, key, table or symbol), else a read of the file's first lines. A file with no name to give (`section` exits 1 on a heading-less file, and `::HeadingName` is a name no file holds) still gets a command that runs. */
 export function sectionOrRangeCommand(shownPath: string, heading: HintTarget): string {
   return heading.real ? sliceCommand(shownPath, heading) : headLinesCommand(shownPath)
 }
@@ -297,15 +298,14 @@ function structuredFormat(shownPath: string): 'json' | 'yaml' | null {
   return null
 }
 
-/** The runnable command that reads one value out of a whole file `section` cannot slice (it finds headings only): the format's outline/query pair for JSON and YAML (lock files included), config-get for TOML/INI, xml-outline for XML, and a grep for any line format. `reason` is the sentence the hook adds after the command. */
-export function fileQueryHint(shownPath: string, reason = '', grepSubject = 'pattern'): string {
+/** The runnable command that reads one value out of a whole file `section` cannot slice (it finds headings only). It names a key only when `key` is one the file really holds: the slice command for that key, else the format's outline for JSON and YAML (lock files included) and xml-outline for XML, and a read of the first lines for TOML/INI and any line format. The `<key>` and `<pattern>` stand-ins these used to print ran as a query for a key or a grep for a string no file holds. `reason` is the sentence the hook adds after the command. */
+export function fileQueryHint(shownPath: string, reason = '', key?: HintTarget): string {
   const format = structuredFormat(shownPath)
-  if (format !== null) {
-    return leadWithCommand('token-goat ' + format + '-outline ' + quotedArg(shownPath), 'to list the top-level keys, then `token-goat ' + format + '-query ' + quotedArgs(shownPath, '<key>').join(' ') + '` to read one value', reason)
-  }
-  if (/\.(toml|ini|cfg)$/i.test(shownPath)) return leadWithCommand(configGetCommand(shownPath, '<key>'),'to read one value', reason)
-  if (/\.(xml|csproj)$/i.test(shownPath)) return leadWithCommand('token-goat xml-outline ' + quotedArg(shownPath), 'to see the element structure, then `token-goat xml-query ' + quotedArgs(shownPath, '<path>').join(' ') + '` to read one element', reason)
-  return grepLinesHint('<' + grepSubject + '>', shownPath, reason)
+  const outline = format !== null ? 'token-goat ' + format + '-outline ' + quotedArg(shownPath) : null
+  if (key?.real === true) return leadWithCommand(sliceCommand(shownPath, key), outline !== null ? 'to read one value, or `' + outline + '` to list the top-level keys' : 'to read one value', reason)
+  if (outline !== null) return leadWithCommand(outline, 'to list the top-level keys', reason)
+  if (/\.(xml|csproj)$/i.test(shownPath)) return leadWithCommand('token-goat xml-outline ' + quotedArg(shownPath), 'to see the element structure', reason)
+  return headLinesHint(shownPath, reason)
 }
 
 /** The command a deny leads with, as leadWithCommand fenced it, or the first fenced `token-goat` command anywhere in it. */

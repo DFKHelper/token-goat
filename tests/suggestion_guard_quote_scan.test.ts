@@ -5,9 +5,12 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import { docSectionHint, quotedArg, stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
-import { hintTarget } from '../src/hint_target.js'
+import { hintTarget, type HintTarget } from '../src/hint_target.js'
 import { relayInProcess } from '../src/relay.js'
 import { POSIX_SH, shArgv } from './helpers/shell_argv.js'
+
+/** The name `target` resolved to, or undefined when it resolved none. */
+const nameOf = (target: HintTarget): string | undefined => (target.real ? target.name : undefined)
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const OMITTED = 'token-goat (command omitted: the path contains shell metacharacters)'
@@ -109,7 +112,7 @@ describe('quotable', () => {
   it('refuses a name ending in a backslash, which would escape the closing quote of an argument a later one follows', () => {
     // HAND-DERIVED: `config-get "f.toml" "dir\" "x"` reads in POSIX sh as the arguments `f.toml` and `dir" x` plus an open quote, so the name never reaches a suggestion.
     expect(hintTarget('f.json', 'key', { content: '{"dir\\\\": 1, "ok": 2}\n' })).toMatchObject({ real: false })
-    expect(hintTarget('d.md', 'section', { content: '# Notes\\\n\n## Usage\n\n## Notes\\\n' }).name).toBe('Usage')
+    expect(nameOf(hintTarget('d.md', 'section', { content: '# Notes\\\n\n## Usage\n\n## Notes\\\n' }))).toBe('Usage')
     expect(hintTarget('d.md', 'section', { content: '## Setup\\\n' })).toMatchObject({ real: false })
   })
 
@@ -124,6 +127,6 @@ describe('quotable', () => {
   })
 
   it('still refuses a name holding a backtick, which ends the fence whatever quotes it', () => {
-    expect(hintTarget('d.md', 'section', { content: '## Use `x`\n\n## Usage\n' }).name).toBe('Usage')
+    expect(nameOf(hintTarget('d.md', 'section', { content: '## Use `x`\n\n## Usage\n' }))).toBe('Usage')
   })
 })

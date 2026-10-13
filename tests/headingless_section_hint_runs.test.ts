@@ -86,6 +86,6 @@ describe('the section hint for a file with no headings', () => {
 
   it('a real heading still gets the section command', () => {
     expect(sectionOrRangeCommand('notes.md', { name: 'Install', real: true, slice: 'section' })).toBe('token-goat section "notes.md::Install"')
-    expect(sectionOrRangeCommand('notes.md', { name: 'SectionHeading', real: false, slice: 'section' })).toBe('token-goat read "notes.md::1-80"')
+    expect(sectionOrRangeCommand('notes.md', { real: false, slice: 'section' })).toBe('token-goat read "notes.md::1-80"')
   })
 })

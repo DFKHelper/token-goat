@@ -33,7 +33,7 @@ describe('a removed command whose widened removal took one side of a parenthesis
   })
 
   it('leaves no stray ) in the JSON outline-then-query hint (src/bash_extractors.ts)', () => {
-    const hint = surgicalHintFor('cfg`x.json', false, true, false, false, { name: 'KEY', real: false, slice: 'key' })
+    const hint = surgicalHintFor('cfg`x.json', false, true, false, false, { real: false, slice: 'key' })
     expect(hint).toContain('(`"[\'a.b\']"` for a key holding a dot)')
     const out = stripUnsafeSuggestions(hint)
     expect(out.startsWith('Run `' + OMITTED + '`')).toBe(true)

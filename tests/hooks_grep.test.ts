@@ -491,12 +491,13 @@ describe('preGrepHandler — single-file structural searches', () => {
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat skeleton "src/worker.py"')
-      expect(result.context).toContain('token-goat read')
+      // src/worker.py does not exist here, so no symbol resolves and no read of a stand-in name is offered.
+      expect(result.context).not.toContain('SymbolName')
     }
     expect(vi.mocked(recordStat).mock.calls.find((c) => c[0] === 'session_hint')).toBeDefined()
   })
 
-  it('emits a section/outline hint for markdown heading search', () => {
+  it('emits a runnable read hint for a markdown heading search when no heading resolves', () => {
     const event = makeHookEvent({
       toolName: 'Grep',
       toolInput: { path: 'docs/arch.md', pattern: '^# ' },
@@ -505,8 +506,9 @@ describe('preGrepHandler — single-file structural searches', () => {
     const result = preGrepHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section "docs/arch.md::SectionHeading"')
-      expect(result.context).toContain('token-goat outline "docs/arch.md"')
+      // docs/arch.md does not exist here, so no heading resolves: the hint reads the first lines rather than naming a stand-in section.
+      expect(result.context).toContain('token-goat read "docs/arch.md::1-80"')
+      expect(result.context).not.toContain('SectionHeading')
     }
   })
 

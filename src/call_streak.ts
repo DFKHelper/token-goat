@@ -148,7 +148,7 @@ function batchHintText(run: number): string {
 }
 
 function searchBrakeText(misses: number): string {
-  return `[token-goat] ${misses} searches in a row found nothing. Search by meaning instead of guessing literals: \`token-goat answer "<question>"\` or \`token-goat semantic "<description>"\`.`
+  return `[token-goat] ${misses} searches in a row found nothing. Search by meaning instead of guessing literals: \`token-goat answer\` with your question, or \`token-goat semantic\` with a description of what you are looking for.`
 }
 
 /** Emit one line through the hint ledger (which may suppress it), returning the text actually shown or null. The row's correlator is this agent's key, the one {@link settleSelfScoredHints} matches, since a subagent shares its parent's session_id. */

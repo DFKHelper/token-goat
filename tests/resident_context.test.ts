@@ -433,7 +433,8 @@ describe('hint text', () => {
 
     expect(hint).toContain('`superman`')
     expect(hint).toContain('12 times')
-    expect(hint).toContain('token-goat skill-section "superman"')
+    expect(hint).toContain('`token-goat skill-section` with "superman"')
+    expect(hint).not.toContain('<heading>')
   })
 
   it('says nothing for a single injection or an empty list', () => {

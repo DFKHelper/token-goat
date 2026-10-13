@@ -211,7 +211,9 @@ describe('preSkillHandler — duplicate-load advisory', () => {
     expect(pre.hookType).toBe('deny');
     if (pre.hookType === 'deny') {
       expect(pre.message).toContain('already loaded this session');
-      expect(pre.message).toContain(`token-goat skill-section "${skill}"`);
+      // The body holds no heading, so no skill-section command is named: a `"<heading>"` stand-in there ran as a request for a section no skill has.
+      expect(pre.message).not.toContain('skill-section');
+      expect(pre.message).not.toContain('<heading>');
       expect(pre.message).toContain(`token-goat skill-body "${skill}"`);
       expect(pre.message).not.toContain('--compact');
     }
@@ -358,8 +360,9 @@ describe('preSkillHandler — oversized first-load gate', () => {
     expect(out.hookType).toBe('deny');
     if (out.hookType === 'deny') {
       expect(out.message).not.toContain(compact);
-      // The slice is the whole body, so `skill-body --compact` would not serve it: the pointer names the section and full-body commands only.
-      expect(out.message).toContain('token-goat skill-section "degenerate-compact"');
+      // The slice is the whole body, so `skill-body --compact` would not serve it, and the body holds no heading for skill-section: the pointer names the full-body command only.
+      expect(out.message).not.toContain('skill-section');
+      expect(out.message).toContain('token-goat skill-body "degenerate-compact"');
       expect(out.message).not.toContain('--compact');
     }
   });
@@ -776,7 +779,8 @@ describe('preSkillHandler -- an oversized skill whose compact slice is too large
     expect(out.hookType).toBe('deny');
     if (out.hookType !== 'deny' || !out.message) return;
     // The slice is 78% of the body, so the pointer stands without claiming a compact slice it would not serve.
-    expect(out.message).toContain('token-goat skill-section "late-marker-flat"');
+    expect(out.message).not.toContain('skill-section');
+    expect(out.message).toContain('token-goat skill-body "late-marker-flat"');
     expect(out.message).not.toContain('has a compact slice available');
     expect(out.message).not.toContain('--compact');
     expect(out.message).not.toContain('heading tree');

@@ -42,7 +42,9 @@ function fromCommand(name: string, slice: HintTarget['slice'] = 'section'): Hint
 }
 
 const real = (name: string, slice: HintTarget['slice']): HintTarget => ({ name, real: true, slice })
-const none = (slice: HintTarget['slice'], name: string): HintTarget => ({ name, real: false, slice })
+const none = (slice: HintTarget['slice']): HintTarget => ({ real: false, slice })
+/** The name `target` resolved to, or undefined when it resolved none. */
+const nameOf = (target: HintTarget): string | undefined => (target.real ? target.name : undefined)
 
 beforeEach(() => {
   clearModuleCaches()
@@ -65,7 +67,7 @@ describe('hintTarget for a path written in a command', () => {
     indexed('brackets.md', '# Changelog\n\n## [Unreleased]\n\ntext\n')
     // The brackets are part of the indexed name. Naming it is the whole point -- though see FUZZY_NEAR_MISS_WORKS: `section` would also have resolved a near miss on its own.
     expect(FUZZY_NEAR_MISS_WORKS).toBe(true)
-    expect(fromCommand('brackets.md').name).toBe('[Unreleased]')
+    expect(nameOf(fromCommand('brackets.md'))).toBe('[Unreleased]')
   })
 
   it('returns a real key for a config file', () => {
@@ -76,7 +78,7 @@ describe('hintTarget for a path written in a command', () => {
   it('reads the index for a heading past the bounded head read', () => {
     // 40 KB of prose before the only heading: the 32 KiB head read cannot see it, so only the index can name it.
     indexed('deep.md', 'intro line of prose that pads the file\n'.repeat(1100) + '\n## Deep Heading\n\ntext\n')
-    expect(fromCommand('deep.md').name).toBe('Deep Heading')
+    expect(nameOf(fromCommand('deep.md'))).toBe('Deep Heading')
   })
 
   it('reads the head of a file that was never indexed', () => {
@@ -84,23 +86,23 @@ describe('hintTarget for a path written in a command', () => {
     expect(fromCommand('unindexed.md')).toEqual(real('Something', 'section'))
   })
 
-  it('falls back to the placeholder for a file that does not exist', () => {
-    expect(fromCommand('no-such-file.md')).toEqual(none('section', 'SectionHeading'))
+  it('names nothing for a file that does not exist', () => {
+    expect(fromCommand('no-such-file.md')).toEqual(none('section'))
   })
 
   it('names what is on disk once the file has drifted from the index, never the stale name', () => {
     const p = indexed('drift.md', '## Original Heading\n\ntext\n')
     // Positive control first: it resolves while the index matches.
-    expect(fromCommand('drift.md').name).toBe('Original Heading')
+    expect(nameOf(fromCommand('drift.md'))).toBe('Original Heading')
     fs.writeFileSync(p, '## Renamed Heading\n\ntext\n', 'utf8')
     // A stale name would be printed as a command that runs and returns the wrong thing, or nothing.
-    expect(fromCommand('drift.md').name).toBe('Renamed Heading')
+    expect(nameOf(fromCommand('drift.md'))).toBe('Renamed Heading')
   })
 
   it('refuses a name that would not survive being pasted into the quoted argument', () => {
     // A heading carrying the spec separator would re-split the argument it is interpolated into, so the resolver skips it and falls through to the next usable name.
     indexed('sep.md', '# bad::name\n\ntext\n\n# good name\n\nmore\n')
-    expect(fromCommand('sep.md').name).toBe('good name')
+    expect(nameOf(fromCommand('sep.md'))).toBe('good name')
   })
 })
 
@@ -137,24 +139,24 @@ describe('surgicalHintFor with a resolved target', () => {
   })
 
   it('leads with a read of the first lines when no heading could be resolved, never the placeholder that fails', () => {
-    const hint = surgicalHintFor('doc.md', false, false, true, false, none('section', 'SectionHeading'))
+    const hint = surgicalHintFor('doc.md', false, false, true, false, none('section'))
     expect(hint).toBe('Run `token-goat read "doc.md::1-80"` to read its first 80 lines.')
     expect(PLACEHOLDER_SECTION_FAILS).toContain('not found')
   })
 
   // HAND-DERIVED: each of these used to lead with its slice's placeholder (`config-get ".env" "KEY_NAME"`, a grep for `<key>`, `section "conf.toml::SectionHeading"`, `read "s.sql::table_name"`, a grep for `<pattern>` on a .txt), and none of those runs as printed. Run against the built bundle in the describe below.
   it.each([
-    ['an env file', '.env', true, false, false, none('key', 'KEY_NAME')],
-    ['a .properties file', 'app.properties', false, true, false, none('key', 'KEY_NAME')],
-    ['a TOML file', 'conf.toml', false, true, false, none('section', 'SectionHeading')],
-    ['a flat .conf file', 'app.conf', false, true, false, none('key', 'KEY_NAME')],
+    ['an env file', '.env', true, false, false, none('key')],
+    ['a .properties file', 'app.properties', false, true, false, none('key')],
+    ['a TOML file', 'conf.toml', false, true, false, none('section')],
+    ['a flat .conf file', 'app.conf', false, true, false, none('key')],
     ['a .txt file, whatever heading was found', 'notes.txt', false, false, true, real('Install', 'section')],
   ])('leads %s with no resolvable name with the read of its first lines', (_, file, isEnv, isConfig, isDoc, target) => {
     expect(surgicalHintFor(file, isEnv, isConfig, isDoc, false, target)).toBe('Run `token-goat read "' + file + '::1-80"` to read its first 80 lines.')
   })
 
   it('leads a SQL file with no table to name with the read of its first lines', () => {
-    expect(sqlTableHint('s.sql', none('table', 'table_name'))).toBe('Run `token-goat read "s.sql::1-80"` to read its first 80 lines.')
+    expect(sqlTableHint('s.sql', none('table'))).toBe('Run `token-goat read "s.sql::1-80"` to read its first 80 lines.')
     expect(sqlTableHint('s.sql', real('users', 'table'))).toBe('Run `token-goat read "s.sql::users"` to pull one CREATE TABLE / CREATE TYPE block.')
   })
 
@@ -180,7 +182,7 @@ describe('surgicalHintFor with a resolved target', () => {
     ['a plain key', 'reg.json', real('118615', 'key')],
     ['a key holding a dot', 'reg.json', real('a.b', 'key')],
     ['a YAML key', 'ci.yml', real('jobs', 'key')],
-    ['no key', 'reg.json', none('key', 'KEY_NAME')],
+    ['no key', 'reg.json', none('key')],
   ])('prints a JSON or YAML hint the suggestion guard keeps whole, for %s', (_, file, target) => {
     const hint = surgicalHintFor(file, false, true, false, false, target, '`cat` loads the entire file into context.')
     expect(stripUnsafeSuggestions(hint)).toBe(hint)
@@ -191,11 +193,11 @@ describe('surgicalHintFor with a resolved target', () => {
   })
 
   it('leads an unresolved JSON or YAML target with the outline, the half that runs verbatim', () => {
-    const json = surgicalHintFor('reg.json', false, true, false, false, none('key', 'KEY_NAME'))
+    const json = surgicalHintFor('reg.json', false, true, false, false, none('key'))
     expect(json.startsWith('Run `token-goat json-outline "reg.json"` to list the top-level keys')).toBe(true)
     expect(json).toContain('--filter TEXT')
     expect(json).not.toContain('config-get')
-    expect(surgicalHintFor('ci.yml', false, true, false, false, none('key', 'KEY_NAME'))).toContain('token-goat yaml-outline "ci.yml"')
+    expect(surgicalHintFor('ci.yml', false, true, false, false, none('key'))).toContain('token-goat yaml-outline "ci.yml"')
     expect(surgicalHintFor('ci.YAML', false, true, false, false, real('jobs', 'key'))).toContain('token-goat yaml-query "ci.YAML" "jobs"')
   })
 
@@ -207,15 +209,16 @@ describe('surgicalHintFor with a resolved target', () => {
     expect(surgicalHintFor('src/a.ts', false, false, false, false, real('someSymbol', 'symbol'))).toBe(
       'Run `token-goat read "src/a.ts::someSymbol"` to read one function or class, or `token-goat outline "src/a.ts"` for all of them.',
     )
-    expect(surgicalHintFor('src/a.ts', false, false, false, false, none('symbol', 'SymbolName'))).toBe(
+    expect(surgicalHintFor('src/a.ts', false, false, false, false, none('symbol'))).toBe(
       'Run `token-goat outline "src/a.ts"` to list every function and class with its line range.',
     )
   })
 
-  it('leaves the xml selector a placeholder: it is an XPath expression, not a name the index holds', () => {
+  it('leads an xml file with xml-outline alone: a selector is an XPath expression no index holds, and `<selector>` was a stand-in for one', () => {
     const xml = surgicalHintFor('a.xml', false, false, false, true, real('root', 'section'))
     expect(xml.startsWith('Run `token-goat xml-outline "a.xml"`')).toBe(true)
-    expect(xml).toContain('<selector>')
+    expect(xml).not.toContain('<selector>')
+    expect(xml).not.toContain('xml-query')
   })
 })
 

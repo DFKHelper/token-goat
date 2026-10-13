@@ -69,8 +69,8 @@ async function compactStandIn(name: string, filePath: string, body: string): Pro
   }
   emitErr(formatCommandError(`${subject} has ${why}; --compact printed its heading tree instead of the body.`))
   const firstHeading = extractMarkdownHeadings(body).find((h) => h.level > 1)?.text
-  const headingArg = firstHeading !== undefined && displaySafeText(firstHeading) === firstHeading && canQuoteArg(firstHeading) ? quotedArg(firstHeading) : '"<heading>"'
-  return `${subject} has ${why}; ${tree.phrase} Load one section with \`token-goat skill-section ${quotedArg(name)} ${headingArg}\`, or drop --compact for the full body.\n\n${tree.sectionsList}`
+  const sectionCommand = firstHeading !== undefined && displaySafeText(firstHeading) === firstHeading && canQuoteArg(firstHeading) ? `\`token-goat skill-section ${quotedArg(name)} ${quotedArg(firstHeading)}\`` : `\`token-goat skill-section\` with ${quotedArg(name)} and a heading below`
+  return `${subject} has ${why}; ${tree.phrase} Load one section with ${sectionCommand}, or drop --compact for the full body.\n\n${tree.sectionsList}`
 }
 
 /** `text`, which is lines `firstLine` on of the skill file at `filePath`, held to the output ceiling ({@link outputCeilingChars}) and paged past it with a `read "file@A-B"` of the next lines. A skill body is printed whole, and humanizer's ran to 49 KB: past the harness's inline limit it was persisted to a file the agent then spent two more calls reading back. */

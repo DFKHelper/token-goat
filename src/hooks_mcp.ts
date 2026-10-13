@@ -215,14 +215,14 @@ async function postMcpHandler(event: HookEvent): Promise<HookOutput> {
   if (rawBytes >= MCP_OVERSIZED_THRESHOLD_BYTES && process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0') {
     if (id === null) id = storeMcpOutput(event.sessionId, toolName, toolInput, resultText)
     if (id !== null) {
-      // A heading the payload really carries, double-quoted as hint_target.ts vetted it; this rewrite never passes the relay's suggestion guard, so the vetting is the only check it gets.
+      // A heading or top-level key the payload really carries, double-quoted as hint_target.ts vetted it; this rewrite never passes the relay's suggestion guard, so the vetting is the only check it gets. A slice with nothing real to name is left out: the `'<path>'`, `'<heading>'` and `'<regex>'` stand-ins it used to print ran as queries for parts no payload holds.
       const heading = hintTarget('', 'section', { content: redactedResult.text })
+      const key = hintTarget('payload.json', 'key', { content: redactedResult.text })
       const notice =
         `[token-goat: oversized MCP result (${rawBytes} bytes) cached as ${id}]\n` +
         `The full payload was cached to prevent harness context spill. Slicing commands:\n` +
-        `  token-goat mcp-output ${id} --json-query '<path>' (e.g. 'issues[*].key', 'values[*].id')\n` +
-        `  token-goat mcp-output ${id} --section ${heading.real ? quotedArg(heading.name) : "'<heading>'"}\n` +
-        `  token-goat mcp-output ${id} --grep '<regex>' --max-matches 20\n` +
+        (key.real && /^[\w-]+$/.test(key.name) ? `  token-goat mcp-output ${id} --json-query ${quotedArg(key.name)}\n` : '') +
+        (heading.real ? `  token-goat mcp-output ${id} --section ${quotedArg(heading.name)}\n` : '') +
         `  token-goat mcp-output ${id} --head 50\n\n`
       return preserve(
         emitRewrite(

@@ -11,8 +11,8 @@ import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavin
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
-import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart } from './hint_suggestion_guard.js'
-import { escapeHintName, headingTreeParts, hintTarget, sectionOrRangeCommand, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
+import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject, quotedArg, configGetCommand, headLinesCommand, HEAD_LINES_READ, sentenceStart } from './hint_suggestion_guard.js'
+import { escapeHintName, headingTreeParts, hintTarget, sectionOrRangeCommand, sliceCommand, sliceForPath, fileQueryHint, type HintTarget } from './hint_target.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun, isSequentialPagingChain } from './util.js'
@@ -54,7 +54,7 @@ import { buildPackageManifestHint } from './hints.js'
 import { querySymbols, getFileEntry } from './index_reader.js'
 import { getReadNavigationEvidence } from './read_navigation_evidence.js'
 import { extractShellBannerHeading } from './section_reader.js'
-import { isLockFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
+import { isLockFile, isLockdepsFile, isManifestFile, isInBuildDir, isGeneratedFile } from './hints/lang_patterns.js'
 import {
   extractMarkdownHeadings,
   getWellKnownSections,
@@ -290,10 +290,10 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   const isXmlFile = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename) && !basename.toLowerCase().endsWith('-meta.xml')
 
   if (isXmlFile) {
-    return leadWithCommand(`token-goat xml-outline ${quotedArg(filePath)}`, `for structure, or \`token-goat xml-query ${quotedArgs(filePath, '<selector>').join(' ')}\` for nodes`)
+    return leadWithCommand(`token-goat xml-outline ${quotedArg(filePath)}`, 'for structure')
   } else if (isDocFile && !docNavigation(filePath).section) {
     // A .txt file has no headings, so `section` exits 1 on it; grep is the command that runs.
-    return fileQueryHint(filePath, '', 'pattern')
+    return fileQueryHint(filePath)
   } else if (isDocFile) {
     // The lead name comes from hintTarget, which passes over a document's lone title (its section is the whole file just refused); the list after it is the first headings in file order, as before.
     let top: string[] = []
@@ -315,16 +315,13 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
     const fmt = isJsonFile ? 'json' : 'yaml'
     const key = hintTarget(filePath, 'key', { content: fileContent })
     if (key.real) return leadWithCommand(sliceCommand(filePath, key), `to read that value, or \`token-goat ${fmt}-outline ${quotedArg(filePath)}\` for every top-level key`)
-    return isJsonFile
-      ? leadWithCommand(`token-goat json-query ${quotedArgs(filePath, '<key>').join(' ')}`, `(or \`token-goat json-outline ${quotedArg(filePath)}\`) to slice one value`)
-      : leadWithCommand(`token-goat section ${quotedArg(`${filePath}::name`)}`, `or \`token-goat yaml-query ${quotedArgs(filePath, '<key>').join(' ')}\` to extract a part`)
+    return leadWithCommand(`token-goat ${fmt}-outline ${quotedArg(filePath)}`, 'for every top-level key')
   } else if (isHtmlFile) {
     return leadWithCommand(sectionOrRangeCommand(filePath, hintTarget(filePath, 'section', { content: fileContent })), `or \`token-goat outline ${quotedArg(filePath)}\` to navigate HTML structure`)
   } else if (isSectionFile) {
     // A stylesheet has no headings (`section` exits 1 on it), but `outline` lists its selectors and `read` returns one rule.
     if (!/\.toml$/i.test(basename)) return leadWithCommand(`token-goat outline ${quotedArg(filePath)}`, 'to list every selector')
-    const table = hintTarget(filePath, 'section', { content: fileContent, placeholder: 'name' }).name
-    return leadWithCommand(`token-goat section ${quotedArg(`${filePath}::${table}`)}`, 'to extract a part')
+    return leadWithCommand(sectionOrRangeCommand(filePath, hintTarget(filePath, 'section', { content: fileContent })), 'to extract a part')
   } else {
     const isShellScript = /\.(sh|bash|zsh|ksh)$/i.test(basename)
     // `section` resolves headings only, so it is offered only for names that came from the banner-heading list.
@@ -346,8 +343,10 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
           }
         })()
     const fallback = samples.length > 0 ? null : hintTarget(filePath, 'symbol', { content: fileContent })
-    const sym = samples[0] ?? fallback?.name ?? HINT_PLACEHOLDERS.symbol
+    const sym = samples[0] ?? (fallback?.real === true ? fallback.name : undefined)
     const avail = samples.length > 0 ? `(available: ${samples.join(', ')}) ` : ''
+    // With no name the file really holds, the commands that run on any source file are the whole hint.
+    if (sym === undefined) return leadWithCommand(`token-goat skeleton ${quotedArg(filePath)}`, `or \`token-goat outline ${quotedArg(filePath)}\` for structure`)
     if (namesAreHeadings) {
       return leadWithCommand(`token-goat section ${quotedArg(`${filePath}::${sym}`)}`, `${avail}for a section, or \`token-goat skeleton ${quotedArg(filePath)}\` / \`token-goat outline ${quotedArg(filePath)}\` for structure`)
     }
@@ -356,14 +355,12 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
       try {
         const indexed = querySymbols({ filePath, name: sym, limit: 1 })[0]
         if (indexed !== undefined && isLargeSymbolSpan(indexed.lineStart, indexed.lineEnd, filePath)) {
-          return `${sentenceStart(nameSubject('symbol', sym))} spans ${indexed.lineEnd - indexed.lineStart + 1} lines -- use \`token-goat grep ${quotedArgs('<pattern>', filePath).join(' ')} -C 15 --symbol\` for a slice inside it, or \`token-goat scope ${quotedArg(`${filePath}:${indexed.lineStart}`)}\` to confirm the enclosing symbol.`
+          return `${sentenceStart(nameSubject('symbol', sym))} spans ${indexed.lineEnd - indexed.lineStart + 1} lines -- use ${largeSymbolSliceCommand(filePath, indexed.lineStart, indexed.lineEnd)} for its opening lines, or \`token-goat scope ${quotedArg(`${filePath}:${indexed.lineStart}`)}\` to confirm the enclosing symbol.`
         }
       } catch {
         // The index is advisory; retain the plain read recommendation when it is unavailable.
       }
     }
-    // With no name the file really holds, the command that runs leads and the read form trails as the pattern to fill in.
-    if (fallback?.real === false) return leadWithCommand(`token-goat skeleton ${quotedArg(filePath)}`, `or \`token-goat outline ${quotedArg(filePath)}\` for structure, then \`token-goat read ${quotedArg(`${filePath}::${sym}`)}\` for one function`)
     return leadWithCommand(`token-goat read ${quotedArg(`${filePath}::${sym}`)}`, `${avail}for one function, or \`token-goat skeleton ${quotedArg(filePath)}\` / \`token-goat outline ${quotedArg(filePath)}\` for structure`)
   }
 }
@@ -420,11 +417,27 @@ export function realSymbolReadHint(filePath: string, shown: string, range?: { st
   if (isLargeSymbolSpan(top.lineStart, top.lineEnd, filePath)) {
     const line = range !== undefined ? range.start : top.lineStart
     const span = top.lineEnd - top.lineStart + 1
-    return '`token-goat grep ' + quotedArgs('<pattern>', shown).join(' ') + ' -C 15 --symbol` for a slice inside ' + nameSubject('symbol', top.name) + ' (' + span + ' lines), or `token-goat scope ' + quotedArg(shown + ':' + line) + '` to confirm the enclosing symbol'
+    return largeSymbolSliceCommand(shown, line, top.lineEnd) + ' for a slice inside ' + nameSubject('symbol', top.name) + ' (' + span + ' lines), or `token-goat scope ' + quotedArg(shown + ':' + line) + '` to confirm the enclosing symbol'
   }
   const names = candidates.map((s) => s.name).slice(0, 3)
   const rest = names.length > 1 ? ' (or: ' + names.slice(1).join(', ') + ')' : ''
   return '`token-goat read ' + quotedArg(shown + '::' + names[0]) + '`' + rest
+}
+
+/** A fenced read of the first {@link HEAD_LINES_READ} lines of a symbol too large to recommend whole, from `lineStart`: a slice that runs as printed, where a grep inside it needed a pattern the hint does not have. */
+function largeSymbolSliceCommand(shown: string, lineStart: number, lineEnd: number): string {
+  return '`token-goat read ' + quotedArg(shown + '@' + lineStart + '-' + Math.min(lineEnd, lineStart + HEAD_LINES_READ - 1)) + '`'
+}
+
+/** A read nudge for a source file: `read` on the symbol the file really holds, with `skeleton` beside it, or `skeleton` alone when no name resolves. */
+function symbolOrSkeletonNudge(shown: string, symbol: HintTarget): string {
+  const skeleton = '`token-goat skeleton ' + quotedArg(shown) + '`'
+  return symbol.real ? '`token-goat read ' + quotedArg(shown + '::' + symbol.name) + '` or ' + skeleton : skeleton
+}
+
+/** The compact-doc deny's pointer to one section in full, or to the outline when no heading resolves, ending in the sentence's own trailing space. */
+function compactDocSectionClause(shown: string, heading: HintTarget): string {
+  return heading.real ? '`' + sliceCommand(shown, heading) + '` for one section in full. ' : '`token-goat outline ' + quotedArg(shown) + '` for every heading with its line range. '
 }
 
 function lineCountForSurgicalHint(filePath: string, fileStatSize?: number): number {
@@ -653,7 +666,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   if (isLockFile(basename)) {
     return denyOutput(
-      'Lock files are rarely useful to read in full. ' + fileQueryHint(shown, 'Or read the relevant manifest instead.', 'package-name'),
+      'Lock files are rarely useful to read in full. ' + (isLockdepsFile(basename) ? leadWithCommand('token-goat lockdeps ' + quotedArg(shown), 'for every package and its version, with `--package` and a name for one', 'Or read the relevant manifest instead.') : fileQueryHint(shown, 'Or read the relevant manifest instead.')),
     )
   }
 
@@ -691,7 +704,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     return quietContextOutput(
       field.real
         ? leadWithCommand(sliceCommand(shown, field), 'to extract just the value you need', 'You\'ve already read this file.')
-        : fileQueryHint(shown, 'You\'ve already read this file.', 'field'),
+        : fileQueryHint(shown, 'You\'ve already read this file.'),
       [shown],
     )
   }
@@ -739,7 +752,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           'the first heading are dropped entirely, each section is cut to its opening ' +
           'sentences, and long code fences are truncated. If you need content it left out, ' +
           're-read with offset/limit for a line window, or ' +
-          '`token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'Heading' }).name) + '` for one section in full. ' +
+          compactDocSectionClause(shown, hintTarget(normalized, 'section')) +
           'Use `token-goat compact-doc ' + quotedArg(shown) + ' --force` to rebuild it, ' +
           'or `token-goat compact-doc ' + quotedArg(shown) + ' --show` to view it directly. ' +
           editAnywayHint(normalized),
@@ -809,8 +822,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         // guidance is token-goat's own authored instruction text (the "use token-goat section" preamble plus the "Sections:" label) and stays OUTSIDE the fence, same as wellKnownText below. sectionsList (the actual heading text) and changelogExtra (version headings) are verbatim bytes from the file, so they are fenced as untrusted data before being spliced into a message the harness attributes to token-goat. wellKnownText is not fenced either: it is built from token-goat's own hardcoded shortcut list plus the file path, with no file-derived bytes, so fencing it would spend markers on nothing. formatHeadingTreeParts' example line names a literal "Heading Name", which `section` cannot find; with a real heading in hand a command naming it leads and that line is dropped. The swap happens here because markdown_hints.ts is an embedding-fingerprinted source.
         const headingTarget = hintTarget(normalized, 'section', { headings, content: fileContent })
         const treeLead = headingTarget.real ? leadWithCommand('token-goat section ' + quotedArg(shown + '::' + headingTarget.name), 'to read one section') + '\n' : ''
-        const treeGuidance = headingTarget.real ? guidance.split('\n').filter((line) => !line.includes('::Heading Name"')).join('\n') : guidance
-        let message = treeLead + treeGuidance + '\n' + fenceUntrustedFileContent(sectionsList + changelogExtra) + wellKnownText
+        let message = treeLead + guidance + '\n' + fenceUntrustedFileContent(sectionsList + changelogExtra) + wellKnownText
         // A re-read is always hard-denied. A first read is also hard-denied when the file is at or above the generic large-file deny threshold: this branch returns before the size-based deny further below ever runs, so it must enforce that gate itself. A genuine, bounded offset/limit request gates on the requested slice's size instead of the whole file's, same as the generic large-file gate and the file-type dispatcher further below — a small window into a huge markdown file should be let through rather than hard-denied.
         const slice = estimateRequestedSlice(event, normalized)
         const gateSize =
@@ -916,7 +928,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     return denyOutput(leadWithCommand(
-      'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section').name),
+      sectionOrRangeCommand(shown, hintTarget(normalized, 'section')),
       'to extract one section',
       'This file was already read this session. Memory files rarely change mid-session.',
     ))
@@ -935,10 +947,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   if (basename.toLowerCase() === 'content.json' && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
-    const [quotedShown, quotedQuery] = quotedArgs(shown, '<path>')
     return denyOutput(
       'This file was already read this session. Tool output spill files should not be re-read whole. ' +
-      'Use `token-goat json-query ' + quotedShown + ' ' + quotedQuery + '` or `token-goat mcp-output --file ' + quotedShown + ' --json-query ' + quotedQuery + '` to extract what you need.',
+      fileQueryHint(shown, '', hintTarget(normalized, 'key')),
     )
   }
 
@@ -946,9 +957,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   if (/^\.env(\.\w+)?$/.test(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
+    const envKey = hintTarget(normalized, 'key')
     return denyOutput(leadWithCommand(
-      configGetCommand(shown, hintTarget(normalized, 'key').name),
-      'to extract a specific variable',
+      envKey.real ? configGetCommand(shown, envKey.name) : headLinesCommand(shown),
+      envKey.real ? 'to extract a specific variable' : 'to read its first ' + HEAD_LINES_READ + ' lines',
       'This file was already read this session. Environment files rarely change mid-session.',
     ))
   }
@@ -1069,7 +1081,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           return quietContextOutput(
             'This file may have already been read by another agent/session working in this project recently. ' +
             'If you are a subagent continuing shared work, consider whether you already have this content from context, ' +
-            'or use `' + (slice.real ? sliceCommand(shown, slice) : 'token-goat read ' + quotedArg(shown + '::SymbolName')) + '` for a narrower slice instead of a full re-read.',
+            'or use `' + (slice.real ? sliceCommand(shown, slice) : 'token-goat outline ' + quotedArg(shown)) + '` for a narrower slice instead of a full re-read.',
             [shown],
           )
         }
@@ -1302,7 +1314,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', 0, 0)
       }
       recordActualSlice(event, normalized)
-      const sectionCommand = _isDocFile(normalized) ? 'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'SectionName' }).name) : ''
+      const rereadHeading = _isDocFile(normalized) ? hintTarget(normalized, 'section') : null
+      const sectionCommand = rereadHeading?.real === true ? sliceCommand(shown, rereadHeading) : ''
       const rereadNote = 'Note: ' + readSubject(normalized, sectionCommand + pagingNote) + ' was already read this session (' + reads + ' ' + plural + ').'
       return quietContextOutput(
         (sectionCommand !== ''
@@ -1447,13 +1460,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordStat('session_hint', 0, 0)
       const isTestFile = /\.(tests|test)\.(ps1|[jt]sx?|py)$/i.test(basename)
       const nudge = isXmlNudge
-        ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline ${quotedArg(shown)}\` or \`token-goat xml-query ${quotedArgs(shown, '<selector>').join(' ')}\``
+        ? `Note: token-goat available for this file type, consider xml-outline first: \`token-goat xml-outline ${quotedArg(shown)}\``
         : isDocNudge
         ? `Note: token-goat available for this file type, consider section first: \`${sectionOrRangeCommand(shown, hintTarget(normalized, 'section'))}\``
         : isTestFile
-        ? `Note: token-goat available for this test file, consider surgical read first: \`token-goat read ${quotedArg(`${shown}::${hintTarget(normalized, 'symbol', { placeholder: 'DescribeBlockName' }).name}`)}\` or \`token-goat skeleton ${quotedArg(shown)}\``
+        ? `Note: token-goat available for this test file, consider surgical read first: ${symbolOrSkeletonNudge(shown, hintTarget(normalized, 'symbol'))}`
         : isScriptNudge
-        ? `Note: token-goat available for this PowerShell file, consider surgical read first: \`token-goat read ${quotedArg(`${shown}::${hintTarget(normalized, 'symbol', { placeholder: 'FunctionName' }).name}`)}\` or \`token-goat skeleton ${quotedArg(shown)}\``
+        ? `Note: token-goat available for this PowerShell file, consider surgical read first: ${symbolOrSkeletonNudge(shown, hintTarget(normalized, 'symbol'))}`
         : `Note: token-goat has this file indexed (>80% read), consider surgical read first: ${surgicalHint(normalized, basename, lineCount)}`
       return quietContextOutput(nudge, isXmlNudge ? undefined : [shown])
     }

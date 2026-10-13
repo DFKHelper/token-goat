@@ -336,7 +336,7 @@ export function formatSessionStoreCatalog(opts?: { json?: boolean | undefined })
     lines.push('')
   }
 
-  lines.push('Run `token-goat session-schema <table>` or `token-goat describe <table>` for detailed column specifications.')
+  lines.push('Run `token-goat session-schema` or `token-goat describe` with a table name above for detailed column specifications.')
   return lines.join('\n')
 }
 

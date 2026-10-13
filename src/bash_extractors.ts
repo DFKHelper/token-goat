@@ -9,7 +9,7 @@ import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } 
 import { dropFileLineRangesIfChanged, getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 import { FALSY_ENV_VALUES } from './env.js'
-import { leadWithCommand, docSectionHint, headLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
+import { leadWithCommand, docTargetHint, headLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import type { HintTarget } from './hint_target.js'
 
 // Defined beside preToolPathDeclined, the rule it applies, so hint_target.ts can gate a path without pulling this module into the core bundle.
@@ -48,7 +48,7 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
   //
   // A config file's name goes where its format takes it: a JSON/YAML key to the query command, a TOML/INI table to `section` (measured, `config-get "cfg.toml" tool` exits 1 on a table while `section "cfg.toml::tool"` returns it), a .properties key to config-get. A JSON property is never put in a `section` slot: `token-goat section "package.json::name"` exits 1.
   const outline = outlineCommand(hintPath)
-  if (isXml) return leadWithCommand('token-goat xml-outline ' + quotedArg(hintPath), 'to inspect structure, or `token-goat xml-query ' + quotedArgs(hintPath, '<selector>').join(' ') + '` to query specific nodes', reason)
+  if (isXml) return leadWithCommand('token-goat xml-outline ' + quotedArg(hintPath), 'to inspect structure', reason)
   if (isEnv) return target.real ? leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific variable', reason) : headLinesHint(hintPath, reason)
   // .properties has no outline extractor (measured 2026-10-03: `outline app.properties` exits 1), so it gets config-get for a key it holds and its first lines otherwise.
   if (isConfig && /\.properties$/i.test(hintPath)) {
@@ -65,7 +65,7 @@ export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: bool
       ? leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific value, or `' + outline + '` for every key with line ranges', reason)
       : leadWithCommand('token-goat section ' + quotedArg(hintPath + '::' + target.name), 'to read one table, or `' + outline + '` for every key with line ranges', reason)
   }
-  if (isDoc) return target.real ? docSectionHint(hintPath, target.name, reason) : headLinesHint(hintPath, reason)
+  if (isDoc) return docTargetHint(hintPath, target, reason)
   // A source file with no nameable symbol leads with outline, which always runs, rather than a `read "file::SymbolName"` that never does.
   return target.real
     ? leadWithCommand('token-goat read ' + quotedArg(hintPath + '::' + target.name), 'to read one function or class, or `' + outline + '` for all of them', reason)

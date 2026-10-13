@@ -1826,7 +1826,8 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query "data.json"')
+      expect(result.context).toContain('token-goat json-outline "data.json"')
+      expect(result.context).not.toContain('<selector>')
     }
   })
 
@@ -1835,7 +1836,7 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query "payload.json"')
+      expect(result.context).toContain('token-goat json-outline "payload.json"')
     }
   })
 
@@ -1844,7 +1845,7 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query "payload.json"')
+      expect(result.context).toContain('token-goat json-outline "payload.json"')
     }
   })
 
@@ -1852,7 +1853,9 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     const result = preBashHandler(makeBashEvent('Get-Content payload.json.bak | ConvertFrom-Json'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat json-query <file>')
+      expect(result.context).toContain('json-outline and json-query commands')
+      expect(result.context).not.toContain('payload.json.bak')
+      expect(result.context).not.toContain('<file>')
     }
   })
 
@@ -1861,12 +1864,13 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('pass')
   })
 
-  it('emits generic json-query hint when ConvertFrom-Json has no file path', () => {
+  it('emits a generic json-query hint, naming no stand-in file, when ConvertFrom-Json has no file path', () => {
     const result = preBashHandler(makeBashEvent('$response | ConvertFrom-Json'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query <file>')
+      expect(result.context).toContain('json-outline and json-query commands')
+      expect(result.context).not.toMatch(/<file>|<selector>/)
     }
   })
 })
@@ -3229,7 +3233,7 @@ describe('preBashHandler — curl download dedup', () => {
       if (result.hookType === 'deny') {
         // The recall message shows the fully-resolved, normalized path recorded at download time (see the "resolves a relative -o path against the ORIGINAL download cwd" regression below), not the raw -o argument as typed on the command line.
         expect(result.message).toContain(resolveIndexPath(v1Path))
-        expect(result.message).toContain('rg')
+        expect(result.message).not.toContain('<pattern>')
         // HAND-DERIVED: the downloaded JSON's first key is `items`, so the lead command queries it.
         expect(result.message).toContain('Run `token-goat json-query "' + resolveIndexPath(v1Path) + '" "items"`')
       }
@@ -3539,13 +3543,13 @@ describe('preBashHandler — markdown heading grep hint', () => {
     clearModuleCaches()
   })
 
-  it('emits outline hint for grep -n "^#" SKILL.md', () => {
+  it('emits a runnable read hint for grep -n "^#" SKILL.md when no heading resolves', () => {
     const result = preBashHandler(makeBashEvent('grep -n "^#" SKILL.md'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat outline')
-      expect(result.context).toContain('SKILL.md')
-      expect(result.context).toContain('token-goat section')
+      // SKILL.md does not exist here, so no heading resolves: the hint reads the first lines rather than naming a section with a stand-in heading.
+      expect(result.context).toContain('token-goat read "SKILL.md::1-80"')
+      expect(result.context).not.toContain('token-goat section')
     }
   })
 

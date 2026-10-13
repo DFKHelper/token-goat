@@ -161,7 +161,7 @@ describe('a hook reading the file behind a drive-letter key opens it where the h
     await asHook(sid, () => postBashHandler(bashEvent(sid, 'post_tool_use', command)))
     const again = await asHook(sid, () => preBashHandler(bashEvent(sid, 'pre_tool_use', command)))
     expect(again.hookType).toBe('deny')
-    expect(text(again)).toContain(`rg '<pattern>' "${HOST_PROJECT}/out.json"`)
+    expect(text(again)).toMatch(new RegExp('`token-goat [^`]*"' + HOST_PROJECT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/out\\.json'))
     expect(text(again)).toContain('This file was already downloaded earlier this session.')
   })
 
