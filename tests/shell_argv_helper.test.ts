@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { POSIX_SH, SH_LIVE, shRunAll } from './helpers/shell_argv.js'
+import { POSIX_SH, SH_LIVE, SH_SCRIPT, shRunAll } from './helpers/shell_argv.js'
 
 describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   const sh = POSIX_SH!
@@ -44,6 +44,13 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     }
     // The run, plus a cleanup capped at 60 s whose environment scans took seven seconds each on a loaded Windows machine.
   }, 150_000)
+
+  it('exits immediately if TG_CHUNK is missing or non-positive rather than loop forever', () => {
+    for (const chunk of ['', '0', '-1', 'notanumber']) {
+      const res = spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env: { ...process.env, TG_N: '5', TG_CHUNK: chunk }, windowsHide: true, timeout: 2000 })
+      expect(res.status).toBe(1)
+    }
+  })
 
   it('shares one subshell across a chunk of commands, so a run forks once per chunk', () => {
     const got = shRunAll(sh, ['tg_probe=set', 'token-goat "${tg_probe-unset}"'])
