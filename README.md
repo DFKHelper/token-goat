@@ -261,6 +261,8 @@ out: 38 lines              # ~300 tokens   (97% smaller)
 
 A line number works in place of a name, which is what you are holding when a grep hit, a stack frame, or a diff hunk points at code: `token-goat read "src/auth.py:142"` returns the symbol enclosing line 142, and `read "src/auth.py:142-190"` returns every symbol the range touches. A Windows drive letter stays part of the path, so `C:/src/auth.py:142` reads line 142 of that file, and a bare `C:142` stays a drive-relative path rather than a line number.
 
+A line range given as a flag (`--lines 1-5`, `--line`, `--range`, `--start`/`--end`, `--from`/`--to`, `--offset`/`--limit`) is not an option of `read`, but when the file argument names no place yet and the range is complete it runs as `read "file@1-5"` and says so on stderr: ``Note: ran as `token-goat read "f.ts@1-5"` ...``. A guessed spelling of a real flag (`--top`, `-k`, `--max` or `--count` for `--limit` on `search`, `semantic` and `recall`; `--search`, `--filter` or `--pattern` for `--grep` on the cached-output commands) runs the same way with the same note when its value is usable. Anything less certain still fails, with a `Did you mean` line naming the command to run.
+
 Same applies to `token-goat section "README.md::Install"` — one heading instead of the whole document. Anchor IDs and setext headings resolve too, so `section "doc.md::Quick-start"` works when the file uses `Quick start` as an `<h2>` with an explicit `{#quick-start}` anchor.
 
 ### 3. Compact manifest — preserve what mattered

@@ -523,6 +523,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/ocr_languages.ts`](src/ocr_languages.ts) | Supported language codes and resolver for Tesseract OCR. |
 | [`src/ooxml_extract.ts`](src/ooxml_extract.ts) | Shared ZIP+XML core for OOXML formats (.pptx, .docx are both a ZIP container of XML parts). |
 | [`src/openapi_query.ts`](src/openapi_query.ts) | Narrow structural summary + single-operation extraction for `token-goat openapi-outline` / `openapi-op`, so a multi-thousand-line OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML) neve |
+| [`src/option_intent.ts`](src/option_intent.ts) | Intent-based translation of a guessed flag: rewrites `read f --lines A-B` (also `--start/--end`, `--offset/--limit`) to the `f@A-B` spec and a value-preserving rename (`--top` for `--limit`, `--search` for `--grep`) to the real flag, each with a stderr note; when the value stops the rewrite it adds the corrected command to the failure instead, and names `read` for a line range given to `section`. |
 | [`src/overflow_guard.ts`](src/overflow_guard.ts) | Overflow guard — cap oversized output to protect the model's context. |
 | [`src/own_lookup.ts`](src/own_lookup.ts) | Own-property lookup for plain-object maps whose keys arrive from outside this process. |
 | [`src/path_containment.ts`](src/path_containment.ts) | Path canonicalization and the symlink-resolving containment test. |

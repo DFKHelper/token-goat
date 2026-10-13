@@ -1,0 +1,11 @@
+! Third-party MCP servers are disabled by your organization's Copilot policy. Only built-in servers
+  are available.
+
+Error: Access denied by policy settings (Request ID: C1F2:3D0B42:6DEDD:920EB:6ACC5B9E)
+
+Your Copilot CLI policy setting may be preventing access. This can happen when:
+  • Your organization has restricted Copilot access
+  • Your Copilot subscription does not include this feature
+  • Required policies have not been enabled by your administrator
+
+To resolve this, visit your Copilot settings: https://github.com/settings/copilot

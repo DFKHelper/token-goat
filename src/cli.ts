@@ -1,5 +1,6 @@
 import { Command } from 'commander'
 import { attemptedCommandName, suggestForUnknownCommand } from './command_intent.js'
+import { renamedFlagsIn, rewriteOptionIntent, suggestForUnknownOption } from './option_intent.js'
 import { spawnSync } from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -601,14 +602,22 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
 async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean; probe?: string }): Promise<void> {
   if (opts.probe !== undefined) {
     // Loaded on demand: a probe spawns a whole harness, and nothing else in doctor needs this module.
-    const { PROBE_COMMANDS, formatProbeReport, isProbeHarness, probePassed, runProbe } = await import('./doctor_probe.js')
+    const { IDE_HOSTS_WITHOUT_PROBE, NO_HEADLESS_PROBE_EXIT_CODE, PROBE_COMMANDS, formatProbeReport, isProbeHarness, noHeadlessProbeMessage, probeVerdict, runProbe } = await import('./doctor_probe.js')
     const harness = opts.probe.trim().toLowerCase()
+    if (IDE_HOSTS_WITHOUT_PROBE.has(harness)) {
+      err(`token-goat: ${noHeadlessProbeMessage(harness)}`)
+      process.exitCode = NO_HEADLESS_PROBE_EXIT_CODE
+      return
+    }
     if (!isProbeHarness(harness)) {
       throw new CliError(`no headless probe for ${echoedValue(opts.probe)}; supported: ${Object.keys(PROBE_COMMANDS).join(', ')}`)
     }
     const report = runProbe(harness)
     out(opts.json === true ? displaySafeJson(report, 0) : formatProbeReport(report))
-    if (!probePassed(report)) throw new CliError('doctor probe failed')
+    const verdict = probeVerdict(report)
+    if (verdict === 'fail') throw new CliError('doctor probe failed')
+    // Exit 2, not 1: the harness failed before its model answered, so the probe judged no hook either way.
+    if (verdict === 'inconclusive') process.exitCode = 2
     return
   }
   const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string; repair?: boolean } = {}
@@ -1340,7 +1349,7 @@ export function buildProgram(): Command {
     .option('--json', 'emit check results as JSON instead of text')
     .option('--repair', 'automatically repair fixable issues (permissive settings, missing semantics models)')
     .option('--fix', 'alias for --repair')
-    .option('--probe <harness>', 'run one real prompt through a harness (claudecode, codex, copilot_cli) and check that token-goat\'s context hooks reach the model')
+    .option('--probe <harness>', 'run one real prompt through a harness (claudecode, codex, copilot_cli) and check that token-goat\'s context hooks reach the model; exits 3 for an editor host (vscode, visualstudio, jetbrains) that has no headless mode')
     .action(guard(cmdDoctor))
 
   program
@@ -1525,8 +1534,13 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   const program = buildProgram()
   // Commander's exitOverride lets us catch its internal exits (help, version, unknown command) instead of letting it call process.exit() mid-flush. Applied to every subcommand, not just the program. Commander copies the exit callback to a subcommand when that subcommand is CREATED (copyInheritedSettings, called from .command()), and buildProgram() has already created all of them by the time this runs -- so they each inherited "no callback" and `token-goat <subcommand> --help` called process.exit() for real, which is exactly what main.ts's docblock says this binary must never do, because an exit mid-flush can truncate output already written to a pipe.
   applyExitOverride(program)
+  const intent = rewriteOptionIntent(argv)
+  if (intent !== null) {
+    err(intent.note)
+    recordStat('cli_option_alias', 0, 0, undefined, `${intent.command} ${intent.flags.join(' ')}`)
+  }
   try {
-    await program.parseAsync(argv)
+    await program.parseAsync(intent === null ? argv : intent.argv)
   } catch (e) {
     // Help / version requests throw with these codes and are not errors.
     const code = (e as { code?: string }).code
@@ -1540,6 +1554,13 @@ export async function run(argv: string[] = process.argv): Promise<void> {
         const attempted = attemptedCommandName(argv)
         const hint = attempted === null ? null : suggestForUnknownCommand(attempted)
         if (hint !== null) err(`Looking for that? Try ${hint}.`)
+      }
+      if (code === 'commander.unknownOption') {
+        const hint = suggestForUnknownOption(argv)
+        if (hint !== null) {
+          err(hint)
+          recordStat('cli_option_alias', 0, 0, undefined, `${attemptedCommandName(argv) ?? ''} ${renamedFlagsIn(argv).join(' ')}`.trim())
+        }
       }
       process.exitCode = 1
       return

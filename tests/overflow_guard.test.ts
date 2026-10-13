@@ -219,3 +219,44 @@ describe('capped-output line total', () => {
     expect(capped).not.toContain('of 501 lines')
   })
 })
+
+/** Provenance for the block below: HAND-DERIVED. With a 100-token budget the body gets 100 - 64 (marker margin) = 36 tokens. A 20-unit line costs 21 units with its newline: 21 / 3 = 7 tokens as text and 21 / 0.9 = 23.33 as wide. The 0.9 is the guard divisor measured against tiktoken in tests/token_estimate.test.ts. */
+describe('wide-script lines in trimToBudget', () => {
+  const ENGLISH_LINE = 'abcdefghij klmnopqrs'
+  const JAPANESE_LINE = 'あ'.repeat(20)
+
+  it('keeps one Japanese line where the same budget keeps five English ones', () => {
+    // 5 * 7 = 35 <= 36 < 42 for English; 23.33 <= 36 < 46.67 for Japanese. Twenty lines keep the whole text over the 100-token entry check.
+    const english = trimToBudget(Array.from({ length: 20 }, () => ENGLISH_LINE).join('\n'), 100)
+    const japanese = trimToBudget(Array.from({ length: 20 }, () => JAPANESE_LINE).join('\n'), 100)
+    expect(english).toContain('showing 5 of 20 lines')
+    expect(japanese).toContain('showing 1 of 20 lines')
+  })
+
+  it('prices a Japanese line inside mostly English text at its own rate', () => {
+    // The text as a whole is English (one wide line in 24), so only a per-line class sees the Japanese line: 3 * 7 + 23.33 = 44.33 > 36 stops at 3 lines, where English pricing would keep 5.
+    const lines = [ENGLISH_LINE, ENGLISH_LINE, ENGLISH_LINE, JAPANESE_LINE, ...Array.from({ length: 20 }, () => ENGLISH_LINE)]
+    expect(trimToBudget(lines.join('\n'), 100)).toContain('showing 3 of 24 lines')
+  })
+
+  it('cuts one oversized Japanese line at the wide budget, not the English one', () => {
+    // 36 tokens * 0.9 units per token = 32.4 units, so 32 characters survive; at the English rate 108 would have kept all 100.
+    const capped = trimToBudget('日'.repeat(100), 100)
+    expect(capped.split('\n')[0]).toBe('日'.repeat(32))
+  })
+
+  it('does not cut a surrogate pair when the budget lands between its halves', () => {
+    // reserveTokens 1 makes the body 35 tokens = 105 units, an odd count, so the cut falls inside the 53rd pair.
+    const capped = trimToBudget('😀'.repeat(400), 100, undefined, { reserveTokens: 1 })
+    const first = capped.split('\n')[0]!
+    expect(first.length).toBe(104)
+    expect(first.charCodeAt(first.length - 1)).toBeGreaterThanOrEqual(0xdc00)
+  })
+
+  it('still prices a wrapped base64 payload dense, though no short line is long enough to classify alone', () => {
+    // 30-character lines of one payload: dense guard divisor 1.45 * 0.75 = 1.0875, so 31 / 1.0875 = 28.5 tokens a line and 36 holds one. Priced as text (31 / 3 = 10.3) three would fit.
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'.repeat(2)
+    const lines = Array.from({ length: 30 }, (_, i) => alphabet.slice(i, i + 30))
+    expect(trimToBudget(lines.join('\n'), 100)).toContain('showing 1 of 30 lines')
+  })
+})
