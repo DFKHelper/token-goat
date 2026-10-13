@@ -41,9 +41,9 @@ import { enqueueDirtyPathsSafe } from './hooks_index.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
 import { runRead, runPrSlice } from './read_commands.js'
 import { runSymbol } from './read_symbol.js'
-import { namedSpecsMergeable, readSpecsMergeable } from './read_spec.js'
+import { extraArgsRejoinSpacedPath, namedSpecsMergeable, readSpecsMergeable } from './read_spec.js'
 import { runBrief } from './read_brief.js'
-import { runSection } from './read_section.js'
+import { runSection, runSectionSpecs } from './read_section.js'
 import { runListSections } from './read_inspect.js'
 import { runSkeleton, runOutline, type SkeletonOptions } from './read_outline.js'
 import { runSemantic, runSemanticMulti } from './read_semantic.js'
@@ -1027,7 +1027,7 @@ export function buildProgram(): Command {
   program
     .command('section <spec> [more...]')
     .description(
-      'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading; comma-separated file::A,B for a merged multi-heading view), or list all sections with --list',
+      'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading; comma-separated file::A,B for a merged multi-heading view, as several specs a.md::A b.md::B also give), or list all sections with --list',
     )
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
@@ -1043,22 +1043,16 @@ export function buildProgram(): Command {
             emitExtraFileArgsNote('section --list', spec, more, { mergeable: false })
             return runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
           })
-        : runExitText(() =>
-            noteExtraFileArgs(
-              'section',
-              spec,
-              more,
-              () =>
-                runSection({
-                  spec,
-                  ...(opts.json === true ? { json: true } : {}),
-                  ...(maxLines !== undefined ? { maxLines } : {}),
-                  ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-                }),
-              { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) },
-            ),
-            { echoSuggestion: true },
-          )
+        : runExitText(() => {
+            const sectionOpts = {
+              ...(opts.json === true ? { json: true } : {}),
+              ...(maxLines !== undefined ? { maxLines } : {}),
+              ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+            }
+            // Words a shell split out of one unquoted heading are not several specs: that shape keeps the note that says how to quote it.
+            if (more.length > 0 && !extraArgsRejoinSpacedPath(spec, more, 'spec')) return runSectionSpecs([spec, ...more], sectionOpts)
+            return noteExtraFileArgs('section', spec, more, () => runSection({ spec, ...sectionOpts }), { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) })
+          }, { echoSuggestion: true })
     })
 
   program

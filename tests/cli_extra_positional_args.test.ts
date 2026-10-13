@@ -88,7 +88,6 @@ describe('extra positional arguments are reported, never dropped in silence', ()
     { name: 'imports', argv: () => ['imports', fileA, fileB], noun: 'file', dropped: () => fileB, mergedSuggestion: true },
     { name: 'read', argv: () => ['read', `${fileA}::alpha`, `${fileB}::beta`], noun: 'spec', dropped: () => `${fileB}::beta`, mergedSuggestion: true },
     { name: 'brief', argv: () => ['brief', `${fileA}::alpha`, `${fileB}::beta`], noun: 'spec', dropped: () => `${fileB}::beta`, mergedSuggestion: true },
-    { name: 'section', argv: () => ['section', `${docA}::Heading A`, `${docB}::Heading B`], noun: 'spec', dropped: () => `${docB}::Heading B`, mergedSuggestion: true },
     { name: 'refs', argv: () => ['refs', `${fileA}::alpha`, `${fileB}::beta`], noun: 'spec', dropped: () => `${fileB}::beta`, mergedSuggestion: true },
     { name: 'symbol', argv: () => ['symbol', 'alpha', 'beta'], noun: 'spec', dropped: () => 'beta', mergedSuggestion: false },
     { name: 'section --list', argv: () => ['section', '--list', docA, docB], noun: 'file', dropped: () => docB, mergedSuggestion: false },
@@ -138,12 +137,11 @@ describe('extra positional arguments are reported, never dropped in silence', ()
     expect(named).toEqual([`${fileA}::alpha,${fileB}::beta`])
   })
 
-  it('runs every comma form brief, refs and section name', async () => {
+  it('runs every comma form brief and refs name', async () => {
     const named: string[] = []
     for (const [command, first, second] of [
       ['brief', `${fileA}::alpha`, `${fileB}::beta`],
       ['refs', `${refA}::gamma`, `${refB}::delta`],
-      ['section', `${docA}::Heading A`, `${docB}::Heading B`],
     ] as const) {
       // Positive control: without this, an unindexed fixture would exit 1 for every shape and the assertion below would hold for a reason that has nothing to do with the note.
       await runCli([command, first])
@@ -156,22 +154,38 @@ describe('extra positional arguments are reported, never dropped in silence', ()
       await runCli([command, suggested![1]!])
       expect(lastExitCode, `${command} note named a spec that does not run: ${suggested![1]!}`).toBe(0)
     }
-    expect(named).toHaveLength(3)
+    expect(named).toHaveLength(2)
   })
 
-  it('names no comma form for the shapes brief, refs and section do not merge', async () => {
+  it('names no comma form for the shapes brief and refs do not merge', async () => {
     for (const [command, first, second] of [
       ['brief', `${fileA}:1`, `${fileB}:1`],
       ['refs', `${refA}:1`, `${refB}:1`],
-      ['section', docA, docB],
     ] as const) {
       const output = await runCli([command, first, second])
       expect(output).toContain(`Run ${command} once per spec.`)
       expect(output).not.toContain(`token-goat ${command} "`)
-      // Why it cannot be named: none of the three reaches a multi-spec path for these shapes.
+      // Why it cannot be named: neither reaches a multi-spec path for these shapes.
       await runCli([command, `${first},${second}`])
       expect(lastExitCode, `${command} unexpectedly served ${first},${second}`).toBe(1)
     }
+  })
+
+  // section is the one spec command that no longer notes its extra specs: it reads them all. Agents spawned one `section` per heading because only the first was read.
+  it('section reads every spec it is given, as its comma form does, with no note', async () => {
+    const output = await runCli(['section', `${docA}::Heading A`, `${docB}::Heading B`])
+    expect(lastExitCode).toBe(0)
+    expect(output).toContain('body a')
+    expect(output).toContain('body b')
+    expect(output).not.toContain(' ignored (')
+  })
+
+  it('section runs specs that do not merge one after another instead of noting them', async () => {
+    const output = await runCli(['section', docA, `${docB}::Heading B`])
+    expect(lastExitCode).toBe(0)
+    expect(output).toContain('Invalid section spec')
+    expect(output).toContain('body b')
+    expect(output).not.toContain('Run section once per spec.')
   })
 
   it('names no comma form for line specs, which read does not merge', async () => {

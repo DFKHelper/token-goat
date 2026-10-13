@@ -325,6 +325,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(grepMiss.status, grepMiss.stderr).toBe(0)
     expect(grepMiss.stdout).toContain('filtered out by --grep zzznomatch')
     expect(grepMiss.stdout).not.toContain('Run npm install')
+    // Several specs are all read, as their comma form is, rather than all but the first being noted as ignored.
+    const twoSpecs = run(['section', 'README.md::Fixture', 'README.md::Install'])
+    expect(twoSpecs.status, twoSpecs.stderr).toBe(0)
+    expect(twoSpecs.stdout).toContain('# Fixture — ')
+    expect(twoSpecs.stdout).toContain('already included in section')
+    expect(twoSpecs.stdout + twoSpecs.stderr).not.toContain('ignored')
   },
   // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this shared fixture is indexed with embeddings disabled (isolate-home.ts sets TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, and tgEnv inherits it), so this case only exercises the FTS keyword fallback and would pass identically whether or not real semantic search is wired up - it is not a substitute for that proof. The dedicated proof - a meaning-only natural-language query finding a symbol whose name/body never uses the query's words, with a control run showing the same query genuinely misses under FTS alone - lives in tests/semantic_embeddings_e2e.test.ts.
   semantic: () => {

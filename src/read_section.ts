@@ -6,7 +6,7 @@ import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
 import { displaySafeJson } from './paths.js'
 import { guardText, healStaleIndex, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
-import { stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
+import { namedSpecsMergeable, stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
 import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
 import { listSections, readSection, type SectionResult } from './section_reader.js'
 import { compileGrepMatcher, countNoun } from './util.js'
@@ -322,4 +322,26 @@ export function runSectionCrossFile(pairs: { file: string; symbol: string }[], o
     recordReadStat('section_read', fullSourceBytes, text, opts.spec)
   }
   return { text, code: anyFound ? 0 : 1 }
+}
+
+/** `section a b ...`, several positional specs in one call. Only the first used to be read, behind a note that the rest were ignored, so agents spawned one `section` per heading (14 spawns across three recorded commands, about 1-2 s each). Specs that each name a heading are served exactly as their comma form `a,b` is, by {@link runSectionCrossFile}, but paired from the specs themselves rather than from a comma-joined string, so a heading holding a comma stays one heading. Otherwise each spec runs in turn, one block per spec, and the call succeeds when any of them does, as the comma form's does. */
+export function runSectionSpecs(specs: string[], opts: Omit<SectionOptions, 'spec'>): { text: string; code: number } {
+  const joined = specs.join(',')
+  if (namedSpecsMergeable(specs)) {
+    const pairs = specs.map((spec) => {
+      const idx = findSectionSeparator(spec, opts.projectRoot)
+      return { file: spec.slice(0, idx), symbol: spec.slice(idx + 2) }
+    })
+    return runSectionCrossFile(pairs, { ...opts, spec: joined })
+  }
+  let anyFound = false
+  const jsonOut: Record<string, unknown> = {}
+  const textBlocks: string[] = []
+  for (const spec of specs) {
+    const sub = runSection({ ...opts, spec })
+    if (sub.code === 0) anyFound = true
+    if (opts.json === true) jsonOut[spec] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
+    else textBlocks.push(`${spec}:\n${sub.text}`)
+  }
+  return { text: opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n'), code: anyFound ? 0 : 1 }
 }
