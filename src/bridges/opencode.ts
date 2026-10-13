@@ -63,10 +63,10 @@ function mcpToolName(tool, args) {
   return sep > 0 ? "mcp__" + tool.slice(0, sep) + "__" + tool.slice(sep + 1) : "mcp__" + tool
 }
 
-// The content blocks of an MCP tool result, or undefined for anything else. opencode passes tool.execute.after the MCP CallToolResult itself for an MCP tool (session/tools.ts, v1.18.16) and builds the model's text from its content array only after the hook returns, so content is the one field a rewrite has to land in; it carries no output string, which is what tells it apart from a built-in or plugin tool.
+// The content blocks of an MCP tool result, or undefined for anything else. opencode passes tool.execute.after the MCP CallToolResult itself for an MCP tool (session/tools.ts, v1.18.16 and v1.19.0) and builds the model's text from its content array only after the hook returns, so content is the one field a rewrite has to land in. A content array is what marks the result, whether or not an output string sits beside it: a built-in or plugin tool's result carries none, and requiring the string to be absent meant an opencode that set both would hand the MCP text to the model with no fence at all.
 function mcpResultBlocks(tool, output) {
   if (TOOL_TO_TG[tool] || MCP_RESOURCE_TOOLS.has(tool)) return undefined
-  return output && Array.isArray(output.content) && typeof output.output !== "string" ? output.content : undefined
+  return output && Array.isArray(output.content) ? output.content : undefined
 }
 
 // Mirrors isTextualContentBlock (src/hooks_common.ts): a block whose every word is already in the text token-goat fenced. Kept beside the rewrite would hand the model an unfenced, unredacted copy; anything else (an image, a blob-only resource) is a payload no string replaces, so it stays.
@@ -169,7 +169,8 @@ export const TokenGoatPlugin = async ({ directory }) => {
       const updatedToolOutput = hso && typeof hso.updatedToolOutput === "string" ? hso.updatedToolOutput : undefined
       if (updatedToolOutput !== undefined) {
         if (mcpBlocks) output.content = [{ type: "text", text: updatedToolOutput }, ...mcpBlocks.filter((b) => !isTextualBlock(b))]
-        else output.output = updatedToolOutput
+        // An MCP result that also carries an output string gets the same rewrite there: whichever of the two fields an opencode version renders, neither holds the server's text unfenced.
+        if (!mcpBlocks || typeof output.output === "string") output.output = updatedToolOutput
         return
       }
 
