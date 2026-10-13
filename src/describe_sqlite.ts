@@ -2,7 +2,7 @@
 
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
 import { echoedValue } from './hint_suggestion_guard.js'
-import { fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
+import { fenceFileJsonStrings } from './untrusted_fence.js'
 
 /** What `describe <db file> [table]` prints, or undefined when `absPath` is not a SQLite database. A failure while reading it is the exit-1 result, not an exception. */
 export async function describeSqliteFile(target: string, absPath: string, table: string | undefined, json: boolean): Promise<{ exitCode: number; text: string } | undefined> {
@@ -19,7 +19,7 @@ export async function describeSqliteFile(target: string, absPath: string, table:
           return { exitCode: 1, text: `Table ${echoedValue(table)} not found in SQLite database ${displaySafePath(target)}. Available tables: ${avail}` }
         }
         if (json === true) {
-          return { exitCode: 0, text: fenceCap.capListField(found, 'columns', (o) => displaySafeJson(fenceJsonStrings(o, fenceFileFieldIfMatched))) }
+          return { exitCode: 0, text: fenceCap.capListField(found, 'columns', (o) => displaySafeJson(fenceFileJsonStrings(o))) }
         }
         const lines = [
           `# SQLite Table: ${displaySafeText(found.name)} (${displaySafeText(found.kind)}) in ${displaySafePath(target)}`,
@@ -36,7 +36,7 @@ export async function describeSqliteFile(target: string, absPath: string, table:
         return { exitCode: 0, text: capAndFence(lines.join('\n')) }
       }
       if (json === true) {
-        return { exitCode: 0, text: fenceCap.capListField(schema, 'tables', (o) => displaySafeJson(fenceJsonStrings(o, fenceFileFieldIfMatched))) }
+        return { exitCode: 0, text: fenceCap.capListField(schema, 'tables', (o) => displaySafeJson(fenceFileJsonStrings(o))) }
       }
       return { exitCode: 0, text: capAndFence(formatSqliteSchema(schema)) }
     }

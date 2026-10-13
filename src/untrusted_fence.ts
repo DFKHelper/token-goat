@@ -1,15 +1,15 @@
 /** The single decision point for "should this text be fenced, and under what notice". Every surface that emits third-party text routes through here so the rule lives in one place. It previously lived, restated, in eight separate call sites -- and all eight got it wrong the same way: each gated the fence on `scanForInjectionPatterns` returning a hit, so any payload the eight deliberately-narrow patterns miss was emitted bare. That is the shape CLAUDE.arch.md's Security Boundaries prohibits: a fence gated on a detector re-prices the payload, because a miss then costs the whole protection rather than just the label. The rule, stated once: - `injection.enabled === false` is the documented one-line opt-out for the whole subsystem, so it returns the text untouched. That is a user's explicit configuration, not a heuristic -- the invariant is "not gated on a detector", not "not gated on anything". It also stays the escape hatch for a downstream consumer that cannot handle fence tags. - Otherwise the text is fenced, always. The scan runs only to decide whether the notice names matched pattern(s) and whether an `injection_detected` stat is recorded. - An unreadable config must not cost the fence: it falls back to enabled, with no scan. Failing open on the security action is the wrong direction, and this mirrors `fenceOcrText`, the one site in the codebase that already had this shape before the rest were brought into line. */
-import { loadConfig } from './config.js'
+import { loadConfig, type Config } from './config.js'
 import { fenceUntrustedContent, scanForInjectionPatterns, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import type { FenceSpan } from './injection_scan.js'
 import { displaySafeText } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
 import { recordStat } from './stats.js'
 
-/** Whether the injection subsystem is on. False only when the user set `injection.enabled=false`. */
-export function injectionFencingEnabled(): boolean {
+/** Whether the injection subsystem is on. False only when the user set `injection.enabled=false`. `config` is one a caller already read, to skip reading it again. */
+export function injectionFencingEnabled(config?: Config): boolean {
   try {
-    return loadConfig().injection.enabled
+    return (config ?? loadConfig()).injection.enabled
   } catch {
     // An unreadable config must not silently disable a security boundary.
     return true
@@ -37,9 +37,9 @@ export function fenceWithMatches(text: string, matches: readonly string[], tag?:
     : fenceUntrustedContent(text, matches, tag)
 }
 
-/** The scan half on its own, for the hook handlers that need the matches before choosing a return shape (pass through, redact-only, or fence). Returns `[]` when the subsystem is switched off, so a caller that gates its own fence on {@link injectionFencingEnabled} sees no matches either way. */
-export function scanAndRecord(text: string): string[] {
-  if (!injectionFencingEnabled()) return []
+/** The scan half on its own, for the hook handlers that need the matches before choosing a return shape (pass through, redact-only, or fence). Returns `[]` when the subsystem is switched off, so a caller that gates its own fence on {@link injectionFencingEnabled} sees no matches either way. `enabled` is that switch, passed in by a caller that read the config once for many strings. */
+export function scanAndRecord(text: string, enabled: boolean = injectionFencingEnabled()): string[] {
+  if (!enabled) return []
   let matches: string[]
   try {
     matches = scanForInjectionPatterns(text)
@@ -56,16 +56,16 @@ export function fenceFileText(text: string): string {
 }
 
 /** `text` fenced under `tag` when the scan flags it, else `text` as given: the per-field gate a `--json` envelope uses, since a fence around a whole envelope would stop it being JSON. The caller redacts first when its text was not redacted upstream. */
-export function fenceIfScanMatched(text: string, tag: string): string {
-  const matches = scanAndRecord(text)
+export function fenceIfScanMatched(text: string, tag: string, enabled?: boolean): string {
+  const matches = scanAndRecord(text, enabled)
   if (matches.length === 0) return text
   return fenceUntrustedContent(text, matches, tag)
 }
 
 /** One string of a `--json` envelope from a source the user named rather than wrote: redacted, then fenced under `tag` only when the scan flags it, and escaped for display when it does not. */
-export function fenceFieldIfMatched(text: string, tag: string): string {
-  const redacted = redactSecrets(text).text
-  const fenced = fenceIfScanMatched(redacted, tag)
+export function fenceFieldIfMatched(text: string, tag: string, config: Config = loadConfig()): string {
+  const redacted = redactSecrets(text, config).text
+  const fenced = fenceIfScanMatched(redacted, tag, injectionFencingEnabled(config))
   return fenced === redacted ? displaySafeText(redacted) : fenced
 }
 
@@ -82,4 +82,10 @@ export function fenceJsonStrings(value: unknown, field: (text: string) => string
   // A value that serializes itself (a Date) is left to do so, as displaySafeJson leaves it.
   if (typeof (value as { toJSON?: unknown }).toJSON === 'function') return value
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [field(k), fenceJsonStrings(v, field)]))
+}
+
+/** {@link fenceJsonStrings} with {@link fenceFileFieldIfMatched} on every string, the config read once for the whole envelope. loadConfig re-reads both config files and the config env vars on every call, and the per-string form calls it twice per string, so a 401-table `sqlite-schema --json` spent 30 s there, once more for each size the overflow cap tried. */
+export function fenceFileJsonStrings(value: unknown): unknown {
+  const config = loadConfig()
+  return fenceJsonStrings(value, (text) => fenceFieldIfMatched(text, UNTRUSTED_FILE_TAG, config))
 }
