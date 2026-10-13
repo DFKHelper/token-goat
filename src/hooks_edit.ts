@@ -1,4 +1,4 @@
-/** post_tool_use edit hooks (Write / Edit / MultiEdit / NotebookEdit). Ports `hooks_edit.py::post_edit`: after a successful edit, record every file it touched in the session cache and append each to the dirty queue so the background indexer (Layer 7) reindexes only what changed. Never blocks an edit -- returns `context` for a single edited markdown file (with a section hint) or `pass` otherwise. The dirty-queue path and write logic live in `hooks_index.ts` ({@link appendDirtyPath}) so this writer and the queue drainer share one definition. */
+/** post_tool_use edit hooks (Write / Edit / MultiEdit / NotebookEdit). Ports `hooks_edit.py::post_edit`: after a successful edit, record every file it touched in the session cache and append each to the dirty queue so the background indexer (Layer 7) reindexes only what changed. Never blocks an edit -- returns `context` for a single Edit of a large markdown file (with a section hint) or `pass` otherwise. The dirty-queue path and write logic live in `hooks_index.ts` ({@link appendDirtyPath}) so this writer and the queue drainer share one definition. */
 
 import * as path from 'node:path'
 import { statSync } from 'node:fs'
@@ -23,13 +23,14 @@ import { compactPathFor, markCompactStale } from './doc_compact.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
 import type { HookOutput } from './types.js'
 
-/** post_tool_use handler for Write/Edit/MultiEdit/NotebookEdit. Records each edited file in the session cache and enqueues its absolute path for reindexing. A missing path (malformed payload: no `file_paths`, and no `file_path` for Write/Edit or `notebook_path` for NotebookEdit) is tolerated, and the call passes through without touching the queue. Returns a context hint for markdown/rst files suggesting the token-goat section command for re-reading. */
+/** post_tool_use handler for Write/Edit/MultiEdit/NotebookEdit. Records each edited file in the session cache and enqueues its absolute path for reindexing. A missing path (malformed payload: no `file_paths`, and no `file_path` for Write/Edit or `notebook_path` for NotebookEdit) is tolerated, and the call passes through without touching the queue. Returns a context hint suggesting the token-goat section command for re-reading, for an Edit (never a Write) of a markdown/rst file large enough that a whole re-read would be costly. */
 function postEditHandlerInner(event: HookEvent): HookOutput {
   const filePaths = getFilePaths(event)
   if (filePaths.length === 0) return passOutput()
   // One call can edit several files (VS Code's multi_replace_string_in_file and apply_patch arrive with `file_paths`), and every one of them has to reach the dirty queue, or the files after the first stay stale in the index until something else touches them. The section hint below names one file, so it fires only for a single-file edit.
   const normalizedPaths = filePaths.map((p) => recordEditedFile(event, p))
-  if (normalizedPaths.length !== 1) return passOutput()
+  // A Write supplies every line of the file, and Claude Code already tells the model the file state is current, so there is nothing a re-read could recover: 32 post-Write hints in the recorded corpus, none followed.
+  if (normalizedPaths.length !== 1 || event.toolName === 'Write') return passOutput()
   const normalized = normalizedPaths[0]!
   return markdownSectionHint(event, normalized)
 }
@@ -73,7 +74,7 @@ function recordEditedFile(event: HookEvent, filePath: string): string {
   return normalized
 }
 
-/** The `token-goat section` re-read hint for an edited markdown/rst file, or pass for any other file. */
+/** The `token-goat section` re-read hint for an edited markdown/rst file at or over `hints.reread_deny_min_bytes`, or pass for any other file. */
 function markdownSectionHint(event: HookEvent, normalized: string): HookOutput {
   const editedBasename = path.basename(normalized)
   if (/\.(md|mdx|markdown|rst)$/i.test(editedBasename)) {
@@ -87,7 +88,8 @@ function markdownSectionHint(event: HookEvent, normalized: string): HookOutput {
     // Once per file per compaction epoch: the hint names the same command every time the same file is edited, so a second copy tells the model nothing the first did not while the first is still in context (one session carried the CHANGELOG.md hint 17 times). A compaction takes the earlier copy out of context, so the epoch is part of the key.
     const repeatKey = `edit-section-hint:${normalized}:${getCompactedAt()}`
     if (wasHintShown(repeatKey)) return passOutput()
-    if (!meetsSavingsFloor(editedSize)) {
+    // The only thing the hint can save is a whole-file re-read, so it speaks only where token-goat already judges a re-read costly enough to step in: the size the re-read deny acts on (hints.reread_deny_min_bytes).
+    if (editedSize < loadConfig().hints.reread_deny_min_bytes || !meetsSavingsFloor(editedSize)) {
       // The file was edited, it is markdown, and a `section` hint was composable from it, so price is the only thing that stopped this one -- the same decision declineUnpriced records for bash redirects, in the category that emits more hints than any other and had never recorded a refusal.
       logSuppressedDetection('edit_reread_suggest', event.sessionId, normalized)
     } else {

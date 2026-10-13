@@ -1017,11 +1017,12 @@ describe('acted-on polarity for suppression-shaped hints', () => {
     expect(row?.acted_on, 'not re-reading the file is the compliance this hint asked for').toBe(1)
   })
 
-  it('credits an edit re-read suggestion the same way', () => {
+  it('does not credit an edit re-read suggestion on silence: it names a section command, so running it is the proof', () => {
+    // Scored on absence it read 50 recorded post-edit hints, none followed, as 50 successes, so suppression could never retire it.
     const n = nonce()
     logHintEmission('edit_reread_suggest', n, 'C:/repo/docs/guide.md')
     idleOut(n)
-    expect(rowFor(n)?.acted_on).toBe(1)
+    expect(rowFor(n)?.acted_on).toBe(0)
   })
 
   // Regression: read_structural_nav is worded exactly like read_reread_dedup ("use structural navigation instead of a future full re-read"), but was measured with the redirect-category presence test until now, so a session that never re-read the file (the compliance the hint actually asked for) still booked acted_on=0 and drove the category toward auto-suppression.

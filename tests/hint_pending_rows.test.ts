@@ -23,7 +23,7 @@ const SUPPRESS_THRESHOLD_PCT = 15
 /** A redirect category: it asks the agent to run a named command, and only that counts. */
 const REDIRECT: HintCategory = 'bash_redirect'
 /** A suppression category: inverted polarity, an expiring window counts as compliance. */
-const SUPPRESSION: HintCategory = 'edit_reread_suggest'
+const SUPPRESSION: HintCategory = 'read_reread_dedup'
 
 fs.mkdirSync(path.dirname(configPath()), { recursive: true })
 

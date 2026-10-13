@@ -331,8 +331,9 @@ const SITES: Site[] = [
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {
-      const p = write(uniq('edited') + '.md', doc(headings))
-      const out = postEditHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Write', toolInput: { file_path: p }, sessionId: uniq('edit') }))
+      // An Edit, padded past hints.reread_deny_min_bytes: a Write, or an Edit of a smaller file, draws no hint at all.
+      const p = write(uniq('edited') + '.md', doc(headings, 9000))
+      const out = postEditHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Edit', toolInput: { file_path: p }, sessionId: uniq('edit') }))
       if (out.hookType !== 'context') throw new Error('expected context, got ' + out.hookType)
       return out.context
     },

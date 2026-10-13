@@ -243,10 +243,9 @@ function commandMentionsCorrelator(command: string, correlator: string): boolean
   return false
 }
 
-/** Categories whose hint asks the agent NOT to do something ("you already read this file, recall it instead of re-reading"). Compliance with one of these is an *absence*: the agent reads nothing and moves on, so there is no command to observe. The redirect categories are the opposite -- they name a cheaper command to run instead, and running it is the observable proof. Measuring these with the same presence test made them structurally unable to score: every row resolved `acted_on = 0` no matter how well the hint worked, efficacy sat at exactly 0%, and `shouldSuppress` muted the category for good once `min_sample_size` rows had accrued. So the hints that save the most -- the ones that stop a whole re-read -- were the first to turn themselves off, on evidence that could not exist. Polarity is therefore inverted for these: assume compliance, and count only observed defiance against them. */
+/** Categories whose hint asks the agent NOT to do something ("you already read this file, recall it instead of re-reading"). Compliance with one of these is an *absence*: the agent reads nothing and moves on, so there is no command to observe. The redirect categories are the opposite -- they name a cheaper command to run instead, and running it is the observable proof. Measuring these with the same presence test made them structurally unable to score: every row resolved `acted_on = 0` no matter how well the hint worked, efficacy sat at exactly 0%, and `shouldSuppress` muted the category for good once `min_sample_size` rows had accrued. So the hints that save the most -- the ones that stop a whole re-read -- were the first to turn themselves off, on evidence that could not exist. Polarity is therefore inverted for these: assume compliance, and count only observed defiance against them. `edit_reread_suggest` is not one of them, though it once was: its text names a `section` command to run, so running it is the proof, and booking every silence as compliance read the 50 recorded post-edit hints, none of them followed, as 50 successes the suppression could never retire. */
 const SUPPRESSION_HINT_CATEGORIES: ReadonlySet<HintCategory> = new Set<HintCategory>([
   'read_reread_dedup',
-  'edit_reread_suggest',
   'read_structural_nav',
 ])
 

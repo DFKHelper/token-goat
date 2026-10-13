@@ -327,7 +327,7 @@ bash_redirect         42 +3         -            9         21.4%       no       
 bash_recall           18            -            15        83.3%       no               0        0        1080
 read_reread_dedup     11            -            2         18.2% *     no               0        0        660
 read_structural_nav   7             3            1         14.3% *     yes              0        1        420
-edit_reread_suggest   3             -            0         0% *        no               0        0        180
+edit_reread_suggest   3             -            0         0%          no               0        0        180
 read_batch            6             -            4         66.7%       no               0        0        900
 search_brake          2             -            1         50.0%       no               0        0        330
 grep_dedup_hint       0 ~4          -            0         n/a         no               0        0        240
