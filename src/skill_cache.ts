@@ -12,7 +12,7 @@ import { DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 import { redactSecrets } from './secret_redact.js'
 import { recordStat } from './stats.js'
 
-const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
+export const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
 
 // The 'skills' subdir name, exported so prune-cache/clean-cache (cache_session_commands.ts) can include it in their managed-subdirs list. Unlike the other cache subdirs, entries here are plain .txt/.meta/.hits/@compact files rather than disk_cache.ts's JSON blob envelope, so eviction is handled by this module's own pruneSkillOutputs rather than the generic pruneBlobs.
 export const SKILLS_OUTPUT_SUBDIR = 'skills'
@@ -195,6 +195,13 @@ function collectSectionBody(lines: string[], startIdx: number, matchedLevel: num
     bodyLines.push(lines[j]!)
   }
   return bodyLines
+}
+
+/** {@link extractCompactFromMarker}'s slice, only when it is at most half the body. A marker placed near the end cuts a "slice" that is nearly the whole skill (humanizer's is 97.6% of it), so recalling it as compact hands over almost every byte while reading as a saving. The Skill hook's cold-load inline gate has always required this ratio; `skill-body --compact` and every deny that names it now require the same one, so no command is advertised for a slice it would not serve. */
+export function usableCompactSlice(body: string): string | null {
+  const compact = extractCompactFromMarker(body)
+  if (compact === null) return null
+  return Buffer.byteLength(compact, 'utf-8') * 2 <= Buffer.byteLength(body, 'utf-8') ? compact : null
 }
 
 export function extractCompactFromMarker(body: string): string | null {

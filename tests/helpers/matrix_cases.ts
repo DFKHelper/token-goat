@@ -2163,6 +2163,16 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status).not.toBe(0)
     expect((r.stdout + r.stderr).length).toBeGreaterThan(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    // A skill with no compact slice used to come back whole from --compact; it now gets its heading tree and a stderr note.
+    const skillDir = path.join(homeBase, '.claude', 'skills', 'tgmatrixskill')
+    fs.mkdirSync(skillDir, { recursive: true })
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `# Matrix Skill\n\n${Array.from({ length: 8 }, (_, i) => `## Part ${i}\n\n${'w'.repeat(900)}`).join('\n\n')}\n`)
+    const compact = run(['skill-body', 'tgmatrixskill', '--compact'])
+    expect(compact.status, compact.stderr).toBe(0)
+    expect(compact.stdout).toContain('## Part 7')
+    expect(compact.stdout).toContain('token-goat skill-section "tgmatrixskill" "Part 0"')
+    expect(compact.stdout).not.toContain('w'.repeat(900))
+    expect(compact.stderr).toContain('no compact slice')
   },
   'skill-compact': () => {
     const r = run(['skill-compact', 'no-such-skill'])
