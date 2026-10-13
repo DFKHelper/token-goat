@@ -30,7 +30,7 @@ function sliceToGuardTokens(text: string, tokens: number, dense: boolean): strin
   return safeSlice(text, end)
 }
 
-/** The longest prefix of `text` that {@link estimateTokens} prices at `maxTokens` or fewer, never splitting a surrogate pair, and `text` itself when it already fits; found by searching the prefix length against the estimator itself, so the cut agrees with the check at the exact edge. */
+/** Adds no cut note, so it is for text the model is handed as a briefing, never for a result a read command serves (those go through trimToBudget or the JSON caps, which isCappedOutput recognises). The longest prefix of `text` that {@link estimateTokens} prices at `maxTokens` or fewer, never splitting a surrogate pair, and `text` itself when it already fits; found by searching the prefix length against the estimator itself, so the cut agrees with the check at the exact edge. */
 export function sliceToEstimatedTokens(text: string, maxTokens: number): string {
   if (estimateTokens(text) <= maxTokens) return text
   let lo = 0
@@ -46,9 +46,12 @@ export function sliceToEstimatedTokens(text: string, maxTokens: number): string 
 /** The opening of the note {@link trimToBudget} ends a cut result with, shared so a reader can tell a capped result from a whole one. */
 const CAP_MARKER_PREFIX = '[token-goat: output capped at ~'
 
-/** Whether `text` ends in (or at least carries) the note {@link trimToBudget} adds to a result it cut. Text that merely quotes the note reads as capped too, which errs toward counting less as seen. */
+/** The flag a `--json` listing carries when {@link capJsonRows} or `capListField` dropped trailing items: valid JSON has no room for the note, so the cut says so in the `truncated` field instead. */
+const JSON_CUT_FLAG = /"truncated"\s*:\s*true\b/
+
+/** Whether `text` carries the note {@link trimToBudget} adds to a result it cut, or the `"truncated": true` flag of a `--json` listing cut by {@link capJsonRows} or `capListField`. Text that merely quotes either reads as capped too, which errs toward counting less as seen. */
 export function isCappedOutput(text: string): boolean {
-  return text.includes(CAP_MARKER_PREFIX)
+  return text.includes(CAP_MARKER_PREFIX) || JSON_CUT_FLAG.test(text)
 }
 
 /** Trim text to fit within a token budget, keeping leading lines. Preserves as many leading whole lines as fit within the budget, appending a marker line that explains the cap and suggests remediation. @param text The text to trim. @param budgetTokens The maximum allowed tokens. @param command Optional command label for tailored hint text. @param opts.reserveTokens Tokens of the budget a caller will spend around the result (a fence's tags and notice), kept out of both the entry check and the body; the marker still names `budgetTokens`. @returns Trimmed text with marker, or original text if within budget. */
