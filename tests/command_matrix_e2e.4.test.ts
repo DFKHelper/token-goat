@@ -108,7 +108,8 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
     const context = out.hookSpecificOutput?.additionalContext ?? ''
     // Either path is acceptable (see comment above); a crash, a hang, or an empty/pass-through response with neither marker is not.
     const gotOcrText = context.includes("OCR'd")
-    const gotShrunkImage = /data:image\/(jpeg|webp);base64,/.test(context)
+    // The pure-TypeScript engine keeps whichever of its JPEG and PNG encodes is smaller and never writes WebP (image_shrink.ts); white text on black is the case PNG wins.
+    const gotShrunkImage = /data:image\/(jpeg|png);base64,/.test(context)
     expect(gotOcrText || gotShrunkImage, `unexpected context output: ${context.slice(0, 200)}`).toBe(true)
   }, 30000)
 })
