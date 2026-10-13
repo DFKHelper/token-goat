@@ -211,7 +211,8 @@ describe('a repeated identical deny, through the real relay', () => {
   })
 
   it('gives the second copy as the command and one line, and the first copy in full', async () => {
-    write('guide.md', doc(REAL, 200))
+    // Past the size `cat` passes under, so the call is refused at all.
+    write('guide.md', doc(REAL, 4000))
     const session = uniq('repeat')
     const first = denyOf(await relayInProcess('pre_tool_use', catPre(session, 'guide.md')))
     const second = denyOf(await relayInProcess('pre_tool_use', catPre(session, 'guide.md')))
@@ -262,11 +263,12 @@ const SITES: Site[] = [
   {
     name: 'hooks_bash.ts cat deny',
     real: (h) => 'Run `token-goat section "guide.md::' + h + '"`',
-    fallback: 'Run `token-goat section "guide.md::SectionHeading"`',
+    fallback: 'Run `token-goat read "guide.md::1-80"`',
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {
-      write('guide.md', doc(headings))
+      // Past the size `cat` passes under, which the other sites' default padding is not.
+      write('guide.md', doc(headings, 4000))
       const out = preBashHandler(makeHookEvent({ toolName: 'Bash', toolInput: { command: 'cat guide.md' }, sessionId: uniq('bash'), raw: { cwd: dir } }))
       if (out.hookType !== 'deny') throw new Error('expected a deny, got ' + out.hookType)
       return out.message

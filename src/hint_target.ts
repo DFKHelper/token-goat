@@ -8,7 +8,7 @@ import { indexMatchesDisk } from './index_freshness.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
-import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
+import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint, configGetCommand, headLinesCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
@@ -280,12 +280,9 @@ export function sliceCommand(shownPath: string, target: HintTarget): string {
   }
 }
 
-/** Lines a {@link sectionOrRangeCommand} range read starts with when the file has no heading to name. */
-const NO_HEADING_RANGE_LINES = 80
-
 /** The command that reads one part of `shownPath` when the hint is about a section: `section` on `heading` when it is a real heading, else a read of the file's first lines. A file with no headings (`section` exits 1 on it, and `::HeadingName` is a name no file holds) still gets a command that runs. */
 export function sectionOrRangeCommand(shownPath: string, heading: HintTarget): string {
-  return heading.real ? sliceCommand(shownPath, heading) : 'token-goat read ' + quotedArg(shownPath + '::1-' + NO_HEADING_RANGE_LINES)
+  return heading.real ? sliceCommand(shownPath, heading) : headLinesCommand(shownPath)
 }
 
 /** Lock files whose bytes are a JSON or YAML document under an extension the format commands would not infer. */

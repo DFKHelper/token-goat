@@ -89,9 +89,25 @@ import {
   compressionOptedOut,
 } from './bash_extractors.js'
 import { countTextLines, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
+import { FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
 
 /** Token budget for an inline interpreter file read run under the wrapper: room for one registry entry or config block printed whole, well under a whole-file dump. */
 const INTERPRETER_READ_TOKEN_CAP = 2000
+
+/** The size below which the Read gate hands a file of each type a whole-file refusal covers over whole, from hints/file_type_handler.ts: its own entry for the types it dispatches, the plain-text one for prose and source, which that table leaves to gates that do not refuse a first read this size. */
+const READ_GATE_FLOOR_BYTES: Readonly<Record<string, number>> = {
+  json: FILE_TYPE_THRESHOLDS.json,
+  yaml: FILE_TYPE_THRESHOLDS.yaml,
+  yml: FILE_TYPE_THRESHOLDS.yaml,
+  xml: FILE_TYPE_THRESHOLDS.xml,
+  dtsx: FILE_TYPE_THRESHOLDS.dtsx,
+  ampkg: FILE_TYPE_THRESHOLDS.ampkg,
+  xaml: FILE_TYPE_THRESHOLDS.xaml,
+}
+
+function readGateFloorBytes(filePath: string): number {
+  return READ_GATE_FLOOR_BYTES[path.extname(filePath).slice(1).toLowerCase()] ?? FILE_TYPE_THRESHOLDS.txt
+}
 
 // Runs an inline interpreter file read under a token cap instead of refusing it. Many are projections, `json.load(open('r.json'))['118615']`, that print a few lines no token-goat command beats by a second round trip; refused, each cost the agent a retry and often a second refusal before it found a spelling the hook let through. A projection now passes whole, and a whole-file dump comes back capped with its recall id and the same surgical command the refusal named. The refusal stays wherever the wrapper cannot run: compression off, a pipeline or chain, a background `&`, a script past the command-line ceiling, VS Code. The hint passes the suggestion guard here because the relay only guards a refusal: printed after the capped output, a path that broke its quoting would reach the model unguarded.
 function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hint: string, denial: string): HookOutput {
@@ -244,6 +260,16 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     for (const p of typeof paths === 'string' ? [paths] : paths) logSuppressedDetection('bash_redirect', event.sessionId, p)
     return passOutput()
   }
+  // A whole-file dump of a file the Read gate would hand over whole is not refused: of eight measured `cat` refusals of 0.8-12.6 KB notes, six were followed by a Read or sed of the same file, a turn spent to arrive at the same bytes, and the command the refusal named was run none of the eight times. An .env file keeps the refusal at any size, as the Read gate refuses its re-read at any size: what it holds is better asked for one variable at a time. Stats the file, so it is gated like every other path this hook touches before the command is approved.
+  const underReadGateFloor = (hintPath: string, isEnv: boolean): boolean => {
+    if (isEnv || !commandPathIsTouchable(hintPath, event)) return false
+    try {
+      const st = statSync(hostPathOfTypedPath(hintPath, hintCwd))
+      return st.isFile() && st.size < readGateFloorBytes(hintPath)
+    } catch {
+      return false
+    }
+  }
   // The size half of the condition each of the five `token-goat bash-output <id>` recall branches below repeated, plus the decline record none of them kept: a candidate that clears the dedup minimum but fails the savings floor was refused on price, which is a decision and has to leave a trace for the same reason declineUnpriced does. Callers still test their own id and entry for null, both to keep TypeScript's narrowing inside the branch and because neither absence is this gate declining anything -- no cached output, or an entry too stale to offer, never reached a price comparison, and recording it would credit the gate with refusing work it never had. The correlator is the cache id, which is what classifyBashHint reads back out of a recall hint that did get shown, so the declined and shown rows key alike.
   const recallWorthShowing = (outputId: string, entry: { sizeBytes: number }): boolean => {
     if (entry.sizeBytes < loadConfig().hints.bash_dedup_min_bytes) return false
@@ -365,7 +391,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       dropFileLineRangesIfChanged(sedDedupKey)
       // A range from line 1 to the last line is `cat` spelled another way, and gets `cat`'s answer: pricing it against a surgical read of the same lines finds no saving, since that read is the whole file too, so `awk 'NR>=1 && NR<=324'` over a 324-line, 54KB skill passed with no word while `cat` of it was refused. Checked before the range is recorded, so a refusal does not count the lines as served.
       const whole = singleLineRangeRead === null ? null : wholeFileRange(filePath, hintPath, hintCwd, ranges, tool)
-      if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey), whole.start, whole.end) === null) {
+      if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey), whole.start, whole.end) === null && !underReadGateFloor(hintPath, whole.cat.isEnv)) {
         recordStat('session_hint', 0, 0)
         if (whole.cat.isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), whole.reason))
         const hint = surgicalHintFor(hintPath, whole.cat.isEnv, whole.cat.isConfig, whole.cat.isDoc, whole.cat.isXml, targetFor(hintPath, whole.cat.isEnv ? 'key' : undefined), whole.reason)
@@ -452,6 +478,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (catResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml, cmd0, advisoryOnly } = catResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    if (underReadGateFloor(hintPath, isEnv)) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     const reason = '`' + cmd0 + '` loads the entire file into context.'
     if (isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), reason))
@@ -460,13 +487,16 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return cdStripped || advisoryOnly ? pathHint(hintPath, hint) : denyOutput(hint)
   }
 
-  const catMulti = extractCatFilesMulti(cmd)
-  if (catMulti !== null) {
+  const catMultiAll = extractCatFilesMulti(cmd)
+  if (catMultiAll !== null) {
+    const shownOf = (filePath: string): string => displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    const catMulti = catMultiAll.filter((m) => !underReadGateFloor(shownOf(m.filePath), m.isEnv))
+    if (catMulti.length === 0) return declineUnpriced(catMultiAll.map((m) => shownOf(m.filePath)))
     recordStat('session_hint', 0, 0)
     const cmd0 = catMulti[0]!.cmd0
     // One command-led line per file, each carrying its own path, so the first thing in the message is a command that runs.
     const perPath = catMulti.map(({ filePath, isDoc, isEnv, isConfig, isSql, isXml }) => {
-      const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+      const hintPath = shownOf(filePath)
       return isSql
         ? sqlTableHint(hintPath, targetFor(hintPath, 'table'))
         : surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, targetFor(hintPath, isEnv ? 'key' : undefined))
@@ -479,6 +509,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (psGetContentResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = psGetContentResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    if (underReadGateFloor(hintPath, isEnv)) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context.'
     if (isSql) {
@@ -493,6 +524,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (wslCatResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = wslCatResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    if (underReadGateFloor(hintPath, isEnv)) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     const reason = '`cat` loads the entire file into context.'
     if (isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), reason))

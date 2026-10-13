@@ -965,7 +965,8 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat section')
+      // Not on disk, so no heading can be named: the deny leads with the read of the first lines, which needs none.
+      expect(result.message).toContain('token-goat read "/c/Projects/report.md::1-80"')
     }
   })
 
@@ -982,7 +983,7 @@ describe('preBashHandler — cat source file recall', () => {
 
   it('intercepts python heredoc that reads a markdown file', () => {
     const event = makeBashEvent("python3 - << 'PYEOF'\npath = 'C:/Projects/yeswehack/report-05/report.md'\nwith open(path, encoding='utf-8') as f: content = f.read()\nPYEOF")
-    expect(interceptedReadHint(preBashHandler(event))).toContain('token-goat section')
+    expect(interceptedReadHint(preBashHandler(event))).toContain('token-goat read "C:/Projects/yeswehack/report-05/report.md::1-80"')
   })
 
   it('does not false-positive on a command that merely contains the substring "python3" elsewhere', () => {
@@ -992,25 +993,25 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  // Neither env file is on disk, so no variable can be named and the deny leads with the read of the first lines, never `config-get "KEY_NAME"`, which exits 1.
   it('denies cat of a local.env file', () => {
     const result = preBashHandler(makeBashEvent('cat C:/Projects/myapp/local.env'))
     expectHookType(result, 'deny')
-    expect(result.message).toContain('config-get')
+    expect(result.message).toContain('token-goat read "C:/Projects/myapp/local.env::1-80"')
   })
 
   it('denies cat of a .env.local file', () => {
     const result = preBashHandler(makeBashEvent('cat /app/.env.local'))
     expectHookType(result, 'deny')
-    expect(result.message).toContain('config-get')
+    expect(result.message).toContain('token-goat read "/app/.env.local::1-80"')
   })
 
   it('emits advisory context for cat of a SQL migration file', () => {
     const result = preBashHandler(makeBashEvent('cat supabase/migrations/0001_init.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      // `read`, not `section`: `section` finds no headings in a .sql file and exits 1, while `read` returns the CREATE block the SQL adapter indexes by name.
-      expect(result.context).toContain('token-goat read "supabase/migrations/0001_init.sql::table_name"')
-      expect(result.context).toContain('CREATE TABLE')
+      // `read`, not `section`: `section` finds no headings in a .sql file and exits 1. With no table to name (the file is not on disk), `read "file::table_name"` exits 1 too, so the hint reads the first lines.
+      expect(result.context).toBe('Run `token-goat read "supabase/migrations/0001_init.sql::1-80"` to read its first 80 lines.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -1040,11 +1041,11 @@ describe('preBashHandler — cat source file recall', () => {
     },
   )
 
-  it('tail command on a SQL file suggests table_name, matching head\'s SQL hint', () => {
+  it('tail command on a SQL file gets the SQL hint, matching head\'s SQL hint', () => {
     const result = preBashHandler(makeBashEvent('tail -n 30 supabase/migrations/0001_init.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('table_name')
+      expect(result.context).toContain('token-goat read "supabase/migrations/0001_init.sql::1-80"')
       expect(result.context).not.toContain('SectionHeading')
     }
   })
@@ -1057,11 +1058,12 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
-  it('tail command on a TOML config file names a table through section, which config-get cannot read', () => {
+  it('tail command on a TOML config file with no table to name leads with the read of its first lines, never a placeholder table', () => {
     const result = preBashHandler(makeBashEvent('tail -n 30 src/config.toml'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section "src/config.toml::')
+      expect(result.context).toContain('token-goat read "src/config.toml::1-80"')
+      expect(result.context).not.toContain('SectionHeading')
     }
   })
 
@@ -1378,7 +1380,7 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "migrations/0001_init.sql::table_name"')
+      expect(result.context).toContain('token-goat read "migrations/0001_init.sql::1-80"')
     }
   })
 
@@ -2520,7 +2522,7 @@ describe('preBashHandler — awk line-range interception', () => {
   })
 })
 
-/** A line range from line 1 to the last line is `cat` spelled another way. Regression: pricing compared the range against a surgical read of the same lines, which is also the whole file, found no saving and declined, so `awk 'NR>=1 && NR<=324' SKILL.md` over the humanizer skill (324 lines, 53,931 bytes, the ~15.8k-token read named on a feedback card, measured 2026-09-24) passed with no word while `cat SKILL.md` was refused. Provenance: HAND-DERIVED. The fixture is a 40-line markdown file written here; the skill's line and byte counts are read off the file on disk. */
+/** A line range from line 1 to the last line is `cat` spelled another way. Regression: pricing compared the range against a surgical read of the same lines, which is also the whole file, found no saving and declined, so `awk 'NR>=1 && NR<=324' SKILL.md` over the humanizer skill (324 lines, 53,931 bytes, the ~15.8k-token read named on a feedback card, measured 2026-09-24) passed with no word while `cat SKILL.md` was refused. Provenance: HAND-DERIVED. The fixture is a 40-line markdown file written here, its lines padded past the size `cat` passes under; the skill's line and byte counts are read off the file on disk. */
 describe('preBashHandler — a line range spanning the whole file', () => {
   let doc: string
   const LINES = 40
@@ -2531,7 +2533,7 @@ describe('preBashHandler — a line range spanning the whole file', () => {
     mkdirSync(dir, { recursive: true })
     doc = join(dir, 'whole_range_skill.md').replace(/\\/g, '/')
     const body: string[] = []
-    for (let i = 0; body.length < LINES; i++) body.push(i % 10 === 0 ? `## Part ${i / 10 + 1}` : `Line ${i} of the fixture.`)
+    for (let i = 0; body.length < LINES; i++) body.push(i % 10 === 0 ? `## Part ${i / 10 + 1}` : `Line ${i} of the fixture. ${'Padding prose for the line. '.repeat(24)}`)
     writeFileSync(doc, body.join('\n') + '\n')
   })
 
@@ -3726,12 +3728,12 @@ describe('preBashHandler — SQL file cat hint', () => {
     clearModuleCaches()
   })
 
+  // Neither SQL file is on disk, so no table can be named and the hint reads the first lines; tests/bash_deny_names_a_runnable_target.test.ts covers the real-table form.
   it('emits context hint (not deny) for cat of a SQL schema file', () => {
     const result = preBashHandler(makeBashEvent('cat schema.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "schema.sql::table_name"')
-      expect(result.context).toContain('CREATE TABLE')
+      expect(result.context).toBe('Run `token-goat read "schema.sql::1-80"` to read its first 80 lines.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -3739,7 +3741,7 @@ describe('preBashHandler — SQL file cat hint', () => {
     const result = preBashHandler(makeBashEvent('cat migration.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "migration.sql::table_name"')
+      expect(result.context).toContain('token-goat read "migration.sql::1-80"')
     }
   })
 
@@ -3753,8 +3755,7 @@ describe('preBashHandler — SQL file cat hint', () => {
     const result = preBashHandler(makeBashEvent(`powershell -Command "Get-Content 'schema.sql'"`))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "schema.sql::table_name"')
-      expect(result.context).toContain('CREATE TABLE')
+      expect(result.context).toContain('token-goat read "schema.sql::1-80"')
     }
   })
 })
@@ -4899,7 +4900,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat docs/loop46_memory.md 2>/dev/null'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('Run `token-goat section "docs/loop46_memory.md::SectionHeading"` to read one section, or `token-goat outline "docs/loop46_memory.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
+      expect(result.context).toBe('Run `token-goat read "docs/loop46_memory.md::1-80"` to read its first 80 lines.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -4923,7 +4924,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat -n README_loop46.md 2>/dev/null | tail -60'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('Run `token-goat section "README_loop46.md::SectionHeading"` to read one section, or `token-goat outline "README_loop46.md"` for every heading with line ranges.\n`tail` bypasses read hooks.')
+      expect(result.context).toBe('Run `token-goat read "README_loop46.md::1-80"` to read its first 80 lines.\n`tail` bypasses read hooks.')
     }
   })
 
@@ -5129,7 +5130,7 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
     const result = preBashHandler(makeBashEvent(`[IO.File]::ReadAllText('schema.sql')`))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "schema.sql::table_name"')
+      expect(result.context).toContain('token-goat read "schema.sql::1-80"')
     }
   })
 
@@ -5141,12 +5142,13 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
     }
   })
 
-  // HAND-DERIVED: surgicalHintFor (src/bash_extractors.ts) points an isEnv read at `config-get ... KEY_NAME`, and every other file-read extractor's handler in preBashHandlerInner calls it with isEnv, so a .env read through this same handler must not fall through to the generic "SymbolName" hint a .env file has no symbols to satisfy.
-  it('denies a .NET .env file read with a config-get hint, not the generic symbol hint', () => {
+  // HAND-DERIVED: surgicalHintFor (src/bash_extractors.ts) gives an isEnv read the env ladder (`config-get` on a variable the file holds, else its first lines), and every other file-read extractor's handler in preBashHandlerInner calls it with isEnv, so a .env read through this same handler must not fall through to the generic "SymbolName" hint a .env file has no symbols to satisfy. No .env is on disk here, so there is no variable to name.
+  it('denies a .NET .env file read with the env hint, not the generic symbol hint', () => {
     const result = preBashHandler(makeBashEvent(`[System.IO.File]::ReadAllText('.env')`))
     expect(interceptedReadHint(result)).not.toBeNull()
-    expect(interceptedReadHint(result)).toContain('token-goat config-get ".env" "KEY_NAME"')
+    expect(interceptedReadHint(result)).toContain('token-goat read ".env::1-80"')
     expect(interceptedReadHint(result)).not.toContain('SymbolName')
+    expect(interceptedReadHint(result)).not.toContain('KEY_NAME')
   })
 })
 
@@ -5192,7 +5194,7 @@ describe('extractPythonFileRead — PowerShell here-string and multi-format supp
     const result = preBashHandler(makeBashEvent(cmd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "db/schema.sql::table_name"')
+      expect(result.context).toContain('token-goat read "db/schema.sql::1-80"')
     }
   })
 })

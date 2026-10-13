@@ -39,8 +39,9 @@ describe('a single-quoted path holding a double quote', () => {
     const reason = await relayedCatReason(p, 'dq')
     expect(reason).not.toContain('command omitted')
     const commands = fencedCommands(reason)
-    expect(commands).toEqual([`token-goat section 'docs/a"b.md::SectionHeading'`, `token-goat outline 'docs/a"b.md'`])
-    if (SH !== null) expect(shArgv(SH, commands[1]!)).toEqual(['outline', p])
+    // The file is not on disk, so no heading can be named and the deny leads with the read of its first lines.
+    expect(commands).toEqual([`token-goat read 'docs/a"b.md::1-80'`])
+    if (SH !== null) expect(shArgv(SH, commands[0]!)).toEqual(['read', p + '::1-80'])
   })
 
   it('keeps a $ the single quotes hold literal, beside the double quote that made the guard look', () => {

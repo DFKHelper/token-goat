@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { beforeEach, afterEach, describe, expect, it } from 'vitest'
 
 import { hintTarget, type HintTarget } from '../src/hint_target.js'
-import { surgicalHintFor } from '../src/bash_extractors.js'
+import { sqlTableHint, surgicalHintFor } from '../src/bash_extractors.js'
 import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { indexFileSync } from '../src/parser.js'
 import { globalDbPath, configPath } from '../src/constants.js'
@@ -136,10 +136,26 @@ describe('surgicalHintFor with a resolved target', () => {
     expect(hint).toBe('Run `token-goat section "doc.md::First Heading"` to read one section, or `token-goat outline "doc.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
   })
 
-  it('keeps the placeholder name when no target could be resolved', () => {
+  it('leads with a read of the first lines when no heading could be resolved, never the placeholder that fails', () => {
     const hint = surgicalHintFor('doc.md', false, false, true, false, none('section', 'SectionHeading'))
-    expect(hint).toBe('Run `token-goat section "doc.md::SectionHeading"` to read one section, or `token-goat outline "doc.md"` for every heading with line ranges.')
+    expect(hint).toBe('Run `token-goat read "doc.md::1-80"` to read its first 80 lines.')
     expect(PLACEHOLDER_SECTION_FAILS).toContain('not found')
+  })
+
+  // HAND-DERIVED: each of these used to lead with its slice's placeholder (`config-get ".env" "KEY_NAME"`, a grep for `<key>`, `section "conf.toml::SectionHeading"`, `read "s.sql::table_name"`, a grep for `<pattern>` on a .txt), and none of those runs as printed. Run against the built bundle in the describe below.
+  it.each([
+    ['an env file', '.env', true, false, false, none('key', 'KEY_NAME')],
+    ['a .properties file', 'app.properties', false, true, false, none('key', 'KEY_NAME')],
+    ['a TOML file', 'conf.toml', false, true, false, none('section', 'SectionHeading')],
+    ['a flat .conf file', 'app.conf', false, true, false, none('key', 'KEY_NAME')],
+    ['a .txt file, whatever heading was found', 'notes.txt', false, false, true, real('Install', 'section')],
+  ])('leads %s with no resolvable name with the read of its first lines', (_, file, isEnv, isConfig, isDoc, target) => {
+    expect(surgicalHintFor(file, isEnv, isConfig, isDoc, false, target)).toBe('Run `token-goat read "' + file + '::1-80"` to read its first 80 lines.')
+  })
+
+  it('leads a SQL file with no table to name with the read of its first lines', () => {
+    expect(sqlTableHint('s.sql', none('table', 'table_name'))).toBe('Run `token-goat read "s.sql::1-80"` to read its first 80 lines.')
+    expect(sqlTableHint('s.sql', real('users', 'table'))).toBe('Run `token-goat read "s.sql::users"` to pull one CREATE TABLE / CREATE TYPE block.')
   })
 
   it('sends a TOML table to section, which config-get cannot read', () => {
@@ -247,12 +263,15 @@ describe('the commands a deny names run against the file', () => {
     for (const d of [home, proj]) fs.rmSync(d, { recursive: true, force: true })
   })
 
+  /** `body` with comment lines appended past the size `cat` passes under, so the call is refused at all. */
+  const pastCatFloor = (body: string): string => body + '# a comment line that carries the file past the size cat passes under\n'.repeat(400)
+
   it.each([
     ['application.properties', 'spring.datasource.url=jdbc:x\nserver.port=8080\n', 'jdbc:x'],
     ['.env.local', 'export API_KEY=abc\nexport PORT=1\n', DOTENV_VALUE_PLACEHOLDER],
     ['.env', 'DATABASE_URL=postgres://h/db\nPORT=2\n', DOTENV_VALUE_PLACEHOLDER],
   ])('cat of %s is denied with commands that all exit 0, the first returning the value', (file, body, value) => {
-    fs.writeFileSync(path.join(proj, file), body, 'utf8')
+    fs.writeFileSync(path.join(proj, file), pastCatFloor(body), 'utf8')
     const commands = namedCommands(hook('Bash', { command: 'cat ' + file }))
     expect(commands.length).toBeGreaterThan(0)
     const results = commands.map((c) => ({ c, ...run(c) }))
@@ -262,13 +281,18 @@ describe('the commands a deny names run against the file', () => {
   })
 
   it('never offers outline for a .properties file, which has no extractor', () => {
-    fs.writeFileSync(path.join(proj, 'app.properties'), 'a.b=1\n', 'utf8')
-    expect(namedCommands(hook('Bash', { command: 'cat app.properties' })).join('\n')).not.toContain('outline')
+    fs.writeFileSync(path.join(proj, 'app.properties'), pastCatFloor('a.b=1\n'), 'utf8')
+    const joined = namedCommands(hook('Bash', { command: 'cat app.properties' })).join('\n')
+    expect(joined).toContain('token-goat config-get')
+    expect(joined).not.toContain('outline')
   })
 
   it('names no config-get or placeholder key for an empty .properties file, where no key exists to name', () => {
-    fs.writeFileSync(path.join(proj, 'empty.properties'), '# nothing here\n', 'utf8')
-    const joined = namedCommands(hook('Bash', { command: 'cat empty.properties' })).join('\n')
+    fs.writeFileSync(path.join(proj, 'empty.properties'), pastCatFloor('# nothing here\n'), 'utf8')
+    const commands = namedCommands(hook('Bash', { command: 'cat empty.properties' }))
+    const joined = commands.join('\n')
+    expect(commands.length).toBeGreaterThan(0)
+    expect(commands.filter((c) => run(c).status !== 0)).toEqual([])
     expect(joined).not.toContain('KEY_NAME')
     expect(joined).not.toContain('config-get')
     expect(joined).not.toContain('outline')
@@ -276,20 +300,22 @@ describe('the commands a deny names run against the file', () => {
 
   // CAPTURE 2026-10-03 against the built bundle: `section "d.rst::Sub"` returns the section, `outline d.rst` exits 1 (no extractor), `section` on a .txt exits 1 ("has no headings").
   it('cat of a .rst file names section but never outline, and the named commands run', () => {
-    fs.writeFileSync(path.join(proj, 'd.rst'), 'Title\n=====\n\nIntro\n\nSub\n---\n\nbody\n'.repeat(1), 'utf8')
+    fs.writeFileSync(path.join(proj, 'd.rst'), 'Title\n=====\n\nIntro\n\nSub\n---\n\nbody\n' + 'Prose that carries the file past the size cat passes under.\n'.repeat(400), 'utf8')
     const commands = namedCommands(hook('Bash', { command: 'cat d.rst' }))
     expect(commands.length).toBeGreaterThan(0)
     expect(commands.join('\n')).not.toContain('outline')
     expect(commands.filter((c) => run(c).status !== 0)).toEqual([])
   })
 
-  it('cat of a .txt file names no section or outline, only a grep that runs', () => {
-    fs.writeFileSync(path.join(proj, 'n.txt'), 'alpha\nbeta\n'.repeat(400), 'utf8')
+  it('cat of a .txt file names no section or outline, only a read of its first lines that runs as printed', () => {
+    fs.writeFileSync(path.join(proj, 'n.txt'), 'alpha\nbeta\n'.repeat(2000), 'utf8')
     const commands = namedCommands(hook('Bash', { command: 'cat n.txt' }))
     const joined = commands.join('\n')
+    expect(commands.length).toBeGreaterThan(0)
     expect(joined).not.toContain('outline')
     expect(joined).not.toContain('token-goat section')
-    expect(commands.filter((c) => run(c.replace('<pattern>', 'beta')).status !== 0)).toEqual([])
+    expect(joined).not.toContain('<pattern>')
+    expect(commands.filter((c) => run(c).status !== 0)).toEqual([])
   })
 
   it('the Grep tool on a .txt file gets no structural hint', () => {

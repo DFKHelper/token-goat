@@ -140,7 +140,8 @@ describe('image Read rewrites honor Claude Code Read rules (built bundle)', () =
 
 // HAND-DERIVED from https://code.claude.com/docs/en/permissions: a Read deny or ask rule applies to Claude Code's Read and Grep tools and to its recognized file commands in Bash (cat, head, sed), but never to a token-goat command those calls are pointed at instead.
 describe('read hints honor Claude Code Read rules (built bundle)', () => {
-  const lock = JSON.stringify({ name: 'p', lockfileVersion: 3, packages: { '': { name: 'p' } } }, null, 2)
+  // 400 dependencies, about 54 KB: past the 20 KB under which a whole-file `cat` of a JSON file runs without a refusal, so the cat beside the ruled path still draws its hint.
+  const lock = JSON.stringify({ name: 'p', lockfileVersion: 3, packages: Object.fromEntries([['', { name: 'p' }], ...Array.from({ length: 400 }, (_, i) => [`node_modules/dep${i}`, { version: '1.0.0', resolved: `https://registry.npmjs.org/dep${i}/-/dep${i}-1.0.0.tgz` }])]) }, null, 2)
   const source = Array.from({ length: 400 }, (_, i) => `export function f${i}(a: number): number {\n  return a + ${i}\n}\n`).join('')
   let calls = 0
 

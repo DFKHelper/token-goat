@@ -9,7 +9,7 @@ import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } 
 import { dropFileLineRangesIfChanged, getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 import { FALSY_ENV_VALUES } from './env.js'
-import { leadWithCommand, docSectionHint, grepLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
+import { leadWithCommand, docSectionHint, headLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import type { HintTarget } from './hint_target.js'
 
 // Defined beside preToolPathDeclined, the rule it applies, so hint_target.ts can gate a path without pulling this module into the core bundle.
@@ -35,34 +35,37 @@ function structuredDataHint(hintPath: string, target: string | null, reason = ''
   return leadWithCommand(query(path), 'to read that value, or `' + outline + '` for every top-level key with its type and size', reason)
 }
 
-/** The SQL branch every whole-file read shares: `read` returns one CREATE TABLE / CREATE TYPE block by the name the SQL adapter indexes it under. It used to print `section "file::table_name"`, which cannot run at all -- `section` finds markdown/TOML/INI headers and exits 1 with "has no headings" on a .sql file (measured 2026-09-24 against the built binary). */
+/** The SQL branch every whole-file read shares: `read` returns one CREATE TABLE / CREATE TYPE block by the name the SQL adapter indexes it under. It used to print `section "file::table_name"`, which cannot run at all -- `section` finds markdown/TOML/INI headers and exits 1 with "has no headings" on a .sql file (measured 2026-09-24 against the built binary). With no table to name, `read "file::table_name"` exits 1 as well, so the file's first lines are offered instead. */
 export function sqlTableHint(hintPath: string, target: HintTarget, reason = ''): string {
+  if (!target.real) return headLinesHint(hintPath, reason)
   return leadWithCommand('token-goat read ' + quotedArg(hintPath + '::' + target.name), 'to pull one CREATE TABLE / CREATE TYPE block', reason)
 }
 
 /** Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`, a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own SQL branch and passes its lead-in as `reason`, which follows the command. */
 // Every caller passes a hintPath already through displaySafePath, because the path here comes out of the shell command's own arguments and so is whatever a repository named its files, while the hint is delivered on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. Sanitizing at the fifteen assignment sites rather than at the thirty interpolations below is what keeps that invariant checkable, and it is the identity function on every path that does not contain a marker or a control character, so the index lookups keyed on the same value are unaffected for any real file.
 export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean, isXml: boolean, target: HintTarget, reason = ''): string {
-  // The whole-file branches are a hard deny, so the command they print is the agent's only next move, and the placeholders they used to print do not run: verified against the built binary on 2026-09-21, `token-goat section "CHANGELOG.md::SectionHeading"` exits 1 with "Section 'SectionHeading' not found" and `token-goat config-get "package.json" KEY_NAME` exits 1 with "Key 'KEY_NAME' not found". `target.name` is a name that file really holds whenever `target.real`, so the command runs verbatim; otherwise it is hint_target.ts's placeholder.
+  // The whole-file branches are a hard deny, so the command they print is the agent's only next move, and the placeholders they used to print do not run: verified against the built binary on 2026-09-21, `token-goat section "CHANGELOG.md::SectionHeading"` exits 1 with "Section 'SectionHeading' not found" and `token-goat config-get "package.json" KEY_NAME` exits 1 with "Key 'KEY_NAME' not found". `target.name` is a name that file really holds whenever `target.real`, so the command runs verbatim; otherwise the hint leads with a command that needs no name: an outline where the format has one for any file, else a read of the first lines, which runs on every text file.
   //
   // A config file's name goes where its format takes it: a JSON/YAML key to the query command, a TOML/INI table to `section` (measured, `config-get "cfg.toml" tool` exits 1 on a table while `section "cfg.toml::tool"` returns it), a .properties key to config-get. A JSON property is never put in a `section` slot: `token-goat section "package.json::name"` exits 1.
   const outline = outlineCommand(hintPath)
   if (isXml) return leadWithCommand('token-goat xml-outline ' + quotedArg(hintPath), 'to inspect structure, or `token-goat xml-query ' + quotedArgs(hintPath, '<selector>').join(' ') + '` to query specific nodes', reason)
-  if (isEnv) return leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific variable', reason)
-  // .properties has no outline extractor (measured 2026-10-03: `outline app.properties` exits 1), so it gets config-get for a key it holds and a grep otherwise.
+  if (isEnv) return target.real ? leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific variable', reason) : headLinesHint(hintPath, reason)
+  // .properties has no outline extractor (measured 2026-10-03: `outline app.properties` exits 1), so it gets config-get for a key it holds and its first lines otherwise.
   if (isConfig && /\.properties$/i.test(hintPath)) {
     return target.real
       ? leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific value', reason)
-      : grepLinesHint('<key>', hintPath, reason)
+      : headLinesHint(hintPath, reason)
   }
   if (isConfig) {
     const structured = structuredDataHint(hintPath, target.real ? target.name : null, reason)
     if (structured !== null) return structured
+    // A flat .conf holds no name outline can list (measured: `outline a.conf` exits 1 with "No indexed symbols found"), and a file with no name found has none for it either.
+    if (!target.real) return headLinesHint(hintPath, reason)
     return target.slice === 'key'
       ? leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific value, or `' + outline + '` for every key with line ranges', reason)
       : leadWithCommand('token-goat section ' + quotedArg(hintPath + '::' + target.name), 'to read one table, or `' + outline + '` for every key with line ranges', reason)
   }
-  if (isDoc) return docSectionHint(hintPath, target.name, reason)
+  if (isDoc) return target.real ? docSectionHint(hintPath, target.name, reason) : headLinesHint(hintPath, reason)
   // A source file with no nameable symbol leads with outline, which always runs, rather than a `read "file::SymbolName"` that never does.
   return target.real
     ? leadWithCommand('token-goat read ' + quotedArg(hintPath + '::' + target.name), 'to read one function or class, or `' + outline + '` for all of them', reason)
