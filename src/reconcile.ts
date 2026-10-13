@@ -11,6 +11,7 @@ import { indexedPathSpellingIsStale } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { getDisplayRoot } from './project.js'
 import { getTrackedFiles } from './repomap.js'
+import { isToolOutputPath } from './skip_scope.js'
 import { projectScopeClause } from './sql_path.js'
 import { countNoun, foldPath } from './util.js'
 
@@ -215,6 +216,12 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     const folded = foldPath(normalized)
     seenOnDisk.add(folded)
     const entry = indexed.get(folded)
+
+    // A tool's snapshot is never indexed, so a new one is no drift; one an index from before that rule still holds is, and the drain purges it.
+    if (isToolOutputPath(file, projectRoot)) {
+      if (entry !== undefined) changed.push(file)
+      continue
+    }
 
     if (entry === undefined) {
       added.push(file)

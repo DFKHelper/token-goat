@@ -15,7 +15,9 @@ import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { dataDir, globalDbPath } from './constants.js'
 import { recordKnownRootThrottled } from './known_roots.js'
 import { LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
-import { isReadOnlyDb } from './db.js'
+import { getDb, isReadOnlyDb } from './db.js'
+import { removeFileFromIndex } from './index_prune.js'
+import { isToolOutputPath } from './skip_scope.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { decodeSource, runGit, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, countNoun, requirePositiveStrictInt } from './util.js'
 import { renderContextWindow } from './util_context.js'
@@ -204,6 +206,11 @@ export function indexFileSyncPinned(resolvedPath: string, dbPath: string): void 
   if (isReadOnlyDb(dbPath)) return
   // A heal triggered by a read can be the only thing that ever indexes a project, so register its root here too rather than relying on a later edit or bulk walk. See recordKnownRootThrottled.
   recordKnownRootThrottled(resolvedPath, dataDir(), dbPath)
+  // A tool's snapshot never enters the index; one an older index still holds is purged, as cmdIndex and the worker purge it.
+  if (isToolOutputPath(resolvedPath)) {
+    removeFileFromIndex(getDb(dbPath), resolvedPath)
+    return
+  }
   const pinned = activePins?.get(pinKey(path.resolve(resolvedPath)))
   if (pinned === undefined) {
     indexFileSync(resolvedPath, dbPath)
