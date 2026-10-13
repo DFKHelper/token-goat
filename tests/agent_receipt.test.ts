@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { runHook as RunHookFn } from '../src/hook_registry.js'
 import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
-import { claimsChangeTheTreeLacks, parkAgentReceipt, receiptLines, takeAgentReceipt } from '../src/agent_receipt.js'
+import { claimsChangeTheTreeLacks, parkAgentReceipt, receiptLines, takeAgentReceipt, waitAgentReceipts } from '../src/agent_receipt.js'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -136,6 +136,20 @@ describe('parked receipts', () => {
     const trailer = (id: string): string => `Done.\n\nagentId: ${id} (internal ID - do not mention to user. Use SendMessage with to: '${id}' to continue this agent.)`
     expect(takeAgentReceipt(sid, trailer('99887766554433aa'))).toBe('receipt for B')
     expect(takeAgentReceipt(sid, trailer('a1b2c3d4e5f60718'))).toBe('receipt for A')
+  })
+
+  // HAND-DERIVED: the wait_agent tool_response shape ({ status: { <id>: { completed: <report> } } }) is the one completedSubagents reads; the id is the harness's string, so it is built here with the four blank-looking characters (U+00A0, U+FE0F, U+3164, U+2800) and the expected header is their \uXXXX spelling computed by hand, with a plain id as the unchanged control.
+  it('the agent id in a wait_agent header hides no word behind a blank, and a plain id reads as before', () => {
+    const sid = newSession()
+    const odd = 'agent \u00a0\ufe0f\u3164\u2800x'
+    parkAgentReceipt(sid, 'Done A.', 'receipt for A', odd)
+    parkAgentReceipt(sid, 'Done B.', 'receipt for B', 'agent-b')
+    const blocks = waitAgentReceipts(sid, { status: { [odd]: { completed: 'Done A.' }, 'agent-b': { completed: 'Done B.' } } })
+    expect(blocks).toHaveLength(2)
+    const [a, b] = blocks as [string, string]
+    for (const ch of ['\u00a0', '\ufe0f', '\u3164', '\u2800']) expect(a).not.toContain(ch)
+    expect(a).toContain('agent \\u00a0\\ufe0f\\u3164\\u2800x')
+    expect(b).toBe('token-goat: agent "agent-b":\nreceipt for B')
   })
 
   it('identical reports with different verdicts and no id to tell them apart deliver nothing', () => {

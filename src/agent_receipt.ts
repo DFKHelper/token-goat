@@ -8,7 +8,7 @@ import { getHarnessName } from './bridges/registry.js'
 import { loadConfig } from './config.js'
 import type { HookEvent } from './hook_registry.js'
 import { sessionStateKey } from './hook_registry.js'
-import { echoedCommand, echoedValue, nameSubject } from './hint_suggestion_guard.js'
+import { echoedCommand, nameSubject } from './hint_suggestion_guard.js'
 import { contextOutput, getCwd, passOutput } from './hooks_common.js'
 import { claimsOwnChange } from './change_claim.js'
 import { claimsCommittedChange } from './hooks_session.js'
@@ -232,7 +232,7 @@ export function waitAgentReceipts(sessionId: string, toolResponse: unknown): str
   const blocks: string[] = []
   for (const { agentId, report } of finished) {
     const text = takeAgentReceipt(sessionId, redactSecrets(report).text, agentId)
-    if (text !== null) blocks.push(finished.length > 1 ? `${LINE_PREFIX} agent ${echoedValue(agentId)}:\n${text}` : text)
+    if (text !== null) blocks.push(finished.length > 1 ? `${LINE_PREFIX} agent ${echoedCommand(agentId)}:\n${text}` : text)
   }
   return blocks
 }
