@@ -283,18 +283,20 @@ describe('compaction epoch invalidates in-context read state', () => {
     expect(entry !== undefined ? epochReadCounts(entry) : null).toEqual({ reads: 1, fullReads: 1 })
   })
 
-  // HAND-DERIVED: two whole reads reached the model; each refusal after them hands over nothing, so a second refusal still quotes those two reads.
-  it('quotes the same read count on a repeated refusal of a source re-read', () => {
+  // HAND-DERIVED: two whole reads reached the model and the refusal hands over nothing, so the retry the per-file circuit breaker lets through (one re-read refusal per file per epoch) still quotes those two reads.
+  it('quotes the same read count on the re-read that follows a refused source re-read', () => {
     const p = tmpSource()
     const t = Date.now()
     readAt(p, t - 2000)
     readAt(p, t - 1000)
 
-    for (let i = 0; i < 2; i++) {
-      const result = preReadHandler(readEvent(p))
-      expect(result.hookType).toBe('deny')
-      if (result.hookType === 'deny') expect(result.message).toContain('Tried to read this file 2 times already.')
-    }
+    const refused = preReadHandler(readEvent(p))
+    expect(refused.hookType).toBe('deny')
+    if (refused.hookType === 'deny') expect(refused.message).toContain('Tried to read this file 2 times already.')
+
+    const retried = preReadHandler(readEvent(p))
+    expect(retried.hookType).toBe('context')
+    if (retried.hookType === 'context') expect(retried.context).toContain('was already read this session (2 reads).')
   })
 
   // HAND-DERIVED: a re-read answered with the diff hands the model the current content, so it counts as the read it replaced.
