@@ -83,6 +83,19 @@ describe('the Copilot CLI adapter on a view of a large image', () => {
     expect(fs.readdirSync(tmp).filter((f) => f.startsWith('token-goat-shrink-')).length).toBe(copiesBefore)
   })
 
+  // The fallback context output in image_shrink.ts (summary + data URL) is the transport the host bridge materializes the copy from, so it is far past 10,000 characters by design; what the harness hands its model is the bridge's translation of it. HAND-DERIVED from that translation (copilotTranslate in src/hook_adapters.ts, translate in src/bridges/copilot_cli.ts): a shrink payload is never forwarded as additionalContext.
+  it('carries the shrunk image to Copilot as a path only, with no additionalContext and no data URL on the wire', async () => {
+    const input = JSON.stringify({ sessionId: 'copilot-view-shrink-wire', workingDirectory: project, toolName: 'view', toolArgs: JSON.stringify({ path: image }) })
+    let relayed = ''
+    const result = await runAdapter('copilot_cli', { event: 'preToolUse', input }, { early: () => 0, relay: async (event, payload, harnessWaitMs) => (relayed = await relayInProcess(event, payload, harnessWaitMs)) })
+    expect(relayed, 'the hook answered with the data URL the bridge materializes from').toContain('data:image/')
+    expect(relayed.length).toBeGreaterThan(10_000)
+    const wire = JSON.parse(result.stdout) as { modifiedArgs?: Record<string, unknown>; additionalContext?: unknown }
+    expect(typeof wire.modifiedArgs?.['path']).toBe('string')
+    expect(wire.additionalContext).toBeUndefined()
+    expect(result.stdout).not.toContain('data:image/')
+  })
+
   it.skipIf(process.platform === 'win32')('writes the copy readable by its owner only (0600)', async () => {
     const copy = (await viewModifiedArgs('copilot-view-shrink-mode'))?.['path'] as string
     expect(fs.statSync(copy).mode & 0o777).toBe(0o600)
