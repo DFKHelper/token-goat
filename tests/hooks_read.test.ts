@@ -3429,6 +3429,15 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     }
   })
 
+  // CAPTURE (corpus 9557924b, subagent a9ea0156): the native Grep tool on a 337KB tool-results snapshot was refused as a whole-file Read and pointed at `bash-output --grep`, whose own output then spilled. A Grep returns only matching lines and is bounded by head_limit, so it is already the narrow form the refusal asks for. The 6,000 rows are HAND-DERIVED, about 300KB.
+  it('lets a Grep search a large tool-results file, while a Read of the whole file is still refused', () => {
+    const p = makeToolResultsFile(Array.from({ length: 6000 }, (_, i) => `listing/${i} ${'x'.repeat(40)}`).join('\n') + '\n')
+    expect(fs.statSync(p).size).toBeGreaterThan(290 * 1024)
+    const grep = makeHookEvent({ toolName: 'Grep', toolInput: { path: p, pattern: 'listing/[0-9]+' }, sessionId: 'test' })
+    expect(preReadHandler(grep)).toEqual({ hookType: 'pass' })
+    expect(preReadHandler(readEvent(p)).hookType).toBe('deny')
+  })
+
   it('denies re-read of tasks/*.output when content unchanged since last read', () => {
     const content = 'task output data\nline two\n'
     const p = makeTasksOutputFile(content)

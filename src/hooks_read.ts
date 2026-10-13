@@ -986,8 +986,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         'This file was already read this session. ' + sessionArtifactRecall(normalized),
       )
     }
-    // First read of tasks/*.output or tool-results/*.txt — size-gated like every other first-read intercept in this function. A small file is a cheap advisory pass; at/above TASK_OUTPUT_DENY_BYTES it's denied outright, forcing even the first read through bash-output --file/--tail instead of one free unsized full dump. Both artifact kinds share this gate -- tool-results/*.txt previously fell through to the lenient generic 100KB threshold with no advisory at all, unlike tasks/*.output.
-    {
+    // First read of tasks/*.output or tool-results/*.txt — size-gated like every other first-read intercept in this function. A small file is a cheap advisory pass; at/above TASK_OUTPUT_DENY_BYTES it's denied outright, forcing even the first read through bash-output --file/--tail instead of one free unsized full dump. Both artifact kinds share this gate -- tool-results/*.txt previously fell through to the lenient generic 100KB threshold with no advisory at all, unlike tasks/*.output. A Grep is left out: it returns matching lines only, bounded by head_limit, which is already the narrow form the refusal and the advisory both point at, and with no limit of its own it was sized as a whole-file Read and refused.
+    if (event.toolName !== 'Grep') {
       const isTaskOutput = /[/\\]tasks[/\\][a-z0-9]+\.output$/i.test(normalized)
       const label = isTaskOutput ? 'Session transcript' : 'Tool-result file'
       const outputSize = statSize(onDisk)
