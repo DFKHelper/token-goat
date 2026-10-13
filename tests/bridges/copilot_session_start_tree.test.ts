@@ -360,11 +360,32 @@ it.runIf(process.platform === 'win32')('inherits the earliest installed native d
   const entered = join(fixture.root, 'helper.pid')
   writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, String(process.pid)); process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`)
   const result = await runInstalledStartup({ fixture, entry, delayMs: 1500 }).done
-  expect(existsSync(entered)).toBe(true)
-  expect(alive(readOwnedPid(entered))).toBe(false)
+  // The installed relay reads the whole input before it creates the owner, shim and helper, so after a 1500 ms delay those launches share the few hundred milliseconds left before its cleanup reserve: whether the helper got to start is a race the run does not decide, but no helper it did start may outlive it.
+  if (existsSync(entered)) expect(alive(readOwnedPid(entered))).toBe(false)
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toMatch(/timed out/)
   expect(result.elapsed).toBeLessThan(3500)
+}, 12_000)
+
+it.runIf(process.platform === 'win32')('hands the installed native deadline to the shim\'s own owner instead of restarting it at shim start', async () => {
+  const fixture = treeFixture()
+  const entry = join(fixture.root, 'entry.cjs')
+  const entered = join(fixture.root, 'helper.pid')
+  const handoff = join(fixture.root, 'handoff.json')
+  writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, String(process.pid)); process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`)
+  // The relay ends the run at its own deadline even when the shim restarts the clock, so the outcome cannot show inheritance; the shim records what it hands its owner, checked against its own process start, which the native entry's deadline precedes by construction.
+  const ownerSpawn = "const root = spawn(binary, ['--session-start-owner-v1', String(deadline), process.execPath, ...args], {"
+  const shim = readFileSync(fixture.shim, 'utf8')
+  expect(shim).toContain(ownerSpawn)
+  writeFileSync(fixture.shim, shim.replace(ownerSpawn, `require('node:fs').writeFileSync(${JSON.stringify(handoff)}, JSON.stringify({ inherited: process.argv[4], deadline, started: Math.floor(require('node:perf_hooks').performance.timeOrigin) })); ${ownerSpawn}`))
+  const result = await runInstalledStartup({ fixture, entry }).done
+  const record = JSON.parse(readFileSync(handoff, 'utf8')) as { inherited: string; deadline: number; started: number }
+  expect(record.inherited).toMatch(/^--session-start-deadline=\d+$/)
+  expect(record.deadline).toBe(Number(record.inherited.slice('--session-start-deadline='.length)))
+  expect(record.deadline).toBeLessThan(record.started + 3000)
+  expect(alive(readOwnedPid(entered))).toBe(false)
+  expect(result.stdout).toBe('{}')
+  expect(result.stderr).toMatch(/timed out/)
 }, 12_000)
 
 it('does not spawn the supervisor when input arrives inside the cleanup reserve', async () => {
