@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { PROBE_DIR, removeProbe, writeProbe } from './helpers/vitest-probe.js'
+import { probePath, removeProbe, writeProbe } from './helpers/vitest-probe.js'
 import RetryVisibilityReporter, { collectRetriedTests, formatRetryReport } from './setup/retry-visibility-reporter.js'
 
 /** Build one module whose single test carries the given diagnostic, matching vitest 4's shape. */
@@ -100,7 +100,8 @@ describe('RetryVisibilityReporter', () => {
 // ---- end-to-end against a genuinely retried test ---------------------------------------------
 
 // Deliberately outside tests/. This file is created and deleted while the rest of the suite is running, and several guards walk tests/ listing every entry and then reading each one, so with it in there one of them would eventually list it and find it already gone: an ENOENT failure in a guard that has nothing to do with retries, blaming a file it never meant to read. Vitest's default include glob covers the whole repo apart from node_modules, dist and .claude, so a probe here is still collected and still matched by the filter the spawn below passes, while being somewhere no tests/ walker will ever look. The directory is gitignored and shared with other probes; tests/helpers/vitest-probe.ts says why only the file is removed.
-const TMP_FLAKY = path.join(PROBE_DIR, 'zz_generated_flaky_probe.test.ts')
+const FLAKY_PROBE = 'zz_generated_flaky_probe.test.ts'
+const TMP_FLAKY = probePath(FLAKY_PROBE)
 
 afterAll(() => {
   removeProbe(TMP_FLAKY)
@@ -114,7 +115,7 @@ describe('reporter against the real vitest API', () => {
 
   it('fires on a test that actually failed and passed on retry', () => {
     // A module-level counter makes attempt 1 fail and attempt 2 pass, so vitest genuinely marks the test flaky rather than us asserting our own idea of its task shape.
-    writeProbe(path.basename(TMP_FLAKY), [
+    writeProbe(FLAKY_PROBE, [
       "import { expect, it } from 'vitest'",
       'let attempts = 0',
       "it('generated probe: fails once then passes', () => {",
@@ -140,6 +141,6 @@ describe('reporter against the real vitest API', () => {
     expect(combined).toContain('retries: 1')
     // A passing retry prints no error anywhere else in the run, so the warning is the only place the first attempt's failure can be read. Without it the flake in tests/compact.test.ts on a Windows CI shard arrived as a name and nothing else, and could not be root-caused from the log. CAPTURE: the probe above, run by the real vitest; line 5 is the expect.
     expect(combined).toContain('first failure: the first attempt fails on purpose: expected 1 to be greater than 1')
-    expect(combined).toMatch(/at \.vitest-probe[\\/]zz_generated_flaky_probe\.test\.ts:5:/)
+    expect(combined).toMatch(new RegExp(`at \\.vitest-probe[\\\\/]zz_generated_flaky_probe\\.${process.pid}\\.test\\.ts:5:`))
   }, 120_000)
 })
