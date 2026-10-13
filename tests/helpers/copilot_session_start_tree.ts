@@ -68,24 +68,39 @@ export function readOwnedPid(path: string): number {
   return pid
 }
 
+function removeWhenReleased(root: string): void {
+  const deadline = Date.now() + 15_000
+  for (;;) {
+    try { return rmSync(root, { recursive: true, force: true }) } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if ((code !== 'EPERM' && code !== 'EBUSY') || Date.now() >= deadline) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+    }
+  }
+}
+
 export function cleanupTrees(): void {
-  // Also recover PIDs if an observation rejected before the assertion registered
-  // them. Only this fixture's own root-level PID files are considered.
+  // Also recover PIDs if an observation rejected before the assertion registered them. Only this fixture's own root-level PID files are considered.
   for (const root of ownedRoots) {
     for (const name of readdirSync(root).filter((name) => name.endsWith('.pid'))) {
       const pid = Number(readFileSync(join(root, name), 'utf8'))
       if (Number.isInteger(pid) && pid > 0 && !ownedPids.includes(pid)) ownedPids.push(pid)
     }
   }
+  const killed: number[] = []
   for (const pid of ownedPids.splice(0).reverse()) {
     if (!alive(pid)) continue
+    killed.push(pid)
     if (process.platform === 'win32') {
       spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 2000, windowsHide: true })
     } else {
       process.kill(pid, 'SIGKILL')
     }
   }
-  for (const root of ownedRoots.splice(0)) rmSync(root, { recursive: true, force: true })
+  // taskkill /F only requests termination, and a killed worker's SQLite files stay locked on Windows for a while after the pid is gone (CAPTURE from instrumented runs of copilot_session_start_worker.test.ts: Restart Manager listed no holder, no process of the fixture was left running, and the folder became deletable about 1.3 s after the kill in one run and 56 ms after in another; the cause of the delay itself is not established). Wait for the pids, then retry the delete on EPERM/EBUSY until it succeeds or 15 s pass, well inside the 60 s test timeout. Any other error, and the final one, still throws.
+  const gone = Date.now() + 5000
+  while (killed.some(alive) && Date.now() < gone) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+  for (const root of ownedRoots.splice(0)) removeWhenReleased(root)
 }
 
 export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void {
