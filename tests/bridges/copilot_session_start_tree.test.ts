@@ -1,8 +1,9 @@
 /** HAND-DERIVED adversity: actual built hook -> reconcileProject -> getTrackedFiles -> runGit,
  * with only the Git executable boundary replaced. This is not a healthy-handler substitute. */
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { createRequire } from 'node:module'
@@ -253,6 +254,49 @@ require('node:child_process').spawnSync(${JSON.stringify(boundary)}, ['hold', ${
       && (!existsSync(descendantFile) || !alive(readOwnedPid(descendantFile))))
   } else {
     expect(existsSync(rootPidFile), 'canonical work ran before complete input').toBe(false)
+  }
+}, 40_000)
+
+it.runIf(process.platform === 'win32')('deletes the fixture only after a process it just killed has released the directory', async () => {
+  // The owner-death cases above end exactly here: the job has terminated the
+  // holder, `alive` already reads it gone, and teardown runs next. A debugger
+  // parks the holder between those two states so the window cannot close early.
+  const fixture = treeFixture()
+  const boundary = buildWindowsBoundary(fixture.root)
+  const outside = mkdtempSync(join(tmpdir(), 'tg-session-debugger-'))
+  const debuggerExe = join(outside, 'debugger.exe')
+  copyFileSync(boundary, debuggerExe)
+  const holderFile = join(fixture.root, 'holder.pid')
+  const marker = join(outside, 'debugger.state')
+  const holder = spawn(boundary, ['hold', holderFile], { cwd: fixture.project, stdio: 'ignore', windowsHide: true })
+  let debuggerProcess: ChildProcess | undefined
+  const stopped = (child: ChildProcess | undefined): Promise<unknown> => {
+    if (child === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+    child.kill()
+    return exited
+  }
+  const waitUntil = async (condition: () => boolean, what: string): Promise<void> => {
+    const until = performance.now() + 10_000
+    while (!condition()) {
+      expect(performance.now(), what).toBeLessThan(until)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+  }
+  const state = (): string => existsSync(marker) ? readFileSync(marker, 'utf8') : ''
+  try {
+    await waitUntil(() => existsSync(holderFile) && readFileSync(holderFile, 'utf8') !== '', 'holder never recorded its PID')
+    const pid = readOwnedPid(holderFile)
+    debuggerProcess = spawn(debuggerExe, ['debug-exit', String(pid), marker, '1500'], { cwd: outside, stdio: 'ignore', windowsHide: true })
+    await waitUntil(() => state() === 'attached', 'debugger never attached')
+    process.kill(pid)
+    await waitUntil(() => state() === 'exiting', 'holder exit never reached the debugger')
+    expect(alive(pid), 'the liveness probe already reads the parked holder as gone').toBe(false)
+    expect(() => cleanupTrees()).not.toThrow()
+    expect(existsSync(fixture.root)).toBe(false)
+  } finally {
+    await Promise.all([stopped(holder), stopped(debuggerProcess)])
+    rmSync(outside, { recursive: true, force: true })
   }
 }, 40_000)
 
