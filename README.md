@@ -464,7 +464,7 @@ token-goat stats
 
 ### Confirming hooks are wired
 
-`doctor` checks the binary, worker, database, and disk, whether the installed Claude Code, Codex and Copilot hook shims match the running build, and the hook wiring itself. Its `Claude Code hook events` line reads `every event this build handles is wired` when `settings.json` has a current token-goat entry for each event; otherwise it names, per scope, the events that are missing, still run a command this build no longer writes, or point at a native hook client binary that is gone. The `Native hooks` lines report, per harness, which form of hook command is wired and whether the native client binary is present and passes its self-test. To fix any of them, re-run `install`:
+`doctor` checks the binary, worker, database, and disk, whether the installed Claude Code, Codex and Copilot hook shims match the running build, and the hook wiring itself. Its `Claude Code hook events` line reads `every event this build handles is wired` when `settings.json` has a current token-goat entry for each event; otherwise it names, per scope, the events that are missing, still run a command this build no longer writes, or point at a native hook client binary that is gone. A `Claude Code hook matchers` line appears only when an event's token-goat entry is wired through a tool matcher other than the one this build writes, as an install from before the PreToolUse MCP matcher was narrowed is, and `install` or `doctor --repair` rewrites it. The `Native hooks` lines report, per harness, which form of hook command is wired and whether the native client binary is present and passes its self-test. To fix any of them, re-run `install`:
 
 ```
 token-goat install

@@ -3,7 +3,7 @@
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, getToolInput, passOutput, denyOutput, extractToolResultText, isMcpErrorResponse, emitRewrite, emitRewriteIfChanged, mcpContentBlocks, isTextualContentBlock, withPreservedBlocks } from './hooks_common.js'
-import { isMcpReadOnly, getMcpOutput, mcpOutputBytes, storeMcpOutput } from './mcp_cache.js'
+import { isMcpReadOnly, getMcpOutput, mcpOutputBytes, storeMcpOutput, MCP_READ_TOOL_PATTERN } from './mcp_cache.js'
 import { PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
 import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
@@ -212,6 +212,6 @@ function postMcpHandler(event: HookEvent): HookOutput {
   return passOrFence()
 }
 
-// Both handlers no-op unless the tool name starts with `mcp__` (preMcpHandler via isMcpReadOnly, postMcpHandler via its own startsWith check), so declaring that prefix lets installHooks narrow the settings.json matcher without losing them.
-registerHook('pre_tool_use', preMcpHandler, { toolPattern: MCP_TOOL_PATTERN })
+// preMcpHandler acts only on a call isMcpReadOnly passes, and MCP_READ_TOOL_PATTERN matches every such name (see its doc comment), so PreToolUse no longer starts a hook process for each navigate, click or create_draft: all 1,409 measured PreToolUse runs on mcp__* tools under the bare prefix printed `{}`. postMcpHandler fences and compresses nearly every MCP result, so it keeps the whole `mcp__` prefix.
+registerHook('pre_tool_use', preMcpHandler, { toolPattern: MCP_READ_TOOL_PATTERN })
 registerHook('post_tool_use', postMcpHandler, { toolPattern: MCP_TOOL_PATTERN })

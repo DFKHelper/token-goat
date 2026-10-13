@@ -24,7 +24,7 @@ import { skillOutputsDir } from './skill_cache.js'
 import { copilotCliConfigPath, copilotCliScriptPath, LEGACY_HOOKS_SCRIPT_FILE, readCopilotHooksOwners } from './bridges/copilot_cli_install.js'
 import { hasCreatedConfig } from './bridges/created_configs.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
-import { claudeHookScriptPath, claudeHooksInstalledAnyScope, hookEventGaps, isInstalled, wiredClaudeHookWords } from './install.js'
+import { claudeHookScriptPath, claudeHooksInstalledAnyScope, hookEventGaps, isInstalled, staleHookMatchers, wiredClaudeHookWords } from './install.js'
 import { parseNativeInvocation, splitHookCommand } from './native_hook.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
@@ -50,7 +50,7 @@ import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import { reclaimIndex, indexSizeBytes } from './index_reclaim.js'
 import type { DoctorResult } from './doctor_result.js'
 import { type ProcessInfo, checkMcpProcessHealth, readWindowsProcesses, checkWorkerRunning } from './cli_doctor_process.js'
-import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks, checkClaudeHookEvents, checkClaudeHooksGone, checkVisualStudio, checkZed, checkCursor, checkStrayClaudeMdBlocks, checkVscodeProjectMcp } from './cli_doctor_platforms.js'
+import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks, checkClaudeHookEvents, checkClaudeHookMatchers, checkClaudeHooksGone, checkVisualStudio, checkZed, checkCursor, checkStrayClaudeMdBlocks, checkVscodeProjectMcp } from './cli_doctor_platforms.js'
 import { checkInstructionGates, checkHarnessCacheEfficiency, repairInstructionGates } from './cli_doctor_guidance.js'
 import { checkSecurityPosture } from './cli_doctor_security.js'
 import { stripBom } from './jsonc_text.js'
@@ -705,6 +705,8 @@ export function checkHookServer(state: { enabled: boolean; statuses: readonly Se
 
 /** {@link runDoctor} plus the checks that have to ask a running process, which the synchronous checks cannot. */
 export async function runDoctorChecks(dataDir?: string, configPath?: string, rootDir?: string, processes?: ProcessInfo[]): Promise<DoctorResult[]> {
+  // Registers every hook handler, as cmdInstall does before installHooks: the hook matcher row compares each installed matcher with the one toolMatcherFor derives from the registry, and the CLI reaches doctor without loading the hook modules. Imported here, not at module scope, because cli.ts loads this module for every command.
+  await import('./relay.js')
   const results = runDoctor(dataDir, configPath, rootDir, processes)
   const enabled = hookServerEnabled()
   const dir = dataDir || defaultDataDir()
@@ -758,6 +760,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   const claudeGaps = { user: hookEventGaps('user'), project: hookEventGaps('project') }
   const claudeEventsResult = checkClaudeHookEvents(claudeGaps)
   if (claudeEventsResult) results.push(claudeEventsResult)
+  const claudeMatcherResult = checkClaudeHookMatchers({ user: staleHookMatchers('user'), project: staleHookMatchers('project') })
+  if (claudeMatcherResult) results.push(claudeMatcherResult)
   // A null gap report means no token-goat entry at all in that scope; a partly wired scope is the event row's finding, not a settings file that was overwritten.
   const claudeGoneResult = checkClaudeHooksGone(claudeGaps.user !== null || claudeGaps.project !== null, claudeHookActivity())
   if (claudeGoneResult) results.push(claudeGoneResult)
