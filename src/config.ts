@@ -737,6 +737,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.git_hint_max_ms = validatedInt(hi_raw['git_hint_max_ms'], hi.git_hint_max_ms, ...boundsOf('hints.git_hint_max_ms'))
   hi.min_session_hint_savings_bytes = validatedInt(hi_raw['min_session_hint_savings_bytes'], hi.min_session_hint_savings_bytes, ...boundsOf('hints.min_session_hint_savings_bytes'))
   hi.pre_skill_advisory = validatedBool(hi_raw['pre_skill_advisory'], hi.pre_skill_advisory)
+  hi.stop_verification_advisory = validatedBool(hi_raw['stop_verification_advisory'], hi.stop_verification_advisory)
+  hi.agent_receipt = validatedBool(hi_raw['agent_receipt'], hi.agent_receipt)
   hi.context_threshold_advisory = validatedBool(hi_raw['context_threshold_advisory'], hi.context_threshold_advisory)
   hi.diff_hint_min_tokens_saved = validatedInt(hi_raw['diff_hint_min_tokens_saved'], hi.diff_hint_min_tokens_saved, ...boundsOf('hints.diff_hint_min_tokens_saved'))
   // Legacy-sentinel guard: config set on ANY key does a full load->mutate-one-field->save-all round trip (see saveConfig), so any pre-4b6f30dc user who ran `config set` for an unrelated key got the then-in-memory default large_read_redirect_bytes (45_000) permanently persisted, even though the field had zero consumers at the time and nobody could have deliberately chosen it. 4b6f30dc wired this key up as the real pressure-scaled first-read deny gate and bumped the in-code default to 512_000 -- but those stale 45_000s now load back in and silently make the gate ~11.4x more aggressive than intended. Treat an exactly-persisted 45_000 as that stale default and fall through to the current default instead of trusting it; any other persisted value (including a deliberate 45_000 set after upgrading) is respected as-is.
@@ -793,6 +795,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.skeleton_large_sources = envBool('TOKEN_GOAT_SKELETON_LARGE_SOURCES', hi.skeleton_large_sources)
   hi.context_threshold_advisory = envBool('TOKEN_GOAT_CONTEXT_THRESHOLD_ADVISORY', hi.context_threshold_advisory)
   hi.pre_skill_advisory = envBool('TOKEN_GOAT_PRE_SKILL_ADVISORY', hi.pre_skill_advisory)
+  hi.stop_verification_advisory = envBool('TOKEN_GOAT_STOP_VERIFICATION_ADVISORY', hi.stop_verification_advisory)
+  hi.agent_receipt = envBool('TOKEN_GOAT_AGENT_RECEIPT', hi.agent_receipt)
   hi.quiet_hours = envStr('TOKEN_GOAT_QUIET_HOURS', hi.quiet_hours)
   // parse prompt_triggers
   const triggers_raw = hi_raw['prompt_triggers']
@@ -1007,6 +1011,8 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.skeleton_large_sources': ['TOKEN_GOAT_SKELETON_LARGE_SOURCES'],
   'hints.context_threshold_advisory': ['TOKEN_GOAT_CONTEXT_THRESHOLD_ADVISORY'],
   'hints.pre_skill_advisory': ['TOKEN_GOAT_PRE_SKILL_ADVISORY'],
+  'hints.stop_verification_advisory': ['TOKEN_GOAT_STOP_VERIFICATION_ADVISORY'],
+  'hints.agent_receipt': ['TOKEN_GOAT_AGENT_RECEIPT'],
   'hints.quiet_hours': ['TOKEN_GOAT_QUIET_HOURS'],
   'hooks.latency_budget_ms': ['TOKEN_GOAT_HOOK_LATENCY_BUDGET_MS'],
   'hooks.server': ['TOKEN_GOAT_HOOK_SERVER'],
@@ -1160,6 +1166,8 @@ export function saveConfig(config: Config, explicitKeys: readonly string[] = [])
       git_hint_max_ms: config.hints.git_hint_max_ms,
       min_session_hint_savings_bytes: config.hints.min_session_hint_savings_bytes,
       pre_skill_advisory: config.hints.pre_skill_advisory,
+      stop_verification_advisory: config.hints.stop_verification_advisory,
+      agent_receipt: config.hints.agent_receipt,
       context_threshold_advisory: config.hints.context_threshold_advisory,
       diff_hint_min_tokens_saved: config.hints.diff_hint_min_tokens_saved,
       large_read_redirect_bytes: config.hints.large_read_redirect_bytes,

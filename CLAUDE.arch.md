@@ -105,8 +105,10 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_session_start.ts`](src/hooks_session_start.ts) | session_start hook: re-inject a short command-routing reminder every time a session starts, resumes, or restarts after compaction. |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |
 | [`src/hooks_skill.ts`](src/hooks_skill.ts) | `postSkillHandler()` captures skill bodies across compaction; `preSkillHandler()` denies a same-session re-load with a compact-recall hint |
+| [`src/hooks_stop.ts`](src/hooks_stop.ts) | The Stop hook: when the agent ends a turn with source edits that no test, lint, typecheck or build run has covered since, say so once. It is an advisory, not a block (a Stop block can trap a session in a loop), so it departs from the block in the original idea spec; the switch is `hints.stop_verification_advisory` (`TOKEN_GOAT_STOP_VERIFICATION_ADVISORY`). |
 | [`src/hooks_taskoutput.ts`](src/hooks_taskoutput.ts) | TaskOutput poll-delta caching hook. |
 | [`src/hooks_tool_failure.ts`](src/hooks_tool_failure.ts) | `post_tool_use_failure` handler -- the repeat-failure brake. |
+| [`src/hooks_verification.ts`](src/hooks_verification.ts) | The eager half of the verification bookkeeping: a keyword gate and the registrations. |
 | [`src/hooks_websearch.ts`](src/hooks_websearch.ts) | WebSearch caching/dedup hooks. |
 | [`src/hooks_write.ts`](src/hooks_write.ts) | pre_tool_use hook for the Write tool: full-rewrite detector (feature-queue #302). |
 | [`src/image_shrink.ts`](src/image_shrink.ts) | `preReadImageHandler()` — intercepts large image Read events, shrinks via system tools, injects the smaller bytes |
@@ -388,6 +390,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | Module | Role |
 |--------|------|
 | [`src/affected.ts`](src/affected.ts) | `token-goat affected` -- which test files a set of changed source files can reach. |
+| [`src/agent_receipt.ts`](src/agent_receipt.ts) | The evidence receipt a subagent's report carries when its own record gives the parent a reason to doubt it: the last check it ran failed, it edited source after its last passing ch |
 | [`src/answer_router.ts`](src/answer_router.ts) | `token-goat answer` -- a deterministic question router. |
 | [`src/archive_query.ts`](src/archive_query.ts) | Entry listing + single-member extraction for `token-goat zip-list` / `zip-read`, so a .zip/.jar/.whl/.vsix/.nupkg (all zip-format containers under the hood) never needs its whole a |
 | [`src/asset_extensions.ts`](src/asset_extensions.ts) | Extension-based classification of files whose bytes are not text, kept in one leaf module with no imports of its own so every consumer shares a single list. |
@@ -398,6 +401,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/call_streak.ts`](src/call_streak.ts) | Call-streak advisories: the two hints that judge a run of tool calls rather than one call. |
 | [`src/canonical_skill.ts`](src/canonical_skill.ts) | The canonical token-goat skill installed by `token-goat install`, generated from `src/canonical_skill.md` by `npm run skill:canonical`. |
 | [`src/capabilities.ts`](src/capabilities.ts) | A machine-readable statement of every capability token-goat has that can send data off the machine or leave data on it, with its effective state and the place that state is enforce |
+| [`src/change_claim.ts`](src/change_claim.ts) | Whether a subagent's final report claims a change of its own. |
 | [`src/claude_config_dir.ts`](src/claude_config_dir.ts) | Where Claude Code keeps its own per-user configuration, and nothing else. |
 | [`src/claude_hidden_rules.ts`](src/claude_hidden_rules.ts) | Whether a Claude Code session could be under permission rules no settings file shows, so that rewrite_permission.ts must not answer a bypassPermissions rewrite with `allow`: a host |
 | [`src/cli_audit.ts`](src/cli_audit.ts) | CLI handler for `token-goat audit`. |
@@ -575,6 +579,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/ts_refs.ts`](src/ts_refs.ts) | Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API. |
 | [`src/untrusted_fence.ts`](src/untrusted_fence.ts) | The single decision point for "should this text be fenced, and under what notice". |
 | [`src/url_policy.ts`](src/url_policy.ts) | Shared allow/deny matching for URL policy (`webfetch.allow` / `webfetch.deny`). |
+| [`src/verification_state.ts`](src/verification_state.ts) | What the session has verified. |
 | [`src/video_chapters.ts`](src/video_chapters.ts) | Reads embedded chapter markers and subtitle-stream metadata out of a video file via `ffprobe`, so an agent can see a video's structure without downloading/transcoding it. |
 | [`src/vscode_duplicate.ts`](src/vscode_duplicate.ts) | Duplicate-invocation suppression for VS Code agent hooks. |
 | [`src/vscode_path_gate.ts`](src/vscode_path_gate.ts) | Which paths a pre_tool_use handler may open. |

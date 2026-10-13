@@ -8,7 +8,7 @@ import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, saniti
 import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSerializedJson } from './secret_redact.js'
-import { MAX_SEEN_IMAGE_HASHES, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, markCompacted, mergeEpochBase, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, MAX_VERIFICATION_RUNS, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, markCompacted, mergeEpochBase, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession, type VerificationRun } from './session.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -225,6 +225,13 @@ function coerce(raw: unknown): SerializedSession {
   const seenImageHashes = Array.isArray(o['seenImageHashes'])
     ? o['seenImageHashes'].filter((h): h is string => typeof h === 'string')
     : []
+  const verificationRuns: VerificationRun[] = Array.isArray(o['verificationRuns'])
+    ? (o['verificationRuns'] as unknown[]).filter(
+        (r): r is VerificationRun =>
+          r !== null && typeof r === 'object' && typeof (r as VerificationRun).command === 'string' && typeof (r as VerificationRun).at === 'number' &&
+          ((r as VerificationRun).exitCode === null || typeof (r as VerificationRun).exitCode === 'number'),
+      )
+    : []
   const pendingLargeFileHints: Array<[string, number]> = Array.isArray(o['pendingLargeFileHints'])
     ? (o['pendingLargeFileHints'] as unknown[]).filter(
         (p): p is [string, number] =>
@@ -269,6 +276,7 @@ function coerce(raw: unknown): SerializedSession {
     outstandingAgentSpawns,
     ...(typeof o['lastTabContextDigest'] === 'string' ? { lastTabContextDigest: o['lastTabContextDigest'] } : {}),
     ...(seenImageHashes.length > 0 ? { seenImageHashes } : {}),
+    ...(verificationRuns.length > 0 ? { verificationRuns } : {}),
     ...(typeof o['compactedAt'] === 'number' ? { compactedAt: o['compactedAt'] } : {}),
     ...(typeof o['created_ts'] === 'number' ? { created_ts: o['created_ts'] } : {}),
   }
@@ -437,6 +445,13 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
   const memServed = (mem.compactedAt ?? 0) === compactedAt ? (mem.fileServedOutputs ?? []) : []
   const rawDiskCliReads = (disk.compactedAt ?? 0) === compactedAt ? (disk.cliReads ?? []) : []
   const memCliReads = (mem.compactedAt ?? 0) === compactedAt ? (mem.cliReads ?? []) : []
+  // One verification run per command, the later of the two when both processes saw it, oldest first and capped at MAX_VERIFICATION_RUNS; empty is omitted from the blob like the other optional lists.
+  const latestRuns = new Map<string, VerificationRun>()
+  for (const run of [...(disk.verificationRuns ?? []), ...(mem.verificationRuns ?? [])]) {
+    const seen = latestRuns.get(run.command)
+    if (seen === undefined || run.at >= seen.at) latestRuns.set(run.command, run)
+  }
+  const verificationRuns = Array.from(latestRuns.values()).sort((a, b) => a.at - b.at).slice(-MAX_VERIFICATION_RUNS)
   // recordFileEdit clears a single file's line-range history in-memory (an edit moves the numbers those ranges are matched on; the served-output ids are matched on bytes instead and survive), but that per-file deletion carries no epoch of its own, so the compaction filter above cannot see it -- an unrelated disk read from before the edit would otherwise resurrect the exact entry this process just cleared. Drop those files from the disk side before the union so the clearing actually sticks.
   const clearedRangeFiles = new Set(consumedFileLineRangeKeys())
   const clearedServedFiles = new Set(consumedFileServedOutputKeys())
@@ -469,6 +484,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     outstandingAgentSpawns: mergeOutstandingAgentSpawns(disk.outstandingAgentSpawns ?? [], mem.outstandingAgentSpawns ?? []),
     // An accumulating collection, so union rather than pick a winner: two hook processes can each see a screenshot the other never did. Disk first, then mem, so the order stays oldest-to-newest and the cap evicts the oldest -- the same policy recordSeenImage applies in memory, applied again here because a union of two capped lists can exceed the cap.
     seenImageHashes: mergeSeenImageHashes(disk.seenImageHashes ?? [], mem.seenImageHashes ?? []),
+    ...(verificationRuns.length > 0 ? { verificationRuns } : {}),
     // Last-seen scalar, not an accumulating collection: prefer mem's value (this process's freshest observation) over disk's, since a newer write always supersedes an older one.
     ...(mem.lastTabContextDigest !== undefined
       ? { lastTabContextDigest: mem.lastTabContextDigest }

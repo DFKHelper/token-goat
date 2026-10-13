@@ -72,6 +72,8 @@ let _globQueries = new Map<string, number>()
 // Last-seen "Tab Context:" block text from a browser-automation MCP tool result this session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a placeholder instead of resending the full open-tab list.
 let _lastTabContext: string | null = null // fingerprint of the block, never the block; see setLastTabContext
 let _seenImageHashes: string[] = []
+// Test, lint, typecheck and build commands run this session, newest last, one entry per distinct command; see recordVerificationRun.
+let _verificationRuns: VerificationRun[] = []
 
 /** A currently-outstanding Agent-tool (subagent) spawn tracked for hooks_agent_spawn.ts's duplicate-brief detection: the original prompt text (before any briefing/advisory the pre-hook appends) and when it was recorded. */
 export interface OutstandingAgentSpawn {
@@ -511,6 +513,23 @@ export function lastTabContextMatches(text: string): boolean {
   return _lastTabContext !== null && _lastTabContext === shortFingerprint(text)
 }
 
+/** One verification command (test, lint, typecheck, build) as the host reported it. `exitCode` is null when the host does not report a status for a call that ran. */
+export interface VerificationRun {
+  readonly command: string
+  readonly exitCode: number | null
+  readonly at: number
+}
+
+/** Upper bound on distinct verification commands remembered per session. */
+export const MAX_VERIFICATION_RUNS = 8
+
+/** Remember a verification run, replacing an earlier run of the same command so only its latest verdict counts, and evicting the oldest past {@link MAX_VERIFICATION_RUNS}. */
+export function recordVerificationRun(command: string, exitCode: number | null, at: number = Date.now()): void {
+  _verificationRuns = _verificationRuns.filter((r) => r.command !== command)
+  _verificationRuns.push({ command, exitCode, at })
+  if (_verificationRuns.length > MAX_VERIFICATION_RUNS) _verificationRuns = _verificationRuns.slice(-MAX_VERIFICATION_RUNS)
+}
+
 /** Upper bound on screenshot fingerprints remembered per session. Bounded for the same reason MAX_OUTSTANDING_AGENT_SPAWNS is: a long browsing session takes hundreds of screenshots and this list is written to disk on every hook. Oldest is evicted first, which is also the right policy on merit -- a screenshot from an hour ago being repeated now is a coincidence, while one from three tool calls ago is a poll loop. */
 export const MAX_SEEN_IMAGE_HASHES = 16
 
@@ -786,6 +805,8 @@ export interface SerializedSession {
   lastTabContextDigest?: string
   /** Fingerprints of screenshots already shown this session, oldest first. See `_seenImageHashes`. */
   seenImageHashes?: string[]
+  /** Verification commands run this session, newest last. See `recordVerificationRun`. */
+  verificationRuns?: VerificationRun[]
   /** Unix-ms of the most recent context compaction, or absent if none. Merged max-wins by session_store.ts so a stamp made by one hook process is never lost to a concurrent process that predates it. See `_compactedAt`. */
   compactedAt?: number
   /** Unix time in *seconds* at which this session's on-disk cache was first written. Set exactly once by `session_store.ts::saveSessionState` and preserved across every later write, so it marks cache creation, not last modification. compact.ts derives the session-age budget multiplier from it. */
@@ -813,6 +834,7 @@ export function exportSessionState(): SerializedSession {
     outstandingAgentSpawns: _outstandingAgentSpawns.map((e) => [e.prompt, e.ts]),
     ...(_lastTabContext !== null ? { lastTabContextDigest: _lastTabContext } : {}),
     ...(_seenImageHashes.length > 0 ? { seenImageHashes: [..._seenImageHashes] } : {}),
+    ...(_verificationRuns.length > 0 ? { verificationRuns: [..._verificationRuns] } : {}),
     ...(_compactedAt > 0 ? { compactedAt: _compactedAt } : {}),
   }
 }
@@ -849,6 +871,7 @@ export function importSessionState(s: SerializedSession): void {
   _outstandingAgentSpawnsAtLoad = [..._outstandingAgentSpawns]
   _lastTabContext = s.lastTabContextDigest ?? null
   _seenImageHashes = [...(s.seenImageHashes ?? [])]
+  _verificationRuns = [...(s.verificationRuns ?? [])]
   _compactedAt = s.compactedAt ?? 0
 }
 
@@ -880,6 +903,7 @@ registerReset(() => {
   _outstandingAgentSpawnsAtLoad = []
   _lastTabContext = null
   _seenImageHashes = []
+  _verificationRuns = []
   _compactedAt = 0
   _sessionId = null
   _transcriptPath = null

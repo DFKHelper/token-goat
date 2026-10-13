@@ -19,7 +19,8 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 const _testConfigPath = tempConfigPath('tg-hooks-session-config-test.toml');
 
-import { pendingContextHandler, subagentStopHandler, userPromptSubmitHandler } from '../src/hooks_session.js';
+import { subagentStopHandler } from '../src/agent_receipt.js';
+import { pendingContextHandler, userPromptSubmitHandler } from '../src/hooks_session.js';
 import { clearModuleCaches } from '../src/reset.js';
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js';
 import { getDb } from '../src/db.js';
@@ -230,6 +231,28 @@ describe('hooks_session', () => {
   });
 
   describe('subagentStopHandler - hallucination detection', () => {
+    // HAND-DERIVED: reports that name no change of the agent's own, which the older verb match took for one ("I'll add X next", "Changed: none").
+    it.each([["I'll add the guard next."], ['Changed: none'], ['We updated nothing'], ['Renamed symbols are listed below.']])('does not warn on the clean-tree report %j', (message) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(util.runGit).mockReset();
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'test-session', agentId: undefined, raw: { cwd: '/tmp/repo', last_assistant_message: message } });
+      expect(warnSpy).not.toHaveBeenCalled();
+      // A report that claims nothing is decided before git is asked.
+      expect(util.runGit).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    });
+
+    it('asks git only for a report that claims a change', () => {
+      vi.mocked(util.runGit).mockReset();
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'test-session', agentId: undefined, raw: { cwd: '/tmp/repo', last_assistant_message: 'I renamed foo to bar.' } });
+      expect(util.runGit).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      warnSpy.mockRestore();
+    });
+
     it('does not warn when the report is a readonly research summary and git status is clean', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -526,7 +549,7 @@ describe('hooks_session', () => {
         toolInput: {},
         sessionId: 'test-session',
         agentId: undefined,
-        raw: { cwd: '/tmp/repo' },
+        raw: { cwd: '/tmp/repo', last_assistant_message: 'I renamed foo to bar.' },
       };
 
       subagentStopHandler(event);

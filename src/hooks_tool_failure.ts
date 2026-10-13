@@ -7,6 +7,7 @@ import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
+import { noteFailedVerificationHandler } from './hooks_verification.js'
 import { contextOutput, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
 import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
@@ -274,4 +275,5 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
   }
 }
 
+registerHook('post_tool_use_failure', noteFailedVerificationHandler, { advisory: true })
 registerHook('post_tool_use_failure', postToolUseFailureHandler)

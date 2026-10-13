@@ -35,6 +35,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Two third-party values. The skill name in the repeated-body advisory is escaped in resident_context.ts, since a skill declares its own name and nothing upstream constrains it. The git branch name is not escaped and does not need to be: git refuses a ref containing a bracket, so it cannot carry a marker.',
   'image_shrink.ts::finalizeShrinkResult':
     'Names the image it shrank, and a repository names its images. The basename is escaped once where it is computed, which also covers the stats label it feeds. The OCR text beside it was already fenced separately.',
+  'hooks_stop.ts::stopHandler':
+    'Names the source files the session edited, which a repository names, and the last verification command, which the model typed. Each file name goes through nameSubject and the command through quotedArg, both display-safe, so neither can carry a marker or a backtick.',
   'hooks_tool_failure.ts::postToolUseFailureHandler':
     'Names the tool that failed twice, and an MCP server chooses the names it advertises. Escaped in repeatFailureNotice.',
   'call_streak.ts::trackedLine':
@@ -68,6 +70,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'One site, reached through quietContextOutput. Its path comes through the same displaySafePath-derived `shown` the pre-read hints use.',
   'hooks_agent_spawn.ts::subagentStartHandler':
     'Emits buildSubagentBriefing, which interpolates the project map and recent cached-output ids. Repository-chosen text in the map (the folder name, recent file paths, top symbol names, kinds and paths) all goes through displaySafeText inside formatProjectMap, pinned by tests/copilot_subagent_start.test.ts; the output ids are hexadecimal ids storeBashOutput generated and the sizes are integers.',
+  'agent_receipt.ts::waitAgentHandler':
+    'Emits the evidence receipt lines of a Codex subagent whose report the parent just received. receiptLines builds them from file names (nameSubject), the failed command (echoedValue) and fixed words, and the thread id that heads a multi-agent block goes through echoedValue, so nothing the repository or the subagent chose reaches the channel unescaped.',
   'hooks_agent_spawn.ts::postAgentHandler':
     'The unrestricted-spawn advisory names agent definitions from a roster that includes the project you are in. AGENT_NAME_RE constrains the name at the parser and neutralizeSpokenMarkers escapes it again at the sentence, so widening the character set cannot quietly reopen it.',
   // The six below are outer handlers whose whole contribution is a try/catch and a dispatch to the Inner adjudicated above them. They are in the population because the walk is transitive, which is the right default: a wrapper that started composing its own text would otherwise be invisible.

@@ -22,9 +22,13 @@ export interface BridgeCapabilityRow {
   readonly reasons: ReadonlyArray<{ readonly events: readonly HookEventName[]; readonly reason: string }>
 }
 
-/** `notification` and `stop` have zero `registerHook('notification', ...)` / `registerHook('stop', ...)` call sites anywhere in `src/` (confirmed via a full-repo grep of `registerHook(` -- every real handler registers against `pre_tool_use`, `post_tool_use`, `pre_compact`, `user_prompt_submit`, or `subagent_stop`). No bridge wiring either event would currently do anything: token-goat's own relay has no server-side handler to dispatch to. Shared reason text for the several rows below that cite it. */
+/** `notification` has zero `registerHook('notification', ...)` call sites anywhere in `src/`, so wiring it on any bridge would currently do nothing: token-goat's own relay has no server-side handler to dispatch to. Shared reason text for the several rows below that cite it. */
 const NO_SERVER_HANDLER_REASON =
-  "token-goat has no registered server-side handler for this event (zero registerHook('notification'|'stop', ...) call sites in src/) -- wiring it client-side would currently be a no-op"
+  "token-goat has no registered server-side handler for this event (zero registerHook('notification', ...) call sites in src/) -- wiring it client-side would currently be a no-op"
+
+/** `stop` has a server-side handler (the unverified-work advisory in src/hooks_stop.ts) and is installed on Claude Code and Codex CLI; Copilot CLI and VS Code run an agentStop entry but their response channels drop the advisory, so both list it as unsupported (see STOP_CONTEXT_DROPPED). A bridge that cites this reason has not had its own stop hook wired or checked. */
+const NO_STOP_WIRING_REASON =
+  'the stop handler (src/hooks_stop.ts) exists, but this bridge does not install a stop hook and its harness has not been checked for one that accepts a non-blocking message'
 
 /** `post_compact` is Claude Code's own event, confirmed by reading the installed binary: its hook input schema declares `hook_event_name: "PostCompact"` with a `compact_summary` string, and the runner hands a hook the finished summary verbatim. No other harness here has been shown to have an equivalent. Several have something adjacent -- pi emits `session_compact` and opencode `experimental.session.compacting` -- but neither bridge forwards a summary, and the Claude Code forks (grok, qwen, kimi) have not been re-checked against their own hooks docs. Left unwired rather than guessed at, the same standard every other row's gaps are held to. */
 const NO_POST_COMPACT_EVENT_REASON =
@@ -68,9 +72,9 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     verification: 'dogfooded',
     verificationNote:
       "The harness this repo is developed and released under; CLAUDE.md requires every CLI/hook change be run against the built binary here before it ships.",
-    implemented: new Set(['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
+    implemented: new Set(['pre_tool_use', 'post_tool_use', 'post_tool_use_failure', 'pre_compact', 'post_compact', 'user_prompt_submit', 'stop', 'subagent_stop', 'session_start']),
     reasons: [
-      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['notification'], reason: NO_SERVER_HANDLER_REASON },
       { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
     ],
   },
@@ -81,10 +85,10 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     verification: 'dogfooded',
     verificationNote:
       'codex-cli 0.155.0, 2026-09-22: observed running the installed config.toml hooks and delivering real payloads to the shim -- PreToolUse/PostToolUse with tool_name "Bash" and tool_input.command, and PreCompact with trigger "auto" from a forced auto-compaction. A pre-tool deny was honored (the model dropped Get-Content and ran token-goat outline instead) and post-tool additionalContext reached the model; the pre-compact response did not, which is why codex is in PRE_COMPACT_CONTEXT_DROPPED. Two conditions gate the tool events and both fail silently. config.toml must carry the matching [hooks.state] trusted_hash the installer writes, and the matcher must name the tool as it appears on the hook wire -- "Bash" for shell execution, since Codex normalizes its own exec tool into Claude Code\'s vocabulary before matching, while apply_patch stays native. A matcher naming the internal spelling produced a run with eight pre_compact rows and no pre_tool_use or post_tool_use row at all, and that also stranded every queued compaction manifest. Verified end to end after the fix: a forced auto-compaction run recorded eight compactions and twelve manifest deliveries in its own rollout transcript.',
-    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop']),
+    implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'stop', 'subagent_stop']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
-      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['notification'], reason: NO_SERVER_HANDLER_REASON },
       { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
       {
         events: ['post_compact', 'session_start'],
@@ -104,7 +108,8 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
-      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['notification'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['stop'], reason: NO_STOP_WIRING_REASON },
       { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
       {
         events: ['session_start'],
@@ -126,7 +131,6 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
       'pre_tool_use',
       'post_tool_use',
       'pre_compact',
-      'stop',
       'subagent_stop',
       'subagent_start',
       'user_prompt_submit',
@@ -134,6 +138,11 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     ]),
     reasons: [
       { events: ['post_compact'], reason: COPILOT_NO_POST_COMPACT_REASON },
+      {
+        events: ['stop'],
+        reason:
+          'Copilot CLI runs the agentStop entry of its hooks file, but agentStop and subagentStop read only a {decision, reason} answer (copilot_cli.ts), so the unverified-work advisory has no channel and the handler passes there (STOP_CONTEXT_DROPPED)',
+      },
       {
         events: ['notification'],
         reason:
@@ -174,7 +183,7 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
         reason:
           "Only five Qwen Code events have a token-goat handler; every other real event (Notification, SessionEnd, PostToolUseFailure, StopFailure, SubagentStart, PermissionRequest, TodoCreated, TodoCompleted) is left unimplemented rather than guessed at (qwen_install.ts)",
       },
-      { events: ['stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['stop'], reason: NO_STOP_WIRING_REASON },
       { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
       {
         events: ['session_start'],
@@ -197,7 +206,12 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
           "VS Code reads the shared Copilot hooks file but maps only sessionStart, sessionEnd, userPromptSubmitted, preToolUse, postToolUse, agentStop, subagentStop and errorOccurred out of it, so the file's preCompact and postToolUseFailure entries never fire there. Re-read in the 1.138.0 bundle, where the github-copilot branch of that table still lists exactly those eight: the compaction manifest is unavailable on this harness rather than merely unwired, and unlike Copilot CLI and Codex there is no queueing fallback, because the trigger itself never arrives",
       },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
-      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['notification'], reason: NO_SERVER_HANDLER_REASON },
+      {
+        events: ['stop'],
+        reason:
+          'VS Code runs the agentStop entry of the shared hooks file, but its Stop hook reads only a block decision (hookSpecificOutput.decision and reason, executeStopHook in extensions/copilot/dist/extension.js, VS Code 1.140.0) and the unverified-work advisory never blocks, so the handler passes there (STOP_CONTEXT_DROPPED)',
+      },
     ],
   },
   {
@@ -226,7 +240,8 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     implemented: new Set(['pre_tool_use', 'post_tool_use', 'pre_compact', 'user_prompt_submit', 'subagent_stop', 'session_start']),
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
-      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },{ events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },{ events: ['notification'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['stop'], reason: NO_STOP_WIRING_REASON },
       { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
     ],
   },
@@ -241,7 +256,8 @@ export const BRIDGE_CAPABILITY_MATRIX: readonly BridgeCapabilityRow[] = [
     reasons: [
       { events: ['post_tool_use_failure'], reason: NO_SEPARATE_FAILURE_EVENT_REASON },
       { events: ['post_compact'], reason: NO_POST_COMPACT_EVENT_REASON },
-      { events: ['notification', 'stop'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['notification'], reason: NO_SERVER_HANDLER_REASON },
+      { events: ['stop'], reason: NO_STOP_WIRING_REASON },
       { events: ['subagent_start'], reason: NO_SUBAGENT_START_REASON },
       {
         events: ['pre_compact', 'session_start', 'subagent_stop'],

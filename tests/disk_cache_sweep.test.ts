@@ -104,6 +104,17 @@ describe('sweepCacheRoots', () => {
     expect(fs.existsSync(fresh)).toBe(true)
   })
 
+  it('reaps the stale subagent-receipt and stop-advisory sidecars of a dead session', () => {
+    // The sidecars live beside the session state, so the sessions-dir age sweep is their only reaper: an aged one must go and a fresh one must stay.
+    const dir = path.join(home, 'sessions')
+    const aged = ['sid1.agent-receipts', 'sid1.agent-receipts.lock', 'sid1.stop-advised'].map((name) => writeFile(dir, name, true))
+    const live = writeFile(dir, 'sid2.agent-receipts', false)
+
+    expect(sweepCacheRoots()).toBe(3)
+    for (const p of aged) expect(fs.existsSync(p)).toBe(false)
+    expect(fs.existsSync(live)).toBe(true)
+  })
+
   it('reaps stale cache files under an extra root too', () => {
     // The stranded legacy root: the same age policy applies to it, so its contents age out without any bespoke "delete the old directory" migration.
     const legacyJson = writeFile(path.join(extraRoot, 'mcp_outputs'), 'x.json', true)

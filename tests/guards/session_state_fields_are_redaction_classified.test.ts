@@ -52,6 +52,19 @@ interface FieldCoverage {
 
 const SESSION_FIELD_COVERAGE: ReadonlyMap<string, FieldCoverage> = new Map([
   [
+    'verificationRuns',
+    {
+      coverage: 'redacted-at-writer',
+      reason:
+        'storedCommand() in verification_state.ts keeps only the check segments and passes each ' +
+        'through an allow-list (allowListed): the runner and subcommand, a short set of known ' +
+        'switches, a built-in reporter and path-like words survive, every other word is dropped ' +
+        'and marked with an ellipsis, then redactSecrets runs over what was kept and the line is ' +
+        'capped at 200 characters before recordVerificationRun stores it; the other two members ' +
+        'are a number and an exit status.',
+    },
+  ],
+  [
     'files',
     {
       coverage: 'structural-no-free-text',

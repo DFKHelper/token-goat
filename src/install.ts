@@ -46,6 +46,7 @@ const HOOK_EVENT_MAP: ReadonlyArray<readonly [string, string]> = [
   ['PreCompact', 'pre_compact'],
   ['PostCompact', 'post_compact'],
   ['UserPromptSubmit', 'user_prompt_submit'],
+  ['Stop', 'stop'],
   ['SubagentStop', 'subagent_stop'],
   ['SessionStart', 'session_start'],
 ]
