@@ -1,4 +1,4 @@
-/** What a recovery pair may store and replay (recovery_pairs.ts). A stored fix is shown to the model in a later session, and the error text that led to it is attacker-influenced, so the gate is an allowlist of the repo's own build, test and install verbs, not a list of known-bad commands. A part names no package (the package name would come from the error text), pipes nothing, redirects nothing and sets no environment variable that changes what gets loaded. Every command kept anywhere on disk must also be free of credentials. */
+/** What a recovery pair may store and replay (recovery_pairs.ts). A stored fix is shown to the model in a later session, and the error text that led to it is attacker-influenced, so the gate is an allowlist of the repo's own build, test and install verbs, not a list of known-bad commands. A part names no package (the package name would come from the error text), pipes nothing, redirects nothing and sets no environment variable outside a short allowlist and names no path outside the working directory. Every command kept anywhere on disk must also be free of credentials. */
 
 import { stripLeadingAssignments } from './bash_extractors.js'
 import { hasPreciseSecret, redactSecrets } from './secret_redact.js'
@@ -12,8 +12,11 @@ const SAFE_FLAG_NAMES: readonly string[] = [
 ]
 const SAFE_FLAG_VALUES: readonly string[] = ['-count', '-parallel', '--jobs', '--concurrency', '--maxsockets']
 const FLAG = String.raw`(?:\s+(?:(?:${SAFE_FLAG_NAMES.join('|')})(?:=(?:true|false|\d{1,5}))?|(?:${SAFE_FLAG_VALUES.join('|')})=\d{1,5}|-j\d{1,3}|--console=plain)(?=\s|$))`
-const PATH_ARG = String.raw`[\w./-]+`
-const PIP_ARGS = String.raw`(?:${FLAG}|\s+-r\s+${PATH_ARG}|\s+-e\s+\.[\w./-]*|\s+\.)*`
+/** Refuses a path with a `..` segment (a segment of exactly two dots) anywhere in the token it is placed in front of. */
+const NO_DOTDOT = String.raw`(?![\w./-]*?(?<![\w.-])\.\.(?![\w.-]))`
+/** A path argument that stays inside the working directory, so a replayed `cd`, `source` or `pip -r` can not point at a file the error text chose: no `..` segment, no leading `/` or `-`, and by the character class no `~`, drive prefix or backslash. */
+const PATH_ARG = String.raw`(?![/-])${NO_DOTDOT}[\w./-]+`
+const PIP_ARGS = String.raw`(?:${FLAG}|\s+-r\s+${PATH_ARG}|\s+-e\s+(?=\.)${PATH_ARG}|\s+\.)*`
 
 /** The verbs a `make` target or a package-manager script name must start with to be replayed: the build, test, lint, setup, install, check, generate and compile family, never a deploy, publish, reset or migration. A name may continue after a verb with `:`, `-` or `_` (`build:prod`, `test-unit`, `lint:fix`) unless {@link UNSAFE_TASK_WORDS} appears anywhere in it. */
 export const FIX_TASK_VERBS: readonly string[] = ['build', 'tests?', 'lint', 'typecheck', 'check', 'setup', 'install', 'bootstrap', 'generate', 'gen', 'codegen', 'compile']
@@ -38,10 +41,10 @@ export const FIX_VERB_ALLOWLIST: readonly FixVerbClass[] = [
   { name: 'uv pip install from a manifest', pattern: new RegExp(String.raw`^uv\s+pip\s+install${PIP_ARGS}$`), example: 'uv pip install -e .' },
   { name: 'python environment sync', pattern: new RegExp(String.raw`^(?:uv\s+sync|poetry\s+install|pipenv\s+(?:install|sync))${FLAG}*$`), example: 'uv sync' },
   { name: 'cargo', pattern: new RegExp(String.raw`^cargo\s+(?:build|test|fetch|check)${FLAG}*$`), example: 'cargo fetch' },
-  { name: 'go build and test', pattern: new RegExp(String.raw`^go\s+(?:build|test|vet)(?:${FLAG}|\s+\.{1,2}/[\w./-]*)*$`), example: 'go test ./...' },
+  { name: 'go build and test', pattern: new RegExp(String.raw`^go\s+(?:build|test|vet)(?:${FLAG}|\s+(?=\./)${PATH_ARG})*$`), example: 'go test ./...' },
   { name: 'go modules', pattern: new RegExp(String.raw`^go\s+mod\s+(?:download|tidy|vendor)${FLAG}*$`), example: 'go mod download' },
   { name: 'make target', pattern: new RegExp(String.raw`^make(?:\s+${TASK}|${FLAG})*$`), example: 'make setup' },
-  { name: 'virtualenv activation', pattern: new RegExp(String.raw`^(?:source|\.)\s+[\w./-]*activate(?:\.\w+)?$`), example: 'source .venv/bin/activate' },
+  { name: 'virtualenv activation', pattern: new RegExp(String.raw`^(?:source|\.)\s+(?=${PATH_ARG}$)[\w./-]*activate(?:\.\w+)?$`), example: 'source .venv/bin/activate' },
   { name: 'bundler', pattern: new RegExp(String.raw`^bundle\s+install${FLAG}*$`), example: 'bundle install' },
   { name: 'dotnet', pattern: new RegExp(String.raw`^dotnet\s+(?:restore|build|test)${FLAG}*$`), example: 'dotnet restore' },
   { name: 'maven and gradle', pattern: new RegExp(String.raw`^(?:\./)?(?:mvnw?|gradlew?)(?:\s+(?:clean|install|compile|test|package|verify|build|assemble)|${FLAG})+$`), example: 'mvn clean install' },
@@ -57,27 +60,31 @@ const FORBIDDEN_IN_PART = /[|;<>&$`]|\b(?:curl|wget|sudo|iex|eval|base64)\b|Invo
 /** A flag that points an install at another package index or registry, or hands make or pip another file (`-i`, `-f`, `-c`), in the spaced or the `=` form. Refused whatever its value, because the value would be a host or file the error text chose. */
 const SOURCE_FLAG = /(?:^|\s)(?:--?(?:index-url|extra-index-url|default-index|index|find-links|registry|trusted-host|proxy|repository|repository-url|file|makefile)|-[ifc])(?:=|\s|$)/i
 
-/** Environment variables that change what a program loads or runs. */
-const DANGEROUS_ENV = /^(?:LD_\w+|DYLD_\w+|PATH|NODE_OPTIONS|NODE_PATH|BASH_ENV|ENV|PYTHONSTARTUP|PYTHONHOME|PERL5OPT|RUBYOPT|GIT_\w+|npm_config_\w+|NPM_CONFIG_\w+|PIP_\w+|UV_\w+)$/
+/** The only variables a replayed fix may set, each one a switch that changes how much a tool prints or which mode it reports in, never what it loads, runs or where it looks: `CI` and `NODE_ENV` (non-interactive and build mode), `FORCE_COLOR` and `NO_COLOR` (colour), `TZ`, `LANG` and `LC_ALL` (time zone and locale), `RUST_BACKTRACE` and `DEBUG` (diagnostic output). Everything else is refused, `HOME`, `CDPATH`, `XDG_*`, `PYTHONPATH`, `SHELL`, `IFS`, `PROMPT_COMMAND` and `TOKEN_GOAT_*` included, because a list of bad names always misses one and an allowlist can not. */
+const SAFE_ENV_NAMES: ReadonlySet<string> = new Set(['CI', 'NODE_ENV', 'FORCE_COLOR', 'NO_COLOR', 'TZ', 'LANG', 'LC_ALL', 'RUST_BACKTRACE', 'DEBUG'])
 
-function leadingAssignmentNames(segment: string): string[] {
-  const names: string[] = []
-  for (const token of segment.split(' ')) {
-    const assign = /^([A-Za-z_]\w*)=/.exec(token)
-    if (assign !== null) names.push(assign[1] ?? '')
-    else if (token !== 'env' && !token.startsWith('-')) break
-  }
-  return names
+/** What a safe variable may be set to: a short bare word, so the value can not carry a path, a quote or an expansion. */
+const SAFE_ENV_VALUE = /^[\w.,:-]{0,32}$/
+
+/** A word of the prefix a part had peeled off that sets a variable (`NAME=value`, or `--unset=X` and `-S "A=b c"`, which hold an `=` too) and is not a safe one. A word with no `=` can not set anything. */
+function setsUnsafeVariable(word: string): boolean {
+  if (!word.includes('=')) return false
+  const assign = /^([A-Za-z_]\w*)=(.*)$/.exec(word)
+  return assign === null || !SAFE_ENV_NAMES.has(assign[1] ?? '') || !SAFE_ENV_VALUE.test(assign[2] ?? '')
 }
 
-function coreOf(segment: string, wrappers: RegExp): string {
+/** The command `segment` runs once leading assignments and wrappers are peeled, and whether every word peeled off was free of an unsafe variable. Read from the peeled prefix itself rather than from the leading words, so an assignment behind a wrapper (`npx -y XDG_CONFIG_HOME=x npm ci`) or after an `env` flag (`env -u A B=1 npm ci`) is seen like a leading one. */
+function peelPart(segment: string, wrappers: RegExp): { core: string; envIsSafe: boolean } {
+  const squeezed = segment.replace(/\s+/g, ' ').trim()
   let core = segment
   for (let peel = 0; peel < 4; peel++) {
     const next = stripLeadingAssignments(core).replace(/\s+/g, ' ').trim().replace(wrappers, '')
     if (next === core) break
     core = next
   }
-  return core
+  core = core.replace(/\s+/g, ' ').trim()
+  if (!squeezed.endsWith(core)) return { core, envIsSafe: false }
+  return { core, envIsSafe: !squeezed.slice(0, squeezed.length - core.length).split(' ').some(setsUnsafeVariable) }
 }
 
 /** Stands in for the failed command itself in a stored fix: its arguments are free text (`pytest -k <anything>`) and an allowlist can not tell a test name from a secret, so the text is never kept and the fix says only that the same command was run again. */
@@ -92,7 +99,7 @@ export function rerunIsAllowed(core: string): boolean {
   return RERUN_COMMAND.test(core) || FIX_VERB_ALLOWLIST.some((verb) => verb.pattern.test(core))
 }
 
-/** `make -e` (or `--environment-overrides`) lets the caller's environment override the Makefile's own variables, which {@link DANGEROUS_ENV} does not see in a part that sets none. */
+/** `make -e` (or `--environment-overrides`) lets the caller's environment override the Makefile's own variables, which {@link SAFE_ENV_NAMES} does not see in a part that sets none. */
 const MAKE_ENV_OVERRIDE = /^make\b.*\s(?:-e|--environment-overrides)(?=\s|$)/
 
 /** Whether every `&&` part of `fix` is safe to show a later session as history. A part is accepted when it starts with an allowlisted verb or ends in {@link RERUN_PLACEHOLDER} behind a {@link SAFE_LEAD}; the failed command is never kept as text, so there is no third way in. */
@@ -103,9 +110,8 @@ export function fixIsAllowed(fix: string, wrappers: RegExp): boolean {
       if (!SAFE_LEAD.test(part.slice(0, part.length - RERUN_PLACEHOLDER.length))) return false
       continue
     }
-    if (leadingAssignmentNames(part).some((name) => DANGEROUS_ENV.test(name))) return false
-    const core = coreOf(part, wrappers)
-    if (MAKE_ENV_OVERRIDE.test(core) || !FIX_VERB_ALLOWLIST.some((verb) => verb.pattern.test(core))) return false
+    const { core, envIsSafe } = peelPart(part, wrappers)
+    if (!envIsSafe || MAKE_ENV_OVERRIDE.test(core) ||!FIX_VERB_ALLOWLIST.some((verb) => verb.pattern.test(core))) return false
   }
   return true
 }

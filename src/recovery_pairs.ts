@@ -1,7 +1,7 @@
-/** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same command in the same directory, same first error line) gets one line naming the fix as history once two distinct sessions have learned it, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that names token-goat, can not sit inside one backtick fence, or carries a credential, and a fix is kept only when every part starts with an allowlisted build, test or install verb (recovery_fix_policy.ts): the stored fix is replayed into the model's context, so it has to be safe to run on sight. No command line is written to disk: the failed command, its prefix and its directory-scoped shape are kept as SHA-256 digests, and a command run in between is kept as text only when it passes that allowlist and carries no credential, otherwise as {@link OTHER_STEP}, which makes the pair unlearnable, and the failed command rerun behind a prefix is kept as that prefix and {@link RERUN_PLACEHOLDER}, never its arguments; a file from before digests is ignored (STORE_VERSION, PENDING_VERSION). */
+/** Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. A failed command C opens a pending pair; when C (or C behind a prefix such as an env activation, `npx`, `uv run` or `env VAR=`) then exits 0 within {@link RECOVERY_WINDOW} later Bash calls with no edit between, the fix is what the model ran in between, or the prefix S added to C. A rerun with nothing between is a flaky command, and an edit between means the edit was the fix (the code changed, not the environment), so both learn nothing. Pairs live per project in a sidecar JSON under the token-goat data dir, keyed by the project hash, with no database migration; a later session whose Bash fails the same way (same command in the same directory, same first error line) gets one line naming the fix as history once two distinct sessions have learned it, and the pair is scored on what follows: the fix ran and C then passed is a help, C failing again after the fix is a hurt, and two hurts with more hurts than helps retire it. Nothing is learned from a command that names token-goat, can not sit inside one backtick fence, or carries a credential, and a fix is kept only when every part starts with an allowlisted build, test or install verb (recovery_fix_policy.ts): the stored fix is replayed into the model's context, so it has to be safe to run on sight. No command line is written to disk: the failed command, its prefix and its directory-scoped shape are kept as HMAC-SHA-256 digests under a per-install key, and a command run in between is kept as text only when it passes that allowlist and carries no credential, otherwise as {@link OTHER_STEP}, which makes the pair unlearnable, and the failed command rerun behind a prefix is kept as that prefix and {@link RERUN_PLACEHOLDER}, never its arguments; a file from before digests is ignored (STORE_VERSION, PENDING_VERSION). */
 
-import { createHash } from 'node:crypto'
-import { readFileSync, rmSync } from 'node:fs'
+import { createHash, createHmac, randomBytes } from 'node:crypto'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, posix, relative, sep } from 'node:path'
 
 import { stripLeadingAssignments } from './bash_extractors.js'
@@ -42,9 +42,9 @@ const MAX_FIX_COMMANDS = 2
 
 const PENDING_SUFFIX = '.recovery-pending'
 
-/** Version 3 keeps a command and an error cluster only as SHA-256 digests; an older file holds command lines or error text in the clear and is dropped unread. */
-const STORE_VERSION = 3
-const PENDING_VERSION = 3
+/** Version 4 keys the digests with a per-install secret ({@link digestKey}); a version 3 file holds bare SHA-256 digests that match nothing the keyed digests produce and can be guessed offline, and a version 2 or older file holds command lines or error text in the clear, so both are dropped unread. */
+const STORE_VERSION = 4
+const PENDING_VERSION = 4
 
 /** Stands in for a command run between a failure and its success that is not an allowlisted fix: the text is never kept, and a fix that would include it is not learned. */
 export const OTHER_STEP = '<other>'
@@ -174,9 +174,48 @@ export function learnableFix(failed: string, success: string, between: readonly 
   return learnFromDigest(digestFailed(failed), success, steps)
 }
 
-/** The SHA-256 of `text`, as hex: how a command is compared and keyed without being kept. */
+/** Where this install's digest key lives, beside the stores it protects so that removing the data directory removes both. */
+function digestKeyPath(): string {
+  return join(dataDir(), 'recovery_pairs', 'install.key')
+}
+
+const DIGEST_KEY_HEX = /^[0-9a-f]{64}$/
+
+let digestKeyCache: { path: string; key: string } | undefined
+
+/** The random key every digest is keyed with, created on first use and read once per process. Without it a digest is a bare SHA-256, and a leaked store lets anyone test guesses at a low-entropy command against it. The file is created exclusively and owner-only where the platform honours a mode, and its value is never logged or returned to a caller outside this module. When it can neither be read nor created the key is random for this process alone, so nothing learned in this process matches a later one: no pair is learned, which is the safe way to fail. */
+function digestKey(): string {
+  const path = digestKeyPath()
+  if (digestKeyCache?.path === path) return digestKeyCache.key
+  let key = ''
+  try {
+    key = readFileSync(path, 'utf8').trim()
+  } catch {
+    // Absent or unreadable: try to create it below.
+  }
+  if (!DIGEST_KEY_HEX.test(key)) {
+    const fresh = randomBytes(32).toString('hex')
+    try {
+      ensureDirSync(dirname(path))
+      writeFileSync(path, fresh, { flag: 'wx', mode: 0o600 })
+      key = fresh
+    } catch {
+      // Lost a race to another hook process, or the directory is not writable: use whichever key is on disk now, else this process's own.
+      try {
+        key = readFileSync(path, 'utf8').trim()
+      } catch {
+        key = ''
+      }
+      if (!DIGEST_KEY_HEX.test(key)) key = fresh
+    }
+  }
+  digestKeyCache = { path, key }
+  return key
+}
+
+/** The HMAC-SHA-256 of `text` under {@link digestKey}, as hex: how a command is compared and keyed without being kept. */
 function digestOf(text: string): string {
-  return createHash('sha256').update(text).digest('hex')
+  return createHmac('sha256', digestKey()).update(text).digest('hex')
 }
 
 function digestFailed(command: string): FailedDigest {

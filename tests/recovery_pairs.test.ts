@@ -1,7 +1,7 @@
 /** Failure-recovery pairs (src/recovery_pairs.ts, src/recovery_fix_policy.ts). Fixtures: the failed Bash payload is FORMAT-DERIVED (tests/fixtures/claude_code_2_1_281/bash_failure.json, scrubbed from a Claude Code 2.1.281 capture with key names unchanged, PROVENANCE.tsv); the successful Bash payload is FORMAT-DERIVED from https://code.claude.com/docs/en/hooks (PostToolUse: tool_name, tool_input.command, tool_response); the Copilot payload is FORMAT-DERIVED from tests/fixtures/harness_hook_payloads.ts (COPILOT_SCHEMA, PostToolUseFailureHookInput) as src/hook_adapters.ts canonicalizes it; command strings, error texts, credential shapes and expected fixes are HAND-DERIVED from the pairing rule and the allowlist. UNVERIFIED for Copilot CLI: no postToolUseFailure payload has been captured, the `Exit code 2` error wording in the Copilot test below is HAND-DERIVED (it is Claude Code's wording), and Copilot CLI's own session logs (events.jsonl under its session-state directory) record a shell command that exited 1 as `resultType: success` with the text `completed with exit code 1`, which suggests a non-zero shell exit reaches a hook as a success and never as postToolUseFailure. */
 import { execFileSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { createHash, createHmac } from 'node:crypto'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -90,6 +90,11 @@ function sidecarPathOf(sessionId: string, suffix: string): string {
 function sidecarText(sessionId: string): string {
   const target = sidecarPathOf(sessionId, '.recovery-pending')
   return target !== '' && existsSync(target) ? readFileSync(target, 'utf8') : ''
+}
+
+/** Where the per-install digest key sits: beside the stores, as the module's header documents. */
+function installKeyPath(): string {
+  return join(dirname(recoveryStorePath('any')), 'install.key')
 }
 
 function storeText(cwd: string): string {
@@ -545,7 +550,7 @@ describe('scoring', () => {
     expect(contextOf(await failed(s, cwd, 'pytest', first))).toContain(INSTALL)
     await succeeded(s, cwd, INSTALL)
     await failed(s, cwd, 'pytest', second)
-    const firstSignature = createHash('sha256').update('exit 1: ModuleNotFoundError: No module named foo').digest('hex')
+    const firstSignature = createHmac('sha256', readFileSync(installKeyPath(), 'utf8').trim()).update('exit 1: ModuleNotFoundError: No module named foo').digest('hex')
     const hurt = loadRecoveryPairs(cwd).map((p) => [p.signature === firstSignature, p.hurt] as const)
     expect(hurt.slice().sort()).toEqual([
       [false, 0],
@@ -853,6 +858,161 @@ describe('the tightened allowlist', () => {
     const after = contextOf(await failed(session(), cwd, 'pytest'))
     expect(after).not.toContain('evil.example')
     expect(after).not.toContain('index-url')
+  })
+})
+
+describe('the allowlist fails closed on environment and paths', () => {
+  const wrappers = /^(?:env\s+(?:-\S+\s+)*|npx\s+(?:(?:-y|--yes|--no-install)\s+)*|uv\s+run\s+(?:--\S+\s+)*)/
+
+  // HAND-DERIVED: each fix is a way to point a replayed install or build at a program or file outside the project. The first two are the forms a security review confirmed passed the previous deny-list and `[\w./-]+` path check; the rest are the other variables that move a home, a config dir, a module path or the shell, and each shape of path that leaves the working directory.
+  it.each([
+    'cd /tmp/x && source ../evil.sh',
+    'HOME=/tmp/x pip install -r /tmp/r.txt',
+    'HOME=x npm ci',
+    'CDPATH=/tmp cd x',
+    'CDPATH=/tmp npm ci',
+    'XDG_CONFIG_HOME=/tmp/x npm ci',
+    'TOKEN_GOAT_HOME=/tmp/x npm ci',
+    'PYTHONPATH=/tmp/x pip install -r requirements.txt',
+    'PROMPT_COMMAND=x npm ci',
+    'IFS=x npm ci',
+    'SHELL=/tmp/sh make build',
+    'env -u A XDG_CONFIG_HOME=/tmp/x npm ci',
+    'npx -y XDG_CONFIG_HOME=/tmp/x npm ci',
+    'uv run PYTHONPATH=/tmp/x pip install -r requirements.txt',
+    'CI=1 HOME=/tmp/x npm ci',
+    'env -S "A=b npm ci"',
+    'CI=$(id) npm ci',
+    'NODE_ENV=/tmp/x npm ci',
+    'cd ..',
+    'cd ../x',
+    'cd a/../..',
+    'cd /abs',
+    'cd ~/x',
+    'cd C:/x',
+    'cd -',
+    'source /abs/x.sh',
+    'source ../.venv/bin/activate',
+    '. /tmp/activate',
+    'source ~/venv/bin/activate',
+    'pip install -r ../r.txt',
+    'pip install -r /abs/r.txt',
+    'pip install -r ~/r.txt',
+    'pip install -r C:/r.txt',
+    'pip install -e /abs',
+    'pip install -e ../x',
+    'pip install -e ./../x',
+    'uv pip install -e ../x',
+    'go build ../x',
+    'go test ./../x',
+  ])('refuses %s', (command) => {
+    expect(fixIsAllowed(command, wrappers)).toBe(false)
+    expect(fixIsAllowed(`${command} && (the same command)`, wrappers)).toBe(false)
+  })
+
+  // HAND-DERIVED: the rows the allowlist accepted before this change and still accepts, plus the safe variables spelled out in the policy.
+  it.each([
+    'cd services/api',
+    'cd .',
+    'cd ./services/api',
+    'cd a..b/c',
+    'cd ...',
+    'source .venv/bin/activate',
+    '. ./venv/bin/activate',
+    'pip install -r requirements.txt',
+    'pip install -r ./reqs/dev.txt',
+    'pip install -e .',
+    'pip install -e ./pkg',
+    'uv pip install -e .',
+    'go test ./...',
+    'go build ./cmd/tool',
+    'make test-x',
+    'CI=1 npm ci',
+    'NODE_ENV=test npm test',
+    'LANG=C.UTF-8 LC_ALL=C make test',
+    'env CI=true NO_COLOR=1 npm ci',
+    'cd services/api && npm ci',
+  ])('still accepts %s', (command) => {
+    expect(fixIsAllowed(command, wrappers)).toBe(true)
+  })
+
+  // PROVENANCE: HAND-DERIVED store contents. The fix text is what an older build, whose deny-list and path check let it through, would have written; the signature and shape digests come from a real two-session lesson, so only the fix is swapped.
+  it.each(['HOME=/tmp/x pip install -r /tmp/r.txt', 'cd ../x && npm ci', 'XDG_CONFIG_HOME=/tmp/x npm ci'])('never replays %s from a store an older build wrote', async (refused) => {
+    const { cwd } = freshProject()
+    await teachTwice(cwd, 'pytest', [INSTALL])
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toContain(INSTALL)
+    const target = recoveryStorePath(recoveryProjectKey(cwd) ?? '')
+    const store = JSON.parse(readFileSync(target, 'utf8')) as { pairs: Array<{ fix: string }> }
+    for (const pair of store.pairs) pair.fix = refused
+    writeFileSync(target, JSON.stringify(store))
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toBe('')
+  })
+
+  it('does not learn a refused fix across two sessions', async () => {
+    const { cwd } = freshProject()
+    await teachTwice(cwd, 'pytest', ['HOME=/tmp/x pip install -r /tmp/r.txt'])
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toBe('')
+    expect(storeText(cwd)).not.toContain('/tmp/r.txt')
+  })
+})
+
+describe('the digests are keyed per install', () => {
+  // HAND-DERIVED: the error line the lesson is keyed on is `exit 1: ModuleNotFoundError: No module named foo` (the captured failure's first error line, as the scoring test above spells it); an unsalted SHA-256 of it is what a leaked store would let a guesser confirm.
+  it('keeps no bare SHA-256 of a guessable error line in the store', async () => {
+    const { cwd } = freshProject()
+    await teachTwice(cwd, 'pytest', [INSTALL])
+    const bare = createHash('sha256').update('exit 1: ModuleNotFoundError: No module named foo').digest('hex')
+    expect(storeText(cwd)).not.toContain(bare)
+    expect(storeText(cwd)).toContain('"signature"')
+  })
+
+  it('still lets two sessions on one install learn a pair and replay it', async () => {
+    const { cwd } = freshProject()
+    await teachTwice(cwd, 'pytest', [INSTALL])
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toContain(INSTALL)
+  })
+
+  it('creates a random 256-bit key once, owner-only where the platform has modes, and prints it nowhere', async () => {
+    const { cwd } = freshProject()
+    const s = session()
+    const shown = [contextOf(await failed(s, cwd, 'pytest'))]
+    await succeeded(s, cwd, INSTALL)
+    await succeeded(s, cwd, 'pytest')
+    await teachTwice(cwd, 'pytest', [INSTALL])
+    shown.push(contextOf(await failed(session(), cwd, 'pytest')))
+    const key = readFileSync(installKeyPath(), 'utf8')
+    expect(key).toMatch(/^[0-9a-f]{64}$/)
+    if (process.platform !== 'win32') expect(statSync(installKeyPath()).mode & 0o777).toBe(0o600)
+    for (const text of [...shown, storeText(cwd), sidecarText(s)]) expect(text).not.toContain(key)
+    await teachTwice(cwd, 'pytest', [INSTALL])
+    expect(readFileSync(installKeyPath(), 'utf8')).toBe(key)
+  })
+
+  // HAND-DERIVED: a store marked with the previous version number is what an older build left; it holds bare digests this build can not reproduce, so it is dropped unread rather than mixed in.
+  it('drops a store written by the unkeyed version instead of replaying it', async () => {
+    const { cwd } = freshProject()
+    await teachTwice(cwd, 'pytest', [INSTALL])
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toContain(INSTALL)
+    const target = recoveryStorePath(recoveryProjectKey(cwd) ?? '')
+    const store = JSON.parse(readFileSync(target, 'utf8')) as { version: number }
+    store.version = 3
+    writeFileSync(target, JSON.stringify(store))
+    expect(contextOf(await failed(session(), cwd, 'pytest'))).toBe('')
+    expect(existsSync(target)).toBe(false)
+  })
+
+  it('ignores a pending file of the unkeyed version', async () => {
+    const { cwd } = freshProject()
+    const s = session()
+    await failed(s, cwd, 'pytest')
+    const target = sidecarPathOf(s, '.recovery-pending')
+    const pending = JSON.parse(readFileSync(target, 'utf8')) as { version: number; open: unknown[] }
+    expect(pending.version).toBe(4)
+    expect(pending.open.length).toBe(1)
+    pending.version = 3
+    writeFileSync(target, JSON.stringify(pending))
+    await succeeded(s, cwd, 'pytest')
+    expect(loadRecoveryPairs(cwd)).toEqual([])
   })
 })
 
