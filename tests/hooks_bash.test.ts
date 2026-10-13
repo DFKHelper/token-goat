@@ -5268,13 +5268,15 @@ describe('stripExportPrefix — plain export statements ahead of a command', () 
 })
 
 describe('stripLeadingAssignments — an assignment that changes what runs is not peeled', () => {
-  it.each(['PATH=/tmp/x cat f', 'LD_PRELOAD=/tmp/x.so cat f', 'BASH_ENV=/tmp/x cat f', 'ENV=/tmp/x cat f', 'CDPATH=/z cat f', 'HOME=/z cat f', 'path=/tmp/x cat f', 'TOKEN_GOAT_HOME=/x cat f', 'TOKEN_GOAT_HARNESS_OVERRIDE=vscode cat f', 'A=1 PATH=/tmp/x cat f', 'env PATH=/tmp/x cat f'])('keeps %j whole', (command) => {
+  it.each(['PATH=/tmp/x cat f', 'LD_PRELOAD=/tmp/x.so cat f', 'BASH_ENV=/tmp/x cat f', 'ENV=/tmp/x cat f', 'CDPATH=/z cat f', 'HOME=/z cat f', 'path=/tmp/x cat f', 'TOKEN_GOAT_HOME=/x cat f', 'TOKEN_GOAT_HARNESS_OVERRIDE=vscode cat f', 'A=1 PATH=/tmp/x cat f', 'env PATH=/tmp/x cat f', 'XDG_DATA_HOME=/z cat f', 'xdg_config_home=/z cat f', 'PYTHONPATH=/z cat f', 'SHELL=/z cat f', 'IFS=x cat f', 'PROMPT_COMMAND=x cat f', 'NODE_OPTIONS=--require=/z cat f', 'GIT_DIR=/z cat f', 'env -u X PYTHONPATH=/z cat f'])('keeps %j whole', (command) => {
     expect(stripCommandPrefix(command)).toBe(command)
   })
 
   it('still peels an ordinary assignment', () => {
     expect(stripCommandPrefix('PATHS=/tmp/x cat f')).toBe('cat f')
     expect(stripCommandPrefix('FOO=1 cat f')).toBe('cat f')
+    expect(stripCommandPrefix('NODE_ENV=test cat f')).toBe('cat f')
+    expect(stripCommandPrefix('LANG=C cat f')).toBe('cat f')
     expect(stripCommandPrefix('TOKEN_GOAT_BASH_COMPRESS=0 cat f')).toBe('cat f')
   })
 })

@@ -178,6 +178,11 @@ describe('every read the ledger records is one the no-detach rule matches, in bo
     ['(cd /p && env -i token-goat read f@1-3)', true],
     ['cd missing && token-goat read f@1-3', true],
     ['cd - && token-goat read f@1-3', true],
+    // HAND-DERIVED: XDG_DATA_HOME moves where the index is looked up and PYTHONPATH what a python-based tool imports, so a read under either is not the bare read and records nothing.
+    ['XDG_DATA_HOME=/x token-goat read f@1-3', false],
+    ['PYTHONPATH=/x token-goat read f@1-3', false],
+    ['env XDG_DATA_HOME=/x token-goat read f@1-3', false],
+    ['env -i PYTHONPATH=/x token-goat read f@1-3', false],
     ['env -C /other token-goat read f@1-3', false],
     ['env --chdir=/other token-goat read f@1-3', false],
     ['env --chdir /other token-goat read f@1-3', false],
