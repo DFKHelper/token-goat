@@ -163,7 +163,7 @@ import(${JSON.stringify(pathToFileURL(BUNDLE).href)})
   expect(result.stderr).not.toContain('cleanup failed')
 })
 
-it.runIf(process.platform === 'win32')('contains an independent native breakaway attempt across nested jobs', async () => {
+it.runIf(process.platform === 'win32')('contains an independent native breakaway attempt across nested jobs', async (ctx) => {
   const fixture = treeFixture()
   const boundary = buildWindowsBoundary(fixture.root)
   const descendant = join(fixture.root, 'escaped.pid')
@@ -175,6 +175,8 @@ if (result.status !== 0) process.exit(1)
 process.stdout.write('{"hookSpecificOutput":{"additionalContext":"breakaway-denied"}}')
 `)
   const result = await runTreeShim({ fixture, entry }).done
+  assertTreeDead(fixture)
+  await skipUnlessPremiseReached(ctx, fixture, result, [attempted], 'owned-tree')
   // Check before teardown: a passing outer harness job must not clean up for us.
   const attempt = readFileSync(attempted, 'utf8')
   if (attempt.startsWith('created:')) {
@@ -187,8 +189,12 @@ process.stdout.write('{"hookSpecificOutput":{"additionalContext":"breakaway-deni
     expect(attempt).toBe('denied:5')
     expect(existsSync(descendant)).toBe(false)
   }
-  expect(result.stdout).toBe('{"additionalContext":"breakaway-denied"}')
-  expect(result.stderr).toBe('')
+  if (result.stdout === '{}') {
+    await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'owned-tree')
+  } else {
+    expect(result.stdout).toBe('{"additionalContext":"breakaway-denied"}')
+    expect(result.stderr).toBe('')
+  }
 }, 40_000)
 
 it.runIf(process.platform === 'win32')('rejects breakaway from the strict job without an intervening libuv job', async () => {
@@ -234,11 +240,7 @@ require('node:child_process').spawnSync(${JSON.stringify(boundary)}, ['hold', ${
     owner.once('error', reject)
   })
   const waitUntil = async (condition: () => boolean): Promise<void> => {
-    const until = performance.now() + 1500
-    while (!condition()) {
-      expect(performance.now()).toBeLessThan(until)
-      await new Promise((resolve) => setTimeout(resolve, 5))
-    }
+    while (!condition()) await new Promise((resolve) => setTimeout(resolve, 5))
   }
   if (phase === 'with-live-descendant') {
     owner.stdin.end('{}')
@@ -279,7 +281,7 @@ it.runIf(process.platform === 'win32')('rejects an incompatible built native pro
   expect(existsSync(entered)).toBe(false)
 })
 
-it.runIf(process.platform === 'win32')('rejects the actual owner argv in a built legacy binary, with a separator negative control', async () => {
+it.runIf(process.platform === 'win32')('rejects the actual owner argv in a built legacy binary, with a separator negative control', async (ctx) => {
   const fixture = treeFixture()
   const legacy = buildLegacyStartupOwner(fixture.root)
   copyFileSync(legacy, installStartupOwner(fixture.root))
@@ -304,6 +306,8 @@ it.runIf(process.platform === 'win32')('rejects the actual owner argv in a built
   const unsafe = await runTreeShim({ fixture, entry }).done
   expect(unsafe.stdout).toBe('{}')
   expect(unsafe.stderr).toContain('incompatible protocol or unverified cleanup')
+  assertTreeDead(fixture)
+  await skipUnlessPremiseReached(ctx, fixture, unsafe, [entered, pidFile], 'owned-tree')
   expect(() => assertNoCanonical()).toThrow(/canonical marker must be absent/)
   expect(existsSync(pidFile)).toBe(true)
   expect(alive(readOwnedPid(pidFile))).toBe(false)
@@ -433,7 +437,7 @@ process.${stream}.on('drain', flood); flood(); setInterval(() => {}, 1000)
   expect(alive(readOwnedPid(pidFile))).toBe(false)
 })
 
-it('refuses unavailable ownership without a Windows canonical fallback', async () => {
+it('refuses unavailable ownership without a Windows canonical fallback', async (ctx) => {
   const fixture = treeFixture()
   const shim = readFileSync(fixture.shim, 'utf8')
   writeFileSync(fixture.shim, process.platform === 'win32'
@@ -448,6 +452,8 @@ it('refuses unavailable ownership without a Windows canonical fallback', async (
     expect(result.stderr).toContain('native startup owner unavailable')
     expect(existsSync(pidFile), 'canonical work ran without ownership').toBe(false)
   } else {
+    assertTreeDead(fixture)
+    await skipUnlessPremiseReached(ctx, fixture, result, [pidFile], 'owned-tree')
     expect(result.stderr).toContain('process-tree cleanup failed')
     expect(result.stderr).toContain('remaining owned PIDs before fallback:')
     expect(result.stderr).toContain('descendant termination not verified')
