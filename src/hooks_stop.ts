@@ -7,7 +7,7 @@ import { dirname } from 'node:path'
 import { loadConfig } from './config.js'
 import type { HookEvent } from './hook_registry.js'
 import { sessionStateKey } from './hook_registry.js'
-import { echoedValue, nameSubject } from './hint_suggestion_guard.js'
+import { echoedCommand, nameSubject } from './hint_suggestion_guard.js'
 import { dropsStopContext } from './harness_channels.js'
 import { contextOutput, passOutput } from './hooks_common.js'
 import { sessionSidecarPath } from './session_store.js'
@@ -27,8 +27,8 @@ export function stopAdvisoryText(state: VerificationState): string | null {
     const more = state.editedSinceLastPass.length - MAX_NAMED_FILES
     parts.push(`edited since the last passing check: ${named}${more > 0 ? ` (+${more} more)` : ''}`)
   }
-  if (state.failingUnresolved && state.latestRun !== undefined) parts.push(`the last check failed: ${echoedValue(state.latestRun.command)} (exit ${state.latestRun.exitCode})`)
-  else if (state.editedSinceLastPass.length > 0 && state.latestRun !== undefined) parts.push(`last check run: ${echoedValue(state.latestRun.command)}`)
+  if (state.failingUnresolved && state.latestRun !== undefined) parts.push(`the last check failed: ${echoedCommand(state.latestRun.command)} (exit ${state.latestRun.exitCode})`)
+  else if (state.editedSinceLastPass.length > 0 && state.latestRun !== undefined) parts.push(`last check run: ${echoedCommand(state.latestRun.command)}`)
   else if (state.editedSinceLastPass.length > 0) parts.push('no test, lint, typecheck or build was run this session')
   return parts.length === 0 ? null : `token-goat: unverified work before you stop. ${parts.join('; ')}.`
 }

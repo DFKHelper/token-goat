@@ -629,6 +629,16 @@ describe('the command the advisory names', () => {
     expect(text).not.toContain(lead)
   })
 
+  // HAND-DERIVED: each is a code point that prints as a blank or nothing and is not a Unicode format character (NBSP, VS16, the Hangul fillers, the combining grapheme joiner, the Khmer inherent vowels, the braille blank) plus a lone high and a lone low surrogate.
+  it.each([0x00a0, 0xfe0f, 0x115f, 0x1160, 0x3164, 0xffa0, 0x034f, 0x17b4, 0x17b5, 0x2800, 0xd800, 0xdc00])('escapes the blank-looking code unit %i in a stored command', (unit) => {
+    const blank = String.fromCharCode(unit)
+    const state = { runs: [], latestRun: { command: `pytest${blank}a.py`, exitCode: 1, at: T0 }, failingUnresolved: true, editedFiles: [], editedAnyFile: false, editedSinceLastPass: [] }
+    const text = stopAdvisoryText(state) ?? ''
+    expect(text).toContain('pytest')
+    expect(text).not.toContain(blank)
+    expect(text).toContain(String.fromCharCode(92) + 'u' + unit.toString(16).padStart(4, '0'))
+  })
+
   it('still keeps an ordinary path and a home-relative or scoped one', () => {
     const sid = newSession()
     inSession(sid, () => noteVerificationRun('pytest tests/a.test.ts ~/x/b.py @scope/pkg/c.ts', 0, false))

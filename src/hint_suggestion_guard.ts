@@ -242,6 +242,14 @@ export function echoedValue(value: string): string {
   return quoted.includes(UNQUOTABLE) ? safe : quoted
 }
 
+/** Characters that print as nothing or as a blank yet are not format characters, so {@link displaySafeText} leaves them: no-break space, variation selector 16, the Hangul fillers, the combining grapheme joiner, the two Khmer inherent vowels, the braille blank, and a lone surrogate half. */
+const BLANK_LOOKING = /\u00a0|\u034f|\u115f|\u1160|\u17b4|\u17b5|\u2800|\u3164|\ufe0f|\uffa0|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g
+
+/** {@link echoedValue} for a command line echoed in the stop advisory, with {@link BLANK_LOOKING} escaped as `\uXXXX` too so a command can not hide a word behind a blank. Kept off {@link echoedValue} itself, whose paths may hold a no-break space for real. */
+export function echoedCommand(value: string): string {
+  return echoedValue(value.replace(BLANK_LOOKING, (ch) => String.fromCharCode(92) + 'u' + ch.charCodeAt(0).toString(16).padStart(4, '0')))
+}
+
 /** The failure for a file no command could open: `Could not read: "<path>"`, the path display-safe and quoted by {@link echoedValue}, so a path holding a space, an apostrophe or a control character still reads as one name. */
 export function couldNotRead(file: string): string {
   return `Could not read: ${echoedValue(file)}`
