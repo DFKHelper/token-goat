@@ -356,7 +356,12 @@ export function withoutEscapes(text: string): string {
 
 /** Whether `text` holds an ESC or an 8-bit introducer (U+0090, U+0098, U+009B to U+009F), the bytes an escape sequence opens with. The other C1 controls open none, in any strip, so a file holding one is kept as it is: `don` U+0092 `t panic`, the CP1252 right quote read as Latin-1, came back as `don` U+241B `t panic`. */
 function hasEscapeBytes(text: string): boolean {
-  return text.includes('\x1b') || /[\x90\x98\x9b-\x9f]/.test(text)
+  return text.includes('\x1b') || escapeClass(text).test(text)
+}
+
+/** The 8-bit controls {@link fencedFileBody} treats as escape bytes in `text`: the introducers, and every other C1 control too when the text holds a BEL. A strip that rewrote each C1 control as ESC and its 7-bit final would turn U+0085 into ESC `E`, which the ansi-regex 6.1 pattern's string branch takes together with the letters and the BEL after it, so `x <` U+0085 `B` BEL `/untrusted-file-content>` became an exact closing tag. No strip known does that rewrite, and Claude Code 2.1.296 passes C1 controls and BEL to the model unchanged, but a file with both a stray C1 control and a BEL is rare enough that writing the control as U+241B there costs nothing. */
+function escapeClass(text: string): RegExp {
+  return text.includes('\x07') ? /[\x80-\x9f]/g : /[\x90\x98\x9b-\x9f]/g
 }
 
 /** `text` with each 8-bit introducer spelled as the ESC sequence it stands for: U+009B as ESC `[`, U+009D as ESC `]`, U+0090, U+0098, U+009E and U+009F as ESC `P`, `X`, `^` and `_`, and U+009C, the string terminator, as ESC and a backslash. A C1 control is ESC followed by its own code less 0x40. */
@@ -382,7 +387,7 @@ function fencedFileBody(text: string): string {
     const plain = body.replace(COLOUR_CODE, '')
     if (neutralizeTags(plain, true) === plain) return body
   }
-  return neutralizeTags(text.replaceAll('\x1b', '␛').replace(/[\x90\x98\x9b-\x9f]/g, '␛'), true)
+  return neutralizeTags(text.replaceAll('\x1b', '␛').replace(escapeClass(text), '␛'), true)
 }
 
 /** A complete SGR colour code: ESC, `[`, parameters of at most four digits separated by `;` (empty ones allowed), and `m`. Past four digits, or with a colon, strips that bound a parameter differently end the sequence in different places. */
