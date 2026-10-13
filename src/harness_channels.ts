@@ -29,3 +29,10 @@ export const PRE_COMPACT_RESUMES_ON_PROMPT = new Set<string>(['copilot_cli'])
 export function resumesCompactionOnPrompt(): boolean {
   return PRE_COMPACT_RESUMES_ON_PROMPT.has(getHarnessName()) && !dropsPromptSubmitContext()
 }
+
+/** Harnesses whose session-start hook runs under a shim deadline and answers `{}` when it misses, so the output it owed can be queued and delivered on the first tool call instead. Copilot CLI and VS Code run the bounded shim in src/bridges/copilot_session_start.ts; Claude Code and Codex run the hook directly with no deadline to miss. */
+export const SESSION_START_MAY_BE_DEFERRED = new Set<string>(['copilot_cli', 'vscode'])
+
+export function sessionStartMayBeDeferred(host: string): boolean {
+  return SESSION_START_MAY_BE_DEFERRED.has(host)
+}

@@ -142,6 +142,8 @@ async function runBoundedSessionStart(entryPath, eventName, payload, harness, de
   const args = [entryPath, 'hook', eventName]
   const env = Object.assign({}, process.env, { TOKEN_GOAT_HOOK_SERVER: '0' })
   if (process.platform === 'win32') env.TG_SESSION_START_DEFER_WORKER = '1'
+  // Lets the helper's settle marker say how close to the deadline it finished.
+  env.TG_SESSION_START_DEADLINE_EPOCH = String(deadline)
   if (harness === 'vscode') {
     args.push('--harness', 'vscode')
     env.TOKEN_GOAT_HARNESS_OVERRIDE = 'vscode'

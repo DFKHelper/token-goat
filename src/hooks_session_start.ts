@@ -16,6 +16,7 @@ import { claimFirstSavingsReceipt, recordStat } from './stats.js'
 import { detectHarness } from './bridges/registry.js'
 import { projectNotesFor } from './project_memory.js'
 import { buildReminder } from './session_reminder.js'
+import { clearSessionStartSettled, recordSessionStartSettled } from './session_start_owed.js'
 
 /** Sweep the project for index drift and enqueue whatever no longer matches disk. Returns a one-line note when drift was found, or null when the index is already correct -- which is the overwhelmingly common case, and stays silent so the session-start context does not grow a line that says nothing. Only runs against an already-indexed project: on an unindexed one every tracked file is legitimately absent from the index, so the sweep would report the entire repository as drift and enqueue it, which is `token-goat index .`'s job and not a hook's. Never throws. Its caller is a session-start hook, and a sweep that failed is a missed repair, not a reason to degrade the reminder the hook exists to deliver. */
 function reconcileNote(cwd: string, indexed: boolean): string | null {
@@ -74,7 +75,19 @@ async function postCompactRecovery(event: HookEvent): Promise<string | null> {
 }
 
 export async function sessionStartHandler(event: HookEvent): Promise<HookOutput> {
-  return withSavingsReceipt(await sessionStartOutput(event))
+  // Cleared first and recorded last, so a marker on disk always means this run reached its end.
+  clearSessionStartSettled(event)
+  const output = withSavingsReceipt(await sessionStartOutput(event))
+  recordSessionStartSettled(event, { finishedAtMs: Date.now(), deadlineEpoch: shimDeadlineEpoch() })
+  return output
+}
+
+/** The shim's deadline as epoch milliseconds, from the env var `runBoundedSessionStart` sets; null when absent or not a positive finite number. */
+function shimDeadlineEpoch(): number | null {
+  const raw = process.env['TG_SESSION_START_DEADLINE_EPOCH']
+  if (raw === undefined || raw.trim() === '') return null
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? value : null
 }
 
 /** The words of the one-time savings receipt. */
@@ -91,7 +104,7 @@ export function withSavingsReceipt(output: HookOutput, homeDir?: string): HookOu
   return saved === null ? output : { ...output, notice: savingsReceiptText(saved) }
 }
 
-async function sessionStartOutput(event: HookEvent): Promise<HookOutput> {
+export async function sessionStartOutput(event: HookEvent): Promise<HookOutput> {
   // Recovery is resolved before the reminder gate and appended after it, because the two answer different questions: `hints.session_start_reminder` turns off a routing reminder an experienced user does not need, and it must not also turn off the restoration of state that has just been compacted away. A user who silenced the reminder still gets the packet, alone.
   const recovery = await postCompactRecovery(event)
   const cwd = getCwd(event)
