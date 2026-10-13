@@ -79,13 +79,12 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
     'hooks_bash_post.ts::withoutHeartbeats',
     'Re-emits what the harness already delivered, redacted, minus the `[token-goat compress] ' +
       'still running` lines the wrapper wrote ahead of it, and adds nothing of its own. The block ' +
-      'is not one voice: it fires only on a result that ends with the runner\'s own recall line, ' +
-      "so the runner's marker and recall line sit in it beside the command's bytes, unfenced, " +
-      'exactly as the harness delivered them with no hook at all. That is the wrapped-command ' +
-      'path, where bash_runner prints its compressed view raw; fencing it belongs to the runner, ' +
-      'and this pass, which only removes lines, cannot fence it without also lifting the runner\'s ' +
-      'notices, which it has no provenance for. A hint it carries goes beside the result as ' +
-      'additionalContext, not into the block.',
+      'is not one voice, and it is already fenced: it fires only on a result that ends with the ' +
+      "runner's own recall line, which the runner prints only under a view it substituted, and " +
+      "that view has the command's bytes inside the runner's fence and the runner's marker and " +
+      'recall line after it (bash_runner.ts::wrapAndCompress, pinned by the deliverCompressed check ' +
+      'below). Fencing it again would wrap that fence in another and escape the runner\'s notices ' +
+      'inside it. A hint it carries goes beside the result as additionalContext, not into the block.',
   ],
   [
     'hooks_grep.ts::foldGrepContentHandler',
@@ -242,6 +241,33 @@ describe('output token-goat substitutes is fenced or exempted by name', () => {
   })
 
   // Backs the hooks_common.ts::emitRewriteWithContext exemption. Provenance: HAND-DERIVED -- the caller set is read off the source by name, and each caller must neutralise in place itself or be emitStructuralFold, whose producers must. The same-file walk above cannot see this: foldCodeBodies also reaches fenceUntrustedFileContent through its compact branch, so it reads as fenced whatever its aligned branch does.
+  // The compress runner substitutes without going through emitRewrite: it prints its compressed view of a wrapped command to stdout, and the harness hands that to the model as the command's result. So the walk above, keyed on the emit boundary, never saw it, and for as long as the post hook skipped wrapped commands that view reached the model with no fence at all. Every caller of deliverCompressed is therefore walked here too, and must reach a fence or be named with why it prints nothing to a model.
+  it('every caller of deliverCompressed fences the command bytes it prints, or is named', () => {
+    const notShown: ReadonlyMap<string, string> = new Map([
+      ['cli_bench.ts::runCase', 'Scores the compressors over a captured corpus and reports sizes and ratios; the delivered text is measured, never printed to a model.'],
+    ])
+    const callers: { key: string; fenced: boolean }[] = []
+    for (const file of srcFiles()) {
+      if (path.basename(file) === 'dispatch.ts') continue
+      const src = fs.readFileSync(file, 'utf8')
+      if (!src.includes('deliverCompressed(')) continue
+      const fns = parseTopLevelFunctions(src)
+      const byName = functionMap(fns)
+      for (const fn of fns) {
+        if (codeOnly(fn.body).includes('deliverCompressed(')) callers.push({ key: `${path.basename(file)}::${fn.name}`, fenced: reaches(fn, byName, callsFence) })
+      }
+    }
+    expect(callers.map((c) => c.key), 'the runner is the caller this check exists for; if it is not found, the walk is broken').toContain('bash_runner.ts::wrapAndCompress')
+    for (const key of notShown.keys()) expect(callers.map((c) => c.key), `${key} is named as not printing to a model but no longer calls deliverCompressed`).toContain(key)
+    expect(
+      callers.filter((c) => !c.fenced && !notShown.has(c.key)).map((c) => c.key),
+      'These print a compressed view of command output to a model without fencing the command bytes in it. Fence them (fenceWithMatches/fenceUntrusted) with token-goat\'s own lines after the closing tag, as bash_runner.ts::wrapAndCompress does.',
+    ).toEqual([])
+    // Reaching a fence is not enough on its own here: the runner also measures the fence for its net-benefit gate, so a call that only prices it would satisfy the walk while the printed body went out bare. The body it prints for a substituted result has to be built by the fence call itself.
+    const runner = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'bash_runner.ts'), 'utf8')).find((f) => f.name === 'wrapAndCompress')
+    expect(codeOnly(runner?.body ?? ''), 'bash_runner.ts::wrapAndCompress must assign the substituted body from the fence call').toMatch(/\bbody = fence(?:WithMatches|Untrusted)\(/)
+  })
+
   it('every aligned rewrite neutralises the file bytes it keeps in place', () => {
     const readPost = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'hooks_read_post.ts'), 'utf-8'))
     const callers = readPost.filter((f) => codeOnly(f.body).includes('emitRewriteWithContext(')).map((f) => f.name).sort()

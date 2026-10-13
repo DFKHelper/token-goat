@@ -222,9 +222,10 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
     'hooks_bash_post.ts:redacted.text',
     "withoutHeartbeats re-emits the Bash result the harness already delivered, redacted, minus the " +
       "heartbeat lines the compress wrapper wrote ahead of it. That result is the payload the reader " +
-      'asked for, and it reaches the model unfenced by design here exactly as it does with no hook at ' +
-      "all: escaping it would change the command's output, and this pass adds no words of its own " +
-      'beside it (substituted_output_reaches_fence.test.ts records why its block is left unfenced).',
+      "asked for, and it arrives already fenced: the pass fires only on the compress runner's own " +
+      "substituted view, which bash_runner.ts::wrapAndCompress builds with fenceWithMatches( around " +
+      "the command's bytes. Fencing it here again would nest the fence, and this pass adds no words " +
+      'of its own beside it (substituted_output_reaches_fence.test.ts records the same reasoning).',
   ],
   [
     'read_git.ts:h.text',

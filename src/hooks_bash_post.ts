@@ -695,8 +695,12 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const rawCmd = extractCommand(event)
     if (rawCmd === undefined) return passOutput()
     const delivered = extractBashOutput(event)
-    const output = heartbeatFreeOutput(event, rawCmd, delivered)
-    const result = await postBashResultHandler(event, output)
+    const fromRunner = runnerShippedResult(rawCmd, delivered)
+    // A persisted result is left alone: the model was shown a short preview, and a rewrite would carry the whole output inline.
+    const output = fromRunner && !resultWasPersisted(event) ? stripCompressHeartbeats(delivered) : delivered
+    let result = await postBashResultHandler(event, output)
+    // The runner already fenced the command's bytes in what it substituted and printed its own lines after the closing tag. A second rewrite here would wrap that fence in another and escape the runner's notices inside it, so its bookkeeping and hints stand and its rewrites do not.
+    if (fromRunner && result.hookType === 'rewriteOutput') result = passOutput()
     return output === delivered ? result : withoutHeartbeats(result, output)
   } catch {
     // Never block: hook failures must be silent.
@@ -704,13 +708,12 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   return passOutput()
 }
 
-/** `delivered` without the heartbeat lines the compress runner wrote ahead of it, or `delivered` itself. Taken by provenance, not by wording: only from a wrapped command whose result ends with the runner's own recall line, naming an output the runner stored for this very command, which a command cannot forge, since the id hashes the output it would have to contain. Without that line the runner shipped the command's output as it was (or never ran a capture at all, under `--no-compress`), and a heartbeat-shaped line there is the command's own. A persisted result is left alone too: the model was shown a short preview, and a rewrite would carry the whole output inline. */
-function heartbeatFreeOutput(event: HookEvent, rawCmd: string, delivered: string): string {
+/** True when `delivered` is the compress runner's own account of a wrapped command: it ends with the runner's recall line, naming an output the runner stored for this very command. Provenance, not wording: a command cannot forge it, since the id hashes the output it would have to contain. Without that line the runner shipped the command's output as it was (or never ran a capture at all, under `--no-compress`), so the result is the command's, heartbeat-shaped lines included. */
+function runnerShippedResult(rawCmd: string, delivered: string): boolean {
   const inner = unwrapCompressCommand(rawCmd)
-  if (inner === null || resultWasPersisted(event)) return delivered
+  if (inner === null) return false
   const id = runnerRecallId(delivered)
-  if (id === null || getBashOutput(id)?.command !== redactSecrets(inner).text) return delivered
-  return stripCompressHeartbeats(delivered)
+  return id !== null && getBashOutput(id)?.command === redactSecrets(inner).text
 }
 
 /** True when Claude Code persisted the result rather than showing it inline. */
