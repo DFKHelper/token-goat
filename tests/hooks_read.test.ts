@@ -4146,6 +4146,93 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
+    it('trips per-file circuit breaker on repeated re-read denials so micro-shifting line ranges does not loop indefinitely', () => {
+      const p = path.join(os.tmpdir(), `tg-range-breaker-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+      fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `const x${i} = ${i};`).join('\n'))
+      tmpFiles.push(p)
+
+      // First slice: lines 10..50
+      preReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p, view_range: [10, 50] },
+        sessionId: 'test',
+      }))
+      postReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p, view_range: [10, 50] },
+        sessionId: 'test',
+      }))
+
+      // Second slice: lines 20..30 (redundant, within 10..50) -> first deny
+      const r2 = preReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p, view_range: [20, 30] },
+        sessionId: 'test',
+      }))
+      expect(r2.hookType).toBe('deny')
+      if (r2.hookType === 'deny') {
+        expect(r2.message).toContain('Lines 20..30 of this file were already read this session (served within lines 10..50)')
+        expect(r2.message).toContain('Do not attempt to re-read this file with shifted or different line ranges')
+      }
+
+      // Third slice: caller micro-shifts to lines 21..29 -> circuit breaker trips, allows read with advisory note
+      const r3 = preReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p, view_range: [21, 29] },
+        sessionId: 'test',
+      }))
+      expect(r3.hookType).not.toBe('deny')
+      expect(r3.hookType).toBe('context')
+
+      // Fourth slice: caller shifts to lines 22..28 -> still allowed through, not denied
+      const r4 = preReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p, view_range: [22, 28] },
+        sessionId: 'test',
+      }))
+      expect(r4.hookType).not.toBe('deny')
+      expect(r4.hookType).toBe('context')
+    })
+
+    it('trips per-file circuit breaker on repeated verbatim-served re-read attempts', () => {
+      const p = path.join(os.tmpdir(), `tg-verbatim-breaker-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+      fs.writeFileSync(p, Array.from({ length: 50 }, (_, i) => `const x${i} = ${i};`).join('\n'))
+      tmpFiles.push(p)
+
+      // First read: whole file
+      preReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+      }))
+      postReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+      }))
+
+      // Second read: identical whole file -> first deny
+      const r2 = preReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+      }))
+      expect(r2.hookType).toBe('deny')
+      if (r2.hookType === 'deny') {
+        expect(r2.message).toContain('Every line of this file this read would return was already served in this session')
+        expect(r2.message).toContain('Do not attempt to re-read this file with shifted or different line ranges')
+      }
+
+      // Third read: caller retries -> circuit breaker trips, allows read with context note
+      const r3 = preReadHandler(makeHookEvent({
+        toolName: 'view',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+      }))
+      expect(r3.hookType).not.toBe('deny')
+      expect(r3.hookType).toBe('context')
+    })
+
     it('detects sequential line-range paging pattern and injects advisory context note', () => {
       const p = path.join(os.tmpdir(), `tg-paging-test-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
       fs.writeFileSync(p, Array.from({ length: 150 }, (_, i) => `const x${i} = ${i};`).join('\n'))

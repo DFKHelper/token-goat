@@ -1112,10 +1112,20 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
     }
 
+    // Circuit breaker: at most one re-read denial (verbatim, range, count, or format) per file
+    // per compaction epoch. Transcripts show agents getting trapped in 20+ retry loops shifting
+    // windows across a file (e.g. 1225..1235, 1220..1230, 1229..1234, 1227..1227) after repeated
+    // denials of overlapping ranges. A caller that retries after a re-read denial will not switch
+    // tools on repeated refusals; subsequent read attempts on this file must NOT keep denying in an
+    // infinite loop — allow them to proceed with the quiet advisory note at the bottom of this block.
+    const fileRereadDenyKey = 'reread-file-deny:' + getCompactedAt() + ':' + foldPath(normalized)
+    const fileAlreadyDenied = wasHintShown(fileRereadDenyKey)
+
     // Proof beats the count. Every branch below reasons about how many times this file has been read, and the recent-read protection window exists because that reasoning can be wrong -- it waves through the four most recently read files precisely so a legitimate re-read is never blocked on a guess. Measured over a month of real sessions, 830 Read calls returned a line range the session had already been given, and the largest reason nothing fired was that the file sat inside that window: exactly the case where the bytes are most certainly still in context. So when the bytes are *known* rather than guessed, the guess-protection does not apply, and the read is answered with a pointer at the copy already delivered. Still gated on hints.reread_deny: a user who turned denials off asked for hints, not blocks, and having proof does not change what they asked for.
     if (config.hints.reread_deny) {
       const alreadyServed = alreadyServedOutputId(event, normalized)
-      if (alreadyServed !== null) {
+      if (alreadyServed !== null && !fileAlreadyDenied) {
+        markHintShown(fileRereadDenyKey)
         // Credit the bytes this read would actually have delivered, not the whole file: a Read carrying offset/limit was only ever going to hand over its window, and crediting the file would book bytes nothing was ever going to spend.
         const blocked = counterfactualCredit(alreadyServed.bytes)
         recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
@@ -1124,7 +1134,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         return denyOutput(
           'Every line of this file this read would return was already served in this session, byte for byte. ' +
           'Recall it with `token-goat bash-output ' + alreadyServed.id + '`, or pull just the part you need with ' +
-          realSymbolReadHint(normalized, shown) + '.',
+          realSymbolReadHint(normalized, shown) + '.' +
+          ' Do not attempt to re-read this file with shifted or different line ranges.',
         )
       }
 
@@ -1132,17 +1143,24 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (window.isExplicitSlice && window.offset !== undefined && window.limit !== undefined) {
         const start = window.offset
         const end = window.offset + window.limit - 1
-        if (prevRanges.some(([s, e]) => s <= start && e >= end)) {
+        const containing = prevRanges.find(([s, e]) => s <= start && e >= end)
+        if (containing !== undefined && !fileAlreadyDenied) {
           // A prior overlapping range only proves this span was served before, never that it still matches disk: an edit outside this session (another tool, another process, the user's own editor) can land between the two reads with nothing here to observe it. Reuse the same snapshot-fingerprint mechanism the whole-file "unchanged since last read" check above relies on rather than trusting the recorded range alone; only a confirmed byte-for-byte match denies.
           const snapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
           const denyRangeReread = (): HookOutput => {
+            markHintShown(fileRereadDenyKey)
             const blocked = counterfactualCredit(rereadCreditBasis)
             recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
             recordStat('session_hint', 0, 0)
+            const [cStart, cEnd] = containing
+            const rangeNote = (cStart === start && cEnd === end)
+              ? 'Lines ' + start + '..' + end + ' of this file were already read this session. '
+              : 'Lines ' + start + '..' + end + ' of this file were already read this session (served within lines ' + cStart + '..' + cEnd + '). '
             return denyOutput(
-              'Lines ' + start + '..' + end + ' of this file were already read this session. ' +
+              rangeNote +
               'Pull just the part you need with ' + realSymbolReadHint(normalized, shown, { start, end }) + '.' +
-              priorOutputRecallHint(normalized),
+              priorOutputRecallHint(normalized) +
+              ' Do not attempt to re-read this file with shifted or different line ranges.',
             )
           }
           if (snapDiff.kind === 'unchanged') {
@@ -1232,22 +1250,24 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
 
       // Count-based deny: 3rd+ read of source files — even small ones that the size threshold misses
-      if (isSourceExt && fullReads >= 2) {
+      if (isSourceExt && fullReads >= 2 && !fileAlreadyDenied) {
+        markHintShown(fileRereadDenyKey)
         // read_count_deny carries the credit for this blocked read. Both it and session_hint map to SOURCE_HINT (see stats.ts's KIND_TO_SOURCE), so a second, non-zero session_hint row here would double the same blocked bytes into the by_source rollup that hint-stats reads -- one deny, one blocked read, one credit. session_hint is still recorded (at 0, 0) so this branch stays visible in its own per-kind breakdown.
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
         bookDenyIdentity('source-count')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-        return denyOutput((surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) + ' Tried to read this file ' + reads + ' times already.' + priorOutputRecallHint(normalized)).trimStart())
+        return denyOutput((surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)) + ' Tried to read this file ' + reads + ' times already.' + priorOutputRecallHint(normalized) + ' Do not attempt to re-read this file with shifted or different line ranges.').trimStart())
       }
     }
 
     const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
-    if (config.hints.reread_deny && !protectedRead && !isSmallUnseenSlice && ((fullReads >= 1 && rereadBytes >= config.hints.reread_deny_min_bytes) || fullReads >= 2)) {
+    if (config.hints.reread_deny && !protectedRead && !isSmallUnseenSlice && ((fullReads >= 1 && rereadBytes >= config.hints.reread_deny_min_bytes) || fullReads >= 2) && !fileAlreadyDenied) {
+      markHintShown(fileRereadDenyKey)
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       bookDenyIdentity('count')
       // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
-      return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized)).trimStart())
+      return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint)) + ' was already read this session (' + reads + ' ' + plural + ').' + priorOutputRecallHint(normalized) + ' Do not attempt to re-read this file with shifted or different line ranges.').trimStart())
     }
     // Only counted when the note actually reaches the caller -- quietContextOutput silently degrades to passOutput() during hints.quiet_hours, and recording unconditionally (as this used to) over-counted the ledger on every quiet-hours re-read that produced no visible output at all. Zero bytes, deliberately: this branch does NOT block the read. The note is appended and the Read still proceeds, so the file's full contents reach the model anyway and the hint text is spent on top of them -- crediting rereadCredit here booked the entire file as saved on the one path where nothing was. The event is still recorded (count, not bytes) because how often the soft note fires is worth knowing; what it is worth is separately measurable through hint-stats' acted-on tracking, which is the only thing that can tell whether the note ever changed what the model did next.
     const pagingWindow = readRequestedSliceWindow(event)

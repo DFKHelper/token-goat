@@ -140,6 +140,8 @@ function workerHealthCheckMarkerPath(dir: string): string {
 /** Minimum time between {@link ensureWorkerAlive} liveness checks, so a burst of edit-hook calls (e.g. a multi-file refactor) doesn't re-check the pid file and attempt a respawn on every single one -- one check per interval is enough to notice and heal a dead daemon promptly. */
 const WORKER_HEALTHCHECK_MIN_INTERVAL_MS = 5 * 60 * 1000
 
+let startupWakeRequested = false
+
 /** Best-effort auto-heal: if the detached worker for `dir` isn't running, start a fresh one. Before this, {@link startDetachedWorker} was only ever invoked from the `worker start` CLI command -- nothing anywhere restarted a daemon that died (crash, a manual `taskkill`, machine sleep/wake races, anything). A dead worker stayed dead indefinitely: the dirty queue kept accumulating, `token-goat read`/`symbol`/`section`/`outline` kept serving stale index content with no automatic recovery, until a human happened to notice and ran `worker start` by hand. Called from {@link postEditHandler in hooks_edit.ts}, the hot path where real work is actually queued for the worker to drain, self-rate-limited via a marker-file mtime ({@link WORKER_HEALTHCHECK_MIN_INTERVAL_MS}) so it isn't re-triggered on every hook call. Fail-soft throughout: marker-file I/O errors, spawn failures, and a lost {@link claimWorkerPidFile} race against a worker that started in the same instant are all swallowed -- this function's job is to nudge a dead worker back to life, never to guarantee one is running or to throw out of a hook handler. */
 export function ensureWorkerAlive(dir: string = dataDir()): void {
   // Test-isolation escape hatch: this is the one auto-heal path that fires as an incidental side effect of exercising unrelated code (any test that drives postEditHandler), not a deliberate "test worker spawning" call -- without this, every such test spawned a REAL detached daemon child process, relying only on that daemon's own data-dir-deleted self-check to eventually notice and exit rather than never spawning it in the first place. tests/setup/isolate-home.ts pins TOKEN_GOAT_NO_WORKER_SPAWN='1' for exactly this reason; a test that deliberately wants real spawning through this function (worker.test.ts's own ensureWorkerAlive suite) opts back out by setting the var itself, the same override pattern used for the harness/embeddings pins. Never gates startDetachedWorker itself -- the explicit `worker start` CLI command and dedicated daemon e2e tests call that directly and must still spawn for real.
@@ -166,6 +168,15 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
     // The pid file naming anyone else now means another hook already replaced the daemon; spawning too would start a second one.
     const nowPid = readPidFile(dir)
     if (nowPid !== null && nowPid !== livePid) return
+  }
+  // Keep ordinary liveness, throttling and upgrade checks inside the bounded
+  // canonical child. Only the actual spawn must move outside its strict job.
+  if (process.env['TG_SESSION_START_DEFER_WORKER'] === '1') {
+    if (!startupWakeRequested) {
+      startupWakeRequested = true
+      process.stderr.write('\x1eTG_WORKER_WAKE_V1\x1e\n')
+    }
+    return
   }
   try {
     startDetachedWorker({ dataDir: dir })
@@ -262,8 +273,22 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
   }
+
   // The judgement and the remove-and-recreate run under one lock: two claimers that both judged the same pid stale would otherwise each remove the file, and the second remove would land on the pid file the first had just written, so both would win and the loser's daemon, never having seen its own pid on disk, would never retire. A claimer that finds the lock held loses, since whoever holds it is reclaiming the same slot.
   return withFileLock(`${pidPath}.reclaim`, () => reclaimStalePidFile(dir, pid), { waitMs: 0 }) ?? false
+}
+
+/** An outer startup owner launches the daemon itself, without a bootstrap. */
+export function claimCurrentWorker(dir: string): boolean {
+  if (process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] === '1') return false
+  ensureDirSync(dir)
+  if (!claimWorkerPidFile(dir, process.pid)) return false
+  try {
+    fs.writeFileSync(workerStampPath(dir), currentDaemonStamp())
+  } catch {
+    // A missing stamp is already handled by the ordinary liveness check.
+  }
+  return true
 }
 
 /** Replaces the pid file with `pid` when the pid it names holds no worker lease; returns false when that pid is a live worker or another claimer wins the recreate. Runs only under claimWorkerPidFile's reclaim lock. */

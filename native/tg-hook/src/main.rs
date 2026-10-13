@@ -12,6 +12,11 @@ mod nodepath;
 mod paths;
 mod protocol;
 mod selftest;
+mod startup_entry;
+#[cfg(windows)]
+mod startup_owner;
+#[cfg(windows)]
+mod startup_process;
 mod sys;
 
 use std::ffi::OsString;
@@ -79,6 +84,9 @@ fn parse_hook_args(args: &[OsString]) -> Option<HookArgs> {
 
 /// A hook call: relay it, or run the wrapped command.
 fn run_hook(hook: HookArgs, main_start: Instant) -> i32 {
+    if hook.call.as_ref().is_some_and(startup_entry::is_startup) {
+        return startup_entry::run(hook.fallback, main_start);
+    }
     if hook.fallback.is_empty() {
         eprintln!("tg-hook: no command after --\n{USAGE}");
         return 2;
@@ -104,6 +112,8 @@ fn main() {
     let main_start = Instant::now();
     let raw: Vec<OsString> = std::env::args_os().skip(1).collect();
     let code = match raw.first().and_then(|a| a.to_str()) {
+        #[cfg(windows)]
+        Some("--session-start-owner-v1") => startup_owner::run(&raw[1..]),
         Some("--selftest") => {
             println!(
                 "{}",
@@ -131,6 +141,11 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<OsString> {
         list.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn internal_owner_argv_cannot_enter_the_legacy_fallback_parser() {
+        assert!(parse_hook_args(&args(&["--session-start-owner-v1", "123", "node.exe", "entry.mjs", "hook", "session_start",])).is_none());
     }
 
     #[test]

@@ -327,8 +327,17 @@ describe('a v2 request answers exactly as the installed shim', () => {
           const native = await runNative(c, `nat-${label}-${c.harness}-${id}`, nativeArgs(c, label))
           await waitIdle(endpoint)
           const after = (await slotStatus(endpoint, key))?.served
+          const boundedStartup = c.harness === 'copilot_cli' && c.event === 'sessionStart'
+          if (boundedStartup && label === 'tripwire') {
+            // Startup must neither dispatch to the resident nor execute this
+            // invalid wrapped command, even when the resident is available.
+            expect({ stdout: native.stdout, exit: native.exit }).toEqual({ stdout: '{}', exit: 0 })
+            expect(native.stderr).toContain('SessionStart failed open: installed startup command unavailable')
+            expect(after, 'startup tripwire reached the resident').toBe(before)
+            continue
+          }
           expect({ label, call, stdout: native.stdout, exit: native.exit }, native.stderr).toEqual({ label, call, stdout: shim.stdout, exit: shim.exit })
-          expect(after, `${label}: the native call was not served`).toBe((before ?? NaN) + 1)
+          expect(after, `${label}: unexpected native dispatch`).toBe(boundedStartup ? before : (before ?? NaN) + 1)
           if (native.stderr !== shim.stderr) stderrDiffs.push({ id: `${c.harness}|${c.name}|${label}|${call}`, shim: shim.stderr, native: native.stderr })
         }
       }
