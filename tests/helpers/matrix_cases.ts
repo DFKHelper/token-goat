@@ -1384,6 +1384,13 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['bash-output', '--file', 'pkg.json'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('3.2.1')
+    // An answer past the harness's inline limit is held under it, closes its fence, and names the --lines that return the rest.
+    const big = path.join(mkIsolated('tg-matrix-bo-'), 'big.txt')
+    fs.writeFileSync(big, `${Array.from({ length: 600 }, (_, i) => `row ${i + 1} ${'filler '.repeat(14)}`).join('\n')}\n`)
+    const capped = run(['bash-output', '--file', big, '--head', '600'])
+    expect(capped.status, capped.stderr).toBe(0)
+    expect(capped.stdout.length).toBeLessThanOrEqual(24_000)
+    expect(capped.stdout).toMatch(/<\/untrusted-tool-output>\n\[token-goat: output capped at 24000 chars[^\n]*--lines \d+-600`\]/)
   },
   'web-output': () => {
     // Reachability: process-local cache is always empty in a fresh process, so a bogus id is a graceful miss (exit 1), not an "unknown command" / crash.

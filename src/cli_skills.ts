@@ -6,8 +6,9 @@ import { formatCommandError } from './command_error.js'
 import { emitErr } from './emit.js'
 import { extractMarkdownHeadings } from './hints/markdown_hints.js'
 import { buildLineDiff } from './hooks_read_slice.js'
-import { displaySafeJson, displaySafeText } from './paths.js'
-import { findSpecSeparator } from './read_commands.js'
+import { displaySafeJson, displaySafeText, normalizePath } from './paths.js'
+import { capFileLines } from './overflow_guard.js'
+import { findSpecSeparator, outputCeilingChars } from './read_commands.js'
 import { didYouMeanLines, filterSimilarHeadings } from './read_suggest.js'
 import { listSections } from './section_reader.js'
 import { getSessionId } from './session.js'
@@ -15,7 +16,7 @@ import {
   COMPACT_END_MARKER,
   contentHash,
   extractCompactFromMarker,
-  extractNamedSection,
+  extractNamedSectionAt,
   formatAge,
   getSkillFilePath,
   incrementSkillHit,
@@ -40,14 +41,14 @@ export async function cmdSkillBody(name: string, opts: { compact?: boolean }): P
   if (opts.compact === true) {
     const compact = usableCompactSlice(body)
     if (compact !== null) {
-      out(compact)
+      out(capToCeiling(compact, filePath, body.split('\n').findIndex((line) => line.trim() !== '') + 1, 'compact slice'))
       const bytesSaved = Buffer.byteLength(body, 'utf8') - Buffer.byteLength(compact, 'utf8')
       if (bytesSaved > 0) recordStat('skill_body:compact', bytesSaved, savedTokensFromBytes(bytesSaved), undefined, name)
     } else {
       out(await compactStandIn(name, filePath, body))
     }
   } else {
-    out(body)
+    out(capToCeiling(body, filePath, 1, 'skill body'))
   }
   await incrementSkillHit(name)
 }
@@ -65,12 +66,19 @@ async function compactStandIn(name: string, filePath: string, body: string): Pro
   const tree = planHeadingTree(body, bodyBytes, name, filePath)
   if (tree === null) {
     emitErr(formatCommandError(`${subject} has ${why} and too few headings to map, so --compact printed the full body.`))
-    return body
+    return capToCeiling(body, filePath, 1, 'skill body')
   }
   emitErr(formatCommandError(`${subject} has ${why}; --compact printed its heading tree instead of the body.`))
   const firstHeading = extractMarkdownHeadings(body).find((h) => h.level > 1)?.text
   const headingArg = firstHeading !== undefined && displaySafeText(firstHeading) === firstHeading && canQuoteArg(firstHeading) ? quotedArg(firstHeading) : '"<heading>"'
   return `${subject} has ${why}; ${tree.phrase} Load one section with \`token-goat skill-section ${quotedArg(name)} ${headingArg}\`, or drop --compact for the full body.\n\n${tree.sectionsList}`
+}
+
+/** `text`, which is lines `firstLine` on of the skill file at `filePath`, held to the output ceiling ({@link outputCeilingChars}) and paged past it with a `read "file@A-B"` of the next lines. A skill body is printed whole, and humanizer's ran to 49 KB: past the harness's inline limit it was persisted to a file the agent then spent two more calls reading back. */
+function capToCeiling(text: string, filePath: string, firstLine: number, what: string): string {
+  const ceiling = outputCeilingChars()
+  const cut = ceiling === null ? null : capFileLines(text.split('\n'), firstLine, normalizePath(filePath), ceiling, what)
+  return cut === null ? text : `${cut.kept.join('\n')}\n${cut.notice}`
 }
 
 export async function cmdSkillCompact(name: string | undefined, opts: { path?: string; all?: boolean }): Promise<void> {
@@ -338,7 +346,7 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
     throw new CliError(`skill ${echoedValue(skillName)} not found`)
   }
   const body = decodeSource(fs.readFileSync(filePath))
-  const extracted = extractNamedSection(body, heading)
+  const extracted = extractNamedSectionAt(body, heading)
   if (!extracted) {
     const allHeadings = listSections(filePath)
     const wanted = stripLower(heading)
@@ -352,5 +360,5 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
     else messages.push(`Try: token-goat outline ${quotedArg(filePath)}`)
     throw new CliError(messages)
   }
-  out(extracted)
+  out(capToCeiling(extracted.text, filePath, extracted.firstLine, 'skill section'))
 }

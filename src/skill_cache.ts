@@ -264,6 +264,11 @@ function parseSectionOrdinal(heading: string): [baseHeading: string, ordinal: nu
 }
 
 export function extractNamedSection(body: string, heading: string): string | null {
+  return extractNamedSectionAt(body, heading)?.text ?? null
+}
+
+/** {@link extractNamedSection} with the 1-based line of `body` its text starts on, so `skill-section` can page an oversized section with a `read "file@A-B"` of the lines that follow. */
+export function extractNamedSectionAt(body: string, heading: string): { text: string; firstLine: number } | null {
   if (!body || !heading) return null
 
   const [baseHeading, ordinal] = parseSectionOrdinal(heading)
@@ -291,8 +296,9 @@ export function extractNamedSection(body: string, heading: string): string | nul
 
   if (startIdx === -1) return null
 
-  const text = collectSectionBody(lines, startIdx, matchedLevel).join('\n').trim()
-  return text || null
+  const bodyLines = collectSectionBody(lines, startIdx, matchedLevel)
+  const text = bodyLines.join('\n').trim()
+  return text ? { text, firstLine: startIdx + bodyLines.findIndex((line) => line.trim() !== '') + 1 } : null
 }
 
 export function extractChecklistSection(body: string): string | null {

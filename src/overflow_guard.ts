@@ -3,6 +3,7 @@
 import { stripAnsiEscapes } from './render/ansi.js'
 import { safeSlice } from './util.js'
 import { forClient } from './mcp_client_text.js'
+import { canQuoteArg, echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import type { ContentClass } from './token_estimate.js'
 import { classifyContent, guardDivisor } from './token_estimate.js'
 
@@ -64,6 +65,38 @@ export function trimToBudget(text: string, budgetTokens: number, command?: strin
   const marker = `[token-goat: output capped at ~${budgetTokens} tokens to protect context — showing ${shown} of ${totalLines} lines. ${hint}]`
 
   return kept.join('\n') + '\n' + forClient(marker)
+}
+
+/** Characters of a token-goat command's own answer that stay inline in Claude Code's Bash tool. CAPTURE from this machine's session transcripts on Claude Code 2.1.29x: results up to 26,588 characters came back inline, while one whose stdout reached 29,926 was persisted to a file and the model shown a 2 KB preview of it. A token-goat answer past that line cost the agent a second call to read the persisted file, and often a third: `section` returned 52.5 KB, `skill-body humanizer` 49 KB and `bash-output --file --grep` 48 KB. 24,000 leaves room for the continuation notice and for stderr. */
+export const HARNESS_INLINE_CEILING_CHARS = 24_000
+
+/** Characters a `token-goat read "file@A-B"` header costs, kept out of a continuation range so the read it names fits the ceiling too. */
+const READ_HEADER_RESERVE_CHARS = 120
+
+/** How many leading `lines`, joined with line breaks, fit in `maxChars`. Never fewer than one, so a capped answer is never empty; a single line longer than the ceiling is the caller's to cut. */
+export function linesWithinChars(lines: readonly string[], maxChars: number): number {
+  let used = 0
+  for (let i = 0; i < lines.length; i++) {
+    used += lines[i]!.length + (i > 0 ? 1 : 0)
+    if (used > maxChars) return Math.max(1, i)
+  }
+  return lines.length
+}
+
+/** `lines`, which are lines `firstLine` on of `file`, cut to the leading lines that fit `maxChars` less `reserve` (what the caller prints around them) with room for a closing notice, which names the next part as a `token-goat read "file@A-B"` whose range fits the ceiling itself. Null when the lines already fit. `what` names the output in the notice ("section", "skill body"). A path no quote mark holds in both shells gets the line range without the command. */
+export function capFileLines(allLines: readonly string[], firstLine: number, file: string, maxChars: number, what: string, reserve = 0): { kept: string[]; lastLine: number; notice: string } | null {
+  if (allLines.join('\n').length + reserve <= maxChars) return null
+  // Text ending in a line break splits into a trailing "" that is no line of the file; counting it would page one line past the end.
+  const lines = allLines.length > 1 && allLines[allLines.length - 1] === '' ? allLines.slice(0, -1) : allLines
+  const kept = lines.slice(0, linesWithinChars(lines, maxChars - reserve - (300 + file.length)))
+  const lastLine = firstLine + kept.length - 1
+  const finalLine = firstLine + lines.length - 1
+  const nextEnd = lastLine + linesWithinChars(lines.slice(kept.length), maxChars - READ_HEADER_RESERVE_CHARS)
+  const head = `[token-goat: ${what} capped at ${maxChars} chars to stay under the harness's inline output limit; showing lines ${firstLine}-${lastLine} of ${firstLine}-${finalLine}.`
+  const next = canQuoteArg(file)
+    ? ` Next part: ${fencedCommand(`token-goat read ${quotedArg(`${file}@${lastLine + 1}-${nextEnd}`)}`)}${nextEnd < finalLine ? `, then on to line ${finalLine}` : ''}.]`
+    : ` The rest is lines ${lastLine + 1}-${finalLine} of ${echoedValue(file)}.]`
+  return { kept, lastLine, notice: forClient(head + next) }
 }
 
 /** Result of capping a JSON-serializable array to a token budget. */

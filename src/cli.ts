@@ -39,7 +39,7 @@ import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
 import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorker, WorkerAlreadyRunningError } from './worker_lifecycle.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
-import { runRead, runPrSlice } from './read_commands.js'
+import { outputCeilingChars, runRead, runPrSlice } from './read_commands.js'
 import { runSymbol } from './read_symbol.js'
 import { extraArgsRejoinSpacedPath, namedSpecsMergeable, readSpecsMergeable } from './read_spec.js'
 import { runBrief } from './read_brief.js'
@@ -1044,10 +1044,12 @@ export function buildProgram(): Command {
             return runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
           })
         : runExitText(() => {
+            const ceiling = opts.json === true ? null : outputCeilingChars()
             const sectionOpts = {
               ...(opts.json === true ? { json: true } : {}),
               ...(maxLines !== undefined ? { maxLines } : {}),
               ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+              ...(ceiling !== null ? { maxChars: ceiling } : {}),
             }
             // Words a shell split out of one unquoted heading are not several specs: that shape keeps the note that says how to quote it.
             if (more.length > 0 && !extraArgsRejoinSpacedPath(spec, more, 'spec')) return runSectionSpecs([spec, ...more], sectionOpts)

@@ -299,6 +299,23 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'capFileLines',
+    {
+      bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',
+      reason:
+        'Pages a section of a file the caller named (read_section.ts runSection) or an installed skill file ' +
+        '(cli_skills.ts capToCeiling) by whole lines at the output ceiling. Both are the user\'s own files, printed ' +
+        'unredacted by section and skill-body before this cap existed; it only stops sooner, at a line boundary.',
+    },
+  ],
+  [
+    'capToCeiling',
+    {
+      bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',
+      reason: 'cli_skills.ts\'s one caller of capFileLines, over a skill file skill-body and skill-section already print whole.',
+    },
+  ],
+  [
     'clipToDeliveryCap',
     {
       bucket: 'caller-refuses-any-secret-shaped-input-before-reaching-here',

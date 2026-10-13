@@ -29,7 +29,8 @@ import { UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
 import { fenceIfScanMatched } from './untrusted_fence.js'
 import { guardThenFence } from './fence_cap.js'
-import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
+import { trimToBudget, capJsonRows, HARNESS_INLINE_CEILING_CHARS, type JsonRowCapResult } from './overflow_guard.js'
+import { guardDivisor } from './token_estimate.js'
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
 import {
@@ -490,6 +491,12 @@ export function emitGuarded(text: string, command: string): void {
 export function guardText(text: string, command: string): string {
   const cfg = loadConfig()
   return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
+}
+
+/** The character ceiling a command that pages its answer holds it to ({@link HARNESS_INLINE_CEILING_CHARS}), or less when `overflow_guard.max_tokens` asks for less, at the guard's own ~3 chars a token; null when `overflow_guard` is off, the same switch that turns {@link guardText} off. */
+export function outputCeilingChars(): number | null {
+  const cfg = loadConfig()
+  return cfg.overflow_guard.enabled ? Math.min(HARNESS_INLINE_CEILING_CHARS, cfg.overflow_guard.max_tokens * guardDivisor()) : null
 }
 
 /** Cap `text` and fence it under {@link UNTRUSTED_GITHUB_TAG}. A PR's title, description, review comments, and diff are all authorable by anyone who opened the PR or left the comment, so the fence follows that provenance and not the scan result. The scan still runs, purely to name matched pattern(s) in the notice and record the stat. Used by every printed `pr-slice` emit site, each of which has already redacted its text. The `--json` sites use {@link fenceGithubFieldIfMatched} instead -- see the note there. */

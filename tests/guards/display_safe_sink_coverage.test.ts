@@ -260,6 +260,13 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       "that line is token-goat's own summary with a child count appended rather than a reproduction.",
   ],
   [
+    'cli_skills.ts:extracted.text',
+    'the skill section skill-section was asked to print: the payload the reader asked for, printed ' +
+      'verbatim as it always was (it read out(extracted) before capToCeiling wrapped it to page an ' +
+      'oversized section). capToCeiling only stops at a line boundary and appends token-goat\'s own ' +
+      'continuation notice, whose path is quoted by quotedArg.',
+  ],
+  [
     'session_store_schema.ts:result.text',
     'the output text produced by describeTarget: the payload the reader asked for, composed of ' +
       'token-goat catalog metadata or formatted SQLite schema text and forwarded to emit/emitErr.',

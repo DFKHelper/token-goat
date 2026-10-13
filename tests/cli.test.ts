@@ -291,17 +291,18 @@ describe('token-goat CLI', () => {
     }
   }, 30000)
 
-  it('bash-output --file --grep alone (no --head/--tail) still applies default elision on a large match set', async () => {
+  // bash-output's --grep with no --max-matches, --head or --tail stops at its default of 100 matches and names the --lines continuation for the rest; it used to show the first 30 and last 80 behind an elision marker whose hint was --full, the one flag that prints every match.
+  it('bash-output --file --grep alone (no --head/--tail) stays bounded on a large match set and names the rest', async () => {
     const tmpFile = path.join(os.tmpdir(), `tg-grep-only-elide-${Date.now()}.txt`)
     const lines = Array.from({ length: 200 }, (_, i) => `MATCH line ${i + 1}`).join('\n')
     fs.writeFileSync(tmpFile, lines, 'utf8')
     try {
       const r = await run(['bash-output', '--file', tmpFile, '--grep', 'MATCH'])
       expect(r.status).toBe(0)
-      expect(r.stdout).toContain('...(elided lines ')
-      expect(r.stdout).toContain('MATCH line 1')
-      expect(r.stdout).toContain('MATCH line 200')
-      expect(r.stdout).not.toContain('MATCH line 100')
+      expect(r.stdout).toContain('MATCH line 1\n')
+      expect(r.stdout).toContain('MATCH line 100\n')
+      expect(r.stdout).not.toContain('MATCH line 101\n')
+      expect(r.stdout).toContain('--grep "MATCH" --lines 101-200')
     } finally {
       fs.rmSync(tmpFile, { force: true })
     }
