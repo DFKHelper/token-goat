@@ -39,6 +39,10 @@ The following are not treated as security issues unless paired with a working pr
 - Social-engineering attacks that require tricking the user into running malicious commands
 - Issues that require an already-compromised local user account
 
+## Check commands in the session record
+
+When a test, lint, typecheck or build command runs, the session record keeps the runner, its subcommand, a short list of known switches and any path-shaped word, and replaces every other word with an ellipsis. A secret passed as a bare positional argument that looks like a path, such as `hunter2.txt`, would be kept, because a file name is what identifies the check; a secret that follows a flag, uses a `user:pass@host` form or is shaped like a JWT is dropped.
+
 ## Dependency advisories
 
 `npm audit` reports Token-Goat clean for anyone who installs it, and that has been true of a default install since the embedding library that carried every finding was removed. This repository's own tree is clean as well, development dependencies included: `adm-zip`, `hono`, `proxy-addr` and `source-map-js` were resolved to patched versions through the lock-file refresh, not bumped by hand the day a fix was published -- see [`.github/dependabot.yml`](.github/dependabot.yml) for why a plain `npm update` isn't the fix. All three numbers below are reproducible with the commands shown. The one place an advisory can still reach is the optional native runtime, which a default install does not carry, and it is described further down rather than folded into these rows.

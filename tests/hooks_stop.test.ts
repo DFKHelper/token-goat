@@ -330,6 +330,10 @@ describe('stored command credentials', () => {
     ['npm test --token hunter2', 'npm test …'],
     ['npm test --header X-Custom:hunter2', 'npm test …'],
     ['pytest -k hunter2 tests/test_x.py::test_y', 'pytest tests/test_x.py::test_y …'],
+    // HAND-DERIVED: a userinfo URL without a scheme has a single `:` and a `/`, so it passes the path shape; a JWT-shaped word (first segment `eyJ`) has an extension-like tail. Both are dropped; a drive path and a `::` selector keep their colons.
+    ['npm test user:hunter2@host/x', 'npm test …'],
+    ['npm test eyJhbGciOiJIUzI1NiJ9.hunter2.sig', 'npm test …'],
+    ['npx vitest run C:/work/a.test.ts', 'npx vitest run C:/work/a.test.ts'],
     // HAND-DERIVED: from here on, commands with no secret on them, whose stored text says what ran. `--grep parser` loses its flag and value, the one change from the deny-list's output.
     ['npm test', 'npm test'],
     ['npm test --watch --reporter=verbose', 'npm test --watch --reporter=verbose'],

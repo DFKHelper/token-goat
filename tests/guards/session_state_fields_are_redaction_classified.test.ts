@@ -61,7 +61,9 @@ const SESSION_FIELD_COVERAGE: ReadonlyMap<string, FieldCoverage> = new Map([
         'switches, a built-in reporter and path-like words survive, every other word is dropped ' +
         'and marked with an ellipsis, then redactSecrets runs over what was kept and the line is ' +
         'capped at 200 characters before recordVerificationRun stores it; the other two members ' +
-        'are a number and an exit status.',
+        'are a number and an exit status. Residual: a secret handed to the runner as a bare ' +
+        'path-shaped positional argument (hunter2.txt) is kept, because a file name identifies the ' +
+        'check; SECURITY.md says the same.',
     },
   ],
   [

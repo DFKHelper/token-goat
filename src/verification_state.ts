@@ -81,12 +81,17 @@ const SAFE_FLAGS: ReadonlySet<string> = new Set(['--', '--ci', '--run', '--watch
 const SAFE_REPORTER = /^--reporter=(?:default|verbose|dot|basic|json|junit|tap|spec|min|list|agent)$/
 const PATH_SHAPE = /^[^-][\w./@:\\-]*$/
 const PATH_EVIDENCE = /[/\\]|::|\.[A-Za-z]\w*$/
+/** A drive letter at the start of a Windows path (`C:/x`, `C:\x`), the one place a single `:` belongs in a path word. */
+const DRIVE_PREFIX = /^[A-Za-z]:[/\\]/
+/** Three base64url segments, the first an encoded JSON header (`eyJ`): a bearer token spelled as a dotted name, which would otherwise pass for a file with an extension. */
+const JWT_SHAPE = /^eyJ[\w-]*\.[\w-]+\.[\w-]*$/
 /** Stands in the stored check for every word the allow-list dropped. */
 const DROPPED_MARK = '…'
 
-/** A bare path or test selector (`tests/a.test.ts`, `tests/test_x.py::test_y`): a word with a separator or an extension. `hunter2` alone is not one. A positional file name is kept because it is what identifies the check; a secret spelled as a path with a separator or an extension is not something a runner is handed as a bare argument, and one that follows a flag is dropped by {@link allowListed}. */
+/** A bare path or test selector (`tests/a.test.ts`, `tests/test_x.py::test_y`): a word with a separator or an extension. `hunter2` alone is not one, and neither is a word with a single `:` outside a drive prefix or `::` (`user:hunter2@host/x`) or one shaped like a JWT. A positional file name is kept because it is what identifies the check; a secret spelled as a path with a separator or an extension is not something a runner is handed as a bare argument, and one that follows a flag is dropped by {@link allowListed}. */
 function looksLikePathOrSelector(word: string): boolean {
-  return PATH_SHAPE.test(word) && PATH_EVIDENCE.test(word)
+  if (!PATH_SHAPE.test(word) || !PATH_EVIDENCE.test(word)) return false
+  return !JWT_SHAPE.test(word) && !word.replace(DRIVE_PREFIX, '').replace(/::/g, '').includes(':')
 }
 
 /** Fail-closed allow-list over one check segment: the runner and subcommand, the switches in {@link SAFE_FLAGS}, a built-in `--reporter=` and path-like words survive; every other word is dropped and the loss is marked, so `npm test --foo hunter2` stores `npm test …`. A word that follows a dropped flag with no `=` may be that flag's value, so it is dropped even when it looks like a path (`-p a/b.c`). A deny-list of secret spellings cannot promise this: a value is not recognisable by its flag name, its position or its shape, which is why the mask that used to sit here is gone. */
