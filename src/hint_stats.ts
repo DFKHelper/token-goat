@@ -22,6 +22,12 @@ export const HINT_CATEGORIES = [
   // The Grep/Glob dedup notes from hooks_common.ts's makeDedupHintHandlers. Logged with no correlator, so they count as spend and emissions but never as a verdict: the note is attached to the re-run it describes, so no later call can show whether it was heeded.
   'grep_dedup_hint',
   'glob_dedup_hint',
+  // recovery_pairs.ts: a failed Bash command that an earlier session learned a fix for. Logged with no correlator: the fix may be run in many spellings, so the pair store scores it (helped and hurt) rather than a pointer match.
+  'recovery_pair',
+  // edit_near_miss.ts: a failed Edit whose old_string differs from the file only by whitespace, punctuation or indentation. Logged with no correlator: the corrected edit may be retyped in any spelling, so it counts as spend and emissions but never a verdict.
+  'edit_near_miss',
+  // path_miss.ts: a tool call named a path that does not exist and an existing path is plausibly the one meant. Logged with no correlator: the corrected call may name the path in any spelling, so it counts as spend and emissions but never a verdict.
+  'path_miss',
 ] as const
 
 export type HintCategory = (typeof HINT_CATEGORIES)[number]

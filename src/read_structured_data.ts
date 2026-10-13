@@ -39,7 +39,8 @@ import {
   xmlNodeToJson,
   type XmlOutlineSummary,
 } from './xml_query.js'
-import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { couldNotReadError } from './could_not_read.js'
 
 /** {@link fenceFieldIfMatched} under the HTML tag, for one string of an html-query or html-outline `--json` envelope. */
 function fenceHtmlFieldIfMatched(text: string): string {
@@ -59,7 +60,7 @@ export interface CsvQueryCliOptions {
 export function runCsvQuery(opts: CsvQueryCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -121,7 +122,7 @@ export interface CsvProfileCliOptions {
 export function runCsvProfile(opts: CsvProfileCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
   try {
@@ -154,7 +155,7 @@ export interface JsonOutlineCliOptions {
 function runOutlineCommand(opts: JsonOutlineCliOptions, parse: (text: string) => unknown, formatLabel: string, kind: string): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -228,7 +229,7 @@ function runQueryCommand(
   const text = readQueryInput(opts.file)
   if (text === null) {
     if (opts.file !== '-') {
-      emitErr(formatCommandError(couldNotRead(opts.file)))
+      emitErr(formatCommandError(couldNotReadError(opts.file)))
     }
     return 1
   }
@@ -361,7 +362,7 @@ export interface XmlOutlineCliOptions {
 export function runXmlOutline(opts: XmlOutlineCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -400,7 +401,7 @@ export function runXmlQuery(opts: XmlQueryCliOptions): number {
   const text = readQueryInput(opts.file)
   if (text === null) {
     if (opts.file !== '-') {
-      emitErr(formatCommandError(couldNotRead(opts.file)))
+      emitErr(formatCommandError(couldNotReadError(opts.file)))
     }
     return 1
   }
@@ -615,7 +616,7 @@ export interface HtmlOutlineCliOptions {
 export function runHtmlOutline(opts: HtmlOutlineCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -645,7 +646,7 @@ export interface HtmlQueryCliOptions {
 export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -755,7 +756,7 @@ export interface HtmlLintCliOptions {
 export function runHtmlLint(opts: HtmlLintCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -808,7 +809,7 @@ export interface OpenApiOutlineCliOptions {
 function loadOpenApiOperations(file: string): ReturnType<typeof extractOperations> | null {
   const text = readFileText(file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(file)))
+    emitErr(formatCommandError(couldNotReadError(file)))
     return null
   }
 

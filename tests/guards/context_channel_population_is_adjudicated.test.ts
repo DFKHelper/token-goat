@@ -37,8 +37,22 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Names the image it shrank, and a repository names its images. The basename is escaped once where it is computed, which also covers the stats label it feeds. The OCR text beside it was already fenced separately.',
   'hooks_stop.ts::stopHandler':
     'Names the source files the session edited, which a repository names, and the last verification command, which the model typed. Each file name goes through nameSubject and the command through quotedArg, both display-safe, so neither can carry a marker or a backtick.',
-  'hooks_tool_failure.ts::postToolUseFailureHandler':
+  'hooks_tool_failure.ts::adviseOnFailure':
     'Names the tool that failed twice, and an MCP server chooses the names it advertises. Escaped in repeatFailureNotice.',
+  'hooks_tool_failure.ts::postToolUseFailureHandler':
+    'Returns what adviseOnFailure produced without the recovery and path-miss lines, which postToolUseFailureWithExtras adds. Interpolates nothing of its own.',
+  'hooks_tool_failure.ts::postToolUseFailureWithExtras':
+    'The registered form of postToolUseFailureHandler: it loads recovery_pairs.ts and path_miss.ts on demand and appends the lines recoveryAfterFailure and pathMissAfterFailure return. Interpolates nothing of its own; the lines are adjudicated under those two functions.',
+  'hooks_tool_failure.ts::withExtraLines':
+    'Joins the lines the two handlers above collected onto the advice adviseOnFailure produced. Interpolates nothing of its own.',
+  'hooks_tool_failure.ts::editAdviceOutput':
+    'Wraps a diagnostic diagnoseEditFailure built. The near-miss shape echoes the edited path (displaySafeText in diagnoseEditFailure) and a span of the on-disk file, which describeNearMiss redacts and then fences with fenceFileText before it is joined into the string, so the file text never reaches the channel unfenced. Interpolates nothing of its own.',
+  'path_miss.ts::pathMissAfterFailure':
+    'Echoes the path a failed tool call named, which is whatever the model or a command typed, and offers paths read off the disk and the index, which a repository names. The missing path goes through echoedValue and each candidate through displaySafeText, quoted with quotedArg and set inside one backtick fence by fencedCommand; a candidate holding a backtick is dropped rather than shown.',
+  'hooks_recovery.ts::textPathMiss':
+    'Passes the line pathMissAfterFailure returns for the text of a Codex or VS Code shell result, which is whatever the command printed. Interpolates nothing of its own; the missing path and each candidate are escaped and fenced under pathMissAfterFailure.',
+  'recovery_pairs.ts::recoveryAfterFailure':
+    'Echoes a fix command a model ran in an earlier session, so the text is session-influenced. It is stored only if isLearnableCommand passed it (one line, no backtick or control character, no credential, nothing about token-goat, and every part starting with a verb on the build, test and install allowlist in recovery_fix_policy.ts), worded as unverified history, escaped with displaySafeText and set inside one backtick fence by fencedCommand.',
   'call_streak.ts::trackedLine':
     'Emits batchHintText or searchBrakeText, whose only interpolation is a streak count this module computed; the command in the brake is a fixed template with placeholder arguments. No path, pattern, command or tool name from the payload is echoed.',
   'call_streak.ts::onReadOnlyPre': 'Reaches the channel only through trackedLine. Interpolates nothing of its own.',
@@ -152,6 +166,7 @@ describe('every function on the context channel has been adjudicated', () => {
       ['resident_context.ts', 'displaySafeText(worst.skill)'],
       ['evidence_cache.ts', 'displaySafePath(entry.source)'],
       ['hooks_tool_failure.ts', 'displaySafeText(toolName)'],
+      ['recovery_pairs.ts', 'fencedCommand(displaySafeText(best.fix))'],
       ['hooks_read.ts', 'displaySafePath(path.basename(normalized))'],
       ['hooks_read.ts', 'displaySafePath(match[1]!)'],
       ['hooks_common.ts', "displaySafeText(typeof toolInput['pattern']"],

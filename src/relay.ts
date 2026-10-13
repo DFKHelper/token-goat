@@ -17,7 +17,8 @@ import { HOOK_PROBE_ENV, recordStat } from './stats.js'
 import { readStdinJson } from './stdin_json.js'
 import { shouldSuppressDuplicateVscodeHook } from './vscode_duplicate.js'
 
-// Side-effect imports: each registers its handlers with the hook registry.
+// Side-effect imports: each registers its handlers with the hook registry; hooks_recovery goes first so its advisory handlers run before any that ends the dispatch loop.
+import './hooks_recovery.js'
 import './hooks_read.js'
 import './hooks_read_post.js'
 import './hooks_grep.js'
@@ -41,7 +42,7 @@ import './hooks_mcp.js'
 import './hooks_websearch.js'
 import './hooks_screenshot.js'
 import './hooks_browser_image.js'
-import './hooks_agent_spawn.js'
+import './hooks_agent_spawn_register.js'
 import './image_shrink.js'
 
 /** Validate that `name` is a known internal hook event name. */

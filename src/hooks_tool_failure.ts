@@ -1,13 +1,16 @@
 /** `post_tool_use_failure` handler -- the repeat-failure brake. Two harnesses route a *failed* tool result here instead of to their ordinary post-tool event. Claude Code sends `PostToolUseFailure` with `error`, `is_interrupt` and `duration_ms` (captured on 2.1.281: a missing-file Read and a non-zero Bash exit both arrive here, never on PostToolUse), and its `additionalContext` reached the model in the same capture. Copilot CLI routes one to its own `postToolUseFailure` hook instead of `postToolUse`, and that hook accepts only `additionalContext`: `modifiedResult` is documented as not honored there and the bundle agrees, so a failed tool result cannot be fenced, compressed or shrunk on Copilot the way a successful one can. What the event *can* do is confirmed rather than assumed -- Copilot CLI 1.0.80, app.js offset 2043380 either folds `additionalContext` into `textResultForLlm` or pushes `{content, source:'system'}` onto `toolResult.newMessages`, so the text does reach the model. That makes this the one handler in token-goat whose channel *adds* tokens instead of removing them, and it is written accordingly: it is silent unless staying silent is more expensive than speaking. The only case that clears that bar is a repeat -- the same tool failing with the same error a second time, which is the model about to spend another whole tool call re-learning what it already knows. One short line costs ~25 tokens; the retry it prevents costs the call plus its failure text. So the first failure of any signature returns `pass` and writes nothing to the model, the second returns the line, and every later one returns `pass` again -- a signature is advised at most once per session, because a model that ignored the note will ignore it twice. Every failure is classified first (tool_error_class.ts) and recorded as one `tool_failure` stat, and a reason in {@link REPEAT_NOTICE_EXEMPT} never gets the line. State is a per-session sidecar, the same mechanism `pending_context.ts` uses, and every read and write is fail-soft: a hook that cannot persist its ledger must still return a valid response. */
 
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, relative } from 'node:path'
 
 import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
+import type * as EditNearMiss from './edit_near_miss.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
 import { noteFailedVerificationHandler } from './hooks_verification.js'
+import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { contextOutput, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
 import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
@@ -107,13 +110,46 @@ export function repeatFailureNotice(toolName: string | undefined): string {
   return `[token-goat] ${tool} just failed with the same error as an earlier call this session. Retrying it unchanged will fail the same way -- change the arguments, the tool, or the approach.`
 }
 
+/** The near-miss finder (edit_near_miss.ts, with the secret-name list under it), loaded by {@link postToolUseFailureWithExtras} only for a failed edit tool call so the hook entry does not parse it on every tool call. Until it is loaded {@link diagnoseEditFailure} skips the near-miss rung and gives the older advice, so a caller that wants the near-miss answer awaits {@link loadNearMiss} first. */
+let nearMissLib: typeof EditNearMiss | undefined
+
+/** Load the near-miss module for {@link diagnoseEditFailure}. A load failure leaves it unloaded, which is the older-advice path rather than an error. */
+export async function loadNearMiss(): Promise<void> {
+  try {
+    nearMissLib ??= await import('./edit_near_miss.js')
+  } catch {
+    // The near-miss rung is an extra; the older edit advice still answers.
+  }
+}
+
 /** Maximum file size (10 MB) to inspect on an edit failure to avoid memory stalls. */
 const MAX_EDIT_DIAGNOSE_BYTES = 10 * 1024 * 1024
+
+/** Every `old_string` an edit tool call carried: the single key under any host's spelling (Claude Code `old_string`, Copilot CLI `old_str`, a bare `target`, Antigravity `TargetContent`), then each `edits[]` entry of a MultiEdit. Empty strings are dropped, since they match everywhere. */
+function editOldStrings(event: HookEvent): string[] {
+  const input = event.toolInput
+  const out: string[] = []
+  for (const key of ['old_string', 'old_str', 'target', 'TargetContent']) {
+    const value = input[key]
+    if (typeof value === 'string' && value !== '') {
+      out.push(value)
+      break
+    }
+  }
+  const edits = input['edits']
+  if (Array.isArray(edits)) {
+    for (const entry of edits) {
+      const value = entry !== null && typeof entry === 'object' ? (entry as Record<string, unknown>)['old_string'] : undefined
+      if (typeof value === 'string' && value !== '') out.push(value)
+    }
+  }
+  return out
+}
 
 /** Inspect an Edit tool failure and generate actionable, surgical guidance. When an agent fails an edit because `old_string` matches multiple locations or zero locations, the raw harness error ("Multiple matches found") provides no line numbers or context, causing blind retry loops. This helper inspects the file on disk to report the exact match counts and line numbers so the agent can disambiguate immediately. */
 export function diagnoseEditFailure(event: HookEvent, errorText: string): string | null {
   const toolName = getToolName(event)
-  if (!toolName || !/^(edit|str_replace_editor)$/i.test(toolName)) {
+  if (!toolName || !/^(edit|multiedit|str_replace_editor)$/i.test(toolName)) {
     return null
   }
 
@@ -126,20 +162,12 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
     return null
   }
 
-  const filePath =
-    getFilePath(event) ?? (typeof event.toolInput['path'] === 'string' && event.toolInput['path'] !== '' ? resolveEventPath(event, event.toolInput['path']) : undefined)
+  const fallbackPath = ['path', 'TargetFile'].map((key) => event.toolInput[key]).find((value): value is string => typeof value === 'string' && value !== '')
+  const filePath = getFilePath(event) ?? (fallbackPath === undefined ? undefined : resolveEventPath(event, fallbackPath))
   if (!filePath) return null
 
-  const oldString =
-    typeof event.toolInput['old_string'] === 'string'
-      ? event.toolInput['old_string']
-      : typeof event.toolInput['old_str'] === 'string'
-        ? event.toolInput['old_str']
-        : typeof event.toolInput['target'] === 'string'
-          ? event.toolInput['target']
-          : undefined
-
-  if (oldString === undefined || oldString === '') return null
+  const oldStrings = editOldStrings(event)
+  if (oldStrings.length === 0) return null
 
   const absPath = hostPathOfIndexKey(normalizePath(filePath))
   if (!existsSync(absPath)) return null
@@ -149,6 +177,9 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
     if (stat.size > MAX_EDIT_DIAGNOSE_BYTES) return null
 
     const fileContent = readFileSync(absPath, 'utf8')
+    // A MultiEdit names several old strings and the error text may not say which one failed, so take the first one the file cannot explain: absent for a not-found, repeated for a multiple-match.
+    const oldString = oldStrings.length === 1 ? oldStrings[0] : oldStrings.find((candidate) => (isNotFound ? !fileContent.includes(candidate) : fileContent.indexOf(candidate) !== fileContent.lastIndexOf(candidate)))
+    if (oldString === undefined) return null
     const relDisplay = displaySafeText(relative(process.cwd(), absPath).replace(/\\/g, '/') || absPath)
 
     if (isMultiple) {
@@ -177,6 +208,10 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
         return `[token-goat] Edit failed: string not found in ${relDisplay}, but matches with normalized line endings. Check CRLF vs LF line endings or whitespace.`
       }
 
+      const nearMiss = nearMissLib?.findNearMiss(fileContent, oldString) ?? null
+      const nearAdvice = nearMiss === null ? null : nearMissLib?.describeNearMiss(fileContent, relDisplay, nearMiss) ?? null
+      if (nearAdvice !== null) return nearAdvice
+
       const firstLine = oldString.split(/\r?\n/)[0]?.trim() ?? ''
       if (firstLine.length >= 10) {
         const fileLines = fileContent.split('\n')
@@ -202,7 +237,67 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
   return null
 }
 
+/** The context answer for an edit diagnostic. Only a near-miss diagnostic (edit_near_miss.ts) is logged as a hint: the older advice carries no new information the hint ledger could judge. */
+function editAdviceOutput(event: HookEvent, text: string): HookOutput {
+  const out = contextOutput(text)
+  return nearMissLib?.isNearMissAdvice(text) === true ? applyHintTracking(event, out, uncorrelatedHint('edit_near_miss')) : out
+}
+
+/** Reasons a failed Bash command opens no recovery pair, beyond {@link REPEAT_NOTICE_EXEMPT}: a syntax error or a blocked sleep is fixed by rewriting the command, so the fix is a different C rather than something run in between. */
+const RECOVERY_SKIPPED: ReadonlySet<string> = new Set(['shell_syntax_error', 'sleep_blocked'])
+
+/** What a failed call needs from the modules {@link postToolUseFailureWithExtras} loads on demand. */
+interface ExtrasRequest {
+  readonly toolName: string | undefined
+  readonly errorText: string
+}
+
+interface AdviceSlot {
+  lines: string[]
+  recovery: (ExtrasRequest & { command: string }) | null
+  pathMiss: ExtrasRequest | null
+}
+
+function newSlot(): AdviceSlot {
+  return { lines: [], recovery: null, pathMiss: null }
+}
+
+function withExtraLines(base: HookOutput, lines: readonly string[]): HookOutput {
+  if (lines.length === 0) return base
+  const extra = lines.join('\n')
+  if (base.hookType === 'context') return contextOutput([base.context, extra].join('\n'), base.correlators)
+  return base.hookType === 'pass' ? contextOutput(extra) : base
+}
+
+/** The failure handler's answer without the two lines that need a module of their own: the failed-command recovery line (recovery_pairs.ts) and the missing-path suggestion (path_miss.ts). {@link postToolUseFailureWithExtras}, the registered handler, adds both. */
 export function postToolUseFailureHandler(event: HookEvent): HookOutput {
+  return adviseOnFailure(event, newSlot())
+}
+
+/** {@link postToolUseFailureHandler} plus the recovery line and the missing-path suggestion, each appended to whatever it says. {@link adviseOnFailure}, which knows the classification, records what each needs in `slot`; the modules are imported here only when asked for, because recovery_pairs.ts and path_miss.ts (with the index reader under it) would otherwise be parsed by the hook entry on every tool call. */
+export async function postToolUseFailureWithExtras(event: HookEvent): Promise<HookOutput> {
+  const slot = newSlot()
+  const toolName = getToolName(event)
+  if (toolName !== undefined && /^(edit|multiedit|str_replace_editor)$/i.test(toolName)) await loadNearMiss()
+  const base = adviseOnFailure(event, slot)
+  try {
+    if (slot.recovery !== null) {
+      const { recoveryAfterFailure } = await import('./recovery_pairs.js')
+      const recovery = recoveryAfterFailure(event, { command: slot.recovery.command, errorText: slot.recovery.errorText })
+      if (recovery !== null) slot.lines.push(recovery)
+    }
+    if (slot.pathMiss !== null) {
+      const { pathMissAfterFailure } = await import('./path_miss.js')
+      const pathMiss = pathMissAfterFailure(event, slot.pathMiss)
+      if (pathMiss !== null) slot.lines.push(pathMiss)
+    }
+  } catch {
+    // The two lines are extras; a failure to produce one leaves the advice already computed.
+  }
+  return withExtraLines(base, slot.lines)
+}
+
+function adviseOnFailure(event: HookEvent, slot: AdviceSlot): HookOutput {
   try {
     const errorText = extractFailureText(event.raw)
     if (errorText === '') return passOutput()
@@ -215,14 +310,20 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
     recordStat('tool_failure', 0, 0, undefined, `tool=${(toolName ?? 'unknown').replace(/\s+/g, '_')} class=${verdict.kind} reason=${verdict.reason}`)
     // Only a `search_no_match` can produce a line here, and that reason is exempt below, so the brake never competes with the repeat notice.
     const streakLine = callStreakAfterFailure(event, verdict.reason)
+    if (toolName === 'Bash' && typeof command === 'string' && event.raw['is_interrupt'] !== true && !REPEAT_NOTICE_EXEMPT.has(verdict.reason) && !RECOVERY_SKIPPED.has(verdict.reason)) {
+      slot.recovery = { toolName, errorText, command }
+    }
+    if (verdict.reason === 'path_not_found' && event.raw['is_interrupt'] !== true) {
+      slot.pathMiss = { toolName, errorText }
+    }
     if (REPEAT_NOTICE_EXEMPT.has(verdict.reason)) return streakLine ?? passOutput()
 
     if (!event.sessionId) return passOutput()
     const target = ledgerPath(event.sessionId)
     if (target === null) return passOutput()
 
-    // Redact before the signature is derived, not after: this signature is the object the ledger persists to disk (writeLedger below), and a tool failure's error text is externally sourced (shell stderr, an MCP tool's own error, a fetch failure) and can carry a credential the failing call happened to echo back.
-    const signature = failureSignature(toolName, redactSecrets(errorText).text)
+    // Redact before the signature is derived, not after: this signature is the object the ledger persists to disk (writeLedger below), and a tool failure's error text is externally sourced (shell stderr, an MCP tool's own error, a fetch failure) and can carry a credential the failing call happened to echo back. Then kept only as a digest: redaction knows credential shapes, not an argument the shell printed back, so the text itself never reaches the ledger.
+    const signature = createHash('sha256').update(failureSignature(toolName, redactSecrets(errorText).text)).digest('hex')
     const ledger = readLedger(target)
     const priorState = ledger.seen[signature]
 
@@ -243,7 +344,7 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
       if (editDiagnostic !== null) {
         ledger.seen[signature] = true
         writeLedger(target, ledger)
-        return contextOutput(editDiagnostic)
+        return editAdviceOutput(event, editDiagnostic)
       }
 
       // If this is an actionable SQL column/table error, advise immediately with valid schema.
@@ -262,7 +363,7 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
     writeLedger(target, ledger)
 
     if (editDiagnostic !== null) {
-      return contextOutput(editDiagnostic)
+      return editAdviceOutput(event, editDiagnostic)
     }
 
     if (sqlDiagnostic !== null) {
@@ -276,4 +377,4 @@ export function postToolUseFailureHandler(event: HookEvent): HookOutput {
 }
 
 registerHook('post_tool_use_failure', noteFailedVerificationHandler, { advisory: true })
-registerHook('post_tool_use_failure', postToolUseFailureHandler)
+registerHook('post_tool_use_failure', postToolUseFailureWithExtras)

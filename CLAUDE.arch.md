@@ -81,6 +81,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 |--------|------|
 | [`src/code_fold.ts`](src/code_fold.ts) | First-read fold planning: `planBodyFolds()` picks foldable index spans (functions, methods, variables; never a class, interface, or type alias) and `planCommentFolds()` finds comment blocks of at least twelve lines from the delivered text alone, so a file the indexer has never seen still folds. Comment syntax is keyed on the file extension and never sniffed from content |
 | [`src/hook_registry.ts`](src/hook_registry.ts) | `registerHook(eventName, handler, filter?)` — stores handlers in a `Map<HookEventName, Registration[]>`; `runHook()` dispatches by event name and optional tool-name filter |
+| [`src/hooks_agent_spawn_register.ts`](src/hooks_agent_spawn_register.ts) | Registers the subagent hooks of hooks_agent_spawn.ts behind dynamic imports, so the hook entry does not parse that module's briefing, report-compaction and roster code on every too |
 | [`src/hooks_agent_spawn.ts`](src/hooks_agent_spawn.ts) | Subagent briefing pack hook. |
 | [`src/hooks_bash_commands.ts`](src/hooks_bash_commands.ts) | Shell command parsing, git mutation detection, pipeline filtering, and syntax validation. |
 | [`src/hooks_bash_post.ts`](src/hooks_bash_post.ts) | `postBashHandler()` — caches bash stdout/stderr, records the files a command read and the paths it rewrote, delivers a smaller rendering of the result where one pays (served-line elision, identical-read collapse, structural and body folds, compound-command compression, curl HTML cleanup, ANSI stripping), emits `gh api` and one-time `gh pr/issue view` field-batching advisories |
@@ -101,6 +102,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/hooks_read_post.ts`](src/hooks_read_post.ts) | `postReadHandler()` — snapshot update, session recording, `elideAlreadyServedLines()` and `foldCodeBodies()` on the delivered text |
 | [`src/hooks_read_slice.ts`](src/hooks_read_slice.ts) | Line windowing, slice estimation, line diffing, and truncated-read detection. |
 | [`src/hooks_read.ts`](src/hooks_read.ts) | `preReadHandler()` — session hint, diff-on-reread, image intercept, large-file gate, surgical-hint injection |
+| [`src/hooks_recovery.ts`](src/hooks_recovery.ts) | `post_tool_use` side of the failure-recovery pairs (recovery_pairs.ts): a successful Bash command may close a pending pair, and an edit tool drops every pending pair. |
 | [`src/hooks_screenshot.ts`](src/hooks_screenshot.ts) | Pre-tool-use hook — `pre_screenshot`: denies MCP screenshot tool calls that don't specify a destination file, redirecting the model to re-issue the call with one. |
 | [`src/hooks_session_start.ts`](src/hooks_session_start.ts) | session_start hook: re-inject a short command-routing reminder every time a session starts, resumes, or restarts after compaction. |
 | [`src/hooks_session.ts`](src/hooks_session.ts) | `sessionStartHandler()`, `userPromptSubmitHandler()` (branch and status context), `subagentStopHandler()` |
@@ -443,6 +445,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/copilot_skill_path.ts`](src/copilot_skill_path.ts) | Exports: `copilotSkillPath` |
 | [`src/copilot_tool_names.ts`](src/copilot_tool_names.ts) | Copilot CLI's built-in tool names, mapped to the canonical token-goat names every hook gates on. |
 | [`src/copilot_waste.ts`](src/copilot_waste.ts) | Waste analysis for Copilot CLI sessions. |
+| [`src/could_not_read.ts`](src/could_not_read.ts) | The failure for a file no command could open, followed by a Did-you-mean list of existing paths it may have been meant to name. |
 | [`src/coverage_query.ts`](src/coverage_query.ts) | Narrow "gaps only" extraction for `token-goat coverage-report-gaps`, so a code-coverage report (which can run to tens of thousands of lines for a real project) never needs a full ` |
 | [`src/csv_query.ts`](src/csv_query.ts) | Narrow CSV projection/filter for `token-goat csv-query`, so a multi-thousand row CSV never needs a full `Read` just to answer "what's in column X where Y = Z". |
 | [`src/delivering_deny.ts`](src/delivering_deny.ts) | The wording that marks a token-goat deny as the delivery of content rather than a refusal. |
@@ -458,6 +461,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/document_refusal.ts`](src/document_refusal.ts) | How long any one document's extraction may run, whatever format it is. |
 | [`src/docx_extract.ts`](src/docx_extract.ts) | Word (.docx) narrow-slice reader. |
 | [`src/dotenv_redact.ts`](src/dotenv_redact.ts) | Value redaction for dotenv files. |
+| [`src/edit_near_miss.ts`](src/edit_near_miss.ts) | Near-miss search for an Edit whose `old_string` is not in the file: three looser matches (trailing blanks, Unicode punctuation, indentation) name the exact on-disk lines; bounded by line and character caps, a one-line fragment must cover half its line, and a credential-named file gets the line range only. |
 | [`src/embedding_boundaries.ts`](src/embedding_boundaries.ts) | Exports: `buildEmbeddingBoundaries` |
 | [`src/emit.ts`](src/emit.ts) | The two writers every command surface uses to put its result on stdout and its diagnostics on stderr. |
 | [`src/encoding.ts`](src/encoding.ts) | Source file character encoding and BOM detection / transcoding. |
@@ -494,6 +498,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/index_freshness.ts`](src/index_freshness.ts) | Whether the index's record of a file still matches what is on disk. |
 | [`src/index_health.ts`](src/index_health.ts) | Shared "this project has zero indexed files" diagnosis, reused by doctor's Symbols check (cli_doctor_index.ts's checkSymbolCount) and by every query command that can dead-end on an empty |
 | [`src/index_reclaim.ts`](src/index_reclaim.ts) | Index-space reclamation (`token-goat reclaim-index`). |
+| [`src/indexed_file_names.ts`](src/indexed_file_names.ts) | The index's file list for a project looked up by name, shared by `answer`'s subject resolution and the path-miss suggestions; vendored trees are never returned. |
 | [`src/indexed_roots.ts`](src/indexed_roots.ts) | Which projects were indexed on purpose: by `token-goat index`, or by the first index `install` queues. |
 | [`src/indexed_source.ts`](src/indexed_source.ts) | Resolves the document a stored symbol line range actually addresses. |
 | [`src/injection_scan.ts`](src/injection_scan.ts) | Lexical scan for prompt-injection attack patterns in untrusted fetched content. |
@@ -531,6 +536,8 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/overflow_guard.ts`](src/overflow_guard.ts) | Overflow guard — cap oversized output to protect the model's context. |
 | [`src/own_lookup.ts`](src/own_lookup.ts) | Own-property lookup for plain-object maps whose keys arrive from outside this process. |
 | [`src/path_containment.ts`](src/path_containment.ts) | Path canonicalization and the symlink-resolving containment test. |
+| [`src/path_miss.ts`](src/path_miss.ts) | `post_tool_use_failure` nudge for a tool call that named a path which does not exist: names the existing path plausibly meant, once per signature, silent when none is close. |
+| [`src/path_suggest.ts`](src/path_suggest.ts) | Existing paths a missing one was probably meant to name: spelling variants, same name in the index, a near name, a case-only mismatch; every candidate is checked on disk. |
 | [`src/pending_context.ts`](src/pending_context.ts) | Deferred hint delivery, for harnesses that run a prompt-submit hook but discard its response. |
 | [`src/pinned_fetch.ts`](src/pinned_fetch.ts) | Hashing, copying and downloading files pinned by digest and length. |
 | [`src/pinned_file.ts`](src/pinned_file.ts) | Files held to a SHA-256 and byte length recorded in this repository. |
@@ -546,6 +553,8 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/queue_waker.ts`](src/queue_waker.ts) | Ends the worker's between-drain sleep when another process appends to `queue/dirty.txt` (fs.watch on the queue directory, timer fallback); the worker's own requeues keep their pacing. |
 | [`src/recall_index.ts`](src/recall_index.ts) | Cross-cache full-text search index for `token-goat recall`. |
 | [`src/reconcile_requests.ts`](src/reconcile_requests.ts) | The worker's side of a reconcile request: a hook that knew files changed but could not learn which (a branch switch whose changed-file list git failed to produce in time) leaves th |
+| [`src/recovery_fix_policy.ts`](src/recovery_fix_policy.ts) | What a recovery pair may store and replay (recovery_pairs.ts). |
+| [`src/recovery_pairs.ts`](src/recovery_pairs.ts) | Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. |
 | [`src/ref_blindness.ts`](src/ref_blindness.ts) | Honest answers for questions the reference index cannot answer. |
 | [`src/regex_guard.ts`](src/regex_guard.ts) | Refusing a regular expression that can stall the process that runs it. |
 | [`src/resident_context.ts`](src/resident_context.ts) | Accounting for the context the harness injects and token-goat's hooks never see. |
@@ -556,6 +565,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/search/rrf.ts`](src/search/rrf.ts) | Exports: `DEFAULT_RRF_K`, `fuseChannelHits` |
 | [`src/search/search_cli.ts`](src/search/search_cli.ts) | Exports: `runParallelSearch` |
 | [`src/search/symbol_fts.ts`](src/search/symbol_fts.ts) | Full-text symbol search split by kind, for the `search` command's symbol and heading channels. |
+| [`src/secret_file_names.ts`](src/secret_file_names.ts) | File names whose contents are credentials. |
 | [`src/secret_redact.ts`](src/secret_redact.ts) | Defense-in-depth secret redaction for {@link file://./disk_cache.ts}'s `storeBlob()` choke point. |
 | [`src/served_lines.ts`](src/served_lines.ts) | Finding the stretches of a delivered file window that this session has already served. |
 | [`src/sessions_dir.ts`](src/sessions_dir.ts) | Where per-session state blobs live on disk, and nothing else. |
@@ -632,6 +642,8 @@ All index data and stats live in a single `global.db`. [`src/db.ts`](src/db.ts) 
 | `skills/` | Skill body/compact cache keyed by `(session, name, content_sha)` ([`src/skill_cache.ts`](src/skill_cache.ts)) |
 | `bash_outputs/{id}.json` | Content-addressed bash stdout cache for cross-process `bash-output <id>` recall ([`src/bash_output_cache.ts`](src/bash_output_cache.ts) via [`src/disk_cache.ts`](src/disk_cache.ts)); pruned by age (24h) and count (200) |
 | `web_outputs/{id}.json` | Content-addressed web body cache for cross-process `web-output <id>` recall ([`src/web_cache.ts`](src/web_cache.ts) via [`src/disk_cache.ts`](src/disk_cache.ts)); same prune policy |
+| `recovery_pairs/{projectHash}.json` | SHA-256 digests of the failed Bash commands (never their text) and the allowlisted fix that followed them as text, per project (50 pairs, 90 days), replayed once two sessions have learned the same fix ([`src/recovery_pairs.ts`](src/recovery_pairs.ts), allowlist in [`src/recovery_fix_policy.ts`](src/recovery_fix_policy.ts)) |
+| `sessions/{session_id}.recovery-pending`, `sessions/{session_id}.path-miss` | Per-session sidecars next to the session state, written by [`src/recovery_pairs.ts`](src/recovery_pairs.ts) (failures still waiting for a fix) and [`src/path_miss.ts`](src/path_miss.ts) (paths already answered this session); aged out with the rest of `sessions/` by the worker's `sweepCacheRoots` ([`src/disk_cache.ts`](src/disk_cache.ts)) |
 
 Project hash = `crypto.createHash('sha1').update(canonicalRoot)` from [`src/project.ts::projectHash`](src/project.ts).
 

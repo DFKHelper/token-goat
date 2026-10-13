@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { claudeConfigDir } from './claude_config_dir.js'
-import { registerHook, type HookEvent } from './hook_registry.js'
+import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { dropsResultRewrite, emitRewrite, passOutput, contextOutput, denyOutput, extractToolResultText, getCwd } from './hooks_common.js'
 import { buildProjectMap, formatProjectMap } from './baseline.js'
@@ -21,7 +21,7 @@ import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { getHarnessName } from './bridges/registry.js'
 import { isInsideRoot } from './project.js'
-import { agentTypeOf, loadingHiddenRuleCheck, permissionNeutralRewrite } from './rewrite_permission.js'
+import { agentTypeOf, permissionNeutralRewrite } from './rewrite_permission.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 import type * as AgentReceiptModule from './agent_receipt.js'
 
@@ -172,7 +172,7 @@ export function subagentStartWired(): boolean {
 }
 
 /** subagent_start: the spawn briefing as context for the subagent being started. Copilot CLI 1.0.88 prepends a subagentStart additionalContext to the subagent's prompt (capture C4a); VS Code 1.137 passes SubagentStart's hookSpecificOutput.additionalContext to the subagent request (extension.js executeSubagentStartHook). */
-function subagentStartHandler(event: HookEvent): HookOutput {
+export function subagentStartHandler(event: HookEvent): HookOutput {
   try {
     const root = getCwd(event) ?? (getHarnessName() === 'vscode' ? null : process.cwd())
     const briefing = buildSubagentBriefing(root).trim()
@@ -208,7 +208,7 @@ function readSpawnBrief(toolName: string | undefined, toolInput: Record<string, 
   return { text: joined, withSuffix: (suffix) => ({ ...toolInput, items: [...items, { type: 'text', text: suffix }] }) }
 }
 
-function preAgentHandler(event: HookEvent): HookOutput {
+export function preAgentHandler(event: HookEvent): HookOutput {
   // Only fire on a subagent spawn tool
   if (!isAgentTool(event.toolName)) return passOutput()
 
@@ -582,7 +582,7 @@ function receiptRewrite(resultText: string, receipt: string): HookOutput {
 }
 
 /** Copilot CLI's subagentStop hook hands over the subagent's final answer as `response`, and a `modifiedResponse` in reply replaces that answer everywhere the parent sees it: the task tool's result and the model request built from it (tg-captures C4a, Copilot CLI 1.0.88). That is the channel the compacted report goes through there. The post-tool rewrite of the task result has never been shown to be honored on Copilot for the task tool (C1b and C6 cover view and the shell tools only). Only a rewrite that pays for its notice is sent; anything less passes, and the post-tool pass handles the report as it does elsewhere. The report is cached only when the rewrite is sent, under an id computed up front, so a report the post-tool pass goes on to cache is not stored twice. */
-async function subagentReportRewriteHandler(event: HookEvent): Promise<HookOutput> {
+export async function subagentReportRewriteHandler(event: HookEvent): Promise<HookOutput> {
   try {
     if (getHarnessName() !== 'copilot_cli' || !event.sessionId) return passOutput()
     const raw = event.raw['last_assistant_message']
@@ -612,7 +612,7 @@ async function subagentReportRewriteHandler(event: HookEvent): Promise<HookOutpu
   }
 }
 
-async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
+export async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
   try {
     if (!isAgentTool(event.toolName) || !event.sessionId) return passOutput()
 
@@ -667,19 +667,3 @@ async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
     return passOutput()
   }
 }
-
-registerHook('subagent_start', subagentStartHandler)
-// advisory: the handlers that share this event must all still run, whichever module registered first.
-registerHook('subagent_stop', async (event) => (await loadAgentReceipt()).subagentReceiptHandler(event), { advisory: true })
-registerHook('subagent_stop', async (event) => (await loadAgentReceipt()).subagentStopHandler(event), { advisory: true })
-registerHook('subagent_stop', subagentReportRewriteHandler, { advisory: true })
-// Written out one per line, not looped over SPAWN_TOOL_BRIEF_FIELD: tests/hooks_cli.test.ts scans this source for literal registerHook toolName arguments to prove every name a harness maps to has a handler. A test here pins these lines to the table's keys.
-registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'Agent' })
-registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'task' })
-registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'Task' })
-registerHook('pre_tool_use', loadingHiddenRuleCheck(preAgentHandler), { toolName: 'spawn_agent' })
-registerHook('post_tool_use', postAgentHandler, { toolName: 'Agent' })
-registerHook('post_tool_use', postAgentHandler, { toolName: 'task' })
-registerHook('post_tool_use', postAgentHandler, { toolName: 'Task' })
-registerHook('post_tool_use', postAgentHandler, { toolName: 'spawn_agent' })
-registerHook('post_tool_use', async (event) => (await loadAgentReceipt()).waitAgentHandler(event), { toolName: 'multi_agent_v1wait_agent' })

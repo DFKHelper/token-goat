@@ -93,6 +93,23 @@ describe('classifyToolError', () => {
   })
 })
 
+describe('the Path does not exist wording', () => {
+  // HAND-DERIVED: the rule is "the message opens with `Path does not exist` and ends the sentence there": bare, with the path after a colon or a period, or followed by a line break. The colon form is the wording tests/path_miss.test.ts sends for Copilot CLI's view tool, itself HAND-DERIVED (no capture of Copilot CLI exists). The two negatives are the boundary the rule draws: a clause that goes on, and a mention that is not the message.
+  it.each([
+    ['Path does not exist'],
+    ['Path does not exist.'],
+    ['Path does not exist: src/missing.ts'],
+    ['Path does not exist\nsrc/missing.ts'],
+    ['<tool_use_error>Path does not exist</tool_use_error>'],
+  ])('classifies %j as path_not_found', (text) => {
+    expect(classifyToolError('Read', text)).toEqual({ kind: 'expected', reason: 'path_not_found' })
+  })
+
+  it.each([['Path does not exist in the manifest'], ['Path does not exist anymore, it was moved'], ['Error: Path does not exist'], ['The checker said: Path does not exist\nand carried on']])('does not classify %j', (text) => {
+    expect(classifyToolError('Read', text).reason).toBe(UNKNOWN_REASON)
+  })
+})
+
 describe('a token-goat deny that delivers the content', () => {
   // FORMAT-DERIVED: each phrase is read out of the source file that prints it (asserted below), so a reworded deny fails here rather than drifting back into the error counts.
   it.each([

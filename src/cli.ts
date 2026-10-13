@@ -82,7 +82,7 @@ import { runBenchCommand } from './cli_bench.js'
 import { expandGlobs } from './cli_diagnostics.js'
 export { expandGlobs }
 import { compressText, createHandoff, resolveHandoff, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
-import { CliError, formatCommandError, formatFailedResultText, formatParseError } from './command_error.js'
+import { CliError, clearCliInvocation, formatCommandError, formatFailedResultText, formatParseError, setCliInvocation } from './command_error.js'
 
 // Defined in a leaf so command modules cli.ts imports can render an error the same way without importing cli.ts back; re-exported here for the many modules that already take CliError from cli.js.
 export { CliError, formatCommandError }
@@ -1539,6 +1539,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     err(intent.note)
     recordStat('cli_option_alias', 0, 0, undefined, `${intent.command} ${intent.flags.join(' ')}`)
   }
+  setCliInvocation(argv)
   try {
     await program.parseAsync(intent === null ? argv : intent.argv)
   } catch (e) {
@@ -1567,5 +1568,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     }
     err(formatCommandError(e))
     process.exitCode = 1
+  } finally {
+    clearCliInvocation()
   }
 }

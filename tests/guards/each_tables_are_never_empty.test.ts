@@ -20,6 +20,11 @@ type Exemption = { file: string; table: string; reason: string }
 /** Every `.each` table this guard cannot prove non-empty statically, with the assertion that would fail first if it did go empty. */
 const EXEMPT: readonly Exemption[] = [
   {
+    file: 'tests/recovery_pairs.test.ts',
+    table: 'FIX_VERB_ALLOWLIST.map((verb) => [verb.name, verb.example] as const)',
+    reason: 'FIX_VERB_ALLOWLIST is an exported literal array. The same file asserts its length is exactly 14, so a list that was emptied fails there before this table matters.',
+  },
+  {
     file: 'tests/retrieval_labels.test.ts',
     table: 'golden.map((g) => [g.id, g] as const)',
     reason: 'Read from evals/retrieval/golden.jsonl. The same file asserts `golden.length` is at least 40, so a golden set that failed to load or was emptied fails there before this table matters.',

@@ -332,6 +332,9 @@ read_batch            6             -            4         66.7%       no       
 search_brake          2             -            1         50.0%       no               0        0        330
 grep_dedup_hint       0 ~4          -            0         n/a         no               0        0        240
 glob_dedup_hint       0 ~1          -            0         n/a         no               0        0        60
+recovery_pair        0 ~2          -            0         n/a         no               0        0        90
+edit_near_miss       0 ~1          -            0         n/a         no               0        0        120
+path_miss            0 ~2          -            0         n/a         no               0        0        150
 
 TOTAL   saved-bytes=48200 (all-time, every hint kind)   spent-bytes=7020 (hint_emissions ledger only)
 ```
@@ -402,6 +405,22 @@ Note that what this feature calls "harness" (Claude Code, Codex, Gemini, ...) is
 harness is the closest real signal available.
 
 Two categories are scored on a pattern of calls rather than a named command. `read_batch` (three or more reads or searches in a row, each sent a full turn after the previous result) counts as acted on when the first later turn that makes read-only calls makes at least two of them together. `search_brake` (three searches in a row found nothing) counts as acted on when the next search from a later turn is `token-goat answer` or `token-goat semantic`. Until that later call arrives the emission stays pending (`+N`) and is counted neither way. `grep_dedup_hint` and `glob_dedup_hint` (an identical Grep or Glob already ran this session) are never scored: the note rides on the re-run it describes, so no later call can show whether it was heeded. They appear in `spent-bytes` and as the `~N` beside `emitted`, never in `emitted` itself or the efficacy figure.
+
+### Failure hints by host: `recovery_pair`, `edit_near_miss`, `path_miss`
+
+Which host gets which of the three failure hints depends on what the host reports after a tool call, not on token-goat.
+
+| Host | `recovery_pair` (the fix a failed command had before) | `edit_near_miss` (exact lines for a missed Edit) | `path_miss` (the path you probably meant) |
+|---|---|---|---|
+| Claude Code | yes, from the failure event | yes | yes, for Read, Grep, Edit, Write and Bash |
+| Copilot CLI | unverified: only if a shell command that exits non-zero arrives as `postToolUseFailure`, and Copilot's own session log records such a command as a successful result (`completed with exit code 1`), so expect it not to | yes | yes for a missing file path; unverified for a shell command, for the same reason |
+| Codex | no: a shell result is always a success and carries no exit code | no: a failed `apply_patch` sends no hook | Bash only, from the `No such file or directory` text of the result |
+| VS Code Chat | no: a tool that throws sends no hook | no | Bash only (`run_in_terminal`), from the text of the result |
+| Visual Studio, JetBrains | no hooks: only the command-line `Did you mean:` list reaches them, through the MCP tools and the file commands | no | the `Did you mean:` list only |
+
+What the failure hints keep on disk: a command that failed is never written down as text. The pending note for a session (`sessions/<id>.recovery-pending`) and the saved pair (`recovery_pairs/<project>.json`) hold only SHA-256 digests of the failed command, its prefix, its directory and the error line, so a password, token or key typed on a command line, or printed back in an error, cannot be read back from either file. The fix that is shown later is the one piece kept as text, and only when it passes the allowlist. When the fix is the failed command run again behind a prefix or wrapper (`source .venv/bin/activate && ...`, `npx ...`), the command itself is stored as `(the same command)` and never with its arguments, and a rerun behind an environment assignment is not learned. The allowlist is: build, test, lint, typecheck, check, setup, install, bootstrap, generate and compile tasks of `make`, `npm run`, `pnpm run`, `yarn run` and `bun run` (a task such as `deploy`, `publish`, `reset` or `clean` is refused), and no command that points the package manager at another index or registry. Flags are accepted by name from a short list of build, install and test switches, so one that runs a program or changes the directory (`--script-shell`, `--prefix`, `--cwd`, `-exec`, `--manifest-path`) is refused. The allowlist is checked again when a stored fix is about to be shown. Files written by an earlier version are ignored and replaced. A shell command's `No such file or directory` text on Codex and VS Code only draws a path suggestion when the path is one of the command's own arguments and does not exist.
+
+The `Did you mean:` list printed by the read commands (`outline`, `skeleton`, `read`, `section` and the others) is the same on every host, since it is command output rather than a hook.
 
 ### Scoring the compressors — `token-goat bench`
 

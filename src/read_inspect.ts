@@ -49,7 +49,8 @@ import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'
-import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { couldNotReadError } from './could_not_read.js'
 
 export interface ZipListCliOptions {
   file: string
@@ -75,7 +76,7 @@ export async function runZipList(opts: ZipListCliOptions): Promise<number> {
     throw err
   }
   if (data === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -118,7 +119,7 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
     throw err
   }
   if (data === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -282,7 +283,7 @@ export interface CoverageReportGapsCliOptions {
 export function runCoverageReportGaps(opts: CoverageReportGapsCliOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -379,7 +380,7 @@ export interface ConfigGetOptions {
 export function runConfigGet(opts: ConfigGetOptions): number {
   const text = readFileText(opts.file)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
 
@@ -620,7 +621,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   const ext = path.extname(opts.file).toLowerCase()
   const text = readFileText(diskPath)
   if (text === null && symbols.length === 0) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
   if (text !== null) {
@@ -683,7 +684,7 @@ export function runImports(opts: ImportsExportsOptions): number {
   const diskPath = resolveAgainstProjectRoot(opts.file, opts.projectRoot)
   const text = readFileText(diskPath)
   if (text === null) {
-    emitErr(formatCommandError(couldNotRead(opts.file)))
+    emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
   const imports = extractImports(text, importsExtensionFor(opts.file))
@@ -1048,7 +1049,7 @@ export function runListSections(opts: ListSectionsOptions): number {
 
   if (sections.length === 0) {
     if (!fileExists(opts.file)) {
-      emitErr(formatCommandError(couldNotRead(opts.file)))
+      emitErr(formatCommandError(couldNotReadError(opts.file)))
       return 1
     }
     emitErr(formatCommandError(`No sections found in ${echoedValue(opts.file)}`))

@@ -12,6 +12,24 @@ export class CliError extends Error {
   }
 }
 
+// Module state is safe because no process runs two commands at once: hook_server.ts sets `busy` before it dispatches and answers a second request with a `busy` frame (the gates at lines 312 and 368), and batch_serve.ts runs requests one after another through `chain = chain.then(...)`; a CLI process runs one command.
+let invocation: readonly string[] | null = null
+
+/** Records the arguments `run` was handed, after the entry script. A command answered inside the hook server runs with that server's `process.argv`, so the arguments the reader typed are only here. */
+export function setCliInvocation(argv: readonly string[]): void {
+  invocation = argv.slice(2)
+}
+
+/** Forgets the recorded arguments when `run` ends, so a later reader in a process that outlives the command (the hook server, a batch server) falls back to its own arguments, not the last command's. */
+export function clearCliInvocation(): void {
+  invocation = null
+}
+
+/** The arguments of the command being run, after the entry script: what `run` recorded while it runs, else this process's own. */
+export function cliInvocation(): readonly string[] {
+  return invocation ?? process.argv.slice(2)
+}
+
 /** The stderr rendering of a command failure: one `token-goat:` line, then any further lines a CliError was built from. */
 export function formatCommandError(e: unknown): string {
   if (e instanceof CliError && e.lines !== undefined) return 'token-goat: ' + e.lines.map(displaySafeText).join('\n')
