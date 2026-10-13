@@ -1,6 +1,6 @@
 /** HAND-DERIVED integration coverage for the installed shared shim: real built hook entry, open stdin, and isolated hook data. */
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
@@ -12,6 +12,7 @@ import { closeAllDbs, getDb } from '../../src/db.js'
 import { SHIM_SESSION_START_TIMEOUT_MS } from '../../src/bridges/shim_common.js'
 import { findGlobalDb } from '../helpers/find_global_db.js'
 import { installStartupOwner } from '../helpers/copilot_session_start_tree.js'
+import { awaitProcessExit, childExit } from '../helpers/process_exit.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 const SESSION_START_BUDGET_MS = 3000
@@ -21,6 +22,8 @@ const SCHEDULING_TOLERANCE_MS = 2000
 const PROCESS_WAIT_LIMIT_MS = SESSION_START_BUDGET_MS + SCHEDULING_TOLERANCE_MS + 1000
 const tempDirs: string[] = []
 const children: ChildProcessWithoutNullStreams[] = []
+/** Helpers the shim's startup owner ran in a fixture's project directory, by PID, each with the time its pid file was written. */
+const helpers = new Map<number, number>()
 
 interface Fixture {
   root: string
@@ -175,10 +178,15 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-afterEach(() => {
-  for (const child of children.splice(0)) {
+afterEach(async () => {
+  await Promise.all(children.splice(0).map((child) => {
+    const exit = childExit(child)
     if (child.exitCode === null && child.signalCode === null) child.kill()
-  }
+    return exit
+  }))
+  const owned = new Map(helpers)
+  helpers.clear()
+  awaitProcessExit(owned)
   closeAllDbs()
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()
@@ -331,6 +339,7 @@ process.stdin.on('end', () => {
     expect(result.stderr).toMatch(/SessionStart failed open.*timed out/i)
     const helperPid = Number(readFileSync(pidFile, 'utf8'))
     expect(Number.isInteger(helperPid)).toBe(true)
+    helpers.set(helperPid, statSync(pidFile).mtimeMs)
     expect(isProcessAlive(helperPid), 'the shim must not leave its helper running').toBe(false)
   }, 12_000)
 

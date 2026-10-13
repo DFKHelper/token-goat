@@ -17,6 +17,7 @@ import { ROOT } from './helpers/bundle.js'
 import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
 import { buildNative } from './helpers/native_bin.js'
+import { childExit } from './helpers/process_exit.js'
 
 type Env = Record<string, string>
 const WIN = process.platform === 'win32'
@@ -399,6 +400,7 @@ afterAll(async () => {
       while (pidAlive(pid) && Date.now() < deadline) await sleep(50)
       if (pidAlive(pid)) process.kill(pid)
     }
+    await childExit(sb.server)
     // The link first, on its own: removing the tree through it would reach the repository.
     if (WIN) fs.rmdirSync(sb.link)
     else fs.unlinkSync(sb.link)

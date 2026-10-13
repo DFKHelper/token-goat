@@ -10,9 +10,9 @@ import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { copilotHookCommandsFor } from '../../src/bridges/copilot_cli_install.js'
 import { nativeHookCommandLine } from '../../src/native_hook.js'
 import { endpointFor, readServerKey } from '../../src/hook_ipc.js'
-import { windowsPowerShellPath } from '../../src/windows_powershell.js'
 import { slotStatus } from './hook_server_probe.js'
 import { buildNative } from './native_bin.js'
+import { awaitProcessExit } from './process_exit.js'
 
 export const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 export const ownedRoots: string[] = []
@@ -93,16 +93,10 @@ export function cleanupTrees(): void {
       process.kill(pid, 'SIGKILL')
     }
   }
-  if (process.platform === 'win32' && awaited.size > 0) awaitExit([...awaited])
+  // Every PID here was running when its pid file was written or taskkill named it, before this call.
+  const now = Date.now()
+  awaitProcessExit(new Map([...awaited].map((pid) => [pid, now])))
   for (const root of ownedRoots.splice(0)) rmSync(root, { recursive: true, force: true })
-}
-
-/** Windows sets a killed process's exit status before the kernel has closed its handles and unmapped its image, and `process.kill(pid, 0)` reads only that status, so `alive` reports the process gone while its executable, working directory and open files still refuse deletion with EPERM. Measured: a copied PING.EXE killed and then probed until `alive` was false left its directory undeletable 100 times in 100, while deleting after the child's own exit event, which fires on the signalled process handle, succeeded 100 times in 100. Process.WaitForExit waits on that handle for PIDs this process did not spawn, including the descendants taskkill /T reached; Wait-Process does not, because it first asks HasExited, which reads the same exit status. */
-function awaitExit(pids: readonly number[]): void {
-  const waited = spawnSync(windowsPowerShellPath(), ['-NoProfile', '-NonInteractive', '-Command',
-    `foreach ($owned in @(Get-Process -Id ${pids.join(',')} -ErrorAction SilentlyContinue)) { if (-not $owned.WaitForExit(10000)) { throw "process $($owned.Id) is still running" } }; exit 0`,
-  ], { encoding: 'utf8', timeout: 20_000, windowsHide: true })
-  if (waited.status !== 0) throw new Error(`owned processes ${pids.join(',')} did not exit (status ${String(waited.status)}): ${waited.error?.message ?? waited.stderr}${waited.stdout}`)
 }
 
 export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void {

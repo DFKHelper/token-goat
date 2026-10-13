@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { BUNDLE, readCoreBundleText, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
+import { awaitProcessExit } from './helpers/process_exit.js'
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
   return sharedRunBundle(args, { cwd, env, timeout: 30000 })
@@ -82,6 +83,8 @@ async function msForRewrites(file: string, rewrites: number, timeoutMs: number):
 const DAEMON_POLL_MS = 200
 
 const tempDirs: string[] = []
+/** Daemons this file started, by PID, each with a time it was known to be running. */
+const daemons = new Map<number, number>()
 function mkIsolated(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   tempDirs.push(dir)
@@ -89,13 +92,11 @@ function mkIsolated(prefix: string): string {
 }
 
 afterEach(() => {
-  for (const d of tempDirs.splice(0)) {
-    try {
-      fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
-    } catch {
-      // Best-effort cleanup on Windows if daemon process still has handles
-    }
-  }
+  // A stopped daemon keeps global.db and its logs open until Windows has finished tearing it down, after `pidAlive` already reads it gone.
+  const started = new Map(daemons)
+  daemons.clear()
+  awaitProcessExit(started)
+  for (const d of tempDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
 })
 
 describe('detached worker daemon (built bundle)', () => {
@@ -120,6 +121,7 @@ describe('detached worker daemon (built bundle)', () => {
         const m = start.stdout.match(/pid (\d+)/)
         expect(m, `unexpected worker start output: ${JSON.stringify(start.stdout)}`).not.toBeNull()
         pid = parseInt((m as RegExpMatchArray)[1], 10)
+        daemons.set(pid, Date.now())
 
         // 2. Wait for positive proof the child reached the daemon loop rather than for a fixed interval: runDetachedWorkerDaemon writes its own pid to queue/drain-heartbeat as its first act, so that file naming this pid can only happen on the far side of the argv dispatch the pre-fix bug died at (commander rejected --worker-daemon and the process exited before ever reaching the loop). A dead child never writes it, so that failure still fails here -- as a timeout rather than a liveness assertion.
         const heartbeat = path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat')
@@ -224,6 +226,7 @@ describe('detached worker daemon (built bundle)', () => {
         const m = start.stdout.match(/pid (\d+)/)
         expect(m, `unexpected worker start output: ${JSON.stringify(start.stdout)}`).not.toBeNull()
         pid = parseInt((m as RegExpMatchArray)[1], 10)
+        daemons.set(pid, Date.now())
         await waitForDaemonHeartbeat(dataBase, pid)
         expectDirectoryReleasedBy(pid, trigger)
       } finally {
@@ -250,6 +253,7 @@ describe('detached worker daemon (built bundle)', () => {
         windowsHide: true,
       })
       const pid = child.pid
+      if (pid !== undefined) daemons.set(pid, Date.now())
       try {
         expect(pid, 'spawning the bundle produced no pid').toBeDefined()
         await waitForDaemonHeartbeat(dataBase, pid as number)

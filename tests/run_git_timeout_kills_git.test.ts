@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { sleepSync } from '../src/process_util.js'
 import { runGit } from '../src/util.js'
+import { awaitProcessExit } from './helpers/process_exit.js'
 
 let repo: string
 let traceDir: string
@@ -56,11 +57,15 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  for (const pid of gitProcessesWith(marker)) {
+  const left = gitProcessesWith(marker)
+  const seen = Date.now()
+  for (const pid of left) {
     if (process.platform === 'win32') spawnSync('taskkill', ['/PID', pid, '/F'], { windowsHide: true })
     else try { process.kill(Number(pid), 'SIGKILL') } catch { /* already exited */ }
   }
-  pollUntil(() => removed(repo), 10_000)
+  // A killed git keeps its working directory in the repository and its GIT_TRACE file open until Windows has finished tearing it down.
+  awaitProcessExit(new Map(left.map((pid) => [Number(pid), seen])))
+  fs.rmSync(repo, { recursive: true, force: true })
   fs.rmSync(traceDir, { recursive: true, force: true })
 })
 
