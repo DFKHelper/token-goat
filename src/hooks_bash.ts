@@ -6,7 +6,7 @@ import { leadWithCommand, docSectionHint, fileSubject, nameSubject, quotedArg, q
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, dropFileLineRangesIfChanged, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
+import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, dropFileLineRangesIfChanged, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession, wasFileFullyReadThisSession } from './session.js'
 import { resolveIndexPath, displaySafePath, hostPathOfTypedPath, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -209,6 +209,15 @@ function wholeFileRange(
   } catch {
     return null
   }
+}
+
+/** The windows of a file this session read that bear on a `token-goat read` of `spec`: every one for a symbol or section, whose lines the spec does not say, and for a line range (`@A-B`, `@A`, `::A-B`) only those that overlap it. */
+function partialReadCover(ranges: ReadonlyArray<readonly [number, number]>, spec: string): Array<readonly [number, number]> {
+  const lines = /(?:@|::)(\d+)(?:-(\d+))?$/.exec(spec)
+  if (lines === null) return [...ranges]
+  const start = parseInt(lines[1] as string, 10)
+  const end = lines[2] !== undefined ? parseInt(lines[2], 10) : start
+  return ranges.filter(([a, b]) => a <= end && b >= start)
 }
 
 /** pre_tool_use handler for the Bash tool. Emits a recall hint when the command is a known build tool and its output was already captured this session. Passes through for all other commands. */
@@ -771,7 +780,14 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       notes.push('You already ran this exact `token-goat ' + tgRead.sub + '` query earlier this session — check your context above before re-running it.')
     }
     if (tgRead.filePath !== null && wasFileReadThisSession(tgRead.filePath)) {
-      notes.push(sentenceStart(fileSubject('', displaySafePath(tgRead.filePath))) + ' was already fully read via the Read tool this session — that content may already cover this.')
+      const subject = sentenceStart(fileSubject('', displaySafePath(tgRead.filePath)))
+      if (wasFileFullyReadThisSession(tgRead.filePath)) {
+        notes.push(subject + ' was already fully read via the Read tool this session — that content may already cover this.')
+      } else {
+        // Only windows of it were read, which the note used to call a full read: name the ones on record, and say nothing when none touches the lines this read asks for.
+        const covered = partialReadCover(getFileLineRanges(tgRead.filePath), tgRead.spec)
+        if (covered.length > 0) notes.push(subject + ' was partially read earlier this session (lines ' + covered.map(([start, end]) => start + '-' + end).join(', ') + '); check whether those lines already hold this.')
+      }
     }
     if (notes.length > 0) {
       recordStat('session_hint', 0, 0)
