@@ -1,4 +1,4 @@
-/** On Windows the compress runner's timeout killed only the shell it spawned: `child.kill()` (and spawnSync's own `timeout` on the `--no-compress` path) terminates that one process, so the command the shell was running, and anything it had started, kept going after the runner reported exit 124. Each test runs a shell whose foreground command is a node process that records its pid and then waits a minute, lets the timeout fire, and checks that the recorded process is gone. The compressed path runs in-process through `run` with nothing injected; the streamed path drives the built bundle's `compress --no-compress`. */
+/** The compress runner's timeout killed only the shell it spawned: `child.kill()` (and spawnSync's own `timeout` on the `--no-compress` path) terminates that one process, so the command the shell was running, and anything it had started, kept going after the runner reported exit 124. That held on Windows, where the shell is Git Bash, and on POSIX, where it is /bin/sh. Each test runs a shell whose foreground command is a node process that records its pid and then waits a minute, lets the timeout fire, and checks that the recorded process is gone. The compressed path runs in-process through `run` with nothing injected; the streamed path drives the built bundle's `compress --no-compress`. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -33,11 +33,11 @@ function alive(pid: number): boolean {
   }
 }
 
-/** A shell command whose foreground job is a node process that writes its pid to `pidFile` and then outlives any budget. The trailing `echo` keeps the shell from exec'ing node in its own place, so node is the shell's child, not the process the runner spawned. */
+/** A shell command whose foreground job is a node process that writes its pid to `pidFile` and then outlives any budget. The trailing `echo` keeps the shell from exec'ing node in its own place, so node is the shell's child, not the process the runner spawned. Node's output goes to /dev/null so a survivor cannot hold the runner's pipes open, which would turn a missed kill into a hung run instead of a failed assertion. */
 function lingeringChild(pidFile: string): string {
   const js = path.join(scriptDir, `${path.basename(pidFile)}.js`)
   fs.writeFileSync(js, `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid))\nsetTimeout(() => {}, 60000)\n`)
-  return `"${process.execPath}" "${js}"; echo after`
+  return `"${process.execPath}" "${js}" >/dev/null 2>&1; echo after`
 }
 
 /** The pid the lingering child recorded, once the runner has returned. */
@@ -83,7 +83,7 @@ afterAll(() => {
   fs.rmSync(DATA_DIR_TMP, { recursive: true, force: true })
 })
 
-describe.runIf(process.platform === 'win32')('a compress timeout kills the whole process tree, not just the shell', () => {
+describe('a compress timeout kills the whole process tree, not just the shell', () => {
   it('on the captured path', async () => {
     const pidFile = path.join(scriptDir, 'captured.pid')
     const code = await run(lingeringChild(pidFile), { filterName: 'generic', timeout: budget, writeStdout: () => {}, writeStderr: () => {} })
