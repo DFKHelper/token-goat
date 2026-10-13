@@ -9,10 +9,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { invalidateConfigCache } from '../src/config.js'
 import { clipToDeliveryCap, fitToDeliveryCap } from '../src/delivery_cap.js'
+import { getBashOutput } from '../src/bash_output_cache.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import { fenceUntrustedContent, UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { BUNDLE } from './helpers/bundle.js'
+import { BUNDLE, readCoreBundleText } from './helpers/bundle.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -66,6 +67,21 @@ describe('a rewrite whose fence strips escapes still fits the delivery cap', () 
     expect(out.updatedOutput).toContain('rewrite clipped to the harness delivery cap')
     expect(Buffer.byteLength(out.updatedOutput, 'utf-8')).toBeLessThanOrEqual(CAP)
     expect(out.updatedOutput).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
+  })
+
+  it('the clip note does not promise a recall of what the clip dropped, since no pointer in the rewrite holds it', async () => {
+    await postBashHandler(postEvent("sed -n '800,900p' build.log", lines(800, 900), 'cap-elide-note'))
+    const out = await postBashHandler(postEvent("sed -n '1,900p' build.log", lines(1, 900), 'cap-elide-note'))
+    if (out.hookType !== 'rewriteOutput') throw new Error('the fixture must reach the elision rewrite')
+    const dropped = 'line 500: '
+    expect(out.updatedOutput).not.toContain(dropped)
+    const ids = [...out.updatedOutput.matchAll(/bash-output ([0-9a-f]{8,})/g)].map((m) => m[1] ?? '')
+    for (const id of ids) expect(getBashOutput(id)?.output ?? '', id).not.toContain(dropped)
+    expect(out.updatedOutput).not.toContain('recalls the untouched output')
+    expect(out.updatedOutput).toContain('the clipped rest was not kept, so re-run the command over a narrower range to see it')
+    const shipped = readCoreBundleText()
+    expect(shipped, 'the built bundle carries the corrected note').toContain('the clipped rest was not kept')
+    expect(shipped).not.toContain('the pointer above recalls the untouched output')
   })
 
   it('the curl HTML fold of a page whose text carries escapes', async () => {
