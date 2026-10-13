@@ -599,3 +599,39 @@ describe('the built hook entry, per host', () => {
     expect(message).toContain('exit 1')
   })
 })
+
+describe('the command the advisory names', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  // HAND-DERIVED: U+202E reorders the text after it, U+0007 is a terminal bell, and a backtick opens a code span in the model's context. Each leads a path-like word, the one place the stored check once let any first character through.
+  it.each(['\u202e', '`', '\u0007'])('does not store a path word that starts with %j, and the advisory never carries it', (lead) => {
+    const sid = newSession()
+    inSession(sid, () => {
+      recordFileEdit('C:/proj/src/widget.ts')
+      noteVerificationRun(`pytest ${lead}tests/a.test.ts`, 1, false)
+    })
+    const state = evaluateVerification(sid)
+    expect(state.runs[0]?.command).toBe('pytest …')
+    expect(stopAdvisoryText(state)).not.toContain(lead)
+  })
+
+  // HAND-DERIVED: the stored command reaches the model through stopAdvisoryText, so a bidi or control character that did get into a stored run is escaped there rather than written raw.
+  it.each(['\u202e', '\u0007'])('escapes %j in a stored command before it reaches the model', (lead) => {
+    const state = { runs: [], latestRun: { command: `pytest ${lead}a.py`, exitCode: 1, at: T0 }, failingUnresolved: true, editedFiles: [], editedAnyFile: false, editedSinceLastPass: [] }
+    const text = stopAdvisoryText(state) ?? ''
+    expect(text).toContain('pytest')
+    expect(text).not.toContain(lead)
+  })
+
+  it('still keeps an ordinary path and a home-relative or scoped one', () => {
+    const sid = newSession()
+    inSession(sid, () => noteVerificationRun('pytest tests/a.test.ts ~/x/b.py @scope/pkg/c.ts', 0, false))
+    expect(evaluateVerification(sid).runs[0]?.command).toBe('pytest tests/a.test.ts ~/x/b.py @scope/pkg/c.ts')
+  })
+})

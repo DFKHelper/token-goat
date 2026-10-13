@@ -79,7 +79,7 @@ const CHECK_HEAD = /^(?:(?:npx\s+)?(?:jest|vitest(?:\s+(?:run|watch))?|eslint|ts
 const SAFE_FLAGS: ReadonlySet<string> = new Set(['--', '--ci', '--run', '--watch', '--watch=false', '--watchAll=false', '--coverage', '--bail', '--verbose', '--silent', '--no-color', '--noEmit', '--passWithNoTests', '--release', '--locked', '--all-targets', '-x', '-q', '-v', '-vv'])
 /** The values of `--reporter=` that name a built-in reporter; any other value could be anything. */
 const SAFE_REPORTER = /^--reporter=(?:default|verbose|dot|basic|json|junit|tap|spec|min|list|agent)$/
-const PATH_SHAPE = /^[^-][\w./@:\\-]*$/
+const PATH_SHAPE = /^[\w./@~][\w./@:\\-]*$/
 const PATH_EVIDENCE = /[/\\]|::|\.[A-Za-z]\w*$/
 /** A drive letter at the start of a Windows path (`C:/x`, `C:\x`), the one place a single `:` belongs in a path word. */
 const DRIVE_PREFIX = /^[A-Za-z]:[/\\]/
