@@ -37,7 +37,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     '- a shell text search with context flags to find a function body → `read "file::symbol"`',
     '- paging one function with view/view_range → `read "file::symbol"`',
     '- issuing sequential or overlapping line-range reads across a file (paging) → read "file::symbol" / outline file / skeleton file / rg <pattern> <file>',
-    '- a read refused by a `[tg]` deny, retried with a shifted range or a different read tool → the command the deny names',
+    '- a read refused by a `[tg]` deny, retried with a shifted range, different lines, or another read tool → never retry reading the file at different lines; run the command the deny names or use bash-output / token-goat read',
     '- reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`',
     '- reading one heading of a large doc → `section "file::Heading"`',
     "- searching for a symbol's callers → `refs file::symbol --callers`",
