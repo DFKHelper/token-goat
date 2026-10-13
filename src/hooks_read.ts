@@ -1369,10 +1369,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
   // Universal file type handler (catch-all for non-code, non-markdown large files)
   const fileTypeExt = path.extname(normalized).slice(1).toLowerCase()
-  const fileStatSize = size ?? statSize(onDisk) ?? 0
+  const fileStat = size ?? statSize(onDisk)
+  const fileStatSize = fileStat ?? 0
   const isKnownFileType = DISPATCHED_FILE_TYPE_EXTS.has(fileTypeExt)
+  // No file, no refusal: every per-type handler describes a file, so a deleted PDF was refused as "PDF file (0 B)" where the Read would have reported that the file does not exist.
   // Same Grep exemption as the large-file gate above: this catch-all's per-type handlers (handleTxt/handleCsv/handleHtml/handleGenericLarge/handlePdf/handleOfficeBinary) block purely on the whole file's size/type, with no notion of a search pattern — without this, a Grep call would fall through from the exempted gate above straight into an equally tool-blind deny here for any large .txt/.log/.csv/.html/binary file.
-  if (event.toolName !== 'Grep' && !isImagePath(normalized) && (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic)) {
+  if (event.toolName !== 'Grep' && fileStat !== null && !isImagePath(normalized) && (isKnownFileType || fileStatSize >= FILE_TYPE_THRESHOLDS.generic)) {
     // Same offset/limit honoring as above: gate the per-type handlers (handleTxt/handleCsv/ handleHtml/handleGenericLarge) on the requested slice's size when one was given.
     const ftSlice = estimateRequestedSlice(event, normalized)
     const ftEffectiveLength = ftSlice.kind === 'bytes' ? Math.min(ftSlice.bytes, fileStatSize) : fileStatSize

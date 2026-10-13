@@ -48,6 +48,16 @@ describe('handlePdf', () => {
     const result = handlePdf('/path/to/doc.pdf', 500000)
     expect(result.message).toContain('pdf-extract')
   })
+
+  // FORMAT-DERIVED from Claude Code's Read tool schema, which reads PDFs through a `pages` parameter: the refusal is token-goat's, and "Read cannot return PDF content" was false (corpus 74f71336, bac21710, c38bb4ce). One of those sessions rendered a page to PNG because its layout mattered, a route the message now names.
+  it('gives token-goat\'s own reason for refusing a PDF Read, not a false claim about Read, and names the route for a page whose layout matters', () => {
+    const result = handlePdf('/path/to/doc.pdf', 1024)
+    expect(result.message).not.toContain('cannot return PDF content')
+    expect(result.message).not.toContain('not retryable')
+    expect(result.message).toContain('token-goat refuses every Read of a PDF')
+    expect(result.message).toContain('fewer tokens')
+    expect(result.message).toContain('render just that page to an image')
+  })
 })
 
 describe('handleHtml', () => {

@@ -107,4 +107,15 @@ describe('the read hook reaches every extension the file-type dispatcher routes'
       expect(result.message).toContain('sqlite-query')
     }
   })
+
+  // CAPTURE (corpus 74f71336 seq 3489, replayed at HEAD): a Read of a PDF that had been deleted was refused as "PDF file (0 B)". With nothing on disk there is no file to describe, so the Read goes ahead and reports the missing file itself; the same path with a PDF in it is still refused.
+  it('leaves a Read of a PDF that is not there to Claude Code, and refuses a Read of one that is', () => {
+    const read = (file: string): ReturnType<typeof preReadHandler> => preReadHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file }, sessionId: 'pdf-gone' }))
+    expect(read(path.join(base, 'gone.pdf'))).toEqual({ hookType: 'pass' })
+    const file = path.join(base, 'here.pdf')
+    fs.writeFileSync(file, '%PDF-1.4\n%%EOF\n')
+    const present = read(file)
+    expect(present.hookType).toBe('deny')
+    if (present.hookType === 'deny') expect(present.message).toContain('PDF file (15 B)')
+  })
 })

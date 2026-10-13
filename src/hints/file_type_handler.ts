@@ -59,15 +59,16 @@ export function BYTE_RANGE_ADVICE(filePath: string): string {
   )
 }
 
-/** PDF handler — always blocks regardless of size. */
+/** PDF handler — always blocks regardless of size. Claude Code's Read does return PDFs, through its `pages` parameter, so the refusal is token-goat's own and says why: Read sends each page as an image beside its text, and the extracted text alone costs far fewer tokens. The old wording, "Read cannot return PDF content", was false there. */
 export function handlePdf(filePath: string, contentLength: number): FileTypeResult {
   const [quoted, range] = quotedArgs(filePath, '<range>')
   return {
     shouldBlock: true,
     message: [
-      `PDF file (${formatBytes(contentLength)}) — Read cannot return PDF content; this is not retryable with different Read parameters.`,
+      `PDF file (${formatBytes(contentLength)}). token-goat refuses every Read of a PDF, one with a pages range included: Read sends each page as an image as well as its text, and the extracted text alone costs far fewer tokens.`,
       `Inspect first: token-goat pdf-meta ${quoted} and token-goat pdf-outline ${quoted}`,
       `Then extract relevant pages: token-goat pdf-extract ${quoted} --pages ${range}`,
+      `Where a page's layout is what matters (a chart, a scanned page, the shape of a table), render just that page to an image file and Read the image.`,
     ].join('\n'),
   }
 }
