@@ -1,4 +1,4 @@
-/** Claude Code's PowerShell tool runs a command the way the Bash tool does and got none of token-goat's output handling: the post hook registered for `Bash` alone, so the generated matcher never named PowerShell. CAPTURE (recorded sessions): 372 PowerShell results, 0 compressed, fenced or stored for recall; `doctor` listed "PowerShell (130x)" among tools with no handler. The result shape below is CAPTURE too, read off `toolUseResult` on PowerShell tool results in this machine's transcripts: `{ stdout, stderr, interrupted, isImage }`, with stderr folded into stdout and CRLF line endings. Only the post hook takes PowerShell: the pre hook's compress wrapper and heredoc handling are bash syntax. */
+/** Claude Code's PowerShell tool runs a command the way the Bash tool does and got none of token-goat's output handling: the post hook registered for `Bash` alone, so the generated matcher never named PowerShell. CAPTURE (recorded sessions): 372 PowerShell results, 0 compressed, fenced or stored for recall; `doctor` listed "PowerShell (130x)" among tools with no handler. The result shape below is CAPTURE too, read off `toolUseResult` on PowerShell tool results in this machine's transcripts: `{ stdout, stderr, interrupted, isImage }`, with stderr folded into stdout and CRLF line endings. The pre hook's checks for this tool are in tests/powershell_tool_shell_parity.test.ts. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -46,9 +46,8 @@ function powerShellEvent(command: string, stdout: string): HookEvent {
 }
 
 describe("Claude Code's PowerShell tool", () => {
-  it('is in the generated PostToolUse matcher and not in the PreToolUse one', () => {
+  it('is in the generated PostToolUse matcher', () => {
     expect((toolMatcherFor('post_tool_use') ?? '').split('|')).toContain('^PowerShell$')
-    expect((toolMatcherFor('pre_tool_use') ?? '').split('|')).not.toContain('^PowerShell$')
   })
 
   it('gets a large output back compressed, fenced, and in its own result shape', async () => {

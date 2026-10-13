@@ -1,4 +1,4 @@
-/** post_tool_use hook for the Bash tool: caches a finished command's output for recall, records the files it read and the paths it rewrote, and replaces a result with a smaller rendering of the same bytes where one pays (served-line elision, identical-read collapse, structural and body folds, compound-command compression, curl HTML cleanup, ANSI stripping), plus the `gh api`, failing-test and large-output advisories. Claude Code's PowerShell tool gets the output half of that (compression, the fence, the recall copy, the large-output advisory) from postPowerShellHandler. The pre_tool_use half is hooks_bash.ts. Neither module imports the other: each registers its handlers at module scope. */
+/** post_tool_use hook for the Bash tool: caches a finished command's output for recall, records the files it read and the paths it rewrote, and replaces a result with a smaller rendering of the same bytes where one pays (served-line elision, identical-read collapse, structural and body folds, compound-command compression, curl HTML cleanup, ANSI stripping), plus the `gh api`, failing-test and large-output advisories. Claude Code's PowerShell tool gets the compression, the fence, the recall copy, the large-output advisory and the bookkeeping in recordShellCall from postPowerShellHandler. The pre_tool_use half is hooks_bash.ts. Neither module imports the other: each registers its handlers at module scope. */
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -738,6 +738,126 @@ function withoutHeartbeats(result: HookOutput, output: string): HookOutput {
   return result.hookType === 'context' ? { ...stripped, context: result.context } : stripped
 }
 
+/** The effects a finished shell call has whichever tool ran it, Bash or Claude Code's PowerShell tool: reindexing the files a git command or an in-place write changed outside the Edit tool, recording a finished download and a `token-goat` surgical read for the pre hook's dedup, and caching a read-only `gh api`, `gh pr|issue view` or scoped `git status` for recall. Each reads a program's own command line and output, which are the same text whichever shell started the program. Returns the `gh` advisory when one applies, which the caller ships ahead of any rewrite, as postBashResultHandler always has. */
+async function recordShellCall(call: { cmd: string; runDir: string | null; cwd: string | null; heldStartCwd: string | null; exitCode: number | null; output: string; cacheMinBytes: number }): Promise<HookOutput | null> {
+  const { cmd, runDir, cwd, heldStartCwd, exitCode, output, cacheMinBytes } = call
+  // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never enter queue/dirty.txt via the normal postEditHandler path -- every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep serving whatever was indexed before the mutation until each file happens to be individually read. `HEAD@{1}` is git's own reflog record of "where HEAD was immediately before this command moved it" -- correct for single-step operations, but a multi-commit rebase or `pull --rebase` creates several intermediate reflog entries, so `HEAD@{1}` can only capture the last replayed step. `ORIG_HEAD` is the more robust base for the subcommands that set it (see ORIG_HEAD_ELIGIBLE_GIT_RE above) since it survives that internal churn; `HEAD@{1}` remains the fallback for checkout/switch/reset/cherry-pick (which never set it, or for which it's excluded) and for the rare case ORIG_HEAD hasn't been set yet at all.
+  if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
+    const gitDir = runDir ?? process.cwd()
+    let diffBase = 'HEAD@{1}'
+    // Why the changed-file list cannot be trusted, when it cannot: a read git did not answer at all (spawn failure or timeout, exit -1) leaves the base possibly wrong even when the diff then succeeds.
+    let unanswered: string | null = null
+    // Set when a read could not start git at all (missing, or a working directory that is gone): the worker needs git to sweep, so it could not do better and gets no request.
+    let gitNeverRan = false
+    if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
+      const reflogTop = runGit(['reflog', '-1', '--format=%gs', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+      if (reflogTop.exitCode === -1) {
+        unanswered = `git reflog: ${reflogTop.stderr}`
+        if (reflogTop.timedOut !== true) gitNeverRan = true
+      }
+      if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {
+        const origHead = runGit(['rev-parse', '--verify', '-q', 'ORIG_HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+        if (origHead.exitCode === -1) {
+          unanswered = `git rev-parse ORIG_HEAD: ${origHead.stderr}`
+          if (origHead.timedOut !== true) gitNeverRan = true
+        }
+        if (origHead.exitCode === 0 && origHead.stdout.trim() !== '') diffBase = 'ORIG_HEAD'
+      }
+    }
+    const mutationDiff = runGit(['diff', '--name-only', diffBase, 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+    if (mutationDiff.exitCode === 0) {
+      // `git diff --name-only` always reports paths relative to the repo top-level, regardless of which directory git was invoked from -- resolving them against the raw event cwd (a monorepo subpackage, or a `cd sub && git checkout ...`) would compute the wrong absolute path and silently enqueue nothing useful. Resolve the real top-level first, and treat a root git would not name as a failed read rather than guessing the working directory.
+      const repoRoot = gitRepoRootOrNull(gitDir)
+      if (repoRoot === null) {
+        unanswered ??= 'git rev-parse --show-toplevel named no root'
+      } else {
+        for (const rel of mutationDiff.stdout.split('\n')) {
+          const trimmed = rel.trim()
+          if (trimmed.length === 0) continue
+          enqueueDirtyPathSafe(resolveIndexPath(trimmed, repoRoot), { alreadyResolved: true })
+        }
+      }
+    } else {
+      unanswered = `git diff ${diffBase} HEAD exited ${mutationDiff.exitCode}: ${mutationDiff.stderr}`
+      gitNeverRan = mutationDiff.exitCode === -1 && mutationDiff.timedOut !== true
+    }
+    // Dropping the work here left the index on the old branch with nothing in any log, and under load each read above is one 5 s timeout from failing. The worker can learn what changed without the hook's time budget (a sweep of the tracked files against the index), so hand it the project and record why.
+    if (unanswered !== null) {
+      const recorded = gitNeverRan ? null : requestReconcileSafe(gitDir)
+      appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${cmd.slice(0, 80)} in ${gitDir}: could not list the files it changed (${unanswered.trim().slice(0, 200)}); ${recorded === null ? 'git could not be started, so no reconcile was requested' : recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
+    }
+  }
+
+  // Working-tree rewrites that never move HEAD, so the block above cannot see them: `git restore`, `git stash pop|apply`, and the plain shell in-place writes (`sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`). Same staleness failure class, one gap over -- none of these go through the Edit tool either, so before this nothing enqueued them and every surgical read kept serving pre-mutation content. See enqueueNonHeadMovingRewrites.
+  if (exitCode === null || exitCode === 0) {
+    enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd())
+  }
+
+  // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
+  const curlDl = extractCurlDownload(cmd)
+  if (curlDl !== null && (exitCode === null || exitCode === 0)) {
+    // Recorded at its host path, which is the key except for a drive-letter key on WSL, so the recall names a file the shell there can open.
+    const outputOnDisk = hostPathOfTypedPath(curlDl.outputPath, runDir ?? process.cwd())
+    if (existsSync(outputOnDisk)) {
+      recordCurlDownload(curlDl.url, outputOnDisk)
+    }
+  }
+
+  // Cache a successful scoped `git status`/`git diff --stat -- <path>` so a later identical call recalls it instead of re-running (see isScopedGitStatusOrDiffStatCommand above). Gated on exit 0 and the shared size floor, same as the gh-api cache above; staleness is enforced entirely by the `gitMutable` fingerprint recorded via computeBashFingerprints (HEAD sha, `git status --porcelain`, and the stat of each path it lists), not a separate mechanism.
+  if (isScopedGitStatusOrDiffStatCommand(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
+    const gitScopedCacheHash = bashRecallKey(cmd, runDir)
+    const gitScopedCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
+    recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
+  }
+
+  // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
+
+  // Record a successful `token-goat symbol|read|section` invocation so a later identical call gets the re-read dedup hint from the pre-hook.
+  let tgRead = extractTgSurgicalRead(cmd, runDir)
+  // The shim skips the pre hook for token-goat's own command (bridges/shim_common.ts::SHIM_OWN_COMMAND_BYPASS), so no start directory is held for it and, on Claude Code's main thread, runDir applies the cd a second time to a cwd it already moved. When the target is missing there, this hook's cwd is where the cd landed; a file under runDir keeps runDir, which is right wherever the shell did not move.
+  if (heldStartCwd === null && cwd !== null && tgRead?.filePath != null && !isFileAtIndexKey(tgRead.filePath)) tgRead = extractTgSurgicalRead(cmd, cwd)
+  if (tgRead !== null && (exitCode === null || exitCode === 0)) {
+    recordCliRead(tgRead.sub + '::' + tgRead.spec)
+    // Record a surgical (symbol/section/range-scoped) read against the file's session entry so compact.ts's symbolsBonus can reward narrowly-engaged files. `spec` for read/section is `filePath` + a narrowing suffix (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a whole-file `token-goat read <file>`, which is not symbol-scoped and is left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
+    if (tgRead.filePath !== null) {
+      const narrowing = tgRead.spec.slice(tgRead.filePath.length)
+      if (narrowing.length > 0) recordSymbolRead(tgRead.filePath, narrowing.replace(/^::/, ''))
+    }
+    if (tgRead.filePath !== null && loadConfig().hints.log_large_file_hint_outcomes) {
+      const pendingSize = takePendingLargeFileHint(tgRead.filePath)
+      if (pendingSize !== null) {
+        recordStat('large_file_hint_followed', 0, 0, undefined, `${tgRead.filePath} (${pendingSize} bytes) — hint fired, then followed by a surgical token-goat read`)
+      }
+    }
+  }
+
+  // Cache a successful, read-only `gh api` GET so a later identical call recalls it instead of re-fetching. Done as a side effect before the advisory-hint return below, so a wide-JSON response is both nudged toward --jq and cached. Gated on exit 0 (and the shared size floor) so an error/permission body is never stored as content.
+  if (isReadOnlyGhApi(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
+    const ghCacheHash = bashRecallKey(cmd, runDir)
+    const ghCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
+    recordBashOutput(ghCacheHash, ghCacheId, Buffer.byteLength(output, 'utf-8'))
+  }
+
+  const ghHint = buildGhApiHint(cmd, output, exitCode)
+  if (ghHint !== null) {
+    recordStat('session_hint', 0, 0)
+    return contextOutput(ghHint)
+  }
+
+  // One-time field-batching advisory: on the first successful read-only `gh pr view`/`gh issue view` this session, nudge toward a single batched `--json a,b,c` instead of querying field-by-field across many calls. Cache the output inline first (as the monitoring path would) so a later identical view still recalls, then return the advisory.
+  const ghView = extractGhViewForBatchAdvisory(cmd)
+  if (ghView !== null && (exitCode === null || exitCode === 0) && !wasHintShown(GH_VIEW_BATCH_HINT_KEY)) {
+    markHintShown(GH_VIEW_BATCH_HINT_KEY)
+    if (Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
+      const ghViewId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
+      recordBashOutput(bashRecallKey(cmd, runDir), ghViewId, Buffer.byteLength(output, 'utf-8'))
+    }
+    recordStat('session_hint', 0, 0)
+    return contextOutput(buildGhViewBatchAdvisory(ghView.sub, ghView.ref))
+  }
+  return null
+}
+
 async function postBashResultHandler(event: HookEvent, output: string): Promise<HookOutput> {
   try {
     const rawCmdRaw = extractCommand(event)
@@ -759,117 +879,13 @@ async function postBashResultHandler(event: HookEvent, output: string): Promise<
     // Decided once, from `rawCmd`: `cmd` has lost its leading assignments, a `TOKEN_GOAT_BASH_COMPRESS=0` prefix among them. Every pass below that compresses takes this rather than a command to decide it from, and the two lossless-looking ones need it too, since config folds the environment's opt-out into `bash_compress.enabled` but a prefix on the command itself never reaches config.
     const optedOut = compressionOptedOut(rawCmd)
 
-    // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never enter queue/dirty.txt via the normal postEditHandler path -- every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep serving whatever was indexed before the mutation until each file happens to be individually read. `HEAD@{1}` is git's own reflog record of "where HEAD was immediately before this command moved it" -- correct for single-step operations, but a multi-commit rebase or `pull --rebase` creates several intermediate reflog entries, so `HEAD@{1}` can only capture the last replayed step. `ORIG_HEAD` is the more robust base for the subcommands that set it (see ORIG_HEAD_ELIGIBLE_GIT_RE above) since it survives that internal churn; `HEAD@{1}` remains the fallback for checkout/switch/reset/cherry-pick (which never set it, or for which it's excluded) and for the rare case ORIG_HEAD hasn't been set yet at all.
-    if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
-      const gitDir = runDir ?? process.cwd()
-      let diffBase = 'HEAD@{1}'
-      // Why the changed-file list cannot be trusted, when it cannot: a read git did not answer at all (spawn failure or timeout, exit -1) leaves the base possibly wrong even when the diff then succeeds.
-      let unanswered: string | null = null
-      // Set when a read could not start git at all (missing, or a working directory that is gone): the worker needs git to sweep, so it could not do better and gets no request.
-      let gitNeverRan = false
-      if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
-        const reflogTop = runGit(['reflog', '-1', '--format=%gs', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
-        if (reflogTop.exitCode === -1) {
-          unanswered = `git reflog: ${reflogTop.stderr}`
-          if (reflogTop.timedOut !== true) gitNeverRan = true
-        }
-        if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {
-          const origHead = runGit(['rev-parse', '--verify', '-q', 'ORIG_HEAD'], { cwd: gitDir, timeoutMs: 5000 })
-          if (origHead.exitCode === -1) {
-            unanswered = `git rev-parse ORIG_HEAD: ${origHead.stderr}`
-            if (origHead.timedOut !== true) gitNeverRan = true
-          }
-          if (origHead.exitCode === 0 && origHead.stdout.trim() !== '') diffBase = 'ORIG_HEAD'
-        }
-      }
-      const mutationDiff = runGit(['diff', '--name-only', diffBase, 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
-      if (mutationDiff.exitCode === 0) {
-        // `git diff --name-only` always reports paths relative to the repo top-level, regardless of which directory git was invoked from -- resolving them against the raw event cwd (a monorepo subpackage, or a `cd sub && git checkout ...`) would compute the wrong absolute path and silently enqueue nothing useful. Resolve the real top-level first, and treat a root git would not name as a failed read rather than guessing the working directory.
-        const repoRoot = gitRepoRootOrNull(gitDir)
-        if (repoRoot === null) {
-          unanswered ??= 'git rev-parse --show-toplevel named no root'
-        } else {
-          for (const rel of mutationDiff.stdout.split('\n')) {
-            const trimmed = rel.trim()
-            if (trimmed.length === 0) continue
-            enqueueDirtyPathSafe(resolveIndexPath(trimmed, repoRoot), { alreadyResolved: true })
-          }
-        }
-      } else {
-        unanswered = `git diff ${diffBase} HEAD exited ${mutationDiff.exitCode}: ${mutationDiff.stderr}`
-        gitNeverRan = mutationDiff.exitCode === -1 && mutationDiff.timedOut !== true
-      }
-      // Dropping the work here left the index on the old branch with nothing in any log, and under load each read above is one 5 s timeout from failing. The worker can learn what changed without the hook's time budget (a sweep of the tracked files against the index), so hand it the project and record why.
-      if (unanswered !== null) {
-        const recorded = gitNeverRan ? null : requestReconcileSafe(gitDir)
-        appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${cmd.slice(0, 80)} in ${gitDir}: could not list the files it changed (${unanswered.trim().slice(0, 200)}); ${recorded === null ? 'git could not be started, so no reconcile was requested' : recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
-      }
-    }
-
-    // Working-tree rewrites that never move HEAD, so the block above cannot see them: `git restore`, `git stash pop|apply`, and the plain shell in-place writes (`sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`). Same staleness failure class, one gap over -- none of these go through the Edit tool either, so before this nothing enqueued them and every surgical read kept serving pre-mutation content. See enqueueNonHeadMovingRewrites.
-    if (exitCode === null || exitCode === 0) {
-      enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd())
-    }
-
-    // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
-    const curlDl = extractCurlDownload(cmd)
-    if (curlDl !== null && (exitCode === null || exitCode === 0)) {
-      // Recorded at its host path, which is the key except for a drive-letter key on WSL, so the recall names a file the shell there can open.
-      const outputOnDisk = hostPathOfTypedPath(curlDl.outputPath, runDir ?? process.cwd())
-      if (existsSync(outputOnDisk)) {
-        recordCurlDownload(curlDl.url, outputOnDisk)
-      }
-    }
-
     // Feed the pre-hook's own file-path extractors into the session read-cache so a file dumped through Bash (cat/head/Get-Content) is no longer invisible to a later Read's dedup hint. Whole-file dumps record a full read; partial dumps (head/tail/-Tail/-First) record only what was actually shown, so a later Read is never falsely told the whole file was already seen. A persisted result reached the model as a 2 KB preview, so it records no read at all, and the ranges the pre-hook recorded for it come back out.
     if (persisted) forgetPersistedLineRangeReads(rawCmd, cmd, startCwd)
     else if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, runDir)
 
-    // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
-
-    // Record a successful `token-goat symbol|read|section` invocation so a later identical call gets the re-read dedup hint from the pre-hook.
-    let tgRead = extractTgSurgicalRead(cmd, runDir)
-    // The shim skips the pre hook for token-goat's own command (bridges/shim_common.ts::SHIM_OWN_COMMAND_BYPASS), so no start directory is held for it and, on Claude Code's main thread, runDir applies the cd a second time to a cwd it already moved. When the target is missing there, this hook's cwd is where the cd landed; a file under runDir keeps runDir, which is right wherever the shell did not move.
-    if (heldStartCwd === null && cwd !== null && tgRead?.filePath != null && !isFileAtIndexKey(tgRead.filePath)) tgRead = extractTgSurgicalRead(cmd, cwd)
-    if (tgRead !== null && (exitCode === null || exitCode === 0)) {
-      recordCliRead(tgRead.sub + '::' + tgRead.spec)
-      // Record a surgical (symbol/section/range-scoped) read against the file's session entry so compact.ts's symbolsBonus can reward narrowly-engaged files. `spec` for read/section is `filePath` + a narrowing suffix (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a whole-file `token-goat read <file>`, which is not symbol-scoped and is left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
-      if (tgRead.filePath !== null) {
-        const narrowing = tgRead.spec.slice(tgRead.filePath.length)
-        if (narrowing.length > 0) recordSymbolRead(tgRead.filePath, narrowing.replace(/^::/, ''))
-      }
-      if (tgRead.filePath !== null && loadConfig().hints.log_large_file_hint_outcomes) {
-        const pendingSize = takePendingLargeFileHint(tgRead.filePath)
-        if (pendingSize !== null) {
-          recordStat('large_file_hint_followed', 0, 0, undefined, `${tgRead.filePath} (${pendingSize} bytes) — hint fired, then followed by a surgical token-goat read`)
-        }
-      }
-    }
-
-    // Cache a successful, read-only `gh api` GET so a later identical call recalls it instead of re-fetching. Done as a side effect before the advisory-hint return below, so a wide-JSON response is both nudged toward --jq and cached. Gated on exit 0 (and the shared size floor) so an error/permission body is never stored as content.
-    if (isReadOnlyGhApi(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-      const ghCacheHash = bashRecallKey(cmd, runDir)
-      const ghCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
-      recordBashOutput(ghCacheHash, ghCacheId, Buffer.byteLength(output, 'utf-8'))
-    }
-
-    const ghHint = buildGhApiHint(cmd, output, exitCode)
-    if (ghHint !== null) {
-      recordStat('session_hint', 0, 0)
-      return contextOutput(ghHint)
-    }
-
-    // One-time field-batching advisory: on the first successful read-only `gh pr view`/`gh issue view` this session, nudge toward a single batched `--json a,b,c` instead of querying field-by-field across many calls. Cache the output inline first (as the monitoring path would) so a later identical view still recalls, then return the advisory.
-    const ghView = extractGhViewForBatchAdvisory(cmd)
-    if (ghView !== null && (exitCode === null || exitCode === 0) && !wasHintShown(GH_VIEW_BATCH_HINT_KEY)) {
-      markHintShown(GH_VIEW_BATCH_HINT_KEY)
-      if (Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-        const ghViewId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
-        recordBashOutput(bashRecallKey(cmd, runDir), ghViewId, Buffer.byteLength(output, 'utf-8'))
-      }
-      recordStat('session_hint', 0, 0)
-      return contextOutput(buildGhViewBatchAdvisory(ghView.sub, ghView.ref))
-    }
+    // The effects this call shares with Claude Code's PowerShell tool, which reads the same command line and output: see recordShellCall.
+    const advisory = await recordShellCall({ cmd, runDir, cwd, heldStartCwd, exitCode, output, cacheMinBytes })
+    if (advisory !== null) return advisory
 
     // Failing test-runner advisory: nudge toward `token-goat failures` instead of the caller scrolling the raw dump. Covers pytest/jest/vitest/go test/cargo test plus the npm/yarn/pnpm script wrappers, including bare `npm test`, which the build/monitoring cache patterns above deliberately exclude as too generic to cache on every green run -- so those commands never get a cached id from the blocks below, and this is the only place that stores one for them. Cache the output here (even for the runners the later blocks would otherwise cache) so the returned id is always real, then return before falling into the later cache logic to avoid a duplicate store under the same key. Gated on a genuine non-zero exit (never on exitCode === null, unlike the git-mutation and gh-api paths above, since an unknown exit code here would silently repeat this hint on every ambiguous run) and on the shared cache_min_bytes floor, same as the other advisory caches in this handler.
     if (isTestRunnerCommand(cmd) && exitCode !== null && exitCode !== 0 && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
@@ -878,13 +894,6 @@ async function postBashResultHandler(event: HookEvent, output: string): Promise<
       recordBashOutput(testFailHash, testFailId, Buffer.byteLength(output, 'utf-8'))
       recordStat('session_hint', 0, 0)
       return contextOutput(`[token-goat] Tests failed. Run \`token-goat bash-output ${testFailId} | token-goat failures\` to see just the failing blocks instead of the full output.`)
-    }
-
-    // Cache a successful scoped `git status`/`git diff --stat -- <path>` so a later identical call recalls it instead of re-running (see isScopedGitStatusOrDiffStatCommand above). Gated on exit 0 and the shared size floor, same as the gh-api cache above; staleness is enforced entirely by the `gitMutable` fingerprint recorded via computeBashFingerprints (HEAD sha, `git status --porcelain`, and the stat of each path it lists), not a separate mechanism.
-    if (isScopedGitStatusOrDiffStatCommand(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-      const gitScopedCacheHash = bashRecallKey(cmd, runDir)
-      const gitScopedCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
-      recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
     }
 
     // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), a test run with a filter (e.g. `dotnet test`, `cargo test`) or a `git diff` that ran directly is compressed here on post-hook; other unwrapped commands fall through so cat recall, curl and build caching below still see them.
@@ -959,21 +968,32 @@ registerHook('post_tool_use', postBashHandler, { toolName: 'Bash' })
 /** `$env:TOKEN_GOAT_BASH_COMPRESS = '0'` leading a PowerShell command, the spelling of the opt-out the compression marker names. */
 const POWERSHELL_COMPRESS_OPT_OUT_RE = /^\s*\$env:TOKEN_GOAT_BASH_COMPRESS\s*=\s*(?:'0'|"0"|0)\s*(?:;|$)/im
 
-/** post_tool_use handler for Claude Code's PowerShell tool. It runs a command the way the Bash tool does and returns the same `{stdout, stderr, interrupted, isImage}` result, and it got none of the Bash tool's output handling: 372 recorded PowerShell results, none compressed, fenced or kept for recall. This is the output half of the Bash path only. The pre hook rewrites nothing for PowerShell, since its compress wrapper and heredoc handling are bash syntax, so every command arrives here as it ran, and the filter is chosen with PowerShell's own command names in mind (see powerShellFilterFor). The rewrite goes through the same compressor as an unwrapped Bash command (redaction, the untrusted-content fence, the recall copy, the net-benefit gate), then the same lossless ANSI strip and large-output advisory, without the `compress -c` suggestion that would run the command under bash. */
+/** post_tool_use handler for Claude Code's PowerShell tool. It runs a command the way the Bash tool does and returns the same `{stdout, stderr, interrupted, isImage}` result, and it got none of the Bash tool's output handling: 372 recorded PowerShell results, none compressed, fenced or kept for recall. It gets the Bash path's output handling and the bookkeeping that reads a program's own command line and output (recordShellCall), but not the file-read folds, the served-line elisions or the build-output delta, which this tool's compression takes the place of, nor the failing-test advisory, which needs an exit code the PowerShell tool's result does not carry. The pre hook rewrites nothing for PowerShell (see preBashHandler), so every command arrives here as it ran, and the filter is chosen with PowerShell's own command names in mind (see powerShellFilterFor). The rewrite goes through the same compressor as an unwrapped Bash command (redaction, the untrusted-content fence, the recall copy, the net-benefit gate), then the same lossless ANSI strip and large-output advisory, without the `compress -c` suggestion that would run the command under bash. */
 export async function postPowerShellHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const command = extractCommand(event)
     if (command === undefined) return passOutput()
     const output = extractBashOutput(event)
     const exitCode = extractExitCode(event.raw)
-    const runDir = getCwd(event) ?? null
-    const resp = event.raw['tool_response']
-    const persisted = resp !== null && typeof resp === 'object' && typeof (resp as Record<string, unknown>)['persistedOutputPath'] === 'string' && (resp as Record<string, unknown>)['persistedOutputPath'] !== ''
+    const cwd = getCwd(event) ?? null
+    // Taken whether or not it is used, so the pre hook's entry for this call does not outlive it.
+    const toolUseId = event.raw['tool_use_id']
+    const heldStartCwd = typeof toolUseId === 'string' && toolUseId !== '' ? takeBashStartCwd(toolUseId) : null
+    const startCwd = heldStartCwd ?? cwd
+    // Keyed the way the pre hook keys this call: the command past a leading `cd <dir>;` and the directory that cd leaves the shell in, which the pre hook derives from the same command and cwd.
+    const { rawCmd, cmd, runDir } = resolveBashCall(command, startCwd)
+    const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
+    const persisted = resultWasPersisted(event)
+    const advisory = await recordShellCall({ cmd, runDir, cwd, heldStartCwd, exitCode, output, cacheMinBytes })
+    if (advisory !== null) return advisory
     const optedOut = POWERSHELL_COMPRESS_OPT_OUT_RE.test(command)
-    const compressed = await maybeCompressCompoundOutput(command, optedOut, output, exitCode, runDir, loadConfig().bash_compress.cache_min_bytes, true, true)
+    const compressed = await maybeCompressCompoundOutput(command, optedOut, output, exitCode, cwd, cacheMinBytes, true, true)
+    // A file read only counts as seen when the model got its lines. Unlike Bash, whose file reads are never compressed, this tool's output is, so a compressed or persisted `Get-Content` takes back the ranges the pre hook recorded instead of recording a read.
+    if (persisted || compressed !== null) forgetPersistedLineRangeReads(rawCmd, cmd, startCwd)
+    else if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, runDir)
     if (compressed !== null) return compressed
     const ansiStripped = optedOut ? null : maybeStripAnsiOnly(output)
-    const largeHint = await maybeEmitLargeUncompressedHint(command, command, optedOut, output, exitCode, runDir, true, event, ansiStripped, persisted, true)
+    const largeHint = await maybeEmitLargeUncompressedHint(command, command, optedOut, output, exitCode, cwd, true, event, ansiStripped, persisted, true)
     return largeHint ?? ansiStripped ?? passOutput()
   } catch {
     // Never block: hook failures must be silent.

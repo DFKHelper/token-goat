@@ -336,6 +336,29 @@ function extractTeeFiles(segment: string): string[] {
   return tokens.slice(1).filter((t) => t.length > 0 && !t.startsWith('-'))
 }
 
+/** PowerShell's own file writers, which name their file by `-Path`, `-LiteralPath` or `-FilePath` or by their first positional argument. */
+const POWERSHELL_WRITE_CMDLET_RE = /^\s*(?:Set-Content|Add-Content|Out-File|Tee-Object)(?:\s|$)/i
+const POWERSHELL_PATH_PARAMS: ReadonlySet<string> = new Set(['-path', '-literalpath', '-filepath', '-pspath', '-lp'])
+const POWERSHELL_WRITE_SWITCHES: ReadonlySet<string> = new Set(['-append', '-force', '-noclobber', '-nonewline', '-passthru', '-whatif', '-confirm', '-asbytestream'])
+
+/** The file a `Set-Content`/`Add-Content`/`Out-File`/`Tee-Object` segment writes, or `[]` for any other segment. Split with PowerShell's quoting rather than shlex's: a backslash is a path separator there, not an escape, so `Set-Content C:\src\a.ts` names `C:\src\a.ts`, and `''` inside single quotes is one quote. A parameter that is not a switch takes the next word as its value, so `-Value 'x' a.ts` still finds `a.ts`. */
+export function extractPowerShellWriteTargets(segment: string): string[] {
+  if (!POWERSHELL_WRITE_CMDLET_RE.test(segment)) return []
+  const words = [...segment.matchAll(/'((?:[^']|'')*)'|"([^"]*)"|(\S+)/g)].map((m) => (m[1] !== undefined ? m[1].replace(/''/g, "'") : (m[2] ?? m[3]!)))
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i]!
+    if (!word.startsWith('-')) return [word]
+    const colon = word.indexOf(':')
+    const name = (colon === -1 ? word : word.slice(0, colon)).toLowerCase()
+    if (POWERSHELL_PATH_PARAMS.has(name)) {
+      const value = colon === -1 ? words[i + 1] : word.slice(colon + 1)
+      return value !== undefined && value !== '' ? [value] : []
+    }
+    if (colon === -1 && !POWERSHELL_WRITE_SWITCHES.has(name)) i++
+  }
+  return []
+}
+
 /** Targets of `>` / `>>` output redirection in one segment. `2>&1`-style fd duplications name no file and are excluded by the target pattern. */
 function extractRedirectTargets(segment: string): string[] {
   const targets: string[] = []
@@ -445,7 +468,7 @@ function enqueueRewrittenPath(absPath: string): void {
   enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
 }
 
-/** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
+/** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, PowerShell's `Set-Content`/`Add-Content`/`Out-File`/`Tee-Object`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
 export function enqueueNonHeadMovingRewrites(cmd: string, runDir: string): void {
   const atRunDir = (f: string): string => resolveIndexPath(f, runDir)
   const paths: string[] = []
@@ -465,6 +488,7 @@ export function enqueueNonHeadMovingRewrites(cmd: string, runDir: string): void 
     for (const f of extractSedInPlaceFiles(segment)) paths.push(atRunDir(f))
     for (const f of extractTeeFiles(segment)) paths.push(atRunDir(f))
     for (const f of extractRedirectTargets(segment)) paths.push(atRunDir(f))
+    for (const f of extractPowerShellWriteTargets(segment)) paths.push(atRunDir(f))
   }
   for (const p of new Set(paths)) enqueueRewrittenPath(p)
   for (const dir of sweepDirs) for (const p of workingTreeStatusPaths(dir)) enqueueSweptPath(p)

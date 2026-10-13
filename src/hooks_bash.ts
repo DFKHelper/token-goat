@@ -115,8 +115,13 @@ function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hi
   return maybeCompressRewrite(event, rawCmd, cmd, { maxTokens: INTERPRETER_READ_TOKEN_CAP, hint: stripUnsafeSuggestions(hint) }) ?? fallback
 }
 
+/** Claude Code's PowerShell tool, which runs a command the way the Bash tool does and reports `{ command }` the same way. */
+const POWERSHELL_TOOL = 'PowerShell'
+
 /** A rewrite of this Bash call's command, or null when rewrite_permission.ts finds it could change the permission outcome of the command the model wrote. */
 function shellRewrite(event: HookEvent, kind: 'shell-wrap' | 'shell-query', original: string, command: string): HookOutput | null {
+  // rewrite_permission.ts proves a rewrite safe against `Bash(...)` rules, and Claude Code checks this tool's calls against `PowerShell(...)` rules, so for it nothing is proven and nothing ships. Its output is compressed after the run instead (hooks_bash_post.ts::postPowerShellHandler).
+  if (event.toolName === POWERSHELL_TOOL) return null
   return permissionNeutralRewrite({ ...event.toolInput, command }, { kind, harness: detectHarness(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original, rewritten: command, agentType: agentTypeOf(event.raw) })
 }
 
@@ -233,6 +238,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined) return passOutput()
   const cmd = stripCommandPrefix(rawCmd)
+  // Claude Code's PowerShell tool: the read, search and recall checks below already read PowerShell spellings (Get-Content, Select-Object, ConvertFrom-Json, [IO.File]::ReadAllText) for the harnesses that run PowerShell through their shell tool, but the Git Bash quirks do not apply to it.
+  const powerShellTool = event.toolName === POWERSHELL_TOOL
   // Only a stripped `cd` moves the directory a relative path resolves against; a stripped assignment or subshell group does not, though a `cd` inside the group does.
   const grouped = stripSubshellGroup(rawCmd)
   const cdStripped = stripCdPrefix(grouped) !== grouped
@@ -290,14 +297,14 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const cfg = loadConfig()
   // Claude Code's Bash tool on Windows passes the command to Git Bash as a `-c` argument, and the argv quoting plus the MSYS2 runtime's decoding halve every run of two or more backslashes, so the command that runs is not the one written and nothing reports the difference (anthropics/claude-code#85856). Denied rather than rewritten: a rewrite goes out as updatedInput, which permission rules evaluate again. `_tg_harness` is 'claude' for every harness relay.ts does not map, so detectHarness() is what pins this to Claude Code; the hook server answers under the caller's own environment, so it sees the same variables here.
-  if (cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && rawCmd.includes('\\\\') && detectHarness() === 'claudecode') {
+  if (!powerShellTool && cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && rawCmd.includes('\\\\') && detectHarness() === 'claudecode') {
     recordStat('session_hint', 0, 0)
     return syntaxOutput(denyOutput(
       'This command has two backslashes in a row. Claude Code\'s Bash tool on Windows halves every run of two or more backslashes before Git Bash sees the command, so it would run with different text than you wrote, with no error (anthropics/claude-code#85856). Write text containing backslashes to a file with the Write tool and run it by path, or use the PowerShell tool, which passes the command unchanged. For paths, use forward slashes: C:/Users/me works in Git Bash. To turn this check off, set hints.deny_bash_double_backslash = false or TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH=0.',
     ))
   }
   // The same Bash tool fails a heredoc command of about 7,300 characters or more before any of it runs (bash_heredoc_spill.ts has the measurements), and token-goat's own PreToolUse used to answer `{}` to every one. A quoted heredoc's body moves to a file the command reads instead, when the permission check every shell rewrite takes approves the rewrite; where that cannot happen, a command long enough to fail for certain is refused with what to do instead.
-  if (process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && hasHeredocOpener(rawCmd) && effectiveCommandLength(rawCmd) >= HEREDOC_SPILL_EFFECTIVE_CHARS && detectHarness() === 'claudecode') {
+  if (!powerShellTool && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && hasHeredocOpener(rawCmd) && effectiveCommandLength(rawCmd) >= HEREDOC_SPILL_EFFECTIVE_CHARS && detectHarness() === 'claudecode') {
     const spillDir = heredocSpillDir()
     const spill = spillQuotedHeredocs(rawCmd, spillDir)
     let why: string
@@ -318,7 +325,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     }
   }
   // Check for unbalanced shell quoting or unterminated heredocs
-  if (cfg.hints.warn_unbalanced_shell_quoting) {
+  // Bash quoting rules: PowerShell doubles a quote inside a quoted string and escapes with a backtick, so a valid PowerShell string reads as unbalanced here.
+  if (cfg.hints.warn_unbalanced_shell_quoting && !powerShellTool) {
     const quoteError = detectUnbalancedShellSyntax(cmd)
     if (quoteError !== null) {
       recordStat('session_hint', 0, 0)
@@ -863,3 +871,5 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
 // A Codex call loads Codex's rules check first, and a bypassPermissions call the hidden rule check, which rewrite_permission.ts needs before it lets a rewrite ship there.
 registerHook('pre_tool_use', loadingHiddenRuleCheck((event) => (detectHarness() === 'codex' ? loadCodexRules().then(() => preBashHandler(event)) : preBashHandler(event))), { toolName: 'Bash' })
+// Claude Code's PowerShell tool gets the same read, search and recall checks. It needs no rules preload: shellRewrite never rewrites its calls.
+registerHook('pre_tool_use', preBashHandler, { toolName: POWERSHELL_TOOL })

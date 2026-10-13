@@ -76,6 +76,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   'hooks_bash_post.ts::postPowerShellHandler': 'Reaches the channel only through maybeEmitLargeUncompressedHint, adjudicated above, and interpolates nothing of its own.',
   'hooks_bash_post.ts::postBashResultHandler':
     "The post-Bash path itself, split out of postBashHandler unchanged so the wrapper can take the compress heartbeat out of the output first. Its own hints interpolate a cached output id (hexadecimal, from storeBashOutput) and the rerun delta, which summarizeOutputDelta builds from line and issue counts alone; the gh advisories are built by buildGhApiHint and buildGhViewBatchAdvisory.",
+  'hooks_bash_post.ts::recordShellCall':
+    'The bookkeeping the Bash and PowerShell post hooks share, moved out of postBashResultHandler unchanged. Its only context outputs are the two gh advisories, whose strings buildGhApiHint and buildGhViewBatchAdvisory build; it interpolates nothing itself.',
   'hooks_edit.ts::postEditHandler': 'Wrapper over postEditHandlerInner. Interpolates nothing of its own.',
   'hooks_read.ts::preReadHandler': 'Wrapper over preReadHandlerInner. Interpolates nothing of its own.',
   'hooks_read_post.ts::postReadHandler': 'Wrapper over postReadHandlerInner. Interpolates nothing of its own.',
