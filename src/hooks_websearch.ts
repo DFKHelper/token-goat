@@ -8,7 +8,7 @@ import { storeMcpOutput, getMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { recordStat } from './stats.js'
 import { scanAndRecord, fenceWithMatches, fenceJsonStrings } from './untrusted_fence.js'
-import { neutralizeFenceMarkers } from './injection_scan.js'
+import { neutralizeFenceMarkers, withoutEscapes } from './injection_scan.js'
 import { countRedactionPlaceholders, redactSecrets } from './secret_redact.js'
 import { detectHarness } from './bridges/registry.js'
 
@@ -40,7 +40,8 @@ function fenceWebSearchResults(toolResponse: unknown, injectionMatches: readonly
   let changed = false
   const config = loadConfig()
   const clean = (text: string): string => {
-    const cleaned = neutralizeFenceMarkers(redactSecrets(text, config).text)
+    // Escapes stripped before the neutralizer reads the string, as fencedBody does for a fence body: these strings ship outside any fence, and `<` ESC `[0m/untrusted-web-content>` reads as nothing to the neutralizer and as a closing tag once any strip drops the escape.
+    const cleaned = neutralizeFenceMarkers(withoutEscapes(redactSecrets(text, config).text))
     if (cleaned !== text) changed = true
     return cleaned
   }
