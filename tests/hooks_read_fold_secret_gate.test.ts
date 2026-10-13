@@ -1,4 +1,5 @@
 /** The Read-hook fold gates ask only the precise secret patterns, never the recall-tuned catch-all. The gates decline to fold on a match, and a decline passes the file through to the model UNREDACTED -- so a false positive there buys no protection and costs every fold the file could have had. `generic_secret_assignment` is tuned the other way on purpose (it guards what gets written to disk, where over-redacting is free), and it matches ordinary source: the prose line below vetoed skeleton, outline and body folds for 9.4% of first-party files of 12 kB or more. Fixture provenance: - CAPTURE: `PasswordException: those files need a password to open` is a doc-comment line from this repository's own src/pdf_extract.ts, copied verbatim; it is prose about a exception type and holds no credential. - HAND-DERIVED: the surrounding TypeScript is synthetic filler written for this test, sized past the fold's own byte floor, and the `N\tline` numbered rendering is the Read tool's `cat -n` delivery shape (the same `numbered` helper tests/hooks_read_source_skeleton.test.ts uses). - HAND-DERIVED: the credential is assembled at runtime from a prefix and a filler run rather than written out, so no committed string in this repository is key-shaped. Its prefix is read off the vendor's documented key format, not off this repo's matcher. */
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,14 +7,19 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { postReadHandler } from '../src/hooks_read_post.js'
-import { redactSecrets } from '../src/secret_redact.js'
+import { hasPreciseSecret, redactSecrets } from '../src/secret_redact.js'
 import type { HookEvent } from '../src/hook_registry.js'
+import { BUNDLE } from './helpers/bundle.js'
 
 /** The false positive: prose, copied from src/pdf_extract.ts, that generic_secret_assignment matches because its keyword needs no left word boundary and its value class runs on past the separator. */
 const PROSE_FALSE_POSITIVE = '// PasswordException: those files need a password to open'
 
 /** A real credential, assembled here so the repository never carries the literal. `sk-ant-` is Anthropic's documented key prefix. */
 const REAL_CREDENTIAL = `sk-ant-api03-${'a'.repeat(90)}`
+
+/** A credential no view hasPreciseSecret read used to show whole: split by a colour code, and preceded on its line by an assignment whose value swallows the ESC of an OSC opener. Stripped as given, that unterminated OSC runs to the end of the line and takes the credential with it; redactSecrets redacts the assignment first, the OSC goes with it, and the strip after joins the credential. */
+const SPLIT_CREDENTIAL = `${REAL_CREDENTIAL.slice(0, 7)}\x1b[31m${REAL_CREDENTIAL.slice(7)}\x1b[0m`
+const JOINED_VIEW_ONLY = `// secret=abcd\x1b] ${SPLIT_CREDENTIAL}`
 
 const BODY_FILLER =
   '  const padding = "filler that exists only to push this fixture past the fold byte floor, and a skeleton that keeps it is not a skeleton"'
@@ -89,6 +95,36 @@ describe('the Read-hook fold gate asks only the precise secret patterns', () => 
     const split = `${REAL_CREDENTIAL.slice(0, 7)}\x1b[31m${REAL_CREDENTIAL.slice(7)}\x1b[0m`
     expect(split).not.toContain(REAL_CREDENTIAL)
     expect(foldedText('colour-credential.ts', `const apiKey = "${split}"`)).toBe('')
+  })
+
+  it('declines to fold a file whose credential only the view redactSecrets strips after its own pass shows whole', () => {
+    expect(redactSecrets(JOINED_VIEW_ONLY).text).toContain('[REDACTED:anthropic_api_key]')
+    expect(hasPreciseSecret(JOINED_VIEW_ONLY)).toBe(true)
+    expect(foldedText('joined-view-credential.ts', JOINED_VIEW_ONLY)).toBe('')
+  })
+
+  it('declines it through the built bundle, on stock defaults, and folds the same file without the credential', () => {
+    const delivered = (name: string, marker: string): string => {
+      const body = sourceWith(marker)
+      const file = join(TMP, name)
+      writeFileSync(file, body)
+      const env: NodeJS.ProcessEnv = { ...process.env, TOKEN_GOAT_HOME: join(TMP, `home-${name}`) }
+      delete env['TOKEN_GOAT_SKELETON_LARGE_SOURCES']
+      const lineCount = body.split('\n').length
+      const payload = {
+        session_id: `fold-secret-bundle-${name}`,
+        hook_event_name: 'PostToolUse',
+        cwd: TMP,
+        tool_name: 'Read',
+        tool_input: { file_path: file },
+        tool_response: { type: 'text', file: { filePath: file, content: body, numLines: lineCount, startLine: 1, totalLines: lineCount } },
+      }
+      const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: JSON.stringify(payload), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, env })
+      expect(res.status, res.stderr.slice(0, 400)).toBe(0)
+      return res.stdout
+    }
+    expect(delivered('bundle-control.ts', '// secret=abcd plain prose')).toContain('updatedToolOutput')
+    expect(delivered('bundle-joined-view.ts', JOINED_VIEW_ONLY)).not.toContain('updatedToolOutput')
   })
 
   it('leaves what redactSecrets writes to disk exactly as it was', () => {

@@ -185,9 +185,12 @@ function matchesNonEmpty(compiled: RegExp, text: string): boolean {
 /** Whether `text` matches a secret pattern precise enough to act on when a false positive costs the caller something. Written for the Read-hook fold gates, whose asymmetry is the inverse of the persistence paths': they decline to fold on a match, and a declined fold passes the file through to the model UNREDACTED, so a false positive buys no protection at all and costs the whole fold. Measured against first-party source of 12 kB or more, {@link RECALL_TUNED_KIND} alone vetoed every fold -- skeleton, outline and body -- for 9.4% of files. Every other built-in pattern is anchored on a literal credential prefix, header name or key field, so it stays in. Custom patterns stay in too: they are declared by the machine's own operator, who is entitled to have them treated as precise. So does the strict-mode entropy heuristic, which is off by default and, when on, is a deliberate request to err toward treating opaque blobs as secrets. Reads the same list {@link redactSecrets} does, so a pattern added there is covered here without a second edit, and changes nothing about what gets written to disk. */
 export function hasPreciseSecret(text: string, config: Config = loadConfig()): boolean {
   if (hasPreciseSecretAsGiven(text, config)) return true
-  // The escape-stripped view too, as redactSecrets reads it: a fold keeps a file's terminal escapes, so a credential a colour code splits would ship split for any later strip to join.
+  // The escape-stripped views too: a fold keeps a file's terminal escapes, so a credential a colour code splits would ship split for any later strip to join. Both of them, because they differ: redactSecrets strips the text after its own pass, and a generic assignment it redacted can take with it the ESC of an unterminated OSC that, stripped from the text as given, runs to the end of the line and hides a token the redacted view joins.
   const shown = withoutEscapes(text)
-  return shown !== text && hasPreciseSecretAsGiven(shown, config)
+  if (shown === text) return false
+  if (hasPreciseSecretAsGiven(shown, config)) return true
+  const redactedShown = withoutEscapes(redactPatterns(text, config, {}).text)
+  return redactedShown !== shown && hasPreciseSecretAsGiven(redactedShown, config)
 }
 
 /** {@link hasPreciseSecret} on `text` exactly as given. */
