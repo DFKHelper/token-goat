@@ -14,6 +14,7 @@ import { postBashHandler } from '../src/hooks_bash_post.js'
 import { fenceUntrustedContent, UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { BUNDLE, readCoreBundleText } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -66,7 +67,7 @@ describe('a rewrite whose fence strips escapes still fits the delivery cap', () 
     if (out.hookType !== 'rewriteOutput') throw new Error('unreachable')
     expect(out.updatedOutput).toContain('rewrite clipped to the harness delivery cap')
     expect(Buffer.byteLength(out.updatedOutput, 'utf-8')).toBeLessThanOrEqual(CAP)
-    expect(out.updatedOutput).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
+    expect(withoutFenceNonces(out.updatedOutput)).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
   })
 
   it('the clip note does not promise a recall of what the clip dropped, since no pointer in the rewrite holds it', async () => {
@@ -93,7 +94,7 @@ describe('a rewrite whose fence strips escapes still fits the delivery cap', () 
     if (out.hookType !== 'rewriteOutput') throw new Error('unreachable')
     expect(out.updatedOutput).toContain('cleaned text clipped to the harness delivery cap')
     expect(Buffer.byteLength(out.updatedOutput, 'utf-8')).toBeLessThanOrEqual(CAP)
-    expect(out.updatedOutput).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
+    expect(withoutFenceNonces(out.updatedOutput)).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
   })
 })
 
@@ -112,7 +113,7 @@ function expectFitsAndCloses(out: Awaited<ReturnType<typeof postBashHandler>>, n
   if (out.hookType !== 'rewriteOutput') throw new Error('unreachable')
   expect(out.updatedOutput).toContain(note)
   expect(Buffer.byteLength(out.updatedOutput, 'utf-8')).toBeLessThanOrEqual(CAP)
-  expect(out.updatedOutput).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
+  expect(withoutFenceNonces(out.updatedOutput)).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
 }
 
 describe('a rewrite dense in markers still fits the delivery cap', () => {
@@ -142,9 +143,9 @@ describe('a rewrite dense in markers still fits the delivery cap', () => {
     for (const text of [denseLines(1, 1500), '[token-goatX'.repeat(3000), `<untrusted-x> <untrusted-y>\n`.repeat(2000)]) {
       const fitted = fitToDeliveryCap(text, frame)
       expect(Buffer.byteLength(fitted, 'utf-8')).toBeLessThanOrEqual(CAP)
-      expect(fitted.endsWith(`</${UNTRUSTED_TOOL_TAG}>\n[note]`)).toBe(true)
+      expect(withoutFenceNonces(fitted).endsWith(`</${UNTRUSTED_TOOL_TAG}>\n[note]`)).toBe(true)
     }
-    expect(fitToDeliveryCap('short', frame)).toBe(frame('short', false))
+    expect(withoutFenceNonces(fitToDeliveryCap('short', frame))).toBe(withoutFenceNonces(frame('short', false)))
   })
 
   it('clipToDeliveryCap clips to nothing rather than handing back the text when the framing fills the cap', () => {
@@ -156,11 +157,12 @@ describe('a rewrite dense in markers still fits the delivery cap', () => {
 /** The body between the tool-output fence's tags, asserted present, non-empty and made of whole characters. */
 function expectWholeBody(text: string, label: string): void {
   const open = `<${UNTRUSTED_TOOL_TAG}>\n`
-  const start = text.indexOf(open)
-  const end = text.lastIndexOf(`\n</${UNTRUSTED_TOOL_TAG}>`)
+  const plain = withoutFenceNonces(text)
+  const start = plain.indexOf(open)
+  const end = plain.lastIndexOf(`\n</${UNTRUSTED_TOOL_TAG}>`)
   expect(start, `${label}: opening tag`).toBeGreaterThanOrEqual(0)
   expect(end, `${label}: closing tag`).toBeGreaterThan(start)
-  const body = text.slice(start + open.length, end)
+  const body = plain.slice(start + open.length, end)
   expect(body.length, `${label}: the fit shipped an empty body`).toBeGreaterThan(0)
   expect(body, `${label}: a cut decoded half a character`).not.toContain('\u{FFFD}')
   expect(/[\u{D800}-\u{DFFF}]/u.test(body), `${label}: a cut split a surrogate pair`).toBe(false)
@@ -219,7 +221,10 @@ describe('a fitted rewrite keeps a body, cut on a whole character', () => {
 
 describe('a fitted rewrite uses the budget rather than stopping at the last line break', () => {
   const frame = (body: string, clipped: boolean): string => fenceUntrustedContent(body, [], UNTRUSTED_TOOL_TAG) + (clipped ? '\n[note]' : '')
-  const bodyOf = (fitted: string): string => fitted.slice(fitted.indexOf(`<${UNTRUSTED_TOOL_TAG}>\n`) + UNTRUSTED_TOOL_TAG.length + 3, fitted.lastIndexOf(`\n</${UNTRUSTED_TOOL_TAG}>`))
+  const bodyOf = (fitted: string): string => {
+    const plain = withoutFenceNonces(fitted)
+    return plain.slice(plain.indexOf(`<${UNTRUSTED_TOOL_TAG}>\n`) + UNTRUSTED_TOOL_TAG.length + 3, plain.lastIndexOf(`\n</${UNTRUSTED_TOOL_TAG}>`))
+  }
 
   it('cuts inside a long last line instead of dropping it', () => {
     // PROVENANCE: HAND-DERIVED from the audit's informational finding. A short line and then one long one shipped the short line alone, under 1% of the cap.

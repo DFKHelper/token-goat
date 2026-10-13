@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { run, runnerRecallId, runRaw } from '../src/bash_runner.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 let scriptDir: string
 /** Seconds the runner waits before it kills the command: three times a measured warm run plus a second, never under 1.5. */
@@ -43,10 +44,11 @@ describe('the runner’s own notes print after the command’s bytes, never amon
     const code = await run(lingering('rows.js', rows), { filterName: 'passthrough', maxTokens: 300, timeout: budget, writeStdout: (s) => (out += s) })
     expect(code).toBe(124)
     const note = `[token-goat: command exceeded ${budget}s timeout and was killed]`
-    const close = out.indexOf('</untrusted-tool-output>')
+    const fenced = withoutFenceNonces(out)
+    const close = fenced.indexOf('</untrusted-tool-output>')
     expect(close, out).toBeGreaterThan(0)
-    expect(out.slice(0, close)).not.toContain('timeout and was killed')
-    const after = out.slice(close).trimEnd().split('\n')
+    expect(fenced.slice(0, close)).not.toContain('timeout and was killed')
+    const after = fenced.slice(close).trimEnd().split('\n')
     expect(after.slice(0, 3)).toEqual(['</untrusted-tool-output>', '[token-goat: output capped at ~300 tokens]', note])
     // The recall line still ends the result, which is how the post hook knows it is the runner's.
     expect(after[after.length - 1]).toMatch(/^\[token-goat\] full output: bash-output [0-9a-f]{16} --full$/)

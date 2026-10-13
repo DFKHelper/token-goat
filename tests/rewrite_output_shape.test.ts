@@ -19,6 +19,7 @@ import {
 import { buildEvent } from '../src/relay.js'
 import { stripAnsiEscapes } from '../src/render/ansi.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { unfence } from './helpers/unfence.js'
 
@@ -259,7 +260,7 @@ describe('WebSearch rewrite through the live post handler', () => {
     const results = o['results'] as unknown[]
     expect(results).toHaveLength(2)
     expect(results[0]).toEqual(hit)
-    const fenced = results[1] as string
+    const fenced = withoutFenceNonces(results[1] as string)
     expect(fenced).toContain('<untrusted-web-content>')
     expect(fenced).toContain('[REDACTED:aws_access_key]')
     expect(fenced).not.toContain(AWS_KEY)

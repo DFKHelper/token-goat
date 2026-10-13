@@ -37,6 +37,7 @@ import { normalizePayload } from '../src/hooks_cli.js'
 import { buildEvent } from '../src/relay.js'
 import { getDb } from '../src/db.js'
 import { indexFileSync } from '../src/parser.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
@@ -1810,10 +1811,11 @@ Examples here
         expect(result.message).not.toContain('Large markdown file')
 
         // Fence placement: the diff (file-derived, untrusted) sits between the fence tags; token-goat's own "Content changed..." guidance sits outside/before it.
-        const openIdx = result.message.indexOf('<untrusted-file-content>')
-        const closeIdx = result.message.indexOf('</untrusted-file-content>')
-        const guidanceIdx = result.message.indexOf('Content changed since last read of')
-        const diffIdx = result.message.indexOf('New Section')
+        const message = withoutFenceNonces(result.message)
+        const openIdx = message.indexOf('<untrusted-file-content>')
+        const closeIdx = message.indexOf('</untrusted-file-content>')
+        const guidanceIdx = message.indexOf('Content changed since last read of')
+        const diffIdx = message.indexOf('New Section')
         expect(openIdx).toBeGreaterThan(-1)
         expect(closeIdx).toBeGreaterThan(openIdx)
         expect(guidanceIdx).toBeGreaterThan(-1)
@@ -2783,10 +2785,11 @@ content here` },
         expect(result.message).not.toContain('This file was already read this session')
 
         // Fence placement: the diff (file-derived, untrusted) sits between the fence tags; token-goat's own "Content changed..." guidance sits outside/before it.
-        const openIdx = result.message.indexOf('<untrusted-file-content>')
-        const closeIdx = result.message.indexOf('</untrusted-file-content>')
-        const guidanceIdx = result.message.indexOf('Content changed since last read of')
-        const diffIdx = result.message.indexOf('New Fact')
+        const message = withoutFenceNonces(result.message)
+        const openIdx = message.indexOf('<untrusted-file-content>')
+        const closeIdx = message.indexOf('</untrusted-file-content>')
+        const guidanceIdx = message.indexOf('Content changed since last read of')
+        const diffIdx = message.indexOf('New Fact')
         expect(openIdx).toBeGreaterThan(-1)
         expect(closeIdx).toBeGreaterThan(openIdx)
         expect(guidanceIdx).toBeGreaterThan(-1)

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 
 // vi.mock is hoisted — this redirects configPath() to a per-test-file temp file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests near the bottom of this file can set a non-default config value deterministically. Mirrors tests/config.test.ts and tests/disk_cache.test.ts. dataDir() is also redirected to an isolated temp dir so the git-mutation staleness-enqueue tests below (which exercise the real queue/dirty.txt write path via enqueueDirtyPathSafe) never touch the real local dirty queue -- mirrors tests/hooks_edit.test.ts's isolation pattern.
@@ -175,7 +176,7 @@ describe('postBashHandler', () => {
     const result = await postBashHandler(event)
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType === 'rewriteOutput') {
-      const out = result.updatedOutput
+      const out = withoutFenceNonces(result.updatedOutput)
       const markerAt = out.indexOf('[tg] Output was')
       const fenceAt = out.indexOf('<untrusted-tool-output>')
       expect(markerAt, 'the hint marker is missing from the rewrite').toBeGreaterThanOrEqual(0)
@@ -4993,7 +4994,7 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     const result = await postBashHandler(makePostBashEvent('grep pattern app.log | sort', dup))
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
-    const out = result.updatedOutput
+    const out = withoutFenceNonces(result.updatedOutput)
     expect(out).toContain(OPEN)
     expect(out).toContain(CLOSE)
     // The load-bearing assertion. token-goat's recall pointer must sit after the closing tag: put it inside and anyone who guesses its wording gets to write a line the model reads as ours.
@@ -5007,7 +5008,7 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     const result = await postBashHandler(makePostBashEvent('grep compiling build.log | sort', lines.join('\n') + '\n'))
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
-    const out = result.updatedOutput
+    const out = withoutFenceNonces(result.updatedOutput)
     const notice = out.indexOf('[token-goat: output capped at')
     expect(notice).toBeGreaterThan(-1)
     expect(notice).toBeGreaterThan(out.indexOf(CLOSE))
@@ -5022,7 +5023,7 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     const result = await postBashHandler(makePostBashEvent('grep compiling build.log | sort', lines.join('\n') + '\n'))
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
-    const out = result.updatedOutput
+    const out = withoutFenceNonces(result.updatedOutput)
     const forged = out.indexOf('&#91;token-goat: output capped at ~10 tokens]')
     expect(forged).toBeGreaterThan(-1)
     expect(forged).toBeLessThan(out.indexOf(CLOSE))
@@ -5054,7 +5055,7 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     if (result.hookType !== 'rewriteOutput') return
 
     // Both halves of the exemption, so it cannot rot into "escape stripping is simply safe": no fence, and nothing of ours inside the block to need one. Give this path a marker or a recall pointer later and this goes red -- correctly, because it would then be substituting rather than passing through, and the fence would be owed.
-    expect(result.updatedOutput).not.toContain(OPEN)
+    expect(result.updatedOutput).not.toContain(`<${UNTRUSTED_TOOL_TAG}`)
     expect(result.updatedOutput).not.toContain('[token-goat')
     // Computed from the input, not read off the stripper: exactly the bytes in, minus the escapes.
     expect(result.updatedOutput).toBe('compiling crate number one\n'.repeat(400))

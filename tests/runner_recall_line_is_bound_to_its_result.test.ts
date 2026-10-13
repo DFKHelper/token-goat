@@ -10,6 +10,7 @@ import { compressHeartbeatLine, run, runnerRecallId } from '../src/bash_runner.j
 import type { HookEvent } from '../src/hook_registry.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 let scriptDir: string
@@ -62,7 +63,7 @@ afterEach(() => {
 
 describe('the recall line vouches only for the result the runner printed', () => {
   it('the fixture is a real runner result: fenced, compressed, ending with the recall line', () => {
-    expect(printed).toContain('</untrusted-tool-output>')
+    expect(withoutFenceNonces(printed)).toContain('</untrusted-tool-output>')
     expect(runnerRecallId(printed)).not.toBeNull()
   })
 

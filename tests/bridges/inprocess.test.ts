@@ -22,6 +22,7 @@ import { expandShortPath, normalizePath } from '../../src/paths.js'
 import { readSessionStateFile } from '../../src/session_store.js'
 import { summarize } from '../../src/stats.js'
 import { HOOK_BUNDLE, ROOT } from '../helpers/bundle.js'
+import { withoutFenceNonces } from '../helpers/fence_nonce.js'
 import { HARNESS_DETECTION_ENV_KEYS } from '../helpers/harness-env.js'
 import { indexableDir } from '../helpers/temp-config.js'
 
@@ -450,7 +451,7 @@ describe('opencode plugin: in-process hook call replaces the second node spawn',
     await hooks['tool.execute.after']!({ tool: 'webfetch', sessionID, args: { url: 'https://example.com/page' } }, out)
 
     // Exact full value: the whole tool result is replaced by the redacted, fenced text, not annotated alongside the raw secret. The fence is there because a fetched page is untrusted by provenance; the redaction is the subject here, so the body is compared unfenced.
-    expect(unfence(out.output)).toBe('Docs mention token [REDACTED:github_token] in the log.')
+    expect(unfence(withoutFenceNonces(out.output))).toBe('Docs mention token [REDACTED:github_token] in the log.')
     expect(existsSync(markerPath)).toBe(false)
   })
 

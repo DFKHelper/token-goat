@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { tempConfigPath } from './helpers/temp-config.js'
 
 const mockDbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-redact-escape-view-'))
@@ -160,7 +161,7 @@ describe('no surface fences a credential back together', () => {
     _applyFiltersAndPrint(`make: ok\n${NESTED}\ndone`, {}, true, UNTRUSTED_TOOL_TAG)
     const printed = stdout.join('')
     expect(printed).toContain('make: ok')
-    expect(printed).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
+    expect(withoutFenceNonces(printed)).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
     expect(leaks(printed)).toBe(false)
   })
 

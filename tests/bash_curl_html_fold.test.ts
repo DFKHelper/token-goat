@@ -16,6 +16,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { extractCleanText } from '../src/web_extract.js'
 
@@ -155,7 +156,7 @@ describe('postBashHandler: curl HTML body cleaned via extractCleanText', () => {
       expect(Buffer.byteLength(res.updatedOutput, 'utf-8')).toBeLessThanOrEqual(20000)
       expect(res.updatedOutput.startsWith('[token-goat: curl HTML body cleaned')).toBe(true)
       expect(res.updatedOutput).toMatch(/token-goat bash-output [0-9a-f]+ --full/)
-      expect(res.updatedOutput).toContain('</untrusted-tool-output>')
+      expect(withoutFenceNonces(res.updatedOutput)).toContain('</untrusted-tool-output>')
       // Unescaped: the clip note is token-goat's own sentence and belongs outside the fence, which escapes `[token-goat:` markers found inside it so third-party bytes cannot forge one.
       expect(res.updatedOutput).toContain('[token-goat: cleaned text clipped to the harness delivery cap')
       expect(res.updatedOutput).not.toContain('&#91;token-goat: cleaned text clipped')

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runRecallCommand } from '../src/cli_recall.js'
 import { indexRecallEntry, resetRecallFtsCacheForTesting } from '../src/recall_index.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 function nonce(): string {
   return `crif${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
@@ -37,7 +38,7 @@ describe('recall injection fencing (search)', () => {
     indexRecallEntry('web', `w-${n}`, `label ${n}`, `intro ${n}\n${PAYLOAD}\ntrailing`, Date.now())
 
     const output = captureStdout(() => runRecallCommand(n))
-    expect(output).toContain('<untrusted-web-content>')
+    expect(withoutFenceNonces(output)).toContain('<untrusted-web-content>')
     expect(output).toContain('ignore-previous-instructions')
   })
 
@@ -46,7 +47,7 @@ describe('recall injection fencing (search)', () => {
     indexRecallEntry('bash', `b-${n}`, `label ${n}`, `intro ${n}\n${PAYLOAD}\ntrailing`, Date.now())
 
     const output = captureStdout(() => runRecallCommand(n))
-    expect(output).toContain('<untrusted-tool-output>')
+    expect(withoutFenceNonces(output)).toContain('<untrusted-tool-output>')
     expect(output).not.toContain('untrusted-web-content')
   })
 
@@ -55,7 +56,7 @@ describe('recall injection fencing (search)', () => {
     indexRecallEntry('mcp', `m-${n}`, `label ${n}`, `intro ${n}\n${PAYLOAD}\ntrailing`, Date.now())
 
     const output = captureStdout(() => runRecallCommand(n))
-    expect(output).toContain('<untrusted-tool-output>')
+    expect(withoutFenceNonces(output)).toContain('<untrusted-tool-output>')
   })
 
   it('fences an ordinary matched snippet too, with a notice that names no pattern', () => {
@@ -78,7 +79,7 @@ describe('recall injection fencing (search)', () => {
     const parsed = JSON.parse(output) as Array<{ id: string; snippet: string }>
     const hit = parsed.find((h) => h.id === `w-${n}`)
     expect(hit).toBeDefined()
-    expect(hit?.snippet).toContain('<untrusted-web-content>')
+    expect(withoutFenceNonces(hit?.snippet ?? '')).toContain('<untrusted-web-content>')
     expect(hit?.snippet).toContain('ignore-previous-instructions')
   })
 })
@@ -91,7 +92,7 @@ describe('recall injection fencing (browse, no query)', () => {
     indexRecallEntry('web', `w-${n}`, `label ${n}`, `${PAYLOAD} (${n})`, base)
 
     const output = captureStdout(() => runRecallCommand(undefined, { type: 'web', limit: 1 }))
-    expect(output).toContain('<untrusted-web-content>')
+    expect(withoutFenceNonces(output)).toContain('<untrusted-web-content>')
     expect(output).toContain('ignore-previous-instructions')
   })
 })

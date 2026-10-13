@@ -10,6 +10,7 @@ import { runHook } from '../src/hook_registry.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import type { HookOutput } from '../src/types.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { HARNESS_DETECTION_ENV_KEYS, withHarnessOverride } from './helpers/harness-env.js'
 
 const PLAYWRIGHT_TEXT =
@@ -94,7 +95,7 @@ describe('a browser screenshot on the production post_tool_use path', () => {
     expect(data).toBeDefined()
     expect(data!.length).toBeLessThan(screenshotB64.length)
     const [fenced, note] = blocks.filter((b) => b['type'] === 'text').map((b) => String(b['text']))
-    expect(fenced).toContain(`<${UNTRUSTED_TOOL_TAG}>`)
+    expect(withoutFenceNonces(fenced)).toContain(`<${UNTRUSTED_TOOL_TAG}>`)
     expect(fenced).toContain('Screenshot of viewport')
     expect(note).toMatch(/^token-goat shrank an inline browser screenshot/)
     expect(textOf(blocks)).not.toContain('data:image/')
@@ -107,7 +108,7 @@ describe('a browser screenshot on the production post_tool_use path', () => {
     expect(textOf(blocks)).toContain('identical to one already shown')
     expect(textOf(blocks)).toContain('(tabs unchanged since last check)')
     expect(textOf(blocks)).not.toContain('Available tabs')
-    expect(textOf(blocks)).toContain(`<${UNTRUSTED_TOOL_TAG}>`)
+    expect(withoutFenceNonces(textOf(blocks))).toContain(`<${UNTRUSTED_TOOL_TAG}>`)
   })
 
   it('an image-only result is shrunk with nothing to fence', async () => {
@@ -128,7 +129,7 @@ describe('a browser screenshot on the production post_tool_use path', () => {
     expect(Array.isArray(updated)).toBe(true)
     const blocks = updated as Record<string, unknown>[]
     expect(imageData(blocks)[0]!.length).toBeLessThan(screenshotB64.length)
-    expect(textOf(blocks)).toContain(`<${UNTRUSTED_TOOL_TAG}>`)
+    expect(withoutFenceNonces(textOf(blocks))).toContain(`<${UNTRUSTED_TOOL_TAG}>`)
     expect(textOf(blocks)).not.toContain('data:image/')
   })
 })

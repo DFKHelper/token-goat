@@ -11,6 +11,7 @@ import { resetCopilotMcpToolNameCache } from '../src/copilot_mcp_names.js'
 import { runAdapter } from '../src/hook_adapters.js'
 import { relayInProcess } from '../src/relay.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 const ENV_KEYS = ['TOKEN_GOAT_HARNESS_OVERRIDE', 'COPILOT_CACHE_HOME'] as const
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
@@ -71,7 +72,7 @@ function viaShim(input: string): Modified {
 
 function expectFencedWithBinaries(out: Modified, binaries: unknown[] | undefined): void {
   // The fence is what makes this call a rewrite at all; without it there would be no modifiedResult to lose anything from.
-  expect(out.modifiedResult?.textResultForLlm).toContain('<untrusted-tool-output>')
+  expect(withoutFenceNonces(out.modifiedResult?.textResultForLlm ?? '')).toContain('<untrusted-tool-output>')
   expect(out.modifiedResult?.textResultForLlm).toContain('Took a screenshot of the page')
   expect(out.modifiedResult?.textResultForLlm).not.toContain(IMAGE.data)
   expect(out.modifiedResult?.binaryResultsForLlm).toEqual(binaries)

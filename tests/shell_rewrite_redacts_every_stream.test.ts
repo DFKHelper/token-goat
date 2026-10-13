@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { buildEvent } from '../src/relay.js'
 import { runHook, serializeOutput, type HookEvent } from '../src/hook_registry.js'
 
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
+
 /** A live-shaped AWS access key id, the shape secret_redact.ts's aws_access_key pattern takes. */
 const SECRET = 'AKIAABCDEFGHIJKLMNOP'
 const ESC = String.fromCharCode(27)
@@ -75,7 +77,7 @@ describe('a shell result with both streams populated', () => {
     expect(result.hookType).toBe('rewriteOutput')
     const shaped = wire(event, result)
     expect(shaped['stderr']).toBe('')
-    const body = String(shaped['stdout'])
+    const body = withoutFenceNonces(String(shaped['stdout']))
     expect(body).not.toContain(SECRET)
     const close = body.indexOf('</untrusted-tool-output>')
     expect(body.indexOf('warning: credentials in env')).toBeLessThan(close)

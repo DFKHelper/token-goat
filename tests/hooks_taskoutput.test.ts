@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 let tmpHome: string
 let prevHome: string | undefined
@@ -245,7 +246,7 @@ describe('TaskOutput poll-delta hook (real runHook dispatch)', () => {
     const second = await runHook(buildEvent('post_tool_use', postPayload(bigChunk + delta)))
     expect(second.hookType).toBe('rewriteOutput')
     if (second.hookType !== 'rewriteOutput') return
-    const out = second.updatedOutput
+    const out = withoutFenceNonces(second.updatedOutput)
     const open = out.indexOf(`<${UNTRUSTED_TOOL_TAG}>`)
     const close = out.indexOf(`</${UNTRUSTED_TOOL_TAG}>`)
     expect(open).toBeGreaterThan(-1)

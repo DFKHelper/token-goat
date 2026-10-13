@@ -11,6 +11,8 @@ import { runHook } from '../src/hook_registry.js'
 import { MCP_OVERSIZED_THRESHOLD_BYTES } from '../src/hooks_mcp.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
+
 let home: string
 const saved: Record<string, string | undefined> = {}
 
@@ -51,9 +53,10 @@ function expectFitted(result: Awaited<ReturnType<typeof post>>, label: string): 
   if (result.hookType !== 'rewriteOutput') throw new Error('unreachable')
   const text = result.updatedOutput
   expect(Buffer.byteLength(text, 'utf-8'), label).toBeLessThan(MCP_OVERSIZED_THRESHOLD_BYTES)
-  expect(text, label).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
-  expect(text, label).toContain('&#91;tg]')
-  return text
+  const shown = withoutFenceNonces(text)
+  expect(shown, label).toContain(`</${UNTRUSTED_TOOL_TAG}>`)
+  expect(shown, label).toContain('&#91;tg]')
+  return shown
 }
 
 describe('an oversized MCP result fits under the spill threshold with its fence closed', () => {

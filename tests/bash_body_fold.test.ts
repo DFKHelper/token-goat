@@ -16,6 +16,7 @@ import { getBashOutput } from '../src/bash_output_cache.js'
 import { getFileServedOutputs } from '../src/session.js'
 import { normalizePath } from '../src/util.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { rewrittenBody } from './helpers/updated-tool-output.js'
 
@@ -112,7 +113,7 @@ describe('postBashHandler: body folding on a shell read', () => {
     const body = delivered(out, text)
     expect(body).toContain(`folded -- token-goat read "${TARGET_REL}::${span.name}@${span.lineStart}"`)
     // The window starts at the declaration, so it survives; the notice replaces only what follows it. The body is fenced: splicing our own fold notice in makes this a substitution, not a pass-through, so the declaration is the first line INSIDE the tag rather than the first line overall. Anchored on the open tag rather than a fixed offset, so rewording the preamble cannot silently re-break this.
-    const bodyLines = body.split('\n')
+    const bodyLines = withoutFenceNonces(body).split('\n')
     const openTagAt = bodyLines.indexOf(`<${UNTRUSTED_TOOL_TAG}>`)
     expect(openTagAt, 'the fenced rewrite lost its open tag').toBeGreaterThanOrEqual(0)
     expect(bodyLines[openTagAt + 1]).toBe(LINES[span.lineStart - 1])

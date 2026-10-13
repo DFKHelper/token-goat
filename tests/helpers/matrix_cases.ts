@@ -1047,7 +1047,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rScan.stdout).toContain('No text layer on page 1 of 1 page')
     expect(rScan.stdout).toContain('-dFirstPage=1 -dLastPage=1')
     expect(rScan.stdout).toContain('token-goat image-text')
-    expect(rScan.stdout).not.toContain('<untrusted-file-content>')
+    expect(rScan.stdout).not.toContain('<untrusted-file-content')
     expect(rScan.stderr).toContain('no text layer on the requested pages')
   },
   'pdf-locate': () => {
@@ -1390,7 +1390,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const capped = run(['bash-output', '--file', big, '--head', '600'])
     expect(capped.status, capped.stderr).toBe(0)
     expect(capped.stdout.length).toBeLessThanOrEqual(24_000)
-    expect(capped.stdout).toMatch(/<\/untrusted-tool-output>\n\[token-goat: output capped at 24000 chars[^\n]*--lines \d+-600`\]/)
+    expect(capped.stdout).toMatch(/<\/untrusted-tool-output nonce=[0-9a-f]{12}>\n\[token-goat: output capped at 24000 chars[^\n]*--lines \d+-600`\]/)
   },
   'web-output': () => {
     // Reachability: process-local cache is always empty in a fresh process, so a bogus id is a graceful miss (exit 1), not an "unknown command" / crash.

@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { invalidateConfigCache } from '../src/config.js'
 import { UNTRUSTED_FILE_TAG, UNTRUSTED_GITHUB_TAG, UNTRUSTED_HTML_TAG } from '../src/injection_scan.js'
 import { estimateTokens } from '../src/overflow_guard.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 const spawnSyncMock = vi.fn()
 vi.mock('node:child_process', async (importOriginal) => {
@@ -40,7 +41,8 @@ function capture(fn: () => number | void): string {
 }
 
 /** The fence closes, and the cap marker comes after the closing tag rather than inside the fence. */
-function expectClosedThenMarker(out: string, tag: string): void {
+function expectClosedThenMarker(fenced: string, tag: string): void {
+  const out = withoutFenceNonces(fenced)
   const close = out.lastIndexOf(`</${tag}>`)
   const marker = out.indexOf('[token-goat: output capped')
   expect(out).toContain(`<${tag}>`)
@@ -105,7 +107,7 @@ describe('a fenced, capped output stays within max_tokens', () => {
     while (estimateTokens(body + line) <= CAP - 5) body += line
     expect(estimateTokens(body)).toBeGreaterThan(CAP - 40)
     const out = guardAndFenceFileText(body, 'xlsx-range')
-    expect(out).toContain(`</${UNTRUSTED_FILE_TAG}>`)
+    expect(withoutFenceNonces(out)).toContain(`</${UNTRUSTED_FILE_TAG}>`)
     expect(estimateTokens(out)).toBeLessThanOrEqual(CAP)
   })
 

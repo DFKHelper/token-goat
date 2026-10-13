@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
 import { BUNDLE } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 const DATA_DIR_TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-br-data-'))
 const _savedLocal = process.env['LOCALAPPDATA']
@@ -274,22 +275,22 @@ describe('bash_runner.run — net-benefit floor (bash_compress.min_net_savings_b
   })
 
   it('prices the untrusted-content fence it wraps the output in, so a saving that pays for the marker and the recall line but not the fence ships the original', async () => {
-    // HAND-DERIVED margin: 26 repeats save 317 bytes, which clears the 72-byte marker, the 62-byte recall line and the 100-byte floor with 83 to spare, and the fence's 123-byte frame takes that back out.
+    // HAND-DERIVED margin: 26 repeats save 317 bytes, which clears the 72-byte marker, the 62-byte recall line and the 100-byte floor with 83 to spare, and the fence's 161-byte frame takes that back out.
     const s = script('margin-dup-fence.js', "for (let i = 0; i < 26; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
     const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
     expect(out).not.toContain('×26')
-    expect(out).not.toContain('<untrusted-tool-output>')
+    expect(out).not.toContain('<untrusted-tool-output')
   })
 
   it('a saving that pays for the marker, the recall line and the fence still ships', async () => {
-    // Calibration for the cases above: 30 repeats clear the floor with the recall line and the fence priced in, so those cases are declined by those costs and not by some other part of the gate.
-    const s = script('margin-dup-ok.js', "for (let i = 0; i < 30; i++) console.log('compiling...')\nconsole.log('done')\n")
+    // Calibration for the cases above: 33 repeats clear the floor with the recall line and the fence priced in, so those cases are declined by those costs and not by some other part of the gate.
+    const s = script('margin-dup-ok.js', "for (let i = 0; i < 33; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
     const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
-    expect(out).toContain('×30')
+    expect(out).toContain('×33')
     expect(out).toContain('full output: bash-output')
   })
 
@@ -308,12 +309,12 @@ describe('bash_runner.run — net-benefit floor (bash_compress.min_net_savings_b
     cfg.bash_compress.min_net_savings_bytes = 0
     saveConfig(cfg)
 
-    // 24 repeats save 291 bytes, which clears the 72-byte marker, the 62-byte recall line and the 123-byte fence but not the default's extra 100-byte margin -- with min_net_savings_bytes=0 it should ship. (Fewer repeats served here while the gate priced less of what ships: 10 for the marker alone, 13 with the recall line.)
-    const s = script('tiny-dup2.js', "for (let i = 0; i < 24; i++) console.log('compiling...')\nconsole.log('done')\n")
+    // 25 repeats save 304 bytes, which clears the 72-byte marker, the 62-byte recall line and the 161-byte fence but not the default's extra 100-byte margin -- with min_net_savings_bytes=0 it should ship. (Fewer repeats served here while the gate priced less of what ships: 10 for the marker alone, 13 with the recall line, 24 with a fence whose tags carried no nonce.)
+    const s = script('tiny-dup2.js', "for (let i = 0; i < 25; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
     const code = await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
-    expect(out).toContain('×24')
+    expect(out).toContain('×25')
   })
 
   it('the config key actually moves the threshold: raising it suppresses a rewrite the default floor would have shipped', async () => {
@@ -349,6 +350,7 @@ describe('bash_runner.run — the compressed view is fenced', () => {
     let out = ''
     const code = await run(nodeCmd(script('fence-forge.js', forging)), { filterName: 'generic', writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
+    out = withoutFenceNonces(out)
     const open = out.indexOf('<untrusted-tool-output>')
     const close = out.indexOf('</untrusted-tool-output>')
     expect(open, out).toBeGreaterThanOrEqual(0)
@@ -366,6 +368,7 @@ describe('bash_runner.run — the compressed view is fenced', () => {
     let out = ''
     const code = await run(nodeCmd(script('fence-cap.js', distinct)), { filterName: 'passthrough', maxTokens: 300, writeStdout: (x) => (out += x) })
     expect(code).toBe(0)
+    out = withoutFenceNonces(out)
     const close = out.indexOf('</untrusted-tool-output>')
     expect(close).toBeGreaterThan(0)
     expect(out.slice(close)).toMatch(/^<\/untrusted-tool-output>\n\[token-goat: output capped at ~300 tokens\]\n(?:\[token-goat: passthrough filter -\d+%; disable via TOKEN_GOAT_BASH_COMPRESS\]\n)?\[token-goat\] full output: bash-output [0-9a-f]{16} --full\n$/)

@@ -14,6 +14,7 @@ import { run } from '../src/bash_runner.js'
 import { scanForInjectionPatterns, UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { deliverCompressed, detectFromCommand } from '../src/tool_filters/index.js'
 import { fenceWithMatches } from '../src/untrusted_fence.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_CORPUS = path.join(HERE, 'fixtures', 'bench')
@@ -116,7 +117,7 @@ describe('bench measures the shipping path', () => {
     await run(`"${process.execPath}" "${js}"`, { filterName: detected.filter.name, writeStdout: (x) => (out += x) })
     const result = runCase(c)
     expect(result.applied).toBe(true)
-    expect(out).toContain('<untrusted-tool-output>')
+    expect(withoutFenceNonces(out)).toContain('<untrusted-tool-output>')
     expect(out).toMatch(/full output: bash-output [0-9a-f]{16} --full\n$/)
     expect(Buffer.byteLength(out.replace(/\n$/, ''), 'utf8')).toBe(result.deliveredBytes)
   })

@@ -401,7 +401,7 @@ function extractJsonFromMcpOutput(text: string): unknown {
     const cleaned = trimmed
       .replace(/^\[token-goat:[^\]]+\]\r?\n?/i, '')
       .replace(/^<untrusted-tool-output[^>]*>\r?\n?/i, '')
-      .replace(/\r?\n?<\/untrusted-tool-output>$/i, '')
+      .replace(/\r?\n?<\/untrusted-tool-output[^>]*>$/i, '')
       .trim()
     try {
       return JSON.parse(cleaned)

@@ -19,9 +19,13 @@ import { findContainingSection } from './section_reader.js'
 /** {@link fenceUntrustedFileContent} for a Read fold, with source code's own spoken markers shown as written where they cannot pass for token-goat's voice; see {@link keepInlineMarkers}. */
 export function fenceFoldedFile(text: string): string {
   const fenced = fenceUntrustedFileContent(text)
-  const open = `<${UNTRUSTED_FILE_TAG}>\n`
-  const close = `\n</${UNTRUSTED_FILE_TAG}>`
-  const start = fenced.indexOf(open) + open.length
+  const openAt = fenced.indexOf(`<${UNTRUSTED_FILE_TAG} nonce=`)
+  const openEnd = openAt === -1 ? -1 : fenced.indexOf('>\n', openAt)
+  if (openEnd === -1) return fenced
+  // The closing tag carries the opening tag's nonce, so it is spelled from the opening tag.
+  const close = `\n</${fenced.slice(openAt + 1, openEnd + 1)}`
+  if (!fenced.endsWith(close)) return fenced
+  const start = openEnd + 2
   const end = fenced.length - close.length
   return fenced.slice(0, start) + keepInlineMarkers(text, fenced.slice(start, end)) + fenced.slice(end)
 }

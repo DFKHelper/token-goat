@@ -11,6 +11,7 @@ import { buildEvent } from '../src/relay.js'
 import { runHook, serializeOutput, toolMatcherFor, type HookEvent } from '../src/hook_registry.js'
 import { categoryStats } from '../src/hint_stats.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { rewrittenBody, rewrittenKeys } from './helpers/updated-tool-output.js'
 
 /** About 10 KB of `Get-ChildItem -Recurse` output: distinct paths, CRLF-terminated, as the PowerShell tool returns it. */
@@ -59,7 +60,7 @@ describe("Claude Code's PowerShell tool", () => {
     const updated = wire.hookSpecificOutput.updatedToolOutput
     // An object, the tool's own shape with stdout replaced: Claude Code rejects a bare string for a built-in tool.
     expect(rewrittenKeys(updated)).toEqual(['stdout', 'stderr', 'interrupted', 'isImage'])
-    const body = rewrittenBody(updated)
+    const body = withoutFenceNonces(rewrittenBody(updated))
     const close = body.indexOf('</untrusted-tool-output>')
     expect(body.indexOf('<untrusted-tool-output>')).toBeGreaterThanOrEqual(0)
     expect(close).toBeGreaterThan(0)
@@ -121,7 +122,7 @@ describe("Claude Code's PowerShell tool (built-bundle e2e)", () => {
     const res = spawnSync(process.execPath, [BUNDLE, 'hook', 'post_tool_use'], { input: JSON.stringify(payload), encoding: 'utf-8', env })
     expect(res.status, res.stderr).toBe(0)
     const parsed = JSON.parse(res.stdout || '{}') as { hookSpecificOutput?: { updatedToolOutput?: unknown } }
-    const body = rewrittenBody(parsed.hookSpecificOutput?.updatedToolOutput)
+    const body = withoutFenceNonces(rewrittenBody(parsed.hookSpecificOutput?.updatedToolOutput))
     expect(body).toContain('</untrusted-tool-output>')
     expect(body).toContain('full output: bash-output')
   })

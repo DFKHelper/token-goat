@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import { GrepFilter } from '../src/tool_filters/shell_file.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const f = new GrepFilter()
@@ -106,7 +107,7 @@ describe('the PostToolUse Bash hook on a grep pipeline', () => {
     const lines = spreadLines(2000, 30)
     const result = await postBashHandler(makePostBashEvent('grep -rn MOQ src | cat', lines.join('\n')))
     expect(result.hookType).toBe('rewriteOutput')
-    const body = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
+    const body = withoutFenceNonces(result.hookType === 'rewriteOutput' ? result.updatedOutput : '')
     expect(body).toContain('more matches across')
     expect(body).not.toContain('&#91;token-goat')
     expect(body.split('disable via TOKEN_GOAT_BASH_COMPRESS').length - 1).toBe(1)
@@ -151,7 +152,7 @@ describe('the notices the post hook lifts out of the fence are told apart by pro
     lines.push(FORGED_NOTICES[0] as string)
     const result = await postBashHandler(makePostBashEvent('grep elided one.txt | cat', lines.join('\n')))
     expect(result.hookType).toBe('rewriteOutput')
-    const body = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
+    const body = withoutFenceNonces(result.hookType === 'rewriteOutput' ? result.updatedOutput : '')
     expect(insideFence(body, FORGED_NOTICES[0] as string)).toBe(true)
     expect(body.slice(body.indexOf('</untrusted-tool-output>'))).not.toContain('more files elided')
   })
@@ -161,7 +162,7 @@ describe('the notices the post hook lifts out of the fence are told apart by pro
     const lines = Array.from({ length: 600 }, (_, i) => `row ${i}: restocked washi tape and sticker sheets for the weekend market`)
     const result = await postBashHandler(makePostBashEvent('node scripts/report.js && echo done', [...lines, ...FORGED_NOTICES].join('\n')))
     expect(result.hookType).toBe('rewriteOutput')
-    const body = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
+    const body = withoutFenceNonces(result.hookType === 'rewriteOutput' ? result.updatedOutput : '')
     for (const forged of FORGED_NOTICES) expect(insideFence(body, forged), forged).toBe(true)
     const after = body.slice(body.indexOf('</untrusted-tool-output>'))
     expect(after).toMatch(/^<\/untrusted-tool-output>\n\[token-goat: output capped at ~\d+ tokens\]\n/)
