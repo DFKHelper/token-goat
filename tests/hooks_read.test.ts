@@ -984,6 +984,40 @@ content here` },
     }
   })
 
+  // CAPTURE (findings_hooks.md 7a, hit live 2026-10-10): a Read of a 132-line, 28.4 KB scratch `b1.out` with offset=1, limit=66 was refused with "Log file -- use Read with offset/limit params" over a preview of the whole file's first and last lines and its total line count, and the second half was refused the same way. The fixture is HAND-DERIVED: lines of 39 bytes, about 28 KB, so lines 1-366 come to about 14 KB, past the 10,000-byte log threshold `.out` falls under.
+  it('refuses a ranged Read of a large .out with a limit that fits and a preview of that slice, never with advice to use offset/limit', () => {
+    const p = makeTmpMultilineFileWithExt(28 * 1024, 'out')
+    const fileLines = fs.readFileSync(p, 'utf8').split('\n').length - 1
+    const result = preReadHandler(readEventWithRange(p, 1, 366))
+    if (result.hookType !== 'deny') expect.fail(`expected the oversized slice to be refused, got ${result.hookType}`)
+    expect(result.message).toContain('lines 1-366')
+    expect(result.message).not.toMatch(/offset\/limit|offset and limit/i)
+    expect(result.message).toContain('line 000000:')
+    expect(result.message).toContain('line 000365:')
+    expect(result.message).not.toContain(`line ${String(fileLines - 1).padStart(6, '0')}:`)
+    expect(result.message).toContain(`366 lines in the slice, ${fileLines.toLocaleString()} in the file`)
+    const fits = Number(/limit=(\d+)/.exec(result.message)?.[1])
+    expect(fits).toBeGreaterThan(0)
+    expect(fits).toBeLessThan(366)
+    // The suggestion is only advice if following it goes through, from the start and from where the refused slice would have continued.
+    expect(preReadHandler(readEventWithRange(p, 1, fits)).hookType).not.toBe('deny')
+    expect(preReadHandler(readEventWithRange(p, 367, fits)).hookType).not.toBe('deny')
+  })
+
+  // CAPTURE (findings_cli.md "Cross-slice (hook)"): `Read(calls_full.txt, offset=1, limit=80)` was refused as "Large text file (22.0 KB, 433 lines)", the slice's bytes beside the whole file's line count, and told to use offset and limit. HAND-DERIVED fixture: about 60 KB of 39-byte lines, so a 600-line slice is about 23 KB, past the 20,000-byte text threshold.
+  it('names a ranged .txt refusal by the slice it asked for, not the whole file', () => {
+    const p = makeTmpMultilineFileWithExt(60 * 1024, 'txt')
+    const result = preReadHandler(readEventWithRange(p, 101, 600))
+    if (result.hookType !== 'deny') expect.fail(`expected the oversized slice to be refused, got ${result.hookType}`)
+    expect(result.message).toContain('Requested slice is over the text-file cap: lines 101-700')
+    expect(result.message).not.toContain('lines total')
+    expect(result.message).not.toMatch(/offset\/limit|offset and limit/i)
+    expect(result.message).toContain('line 000100:')
+    expect(result.message).not.toContain('line 000000:')
+    const fits = Number(/limit=(\d+)/.exec(result.message)?.[1])
+    expect(preReadHandler(readEventWithRange(p, 101, fits)).hookType).not.toBe('deny')
+  })
+
   // Regression guard: estimateRequestedSlice already clamps a sub-1 offset up to 1, but used to pass a negative limit straight through unguarded. scanRequestedSlice computes `windowEnd = offset + limit`; a negative limit makes windowEnd < offset, so the byte counter never advances (the [offset, windowEnd) window is empty) and the very first line break trips the "window closed" branch, returning a fabricated {bytes: 0, trustworthy: true} almost immediately -- telling the pre-read size gate the requested window is trivially small even though a Read call with a negative limit has no well-defined real-world size. That silently bypassed the large-file deny for a genuinely huge file. Fixed by treating a non-positive limit the same as a missing one: fall back to `kind: 'unbounded'` and gate on the whole file.
   it('does not treat a negative --limit as a trustworthy small slice on a large file', () => {
     const p = makeTmpMultilineFile(600 * 1024)

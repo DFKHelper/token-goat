@@ -313,6 +313,24 @@ describe('handleTxt', () => {
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('--tail')
   })
+
+  // HAND-DERIVED: a request that already carries offset/limit cannot be helped by being told to use them; the limit that fits is the threshold over the slice's average line, here 100-byte lines against the 10,000-byte log threshold.
+  it('a ranged log refusal names a limit that fits, keeps the bash-output route, and never says to use offset/limit', () => {
+    const lines = Array.from({ length: 400 }, (_, i) => `${String(i + 1).padStart(4, '0')} ${makeStr(95)}`)
+    const result = handleTxt('/var/log/app.log', lines.join('\n') + '\n', 20_000, { offset: 1, limit: 200 })
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('lines 1-200 come to 19.5 KB')
+    expect(result.message).toContain('limit=99')
+    expect(result.message).toContain('bash-output --file "/var/log/app.log" --tail 100')
+    expect(result.message).not.toMatch(/offset\/limit|offset and limit/i)
+  })
+
+  it('a ranged slice made of lines each over the cap points at byte sampling instead of a limit', () => {
+    const result = handleTxt('/path/to/wide.txt', [makeStr(30_000), makeStr(30_000)].join('\n'), 60_001, { offset: 1, limit: 2 })
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('dd if=')
+    expect(result.message).not.toContain('limit=')
+  })
 })
 
 describe('handleXlsx', () => {
@@ -495,6 +513,14 @@ describe('handleGenericLarge', () => {
   it('passes files below threshold', () => {
     const result = handleGenericLarge('/path/to/file.bin', FILE_TYPE_THRESHOLDS.generic - 1)
     expect(result.shouldBlock).toBe(false)
+  })
+
+  it('a ranged refusal names the limit that fits instead of telling the request to use offset and limit', () => {
+    const result = handleGenericLarge('/path/to/file.bin', 200_000, { offset: 11, limit: 1000 })
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('lines 11-1010')
+    expect(result.message).toContain('limit=499')
+    expect(result.message).not.toMatch(/offset\/limit|offset and limit/i)
   })
 })
 
@@ -863,6 +889,17 @@ describe('handleJsonl', () => {
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('too large to preview')
     expect(result.message).toContain('offset and limit')
+  })
+
+  it('a ranged refusal previews the requested records and names the limit that fits', () => {
+    const lines = Array.from({ length: 300 }, (_, i) => JSON.stringify({ id: i, padding: makeStr(90) }))
+    const result = handleJsonl('/path/to/dataset.jsonl', lines.join('\n'), 30_000, { offset: 51, limit: 250 })
+    expect(result.shouldBlock).toBe(true)
+    expect(result.message).toContain('lines 51-300')
+    expect(result.message).toContain('{"id":50,')
+    expect(result.message).not.toContain('{"id":0,')
+    expect(result.message).toContain('limit=166')
+    expect(result.message).not.toMatch(/offset\/limit|offset and limit/i)
   })
 })
 

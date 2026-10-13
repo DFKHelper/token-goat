@@ -1385,7 +1385,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         // best-effort — empty content will pass through
       }
     }
-    const ftResult = dispatchFileTypeHandler(normalized, ftContent, ftEffectiveLength)
+    // A sized slice is passed on as the lines it names, so a refusal speaks of that slice and the limit that would fit, not of the whole file and the offset/limit the request already used.
+    const ftWindow = readRequestedSliceWindow(event)
+    const ftRange = ftSlice.kind === 'bytes' && ftWindow.limit !== undefined ? { offset: ftWindow.offset ?? 1, limit: ftWindow.limit } : undefined
+    const ftResult = dispatchFileTypeHandler(normalized, ftContent, ftEffectiveLength, ftRange)
     if (ftResult?.shouldBlock) {
       // Blocked read never happened — don't count it against re-read dedup. These messages (large txt/log/csv/generic) tell the caller to retry with offset/limit; recording the read here would make that retry hit the "already read this session" deny instead, with no way to ever read the file.
       return denyOutput(ftResult.message)

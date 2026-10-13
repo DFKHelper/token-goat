@@ -120,8 +120,36 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   }
 }
 
+/** The line window a ranged Read asked for: its 1-based first line and how many lines it asked for. */
+export interface RequestedLines {
+  readonly offset: number
+  readonly limit: number
+}
+
+/** The refusal for a ranged Read whose requested slice alone is over `threshold`. The request already carries offset/limit, so telling it to use them sent the model round in a loop: the advice is instead the limit that fits, the threshold over the slice's average line length, and the preview is the slice's own first and last lines rather than the whole file's. `content` is the whole file, or empty when the caller could not scan it, in which case the line count is the one the request named and no preview is shown. */
+function rangedSliceResult(kind: string, filePath: string, content: string, sliceBytes: number, threshold: number, range: RequestedLines, alternative?: string): FileTypeResult {
+  const fileLines = content.split('\n')
+  if (fileLines.length > 1 && fileLines[fileLines.length - 1] === '') fileLines.pop()
+  const slice = content.length === 0 ? [] : fileLines.slice(range.offset - 1, range.offset - 1 + range.limit)
+  const sliceLines = slice.length > 0 ? slice.length : range.limit
+  const head = `Requested slice is over the ${kind} cap: lines ${range.offset}-${range.offset + sliceLines - 1} come to ${formatBytes(sliceBytes)}, and the cap is ${formatBytes(threshold)}.`
+  const perLine = sliceBytes / sliceLines
+  if (perLine >= threshold) return { shouldBlock: true, message: `${head} ${BYTE_RANGE_ADVICE(displaySafePath(filePath))}` }
+  const fits = Math.max(1, Math.floor((threshold - 1) / perLine))
+  const advice = `Ask for at most ${fits} lines at a time (limit=${fits}; these lines average ${formatBytes(Math.ceil(perLine))} each).${alternative === undefined ? '' : ` Or: ${alternative}`}`
+  if (slice.length === 0) return { shouldBlock: true, message: `${head}\n${advice}` }
+  const preview = [
+    '--- first 5 lines of the slice ---',
+    ...slice.slice(0, 5),
+    `... (${slice.length.toLocaleString()} lines in the slice, ${fileLines.length.toLocaleString()} in the file) ...`,
+    '--- last 5 lines of the slice ---',
+    ...slice.slice(-5),
+  ].join('\n')
+  return { shouldBlock: true, message: `${head}\n${fenceUntrustedFileContent(preview)}\n\n${advice}` }
+}
+
 /** Plain text / log handler — blocks when file exceeds threshold. */
-export function handleTxt(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+export function handleTxt(filePath: string, content: string, contentLengthHint?: number, range?: RequestedLines): FileTypeResult {
   const length = contentLengthHint ?? content.length
   // Match /logs/ or \logs\ so Windows-native backslash-separated absolute paths (this tool's primary deployment target) get the same log-specific recall hint as POSIX paths.
   const isLog = /\.(log|out|err|trace)$/i.test(filePath) || /[\\/]logs[\\/]/.test(filePath)
@@ -130,6 +158,7 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
 
   // `bash-output <id>` errors for a file read directly off disk (never went through the bash-output cache, so there is no id) -- `--file "<path>"` is the working form, matching hooks_read.ts's sessionArtifactRecall for the same on-disk-but-uncached situation.
   const [quotedLog, errorPattern] = quotedArgs(filePath, 'error|ERROR')
+  if (range !== undefined) return rangedSliceResult(isLog ? 'log-file' : 'text-file', filePath, content, length, threshold, range, isLog ? `token-goat bash-output --file ${quotedLog} --tail 100 --grep ${errorPattern}` : undefined)
   const recall = isLog
     ? `Log file — use Read with offset/limit params, or: token-goat bash-output --file ${quotedLog} --tail 100 --grep ${errorPattern}`
     : 'Use Read with offset and limit params to sample specific line ranges.'
@@ -468,9 +497,10 @@ export function handleYaml(filePath: string, content: string, contentLengthHint?
 }
 
 /** JSON Lines (JSONL) handler — blocks when file exceeds threshold. */
-export function handleJsonl(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+export function handleJsonl(filePath: string, content: string, contentLengthHint?: number, range?: RequestedLines): FileTypeResult {
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.jsonl) return { shouldBlock: false, message: '' }
+  if (range !== undefined) return rangedSliceResult('JSON Lines', filePath, content, length, FILE_TYPE_THRESHOLDS.jsonl, range)
 
   if (previewUnavailable(content, length)) {
     return {
@@ -504,8 +534,10 @@ export function handleJsonl(filePath: string, content: string, contentLengthHint
 }
 
 /** Generic catch-all for unrecognized large files. */
-export function handleGenericLarge(filePath: string, contentLength: number): FileTypeResult {
+export function handleGenericLarge(filePath: string, contentLength: number, range?: RequestedLines): FileTypeResult {
   if (contentLength < FILE_TYPE_THRESHOLDS.generic) return { shouldBlock: false, message: '' }
+  // No preview: this catch-all also takes files no handler knows to be text.
+  if (range !== undefined) return rangedSliceResult('large-file', filePath, '', contentLength, FILE_TYPE_THRESHOLDS.generic, range)
   return {
     shouldBlock: true,
     message: `Large file (${formatBytes(contentLength)}). Use Read with offset and limit parameters to read specific line ranges rather than loading the entire file.`,
@@ -517,6 +549,7 @@ export function dispatchFileTypeHandler(
   filePath: string,
   content: string,
   contentLengthHint?: number,
+  range?: RequestedLines,
 ): FileTypeResult | null {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
 
@@ -529,7 +562,7 @@ export function dispatchFileTypeHandler(
   if (ext === 'svg') return handleSvg(filePath, content, effectiveLength)
   if (['xml', 'dtsx', 'ampkg', 'xaml'].includes(ext)) return handleXml(filePath, content, effectiveLength)
   if (['html', 'htm', 'xhtml'].includes(ext)) return handleHtml(filePath, content, effectiveLength)
-  if (['txt', 'log', 'out', 'err', 'trace'].includes(ext)) return handleTxt(filePath, content, effectiveLength)
+  if (['txt', 'log', 'out', 'err', 'trace'].includes(ext)) return handleTxt(filePath, content, effectiveLength, range)
   if (ext === 'xlsx') return handleXlsx(filePath)
   if (ext === 'pptx') return handlePptx(filePath)
   if (ext === 'docx') return handleDocx(filePath)
@@ -540,8 +573,8 @@ export function dispatchFileTypeHandler(
   if (ext === 'vtt' || ext === 'srt') return handleTranscript(filePath, content, effectiveLength)
   if (ext === 'json') return handleJson(filePath, content, effectiveLength)
   if (['yaml', 'yml'].includes(ext)) return handleYaml(filePath, content, effectiveLength)
-  if (ext === 'jsonl') return handleJsonl(filePath, content, effectiveLength)
+  if (ext === 'jsonl') return handleJsonl(filePath, content, effectiveLength, range)
 
   // Generic catch-all
-  return handleGenericLarge(filePath, effectiveLength)
+  return handleGenericLarge(filePath, effectiveLength, range)
 }
