@@ -10,7 +10,7 @@ import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js
 import { peekPendingContext, queuePendingContext } from './pending_context.js';
 import { dropsPreCompactContext, dropsPromptSubmitContext, resumesCompactionOnPrompt, sessionStartMayBeDeferred } from './harness_channels.js';
 import { getHarnessName } from './bridges/registry.js';
-import { claimOwedSessionStart, readSessionStartSettled, sessionStartOwed } from './session_start_owed.js';
+import { claimOwedSessionStart, readSessionStartSettled, releaseOwedSessionStart, sessionStartOwed } from './session_start_owed.js';
 import { sessionStartOutput } from './hooks_session_start.js';
 import { recordStat } from './stats.js';
 import {
@@ -22,17 +22,20 @@ import {
   taskListPruneHint,
 } from './resident_context.js';
 
-/** On the first tool call of a session on a harness whose session-start hook can miss its shim deadline, queue the output that hook owed so the peek below delivers it. Read the marker, claim, and only then compute: the claim is an exclusive create, so of two concurrent first calls one delivers, and a call that lost the claim computes nothing. A subagent is skipped outright, because it never ran a session start of its own and the parent's entry is not its to take. Advisory like the handler around it: a throw is swallowed. */
+/** On the first tool call of a session on a harness whose session-start hook can miss its shim deadline, queue the output that hook owed so the peek below delivers it. Read the marker, claim, and only then compute. No hint gate sits in front: hints persist in the session blob, so a gate keyed on the session would hide every later missed start of the same key and would stop a released claim from being retried. The claim file is the once-only gate across processes; the shim removes it, and the settle marker, at each new start. The claim is an exclusive create, so of two concurrent first calls one delivers, and a call that lost the claim computes nothing. A subagent is skipped outright, because it never ran a session start of its own and the parent's entry is not its to take. Advisory like the handler around it: a throw is swallowed. */
 async function deliverOwedSessionStart(event: HookEvent): Promise<void> {
   try {
     if (event.agentId !== undefined || !sessionStartMayBeDeferred(getHarnessName())) return;
     const stateKey = sessionStateKey(event);
-    const gateKey = `session-start-deferred:${stateKey}`;
-    if (wasHintShown(gateKey)) return;
-    markHintShown(gateKey);
     if (!sessionStartOwed(readSessionStartSettled(event), Date.now()) || !claimOwedSessionStart(event)) return;
-    const owed = await sessionStartOutput(event, { skipRecovery: true });
-    if (owed.hookType === 'context') queuePendingContext(stateKey, owed.context);
+    try {
+      const owed = await sessionStartOutput(event, { skipRecovery: true });
+      if (owed.hookType === 'context') queuePendingContext(stateKey, owed.context);
+    } catch (error) {
+      // The claim is exclusive and never expires, so a failure after taking it would lose the text for good; give it back so a later hook process retries.
+      releaseOwedSessionStart(event);
+      throw error;
+    }
     recordStat('session_start_deferred', 0, 0);
   } catch {
     // Advisory: a failed deferral costs the owed text, never the tool call.

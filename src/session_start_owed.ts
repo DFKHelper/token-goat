@@ -44,15 +44,31 @@ export function recordSessionStartSettled(event: HookEvent, marker: SessionStart
   }
 }
 
-/** Remove the marker so a previous run's finish is never mistaken for this one's. Never throws. */
-export function clearSessionStartSettled(event: HookEvent): void {
-  const target = sessionSidecarPath(sessionStateKey(event), SETTLED_SUFFIX)
+/** Remove one sidecar of this session. Never throws. */
+function removeSidecar(event: HookEvent, suffix: string): void {
+  const target = sessionSidecarPath(sessionStateKey(event), suffix)
   if (target === null) return
   try {
     rmSync(target, { force: true })
   } catch {
-    // Best-effort: a marker that cannot be removed is overwritten by the record that follows.
+    // Best-effort: a sidecar that cannot be removed is overwritten or re-claimed by the next writer.
   }
+}
+
+/** Remove the marker so a previous run's finish is never mistaken for this one's. Never throws. */
+export function clearSessionStartSettled(event: HookEvent): void {
+  removeSidecar(event, SETTLED_SUFFIX)
+}
+
+/** Forget everything an earlier session start of this key left: the settle marker and the delivery claim. The Copilot shim does this in plain JS before it spawns the helper (a helper killed before its own clear would otherwise leave a stale marker reading settled); tests pin that mirror against this function. Never throws. */
+export function resetSessionStartOwed(event: HookEvent): void {
+  removeSidecar(event, SETTLED_SUFFIX)
+  removeSidecar(event, OWED_CLAIM_SUFFIX)
+}
+
+/** Give back a claim whose delivery failed, so a later hook process retries. Never throws. */
+export function releaseOwedSessionStart(event: HookEvent): void {
+  removeSidecar(event, OWED_CLAIM_SUFFIX)
 }
 
 /** The marker for this (sub)agent, or null when absent, unreadable, unparseable or the wrong shape. */

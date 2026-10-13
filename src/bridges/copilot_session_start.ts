@@ -129,7 +129,29 @@ function readSessionStartInput(timeoutMs) {
   })
 }
 
+// Plain-JS mirror of session_start_owed.ts::resetSessionStartOwed for a main-thread key: tests/session_start_owed_reset.test.ts pins both to the same files. It runs before anything can throw so a helper killed before its own clear cannot leave an earlier start's marker reading settled.
+function resetSessionStartOwedFiles(payload) {
+  try {
+    const raw = payload && (payload.session_id !== undefined ? payload.session_id : payload.sessionId)
+    if (typeof raw !== 'string' || raw === '' || raw.indexOf(':agent:') !== -1) return
+    // A subagent's key is salted, and its start is not the parent's to reset.
+    if (payload.agent_id || payload.agentId) return
+    const override = (process.env.TOKEN_GOAT_HOME || '').trim()
+    const rooted = override !== '' && require('node:path').isAbsolute(override) &&
+      (process.platform !== 'win32' || !['', '/', String.fromCharCode(92)].includes(require('node:path').parse(override).root))
+    const home = rooted ? override : require('node:path').join(require('node:os').homedir(), '.token-goat')
+    const stem = raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
+    if (stem === '') return
+    for (const suffix of ['.session-start', '.session-start-owed']) {
+      require('node:fs').rmSync(require('node:path').join(home, 'sessions', stem + suffix), { force: true })
+    }
+  } catch {
+    // Best-effort: the helper clears the marker itself when it gets that far.
+  }
+}
+
 async function runBoundedSessionStart(entryPath, eventName, payload, harness, deadline) {
+  resetSessionStartOwedFiles(payload)
   // Do not probe entryPath here: even existsSync can block on a network filesystem.
   if (typeof entryPath !== 'string' || entryPath === '') throw new Error('hook entry unavailable')
   const remainingMs = deadline - Date.now()
