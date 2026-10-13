@@ -24,12 +24,12 @@ function lingering(name: string, print: string): string {
   return nodeCmd(name, `${print}\nsetTimeout(() => {}, ${Math.ceil(budget * 1000) + 1500})\n`)
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-runner-notes-'))
   const noop = nodeCmd('noop.js', '')
-  runRaw(noop)
+  await runRaw(noop)
   const t0 = Date.now()
-  runRaw(noop)
+  await runRaw(noop)
   budget = Math.max(1.5, Math.round((3 * (Date.now() - t0) + 1000) / 100) / 10)
 })
 
