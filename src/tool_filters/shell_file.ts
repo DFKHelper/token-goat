@@ -110,9 +110,11 @@ export class GrepFilter extends ToolFilter {
     if (nonEmpty.length <= _GREP_KEPT_MATCH_LINES || grepLineBound(argv, searchArgv, ctx) <= _GREP_BOUNDED_MAX_LINES) return clipGrepLines(text, searchArgv)
 
     // grep only prefixes a filename when the search covers more than one file, so a single-file search (e.g. `grep -n alpha b1.txt`) emits bare `12:text` or `12-text` lines with nothing to attribute. When the command names exactly one file, those bare lines are attributed to it.
-    const searchFiles = positionalArgs(searchArgv.slice(1)).slice(1)
+    const operands = grepFileOperands(searchArgv)
+    const searchFiles = operands ?? positionalArgs(searchArgv.slice(1)).slice(1)
     const singleFile = searchFiles.length === 1 ? searchFiles[0] : undefined
-    const sources = nonEmpty.map((line) => grepMatchSource(line, singleFile))
+    const unprefixed = operands !== null && grepPrintsNoFilenames(searchArgv, operands)
+    const sources = nonEmpty.map((line) => (unprefixed ? (singleFile ?? null) : grepMatchSource(line, singleFile)))
     const named = new Set(sources.filter((s): s is string => s !== null))
     // One file's matches have no per-file breakdown to give: a summary of them is one number, and every recorded case of one was re-fetched in full within two calls. They ship as lines, bounded by apply()'s caps like any other long output.
     const oneFile = named.size === 0 ? searchFiles.length <= 1 : named.size === 1 && (named.has(singleFile ?? '') || !sources.includes(null))
@@ -133,7 +135,9 @@ export class GrepFilter extends ToolFilter {
       else fileCounts.set(source, (fileCounts.get(source) ?? 0) + 1)
     }
 
-    const more = countNoun(nonEmpty.length - keep, 'more match', 'more matches')
+    // `-v` prints the lines that did not match, so what is being counted is lines.
+    const [one, many] = grepFlagInCluster(searchArgv, 'v', '--invert-match') ? ['line', 'lines'] : ['match', 'matches']
+    const more = countNoun(nonEmpty.length - keep, `more ${one}`, `more ${many}`)
     const numFiles = fileCounts.size
     const outLines = clipped.slice(0, keep)
     // These counts are the answer the caller wanted, not a description of what this filter did, so when the clamp dropped part of the input they are a floor and have to say so. Stated flat, a 985,533-byte search of 9,000 matching lines reported `grep: 4685 matches across 40 file(s)`, and the per-file counts below are understated the same way.
@@ -144,7 +148,7 @@ export class GrepFilter extends ToolFilter {
     )
     const sorted = [...fileCounts.entries()].sort((a, b) => b[1] - a[1])
     for (const [fname, count] of sorted.slice(0, _GREP_MAX_FILE_LINES)) {
-      outLines.push(`  ${fname}: ${countNoun(count, 'match', 'matches')}`)
+      outLines.push(`  ${fname}: ${countNoun(count, one, many)}`)
     }
     if (unattributed) {
       outLines.push(`  (unattributed lines: ${unattributed})`)
@@ -157,6 +161,50 @@ export class GrepFilter extends ToolFilter {
     outLines.push(ownNotice(`[token-goat: grep output compressed from ${nonEmpty.length} lines to ${outLines.length}]`))
     return this.finalize(outLines)
   }
+}
+
+/** grep's long options that take a value, which may follow as the next token rather than after `=`. */
+const _GREP_LONG_VALUE_FLAGS: ReadonlySet<string> = new Set(['--regexp', '--file', '--max-count', '--after-context', '--before-context', '--context', '--include', '--exclude', '--exclude-dir', '--exclude-from', '--label', '--binary-files', '--devices', '--directories', '--group-separator'])
+
+/** The files a GNU grep/egrep/fgrep command names, or null for any other search tool. The first operand is the pattern unless `-e`/`-f` (or `--regexp`/`--file`) supplied one, and a flag's value, glued or in the next token, is never an operand. */
+function grepFileOperands(searchArgv: string[]): string[] | null {
+  if (!['grep', 'egrep', 'fgrep'].includes(pathStem(searchArgv[0] ?? '').toLowerCase())) return null
+  const operands: string[] = []
+  let patternGiven = false
+  for (let i = 1; i < searchArgv.length; i++) {
+    const a = searchArgv[i] as string
+    if (a === '--') {
+      operands.push(...searchArgv.slice(i + 1))
+      break
+    }
+    if (a.startsWith('--')) {
+      const name = a.split('=', 1)[0] as string
+      if (name === '--regexp' || name === '--file') patternGiven = true
+      if (!a.includes('=') && _GREP_LONG_VALUE_FLAGS.has(name)) i++
+      continue
+    }
+    if (a.startsWith('-') && a.length > 1) {
+      for (let j = 1; j < a.length; j++) {
+        const ch = a[j] as string
+        if (!_GREP_GLUED_VALUE_SHORT_FLAGS.includes(ch)) continue
+        if (ch === 'e' || ch === 'f') patternGiven = true
+        if (j === a.length - 1) i++
+        break
+      }
+      continue
+    }
+    operands.push(a)
+  }
+  return patternGiven ? operands : operands.slice(1)
+}
+
+/** True when this grep cannot have put a filename in front of any line: GNU grep prefixes one only when it searches more than one file, so a search of one file or of stdin prints the lines bare unless `-H` asks for the name, and a recursive search always names it. An operand spelled as a directory (`.`, `src/`) is read as a search that may name files, whether or not a recursion flag is visible here. A bare line's text before its first colon is the line's own text, and `grep -v` makes that the usual case, since its lines are whatever the file holds: `awk '/^[[:space:]]*-/'` was read as a file named `awk '/^[[`. Only called for grep itself (see {@link grepFileOperands}); rg, ag, ack and git grep decide by other rules (rg names a lone path that is a directory), so their lines keep being read for a prefix. */
+function grepPrintsNoFilenames(searchArgv: string[], files: string[]): boolean {
+  if (grepFlagInCluster(searchArgv, 'h', '--no-filename')) return true
+  if (grepFlagInCluster(searchArgv, 'H', '--with-filename')) return false
+  if (grepFlagInCluster(searchArgv, 'r', '--recursive') || grepFlagInCluster(searchArgv, 'R', '--dereference-recursive')) return false
+  if (searchArgv.some((a, i) => a === '-drecurse' || a === '--directories=recurse' || ((a === '-d' || a === '--directories') && searchArgv[i + 1] === 'recurse'))) return false
+  return files.length <= 1 && !files.some((f) => f === '.' || f === '..' || /[/\\]$/.test(f))
 }
 
 /** The file one grep/rg result line belongs to, or null when the line names none. */
