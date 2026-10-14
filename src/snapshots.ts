@@ -146,6 +146,8 @@ export function store(
       try {
         const existing = fs.readFileSync(p)
         if (Buffer.from(existing).equals(stored)) {
+          const sidecar = kindSidecarPath(p)
+          if (readSnapshotKind(sidecar) !== kind) writeSnapshotKind(sidecar, kind)
           return {
             path: p,
             content_sha: sha,

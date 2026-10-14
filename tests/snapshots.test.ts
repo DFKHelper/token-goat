@@ -112,6 +112,17 @@ describe('load_kind', () => {
     const kind = load_kind('sess', 'nonexistent.ts')
     expect(kind).toBeNull()
   })
+
+  // HAND-DERIVED: two stores of the byte-identical content 'same' with kinds 'read' then 'predictive' must leave the sidecar at the later kind, and the reverse order likewise; the expected kinds are the arguments of the second call, independent of the implementation.
+  it('takes the kind of a later store of identical content', () => {
+    const content = Buffer.from('same')
+    store('sess', 'kind-flip.ts', content, { kind: 'read' })
+    store('sess', 'kind-flip.ts', content, { kind: 'predictive' })
+    expect(load_kind('sess', 'kind-flip.ts')).toBe('predictive')
+    store('sess', 'kind-flip.ts', content, { kind: 'read' })
+    expect(load_kind('sess', 'kind-flip.ts')).toBe('read')
+    expect(load('sess', 'kind-flip.ts')?.toString()).toBe('same')
+  })
 })
 
 describe('cleanup_session', () => {
