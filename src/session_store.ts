@@ -9,6 +9,7 @@ import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSerializedJson } from './secret_redact.js'
 import { MAX_SEEN_IMAGE_HASHES, MAX_VERIFICATION_RUNS, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, markCompacted, mergeEpochBase, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession, type VerificationRun } from './session.js'
+import { coerceReadRangeEvasion, mergeReadRangeEvasion } from './read_range_evasion.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -265,6 +266,7 @@ function coerce(raw: unknown): SerializedSession {
     bashOutputs: asStringPairs(o['bashOutputs']),
     curlDownloads: migrateKeys(asStringPairs(o['curlDownloads']), migrateCurlDownloadKey),
     fileLineRanges: asLineRanges(o['fileLineRanges']),
+    readRangeEvasion: coerceReadRangeEvasion(o['readRangeEvasion']),
     ...(rangeIdentities.length > 0 ? { fileLineRangeIdentities: rangeIdentities } : {}),
     fileServedOutputs: asServedOutputs(o['fileServedOutputs']),
     cliReads,
@@ -458,6 +460,8 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
   const diskRanges = rawDiskRanges.filter(([path]) => !clearedRangeFiles.has(path))
   const diskServed = rawDiskServed.filter(([path]) => !clearedServedFiles.has(path))
   const fileLineRanges = mergeLineRanges(diskRanges, memRanges)
+  const diskRangeEvasion = (disk.compactedAt ?? 0) === compactedAt ? (disk.readRangeEvasion ?? []) : []
+  const memRangeEvasion = (mem.compactedAt ?? 0) === compactedAt ? (mem.readRangeEvasion ?? []) : []
   // A file's range identity goes and comes with its ranges: the same epoch filter and cleared-file tombstones, this process's stamp over disk's, and none kept for a file left without ranges.
   const rangedFiles = new Set(fileLineRanges.map(([path]) => path))
   const rawDiskIdentities = (disk.compactedAt ?? 0) === compactedAt ? (disk.fileLineRangeIdentities ?? []) : []
@@ -471,6 +475,7 @@ function mergeSessionState(disk: SerializedSession, mem: SerializedSession): Ser
     bashOutputs: mergePairs(disk.bashOutputs, mem.bashOutputs),
     curlDownloads: mergeCurlDownloads(disk.curlDownloads, mem.curlDownloads),
     fileLineRanges,
+    readRangeEvasion: mergeReadRangeEvasion(diskRangeEvasion, memRangeEvasion),
     ...(fileLineRangeIdentities.length > 0 ? { fileLineRangeIdentities } : {}),
     fileServedOutputs: mergeServedOutputs(diskServed, memServed),
     ...(compactedAt > 0 ? { compactedAt } : {}),

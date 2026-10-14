@@ -412,6 +412,7 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }
   { kind: 'markdown_already_read_deny', re: /Markdown file already read this session\./, tool: 'Read' },
   { kind: 'read_count_deny', re: /(?:Read|Tried to read) this file \d+ times already/, tool: 'Read' },
   // Shares read_count_deny's stat name and matches none of its wording: this branch fires on the SHAPE of the reads (consecutive line windows walking one file) rather than on their count, and says so.
+  { kind: 'range_evasion_lock_deny', re: /Line-range reads of this file are locked/, tool: 'Read' },
   { kind: 'sequential_paging_deny', re: /Sequential line-range paging detected on /, tool: 'Read' },
   { kind: 'generic_reread_deny', re: /was already read this session \(\d+ read/, tool: 'Read' },
   { kind: 'large_file_deny', re: /is very large \(\d+(?:\.\d+)?KB\)\./, tool: 'Read' },

@@ -4146,7 +4146,7 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
-    it('trips per-file circuit breaker on repeated re-read denials so micro-shifting line ranges does not loop indefinitely', () => {
+    it('locks micro-shifting line ranges after a contained deny without post_tool_use', () => {
       const p = path.join(os.tmpdir(), `tg-range-breaker-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
       fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `const x${i} = ${i};`).join('\n'))
       tmpFiles.push(p)
@@ -4175,23 +4175,22 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
         expect(r2.message).toContain('Do not attempt to re-read this file with shifted or different line ranges')
       }
 
-      // Third slice: caller micro-shifts to lines 21..29 -> circuit breaker trips, allows read with advisory note
+      // No post_tool_use for the denied call: the pre-hook must already have locked retries.
       const r3 = preReadHandler(makeHookEvent({
         toolName: 'view',
         toolInput: { file_path: p, view_range: [21, 29] },
         sessionId: 'test',
       }))
-      expect(r3.hookType).not.toBe('deny')
-      expect(r3.hookType).toBe('context')
+      expect(r3.hookType).toBe('deny')
+      if (r3.hookType === 'deny') expect(r3.message).toContain('Line-range reads of this file are locked')
 
-      // Fourth slice: caller shifts to lines 22..28 -> still allowed through, not denied
+      // Fourth slice remains locked too.
       const r4 = preReadHandler(makeHookEvent({
         toolName: 'view',
         toolInput: { file_path: p, view_range: [22, 28] },
         sessionId: 'test',
       }))
-      expect(r4.hookType).not.toBe('deny')
-      expect(r4.hookType).toBe('context')
+      expect(r4.hookType).toBe('deny')
     })
 
     it('trips per-file circuit breaker on repeated verbatim-served re-read attempts', () => {
@@ -4250,8 +4249,9 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       }
     })
 
-    // HAND-DERIVED: a 600-line function computed independently of the 1/3-span ratio this test pins. Regression: the 4th+ ranged read of a file denied on slice count alone (Item 2.5), even when every slice sat well inside one indexed symbol many times bigger than each window -- exactly the case where the ranged read is already the narrowest handle available, since `read "file::bigFn"` would hand back the whole 600-line body instead. Real transcripts show this firing on token-goat's own src/hooks_read.ts while paging a 906-line function in 100-280 line windows.
-    it('does not deny the 4th ranged read once every slice sits well inside one much-larger indexed symbol', () => {
+    // HAND-DERIVED: a 600-line function. Paging still locks inside it, but the hint must preserve
+    // the requested window rather than redirecting to the entire much-larger function.
+    it('denies the 4th ranged read inside a much-larger indexed symbol with a window-sized command', () => {
       const p = path.join(os.tmpdir(), `tg-paging-inside-symbol-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
       const bodyLines = Array.from({ length: 598 }, (_, i) => `  step${i}()`).join('\n')
       fs.writeFileSync(p, `function bigFn() {\n${bodyLines}\n}\n`)
@@ -4264,7 +4264,12 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [60, 110] }, sessionId: 'test' }))
       preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [120, 170] }, sessionId: 'test' }))
       const r4 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [180, 230] }, sessionId: 'test' }))
-      expect(r4.hookType).not.toBe('deny')
+      expect(r4.hookType).toBe('deny')
+      if (r4.hookType === 'deny') {
+        expect(r4.message).toContain('token-goat read')
+        expect(r4.message).toContain('@180-230"')
+        expect(r4.message).not.toContain('::bigFn')
+      }
     })
 
     // Control for the test above: the same 4-slices-of-one-file shape, but with no enclosing symbol anywhere near 3x each window (a file with no indexed symbols at all), so the paging deny must still fire.
@@ -4321,8 +4326,9 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(rFull.hookType).not.toBe('deny')
     })
 
-    // HAND-DERIVED: ten 30-line Python functions, so lines 140..165 fall in fn_4 (121..150) and fn_5 (151..180) by arithmetic, not by asking the index. The wire shape is copilotViewEvent's (FORMAT-DERIVED above). Regression for a reported Copilot session that sought lines 140..180 of a Python file and was denied 18 times in a row: the paging deny named symbols from the top of the file rather than the ones at the requested lines, and once three slices were recorded it denied every later slice for the rest of the session, so each retry with an adjusted window met the same refusal.
-    it('names the symbols at the requested lines in the paging deny, and denies paging on a file only once', () => {
+    // HAND-DERIVED: ten 30-line Python functions. Copilot's normalized wire shape must preserve
+    // a window-sized escape command and lock both adjusted retries, without post_tool_use.
+    it('names the requested window in the paging deny and locks adjusted range retries', () => {
       const p = path.join(os.tmpdir(), `tg-paging-once-${process.pid}-${Math.random().toString(36).slice(2)}.py`)
       fs.writeFileSync(p, Array.from({ length: 10 }, (_, k) => ['def fn_' + k + '():', ...Array.from({ length: 29 }, (_, i) => '    v' + i + ' = ' + i)].join('\n')).join('\n') + '\n')
       tmpFiles.push(p)
@@ -4335,15 +4341,47 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(r4.hookType).toBe('deny')
       if (r4.hookType === 'deny') {
         expect(r4.message).toContain('Sequential line-range paging detected on')
-        expect(r4.message).toContain('::fn_4"`')
+        expect(r4.message).toContain('@140-165"`')
         expect(r4.message).not.toContain('::fn_0"`')
       }
 
-      // The two retries the report describes: an adjusted window and the rest of the target span. Neither was served before, so neither is a duplicate, and the breaker has already spoken for this file.
+      // Neither retry was served before; the paging lock, not micro-shift detection, denies them.
       for (const [s, e] of [[120, 135], [166, 180]]) {
         const r = preReadHandler(copilotViewEvent(p, sessionId, s, e))
-        expect(r.hookType).not.toBe('deny')
+        expect(r.hookType).toBe('deny')
+        if (r.hookType === 'deny') expect(r.message).toContain('Line-range reads of this file are locked')
       }
+    })
+
+    it('clears a range lock when an external edit changes the file identity', () => {
+      const p = path.join(os.tmpdir(), `tg-range-changed-${process.pid}.log`)
+      fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `old line ${i}`).join('\n'))
+      tmpFiles.push(p)
+      const slice = (start: number, end: number): HookEvent => copilotViewEvent(p, 'test', start, end)
+      expect(preReadHandler(slice(10, 50)).hookType).not.toBe('deny')
+      postReadHandler(postCopilotViewEvent(p, 'test', 10, 50))
+      expect(preReadHandler(slice(20, 30)).hookType).toBe('deny')
+      const locked = preReadHandler(slice(70, 80))
+      expect(locked.hookType).toBe('deny')
+      if (locked.hookType === 'deny') expect(locked.message).toContain('Line-range reads of this file are locked')
+      // Size differs deterministically, regardless of filesystem timestamp resolution.
+      fs.appendFileSync(p, '\nnew external content\n')
+      expect(preReadHandler(slice(70, 80)).hookType).not.toBe('deny')
+    })
+
+    it('clears a ranged verbatim lock after external edits without a prior served-range identity', () => {
+      const p = path.join(os.tmpdir(), `tg-range-verbatim-changed-${process.pid}.ts`)
+      fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `const old${i} = ${i}; // ${'v'.repeat(80)}`).join('\n'))
+      tmpFiles.push(p)
+      const whole = (): HookEvent => makeHookEvent({ toolName: 'view', toolInput: { file_path: p }, sessionId: 'test' })
+      preReadHandler(whole())
+      postReadHandler(whole())
+      const ranged = preReadHandler(copilotViewEvent(p, 'test', 10, 20))
+      expect(ranged.hookType).toBe('deny')
+      if (ranged.hookType === 'deny') expect(ranged.message).toContain('Every line of this file')
+      fs.appendFileSync(p, '\nexport const external = true;\n')
+      const fresh = preReadHandler(copilotViewEvent(p, 'test', 95, 101))
+      expect(fresh.hookType).not.toBe('deny')
     })
 
     it('caps isProtectedRecentRead so files read 4+ times cannot loop indefinitely in small sessions', () => {
