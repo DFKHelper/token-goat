@@ -94,6 +94,6 @@ describe('unrestricted-spawn advisory under Copilot CLI', () => {
     process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'generic'
     clearModuleCaches()
     writeRoster()
-    expect(buildUnrestrictedSpawnAdvisory({ prompt: 'p', description: 'd' })).toBe(EXPECTED_ADVISORY)
+    expect(buildUnrestrictedSpawnAdvisory({ prompt: 'p', description: 'd' }, `copilot-control-${Math.random().toString(36).slice(2)}`)).toBe(EXPECTED_ADVISORY)
   })
 })

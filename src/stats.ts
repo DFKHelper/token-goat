@@ -665,6 +665,7 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
     rollupAndPruneStats(db)
     pruneHintEmissions(db)
     pruneSemanticQueries(db)
+    pruneSessionFlags(db)
     pruneTestIsolationLeakRows(db)
     dropRetiredPythonTables(db)
   } catch {
@@ -897,6 +898,28 @@ export function firstReceiptShownAt(testDb?: SqliteDatabase, homeDir?: string): 
     return row === undefined ? null : row.set_ts * 1000
   } catch {
     return null
+  }
+}
+
+/** Prefix of the `stats_flags` rows {@link claimSessionFlag} writes, which {@link pruneSessionFlags} ages out. */
+const SESSION_FLAG_PREFIX = 'session:'
+
+/** Claim a once-per-session notice: true the first time `flag` is claimed for `sessionId`, false every time after. The session-state blob is not enough to hold this, because the worker's cache sweep deletes a blob 24 hours after it was last written, and the hints-shown set goes with it: a session left for a day and resumed drew its once-per-session notices again (the unrestricted-spawn advisory came back after each of the 43- and 68-hour gaps in one recorded session). INSERT OR IGNORE, so two hook processes racing for the same claim cannot both win. True on any failure, which leaves the caller's in-memory check to decide, as it did before this existed. */
+export function claimSessionFlag(flag: string, sessionId: string, testDb?: SqliteDatabase, now: number = Date.now()): boolean {
+  try {
+    const db = testDb ?? getGlobalDb()
+    return db.prepare('INSERT OR IGNORE INTO stats_flags (name, set_ts) VALUES (?, ?)').run(`${SESSION_FLAG_PREFIX}${flag}:${sessionId}`, Math.floor(now / 1000)).changes === 1
+  } catch {
+    return true
+  }
+}
+
+/** Delete {@link claimSessionFlag} rows older than `retentionDays`, so one row per session does not accumulate for good. A session idle for longer than this can draw its notice once more, which is the price of a bound. */
+export function pruneSessionFlags(db: SqliteDatabase, retentionDays: number = STATS_RETENTION_DAYS): void {
+  try {
+    db.prepare(`DELETE FROM stats_flags WHERE name LIKE ? AND set_ts < ?`).run(`${SESSION_FLAG_PREFIX}%`, Math.floor(Date.now() / 1000) - retentionDays * 86400)
+  } catch {
+    // Fail-soft: never block the stat write that triggers this (see recordStat's call site).
   }
 }
 

@@ -14,7 +14,7 @@ import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
 import { toKB } from './util.js'
 import { mcpHash, mcpOutputId, storeMcpOutput } from './mcp_cache.js'
-import { recordStat, savedTokensFromBytes } from './stats.js'
+import { claimSessionFlag, recordStat, savedTokensFromBytes } from './stats.js'
 import { redactSecrets } from './secret_redact.js'
 import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
@@ -493,8 +493,8 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
   return Array.from(names).sort()
 }
 
-/** Build the once-per-session unrestricted-spawn advisory, or '' when it does not apply. Trigger: the finished spawn ran as general-purpose, either because `subagent_type` was absent (620 of 3,167 corpus spawn blocks) or because it named general-purpose explicitly; both are definitionally unrestricted with no definition file to resolve, which is the only restriction status observable at the hook without reading a roster file for the spawned type. Gate: at least one tools-restricted agent definition exists in ~/.claude/agents, so the advice is actionable and the hint clearable. Dedupe: once per session via the persisted hints-shown set. Accounting: recorded as a zero-credit `session_hint`. The advisory fires AFTER the spawn it observed and cannot save that spawn: the counterfactual it might improve (the user's next spawn, or their roster) is not a branch this code blocks, so crediting anything would repeat the advisory-credited-the-full-file defect class. The text says so explicitly for the same reason. */
-export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>): string {
+/** Build the once-per-session unrestricted-spawn advisory, or '' when it does not apply. Trigger: the finished spawn ran as general-purpose, either because `subagent_type` was absent (620 of 3,167 corpus spawn blocks) or because it named general-purpose explicitly; both are definitionally unrestricted with no definition file to resolve, which is the only restriction status observable at the hook without reading a roster file for the spawned type. Gate: at least one tools-restricted agent definition exists in ~/.claude/agents, so the advice is actionable and the hint clearable. Dedupe: once per session, via the hints-shown set and a durable claim in global.db (claimSessionFlag) that outlives the 24-hour sweep of idle session state. Accounting: recorded as a zero-credit `session_hint`. The advisory fires AFTER the spawn it observed and cannot save that spawn: the counterfactual it might improve (the user's next spawn, or their roster) is not a branch this code blocks, so crediting anything would repeat the advisory-credited-the-full-file defect class. The text says so explicitly for the same reason. */
+export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>, sessionId: string): string {
   try {
     // Gated off entirely on Copilot CLI because the advisory's content is Claude Code's Task schema (subagent_type, ~/.claude/agents rosters). Copilot's own task tool carries agent_type, not subagent_type (captured toolArgs {description, prompt, agent_type, name}, tg-captures C4a), so the absent-field trigger would misclassify every Copilot task spawn as an untyped general-purpose spawn. The channel is not the reason: post_tool_use additionalContext does reach the model on Copilot 1.0.88 (tg-captures C1a). Other bridges are not gated here: their task-tool wire shapes are unverified (loop-ledger BE-06) and their bridges forward additionalContext, so suppressing them would rest on inference. VS Code is gated for the same schema reason, read off its own bundle: runSubagent takes {prompt, description, agentName, model} (RunSubagentTool.getToolData in VS Code 1.137.0's workbench.desktop.main.js), where agentName names a VS Code chat agent, so advice to pass a ~/.claude/agents name as subagent_type names a key the tool does not have.
     const harness = getHarnessName()
@@ -506,6 +506,8 @@ export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown
     const names = findRestrictedAgentNames()
     if (names.length === 0) return ''
     markHintShown(SPAWN_RESTRICT_HINT_KEY)
+    // The mark above lives in the session-state blob, which the worker sweeps after a day idle; the claim is what keeps a resumed session from drawing this again.
+    if (!claimSessionFlag(SPAWN_RESTRICT_HINT_KEY, sessionId)) return ''
     recordStat('session_hint', 0, 0, undefined, 'agent-spawn-restrict')
     // Neutralized even though AGENT_NAME_RE already excludes `[`, because this is the layer that survives someone widening that charset later: only the interpolated names go through it, never the sentence around them, since our own `[token-goat]` prefix is exactly what the neutralizer is built to strip.
     const shown = neutralizeSpokenMarkers(names.slice(0, SPAWN_RESTRICT_MAX_NAMES).join(', '))
@@ -614,7 +616,7 @@ function postAgentHandler(event: HookEvent): HookOutput {
     if (REWRITTEN_REPORT_RE.test(resultText)) return passOutput()
     const agentReportCfg = loadConfig().agent_report
     // Built before the min_bytes early returns because the advisory is about the SPAWN, not the report: a lane that came back with a two-line answer paid the same unrestricted prefix. On the early-return paths it rides alone as the whole context output; past them it is folded into `notice` below, BEFORE the net-benefit gate prices that notice, so the gate-then-emit-extra accounting trap cannot reappear here.
-    const spawnAdvisory = buildUnrestrictedSpawnAdvisory(event.toolInput)
+    const spawnAdvisory = buildUnrestrictedSpawnAdvisory(event.toolInput, event.sessionId)
     if (!resultText || resultText.length < agentReportCfg.min_bytes) {
       return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     }

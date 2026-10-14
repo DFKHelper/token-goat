@@ -11,6 +11,8 @@ import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
 import { summarize } from '../src/stats.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
+import { sessionsDir } from '../src/sessions_dir.js'
+import { sweepCacheRoots } from '../src/disk_cache.js'
 import { collapseFencedBlocks, dedupeFencedBlocks, collapseBlankRunsInFences, parseAgentDefinition, findRestrictedAgentNames } from '../src/hooks_agent_spawn.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
 import { rmInSandbox } from './helpers/sandbox-rm.js'
@@ -1155,6 +1157,25 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
     const first = await callAgentHook('post_tool_use', { prompt: 'p1', description: 'd' }, sid, 'short report')
     expect(first.hookType).toBe('context')
     if (first.hookType === 'context') expect(first.context).toBe(EXPECTED_ADVISORY)
+    const second = await callAgentHook('post_tool_use', { prompt: 'p2', description: 'd' }, sid, 'short report')
+    expect(second.hookType).toBe('pass')
+  })
+
+  it('stays once per session after a day idle, when the worker sweep has deleted the session state that marked it shown', async () => {
+    // One recorded session drew this advisory three times, each after an idle gap of more than a day (43 and 68 hours): the worker's cache sweep removes a session-state blob 24 hours after it was last written, and the hints-shown set went with it.
+    writeRoster({ 'lean-coder.md': RESTRICTED_DEF })
+    const sid = `${sessionId}-advisory-idle`
+    const first = await callAgentHook('post_tool_use', { prompt: 'p1', description: 'd' }, sid, 'short report')
+    expect(first.hookType).toBe('context')
+
+    const dir = sessionsDir()
+    const dayAgo = (Date.now() - 25 * 3600 * 1000) / 1000
+    const blobs = fs.readdirSync(dir)
+    expect(blobs.length, 'the first spawn must have persisted session state, or the sweep below proves nothing').toBeGreaterThan(0)
+    for (const name of blobs) fs.utimesSync(path.join(dir, name), dayAgo, dayAgo)
+    sweepCacheRoots()
+    expect(fs.readdirSync(dir), 'the sweep must have removed the idle session state').toEqual([])
+
     const second = await callAgentHook('post_tool_use', { prompt: 'p2', description: 'd' }, sid, 'short report')
     expect(second.hookType).toBe('pass')
   })
