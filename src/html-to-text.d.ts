@@ -2,6 +2,7 @@
 declare module 'html-to-text' {
   export interface HtmlToTextOptions {
     wordwrap?: number | false
+    limits?: { maxInputLength?: number }
     selectors?: Array<{
       selector: string
       format?: string

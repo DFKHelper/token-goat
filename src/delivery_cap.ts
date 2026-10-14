@@ -16,14 +16,57 @@ export function bashOutputCapBytes(harness: HarnessName = detectHarness()): numb
   return harness === 'claudecode' ? CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES : null
 }
 
-/** Cut `text` back so that it plus `reserveBytes` of framing still fits the harness delivery cap. A rewrite that overruns the cap does not merely lose its tail. The harness truncates from the END, which is exactly where a closing fence tag and a recall pointer sit, and it PERSISTS the substitute -- so an over-long rewrite ships an unterminated fence and destroys the only route back to the original. Callers therefore reserve the bytes of everything they intend to wrap around `text` and clip the payload, never the framing. The cut lands on the last complete line so the boundary is one the model can read, which also drops any multi-byte character a byte-wise slice split in half. Returns the text unchanged when the harness has no measured cap or the payload already fits. */
+/** Cut `text` back so that it plus `reserveBytes` of framing still fits the harness delivery cap. A rewrite that overruns the cap does not merely lose its tail. The harness truncates from the END, which is exactly where a closing fence tag and a recall pointer sit, and it PERSISTS the substitute -- so an over-long rewrite ships an unterminated fence and destroys the only route back to the original. Callers therefore reserve the bytes of everything they intend to wrap around `text` and clip the payload, never the framing. The cut lands on the last complete line so the boundary is one the model can read, which also drops any multi-byte character a byte-wise slice split in half. Returns the text unchanged when the harness has no measured cap or the payload already fits, and an empty payload when the framing alone fills the cap: handing the text back whole there shipped a fence of marker-dense output at 54,259 bytes. */
 export function clipToDeliveryCap(text: string, reserveBytes: number): { text: string; clipped: boolean } {
   const cap = bashOutputCapBytes()
   const room = cap === null ? null : cap - reserveBytes
-  if (room === null || room <= 0 || Buffer.byteLength(text, 'utf-8') <= room) return { text, clipped: false }
-  const sliced = Buffer.from(text, 'utf-8').subarray(0, room).toString('utf-8')
+  if (room === null || Buffer.byteLength(text, 'utf-8') <= room) return { text, clipped: false }
+  return { text: cutToBytes(Buffer.from(text, 'utf-8'), room), clipped: true }
+}
+
+/** The longest run of whole lines of `bytes` within `room` of them, or the cut first line when not even one line fits. The cut backs off to the first byte of a character, so it never ends in the replacement character a split one decodes to, nor between the halves of a surrogate pair: a cut through a 2-byte letter decoded to a 3-byte U+FFFD that overran by the byte it was meant to save. */
+function cutToBytes(bytes: Buffer, room: number): string {
+  let end = Math.min(Math.max(0, room), bytes.length)
+  while (end > 0 && end < bytes.length && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--
+  const sliced = bytes.subarray(0, end).toString('utf-8')
   const lastNewline = sliced.lastIndexOf('\n')
-  return { text: lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced, clipped: true }
+  return lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced
+}
+
+/** `frame(text, false)` when it fits within `cap` bytes, the harness delivery cap unless a caller names another, or else `frame(cut, true)` for the longest cut of `text` this finds whose framed result does. For a rewrite whose framing does not cost a fixed number of bytes, which is every fenced one: the neutralizer can double a marker-dense body (`[tg]` becomes `&#91;tg]`), the escape strip can shrink a coloured one, and a cut can end inside a marker the whole text spelled differently, so a reserve priced off the whole text let a cut of it overrun the cap. Each candidate is framed and measured instead, and the next cut is scaled down by how far the last one ran over, and by at least a byte, for eight tries. A single long line approaches the fit from above and can still be over after eight, so the cut is then found by halving between the empty body, which fits, and the shortest cut that did not. The frame around an empty body is the floor: it still closes, and its pointer still recalls the original. */
+export function fitToDeliveryCap(text: string, frame: (body: string, clipped: boolean) => string, cap: number | null = bashOutputCapBytes()): string {
+  const whole = frame(text, false)
+  if (cap === null || Buffer.byteLength(whole, 'utf-8') <= cap) return whole
+  const bytes = Buffer.from(text, 'utf-8')
+  const empty = frame('', true)
+  const fixed = Buffer.byteLength(empty, 'utf-8')
+  if (fixed > cap) return empty
+  const framedWithin = (room: number): { framed: string; size: number; body: string } => {
+    const body = cutToBytes(bytes, room)
+    const framed = frame(body, true)
+    return { framed, size: Buffer.byteLength(framed, 'utf-8'), body }
+  }
+  let room = Math.min(bytes.length, cap - fixed)
+  let over = room
+  for (let attempt = 0; attempt < 8 && room > 0; attempt++) {
+    const tried = framedWithin(room)
+    if (tried.size <= cap) return tried.framed
+    over = room
+    room = Math.min(room - 1, Math.floor((Buffer.byteLength(tried.body, 'utf-8') * (cap - fixed)) / (tried.size - fixed)))
+  }
+  let best = empty
+  let fits = 0
+  while (over - fits > 1) {
+    const mid = Math.floor((fits + over) / 2)
+    const tried = framedWithin(mid)
+    if (tried.size <= cap) {
+      best = tried.framed
+      fits = mid
+    } else {
+      over = mid
+    }
+  }
+  return best
 }
 
 /** The portion of originalBytes the model would actually have received, given the active harness. This is the single definition of the counterfactual every Bash saving is measured against. Both the CLI wrapper path (bash_runner) and the hook rewrite path (hooks_bash_post) route their recorded figure through it, so the two cannot drift apart. Crossing the cap does not deliver up to `cap` bytes inline -- Claude Code persists the rest and shows only CLAUDE_CODE_PERSISTED_PREVIEW_BYTES of preview, so crediting the full cap there over-counts what the model actually saw. */

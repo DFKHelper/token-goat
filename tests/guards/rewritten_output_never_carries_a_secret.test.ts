@@ -10,6 +10,8 @@ import { buildEvent } from '../../src/relay.js'
 import { runHook, toolMatcherFor } from '../../src/hook_registry.js'
 import { bashOutputIdSync, storeBashOutputSync } from '../../src/bash_output_cache.js'
 import { runnerResultDigest } from '../../src/bash_runner.js'
+import { withoutEscapes } from '../../src/injection_scan.js'
+import { stripAnsiEscapes } from '../../src/render/ansi.js'
 
 /** A live-shaped AWS access key id — `secret_redact.ts`'s `aws_access_key` pattern. */
 const SECRET = 'AKIAABCDEFGHIJKLMNOP'
@@ -229,5 +231,32 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
     expect(emitted).toContain('curl HTML body cleaned')
     expect(emitted).toContain('before the deploy step')
     expect(emitted).not.toContain(SECRET)
+  })
+  // A pure file read is a Bash surface the sweep above never reaches either: a `sed -n` range that overlaps one served earlier in the session is withheld stretch by stretch and the rest shipped in a rewrite, and that rewrite carried the command's own unserved rows unredacted, fenced, with a colour-split key joined by the fence. HAND-DERIVED: lines 100-200 are served first, so the second read withholds them and ships lines 1-99, the fifth of which carries the key.
+  it('redacts or declines a served-line elision of a shell file read whose unserved rows hold a credential', async () => {
+    const fileLines = (lo: number, hi: number, fifth: string): string => {
+      const out: string[] = []
+      for (let n = lo; n <= hi; n++) out.push(n === 5 ? fifth : `line ${n}: ${'x'.repeat(60)}`)
+      return out.join('\n')
+    }
+    const read = (sessionId: string, command: string, stdout: string) =>
+      runHook(buildEvent('post_tool_use', { tool_name: 'Bash', tool_input: { command }, session_id: sessionId, tool_response: { stdout, stderr: '', interrupted: false, isImage: false } }))
+    const shapes: [string, string][] = [
+      ['clean', 'line 5: nothing secret here'],
+      ['plain key', `export AWS_ACCESS_KEY_ID=${SECRET}`],
+      ['colour-split key', `export AWS_ACCESS_KEY_ID=${SECRET.slice(0, 4)}\x1b[0m\x1b[1;31m${SECRET.slice(4)}\x1b[0m`],
+    ]
+    for (const [label, fifth] of shapes) {
+      const sessionId = `guard-served-elide-${label.replace(/ /g, '-')}`
+      await read(sessionId, "sed -n '100,200p' notes.log", fileLines(100, 200, fifth))
+      const result = await read(sessionId, "sed -n '1,200p' notes.log", fileLines(1, 200, fifth))
+      const emitted = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
+      if (label === 'clean') {
+        expect(result.hookType, 'the clean pair must reach the served-line elision or this case tests nothing').toBe('rewriteOutput')
+        expect(emitted).toContain('lines 100-200 were already served')
+        continue
+      }
+      for (const view of [emitted, stripAnsiEscapes(emitted), withoutEscapes(emitted)]) expect(view, label).not.toContain(SECRET)
+    }
   })
 })

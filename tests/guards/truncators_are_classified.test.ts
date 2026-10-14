@@ -341,11 +341,12 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
   [
     'clipToDeliveryCap',
     {
-      bucket: 'caller-refuses-any-secret-shaped-input-before-reaching-here',
+      bucket: 'operates-on-already-redacted-input',
       reason:
-        'Both call sites in hooks_bash_post.ts sit inside functions that already returned null on ' +
-        '`redactSecrets(output).count > 0` earlier in the same function body, so this only ever ' +
-        'clips text already proven to carry no secret-shaped fragment.',
+        'Its one call site, hooks_bash_post.ts::withoutHeartbeats, hands it `redactSecrets(output).text` and only ' +
+        'asks whether it would clip. The rewrites that ship a cut go through fitToDeliveryCap in the same module, ' +
+        'and every caller of that redacts first (the curl HTML fold, every MCP return in hooks_mcp.ts) or returns ' +
+        'null on `redactSecrets(output).count > 0` before it (the served-line elisions and the body fold).',
     },
   ],
   [

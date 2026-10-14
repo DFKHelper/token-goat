@@ -84,6 +84,13 @@ describe('the Read-hook fold gate asks only the precise secret patterns', () => 
     expect(foldedText('credential.ts', `const apiKey = "${REAL_CREDENTIAL}"`)).toBe('')
   })
 
+  it('declines to fold a file whose credential a colour code splits, as a terminal or a harness strip would join it', () => {
+    // HAND-DERIVED: a colour change after the key's prefix, the shape a snapshot of highlighted CLI output keeps in a file. The fold keeps a file's escapes, so it would ship the split key for any later strip to join.
+    const split = `${REAL_CREDENTIAL.slice(0, 7)}\x1b[31m${REAL_CREDENTIAL.slice(7)}\x1b[0m`
+    expect(split).not.toContain(REAL_CREDENTIAL)
+    expect(foldedText('colour-credential.ts', `const apiKey = "${split}"`)).toBe('')
+  })
+
   it('leaves what redactSecrets writes to disk exactly as it was', () => {
     // Both directions of the persistence contract, which this change must not move: the catch-all still redacts the prose line it false-fires on, and the precise pattern still redacts the credential.
     const prose = redactSecrets(sourceWith(PROSE_FALSE_POSITIVE))

@@ -13,7 +13,7 @@ import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './
 import { storeBashOutput, getBashOutput, isScopedGitStatusOrDiffStatCommand, commandHash, bashOutputIdSync, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
-import { bashOutputCapBytes, deliveredOutputBytes, clipToDeliveryCap } from './delivery_cap.js'
+import { bashOutputCapBytes, deliveredOutputBytes, clipToDeliveryCap, fitToDeliveryCap } from './delivery_cap.js'
 import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { foldDelivery, foldingEnabled, type FoldRow } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton } from './fold_structure.js'
@@ -182,18 +182,21 @@ function fenceRewriteWithinCap(spans: readonly FenceSpan[]): string {
   const fenced = fenceUntrustedSpans(spans, UNTRUSTED_TOOL_TAG)
   // Fencing switched off: nothing was wrapped around the body, so there is no closing tag to lose and the cap behaves exactly as it did before this fence existed.
   if (fenced === joined) return joined
-  const overhead = Buffer.byteLength(fenced, 'utf-8') - Buffer.byteLength(joined, 'utf-8') + Buffer.byteLength(REWRITE_CLIP_NOTE, 'utf-8')
-  const cut = clipToDeliveryCap(joined, overhead)
-  if (!cut.clipped) return fenced
-  // Re-cut the spans to the clipped length so authorship survives the clip: the clipped text is a prefix of `joined`, so taking that many characters back off the span list reproduces it exactly.
-  const kept: FenceSpan[] = []
-  let left = cut.text.length
-  for (const s of spans) {
-    if (left <= 0) break
-    kept.push(s.text.length <= left ? s : { ...s, text: s.text.slice(0, left) })
-    left -= s.text.length
+  // Re-cut the spans to each clipped length so authorship survives the clip: a cut is a prefix of `joined`, so taking that many characters back off the span list reproduces it exactly. Never between the halves of a surrogate pair, which would ship a lone surrogate.
+  const prefix = (length: number): FenceSpan[] => {
+    const kept: FenceSpan[] = []
+    let left = length
+    for (const s of spans) {
+      if (left <= 0) break
+      const high = s.text.charCodeAt(left - 1)
+      const take = left < s.text.length && high >= 0xd800 && high <= 0xdbff ? left - 1 : left
+      kept.push(s.text.length <= left ? s : { ...s, text: s.text.slice(0, take) })
+      left -= s.text.length
+    }
+    return kept
   }
-  return fenceUntrustedSpans(kept, UNTRUSTED_TOOL_TAG) + REWRITE_CLIP_NOTE
+  // Measured on the fenced result rather than priced ahead of it, for the reasons fitToDeliveryCap gives: the fence strips escapes and escapes markers, so what it adds to a body is not a constant.
+  return fitToDeliveryCap(joined, (body, clipped) => (clipped ? fenceUntrustedSpans(prefix(body.length), UNTRUSTED_TOOL_TAG) + REWRITE_CLIP_NOTE : fenced))
 }
 
 async function maybeCollapseIdenticalRead(
@@ -234,8 +237,9 @@ async function maybeCollapseIdenticalRead(
   const sessionKey = bashRecallKey(cmd, runDir)
   if (containerId === null) {
     // Nothing served this session contains these lines whole. That is not the same as nothing having been served: a read overlapping an earlier one without nesting inside it lands here too, and used to ship every already-seen line again. Withhold just those stretches, then cache what was actually delivered so a later read is matched against what the model saw rather than what the command printed.
-    const elided = elideServedShellLines(cmd, output, priorIds)
-    const priced = (text: string): boolean => isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(text, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })
+    // Declined on a credential, as both folds below and the generic elision decline: the rewrite would hand back the command's own unserved rows unredacted, and its fence joins a key a colour code split. redactSecrets reads that joined view too.
+    const elided = priorIds.length === 0 || redactSecrets(output).count > 0 ? null : elideServedShellLines(cmd, output, priorIds)
+    const priced =(text: string): boolean => isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(text, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })
 
     // Elision first, because withholding lines the model has already been shown always beats folding lines it has not. The fold is what is left for a first read, which is where this branch spends most of its time: there is nothing served to withhold and, until now, nothing else to do either.
     let rewrite: { text: string; reason: string; kind: string; detail?: string } | null = null
@@ -442,8 +446,8 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
   if (!cfg.enabled || cfg.disabled_filters.includes('curl-html')) return null
   let cleaned: string
   try {
-    // Redacted before the clip below, which could otherwise cut a credential short of the length its pattern recognizes, and before anything reaches the model: an unwrapped `curl` GET (auto mode, a deny or ask rule, a harness that never rewrites the shell) arrives here with the page exactly as served.
-    cleaned = redactSecrets(extractCleanText(output)).text
+    // Redacted before the clip below, which could otherwise cut a credential short of the length its pattern recognizes, and before anything reaches the model: an unwrapped `curl` GET (auto mode, a deny or ask rule, a harness that never rewrites the shell) arrives here with the page exactly as served. Redacted on the way in as well, because extractCleanText is a truncator too: html-to-text cuts its input at limits.maxInputLength, and a page past that cut had a credential split in two before the redaction after it ran.
+    cleaned = redactSecrets(extractCleanText(redactSecrets(output).text)).text
   } catch {
     return null
   }
@@ -453,17 +457,12 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
   const noticeBytes = Buffer.byteLength(notice, 'utf-8')
   // Fenced like maybeCompressCompoundOutput above: the cleaned text is a fetched webpage's own words, third-party content by provenance the same way a WebFetch body is, so it gets the same untrusted-content fence and injection scan hooks_fetch.ts already applies to that surface. Clipped to the harness delivery cap rather than shipped whole, because unlike every other rewrite in this file this one can legitimately EXCEED that cap: extractCleanText shrinks a page enormously relative to its markup and still leaves more prose than the cap carries, measured at 29,252 bytes of cleaned text from a 197,504-byte Wikipedia article. Shipping past the cap costs nothing in bytes (the harness truncates either way) but loses the tail, and the tail is where the closing fence marker and the recall notice sit. Losing the notice is the expensive half: the harness persists the CLEANED text it was handed, so once this hook substitutes, the raw markup survives only in token-goat's own bash cache and that notice is its only route back. Overhead is measured off an actual fence call rather than assumed, since fenceUntrusted returns the text unchanged when injection fencing is switched off.
   const clipNote = '\n[token-goat: cleaned text clipped to the harness delivery cap; the notice at the top of this output recalls the full raw markup]'
-  const fenceOverhead = Buffer.byteLength(fenceUntrusted(cleaned, UNTRUSTED_TOOL_TAG), 'utf-8') - Buffer.byteLength(cleaned, 'utf-8')
-  // The cap rule itself lives in delivery_cap.ts and is shared with fenceRewriteWithinCap above, so the two Bash paths that can outrun the cap cannot drift apart on where they cut.
-  const cut = clipToDeliveryCap(cleaned, noticeBytes + fenceOverhead + Buffer.byteLength(clipNote, 'utf-8'))
-  const body = cut.text
-  const clipped = cut.clipped ? clipNote : ''
-  // The clip note stays OUTSIDE the fence: it is token-goat's own sentence, and the fence escapes `[token-goat:` markers found within it so that third-party bytes cannot forge one, which rendered this note as `&#91;token-goat: ...` when it was fenced along with the page text.
-  const fenced = fenceUntrusted(body, UNTRUSTED_TOOL_TAG) + clipped
+  // Measured on what ships, notice and clip note included, for the reasons fitToDeliveryCap gives: html-to-text decodes `&#27;`, so a page can put escapes in for the fence to strip, and a page dense in markers grows under the neutralizer. The cap rule itself lives in delivery_cap.ts and is shared with fenceRewriteWithinCap above, so the two Bash paths that can outrun the cap cannot drift apart on where they cut. The clip note stays OUTSIDE the fence: it is token-goat's own sentence, and the fence escapes `[token-goat:` markers found within it so that third-party bytes cannot forge one, which rendered this note as `&#91;token-goat: ...` when it was fenced along with the page text.
+  const shipped = fitToDeliveryCap(cleaned, (body, clipped) => notice + fenceUntrusted(body, UNTRUSTED_TOOL_TAG) + (clipped ? clipNote : ''))
   if (
     !isRewriteWorthwhile({
       originalBytes,
-      rewrittenBytes: Buffer.byteLength(fenced, 'utf-8'),
+      rewrittenBytes: Buffer.byteLength(shipped, 'utf-8') - noticeBytes,
       noticeBytes,
       minNetSavingsBytes: resolveMinNetSavingsBytes(),
     })
@@ -471,7 +470,7 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
     return null
   }
   // Default 'count-here' redaction accounting, matching the other lossy-rewrite sites in this file (the generic compress and identical/contained-reread paths above): extractCleanText performs no redaction of its own, so this is the same posture as those sites rather than the ansi path's 'counted-elsewhere', which exists only because that path is a pure identity transform on bytes already accounted for elsewhere. Notice FIRST, not appended: it is the only pointer back to the raw markup, and a trailing one sits exactly where the harness truncates.
-  return emitRewrite(notice + fenced, 'curl HTML body cleaned', { kind: 'bash_compress:curl-html', originalBytes: deliveredOutputBytes(originalBytes) })
+  return emitRewrite(shipped, 'curl HTML body cleaned', { kind: 'bash_compress:curl-html', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
 /** Read the full text a Bash tool_response points at via `persistedOutputPath`, when Claude Code already wrote the complete output to disk because it exceeded the harness's 20,000-char inline head -- `tool_response.stdout` in that case is only the head, so compressing or caching from it alone silently drops the rest of a larger real result. Confined to this session's own `<claude home>/projects/<slug>/<session id>/tool-results/` directory (resolved through symlinks via isInsideRoot, so a link escaping that directory cannot be followed), bounded to MAX_CAPTURE_BYTES, and sanity-checked against `persistedOutputSize`. Any failure returns null so the caller falls back to the head. */

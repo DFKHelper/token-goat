@@ -1,6 +1,7 @@
 /** Defense-in-depth secret redaction for {@link file://./disk_cache.ts}'s `storeBlob()` choke point. token-goat persists a lot of tool output to disk (bash-output, web-output, and mcp-output caches, all funneling through `storeBlob()`). If a cached tool result happens to contain a real credential (an API key echoed by a misconfigured script, a token pasted into a bash command's output), it would otherwise sit in plaintext under `~/.token-goat` indefinitely. This module scans the JSON-serialized blob text for a small set of high-confidence secret patterns and replaces each match with a fixed-width placeholder before it ever reaches disk. Deliberately a small, high-confidence pattern set rather than an exhaustive one: broad heuristics (generic "api_key=..." key/value pairs, high-entropy hex/base64 blobs, bare AWS secret-access-key strings with no anchoring prefix) false-fire constantly on normal code, JSON, and log output, and a redaction pass that mangles ordinary content is worse for a caching layer than one that misses an unusual credential format. Each pattern here has a distinctive, low-collision prefix or block marker. `src/pack.ts` has its own `SECRET_PATTERNS` list, but it exists for a different purpose (scanning project files for `token-goat pack`'s report-only secret warning) and is deliberately noisier — it includes generic "api_key=", "password=", and database-URL patterns that are fine for a human-reviewed report but too false-positive-prone to blindly mangle cached tool output. That list is also module-private. This module keeps a separate, narrower set tuned for automatic in-place redaction. All patterns are single-pass and non-backtracking: fixed-width, bounded, or a single negated-class quantifier whose alternatives are disjoint, so nothing here has a nested or overlapping quantifier for the engine to explore two ways. Every quantifier inside a lookbehind is bounded, which is a stronger requirement than the rest of the pattern needs and is not decoration. A variable-length lookbehind is re-evaluated at each start position, so an unbounded run inside one turns the pass quadratic even though no single match backtracks: the generic assignment pattern below once held `\s*` around its separator, and the literal input `'password' + ' '.repeat(n) + '=!'` took 108 ms at n=20000 and 1726 ms at n=80000 -- four times the work for twice the input, on a path that runs over every command output before it reaches the model. Bounding the run made the same input 0.5 ms and 1.9 ms. Keep quantifiers inside a lookbehind bounded. */
 
 import { loadConfig, type Config } from './config.js'
+import { withoutEscapes } from './injection_scan.js'
 import { growsExponentially, hasNestedQuantifier } from './regex_guard.js'
 
 const SECRET_PATTERNS: Array<[string, RegExp]> = [
@@ -183,6 +184,14 @@ function matchesNonEmpty(compiled: RegExp, text: string): boolean {
 
 /** Whether `text` matches a secret pattern precise enough to act on when a false positive costs the caller something. Written for the Read-hook fold gates, whose asymmetry is the inverse of the persistence paths': they decline to fold on a match, and a declined fold passes the file through to the model UNREDACTED, so a false positive buys no protection at all and costs the whole fold. Measured against first-party source of 12 kB or more, {@link RECALL_TUNED_KIND} alone vetoed every fold -- skeleton, outline and body -- for 9.4% of files. Every other built-in pattern is anchored on a literal credential prefix, header name or key field, so it stays in. Custom patterns stay in too: they are declared by the machine's own operator, who is entitled to have them treated as precise. So does the strict-mode entropy heuristic, which is off by default and, when on, is a deliberate request to err toward treating opaque blobs as secrets. Reads the same list {@link redactSecrets} does, so a pattern added there is covered here without a second edit, and changes nothing about what gets written to disk. */
 export function hasPreciseSecret(text: string, config: Config = loadConfig()): boolean {
+  if (hasPreciseSecretAsGiven(text, config)) return true
+  // The escape-stripped view too, as redactSecrets reads it: a fold keeps a file's terminal escapes, so a credential a colour code splits would ship split for any later strip to join.
+  const shown = withoutEscapes(text)
+  return shown !== text && hasPreciseSecretAsGiven(shown, config)
+}
+
+/** {@link hasPreciseSecret} on `text` exactly as given. */
+function hasPreciseSecretAsGiven(text: string, config: Config): boolean {
   for (const [kind, pattern] of SECRET_PATTERNS) {
     if (kind === RECALL_TUNED_KIND) continue
     if (matchesAnywhere(pattern, text)) return true
@@ -199,8 +208,18 @@ export function hasPreciseSecret(text: string, config: Config = loadConfig()): b
   return false
 }
 
-/** Scan `text` for high-confidence secret patterns and replace each match with `[REDACTED:<kind>]`. Never partially reveals a matched secret. Pure and synchronous: callers decide how to handle a thrown error (regex engine failures are not expected in practice given the patterns above, but this function does not swallow them itself; see `storeBlob()` for the fail-safe wrapping applied at the actual disk-write choke point). */
+/** Scan `text` for high-confidence secret patterns and replace each match with `[REDACTED:<kind>]`. Never partially reveals a matched secret. The text is read twice, as given and with its terminal escapes stripped, and comes back stripped when only the second reading found a credential. Pure and synchronous: callers decide how to handle a thrown error (regex engine failures are not expected in practice given the patterns above, but this function does not swallow them itself; see `storeBlob()` for the fail-safe wrapping applied at the actual disk-write choke point). */
 export function redactSecrets(text: string, config: Config = loadConfig(), opts: { keepLineCount?: boolean } = {}): RedactResult {
+  const raw = redactPatterns(text, config, opts)
+  // A credential coloured part-way through, as `rg --color=always` prints the match inside `GITHUB_TOKEN=ghp_...`, is split by an escape sequence, so no pattern matches it here, and a terminal, `out()`'s strip or a tool-output fence (see withoutEscapes) joins it again. It is the same credential in the view every one of those shows, so that view is redacted too, and returned in place of the text only when it holds a credential the text hid, so colour survives everywhere else.
+  const shown = withoutEscapes(raw.text)
+  if (shown === raw.text) return raw
+  const joined = redactPatterns(shown, config, opts)
+  return joined.count === 0 ? raw : { text: joined.text, count: raw.count + joined.count }
+}
+
+/** {@link redactSecrets} on `text` exactly as given, with no escape-stripped view. */
+function redactPatterns(text: string, config: Config, opts: { keepLineCount?: boolean }): RedactResult {
   let count = 0
   let out = text
   // With keepLineCount a match spanning lines (a PEM private-key block, a custom pattern) leaves one placeholder per line it covered and keeps each line break, so a caller that numbers lines (`bash-output --file -n`, `--lines A-B`) stays aligned with the original text after it; the default collapses the match to one placeholder.
@@ -259,6 +278,7 @@ function decodeEscape(escape: string): string {
 
 /** Redact a compact JSON serialization (JSON.stringify output with no indentation) as the text its strings hold. The patterns are written for raw text, and JSON spells every control character as an escape, so a line break reads as the two characters `\` and `n`: an assignment value ran on across it and took the lines after it, a pattern anchored on a word boundary missed a match at the start of a line, and strict mode's candidate run took in the escape's letter and left a lone backslash that made the whole document unparseable. A surrogate with no partner is written as a `\u` escape as well, whose letter and hex digits gave strict mode's run the same start. Each of those escapes is decoded before the patterns run and escaped again after, byte for byte, which is safe because JSON.stringify writes none of those characters raw, so each one in the result came from that decoding. */
 export function redactSerializedJson(json: string): RedactResult {
-  const result = redactSecrets(json.replace(JSON_ESCAPE, decodeEscape))
+  // The patterns alone, without redactSecrets' escape-stripped view: that view drops the bytes of an escape sequence, and an OSC sequence with no terminator runs to the end of its line, which in a decoded serialization takes the closing quote and the rest of the document with it.
+  const result = redactPatterns(json.replace(JSON_ESCAPE, decodeEscape), loadConfig(), {})
   return { text: result.text.replace(DECODED_CHARACTER, (ch) => CONTROL_ESCAPES.get(ch) ?? JSON.stringify(ch).slice(1, -1)), count: result.count }
 }
