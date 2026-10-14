@@ -39,7 +39,6 @@ import './hooks_exitplanmode.js'
 import './hooks_mcp.js'
 import './hooks_websearch.js'
 import './hooks_screenshot.js'
-import './hooks_browser_image.js'
 import './hooks_agent_spawn.js'
 import './image_shrink.js'
 

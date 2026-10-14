@@ -17,6 +17,7 @@ import { bashOutputCapBytes, fitToDeliveryCap } from './delivery_cap.js'
 import { MCP_TOOL_PATTERN, PLAYWRIGHT_TOOL_RE } from './mcp_tool_pattern.js'
 import { hintTarget } from './hint_target.js'
 import { quotedArg } from './hint_suggestion_guard.js'
+import { browserResultBlocks } from './hooks_browser_image.js'
 
 export const MCP_OVERSIZED_THRESHOLD_BYTES = 25_000
 
@@ -111,18 +112,33 @@ function preMcpHandler(event: HookEvent): HookOutput {
   )
 }
 
+/** `raw` with its result's block array replaced by `blocks`, keeping the wrapper object (and its `isError` flag) when the result arrived wrapped. */
+function withResultBlocks(raw: Record<string, unknown>, blocks: readonly Record<string, unknown>[]): Record<string, unknown> {
+  const tr = raw['tool_response']
+  return { ...raw, tool_response: Array.isArray(tr) ? blocks : { ...(tr as Record<string, unknown>), content: blocks } }
+}
+
 async function postMcpHandler(event: HookEvent): Promise<HookOutput> {
   const toolName = getToolName(event)
   if (!toolName || !toolName.startsWith('mcp__') || isTokenGoatMcpTool(toolName)) return passOutput()
   const toolInput = getToolInput(event)
-  const resultText = extractToolResultText(event.raw)
-  if (!resultText) return passOutput()
+  // The browser pass runs first, on the blocks as they arrived: it shrinks or withholds each screenshot and shortens a repeated tab list, and everything below then fences and compresses the text that is left. It used to be a handler of its own registered after this one, and this one claims every result that carries text, so a screenshot with a caption or a tab list beside it was never shrunk.
+  const browser = await browserResultBlocks(event)
+  const raw = browser === null ? event.raw : withResultBlocks(event.raw, browser.blocks.filter((b) => !browser.own.has(b)))
+  const resultText = extractToolResultText(raw)
+  if (!resultText) {
+    if (browser === null) return passOutput()
+    // An image-only result: nothing of the server's to fence, only token-goat's notes and the smaller images.
+    const notes = emitRewrite([...browser.own].map((b) => String(b['text'])).join('\n'), 'mcp')
+    return notes.hookType === 'rewriteOutput' ? { ...notes, updatedBlocks: browser.blocks } : notes
+  }
   // An MCP result is a remote server's output: the least trusted text in the pipeline, and the one surface a page-only injection scan never covered. Scanned before every early return below, because each of those returns was a way for the same hostile text to reach the model unmarked: an in-band error response carries text just as a success does, a harness that omits the session id still shows the model the result, and the read-only dedup return fires on the SECOND of two identical calls -- whose result a hostile or time-varying server is free to make different from the first. Caching is what those guards exist to gate; the fence is not.
   const injectionMatches = scanAndRecord(resultText)
   // Redact secrets on this same live path, computed once here ahead of every early-return guard below -- an MCP result carrying a bare credential (an API key in an env-dump tool's output, a PAT sitting in a commit message) trips no injection pattern at all, so gating redaction on injectionMatches (as fenced() alone used to) would leave every non-fenced return -- no session id, an in-band MCP error, a dedup cache hit, and the terminal "compression did not fire or did not pay off" return below -- shipping it unredacted. Mirrors postWebSearchHandler's and postFetchHandler's fix for the same gap.
   const redactedResult = redactSecrets(resultText)
   // Every block whose payload no string can stand in for. The rewrite below replaces the tool result with one fenced text block, which represents each textual block completely (see isTextualContentBlock) but would drop an image, an audio clip or a blob resource outright -- measured: a mixed text+image MCP result came back as a bare string with its 220 KB picture simply gone. Computed once here, beside the text every branch shares, so a branch added later inherits it rather than forgetting it.
-  const preserved = (mcpContentBlocks(event.raw) ?? []).filter((b) => !isTextualContentBlock(b))
+  // token-goat's own notes from the browser pass ride here too, beside the image each describes, so they stay outside the fence.
+  const preserved = (browser?.blocks ?? mcpContentBlocks(event.raw) ?? []).filter((b) => browser?.own.has(b) === true || !isTextualContentBlock(b))
   const preserve = (output: HookOutput): HookOutput => withPreservedBlocks(output, preserved)
   // Fitted under the spill size like both previews below: a server that flags its own reply as an error, a repeated read-only call and a result too large to cache all came back fenced whole, a 60 KB result of `[tg]` lines at 100,912 bytes, where a spill keeps a preview that ends before the closing tag. The note on a cut sits outside the closing tag and names the cached copy when there is one.
   const fenced = (cachedId: string | null): HookOutput => {

@@ -122,12 +122,6 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       "around it would escape token-goat's own markers. Open, not settled, and it settles with " +
       'postAgentHandler: the two share one planner so they cannot drift.',
   ],
-  [
-    'hooks_browser_image.ts::postBrowserImageHandler',
-    'Interleaved across blocks: our repeat-screenshot and tab-dedup notices are joined to blocks ' +
-      'that passed through untouched, and to base64 data URLs a fence would corrupt. Open, not ' +
-      'settled.',
-  ],
 ])
 
 /** True when `body` reaches a fence boundary. */
