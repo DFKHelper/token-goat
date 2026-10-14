@@ -51,7 +51,10 @@ function spawnFailure(res: SpawnSyncReturns<string>): string {
 /** Commands sharing one subshell: a fork per command cost Git Bash about 34 ms idle and enough under full-suite load to cross the 120 s cap partway through 184 commands. */
 const SH_CHUNK = 16
 
-/** Builtins only, since a process per argument made a few hundred commands take minutes under Git Bash: a call is `C<argc>` then each argument, every field NUL-terminated (no value holds NUL), `E<n>` ends command n's run, and `X` ends a chunk. Each chunk runs in a subshell, so a command that ends it cannot end the other chunks; a command can only change what its chunk mates see by smuggling in a statement, which already changes its own argv. */
+/** Seconds past the spawn timeout the shell's own `TG_BUDGET_S` deadline allows: the timeout kills a live run first, so the deadline only ever fires when the parent died and could not kill it. A parent check cannot stand in: under Git Bash a native parent reads as `$PPID` 1, so `kill -0` on it fails at once and would end every live run. */
+const SH_BUDGET_SLACK_S = 15
+
+/** Builtins only, since a process per argument made a few hundred commands take minutes under Git Bash: a call is `C<argc>` then each argument, every field NUL-terminated (no value holds NUL), `E<n>` ends command n's run, and `X` ends a chunk. The shell exits on its own once `$SECONDS` passes `TG_BUDGET_S` (default 600), so a run whose parent died cannot spin forever. Each chunk runs in a subshell, so a command that ends it cannot end the other chunks; a command can only change what its chunk mates see by smuggling in a statement, which already changes its own argv. */
 export const SH_SCRIPT = [
   "token-goat() { printf '\\0C%d\\0' \"$#\"; printf '%s\\0' \"$@\"; }",
   '[ -n "${TG_N+x}" ] || exit 1',
@@ -59,9 +62,12 @@ export const SH_SCRIPT = [
   '[ -n "${TG_CHUNK+x}" ] || TG_CHUNK=16',
   '[ "$TG_CHUNK" -gt 0 ] 2>/dev/null || exit 1',
   'case "$TG_CHUNK" in *[!0-9]*) exit 1 ;; esac',
+  '[ -n "${TG_BUDGET_S+x}" ] || TG_BUDGET_S=600',
+  'case "$TG_BUDGET_S" in "" | *[!0-9]*) exit 1 ;; esac',
   'tg_chunk=$((10#$TG_CHUNK))',
   'tg_i=0',
   'while [ "$tg_i" -lt "$TG_N" ]; do',
+  '  [ "$SECONDS" -lt "$TG_BUDGET_S" ] || exit 1',
   '  (',
   '    tg_end=$((tg_i + tg_chunk))',
   '    while [ "$tg_i" -lt "$TG_N" ] && [ "$tg_i" -lt "$tg_end" ]; do',
@@ -80,7 +86,7 @@ export const SH_SCRIPT = [
 ].join('\n')
 
 /** The variable naming a run's owner token: every process the run starts inherits it, so a cleanup can find them all after a timeout killed only the outer shell. */
-const OWNER_VAR = 'TG_SHARGV_OWNER'
+export const OWNER_VAR = 'TG_SHARGV_OWNER'
 
 /** Defines `tg_live PID`, true while the pid runs: a zombie is gone, and so is a pid whose /proc stat reads empty, since under load MSYS keeps answering kill -0 for one that already exited; macOS has no /proc and keeps plain kill -0. */
 export const SH_LIVE = 'tg_live() { if [ -r /proc/self/stat ]; then tg_st=; read -r tg_st 2>/dev/null < "/proc/$1/stat"; [ -n "$tg_st" ] || return 1; case "${tg_st##*) }" in Z*) return 1 ;; esac; fi; kill -0 "$1" 2>/dev/null; }'
@@ -127,7 +133,7 @@ const REAP_SCRIPT = [
 ].join('\n')
 
 /** Kill whatever a failed run left behind, returning why that failed or null when nothing of the run survives. */
-function reapOwned(sh: string, token: string): string | null {
+export function reapOwned(sh: string, token: string): string | null {
   const res = spawnSync(sh, ['-c', REAP_SCRIPT], { encoding: 'utf8', env: { ...process.env, TG_REAP_TOKEN: token }, windowsHide: true, timeout: 60_000 })
   return res.error || res.signal || res.status !== 0 ? spawnFailure(res) : null
 }
@@ -138,7 +144,7 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
   let pending = commands.map((_, i) => i)
   while (pending.length > 0) {
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
-    const env: NodeJS.ProcessEnv = { ...process.env, TG_N: String(pending.length), TG_CHUNK: String(SH_CHUNK), [OWNER_VAR]: token }
+    const env: NodeJS.ProcessEnv = { ...process.env, TG_N: String(pending.length), TG_CHUNK: String(SH_CHUNK), TG_BUDGET_S: String(Math.ceil((opts.timeoutMs ?? 120_000) / 1000) + SH_BUDGET_SLACK_S), [OWNER_VAR]: token }
     pending.forEach((ci, j) => {
       env[`TG_CMD_${j}`] = commands[ci]
     })
