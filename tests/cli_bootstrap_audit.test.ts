@@ -46,7 +46,8 @@ describe('bootstrap-audit', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'token-goat-bootstrap-links-'))
     const home = path.join(root, 'home')
     fs.mkdirSync(path.join(home, '.claude', 'agents'), { recursive: true })
-    fs.symlinkSync(path.join(home, 'missing.md'), path.join(home, '.claude', 'agents', 'broken.md'))
+    // A junction on Windows, which an unprivileged process may plant even with a missing target, where a file symlink needs Developer Mode or elevation.
+    fs.symlinkSync(path.join(home, 'missing.md'), path.join(home, '.claude', 'agents', 'broken.md'), process.platform === 'win32' ? 'junction' : 'file')
     const result = await buildBootstrapAudit({ project: root, home })
     expect(result.diagnostics.some((d) => d.reason.includes('broken'))).toBe(true)
     fs.rmSync(root, { recursive: true, force: true })
