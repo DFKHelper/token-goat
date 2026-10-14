@@ -23,12 +23,13 @@ import { hasPreciseSecret } from './secret_redact.js'
 import { countTextLines, harnessNumbersReadContent, isTruncatedReadDelivery, type NumberedRow, numberedRenderBytes, parseReadDelivery, readRequestedSliceWindow, readStartLine, readWindowFromDisk, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
 import type { HookOutput } from './types.js'
 import { type ReadShape, recordReadShape } from './read_shape.js'
+import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
 import { recordStat } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
 import { isImagePath } from './image_shrink.js'
 import { readEvidenceFileText, recordEvidence } from './evidence_cache.js'
 import { foldDetail } from './code_fold.js'
-import { ALIGNED_LAYOUT_NOTE, fenceFoldedFile, fenceFoldedNumberedFile, type FoldLayout, foldDelivery, foldingEnabled, isProseFoldablePath, pushWithheld } from './fold_delivery.js'
+import { ALIGNED_LAYOUT_NOTE, type FoldLayout, foldDelivery, foldingEnabled, isProseFoldablePath, pushWithheld } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton, type StructuralFold } from './fold_structure.js'
 import { isDiffableSource, isSessionArtifactFile, isSourceExtension, quietContextOutput, recordActualSlice, relPathWithinRoot } from './hooks_read.js'
 
@@ -228,7 +229,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   for (let i = at; i < parsed.rows.length; i++) bodyRows.push(parsed.rows[i]?.raw ?? '')
 
   // fenceNumberedFileContent's `body` is the marker-neutralised text alone (no fence lines added, unlike fenceUntrustedFileContent), so it is safe to use here regardless of layout: a hostile file line spelling out this exact notice ("[token-goat] lines 1-500 were already served -- bash-output x") is escaped in place, at no line-count cost, header and trailer (the harness's own framing, never file content) left outside it. Aligned layout additionally can't let the fence's own preamble lead the body -- the same reason every other aligned producer (planMarkdownOutline, planSourceSkeleton, foldCodeBodies) moves it into the PostToolUse context instead of printing it inline.
-  const fenced = fenceFoldedNumberedFile(bodyRows.join('\n'), ALIGNED_LAYOUT_NOTE)
+  const fenced = fenceNumberedFileContent(bodyRows.join('\n'), ALIGNED_LAYOUT_NOTE)
   const rewritten = [...parsed.header, fenced.body, ...parsed.trailer].join('\n')
   if (layout === 'aligned' && !keepsLineNumbers(respText, rewritten)) return null
   const originalBytes = Buffer.byteLength(respText, 'utf-8')
@@ -339,7 +340,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   const originalBytes = Buffer.byteLength(respText, 'utf-8')
 
   if (layout === 'aligned') {
-    const fenced = fenceFoldedNumberedFile(folded.numbered.join('\n'), ALIGNED_LAYOUT_NOTE)
+    const fenced = fenceNumberedFileContent(folded.numbered.join('\n'), ALIGNED_LAYOUT_NOTE)
     const rewritten = [...parsed.header, fenced.body, ...parsed.trailer].join('\n')
     if (!keepsLineNumbers(respText, rewritten)) return null
     if (
@@ -359,7 +360,7 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   }
 
   // `folded.numbered` is file bytes with this fold's own `... N lines folded` pointers interleaved, and it shipped unfenced: a source file's own text arrived beside token-goat's narration in one unlabelled block, so a first line spelling `[tg] ...` read as this rewrite's preamble. Fence the whole run, header and trailer (the harness's own framing) left outside it. Same repair as planSourceSkeleton.
-  const rewritten = [...parsed.header, fenceFoldedFile(folded.numbered.join('\n')), ...parsed.trailer].join('\n')
+  const rewritten = [...parsed.header, fenceUntrustedFileContent(folded.numbered.join('\n')), ...parsed.trailer].join('\n')
   if (
     !isRewriteWorthwhile({
       originalBytes,

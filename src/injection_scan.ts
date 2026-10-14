@@ -275,7 +275,7 @@ export function neutralizeFenceMarkers(text: string): string {
   return neutralizeTags(text, false)
 }
 
-/** {@link neutralizeFenceMarkers}, read as a file fence reads it when `inFile` is set. A Read hands file bytes back to be edited, and source code spells the word too: `Map<UntrustedInput, string>` and `count <untrustedLimit` came back as `&lt;` and `&gt;`, which an Edit then fails to match or writes into the file. So in a file an opening `<untrusted` that runs straight on into an identifier, an ASCII letter or digit with no hyphen, and that has nothing at all between the `<` and the word, is left as written; a closing form, with any slash or slash look-alike before the name, is escaped wherever it sits, and tool output keeps the generous reading. In either, an escaped `<` is paired with a `>` on its own line only, as a reader pairs brackets: a `return a > b` two lines further down closes nothing. */
+/** {@link neutralizeFenceMarkers}, read as a file fence reads it when `inFile` is set. A Read hands file bytes back to be edited, and source code spells the word too: `Map<UntrustedInput, string>` and `count <untrustedLimit` came back as `&lt;` and `&gt;`, which an Edit then fails to match or writes into the file. So in a file an opening `<untrusted` that runs straight on into an identifier, an ASCII letter or digit with no hyphen, and that has nothing at all between the `<` and the word, is left as written; a closing form, with any slash or slash look-alike before the name, is escaped wherever it sits, and tool output keeps the generous reading. A spoken marker in a file is escaped only where it can read as the start of a line (see {@link inlineMarkers}). In either, an escaped `<` is paired with a `>` on its own line only, as a reader pairs brackets: a `return a > b` two lines further down closes nothing. */
 function neutralizeTags(text: string, inFile: boolean): string {
   if (text.length > FENCE_SCAN_CEILING) return escapeEveryBracket(text)
   const readings: Readings = { read: new Map(), kind: new Map(), slots: null }
@@ -318,21 +318,81 @@ function neutralizeTags(text: string, inFile: boolean): string {
     if (close !== -1 && close < lineEnd) pendingClose = close
   }
   if (pendingClose !== -1) escapeAt(pendingClose, '&gt;')
-  return neutralizeSpokenMarkers(out + text.slice(last), readings)
+  return neutralizeSpokenMarkers(out + text.slice(last), readings, inFile)
 }
 
 /** Escape anything inside the fence that wears token-goat's own `[token-goat...]` marker prefix. Closing the tag early is not the only way out of the fence. The fence's own preamble opens with `[token-goat:`, and every hook that shrinks something signs its work with a marker in the same shape, so that prefix is a live authority signal in the model's context -- and third-party bytes can print it. Text that does so is not escaping the fence, it is speaking from inside it in the voice of the thing that built it, which is the more useful attack: the fence stays intact and correctly labelled while the model reads a line inside it as token-goat's own. Measured 2026-09-04, twelve trials per condition against a headless model, on a build log whose last lines impersonate a token-goat truncation notice and ask for a canary line back. Unfenced, the model complied 11 times. Fenced as we shipped it that morning, 6 -- the fence halves the attack and no more, because it never contradicts the impersonation, it only surrounds it. With the prefix escaped as below, 1. The same probe found that a *genuine* marker sitting beside an ordinary injection lends it nothing (0 of 12 either way), so proximity was never the problem and this is narrowly aimed at the thing that was: forgery of the prefix itself. The escape is `&#91;` for the opening bracket alone, matching how the tag neutraliser above defuses a forged tag: enough that the line no longer reads as our marker, little enough that a human reading the output still sees what the bytes said. Nothing token-goat writes is ever legitimately inside a fence -- markers and pointers are appended outside the closing tag -- so this cannot escape our own text, and an escaped marker showing up in fenced output means either a real forgery or a bug that folded our voice inside the fence. Both want to be visible. The marker is read the way {@link neutralizeFenceMarkers} reads a tag, passing over {@link UNSEEN_CHAR}s, since `[token\u200b-goat: ...]` reads as the marker exactly as `[token-goat: ...]` does. */
-export function neutralizeSpokenMarkers(text: string, readings: Readings = { read: new Map(), kind: new Map(), slots: null }): string {
+export function neutralizeSpokenMarkers(text: string, readings: Readings = { read: new Map(), kind: new Map(), slots: null }, inFile = false): string {
   if (text.length > FENCE_SCAN_CEILING) return text.replace(new RegExp(markerClasses().voiceOpens, 'gu'), '&#91;')
   let out = ''
   let last = 0
   const opens = new RegExp(markerClasses().voiceOpens, 'gu')
+  const inline = inFile ? inlineMarkers(text) : null
   for (let m = opens.exec(text); m !== null; m = opens.exec(text)) {
     if (!spokenMarkerAt(text, m.index + m[0].length, readings)) continue
+    if (inline?.(m.index) === true) continue
     out += text.slice(last, m.index) + '&#91;'
     last = m.index + m[0].length
   }
   return out + text.slice(last)
+}
+
+/** The code points a renderer starts a new line at: line feed, vertical tab, form feed, carriage return, NEL, and the line and paragraph separators. */
+const LINE_BREAKS: ReadonlySet<number> = new Set([0x0a, 0x0b, 0x0c, 0x0d, 0x85, 0x2028, 0x2029])
+
+/** The column a Read numbers a line with, `   12` and a tab or an arrow, read at the start of a line so its digits do not count as text before a marker. */
+const READ_COLUMN = /[^\S\n]*\d+(?:\t|\u2192)/y
+
+/** A control character other than a tab or a line break, or the U+241B a file fence writes for an escape byte. Not only ESC and the C1 controls: the string branch of the ansi-regex 6.1 pattern claude.exe strips with runs through printable characters to a BEL, so which text a strip leaves before a marker on a line holding any other control is not something this scan can know. */
+// eslint-disable-next-line no-control-regex -- the control characters are what it looks for
+const ESCAPE_BYTE = /[\x00-\x08\x0e-\x1f\x7f-\x9f\u241b]/
+
+/** For a file fence, whether each spoken marker `text` holds, asked about in order of position, is written inline and so left as written. token-goat speaks only at the start of a line, and source code spells its markers inside lines, in string literals and comments (`const NOTE = '[tg] cached'`), where an escape made an Edit built from a Read miss the file or write the entity into it. So a marker stays as written when an ASCII letter, digit or quote stands before it on its line, past any Read column. Nothing else counts as text: whitespace, punctuation, an opening bracket (`[[tg]` reads as the marker too), a character the neutralizer passes over, and every other script's letters and symbols, among them the blank-rendering Hangul fillers U+3164, U+115F and U+FFA0 and the empty Braille pattern U+2800, which an earlier test for any letter or symbol counted as text and so put back a raw marker at what reads as the start of a line. A line counts from the last break a renderer starts a line at, a carriage return included, and from a backslash, whose letters are not counted: a project note's line break is shown as the two characters `\` and `n`, which a model reads as the break it stands for. A line holding an escape byte keeps every escape, since a strip can remove whatever stood before its marker, and once a marker on a line is escaped every later one on it is too, since the letters of an escaped marker are not text that stands before one. The scan only moves forward, so it stays linear. */
+function inlineMarkers(text: string): (at: number) => boolean {
+  let scanned = 0
+  let lineEnd = 0
+  let held = false
+  let spoken = false
+  let escaped = false
+  // The start of the text line beginning at `start`, past its Read column.
+  const enterLine = (start: number): number => {
+    lineEnd = text.indexOf('\n', start)
+    if (lineEnd === -1) lineEnd = text.length
+    held = ESCAPE_BYTE.test(text.slice(start, lineEnd))
+    spoken = false
+    escaped = false
+    READ_COLUMN.lastIndex = start
+    return READ_COLUMN.test(text) ? READ_COLUMN.lastIndex : start
+  }
+  scanned = enterLine(0)
+  return (at) => {
+    while (scanned < at) {
+      const code = text.charCodeAt(scanned)
+      if (code === 0x0a) {
+        scanned = enterLine(scanned + 1)
+        continue
+      }
+      if (LINE_BREAKS.has(code)) {
+        spoken = false
+        escaped = false
+      } else if (code === 0x5c) {
+        spoken = false
+        for (scanned++; scanned < at && isAsciiWordCode(text.charCodeAt(scanned)); scanned++);
+        continue
+      } else if (isAsciiWordCode(code) || code === 0x22 || code === 0x27 || code === 0x60) {
+        spoken = true
+      }
+      scanned++
+    }
+    const inline = spoken && !held && !escaped
+    if (!inline) escaped = true
+    return inline
+  }
+}
+
+/** Whether `code` is an ASCII letter or digit. */
+function isAsciiWordCode(code: number): boolean {
+  return (code >= 0x30 && code <= 0x39) || ((code | 0x20) >= 0x61 && (code | 0x20) <= 0x7a)
 }
 
 /** True when the `[` ending just before `after` starts either voice token-goat speaks in: the `[token-goat: ...]` marker hooks sign rewrites with, and the `[tg]` prefix denyOutput puts on every deny. The deny prefix is the more dangerous of the two, since a deny is the one message shaped as an instruction the model is meant to obey, and it is matched only with its closing bracket or a colon after it so that ordinary bracketed words like `[tgz]` are left alone. The colon is the shape of token-goat's other short lines (`[tg: note]`, `[tg: ok]`, `[tg: stale-write]`), which a bracket-only match let through. A bracket that passes for `[` or `]` (the lenticular `【tg】`, the mathematical `⟦tg⟧`, the tortoise-shell `〔tg〕`) counts as one. `(tg)` does not: parentheses around a word are ordinary prose, and no voice of token-goat's is spelled with them. */
