@@ -1,4 +1,4 @@
-/** The re-read denial circuit breaker and the Write blind-drop guard compose: a denial loop the breaker ends never turns a refused retry into a view the Write guard counts as seen. Provenance: HAND-DERIVED from a 200-line file whose first 60 lines are served; the same sequence was driven through the built hook entry (PreToolUse/PostToolUse payloads with Read and Write tool inputs) and printed the deny, the breaker's advisory note, and the blind-drop refusal quoted in the merge report. */
+/** The re-read denial circuit breaker and the Write blind-drop guard compose: a whole-file denial loop the breaker ends hands over one real read the Write guard counts as seen, while a line-range retry is locked rather than let through, so a refused retry is never counted as seen. Provenance: HAND-DERIVED from a 200-line file; the whole-file rows read it unranged, the range rows serve its first 60 lines; the first version of the range sequence was driven through the built hook entry (PreToolUse/PostToolUse payloads with Read and Write tool inputs) and printed the deny, the breaker's advisory note, and the blind-drop refusal quoted in the merge report. The range rows pin main's 44e95a016, where a refused range read locks later slices instead of going through the breaker (the fileRereadDenyKey comment in src/hooks_read.ts). */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -9,6 +9,8 @@ import type * as ConstantsModule from '../src/constants.js'
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-breaker-write-'))
 const TEST_CONFIG_PATH = path.join(DATA_DIR, 'config.toml')
+// The recent-read protection window waves through the four most recently read files, so a lone file's whole-file re-read would never be denied without this.
+fs.writeFileSync(TEST_CONFIG_PATH, '[hints]\nprotect_recent_reads = 0\n', 'utf8')
 
 vi.mock('../src/constants.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConstantsModule>()
@@ -39,41 +41,68 @@ afterEach(() => {
 
 let counter = 0
 
-function seed(): string {
-  const target = path.join(FILES_DIR, `b${++counter}.ts`)
+function seed(extension: string): string {
+  const target = path.join(FILES_DIR, `b${++counter}.${extension}`)
   fs.writeFileSync(target, WHOLE)
   return target
 }
 
-function readEvent(eventName: 'pre_tool_use' | 'post_tool_use', file: string) {
+function rangeReadEvent(eventName: 'pre_tool_use' | 'post_tool_use', file: string) {
   return makeHookEvent({ eventName, toolName: 'Read', toolInput: { file_path: file, offset: 1, limit: 60 }, sessionId: 'breaker-write' })
+}
+
+function wholeReadEvent(eventName: 'pre_tool_use' | 'post_tool_use', file: string) {
+  return makeHookEvent({ eventName, toolName: 'Read', toolInput: { file_path: file }, sessionId: 'breaker-write' })
 }
 
 function writeEvent(file: string, content: string) {
   return makeHookEvent({ eventName: 'pre_tool_use', toolName: 'Write', toolInput: { file_path: file, content }, sessionId: 'breaker-write' })
 }
 
-/** Serve lines 1-60, then retry the same read until the breaker lets it through. */
-function serveThenLoopUntilBreaker(file: string): void {
-  preReadHandler(readEvent('pre_tool_use', file))
-  postReadHandler(readEvent('post_tool_use', file))
-  expect(preReadHandler(readEvent('pre_tool_use', file)).hookType, 'the first retry is denied').toBe('deny')
-  expect(preReadHandler(readEvent('pre_tool_use', file)).hookType, 'the second retry is let through by the breaker').not.toBe('deny')
-  postReadHandler(readEvent('post_tool_use', file))
+/** Read the whole file, retry it (denied: every line was already served), then retry again until the breaker lets it through. A .csv has no snapshot-diff deny ahead of the breaker, so the deny that fires is the one the breaker covers. */
+function wholeFileLoopUntilBreaker(file: string): void {
+  expect(preReadHandler(wholeReadEvent('pre_tool_use', file)).hookType, 'the first read passes').not.toBe('deny')
+  postReadHandler(wholeReadEvent('post_tool_use', file))
+  expect(preReadHandler(wholeReadEvent('pre_tool_use', file)).hookType, 'the first retry is denied').toBe('deny')
+  expect(preReadHandler(wholeReadEvent('pre_tool_use', file)).hookType, 'the second retry is let through by the breaker').not.toBe('deny')
+  postReadHandler(wholeReadEvent('post_tool_use', file))
+}
+
+/** Serve lines 1-60 and leave the file read in part. */
+function serveFirstWindow(file: string): void {
+  preReadHandler(rangeReadEvent('pre_tool_use', file))
+  postReadHandler(rangeReadEvent('post_tool_use', file))
 }
 
 describe('the re-read circuit breaker and the Write blind-drop guard', () => {
-  it('still refuses a Write that drops lines nobody saw after the breaker let a retry through', async () => {
-    const target = seed()
-    serveThenLoopUntilBreaker(target)
+  it('a Write that keeps every line passes after the breaker let a whole-file retry through', async () => {
+    const target = seed('csv')
+    wholeFileLoopUntilBreaker(target)
+    expect((await preWriteRewriteHandler(writeEvent(target, WHOLE + '// added\n'))).hookType).not.toBe('deny')
+  })
+
+  it('a Write that drops lines passes after the breaker let a whole-file retry through, because that retry delivered the whole file', async () => {
+    const target = seed('csv')
+    wholeFileLoopUntilBreaker(target)
+    expect((await preWriteRewriteHandler(writeEvent(target, FIRST_60_ONLY))).hookType).toBe('pass')
+  })
+
+  it('locks the second identical line-range retry instead of letting it through the breaker', () => {
+    const target = seed('ts')
+    serveFirstWindow(target)
+    expect(preReadHandler(rangeReadEvent('pre_tool_use', target)).hookType, 'the first retry is denied').toBe('deny')
+    const second = preReadHandler(rangeReadEvent('pre_tool_use', target))
+    expect(second.hookType, 'the second identical range retry stays denied').toBe('deny')
+    if (second.hookType === 'deny') expect(second.message).toContain('Line-range reads of this file are locked')
+  })
+
+  it('still refuses a Write that drops lines nobody saw after a locked line-range retry', async () => {
+    const target = seed('ts')
+    serveFirstWindow(target)
+    preReadHandler(rangeReadEvent('pre_tool_use', target))
+    preReadHandler(rangeReadEvent('pre_tool_use', target))
     const out = await preWriteRewriteHandler(writeEvent(target, FIRST_60_ONLY))
     expect(out.hookType).toBe('deny')
     if (out.hookType === 'deny') expect(out.message).toContain('lines 61-200')
-  })
-
-  it('does not refuse a Write that keeps every line, so the guard is not simply denying after the loop', async () => {
-    const target = seed()
-    serveThenLoopUntilBreaker(target)
-    expect((await preWriteRewriteHandler(writeEvent(target, WHOLE + '// added\n'))).hookType).not.toBe('deny')
   })
 })
