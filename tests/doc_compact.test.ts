@@ -306,14 +306,6 @@ describe('doc_compact', () => {
       expect(compact).not.toContain('## Setup Guide')
     })
 
-    it('matches exact heading, not a longer heading that contains it as substring', () => {
-      const body = '## Setup Guide\nSetup Guide content\n## Setup\nSetup content'
-      const compact = extractDocCompact(body, 'Setup')
-      // Should match "## Setup" exactly, not "## Setup Guide" which merely contains "Setup"
-      expect(compact).toContain('## Setup')
-      expect(compact).not.toContain('## Setup Guide')
-    })
-
     it('stops at next heading of equal or shallower depth (regression: was dumping all following sections)', () => {
       const body = 'Intro\n## Summary\nSummary content here\n## Next\nNext section content'
       const compact = extractDocCompact(body, 'Summary')

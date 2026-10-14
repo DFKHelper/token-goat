@@ -226,7 +226,7 @@ describe('postBrowserImageHandler', () => {
   })
 
   describe('Tab Context dedup', () => {
-    // Big enough (comfortably over the default min_net_savings_bytes=100 floor once the ~34-byte placeholder notice is subtracted) so the dedup rewrite clears the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile). A dedicated pair of tests further down covers the below-floor (untouched) and above-floor (rewritten) boundary explicitly with small/large lists.
+    // Big enough (comfortably over the default min_net_savings_bytes=100 floor once the ~34-byte placeholder notice is subtracted) so the dedup rewrite clears the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile). The above-floor (rewritten) side is the identical-repeat test below, and the below-floor (untouched) side has its own small-list test further down.
     const tabContextText =
       '\n\nTab Context:\n- Available tabs:\n' +
       Array.from({ length: 6 }, (_, i) => `  • tabId ${i + 1}: "Tab number ${i + 1}" (https://example.com/page-${i + 1})`).join('\n')
@@ -278,16 +278,6 @@ describe('postBrowserImageHandler', () => {
       } finally {
         if (prevFloor === undefined) delete process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
         else process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = prevFloor
-      }
-    })
-
-    it('shortens an above-floor repeated Tab Context to the placeholder', async () => {
-      await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
-      const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
-      expect(result.hookType).toBe('rewriteOutput')
-      if (result.hookType === 'rewriteOutput') {
-        expect(result.updatedOutput).not.toContain('Available tabs')
-        expect(result.updatedOutput).toContain('(tabs unchanged since last check)')
       }
     })
   })

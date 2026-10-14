@@ -37,7 +37,7 @@ beforeAll(() => {
   projectDir = mkdtempSync(join(tmpdir(), 'tg-deleted-read-'))
   homeDir = mkdtempSync(join(tmpdir(), 'tg-deleted-home-'))
   // `gone.ts` is deleted after indexing; `stays.ts` never is, and anchors the silent half.
-  writeFileSync(join(projectDir, 'gone.ts'), 'export function vanishes(x: number): number {\n  return x + 1\n}\n')
+  writeFileSync(join(projectDir, 'gone.ts'), 'export function vanishes(x: number): number {\n  return x + 1\n}\nexport function callsIt(): number {\n  return vanishes(1)\n}\n')
   writeFileSync(join(projectDir, 'stays.ts'), 'export function remains(x: number): number {\n  return x + 2\n}\n')
   run(['index', '.', '--walk'])
   rmSync(join(projectDir, 'gone.ts'))
@@ -87,6 +87,26 @@ describe('reading a file that was indexed and then deleted', () => {
   it('does not mislabel a deleted file as merely stale', () => {
     const { out } = run(['read', 'gone.ts::vanishes'])
     expect(out).not.toContain(STALE_MARKER)
+  })
+})
+
+// Guard: `brief` must carry the same deleted-file warning every other single-file surgical-read command (`read`, `outline`, `skeleton`, `symbol`) already carries -- see the header above for the shared root cause. `runBriefCore` resolved its symbol through `resolveSymbolSpec`, which does heal a stale-but-still-present file in place, but never called the trailing `staleWarning` check `runRead` makes to catch what healing cannot fix: a file that is gone entirely. So `brief` on an indexed-then-deleted file served the old body with no warning at all, in both its text and `--json` forms, while `read` on the identical spec printed the `⚠ DELETED` banner.
+describe('brief on a file that was indexed and then deleted', () => {
+  it('still returns the indexed body (the body is what makes the silence dangerous)', () => {
+    const { status, out } = run(['brief', 'gone.ts::vanishes'])
+    expect(status).toBe(0)
+    expect(out).toContain('return x + 1')
+  })
+
+  it('warns that the file is gone, matching read on the identical spec', () => {
+    const { out } = run(['brief', 'gone.ts::vanishes'])
+    expect(out, 'brief served indexed content for a deleted file with no warning').toContain(DELETED_MARKER)
+  })
+
+  it('--json marks the row deleted rather than passing it off as a live file', () => {
+    const { out } = run(['brief', 'gone.ts::vanishes', '--json'])
+    const payload = JSON.parse(out) as { deleted?: boolean }
+    expect(payload.deleted, 'brief --json passed a deleted file off as a live read').toBe(true)
   })
 })
 

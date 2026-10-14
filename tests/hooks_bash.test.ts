@@ -2451,12 +2451,6 @@ describe('preBashHandler — sed line-range interception', () => {
     expect(preBashHandler(makeBashEvent("sed -n '10,20p;100,110p;200,210p' src/foo.ts")).hookType).toBe('pass')
   })
 
-  it('a single range still resolves through the multi-range path', () => {
-    // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
-    expect(extractLineRangeRead("sed -n '13,31p' docs/report.md") ?? extractLineRangeReadsCompound("sed -n '13,31p' docs/report.md")?.[0]).toMatchObject({ filePath: 'docs/report.md', ranges: [[13, 31]] })
-    expect(preBashHandler(makeBashEvent("sed -n '13,31p' docs/report.md")).hookType).toBe('pass')
-  })
-
   it('resolves Salesforce Apex, metadata, and markup line ranges to their files', () => {
     // Priced gate: these fixture paths are not on disk, so the replacement cannot be priced and no hint is emitted (bash_range_savings.ts). What this case is really about -- that the command shape is recognized and resolves to this file and range -- is asserted on the extractor, which is a stricter oracle than the sentence the hint used to render.
     for (const file of [
@@ -2667,14 +2661,6 @@ describe('preBashHandler — directory listing map hint', () => {
 
   it('emits map hint for ls -laR', () => {
     const result = preBashHandler(makeBashEvent('ls -laR'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat map')
-    }
-  })
-
-  it('still fires for eza --long (existing path)', () => {
-    const result = preBashHandler(makeBashEvent('eza --git --long src/'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat map')

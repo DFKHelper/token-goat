@@ -4933,27 +4933,6 @@ merge = refs/heads/master
     expect(symbols.find((s) => s.name === 'branch "master"')?.kind).toBe('ini_section')
   })
 
-  it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
-    const content = `
-CREATE INDEX CONCURRENTLY idx_name ON users (id);
-`
-    const symbols = extractSql(content, 'schema.sql')
-    const names = symbols.map((s) => s.name)
-    expect(names).toContain('idx_name')
-    expect(names).not.toContain('CONCURRENTLY')
-    expect(symbols.find((s) => s.name === 'idx_name')?.kind).toBe('sql_index')
-  })
-
-  it('extracts CREATE MATERIALIZED VIEW', () => {
-    const content = `
-CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
-`
-    const symbols = extractSql(content, 'schema.sql')
-    const names = symbols.map((s) => s.name)
-    expect(names).toContain('mat_view')
-    expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
-  })
-
   it('returns empty array for empty input', () => {
     expect(extractIni('', 'empty.ini')).toHaveLength(0)
   })
@@ -5072,27 +5051,6 @@ NEXT=1
 `
     const symbols = extractEnv(content, '.env')
     expect(symbols.map((s) => s.name)).toEqual(['DIR', 'API_KEY', 'PORT', 'WIN', 'NEXT'])
-  })
-
-  it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
-    const content = `
-CREATE INDEX CONCURRENTLY idx_name ON users (id);
-`
-    const symbols = extractSql(content, 'schema.sql')
-    const names = symbols.map((s) => s.name)
-    expect(names).toContain('idx_name')
-    expect(names).not.toContain('CONCURRENTLY')
-    expect(symbols.find((s) => s.name === 'idx_name')?.kind).toBe('sql_index')
-  })
-
-  it('extracts CREATE MATERIALIZED VIEW', () => {
-    const content = `
-CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
-`
-    const symbols = extractSql(content, 'schema.sql')
-    const names = symbols.map((s) => s.name)
-    expect(names).toContain('mat_view')
-    expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
   })
 
   it('returns empty array for empty input', () => {
@@ -5407,28 +5365,6 @@ real:
       ['first', 'makefile_target', 2],
       ['all', 'makefile_target', 4],
     ])
-  })
-
-  it('extracts CREATE INDEX with CONCURRENTLY keyword', () => {
-
-    const content = `
-CREATE INDEX CONCURRENTLY idx_name ON users (id);
-`
-    const symbols = extractSql(content, 'schema.sql')
-    const names = symbols.map((s) => s.name)
-    expect(names).toContain('idx_name')
-    expect(names).not.toContain('CONCURRENTLY')
-    expect(symbols.find((s) => s.name === 'idx_name')?.kind).toBe('sql_index')
-  })
-
-  it('extracts CREATE MATERIALIZED VIEW', () => {
-    const content = `
-CREATE MATERIALIZED VIEW mat_view AS SELECT * FROM users;
-`
-    const symbols = extractSql(content, 'schema.sql')
-    const names = symbols.map((s) => s.name)
-    expect(names).toContain('mat_view')
-    expect(symbols.find((s) => s.name === 'mat_view')?.kind).toBe('sql_view')
   })
 
   it('reports correct line numbers for many scattered targets', () => {

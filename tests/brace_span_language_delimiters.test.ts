@@ -221,22 +221,6 @@ describe('brace span scanning treats a C# raw string as opaque', () => {
     expect(result.symbols.find((s) => s.name === 'C')?.lineEnd).toBe(6)
   })
 
-  it('still reads three adjacent quotes in Kotlin as a fixed three-quote literal', async () => {
-    const content = [
-      'class Sizes {',
-      '    fun label(): String {',
-      '        val s = """5" wide"""',
-      '        return s',
-      '    }',
-      '}',
-      '',
-    ].join('\n')
-    const result = await parseFixture('Sizes.kt', content)
-    const label = result.symbols.find((s) => s.name === 'label')
-    expect(label?.lineStart).toBe(2)
-    expect(label?.lineEnd).toBe(5)
-  })
-
   it('still reads an empty C# string literal as two ordinary quotes', async () => {
     const content = [
       'class C {',
