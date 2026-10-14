@@ -117,11 +117,8 @@ function readSessionStartInput(timeoutMs) {
       finish('stdin could not be read')
     }
 
-    if (timeoutMs <= 0) {
-      finish('input deadline exceeded')
-      return
-    }
-    timer = setTimeout(() => finish('input deadline exceeded'), timeoutMs)
+    // A payload already in the pipe must be framed even when the deadline has passed, so the expiry is deferred one turn: the poll phase delivers buffered stdin before setImmediate runs.
+    timer = setTimeout(() => setImmediate(() => finish('input deadline exceeded')), Math.max(0, timeoutMs))
     process.stdin.on('data', onData)
     process.stdin.on('end', onEnd)
     process.stdin.on('error', onError)
