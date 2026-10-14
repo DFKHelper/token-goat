@@ -87,6 +87,19 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
         '26c; see tests/hooks_mcp.test.ts for the straddling-key regression.',
     },
   ],
+  ...['truncatePlaywrightSnapshotLine', 'elideSnapshotText', 'truncateNetworkRequestLine'].map(
+    (name): [string, Classification] => [
+      name,
+      {
+        bucket: 'operates-on-already-redacted-input',
+        reason:
+          'Reached only through compressBrowserMcpResult, called from compressMcpResultWithPacks on the text ' +
+          'hooks_mcp.ts::postMcpHandler builds from redactedResult.text (the Playwright pass output, itself ' +
+          'computed from redactedResult.text, or that text directly), the same path as truncateSnapshotLine. ' +
+          'See tests/mcp_compress_playwright.test.ts for the snapshot and network straddling-key regressions.',
+      },
+    ],
+  ),
   [
     'clipWideLines',
     {

@@ -510,6 +510,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/markdown_lines.ts`](src/markdown_lines.ts) | Iterate markdown lines, skipping fenced-code-block content (``` or ~~~ blocks) and the fence delimiter lines themselves, so a `#` comment inside a code fence is never mistaken for |
 | [`src/mcp_client_text.ts`](src/mcp_client_text.ts) | Token-goat's own notes worded for whichever client asked. |
 | [`src/mcp_compress_packs.ts`](src/mcp_compress_packs.ts) | Schema-aware compression packs for two specific MCP servers, layered on top of {@link mcp_compress.ts}'s generic structural pass. |
+| [`src/mcp_compress_playwright.ts`](src/mcp_compress_playwright.ts) | Section pass for `@playwright/mcp` browser-tool results. |
 | [`src/mcp_compress.ts`](src/mcp_compress.ts) | Deterministic, structural compression for MCP tool results. |
 | [`src/mcp_jsonrpc.ts`](src/mcp_jsonrpc.ts) | A minimal Model Context Protocol server, in-house. |
 | [`src/mcp_stdio.ts`](src/mcp_stdio.ts) | The stdio transport for token-goat's MCP server -- newline-delimited JSON over the process's own stdin and stdout, which is the only transport `token-goat mcp-serve` has ever offer |

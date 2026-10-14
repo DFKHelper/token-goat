@@ -587,6 +587,7 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
     'process_util.ts::return `"${value.replace(/[\\\\$`"]/g, \'\\\\$&\')}"`',
     'process_util.ts::return `\'${value.replace(/\'/g, "\'\\\\\'\'")}\'`',
     'process_util.ts::return `\'${value.replace(/\'/g, "\'\'")}\'`',
+    'mcp_compress_playwright.ts::return `\'${escaped}\'`',
   ].map((key) => ({ key, reason: R.quoter })),
   ...[
     'hooks_bash_commands.ts::.replace(/"((?:[^"\\\\]|\\\\.)*)"/g, (_m, inner: string) => \'"\' + \' \'.repeat(inner.length) + \'"\')',
@@ -623,6 +624,7 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
   ].map((key) => ({ key, reason: R.pinned })),
   ...[
     'mcp_compress_packs.ts::return `${indent}${uid} ${role} "${name.slice(0, SNAPSHOT_NAME_MAX_CHARS)}  … [${elided} chars elided]"${rest}`',
+    'mcp_compress_packs.ts::const namePart = name === undefined ? \'\' : ` "${elideSnapshotText(name)}"`',
     'tool_filters/db_clients.ts::kept.push(...allKeys.slice(0, RedisCLIFilter.LIST_KEEP).map((k) => `"${k}"`))',
     'tool_filters/db_clients.ts::kept.push(...allKeys.map((k) => `"${k}"`))',
   ].map((key) => ({ key, reason: R.render })),
