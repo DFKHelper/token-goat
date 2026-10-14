@@ -8,14 +8,13 @@ import { PER_FILE_COUNTERFACTUAL_CEILING } from './util.js'
 import { loadConfig } from './config.js'
 import { compressMcpResult, MCP_COMPRESS_MIN_BYTES } from './mcp_compress.js'
 import { compressMcpResultWithPacks } from './mcp_compress_packs.js'
-import { compressPlaywrightResult } from './mcp_compress_playwright.js'
 import { redactSecrets } from './secret_redact.js'
 import { UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import { scanAndRecord, fenceWithMatches } from './untrusted_fence.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { clipToDeliveryCap } from './delivery_cap.js'
-import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
+import { MCP_TOOL_PATTERN, PLAYWRIGHT_TOOL_RE } from './mcp_tool_pattern.js'
 import { hintTarget } from './hint_target.js'
 import { quotedArg } from './hint_suggestion_guard.js'
 
@@ -102,7 +101,7 @@ function preMcpHandler(event: HookEvent): HookOutput {
   )
 }
 
-function postMcpHandler(event: HookEvent): HookOutput {
+async function postMcpHandler(event: HookEvent): Promise<HookOutput> {
   const toolName = getToolName(event)
   if (!toolName || !toolName.startsWith('mcp__') || isTokenGoatMcpTool(toolName)) return passOutput()
   const toolInput = getToolInput(event)
@@ -129,7 +128,9 @@ function postMcpHandler(event: HookEvent): HookOutput {
   if (!event.sessionId) return passOrFence()
   const compressionEnabled = process.env['TOKEN_GOAT_MCP_COMPRESS'] !== '0'
   // Computed ahead of the error and dedup returns below, though only the compression branch uses it, because the Playwright pass also records the `Open tabs` list this result carries as the last one shown. Each of those returns ships this list in full, so a record taken only on the compression branch would miss a list the model did see, and the next result could then be collapsed as "unchanged" against an older list. Fed the redacted text, like every other compression step here.
-  const sectioned = compressionEnabled ? compressPlaywrightResult(toolName, toolInput, redactedResult.text) : null
+  // Imported only for a Playwright tool, which keeps the pass out of the hook entry's eager set: every other MCP result, and every non-MCP tool call, would parse it and never run it. A failed import skips the pass rather than throwing: a resident hook server outlives the rebuild that renames its chunks, and a throw here would hand the result through unfenced.
+  const playwright = compressionEnabled && PLAYWRIGHT_TOOL_RE.test(toolName) ? await import('./mcp_compress_playwright.js').catch(() => null) : null
+  const sectioned = playwright ? playwright.compressPlaywrightResult(toolName, toolInput, redactedResult.text) : null
   // An in-band MCP error is a valid response, not a cacheable one - never let a transient or now-resolved failure block every later identical retry.
   if (isMcpErrorResponse(event.raw)) return passOrFence()
   const readOnly = isMcpReadOnly(toolName, toolInput)

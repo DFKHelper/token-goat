@@ -1,9 +1,7 @@
 /** Section pass for `@playwright/mcp` browser-tool results. They arrive as markdown `### ` sections (`Result`, `Ran Playwright code`, `Open tabs`, `Page`, `Snapshot`, `Events`, `Error`) rather than JSON, so neither {@link mcp_compress.ts}'s generic pass nor a key-stripping pack in {@link mcp_compress_packs.ts} can touch them. Only the two sections that repeat what the model already holds are rewritten. `Ran Playwright code` on `browser_evaluate`/`browser_run_code`/`browser_run_code_unsafe` echoes the model's own `function`/`code` argument back, re-escaped into a JS string and so longer than what was sent (34% of all measured `browser_evaluate` bytes). `Open tabs` repeats the list an earlier Playwright result already showed (83 of 212 measured sections). Every other section, and the code block of every action tool (the only record of the locator Playwright resolved a ref to), passes through byte-identical. {@link hooks_mcp.ts}'s `postMcpHandler` runs this below `MCP_COMPRESS_MIN_BYTES`, because that is where most Playwright results are: 903 of 1,160 measured fell under it. */
 
+import { PLAYWRIGHT_TOOL_RE } from './mcp_tool_pattern.js'
 import { lastTabContextMatches, setLastTabContext } from './session.js'
-
-/** Matches `@playwright/mcp`'s browser tools under whatever server key the user registered it as, e.g. `mcp__playwright__browser_evaluate` or `mcp__plugin_playwright_playwright__browser_tabs`. */
-const PLAYWRIGHT_TOOL_RE = /^mcp__.*playwright.*__browser_[a-z_]+$/i
 
 const SECTION_HEADING_PREFIX = '### '
 const CODE_HEADING = '### Ran Playwright code'

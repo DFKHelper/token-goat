@@ -82,7 +82,7 @@ import {
   symbolExtractorGap,
 } from './read_meta.js'
 import { formatCommandError } from './command_error.js'
-import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { canQuoteArg, couldNotRead, echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { forClient } from './mcp_client_text.js'
 
 const GREP_MAX_LINES = 200
@@ -497,6 +497,35 @@ export function guardText(text: string, command: string): string {
 export function outputCeilingChars(): number | null {
   const cfg = loadConfig()
   return cfg.overflow_guard.enabled ? Math.min(HARNESS_INLINE_CEILING_CHARS, cfg.overflow_guard.max_tokens * guardDivisor()) : null
+}
+
+/** Characters a `token-goat read "file@A-B"` header costs, kept out of a continuation range so the read it names fits the ceiling too. */
+const READ_HEADER_RESERVE_CHARS = 120
+
+/** How many leading `lines`, joined with line breaks, fit in `maxChars`. Never fewer than one, so a capped answer is never empty; a single line longer than the ceiling is the caller's to cut. */
+export function linesWithinChars(lines: readonly string[], maxChars: number): number {
+  let used = 0
+  for (let i = 0; i < lines.length; i++) {
+    used += lines[i]!.length + (i > 0 ? 1 : 0)
+    if (used > maxChars) return Math.max(1, i)
+  }
+  return lines.length
+}
+
+/** `lines`, which are lines `firstLine` on of `file`, cut to the leading lines that fit `maxChars` less `reserve` (what the caller prints around them) with room for a closing notice, which names the next part as a `token-goat read "file@A-B"` whose range fits the ceiling itself. Null when the lines already fit. `what` names the output in the notice ("section", "skill body"). A path no quote mark holds in both shells gets the line range without the command. Here beside {@link outputCeilingChars} rather than in overflow_guard.ts, which the hook entry loads eagerly: only the CLI's own paged answers call it. */
+export function capFileLines(allLines: readonly string[], firstLine: number, file: string, maxChars: number, what: string, reserve = 0): { kept: string[]; lastLine: number; notice: string } | null {
+  if (allLines.join('\n').length + reserve <= maxChars) return null
+  // Text ending in a line break splits into a trailing "" that is no line of the file; counting it would page one line past the end.
+  const lines = allLines.length > 1 && allLines[allLines.length - 1] === '' ? allLines.slice(0, -1) : allLines
+  const kept = lines.slice(0, linesWithinChars(lines, maxChars - reserve - (300 + file.length)))
+  const lastLine = firstLine + kept.length - 1
+  const finalLine = firstLine + lines.length - 1
+  const nextEnd = lastLine + linesWithinChars(lines.slice(kept.length), maxChars - READ_HEADER_RESERVE_CHARS)
+  const head = `[token-goat: ${what} capped at ${maxChars} chars to stay under the harness's inline output limit; showing lines ${firstLine}-${lastLine} of ${firstLine}-${finalLine}.`
+  const next = canQuoteArg(file)
+    ? ` Next part: ${fencedCommand(`token-goat read ${quotedArg(`${file}@${lastLine + 1}-${nextEnd}`)}`)}${nextEnd < finalLine ? `, then on to line ${finalLine}` : ''}.]`
+    : ` The rest is lines ${lastLine + 1}-${finalLine} of ${echoedValue(file)}.]`
+  return { kept, lastLine, notice: forClient(head + next) }
 }
 
 /** Cap `text` and fence it under {@link UNTRUSTED_GITHUB_TAG}. A PR's title, description, review comments, and diff are all authorable by anyone who opened the PR or left the comment, so the fence follows that provenance and not the scan result. The scan still runs, purely to name matched pattern(s) in the notice and record the stat. Used by every printed `pr-slice` emit site, each of which has already redacted its text. The `--json` sites use {@link fenceGithubFieldIfMatched} instead -- see the note there. */
