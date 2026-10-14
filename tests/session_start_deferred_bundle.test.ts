@@ -96,11 +96,12 @@ function occurrences(text: string): number {
   return text.split(REMINDER_PHRASE).length - 1
 }
 
-/** The shipping shim with a startup deadline that is already past, so the start fails open with `{}`. */
+/** The shipping shim running a start that begins and never settles: it reads the payload inside its own live deadline (so it stamps the start as begun), then its helper entry hangs and the start fails open with `{}`. A past deadline would fail before any payload is read, a start no session key can be tied to. */
 async function deferredStart(fixture: Fixture, sessionId: string): Promise<Run> {
-  const past = Date.now() - 60_000
+  const hang = join(fixture.root, 'hang_entry.cjs')
+  writeFileSync(hang, 'setInterval(() => {}, 1000)', 'utf8')
   const payload = { sessionId, workingDirectory: fixture.project, source: 'startup' }
-  return exec([fixture.shim, 'sessionStart', BUNDLE, `--session-start-deadline=${past}`], fixture, {}, JSON.stringify(payload))
+  return exec([fixture.shim, 'sessionStart', hang], fixture, {}, JSON.stringify(payload))
 }
 
 async function doctorLine(fixture: Fixture): Promise<string> {
@@ -114,7 +115,7 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop() as string, { recursive: true, force: true })
 })
 
-describe('built bundle: deferred session start (R2, R5, R8)', () => {
+describe('built bundle: deferred session start (R2, R5, R8, R9)', () => {
   it('R2: a start that failed open is delivered on the first copilot_cli tool call, with the drift sweep', async () => {
     expect(existsSync(BUNDLE), 'build dist/token-goat.mjs before this test').toBe(true)
     const fixture = makeFixture()
@@ -161,6 +162,17 @@ describe('built bundle: deferred session start (R2, R5, R8)', () => {
     expect(occurrences(first.stdout), first.stdout).toBe(1)
     await hook(fixture, 'post_tool_use', 'copilot_cli', toolPayload(fixture, sid))
     expect(await doctorLine(fixture)).toContain('1 session start missed the shim deadline and was delivered on the first tool call')
+  }, 120_000)
+
+  it('R9: a start that failed before it read its payload leaves no session start owed', async () => {
+    const fixture = makeFixture()
+    const sid = 'bundle-r9-session'
+    const past = Date.now() - 60_000
+    const payload = { sessionId: sid, workingDirectory: fixture.project, source: 'startup' }
+    const start = await exec([fixture.shim, 'sessionStart', BUNDLE, `--session-start-deadline=${past}`], fixture, {}, JSON.stringify(payload))
+    expect(start.stdout).toBe('{}')
+    const first = await hook(fixture, 'post_tool_use', 'copilot_cli', toolPayload(fixture, sid))
+    expect(occurrences(first.stdout), first.stdout).toBe(0)
   }, 120_000)
 })
 
