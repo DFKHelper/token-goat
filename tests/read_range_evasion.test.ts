@@ -3,7 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  clearAllReadRangeEvasion, evaluateRangeEvasion, getReadRangeDenials, lockReadRange,
+  clearAllReadRangeEvasion, coerceReadRangeEvasion, evaluateRangeEvasion, exportReadRangeEvasion, getReadRangeDenials, importReadRangeEvasion, lockReadRange,
   getRecentReadRanges, recordRecentReadRange,
   type ReadRange,
 } from '../src/read_range_evasion.js'
@@ -75,6 +75,28 @@ describe('range-denial lifecycle', () => {
     expect(getReadRangeDenials(key)).toEqual([[20, 30]])
     resetFileLineRanges('file')
     expect(getReadRangeDenials(key)).toEqual([])
+  })
+
+  // HAND-DERIVED: lines 10..30 read, the file changes on disk, 15..25 is read (it finds the change), then 10..30 again. Windows are computed by hand; 10..30 holds an edit the model was never shown, so it must not count as a high-overlap retry of 15..25.
+  it('does not judge a read around the window that re-synced the file after a change as evasion', () => {
+    const key = foldPath(normalizePath('file'))
+    recordRecentReadRange(key, [10, 30])
+    resetFileLineRanges('file')
+    recordRecentReadRange(key, [15, 25])
+    recordRecentReadRange(key, [15, 25])
+    expect(getRecentReadRanges(key)).toEqual([])
+    expect(evaluateRangeEvasion({ span: [10, 30], served: getRecentReadRanges(key) })).toBeNull()
+    // The pass is for that one window: once the re-read of 10..30 is booked, a hunt around it is still caught.
+    recordRecentReadRange(key, [10, 30])
+    expect(evaluateRangeEvasion({ span: [5, 50], served: getRecentReadRanges(key) })).toBe('overlap')
+  })
+
+  it('keeps the re-sync mark across the JSON boundary between hook processes', () => {
+    const key = foldPath(normalizePath('file'))
+    resetFileLineRanges('file')
+    recordRecentReadRange(key, [15, 25])
+    importReadRangeEvasion(coerceReadRangeEvasion(JSON.parse(JSON.stringify(exportReadRangeEvasion()))))
+    expect(getRecentReadRanges(key)).toEqual([])
   })
 
   it('clears the denied spans and lock at compaction', () => {

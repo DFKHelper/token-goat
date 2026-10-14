@@ -3,7 +3,7 @@ import { quotedArg } from './hint_suggestion_guard.js'
 
 export type ReadRange = readonly [number, number]
 type Identity = { size: number; mtimeMs: number }
-type Visit = { span: [number, number]; at: number }
+type Visit = { span: [number, number]; at: number; resync?: true }
 export interface RangeEvasionState {
   resetAt: number
   denied: Visit[]
@@ -74,12 +74,15 @@ export function recordRecentReadRange(key: string, span: ReadRange): void {
   // Both pre and post hooks book a successful window. That pair is one visit, not two slices.
   const last = state.recent.at(-1)?.span
   if (last?.[0] === span[0] && last[1] === span[1]) return
-  state.recent.push({ span: [span[0], span[1]], at: stamp() })
+  // The first window read after a reset (the file changed on disk, or was edited) is the model re-syncing, so a later read around it is no evasion.
+  const resync = state.resetAt > 0 && state.recent.length === 0 && state.denied.length === 0
+  state.recent.push({ span: [span[0], span[1]], at: stamp(), ...(resync ? { resync: true as const } : {}) })
   state.recent = state.recent.slice(-3)
 }
 
+/** The recent windows evasion is judged against, without the re-sync window that opened the file's history after a reset. */
 export function getRecentReadRanges(key: string): ReadonlyArray<ReadRange> {
-  return states.get(key)?.recent.map((v) => v.span) ?? []
+  return states.get(key)?.recent.filter((v) => v.resync !== true).map((v) => v.span) ?? []
 }
 
 /** A denied-only file may have no served-range identity; its lock carries its own fingerprint. */
@@ -120,7 +123,7 @@ export function coerceReadRangeEvasion(raw: unknown): RangeEvasionEntries {
       const span: unknown = v.span
       if (!Array.isArray(span) || span.length !== 2 || !finite(span[0]) || !finite(span[1]) ||
         !Number.isInteger(span[0]) || !Number.isInteger(span[1]) || span[0] < 1 || span[1] < span[0] || !finite(v.at)) return []
-      return [{ span: [span[0], span[1]], at: v.at }]
+      return [{ span: [span[0], span[1]], at: v.at, ...('resync' in v && v.resync === true ? { resync: true as const } : {}) }]
     }).slice(-3)
   }
   return raw.flatMap((pair: unknown): RangeEvasionEntries => {
