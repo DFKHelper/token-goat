@@ -76,6 +76,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/hint_suggestion_guard.ts': 'formats the token-goat command text in an embedding-status suggestion, reached only via embed_model.ts; it never reads file content or decides what a parse extracts',
   'src/hints/markdown_hints.ts': 'extractMarkdownHeadings is reached from parser.ts only via buildEmbeddingBoundaries, which derives embedding chunk boundaries (files.embed_sha), not symbol/ref/section extraction',
   'src/index_reader.ts': 'querySymbols is used inside buildEmbeddingBoundaries to read back already-written symbol rows for embedding chunking, and elsewhere only by CLI read commands; it never decides what indexFileSync writes',
+  'src/fence_confusables.ts': 'the look-alike readings the fence-marker scans use, reached only via injection_scan.ts; never applied to stored symbol/ref/section content',
   'src/injection_scan.ts': 'untrusted-content fencing for CLI/hook output display, reached via paths.ts and secret_redact.ts, never applied to stored symbol/ref/section content',
   'src/render/ansi.ts': 'terminal escape stripping, reached from parser.ts only via injection_scan.ts, whose tool-output fences strip a body before neutralizing it; never applied to stored symbol/ref/section content',
   'src/lazy_module.ts': 'generic optional-dependency lazy-loader factory used by pdf/ooxml_extract.ts (embed_sha pipeline) and unrelated CLI surfaces; carries no extraction decisions itself',

@@ -1,5 +1,6 @@
 /** Lexical scan for prompt-injection attack patterns in untrusted fetched content. Pure leaf module: no mutable state, so no {@link registerReset} hook. */
 
+import { ASCII_CONFUSABLES, CONFUSABLE_CLASSES, CONFUSABLE_READINGS } from './fence_confusables.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 
 interface InjectionPattern {
@@ -46,11 +47,69 @@ const FENCE_TAG_PREFIX = 'untrusted'
 /** Characters a reader passes over, so a marker with one spliced into it still reads as that marker: format and control characters (zero-width spaces and joiners, the word joiner, the soft hyphen, bidi marks, C0 and C1 controls), every other default-ignorable code point (`\p{DI}`, Default_Ignorable_Code_Point: variation selectors, the combining grapheme joiner, Hangul fillers, Mongolian variation selectors, Khmer inherent vowels, the whole tag block whether assigned or not), combining marks, lone surrogates, and the line and paragraph separators, which a renderer may drop or break on and either way does not show as a letter. Format and control characters alone let `</untrusted\uFE0F-tool-output>` through, a variation selector being neither. */
 const UNSEEN_CHAR = /^[\p{Cf}\p{Cc}\p{DI}\p{M}\p{Cs}\p{Zl}\p{Zp}]$/u
 
-/** Letters compatibility decomposition leaves alone that a reader takes for a Latin letter one of the marker names spells (`untrusted`, `token`, `goat`, `tg`): Cyrillic, Greek, Armenian and Cherokee look-alikes, the script `g`, the small capitals `u`, `t`, `s` and `g`, a Lisu `u` and a Canadian syllabics `d`, each above the letter in {@link LOOKALIKE_TO} it reads as. Lower case only, since {@link readAs} lower-cases first, which brings `\u0422`, `\u039A`, `\u039D` and the rest down to these. */
-const LOOKALIKE_FROM = '\u0430\u03B1\u0501\u0435\u03B5\u0261\u050D\u0581\u043A\u03BA\u03B7\u03BD\u043F\u0578\u043E\u03BF\u03C3\u0585\u0433\u0455\u0442\u03C4\u03C5\u057D\u1D1C\uA4F4\u1D1B\uA731\u04BD\u146F\uAB81\u0262'
-const LOOKALIKE_TO = 'aadeegggkknnnnoooorsttuuuutsedrg'
+/** The groups of a {@link CONFUSABLE_READINGS}-shaped string: each reading with the code points that read as it. */
+function decodeConfusables(encoded: string, visit: (cp: number, reading: string) => void): void {
+  for (const group of encoded.split('|')) {
+    const space = group.indexOf(' ')
+    const reading = group.slice(0, space)
+    let cp = 0
+    for (const gap of group.slice(space + 1).split(',')) visit((cp += parseInt(gap, 36)), reading)
+  }
+}
 
-/** What a reader takes code point `cp` for: NFKD folds fullwidth and small forms, mathematical alphanumerics and ligatures to plain letters and punctuation and splits an accented letter from its accent, the accents are dropped, so `\u00FC` reads as the `u` it is drawn on just as `u` with a combining diaeresis does, the result is lower-cased, a {@link LOOKALIKE_FROM} letter becomes the one it reads as, and a dash, a space or an underscore reads as `-` (the dashes being U+02D7, U+2010 to U+2015, U+2043 and U+2212, and the box-drawing, katakana and heavy-minus strokes U+2500, U+30FC and U+2796 that pass for one; NFKD already brings the small and fullwidth hyphen-minus down to `-`). ASCII is nearly every character this is asked about and none of that changes it, so it is lower-cased directly, and only a code point in {@link FOLDING_RANGES} is decomposed at all, once per call: normalizing every character of a marker-dense text made fencing it eight times slower. The look-alikes in this module's regex classes are written raw, not escaped, because esbuild keeps an escape in a regex at six bytes and this module is in every hook's eager set; each class names its code points beside it. */
+/** What a look-alike compatibility decomposition does not fold reads as, from Unicode's confusables data (UTS #39) as src/fence_confusables.ts holds it: the Cyrillic, Greek, Armenian, Cherokee, Lisu, Coptic, syllabics and every other script's letters and signs whose prototype is an ASCII letter or digit, a dash, a slash, a bracket or a colon. Data rather than a list written out here, which named 32 letters and let every other look-alike through. Decoded on the first non-ASCII character a scan reads, since most text has none. Where the data and compatibility decomposition disagree, as for the long `s` the data reads as `f`, a scan takes either reading. Exported for the test that checks every entry of the data. */
+let confusableReadings: Map<number, string> | null = null
+
+export function confusableReading(cp: number): string | undefined {
+  if (confusableReadings === null) {
+    const readings = new Map<number, string>()
+    decodeConfusables(CONFUSABLE_READINGS, (at, reading) => readings.set(at, reading))
+    confusableReadings = readings
+  }
+  return confusableReadings.get(cp)
+}
+
+/** Every code point that reads as `ch`, which must be one of the punctuation characters {@link CONFUSABLE_CLASSES} covers, as a regex character class that also holds `ch` itself. */
+function readingClass(ch: string): string {
+  let members = `\\u{${(ch.codePointAt(0) ?? 0).toString(16)}}`
+  decodeConfusables(CONFUSABLE_CLASSES, (cp, reading) => {
+    if (reading === ch) members += `\\u{${cp.toString(16)}}`
+  })
+  return `[${members}]`
+}
+
+/** The character classes the scans find brackets with, as regex sources, and the code points of every slash and backslash, each built once from {@link CONFUSABLE_CLASSES}. */
+interface MarkerClasses {
+  /** `<`, its small and fullwidth forms, and every angle bracket that reads as one: the syllabics, modifier, single-guillemet, CJK, mathematical and ornament forms among them. */
+  readonly opens: string
+  /** `>` read the same way. */
+  readonly closes: string
+  /** `[` read the same way, for the voice. */
+  readonly voiceOpens: string
+  /** `/`, the backslash, and every fraction, division, fullwidth, box-drawing, katakana or other slash that reads as one of them. */
+  readonly slashes: ReadonlySet<number>
+}
+let markerClassCache: MarkerClasses | null = null
+
+function markerClasses(): MarkerClasses {
+  if (markerClassCache !== null) return markerClassCache
+  const slashes = new Set<number>([0x2f, 0x5c])
+  decodeConfusables(CONFUSABLE_CLASSES, (cp, reading) => {
+    if (reading === '/' || reading === '\\') slashes.add(cp)
+  })
+  return (markerClassCache = { opens: readingClass('<'), closes: readingClass('>'), voiceOpens: readingClass('['), slashes })
+}
+
+/** Each ASCII code as {@link readAs} reads it: lower case; `0` as `o` and `1`, `I` and `|` as `l`, as the confusables data has them; and an underscore, a space, a tab or a line break as `-`. */
+const ASCII_READINGS = ((): Uint8Array => {
+  const table = new Uint8Array(0x80)
+  for (let code = 0; code < 0x80; code++) table[code] = code >= 0x41 && code <= 0x5a ? code + 0x20 : code
+  for (let i = 0; i < ASCII_CONFUSABLES.length; i += 2) table[ASCII_CONFUSABLES.charCodeAt(i)] = ASCII_CONFUSABLES.charCodeAt(i + 1)
+  for (const code of [0x5f, 0x20, 0x09, 0x0a, 0x0b, 0x0c, 0x0d]) table[code] = 0x2d
+  return table
+})()
+
+/** What a reader takes code point `cp` for: NFKD folds fullwidth and small forms, mathematical alphanumerics and ligatures to plain letters and punctuation and splits an accented letter from its accent, the accents are dropped, so `\u00FC` reads as the `u` it is drawn on just as `u` with a combining diaeresis does, each character left becomes what the confusables data reads it as ({@link confusableReading}) or else its lower case, and a space or an underscore reads as `-`. ASCII is nearly every character this is asked about and none of that changes it, so it is lower-cased directly, and only a code point in {@link FOLDING_RANGES} is decomposed at all, once per call: normalizing every character of a marker-dense text made fencing it eight times slower. */
 function readAs(cp: number, readings: Readings): string {
   if (cp < 0x80) return String.fromCharCode(readAscii(cp))
   const held = readings.slots !== null && readings.slots.cp[cp & SLOT_MASK] === cp ? readings.slots.read[cp & SLOT_MASK] : undefined
@@ -67,12 +126,21 @@ function readAs(cp: number, readings: Readings): string {
   return read
 }
 
-/** What a reader takes non-ASCII code point `cp` for, as {@link readAs} describes: through compatibility decomposition with the accents dropped when `decompose` is set, as itself when not, then lower case, the look-alike map and the dash rule. Exported for the test that walks every code point to prove {@link FOLDING_RANGES} complete. */
+/** What a reader takes non-ASCII code point `cp` for, as {@link readAs} describes: through compatibility decomposition with the accents dropped when `decompose` is set, as itself when not, then each character through the confusables data, lower case and the dash rule. A ligature spells its letters in turn, and a character that decomposes to accents alone, such as the halfwidth voiced sound mark, reads as nothing, as an accent does. Exported for the tests that walk every code point to prove {@link FOLDING_RANGES} and the confusables table complete. */
 export function foldCodePoint(cp: number, decompose: boolean): string {
   const ch = String.fromCodePoint(cp)
-  const folded = (decompose ? ch.normalize('NFKD').replace(/\p{M}/gu, '') : ch).toLowerCase()
-  // A ligature spells its letters in turn, and a character that decomposes to accents alone, such as the halfwidth voiced sound mark, reads as nothing, as an accent does; the look-up below is for one letter.
-  return folded.length !== 1 ? folded : (LOOKALIKE_TO[LOOKALIKE_FROM.indexOf(folded)] ?? (/^[\s_˗‐-―⁃−─ー➖]$/.test(folded) ? '-' : folded))
+  let read = ''
+  // A Hangul syllable is read whole: its jamo are drawn as one block, and the leading ieung of one taken apart is the circle the data reads as `o`.
+  for (const part of decompose && (cp < 0xac00 || cp > 0xd7a3) ? ch.normalize('NFKD').replace(/\p{M}/gu, '') : ch) {
+    const code = part.codePointAt(0) ?? 0
+    if (code < 0x80) {
+      read += String.fromCharCode(ASCII_READINGS[code] ?? code)
+      continue
+    }
+    const lower = part.toLowerCase()
+    read += confusableReading(code) ?? confusableReading(lower.codePointAt(0) ?? 0) ?? (/^\s$/.test(lower) ? '-' : lower)
+  }
+  return read
 }
 
 /** What {@link readAs} and {@link nextSeen} have worked out for each non-ASCII code point in one neutralizer call, so a text that repeats one decomposes and classifies it once. A code point in {@link FOLDING_RANGES} is kept in `read` and `kind`, which never drop an entry and hold at most the ranges' few thousand code points, so nothing a text puts first can push a later character out: behind 4,200 distinct CJK letters the capped first-come map this replaced was full before a marker-dense payload began, and fullwidth `<untrusted` repeated to 2,000,000 characters went back to 2.1 s. Any other code point reads as itself, with no normalization, and goes in `slots`, a direct-mapped table of {@link SLOT_COUNT} entries indexed by the code point's low bits and overwritten on a collision: a repeated character always finds its own entry, and a text that cycles colliding characters costs only what reading each afresh costs. Without it `[` followed by a Thai letter, repeated to 2,000,000 characters, took 1.8 s against 0.3 s with a cache. */
@@ -109,16 +177,17 @@ function slotFor(readings: Readings, cp: number): Slots {
   return slots
 }
 
-/** Whether a reader passes over code point `cp` ({@link UNSEEN}), takes it for whitespace ({@link SPACE}), or sees it ({@link SEEN}). */
+/** Whether a reader passes over code point `cp` ({@link UNSEEN}), takes it for whitespace ({@link SPACE}), or sees it ({@link SEEN}). A sign the confusables data reads as something is seen whatever its category: the Telugu anusvara is a spacing mark drawn as an `o`, and the Devanagari visarga one drawn as a colon. */
 function classify(cp: number): number {
+  if (confusableReading(cp) !== undefined) return SEEN
   const ch = String.fromCodePoint(cp)
   return UNSEEN_CHAR.test(ch) ? UNSEEN : /^\s$/.test(ch) ? SPACE : SEEN
 }
 
-/** Every code point whose compatibility or canonical decomposition can read as a character the scans spell or match (the letters of `untrusted`, `token`, `goat` and `tg`, the hyphen, `<`, `>`, `/`, `[`, `]` and `:`), as start and end pairs in order: Latin-1 Supplement through Cyrillic; the phonetic extensions; Latin Extended Additional and Greek Extended through General Punctuation, superscripts and subscripts, Letterlike Symbols and Number Forms; Mathematical Operators; Enclosed Alphanumerics; Supplemental Mathematical Operators; CJK Symbols and Punctuation, Hiragana and Katakana; Enclosed CJK Letters and CJK Compatibility; Latin Extended-D; the presentation forms, variation selectors, small form variants and Halfwidth and Fullwidth Forms; Latin Extended-F; Symbols for Legacy Computing Supplement; Mathematical Alphanumeric Symbols; Cyrillic Extended-D; Enclosed Alphanumeric Supplement. Derived, not chosen: fence_marker_invisible_chars.test.ts walks every code point and fails on one outside these whose decomposition changes what it reads as toward one of those characters. */
+/** Every code point whose compatibility or canonical decomposition can read as a character the scans spell or match (the letters of `untrusted`, `token`, `goat` and `tg`, the hyphen, `<`, `>`, `/`, `[`, `]` and `:`), as start and end pairs in order: Latin-1 Supplement through Cyrillic; Arabic, whose letters with a hamza above decompose to ones drawn as `l` and `o`; the phonetic extensions; Latin Extended Additional and Greek Extended through General Punctuation, superscripts and subscripts, Letterlike Symbols and Number Forms; Mathematical Operators and Miscellaneous Technical, whose deprecated angle brackets decompose to the CJK ones; Enclosed Alphanumerics; Supplemental Mathematical Operators; CJK Symbols and Punctuation, Hiragana and Katakana; Enclosed CJK Letters and CJK Compatibility; Latin Extended-D; Latin Extended-E; the presentation forms, variation selectors, small form variants and Halfwidth and Fullwidth Forms; Latin Extended-F; Symbols for Legacy Computing Supplement; Mathematical Alphanumeric Symbols; Cyrillic Extended-D; Arabic Mathematical Alphabetic Symbols; Enclosed Alphanumeric Supplement and Enclosed Ideographic Supplement; the segmented digits of Symbols for Legacy Computing. Derived, not chosen: fence_marker_invisible_chars.test.ts walks every code point and fails on one outside these whose decomposition changes what it reads as toward one of those characters. */
 export const FOLDING_RANGES: readonly number[] = [
-  0x00a0, 0x04ff, 0x1d00, 0x1dbf, 0x1e00, 0x218f, 0x2200, 0x22ff, 0x2460, 0x24ff, 0x2a00, 0x2aff, 0x3000, 0x30ff, 0x3200, 0x33ff, 0xa700, 0xa7ff, 0xfb00, 0xffef,
-  0x10780, 0x107bf, 0x1cc00, 0x1cebf, 0x1d400, 0x1d7ff, 0x1e000, 0x1e08f, 0x1f100, 0x1f1ff,
+  0x00a0, 0x04ff, 0x0600, 0x06ff, 0x1d00, 0x1dbf, 0x1e00, 0x218f, 0x2200, 0x23ff, 0x2460, 0x24ff, 0x2a00, 0x2aff, 0x3000, 0x30ff, 0x3200, 0x33ff, 0xa700, 0xa7ff, 0xab30, 0xab6f,
+  0xfb00, 0xffef, 0x10780, 0x107bf, 0x1cc00, 0x1cebf, 0x1d400, 0x1d7ff, 0x1e000, 0x1e08f, 0x1ee00, 0x1eeff, 0x1f100, 0x1f2ff, 0x1fbf0, 0x1fbf9,
 ]
 
 function inFoldingRange(cp: number): boolean {
@@ -129,10 +198,9 @@ function inFoldingRange(cp: number): boolean {
   return false
 }
 
-/** {@link readAs} for an ASCII code, as a code: lower case, with an underscore, a space, a tab or a line break read as `-`. */
+/** {@link readAs} for an ASCII code, as a code, from {@link ASCII_READINGS}. */
 function readAscii(code: number): number {
-  if (code === 0x5f || code === 0x20 || (code >= 0x09 && code <= 0x0d)) return 0x2d
-  return code >= 0x41 && code <= 0x5a ? code + 0x20 : code
+  return ASCII_READINGS[code] ?? code
 }
 
 /** Index of the first character at or after `i` that a reader sees: past every {@link UNSEEN_CHAR}, and past whitespace too when `spaces` is set. */
@@ -178,8 +246,14 @@ function spelledEnd(text: string, i: number, word: string, readings: Readings): 
     // Past the end this reads U+0000, which no word contains.
     const cp = text.codePointAt(i) ?? 0
     const read = readAs(cp, readings)
-    if (!word.startsWith(read, at)) return -1
-    at += read.length
+    if (word.startsWith(read, at)) {
+      at += read.length
+    } else {
+      // A character the data and its decomposition read differently is read either way: `\u017F` decomposes to the `s` it is and is drawn as the `f` the data has.
+      const drawn = confusableReading(cp)
+      if (drawn === undefined || !word.startsWith(drawn, at)) return -1
+      at += drawn.length
+    }
     i += cp > 0xffff ? 2 : 1
   }
   return i
@@ -195,12 +269,13 @@ function neutralizeTags(text: string, inFile: boolean): string {
   const readings: Readings = { read: new Map(), kind: new Map(), slots: null }
   let out = ''
   let last = 0
+  // A bracket outside the BMP is two code units, and both go.
   const escapeAt = (at: number, entity: string): void => {
     out += text.slice(last, at) + entity
-    last = at + 1
+    last = at + ((text.codePointAt(at) ?? 0) > 0xffff ? 2 : 1)
   }
-  // Each bracket with the small and fullwidth forms NFKD folds to it, U+FE65 and U+FF1E for `>` and U+FE64 and U+FF1C for `<`, and the angle brackets that pass for one: the Canadian syllabics, modifier, single-guillemet, CJK, mathematical and heavy ornament forms (U+1433, U+02C3, U+203A, U+3009, U+27E9, U+276F, and U+1438, U+02C2, U+2039, U+3008, U+27E8, U+276E for `<`).
-  const closes = /[>﹥＞ᐳ˃›〉⟩❯]/g
+  const classes = markerClasses()
+  const closes = new RegExp(classes.closes, 'gu')
   const closeFrom = (from: number): number => {
     closes.lastIndex = from
     return closes.exec(text)?.index ?? -1
@@ -209,16 +284,15 @@ function neutralizeTags(text: string, inFile: boolean): string {
   let pendingClose = -1
   // The end of the line a name ends on, searched for again only once a later name ends past it, so the scan stays linear.
   let lineEnd = -1
-  const opens = /[<﹤＜ᐸ˂‹〈⟨❮]/g
+  const opens = new RegExp(classes.opens, 'gu')
   for (let m = opens.exec(text); m !== null; m = opens.exec(text)) {
     const open = m.index
-    let at = nextSeen(text, open + 1, true, readings)
-    // Slashes and backslashes: the fraction slash, division slash and big solidus (U+2044, U+2215, U+29F8), the small and fullwidth forms (U+FE68, U+FF0F, U+FF3C), and the box-drawing diagonal, katakana `no` and mathematical rising diagonal that pass for one (U+2571, U+30CE, U+27CB).
-    while (/[/\\⁄∕⧸﹨／＼╱ノ⟋]/.test(text[at] ?? '')) at = nextSeen(text, at + 1, true, readings)
+    let at = nextSeen(text, open + m[0].length, true, readings)
+    for (let cp = text.codePointAt(at) ?? -1; classes.slashes.has(cp); cp = text.codePointAt(at) ?? -1) at = nextSeen(text, at + (cp > 0xffff ? 2 : 1), true, readings)
     const nameEnd = spelledEnd(text, at, FENCE_TAG_PREFIX, readings)
     if (nameEnd === -1) continue
     // Only `<` written straight against the word: a combining solidus overlay or anything else between them is passed over by the reading, and an overlay draws the slash a closing tag has.
-    if (inFile && at === open + 1 && /[A-Za-z0-9]/.test(text[nameEnd] ?? '')) continue
+    if (inFile && at === open + m[0].length && /[A-Za-z0-9]/.test(text[nameEnd] ?? '')) continue
     if (pendingClose !== -1 && pendingClose < open) {
       escapeAt(pendingClose, '&gt;')
       pendingClose = -1
@@ -239,19 +313,18 @@ function neutralizeTags(text: string, inFile: boolean): string {
 export function neutralizeSpokenMarkers(text: string, readings: Readings = { read: new Map(), kind: new Map(), slots: null }): string {
   let out = ''
   let last = 0
-  // `[` with U+FE47 and U+FF3B, the forms NFKD folds to it, and the lenticular, mathematical white and tortoise-shell brackets that pass for one (U+3010, U+27E6, U+3014).
-  const opens = /[[﹇［【⟦〔]/g
+  const opens = new RegExp(markerClasses().voiceOpens, 'gu')
   for (let m = opens.exec(text); m !== null; m = opens.exec(text)) {
-    if (!spokenMarkerAt(text, m.index, readings)) continue
+    if (!spokenMarkerAt(text, m.index + m[0].length, readings)) continue
     out += text.slice(last, m.index) + '&#91;'
-    last = m.index + 1
+    last = m.index + m[0].length
   }
   return out + text.slice(last)
 }
 
-/** True when the `[` at `open` starts either voice token-goat speaks in: the `[token-goat: ...]` marker hooks sign rewrites with, and the `[tg]` prefix denyOutput puts on every deny. The deny prefix is the more dangerous of the two, since a deny is the one message shaped as an instruction the model is meant to obey, and it is matched only with its closing bracket or a colon after it so that ordinary bracketed words like `[tgz]` are left alone. The colon is the shape of token-goat's other short lines (`[tg: note]`, `[tg: ok]`, `[tg: stale-write]`), which a bracket-only match let through. A bracket that passes for `[` or `]` (the lenticular `【tg】`, the mathematical `⟦tg⟧`, the tortoise-shell `〔tg〕`) counts as one. `(tg)` does not: parentheses around a word are ordinary prose, and no voice of token-goat's is spelled with them. */
-function spokenMarkerAt(text: string, open: number, readings: Readings): boolean {
-  const at = nextSeen(text, open + 1, true, readings)
+/** True when the `[` ending just before `after` starts either voice token-goat speaks in: the `[token-goat: ...]` marker hooks sign rewrites with, and the `[tg]` prefix denyOutput puts on every deny. The deny prefix is the more dangerous of the two, since a deny is the one message shaped as an instruction the model is meant to obey, and it is matched only with its closing bracket or a colon after it so that ordinary bracketed words like `[tgz]` are left alone. The colon is the shape of token-goat's other short lines (`[tg: note]`, `[tg: ok]`, `[tg: stale-write]`), which a bracket-only match let through. A bracket that passes for `[` or `]` (the lenticular `【tg】`, the mathematical `⟦tg⟧`, the tortoise-shell `〔tg〕`) counts as one. `(tg)` does not: parentheses around a word are ordinary prose, and no voice of token-goat's is spelled with them. */
+function spokenMarkerAt(text: string, after: number, readings: Readings): boolean {
+  const at = nextSeen(text, after, true, readings)
   const token = spelledEnd(text, at, 'token', readings)
   if (token !== -1) {
     // The hyphen is optional: `[tokengoat:` reads as the marker as surely as `[token-goat:` does.
@@ -261,9 +334,13 @@ function spokenMarkerAt(text: string, open: number, readings: Readings): boolean
   }
   const tg = spelledEnd(text, at, 'tg', readings)
   if (tg === -1) return false
-  // `]` or `:`, compared directly because they are nearly every case, or a form NFKD folds to one of them, U+FE48 and U+FF3D, U+FE13, U+FE55 and U+FF1A, or a closing bracket matching the look-alike openers above, U+3011, U+27E7 and U+3015.
-  const close = text[nextSeen(text, tg, true, readings)] ?? ''
-  return close === ']' || close === ':' || /[︓﹈﹕：］】⟧〕]/.test(close)
+  // `]` or `:`, compared directly because they are nearly every case, or anything that reads as one of them: the forms NFKD folds to them, the look-alikes the confusables data names, and the closing lenticular, mathematical white and tortoise-shell brackets.
+  const close = text.codePointAt(nextSeen(text, tg, true, readings)) ?? -1
+  if (close === 0x5d || close === 0x3a) return true
+  if (close < 0x80) return false
+  const read = readAs(close, readings)
+  const drawn = confusableReading(close)
+  return read === ']' || read === ':' || drawn === ']' || drawn === ':'
 }
 
 /** `text` with every terminal escape sequence gone, so nothing downstream can assemble a marker out of bytes the neutralizer passed. `out()` and `emit()` strip ANSI from whatever they print to a pipe, which under an agent is every time, and `stripAnsiEscapes` is not idempotent: `ESC ESC[0m[0m` strips to `ESC[0m`. A neutralizer running before that strip read `<ESC[0m/untrusted-tool-output>`, which spells nothing, and the strip then printed an exact closing tag; a `[` the same way became a raw `[tg]` deny voice. Stripped here to a fixpoint first, with any ESC no sequence claimed dropped after, the body holds no ESC at all, so a later strip changes nothing and what the neutralizer read is what the model reads. The 8-bit introducers are rewritten to their 7-bit forms before the strip and every C1 control left after it is dropped with the ESC bytes, for the same reason one level down: the neutralizer passes over a C1 control as unseen but reads the parameter bytes after it, so `<` U+009B `0m/untrusted-tool-output>` spelled nothing to it, and any strip that knows CSI's 8-bit form, as the common ANSI patterns do, turned it into an exact closing tag. Line by line, so a sequence with no terminator stops at the end of its line and the line count stays what it was. The passes are capped because each unwraps one layer, and an uncapped loop is quadratic on a payload nested as deep as it is long; past the cap the ESC bytes left are dropped all the same, leaving the inner layers as printable text the attacker could have typed directly, which the neutralizer reads as it stands. Since a fence now removes bytes as well as adding them, a caller sizing one measures what the fence returns, not the raw text, and a redaction reads this view of the text, since this is the one a tool-output fence ships. */
