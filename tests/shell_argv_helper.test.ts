@@ -14,7 +14,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   const sh = POSIX_SH!
 
   // A builtin loop rather than sleep: a child process would hold the output pipe open after the shell is killed. The budget is three times a measured warm run plus a second, so a loaded machine slow to start the shell still reaches the loop before the kill.
-  it('names a timeout when the shell is killed before every command ran', () => {
+  it('names a timeout when the shell is killed before every command ran', async () => {
     const started = Date.now()
     shRunAll(sh, ['token-goat w'])
     const warmMs = Date.now() - started
@@ -37,9 +37,20 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       expect(message, message).not.toMatch(/cleanup/)
       const pids = ['pid', 'kid'].map((name) => fs.readFileSync(file(name), 'utf8').trim())
       for (const pid of pids) expect(pid).toMatch(/^[1-9]\d*$/)
-      // A builtin-only poll of up to two seconds in one spawn, since a fork per check cost Git Bash enough to outlast the bounded loop; it asks the cleanup's own liveness rule, since a stricter copy once read an exited MSYS pid as running and failed a cleanup that had succeeded.
-      const poll = spawnSync(sh, ['-c', `${SH_LIVE}; while tg_live ${pids[0]} || tg_live ${pids[1]}; do [ "$SECONDS" -lt 2 ] || exit 1; done`], { windowsHide: true, timeout: 30_000 })
-      expect(poll.status, 'the chunk subshell or its child is still running').toBe(0)
+      // Waits for both pids to be gone, failing only when they stay alive for a stall-proof quiet limit rather than a fixed two seconds that a slow Git Bash spawn can outlast; it asks the cleanup's own liveness rule, since a stricter copy once read an exited MSYS pid as running and failed a cleanup that had succeeded.
+      const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'the chunk subshell or its child is still running' })
+      let polling = true
+      try {
+        const alive = (): boolean => spawnSync(sh, ['-c', `${SH_LIVE}; tg_live ${pids[0]} || tg_live ${pids[1]}`], { windowsHide: true, timeout: 30_000 }).status === 0
+        const gone = (async (): Promise<void> => {
+          while (polling && alive()) await new Promise((resolve) => setTimeout(resolve, 200))
+          watchdog.progress('chunk subshell and its child gone')
+        })()
+        await Promise.race([gone, watchdog.failed])
+      } finally {
+        polling = false
+        watchdog.stop()
+      }
       expect(fs.existsSync(file('expired')), 'the child ran to its bound rather than being killed').toBe(false)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -87,10 +98,24 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(leftover, 'the cleanup of the test shell failed').toBeNull()
   }, 120_000)
 
-  it('exits immediately if TG_CHUNK is missing or non-positive rather than loop forever', () => {
+  // The shell must exit on its own with status 1. A shell that loops instead makes no progress, so the stall-proof watchdog fails it after a quiet limit that a slow shell start cannot reach, and the shell is killed in `finally`; a fixed two-second spawn timeout failed this on a busy machine.
+  it('exits immediately if TG_CHUNK is missing or non-positive rather than loop forever', async () => {
     for (const chunk of ['', '0', '-1', 'notanumber']) {
-      const res = spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env: { ...process.env, TG_N: '5', TG_CHUNK: chunk }, windowsHide: true, timeout: 2000 })
-      expect(res.status).toBe(1)
+      const watchdog = startWatchdog({ quietLimitMs: 30_000, label: `shell did not exit for TG_CHUNK=${JSON.stringify(chunk)}` })
+      const child = spawn(sh, ['-c', SH_SCRIPT], { env: { ...process.env, TG_N: '5', TG_CHUNK: chunk }, stdio: 'ignore', windowsHide: true })
+      try {
+        const status = await Promise.race([
+          new Promise<number | null>((resolve, reject) => {
+            child.once('error', reject)
+            child.once('exit', (code) => { watchdog.progress('shell exited'); resolve(code) })
+          }),
+          watchdog.failed,
+        ])
+        expect(status).toBe(1)
+      } finally {
+        watchdog.stop()
+        if (child.exitCode === null && child.signalCode === null) child.kill()
+      }
     }
   })
 
