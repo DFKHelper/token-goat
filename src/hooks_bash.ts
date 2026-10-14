@@ -90,6 +90,7 @@ import {
 } from './bash_extractors.js'
 import { countTextLines, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
 import { FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
+import { HEREDOC_CERTAIN_FAILURE_CHARS, HEREDOC_SPILL_EFFECTIVE_CHARS, effectiveCommandLength, hasHeredocOpener, heredocSpillDir, spillQuotedHeredocs, writeSpilledBodies } from './bash_heredoc_spill.js'
 
 /** Token budget for an inline interpreter file read run under the wrapper: room for one registry entry or config block printed whole, well under a whole-file dump. */
 const INTERPRETER_READ_TOKEN_CAP = 2000
@@ -294,6 +295,27 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return syntaxOutput(denyOutput(
       'This command has two backslashes in a row. Claude Code\'s Bash tool on Windows halves every run of two or more backslashes before Git Bash sees the command, so it would run with different text than you wrote, with no error (anthropics/claude-code#85856). Write text containing backslashes to a file with the Write tool and run it by path, or use the PowerShell tool, which passes the command unchanged. For paths, use forward slashes: C:/Users/me works in Git Bash. To turn this check off, set hints.deny_bash_double_backslash = false or TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH=0.',
     ))
+  }
+  // The same Bash tool fails a heredoc command of about 7,300 characters or more before any of it runs (bash_heredoc_spill.ts has the measurements), and token-goat's own PreToolUse used to answer `{}` to every one. A quoted heredoc's body moves to a file the command reads instead, when the permission check every shell rewrite takes approves the rewrite; where that cannot happen, a command long enough to fail for certain is refused with what to do instead.
+  if (process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && hasHeredocOpener(rawCmd) && effectiveCommandLength(rawCmd) >= HEREDOC_SPILL_EFFECTIVE_CHARS && detectHarness() === 'claudecode') {
+    const spillDir = heredocSpillDir()
+    const spill = spillQuotedHeredocs(rawCmd, spillDir)
+    let why: string
+    if ('refused' in spill) {
+      why = spill.refused
+    } else {
+      // Only a rewrite the permission check approves ships, which in practice is bypassPermissions: one left to a prompt would ask the user to approve `cat > f < '<file>'`, a command whose body the prompt cannot show and whose file could change before it ran. The files are written only then, so a declined rewrite leaves nothing behind.
+      const rewrite = shellRewrite(event, 'shell-wrap', rawCmd, spill.command)
+      const approved = rewrite !== null && rewrite.hookType === 'rewriteInput' && rewrite.approve
+      if (approved && writeSpilledBodies(spillDir, spill.files)) return rewrite
+      why = rewrite === null ? 'the permission check for this call keeps the command as written' : approved ? 'the file for its body could not be written' : 'the rewritten command would go to a permission prompt that could not show the body moved out of it'
+    }
+    if (rawCmd.length >= HEREDOC_CERTAIN_FAILURE_CHARS) {
+      recordStat('session_hint', 0, 0)
+      return syntaxOutput(denyOutput(
+        'This command is ' + rawCmd.length.toLocaleString('en-US') + ' characters long and opens a heredoc. Claude Code\'s Bash tool on Windows fails a command of about 7,300 characters or more before any of it runs, with "unexpected EOF while looking for matching" and a quote character (exit 2), and just under that length a heredoc can arrive cut short and write a truncated file. token-goat moves a quoted heredoc\'s body into a file of its own when the call would run with no prompt, and could not here: ' + why + '. Write the content with the Write tool and run the command against that file, or split it into heredocs of a few KB each, appending with `cat >> file <<\'EOF\'`.',
+      ))
+    }
   }
   // Check for unbalanced shell quoting or unterminated heredocs
   if (cfg.hints.warn_unbalanced_shell_quoting) {
