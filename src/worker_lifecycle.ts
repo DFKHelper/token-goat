@@ -169,8 +169,7 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
     const nowPid = readPidFile(dir)
     if (nowPid !== null && nowPid !== livePid) return
   }
-  // Keep ordinary liveness, throttling and upgrade checks inside the bounded
-  // canonical child. Only the actual spawn must move outside its strict job.
+  // Keep ordinary liveness, throttling and upgrade checks inside the bounded canonical child. Only the actual spawn must move outside its strict job.
   if (process.env['TG_SESSION_START_DEFER_WORKER'] === '1') {
     if (!startupWakeRequested) {
       startupWakeRequested = true

@@ -1112,12 +1112,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
     }
 
-    // Circuit breaker: at most one re-read denial (verbatim, range, count, or format) per file
-    // per compaction epoch. Transcripts show agents getting trapped in 20+ retry loops shifting
-    // windows across a file (e.g. 1225..1235, 1220..1230, 1229..1234, 1227..1227) after repeated
-    // denials of overlapping ranges. A caller that retries after a re-read denial will not switch
-    // tools on repeated refusals; subsequent read attempts on this file must NOT keep denying in an
-    // infinite loop — allow them to proceed with the quiet advisory note at the bottom of this block.
+    // Circuit breaker: at most one re-read denial (verbatim, range, count, or format) per file per compaction epoch. Transcripts show agents getting trapped in 20+ retry loops shifting windows across a file (e.g. 1225..1235, 1220..1230, 1229..1234, 1227..1227) after repeated denials of overlapping ranges. A caller that retries after a re-read denial will not switch tools on repeated refusals; subsequent read attempts on this file must NOT keep denying in an infinite loop — allow them to proceed with the quiet advisory note at the bottom of this block.
     const fileRereadDenyKey = 'reread-file-deny:' + getCompactedAt() + ':' + foldPath(normalized)
     const fileAlreadyDenied = wasHintShown(fileRereadDenyKey)
 
