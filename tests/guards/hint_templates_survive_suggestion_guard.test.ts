@@ -239,7 +239,7 @@ describe('every suggestion template in src', () => {
       what: 'token-goat suggestion templates with a quoted argument in src',
       items: all.map((t) => t.file + '::' + t.text),
       floor: 220,
-      mustInclude: ['hooks_read_slice.ts::To edit it anyway', 'hooks_read.ts::This file was already read this session. Tool output spill files', 'hooks_bash.ts::token-goat available for this file type', 'hints/file_type_handler.ts::Then extract relevant pages'],
+      mustInclude: ['hooks_read_slice.ts::To edit it anyway', 'hooks_bash.ts::token-goat available for this file type', 'hints/file_type_handler.ts::Then extract the pages you need'],
     })
   })
 
@@ -372,11 +372,11 @@ function unquotedValues(text: string, commands: ReadonlySet<string>): Array<{ ma
 
 /** Interpolated values a suggestion may leave bare, each keyed `file::expression` and reviewed: an id token-goat minted, a number, a flag or command name from a fixed set, or a command line that is executed rather than suggested and quotes itself. Anything not here is quoted with quotedArg. */
 const SAFE_BARE: ReadonlyArray<{ key: string; reason: string }> = [
-  ...['bash_extractors.ts::outputId', 'bash_runner.ts::id', 'cli_recall.ts::hit.id', 'content_store.ts::id', 'hooks_agent_spawn.ts::id', 'hooks_bash.ts::monOutputId', 'hooks_bash.ts::curlOutputId', 'hooks_bash.ts::ghOutputId', 'hooks_bash.ts::gitScopedOutputId', 'hooks_bash_post.ts::containerId', 'hooks_bash_post.ts::id', 'hooks_bash_post.ts::testFailId', 'hooks_fetch.ts::cacheId', 'hooks_fetch.ts::id', 'hooks_mcp.ts::id', 'hooks_read.ts::latestId', 'hooks_read.ts::alreadyServed.id', 'hooks_websearch.ts::id', 'served_lines.ts::id'].map((key) => ({ key, reason: 'a cache id token-goat minted from a hash, hex digits only' })),
+  ...['bash_extractors.ts::outputId', 'bash_runner.ts::id', 'cli_recall.ts::hit.id', 'content_store.ts::id', 'hooks_agent_spawn.ts::id', 'hooks_bash.ts::monOutputId', 'hooks_bash.ts::curlOutputId', 'hooks_bash.ts::ghOutputId', 'hooks_bash.ts::gitScopedOutputId', 'hooks_bash_post.ts::containerId', 'hooks_bash_post.ts::id', 'hooks_bash_post.ts::testFailId', 'hooks_fetch.ts::cacheId', 'hooks_fetch.ts::id', 'hooks_mcp.ts::cachedId', 'hooks_mcp.ts::id', 'hooks_read.ts::latestId', 'hooks_read.ts::alreadyServed.id', 'hooks_websearch.ts::id', 'served_lines.ts::id'].map((key) => ({ key, reason: 'a cache id token-goat minted from a hash, hex digits only' })),
   { key: 'answer_router.ts::ANSWER_DELEGATE_LIMIT', reason: 'a numeric constant' },
   { key: 'read_git.ts::suggestedRef', reason: '`HEAD~n` for a number n, or the fixed empty-tree hash' },
   { key: 'hooks_bash.ts::monitoringHint', reason: 'a flag string from the fixed MONITORING_COMMAND_PATTERNS table (src/hints/lang_patterns.ts)' },
-  ...['answer_router.ts::command', 'answer_router.ts::cls.intent', 'bash_extractors.ts::fmt', 'hint_target.ts::format', 'hooks_read.ts::fmt', 'read_spec.ts::command', 'read_spec.ts::commandName', 'read_suggest.ts::command', 'read_symbol.ts::hit.command', 'cli_recall.ts::RECALL_COMMAND[hit.cacheType]', 'hooks_bash.ts::tgRead.sub'].map((key) => ({ key, reason: 'a command name (or `json`/`yaml` prefix) from a fixed set in the source, never user text' })),
+  ...['answer_router.ts::command', 'cli_cached_output.ts::command', 'answer_router.ts::cls.intent', 'bash_extractors.ts::fmt', 'hint_target.ts::format', 'hooks_read.ts::fmt', 'read_spec.ts::command', 'read_spec.ts::commandName', 'read_suggest.ts::command', 'read_symbol.ts::hit.command', 'cli_recall.ts::RECALL_COMMAND[hit.cacheType]', 'hooks_bash.ts::tgRead.sub'].map((key) => ({ key, reason: 'a command name (or `json`/`yaml` prefix) from a fixed set in the source, never user text' })),
   { key: 'cli_install.ts::leftover.flag', reason: 'an install flag such as `--codex` from the fixed leftoverIntegrations table' },
   ...['cli_install.ts::removal.label', 'cli_install.ts::leftover.label'].map((key) => ({ key, reason: 'a fixed integration label in a status line (`Removed token-goat Codex CLI integration.`), not a command' })),
   ...['hooks_bash.ts::filterName', 'hooks_bash.ts::cfg.timeout_seconds', 'hooks_bash.ts::capArgs', 'hooks_bash.ts::shellQuoteSingle(rawCmd)'].map((key) => ({ key, reason: 'the compress wrapper command line the hook executes, built from a filter name, numbers and a shellQuoteSingle-quoted command' })),
@@ -586,6 +586,7 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
     'process_util.ts::return `"${value.replace(/[\\\\$`"]/g, \'\\\\$&\')}"`',
     'process_util.ts::return `\'${value.replace(/\'/g, "\'\\\\\'\'")}\'`',
     'process_util.ts::return `\'${value.replace(/\'/g, "\'\'")}\'`',
+    'mcp_compress_playwright.ts::return `\'${escaped}\'`',
   ].map((key) => ({ key, reason: R.quoter })),
   ...[
     'hooks_bash_commands.ts::.replace(/"((?:[^"\\\\]|\\\\.)*)"/g, (_m, inner: string) => \'"\' + \' \'.repeat(inner.length) + \'"\')',
@@ -615,13 +616,14 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
   ].map((key) => ({ key, reason: R.jsonPath })),
   { key: 'bash_extractors.ts::return \'sed -n \' + m[4]! + \' "\' + filePath + \'"\'', reason: R.sedRewrite },
   { key: 'hooks_bash_post.ts::const runCmd = cdHost === null ? bare : `cd \'${cdHost}\' && ${bare}`', reason: R.compressCmd },
-  { key: 'hints/file_type_handler.ts::`Query with DuckDB: duckdb -c "SELECT * FROM read_parquet(\'${sqlLiteralPath(filePath)}\') LIMIT 10"`,', reason: R.duckdb },
+  { key: 'hints/file_type_handler.ts::sqlPath !== null ? `Query with DuckDB: duckdb -c "SELECT * FROM read_parquet(\'${sqlPath}\') LIMIT 10"` : \'Query it with DuckDB\\\'s read_parquet function; this path cannot be written into the SQL string safely.\',', reason: R.duckdb },
   ...[
     'embed_tokenizer.ts::if (template !== \'[CLS] A [SEP]\') fail(`post_processor.single is "${template}", expected "[CLS] A [SEP]"`)',
     'embed_tokenizer.ts::if (typeof id !== \'number\' || !Number.isInteger(id)) fail(`model.vocab["${token}"] is not an integer id`)',
   ].map((key) => ({ key, reason: R.pinned })),
   ...[
     'mcp_compress_packs.ts::return `${indent}${uid} ${role} "${name.slice(0, SNAPSHOT_NAME_MAX_CHARS)}  … [${elided} chars elided]"${rest}`',
+    'mcp_compress_packs.ts::const namePart = name === undefined ? \'\' : ` "${elideSnapshotText(name)}"`',
     'tool_filters/db_clients.ts::kept.push(...allKeys.slice(0, RedisCLIFilter.LIST_KEEP).map((k) => `"${k}"`))',
     'tool_filters/db_clients.ts::kept.push(...allKeys.map((k) => `"${k}"`))',
   ].map((key) => ({ key, reason: R.render })),
@@ -629,7 +631,7 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
     'cli_file_ops.ts::const e = Object.assign(new Error(`EISDIR: illegal operation on a directory, open \'${displaySafeText(dest)}\'`), { code: \'EISDIR\', path: dest }) as NodeJS.ErrnoException',
     'fold_delivery.ts::return `... ${countNoun(n, \'more comment line\')} (${firstLine}-${lastLine}) folded -- Read "${displaySafeText(shownPath)}" with offset=${firstLine}, limit=${n}`',
     'fold_structure.ts::return `... ${n} line${n === 1 ? \'\' : \'s\'} (${firstLine}-${lastLine}) withheld from the skeleton -- Read "${displaySafeText(shownPath)}" with offset=${firstLine}, limit=${n}`',
-    'fold_structure.ts::const notice = `Partial view: this ${originalBytes.toLocaleString(\'en-US\')} B source file was replaced with its structural skeleton, its preamble and one line per declaration, with ${plan.withheldLines.toLocaleString(\'en-US\')} line${plan.withheldLines === 1 ? \'\' : \'s\'} of bodies withheld (at least ${symbols.length} declaration${symbols.length === 1 ? \'\' : \'s\'} found). Run ${fencedCommand(`token-goat read ${quotedArg(`${shownPath}::SymbolName`)}`)} for one body verbatim, or Read "${displaySafeText(shownPath)}" with offset=1, limit=${rows.length} for the whole file.`',
+    'fold_structure.ts::const notice = `Partial view: this ${originalBytes.toLocaleString(\'en-US\')} B source file was replaced with its structural skeleton, its preamble and one line per declaration, with ${plan.withheldLines.toLocaleString(\'en-US\')} line${plan.withheldLines === 1 ? \'\' : \'s\'} of bodies withheld (at least ${symbols.length} declaration${symbols.length === 1 ? \'\' : \'s\'} found). Run ${firstBody.real ? fencedCommand(`token-goat read ${quotedArg(`${shownPath}::${firstBody.name}`)}`) : fencedCommand(`token-goat skeleton ${quotedArg(shownPath)}`)} for ${firstBody.real ? \'one body verbatim\' : \'the declarations with their line ranges\'}, or Read "${displaySafeText(shownPath)}" with offset=1, limit=${rows.length} for the whole file.`',
     'text_trace.ts::process.stdout.write(`  File "${displaySafeText(f.file)}", line ${f.lineNo}, in ${displaySafeText(f.func)}\\n`)',
     'xml_query.ts::attrParts.push(`${displaySafeText(k)}="${displaySafeText(escapeXmlAttr(valPreview))}"`)',
   ].map((key) => ({ key, reason: R.render })),

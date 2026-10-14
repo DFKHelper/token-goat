@@ -99,7 +99,10 @@ describe('every lever that ships on is reachable without an environment override
     const paragraph =
       'The heading below exists only so this file parses as a document rather than as loose text. ' +
       'It continues with a great deal of further prose whose only job is to run the physical line well past the four hundred character floor the paragraph fold requires, so that the opening sentence is a small fraction of the whole and the fold has something substantial to withhold behind its pointer. '.repeat(3)
-    const body = ['# Guard Fixture', '', paragraph, '', 'A short closing line the fold must leave alone.', ''].join('\n')
+    // Padding inside a fence, which the paragraph fold never reads, carries the file past the 4,000 B a document must reach before any fold touches it (MARKDOWN_SIZE_THRESHOLD, the size the read hook first looks at a markdown file's structure).
+    const pad = '```\n' + 'padding line the paragraph fold leaves alone inside its fence\n'.repeat(60) + '```'
+    const body = ['# Guard Fixture', '', paragraph, '', pad, '', 'A short closing line the fold must leave alone.', ''].join('\n')
+    expect(Buffer.byteLength(body, 'utf-8')).toBeGreaterThan(4_000)
     // Under the 8,000 B document floor and short of six headings, so the heading tree cannot be what answered.
     expect(Buffer.byteLength(body, 'utf-8')).toBeLessThan(8_000)
 

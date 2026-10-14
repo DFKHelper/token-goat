@@ -20,7 +20,8 @@ import type { HookOutput } from '../src/types.js'
 const LINES = Array.from({ length: 80 }, (_, i) => (i === 0 ? 'export function foo(): number { return 1 }' : `export const value${i} = ${i} * 2`))
 const BODY = LINES.join('\n')
 const REPEAT_NOTE = 'You already ran this exact `token-goat read` query'
-const READ_NOTE = 'was already fully read via the Read tool'
+// partialRead below covers lines 50-64 only, so the note names that window rather than a full read.
+const READ_NOTE = 'was partially read earlier this session (lines 50-64)'
 
 const dirs: string[] = []
 

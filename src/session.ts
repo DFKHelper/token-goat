@@ -70,7 +70,7 @@ let _grepQueries = new Map<string, number>()
 // `[pattern, path]` signature -> match count, for Glob dedup-hint recall (an identical Glob repeated later in the session, above hints.glob_dedup_min_matches). Mirrors _grepQueries.
 let _globQueries = new Map<string, number>()
 
-// Last-seen "Tab Context:" block text from a browser-automation MCP tool result this session, for hooks_browser_image.ts's dedup: an identical repeat gets shortened to a placeholder instead of resending the full open-tab list.
+// Last-seen open-tab list from a browser-automation MCP tool result this session -- claude-in-chrome's "Tab Context:" block for hooks_browser_image.ts's dedup, or a `@playwright/mcp` "### Open tabs" section for mcp_compress_playwright.ts's -- so an identical repeat gets shortened to a placeholder instead of resending the full open-tab list. One slot for both: the two formats never fingerprint alike, so sharing it can cost a missed collapse when a session drives both servers, never a wrong one.
 let _lastTabContext: string | null = null // fingerprint of the block, never the block; see setLastTabContext
 let _seenImageHashes: string[] = []
 
@@ -502,12 +502,12 @@ export function getGlobMatchCount(signature: string): number | null {
   return _globQueries.get(signature) ?? null
 }
 
-/** Record the most recent "Tab Context:" block seen this session, for hooks_browser_image.ts's dedup. A fingerprint is stored, never the block itself. The only question ever asked of this value is whether the next block is identical to it ({@link lastTabContextMatches}), and a fingerprint answers that exactly. The block does not: it is a list of the tabs open in the user's browser, titles and full URLs, and session state is written to disk, so keeping the text would put whatever a URL happens to carry -- a session token, a signed link, a password-reset parameter -- into a file on disk that nothing ever reads back for its content. */
+/** Record the most recent open-tab list (a "Tab Context:" block or a Playwright "### Open tabs" section) seen this session, for hooks_browser_image.ts's and mcp_compress_playwright.ts's dedup. A fingerprint is stored, never the block itself. The only question ever asked of this value is whether the next block is identical to it ({@link lastTabContextMatches}), and a fingerprint answers that exactly. The block does not: it is a list of the tabs open in the user's browser, titles and full URLs, and session state is written to disk, so keeping the text would put whatever a URL happens to carry -- a session token, a signed link, a password-reset parameter -- into a file on disk that nothing ever reads back for its content. */
 export function setLastTabContext(text: string): void {
   _lastTabContext = shortFingerprint(text)
 }
 
-/** Whether `text` is the same "Tab Context:" block already seen this session. */
+/** Whether `text` is the same open-tab list already seen this session. */
 export function lastTabContextMatches(text: string): boolean {
   return _lastTabContext !== null && _lastTabContext === shortFingerprint(text)
 }

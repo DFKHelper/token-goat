@@ -39,9 +39,10 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
       session_id: 'matrix-image-shrink',
     })
     // OCR is disabled here: this test's whole point is the sharp DLL-poisoning regression, predating OCR entirely. Leaving OCR on would make the assertion depend on real tesseract.js's confidence score for random noise (low, but not a contract) rather than deterministically exercising the pixel-shrink path this test actually targets. OCR's own built-bundle wiring gets its own smoke test below. A harness that takes the shrink as a data-URL context payload, so the shrunk pixels are in stdout; Claude Code gets a rewritten Read path instead, covered by the case below.
+    // OpenClaw, because a generic harness gets no shrink at all: only a host that turns the data URL back into an image (Copilot CLI, pi, OpenClaw) receives one, see tests/image_shrink_text_only_harness.test.ts.
     const r = run(['hook', 'pre_tool_use'], {
       input: payload,
-      env: { ...tgEnv(dataBase), TOKEN_GOAT_OCR_ENABLED: 'false', TOKEN_GOAT_HARNESS_OVERRIDE: 'generic' },
+      env: { ...tgEnv(dataBase), TOKEN_GOAT_OCR_ENABLED: 'false', TOKEN_GOAT_HARNESS_OVERRIDE: 'openclaw' },
     })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stderr).not.toContain('sharp unavailable')
@@ -99,7 +100,7 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
       session_id: 'matrix-image-ocr',
     })
     // network.offline, so the spawned bundle takes the OCR path without fetching the 5 MB tesseract language data from cdn.jsdelivr.net. Measured by wrapping fetch for a whole suite run: this was the only test that reached that host, and it cost 12 s per run plus a hard dependency on the internet for a case whose own assertion below already accepts either outcome. What it still proves is the thing it was written for: the built bundle dispatches a large text-heavy image through the real hook path, loads its native addons in the right order, and answers without crashing or hanging. The OCR engine's own wiring -- the child script, the pinned langPath, the cache directory, the integrity refusal -- is covered by tests/image_ocr_integrity.test.ts and tests/image_ocr.test.ts against stubs. Pinned to a context-channel harness, whose reply carries either marker this case accepts; on Claude Code the OCR branch is skipped and the shrink is a rewritten path.
-    const r = run(['hook', 'pre_tool_use'], { input: payload, env: { ...tgEnv(dataBase), TOKEN_GOAT_OFFLINE: '1', TOKEN_GOAT_HARNESS_OVERRIDE: 'generic' } })
+    const r = run(['hook', 'pre_tool_use'], { input: payload, env: { ...tgEnv(dataBase), TOKEN_GOAT_OFFLINE: '1', TOKEN_GOAT_HARNESS_OVERRIDE: 'openclaw' } })
     expect(r.status, r.stderr).toBe(0)
 
     const out = JSON.parse(r.stdout) as {
@@ -108,7 +109,8 @@ describe('built bundle image shrink (real sharp dlopen through the full CLI impo
     const context = out.hookSpecificOutput?.additionalContext ?? ''
     // Either path is acceptable (see comment above); a crash, a hang, or an empty/pass-through response with neither marker is not.
     const gotOcrText = context.includes("OCR'd")
-    const gotShrunkImage = /data:image\/(jpeg|webp);base64,/.test(context)
+    // The pure-TypeScript engine keeps whichever of its JPEG and PNG encodes is smaller and never writes WebP (image_shrink.ts); white text on black is the case PNG wins.
+    const gotShrunkImage = /data:image\/(jpeg|png);base64,/.test(context)
     expect(gotOcrText || gotShrunkImage, `unexpected context output: ${context.slice(0, 200)}`).toBe(true)
   }, 30000)
 })

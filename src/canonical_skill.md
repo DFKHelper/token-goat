@@ -40,6 +40,7 @@ Failure shapes to catch yourself in, and the command that replaces each:
 - paging one function with view/view_range → `read "file::symbol"`
 - reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`
 - reading one heading of a large doc → `section "file::Heading"`
+- one `section` call per heading, chained → a single call: `section "file::A,B"` or `section "a.md::A" "b.md::B"`
 - reading a procedural shell script check or step → `section "script.sh::# Banner"` or `read "script.sh::# Banner"`
 - searching for a symbol's callers → `refs file::symbol --callers`
 - searching for a *concept* rather than a literal string → `semantic "description"`

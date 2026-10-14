@@ -83,16 +83,16 @@ describe('compound-output compression savings accounting', () => {
     return filler + '\n' + 'a repeated line xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n'.repeat(repeats)
   }
 
-  // Measured against the built pipeline: at eight repeats the emitted body is 2246 bytes against a 2246-byte original, no reduction at all once the untrusted-content fence around the third-party bytes is paid for -- under the 100-byte min_net_savings_bytes floor. Pricing only the filter's own marker (and not the recall pointer) let a case like this ship as a rewrite and record a saving for it. The pair below sat at 6/7 repeats before the fence, whose bytes the gate now counts: a rewrite that clears the floor only by omitting its own delimiter is not a saving.
+  // Measured against the built pipeline: at nine repeats the reduction left once the untrusted-content fence around the third-party bytes is paid for is under the 100-byte min_net_savings_bytes floor, and at ten it is 120 bytes. Pricing only the filter's own marker (and not the recall pointer) let a case like this ship as a rewrite and record a saving for it. The pair below sat at 6/7 repeats before the fence and at 8/9 before each fence tag carried its nonce; the gate counts the fence's bytes, nonces included: a rewrite that clears the floor only by omitting its own delimiter is not a saving.
   it('declines a rewrite whose true reduction is under the net-benefit floor', async () => {
-    const result = await postBashHandler(makePostBashEvent('grep under app.log | sort', tunedOutput(8)))
+    const result = await postBashHandler(makePostBashEvent('grep under app.log | sort', tunedOutput(9)))
     expect(result.hookType).toBe('pass')
     expect(genericSavings()).toEqual([])
   })
 
-  // Control one repeat up: 112 bytes truly removed, over the floor, so the rewrite must still ship. A fix that simply tightened the gate too far would fail here.
+  // Control one repeat up: 120 bytes truly removed, over the floor, so the rewrite must still ship. A fix that simply tightened the gate too far would fail here.
   it('still ships a rewrite whose true reduction clears the net-benefit floor', async () => {
-    const output = tunedOutput(9)
+    const output = tunedOutput(10)
     const result = await postBashHandler(makePostBashEvent('grep over app.log | sort', output))
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return

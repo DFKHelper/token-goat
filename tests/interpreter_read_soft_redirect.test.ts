@@ -25,6 +25,8 @@ function capHint(command: string): string {
 // CAPTURE: two of the 217 refused commands, verbatim from the transcripts (the first a Claude Code session, the second one line of a multi-line one); both project a few fields out of one JSON file.
 const PROJECTION_ONE_LINE = `python -c "import json;d=json.load(open('C:/Users/zelys/AppData/Local/Temp/tweet.json',encoding='utf-8'));t=d.get('tweet',d);print(t.get('text') or t.get('raw_text',{}).get('text'))"`
 const PROJECTION_MULTI_LINE = `python -c "\nimport json\nd=json.load(open('.selfimprove/targets.json'))\nfor i,t in enumerate(d['targets']): print(i, t['id'], '|', t['title'][:78])\n"`
+// HAND-DERIVED from the first capture: the same file printed as raw text rather than parsed, the read the refusal is kept for where the wrapper cannot run.
+const DUMP_ONE_LINE = `python -c "print(open('C:/Users/zelys/AppData/Local/Temp/tweet.json',encoding='utf-8').read())"`
 
 describe('inline interpreter file reads run capped instead of refused', () => {
   const saved = process.env['TOKEN_GOAT_BASH_COMPRESS']
@@ -54,14 +56,17 @@ describe('inline interpreter file reads run capped instead of refused', () => {
     expect(capHint(wrapped(preBashHandler(bashEvent(`powershell -Command "[IO.File]::ReadAllText('README.md')"`))))).toContain('token-goat section "README.md::')
   })
 
-  it('refuses with the full message when compression is off, so the wrapper cannot run', () => {
+  it('refuses a raw dump with the full message when compression is off, so the wrapper cannot run, and advises a parsing read without refusing it', () => {
     process.env['TOKEN_GOAT_BASH_COMPRESS'] = '0'
-    const result = preBashHandler(bashEvent(PROJECTION_ONE_LINE))
+    const result = preBashHandler(bashEvent(DUMP_ONE_LINE))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('Python `open()` file reads bypass read hooks.')
       expect(result.message).toContain('token-goat json-outline "C:/Users/zelys/AppData/Local/Temp/tweet.json"')
     }
+    const projection = preBashHandler(bashEvent(PROJECTION_ONE_LINE))
+    expect(projection.hookType).toBe('context')
+    if (projection.hookType === 'context') expect(projection.context).toContain('token-goat json-outline "C:/Users/zelys/AppData/Local/Temp/tweet.json"')
   })
 
   // PROVENANCE: HAND-DERIVED. The extractors match the command past its leading assignments, but the wrapper runs the command as written, so the read still sees the variable it set.
@@ -75,9 +80,10 @@ describe('inline interpreter file reads run capped instead of refused', () => {
   })
 
   it('refuses a read whose own prefix switches compression off, as the environment opt-out does, since the cap is compression', () => {
-    const result = preBashHandler(bashEvent(`TOKEN_GOAT_BASH_COMPRESS=0 ${PROJECTION_ONE_LINE}`))
+    const result = preBashHandler(bashEvent(`TOKEN_GOAT_BASH_COMPRESS=0 ${DUMP_ONE_LINE}`))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') expect(result.message).toContain('Python `open()` file reads bypass read hooks.')
+    expect(preBashHandler(bashEvent(`TOKEN_GOAT_BASH_COMPRESS=0 ${PROJECTION_ONE_LINE}`)).hookType).toBe('context')
   })
 
   it('wraps a heredoc read too, the shape 81 of the 217 measured refusals arrived in', () => {

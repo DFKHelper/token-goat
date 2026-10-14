@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { registerHook, toolMatcherFor } from '../src/hook_registry.js'
-import { claudeHookScriptPath, installHooks } from '../src/install.js'
+import { claudeHookScriptPath, installHooks, staleHookMatchers } from '../src/install.js'
 
 // Side-effect import: registers every hook handler, mirroring the `await import('./relay.js')` cli_install.ts::cmdInstall runs before installHooks. Without this the registry is empty and every assertion below would be vacuous.
 import '../src/relay.js'
@@ -76,8 +76,11 @@ describe('toolMatcherFor', () => {
       expect(pre.split('|'), `pre_tool_use must match ${tool}`).toContain(`^${tool}$`)
     }
 
-    // The MCP dedup and screenshot-redirect handlers register with no toolName and match dynamic mcp__ names by regex. Dropping this alternative silently disables MCP dedup and the screenshot redirect rather than failing loudly.
-    expect(pre.split('|')).toContain('^mcp__')
+    // The MCP dedup and screenshot-redirect handlers register with no toolName and match dynamic mcp__ names by regex. Dropping their alternatives silently disables MCP dedup and the screenshot redirect rather than failing loudly. Each now declares the names it acts on rather than the bare prefix; tests/pre_tool_use_mcp_matcher.test.ts sweeps both directions.
+    const re = new RegExp(pre)
+    expect(re.test('mcp__memory__search_nodes'), 'a read-verb MCP tool reaches the dedup handler').toBe(true)
+    expect(re.test('mcp__chrome-devtools__take_screenshot'), 'a screenshot tool reaches the redirect').toBe(true)
+    expect(pre.split('|'), 'the bare prefix would start PreToolUse for every MCP call').not.toContain('^mcp__')
   })
 
   it('matches every handled tool and no unhandled one', () => {
@@ -88,7 +91,7 @@ describe('toolMatcherFor', () => {
       expect(re.test(tool), `${tool} has a pre_tool_use handler and must match`).toBe(true)
     }
     for (const tool of ['mcp__chrome-devtools__take_screenshot', 'mcp__memory__search_nodes']) {
-      expect(re.test(tool), `${tool} is covered by the ^mcp__ fragment`).toBe(true)
+      expect(re.test(tool), `${tool} is covered by an MCP handler's fragment`).toBe(true)
     }
     for (const tool of ['TodoWrite', 'SendMessage', 'ScheduleWakeup', 'Monitor', 'TaskUpdate', 'AskUserQuestion']) {
       expect(re.test(tool), `${tool} has no pre_tool_use handler and must not spawn`).toBe(false)
@@ -181,6 +184,25 @@ describe('installHooks matcher narrowing', () => {
       g.hooks.some((h) => h.command === 'my-own-linter.sh'),
     )
     expect(mixed?.matcher, "a user's own matcher must not be rewritten").toBe('Bash')
+  })
+
+  it('reports through staleHookMatchers exactly the groups the re-narrow rewrites', () => {
+    const first = installHooks('project')
+    expect(staleHookMatchers('project')).toEqual([])
+
+    const settings = JSON.parse(fs.readFileSync(first.settingsPath, 'utf8')) as { hooks: Record<string, HookGroup[]> }
+    const own = (settings.hooks['PreToolUse'] ?? [])[0] as HookGroup
+    own.matcher = '^Read$|^mcp__'
+    const post = (settings.hooks['PostToolUse'] ?? [])[0] as HookGroup
+    post.matcher = 'Bash'
+    post.hooks.push({ type: 'command', command: 'my-own-linter.sh' })
+    fs.writeFileSync(first.settingsPath, JSON.stringify(settings, null, 2))
+
+    // The PostToolUse group now holds a user's command, so its matcher is theirs and is neither reported nor rewritten.
+    expect(staleHookMatchers('project')).toEqual(['PreToolUse'])
+    installHooks('project')
+    expect(staleHookMatchers('project')).toEqual([])
+    expect(tokenGoatGroup(first.settingsPath, 'PreToolUse').matcher).toBe(toolMatcherFor('pre_tool_use'))
   })
 
   it('stays idempotent across repeated installs', () => {

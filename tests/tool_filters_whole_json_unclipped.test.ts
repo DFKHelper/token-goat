@@ -55,7 +55,8 @@ describe('whole-document JSON filters see an unclipped single-line document', ()
     const doc = JSON.stringify({ note: 'x'.repeat(200_000) })
     const text = run(['gh', 'api', 'repos/o/r/anything'], doc)
     expect(text.length).toBeLessThan(doc.length / 10)
-    expect(text).toContain('{"note":"xxxx')
+    // The per-line cap lays a one-line JSON document out by member before it cuts, so the one wide value is clipped on its own line.
+    expect(text).toContain('{\n  "note": "xxxx')
   })
 
   it('a filter that did not opt in still has wide lines clipped', () => {

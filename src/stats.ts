@@ -197,7 +197,7 @@ const KIND_TO_SOURCE: Record<string, string> = {
   // Decline counterpart to agent_report_compact: the fence-collapse net-benefit gate ran and found at least one over-long fence, but declined to rewrite because net savings did not clear the notice cost. Always recorded at (0, 0) -- see the recordStat call site -- so it never contributes to any savings total; it exists purely to make gate hit-rate and near-misses visible instead of the decline being invisible.
   agent_report_compact_declined: SOURCE_CONTENT,
   content_compress: SOURCE_CONTENT,
-  // Verbatim-repeat collapse of a browser tool's "Tab Context:" text block (hooks_browser_image.ts postBrowserImageHandler). SOURCE_CONTENT for the same reason as agent_report_compact above: it is a real rewrite with real bytes removed, not an advisory nudge. Deliberately not SOURCE_IMAGE -- it shares a handler with image_shrink but collapses text, and folding text bytes into the image ledger is the two-units-under-one-label mistake this file's image_shrink entry was just fixed for.
+  // Verbatim-repeat collapse of a browser tool's "Tab Context:" text block (hooks_browser_image.ts browserResultBlocks). SOURCE_CONTENT for the same reason as agent_report_compact above: it is a real rewrite with real bytes removed, not an advisory nudge. Deliberately not SOURCE_IMAGE -- it shares a handler with image_shrink but collapses text, and folding text bytes into the image ledger is the two-units-under-one-label mistake this file's image_shrink entry was just fixed for.
   browser_tab_dedup: SOURCE_CONTENT,
   // Collapse of the plan echo in an approved ExitPlanMode result (hooks_exitplanmode.ts). SOURCE_CONTENT for the same reason as agent_report_compact: real bytes removed from a tool result, not an advisory nudge. The handler shipped for releases emitting this rewrite and recording nothing at all, so the mechanism was invisible in `stats` and its net benefit could not be checked against the gate that admits it.
   plan_echo_collapse: SOURCE_CONTENT,
@@ -665,6 +665,7 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
     rollupAndPruneStats(db)
     pruneHintEmissions(db)
     pruneSemanticQueries(db)
+    pruneSessionFlags(db)
     pruneTestIsolationLeakRows(db)
     dropRetiredPythonTables(db)
   } catch {
@@ -897,6 +898,28 @@ export function firstReceiptShownAt(testDb?: SqliteDatabase, homeDir?: string): 
     return row === undefined ? null : row.set_ts * 1000
   } catch {
     return null
+  }
+}
+
+/** Prefix of the `stats_flags` rows {@link claimSessionFlag} writes, which {@link pruneSessionFlags} ages out. */
+const SESSION_FLAG_PREFIX = 'session:'
+
+/** Claim a once-per-session notice: true the first time `flag` is claimed for `sessionId`, false every time after. The session-state blob is not enough to hold this, because the worker's cache sweep deletes a blob 24 hours after it was last written, and the hints-shown set goes with it: a session left for a day and resumed drew its once-per-session notices again (the unrestricted-spawn advisory came back after each of the 43- and 68-hour gaps in one recorded session). INSERT OR IGNORE, so two hook processes racing for the same claim cannot both win. True on any failure, which leaves the caller's in-memory check to decide, as it did before this existed. */
+export function claimSessionFlag(flag: string, sessionId: string, testDb?: SqliteDatabase, now: number = Date.now()): boolean {
+  try {
+    const db = testDb ?? getGlobalDb()
+    return db.prepare('INSERT OR IGNORE INTO stats_flags (name, set_ts) VALUES (?, ?)').run(`${SESSION_FLAG_PREFIX}${flag}:${sessionId}`, Math.floor(now / 1000)).changes === 1
+  } catch {
+    return true
+  }
+}
+
+/** Delete {@link claimSessionFlag} rows older than `retentionDays`, so one row per session does not accumulate for good. A session idle for longer than this can draw its notice once more, which is the price of a bound. */
+export function pruneSessionFlags(db: SqliteDatabase, retentionDays: number = STATS_RETENTION_DAYS): void {
+  try {
+    db.prepare(`DELETE FROM stats_flags WHERE name LIKE ? AND set_ts < ?`).run(`${SESSION_FLAG_PREFIX}%`, Math.floor(Date.now() / 1000) - retentionDays * 86400)
+  } catch {
+    // Fail-soft: never block the stat write that triggers this (see recordStat's call site).
   }
 }
 

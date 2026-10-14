@@ -1,4 +1,4 @@
-/** post_tool_use hook for the Bash tool: caches a finished command's output for recall, records the files it read and the paths it rewrote, and replaces a result with a smaller rendering of the same bytes where one pays (served-line elision, identical-read collapse, structural and body folds, compound-command compression, curl HTML cleanup, ANSI stripping), plus the `gh api`, failing-test and large-output advisories. The pre_tool_use half is hooks_bash.ts. Neither module imports the other: each registers its handlers at module scope. */
+/** post_tool_use hook for the Bash tool: caches a finished command's output for recall, records the files it read and the paths it rewrote, and replaces a result with a smaller rendering of the same bytes where one pays (served-line elision, identical-read collapse, structural and body folds, compound-command compression, curl HTML cleanup, ANSI stripping), plus the `gh api`, failing-test and large-output advisories. Claude Code's PowerShell tool gets the compression, the fence, the recall copy, the large-output advisory and the bookkeeping in recordShellCall from postPowerShellHandler. The pre_tool_use half is hooks_bash.ts. Neither module imports the other: each registers its handlers at module scope. */
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -13,7 +13,8 @@ import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './
 import { storeBashOutput, getBashOutput, isScopedGitStatusOrDiffStatCommand, commandHash, bashOutputIdSync, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
-import { deliveredOutputBytes, clipToDeliveryCap } from './delivery_cap.js'
+import { bashOutputCapBytes, deliveredOutputBytes, clipToDeliveryCap, fitToDeliveryCap } from './delivery_cap.js'
+import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { foldDelivery, foldingEnabled, type FoldRow } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton } from './fold_structure.js'
 import { fileSubject, quotedArg } from './hint_suggestion_guard.js'
@@ -21,7 +22,7 @@ import { foldDetail, type BodyFold } from './code_fold.js'
 import { redactSecrets } from './secret_redact.js'
 import { findProject } from './project.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow, type ServedBody } from './served_lines.js'
-import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, resolveMinNetSavingsBytes, splitOwnTrailingNotices } from './tool_filters/index.js'
+import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, resolveMinNetSavingsBytes, type ToolFilter } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -32,7 +33,7 @@ import { dataDir } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
 import { isInsideRoot } from './path_containment.js'
 import { projectTranscriptsDir } from './claude_config_dir.js'
-import { MAX_CAPTURE_BYTES } from './bash_runner.js'
+import { MAX_CAPTURE_BYTES, runnerRecallId, runnerResultDigest, stripCompressHeartbeats } from './bash_runner.js'
 import {
   stripCdPrefix,
   resolveCdHintPath,
@@ -45,6 +46,7 @@ import {
   gitRepoRootOrNull,
   enqueueNonHeadMovingRewrites,
   pipelineShapeFilter,
+  pipelineLineBound,
   isFullRecallCommand,
   isRecallCommand,
   isTokenGoatOwnCommand,
@@ -171,8 +173,8 @@ function foldShellReadStructure(cmd: string, filePath: string, output: string, f
 }
 
 /** Collapse a byte-identical re-run of a pure file read down to a pointer at the cached copy. Unlike every other rewrite in this handler, this one needs no judgement about which parts of the output matter, because nothing is being summarized: the bytes the model already holds and the bytes it would be handed again are the same bytes. Only a duplicate is dropped, and the original stays whole in the bash-output cache, so a caller that genuinely wants it back can ask. Why a rewrite and not a hint. The advisory channel measurably does not work for bash: the `bash_redirect` and `bash_recall` hint categories sit at 2.7% and 13.8% acted-on and are suppressed by the backoff ledger for that reason, while the two paths that act on the payload instead of asking for cooperation (`read_reread_dedup`, `edit_reread_suggest`) sit at 95.6% and 98.5%. Advice about a redundant read still costs the redundant read. Returns null -- leaving output untouched -- on a command's first run, when the file changed so the output differs, on a non-zero exit, or when the net-benefit gate declines. The first run is also where the body gets cached, so a later identical run has a baseline to compare against. */
-/** Appended OUTSIDE the fence when a composed rewrite had to be cut back to fit the delivery cap. */
-const REWRITE_CLIP_NOTE = '\n[token-goat: rewrite clipped to the harness delivery cap; the pointer above recalls the untouched output]'
+/** Appended OUTSIDE the fence when a composed rewrite had to be cut back to fit the delivery cap. It used to say a pointer above recalled the untouched output, which no pointer does: every caller stores the rewrite it ships, so the served-line record matches what the reader got, and the pointers inside the body name earlier runs. So it says what was lost and how to get it. */
+const REWRITE_CLIP_NOTE = '\n[token-goat: rewrite clipped to the harness delivery cap; the clipped rest was not kept, so re-run the command over a narrower range to see it]'
 
 /** Fence a body this file composed, clipped so that the fence still closes. The single place the tool-output fence is applied to a Bash rewrite, so no call site restates either half of the rule. Both halves are load-bearing: - The fence goes on because these bodies are SUBSTITUTIONS: token-goat splices its own notices in beside bytes it did not write, so the model needs to see where one voice ends. A pure pass-through owes no fence and does not come through here (see {@link maybeStripAnsiOnly}). - The clip goes on because the harness truncates a result from the END and PERSISTS the substitute. An over-long fenced rewrite would therefore ship with its closing tag and its recall pointer cut off, leaving the model an unterminated fence and no route back to the original. Overhead is measured off a real fence call rather than assumed, because `fenceUntrustedSpans` returns the body unchanged when injection fencing is switched off. The caller prices what this RETURNS, never the unfenced body: pricing the body and then fencing it is how a fence silently pushes a rewrite under its own net-benefit gate, at which point the rewrite is declined and the bytes ship unfenced anyway. */
 function fenceRewriteWithinCap(spans: readonly FenceSpan[]): string {
@@ -180,18 +182,21 @@ function fenceRewriteWithinCap(spans: readonly FenceSpan[]): string {
   const fenced = fenceUntrustedSpans(spans, UNTRUSTED_TOOL_TAG)
   // Fencing switched off: nothing was wrapped around the body, so there is no closing tag to lose and the cap behaves exactly as it did before this fence existed.
   if (fenced === joined) return joined
-  const overhead = Buffer.byteLength(fenced, 'utf-8') - Buffer.byteLength(joined, 'utf-8') + Buffer.byteLength(REWRITE_CLIP_NOTE, 'utf-8')
-  const cut = clipToDeliveryCap(joined, overhead)
-  if (!cut.clipped) return fenced
-  // Re-cut the spans to the clipped length so authorship survives the clip: the clipped text is a prefix of `joined`, so taking that many characters back off the span list reproduces it exactly.
-  const kept: FenceSpan[] = []
-  let left = cut.text.length
-  for (const s of spans) {
-    if (left <= 0) break
-    kept.push(s.text.length <= left ? s : { ...s, text: s.text.slice(0, left) })
-    left -= s.text.length
+  // Re-cut the spans to each clipped length so authorship survives the clip: a cut is a prefix of `joined`, so taking that many characters back off the span list reproduces it exactly. Never between the halves of a surrogate pair, which would ship a lone surrogate.
+  const prefix = (length: number): FenceSpan[] => {
+    const kept: FenceSpan[] = []
+    let left = length
+    for (const s of spans) {
+      if (left <= 0) break
+      const high = s.text.charCodeAt(left - 1)
+      const take = left < s.text.length && high >= 0xd800 && high <= 0xdbff ? left - 1 : left
+      kept.push(s.text.length <= left ? s : { ...s, text: s.text.slice(0, take) })
+      left -= s.text.length
+    }
+    return kept
   }
-  return fenceUntrustedSpans(kept, UNTRUSTED_TOOL_TAG) + REWRITE_CLIP_NOTE
+  // Measured on the fenced result rather than priced ahead of it, for the reasons fitToDeliveryCap gives: the fence strips escapes and escapes markers, so what it adds to a body is not a constant.
+  return fitToDeliveryCap(joined, (body, clipped) => (clipped ? fenceUntrustedSpans(prefix(body.length), UNTRUSTED_TOOL_TAG) + REWRITE_CLIP_NOTE : fenced))
 }
 
 async function maybeCollapseIdenticalRead(
@@ -232,8 +237,9 @@ async function maybeCollapseIdenticalRead(
   const sessionKey = bashRecallKey(cmd, runDir)
   if (containerId === null) {
     // Nothing served this session contains these lines whole. That is not the same as nothing having been served: a read overlapping an earlier one without nesting inside it lands here too, and used to ship every already-seen line again. Withhold just those stretches, then cache what was actually delivered so a later read is matched against what the model saw rather than what the command printed.
-    const elided = elideServedShellLines(cmd, output, priorIds)
-    const priced = (text: string): boolean => isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(text, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })
+    // Declined on a credential, as both folds below and the generic elision decline: the rewrite would hand back the command's own unserved rows unredacted, and its fence joins a key a colour code split. redactSecrets reads that joined view too.
+    const elided = priorIds.length === 0 || redactSecrets(output).count > 0 ? null : elideServedShellLines(cmd, output, priorIds)
+    const priced =(text: string): boolean => isRewriteWorthwhile({ originalBytes, rewrittenBytes: Buffer.byteLength(text, 'utf-8'), noticeBytes: 0, minNetSavingsBytes: resolveMinNetSavingsBytes() })
 
     // Elision first, because withholding lines the model has already been shown always beats folding lines it has not. The fold is what is left for a first read, which is where this branch spends most of its time: there is nothing served to withhold and, until now, nothing else to do either.
     let rewrite: { text: string; reason: string; kind: string; detail?: string } | null = null
@@ -315,6 +321,16 @@ async function maybeElideServedGenericOutput(
   return emitRewrite(rewrittenText, 'already-served shell output collapsed', { kind: 'bash_compress:generic-served-elision', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
+/** Names PowerShell gives to commands of its own that share a name with a tool token-goat has a filter for, or that it resolves before any program on PATH: `ls`/`dir` are Get-ChildItem, `cat`/`type` Get-Content, `curl`/`wget` Invoke-WebRequest in Windows PowerShell 5.1, `sort` Sort-Object, `diff` Compare-Object, `ps` Get-Process, `echo` Write-Output, `tee` Tee-Object. What they print is a cmdlet's object formatting, not the tool's text, so a filter written for the tool's text would misread it. */
+const POWERSHELL_OWN_NAMES: ReadonlySet<string> = new Set(['ls', 'dir', 'gci', 'cat', 'type', 'gc', 'curl', 'wget', 'iwr', 'irm', 'cp', 'copy', 'mv', 'move', 'rm', 'del', 'rmdir', 'rd', 'ps', 'gps', 'kill', 'sort', 'diff', 'compare', 'echo', 'write', 'tee', 'select', 'where', 'sls', 'man', 'help', 'pwd', 'cd', 'sleep', 'start', 'measure'])
+
+/** The filter for a PowerShell command, or null for the generic filter. Only a single command that runs an external program qualifies, since the program prints the same text whichever shell started it: a cmdlet (`Verb-Noun`) or one of {@link POWERSHELL_OWN_NAMES} prints PowerShell's formatting, and a pipeline, statement list or call operator is PowerShell grammar the bash-shaped command parser cannot read, which detectFromCommand already refuses. */
+function powerShellFilterFor(cmd: string, runDir: string | null): { filter: ToolFilter; argv: string[] } | null {
+  const head = cmd.trimStart().split(/\s+/)[0] ?? ''
+  if (/^[A-Za-z]+-[A-Za-z]+$/.test(head) || POWERSHELL_OWN_NAMES.has(head.toLowerCase())) return null
+  return detectFromCommand(cmd, runDir ?? undefined)
+}
+
 async function maybeCompressCompoundOutput(
   cmd: string,
   optedOut: boolean,
@@ -323,6 +339,7 @@ async function maybeCompressCompoundOutput(
   runDir: string | null,
   cacheMinBytes: number,
   isUnwrapped = false,
+  powerShell = false,
 ): Promise<HookOutput | null> {
   if (optedOut) return null
   // A wrapped command's output already went through the runner, whatever its shape: the capped interpreter-read wrapper runs multi-line scripts and heredocs too, and keyed on the inner command being a single one, their already-capped output was compressed a second time as a compound command's. Unwrapped single commands (e.g. in environments without pre-hook rewriting) reach here and are eligible for compression.
@@ -342,16 +359,18 @@ async function maybeCompressCompoundOutput(
   if (!cfg.enabled || cfg.disabled_filters.includes('generic')) return null
   if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return null
   // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; an unwrapped single command gets its command-specific filter; everything else keeps the generic filter this path has always used. Both lookups find a package-manager script's runner in the directory the command ran in, not the event's cwd, which for a subagent is where the call started whatever its cd did, and the store below files the output under that directory too. Under the event's cwd, an unwrapped `cd ../other && git diff` left the other repository's diff where a later `git diff` in the starting one took it for its own prior run, and the waste report, which looks a call up under the directory it ran in, found nothing.
-  const shaped = pipelineShapeFilter(cmd, runDir) ?? (isUnwrapped ? detectFromCommand(cmd, runDir ?? undefined) ?? null : null)
+  const shaped = powerShell ? powerShellFilterFor(cmd, runDir) : pipelineShapeFilter(cmd, runDir) ?? (isUnwrapped ? detectFromCommand(cmd, runDir ?? undefined) ?? null : null)
   const useShaped = shaped !== null && !cfg.disabled_filters.includes(shaped.filter.name)
   const filter = useShaped ? shaped.filter : filterByName('generic')
   if (filter === null) return null
   // Only the shaped filter gets argv: the generic fallback is chosen precisely because no filter claimed this command, so handing it the first stage's tokens would invite it to read flags meant for something else.
   const filterArgv = useShaped ? shaped.argv : []
-  // Output is the combined stdout/stderr stream the harness already merged, so pass it as stdout.
+  // Output is the combined stdout/stderr stream the harness already merged, so pass it as stdout. The shaped filter sees only the first stage's argv, so a `| head -N` the caller already bounded the output with travels beside it.
+  const lineBound = useShaped && !powerShell ? pipelineLineBound(cmd) : null
   const compressed = compressOutput(filter, output, '', exitCode ?? 0, filterArgv, {
     maxLines: cfg.max_lines,
     maxBytes: cfg.max_bytes,
+    ...(lineBound !== null ? { outputLineBound: lineBound } : {}),
   })
   const minNet = resolveMinNetSavingsBytes()
   // Cheap necessary pre-check: the recall pointer below only ever makes the rewrite bigger, so anything failing here can never clear the gate once the pointer is priced in either. Failing fast keeps a hopeless case from paying for a cache write.
@@ -359,7 +378,9 @@ async function maybeCompressCompoundOutput(
   // The id is `bashOutputIdSync(cmd, output, runDir)`, exactly what the storeBashOutput call below returns for this same output, so the pointer's real byte cost is known before committing to the cache write -- and the pointer names this run's body rather than whatever the command last produced.
   const id = bashOutputIdSync(cmd, output, runDir)
   // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies head/tail elision, so it would return a truncated view, not the complete original. The fence wraps the command's own bytes and nothing else: token-goat's marker and the recall pointer sit outside it. Fold them in and the model loses its one signal for where our voice ends and the command's output begins, and anyone who guesses the marker's wording gets to write text the model reads as ours. Every other rewrite hook already follows this rule -- fetch, websearch, MCP, and the Read splice sites -- and Bash was the one substitution site in the codebase that handed the model a replacement body with no fence at all. A filter that hit its cap appends a notice saying so, and that notice is ours, so it joins the marker outside the tag rather than riding inside with the command's bytes. Leaving it in was the one case where token-goat's voice really did sit inside its own fence, which is exactly the ambiguity the fence removes -- and the marker neutraliser escapes it, so the symptom was our own cap notice arriving mangled. Nothing positional is lost: the cap trims the tail, so the point it describes is where the body ends, which the closing tag already marks.
-  const { body: untrusted, notices } = splitOwnTrailingNotices(compressed.text)
+  // apply() already told token-goat's closing notices from the command's bytes by provenance and kept them apart; `text` ends with exactly them.
+  const notices = compressed.ownNotices
+  const untrusted = compressed.text.slice(0, compressed.text.length - notices.length)
   const marker = compressed.withMarker(minNet).slice(compressed.text.length)
   const body =
     fenceUntrusted(untrusted, UNTRUSTED_TOOL_TAG) +
@@ -396,7 +417,7 @@ function maybeStripAnsiOnly(output: string): HookOutput | null {
   if (!cfg.enabled || cfg.disabled_filters.includes('ansi')) return null
   const stripped = stripAnsiEscapes(output)
   const originalBytes = Buffer.byteLength(output, 'utf-8')
-  // Deliberately not fenced, unlike the compressing path above. The fence marks where token-goat stops speaking and third-party bytes begin, and it earns that only where token-goat has something of its own in the block: the compressing path drops lines, vouches for what it kept, and splices a `[token-goat: ...]` marker in beside content it did not write. This path does none of that. It emits `stripped` alone -- no marker, no recall pointer, no summary -- so the model receives the same bytes the harness would have delivered anyway, minus escape sequences it cannot render. There is no token-goat voice here to delimit. Pricing a fence in here also costs the strip itself: the whole saving is the escape bytes, so the fence's ~123 outweighs it on ordinary build output, the gate returns null, and the raw output reaches the model unfenced regardless -- losing the strip and buying no safety.
+  // Deliberately not fenced, unlike the compressing path above. The fence marks where token-goat stops speaking and third-party bytes begin, and it earns that only where token-goat has something of its own in the block: the compressing path drops lines, vouches for what it kept, and splices a `[token-goat: ...]` marker in beside content it did not write. This path does none of that. It emits the stripped output alone, redacted -- no marker, no recall pointer, no summary -- so the model receives the same bytes the harness would have delivered anyway, minus escape sequences it cannot render and any credential. There is no token-goat voice here to delimit. Pricing a fence in here also costs the strip itself: the whole saving is the escape bytes, so the fence's ~123 outweighs it on ordinary build output, the gate returns null, and the raw output reaches the model unfenced regardless -- losing the strip and buying no safety.
   if (
     !isRewriteWorthwhile({
       originalBytes,
@@ -407,8 +428,10 @@ function maybeStripAnsiOnly(output: string): HookOutput | null {
   ) {
     return null
   }
-  // 'counted-elsewhere': this pass redacts nothing, it only removes escape bytes. Any placeholder in `stripped` was already in the original and was booked by whoever put it there, so counting here would credit this path with a redaction it did not perform. Capped at the harness delivery cap for the same reason as the other Bash rewrite sites.
-  return emitRewrite(stripped, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes: deliveredOutputBytes(originalBytes) }, 'counted-elsewhere')
+  // Redacted before it ships, as every rewrite is: once this pass substitutes the result, the bytes are token-goat's emission, and a credential the command printed would reach the model through it. Only the values this pass redacted are booked; a placeholder already in the output was put there, and counted, by whoever wrote it (the compress runner for a wrapped command), so 'counted-elsewhere' keeps emitRewrite from booking it twice. Capped at the harness delivery cap for the same reason as the other Bash rewrite sites.
+  const redacted = redactSecrets(stripped)
+  if (redacted.count > 0) recordStat('secret_redacted', 0, redacted.count, undefined, 'ansi escapes stripped')
+  return emitRewrite(redacted.text, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes: deliveredOutputBytes(originalBytes) }, 'counted-elsewhere')
 }
 
 // A `curl` GET of an HTML page is the one Bash shape hooks_fetch.ts's WebFetch path already solves and this surface never reached: the harness's delivery cap (see delivery_cap.ts) truncates a Bash result long before article text past the `<head>`/inline CSS/`<script>` preamble arrives, so the model can pay the full cap and still receive zero article content. Modelled on maybeStripAnsiOnly above, but this pass is lossy (extractCleanText drops markup, not just display-only bytes) so, unlike that one, it appends a recall notice pointing at the raw cached copy and prices that notice's own bytes in the net-benefit gate.
@@ -423,7 +446,8 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
   if (!cfg.enabled || cfg.disabled_filters.includes('curl-html')) return null
   let cleaned: string
   try {
-    cleaned = extractCleanText(output)
+    // Redacted before the clip below, which could otherwise cut a credential short of the length its pattern recognizes, and before anything reaches the model: an unwrapped `curl` GET (auto mode, a deny or ask rule, a harness that never rewrites the shell) arrives here with the page exactly as served. Redacted on the way in as well, because extractCleanText is a truncator too: html-to-text cuts its input at limits.maxInputLength, and a page past that cut had a credential split in two before the redaction after it ran.
+    cleaned = redactSecrets(extractCleanText(redactSecrets(output).text)).text
   } catch {
     return null
   }
@@ -433,17 +457,12 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
   const noticeBytes = Buffer.byteLength(notice, 'utf-8')
   // Fenced like maybeCompressCompoundOutput above: the cleaned text is a fetched webpage's own words, third-party content by provenance the same way a WebFetch body is, so it gets the same untrusted-content fence and injection scan hooks_fetch.ts already applies to that surface. Clipped to the harness delivery cap rather than shipped whole, because unlike every other rewrite in this file this one can legitimately EXCEED that cap: extractCleanText shrinks a page enormously relative to its markup and still leaves more prose than the cap carries, measured at 29,252 bytes of cleaned text from a 197,504-byte Wikipedia article. Shipping past the cap costs nothing in bytes (the harness truncates either way) but loses the tail, and the tail is where the closing fence marker and the recall notice sit. Losing the notice is the expensive half: the harness persists the CLEANED text it was handed, so once this hook substitutes, the raw markup survives only in token-goat's own bash cache and that notice is its only route back. Overhead is measured off an actual fence call rather than assumed, since fenceUntrusted returns the text unchanged when injection fencing is switched off.
   const clipNote = '\n[token-goat: cleaned text clipped to the harness delivery cap; the notice at the top of this output recalls the full raw markup]'
-  const fenceOverhead = Buffer.byteLength(fenceUntrusted(cleaned, UNTRUSTED_TOOL_TAG), 'utf-8') - Buffer.byteLength(cleaned, 'utf-8')
-  // The cap rule itself lives in delivery_cap.ts and is shared with fenceRewriteWithinCap above, so the two Bash paths that can outrun the cap cannot drift apart on where they cut.
-  const cut = clipToDeliveryCap(cleaned, noticeBytes + fenceOverhead + Buffer.byteLength(clipNote, 'utf-8'))
-  const body = cut.text
-  const clipped = cut.clipped ? clipNote : ''
-  // The clip note stays OUTSIDE the fence: it is token-goat's own sentence, and the fence escapes `[token-goat:` markers found within it so that third-party bytes cannot forge one, which rendered this note as `&#91;token-goat: ...` when it was fenced along with the page text.
-  const fenced = fenceUntrusted(body, UNTRUSTED_TOOL_TAG) + clipped
+  // Measured on what ships, notice and clip note included, for the reasons fitToDeliveryCap gives: html-to-text decodes `&#27;`, so a page can put escapes in for the fence to strip, and a page dense in markers grows under the neutralizer. The cap rule itself lives in delivery_cap.ts and is shared with fenceRewriteWithinCap above, so the two Bash paths that can outrun the cap cannot drift apart on where they cut. The clip note stays OUTSIDE the fence: it is token-goat's own sentence, and the fence escapes `[token-goat:` markers found within it so that third-party bytes cannot forge one, which rendered this note as `&#91;token-goat: ...` when it was fenced along with the page text.
+  const shipped = fitToDeliveryCap(cleaned, (body, clipped) => notice + fenceUntrusted(body, UNTRUSTED_TOOL_TAG) + (clipped ? clipNote : ''))
   if (
     !isRewriteWorthwhile({
       originalBytes,
-      rewrittenBytes: Buffer.byteLength(fenced, 'utf-8'),
+      rewrittenBytes: Buffer.byteLength(shipped, 'utf-8') - noticeBytes,
       noticeBytes,
       minNetSavingsBytes: resolveMinNetSavingsBytes(),
     })
@@ -451,7 +470,7 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
     return null
   }
   // Default 'count-here' redaction accounting, matching the other lossy-rewrite sites in this file (the generic compress and identical/contained-reread paths above): extractCleanText performs no redaction of its own, so this is the same posture as those sites rather than the ansi path's 'counted-elsewhere', which exists only because that path is a pure identity transform on bytes already accounted for elsewhere. Notice FIRST, not appended: it is the only pointer back to the raw markup, and a trailing one sits exactly where the harness truncates.
-  return emitRewrite(notice + fenced, 'curl HTML body cleaned', { kind: 'bash_compress:curl-html', originalBytes: deliveredOutputBytes(originalBytes) })
+  return emitRewrite(shipped, 'curl HTML body cleaned', { kind: 'bash_compress:curl-html', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
 /** Read the full text a Bash tool_response points at via `persistedOutputPath`, when Claude Code already wrote the complete output to disk because it exceeded the harness's 20,000-char inline head -- `tool_response.stdout` in that case is only the head, so compressing or caching from it alone silently drops the rest of a larger real result. Confined to this session's own `<claude home>/projects/<slug>/<session id>/tool-results/` directory (resolved through symlinks via isInsideRoot, so a link escaping that directory cannot be followed), bounded to MAX_CAPTURE_BYTES, and sanity-checked against `persistedOutputSize`. Any failure returns null so the caller falls back to the head. */
@@ -602,6 +621,7 @@ function recordBashFileReadsForSessionCache(cmd: string, runDir: string | null):
   // An inline interpreter read (`python -c`, `node -e`, PowerShell `[IO.File]::ReadAllText`) is deliberately absent: what reaches the conversation is whatever the script printed, and of 217 such commands measured in real transcripts about 203 printed a key, a count or a slice. Recorded as a full read, one printed key armed the Read hook's unchanged-file denies against a file the model had never seen.
 }
 
+/** The advisory for a large output nothing compressed, which offers two things, each at most once per session per command. A recall pointer, only when the harness did not show the whole output: Claude Code persists a result past its inline limit and hands the model a short preview, so a pointer there names bytes the model has not read, while under that limit it names bytes already in context. Measured over the recorded sessions, the pointer was shown 80 times on outputs that had arrived whole and recalled 0 times. And a `token-goat compress -c` suggestion, only once the same command has produced a large output before in this session, since it is the next run it would compress and a one-off command has none. Routed through hint tracking as `bash_large_output`, so hint-stats scores it on the pointer or the suggestion being followed and backs it off when they are not. */
 async function maybeEmitLargeUncompressedHint(
   cmd: string,
   rawCmd: string,
@@ -612,6 +632,8 @@ async function maybeEmitLargeUncompressedHint(
   isUnwrapped: boolean,
   event: HookEvent,
   ansiResult: HookOutput | null,
+  persisted: boolean,
+  powerShell = false,
 ): Promise<HookOutput | null> {
   const outputBytes = Buffer.byteLength(output, 'utf-8')
   if (
@@ -620,43 +642,228 @@ async function maybeEmitLargeUncompressedHint(
     (exitCode !== null && exitCode !== 0) ||
     // token-goat's own output is already the narrow form; telling the model to compress it is noise.
     isTokenGoatOwnCommand(cmd) ||
-    // a line-range read, piped or repeated, is already the narrow slice; compressing it saves nothing.
-    extractLineRangeReadsCompound(cmd) !== null ||
-    // nor does compressing a whole-file read such as `cat f | head -200`: the file-read branch already folded whatever it could, and when it found nothing to fold this hint used to fire in its place.
-    pureFileReadPath(cmd) !== null ||
-    (event.raw['_tg_harness'] !== 'vscode' && (isCompressibleSingleCommand(cmd) || !isUnwrapped))
+    // The rest are Bash's: a PowerShell command is never wrapped for compression and has no file-read branch to defer to.
+    (!powerShell &&
+      // a line-range read, piped or repeated, is already the narrow slice; compressing it saves nothing.
+      (extractLineRangeReadsCompound(cmd) !== null ||
+        // nor does compressing a whole-file read such as `cat f | head -200`: the file-read branch already folded whatever it could, and when it found nothing to fold this hint used to fire in its place.
+        pureFileReadPath(cmd) !== null ||
+        (event.raw['_tg_harness'] !== 'vscode' && (isCompressibleSingleCommand(cmd) || !isUnwrapped))))
   ) {
     return null
   }
-  const key = `bash-uncompressed-4k:${event.sessionId ?? ''}:${shortFingerprint(cmd)}`
-  if (wasHintShown(key)) return null
-  markHintShown(key)
-  recordStat('session_hint', 0, 0)
-  // Under the directory the command ran in, as the cache branch stores the same output: under the hook's cwd instead, a later run of the same command there would find this copy and read it as its own prior run.
-  const id = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
-  const kb = Math.round(outputBytes / 1024)
-  // The recall pointer leads and each suggestion sits in its own backticks: the suggestion scrubber cuts from an unsafe suggestion to the last backtick on the line, so a compress suggestion ahead of it took the pointer down with it. A command holding a quote, backtick, `$` or line break cannot be wrapped in the double quotes below at all, so it gets no compress suggestion. The suggestion is a command to run, so it keeps the leading assignments `cmd` dropped: `FOO=1 build` suggested back as `build` would run without FOO. It keeps a `cd DIR &&` prefix for the same reason, as the directory the prefix resolved to rather than as written: without it the next run happens wherever the shell is, and a relative DIR names the wrong place once the shell is in it, which is where Claude Code's main thread leaves it after this call. That directory sits in single quotes, which keep a space in it whole and cannot hold a single quote, so a directory containing one gets no compress suggestion either. Nor does one that is not there as resolved: the directory is resolved as a path with no `~` expanded, so `cd ~/pkg` names a `~` under the start directory, and a suggestion naming it fails at its cd before the command runs. The resolved directory is an index key, which spells a WSL drive mount `/mnt/c/x` as `c:/x`, a path the shell there cannot cd to, so the suggestion names the directory where the host finds it.
+  const keySuffix = `${event.sessionId ?? ''}:${shortFingerprint(cmd)}`
+  const seenKey = `bash-uncompressed-seen:${keySuffix}`
+  const recallKey = `bash-uncompressed-recall:${keySuffix}`
+  const compressKey = `bash-uncompressed-4k:${keySuffix}`
+  const repeat = wasHintShown(seenKey)
+  markHintShown(seenKey)
+  const cap = bashOutputCapBytes()
+  const recall = (persisted || (cap !== null && outputBytes > cap)) && !wasHintShown(recallKey)
+  // Each suggestion sits in its own backticks: the suggestion scrubber cuts from an unsafe suggestion to the last backtick on the line, so a compress suggestion ahead of the recall pointer took the pointer down with it. A command holding a quote, backtick, `$` or line break cannot be wrapped in the double quotes below at all, so it gets no compress suggestion. The suggestion is a command to run, so it keeps the leading assignments `cmd` dropped: `FOO=1 build` suggested back as `build` would run without FOO. It keeps a `cd DIR &&` prefix for the same reason, as the directory the prefix resolved to rather than as written: without it the next run happens wherever the shell is, and a relative DIR names the wrong place once the shell is in it, which is where Claude Code's main thread leaves it after this call. That directory sits in single quotes, which keep a space in it whole and cannot hold a single quote, so a directory containing one gets no compress suggestion either. Nor does one that is not there as resolved: the directory is resolved as a path with no `~` expanded, so `cd ~/pkg` names a `~` under the start directory, and a suggestion naming it fails at its cd before the command runs. The resolved directory is an index key, which spells a WSL drive mount `/mnt/c/x` as `c:/x`, a path the shell there cannot cd to, so the suggestion names the directory where the host finds it.
   const bare = stripCdPrefix(rawCmd)
   const cdDir = bare === rawCmd ? null : runDir
   const cdHost = cdDir === null ? null : dirAtIndexKey(cdDir)
   const runCmd = cdHost === null ? bare : `cd '${cdHost}' && ${bare}`
   const compressable = !/["`$\r\n]/.test(runCmd) && (cdDir === null || (cdHost !== null && !cdHost.includes("'")))
-  const msg = `[tg] Output was ${kb}KB uncompressed; \`token-goat bash-output ${id}\` recalls it` + (compressable ? `, and \`token-goat compress -c ${quotedArg(displaySafeText(runCmd))}\` compresses the next run.` : '.')
+  // `compress -c` runs its command under bash, so a PowerShell command gets no suggestion.
+  const compress = !powerShell && repeat && compressable && !wasHintShown(compressKey)
+  if (!recall && !compress) return null
+  if (recall) markHintShown(recallKey)
+  if (compress) markHintShown(compressKey)
+  // The id is the one storeBashOutput below returns for this output, under the directory the command ran in, as the cache branch stores the same output: under the hook's cwd instead, a later run of the same command there would find this copy and read it as its own prior run. Known before the store, so a hint that hint tracking holds back costs no cache write.
+  const id = bashOutputIdSync(cmd, output, runDir)
+  const kb = Math.round(outputBytes / 1024)
+  const suggestion = `\`token-goat compress -c ${quotedArg(displaySafeText(runCmd))}\``
+  const msg = recall
+    ? `[tg] Output was ${kb}KB uncompressed, more than the harness shows inline; \`token-goat bash-output ${id}\` recalls it` + (compress ? `, and ${suggestion} compresses the next run.` : '.')
+    : `[tg] Output was ${kb}KB uncompressed again; ${suggestion} compresses the next run.`
+  const tracked = applyHintTracking(event, contextOutput(msg, [...(recall ? [id] : []), ...(compress ? [runCmd] : [])]), uncorrelatedHint('bash_large_output'))
+  if (tracked.hookType !== 'context') return null
+  recordStat('session_hint', 0, 0)
+  if (recall) await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
   if (ansiResult !== null && ansiResult.hookType === 'rewriteOutput') {
     // The ansi strip already emitted through emitRewrite and booked its own saving there, so this re-emit carries the same text and books no saving of its own -- the hint is the session_hint stat recorded above, and double-booking those bytes would inflate every total that sums them. Routing through emitRewrite rather than constructing the object here is also what applies the vscode guard: that harness has no field which replaces a tool result, so a hand-built rewrite was silently dropped while still reading as an emit. maybeStripAnsiOnly may ship those bytes unfenced because it adds nothing of ours to them, but this block does add a marker, so the command output is fenced here and the marker stays outside it: otherwise the model cannot tell which of the two voices in the block is token-goat's, and output that forged the marker wording would read as ours. The marker leads rather than trails because it carries the only pointer back to the full output, and the harness truncates from the end.
     return emitRewrite(msg + '\n' + fenceUntrusted(ansiResult.updatedOutput, UNTRUSTED_TOOL_TAG), 'large uncompressed output hint', undefined, 'counted-elsewhere')
   }
-  return contextOutput(msg)
+  return tracked
 }
 
-/** post_tool_use handler for the Bash tool. Caches the output of monitoring and build commands so that `preBashHandler` can emit a recall hint the next time the same command is run, avoiding a redundant re-execution and the token cost of re-reading the output. */
+/** post_tool_use handler for the Bash tool. Caches the output of monitoring and build commands so that `preBashHandler` can emit a recall hint the next time the same command is run, avoiding a redundant re-execution and the token cost of re-reading the output. A wrapped command's result first loses the heartbeat lines `token-goat compress` wrote to stderr while the command was quiet: they were for whoever watched the run, and Claude Code merges stderr into the finished result. */
 export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
+  try {
+    const rawCmd = extractCommand(event)
+    if (rawCmd === undefined) return passOutput()
+    const delivered = extractBashOutput(event)
+    const fromRunner = runnerShippedResult(rawCmd, delivered)
+    // A persisted result is left alone: the model was shown a short preview, and a rewrite would carry the whole output inline.
+    const output = fromRunner && !resultWasPersisted(event) ? stripCompressHeartbeats(delivered) : delivered
+    let result = await postBashResultHandler(event, output)
+    // The runner already fenced the command's bytes in what it substituted and printed its own lines after the closing tag. A second rewrite here would wrap that fence in another and escape the runner's notices inside it, so its bookkeeping and hints stand and its rewrites do not.
+    if (fromRunner && result.hookType === 'rewriteOutput') result = passOutput()
+    return output === delivered ? result : withoutHeartbeats(result, output)
+  } catch {
+    // Never block: hook failures must be silent.
+  }
+  return passOutput()
+}
+
+/** True when `delivered` is the compress runner's own account of a wrapped command: it ends with the runner's recall line, the line names an entry the runner stored for this very command by its content-addressed id, and that entry's digest of what the runner printed matches `delivered` with its opening heartbeats taken off. The line alone proves nothing, because a command can print it: this used to accept any id that resolved to an entry for the same command, and two such ids are knowable before the command runs: the command-hash redirect (an unkeyed hash of the directory and the command) and the id of an earlier run's output. The digest binds the line to the bytes it ends, so it vouches only for a result the runner printed. An earlier result replayed byte for byte still passes, and may: every byte of it is token-goat's own fenced, redacted output. Without that line the runner shipped the command's output as it was (or never ran a capture at all, under `--no-compress`), so the result is the command's, heartbeat-shaped lines included. */
+function runnerShippedResult(rawCmd: string, delivered: string): boolean {
+  const inner = unwrapCompressCommand(rawCmd)
+  if (inner === null) return false
+  const id = runnerRecallId(delivered)
+  if (id === null) return false
+  const entry = getBashOutput(id)
+  return entry !== null && entry.id === id && entry.command === redactSecrets(inner).text && entry.shipped === runnerResultDigest(stripCompressHeartbeats(delivered))
+}
+
+/** True when Claude Code persisted the result rather than showing it inline. */
+function resultWasPersisted(event: HookEvent): boolean {
+  const resp = event.raw['tool_response']
+  if (resp === null || typeof resp !== 'object') return false
+  const persistedPath = (resp as Record<string, unknown>)['persistedOutputPath']
+  return typeof persistedPath === 'string' && persistedPath !== ''
+}
+
+/** What reaches the model once `output`, the delivered result minus its heartbeat lines, differs from what the harness delivered. A rewrite was already built from `output`. A pass or a hint would leave the heartbeats in place, so the result becomes `output` itself, redacted like every rewrite, with a hint carried beside it as additionalContext rather than dropped. A result the delivery cap would cut is left as delivered rather than shipped inline past the cap. */
+function withoutHeartbeats(result: HookOutput, output: string): HookOutput {
+  if (result.hookType !== 'pass' && result.hookType !== 'context') return result
+  const redacted = redactSecrets(output)
+  if (clipToDeliveryCap(redacted.text, 0).clipped) return result
+  // Booked here for the values this pass redacted itself; any placeholder already in the result was put there, and counted, by the runner.
+  if (redacted.count > 0) recordStat('secret_redacted', 0, redacted.count, undefined, 'compress heartbeat removed')
+  const stripped = emitRewrite(redacted.text, 'compress heartbeat removed', undefined, 'counted-elsewhere')
+  if (stripped.hookType !== 'rewriteOutput') return result
+  return result.hookType === 'context' ? { ...stripped, context: result.context } : stripped
+}
+
+/** The effects a finished shell call has whichever tool ran it, Bash or Claude Code's PowerShell tool: reindexing the files a git command or an in-place write changed outside the Edit tool, recording a finished download and a `token-goat` surgical read for the pre hook's dedup, and caching a read-only `gh api`, `gh pr|issue view` or scoped `git status` for recall. Each reads a program's own command line and output, which are the same text whichever shell started the program. Returns the `gh` advisory when one applies, which the caller ships ahead of any rewrite, as postBashResultHandler always has. */
+async function recordShellCall(call: { cmd: string; runDir: string | null; cwd: string | null; heldStartCwd: string | null; exitCode: number | null; output: string; cacheMinBytes: number }): Promise<HookOutput | null> {
+  const { cmd, runDir, cwd, heldStartCwd, exitCode, output, cacheMinBytes } = call
+  // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never enter queue/dirty.txt via the normal postEditHandler path -- every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep serving whatever was indexed before the mutation until each file happens to be individually read. `HEAD@{1}` is git's own reflog record of "where HEAD was immediately before this command moved it" -- correct for single-step operations, but a multi-commit rebase or `pull --rebase` creates several intermediate reflog entries, so `HEAD@{1}` can only capture the last replayed step. `ORIG_HEAD` is the more robust base for the subcommands that set it (see ORIG_HEAD_ELIGIBLE_GIT_RE above) since it survives that internal churn; `HEAD@{1}` remains the fallback for checkout/switch/reset/cherry-pick (which never set it, or for which it's excluded) and for the rare case ORIG_HEAD hasn't been set yet at all.
+  if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
+    const gitDir = runDir ?? process.cwd()
+    let diffBase = 'HEAD@{1}'
+    // Why the changed-file list cannot be trusted, when it cannot: a read git did not answer at all (spawn failure or timeout, exit -1) leaves the base possibly wrong even when the diff then succeeds.
+    let unanswered: string | null = null
+    // Set when a read could not start git at all (missing, or a working directory that is gone): the worker needs git to sweep, so it could not do better and gets no request.
+    let gitNeverRan = false
+    if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
+      const reflogTop = runGit(['reflog', '-1', '--format=%gs', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+      if (reflogTop.exitCode === -1) {
+        unanswered = `git reflog: ${reflogTop.stderr}`
+        if (reflogTop.timedOut !== true) gitNeverRan = true
+      }
+      if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {
+        const origHead = runGit(['rev-parse', '--verify', '-q', 'ORIG_HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+        if (origHead.exitCode === -1) {
+          unanswered = `git rev-parse ORIG_HEAD: ${origHead.stderr}`
+          if (origHead.timedOut !== true) gitNeverRan = true
+        }
+        if (origHead.exitCode === 0 && origHead.stdout.trim() !== '') diffBase = 'ORIG_HEAD'
+      }
+    }
+    const mutationDiff = runGit(['diff', '--name-only', diffBase, 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+    if (mutationDiff.exitCode === 0) {
+      // `git diff --name-only` always reports paths relative to the repo top-level, regardless of which directory git was invoked from -- resolving them against the raw event cwd (a monorepo subpackage, or a `cd sub && git checkout ...`) would compute the wrong absolute path and silently enqueue nothing useful. Resolve the real top-level first, and treat a root git would not name as a failed read rather than guessing the working directory.
+      const repoRoot = gitRepoRootOrNull(gitDir)
+      if (repoRoot === null) {
+        unanswered ??= 'git rev-parse --show-toplevel named no root'
+      } else {
+        for (const rel of mutationDiff.stdout.split('\n')) {
+          const trimmed = rel.trim()
+          if (trimmed.length === 0) continue
+          enqueueDirtyPathSafe(resolveIndexPath(trimmed, repoRoot), { alreadyResolved: true })
+        }
+      }
+    } else {
+      unanswered = `git diff ${diffBase} HEAD exited ${mutationDiff.exitCode}: ${mutationDiff.stderr}`
+      gitNeverRan = mutationDiff.exitCode === -1 && mutationDiff.timedOut !== true
+    }
+    // Dropping the work here left the index on the old branch with nothing in any log, and under load each read above is one 5 s timeout from failing. The worker can learn what changed without the hook's time budget (a sweep of the tracked files against the index), so hand it the project and record why.
+    if (unanswered !== null) {
+      const recorded = gitNeverRan ? null : requestReconcileSafe(gitDir)
+      appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${cmd.slice(0, 80)} in ${gitDir}: could not list the files it changed (${unanswered.trim().slice(0, 200)}); ${recorded === null ? 'git could not be started, so no reconcile was requested' : recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
+    }
+  }
+
+  // Working-tree rewrites that never move HEAD, so the block above cannot see them: `git restore`, `git stash pop|apply`, and the plain shell in-place writes (`sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`). Same staleness failure class, one gap over -- none of these go through the Edit tool either, so before this nothing enqueued them and every surgical read kept serving pre-mutation content. See enqueueNonHeadMovingRewrites.
+  if (exitCode === null || exitCode === 0) {
+    enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd())
+  }
+
+  // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
+  const curlDl = extractCurlDownload(cmd)
+  if (curlDl !== null && (exitCode === null || exitCode === 0)) {
+    // Recorded at its host path, which is the key except for a drive-letter key on WSL, so the recall names a file the shell there can open.
+    const outputOnDisk = hostPathOfTypedPath(curlDl.outputPath, runDir ?? process.cwd())
+    if (existsSync(outputOnDisk)) {
+      recordCurlDownload(curlDl.url, outputOnDisk)
+    }
+  }
+
+  // Cache a successful scoped `git status`/`git diff --stat -- <path>` so a later identical call recalls it instead of re-running (see isScopedGitStatusOrDiffStatCommand above). Gated on exit 0 and the shared size floor, same as the gh-api cache above; staleness is enforced entirely by the `gitMutable` fingerprint recorded via computeBashFingerprints (HEAD sha, `git status --porcelain`, and the stat of each path it lists), not a separate mechanism.
+  if (isScopedGitStatusOrDiffStatCommand(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
+    const gitScopedCacheHash = bashRecallKey(cmd, runDir)
+    const gitScopedCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
+    recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
+  }
+
+  // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
+
+  // Record a successful `token-goat symbol|read|section` invocation so a later identical call gets the re-read dedup hint from the pre-hook.
+  let tgRead = extractTgSurgicalRead(cmd, runDir)
+  // The shim skips the pre hook for token-goat's own command (bridges/shim_common.ts::SHIM_OWN_COMMAND_BYPASS), so no start directory is held for it and, on Claude Code's main thread, runDir applies the cd a second time to a cwd it already moved. When the target is missing there, this hook's cwd is where the cd landed; a file under runDir keeps runDir, which is right wherever the shell did not move.
+  if (heldStartCwd === null && cwd !== null && tgRead?.filePath != null && !isFileAtIndexKey(tgRead.filePath)) tgRead = extractTgSurgicalRead(cmd, cwd)
+  if (tgRead !== null && (exitCode === null || exitCode === 0)) {
+    recordCliRead(tgRead.sub + '::' + tgRead.spec)
+    // Record a surgical (symbol/section/range-scoped) read against the file's session entry so compact.ts's symbolsBonus can reward narrowly-engaged files. `spec` for read/section is `filePath` + a narrowing suffix (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a whole-file `token-goat read <file>`, which is not symbol-scoped and is left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
+    if (tgRead.filePath !== null) {
+      const narrowing = tgRead.spec.slice(tgRead.filePath.length)
+      if (narrowing.length > 0) recordSymbolRead(tgRead.filePath, narrowing.replace(/^::/, ''))
+    }
+    if (tgRead.filePath !== null && loadConfig().hints.log_large_file_hint_outcomes) {
+      const pendingSize = takePendingLargeFileHint(tgRead.filePath)
+      if (pendingSize !== null) {
+        recordStat('large_file_hint_followed', 0, 0, undefined, `${tgRead.filePath} (${pendingSize} bytes) — hint fired, then followed by a surgical token-goat read`)
+      }
+    }
+  }
+
+  // Cache a successful, read-only `gh api` GET so a later identical call recalls it instead of re-fetching. Done as a side effect before the advisory-hint return below, so a wide-JSON response is both nudged toward --jq and cached. Gated on exit 0 (and the shared size floor) so an error/permission body is never stored as content.
+  if (isReadOnlyGhApi(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
+    const ghCacheHash = bashRecallKey(cmd, runDir)
+    const ghCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
+    recordBashOutput(ghCacheHash, ghCacheId, Buffer.byteLength(output, 'utf-8'))
+  }
+
+  const ghHint = buildGhApiHint(cmd, output, exitCode)
+  if (ghHint !== null) {
+    recordStat('session_hint', 0, 0)
+    return contextOutput(ghHint)
+  }
+
+  // One-time field-batching advisory: on the first successful read-only `gh pr view`/`gh issue view` this session, nudge toward a single batched `--json a,b,c` instead of querying field-by-field across many calls. Cache the output inline first (as the monitoring path would) so a later identical view still recalls, then return the advisory.
+  const ghView = extractGhViewForBatchAdvisory(cmd)
+  if (ghView !== null && (exitCode === null || exitCode === 0) && !wasHintShown(GH_VIEW_BATCH_HINT_KEY)) {
+    markHintShown(GH_VIEW_BATCH_HINT_KEY)
+    if (Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
+      const ghViewId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
+      recordBashOutput(bashRecallKey(cmd, runDir), ghViewId, Buffer.byteLength(output, 'utf-8'))
+    }
+    recordStat('session_hint', 0, 0)
+    return contextOutput(buildGhViewBatchAdvisory(ghView.sub, ghView.ref))
+  }
+  return null
+}
+
+async function postBashResultHandler(event: HookEvent, output: string): Promise<HookOutput> {
   try {
     const rawCmdRaw = extractCommand(event)
     if (rawCmdRaw === undefined) return passOutput()
     // True when the call ran as written, not inside a `token-goat compress` wrapper the pre hook rewrote it into.
     const isUnwrapped = unwrapCompressCommand(rawCmdRaw) === null
-    const output = extractBashOutput(event)
     const exitCode = extractExitCode(event.raw)
     const cwd = getCwd(event) ?? null
     // The directory the call started in, which the pre hook saw and held under this call's id. Claude Code's main thread reports the directory a `cd` left the shell in here, so resolving the command's own `cd` against this hook's cwd applies it twice. A call with no pre hook on record falls back to this hook's cwd, which is where the call started whenever the shell does not move: a subagent, or a cd out of the working directories, which the harness resets.
@@ -672,117 +879,13 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // Decided once, from `rawCmd`: `cmd` has lost its leading assignments, a `TOKEN_GOAT_BASH_COMPRESS=0` prefix among them. Every pass below that compresses takes this rather than a command to decide it from, and the two lossless-looking ones need it too, since config folds the environment's opt-out into `bash_compress.enabled` but a prefix on the command itself never reaches config.
     const optedOut = compressionOptedOut(rawCmd)
 
-    // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never enter queue/dirty.txt via the normal postEditHandler path -- every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep serving whatever was indexed before the mutation until each file happens to be individually read. `HEAD@{1}` is git's own reflog record of "where HEAD was immediately before this command moved it" -- correct for single-step operations, but a multi-commit rebase or `pull --rebase` creates several intermediate reflog entries, so `HEAD@{1}` can only capture the last replayed step. `ORIG_HEAD` is the more robust base for the subcommands that set it (see ORIG_HEAD_ELIGIBLE_GIT_RE above) since it survives that internal churn; `HEAD@{1}` remains the fallback for checkout/switch/reset/cherry-pick (which never set it, or for which it's excluded) and for the rare case ORIG_HEAD hasn't been set yet at all.
-    if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
-      const gitDir = runDir ?? process.cwd()
-      let diffBase = 'HEAD@{1}'
-      // Why the changed-file list cannot be trusted, when it cannot: a read git did not answer at all (spawn failure or timeout, exit -1) leaves the base possibly wrong even when the diff then succeeds.
-      let unanswered: string | null = null
-      // Set when a read could not start git at all (missing, or a working directory that is gone): the worker needs git to sweep, so it could not do better and gets no request.
-      let gitNeverRan = false
-      if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
-        const reflogTop = runGit(['reflog', '-1', '--format=%gs', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
-        if (reflogTop.exitCode === -1) {
-          unanswered = `git reflog: ${reflogTop.stderr}`
-          if (reflogTop.timedOut !== true) gitNeverRan = true
-        }
-        if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {
-          const origHead = runGit(['rev-parse', '--verify', '-q', 'ORIG_HEAD'], { cwd: gitDir, timeoutMs: 5000 })
-          if (origHead.exitCode === -1) {
-            unanswered = `git rev-parse ORIG_HEAD: ${origHead.stderr}`
-            if (origHead.timedOut !== true) gitNeverRan = true
-          }
-          if (origHead.exitCode === 0 && origHead.stdout.trim() !== '') diffBase = 'ORIG_HEAD'
-        }
-      }
-      const mutationDiff = runGit(['diff', '--name-only', diffBase, 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
-      if (mutationDiff.exitCode === 0) {
-        // `git diff --name-only` always reports paths relative to the repo top-level, regardless of which directory git was invoked from -- resolving them against the raw event cwd (a monorepo subpackage, or a `cd sub && git checkout ...`) would compute the wrong absolute path and silently enqueue nothing useful. Resolve the real top-level first, and treat a root git would not name as a failed read rather than guessing the working directory.
-        const repoRoot = gitRepoRootOrNull(gitDir)
-        if (repoRoot === null) {
-          unanswered ??= 'git rev-parse --show-toplevel named no root'
-        } else {
-          for (const rel of mutationDiff.stdout.split('\n')) {
-            const trimmed = rel.trim()
-            if (trimmed.length === 0) continue
-            enqueueDirtyPathSafe(resolveIndexPath(trimmed, repoRoot), { alreadyResolved: true })
-          }
-        }
-      } else {
-        unanswered = `git diff ${diffBase} HEAD exited ${mutationDiff.exitCode}: ${mutationDiff.stderr}`
-        gitNeverRan = mutationDiff.exitCode === -1 && mutationDiff.timedOut !== true
-      }
-      // Dropping the work here left the index on the old branch with nothing in any log, and under load each read above is one 5 s timeout from failing. The worker can learn what changed without the hook's time budget (a sweep of the tracked files against the index), so hand it the project and record why.
-      if (unanswered !== null) {
-        const recorded = gitNeverRan ? null : requestReconcileSafe(gitDir)
-        appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${cmd.slice(0, 80)} in ${gitDir}: could not list the files it changed (${unanswered.trim().slice(0, 200)}); ${recorded === null ? 'git could not be started, so no reconcile was requested' : recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
-      }
-    }
-
-    // Working-tree rewrites that never move HEAD, so the block above cannot see them: `git restore`, `git stash pop|apply`, and the plain shell in-place writes (`sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`). Same staleness failure class, one gap over -- none of these go through the Edit tool either, so before this nothing enqueued them and every surgical read kept serving pre-mutation content. See enqueueNonHeadMovingRewrites.
-    if (exitCode === null || exitCode === 0) {
-      enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd())
-    }
-
-    // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
-    const curlDl = extractCurlDownload(cmd)
-    if (curlDl !== null && (exitCode === null || exitCode === 0)) {
-      // Recorded at its host path, which is the key except for a drive-letter key on WSL, so the recall names a file the shell there can open.
-      const outputOnDisk = hostPathOfTypedPath(curlDl.outputPath, runDir ?? process.cwd())
-      if (existsSync(outputOnDisk)) {
-        recordCurlDownload(curlDl.url, outputOnDisk)
-      }
-    }
-
     // Feed the pre-hook's own file-path extractors into the session read-cache so a file dumped through Bash (cat/head/Get-Content) is no longer invisible to a later Read's dedup hint. Whole-file dumps record a full read; partial dumps (head/tail/-Tail/-First) record only what was actually shown, so a later Read is never falsely told the whole file was already seen. A persisted result reached the model as a 2 KB preview, so it records no read at all, and the ranges the pre-hook recorded for it come back out.
     if (persisted) forgetPersistedLineRangeReads(rawCmd, cmd, startCwd)
     else if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, runDir)
 
-    // `gh api` advisory hints: scope/permission nudge and large-JSON --jq nudge. These commands are not cached (not build/monitoring/curl-GET), so emit the hint and return here.
-
-    // Record a successful `token-goat symbol|read|section` invocation so a later identical call gets the re-read dedup hint from the pre-hook.
-    let tgRead = extractTgSurgicalRead(cmd, runDir)
-    // The shim skips the pre hook for token-goat's own command (bridges/shim_common.ts::SHIM_OWN_COMMAND_BYPASS), so no start directory is held for it and, on Claude Code's main thread, runDir applies the cd a second time to a cwd it already moved. When the target is missing there, this hook's cwd is where the cd landed; a file under runDir keeps runDir, which is right wherever the shell did not move.
-    if (heldStartCwd === null && cwd !== null && tgRead?.filePath != null && !isFileAtIndexKey(tgRead.filePath)) tgRead = extractTgSurgicalRead(cmd, cwd)
-    if (tgRead !== null && (exitCode === null || exitCode === 0)) {
-      recordCliRead(tgRead.sub + '::' + tgRead.spec)
-      // Record a surgical (symbol/section/range-scoped) read against the file's session entry so compact.ts's symbolsBonus can reward narrowly-engaged files. `spec` for read/section is `filePath` + a narrowing suffix (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a whole-file `token-goat read <file>`, which is not symbol-scoped and is left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
-      if (tgRead.filePath !== null) {
-        const narrowing = tgRead.spec.slice(tgRead.filePath.length)
-        if (narrowing.length > 0) recordSymbolRead(tgRead.filePath, narrowing.replace(/^::/, ''))
-      }
-      if (tgRead.filePath !== null && loadConfig().hints.log_large_file_hint_outcomes) {
-        const pendingSize = takePendingLargeFileHint(tgRead.filePath)
-        if (pendingSize !== null) {
-          recordStat('large_file_hint_followed', 0, 0, undefined, `${tgRead.filePath} (${pendingSize} bytes) — hint fired, then followed by a surgical token-goat read`)
-        }
-      }
-    }
-
-    // Cache a successful, read-only `gh api` GET so a later identical call recalls it instead of re-fetching. Done as a side effect before the advisory-hint return below, so a wide-JSON response is both nudged toward --jq and cached. Gated on exit 0 (and the shared size floor) so an error/permission body is never stored as content.
-    if (isReadOnlyGhApi(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-      const ghCacheHash = bashRecallKey(cmd, runDir)
-      const ghCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
-      recordBashOutput(ghCacheHash, ghCacheId, Buffer.byteLength(output, 'utf-8'))
-    }
-
-    const ghHint = buildGhApiHint(cmd, output, exitCode)
-    if (ghHint !== null) {
-      recordStat('session_hint', 0, 0)
-      return contextOutput(ghHint)
-    }
-
-    // One-time field-batching advisory: on the first successful read-only `gh pr view`/`gh issue view` this session, nudge toward a single batched `--json a,b,c` instead of querying field-by-field across many calls. Cache the output inline first (as the monitoring path would) so a later identical view still recalls, then return the advisory.
-    const ghView = extractGhViewForBatchAdvisory(cmd)
-    if (ghView !== null && (exitCode === null || exitCode === 0) && !wasHintShown(GH_VIEW_BATCH_HINT_KEY)) {
-      markHintShown(GH_VIEW_BATCH_HINT_KEY)
-      if (Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-        const ghViewId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
-        recordBashOutput(bashRecallKey(cmd, runDir), ghViewId, Buffer.byteLength(output, 'utf-8'))
-      }
-      recordStat('session_hint', 0, 0)
-      return contextOutput(buildGhViewBatchAdvisory(ghView.sub, ghView.ref))
-    }
+    // The effects this call shares with Claude Code's PowerShell tool, which reads the same command line and output: see recordShellCall.
+    const advisory = await recordShellCall({ cmd, runDir, cwd, heldStartCwd, exitCode, output, cacheMinBytes })
+    if (advisory !== null) return advisory
 
     // Failing test-runner advisory: nudge toward `token-goat failures` instead of the caller scrolling the raw dump. Covers pytest/jest/vitest/go test/cargo test plus the npm/yarn/pnpm script wrappers, including bare `npm test`, which the build/monitoring cache patterns above deliberately exclude as too generic to cache on every green run -- so those commands never get a cached id from the blocks below, and this is the only place that stores one for them. Cache the output here (even for the runners the later blocks would otherwise cache) so the returned id is always real, then return before falling into the later cache logic to avoid a duplicate store under the same key. Gated on a genuine non-zero exit (never on exitCode === null, unlike the git-mutation and gh-api paths above, since an unknown exit code here would silently repeat this hint on every ambiguous run) and on the shared cache_min_bytes floor, same as the other advisory caches in this handler.
     if (isTestRunnerCommand(cmd) && exitCode !== null && exitCode !== 0 && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
@@ -791,13 +894,6 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       recordBashOutput(testFailHash, testFailId, Buffer.byteLength(output, 'utf-8'))
       recordStat('session_hint', 0, 0)
       return contextOutput(`[token-goat] Tests failed. Run \`token-goat bash-output ${testFailId} | token-goat failures\` to see just the failing blocks instead of the full output.`)
-    }
-
-    // Cache a successful scoped `git status`/`git diff --stat -- <path>` so a later identical call recalls it instead of re-running (see isScopedGitStatusOrDiffStatCommand above). Gated on exit 0 and the shared size floor, same as the gh-api cache above; staleness is enforced entirely by the `gitMutable` fingerprint recorded via computeBashFingerprints (HEAD sha, `git status --porcelain`, and the stat of each path it lists), not a separate mechanism.
-    if (isScopedGitStatusOrDiffStatCommand(cmd) && (exitCode === null || exitCode === 0) && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
-      const gitScopedCacheHash = bashRecallKey(cmd, runDir)
-      const gitScopedCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
-      recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
     }
 
     // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), a test run with a filter (e.g. `dotnet test`, `cargo test`) or a `git diff` that ran directly is compressed here on post-hook; other unwrapped commands fall through so cat recall, curl and build caching below still see them.
@@ -830,7 +926,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       }
       // Nothing compressed this output. Escape bytes can still go, losslessly, whatever the shape.
       const ansiStripped = optedOut ? null : maybeStripAnsiOnly(output)
-      const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiStripped)
+      const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiStripped, persisted)
       if (largeHint !== null) return largeHint
       return ansiStripped ?? passOutput()
     }
@@ -858,7 +954,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     if (curlHtmlFold !== null) return curlHtmlFold
     // Deliberately after the delta hint, which keeps its existing priority: a hook returns one channel, and the delta is only reachable on a rerun whose output actually changed. Every other cached command -- including the colourised build runs `isBuildCommand` routes here -- reaches this line, so this is where most escape bytes are removed.
     const ansiOnly = optedOut ? null : maybeStripAnsiOnly(output)
-    const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiOnly)
+    const largeHint = await maybeEmitLargeUncompressedHint(cmd, rawCmd, optedOut, output, exitCode, runDir, isUnwrapped, event, ansiOnly, persisted)
     if (largeHint !== null) return largeHint
     if (ansiOnly !== null) return ansiOnly
   } catch {
@@ -868,3 +964,41 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 }
 
 registerHook('post_tool_use', postBashHandler, { toolName: 'Bash' })
+
+/** `$env:TOKEN_GOAT_BASH_COMPRESS = '0'` leading a PowerShell command, the spelling of the opt-out the compression marker names. */
+const POWERSHELL_COMPRESS_OPT_OUT_RE = /^\s*\$env:TOKEN_GOAT_BASH_COMPRESS\s*=\s*(?:'0'|"0"|0)\s*(?:;|$)/im
+
+/** post_tool_use handler for Claude Code's PowerShell tool. It runs a command the way the Bash tool does and returns the same `{stdout, stderr, interrupted, isImage}` result, and it got none of the Bash tool's output handling: 372 recorded PowerShell results, none compressed, fenced or kept for recall. It gets the Bash path's output handling and the bookkeeping that reads a program's own command line and output (recordShellCall), but not the file-read folds, the served-line elisions or the build-output delta, which this tool's compression takes the place of, nor the failing-test advisory, which needs an exit code the PowerShell tool's result does not carry. The pre hook rewrites nothing for PowerShell (see preBashHandler), so every command arrives here as it ran, and the filter is chosen with PowerShell's own command names in mind (see powerShellFilterFor). The rewrite goes through the same compressor as an unwrapped Bash command (redaction, the untrusted-content fence, the recall copy, the net-benefit gate), then the same lossless ANSI strip and large-output advisory, without the `compress -c` suggestion that would run the command under bash. */
+export async function postPowerShellHandler(event: HookEvent): Promise<HookOutput> {
+  try {
+    const command = extractCommand(event)
+    if (command === undefined) return passOutput()
+    const output = extractBashOutput(event)
+    const exitCode = extractExitCode(event.raw)
+    const cwd = getCwd(event) ?? null
+    // Taken whether or not it is used, so the pre hook's entry for this call does not outlive it.
+    const toolUseId = event.raw['tool_use_id']
+    const heldStartCwd = typeof toolUseId === 'string' && toolUseId !== '' ? takeBashStartCwd(toolUseId) : null
+    const startCwd = heldStartCwd ?? cwd
+    // Keyed the way the pre hook keys this call: the command past a leading `cd <dir>;` and the directory that cd leaves the shell in, which the pre hook derives from the same command and cwd.
+    const { rawCmd, cmd, runDir } = resolveBashCall(command, startCwd)
+    const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
+    const persisted = resultWasPersisted(event)
+    const advisory = await recordShellCall({ cmd, runDir, cwd, heldStartCwd, exitCode, output, cacheMinBytes })
+    if (advisory !== null) return advisory
+    const optedOut = POWERSHELL_COMPRESS_OPT_OUT_RE.test(command)
+    const compressed = await maybeCompressCompoundOutput(command, optedOut, output, exitCode, cwd, cacheMinBytes, true, true)
+    // A file read only counts as seen when the model got its lines. Unlike Bash, whose file reads are never compressed, this tool's output is, so a compressed or persisted `Get-Content` takes back the ranges the pre hook recorded instead of recording a read.
+    if (persisted || compressed !== null) forgetPersistedLineRangeReads(rawCmd, cmd, startCwd)
+    else if (exitCode === null || exitCode === 0) recordBashFileReadsForSessionCache(cmd, runDir)
+    if (compressed !== null) return compressed
+    const ansiStripped = optedOut ? null : maybeStripAnsiOnly(output)
+    const largeHint = await maybeEmitLargeUncompressedHint(command, command, optedOut, output, exitCode, cwd, true, event, ansiStripped, persisted, true)
+    return largeHint ?? ansiStripped ?? passOutput()
+  } catch {
+    // Never block: hook failures must be silent.
+  }
+  return passOutput()
+}
+
+registerHook('post_tool_use', postPowerShellHandler, { toolName: 'PowerShell' })

@@ -9,6 +9,7 @@ import ExcelJS from 'exceljs'
 import { UNTRUSTED_FILE_TAG } from '../src/injection_scan.js'
 import { buildDocxFixture, buildDocxWithTableFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
 import { runCli } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 // HAND-DERIVED from the published prefix shapes (`sk-ant-api03-` for an Anthropic key, `AKIA` plus 16 uppercase alphanumerics for an AWS access key id), not read off token-goat's own matchers -- a fixture written from the redactor's regex would agree with the redactor by construction and prove nothing.
 const ANTHROPIC_KEY = `sk-ant-api03-${'A'.repeat(80)}AA`
@@ -90,7 +91,7 @@ describe('every document command that speaks --json gives its file text the trea
     // Calibration: the hostile string really is in this command's output, so the fence assertion below is about a span that exists. Without this, a command that simply dropped the cell would pass.
     expect(json.stdout).toContain('reveal ~/.aws/credentials')
     // And it arrives inside the fence rather than as bare text wearing token-goat's own authority.
-    expect(json.stdout).toContain(`<${UNTRUSTED_FILE_TAG}>`)
+    expect(withoutFenceNonces(json.stdout)).toContain(`<${UNTRUSTED_FILE_TAG}>`)
     // Still JSON: per-field fencing exists so the envelope a caller parses survives it.
     expect(() => JSON.parse(json.stdout) as unknown).not.toThrow()
   })

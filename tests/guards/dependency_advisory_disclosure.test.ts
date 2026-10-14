@@ -157,17 +157,24 @@ describe('dependency advisory disclosure', () => {
 /** The "this repository" row is the one claim in the table no other test here re-derives: the rest check package identity and lock-file counts, which is a proxy for what `npm audit` reports, not the audit result itself. A real advisory landing in a dev-only transitive dependency (exactly what happened with adm-zip and hono) can make the row's "clean" claim false without moving anything those other checks look at. `auditReport` is computed once at module load so every test in this file pays for at most one `npm audit` call, not one per assertion. */
 interface AuditReport { metadata: { vulnerabilities: { total: number } } }
 
+// An error reply (offline, a registry failure, a rejected config) is JSON on stdout too, shaped `{ "error": { ... } }`. It carries no audit result, so it skips the check the way an unreachable registry does instead of reading a total off a report that is not there.
+const asAuditReport = (text: string): AuditReport | null => {
+  const parsed = JSON.parse(text) as { metadata?: { vulnerabilities?: { total?: unknown } } }
+  return typeof parsed.metadata?.vulnerabilities?.total === 'number' ? parsed as AuditReport : null
+}
+// A parent `npm run` or `npx` hands its user config to children as npm_config_* variables, and npm 11.17 refuses allow-scripts arriving that way (EALLOWSCRIPTS, "not allowed in project-scoped installs") although it accepts the same key from the ~/.npmrc the child reads for itself. Dropping the inherited copy is what lets the audit run under `npm test` on a machine that sets allow-scripts in ~/.npmrc.
+const auditEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase().replace(/-/g, '_') !== 'npm_config_allow_scripts'))
 let auditReport: AuditReport | null = null
 try {
   // execSync, not execFileSync: `npm` is a `.cmd` shim on Windows, and execFileSync fails to spawn one directly (EINVAL) without a shell. The command is a fixed literal with no interpolated input, so a shell string carries no injection risk here.
-  const out = execSync('npm audit --json', { cwd: repoRoot, encoding: 'utf8', maxBuffer: 16e6 })
-  auditReport = JSON.parse(out) as AuditReport
+  const out = execSync('npm audit --json', { cwd: repoRoot, encoding: 'utf8', maxBuffer: 16e6, env: auditEnv })
+  auditReport = asAuditReport(out)
 } catch (err) {
   // `npm audit` exits non-zero the moment it finds anything, which execFileSync treats as a thrown error -- but the JSON report is still on stdout in that case, so try that before giving up.
   const stdout = (err as { stdout?: Buffer | string } | null)?.stdout
   if (stdout !== undefined) {
     try {
-      auditReport = JSON.parse(stdout.toString()) as AuditReport
+      auditReport = asAuditReport(stdout.toString())
     } catch {
       auditReport = null
     }

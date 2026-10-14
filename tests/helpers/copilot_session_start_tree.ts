@@ -12,6 +12,7 @@ import { nativeHookCommandLine } from '../../src/native_hook.js'
 import { endpointFor, readServerKey } from '../../src/hook_ipc.js'
 import { slotStatus } from './hook_server_probe.js'
 import { buildNative } from './native_bin.js'
+import { awaitProcessExit } from './process_exit.js'
 
 export const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 export const ownedRoots: string[] = []
@@ -77,14 +78,24 @@ export function cleanupTrees(): void {
       if (Number.isInteger(pid) && pid > 0 && !ownedPids.includes(pid)) ownedPids.push(pid)
     }
   }
-  for (const pid of ownedPids.splice(0).reverse()) {
+  const pids = ownedPids.splice(0).reverse()
+  const awaited = new Set(pids)
+  for (const pid of pids) {
     if (!alive(pid)) continue
     if (process.platform === 'win32') {
-      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { timeout: 2000, windowsHide: true })
+      const killed = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8', timeout: 2000, windowsHide: true })
+      // Each line names the process it acted on as its first number, in any display language.
+      for (const line of killed.stdout?.split('\n') ?? []) {
+        const match = /[0-9]+/.exec(line)
+        if (match) awaited.add(Number(match[0]))
+      }
     } else {
       process.kill(pid, 'SIGKILL')
     }
   }
+  // Every PID here was running when its pid file was written or taskkill named it, before this call.
+  const now = Date.now()
+  awaitProcessExit(new Map([...awaited].map((pid) => [pid, now])))
   for (const root of ownedRoots.splice(0)) rmSync(root, { recursive: true, force: true })
 }
 

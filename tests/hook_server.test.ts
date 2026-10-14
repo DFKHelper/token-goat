@@ -31,6 +31,7 @@ import {
 } from '../src/hook_ipc.js'
 import Database from '../src/sqlite_driver.js'
 import { BUNDLE, ROOT } from './helpers/bundle.js'
+import { awaitProcessExit } from './helpers/process_exit.js'
 
 type Env = Record<string, string>
 
@@ -41,7 +42,8 @@ interface Sandbox {
   proj: string
   env: Env
   bundle: string
-  pids: Set<number>
+  /** Every server PID this sandbox has seen, each with a time it was known to be running. */
+  pids: Map<number, number>
   children: ChildProcess[]
   cleanup: Array<() => void>
   /** Lets go of every request {@link occupy} is holding open; run before the servers are stopped so none waits on its own hold. */
@@ -81,7 +83,7 @@ function sandbox(opts: { bundle?: string; serverEnv?: 'on' | 'unset' } = {}): Sa
     TOKEN_GOAT_HOOK_SERVER: '1',
   }
   if (opts.serverEnv === 'unset') delete env['TOKEN_GOAT_HOOK_SERVER']
-  const sb: Sandbox = { base, dataDir, home, proj, env, bundle, pids: new Set(), children: [], cleanup: [], releases: [] }
+  const sb: Sandbox = { base, dataDir, home, proj, env, bundle, pids: new Map(), children: [], cleanup: [], releases: [] }
   sandboxes.push(sb)
   return sb
 }
@@ -105,11 +107,13 @@ afterEach(async () => {
       // the stop below by pid still runs
     }
     const deadline = Date.now() + 5000
-    for (const pid of sb.pids) {
+    for (const pid of sb.pids.keys()) {
       while (pidAlive(pid) && Date.now() < deadline) await sleep(50)
       if (pidAlive(pid)) process.kill(pid)
     }
     for (const child of sb.children) if (child.exitCode === null && child.signalCode === null) child.kill()
+    // A server that has exited, or been killed, still holds its working directory and data files until Windows has finished tearing it down.
+    awaitProcessExit(sb.pids)
     for (const fn of sb.cleanup) fn()
     fs.rmSync(sb.base, { recursive: true, force: true })
   }
@@ -168,7 +172,7 @@ function statuses(sb: Sandbox): ServerStatus[] {
   const res = cli(sb, ['hook-server', 'status', '--json'])
   expect(res.status, res.stderr).toBe(0)
   const list = JSON.parse(res.stdout) as ServerStatus[]
-  for (const s of list) sb.pids.add(s.pid)
+  for (const s of list) sb.pids.set(s.pid, Date.now())
   return list
 }
 
@@ -228,7 +232,7 @@ async function waitForSlots(sb: Sandbox, slots: number[]): Promise<ServerStatus[
 function startServer(sb: Sandbox, slot: number, env: Env = {}): { child: ChildProcess; exit: Promise<number | null>; stderr: () => string } {
   const child = spawn(process.execPath, [sb.bundle, 'hook-server', 'run', '--slot', String(slot)], { cwd: sb.base, env: { ...sb.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
   sb.children.push(child)
-  if (child.pid !== undefined) sb.pids.add(child.pid)
+  if (child.pid !== undefined) sb.pids.set(child.pid, Date.now())
   let err = ''
   child.stderr?.on('data', (d: Buffer) => (err += d.toString('utf8')))
   child.stdout?.resume()

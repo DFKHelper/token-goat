@@ -1,6 +1,6 @@
 // The harness delivery cap: a Bash saving may only be credited against what the model would actually have received, not against the full command output.
 //
-// FIXTURE PROVENANCE - The 20,000-byte cap is CAPTURE: measured across the recorded Claude Code session corpus (174,678 Bash tool results, 1,935 of them persisted to a file). The smallest output that WAS persisted measured 20,013 bytes; the largest that was NOT measured 19,990. A 23-byte gap with nothing in between fixes the cap at 20,000. No transcript content is reproduced here, only that boundary number. - Every expected byte/token figure below is HAND-DERIVED: computed in the test from the emitted string's own length and the stated cap, never read back from the producer's savings formula. A fixture written from token-goat's own accounting would agree with the bug by construction -- that is precisely how the over-crediting this file pins went unnoticed.
+// FIXTURE PROVENANCE - The 29,706-character cap is CAPTURE from this machine's Claude Code transcripts on 2.1.220 to 2.1.296: the longest Bash result delivered inline held 29,706 characters, and every persisted result whose saved file survived held 30,695 or more (src/delivery_cap.ts carries the full provenance). No transcript content is reproduced here, only that boundary number. - Every expected byte/token figure below is HAND-DERIVED: computed in the test from the emitted string's own length and the stated cap, never read back from the producer's savings formula. A fixture written from token-goat's own accounting would agree with the bug by construction -- that is precisely how the over-crediting this file pins went unnoticed.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { HookEvent } from '../src/hook_registry.js'
@@ -16,7 +16,7 @@ import { recordStat } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES, CLAUDE_CODE_PERSISTED_PREVIEW_BYTES, bashOutputCapBytes, deliveredOutputBytes } from '../src/delivery_cap.js'
 
-const CAP = 20_000
+const CAP = 29_706
 const PREVIEW = 2048
 
 function makePostBashEvent(command: string, output: string): HookEvent {

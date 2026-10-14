@@ -5,6 +5,7 @@
 // Ported faithfully from the Python `bash_compress.py` foundation so the per-tool filters that depend on these primitives compress identically.
 
 import { countNoun } from '../util.js'
+import { randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -203,16 +204,34 @@ export function hasUnquotedOperator(cmd: string, ops: readonly string[]): boolea
   return ops.some((op) => masked.includes(op))
 }
 
-const BYTES_ELIDED_MARKER_RE = /\n\.\.\. \[\d+ bytes elided by token-goat\]$/
+/** Ends every notice line token-goat itself appends inside the filter pipeline (see {@link ownNotice}). Provenance, not wording: a NUL never survives into a filter's input (safeDecode and the control-char sanitiser both drop it) and the hex is drawn fresh for each process, so no command output can carry this tag, however exactly it copies a notice's text. */
+const OWN_NOTICE_TAG = `\u0000tg-${randomBytes(8).toString('hex')}\u0000`
 
-/** The trailing lines {@link capBytes} and {@link capTokens} append in token-goat's own voice, as one anchored pattern. Both spellings, repeated, at the very end and nowhere else. */
-const OWN_TRAILING_NOTICE_RE =
-  /(?:\n(?:\[token-goat: output capped at ~\d+ tokens\]|\.\.\. \[\d+ bytes elided by token-goat\]))+$/
+/** `line` marked as token-goat's own notice, so {@link splitOwnTrailingNotices} can tell it from command output that reads the same. Only for a notice whose every character token-goat chose: one that quotes the output (ls's `by type:` summary names the listed files' extensions) must stay unmarked, since lifting it out of the fence would lift the quoted text with it. */
+export function ownNotice(line: string): string {
+  return line + OWN_NOTICE_TAG
+}
 
-/** Split a filtered body into the bytes the command produced and the notices token-goat appended to the end of them. A caller that fences its output needs this. The fence's contract is that everything inside it came from somewhere else, and a cap notice is not from somewhere else -- it is token-goat explaining what it just did. Left inside, it makes our own voice indistinguishable from a forgery of it, which is the ambiguity the fence exists to remove; the marker neutraliser in `injection_scan.ts` makes that visible by escaping it, and an escaped notice of our own is the symptom, not the disease. Exempting the notice from that escape would be worse than either: the string is not a secret, so anything an attacker's output prints would inherit the same exemption. Nothing positional is lost by moving it out. Both cappers truncate the tail, so the point they are describing is the end of the body, which the closing tag already marks. */
+/** `text` with every {@link ownNotice} tag taken out. */
+export function stripOwnNoticeTags(text: string): string {
+  return text.includes(OWN_NOTICE_TAG) ? text.split(OWN_NOTICE_TAG).join('') : text
+}
+
+/** {@link capBytes}'s notice when it is the last line of `text`, tag included. */
+const BYTES_ELIDED_NOTICE_END_RE = new RegExp(`\\n\\.\\.\\. \\[\\d+ bytes elided by token-goat\\]${OWN_NOTICE_TAG}$`)
+
+/** {@link capTokens}'s own notice when it is the last line of the text, tag included. */
+const CAP_NOTICE_END_RE = new RegExp(`\\n\\[token-goat: output capped at ~\\d+ tokens\\]${OWN_NOTICE_TAG}$`)
+
+/** Split a filtered body into the bytes the command produced and the notices token-goat appended to the end of them, every tag removed from both. A caller that fences its output needs this. The fence's contract is that everything inside it came from somewhere else, and a cap notice is not from somewhere else -- it is token-goat explaining what it just did. Left inside, it makes our own voice indistinguishable from a forgery of it, which is the ambiguity the fence exists to remove; the marker neutraliser in `injection_scan.ts` makes that visible by escaping it, and an escaped notice of our own is the symptom, not the disease. Exempting the notice from that escape would be worse than either: the string is not a secret, so anything an attacker's output prints would inherit the same exemption. That is also why the split goes by the {@link ownNotice} tag and never by wording: a file whose last line spells one of these notices exactly stays inside, where it is escaped like any other marker. Only a run of tagged lines at the very end lifts; a tagged notice anywhere else stays where it is, untagged. Nothing positional is lost by moving the run out. The cappers truncate the tail and the filters' closing notices follow everything they kept, so the point they describe is the end of the body, which the closing tag already marks. */
 export function splitOwnTrailingNotices(text: string): { body: string; notices: string } {
-  const m = OWN_TRAILING_NOTICE_RE.exec(text)
-  return m ? { body: text.slice(0, m.index), notices: m[0] } : { body: text, notices: '' }
+  let cut = text.length
+  while (cut > 0 && text.endsWith(OWN_NOTICE_TAG, cut)) {
+    const lineStart = text.lastIndexOf('\n', cut - OWN_NOTICE_TAG.length - 1)
+    if (lineStart === -1) break
+    cut = lineStart
+  }
+  return { body: stripOwnNoticeTags(text.slice(0, cut)), notices: stripOwnNoticeTags(text.slice(cut)) }
 }
 const DIGITS_RE = /\d+/g
 // C0/C1 control chars except tab (09), newline (0A), carriage return (0D).
@@ -237,14 +256,40 @@ export function sanitizeControlChars(text: string): string {
   return text.replace(CONTROL_CHAR_RE, '')
 }
 
-/** Collapse `\r`-overwrite progress lines to their final rendered state. Keeps only the segment after the last `\r` within each line. A line whose only `\r` is its own trailing character (e.g. curl on Windows emits `\r\n` per verbose line, and the preceding CRLF→LF pass only ever consumes one `\r` of a `\r\r\n` run, leaving a lone trailing `\r`) is real content with leftover line-ending debris, not a terminal overwrite — strip that single trailing `\r` first so it isn't mistaken for an overwrite marker that wipes the whole line to empty. */
+/** What a terminal redraw prints and a data row rarely does: a percentage, a spinner or bar glyph, a `[==>` or `[###` bar, a transfer rate, an ETA or clock, an `n/m` or `n of m` counter that is not part of a date or path, or a spinner character opening the line. */
+const PROGRESS_SEGMENT_RE =
+  /\d ?%|[▀-▟━⠀-⣿◐-◓◴-◷]|\[(?:=+>|#{2})|\beta\b|\d ?[kmgt]?i?b\/s\b|\b(?:it\/s|s\/it)\b|--:--|\b\d{1,2}:\d{2}:\d{2}\b|(?<![\d./])\d+ ?\/ ?\d+(?![\d./])|\b\d+ of \d+\b|^\s*[|/\\-](?:\s|$)/i
+
+/** Separators a `tr '\n' X` or `paste -sd X` join leaves directly after each line's stray `\r`. */
+const JOIN_SEPARATORS = ',; \t|'
+
+/** True when the `\r`-separated segments of one line are redraws of a single status line rather than separate pieces of data. Every earlier segment has to look like a redraw on its own -- a progress marker, or the final segment's own template with different numbers -- because a false yes deletes data while a false no only leaves a few bytes of stale progress text in place. A list that `tr '\n' ','` joined across CRLF line endings is ruled out first by its shape: each `\r` is followed by the same separator, which the first entry does not start with. */
+function isRedraw(segments: string[]): boolean {
+  const last = segments[segments.length - 1] as string
+  const first = segments[0] as string
+  const sep = (segments[1] as string)[0]
+  if (first.trim() !== '' && sep !== undefined && JOIN_SEPARATORS.includes(sep) && first[0] !== sep && segments.slice(1).every((s) => s[0] === sep)) return false
+  return segments.slice(0, -1).every((s) => s.trim() === '' || PROGRESS_SEGMENT_RE.test(s) || isSameTemplate(s, last))
+}
+
+/** True when `a` and `b` are one line rendered twice with different numbers (`Processed 100 rows` / `Processed 2000 rows`): the same text once every digit run is folded, and a shared opening of at least four characters that carries a letter, so a list of order numbers or of `user1@`, `user2@` addresses does not qualify. */
+function isSameTemplate(a: string, b: string): boolean {
+  let p = 0
+  while (p < a.length && p < b.length && a[p] === b[p]) p++
+  if (p < 4 || !/[A-Za-z]/.test(a.slice(0, p))) return false
+  return a.replace(/\d+/g, '0') === b.replace(/\d+/g, '0')
+}
+
+/** Collapse `\r`-overwrite progress lines to their final rendered state, and keep every piece of a line whose `\r`s are data. A redraw (see {@link isRedraw}) keeps only the segment after the last `\r`. Anything else loses the `\r`s and keeps all of its text: a CRLF file joined onto one line by `tr '\n' ','` used to come back as its last entry alone, which reads as a plausible, wrong answer. A line whose only `\r` is its own trailing character (e.g. curl on Windows emits `\r\n` per verbose line, and the preceding CRLF→LF pass only ever consumes one `\r` of a `\r\r\n` run, leaving a lone trailing `\r`) is real content with leftover line-ending debris, not a terminal overwrite — strip that single trailing `\r` first so it isn't mistaken for an overwrite marker that wipes the whole line to empty. */
 export function stripProgress(text: string): string {
   if (!text.includes('\r')) return text
   return text
     .split('\n')
     .map((line) => {
       const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line
-      return trimmed.includes('\r') ? trimmed.slice(trimmed.lastIndexOf('\r') + 1) : trimmed
+      if (!trimmed.includes('\r')) return trimmed
+      const segments = trimmed.split('\r')
+      return isRedraw(segments) ? (segments[segments.length - 1] as string) : segments.join('')
     })
     .join('\n')
 }
@@ -453,13 +498,14 @@ export function capBytes(text: string, maxBytes: number): string {
   const encoded = Buffer.from(text, 'utf8')
   if (encoded.length <= maxBytes) return text
   // Sized against the largest count this can ever print, so the exact figure below is never wider than the space reserved for it and the result cannot overshoot `maxBytes`.
-  const widestMarker = `\n... [${encoded.length} bytes elided by token-goat]`
+  // The tag is measured too, so the result stays within `maxBytes` before the tag is stripped as well as after.
+  const widestMarker = '\n' + ownNotice(`... [${encoded.length} bytes elided by token-goat]`)
   const budget = maxBytes - Buffer.byteLength(widestMarker, 'utf8')
-  if (budget <= 0) return widestMarker.trim()
+  if (budget <= 0) return widestMarker.slice(1)
   // Both ends, not a head trim. This runs as step 9 of {@link ToolFilter.apply}, after step 8 has already made a deliberate head-and-tail selection, so a head trim here deleted exactly the tail the step before it chose to keep. On a failing 2.4MB test run that meant the summary and the failure block were selected and then dropped one step later. `capBytes` is also the last thing every filter passes through and the only cap `misc.ts` applies at all, so the class landed on every family at once. See {@link clampKeepingEnds}.
   const kept = clampKeepingEnds(text, budget) ?? text
   // Measured against what actually survived rather than against `maxBytes`: the both-ends clamp spends some of its budget on its own elision marker, so a count derived from the cap alone would understate the loss and report less discarded than really was.
-  return `${kept}\n... [${encoded.length - Buffer.byteLength(kept, 'utf8')} bytes elided by token-goat]`
+  return `${kept}\n` + ownNotice(`... [${encoded.length - Buffer.byteLength(kept, 'utf8')} bytes elided by token-goat]`)
 }
 
 /** Truncate `text` to approximately `maxTokens` tokens, measured on the ANSI-stripped string so escape sequences don't trip the cap early. */
@@ -469,9 +515,10 @@ export function capTokens(text: string, maxTokens: number): string {
   const maxBytes = Math.floor(maxTokens * 3.5)
   // Both ends, not the first `maxBytes`: every caller passes command output, whose verdict sits at the end. `bash_runner` applies this to the delivered body of any filter once context pressure sets a budget, so a head-only cut here threw away the very tail the pre-filter clamp preserves, and a 1,071,063-byte run capped to 2,000 tokens came back holding its first 57 lines and nothing else. See {@link clampKeepingEnds}.
   let truncated = clampKeepingEnds(clean, maxBytes) ?? clean
-  if (!truncated.includes('[token-goat: output capped at')) {
-    truncated = truncated.replace(BYTES_ELIDED_MARKER_RE, '')
-    truncated += `\n[token-goat: output capped at ~${maxTokens} tokens]`
+  // A cap notice of our own already ending the text means this ran twice; one that only reads the same is the output's, and must not stand in for ours.
+  if (!CAP_NOTICE_END_RE.test(truncated)) {
+    truncated = truncated.replace(BYTES_ELIDED_NOTICE_END_RE, '')
+    truncated += '\n' + ownNotice(`[token-goat: output capped at ~${maxTokens} tokens]`)
   }
   return truncated
 }
@@ -618,6 +665,26 @@ export function positionalArgs(args: string[], valueFlags?: ReadonlySet<string>)
     out.push(a)
   }
   return out
+}
+
+/** The most lines a `head` or `tail` pipeline stage lets through, from its tokens: `-N`, `-n N`, `-nN`, `--lines N`, `--lines=N`, or 10 for a bare one. Null for any other stage, and for a spelling that bounds nothing by line: `tail -n +5` reads from line 5 on, `head -n -5` drops the last five, and `-c` counts bytes. */
+export function stageLineBound(tokens: readonly string[]): number | null {
+  const name = (tokens[0] ?? '').replace(/^.*[/\\]/, '')
+  if (name !== 'head' && name !== 'tail') return null
+  let bound = 10
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i] as string
+    let value: string | undefined
+    if (/^-\d+$/.test(t)) value = t.slice(1)
+    else if (t === '-n' || t === '--lines') value = tokens[++i]
+    else if (t.startsWith('--lines=')) value = t.slice('--lines='.length)
+    else if (/^-n./.test(t)) value = t.slice(2)
+    else if (/^-c|^--bytes/.test(t)) return null
+    else continue
+    if (value === undefined || !/^\d+$/.test(value)) return null
+    bound = Number(value)
+  }
+  return bound
 }
 
 // `-i` is deliberately absent: for the passthrough wrappers this set gates (sudo, env, ...), `-i` takes no value (`sudo -i`, `env -i`), so treating it as value-taking would consume the real binary token as its "value".
@@ -875,24 +942,110 @@ export function shlexSplit(cmd: string): string[] {
 /** Fewest chars a cut must drop before {@link capLongLines} writes its marker; a smaller overflow is cheaper left in place. */
 const CLIP_MIN_OVERFLOW = 64
 
-/** Truncate individual lines exceeding `maxChars` with an inline marker. */
+/** Truncate individual lines exceeding `maxChars` with an inline marker. A line that is one whole JSON object or array is laid out over several lines first (see {@link layOutJsonLine}), and only a piece still over the cap is cut: keeping the head of a one-line document cut it inside a string and dropped every element after the cut, and the recorded follow-up was a full recall parsed with `json.loads`. */
 export function capLongLines(lines: string[], maxChars = FALLBACK_MAX_LINE_CHARS): string[] {
-  return lines.map((line) => {
-    if (line.length <= maxChars) return line
-    // A line the grep clip already shortened still exceeds a smaller cap, and cutting it again would append a second marker whose count is measured against the first marker's text rather than against the original line: two elision notices on one line, the second one wrong. One clip per line, whoever made it.
-    if (ELIDED_MARKER_RE.test(line)) return line
-    // The input clip at step 2b runs four times wider than this cap, so its lines arrive here still over it and have to be cut again. Its marker records what it already dropped; carry that figure into this one, or the notice reports only what this cut removed from an already-shortened line -- a 10,000-char line came out saying 3,030 chars elided when 9,000 were gone. Only when the whole marker falls beyond the cut: otherwise part of it survives into the kept text and its characters would be counted on both sides.
-    const priorClip = CLIPPED_MARKER_RE.exec(line)
-    let cut = maxChars
-    // Never split a surrogate pair: `maxChars` counts UTF-16 code units, so a cut landing between a high surrogate and its low surrogate (e.g. inside an emoji) leaves a lone surrogate that serializes as U+FFFD on UTF-8 output. Back off by one code unit so the pair stays whole.
-    const high = line.charCodeAt(cut - 1)
-    const low = line.charCodeAt(cut)
-    if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) cut -= 1
-    // The marker costs 21 bytes plus the digits of its count, so a clip that drops fewer than CLIP_MIN_OVERFLOW chars grows the line while losing content: emit it whole. Measured before the carried count is added, since that figure describes what an earlier clip already dropped, not what this cut saves.
-    if (line.length - cut <= CLIP_MIN_OVERFLOW) return line
-    const carried = priorClip !== null && priorClip.index >= cut ? Number(priorClip[1]) - priorClip[0].length : 0
-    return `${line.slice(0, cut)}  … [${line.length - cut + carried} chars elided]`
+  return lines.flatMap((line) => {
+    if (line.length <= maxChars) return [line]
+    const laidOut = layOutJsonLine(line, maxChars)
+    return laidOut === null ? [capLine(line, maxChars)] : laidOut.map((piece) => capLine(piece, maxChars))
   })
+}
+
+/** `line` laid out as indented JSON, or null when it is not exactly one JSON object or array (after any leading indent, which every output line keeps). A container is opened onto one line per member, two spaces deeper, only while it is wider than `maxChars`; a member that fits stays whole on its line. So an array of records becomes one line per record, which keeps every record's first keys in view and adds a handful of lines rather than one per scalar, a cost the line cap that runs next would otherwise collect from the middle of the document. Laid out from the source text, token by token, after JSON.parse has confirmed it is JSON. Re-stringifying the parsed value would change the data: an integer past 2^53 loses digits, `1.0` becomes `1`, `é` becomes `é`, and a repeated key disappears. */
+function layOutJsonLine(line: string, maxChars: number): string[] | null {
+  const body = line.trim()
+  if (body[0] !== '{' && body[0] !== '[') return null
+  try {
+    JSON.parse(body)
+  } catch {
+    return null
+  }
+  // Insignificant whitespace goes, so a member's width is its tokens alone and a member kept whole reads the same whatever separators the producer used.
+  let src = ''
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === '"') {
+      const end = jsonStringEnd(body, i)
+      src += body.slice(i, end)
+      i = end - 1
+    } else if (!/\s/.test(body[i] as string)) {
+      src += body[i]
+    }
+  }
+  const out: string[] = []
+  layOutJsonValue(src, 0, src.length, line.slice(0, line.length - line.trimStart().length), '', '', maxChars, out)
+  return out
+}
+
+/** Index just past the string token that opens at `start` (a `"`), escapes included. */
+function jsonStringEnd(src: string, start: number): number {
+  let i = start + 1
+  while (src[i] !== '"') i += src[i] === '\\' ? 2 : 1
+  return i + 1
+}
+
+/** How deep {@link layOutJsonValue} opens containers. Past it a value stays on one line and is cut like any long line. Nesting alone is enough to make a document wide at every level, and opening it level by level costs one stack frame and two spaces of indent per level on every line below: `[[[...]]]` at depth D comes to about 2·D² characters, and at the depth a 500 KB line can reach, a stack overflow. Records worth reading whole sit a few levels down, not dozens. */
+const JSON_LAYOUT_MAX_DEPTH = 32
+
+/** Lines {@link layOutJsonValue} writes before it stops opening anything, so the work it does stays proportional to what the line cap after it can keep. Twice the largest configurable line cap; the rest of an open container goes onto one line, cut like any long line. */
+const JSON_LAYOUT_MAX_LINES = 2000
+
+/** Append the value `src[start, end)` to `out`, behind `indent` and `prefix` (a member's `"key": `) and followed by `suffix` (its comma), opening it onto its members when it is a container too wide for one line, and while the depth, indent and line budgets above allow. */
+function layOutJsonValue(src: string, start: number, end: number, indent: string, prefix: string, suffix: string, maxChars: number, out: string[], depth = 0): void {
+  const open = src[start]
+  const fits = indent.length + prefix.length + (end - start) + suffix.length <= maxChars
+  const mayOpen = depth < JSON_LAYOUT_MAX_DEPTH && indent.length < maxChars / 2 && out.length < JSON_LAYOUT_MAX_LINES
+  if ((open !== '{' && open !== '[') || end - start <= 2 || fits || !mayOpen) {
+    out.push(indent + prefix + src.slice(start, end) + suffix)
+    return
+  }
+  out.push(indent + prefix + open)
+  const members: Array<[number, number]> = []
+  let nesting = 0
+  let from = start + 1
+  for (let i = start + 1; i < end - 1; i++) {
+    const ch = src[i]
+    if (ch === '"') i = jsonStringEnd(src, i) - 1
+    else if (ch === '{' || ch === '[') nesting++
+    else if (ch === '}' || ch === ']') nesting--
+    else if (ch === ',' && nesting === 0) {
+      members.push([from, i])
+      from = i + 1
+    }
+  }
+  members.push([from, end - 1])
+  for (let k = 0; k < members.length; k++) {
+    const [ms, me] = members[k] as [number, number]
+    if (out.length >= JSON_LAYOUT_MAX_LINES) {
+      out.push(indent + '  ' + src.slice(ms, end - 1))
+      break
+    }
+    const comma = k < members.length - 1 ? ',' : ''
+    if (open === '[') {
+      layOutJsonValue(src, ms, me, indent + '  ', '', comma, maxChars, out, depth + 1)
+      continue
+    }
+    const keyEnd = jsonStringEnd(src, ms)
+    layOutJsonValue(src, keyEnd + 1, me, indent + '  ', src.slice(ms, keyEnd) + ': ', comma, maxChars, out, depth + 1)
+  }
+  out.push(indent + (open === '{' ? '}' : ']') + suffix)
+}
+
+/** One line cut back to `maxChars` with an inline marker, or the line itself when it fits or the cut would not pay. */
+function capLine(line: string, maxChars: number): string {
+  if (line.length <= maxChars) return line
+  // A line the grep clip already shortened still exceeds a smaller cap, and cutting it again would append a second marker whose count is measured against the first marker's text rather than against the original line: two elision notices on one line, the second one wrong. One clip per line, whoever made it.
+  if (ELIDED_MARKER_RE.test(line)) return line
+  // The input clip at step 2b runs four times wider than this cap, so its lines arrive here still over it and have to be cut again. Its marker records what it already dropped; carry that figure into this one, or the notice reports only what this cut removed from an already-shortened line -- a 10,000-char line came out saying 3,030 chars elided when 9,000 were gone. Only when the whole marker falls beyond the cut: otherwise part of it survives into the kept text and its characters would be counted on both sides.
+  const priorClip = CLIPPED_MARKER_RE.exec(line)
+  let cut = maxChars
+  // Never split a surrogate pair: `maxChars` counts UTF-16 code units, so a cut landing between a high surrogate and its low surrogate (e.g. inside an emoji) leaves a lone surrogate that serializes as U+FFFD on UTF-8 output. Back off by one code unit so the pair stays whole.
+  const high = line.charCodeAt(cut - 1)
+  const low = line.charCodeAt(cut)
+  if (high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff) cut -= 1
+  // The marker costs 21 bytes plus the digits of its count, so a clip that drops fewer than CLIP_MIN_OVERFLOW chars grows the line while losing content: emit it whole. Measured before the carried count is added, since that figure describes what an earlier clip already dropped, not what this cut saves.
+  if (line.length - cut <= CLIP_MIN_OVERFLOW) return line
+  const carried = priorClip !== null && priorClip.index >= cut ? Number(priorClip[1]) - priorClip[0].length : 0
+  return `${line.slice(0, cut)}  … [${line.length - cut + carried} chars elided]`
 }
 
 // Per-line char cap for grep/rg output that passes through uncompressed. 1000, not FALLBACK_MAX_LINE_CHARS' 400: measured over 4,664 real transcripts (32,720 unmarked grep/rg-headed Bash results, 42.8 MB), 2.89 MB sits beyond 1000 chars across 1,872 results (5.7%), versus 6.9 MB beyond 400. The 400 tier starts clipping ordinary long source lines, whereas past 1000 chars is effectively minified-bundle / base64 territory, where the characters flanking the match carry nothing a reader can use.

@@ -103,8 +103,8 @@ export const BROWSER_TOOL_RE = /^mcp__.*(?:chrome-devtools|claude-in-chrome|play
 /** Matches the method segment for both servers' console-message list tools: `read_console_messages` (claude-in-chrome) and `list_console_messages` (chrome-devtools-mcp). */
 const BROWSER_CONSOLE_METHOD_RE = /(?:^|_)(?:read|list)_console_messages$/i
 
-/** Matches the method segment for both servers' network-request list tools: `read_network_requests` (claude-in-chrome) and `list_network_requests` (chrome-devtools-mcp). */
-const BROWSER_NETWORK_METHOD_RE = /(?:^|_)(?:read|list)_network_requests$/i
+/** Matches the method segment for every server's network-request list tool: `read_network_requests` (claude-in-chrome), `list_network_requests` (chrome-devtools-mcp) and `browser_network_requests` (`@playwright/mcp`, which answers in numbered text lines rather than JSON; see {@link NETWORK_REQUEST_LINE_RE}). */
+const BROWSER_NETWORK_METHOD_RE = /(?:^|_)(?:read|list|browser)_network_requests$/i
 
 /** Console-message entries (Chrome DevTools Protocol `Runtime.consoleAPICalled` / `Log.entryAdded` shape, which both servers surface close to verbatim) carry a `stackTrace` -- an array of call frames each with its own `functionName`/`scriptId`/`url`/`lineNumber`/`columnNumber` -- that exists for source-mapping a browser DevTools UI, not for an agent reading a one-line log message. Everything else (`type`/`level`, `text`, `url`, `lineNumber`, `timestamp`, `source`, `args`) is the actual message content and is kept. */
 const BROWSER_CONSOLE_STRIP_KEYS = new Set(['stackTrace'])
@@ -135,10 +135,19 @@ const SNAPSHOT_NAME_MAX_CHARS = 200
 /** Matches one accessibility-tree node line from a `take_snapshot`/`read_page` result, per the reference chrome-devtools-mcp `SnapshotFormatter`: `{2*depth spaces}uid={id} {role} "{name}" attr1="value1" attr2 ...`. Captures: (1) leading indentation, (2) the `uid=` token including its id, (3) the role token, (4) the quoted name's inner text, (5) everything after the closing quote (further attributes), verbatim. A line that doesn't match this shape (unexpected tool version, verbose-mode extra fields, a blank/header line) is left completely untouched by the caller -- this regex only identifies lines safe to touch, it never itself decides to drop or alter content. */
 const SNAPSHOT_NODE_LINE_RE = /^( *)(uid=\S+) (\S+) "((?:[^"\\]|\\.)*)"(.*)$/
 
-/** Truncate one snapshot node line's accessible-name field when it exceeds {@link SNAPSHOT_NAME_MAX_CHARS}, leaving indentation, `uid=`, role, and any trailing attributes byte-identical. Lines that don't match the expected shape pass through unchanged -- fail-open per line, matching this file's fail-closed-per-pack convention at the whole-result level. */
+/** Matches one node line of a `@playwright/mcp` `browser_snapshot`, which is Playwright's YAML aria snapshot rather than the `uid=` form: `{indent}- {role} "{name}" [attr] [ref=e12]:` for a node with children, or `... [ref=e41]: {inline text}` for one whose text sits on the same line (`- text: ...` and `- paragraph [ref=..]: ...` carry the page's prose). Captures: (1) indentation and the `- ` marker, (2) the role, (3) the quoted name's inner text when there is one, (4) the bracketed attributes, verbatim, (5) the inline text after `: ` when there is one. A role starts with a letter, so a `- /url: ...` property line never matches: a URL is an identifier the model navigates by, not prose. */
+const PLAYWRIGHT_SNAPSHOT_NODE_LINE_RE = /^( *- )([a-z][a-z0-9-]*)(?: "((?:[^"\\]|\\.)*)")?((?: \[[^\]\n]*\])*)(?::(?: (.*))?)?$/
+
+/** `text` cut to {@link SNAPSHOT_NAME_MAX_CHARS} with the repo's `N chars elided` marker, or `text` itself when it is within the cap. */
+function elideSnapshotText(text: string): string {
+  if (text.length <= SNAPSHOT_NAME_MAX_CHARS) return text
+  return `${text.slice(0, SNAPSHOT_NAME_MAX_CHARS)}  … [${text.length - SNAPSHOT_NAME_MAX_CHARS} chars elided]`
+}
+
+/** Truncate one snapshot node line's accessible-name field when it exceeds {@link SNAPSHOT_NAME_MAX_CHARS}, leaving indentation, `uid=`, role, and any trailing attributes byte-identical. A Playwright YAML node line ({@link PLAYWRIGHT_SNAPSHOT_NODE_LINE_RE}) gets the same cap on its quoted name and on its inline text, with the `[ref=...]` and every other attribute left byte-identical. Lines that don't match either shape pass through unchanged -- fail-open per line, matching this file's fail-closed-per-pack convention at the whole-result level. */
 function truncateSnapshotLine(line: string): string {
   const m = SNAPSHOT_NODE_LINE_RE.exec(line)
-  if (!m) return line
+  if (!m) return truncatePlaywrightSnapshotLine(line)
   const [, indent, uid, role, name, rest] = m
   if (name === undefined) return line
   if (name.length <= SNAPSHOT_NAME_MAX_CHARS) return line
@@ -146,15 +155,51 @@ function truncateSnapshotLine(line: string): string {
   return `${indent}${uid} ${role} "${name.slice(0, SNAPSHOT_NAME_MAX_CHARS)}  … [${elided} chars elided]"${rest}`
 }
 
-/** Compress an accessibility-tree snapshot result by truncating only the long prose text carried in each line's quoted accessible-name field. Operates on the raw text directly (not via JSON.parse/deepStrip like the other packs here) because the snapshot payload's outer JSON usually wraps a single large indentation-formatted text blob, not a homogeneous array `finishWithGenericPass`'s table-ifying pass can do anything useful with. */
-function compressSnapshotText(resultText: string): string | null {
-  const compressed = resultText.split('\n').map(truncateSnapshotLine).join('\n')
+function truncatePlaywrightSnapshotLine(line: string): string {
+  const m = PLAYWRIGHT_SNAPSHOT_NODE_LINE_RE.exec(line)
+  if (!m) return line
+  const [, marker, role, name, attrs, text] = m
+  const nameTooLong = name !== undefined && name.length > SNAPSHOT_NAME_MAX_CHARS
+  const textTooLong = text !== undefined && text.length > SNAPSHOT_NAME_MAX_CHARS
+  if (!nameTooLong && !textTooLong) return line
+  const namePart = name === undefined ? '' : ` "${elideSnapshotText(name)}"`
+  const colonPart = text !== undefined ? `: ${elideSnapshotText(text)}` : line.endsWith(':') ? ':' : ''
+  return `${marker}${role}${namePart}${attrs ?? ''}${colonPart}`
+}
+
+/** Matches one request line of `@playwright/mcp`'s `browser_network_requests` text result: `{index}. [{METHOD}] {url}`, then ` => [{status}] {statusText}` once the response is in. Captures: (1) the index and method, (2) the URL, (3) everything after it, verbatim. */
+const NETWORK_REQUEST_LINE_RE = /^(\d+\. \[[A-Z]+\] )(\S+)((?: .*)?)$/
+
+/** Longest request URL kept whole in a network-request text line, with the same reasoning as {@link SNAPSHOT_NAME_MAX_CHARS}: the measured bulk of a Playwright request list is analytics and tracking beacons whose query strings run to 500+ characters each, while an API endpoint the model is looking for fits well under it. */
+const NETWORK_URL_MAX_CHARS = 200
+
+/** Cut an overlong request URL's query string past {@link NETWORK_URL_MAX_CHARS}, never its scheme, host or path, which are what identify the request; the index (what `browser_network_request` takes), method and status pass through verbatim. Lines of any other shape pass through unchanged. */
+function truncateNetworkRequestLine(line: string): string {
+  const m = NETWORK_REQUEST_LINE_RE.exec(line)
+  if (!m) return line
+  const [, head, url, rest] = m
+  if (url === undefined) return line
+  const queryStart = url.search(/[?#]/)
+  if (queryStart === -1) return line
+  const keep = Math.max(NETWORK_URL_MAX_CHARS, queryStart + 1)
+  if (url.length <= keep) return line
+  return `${head}${url.slice(0, keep)}  … [${url.length - keep} chars elided]${rest ?? ''}`
+}
+
+/** Apply `truncateLine` to every line of `resultText`, returning `null` unless that clears the pack savings bar. Operates on the raw text directly (not via JSON.parse/deepStrip like the other packs here) because these payloads are line-formatted text blobs, not a homogeneous array `finishWithGenericPass`'s table-ifying pass can do anything useful with. */
+function compressLineByLine(resultText: string, truncateLine: (line: string) => string): string | null {
+  const compressed = resultText.split('\n').map(truncateLine).join('\n')
   if (compressed.length >= resultText.length) return null
   if (compressed.length > resultText.length * (1 - PACK_MIN_SAVINGS_RATIO)) return null
   return compressed
 }
 
-/** Compress a browser-automation MCP tool result (console-message list, network-request list, or accessibility-tree snapshot). Returns `null` when *toolName* is not a recognized browser-automation server tool, its method matches none of the known shapes, *resultText* is not JSON (for the console/network shapes) or does not clear the savings bar -- in every such case the caller falls through to the generic pass unchanged. */
+/** Compress an accessibility-tree snapshot result by truncating only the long prose text carried in each line's quoted accessible-name field (and, for Playwright's YAML form, its inline text). */
+function compressSnapshotText(resultText: string): string | null {
+  return compressLineByLine(resultText, truncateSnapshotLine)
+}
+
+/** Compress a browser-automation MCP tool result (console-message list, network-request list, or accessibility-tree snapshot). Returns `null` when *toolName* is not a recognized browser-automation server tool, its method matches none of the known shapes, *resultText* is not JSON (for the console shape; a non-JSON network list gets the text-line pass instead) or does not clear the savings bar -- in every such case the caller falls through to the generic pass unchanged. */
 export function compressBrowserMcpResult(toolName: string, resultText: string): string | null {
   if (!BROWSER_TOOL_RE.test(toolName)) return null
   const method = toolName.split('__').pop() || ''
@@ -168,15 +213,16 @@ export function compressBrowserMcpResult(toolName: string, resultText: string): 
   }
 
   let shouldStrip: ((key: string) => boolean) | null = null
+  const network = BROWSER_NETWORK_METHOD_RE.test(method)
   if (BROWSER_CONSOLE_METHOD_RE.test(method)) shouldStrip = (key) => BROWSER_CONSOLE_STRIP_KEYS.has(key)
-  else if (BROWSER_NETWORK_METHOD_RE.test(method)) shouldStrip = (key) => BROWSER_NETWORK_STRIP_KEYS.has(key)
+  else if (network) shouldStrip = (key) => BROWSER_NETWORK_STRIP_KEYS.has(key)
   if (!shouldStrip) return null
 
   let parsed: unknown
   try {
     parsed = JSON.parse(resultText)
   } catch {
-    return null
+    return network ? compressLineByLine(resultText, truncateNetworkRequestLine) : null
   }
   const stripped = deepStrip(parsed, shouldStrip)
   return finishWithGenericPass(resultText, stripped)

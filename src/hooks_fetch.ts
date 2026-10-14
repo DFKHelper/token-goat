@@ -139,7 +139,8 @@ export function postFetchHandler(event: HookEvent): HookOutput {
     const wfCfg = loadConfig().webfetch;
     if (wfCfg.compress_bodies && body.length >= wfCfg.compress_min_bytes && looksLikeHtml(body)) {
       try {
-        storedBody = extractCleanText(body);
+        // From the redacted body, and redacted again below: extractCleanText is a truncator as well as a converter, and a credential straddling a cut would reach the redactor as a fragment too short to match. Same order as the curl HTML fold in hooks_bash_post.ts.
+        storedBody = extractCleanText(bodyRedacted.text);
       } catch {
         storedBody = body;
       }

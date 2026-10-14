@@ -159,6 +159,21 @@ export function checkClaudeHookEvents(gaps: { readonly user: HookEventGaps | nul
   return { name, status: broken.length > 0 ? 'fail' : 'warn', message: `${sentences.join('. ')}; restart any running session afterwards.` }
 }
 
+/** Name the Claude Code hook events whose installed matcher is not the one this build derives from its handlers, from `staleHookMatchers` (install.ts) per scope. Null when no scope has one, so a current install gets no extra row. Every such event still reaches token-goat, so this is a cost finding rather than a broken hook: an install from before the PreToolUse MCP matcher was narrowed keeps starting a hook process for every MCP call, all of which print `{}`. */
+export function checkClaudeHookMatchers(stale: { readonly user: readonly string[]; readonly project: readonly string[] }): DoctorResult | null {
+  const scopes = [
+    { scope: 'user', events: stale.user, run: 'token-goat install' },
+    { scope: 'project', events: stale.project, run: 'token-goat install --project' },
+  ] as const
+  const found = scopes.filter((s) => s.events.length > 0).map((s) => `${s.scope} scope matches ${s.events.join(', ')} with a tool matcher this build no longer writes; run: ${s.run}`)
+  if (found.length === 0) return null
+  return {
+    name: 'Claude Code hook matchers',
+    status: 'warn',
+    message: `${found.join('. ')}. Until then those events start a hook process for tools no handler acts on, or skip one a handler now wants; restart any running session afterwards.`,
+  }
+}
+
 /** `paths` with duplicates removed, comparing on the resolved path. */
 export function dedupeByResolvedPath(paths: readonly string[]): string[] {
   const seen = new Set<string>()

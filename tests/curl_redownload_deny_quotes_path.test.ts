@@ -1,4 +1,4 @@
-/** The deny for a repeated `curl -o` download suggests `rg '<pattern>' <path>` to search the saved file, and wrote the path raw: a project directory holding `$` and a zero-width space reached the model as `rg '<pattern>' C:/…/p$MARK<U+200B>/out.json`, where the shell expands `$MARK`, splits at the space, and the invisible character rides along. The path is now quoted with quotedArg after displaySafePath. Provenance: HAND-DERIVED directory name built from the shell rules; the curl command is only handed to the hook handlers, never to a shell, and names the reserved example.invalid host. */
+/** The deny for a repeated `curl -o` download suggested `rg '<pattern>' <path>` to search the saved file (dropped since: the pattern was a stand-in that searched for nothing), and wrote the path raw: a project directory holding `$` and a zero-width space reached the model as `rg '<pattern>' C:/…/p$MARK<U+200B>/out.json`, where the shell expands `$MARK`, splits at the space, and the invisible character rides along. The path is now quoted with quotedArg after displaySafePath. Provenance: HAND-DERIVED directory name built from the shell rules; the curl command is only handed to the hook handlers, never to a shell, and names the reserved example.invalid host. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -46,7 +46,7 @@ function text(out: HookOutput): string {
 }
 
 describe('the repeated curl -o download deny', () => {
-  it('quotes the saved path in its rg suggestion, so the relay keeps it and a shell reads one argument', async () => {
+  it('quotes the saved path in its read suggestion, so the relay keeps it and a shell reads one argument, and names no rg with a stand-in pattern', async () => {
     fs.writeFileSync(path.join(root, 'out.json'), JSON.stringify({ rows: Array.from({ length: 400 }, (_, i) => ({ id: i, name: `row ${i}` })) }))
     const command = 'curl -sS -o out.json https://example.invalid/data.json'
     const sid = `s-curl-quote-${process.pid}-${Math.random().toString(36).slice(2)}`
@@ -54,10 +54,11 @@ describe('the repeated curl -o download deny', () => {
     const again = await asHook(sid, () => preBashHandler(bashEvent(sid, 'pre_tool_use', command)))
     const message = text(again)
     expect(again.hookType).toBe('deny')
-    const rg = /`(rg [^`]*)`/.exec(message)?.[1] ?? ''
+    const read = /`(token-goat [^`]*)`/.exec(message)?.[1] ?? ''
     const saved = normalizePath(path.join(root, 'out.json'))
-    expect(rg).toBe(`rg '<pattern>' ${quotedArg(displaySafePath(saved))}`)
-    expect(rg).toContain('$MARK\\u200b')
-    expect(stripUnsafeSuggestions(rg)).toBe(rg)
+    expect(read).toContain(quotedArg(displaySafePath(saved)))
+    expect(read).toContain('$MARK\\u200b')
+    expect(stripUnsafeSuggestions(read)).toBe(read)
+    expect(message).not.toContain('<pattern>')
   })
 })

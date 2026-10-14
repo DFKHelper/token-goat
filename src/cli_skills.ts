@@ -2,16 +2,20 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { CliError, out } from './cli.js'
+import { formatCommandError } from './command_error.js'
+import { emitErr } from './emit.js'
+import { extractMarkdownHeadings } from './hints/markdown_hints.js'
 import { buildLineDiff } from './hooks_read_slice.js'
-import { displaySafeJson, displaySafeText } from './paths.js'
-import { findSpecSeparator } from './read_commands.js'
+import { displaySafeJson, displaySafeText, normalizePath } from './paths.js'
+import { capFileLines, findSpecSeparator, outputCeilingChars } from './read_commands.js'
 import { didYouMeanLines, filterSimilarHeadings } from './read_suggest.js'
 import { listSections } from './section_reader.js'
 import { getSessionId } from './session.js'
 import {
+  COMPACT_END_MARKER,
   contentHash,
   extractCompactFromMarker,
-  extractNamedSection,
+  extractNamedSectionAt,
   formatAge,
   getSkillFilePath,
   incrementSkillHit,
@@ -20,10 +24,11 @@ import {
   skillOutputsDir,
   storeCompact,
   storeOutput,
+  usableCompactSlice,
 } from './skill_cache.js'
 import { formatLocalTimestamp, recordStat, savedTokensFromBytes } from './stats.js'
 import { decodeSource, extractErrorMessage, stripLower } from './util.js'
-import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { canQuoteArg, echoedValue, nameSubject, quotedArg, sentenceStart } from './hint_suggestion_guard.js'
 
 export async function cmdSkillBody(name: string, opts: { compact?: boolean }): Promise<void> {
   const filePath = await getSkillFilePath(name)
@@ -33,14 +38,46 @@ export async function cmdSkillBody(name: string, opts: { compact?: boolean }): P
 
   const body = decodeSource(fs.readFileSync(filePath))
   if (opts.compact === true) {
-    const emitted = extractCompactFromMarker(body) ?? body
-    out(emitted)
-    const bytesSaved = Buffer.byteLength(body, 'utf8') - Buffer.byteLength(emitted, 'utf8')
-    if (bytesSaved > 0) recordStat('skill_body:compact', bytesSaved, savedTokensFromBytes(bytesSaved), undefined, name)
+    const compact = usableCompactSlice(body)
+    if (compact !== null) {
+      out(capToCeiling(compact, filePath, body.split('\n').findIndex((line) => line.trim() !== '') + 1, 'compact slice'))
+      const bytesSaved = Buffer.byteLength(body, 'utf8') - Buffer.byteLength(compact, 'utf8')
+      if (bytesSaved > 0) recordStat('skill_body:compact', bytesSaved, savedTokensFromBytes(bytesSaved), undefined, name)
+    } else {
+      out(await compactStandIn(name, filePath, body))
+    }
   } else {
-    out(body)
+    out(capToCeiling(body, filePath, 1, 'skill body'))
   }
   await incrementSkillHit(name)
+}
+
+/** What `skill-body --compact` prints for a skill with no usable compact slice ({@link usableCompactSlice}). It used to print the full body without a word that the flag had done nothing: humanizer's marker cuts 97.6% of it, and marketing and token-goat have no marker at all, so one session spent six calls loading one skill. Prints the heading tree the Skill hook inlines in the same case, with how to load one section, and says on stderr that no slice was served; a skill too flat to map gets its body back, said as such. The hook module is imported only here, so `skill-body` does not load it on every run. */
+async function compactStandIn(name: string, filePath: string, body: string): Promise<string> {
+  const bodyBytes = Buffer.byteLength(body, 'utf8')
+  const marked = extractCompactFromMarker(body)
+  const why =
+    marked === null
+      ? `no compact slice (no ${COMPACT_END_MARKER} marker; ${bodyBytes} bytes)`
+      : `no compact slice under half its body (the part before ${COMPACT_END_MARKER} is ${Buffer.byteLength(marked, 'utf8')} of its ${bodyBytes} bytes)`
+  const subject = sentenceStart(nameSubject('skill', name))
+  const { planHeadingTree } = await import('./hooks_skill.js')
+  const tree = planHeadingTree(body, bodyBytes, name, filePath)
+  if (tree === null) {
+    emitErr(formatCommandError(`${subject} has ${why} and too few headings to map, so --compact printed the full body.`))
+    return capToCeiling(body, filePath, 1, 'skill body')
+  }
+  emitErr(formatCommandError(`${subject} has ${why}; --compact printed its heading tree instead of the body.`))
+  const firstHeading = extractMarkdownHeadings(body).find((h) => h.level > 1)?.text
+  const sectionCommand = firstHeading !== undefined && displaySafeText(firstHeading) === firstHeading && canQuoteArg(firstHeading) ? `\`token-goat skill-section ${quotedArg(name)} ${quotedArg(firstHeading)}\`` : `\`token-goat skill-section\` with ${quotedArg(name)} and a heading below`
+  return `${subject} has ${why}; ${tree.phrase} Load one section with ${sectionCommand}, or drop --compact for the full body.\n\n${tree.sectionsList}`
+}
+
+/** `text`, which is lines `firstLine` on of the skill file at `filePath`, held to the output ceiling ({@link outputCeilingChars}) and paged past it with a `read "file@A-B"` of the next lines. A skill body is printed whole, and humanizer's ran to 49 KB: past the harness's inline limit it was persisted to a file the agent then spent two more calls reading back. */
+function capToCeiling(text: string, filePath: string, firstLine: number, what: string): string {
+  const ceiling = outputCeilingChars()
+  const cut = ceiling === null ? null : capFileLines(text.split('\n'), firstLine, normalizePath(filePath), ceiling, what)
+  return cut === null ? text : `${cut.kept.join('\n')}\n${cut.notice}`
 }
 
 export async function cmdSkillCompact(name: string | undefined, opts: { path?: string; all?: boolean }): Promise<void> {
@@ -308,7 +345,7 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
     throw new CliError(`skill ${echoedValue(skillName)} not found`)
   }
   const body = decodeSource(fs.readFileSync(filePath))
-  const extracted = extractNamedSection(body, heading)
+  const extracted = extractNamedSectionAt(body, heading)
   if (!extracted) {
     const allHeadings = listSections(filePath)
     const wanted = stripLower(heading)
@@ -322,5 +359,5 @@ export async function cmdSkillSection(nameHeading: string, headingArg?: string):
     else messages.push(`Try: token-goat outline ${quotedArg(filePath)}`)
     throw new CliError(messages)
   }
-  out(extracted)
+  out(capToCeiling(extracted.text, filePath, extracted.firstLine, 'skill section'))
 }

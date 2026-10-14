@@ -45,17 +45,21 @@ afterEach(() => {
   mounted.root = null
 })
 
-/** One load, handle and save, as relay.ts runs a hook call, with a fresh session so the once-per-session hint can fire. */
+/** Two runs of `command` in a fresh session, each one load, handle and save as relay.ts runs a hook call, returning the second's answer. The compress suggestion needs a command that produced a large output before in the session. The second run is persisted, as Claude Code reports a result it did not show inline (the path names no file, so the hook reads `stdout`), so the hint also carries its recall pointer. */
 async function post(command: string): Promise<HookOutput> {
   const sid = `s-wsl-hint-${process.pid}-${Math.random().toString(36).slice(2)}`
-  const raw: Record<string, unknown> = { cwd: PROJECT, tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: BIG, stderr: '', interrupted: false, isImage: false, noOutputExpected: false } }
-  const event: HookEvent = { eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId: sid, agentId: undefined, raw }
-  loadSessionState(sid)
-  try {
-    return await postBashHandler(event)
-  } finally {
-    saveSessionState(sid)
+  const run = async (response: Record<string, unknown>): Promise<HookOutput> => {
+    const raw: Record<string, unknown> = { cwd: PROJECT, tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: BIG, stderr: '', interrupted: false, isImage: false, noOutputExpected: false, ...response } }
+    const event: HookEvent = { eventName: 'post_tool_use', toolName: 'Bash', toolInput: { command }, sessionId: sid, agentId: undefined, raw }
+    loadSessionState(sid)
+    try {
+      return await postBashHandler(event)
+    } finally {
+      saveSessionState(sid)
+    }
   }
+  await run({})
+  return run({ persistedOutputPath: '/nowhere/tool-results/wsl.txt', persistedOutputSize: 0 })
 }
 
 function suggestion(out: HookOutput): string | null {

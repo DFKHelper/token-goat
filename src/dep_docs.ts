@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { dirExists, displaySafeText, displaySafeJson } from './paths.js'
 import type TsModule from 'typescript'
 import { resolveProjectRoot } from './project.js'
-import { loadConfig } from './config.js'
+import { loadConfig, type Config } from './config.js'
 import { trimToBudget, capJsonRows, estimateTokens, type JsonRowCapResult } from './overflow_guard.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { suggestPackageNames } from './util_suggest.js'
@@ -230,8 +230,8 @@ function guardReadmeField(text: string, budgetTokens: number, reserveTokens: num
 }
 
 /** {@link fenceFileFieldIfMatched} without the `injection_detected` stat, for sizing a candidate output that is not the one printed. */
-function measureFileField(text: string): string {
-  const redacted = redactSecrets(text).text
+function measureFileField(text: string, config: Config): string {
+  const redacted = redactSecrets(text, config).text
   let matches: string[]
   try {
     matches = scanForInjectionPatterns(redacted)
@@ -342,12 +342,12 @@ export function runDepDocs(opts: DepDocsOptions): DepDocsResult {
     let shrink = 0
     if (cfg.overflow_guard.enabled) {
       for (let pass = 0; pass < 8; pass++) {
-        const excess = estimateTokens(build(shrink, measureFileField)) - maxTokens
+        const excess = estimateTokens(build(shrink, (field) => measureFileField(field, cfg))) - maxTokens
         if (excess <= 0) break
         shrink += excess
       }
     }
-    const text = build(shrink, fenceFileFieldIfMatched)
+    const text = build(shrink, (field) => fenceFileFieldIfMatched(field, cfg))
     recordDepDocsStat(fullSourceBytes, text, opts.packageName)
     return { text, code: 0 }
   }

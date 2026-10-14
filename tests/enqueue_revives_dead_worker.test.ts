@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { runBundle as sharedRunBundle, type RunResult } from './helpers/bundle.js'
+import { awaitProcessExit } from './helpers/process_exit.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
@@ -51,6 +52,8 @@ function pidAlive(pid: number): boolean {
 }
 
 const tempDirs: string[] = []
+/** Daemons a test's enqueue spawned, by PID, each with a time it was known to be running. */
+const daemons = new Map<number, number>()
 function mkIsolated(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   tempDirs.push(dir)
@@ -58,13 +61,11 @@ function mkIsolated(prefix: string): string {
 }
 
 afterEach(() => {
-  for (const d of tempDirs.splice(0)) {
-    try {
-      fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
-    } catch {
-      // best-effort cleanup
-    }
-  }
+  // A stopped daemon keeps global.db open until Windows has finished tearing it down, after `pidAlive` already reads it gone.
+  const started = new Map(daemons)
+  daemons.clear()
+  awaitProcessExit(started)
+  for (const d of tempDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
 })
 
 describe('a CLI enqueue path revives a dead worker (not just the edit hook)', () => {
@@ -121,6 +122,9 @@ describe('a CLI enqueue path revives a dead worker (not just the edit hook)', ()
       // The record `worker stop` and `doctor` act on must name the daemon that is draining, not the dead pid it replaced.
       expect(readPid(pidFile), pendingState()).toBe(readPid(heartbeat))
     } finally {
+      // The spawner writes the pid file once the daemon exists, so its mtime is a time that pid named the daemon.
+      const daemon = readPid(pidFile)
+      if (daemon !== null && daemon !== deadPid) daemons.set(daemon, fs.statSync(pidFile, { throwIfNoEntry: false })?.mtimeMs ?? Date.now())
       runBundle(['worker', 'stop'], env, repo)
     }
   }, 30000)

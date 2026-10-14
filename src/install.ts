@@ -281,6 +281,18 @@ function hooksOf(group: HookMatcherGroup | null | undefined): HookCommandEntry[]
   return Array.isArray(group?.hooks) ? group.hooks : []
 }
 
+/** The matcher {@link installHooks} gives `group` on its next run, or undefined when it leaves the group's matcher alone: when the event cannot be narrowed (`narrowed` null), when the group already has it, or when the group holds any hook that is not this build's own entry, since a group a user added a command to is theirs, matcher included. The one rule both the re-narrow and {@link staleHookMatchers} apply, so doctor reports exactly the groups an install would rewrite. */
+function renarrowedMatcher(
+  group: HookMatcherGroup | undefined,
+  isOurs: (command: string, args?: readonly string[]) => boolean,
+  narrowed: string | null,
+): string | undefined {
+  if (narrowed === null || group === undefined) return undefined
+  const ownHooks = hooksOf(group)
+  if (ownHooks.length === 0 || !ownHooks.every((h) => isOwnHookEntry(h, isOurs))) return undefined
+  return group.matcher === narrowed ? undefined : narrowed
+}
+
 /** True when `groups` contains a hook command matching `predicate`. */
 function groupHasTokenGoat(
   groups: HookMatcherGroup[] | undefined,
@@ -360,17 +372,12 @@ function installHooksScoped(scope: HookScope): InstallResult {
       // Re-narrow an already-installed entry. Without this the matcher improvement below would only ever reach brand-new installs: every existing user would keep the catch-all they were installed with and see no benefit. Only groups whose hooks are all token-goat's own are touched -- a group the user has added their own commands to is left exactly as-is.
       const narrowed = toolMatcherFor(eventArg as HookEventName)
       let renarrowed = false
-      if (narrowed !== null) {
-        for (let i = 0; i < groups.length; i++) {
-          const group = groups[i]
-          if (group === undefined) continue
-          const ownHooks = hooksOf(group)
-          const isOwnGroup = ownHooks.length > 0 && ownHooks.every((h) => isOwnHookEntry(h, isOurs))
-          if (isOwnGroup && group.matcher !== narrowed) {
-            groups[i] = { ...group, matcher: narrowed }
-            renarrowed = true
-          }
-        }
+      for (let i = 0; i < groups.length; i++) {
+        const group = groups[i]
+        const matcher = renarrowedMatcher(group, isOurs, narrowed)
+        if (group === undefined || matcher === undefined) continue
+        groups[i] = { ...group, matcher }
+        renarrowed = true
       }
       if (strippedStale || renarrowed) {
         hooks[eventKey] = groups
@@ -516,6 +523,23 @@ export function hookEventGaps(scope: HookScope = 'user'): HookEventGaps | null {
     else missing.push(eventKey)
   }
   return { missing, outdated, broken }
+}
+
+/** Claude Code event keys in `scope` whose own token-goat matcher group carries a matcher other than the one this build derives from its handlers ({@link toolMatcherFor}): exactly the groups {@link installHooks} re-narrows on its next run. The event still reaches token-goat, but through a matcher that starts a hook process for tools no handler acts on, or never starts it for one a handler wants, as an install from before a handler's pattern was narrowed does. Read against the live hook registry, so a caller must import relay.ts first, as installHooks's callers do: a partly populated registry derives a matcher no install wrote, and every event would read as stale. */
+export function staleHookMatchers(scope: HookScope = 'user'): string[] {
+  const hooks = readSettings(settingsPath(scope)).hooks
+  if (hooks === undefined) return []
+  const scriptPath = claudeHookScriptPath()
+  const stale: string[] = []
+  for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
+    const groups: unknown = hooks[eventKey]
+    if (!Array.isArray(groups)) continue
+    const expected = expectedHookEntryFor(scriptPath, eventArg, { sync: false })
+    const isOurs = (command: string, args?: readonly string[]): boolean => hookEntryMatches(command, args, expected)
+    const narrowed = toolMatcherFor(eventArg as HookEventName)
+    if ((groups as HookMatcherGroup[]).some((group) => renarrowedMatcher(group, isOurs, narrowed) !== undefined)) stale.push(eventKey)
+  }
+  return stale
 }
 
 // --- CLAUDE.md delimited-block writer --- README documents this as part of the base Claude Code install -- run by a bare `install` (or `--hermes`, gated in cli_install.ts's wantsClaudeCodeBase), never by a scoped harness flag like --vscode: a delimited block in the user's own ~/.claude/CLAUDE.md telling the agent to prefer token-goat commands over Read/Grep. Mirrors bridges/codex_install.ts's AGENTS.md writer -- same idempotent merge-or-append pattern, same "preserve everything outside the markers" guarantee for a file the user edits directly.

@@ -13,6 +13,7 @@ import { invalidateConfigCache } from '../src/config.js'
 import Database from '../src/sqlite_driver.js'
 import { guardDivisor } from '../src/token_estimate.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { buildDocxFixture, buildDocxWithTableFixture, buildPptxFixture } from './helpers/ooxml_fixtures.js'
 
 const COUNT = 400
@@ -187,9 +188,10 @@ const CASES: ReadonlyArray<readonly [string, (p: (name: string) => string) => st
 describe('readers hold their output to the overflow cap', () => {
   for (const [name, argvFor] of CASES) {
     it(name, async () => {
-      const text = await printed(argvFor((file) => join(root, file)))
+      const raw = await printed(argvFor((file) => join(root, file)))
+      const text = withoutFenceNonces(raw)
       expect(text, 'the cap marker is present').toContain(MARKER)
-      expect(text.length, 'the output is held to the cap').toBeLessThan(CEILING_CHARS)
+      expect(raw.length, 'the output is held to the cap').toBeLessThan(CEILING_CHARS)
       expect(text.indexOf(CLOSE_TAG), 'the fence closes before the marker').toBeGreaterThan(0)
       expect(text.indexOf(CLOSE_TAG)).toBeLessThan(text.indexOf(MARKER))
     })

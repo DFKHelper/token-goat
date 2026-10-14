@@ -64,19 +64,20 @@ describe('post-hook filter selection for a piped command', () => {
     const body = await runAndGetBody('grep -rn "export function" src | head -200')
     expect(compressFilters(), 'a pass-through pipeline must not fall back to generic').toContain('grep')
     expect(compressFilters()).not.toContain('generic')
-    // The grep filter summarises matches rather than listing them, which is its shipped behaviour for a bare grep too. So the anchor is not a matched line but the caller's route back to one: the file that matched and how many times. A body that lost those would be a count of nothing.
-    expect(body, 'must still name the file that matched').toContain('src/util.ts')
-    expect(body, 'must still carry the match count').toContain('400')
+    // A one-file search bounded by `head` is the caller asking for those lines, so the grep filter ships them rather than a count of them, and apply()'s line cap disclosing what it cut.
+    expect(body, 'must still carry the matched lines').toContain('src/util.ts:1:export function helper0(ms: number): void {')
+    expect(body, 'must not trade them for a count').not.toContain('matches across')
   })
 
   // PROVENANCE: CAPTURE. Real `rg -n "describe\(" tests/tool_filters_git.test.ts` output from this repository on 2026-09-22, run twice against the live hook: bare it reported `grep: 38 matches across 1 file(s)` with the path named, and piped to `cat` it reported `grep: 38 matches across 0 file(s)` / `(unattributed lines: 38)` -- the same 38 matches, every one discarded. The captured part is the line shape a SINGLE-file search emits: `lineno:text` with no path prefix, because grep and rg only prefix a filename when the search spans more than one file. That shape is the whole point here: the filter has a branch that attributes those bare lines to the one file named in argv, and the pipeline path was passing it an empty argv, so the branch could never fire.
   const SINGLE_FILE_LINES = Array.from({ length: 400 }, (_v, i) => `${i + 1}:describe('GitLogFilter dispatch', () => {`).join('\n')
 
-  it('attributes a single-file search through a pipeline, where the path is in argv and not in the output', async () => {
+  it('reads a single-file search through a pipeline as one file, where the path is in argv and not in the output', async () => {
     const body = await runAndGetBody('rg -n "describe\\(" tests/tool_filters_git.test.ts | cat', SINGLE_FILE_LINES)
     expect(compressFilters(), 'a pass-through pipeline must not fall back to generic').toContain('grep')
-    // The count survived the old defect -- what did not was any route back to the matches. A summary naming zero files is strictly worse than the raw output it replaced.
-    expect(body, 'must name the file argv searched').toContain('tests/tool_filters_git.test.ts')
+    // The count survived the old defect -- what did not was any route back to the matches. One file's matches now ship as lines, which is only possible once the bare lines are attributed to the file argv names.
+    expect(body, 'must keep the matched lines').toContain("1:describe('GitLogFilter dispatch', () => {")
+    expect(body, 'must not trade them for a count').not.toContain('matches across')
     expect(body, 'must not report every line as unattributable').not.toContain('unattributed lines')
     expect(body, 'must not report zero files for a search that matched').not.toContain('0 files')
   })
@@ -137,12 +138,15 @@ describe('post-hook filter selection for a piped command', () => {
   })
 
   it('compresses a pass-through pipeline strictly harder than the generic path it replaces', async () => {
-    const family = await runAndGetBody('grep -rn "export function" src | head -200')
+    // An unbounded search across many files, the one shape the grep filter still summarises. A bounded or one-file search ships its lines, which is the point of bounding it, so it is no contest for a byte count.
+    const manyFiles = Array.from({ length: 2000 }, (_v, i) => `src/mod_${i % 30}.ts:${i + 1}:export function helper${i}(ms: number): void {`).join('\n')
+    const family = await runAndGetBody('grep -rn "export function" src | cat', manyFiles)
     ;(recordStat as unknown as { mockClear: () => void }).mockClear()
-    const generic = await runAndGetBody('grep -rn "export function" src | sort')
+    const generic = await runAndGetBody('grep -rn "export function" src | sort', manyFiles)
     // A ratio floor on its own is not a guard -- over-collapsing improves it -- so the survival anchor is asserted on the smaller body, which is the one with something to prove.
     expect(family.length, 'the family filter must beat generic on identical bytes').toBeLessThan(generic.length)
-    expect(family, 'and must still name where the matches are').toContain('src/util.ts')
+    expect(family, 'and must still carry real matches').toContain('src/mod_0.ts:1:export function helper0(ms: number): void {')
+    expect(family, 'and name where the rest are').toContain('src/mod_10.ts: 66 matches')
   })
 
   // Regression: `token-goat bash-output <id> --full` is the model's own request for a prior full delivery back verbatim. Piping or chaining it (`| head -300`) fell through to the generic pipeline path above and got recompressed into a fresh, smaller pointer instead of surviving.

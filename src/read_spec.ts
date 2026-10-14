@@ -77,6 +77,12 @@ export function specFilePart(spec: string): string {
   return colonIdx === -1 ? spec : spec.slice(0, colonIdx)
 }
 
+/** Whether `first` and `extras`, rejoined with the spaces a shell split them at, name one real file, or for a spec one whose file part is real. An unquoted path or heading holding spaces reaches the CLI split into words, and when the rejoined words name a file, that one argument is what was meant rather than a list of its fragments. */
+export function extraArgsRejoinSpacedPath(first: string, extras: readonly string[], noun: 'file' | 'spec'): boolean {
+  const spaced = [first, ...extras].join(' ')
+  return fileExists(expandSpecPath(noun === 'spec' ? specFilePart(spaced) : spaced))
+}
+
 export function extraFileArgsNote(
   command: string,
   first: string,
@@ -85,9 +91,8 @@ export function extraFileArgsNote(
 ): string {
   const noun = opts.noun ?? 'file'
   const head = `Note: ${countNoun(extras.length, `extra ${noun} argument`)} ignored (${extras.join(', ')}).`
-  // An unquoted path holding spaces reaches the CLI split into words; when the words rejoined with spaces name a real file, that path is what was meant, so suggest it quoted rather than a comma list of its fragments.
   const spaced = [first, ...extras].join(' ')
-  if (fileExists(expandSpecPath(noun === 'spec' ? specFilePart(spaced) : spaced))) return `${head} Together they make one ${noun === 'spec' ? 'spec' : 'path'} holding spaces, which a shell splits unless it is quoted: token-goat ${command} ${quotedArg(spaced)}`
+  if (extraArgsRejoinSpacedPath(first, extras, noun)) return `${head} Together they make one ${noun === 'spec' ? 'spec' : 'path'} holding spaces, which a shell splits unless it is quoted: token-goat ${command} ${quotedArg(spaced)}`
   if (opts.mergeable === false) return `${head} Run ${command} once per ${noun}.`
   return `${head} ${command} reads one ${noun}, or a comma-separated list: token-goat ${command} ${quotedArg([first, ...extras].join(','))}`
 }

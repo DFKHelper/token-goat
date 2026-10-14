@@ -37,6 +37,7 @@ import { normalizePayload } from '../src/hooks_cli.js'
 import { buildEvent } from '../src/relay.js'
 import { getDb } from '../src/db.js'
 import { indexFileSync } from '../src/parser.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const tmpFiles: string[] = []
@@ -273,8 +274,9 @@ describe('preReadHandler', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('already read this session')
-      expect(result.message).toContain('token-goat read')
-      expect(result.message).toContain('SymbolName')
+      // A file of one repeated character holds no symbol, so the hint leads with skeleton rather than a read of a stand-in name.
+      expect(result.message).toContain('token-goat skeleton')
+      expect(result.message).not.toContain('SymbolName')
       expect(result.message).not.toContain('To edit it anyway')
       expect(result.message).not.toContain('token-goat replace')
     }
@@ -982,6 +984,40 @@ content here` },
       // True advice now that offset/limit is honored: tells the caller to narrow it further, not to blindly retry with offset/limit again (which is what caused the original bug).
       expect(result.message).toContain('narrow the range further')
     }
+  })
+
+  // CAPTURE (findings_hooks.md 7a, hit live 2026-10-10): a Read of a 132-line, 28.4 KB scratch `b1.out` with offset=1, limit=66 was refused with "Log file -- use Read with offset/limit params" over a preview of the whole file's first and last lines and its total line count, and the second half was refused the same way. The fixture is HAND-DERIVED: lines of 39 bytes, about 28 KB, so lines 1-366 come to about 14 KB, past the 10,000-byte log threshold `.out` falls under.
+  it('refuses a ranged Read of a large .out with a limit that fits and a preview of that slice, never with advice to use offset/limit', () => {
+    const p = makeTmpMultilineFileWithExt(28 * 1024, 'out')
+    const fileLines = fs.readFileSync(p, 'utf8').split('\n').length - 1
+    const result = preReadHandler(readEventWithRange(p, 1, 366))
+    if (result.hookType !== 'deny') expect.fail(`expected the oversized slice to be refused, got ${result.hookType}`)
+    expect(result.message).toContain('lines 1-366')
+    expect(result.message).not.toMatch(/offset\/limit|offset and limit/i)
+    expect(result.message).toContain('line 000000:')
+    expect(result.message).toContain('line 000365:')
+    expect(result.message).not.toContain(`line ${String(fileLines - 1).padStart(6, '0')}:`)
+    expect(result.message).toContain(`366 lines in the slice, ${fileLines.toLocaleString()} in the file`)
+    const fits = Number(/limit=(\d+)/.exec(result.message)?.[1])
+    expect(fits).toBeGreaterThan(0)
+    expect(fits).toBeLessThan(366)
+    // The suggestion is only advice if following it goes through, from the start and from where the refused slice would have continued.
+    expect(preReadHandler(readEventWithRange(p, 1, fits)).hookType).not.toBe('deny')
+    expect(preReadHandler(readEventWithRange(p, 367, fits)).hookType).not.toBe('deny')
+  })
+
+  // CAPTURE (findings_cli.md "Cross-slice (hook)"): `Read(calls_full.txt, offset=1, limit=80)` was refused as "Large text file (22.0 KB, 433 lines)", the slice's bytes beside the whole file's line count, and told to use offset and limit. HAND-DERIVED fixture: about 60 KB of 39-byte lines, so a 600-line slice is about 23 KB, past the 20,000-byte text threshold.
+  it('names a ranged .txt refusal by the slice it asked for, not the whole file', () => {
+    const p = makeTmpMultilineFileWithExt(60 * 1024, 'txt')
+    const result = preReadHandler(readEventWithRange(p, 101, 600))
+    if (result.hookType !== 'deny') expect.fail(`expected the oversized slice to be refused, got ${result.hookType}`)
+    expect(result.message).toContain('Requested slice is over the text-file cap: lines 101-700')
+    expect(result.message).not.toContain('lines total')
+    expect(result.message).not.toMatch(/offset\/limit|offset and limit/i)
+    expect(result.message).toContain('line 000100:')
+    expect(result.message).not.toContain('line 000000:')
+    const fits = Number(/limit=(\d+)/.exec(result.message)?.[1])
+    expect(preReadHandler(readEventWithRange(p, 101, fits)).hookType).not.toBe('deny')
   })
 
   // Regression guard: estimateRequestedSlice already clamps a sub-1 offset up to 1, but used to pass a negative limit straight through unguarded. scanRequestedSlice computes `windowEnd = offset + limit`; a negative limit makes windowEnd < offset, so the byte counter never advances (the [offset, windowEnd) window is empty) and the very first line break trips the "window closed" branch, returning a fabricated {bytes: 0, trustworthy: true} almost immediately -- telling the pre-read size gate the requested window is trivially small even though a Read call with a negative limit has no well-defined real-world size. That silently bypassed the large-file deny for a genuinely huge file. Fixed by treating a non-positive limit the same as a missing one: fall back to `kind: 'unbounded'` and gate on the whole file.
@@ -1776,10 +1812,11 @@ Examples here
         expect(result.message).not.toContain('Large markdown file')
 
         // Fence placement: the diff (file-derived, untrusted) sits between the fence tags; token-goat's own "Content changed..." guidance sits outside/before it.
-        const openIdx = result.message.indexOf('<untrusted-file-content>')
-        const closeIdx = result.message.indexOf('</untrusted-file-content>')
-        const guidanceIdx = result.message.indexOf('Content changed since last read of')
-        const diffIdx = result.message.indexOf('New Section')
+        const message = withoutFenceNonces(result.message)
+        const openIdx = message.indexOf('<untrusted-file-content>')
+        const closeIdx = message.indexOf('</untrusted-file-content>')
+        const guidanceIdx = message.indexOf('Content changed since last read of')
+        const diffIdx = message.indexOf('New Section')
         expect(openIdx).toBeGreaterThan(-1)
         expect(closeIdx).toBeGreaterThan(openIdx)
         expect(guidanceIdx).toBeGreaterThan(-1)
@@ -2376,7 +2413,7 @@ content here` },
     if (result.hookType === 'deny') {
       expect(result.message).toContain('truncated on last read')
       expect(result.message).toContain('token-goat skeleton')
-      expect(result.message).toContain('token-goat read')
+      expect(result.message).not.toContain('SymbolName')
     }
   })
 
@@ -2749,10 +2786,11 @@ content here` },
         expect(result.message).not.toContain('This file was already read this session')
 
         // Fence placement: the diff (file-derived, untrusted) sits between the fence tags; token-goat's own "Content changed..." guidance sits outside/before it.
-        const openIdx = result.message.indexOf('<untrusted-file-content>')
-        const closeIdx = result.message.indexOf('</untrusted-file-content>')
-        const guidanceIdx = result.message.indexOf('Content changed since last read of')
-        const diffIdx = result.message.indexOf('New Fact')
+        const message = withoutFenceNonces(result.message)
+        const openIdx = message.indexOf('<untrusted-file-content>')
+        const closeIdx = message.indexOf('</untrusted-file-content>')
+        const guidanceIdx = message.indexOf('Content changed since last read of')
+        const diffIdx = message.indexOf('New Fact')
         expect(openIdx).toBeGreaterThan(-1)
         expect(closeIdx).toBeGreaterThan(openIdx)
         expect(guidanceIdx).toBeGreaterThan(-1)
@@ -3159,7 +3197,7 @@ content here` },
     })
   })
 
-  it('flag ON: re-read of an unchanged .txt names a grep, never section (a .txt has no headings)', () => {
+  it('flag ON: re-read of an unchanged .txt names a read of its first lines, never section (a .txt has no headings)', () => {
     pinProtectRecentReadsToZero()
     withDiffFlag(true, () => {
       const content = 'plain line one\nplain line two\nplain line three\n'
@@ -3170,9 +3208,10 @@ content here` },
       expect(result.hookType).toBe('deny')
       if (result.hookType === 'deny') {
         expect(result.message).toContain('unchanged since last read')
-        // HAND-DERIVED from the CAPTURE in tests/bash_deny_names_a_runnable_target.test.ts: `section` on a .txt exits 1 ("has no headings"), `grep` exits 0
-        expect(result.message).toContain('token-goat grep')
+        // HAND-DERIVED from the CAPTURE in tests/bash_deny_names_a_runnable_target.test.ts: `section` on a .txt exits 1 ("has no headings"); a grep would need a pattern the hook does not have, so a read of the first lines leads.
+        expect(result.message).toContain('token-goat read "' + normalizePath(p) + '::1-80"')
         expect(result.message).not.toContain('token-goat section')
+        expect(result.message).not.toContain('<pattern>')
       }
     })
   })
@@ -3427,6 +3466,15 @@ describe('preReadHandler — session artifact re-read dedup', () => {
     if (result.hookType === 'deny') {
       expect(result.message).toContain('token-goat bash-output --file "' + normalizePath(p) + '"')
     }
+  })
+
+  // CAPTURE (corpus 9557924b, subagent a9ea0156): the native Grep tool on a 337KB tool-results snapshot was refused as a whole-file Read and pointed at `bash-output --grep`, whose own output then spilled. A Grep returns only matching lines and is bounded by head_limit, so it is already the narrow form the refusal asks for. The 6,000 rows are HAND-DERIVED, about 300KB.
+  it('lets a Grep search a large tool-results file, while a Read of the whole file is still refused', () => {
+    const p = makeToolResultsFile(Array.from({ length: 6000 }, (_, i) => `listing/${i} ${'x'.repeat(40)}`).join('\n') + '\n')
+    expect(fs.statSync(p).size).toBeGreaterThan(290 * 1024)
+    const grep = makeHookEvent({ toolName: 'Grep', toolInput: { path: p, pattern: 'listing/[0-9]+' }, sessionId: 'test' })
+    expect(preReadHandler(grep)).toEqual({ hookType: 'pass' })
+    expect(preReadHandler(readEvent(p)).hookType).toBe('deny')
   })
 
   it('denies re-read of tasks/*.output when content unchanged since last read', () => {
@@ -4091,12 +4139,13 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
         expect(result.context).not.toContain('[tg]')
         expect(result.context).not.toContain('[token-goat:')
         expect(result.context).not.toContain('&#91;')
-        expect(result.context).toContain('SymbolName')
+        expect(result.context).toContain('token-goat skeleton')
+        expect(result.context).not.toContain('SymbolName')
       }
     })
 
     // HAND-DERIVED: a 400-line function body computed independently of the threshold this test pins. Regression: surgicalHint's fileContent-available branch (extractQuickSymbolSamples) named a real symbol for `token-goat read "file::Symbol"` with no size check at all, even though the DB already knew the symbol's true span -- so a file this large in the large-file quietContextOutput channel pointed at a whole-body read of a symbol nearly as big as the file itself. The fix consults the index as a size check even on this content-derived path and swaps in a grep -C slice once the named symbol clears the large-symbol threshold.
-    it('swaps a whole-body read for a grep -C slice when the fileContent-derived symbol name resolves to an oversized indexed span', () => {
+    it('swaps a whole-body read for a read of its opening lines when the fileContent-derived symbol name resolves to an oversized indexed span', () => {
       const p = path.join(os.tmpdir(), `tg-large-symbol-content-${process.pid}-${Math.random().toString(36).slice(2)}.js`)
       const bodyLines = Array.from({ length: 400 }, (_, i) => `  step${i}()`).join('\n')
       const content = `function bigFn() {\n${bodyLines}\n}\n` + '// ' + 'x'.repeat(150 * 1024)
@@ -4110,7 +4159,8 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(result.hookType).toBe('context')
       if (result.hookType === 'context') {
         expect(result.context).not.toContain('read "' + normalizePath(p) + '::bigFn"')
-        expect(result.context).toContain('grep "<pattern>" "' + normalizePath(p) + '" -C 15 --symbol')
+        expect(result.context).toContain('read "' + normalizePath(p) + '@1-80"')
+        expect(result.context).not.toContain('<pattern>')
         expect(result.context).toContain('scope "' + normalizePath(p) + ':')
       }
     })
@@ -4247,6 +4297,18 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       if (r3.hookType === 'context') {
         expect(r3.context).toContain('Sequential line-range paging detected')
       }
+    })
+
+    // CAPTURE (findings_markers.md "Q4 summary: hints"): paging through a plain .txt drew "Prefer `token-goat skeleton ...`", and a .txt has no symbols for skeleton to show. The same three slices of a .ts file still draw the note (the case above).
+    it('does not point a paged plain-text file at skeleton or a symbol read', () => {
+      const p = path.join(os.tmpdir(), `tg-paging-txt-${process.pid}-${Math.random().toString(36).slice(2)}.txt`)
+      fs.writeFileSync(p, Array.from({ length: 150 }, (_, i) => `plain line ${i}`).join('\n'))
+      tmpFiles.push(p)
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [1, 20] }, sessionId: 'test' }))
+      preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [21, 40] }, sessionId: 'test' }))
+      const r3 = preReadHandler(makeHookEvent({ toolName: 'view', toolInput: { file_path: p, view_range: [41, 60] }, sessionId: 'test' }))
+      expect(r3.hookType).not.toBe('deny')
+      expect(r3.hookType === 'context' ? r3.context : '').not.toMatch(/skeleton|Sequential line-range paging/)
     })
 
     // HAND-DERIVED: a 600-line function. Paging still locks inside it, but the hint must preserve

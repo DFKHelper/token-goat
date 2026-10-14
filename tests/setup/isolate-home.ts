@@ -60,6 +60,8 @@ delete process.env['CLAUDE_CONFIG_DIR']
 delete process.env['CLAUDE_PROJECT_DIR']
 // CODEX_HOME points rewrite_permission.ts at Codex's rules files, and an inherited one would hand spawned bundles the developer's own rules; a test that wants it sets its own.
 delete process.env['CODEX_HOME']
+// CLAUDE_CODE_TMPDIR moves Claude Code's temp tree, whose `claude/` folder hooks_read_post.ts leaves unfolded, so an inherited one would decide which fixtures a test sees folded; a test that wants it sets its own.
+delete process.env['CLAUDE_CODE_TMPDIR']
 // A suite run from a Claude Code Bash call inherits the session: CLAUDE_PID sends the hidden-rule check to the developer's own claude command line, CLAUDE_CODE_ENTRYPOINT decides whether it trusts the host, the session id keys its cache, and doctor's probe reads the rest as Claude Code signals; CI has none of them, so they are deleted and a test that wants one sets its own.
 scrubClaudeSessionEnv(process.env)
 
@@ -120,6 +122,10 @@ if (!process.env['TOKEN_GOAT_HOOK_SERVER']) {
 // An install run by a spawned bundle would otherwise wire the native hook client whenever dist/native holds a binary, so the hook commands a test sees would depend on whether `npm run build:native` has run. Tests of the native form delete this and so run the shipping default.
 if (!process.env['TOKEN_GOAT_NATIVE_HOOKS']) {
   process.env['TOKEN_GOAT_NATIVE_HOOKS'] = '0'
+}
+// A spawned `index` lowers itself to worker.priority, below_normal by default (src/process_priority.ts), and on a loaded machine that took a one-file index from a few seconds to 33-59 s against the 60 s test limit. The tests that index are about what gets indexed, not the priority it runs at; tests/process_priority.test.ts and tests/cmdindex_priority_after_enumeration.test.ts delete this to exercise the shipped default.
+if (!process.env['TOKEN_GOAT_WORKER_PRIORITY']) {
+  process.env['TOKEN_GOAT_WORKER_PRIORITY'] = 'normal'
 }
 // src/rewrite_permission.ts reads Claude Code's settings from the machine's managed policy and from every `.claude` directory above a hook's cwd, which for an event with no cwd is this repository. A developer's own untracked `.claude/settings.local.json` here then decided whether an in-process test saw a rewrite. In-process reads are confined to the run root, where every fixture lives; spawned bundles do not inherit this and pass their own cwd.
 const permissionRoot = path.resolve(runRoot())

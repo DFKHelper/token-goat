@@ -121,11 +121,12 @@ describe('the read hint', () => {
   })
 })
 
+// An Edit, since a Write draws no section hint. The file does not exist, and a size that cannot be read counts as large enough for the hint.
 describe('the edit hint', () => {
   it('does not let a file name add a line of its own', () => {
     const filePath = join(projectDir, 'evil' + HOSTILE + '.md')
     const r = hook('post_tool_use', {
-      tool_name: 'Write',
+      tool_name: 'Edit',
       tool_input: { file_path: filePath },
       session_id: 'inject-edit',
       tool_response: {},
@@ -138,7 +139,7 @@ describe('the edit hint', () => {
 
   it('still reports an ordinary path unchanged', () => {
     const r = hook('post_tool_use', {
-      tool_name: 'Write',
+      tool_name: 'Edit',
       tool_input: { file_path: join(projectDir, 'ordinary.md') },
       session_id: 'inject-edit-control',
       tool_response: {},

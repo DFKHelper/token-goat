@@ -16,7 +16,7 @@ import { getTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { dataDir, ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
-import { withDeclaredSkipScopeRoot } from './skip_scope.js'
+import { isToolOutputPath, withDeclaredSkipScopeRoot } from './skip_scope.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { foregroundDownloadDeferred, offlineEmbedNotice, WARM_COMMAND } from './embed_preflight.js'
@@ -39,11 +39,11 @@ import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
 import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorker, WorkerAlreadyRunningError } from './worker_lifecycle.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
-import { runRead, runPrSlice } from './read_commands.js'
+import { outputCeilingChars, runRead, runPrSlice } from './read_commands.js'
 import { runSymbol } from './read_symbol.js'
-import { namedSpecsMergeable, readSpecsMergeable } from './read_spec.js'
+import { extraArgsRejoinSpacedPath, namedSpecsMergeable, readSpecsMergeable } from './read_spec.js'
 import { runBrief } from './read_brief.js'
-import { runSection } from './read_section.js'
+import { runSection, runSectionSpecs } from './read_section.js'
 import { runListSections } from './read_inspect.js'
 import { runSkeleton, runOutline, type SkeletonOptions } from './read_outline.js'
 import { runSemantic, runSemanticMulti } from './read_semantic.js'
@@ -345,7 +345,7 @@ export async function cmdIndex(
     // PDF/DOCX/PPTX/XLSX have no Language entry (no code symbols) so they report 'unknown', but they must still reach indexFileEmbeddings below for extracted-text embedding. The language is read from the file's head, as the walk that listed it did: a path-only check skipped every `.p`, `.w`, `.m` and `.t` a content sniff admits, so it was never indexed or counted.
     if (detectLanguageOfFile(key) === 'unknown' && !isEmbeddableDocument(key)) continue
     // indexing.skip_dirs / large_file_skip_kb: filter here, before the sha/entry work below. Without this pre-filter, indexFileSync's internal purge would run and then the unconditional indexFileEmbeddings call below would immediately re-embed a file meant to be fully excluded (origin's indexFileEmbeddings has no skip_dirs/size-cap branch).
-    if (isParseSkipEligible(key, ixCfg, walkRootKey)) {
+    if (isParseSkipEligible(key, ixCfg, walkRootKey) || isToolOutputPath(key, walkRootKey)) {
       removeFileFromIndex(getDb(dbPath), key)
       continue
     }
@@ -761,7 +761,7 @@ async function cmdCompress(
     const bashRunner = await import('./bash_runner.js')
     if (opts.compress === false) {
       // Commander maps `--no-compress` to `opts.compress === false`.
-      process.exitCode = bashRunner.runRaw(
+      process.exitCode = await bashRunner.runRaw(
         command,
         parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS),
         opts.native,
@@ -968,6 +968,7 @@ export function buildProgram(): Command {
           // `symbol` searches one name; there is no comma form that would search several.
           { noun: 'spec', mergeable: false },
         ),
+        { echoSuggestion: true },
       )
     })
 
@@ -995,6 +996,7 @@ export function buildProgram(): Command {
           // Whether the comma form the note names would actually run depends on the specs themselves, not on the command: `read` merges `::` specs and nothing else.
           { noun: 'spec', mergeable: readSpecsMergeable([spec, ...more]) },
         ),
+        { echoSuggestion: true },
       ),
     )
 
@@ -1025,7 +1027,7 @@ export function buildProgram(): Command {
   program
     .command('section <spec> [more...]')
     .description(
-      'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading; comma-separated file::A,B for a merged multi-heading view), or list all sections with --list',
+      'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading; comma-separated file::A,B for a merged multi-heading view, as several specs a.md::A b.md::B also give), or list all sections with --list',
     )
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
@@ -1041,21 +1043,18 @@ export function buildProgram(): Command {
             emitExtraFileArgsNote('section --list', spec, more, { mergeable: false })
             return runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
           })
-        : runExitText(() =>
-            noteExtraFileArgs(
-              'section',
-              spec,
-              more,
-              () =>
-                runSection({
-                  spec,
-                  ...(opts.json === true ? { json: true } : {}),
-                  ...(maxLines !== undefined ? { maxLines } : {}),
-                  ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-                }),
-              { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) },
-            ),
-          )
+        : runExitText(() => {
+            const ceiling = opts.json === true ? null : outputCeilingChars()
+            const sectionOpts = {
+              ...(opts.json === true ? { json: true } : {}),
+              ...(maxLines !== undefined ? { maxLines } : {}),
+              ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+              ...(ceiling !== null ? { maxChars: ceiling } : {}),
+            }
+            // Words a shell split out of one unquoted heading are not several specs: that shape keeps the note that says how to quote it.
+            if (more.length > 0 && !extraArgsRejoinSpacedPath(spec, more, 'spec')) return runSectionSpecs([spec, ...more], sectionOpts)
+            return noteExtraFileArgs('section', spec, more, () => runSection({ spec, ...sectionOpts }), { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) })
+          }, { echoSuggestion: true })
     })
 
   program
@@ -1108,6 +1107,7 @@ export function buildProgram(): Command {
                 ...(opts.stats === true ? { stats: true } : {}),
               }),
             ),
+            { echoSuggestion: true },
           ),
       )
   }

@@ -5,7 +5,8 @@ import * as fs from 'node:fs'
 import { getDb, getReadDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { sanitizeFtsQuery } from './index_reader.js'
-import { stripAnsiEscapes } from './render/ansi.js'
+import { withoutEscapes } from './injection_scan.js'
+import { redactSecrets } from './secret_redact.js'
 import { snippetAround } from './snippet_window.js'
 import { blobPath, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 
@@ -56,13 +57,19 @@ export function indexRecallEntry(cacheType: RecallCacheType, id: string, label: 
          label = excluded.label,
          content = excluded.content,
          stored_at = excluded.stored_at`,
-    // Stripped so a query spanning a colour boundary matches the text a reader sees; the cached blob itself stays raw.
-    ).run({ cacheType, id, label: stripAnsiEscapes(label), content: stripAnsiEscapes(content), storedAt })
+    // Stripped so a query spanning a colour boundary matches the text a reader sees; the cached blob itself stays raw. Redacted after the strip, because the strip is what joins a credential an escape split, and every caller redacted before it.
+    ).run({ cacheType, id, label: strippedAndRedacted(label), content: strippedAndRedacted(content), storedAt })
   } catch {
     // Fail-soft: see doc comment above.
   }
   // Prune on write, mirroring storeBlob()'s own prune-after-write in disk_cache.ts -- both this row's expiry and the blob's age eviction derive from the one shared DEFAULT_MAX_AGE_MS constant, so the two lifetimes cannot drift back apart the way they did before this fix (rows had no expiry at all: 25,062 of 30,655 live rows, 81.8%, were already older than the blob's 24h window, 145.8 MB of text pointing at nothing). This does not by itself guarantee every surviving row has a live blob -- storeBlob also evicts early on count/bytes budgets, an axis this age-only prune can't see -- which is why {@link blobStillExists} additionally gates the printed/JSON pointer at read time regardless of row age.
   pruneCacheRecallRows()
+}
+
+/** `text` with its terminal escapes stripped and any credential the strip joined redacted. Text with no escape is returned as the caller redacted it. The strip is withoutEscapes, the one every tool-output fence and redaction reads, so nothing displayed later strips this row again into a different text: a single whole-text strip left an OSC open across a line break, and the snippet's second strip then joined the key on either side of it. */
+function strippedAndRedacted(text: string): string {
+  const stripped = withoutEscapes(text)
+  return stripped === text ? text : redactSecrets(stripped).text
 }
 
 /** Delete `cache_recall` rows older than `maxAgeMs` (default: the same {@link DEFAULT_MAX_AGE_MS} disk_cache.ts prunes blobs on), so the recall index's row lifetime cannot silently outlive the blob lifetime again. Bounded by `stored_at` on every call -- safe to interrupt (a partial run just leaves more expired rows for the next write's prune) and safe against a database this function has never seen before (no schema-version assumption beyond the `cache_recall` table this module already owns). Fail-soft, matching every other write path in this module: a prune failure never blocks the insert it accompanies. */
@@ -104,8 +111,8 @@ export function clearRecallEntriesForTesting(): void {
 
 /** Build a short, single-line excerpt of `content` centered on the first case-insensitive occurrence of any query token, falling back to a leading slice when no token is found verbatim (e.g. an FTS prefix/stem match). */
 function buildSnippet(content: string, query: string, maxLen = 160): string {
-  // Rows indexed before write-time stripping still hold raw escape codes, and a snippet is shown to a reader.
-  const flat = stripAnsiEscapes(content).replace(/\s+/g, ' ').trim()
+  // Rows indexed before write-time stripping still hold raw escape codes, and a snippet is shown to a reader. The same strip the index applies, so a row already stripped comes back unchanged rather than stripped a second, different way.
+  const flat = withoutEscapes(content).replace(/\s+/g, ' ').trim()
   const tokens = query.split(/\s+/).filter(Boolean)
   let idx = -1
   const lowerFlat = flat.toLowerCase()

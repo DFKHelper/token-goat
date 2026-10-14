@@ -7,10 +7,11 @@ import { CliError, err, formatCommandError, out } from './cli.js'
 import { requireNonNegativeInt } from './cli_dispatch.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { UNTRUSTED_TOOL_TAG, UNTRUSTED_WEB_TAG } from './injection_scan.js'
-import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { canQuoteArg, echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { forClient } from './mcp_client_text.js'
 import { noMatchMessage, queryJson } from './json_query.js'
 import { displaySafeJson } from './paths.js'
-import { guardJsonRows } from './read_commands.js'
+import { guardJsonRows, linesWithinChars, outputCeilingChars } from './read_commands.js'
 import { headElidedNotice, traversalLimitNotice } from './query_notices.js'
 import { extractTranscriptText } from './read_inspect.js'
 import { compileGuardedRegex } from './regex_guard.js'
@@ -19,8 +20,9 @@ import { redactSecrets } from './secret_redact.js'
 import { AMBIGUOUS_HEADING_LIMIT } from './read_section.js'
 import { extractSection } from './section_reader.js'
 import { clipLongMatchLine } from './tool_filters/helpers.js'
-import { fenceIfScanMatched, fenceJsonStrings, fenceUntrusted } from './untrusted_fence.js'
-import { countNoun, decodeSource, isWindows } from './util.js'
+import { fenceIfScanMatched, fenceJsonStrings, fenceUntrusted, injectionFencingEnabled } from './untrusted_fence.js'
+import { loadConfig, type Config } from './config.js'
+import { countNoun, decodeSource, isWindows, safeSlice } from './util.js'
 import { getWebOutput, getWebOutputRaw } from './web_cache.js'
 
 /** The narrowing flags every cached-output recall command shares; the three recall-by-position flags (`--lines`, `-n`, `--context`) are optional so callers that never register them (cli_office.ts) compile unchanged. */
@@ -52,14 +54,29 @@ function parseLineRange(spec: string): { from: number; to: number } {
   return { from, to }
 }
 
+/** How a recall command re-runs for the part of its answer the output ceiling left out. `command` is the command up to its narrowing flags (`token-goat bash-output <id>`, `token-goat mcp-output --file "<path>" --json-query "<q>"`), null when the path or id has no spelling both shells keep; `capped` is false when the caller asked for everything with --full; `defaultMaxMatches` bounds a --grep given no --max-matches, --head, --tail or --full. Absent for the callers that keep no ceiling (`retrieve` and the document commands). */
+export interface RecallContinuation {
+  command: string | null
+  capped: boolean
+  defaultMaxMatches?: number
+  /** The flags that narrow inside one line too long for the ceiling, which `--lines` cannot page: `--grep` by default, and `--json-query` too for an MCP result, often one line of JSON. */
+  narrowFlags?: string
+}
+
+/** Characters of a capped recall kept free for the continuation notice printed below the fence. */
+const CONTINUATION_RESERVE_CHARS = 600
+
 export function _applyFiltersAndPrint(
   content: string,
   opts: RecallFilterOpts,
   fenceByProvenance = false,
   fenceTag: string = UNTRUSTED_WEB_TAG,
+  recall?: RecallContinuation,
 ): string {
   // Said on stderr after the body: a line inside the content fence is escaped as payload and reads as part of the text it describes.
   let capNotice: string | undefined
+  // Set when a default --max-matches (recall.defaultMaxMatches) dropped matches: said on stdout with the command for the rest, as a ceiling cut is.
+  let defaultCapped: { shown: number; total: number } | undefined
   // Fetched-page recall only. The injection scan is documented as unconditional for fetched pages, and a `web-output <id>` recall puts that same attacker-written text in front of the model -- but only the WebFetch post-hook fenced it, so the copy served from the cache came back bare. Scanning here rather than at store time means the fence wraps exactly what the caller sees, so a --grep/--head slice that keeps the payload is fenced and one that drops it is not. Recall of cached Bash and MCP output is scanned too, under a tag naming tool output rather than a fetched page. Neither is a page token-goat fetched, but both carry text written by a third party -- a dependency's build or test output, a remote MCP server's result -- and the recall channel put it in front of the model unmarked. The fence is decided by provenance -- `fenceByProvenance` -- and not by whether the scan matched: it used to appear only on a positive hit, which meant any payload the eight deliberately-narrow regexes miss was emitted bare. The scan now only decides whether the notice names pattern(s) and whether a stat is recorded.
   const emit = (text: string): string => {
     const shown = !fenceByProvenance || text === '' ? text : fenceUntrusted(text, fenceTag)
@@ -72,6 +89,58 @@ export function _applyFiltersAndPrint(
   // fenceByProvenance true means this is third-party content (a fetched page, a recalled cache entry, a document the caller only named rather than authored), the same population the injection fence covers -- redact it before any narrowing so --grep's long-line clip can never cut a secret in half and leave a fragment the redactor no longer recognises. Idempotent on content already redacted at write time (bash/web/mcp caches).
   if (fenceByProvenance) content = redactSecrets(content, undefined, { keepLineCount: true }).text
   const render = (rows: RecallRow[]): string => rows.map((r) => (opts.lineNumbers === true && r.n !== null ? `${r.n}:${r.text}` : r.text)).join('\n')
+  // Prints `shown` through {@link emit}, held to the output ceiling when `recall` asks for one. A cut keeps whole leading rows, closes the fence, and names on stdout below it the command that returns the next lines (`--lines A-B`, with the narrowing flags kept), so an answer past the harness's inline limit costs one more call instead of a persisted file and two more.
+  const emitRows = (shown: RecallRow[], trailing = ''): string => {
+    const ceiling = recall?.capped === true ? outputCeilingChars() : null
+    let kept = shown
+    let cutLine: { n: number; of: number } | undefined
+    if (ceiling !== null && fencedLength(render(shown) + trailing) > ceiling) {
+      let budget = ceiling - CONTINUATION_RESERVE_CHARS - fencedLength('')
+      for (let pass = 0; pass < 8; pass++) {
+        kept = shown.slice(0, linesWithinChars(shown.map((r) => render([r])), budget))
+        const only = kept[0]
+        // One line longer than the whole ceiling (a minified JSON result is often a single line): keep its head, since --lines cannot page inside a line.
+        if (kept.length === 1 && only !== undefined && render(kept).length > budget) {
+          const room = Math.max(1, budget - (render(kept).length - only.text.length) - 40)
+          cutLine = { n: only.n ?? 0, of: only.text.length }
+          kept = [{ n: only.n, text: `${safeSlice(only.text, room)} … [${only.text.length - room} chars not shown]` }]
+        }
+        const excess = fencedLength(render(kept)) + CONTINUATION_RESERVE_CHARS - ceiling
+        if (excess <= 0) break
+        budget -= excess
+      }
+    }
+    if (kept === shown && defaultCapped === undefined) return emit(render(shown) + trailing)
+    const printed = emit(render(kept))
+    const notice = continuationNotice(kept, shown, ceiling !== null && kept !== shown ? ceiling : null, cutLine)
+    out(notice)
+    return `${printed}\n${notice}`
+  }
+  const fencedLength = (text: string): number => (fenceByProvenance && text !== '' ? fenceUntrusted(text, fenceTag).length : fenceByProvenance ? fenceUntrusted(' ', fenceTag).length : text.length)
+  // The notice below a capped recall: what it showed and the command for the rest. A --grep with no --head or --tail continues to the last line it searched; any other view continues to the last line it would have shown.
+  const continuationNotice = (kept: RecallRow[], shown: RecallRow[], ceiling: number | null, cutLine: { n: number; of: number } | undefined): string => {
+    const lastN = (rows: RecallRow[]): number | null => [...rows].reverse().find((r) => r.n !== null)?.n ?? null
+    const lastShown = lastN(kept)
+    const end = opts.grep !== undefined && opts.head === undefined && opts.tail === undefined ? searchEnd : lastN(shown)
+    const firstShown = kept.find((r) => r.n !== null)?.n ?? null
+    const what = opts.grep !== undefined ? `matches through line ${lastShown ?? '?'}` : `lines ${firstShown ?? '?'}-${lastShown ?? '?'}`
+    const head = ceiling !== null
+      ? `[token-goat: output capped at ${ceiling} chars to stay under the harness's inline output limit; showing ${what}${end !== null ? ` of ${end}` : ''}.`
+      : `[token-goat: showing the first ${defaultCapped!.shown} of ${defaultCapped!.total} matching lines, the default for a --grep with no --max-matches.`
+    const cut = cutLine !== undefined ? ` Line ${cutLine.n} alone is ${cutLine.of} chars, cut above; ${recall?.narrowFlags ?? '--grep'} narrows inside it.` : ''
+    if (lastShown === null || end === null || lastShown >= end) return forClient(`${head}${cut}]`)
+    const flags = [
+      opts.section !== undefined ? `--section ${quotedArg(opts.section)}` : null,
+      opts.grep !== undefined ? `--grep ${quotedArg(opts.grep)}` : null,
+      opts.context !== undefined ? `--context ${opts.context}` : null,
+      opts.maxMatches !== undefined ? `--max-matches ${opts.maxMatches}` : null,
+      opts.lineNumbers === true ? '-n' : null,
+      `--lines ${lastShown + 1}-${end}`,
+    ]
+    const runnable = recall?.command !== null && recall?.command !== undefined && (opts.section === undefined || canQuoteArg(opts.section)) && (opts.grep === undefined || canQuoteArg(opts.grep))
+    const next = runnable ? ` Next part: ${fencedCommand(`${recall.command} ${flags.filter((f) => f !== null).join(' ')}`)}` : ` The rest is lines ${lastShown + 1}-${end}.`
+    return forClient(`${head}${cut}${next}${defaultCapped !== undefined && ceiling === null ? ', or pass --max-matches for more at once' : ''}]`)
+  }
   let firstLine = 1
   if (opts.section !== undefined) {
     const sectionResult = extractSection(content, opts.section)
@@ -113,6 +182,9 @@ export function _applyFiltersAndPrint(
     throw new CliError('--context needs --grep: it widens each match with the lines around it')
   }
 
+  // The last line a --grep searched, which is where a continuation of its matches has to run to.
+  const searchEnd = rows.length > 0 ? rows[rows.length - 1]!.n : null
+
   if (opts.grep !== undefined) {
     let pattern = opts.grep
     // Normalize pattern to handle -E or --extended-regexp prefix
@@ -128,7 +200,8 @@ export function _applyFiltersAndPrint(
     })
     // Said as an error, like a --section that is not found: an empty line at exit 0 reads the same as an empty cache entry or a failed recall.
     if (hits.length === 0) throw new CliError(`--grep matched no lines of ${rows.length}: ${echoedValue(opts.grep)}`)
-    const cap = opts.maxMatches !== undefined ? requireNonNegativeInt('--max-matches', opts.maxMatches) : undefined
+    const explicitCap = opts.maxMatches !== undefined ? requireNonNegativeInt('--max-matches', opts.maxMatches) : undefined
+    const cap = explicitCap ?? (opts.head === undefined && opts.tail === undefined && opts.full !== true ? recall?.defaultMaxMatches : undefined)
     const kept = cap !== undefined && hits.length > cap ? hits.slice(0, cap) : hits
     const ctx = opts.context !== undefined ? requireNonNegativeInt('--context', opts.context) : 0
     const lastReal = rows.length - 1
@@ -146,7 +219,8 @@ export function _applyFiltersAndPrint(
       previous = i
     }
     if (cap !== undefined && hits.length > cap) {
-      capNotice = '[token-goat: showing first ' + cap + ' of ' + hits.length + ' matching lines; raise --max-matches for more]'
+      if (explicitCap !== undefined) capNotice = '[token-goat: showing first ' + cap + ' of ' + hits.length + ' matching lines; raise --max-matches for more]'
+      else defaultCapped = { shown: cap, total: hits.length }
     }
     rows = next
   }
@@ -154,12 +228,12 @@ export function _applyFiltersAndPrint(
   // --full is the only way to get the whole stored blob back (colour codes stripped, as on every path here; `retrieve` with no flag bypasses this function for its byte-verbatim contract). The blob store itself is lossless, but every render path below elides the middle past head+tail, so without this flag an elision marker pointing a reader at `mcp-output <id>` promises a full report the CLI cannot actually produce -- which is exactly what hooks_agent_spawn.ts's envelope compaction relies on. Deliberately bypasses only the elision, not --section/--grep/--max-matches above: those are explicit narrowing the caller asked for.
   if (opts.full === true) {
     // The whole text (or --section's) keeps the final newline it ended with, so the verbatim blob is unchanged; a --lines or --grep slice is a set of lines, not the text's end.
-    return emit(render(rows) + (trailingNewline && opts.lines === undefined && opts.grep === undefined ? '\n' : ''))
+    return emitRows(rows, trailingNewline && opts.lines === undefined && opts.grep === undefined ? '\n' : '')
   }
   const lines = rows
   // An explicit --lines range is the caller asking for exactly those lines, so the default head/tail window must not cut into it.
   if (ranged && opts.head === undefined && opts.tail === undefined) {
-    return emit(render(lines))
+    return emitRows(lines)
   }
   const headN = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 30
   const tailN = opts.tail !== undefined ? requireNonNegativeInt('--tail', opts.tail) : 80
@@ -194,7 +268,7 @@ export function _applyFiltersAndPrint(
     noteLineCap('last', 'tail', result.length, lines.length)
   }
 
-  return emit(render(result))
+  return emitRows(result)
 }
 
 /** The text of the file a `bash-output`/`mcp-output --file` recall names: a regular file only, decoded, and with a dotenv file's values redacted, since either command will print a .env it is pointed at and every other path that serves a file's text redacts them (see dotenv_redact.ts). `mtimeMs` is what `--verify-last-write` measures a write's age against. */
@@ -215,6 +289,23 @@ function readRecallFile(file: string): { text: string; mtimeMs: number } {
     if (e instanceof CliError) throw e
     throw new CliError((e as NodeJS.ErrnoException).code === 'ENOENT' ? `file not found: ${echoedValue(file)}` : `cannot read file: ${file}`)
   }
+}
+
+/** Matches a `bash-output --grep` prints when given no --max-matches, --head, --tail or --full, the rest named by a `--lines` continuation. Unbounded, a --grep over a 337 KB tool-results file printed 48 KB, past the harness's inline limit, so the answer was persisted to yet another file. */
+const BASH_OUTPUT_DEFAULT_MAX_MATCHES = 100
+
+/** A recall's own command as a continuation repeats it: `recall` names the command and `args` the id or `--file` path, quoted only when it needs to be; null when a value has no spelling both shells keep. */
+function recallCommand(command: string, args: ({ flag?: string; value: string } | string)[]): string | null {
+  const words = [`token-goat ${command}`]
+  for (const arg of args) {
+    if (typeof arg === 'string') {
+      words.push(arg)
+      continue
+    }
+    if (!/^[\w.-]+$/.test(arg.value) && !canQuoteArg(arg.value)) return null
+    words.push(`${arg.flag !== undefined ? `${arg.flag} ` : ''}${/^[\w.-]+$/.test(arg.value) ? arg.value : quotedArg(arg.value)}`)
+  }
+  return words.join(' ')
 }
 
 export function cmdBashOutput(
@@ -249,7 +340,11 @@ export function cmdBashOutput(
         process.stderr.write(`[tg: stale-write] ${msg}\n`)
       }
     }
-    _applyFiltersAndPrint(opts.transcript === true ? extractTranscriptText(text) : text, opts, true, UNTRUSTED_TOOL_TAG)
+    _applyFiltersAndPrint(opts.transcript === true ? extractTranscriptText(text) : text, opts, true, UNTRUSTED_TOOL_TAG, {
+      command: recallCommand('bash-output', [{ flag: '--file', value: opts.file }, ...(opts.transcript === true ? ['--transcript'] : [])]),
+      capped: opts.full !== true,
+      defaultMaxMatches: BASH_OUTPUT_DEFAULT_MAX_MATCHES,
+    })
     return
   }
 
@@ -273,7 +368,11 @@ export function cmdBashOutput(
     }
   }
 
-  _applyFiltersAndPrint(entry.output, opts, true, UNTRUSTED_TOOL_TAG)
+  _applyFiltersAndPrint(entry.output, opts, true, UNTRUSTED_TOOL_TAG, {
+    command: recallCommand('bash-output', [{ value: id }]),
+    capped: opts.full !== true,
+    defaultMaxMatches: BASH_OUTPUT_DEFAULT_MAX_MATCHES,
+  })
 }
 
 export function cmdWebOutput(
@@ -288,7 +387,10 @@ export function cmdWebOutput(
   if (content === null) {
     throw new CliError(`no cached web output for id: ${id}. The cache may have expired; re-run the WebFetch to repopulate it.`)
   }
-  _applyFiltersAndPrint(content, opts, true)
+  _applyFiltersAndPrint(content, opts, true, UNTRUSTED_WEB_TAG, {
+    command: recallCommand('web-output', [{ value: id }, ...(opts.raw === true ? ['--raw'] : [])]),
+    capped: opts.full !== true,
+  })
 }
 
 function extractJsonFromMcpOutput(text: string): unknown {
@@ -299,7 +401,7 @@ function extractJsonFromMcpOutput(text: string): unknown {
     const cleaned = trimmed
       .replace(/^\[token-goat:[^\]]+\]\r?\n?/i, '')
       .replace(/^<untrusted-tool-output[^>]*>\r?\n?/i, '')
-      .replace(/\r?\n?<\/untrusted-tool-output>$/i, '')
+      .replace(/\r?\n?<\/untrusted-tool-output[^>]*>$/i, '')
       .trim()
     try {
       return JSON.parse(cleaned)
@@ -318,8 +420,8 @@ function extractJsonFromMcpOutput(text: string): unknown {
 }
 
 /** Per-field variant for the `mcp-output --json-query --json` output, still gated on a scan hit. The printed form of the same query is fenced whole, by provenance; a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers. Same deliberate exception as `fenceFileFieldIfMatched` in untrusted_fence.ts and `fenceGithubFieldIfMatched` in read_commands.ts. */
-function fenceToolFieldIfMatched(text: string): string {
-  return fenceIfScanMatched(redactSecrets(text).text, UNTRUSTED_TOOL_TAG)
+function fenceToolFieldIfMatched(text: string, config: Config): string {
+  return fenceIfScanMatched(redactSecrets(text, config).text, UNTRUSTED_TOOL_TAG, injectionFencingEnabled(config))
 }
 
 // MCP results are stored in the same bash-output blob store as `mcp_<hash>`-prefixed ids (see mcp_cache.ts's storeMcpOutput), so `token-goat bash-output <id>` already resolves one — this command exists for discoverability (the id printed in a `[token-goat: compressed, full via mcp-output <id>]` label points here) and to fail clearly on a non-MCP id rather than silently serving whatever bash-output happens to be stored under it.
@@ -347,6 +449,13 @@ export function cmdMcpOutput(
     throw new CliError('provide an mcp-output <id> or --file <path>')
   }
 
+  const source = opts.file !== undefined ? { flag: '--file', value: opts.file } : { value: id! }
+  const recall: RecallContinuation = {
+    command: recallCommand('mcp-output', opts.jsonQuery !== undefined ? [source, { flag: '--json-query', value: opts.jsonQuery }] : [source]),
+    capped: opts.full !== true,
+    narrowFlags: '--json-query or --grep',
+  }
+
   if (opts.jsonQuery !== undefined) {
     const data = extractJsonFromMcpOutput(content)
     let head: number | undefined
@@ -361,10 +470,11 @@ export function cmdMcpOutput(
     if (!queryResult.fanned) {
       const val = queryResult.items[0]
       if (opts.json === true) {
-        out(displaySafeJson(fenceJsonStrings(val, fenceToolFieldIfMatched), 0))
+        const config = loadConfig()
+        out(displaySafeJson(fenceJsonStrings(val, (field) => fenceToolFieldIfMatched(field, config)), 0))
         return
       }
-      _applyFiltersAndPrint(displaySafeJson(val), printOpts, true, UNTRUSTED_TOOL_TAG)
+      _applyFiltersAndPrint(displaySafeJson(val), printOpts, true, UNTRUSTED_TOOL_TAG, recall)
       return
     }
 
@@ -381,7 +491,8 @@ export function cmdMcpOutput(
     const headTruncated = limited.length < totalCount
 
     if (opts.json === true) {
-      const capped = guardJsonRows(limited.map((v) => fenceJsonStrings(v, fenceToolFieldIfMatched)))
+      const config = loadConfig()
+      const capped = guardJsonRows(limited.map((v) => fenceJsonStrings(v, (field) => fenceToolFieldIfMatched(field, config))))
       out(displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated || queryResult.truncated, totalCount }, 0))
     } else {
       const lines = limited.map((item) => displaySafeJson(item, 0))
@@ -391,10 +502,10 @@ export function cmdMcpOutput(
       if (queryResult.truncated) {
         lines.push(traversalLimitNotice(totalCount))
       }
-      _applyFiltersAndPrint(lines.join('\n'), printOpts, true, UNTRUSTED_TOOL_TAG)
+      _applyFiltersAndPrint(lines.join('\n'), printOpts, true, UNTRUSTED_TOOL_TAG, recall)
     }
     return
   }
 
-  _applyFiltersAndPrint(content, opts, true, UNTRUSTED_TOOL_TAG)
+  _applyFiltersAndPrint(content, opts, true, UNTRUSTED_TOOL_TAG, recall)
 }

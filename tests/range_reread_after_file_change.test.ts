@@ -88,8 +88,8 @@ describe.each(['app.ts', 'server.log'])('a repeated ranged Read of %s after an o
     const file = makeFile(name)
     expect(await rangedRead(sid, file, 10, 21)).toBeNull()
     editOutsideSession(file, 12)
-    // Overlaps the recorded 10..30 without covering line 12, so it is the only part of the edited file the model sees.
-    expect(await rangedRead(sid, file, 15, 11)).toBeNull()
+    // Overlaps the recorded 10..30 without covering line 12, so it is the only part of the edited file the model sees. It shares only lines 28..30 with 10..30, too little for the line-range lock's overlap, micro-shift or same-anchor checks to read the re-read below as a retry of this window.
+    expect(await rangedRead(sid, file, 28, 33)).toBeNull()
     expect(await rangedRead(sid, file, 10, 21)).toBeNull()
   })
 

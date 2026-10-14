@@ -30,9 +30,9 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-function headinglessNotes(): string {
+function headinglessNotes(repeats = 400): string {
   const line = 'A line of plain notes with no heading marker anywhere in it, repeated to pad the file.\n'
-  return line.repeat(400)
+  return line.repeat(repeats)
 }
 
 /** The first backticked `token-goat ...` command in `text`. */
@@ -54,8 +54,9 @@ describe('the section hint for a file with no headings', () => {
   it('post-edit names a range read that runs, not ::HeadingName', () => {
     seq += 1
     const p = path.join(dir, `notes-${seq}.md`)
-    fs.writeFileSync(p, headinglessNotes())
-    const out = postEditHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Write', toolInput: { file_path: p }, sessionId: `headingless-edit-${seq}` }))
+    // An Edit of a file over hints.reread_deny_min_bytes: the post-edit hint is not offered after a Write or for a smaller file.
+    fs.writeFileSync(p, headinglessNotes(700))
+    const out = postEditHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Edit', toolInput: { file_path: p }, sessionId: `headingless-edit-${seq}` }))
     expect(out.hookType).toBe('context')
     const context = out.hookType === 'context' ? out.context : ''
     expect(context).not.toContain('HeadingName')
@@ -85,6 +86,6 @@ describe('the section hint for a file with no headings', () => {
 
   it('a real heading still gets the section command', () => {
     expect(sectionOrRangeCommand('notes.md', { name: 'Install', real: true, slice: 'section' })).toBe('token-goat section "notes.md::Install"')
-    expect(sectionOrRangeCommand('notes.md', { name: 'SectionHeading', real: false, slice: 'section' })).toBe('token-goat read "notes.md::1-80"')
+    expect(sectionOrRangeCommand('notes.md', { real: false, slice: 'section' })).toBe('token-goat read "notes.md::1-80"')
   })
 })

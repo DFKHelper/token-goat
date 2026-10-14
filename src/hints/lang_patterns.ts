@@ -159,6 +159,14 @@ export const GENERATED_EXT_COUNT = ALWAYS_GENERATED_EXTS.size + CONDITIONALLY_GE
 // --------------------------------------------------------------------------- Helper functions ---------------------------------------------------------------------------
 
 /** True when `basename` (case-insensitive) is a known lock file. @param basename - The filename only, no directory prefix. */
+/** Lock files `token-goat lockdeps` parses, spelled exactly as its parser matches them (text_commands.ts parseLockFile compares the basename case-sensitively). */
+const LOCKDEPS_FILE_NAMES: ReadonlySet<string> = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'poetry.lock', 'uv.lock', 'Cargo.lock', 'Pipfile.lock'])
+
+/** True when `token-goat lockdeps` summarizes this lock file, so a hint can name that command for it. */
+export function isLockdepsFile(basename: string): boolean {
+  return LOCKDEPS_FILE_NAMES.has(basename)
+}
+
 export function isLockFile(basename: string): boolean {
   return LOCK_FILE_NAMES.has(basename.toLowerCase())
 }

@@ -16,12 +16,19 @@ import {
   compressTestOutput,
   clipGrepLines,
   capLongLines,
+  ownNotice,
+  stageLineBound,
 } from './helpers.js'
 import { stripAnsiEscapes } from '../render/ansi.js'
 
 // --------------------------------------------------------------------------- Grep / rg constants ---------------------------------------------------------------------------
 
-const _GREP_COMPRESS_THRESHOLD = 30
+/** Match lines a summarised result keeps verbatim ahead of its per-file counts, and the most a result may hold before it is summarised at all. */
+const _GREP_KEPT_MATCH_LINES = 40
+/** Byte budget for those kept lines, so a run of wide hits cannot carry the kept block toward the harness delivery cap. */
+const _GREP_KEPT_MATCH_BYTES = 8 * 1024
+/** A result whose command already bounded it to this many lines or fewer (`| head -N`, `-m N`) ships as lines: the caller chose how much to see. The balanced profile's own line cap, so a bounded result fits the cap apply() enforces next. */
+const _GREP_BOUNDED_MAX_LINES = 200
 const _GREP_MAX_FILE_LINES = 20
 
 /** True when a grep/rg command asks for one of the two output shapes whose lines are not matches. `-l`/`--files-with-matches` emits a bare path per line and `-c`/`--count` emits `path:count`. Neither is a `path:lineno:text` match line, and GrepFilter's summarizer reads every line as one match on the text before its first colon. So `-l` attributed all 385 paths of an `rg -l export src/` to `src/` -- the search root, which is not a file -- and reported "385 matches across 1 file(s)", destroying the only thing the caller asked for. `-c` was worse in kind: each `path:6` became one match for `path`, so every real count printed as 1, the header's total was the file count, and the top-20 cap then ranked on a number the filter had fabricated. Short flags are matched inside a cluster, not just alone: `grep -rl` and `grep -rc` are the ordinary spellings and an exact-token test misses both. Case is load-bearing -- `-c` is count, `-C` is context. A cluster is only flags up to the first one that takes a value, because that flag consumes the rest of the token: `rg -tcss` is `--type=css`, not `-t -c -s -s`, and reading a `c` out of `css` claimed a match-listing search was a count-only one and shipped every match line uncompressed. Which letters eat the rest is a property of the tool, so the caller passes its own set: {@link _GREP_GLUED_VALUE_SHORT_FLAGS} or {@link _RG_GLUED_VALUE_SHORT_FLAGS}. */
@@ -95,69 +102,153 @@ export class GrepFilter extends ToolFilter {
     const text = this.combineOutput(stdout, stderr)
     // Released whole: the per-file summary below is a lossy restatement of match lines, and neither of these shapes has any. A files-only list IS the answer, and a count list is already one short line per file, so summarising either can only subtract. apply()'s line and byte caps still bound the result, and they disclose what they drop.
     if (isFilesOnlySearch(argv) || isCountOnlySearch(argv) || isStructuredOutputSearch(argv)) return text
-    const lines = text.split('\n')
-    const nonEmpty = lines.filter(l => l.trim())
-    // Under the summarise threshold the raw output ships verbatim, which used to include a 5,000-char hit inside a minified bundle at full length: neither this filter nor apply()'s line/byte caps ever looks at an individual line. Clip those to a window centred on the match instead. The >30-line branch below needs nothing, since it already discards line content entirely.
-    if (nonEmpty.length <= _GREP_COMPRESS_THRESHOLD) return clipGrepLines(text, argv)
+    // A `compress -c 'grep ... | head -50'` argv carries the whole pipeline. The search's own flags, pattern and files are the first stage; the rest is only read for a line bound.
+    const pipe = argv.indexOf('|')
+    const searchArgv = pipe === -1 ? argv : argv.slice(0, pipe)
+    const nonEmpty = text.split('\n').filter((l) => l.trim())
+    // A result short enough to read, or one the caller already bounded, ships as lines: those are the answer, and a count of them is not. The lines are clipped to a window around the match, since neither this filter nor apply()'s line/byte caps would otherwise stop a 5,000-char hit inside a minified bundle from shipping at full length.
+    if (nonEmpty.length <= _GREP_KEPT_MATCH_LINES || grepLineBound(argv, searchArgv, ctx) <= _GREP_BOUNDED_MAX_LINES) return clipGrepLines(text, searchArgv)
 
+    // grep only prefixes a filename when the search covers more than one file, so a single-file search (e.g. `grep -n alpha b1.txt`) emits bare `12:text` or `12-text` lines with nothing to attribute. When the command names exactly one file, those bare lines are attributed to it.
+    const operands = grepFileOperands(searchArgv)
+    const searchFiles = operands ?? positionalArgs(searchArgv.slice(1)).slice(1)
+    const singleFile = searchFiles.length === 1 ? searchFiles[0] : undefined
+    const unprefixed = operands !== null && grepPrintsNoFilenames(searchArgv, operands)
+    const sources = nonEmpty.map((line) => (unprefixed ? (singleFile ?? null) : grepMatchSource(line, singleFile)))
+    const named = new Set(sources.filter((s): s is string => s !== null))
+    // One file's matches have no per-file breakdown to give: a summary of them is one number, and every recorded case of one was re-fetched in full within two calls. They ship as lines, bounded by apply()'s caps like any other long output.
+    const oneFile = named.size === 0 ? searchFiles.length <= 1 : named.size === 1 && (named.has(singleFile ?? '') || !sources.includes(null))
+    if (oneFile) return clipGrepLines(text, searchArgv)
+
+    // Many files: the first matches ship verbatim and only the rest become per-file counts, so a summary always carries real lines to act on. The byte budget stops wide lines from carrying the kept block toward the harness delivery cap.
+    const clipped = clipGrepLines(nonEmpty.join('\n'), searchArgv).split('\n')
+    let keep = 0
+    for (let used = 0; keep < _GREP_KEPT_MATCH_LINES && keep < clipped.length; keep++) {
+      const n = Buffer.byteLength(clipped[keep] as string, 'utf8') + 1
+      if (keep > 0 && used + n > _GREP_KEPT_MATCH_BYTES) break
+      used += n
+    }
     const fileCounts = new Map<string, number>()
     let unattributed = 0
-    // grep only prefixes a filename when the search covers more than one file, so a single-file search (e.g. `grep -n alpha b1.txt`) emits bare `12:text` or `12-text` lines with nothing to attribute -- every such line used to fall into the unattributed bucket even though the target file is right there in argv. When the command names exactly one file, attribute those bare lines to it instead.
-    const searchFiles = positionalArgs(argv.slice(1)).slice(1)
-    const singleFile = searchFiles.length === 1 ? searchFiles[0] : undefined
-    for (const line of nonEmpty) {
-      if (line.startsWith('Binary file ') && line.includes(' matches')) {
-        const fname = line.slice('Binary file '.length).replace(/ matches$/, '')
-        fileCounts.set(fname, (fileCounts.get(fname) ?? 0) + 1)
-        continue
-      }
-      // A Windows absolute path (C:\foo\bar.py:12:text) has its own colon right after the single-letter drive, which line.indexOf(':') would otherwise pick up as the field separator -- leaving candidate as just "C" (no '.', '/', or '\\') and silently dumping every match on such a path into the unattributed bucket. Skip past a leading drive-letter colon before looking for the real path/lineno separator.
-      const driveColonMatch = /^[A-Za-z]:[\\/]/.exec(line)
-      const searchFrom = driveColonMatch ? 2 : 0
-      const colonIdx = line.indexOf(':', searchFrom)
-      if (colonIdx > 0) {
-        const candidate = line.slice(0, colonIdx)
-        if (candidate.includes('.') || candidate.includes('/') || candidate.includes('\\')) {
-          fileCounts.set(candidate, (fileCounts.get(candidate) ?? 0) + 1)
-          continue
-        }
-      }
-      if (singleFile !== undefined && (/^\d+[:-]/.test(line) || colonIdx <= 0)) {
-        fileCounts.set(singleFile, (fileCounts.get(singleFile) ?? 0) + 1)
-        continue
-      }
-      unattributed++
+    for (const source of sources.slice(keep)) {
+      if (source === null) unattributed++
+      else fileCounts.set(source, (fileCounts.get(source) ?? 0) + 1)
     }
 
-    const totalMatches = [...fileCounts.values()].reduce((a, b) => a + b, 0) + unattributed
+    // `-v` prints the lines that did not match, so what is being counted is lines.
+    const [one, many] = grepFlagInCluster(searchArgv, 'v', '--invert-match') ? ['line', 'lines'] : ['match', 'matches']
+    const more = countNoun(nonEmpty.length - keep, `more ${one}`, `more ${many}`)
     const numFiles = fileCounts.size
+    const outLines = clipped.slice(0, keep)
     // These counts are the answer the caller wanted, not a description of what this filter did, so when the clamp dropped part of the input they are a floor and have to say so. Stated flat, a 985,533-byte search of 9,000 matching lines reported `grep: 4685 matches across 40 file(s)`, and the per-file counts below are understated the same way.
-    const outLines: string[] = ctx.inputTruncated
-      ? [`grep: at least ${countNoun(totalMatches, 'match', 'matches')} across ${countNoun(numFiles, 'file')} (counted over a truncated input; per-file counts below are lower bounds)`]
-      : [`grep: ${countNoun(totalMatches, 'match', 'matches')} across ${countNoun(numFiles, 'file')}`]
-
+    outLines.push(
+      ctx.inputTruncated
+        ? `grep: at least ${more} across ${countNoun(numFiles, 'file')} (counted over a truncated input; per-file counts below are lower bounds)`
+        : `grep: ${more} across ${countNoun(numFiles, 'file')}`,
+    )
     const sorted = [...fileCounts.entries()].sort((a, b) => b[1] - a[1])
-    const shown = sorted.slice(0, _GREP_MAX_FILE_LINES)
-    for (const [fname, count] of shown) {
-      outLines.push(`  ${fname}: ${countNoun(count, 'match', 'matches')}`)
-    }
-    if (sorted.length > _GREP_MAX_FILE_LINES) {
-      const remaining = sorted.length - _GREP_MAX_FILE_LINES
-      // `-C`/`--context` prints more surrounding lines per match -- it has nothing to do with narrowing which FILES a search touches, so telling the user to reach for it here (the too-many-distinct-files case) never actually helped. A more specific pattern or a path/glob restriction (--include, or a narrower search root) is what actually reduces the file count this elision message is reporting.
-      outLines.push(
-        `  [token-goat: +${countNoun(remaining, 'more file')} elided; use a more specific pattern or --include=<glob> to narrow]`,
-      )
+    for (const [fname, count] of sorted.slice(0, _GREP_MAX_FILE_LINES)) {
+      outLines.push(`  ${fname}: ${countNoun(count, one, many)}`)
     }
     if (unattributed) {
       outLines.push(`  (unattributed lines: ${unattributed})`)
     }
-    outLines.push(
-      `[token-goat: grep output compressed from ${nonEmpty.length} lines` +
-        ` to ${outLines.length} — disable via TOKEN_GOAT_BASH_COMPRESS]`,
-    )
-    const result = outLines.join('\n')
-    return this.finalize([result])
+    // token-goat's own notices close the output, tagged by ownNotice so the hook can lift them out of the untrusted-content fence by provenance (helpers.ts splitOwnTrailingNotices); a matched line that spells the same text stays inside. Inside it they were escaped to `&#91;token-goat`. The opt-out is left to the compression marker that follows every shipped rewrite, which already names it once.
+    if (sorted.length > _GREP_MAX_FILE_LINES) {
+      // `-C`/`--context` prints more surrounding lines per match -- it has nothing to do with narrowing which FILES a search touches, so telling the user to reach for it here (the too-many-distinct-files case) never actually helped. A more specific pattern or a path/glob restriction (--include, or a narrower search root) is what actually reduces the file count this elision message is reporting.
+      outLines.push(ownNotice(`[token-goat: +${countNoun(sorted.length - _GREP_MAX_FILE_LINES, 'more file')} elided; use a more specific pattern or --include=<glob> to narrow]`))
+    }
+    outLines.push(ownNotice(`[token-goat: grep output compressed from ${nonEmpty.length} lines to ${outLines.length}]`))
+    return this.finalize(outLines)
   }
+}
+
+/** grep's long options that take a value, which may follow as the next token rather than after `=`. */
+const _GREP_LONG_VALUE_FLAGS: ReadonlySet<string> = new Set(['--regexp', '--file', '--max-count', '--after-context', '--before-context', '--context', '--include', '--exclude', '--exclude-dir', '--exclude-from', '--label', '--binary-files', '--devices', '--directories', '--group-separator'])
+
+/** The files a GNU grep/egrep/fgrep command names, or null for any other search tool. The first operand is the pattern unless `-e`/`-f` (or `--regexp`/`--file`) supplied one, and a flag's value, glued or in the next token, is never an operand. */
+function grepFileOperands(searchArgv: string[]): string[] | null {
+  if (!['grep', 'egrep', 'fgrep'].includes(pathStem(searchArgv[0] ?? '').toLowerCase())) return null
+  const operands: string[] = []
+  let patternGiven = false
+  for (let i = 1; i < searchArgv.length; i++) {
+    const a = searchArgv[i] as string
+    if (a === '--') {
+      operands.push(...searchArgv.slice(i + 1))
+      break
+    }
+    if (a.startsWith('--')) {
+      const name = a.split('=', 1)[0] as string
+      if (name === '--regexp' || name === '--file') patternGiven = true
+      if (!a.includes('=') && _GREP_LONG_VALUE_FLAGS.has(name)) i++
+      continue
+    }
+    if (a.startsWith('-') && a.length > 1) {
+      for (let j = 1; j < a.length; j++) {
+        const ch = a[j] as string
+        if (!_GREP_GLUED_VALUE_SHORT_FLAGS.includes(ch)) continue
+        if (ch === 'e' || ch === 'f') patternGiven = true
+        if (j === a.length - 1) i++
+        break
+      }
+      continue
+    }
+    operands.push(a)
+  }
+  return patternGiven ? operands : operands.slice(1)
+}
+
+/** True when this grep cannot have put a filename in front of any line: GNU grep prefixes one only when it searches more than one file, so a search of one file or of stdin prints the lines bare unless `-H` asks for the name, and a recursive search always names it. An operand spelled as a directory (`.`, `src/`) is read as a search that may name files, whether or not a recursion flag is visible here. A bare line's text before its first colon is the line's own text, and `grep -v` makes that the usual case, since its lines are whatever the file holds: `awk '/^[[:space:]]*-/'` was read as a file named `awk '/^[[`. Only called for grep itself (see {@link grepFileOperands}); rg, ag, ack and git grep decide by other rules (rg names a lone path that is a directory), so their lines keep being read for a prefix. */
+function grepPrintsNoFilenames(searchArgv: string[], files: string[]): boolean {
+  if (grepFlagInCluster(searchArgv, 'h', '--no-filename')) return true
+  if (grepFlagInCluster(searchArgv, 'H', '--with-filename')) return false
+  if (grepFlagInCluster(searchArgv, 'r', '--recursive') || grepFlagInCluster(searchArgv, 'R', '--dereference-recursive')) return false
+  if (searchArgv.some((a, i) => a === '-drecurse' || a === '--directories=recurse' || ((a === '-d' || a === '--directories') && searchArgv[i + 1] === 'recurse'))) return false
+  return files.length <= 1 && !files.some((f) => f === '.' || f === '..' || /[/\\]$/.test(f))
+}
+
+/** The file one grep/rg result line belongs to, or null when the line names none. */
+function grepMatchSource(line: string, singleFile: string | undefined): string | null {
+  if (line.startsWith('Binary file ') && line.includes(' matches')) return line.slice('Binary file '.length).replace(/ matches$/, '')
+  // A Windows absolute path (C:\foo\bar.py:12:text) has its own colon right after the single-letter drive, which line.indexOf(':') would otherwise pick up as the field separator -- leaving candidate as just "C" (no '.', '/', or '\\') and silently dumping every match on such a path into the unattributed bucket. Skip past a leading drive-letter colon before looking for the real path/lineno separator.
+  const driveColonMatch = /^[A-Za-z]:[\\/]/.exec(line)
+  const colonIdx = line.indexOf(':', driveColonMatch ? 2 : 0)
+  if (colonIdx > 0) {
+    const candidate = line.slice(0, colonIdx)
+    if (candidate.includes('.') || candidate.includes('/') || candidate.includes('\\')) return candidate
+  }
+  if (singleFile !== undefined && (/^\d+[:-]/.test(line) || colonIdx <= 0)) return singleFile
+  return null
+}
+
+/** The most lines this search could have printed: the `-m N`/`--max-count N` it carries, a `head`/`tail` stage in its own argv, or the pipeline bound the caller measured. Infinity when nothing bounds it. `-m` counts per file, so a recursive search can print more than N lines; the caller still asked for at most N matches from each, which is a bounded request rather than a scan of everything. */
+function grepLineBound(argv: string[], searchArgv: string[], ctx: CompressContext): number {
+  let bound = ctx.outputLineBound ?? Infinity
+  for (let start = argv.indexOf('|'); start !== -1; ) {
+    const next = argv.indexOf('|', start + 1)
+    const n = stageLineBound(argv.slice(start + 1, next === -1 ? argv.length : next))
+    if (n !== null) bound = Math.min(bound, n)
+    start = next
+  }
+  const glued = gluedValueShortFlags(searchArgv)
+  for (let i = 1; i < searchArgv.length; i++) {
+    const a = searchArgv[i] as string
+    let value: string | undefined
+    if (a === '--max-count') value = searchArgv[i + 1]
+    else if (a.startsWith('--max-count=')) value = a.slice('--max-count='.length)
+    else if (/^-[A-Za-z]/.test(a)) {
+      for (let j = 1; j < a.length; j++) {
+        const ch = a[j] as string
+        if (ch === 'm') {
+          value = j + 1 < a.length ? a.slice(j + 1) : searchArgv[i + 1]
+          break
+        }
+        if (glued.includes(ch)) break
+      }
+    }
+    if (value !== undefined && /^\d+$/.test(value)) bound = Math.min(bound, Number(value))
+  }
+  return bound
 }
 
 // --------------------------------------------------------------------------- RgFilter — context-line suppressor for rg/grep -C/-A/-B output ---------------------------------------------------------------------------
@@ -247,8 +338,10 @@ export class RgFilter extends ToolFilter {
     }
     if (suppressed === 0) return text
     kept.push(
-      `[token-goat: ${suppressed} context lines suppressed` +
-        ` — rerun with -l for filenames only or without -C/-A/-B for matches only]`,
+      ownNotice(
+        `[token-goat: ${suppressed} context lines suppressed` +
+          ` — rerun with -l for filenames only or without -C/-A/-B for matches only]`,
+      ),
     )
     return kept.join('\n')
   }
@@ -344,7 +437,7 @@ export class LsFilter extends ToolFilter {
     const extPart = _lsExtSummary(fileEntries)
     const hiddenMarker = extPart
       ? _LS_HIDDEN_MARKER_EXT.replace('{n}', () => countNoun(hiddenCount, 'more entry', 'more entries')).replace('{ext_summary}', () => extPart)
-      : _LS_HIDDEN_MARKER.replace('{n}', () => countNoun(hiddenCount, 'more entry', 'more entries'))
+      : ownNotice(_LS_HIDDEN_MARKER.replace('{n}', () => countNoun(hiddenCount, 'more entry', 'more entries')))
 
     const out: string[] = []
     let hiddenMarkerEmitted = false
@@ -388,7 +481,8 @@ export class LsFilter extends ToolFilter {
     if (extPart) {
       out.push(_LS_HIDDEN_MARKER_EXT.replace('{n}', () => countNoun(hidden, 'more entry', 'more entries')).replace('{ext_summary}', () => extPart))
     } else {
-      out.push(_LS_HIDDEN_MARKER.replace('{n}', () => countNoun(hidden, 'more entry', 'more entries')))
+      // Tagged as ours only without the typed summary, whose extensions are read off the listed names.
+      out.push(ownNotice(_LS_HIDDEN_MARKER.replace('{n}', () => countNoun(hidden, 'more entry', 'more entries'))))
     }
     return out
   }

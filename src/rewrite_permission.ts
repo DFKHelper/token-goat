@@ -323,11 +323,13 @@ function readRuleMayCover(snapshot: PermissionSnapshot, hays: readonly string[])
   return false
 }
 
-function decideRead(snapshot: PermissionSnapshot, req: RewriteRequest): RewriteVerdict {
+function decideRead(snapshot: PermissionSnapshot, req: RewriteRequest, mode: string): RewriteVerdict {
   if (snapshot.blockReadsOutside) return 'skip'
   // The real spellings too: a junction or short name in the original would otherwise hide the directory a rule names, while the copy's temp path carries none of it.
   if (readRuleMayCover(snapshot, haystacks([req.original, req.rewritten, ...realSpellings(req.original, req.cwd), ...realSpellings(req.rewritten, req.cwd)]))) return 'skip'
   if (req.harness !== 'claudecode') return 'rewrite'
+  // bypassPermissions reads outside the working directory with no prompt too, so the original's place decides nothing there: decideRewrite turns this into an allow or a skip.
+  if (mode === 'bypassPermissions') return 'rewrite'
   // The temp copy is outside the working directory, so Claude Code would prompt for it: approved only for an original it reads with no prompt.
   return req.insideCwd === true ? 'approve' : 'skip'
 }
@@ -361,7 +363,7 @@ export function decideRewrite(snapshot: PermissionSnapshot | null, req: RewriteR
       verdict = decideShell(snapshot, req, mode)
       break
     case 'read':
-      verdict = decideRead(snapshot, req)
+      verdict = decideRead(snapshot, req, mode)
       break
     case 'agent':
       verdict = decideAgent(snapshot)
@@ -701,7 +703,7 @@ export function permissionNeutralRewrite(updatedInput: Record<string, unknown>, 
   return { hookType: 'rewriteInput', updatedInput, approve: verdict === 'approve' }
 }
 
-/** Whether a hint naming a token-goat command that reads these paths must be held back on Claude Code or VS Code, which loads its settings: that command reads the file with no Read rule applying, so the hint would lead around a deny, or past an ask, Claude Code raises for the call it replaces. True for a Read deny or ask rule that could cover a path or the shell `command` naming it, an unreadable settings source, blocked reads outside the working directory, or a command whose `$`, `~` or glob names files no hook can see while any Read rule exists; a path the caller must not touch (`declined`) is matched as written, never resolved on disk. */
+/** Whether a hint naming a token-goat command that reads these paths must be held back on Claude Code or VS Code, which loads its settings: that command reads the file with no Read rule applying, so the hint would lead around a deny, or past an ask, Claude Code raises for the call it replaces. True for a Read deny or ask rule that could cover a path or the shell `command` naming it, an unreadable settings source, blocked reads outside the working directory, or a command whose `$`, `~` or glob names files no hook can see while any Read rule exists; a path the caller must not touch (`declined`) is matched as written, never resolved on disk. preReadImageHandler asks the same question before it opens an image, so a refused image is never shrunk into the cache. */
 export function readHintCrossesRule(harness: HarnessName, cwd: string, paths: readonly string[], command = '', declined?: (p: string) => boolean): boolean {
   if (harness !== 'claudecode' && harness !== 'vscode') return false
   const snapshot = loadPermissionSnapshot(cwd)

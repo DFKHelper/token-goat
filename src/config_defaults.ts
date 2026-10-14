@@ -132,7 +132,8 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
     subagent_markdown_first_read_deny: false,
     agent_scoped_spawn_deny: false,
     backoff_thresholds: [1, 3, 10, 30],
-    git_hint_max_ms: 50,
+    // Sized from the git calls it bounds, measured on Windows (Git for Windows 2.x): `rev-parse --abbrev-ref HEAD`, `status --porcelain` and `diff --stat HEAD` each took 57-184 ms in a 645-file repo and in a non-repo temp dir. The old 50 ms fired on every call there, so the branch hint, the subagent no-changes check and the compaction git bonus never ran, and each kill left the real git (a child of the `cmd/git.exe` launcher the timeout kills) running in the caller's cwd, which is what failed tests/compact.test.ts with EPERM on rmSync. 500 ms is about 2.7x the slowest call seen and keeps a UserPromptSubmit hook well under hooks.latency_budget_ms.
+    git_hint_max_ms: 500,
     min_session_hint_savings_bytes: 512,
     pre_skill_advisory: true,
     context_threshold_advisory: true,

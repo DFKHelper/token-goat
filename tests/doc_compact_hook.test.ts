@@ -23,6 +23,7 @@ const { compactPathFor, isCompactFresh, writeCompact, buildExtractiveCompact } =
 )
 const { clearModuleCaches } = await import('../src/reset.js')
 const { makeHookEvent } = await import('./helpers/hook-event.js')
+const { withoutFenceNonces } = await import('./helpers/fence_nonce.js')
 
 const tmpFiles: string[] = []
 
@@ -140,7 +141,7 @@ describe('preReadHandler — stable-doc compact serving', () => {
     expect(first.hookType).toBe('deny')
     expect(second.hookType).toBe('deny')
     if (first.hookType === 'deny' && second.hookType === 'deny') {
-      expect(second.message).toBe(first.message)
+      expect(withoutFenceNonces(second.message)).toBe(withoutFenceNonces(first.message))
     }
   })
 

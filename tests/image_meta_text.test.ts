@@ -8,6 +8,7 @@ import sharp, { type CreateRaw } from 'sharp'
 import { runImageMeta, runImageText } from '../src/read_commands.js'
 import { run } from '../src/cli.js'
 import { resetOcrStateForTesting, setTesseractEntryForTesting } from '../src/image_ocr.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-image-meta-text-'))
 
@@ -332,8 +333,8 @@ describe('image-text fences OCR text it lifts out of an image', () => {
 
     const output = await captureStdout(() => run(['node', 'token-goat', 'image-text', file]))
 
-    expect(output).toContain('<untrusted-image-text>')
-    expect(output).toContain('</untrusted-image-text>')
+    expect(withoutFenceNonces(output)).toContain('<untrusted-image-text>')
+    expect(withoutFenceNonces(output)).toContain('</untrusted-image-text>')
     // The text is still delivered -- fencing marks it, it does not withhold it.
     expect(output).toContain(PHRASE)
     expect(output).toContain('Confidence: 92%')
@@ -346,7 +347,7 @@ describe('image-text fences OCR text it lifts out of an image', () => {
     const output = await captureStdout(() => run(['node', 'token-goat', 'image-text', file]))
 
     // Matches no injection pattern, and is fenced anyway: this is the case a scan-gated fence let through, and the one an attacker reaches by simply not using a phrase the list knows.
-    expect(output).toContain('<untrusted-image-text>')
+    expect(withoutFenceNonces(output)).toContain('<untrusted-image-text>')
     expect(output).toContain('quarterly revenue chart')
   })
 
@@ -360,7 +361,7 @@ describe('image-text fences OCR text it lifts out of an image', () => {
     const parsed = JSON.parse(output) as { text: string | null; confidence: number; ocrAvailable: boolean }
     expect(parsed.ocrAvailable).toBe(true)
     expect(parsed.confidence).toBe(90)
-    expect(parsed.text).toContain('<untrusted-image-text>')
+    expect(withoutFenceNonces(parsed.text ?? '')).toContain('<untrusted-image-text>')
     expect(parsed.text).toContain(PHRASE)
   })
 })

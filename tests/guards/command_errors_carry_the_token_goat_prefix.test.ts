@@ -18,7 +18,7 @@ type Allowed = { file: string; write: string; reason: string }
 const ALLOWED: readonly Allowed[] = [
   {
     file: 'src/bash_runner.ts',
-    write: '`[token-goat: ${displaySafeText(result.error.message)}]\\n`',
+    write: '`[token-goat: ${displaySafeText((spawnError as Error).message)}]\\n`',
     reason: "`token-goat run`'s passthrough path reporting that the wrapped command could not be spawned. It speaks inside the wrapped command's own stderr stream, in the bracketed marker shape the captured path appends for the same failure (and for its timeout and capture-cap notes), so both paths of the runner report a spawn failure identically to the agent reading that command's output.",
   },
 ]

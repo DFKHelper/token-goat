@@ -385,6 +385,89 @@ describe('compressBrowserMcpResult', () => {
       expect(compressBrowserMcpResult('mcp__claude-in-chrome__read_page', text)).toBeNull()
     })
   })
+
+  describe('Playwright YAML snapshot (browser_snapshot)', () => {
+    const prose = (
+      'Spooky workshop registrations go live this Saturday at noon, with every class, kit and ticket tier listed on the ' +
+      'workshops page alongside the refund policy, the venue map, parking notes and the volunteer schedule. '
+    ).repeat(3)
+    const longUrl = 'https://www.example.com/collections/fall-market-workshop?' + 'utm_source=newsletter&'.repeat(20)
+    const lines = [
+      '### Page',
+      '- Page URL: https://www.example.com/pages/contact',
+      '- Page Title: Contact',
+      '### Snapshot',
+      '```yaml',
+      '- generic [active] [ref=f43e1]:',
+      '  - link "Skip to content" [ref=f43e2] [cursor=pointer]:',
+      '    - /url: "#MainContent"',
+      `  - paragraph [ref=f43e41]: ${prose}`,
+      `  - heading "${prose}" [level=2] [ref=f43e42]`,
+      `  - link [ref=f43e44] [cursor=pointer]:`,
+      `    - /url: ${longUrl}`,
+      `    - text: ${prose}`,
+      '  - button "Next announcement" [ref=f43e58] [cursor=pointer]',
+      '```',
+    ]
+    const text = lines.join('\n')
+
+    it('truncates long inline text and long quoted names, leaving every ref, attribute, url and short line byte-identical', () => {
+      const compressed = compressBrowserMcpResult('mcp__playwright__browser_snapshot', text)
+      expect(compressed).not.toBeNull()
+      if (compressed === null) return
+      const outLines = compressed.split('\n')
+      expect(outLines.length).toBe(lines.length)
+
+      for (let i = 0; i < lines.length; i++) {
+        expect(outLines[i]?.match(/\[ref=[^\]]+\]/g)).toEqual(lines[i]?.match(/\[ref=[^\]]+\]/g))
+      }
+      for (const i of [0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 13, 14]) expect(outLines[i]).toBe(lines[i])
+
+      const elided = prose.length - 200
+      expect(outLines[8]).toBe(`  - paragraph [ref=f43e41]: ${prose.slice(0, 200)}  … [${elided} chars elided]`)
+      expect(outLines[9]).toBe(`  - heading "${prose.slice(0, 200)}  … [${elided} chars elided]" [level=2] [ref=f43e42]`)
+      expect(outLines[12]).toBe(`    - text: ${prose.slice(0, 200)}  … [${elided} chars elided]`)
+    })
+
+    it('returns null when nothing in the snapshot is long enough to cut', () => {
+      const short = ['### Snapshot', '```yaml', '- generic [ref=e1]:', '  - button "OK" [ref=e2] [cursor=pointer]', '```'].join('\n')
+      expect(compressBrowserMcpResult('mcp__playwright__browser_snapshot', short)).toBeNull()
+    })
+  })
+
+  describe('Playwright network request list (browser_network_requests)', () => {
+    const beacon = 'https://www.google.com/ccm/collect?rcb=17&frm=0&apvc=1&ae=g&auid=1546198483.1787489609&' + 'dt=Purchase%20Wholesale%20Designs&en=page_view&'.repeat(8)
+    const longPath = 'https://www.example.com/api/v3/layout/' + 'segment/'.repeat(30) + 'tiles'
+    const lines = [
+      '### Result',
+      '152. [POST] https://events.api.example.com/api/client-event => [200] ',
+      `247. [POST] ${beacon} => [200] `,
+      `248. [GET] ${beacon}`,
+      `249. [POST] ${longPath} => [200] `,
+      `250. [POST] ${beacon} => [FAILED] csp`,
+      '',
+      'Note: 303 static requests not shown, run with "static" option to see them.',
+    ]
+    const text = lines.join('\n')
+
+    it('elides the query string of an overlong request URL past the cap, keeping index, method, path and status', () => {
+      const compressed = compressBrowserMcpResult('mcp__playwright__browser_network_requests', text)
+      expect(compressed).not.toBeNull()
+      if (compressed === null) return
+      const outLines = compressed.split('\n')
+      expect(outLines.length).toBe(lines.length)
+      const cut = `${beacon.slice(0, 200)}  … [${beacon.length - 200} chars elided]`
+      expect(outLines[2]).toBe(`247. [POST] ${cut} => [200] `)
+      expect(outLines[3]).toBe(`248. [GET] ${cut}`)
+      expect(outLines[5]).toBe(`250. [POST] ${cut} => [FAILED] csp`)
+      // A URL with no query is an identifier end to end, so it is never cut however long it is.
+      for (const i of [0, 1, 4, 6, 7]) expect(outLines[i]).toBe(lines[i])
+    })
+
+    it('still routes the JSON request list of the other servers through the key strip', () => {
+      expect(compressBrowserMcpResult('mcp__playwright__browser_network_requests', JSON.stringify(networkRequestList(40)))).not.toBeNull()
+    })
+  })
 })
 
 // --- compressGWorkspaceMcpResult ----------------------------------------------

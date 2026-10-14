@@ -5,7 +5,9 @@ import { _applyFiltersAndPrint } from './cli_cached_output.js'
 import { formatCsvTable, parseWhereSpecs } from './csv_query.js'
 import { docxOutline, docxTables, docxText, formatDocxTables } from './docx_extract.js'
 import { emitErr } from './emit.js'
+import { parsePageRange } from './pdf_extract.js'
 import { UNTRUSTED_FILE_TAG } from './injection_scan.js'
+import { canQuoteArg, echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { displaySafeJson, displaySafePath, displaySafeText } from './paths.js'
 import { pptxNotesText, pptxOutline, pptxSlideText, pptxTextGrep } from './pptx_extract.js'
 import {
@@ -15,6 +17,7 @@ import {
   runPdfMeta,
   runPdfOutline,
 } from './read_commands.js'
+import { loadConfig } from './config.js'
 import { guardAndFenceFileText } from './fence_cap.js'
 import { redactSecrets } from './secret_redact.js'
 import { parseShareUrl, resolveLocalPath } from './sharepoint_resolve.js'
@@ -27,8 +30,8 @@ import {
   readTranscript,
   sliceTranscript,
 } from './transcript_extract.js'
-import { fenceFileFieldIfMatched } from './untrusted_fence.js'
-import { cappedSourceBytesSaved, countNoun, redactUrlQuery } from './util.js'
+import { fenceFileFieldIfMatched, fenceFileJsonStrings, recordInjectionDetected } from './untrusted_fence.js'
+import { cappedSourceBytesSaved, countNoun, isWindows, redactUrlQuery } from './util.js'
 import { extractVideoChapters } from './video_chapters.js'
 import {
   formatXlsxColumns,
@@ -60,11 +63,33 @@ export function recordXlsxStat(kind: string, file: string, emitted: string): voi
   recordStat(kind, bytesSaved, savedTokensFromBytes(bytesSaved))
 }
 
+/** What pdf-extract prints instead of an empty fence when no requested page has a text layer: which pages, why, and two rasterizers whose page images the model can Read or `image-text` can OCR. Ghostscript's console binary is `gswin64c` on Windows and `gs` elsewhere. A path no quote mark holds in both shells gets the explanation without the commands. */
+function noTextLayerNote(file: string, first: number, last: number, pageCount: number): string {
+  const pages = first === last ? `page ${first}` : `pages ${first}-${last}`
+  const lines = [`No text layer on ${pages} of ${countNoun(pageCount, 'page')} in ${echoedValue(file)}: it looks scanned or image-only, and pdf-extract reads only a PDF's text layer, it does not OCR.`]
+  if (!canQuoteArg(file)) return lines[0]!
+  const pdf = quotedArg(file)
+  lines.push(
+    'Rasterize the pages, then Read each page image, or run token-goat image-text on it for its text:',
+    `  pdftoppm -r 150 -png -f ${first} -l ${last} ${pdf} page`,
+    `  ${isWindows() ? 'gswin64c' : 'gs'} -q -dSAFER -dBATCH -dNOPAUSE -sDEVICE=png16m -r150 -dFirstPage=${first} -dLastPage=${last} -sOutputFile=page-%d.png ${pdf}`,
+  )
+  return lines.join('\n')
+}
+
 export async function cmdPdfExtract(
   file: string,
   opts: { pages?: string; head?: string; tail?: string; grep?: string; section?: string; maxMatches?: string; layout?: boolean; full?: boolean; lines?: string },
 ): Promise<void> {
   const result = await runPdfExtractText(file, opts.pages, opts.layout === true)
+  // Every page's text is trimmed before the join, so an empty result means no requested page holds a visible character: the test pdf-meta's hasTextLayer applies, so one real glyph still counts as text.
+  if (result.pagesExtracted > 0 && result.text.trim() === '') {
+    if (result.pagesNote !== undefined) emitErr(result.pagesNote)
+    const range = parsePageRange(opts.pages, result.pageCount) ?? { start: 1, end: result.pageCount }
+    // On stdout as well as the exit code: an empty fence at exit 0 read as a broken command (an agent spent three calls doubting it), and an agent's `2>/dev/null` or `| head` would hide a note written only to stderr.
+    out(noTextLayerNote(file, range.start, range.end, result.pageCount))
+    throw new CliError(`no text layer on the requested pages of ${echoedValue(file)}; it looks scanned or image-only`)
+  }
   const text = redactSecrets(result.text).text
   const printed = _applyFiltersAndPrint(text, opts, true, UNTRUSTED_FILE_TAG)
   // On stderr after the body, as the recall filters' own notes are: stdout is fenced document text, where a token-goat line would read as part of the document.
@@ -90,7 +115,8 @@ export async function cmdPdfLocate(
   const pages = matches.map((m) => m.page)
   let printed: string
   if (opts.json === true) {
-    const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileFieldIfMatched(m.snippet) }))
+    const config = loadConfig()
+    const fencedMatches = matches.map((m) => ({ ...m, snippet: fenceFileFieldIfMatched(m.snippet, config) }))
     printed = displaySafeJson({ file, pattern, matchCount: fencedMatches.length, truncated, pages, matches: fencedMatches })
     out(printed)
   } else if (matches.length === 0) {
@@ -120,10 +146,13 @@ export async function cmdPdfOutline(file: string, opts: { json?: boolean }): Pro
     }
     return
   }
-  const text =
-    opts.json === true
-      ? displaySafeJson(entries.map((e) => ({ ...e, title: fenceFileFieldIfMatched(e.title) })))
-      : guardAndFenceFileText(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'), 'pdf-outline')
+  let text: string
+  if (opts.json === true) {
+    const config = loadConfig()
+    text = displaySafeJson(entries.map((e) => ({ ...e, title: fenceFileFieldIfMatched(e.title, config) })))
+  } else {
+    text = guardAndFenceFileText(entries.map((e) => `${'  '.repeat(e.level)}${e.title}${e.page !== null ? `  (p.${e.page})` : ''}`).join('\n'), 'pdf-outline')
+  }
   out(text)
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
@@ -132,7 +161,8 @@ export async function cmdPdfOutline(file: string, opts: { json?: boolean }): Pro
 
 export async function cmdPdfMeta(file: string, opts: { json?: boolean } = {}): Promise<void> {
   const meta = await runPdfMeta(file)
-  const safeField = (v: string | null): string | null => (v === null ? null : fenceFileFieldIfMatched(v))
+  const config = loadConfig()
+  const safeField = (v: string | null): string | null => (v === null ? null : fenceFileFieldIfMatched(v, config))
   const lines = [
     `Pages: ${meta.pageCount}`,
     `Title: ${safeField(meta.title) ?? '(none)'}`,
@@ -203,7 +233,13 @@ export function cmdSharepointResolve(url: string): void {
 
 export async function cmdXlsxSheets(file: string, opts: { json?: boolean } = {}): Promise<void> {
   const sheets = await xlsxListSheets(file)
-  const text = opts.json === true ? displaySafeJson(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name), ref: s.ref, rows: s.rows, cols: s.cols }))) : guardAndFenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'), 'xlsx-sheets')
+  let text: string
+  if (opts.json === true) {
+    const config = loadConfig()
+    text = displaySafeJson(sheets.map((s) => ({ name: fenceFileFieldIfMatched(s.name, config), ref: s.ref, rows: s.rows, cols: s.cols })))
+  } else {
+    text = guardAndFenceFileText(sheets.map((s) => `${s.name}  ${s.ref}  (${s.rows} rows x ${s.cols} cols)`).join('\n'), 'xlsx-sheets')
+  }
   out(text)
   recordXlsxStat('xlsx_sheets', file, text)
 }
@@ -222,10 +258,11 @@ export async function cmdXlsxColumns(file: string, opts: { sheet?: string; head?
   const maxRows = opts.head !== undefined ? requireNonNegativeInt('--head', opts.head) : 100
   const result = await xlsxColumns(file, opts.sheet, maxRows)
   if (opts.json === true) {
+    const config = loadConfig()
     const text = displaySafeJson({
       ...result,
-      sheetName: fenceFileFieldIfMatched(result.sheetName),
-      columns: result.columns.map((c) => ({ ...c, name: fenceFileFieldIfMatched(c.name), sampleValues: c.sampleValues.map(fenceFileFieldIfMatched) })),
+      sheetName: fenceFileFieldIfMatched(result.sheetName, config),
+      columns: result.columns.map((c) => ({ ...c, name: fenceFileFieldIfMatched(c.name, config), sampleValues: c.sampleValues.map((v) => fenceFileFieldIfMatched(v, config)) })),
     })
     out(text)
     recordXlsxStat('xlsx_columns', file, text)
@@ -259,8 +296,9 @@ export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns
   })
   if (opts.json === true) {
     // The header row is the sheet author's text as much as any cell, and it becomes every row's keys, so it goes through the same per-field fence once: a fence cannot wrap a key in place, so a flagged header's fenced form is the key.
-    const keys = result.header.map((h) => fenceFileFieldIfMatched(h))
-    const rowsJson = result.rows.map((r) => Object.fromEntries(keys.map((k, i) => [k, fenceFileFieldIfMatched(r[i] ?? '')])))
+    const config = loadConfig()
+    const keys = result.header.map((h) => fenceFileFieldIfMatched(h, config))
+    const rowsJson = result.rows.map((r) => Object.fromEntries(keys.map((k, i) => [k, fenceFileFieldIfMatched(r[i] ?? '', config)])))
     const headTruncated = result.rows.length < result.totalRows
     const capped = guardJsonRows(rowsJson)
     const text = displaySafeJson(
@@ -283,15 +321,18 @@ export async function cmdXlsxQuery(file: string, opts: { sheet?: string; columns
 
 export async function cmdPptxOutline(file: string, opts: { json?: boolean }): Promise<void> {
   const slides = await pptxOutline(file)
-  const text =
-    opts.json === true
-      ? displaySafeJson(slides.map((s) => ({ ...s, title: fenceFileFieldIfMatched(s.title) })))
-      : guardAndFenceFileText(
-          slides
-            .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
-            .join('\n'),
-          'pptx-outline',
-        )
+  let text: string
+  if (opts.json === true) {
+    const config = loadConfig()
+    text = displaySafeJson(slides.map((s) => ({ ...s, title: fenceFileFieldIfMatched(s.title, config) })))
+  } else {
+    text = guardAndFenceFileText(
+      slides
+        .map((s) => `${s.slide}. ${s.title || '(untitled)'}  [${s.bodyChars} body chars${s.hasNotes ? ', has notes' : ''}]`)
+        .join('\n'),
+      'pptx-outline',
+    )
+  }
   out(text)
   recordDocStat('pptx_outline', file, text)
 }
@@ -332,10 +373,13 @@ export async function cmdDocxOutline(file: string, opts: { json?: boolean }): Pr
     }
     return
   }
-  const text =
-    opts.json === true
-      ? displaySafeJson(headings.map((h) => ({ ...h, text: fenceFileFieldIfMatched(h.text) })))
-      : guardAndFenceFileText(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'), 'docx-outline')
+  let text: string
+  if (opts.json === true) {
+    const config = loadConfig()
+    text = displaySafeJson(headings.map((h) => ({ ...h, text: fenceFileFieldIfMatched(h.text, config) })))
+  } else {
+    text = guardAndFenceFileText(headings.map((h) => `${'  '.repeat(h.level - 1)}${h.text}`).join('\n'), 'docx-outline')
+  }
   out(text)
   recordDocStat('docx_outline', file, text)
 }
@@ -361,7 +405,8 @@ export async function cmdDocxTables(file: string, opts: { table?: string; json?:
   }
 
   if (opts.json === true) {
-    const fenced = selected.map((t) => ({ ...t, rows: t.rows.map((r) => r.map(fenceFileFieldIfMatched)) }))
+    const config = loadConfig()
+    const fenced = selected.map((t) => ({ ...t, rows: t.rows.map((r) => r.map((cell) => fenceFileFieldIfMatched(cell, config))) }))
     const text = displaySafeJson(tableIdx !== undefined ? fenced[0] : fenced)
     out(text)
     recordDocStat('docx_tables', file, text)
@@ -392,17 +437,24 @@ export function cmdTranscriptOutline(file: string, opts: { json?: boolean }): vo
     }
     return
   }
-  const outline = buildTranscriptOutline(cues)
+  // Read once for the whole outline: loadConfig re-reads both config files and every config env var on each call, so a read per cue grew with the transcript.
+  const config = loadConfig()
+  // Redacted per cue before the outline cuts each preview to 60 characters: a cut can leave a credential's prefix too short for its pattern to match.
+  const outline = buildTranscriptOutline(
+    cues.map((c) => ({ ...c, text: redactSecrets(c.text, config).text, speaker: c.speaker === null ? null : redactSecrets(c.speaker, config).text })),
+  )
   let text: string
   if (opts.json === true) {
-    text = displaySafeJson(outline)
+    const held: string[][] = []
+    text = displaySafeJson(fenceFileJsonStrings(outline, held))
+    for (const matches of held) recordInjectionDetected(matches)
   } else {
     const lines = [`Duration: ${formatTimestamp(outline.durationSeconds)}  (${cues.length} cues)`]
     if (outline.speakers.length > 0) {
       lines.push('', 'Speakers:', ...outline.speakers.map((s) => `  ${displaySafeText(s.name)}  (${s.cueCount} cues)`))
     }
     lines.push('', 'Markers:', ...outline.markers.map((m) => `  [${m.timestamp}] ${displaySafeText(m.preview)}`))
-    text = lines.join('\n')
+    text = guardAndFenceFileText(lines.join('\n'), 'transcript-outline')
   }
   out(text)
   recordDocStat('transcript_outline', file, text)

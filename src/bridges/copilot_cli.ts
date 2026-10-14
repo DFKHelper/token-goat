@@ -553,12 +553,12 @@ async function main() {
     return
   }
 
-  process.stdout.write(JSON.stringify(translate(copilotEvent, resp, toolName, originalToolArgs)))
+  process.stdout.write(JSON.stringify(translate(copilotEvent, resp, toolName, originalToolArgs, rawResult)))
 }
 
 ${MATERIALIZE_SHRUNK_IMAGE_JS}
 
-function translate(copilotEvent, resp, toolName, originalToolArgs) {
+function translate(copilotEvent, resp, toolName, originalToolArgs, toolResult) {
   if (copilotEvent === 'preToolUse') {
     const hso = resp && resp.hookSpecificOutput
     const denied = resp && (resp.decision === 'block' || (hso && hso.permissionDecision === 'deny'))
@@ -590,7 +590,13 @@ function translate(copilotEvent, resp, toolName, originalToolArgs) {
     const updatedToolOutput = hso && hso.updatedToolOutput
     const context = extractContext(resp)
     const out = {}
-    if (typeof updatedToolOutput === 'string') out.modifiedResult = { resultType: 'success', textResultForLlm: updatedToolOutput }
+    if (typeof updatedToolOutput === 'string') {
+      out.modifiedResult = { resultType: 'success', textResultForLlm: updatedToolOutput }
+      // The rewrite is text only. An MCP result's images and blob resources travel beside it in binaryResultsForLlm (copilot-sdk's convertMcpCallToolResult), which modifiedResult, a whole ToolResultObject, carries too, so they are handed back rather than left to how Copilot merges an omitted field. Only image and audio entries go back, as type, data and mimeType: convertMcpCallToolResult sets a blob resource's description to its URI and passes any mimeType through, so a text/plain blob or the description is the server's own text, and handing it back verbatim put it beside the fenced rewrite unfenced and unredacted.
+      const binary = toolResult && typeof toolResult === 'object' ? toolResult.binaryResultsForLlm : undefined
+      const media = Array.isArray(binary) ? binary.filter((b) => b && typeof b === 'object' && typeof b.data === 'string' && typeof b.mimeType === 'string' && (b.mimeType.toLowerCase().startsWith('image/') || b.mimeType.toLowerCase().startsWith('audio/'))).map((b) => ({ type: b.type, data: b.data, mimeType: b.mimeType })) : []
+      if (media.length > 0) out.modifiedResult.binaryResultsForLlm = media
+    }
     if (context) out.additionalContext = context
     return out
   }

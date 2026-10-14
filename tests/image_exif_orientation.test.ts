@@ -171,7 +171,7 @@ describe('the delivered image for an EXIF-rotated photo is rotated, not sheared'
     const file = path.join(dir, `${tag}.jpg`)
     fs.writeFileSync(file, buf)
     // A harness that takes the shrink as a data-URL payload, so the delivered pixels are in the result; Claude Code gets a rewritten Read path instead (tests/image_shrink_claudecode_delivery.test.ts).
-    const out = await withHarnessOverride('generic', () => preReadImageHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file } })))
+    const out = await withHarnessOverride('openclaw', () => preReadImageHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: file } })))
     const m = /data:image\/(png|jpeg);base64,([A-Za-z0-9+/=]+)/.exec(JSON.stringify(out ?? {}))
     if (m === null) return null
     const bytes = Buffer.from(m[2] as string, 'base64')

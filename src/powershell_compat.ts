@@ -7,8 +7,8 @@ import { quotePowershellPath } from './process_util.js'
 // eslint-disable-next-line regexp/no-super-linear-backtracking
 const heredocRe = (): RegExp => /(?:^|(?<=[;\r\n]|&&|\|\|))\s*([^\r\n;&|<]+?)\s*<<(-?)[ \t]*(['"]?)([A-Za-z0-9_]+)\3([^\r\n]*?)(?=\r?\n)/g
 
-// A heredoc operator, its `-` and its delimiter word, read at a top-level `<<`, and a line that ends the body: the delimiter alone on its line, after tabs for `<<-`, as bash reads it, so `EOF;`, `EOF ` and `EOF` followed by a CR do not end the body.
-const HEREDOC_HEAD_RE = /<<(-?)[ \t]*(['"]?)([A-Za-z0-9_]+)\2/y
+// A heredoc operator, its `-`, the quote around its delimiter word (or the backslash before it, `<<\EOF`, which quotes it as well) and the word itself, read at a top-level `<<`, and a line that ends the body: the delimiter alone on its line, after tabs for `<<-`, as bash reads it, so `EOF;`, `EOF ` and `EOF` followed by a CR do not end the body.
+const HEREDOC_HEAD_RE = /<<(-?)[ \t]*(?:(['"]?)([A-Za-z0-9_]+)\2|\\([A-Za-z0-9_]+))/y
 const HEREDOC_TERMINATOR_RE = /^(\t*)([A-Za-z0-9_]+)$/
 
 // PowerShell reads the curly and low-9 quotation marks as quotes too.
@@ -17,8 +17,11 @@ const DOUBLE_QUOTES = '"\u201C\u201D\u201E'
 
 interface Span { end: number; closed: boolean }
 
+// A heredoc operator as read at its `<<` (`op`): its delimiter word, whether it is `<<-`, the index just past the word (`headEnd`), and the mark that quoted the word, `'`, `"` or `\`, or '' when nothing did.
+interface HeredocHead { op: number; delim: string; stripTabs: boolean; headEnd: number; quote: string }
+
 // A heredoc body runs from `bodyStart` to `termStart`, the start of its closing line, and `end` is the index just past the closing delimiter.
-interface HeredocSpan { bodyStart: number; termStart: number; end: number }
+interface HeredocSpan extends Omit<HeredocHead, 'op' | 'delim'> { bodyStart: number; termStart: number; end: number }
 
 /** Where a command's top-level PowerShell code is: `code[i]` is 1 for a character outside every string, here-string, comment, braced variable and recognized heredoc body, `stringEnd` maps a top-level string's opening quote to the index just past its closing quote, and `heredocs` maps a top-level `<<` whose body was found to that body's span. */
 interface PowerShellLayout {
@@ -129,16 +132,16 @@ function scanToken(src: string, i: number): Span | null {
 }
 
 // Skips the bodies of the heredocs opened on the line that just ended, in order, returning the index past the last terminator, or `start` (recording none of them) when any body has no terminator.
-function skipHeredocBodies(src: string, start: number, pending: Array<{ op: number; delim: string; stripTabs: boolean }>, heredocs: Map<number, HeredocSpan>): number {
+function skipHeredocBodies(src: string, start: number, pending: HeredocHead[], heredocs: Map<number, HeredocSpan>): number {
   const found: Array<[number, HeredocSpan]> = []
   let lineStart = start
-  for (const { op, delim, stripTabs } of pending) {
+  for (const { op, delim, stripTabs, headEnd, quote } of pending) {
     let span: HeredocSpan | null = null
     for (let ls = lineStart; ls <= src.length; ) {
       const nl = src.indexOf('\n', ls)
       const term = HEREDOC_TERMINATOR_RE.exec(src.slice(ls, nl === -1 ? src.length : nl))
       if (term && term[2] === delim && (stripTabs || term[1] === '')) {
-        span = { bodyStart: lineStart, termStart: ls, end: ls + term[0].length }
+        span = { stripTabs, headEnd, quote, bodyStart: lineStart, termStart: ls, end: ls + term[0].length }
         break
       }
       if (nl === -1) break
@@ -158,7 +161,7 @@ function layoutPowerShell(src: string): PowerShellLayout {
   const code = new Uint8Array(src.length)
   const stringEnd = new Map<number, number>()
   const heredocs = new Map<number, HeredocSpan>()
-  let pending: Array<{ op: number; delim: string; stripTabs: boolean }> = []
+  let pending: HeredocHead[] = []
   let i = 0
   while (i < src.length) {
     if (src[i] === '\n' && pending.length > 0) {
@@ -170,7 +173,7 @@ function layoutPowerShell(src: string): PowerShellLayout {
     HEREDOC_HEAD_RE.lastIndex = i
     const head = src[i] === '<' ? HEREDOC_HEAD_RE.exec(src) : null
     if (head) {
-      pending.push({ op: i, delim: head[3] as string, stripTabs: head[1] === '-' })
+      pending.push({ op: i, delim: (head[3] ?? head[4]) as string, stripTabs: head[1] === '-', headEnd: HEREDOC_HEAD_RE.lastIndex, quote: head[4] !== undefined ? '\\' : head[2] ?? '' })
       code.fill(1, i, i + 2)
       i += 2
       continue
@@ -185,6 +188,14 @@ function layoutPowerShell(src: string): PowerShellLayout {
     i++
   }
   return { code, stringEnd, heredocs }
+}
+
+/** A heredoc whose body was found, as {@link topLevelHeredocs} reports it: its `<<` at `op`, the delimiter word ending at `headEnd`, the mark that quoted the word (`'`, `"`, `\`, or '' for none), whether it is `<<-`, and its body from `bodyStart` to `termStart`, the start of the closing line, which ends at `end`. */
+export interface HeredocSite extends HeredocSpan { op: number }
+
+/** Every heredoc in `command` whose `<<` is top-level code and whose body has its closing line, in the order they open, read by the same lexer adaptHeredoc rewrites from. It is PowerShell's lexer, which reads bash's quotes the same way except at a backslash, a backtick, a curly quote, a `@'` here-string, a `<#` comment, a `${...}` holding a quote and a `#` after `{`, `}`, `,`, `=`, `<` or `>`; a caller reading a bash command has to rule those out in the text outside the bodies before trusting the spans. */
+export function topLevelHeredocs(command: string): HeredocSite[] {
+  return Array.from(layoutPowerShell(command).heredocs, ([op, span]) => ({ op, ...span })).sort((a, b) => a.op - b.op)
 }
 
 // A Python interpreter word, with the directory it may be called through: python, python3 or py, each with or without `.exe`. Every Python pattern below is built from this one source.

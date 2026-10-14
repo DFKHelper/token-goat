@@ -1,8 +1,9 @@
 /** HAND-DERIVED adversity: actual built hook -> reconcileProject -> getTrackedFiles -> runGit,
  * with only the Git executable boundary replaced. This is not a healthy-handler substitute. */
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { createRequire } from 'node:module'
@@ -256,6 +257,49 @@ require('node:child_process').spawnSync(${JSON.stringify(boundary)}, ['hold', ${
   }
 }, 40_000)
 
+it.runIf(process.platform === 'win32')('deletes the fixture only after a process it just killed has released the directory', async () => {
+  // The owner-death cases above end exactly here: the job has terminated the
+  // holder, `alive` already reads it gone, and teardown runs next. A debugger
+  // parks the holder between those two states so the window cannot close early.
+  const fixture = treeFixture()
+  const boundary = buildWindowsBoundary(fixture.root)
+  const outside = mkdtempSync(join(tmpdir(), 'tg-session-debugger-'))
+  const debuggerExe = join(outside, 'debugger.exe')
+  copyFileSync(boundary, debuggerExe)
+  const holderFile = join(fixture.root, 'holder.pid')
+  const marker = join(outside, 'debugger.state')
+  const holder = spawn(boundary, ['hold', holderFile], { cwd: fixture.project, stdio: 'ignore', windowsHide: true })
+  let debuggerProcess: ChildProcess | undefined
+  const stopped = (child: ChildProcess | undefined): Promise<unknown> => {
+    if (child === undefined || child.exitCode !== null || child.signalCode !== null) return Promise.resolve()
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+    child.kill()
+    return exited
+  }
+  const waitUntil = async (condition: () => boolean, what: string): Promise<void> => {
+    const until = performance.now() + 10_000
+    while (!condition()) {
+      expect(performance.now(), what).toBeLessThan(until)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+  }
+  const state = (): string => existsSync(marker) ? readFileSync(marker, 'utf8') : ''
+  try {
+    await waitUntil(() => existsSync(holderFile) && readFileSync(holderFile, 'utf8') !== '', 'holder never recorded its PID')
+    const pid = readOwnedPid(holderFile)
+    debuggerProcess = spawn(debuggerExe, ['debug-exit', String(pid), marker, '1500'], { cwd: outside, stdio: 'ignore', windowsHide: true })
+    await waitUntil(() => state() === 'attached', 'debugger never attached')
+    process.kill(pid)
+    await waitUntil(() => state() === 'exiting', 'holder exit never reached the debugger')
+    expect(alive(pid), 'the liveness probe already reads the parked holder as gone').toBe(false)
+    expect(() => cleanupTrees()).not.toThrow()
+    expect(existsSync(fixture.root)).toBe(false)
+  } finally {
+    await Promise.all([stopped(holder), stopped(debuggerProcess)])
+    rmSync(outside, { recursive: true, force: true })
+  }
+}, 40_000)
+
 it.runIf(process.platform === 'win32')('rejects an incompatible built native protocol before canonical execution', async () => {
   const fixture = treeFixture()
   const entry = join(fixture.root, 'entry.cjs')
@@ -360,11 +404,32 @@ it.runIf(process.platform === 'win32')('inherits the earliest installed native d
   const entered = join(fixture.root, 'helper.pid')
   writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, String(process.pid)); process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`)
   const result = await runInstalledStartup({ fixture, entry, delayMs: 1500 }).done
-  expect(existsSync(entered)).toBe(true)
-  expect(alive(readOwnedPid(entered))).toBe(false)
+  // The installed relay reads the whole input before it creates the owner, shim and helper, so after a 1500 ms delay those launches share the few hundred milliseconds left before its cleanup reserve: whether the helper got to start is a race the run does not decide, but no helper it did start may outlive it.
+  if (existsSync(entered)) expect(alive(readOwnedPid(entered))).toBe(false)
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toMatch(/timed out/)
   expect(result.elapsed).toBeLessThan(3500)
+}, 12_000)
+
+it.runIf(process.platform === 'win32')('hands the installed native deadline to the shim\'s own owner instead of restarting it at shim start', async () => {
+  const fixture = treeFixture()
+  const entry = join(fixture.root, 'entry.cjs')
+  const entered = join(fixture.root, 'helper.pid')
+  const handoff = join(fixture.root, 'handoff.json')
+  writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, String(process.pid)); process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`)
+  // The relay ends the run at its own deadline even when the shim restarts the clock, so the outcome cannot show inheritance; the shim records what it hands its owner, checked against its own process start, which the native entry's deadline precedes by construction.
+  const ownerSpawn = "const root = spawn(binary, ['--session-start-owner-v1', String(deadline), process.execPath, ...args], {"
+  const shim = readFileSync(fixture.shim, 'utf8')
+  expect(shim).toContain(ownerSpawn)
+  writeFileSync(fixture.shim, shim.replace(ownerSpawn, `require('node:fs').writeFileSync(${JSON.stringify(handoff)}, JSON.stringify({ inherited: process.argv[4], deadline, started: Math.floor(require('node:perf_hooks').performance.timeOrigin) })); ${ownerSpawn}`))
+  const result = await runInstalledStartup({ fixture, entry }).done
+  const record = JSON.parse(readFileSync(handoff, 'utf8')) as { inherited: string; deadline: number; started: number }
+  expect(record.inherited).toMatch(/^--session-start-deadline=\d+$/)
+  expect(record.deadline).toBe(Number(record.inherited.slice('--session-start-deadline='.length)))
+  expect(record.deadline).toBeLessThan(record.started + 3000)
+  expect(alive(readOwnedPid(entered))).toBe(false)
+  expect(result.stdout).toBe('{}')
+  expect(result.stderr).toMatch(/timed out/)
 }, 12_000)
 
 it('does not spawn the supervisor when input arrives inside the cleanup reserve', async () => {

@@ -320,6 +320,22 @@ describe('decideRewrite: image Read', () => {
     expect(decideRewrite(NONE, read(false, 'vscode'))).toBe('rewrite')
     expect(decideRewrite(snap({ deny: ['Read(./private/**)'] }), read(true, 'vscode'))).toBe('skip')
   })
+
+  // HAND-DERIVED from https://code.claude.com/docs/en/permission-modes: bypassPermissions skips every prompt, the one a Read outside the working directory gets in other modes included, while a deny rule still applies. So an image outside it is approved there under the conditions every bypass rewrite meets (no Read rule that could match, no PermissionRequest hook, no rule source the hook cannot read, reads outside not blocked), and every other mode keeps the working-directory gate.
+  it('in bypassPermissions an image outside the working directory is approved only under the bypass conditions; every other mode leaves it to the prompt', () => {
+    const outside = path.join(path.dirname(CWD), 'elsewhere', 'shot.png')
+    const bypass: RewriteRequest = { ...read(false), mode: 'bypassPermissions', original: outside }
+    const clean = (): boolean => false
+    expect(decideRewrite(NONE, bypass, clean)).toBe('approve')
+    expect(decideRewrite(snap({ deny: ['Read(**/elsewhere/**)'] }), bypass, clean)).toBe('skip')
+    expect(decideRewrite(snap({ ask: ['Read(**/*.png)'] }), bypass, clean)).toBe('skip')
+    expect(decideRewrite(snap({ deny: ['Read(./.env)'] }), bypass, clean)).toBe('approve')
+    const hooked = snapshotFromDocs([{ role: 'user', json: { hooks: { PermissionRequest: [{ hooks: [{ type: 'command', command: 'x' }] }] } } }])
+    expect(decideRewrite(hooked, bypass, clean)).toBe('skip')
+    expect(decideRewrite(NONE, bypass, () => true)).toBe('skip')
+    expect(decideRewrite(snap({}, 'user', { blockReadsOutsideWorkingDirectories: true }), bypass, clean)).toBe('skip')
+    for (const mode of ['default', 'acceptEdits', 'plan', 'dontAsk', 'auto']) expect(decideRewrite(NONE, { ...bypass, mode }, clean), mode).toBe('skip')
+  })
 })
 
 describe('decideRewrite: Agent prompt', () => {

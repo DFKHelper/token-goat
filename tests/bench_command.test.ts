@@ -9,7 +9,12 @@ import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 
 import { currentCommit, loadCorpus, runBenchCommand, runCase, runCorpus } from '../src/cli_bench.js'
+import { bashOutputIdSync } from '../src/bash_output_cache.js'
+import { run } from '../src/bash_runner.js'
+import { scanForInjectionPatterns, UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { deliverCompressed, detectFromCommand } from '../src/tool_filters/index.js'
+import { fenceWithMatches } from '../src/untrusted_fence.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_CORPUS = path.join(HERE, 'fixtures', 'bench')
@@ -80,18 +85,41 @@ describe('bench corpus loading', () => {
 })
 
 describe('bench measures the shipping path', () => {
-  // The load-bearing test. If `runCase` ever stops routing through `deliverCompressed`, delivery and the benchmark can disagree -- and the benchmark is the thing that would keep saying the old number.
-  it('reports exactly the bytes deliverCompressed would hand to the model', () => {
+  // The load-bearing test. If `runCase` ever stops routing through the runner's delivery, delivery and the benchmark can disagree -- and the benchmark is the thing that would keep saying the old number. The expected bytes are composed here from the parts the runner prints, not from runCase's helper: a shipped rewrite costs the model its untrusted-content fence and its recall line as well as its marker, and the gate prices both, so a benchmark that counted the marker alone credited savings the model never got.
+  it('reports exactly the bytes the runner prints: the fenced rewrite, its marker and its recall line', () => {
+    const bytes = (s: string): number => Buffer.byteLength(s, 'utf8')
+    const fence = (s: string): string => fenceWithMatches(s, scanForInjectionPatterns(s), UNTRUSTED_TOOL_TAG)
     for (const c of loadCorpus(REPO_CORPUS)) {
       const detected = detectFromCommand(c.command)
       expect(detected, `${c.id}: corpus command no longer routes to a filter`).not.toBeNull()
-      const d = deliverCompressed(detected!.filter, c.output, '', c.exitCode, detected!.argv)
-      const expected = Buffer.byteLength(d.text + d.marker, 'utf8')
+      const trailer = `\n[token-goat] full output: bash-output ${bashOutputIdSync(c.command, c.output.trim())} --full`
+      const d = deliverCompressed(detected!.filter, c.output, '', c.exitCode, detected!.argv, { trailerBytes: bytes(trailer), framingBytes: (b) => bytes(fence(b)) - bytes(b) })
+      const printed = d.applied ? fence(d.untrusted) + d.ownNotices + d.marker + trailer : d.text
       const result = runCase(c)
-      expect(result.deliveredBytes, c.id).toBe(expected)
+      expect(result.deliveredBytes, c.id).toBe(bytes(printed))
       expect(result.filter, c.id).toBe(detected!.filter.name)
       expect(result.applied, c.id).toBe(d.applied)
+      if (d.applied) expect(result.deliveredBytes, `${c.id}: the fence and recall line are counted`).toBeGreaterThan(bytes(d.text + d.marker + trailer))
     }
+  })
+
+  // The same claim checked against the shipping runner itself rather than a composition of its parts: a command that prints a corpus case, compressed by `run` under the case's filter, prints as many bytes as the benchmark reports for that case. The recall id differs (it hashes the command), but it is always 16 hex digits, so the byte counts still match.
+  it('agrees with what token-goat compress prints for the same output', async () => {
+    const c = loadCorpus(REPO_CORPUS).find((x) => x.id === 'vitest-run')!
+    const detected = detectFromCommand(c.command)!
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-bench-run-'))
+    tempDirs.add(dir)
+    const src = path.join(dir, 'out.txt')
+    fs.writeFileSync(src, c.output, 'utf8')
+    const js = path.join(dir, 'print.js')
+    fs.writeFileSync(js, `process.stdout.write(require('fs').readFileSync(${JSON.stringify(src)}, 'utf8'))`, 'utf8')
+    let out = ''
+    await run(`"${process.execPath}" "${js}"`, { filterName: detected.filter.name, writeStdout: (x) => (out += x) })
+    const result = runCase(c)
+    expect(result.applied).toBe(true)
+    expect(withoutFenceNonces(out)).toContain('<untrusted-tool-output>')
+    expect(out).toMatch(/full output: bash-output [0-9a-f]{16} --full\n$/)
+    expect(Buffer.byteLength(out.replace(/\n$/, ''), 'utf8')).toBe(result.deliveredBytes)
   })
 
   it('credits a refused rewrite with no savings, because the raw output is what ships', () => {

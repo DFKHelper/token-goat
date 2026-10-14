@@ -8,12 +8,13 @@ vi.mock('../src/constants.js', async (importOriginal) => {
   return { ...original, configPath: () => _testConfigPath }
 })
 
-import { postBrowserImageHandler } from '../src/hooks_browser_image.js'
+import { browserResultBlocks, type BrowserBlocks } from '../src/hooks_browser_image.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { lastTabContextMatches } from '../src/session.js'
 import { summarize } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+import { withHarnessOverride } from './helpers/harness-env.js'
 import { bareArrayImagePayload } from './fixtures/mcp_bare_array_payloads.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
@@ -80,63 +81,79 @@ function imageEvent(dataB64: string, toolName = 'mcp__claude-in-chrome__computer
   })
 }
 
-describe('postBrowserImageHandler', () => {
-  it('shrinks an oversized inline screenshot and rewrites the output with a smaller data URL', async () => {
-    const result = await postBrowserImageHandler(imageEvent(largeJpegB64))
-    expect(result.hookType).toBe('rewriteOutput')
-    if (result.hookType === 'rewriteOutput') {
-      expect(result.updatedOutput).toContain('token-goat shrank an inline browser screenshot')
-      expect(result.updatedOutput).toContain('data:image/')
-      const dataUrlMatch = /data:image\/\w+;base64,([A-Za-z0-9+/=]+)/.exec(result.updatedOutput)
-      expect(dataUrlMatch).not.toBeNull()
-      expect(dataUrlMatch![1]!.length).toBeLessThan(largeJpegB64.length)
-    }
+/** The base64 payload of every image block the pass handed back. */
+function imageData(out: BrowserBlocks | null): string[] {
+  return (out?.blocks ?? []).filter((b) => b['type'] === 'image').map((b) => String((b['source'] as Record<string, unknown> | undefined)?.['data'] ?? b['data']))
+}
+
+/** token-goat's own notes, the blocks the caller keeps outside the fence. */
+function notes(out: BrowserBlocks | null): string[] {
+  return out === null ? [] : [...out.own].map((b) => String(b['text']))
+}
+
+/** Every text block's text, own notes included. */
+function texts(out: BrowserBlocks | null): string {
+  return (out?.blocks ?? []).filter((b) => b['type'] === 'text').map((b) => String(b['text'])).join('\n')
+}
+
+describe('browserResultBlocks', () => {
+  it('shrinks an oversized inline screenshot into a smaller image block of the same shape, with its note beside it', async () => {
+    const out = await browserResultBlocks(imageEvent(largeJpegB64))
+    expect(notes(out)).toEqual([expect.stringContaining('token-goat shrank an inline browser screenshot')])
+    const [data] = imageData(out)
+    expect(data).toBeDefined()
+    expect(data!.length).toBeLessThan(largeJpegB64.length)
+    const image = out!.blocks.find((b) => b['type'] === 'image')!
+    expect(image['source']).toMatchObject({ type: 'base64', media_type: expect.stringMatching(/^image\//) })
+    expect(texts(out)).not.toContain('data:image/')
+  })
+
+  it('shrinks an image block in MCP\'s own data/mimeType shape and hands it back in that shape', async () => {
+    const event = makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'mcp__playwright__browser_take_screenshot',
+      toolInput: {},
+      sessionId: 'test',
+      raw: { tool_response: [{ type: 'image', data: largeJpegB64, mimeType: 'image/jpeg' }] },
+    })
+    const out = await browserResultBlocks(event)
+    const image = out!.blocks.find((b) => b['type'] === 'image')!
+    expect(image['source']).toBeUndefined()
+    expect(image['mimeType']).toMatch(/^image\//)
+    expect(String(image['data']).length).toBeLessThan(largeJpegB64.length)
   })
 
   it('shrinks a screenshot delivered as a bare block array, with no content wrapper around it', async () => {
     // A bare `tool_response` array is a shape real MCP servers send (see tests/fixtures/mcp_bare_array_payloads.ts for the captured one). It passes a `typeof tr === 'object'` check and then has no `.content`, so reading only the wrapped shape returned null here and skipped image handling for the whole result without erroring.
     const raw = bareArrayImagePayload('mcp__claude-in-chrome__computer', largeJpegB64)
     const event = makeHookEvent({ eventName: 'post_tool_use', toolName: 'mcp__claude-in-chrome__computer', toolInput: {}, sessionId: 'test', raw })
-    const result = await postBrowserImageHandler(event)
-    expect(result.hookType).toBe('rewriteOutput')
-    if (result.hookType === 'rewriteOutput') {
-      expect(result.updatedOutput).toContain('token-goat shrank an inline browser screenshot')
-      expect(result.updatedOutput).toContain('Took a screenshot of the current page')
-      const dataUrlMatch = /data:image\/\w+;base64,([A-Za-z0-9+/=]+)/.exec(result.updatedOutput)
-      expect(dataUrlMatch).not.toBeNull()
-      expect(dataUrlMatch![1]!.length).toBeLessThan(largeJpegB64.length)
-    }
+    const out = await browserResultBlocks(event)
+    expect(notes(out)).toEqual([expect.stringContaining('token-goat shrank an inline browser screenshot')])
+    expect(texts(out)).toContain('Took a screenshot of the current page')
+    expect(imageData(out)[0]!.length).toBeLessThan(largeJpegB64.length)
   })
 
   it('replaces a screenshot it has already shown this session instead of sending the same pixels twice', async () => {
     // The second screenshot of an unchanged page is the one case where no image beats a smaller image: the notice answers the question the screenshot was taken to ask, in a hundred bytes.
-    const first = await postBrowserImageHandler(imageEvent(largeJpegB64))
-    expect(first.hookType).toBe('rewriteOutput')
-    if (first.hookType === 'rewriteOutput') {
-      expect(first.updatedOutput).toContain('data:image/')
-      expect(first.updatedOutput).not.toContain('identical to one already shown')
-    }
+    const first = await browserResultBlocks(imageEvent(largeJpegB64))
+    expect(imageData(first)).toHaveLength(1)
+    expect(texts(first)).not.toContain('identical to one already shown')
 
-    const second = await postBrowserImageHandler(imageEvent(largeJpegB64))
-    expect(second.hookType).toBe('rewriteOutput')
-    if (second.hookType === 'rewriteOutput') {
-      expect(second.updatedOutput).toContain('identical to one already shown')
-      expect(second.updatedOutput).not.toContain('data:image/')
-    }
+    const second = await browserResultBlocks(imageEvent(largeJpegB64))
+    expect(notes(second)).toEqual([expect.stringContaining('identical to one already shown')])
+    expect(imageData(second)).toEqual([])
   })
 
   // Provenance for the token figures below: HAND-DERIVED from Anthropic's published patch rule, computed here rather than read out of visionTokens. The fixture is 3000x3000. On the standard tier the API caps it at the largest square whose grid fits 1568 tokens, 39x39 = 1521, so 1521 is what withholding it saves before the replacement notice is paid for. tests/vision_tokens.test.ts pins the same arithmetic against the published table.
   it('credits a withheld repeat screenshot with the whole billed cost of the image, less the notice standing in for it', async () => {
-    await postBrowserImageHandler(imageEvent(largeJpegB64))
+    await browserResultBlocks(imageEvent(largeJpegB64))
 
     const before = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
-    const second = await postBrowserImageHandler(imageEvent(largeJpegB64))
-    expect(second.hookType).toBe('rewriteOutput')
-    if (second.hookType !== 'rewriteOutput') return
+    const second = await browserResultBlocks(imageEvent(largeJpegB64))
     const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
 
     // The replacement notice is 121 bytes, which this repository's text-token approximation prices at round(121 / 4) = 30. Pixels go out and text comes back on this branch, so the two sides are priced by their own rules rather than one rule applied to both.
-    expect(second.updatedOutput).toContain('not re-sent')
+    expect(notes(second).join('')).toContain('not re-sent')
     expect(delta).toBe(1521 - 30)
 
     // A guard against silently returning to a bytes-shaped figure: this fixture is megabytes of incompressible noise, so bytes/4 books over a million tokens for the same event.
@@ -148,8 +165,8 @@ describe('postBrowserImageHandler', () => {
     invalidateConfigCache()
 
     const before = summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0
-    const out = await postBrowserImageHandler(imageEvent(largeJpegB64))
-    expect(out.hookType).toBe('rewriteOutput')
+    const out = await browserResultBlocks(imageEvent(largeJpegB64))
+    expect(out).not.toBeNull()
     const delta = (summarize(30).by_kind['image_shrink']?.tokens_saved ?? 0) - before
 
     // 3000x3000 is capped at 69x69 = 4761 on the high-resolution tier; the 1568x1568 resize fits that tier untouched at 56x56 = 3136.
@@ -158,17 +175,14 @@ describe('postBrowserImageHandler', () => {
 
   it('still sends a genuinely different screenshot after one it has already shown', async () => {
     // The failure this rules out is a dedup keyed on something every screenshot shares -- it would pass the test above and silently blind the model to every page it visited afterwards.
-    await postBrowserImageHandler(imageEvent(largeJpegB64))
+    await browserResultBlocks(imageEvent(largeJpegB64))
 
-    const other = await postBrowserImageHandler(imageEvent(flatScreenshotB64))
-    expect(other.hookType).toBe('rewriteOutput')
-    if (other.hookType === 'rewriteOutput') {
-      expect(other.updatedOutput).toContain('data:image/')
-      expect(other.updatedOutput).not.toContain('identical to one already shown')
-    }
+    const other = await browserResultBlocks(imageEvent(flatScreenshotB64))
+    expect(imageData(other)).toHaveLength(1)
+    expect(texts(other)).not.toContain('identical to one already shown')
   })
 
-  it('passes through a tool result with no image blocks', async () => {
+  it('changes nothing in a tool result with no image blocks', async () => {
     const event = makeHookEvent({
       eventName: 'post_tool_use',
       toolName: 'mcp__claude-in-chrome__computer',
@@ -176,42 +190,30 @@ describe('postBrowserImageHandler', () => {
       sessionId: 'test',
       raw: { tool_response: { content: [{ type: 'text', text: 'no images here' }] } },
     })
-    const result = await postBrowserImageHandler(event)
-    expect(result.hookType).toBe('pass')
+    expect(await browserResultBlocks(event)).toBeNull()
   })
 
-  it('leaves a below-threshold image untouched (no rewrite fires for that reason alone)', async () => {
-    const result = await postBrowserImageHandler(imageEvent(smallPngB64))
-    expect(result.hookType).toBe('pass')
+  it('leaves a below-threshold image untouched', async () => {
+    expect(await browserResultBlocks(imageEvent(smallPngB64))).toBeNull()
   })
 
   it('shrinks a screenshot that is small in bytes but oversized in pixels, which the byte threshold alone would skip', async () => {
     // The regression this pins: shrinkImageBlock used to call shrinkImage with no options, so the 512 KB byte gate decided on its own and a 1920px screenshot at a few KB went through at full size. Vision bills pixels, not bytes, so that is the whole cost of the image left unpaid for. The file-Read path had a dimension probe for exactly this and the browser path did not.
     expect(flatScreenshotBytes).toBeLessThan(512 * 1024)
 
-    const result = await postBrowserImageHandler(imageEvent(flatScreenshotB64))
-
-    expect(result.hookType).toBe('rewriteOutput')
-    if (result.hookType === 'rewriteOutput') {
-      expect(result.updatedOutput).toContain('token-goat shrank an inline browser screenshot')
-      const dataUrlMatch = /data:image\/\w+;base64,([A-Za-z0-9+/=]+)/.exec(result.updatedOutput)
-      expect(dataUrlMatch).not.toBeNull()
-      expect(dataUrlMatch![1]!.length).toBeLessThan(flatScreenshotB64.length)
-    }
+    const out = await browserResultBlocks(imageEvent(flatScreenshotB64))
+    expect(notes(out)).toEqual([expect.stringContaining('token-goat shrank an inline browser screenshot')])
+    expect(imageData(out)[0]!.length).toBeLessThan(flatScreenshotB64.length)
   })
 
-  it('preserves an unrecognized content-block type (e.g. an MCP resource block) instead of silently dropping it when an image in the same result triggers a rewrite (regression: the loop only pushed image/text blocks to parts, so any other block type vanished from updatedOutput once anyChanged fired)', async () => {
+  it('keeps an unrecognized content-block type (e.g. an MCP resource block) when an image in the same result is shrunk', async () => {
     const resourceBlock = { type: 'resource', resource: { uri: 'file:///tmp/report.pdf', mimeType: 'application/pdf' } }
-    const result = await postBrowserImageHandler(imageEvent(largeJpegB64, 'mcp__claude-in-chrome__computer', [resourceBlock]))
-    expect(result.hookType).toBe('rewriteOutput')
-    if (result.hookType === 'rewriteOutput') {
-      expect(result.updatedOutput).toContain('file:///tmp/report.pdf')
-    }
+    const out = await browserResultBlocks(imageEvent(largeJpegB64, 'mcp__claude-in-chrome__computer', [resourceBlock]))
+    expect(out?.blocks).toContainEqual(resourceBlock)
   })
 
   it('ignores a non-browser MCP tool name', async () => {
-    const result = await postBrowserImageHandler(imageEvent(largeJpegB64, 'mcp__plugin_github_github__search_issues'))
-    expect(result.hookType).toBe('pass')
+    expect(await browserResultBlocks(imageEvent(largeJpegB64, 'mcp__plugin_github_github__search_issues'))).toBeNull()
   })
 
   it('ignores non-MCP tool calls', async () => {
@@ -221,8 +223,12 @@ describe('postBrowserImageHandler', () => {
       toolInput: {},
       raw: { tool_response: { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: largeJpegB64 } }] } },
     })
-    const result = await postBrowserImageHandler(event)
-    expect(result.hookType).toBe('pass')
+    expect(await browserResultBlocks(event)).toBeNull()
+  })
+
+  it('leaves the image alone on a harness that reads the rewrite as one string, where it could only arrive as base64 text', async () => {
+    const out = await withHarnessOverride('copilot_cli', () => browserResultBlocks(imageEvent(largeJpegB64)))
+    expect(out).toBeNull()
   })
 
   describe('Tab Context dedup', () => {
@@ -232,39 +238,32 @@ describe('postBrowserImageHandler', () => {
       Array.from({ length: 6 }, (_, i) => `  • tabId ${i + 1}: "Tab number ${i + 1}" (https://example.com/page-${i + 1})`).join('\n')
 
     it('passes a first-seen Tab Context block through verbatim and records it', async () => {
-      const result = await postBrowserImageHandler(imageEvent(largeJpegB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
-      expect(result.hookType).toBe('rewriteOutput')
-      if (result.hookType === 'rewriteOutput') {
-        expect(result.updatedOutput).toContain('Tab Context:')
-      }
+      const out = await browserResultBlocks(imageEvent(largeJpegB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+      expect(texts(out)).toContain('Tab Context:')
       expect(lastTabContextMatches(tabContextText)).toBe(true)
     })
 
     it('shortens an identical Tab Context repeat to a placeholder', async () => {
-      await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
-      const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
-      expect(result.hookType).toBe('rewriteOutput')
-      if (result.hookType === 'rewriteOutput') {
-        expect(result.updatedOutput).not.toContain('Available tabs')
-        expect(result.updatedOutput).toContain('(tabs unchanged since last check)')
-      }
+      await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+      const out = await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+      expect(texts(out)).not.toContain('Available tabs')
+      expect(texts(out)).toContain('(tabs unchanged since last check)')
     })
 
     it('updates the cache for a changed Tab Context without forcing a rewrite it does not need', async () => {
-      await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+      await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
       const changed = '\n\nTab Context:\n- Available tabs:\n  • tabId 2: "Other Tab" (https://example.com/)'
-      const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: changed }]))
+      const out = await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: changed }]))
       // Below-threshold image + a non-repeat Tab Context (first-seen-or-changed passes through verbatim, which is a no-op) means nothing actually needs rewriting this call.
-      expect(result.hookType).toBe('pass')
+      expect(out).toBeNull()
       expect(lastTabContextMatches(changed)).toBe(true)
     })
 
     it('leaves a below-floor repeated Tab Context untouched -- the placeholder would not clear the net-savings floor', async () => {
       // A tiny one-tab list: shrinking it to the ~34-byte placeholder saves too few bytes to clear the default min_net_savings_bytes=100 floor.
       const tinyTabContext = '\n\nTab Context:\n- Available tabs:\n  • tabId 1: "New Tab" (chrome://newtab/)'
-      await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tinyTabContext }]))
-      const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tinyTabContext }]))
-      expect(result.hookType).toBe('pass')
+      await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tinyTabContext }]))
+      expect(await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tinyTabContext }]))).toBeNull()
     })
 
     // Proves the shared net-benefit gate (tool_filters/base.ts::isRewriteWorthwhile, resolveMinNetSavingsBytes) is actually wired into this path: cranking the same config key/env var bash_runner already used (TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES) to an impossible floor flips an otherwise-rewritable repeat back to a pass-through.
@@ -272,9 +271,8 @@ describe('postBrowserImageHandler', () => {
       const prevFloor = process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
       process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = '10000000'
       try {
-        await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
-        const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
-        expect(result.hookType).toBe('pass')
+        await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+        expect(await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))).toBeNull()
       } finally {
         if (prevFloor === undefined) delete process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES']
         else process.env['TOKEN_GOAT_BASH_MIN_NET_SAVINGS_BYTES'] = prevFloor
@@ -282,23 +280,20 @@ describe('postBrowserImageHandler', () => {
     })
 
     it('shortens an above-floor repeated Tab Context to the placeholder', async () => {
-      await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
-      const result = await postBrowserImageHandler(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
-      expect(result.hookType).toBe('rewriteOutput')
-      if (result.hookType === 'rewriteOutput') {
-        expect(result.updatedOutput).not.toContain('Available tabs')
-        expect(result.updatedOutput).toContain('(tabs unchanged since last check)')
-      }
+      await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+      const out = await browserResultBlocks(imageEvent(smallPngB64, 'mcp__claude-in-chrome__computer', [{ type: 'text', text: tabContextText }]))
+      expect(texts(out)).not.toContain('Available tabs')
+      expect(texts(out)).toContain('(tabs unchanged since last check)')
+      expect(notes(out)).toEqual([])
     })
   })
 
-  it('image_shrink.enabled=false disables the whole hook', async () => {
+  it('image_shrink.enabled=false disables the whole pass', async () => {
     const cfg = defaultConfig()
     cfg.image_shrink.enabled = false
     saveConfig(cfg)
     invalidateConfigCache()
 
-    const result = await postBrowserImageHandler(imageEvent(largeJpegB64))
-    expect(result.hookType).toBe('pass')
+    expect(await browserResultBlocks(imageEvent(largeJpegB64))).toBeNull()
   })
 })

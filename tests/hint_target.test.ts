@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { relayInProcess, buildEvent } from '../src/relay.js'
 import { handlersFor, runHook } from '../src/hook_registry.js'
-import { HINT_PLACEHOLDERS, headingTreeParts, hintTarget, hintTargetFromNames, sharpenRepeatedDeny, sliceCommand, sliceForPath, type HintTarget } from '../src/hint_target.js'
+import { headingTreeParts, hintTarget, hintTargetFromNames, sharpenRepeatedDeny, sliceCommand, sliceForPath, type HintTarget, type RealHintTarget } from '../src/hint_target.js'
 import { leadWithCommand, stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { preBashHandler } from '../src/hooks_bash.js'
 import { preReadHandler } from '../src/hooks_read.js'
@@ -21,6 +21,11 @@ import { extractMarkdownHeadings } from '../src/hints/markdown_hints.js'
 import { recordFileRead } from '../src/session.js'
 import { normalizePath } from '../src/paths.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+
+/** The name a resolved target carries, or undefined for one that resolved nothing (which has no name to read). */
+function nameOf(target: HintTarget): string | undefined {
+  return target.real ? target.name : undefined
+}
 
 let dir: string
 let seq = 0
@@ -97,14 +102,14 @@ describe('hintTarget names what the file holds', () => {
   it('skips a YAML front matter block, which the heading scan reads as a setext heading over its closing ---', () => {
     // HAND-DERIVED: README.md in this repository opens this way; `section "README.md::permalink: /"` runs and returns two lines of metadata.
     const p = write('README.md', '---\nlayout: default\npermalink: /\n---\n\n# Project\n\nintro\n\n## Quick start\n\ntext\n')
-    expect(hintTarget(p, 'section').name).toBe('Quick start')
+    expect(nameOf(hintTarget(p, 'section'))).toBe('Quick start')
     const text = fs.readFileSync(p, 'utf8')
-    expect(hintTarget(p, 'section', { content: text }).name).toBe('Quick start')
+    expect(nameOf(hintTarget(p, 'section', { content: text }))).toBe('Quick start')
   })
 
   it('prefers the content the caller already holds over the file on disk', () => {
     const p = write('held.md', '## On Disk\n\nx\n')
-    expect(hintTarget(p, 'section', { content: '## In Hand\n\ny\n' }).name).toBe('In Hand')
+    expect(nameOf(hintTarget(p, 'section', { content: '## In Hand\n\ny\n' }))).toBe('In Hand')
   })
 
   it.each([
@@ -112,15 +117,15 @@ describe('hintTarget names what the file holds', () => {
     ['a file with no headings', 'plain.md', 'just prose\n', 'section'],
     ['a JSON array, which has no top-level key', 'arr.json', '[1, 2, 3]\n', 'key'],
     ['a SQL file with no CREATE', 'q.sql', 'SELECT 1;\n', 'table'],
-  ] as const)('falls back to the placeholder for %s', (_, name, body, slice) => {
+  ] as const)('resolves no name, and carries none, for %s', (_, name, body, slice) => {
     const p = body === null ? path.join(dir, name) : write(name, body)
-    expect(hintTarget(p, slice)).toEqual({ name: HINT_PLACEHOLDERS[slice], real: false, slice })
-    expect(hintTarget(p, slice, { placeholder: 'HeadingName' }).name).toBe('HeadingName')
+    expect(hintTarget(p, slice)).toEqual({ real: false, slice })
+    expect(hintTarget(p, slice)).not.toHaveProperty('name')
   })
 
   it('refuses every hostile heading and falls back rather than printing one', () => {
     const p = write('hostile.md', doc(HOSTILE, 40))
-    expect(hintTarget(p, 'section')).toEqual({ name: 'SectionHeading', real: false, slice: 'section' })
+    expect(hintTarget(p, 'section')).toEqual({ real: false, slice: 'section' })
   })
 
   it.each(SINGLE_QUOTED)('takes the heading %s, which quotedArg single-quotes', (heading) => {
@@ -142,17 +147,17 @@ describe('hintTarget names what the file holds', () => {
 
   it('still names a heading holding a double quote, which section resolves', () => {
     const p = write('quoted.md', '## Using "foo" here\n\nx\n')
-    expect(hintTarget(p, 'section').name).toBe('Using "foo" here')
+    expect(nameOf(hintTarget(p, 'section'))).toBe('Using "foo" here')
   })
 
   it('steps past a hostile heading to the next usable one', () => {
     const p = write('mixed.md', '## $(touch pwned)\n\nx\n\n## Install\n\ny\n')
-    expect(hintTarget(p, 'section').name).toBe('Install')
+    expect(nameOf(hintTarget(p, 'section'))).toBe('Install')
   })
 })
 
 describe('sliceCommand prints the command each slice runs through', () => {
-  const t = (name: string, slice: HintTarget['slice']): HintTarget => ({ name, real: true, slice })
+  const t = (name: string, slice: HintTarget['slice']): RealHintTarget => ({ name, real: true, slice })
   it.each([
     ['doc.md', t('Install', 'section'), 'token-goat section "doc.md::Install"'],
     ['cfg.toml', t('server', 'section'), 'token-goat section "cfg.toml::server"'],
@@ -211,7 +216,8 @@ describe('a repeated identical deny, through the real relay', () => {
   })
 
   it('gives the second copy as the command and one line, and the first copy in full', async () => {
-    write('guide.md', doc(REAL, 200))
+    // Past the size `cat` passes under, so the call is refused at all.
+    write('guide.md', doc(REAL, 4000))
     const session = uniq('repeat')
     const first = denyOf(await relayInProcess('pre_tool_use', catPre(session, 'guide.md')))
     const second = denyOf(await relayInProcess('pre_tool_use', catPre(session, 'guide.md')))
@@ -249,8 +255,8 @@ interface Site {
   readonly name: string
   /** The text the site prints when it names `heading`. */
   readonly real: (heading: string) => string
-  /** The text the site prints when nothing usable was found. */
-  readonly fallback: string
+  /** The text the site prints when nothing usable was found: a command that runs without a name, never one carrying a stand-in. */
+  readonly fallback: string | RegExp
   /** Whether the relay's suggestion guard sees this output (deny and context do; a rewritten tool result does not). */
   readonly guarded: boolean
   /** Headings for the fallback case: none where the site speaks without them, the hostile set where it needs headings to speak at all. */
@@ -262,11 +268,12 @@ const SITES: Site[] = [
   {
     name: 'hooks_bash.ts cat deny',
     real: (h) => 'Run `token-goat section "guide.md::' + h + '"`',
-    fallback: 'Run `token-goat section "guide.md::SectionHeading"`',
+    fallback: 'Run `token-goat read "guide.md::1-80"`',
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {
-      write('guide.md', doc(headings))
+      // Past the size `cat` passes under, which the other sites' default padding is not.
+      write('guide.md', doc(headings, 4000))
       const out = preBashHandler(makeHookEvent({ toolName: 'Bash', toolInput: { command: 'cat guide.md' }, sessionId: uniq('bash'), raw: { cwd: dir } }))
       if (out.hookType !== 'deny') throw new Error('expected a deny, got ' + out.hookType)
       return out.message
@@ -275,7 +282,7 @@ const SITES: Site[] = [
   {
     name: 'hooks_read.ts memory re-read deny',
     real: (h) => '::' + h + '"` to extract one section.',
-    fallback: '::SectionHeading"` to extract one section.',
+    fallback: '::1-80"` to extract one section.',
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {
@@ -290,7 +297,8 @@ const SITES: Site[] = [
   {
     name: 'hooks_read.ts large-markdown heading-tree deny',
     real: (h) => '::' + h + '"` to read one section.\n',
-    fallback: '::Heading Name"',
+    // With no heading to lead with, the deny opens on the heading tree itself.
+    fallback: /^\[tg\] Large markdown file \(\d+ headings\)\. Use token-goat section with a heading from the list below/,
     guarded: true,
     fallbackHeadings: HOSTILE,
     run: async (headings) => {
@@ -312,7 +320,7 @@ const SITES: Site[] = [
   {
     name: 'hooks_grep.ts structural heading search',
     real: (h) => 'Run `token-goat section "guide.md::' + h + '"`',
-    fallback: 'Run `token-goat section "guide.md::SectionHeading"`',
+    fallback: 'Run `token-goat read "guide.md::1-80"`',
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {
@@ -329,8 +337,9 @@ const SITES: Site[] = [
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {
-      const p = write(uniq('edited') + '.md', doc(headings))
-      const out = postEditHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Write', toolInput: { file_path: p }, sessionId: uniq('edit') }))
+      // An Edit, padded past hints.reread_deny_min_bytes: a Write, or an Edit of a smaller file, draws no hint at all.
+      const p = write(uniq('edited') + '.md', doc(headings, 9000))
+      const out = postEditHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Edit', toolInput: { file_path: p }, sessionId: uniq('edit') }))
       if (out.hookType !== 'context') throw new Error('expected context, got ' + out.hookType)
       return out.context
     },
@@ -338,7 +347,7 @@ const SITES: Site[] = [
   {
     name: 'hooks_mcp.ts oversized-result notice',
     real: (h) => '--section "' + h + '"',
-    fallback: "--section '<heading>'",
+    fallback: /Slicing commands:\n {2}token-goat mcp-output \S+ --head 50/,
     guarded: false,
     fallbackHeadings: [],
     run: async (headings) => {
@@ -351,7 +360,7 @@ const SITES: Site[] = [
   {
     name: 'hooks_skill.ts oversized skill deny',
     real: (h) => 'skill-section "SKILL" "' + h + '"',
-    fallback: 'skill-section "SKILL" "<heading>"',
+    fallback: ' Use `token-goat skill-body "SKILL"` for the full body',
     guarded: true,
     fallbackHeadings: HOSTILE,
     run: async (headings) => {
@@ -366,7 +375,7 @@ const SITES: Site[] = [
   {
     name: 'fold_structure.ts large-markdown outline notice',
     real: (h) => 'Run token-goat section "guide.md::' + h + '"',
-    fallback: 'Run token-goat section "guide.md::<Heading>"',
+    fallback: 'Run token-goat outline "guide.md" for every heading with its line range.',
     guarded: false,
     fallbackHeadings: HOSTILE,
     run: async (headings) => {
@@ -384,12 +393,13 @@ describe.each(SITES)('$name', (site) => {
   it('leads with a heading the file really holds', async () => {
     const text = await site.run(REAL)
     expect(text).toContain(site.real('Install'))
-    expect(text).not.toContain(site.fallback)
+    expect(text).not.toMatch(site.fallback)
   })
 
-  it('falls back to the placeholder when nothing usable is found', async () => {
+  it('falls back to a command that runs, with no stand-in name, when nothing usable is found', async () => {
     const text = await site.run(site.fallbackHeadings)
-    expect(text).toContain(site.fallback)
+    expect(text).toMatch(site.fallback)
+    expect(text).not.toMatch(/SectionHeading|Heading Name|<heading>|<Heading>|SymbolName/)
   })
 
   it('prints a command carrying a normal name that the suggestion guard leaves unchanged', async () => {
@@ -405,7 +415,7 @@ describe.each(SITES)('$name', (site) => {
 
   it('keeps a hostile heading out of every command, so the guard has nothing to drop and the message survives whole', async () => {
     const text = await site.run(HOSTILE)
-    expect(text).toContain(site.fallback)
+    expect(text).toMatch(site.fallback)
     for (const span of commandSpans(text)) for (const mark of HOSTILE_MARKS) expect(span).not.toContain(mark)
     if (site.guarded) expect(stripUnsafeSuggestions(text)).toBe(text)
   })
@@ -489,8 +499,8 @@ describe('hintTargetFromNames', () => {
   // HAND-DERIVED: names built from the characters the relay guard and displaySafeText act on; none was read off an index.
   it('allows ordinary identifiers and headings', () => {
     expect(hintTargetFromNames(['parseAst'], 'symbol')).toMatchObject({ name: 'parseAst', real: true })
-    expect(hintTargetFromNames(['MyClass_v2'], 'symbol').name).toBe('MyClass_v2')
-    expect(hintTargetFromNames(['Section 1 - Introduction'], 'section').name).toBe('Section 1 - Introduction')
+    expect(nameOf(hintTargetFromNames(['MyClass_v2'], 'symbol'))).toBe('MyClass_v2')
+    expect(nameOf(hintTargetFromNames(['Section 1 - Introduction'], 'section'))).toBe('Section 1 - Introduction')
   })
 
   it('keeps names the relay guard lets through once quoted', () => {
@@ -499,8 +509,8 @@ describe('hintTargetFromNames', () => {
     }
   })
 
-  it('answers with the placeholder when nothing usable is left', () => {
-    expect(hintTargetFromNames([], 'symbol')).toMatchObject({ name: 'SymbolName', real: false })
+  it('answers with no name when nothing usable is left', () => {
+    expect(hintTargetFromNames([], 'symbol')).toEqual({ real: false, slice: 'symbol' })
     expect(hintTargetFromNames(['a'.repeat(121)], 'symbol').real).toBe(false)
     expect(hintTargetFromNames(['foo::bar'], 'symbol').real).toBe(false)
     expect(hintTargetFromNames(['foo`id`'], 'symbol').real).toBe(false)
@@ -517,7 +527,7 @@ describe('hintTargetFromNames', () => {
 
   it('never alters a name: surrounding whitespace is refused, not trimmed', () => {
     expect(hintTargetFromNames(['  Sp  '], 'symbol').real).toBe(false)
-    expect(hintTargetFromNames(['  Sp  ', 'Next'], 'symbol').name).toBe('Next')
+    expect(nameOf(hintTargetFromNames(['  Sp  ', 'Next'], 'symbol'))).toBe('Next')
   })
 
   it('falls through an unsafe first name to the next safe one', () => {

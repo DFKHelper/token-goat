@@ -40,6 +40,14 @@ function outermostProjectRoot(filePath: string): string | undefined {
   }
 }
 
+/** Directories a tool fills with its own output snapshots: the Playwright CLI and the Playwright MCP server save every page's accessibility tree there as `page-<timestamp>.yml`. The walk already skips them as hidden directories, but `index` lists a git repo through `git ls-files`, so a repo that commits them indexed and embedded every snapshot, and in this repo 8 of the 20 `search "updatedToolOutput WebSearch"` hits came from two of those files. No source lives in them, so they are skipped always rather than through `indexing.skip_dirs`. */
+const TOOL_OUTPUT_DIRS: ReadonlySet<string> = new Set(['.playwright-cli', '.playwright-mcp'])
+
+/** True when a directory segment of `filePath` below the project root is one of {@link TOOL_OUTPUT_DIRS}. Checked beside parser.ts's isParseSkipEligible at every site that decides what reaches the index (cmdIndex, the worker's indexer and drain, the read commands' indexFileSyncPinned) and by reconcile, which re-queues a snapshot an older index still holds so the drain purges it. It lives here rather than in parser.ts because every byte of parser.ts is in PARSER_FINGERPRINT, and moving that stamp makes every user reparse every language. */
+export function isToolOutputPath(filePath: string, projectRoot?: string): boolean {
+  return hasSkipSegmentBelowRoot(filePath, projectRoot, (seg) => TOOL_OUTPUT_DIRS.has(foldPath(seg)))
+}
+
 /** True when a directory segment of `filePath` (the file name excluded) that lies below the project root satisfies `isSkipSegment`. `projectRoot` is the root the caller already knows (a walk root, a resolved project root); when omitted it is derived from project markers, and only once some segment matches at all, so the marker probing is not paid on the common path. A path outside the given root, or with no derivable root, is tested whole: the conservative answer, identical to the old behavior. */
 export function hasSkipSegmentBelowRoot(filePath: string, projectRoot: string | undefined, isSkipSegment: (segment: string) => boolean): boolean {
   const dirSegments = pathSegments(filePath).slice(0, -1)

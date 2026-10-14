@@ -251,6 +251,12 @@ describe('PowerShell Heredoc and Inline Script Adaptation', () => {
       expect(withoutLoader(adapted)).toMatch(/^python3 -u -c LOADER x[0-9a-f]+ arg1 arg2$/)
     })
 
+    // HAND-DERIVED: a backslash before a heredoc's delimiter quotes it as surely as quote marks do (bash manual, "Here Documents"), so a `<<\EOF` body is data; read as code, the apostrophe in it opened a string that ran to the end of the command, and the python -c after the heredoc was left unadapted.
+    it('reads past the body of a backslash-quoted heredoc to the code after it', () => {
+      const input = `cat > notes.txt <<\\EOF\nit's a note\nEOF\npython -c "print('x')"`
+      expect(adaptInlinePython(input).startsWith(`cat > notes.txt <<\\EOF\nit's a note\nEOF\npython -c $(& { param($TgS)`)).toBe(true)
+    })
+
     it('handles chained statements with python -c', () => {
       const input = `Write-Output "part1"; python -c "print('part2')"; Write-Output "part3"`
       const adapted = adaptInlinePython(input)

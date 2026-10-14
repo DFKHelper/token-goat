@@ -1,6 +1,6 @@
 // The `token-goat compress` wrapper path (src/bash_runner.ts) must credit a Bash saving against the harness delivery cap, not against the full command output. This is the path that produced the bulk of the over-credited rows in the real ledger: every `bash_compress:<filtername>` stat comes from here, and the largest single row credited a multi-megabyte output the model never received.
 //
-// FIXTURE PROVENANCE - The 20,000-byte cap is CAPTURE from the recorded Claude Code session corpus (smallest persisted Bash tool result 20,013 bytes; largest non-persisted 19,990; a 23-byte gap with nothing between). No transcript content appears here, only that boundary number. - Expected byte/token figures are HAND-DERIVED from the cap and the emitted body's own length, never read back from the producer's savings formula.
+// FIXTURE PROVENANCE - The 29,706-character cap is CAPTURE from this machine's Claude Code transcripts on 2.1.220 to 2.1.296: the longest Bash result delivered inline held 29,706 characters, and every persisted result whose saved file survived held 30,695 or more (src/delivery_cap.ts carries the full provenance). No transcript content is reproduced here, only that boundary number. - Expected byte/token figures are HAND-DERIVED from the cap and the emitted body's own length, never read back from the producer's savings formula.
 //
 // recordStat is mocked WITHOUT passthrough, so this file writes to no database at all.
 
@@ -18,7 +18,7 @@ vi.mock('../src/stats.js', async (importOriginal) => {
 import { run } from '../src/bash_runner.js'
 import { recordStat } from '../src/stats.js'
 
-const CAP = 20_000
+const CAP = 29_706
 
 let scriptDir: string
 

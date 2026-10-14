@@ -99,6 +99,11 @@ describe('ANSI formatting', () => {
     expect(result).not.toContain('\x1b')
   })
 
+  it('stripAnsiEscapes removes a terminated DCS or APC string whole, payload and all, now that a payload ends at the first ESC', () => {
+    expect(stripAnsiEscapes('before\x1bPq#0;2;0;0;0#0~~\x1b\\after')).toBe('beforeafter')
+    expect(stripAnsiEscapes('before\x1b_Gf=100;AAAA\x1b\\after')).toBe('beforeafter')
+  })
+
   it('stripAnsiEscapes drops a bare CSI introducer with no final byte at end of input (regression: [ was missing from the bare-escape fallback range)', () => {
     const truncated = 'before text\x1b['
     const result = stripAnsiEscapes(truncated)

@@ -8,6 +8,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 // Importing relay registers every hook module for its side effects, so both the matcher below and runHook dispatch through the real production registry rather than a test-local subset.
 import { buildEvent } from '../../src/relay.js'
 import { runHook, toolMatcherFor } from '../../src/hook_registry.js'
+import { bashOutputIdSync, storeBashOutputSync } from '../../src/bash_output_cache.js'
+import { runnerResultDigest } from '../../src/bash_runner.js'
+import { withoutEscapes } from '../../src/injection_scan.js'
+import { stripAnsiEscapes } from '../../src/render/ansi.js'
 
 /** A live-shaped AWS access key id — `secret_redact.ts`'s `aws_access_key` pattern. */
 const SECRET = 'AKIAABCDEFGHIJKLMNOP'
@@ -72,12 +76,30 @@ function responseShapePairs(): { first: Record<string, unknown>; second: Record<
   }
   // The credential goes BEFORE the `## Approved Plan:` marker on purpose. That handler's rewrite keeps the text up to the marker and discards the echoed body after it, so a secret placed in the body would be dropped by the truncation rather than by any redaction -- the assertion would pass while proving nothing about whether the handler redacts.
   const plan = `User has approved your plan. Context: AWS_ACCESS_KEY_ID=${SECRET}\n\n## Approved Plan:\n${PLAN_BODY}`
+  // Colour codes around a short build log, so the ANSI-only strip is the pass that rewrites it: that pass emits the command's bytes minus escapes, and shipped them unredacted. The same bytes both times, so the rerun delta stays out of the way on the second call.
+  const colour = (s: string): string => `\x1b[32m${s}\x1b[0m`
+  const ansi = Array.from({ length: 30 }, (_, i) => colour(`compiled module ${i}`)).join('\n') + `\n${colour(`export AWS_ACCESS_KEY_ID=${SECRET}`)}\n`
   return [
     { first: { output: clean, exit_code: 0 }, second: { output: withSecret, exit_code: 0 } },
     { first: { content: [{ type: 'text', text: report }] }, second: { content: [{ type: 'text', text: report }] } },
     { first: { output: plan }, second: { output: plan } },
     { first: { output: grepHits.join('\n') }, second: { output: grepHits.join('\n') } },
+    // Claude Code's real WebSearch shape, whose summary strings sit inside `results` beside the hit objects, so the WebSearch handler rewrites them in place through `updatedToolResponse` rather than through any field `updatedOutput` stands in for.
+    { first: webSearchResponse(withSecret), second: webSearchResponse(withSecret) },
+    // The credential only in a hit object's URL: hit objects reach the model as "Links: <json>", outside the fence, so they are redacted where they sit.
+    { first: webSearchResponse(clean, `https://example.com/deploy?key=${SECRET}`), second: webSearchResponse(clean, `https://example.com/deploy?key=${SECRET}`) },
+    { first: { stdout: ansi, stderr: '' }, second: { stdout: ansi, stderr: '' } },
   ]
+}
+
+/** CAPTURE — Claude Code's WebSearch `tool_response` key set, `{query, results, durationSeconds, searchCount}`, with `results` holding a hit object and the model's summary string. */
+function webSearchResponse(summary: string, url = 'https://example.com/deploy'): Record<string, unknown> {
+  return {
+    query: 'deploy config',
+    results: [{ tool_use_id: 'srvtoolu_01', content: [{ title: 'Deploy notes', url }] }, summary],
+    durationSeconds: 1.5,
+    searchCount: 1,
+  }
 }
 
 /** Tool inputs picked so each handler's own command/id gate is satisfied where it has one. */
@@ -86,6 +108,9 @@ function toolInputFor(toolName: string): Record<string, unknown> {
     // Compound, so it reaches the post-hook's generic compressor rather than the pre-hook wrapper.
     case 'Bash':
       return { command: 'npm install && npm run build' }
+    // A statement list, which the PowerShell output path hands to the generic compressor.
+    case 'PowerShell':
+      return { command: 'npm install; npm run build' }
     case 'BashOutput':
       return { bash_id: 'bash-1' }
     case 'TaskOutput':
@@ -134,7 +159,8 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
           rewrote++
           rewroteTools.add(toolName)
           // updatedBlocks is scanned beside updatedOutput, not instead of it: a rewrite that emits blocks ships them in place of the string, so reading only the string would certify a payload the model never receives while the one it does receive goes unread. The blocks are copied out of the tool's own result, which is exactly where a live credential would be.
-          const emitted = result.updatedOutput + JSON.stringify(result.updatedBlocks ?? [])
+          // updatedToolResponse likewise: on Claude Code it replaces the string outright.
+          const emitted = result.updatedOutput + JSON.stringify(result.updatedBlocks ?? []) + JSON.stringify(result.updatedToolResponse ?? {})
           if (emitted.includes(SECRET)) leaked.push(`${toolName} (shape ${i}, call ${call + 1})`)
         }
       }
@@ -154,6 +180,7 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
       'BashOutput',
       'ExitPlanMode',
       'Grep',
+      'PowerShell',
       'Task',
       'TaskOutput',
       'WebFetch',
@@ -162,5 +189,74 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
       'task',
     ])
     expect(rewrote, 'fixtures must actually reach at least one handler rewrite branch').toBeGreaterThan(0)
+  })
+
+  // The heartbeat strip on a wrapped command re-emits a result token-goat did not write, which the per-tool sweep above never reaches: it needs a `token-goat compress` command and a result ending with the runner's recall line for an output stored under that command, with the digest of that result the runner stores beside it, so this case builds all three.
+  it('redacts the credential out of a wrapped result it takes the compress heartbeat out of', async () => {
+    const inner = 'npm run build'
+    const captured = `vite build\nexport AWS_ACCESS_KEY_ID=${SECRET}`
+    const printed = `vite build\nexport AWS_ACCESS_KEY_ID=${SECRET}\n[token-goat] full output: bash-output ${bashOutputIdSync(inner, captured, null)} --full\n`
+    storeBashOutputSync(inner, captured, 0, null, runnerResultDigest(printed))
+    const stdout = `[token-goat compress] still running, 15s elapsed\n${printed}`
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: 'Bash',
+        tool_input: { command: `token-goat compress -c '${inner}'` },
+        session_id: 'guard-heartbeat',
+        tool_response: { stdout, stderr: '', interrupted: false, isImage: false },
+      }),
+    )
+    expect(result.hookType, 'the fixture must reach the heartbeat rewrite or this case tests nothing').toBe('rewriteOutput')
+    const emitted = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
+    expect(emitted).not.toContain('still running')
+    expect(emitted).not.toContain(SECRET)
+  })
+
+  // The curl HTML fold is a Bash rewrite the per-tool sweep above never reaches: its Bash fixture is a compound build, and the fold needs an unwrapped `curl` GET whose output sniffs as an HTML page. The credential sits in the article text, which extractCleanText keeps.
+  it('redacts the credential out of a curl HTML page it folds to text', async () => {
+    const page =
+      '<!DOCTYPE html><html><head><title>Deploy notes</title>' +
+      '<style>.filler{color:#000;}</style>\n'.repeat(700) +
+      `</head><body><article><p>Set AWS_ACCESS_KEY_ID=${SECRET} before the deploy step.</p></article></body></html>`
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: 'Bash',
+        tool_input: { command: 'curl https://example.com/deploy-notes' },
+        session_id: 'guard-curl-html',
+        tool_response: { stdout: page, stderr: '', interrupted: false, isImage: false },
+      }),
+    )
+    expect(result.hookType, 'the fixture must reach the curl HTML fold or this case tests nothing').toBe('rewriteOutput')
+    const emitted = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
+    expect(emitted).toContain('curl HTML body cleaned')
+    expect(emitted).toContain('before the deploy step')
+    expect(emitted).not.toContain(SECRET)
+  })
+  // A pure file read is a Bash surface the sweep above never reaches either: a `sed -n` range that overlaps one served earlier in the session is withheld stretch by stretch and the rest shipped in a rewrite, and that rewrite carried the command's own unserved rows unredacted, fenced, with a colour-split key joined by the fence. HAND-DERIVED: lines 100-200 are served first, so the second read withholds them and ships lines 1-99, the fifth of which carries the key.
+  it('redacts or declines a served-line elision of a shell file read whose unserved rows hold a credential', async () => {
+    const fileLines = (lo: number, hi: number, fifth: string): string => {
+      const out: string[] = []
+      for (let n = lo; n <= hi; n++) out.push(n === 5 ? fifth : `line ${n}: ${'x'.repeat(60)}`)
+      return out.join('\n')
+    }
+    const read = (sessionId: string, command: string, stdout: string) =>
+      runHook(buildEvent('post_tool_use', { tool_name: 'Bash', tool_input: { command }, session_id: sessionId, tool_response: { stdout, stderr: '', interrupted: false, isImage: false } }))
+    const shapes: [string, string][] = [
+      ['clean', 'line 5: nothing secret here'],
+      ['plain key', `export AWS_ACCESS_KEY_ID=${SECRET}`],
+      ['colour-split key', `export AWS_ACCESS_KEY_ID=${SECRET.slice(0, 4)}\x1b[0m\x1b[1;31m${SECRET.slice(4)}\x1b[0m`],
+    ]
+    for (const [label, fifth] of shapes) {
+      const sessionId = `guard-served-elide-${label.replace(/ /g, '-')}`
+      await read(sessionId, "sed -n '100,200p' notes.log", fileLines(100, 200, fifth))
+      const result = await read(sessionId, "sed -n '1,200p' notes.log", fileLines(1, 200, fifth))
+      const emitted = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
+      if (label === 'clean') {
+        expect(result.hookType, 'the clean pair must reach the served-line elision or this case tests nothing').toBe('rewriteOutput')
+        expect(emitted).toContain('lines 100-200 were already served')
+        continue
+      }
+      for (const view of [emitted, stripAnsiEscapes(emitted), withoutEscapes(emitted)]) expect(view, label).not.toContain(SECRET)
+    }
   })
 })

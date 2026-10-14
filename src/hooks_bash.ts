@@ -2,11 +2,11 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { leadWithCommand, docSectionHint, fileSubject, nameSubject, quotedArg, quotedArgs, sentenceStart, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { leadWithCommand, docTargetHint, fileSubject, nameSubject, quotedArg, sentenceStart, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, dropFileLineRangesIfChanged, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
+import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, dropFileLineRangesIfChanged, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession, wasFileFullyReadThisSession } from './session.js'
 import { resolveIndexPath, displaySafePath, hostPathOfTypedPath, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -19,7 +19,7 @@ import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
 import { agentTypeOf, loadCodexRules, loadingHiddenRuleCheck, permissionNeutralRewrite, readHintCrossesRule, shellPathWords } from './rewrite_permission.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
-import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
+import { hintTarget, sectionOrRangeCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 import {
@@ -89,17 +89,39 @@ import {
   compressionOptedOut,
 } from './bash_extractors.js'
 import { countTextLines, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
+import { FILE_TYPE_THRESHOLDS } from './hints/file_type_handler.js'
+import { HEREDOC_CERTAIN_FAILURE_CHARS, HEREDOC_SPILL_EFFECTIVE_CHARS, effectiveCommandLength, hasHeredocOpener, heredocSpillDir, spillQuotedHeredocs, writeSpilledBodies } from './bash_heredoc_spill.js'
 
 /** Token budget for an inline interpreter file read run under the wrapper: room for one registry entry or config block printed whole, well under a whole-file dump. */
 const INTERPRETER_READ_TOKEN_CAP = 2000
 
-// Runs an inline interpreter file read under a token cap instead of refusing it. Many are projections, `json.load(open('r.json'))['118615']`, that print a few lines no token-goat command beats by a second round trip; refused, each cost the agent a retry and often a second refusal before it found a spelling the hook let through. A projection now passes whole, and a whole-file dump comes back capped with its recall id and the same surgical command the refusal named. The refusal stays wherever the wrapper cannot run: compression off, a pipeline or chain, a background `&`, a script past the command-line ceiling, VS Code. The hint passes the suggestion guard here because the relay only guards a refusal: printed after the capped output, a path that broke its quoting would reach the model unguarded.
-function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hint: string, denial: string): HookOutput {
-  return maybeCompressRewrite(event, rawCmd, cmd, { maxTokens: INTERPRETER_READ_TOKEN_CAP, hint: stripUnsafeSuggestions(hint) }) ?? denyOutput(denial)
+/** The size below which the Read gate hands a file of each type a whole-file refusal covers over whole, from hints/file_type_handler.ts: its own entry for the types it dispatches, the plain-text one for prose and source, which that table leaves to gates that do not refuse a first read this size. */
+const READ_GATE_FLOOR_BYTES: Readonly<Record<string, number>> = {
+  json: FILE_TYPE_THRESHOLDS.json,
+  yaml: FILE_TYPE_THRESHOLDS.yaml,
+  yml: FILE_TYPE_THRESHOLDS.yaml,
+  xml: FILE_TYPE_THRESHOLDS.xml,
+  dtsx: FILE_TYPE_THRESHOLDS.dtsx,
+  ampkg: FILE_TYPE_THRESHOLDS.ampkg,
+  xaml: FILE_TYPE_THRESHOLDS.xaml,
 }
+
+function readGateFloorBytes(filePath: string): number {
+  return READ_GATE_FLOOR_BYTES[path.extname(filePath).slice(1).toLowerCase()] ?? FILE_TYPE_THRESHOLDS.txt
+}
+
+// Runs an inline interpreter file read under a token cap instead of refusing it. Many are projections, `json.load(open('r.json'))['118615']`, that print a few lines no token-goat command beats by a second round trip; refused, each cost the agent a retry and often a second refusal before it found a spelling the hook let through. A projection now passes whole, and a whole-file dump comes back capped with its recall id and the same surgical command the refusal named. Wherever the wrapper cannot run (compression off, a background `&`, a script past the command-line ceiling, VS Code, or rewrite_permission.ts withholding the rewrite, as it does in auto mode and under a rule that could match) `fallback` answers instead: the refusal for a read that prints the file, advice for one that hands it to a parser. The hint passes the suggestion guard here because the relay only guards a refusal: printed after the capped output, a path that broke its quoting would reach the model unguarded.
+function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hint: string, fallback: HookOutput): HookOutput {
+  return maybeCompressRewrite(event, rawCmd, cmd, { maxTokens: INTERPRETER_READ_TOKEN_CAP, hint: stripUnsafeSuggestions(hint) }) ?? fallback
+}
+
+/** Claude Code's PowerShell tool, which runs a command the way the Bash tool does and reports `{ command }` the same way. */
+const POWERSHELL_TOOL = 'PowerShell'
 
 /** A rewrite of this Bash call's command, or null when rewrite_permission.ts finds it could change the permission outcome of the command the model wrote. */
 function shellRewrite(event: HookEvent, kind: 'shell-wrap' | 'shell-query', original: string, command: string): HookOutput | null {
+  // rewrite_permission.ts proves a rewrite safe against `Bash(...)` rules, and Claude Code checks this tool's calls against `PowerShell(...)` rules, so for it nothing is proven and nothing ships. Its output is compressed after the run instead (hooks_bash_post.ts::postPowerShellHandler).
+  if (event.toolName === POWERSHELL_TOOL) return null
   return permissionNeutralRewrite({ ...event.toolInput, command }, { kind, harness: detectHarness(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original, rewritten: command, agentType: agentTypeOf(event.raw) })
 }
 
@@ -195,6 +217,15 @@ function wholeFileRange(
   }
 }
 
+/** The windows of a file this session read that bear on a `token-goat read` of `spec`: every one for a symbol or section, whose lines the spec does not say, and for a line range (`@A-B`, `@A`, `::A-B`) only those that overlap it. */
+function partialReadCover(ranges: ReadonlyArray<readonly [number, number]>, spec: string): Array<readonly [number, number]> {
+  const lines = /(?:@|::)(\d+)(?:-(\d+))?$/.exec(spec)
+  if (lines === null) return [...ranges]
+  const start = parseInt(lines[1] as string, 10)
+  const end = lines[2] !== undefined ? parseInt(lines[2], 10) : start
+  return ranges.filter(([a, b]) => a <= end && b >= start)
+}
+
 /** pre_tool_use handler for the Bash tool. Emits a recall hint when the command is a known build tool and its output was already captured this session. Passes through for all other commands. */
 /** The answers about how a command is written rather than a file it reads, which preBashHandler's Read-rule gate leaves standing. */
 const SYNTAX_OUTPUTS = new WeakSet<HookOutput>()
@@ -207,6 +238,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined) return passOutput()
   const cmd = stripCommandPrefix(rawCmd)
+  // Claude Code's PowerShell tool: the read, search and recall checks below already read PowerShell spellings (Get-Content, Select-Object, ConvertFrom-Json, [IO.File]::ReadAllText) for the harnesses that run PowerShell through their shell tool, but the Git Bash quirks do not apply to it.
+  const powerShellTool = event.toolName === POWERSHELL_TOOL
   // Only a stripped `cd` moves the directory a relative path resolves against; a stripped assignment or subshell group does not, though a `cd` inside the group does.
   const grouped = stripSubshellGroup(rawCmd)
   const cdStripped = stripCdPrefix(grouped) !== grouped
@@ -222,7 +255,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // Every hint below that names a file returns through this instead of a bare contextOutput, so the efficacy ledger is handed the path the hint was built from rather than regex-scraping one back out of the rendered sentence (see extractPathCorrelator's doc comment for what that scrape actually recorded). Measurement only -- relay.ts drops the field before the harness sees the output, so the hint text is byte-identical either way. The `token-goat bash-output <id>` recall branches near the end deliberately do NOT use this: their correlator is a cache id, which classifyBashHint already reads straight out of the command it printed, not a path.
   const pathHint = (paths: string | readonly string[], text: string): HookOutput =>
     contextOutput(text, typeof paths === 'string' ? [paths] : paths)
-  // The name a surgical-read suggestion below carries, resolved against the directory the command would run in: a heading, key, table or symbol the file holds, or hint_target.ts's placeholder.
+  // The name a surgical-read suggestion below carries, resolved against the directory the command would run in: a heading, key, table or symbol the file holds, or none.
   const targetFor = (hintPath: string, slice: HintSlice = sliceForPath(hintPath)): HintTarget => hintTarget(hintPath, slice, { cwd: hintCwd, event })
   // A task `.output` path as the shell would open it, against the directory the command runs in rather than this hook's own cwd, and as a recall command should name it: a relative one comes back absolute, so the suggested command runs as printed from any directory.
   const taskOutputPath = (typed: string): { probe: string; shown: string } | null => {
@@ -244,6 +277,16 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     for (const p of typeof paths === 'string' ? [paths] : paths) logSuppressedDetection('bash_redirect', event.sessionId, p)
     return passOutput()
   }
+  // A whole-file dump of a file the Read gate would hand over whole is not refused: of eight measured `cat` refusals of 0.8-12.6 KB notes, six were followed by a Read or sed of the same file, a turn spent to arrive at the same bytes, and the command the refusal named was run none of the eight times. An .env file keeps the refusal at any size, as the Read gate refuses its re-read at any size: what it holds is better asked for one variable at a time. Stats the file, so it is gated like every other path this hook touches before the command is approved.
+  const underReadGateFloor = (hintPath: string, isEnv: boolean): boolean => {
+    if (isEnv || !commandPathIsTouchable(hintPath, event)) return false
+    try {
+      const st = statSync(hostPathOfTypedPath(hintPath, hintCwd))
+      return st.isFile() && st.size < readGateFloorBytes(hintPath)
+    } catch {
+      return false
+    }
+  }
   // The size half of the condition each of the five `token-goat bash-output <id>` recall branches below repeated, plus the decline record none of them kept: a candidate that clears the dedup minimum but fails the savings floor was refused on price, which is a decision and has to leave a trace for the same reason declineUnpriced does. Callers still test their own id and entry for null, both to keep TypeScript's narrowing inside the branch and because neither absence is this gate declining anything -- no cached output, or an entry too stale to offer, never reached a price comparison, and recording it would credit the gate with refusing work it never had. The correlator is the cache id, which is what classifyBashHint reads back out of a recall hint that did get shown, so the declined and shown rows key alike.
   const recallWorthShowing = (outputId: string, entry: { sizeBytes: number }): boolean => {
     if (entry.sizeBytes < loadConfig().hints.bash_dedup_min_bytes) return false
@@ -254,14 +297,36 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const cfg = loadConfig()
   // Claude Code's Bash tool on Windows passes the command to Git Bash as a `-c` argument, and the argv quoting plus the MSYS2 runtime's decoding halve every run of two or more backslashes, so the command that runs is not the one written and nothing reports the difference (anthropics/claude-code#85856). Denied rather than rewritten: a rewrite goes out as updatedInput, which permission rules evaluate again. `_tg_harness` is 'claude' for every harness relay.ts does not map, so detectHarness() is what pins this to Claude Code; the hook server answers under the caller's own environment, so it sees the same variables here.
-  if (cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && rawCmd.includes('\\\\') && detectHarness() === 'claudecode') {
+  if (!powerShellTool && cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && rawCmd.includes('\\\\') && detectHarness() === 'claudecode') {
     recordStat('session_hint', 0, 0)
     return syntaxOutput(denyOutput(
       'This command has two backslashes in a row. Claude Code\'s Bash tool on Windows halves every run of two or more backslashes before Git Bash sees the command, so it would run with different text than you wrote, with no error (anthropics/claude-code#85856). Write text containing backslashes to a file with the Write tool and run it by path, or use the PowerShell tool, which passes the command unchanged. For paths, use forward slashes: C:/Users/me works in Git Bash. To turn this check off, set hints.deny_bash_double_backslash = false or TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH=0.',
     ))
   }
+  // The same Bash tool fails a heredoc command of about 7,300 characters or more before any of it runs (bash_heredoc_spill.ts has the measurements), and token-goat's own PreToolUse used to answer `{}` to every one. A quoted heredoc's body moves to a file the command reads instead, when the permission check every shell rewrite takes approves the rewrite; where that cannot happen, a command long enough to fail for certain is refused with what to do instead.
+  if (!powerShellTool && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && hasHeredocOpener(rawCmd) && effectiveCommandLength(rawCmd) >= HEREDOC_SPILL_EFFECTIVE_CHARS && detectHarness() === 'claudecode') {
+    const spillDir = heredocSpillDir()
+    const spill = spillQuotedHeredocs(rawCmd, spillDir)
+    let why: string
+    if ('refused' in spill) {
+      why = spill.refused
+    } else {
+      // Only a rewrite the permission check approves ships, which in practice is bypassPermissions: one left to a prompt would ask the user to approve `cat > f < '<file>'`, a command whose body the prompt cannot show and whose file could change before it ran. The files are written only then, so a declined rewrite leaves nothing behind.
+      const rewrite = shellRewrite(event, 'shell-wrap', rawCmd, spill.command)
+      const approved = rewrite !== null && rewrite.hookType === 'rewriteInput' && rewrite.approve
+      if (approved && writeSpilledBodies(spillDir, spill.files)) return rewrite
+      why = rewrite === null ? 'the permission check for this call keeps the command as written' : approved ? 'the file for its body could not be written' : 'the rewritten command would go to a permission prompt that could not show the body moved out of it'
+    }
+    if (rawCmd.length >= HEREDOC_CERTAIN_FAILURE_CHARS) {
+      recordStat('session_hint', 0, 0)
+      return syntaxOutput(denyOutput(
+        'This command is ' + rawCmd.length.toLocaleString('en-US') + ' characters long and opens a heredoc. Claude Code\'s Bash tool on Windows fails a command of about 7,300 characters or more before any of it runs, with "unexpected EOF while looking for matching" and a quote character (exit 2), and just under that length a heredoc can arrive cut short and write a truncated file. token-goat moves a quoted heredoc\'s body into a file of its own when the call would run with no prompt, and could not here: ' + why + '. Write the content with the Write tool and run the command against that file, or split it into heredocs of a few KB each, appending with `cat >> file <<\'EOF\'`.',
+      ))
+    }
+  }
   // Check for unbalanced shell quoting or unterminated heredocs
-  if (cfg.hints.warn_unbalanced_shell_quoting) {
+  // Bash quoting rules: PowerShell doubles a quote inside a quoted string and escapes with a backtick, so a valid PowerShell string reads as unbalanced here.
+  if (cfg.hints.warn_unbalanced_shell_quoting && !powerShellTool) {
     const quoteError = detectUnbalancedShellSyntax(cmd)
     if (quoteError !== null) {
       recordStat('session_hint', 0, 0)
@@ -307,7 +372,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     if (isXargsGrepL) {
       return denyOutput(
         '`find | xargs grep -l` is a slow symbol search. ' +
-        'Use `token-goat refs <symbol>` or `rg -l <symbol>` for faster symbol-file discovery.',
+        'Use `token-goat refs` with the symbol name, or `rg -l` with the pattern, for faster symbol-file discovery.',
       )
     }
     const fdHint = extGlob
@@ -315,7 +380,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       : 'Use `fd` for faster file discovery (respects .gitignore).'
     return contextOutput(
       '`find` is slow and ignores .gitignore. ' + fdHint +
-      ' For symbol definitions, use `token-goat symbol <Name>`.',
+      ' For symbol definitions, use `token-goat symbol` with the name.',
     )
   }
 
@@ -323,7 +388,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (extractDirectoryListing(cmd)) {
     recordStat('session_hint', 0, 0)
     return contextOutput(
-      'Use `token-goat map --compact` (~300 tokens) for a repo overview, or `token-goat map <dir>` for a subdirectory.',
+      'Use `token-goat map --compact` (~300 tokens) for a repo overview, or `token-goat map` with a directory for a subdirectory.',
     )
   }
 
@@ -331,7 +396,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (extractForLoopWcL(cmd)) {
     recordStat('session_hint', 0, 0)
     return contextOutput(
-      'Use `token-goat outline <file>` to see symbol names and line counts without loading files.',
+      'Use `token-goat outline` on a file to see its symbol names and line counts without loading it.',
     )
   }
 
@@ -340,9 +405,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (terminalXml !== null) {
     const { filePath, toolOrScript } = terminalXml
     recordStat('session_hint', 0, 0)
-    const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : '<file>'
-    return pathHint(filePath ? [target] : [],
-      `token-goat available for this file type, consider \`token-goat xml-query ${quotedArgs(target, '<xpath>').join(' ')}\` or \`token-goat xml-outline ${quotedArg(target)}\` first instead of terminal XML parsing (${nameSubject('tool', toolOrScript)}).`,
+    const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : null
+    return pathHint(target !== null ? [target] : [],
+      target !== null
+        ? `token-goat available for this file type, consider \`token-goat xml-outline ${quotedArg(target)}\` first instead of terminal XML parsing (${nameSubject('tool', toolOrScript)}).`
+        : `token-goat available for this file type: its xml-outline and xml-query commands read an XML file without terminal XML parsing (${nameSubject('tool', toolOrScript)}).`,
     )
   }
 
@@ -365,7 +432,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       dropFileLineRangesIfChanged(sedDedupKey)
       // A range from line 1 to the last line is `cat` spelled another way, and gets `cat`'s answer: pricing it against a surgical read of the same lines finds no saving, since that read is the whole file too, so `awk 'NR>=1 && NR<=324'` over a 324-line, 54KB skill passed with no word while `cat` of it was refused. Checked before the range is recorded, so a refusal does not count the lines as served.
       const whole = singleLineRangeRead === null ? null : wholeFileRange(filePath, hintPath, hintCwd, ranges, tool)
-      if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey), whole.start, whole.end) === null) {
+      if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey), whole.start, whole.end) === null && !underReadGateFloor(hintPath, whole.cat.isEnv)) {
         recordStat('session_hint', 0, 0)
         if (whole.cat.isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), whole.reason))
         const hint = surgicalHintFor(hintPath, whole.cat.isEnv, whole.cat.isConfig, whole.cat.isDoc, whole.cat.isXml, targetFor(hintPath, whole.cat.isEnv ? 'key' : undefined), whole.reason)
@@ -440,11 +507,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     if (psJsonPipe.filePath) {
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, psJsonPipe.filePath, hintCwd) : psJsonPipe.filePath)
       return pathHint(hintPath,
-        'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query ' + quotedArgs(hintPath, '<selector>').join(' ') + '` to extract fields directly without shell conversion scripts.',
+        'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-outline ' + quotedArg(hintPath) + '` for its keys, then its json-query command to extract fields directly without shell conversion scripts.',
       )
     }
     return contextOutput(
-      'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query <file> "<selector>"` or `token-goat web-output` to extract fields directly.',
+      'PowerShell `ConvertFrom-Json` pipeline detected. token-goat\'s json-outline and json-query commands, or web-output for a fetched response, extract fields directly.',
     )
   }
 
@@ -452,6 +519,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (catResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml, cmd0, advisoryOnly } = catResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    if (underReadGateFloor(hintPath, isEnv)) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     const reason = '`' + cmd0 + '` loads the entire file into context.'
     if (isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), reason))
@@ -460,13 +528,16 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return cdStripped || advisoryOnly ? pathHint(hintPath, hint) : denyOutput(hint)
   }
 
-  const catMulti = extractCatFilesMulti(cmd)
-  if (catMulti !== null) {
+  const catMultiAll = extractCatFilesMulti(cmd)
+  if (catMultiAll !== null) {
+    const shownOf = (filePath: string): string => displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    const catMulti = catMultiAll.filter((m) => !underReadGateFloor(shownOf(m.filePath), m.isEnv))
+    if (catMulti.length === 0) return declineUnpriced(catMultiAll.map((m) => shownOf(m.filePath)))
     recordStat('session_hint', 0, 0)
     const cmd0 = catMulti[0]!.cmd0
     // One command-led line per file, each carrying its own path, so the first thing in the message is a command that runs.
     const perPath = catMulti.map(({ filePath, isDoc, isEnv, isConfig, isSql, isXml }) => {
-      const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+      const hintPath = shownOf(filePath)
       return isSql
         ? sqlTableHint(hintPath, targetFor(hintPath, 'table'))
         : surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, targetFor(hintPath, isEnv ? 'key' : undefined))
@@ -479,6 +550,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (psGetContentResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = psGetContentResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    if (underReadGateFloor(hintPath, isEnv)) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     const lead = '`Get-Content` via a `powershell -Command` wrapper bypasses read hooks and loads the entire file into context.'
     if (isSql) {
@@ -493,6 +565,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (wslCatResult !== null) {
     const { filePath, isDoc, isEnv, isConfig, isSql, isXml } = wslCatResult
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
+    if (underReadGateFloor(hintPath, isEnv)) return declineUnpriced(hintPath)
     recordStat('session_hint', 0, 0)
     const reason = '`cat` loads the entire file into context.'
     if (isSql) return pathHint(hintPath, sqlTableHint(hintPath, targetFor(hintPath, 'table'), reason))
@@ -502,7 +575,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
 
   const pyRead = extractPythonFileRead(cmd)
   if (pyRead !== null) {
-    const { filePath, isDoc, isConfig, isEnv, isSql, isXml, isOutputFile } = pyRead
+    const { filePath, isDoc, isConfig, isEnv, isSql, isXml, isOutputFile, feedsParser } = pyRead
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
     if (isOutputFile) {
@@ -521,7 +594,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const target = targetFor(hintPath, isEnv ? 'key' : undefined)
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml ?? false, target)
     const denial = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml ?? false, target, reason)
-    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denial)
+    // A script that parses the file computes on it rather than printing it, so where the cap cannot run it gets the advice and runs: refused, every measured one came back as the same script from a file, the file on stdin or a copy elsewhere, a turn later.
+    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, feedsParser ? pathHint(hintPath, denial) : denyOutput(denial))
   }
 
   const tailResult = extractTailFile(cmd)
@@ -557,7 +631,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hint = surgicalHintFor(hintPath, false, isConfig, isDoc, false, target)
     const denial = surgicalHintFor(hintPath, false, isConfig, isDoc, false, target, lead)
     recordStat('session_hint', 0, 0)
-    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denial)
+    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denyOutput(denial))
   }
 
   const psMethodRead = extractPowerShellFileMethodRead(cmd, event)
@@ -573,7 +647,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const hint = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, target)
     const denial = surgicalHintFor(hintPath, isEnv, isConfig, isDoc, isXml, target, lead)
     recordStat('session_hint', 0, 0)
-    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denial)
+    return cdStripped ? pathHint(hintPath, denial) : cappedInterpreterRead(event, rawCmd, cmd, hint, denyOutput(denial))
   }
 
   // A plain-enumeration rg/grep structural search (whole-file symbols, headings, imports) has an exact index answer -- rewrite the command to it instead of just hinting, so the model gets the answer in this one tool result. Checked on rawCmd (not the cd-stripped cmd) ahead of the hint-only checks below: detectStructuralIndexRewrite's own detectFromCommand call rejects any `cd DIR &&` prefix as a compound command, which is the correct pass-through for that shape rather than something this call needs to special-case.
@@ -587,7 +661,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     recordStat('session_hint', 0, 0)
     return contextOutput(
       'Collapse `grep | grep` into `rg -e PAT1 -e PAT2` (single pass). ' +
-      'For symbol discovery: `token-goat refs <symbol>` or `token-goat semantic`.',
+      'For symbol discovery: `token-goat refs` with the symbol name, or `token-goat semantic`.',
     )
   }
 
@@ -597,7 +671,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath } = mdHeadingGrep
     const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath)
     recordStat('session_hint', 0, 0)
-    return pathHint(hintPath, docSectionHint(hintPath, targetFor(hintPath, 'section').name))
+    return pathHint(hintPath, docTargetHint(hintPath, targetFor(hintPath, 'section')))
   }
 
   // Bare identifier search on a single source file — symbol lookup is cheaper
@@ -641,7 +715,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         return contextOutput(
           'Prior output from `' + cmd + '`' + pipelineDivergenceNote(cmd, monEntry.command) + ' is cached. ' +
           'Use `token-goat bash-output ' + monOutputId + '` to recall the full file, or ' +
-          '`' + sliceCommand(displaySafePath(catFile), targetFor(displaySafePath(catFile))) + '` to extract only the part you need.'
+          '`' + sectionOrRangeCommand(displaySafePath(catFile), targetFor(displaySafePath(catFile))) + '` to extract only the part you need.'
         )
       }
       const cmdSummary = cmd.length > 60 ? cmd.slice(0, 57).trimEnd() + '...' : cmd
@@ -666,9 +740,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     } else if (prevPath !== null && prevOnDisk !== null && statSync(prevOnDisk).size >= loadConfig().hints.bash_dedup_min_bytes) {
       recordStat('session_hint', 0, 0)
       const shownPrev = displaySafePath(prevPath)
-      const read = sliceCommand(shownPrev, targetFor(prevPath))
-      const search = 'rg \'<pattern>\' ' + quotedArg(shownPrev)
-      return denyOutput(leadWithCommand(read, 'to read a part of it, or `' + search + '` to search it', sentenceStart(fileSubject(read + search, shownPrev, prevPath)) + ' was already downloaded earlier this session.'))
+      const read = sectionOrRangeCommand(shownPrev, targetFor(prevPath))
+      return denyOutput(leadWithCommand(read, 'to read a part of it', sentenceStart(fileSubject(read, shownPrev, prevPath)) + ' was already downloaded earlier this session.'))
     }
   }
 
@@ -689,7 +762,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
         'curl response cached (`' + curlPreview + '`).' + pipelineDivergenceNote(cmd, curlEntry.command) + ' ' +
         (curlHeading.real
           ? leadWithCommand('token-goat bash-output ' + curlOutputId + ' --section ' + quotedArg(curlHeading.name), 'to read one markdown section, or `token-goat bash-output ' + curlOutputId + '` to recall it all (`--grep PATTERN` filters)')
-          : 'Use `token-goat bash-output ' + curlOutputId + '` to recall it. Append `--grep PATTERN` to filter or `--section HeadingName` for a markdown section.'),
+          : 'Use `token-goat bash-output ' + curlOutputId + '` to recall it. Append `--grep PATTERN` to filter.'),
       )
     }
   }
@@ -738,7 +811,14 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       notes.push('You already ran this exact `token-goat ' + tgRead.sub + '` query earlier this session — check your context above before re-running it.')
     }
     if (tgRead.filePath !== null && wasFileReadThisSession(tgRead.filePath)) {
-      notes.push(sentenceStart(fileSubject('', displaySafePath(tgRead.filePath))) + ' was already fully read via the Read tool this session — that content may already cover this.')
+      const subject = sentenceStart(fileSubject('', displaySafePath(tgRead.filePath)))
+      if (wasFileFullyReadThisSession(tgRead.filePath)) {
+        notes.push(subject + ' was already fully read via the Read tool this session — that content may already cover this.')
+      } else {
+        // Only windows of it were read, which the note used to call a full read: name the ones on record, and say nothing when none touches the lines this read asks for.
+        const covered = partialReadCover(getFileLineRanges(tgRead.filePath), tgRead.spec)
+        if (covered.length > 0) notes.push(subject + ' was partially read earlier this session (lines ' + covered.map(([start, end]) => start + '-' + end).join(', ') + '); check whether those lines already hold this.')
+      }
     }
     if (notes.length > 0) {
       recordStat('session_hint', 0, 0)
@@ -792,3 +872,5 @@ export function preBashHandler(event: HookEvent): HookOutput {
 
 // A Codex call loads Codex's rules check first, and a bypassPermissions call the hidden rule check, which rewrite_permission.ts needs before it lets a rewrite ship there.
 registerHook('pre_tool_use', loadingHiddenRuleCheck((event) => (detectHarness() === 'codex' ? loadCodexRules().then(() => preBashHandler(event)) : preBashHandler(event))), { toolName: 'Bash' })
+// Claude Code's PowerShell tool gets the same read, search and recall checks. It needs no rules preload: shellRewrite never rewrites its calls.
+registerHook('pre_tool_use', preBashHandler, { toolName: POWERSHELL_TOOL })

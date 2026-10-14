@@ -250,8 +250,9 @@ describe('the other net-benefit gates record their declines too', () => {
 
   it('positive control: the same gate above the floor still shows the hint, and books it as shown', () => {
     const file = path.join(dir, 'big.md')
-    fs.writeFileSync(file, '# Title\n\n' + 'padding line of prose\n'.repeat(60), 'utf8')
-    expect(fs.statSync(file).size).toBeGreaterThan(512)
+    // Over hints.reread_deny_min_bytes, the size the post-edit hint gates on now; the 512-byte savings floor sits under it.
+    fs.writeFileSync(file, '# Title\n\n' + 'padding line of prose\n'.repeat(2600), 'utf8')
+    expect(fs.statSync(file).size).toBeGreaterThan(51_200)
 
     const session = nonce()
     expect(postEditHandler(editEvent(session, file)).hookType).toBe('context')

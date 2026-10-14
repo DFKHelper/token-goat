@@ -11,6 +11,7 @@ export const KEPT_TOKEN_GOAT_ENV_VARS = [
   'TOKEN_GOAT_HARNESS_OVERRIDE',
   'TOKEN_GOAT_HOOK_SERVER',
   'TOKEN_GOAT_NATIVE_HOOKS',
+  'TOKEN_GOAT_WORKER_PRIORITY',
   // Set through GITHUB_ENV by .github/workflows/ci.yml so the embedding tests find the warmed model and fail rather than skip without it.
   'TOKEN_GOAT_MODEL_CACHE_DIR',
   'TOKEN_GOAT_REQUIRE_EMBED_MODEL',

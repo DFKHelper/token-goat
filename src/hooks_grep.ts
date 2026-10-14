@@ -4,7 +4,7 @@ import { registerHook } from './hook_registry.js'
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { emitRewrite, makeDedupHintHandlers, passOutput, contextOutput, getCwd, getToolName, getToolInput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS } from './hooks_common.js'
-import { leadWithCommand, docNavigation, docSectionHint, quotedArg } from './hint_suggestion_guard.js'
+import { leadWithCommand, docNavigation, docTargetHint, quotedArg } from './hint_suggestion_guard.js'
 import { hintTarget } from './hint_target.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
@@ -190,10 +190,10 @@ function preGrepHandler(event: HookEvent): HookOutput {
       const filePath = displaySafePath(structSearch.filePath)
       const target = hintTarget(structSearch.filePath, isDoc ? 'section' : 'symbol', { cwd: getCwd(event) ?? process.cwd(), event, pattern: String(toolInput['pattern'] ?? '') })
       const hint = isDoc
-        ? docSectionHint(filePath, target.name, 'Scanning a document for headings loads large match output.')
+        ? docTargetHint(filePath, target, 'Scanning a document for headings loads large match output.')
         : target.real
           ? leadWithCommand('token-goat read ' + quotedArg(filePath + '::' + target.name), 'to inspect one symbol, or `token-goat skeleton ' + quotedArg(filePath) + '` to see the file structure', 'Scanning a source file for symbols loads large match output.')
-          : leadWithCommand('token-goat skeleton ' + quotedArg(filePath), 'to see the file structure, or `token-goat read ' + quotedArg(filePath + '::SymbolName') + '` to inspect a specific symbol', 'Scanning a source file for symbols loads large match output.')
+          : leadWithCommand('token-goat skeleton ' + quotedArg(filePath), 'to see the file structure', 'Scanning a source file for symbols loads large match output.')
       return contextOutput(hint)
     }
     return applyHintTracking(event, preGrepDedupHandler(event), uncorrelatedHint('grep_dedup_hint'))

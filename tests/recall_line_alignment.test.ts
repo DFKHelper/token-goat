@@ -13,6 +13,7 @@ import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { redactSecrets } from '../src/secret_redact.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { unfence } from './helpers/unfence.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
@@ -55,7 +56,7 @@ afterEach(() => {
 
 /** The recall body the shared printer returns, fence stripped. */
 function recall(text: string, opts: Parameters<typeof _applyFiltersAndPrint>[1]): string {
-  return unfence(_applyFiltersAndPrint(text, opts, true, UNTRUSTED_TOOL_TAG))
+  return unfence(withoutFenceNonces(_applyFiltersAndPrint(text, opts, true, UNTRUSTED_TOOL_TAG)))
 }
 
 /** Recall through the built bundle's `bash-output --file`, fence stripped. */
@@ -64,7 +65,7 @@ function recallBundle(text: string, args: string[]): { status: number | null; bo
   fs.writeFileSync(file, text)
   const env = { ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: envRoot, XDG_DATA_HOME: envRoot }
   const res = spawnSync(process.execPath, [BUNDLE, 'bash-output', '--file', file, ...args], { env, encoding: 'utf8', cwd: home })
-  return { status: res.status, body: unfence((res.stdout ?? '').replace(/\r\n/g, '\n')).replace(/\n$/, ''), stderr: res.stderr ?? '' }
+  return { status: res.status, body: unfence(withoutFenceNonces(res.stdout ?? '').replace(/\r\n/g, '\n')).replace(/\n$/, ''), stderr: res.stderr ?? '' }
 }
 
 // Provenance: HAND-DERIVED: four lines, the second a genuine blank one, ending in the newline every captured file and blob ends with.
@@ -103,7 +104,7 @@ describe('a real blank line at the end of a slice survives', () => {
   it('applies to a cached `bash-output <id>` recall too', () => {
     const id = storeBashOutputSync('echo recall-align', BLANK_SECOND, 0)
     cmdBashOutput(id, { lines: '1-2', lineNumbers: true })
-    expect(unfence(stdout.join('').replace(/\n$/, ''))).toBe('1:alpha\n2:')
+    expect(unfence(withoutFenceNonces(stdout.join('')).replace(/\n$/, ''))).toBe('1:alpha\n2:')
   })
 
   it('applies to the built bundle`s `bash-output --file`', () => {

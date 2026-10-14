@@ -30,10 +30,10 @@ function mkTemp(prefix: string): string {
   return dir
 }
 
-/** A workspace with one source file, so a project map has something to name. */
+/** A workspace with five source files, the fewest for which a spawn briefing carries a project map. */
 function mkWorkspace(): string {
   const proj = mkTemp('tg-subagent-ws-')
-  fs.writeFileSync(path.join(proj, 'a.ts'), 'export const a = 1\n')
+  for (const name of ['a', 'b', 'c', 'd', 'e']) fs.writeFileSync(path.join(proj, `${name}.ts`), `export const ${name} = 1\n`)
   return proj
 }
 

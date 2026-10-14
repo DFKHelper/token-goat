@@ -30,6 +30,9 @@ const COMPUTED_LABEL_LAST_CASES: Array<[string, number, string[]]> = [
   ["$l = 'L'; :L foreach ($i in 1,2) { Write-Output $i; break $l }", 0, ['1']],
 ]
 
+// Every case past the resolver spawns PowerShell. GitHub's ubuntu, macOS and Windows runners all ship pwsh, so on CI they run regardless and a missing PowerShell fails them, as tests/helpers/powershell_parse.ts does for its oracle; a Linux or macOS machine without pwsh skips them, as tests/powershell_heredoc_compat.test.ts does.
+const itPwsh = it.runIf(canRunPowerShell() || Boolean(process.env['CI']))
+
 describe('PowerShell runner integration and resolution', () => {
   it('resolves PowerShell binary based on platform or environment override', () => {
     const customPs = 'C:\\Custom\\pwsh.exe'
@@ -37,11 +40,11 @@ describe('PowerShell runner integration and resolution', () => {
     expect(resolved).toBe(customPs)
   })
 
-  it('canRunPowerShell checks binary accessibility', () => {
+  itPwsh('canRunPowerShell checks binary accessibility', () => {
     expect(canRunPowerShell()).toBe(true)
   })
 
-  it('runs command under PowerShell preserving backslashes and cmdlets', async () => {
+  itPwsh('runs command under PowerShell preserving backslashes and cmdlets', async () => {
     let captured = ''
     const exitCode = await run('Write-Output "Test-TokenGoat: .\\path\\to\\file.ps1"', {
       filterName: 'powershell',
@@ -55,7 +58,7 @@ describe('PowerShell runner integration and resolution', () => {
     expect(captured).toContain('Test-TokenGoat: .\\path\\to\\file.ps1')
   })
 
-  it('propagates non-zero exit codes from PowerShell execution', async () => {
+  itPwsh('propagates non-zero exit codes from PowerShell execution', async () => {
     const exitCode = await run('exit 37', {
       shellType: 'pwsh',
       writeStdout: () => {},
@@ -65,7 +68,7 @@ describe('PowerShell runner integration and resolution', () => {
     expect(exitCode).toBe(37)
   })
 
-  it('clears TG_CMD before executing user script to prevent leakage to child processes', async () => {
+  itPwsh('clears TG_CMD before executing user script to prevent leakage to child processes', async () => {
     let captured = ''
     const exitCode = await run('Write-Output "TG_CMD_VAL:[$env:TG_CMD]"', {
       filterName: 'powershell',
@@ -79,7 +82,7 @@ describe('PowerShell runner integration and resolution', () => {
     expect(captured).toContain('TG_CMD_VAL:[]')
   })
 
-  it('executes multi-statement pipeline and native commands via scriptblock invocation', async () => {
+  itPwsh('executes multi-statement pipeline and native commands via scriptblock invocation', async () => {
     let captured = ''
     const exitCode = await run('Write-Output "Part1"; python -c "print(\'Part2\')"; Write-Output "Part3"', {
       filterName: 'powershell',
@@ -96,7 +99,7 @@ describe('PowerShell runner integration and resolution', () => {
   })
 
   // Provenance: CAPTURE, exit codes of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` spawned from node, PowerShell 7.6.4 on Windows 11, 2026-10-02. A trailing failed native command exits 1, not its own code, and a top-level `return` keeps the `$?` of the statement before it. `node -e` is the native command because it exists on every CI runner, where `cmd` does not.
-  it.each([
+  itPwsh.each([
     ['Get-Item ./nonexistent-xyz-123', 1],
     ['Write-Output ok', 0],
     ["node -e 'process.exit(3)'", 1],
@@ -116,7 +119,7 @@ describe('PowerShell runner integration and resolution', () => {
   })
 
   // Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` spawned from node, PowerShell 7.6.4 on Windows 11, 2026-10-02. A statement-terminating error (unknown command, .NET exception, divide by zero) does not stop the script, `return X` and a top-level break keep the `$?` of the statement before them, a finally that runs last decides the exit, a break whose label nothing catches still exits 1 whether the label is quoted, dotted or computed, a label a loop declares still reaches that loop, a named begin, process or end block reports the `$?` of its own last statement with an empty block passing its predecessor's on, a clean block's failure decides the exit while its output never reaches stdout, and a user variable named like the wrapper's own does not change the result.
-  it.each([
+  itPwsh.each([
     ['nonexistentcmd-xyz; Write-Output after', 0, ['after']],
     ["[int]::Parse('x'); Write-Output after", 0, ['after']],
     ['$x = 1/0; Write-Output after', 0, ['after']],
@@ -184,7 +187,7 @@ describe('PowerShell runner integration and resolution', () => {
   })
 
   // Provenance: CAPTURE, PowerShell 7.6.4 on Windows 11, 2026-10-02: a direct `pwsh -NoProfile -NonInteractive -Command 'Write-Output "unterminated'` spawned from node exits 1 with empty stdout and stderr, and the previous wrapper printed `MethodInvocationException: Exception calling "Create"`, which names neither the cause nor the line.
-  it('reports a parse error as a ParserError quoting the user line', () => {
+  itPwsh('reports a parse error as a ParserError quoting the user line', () => {
     const target = spawnTarget('Write-Output "unterminated', undefined, 'pwsh')
     const r = spawnSync(target.file, target.args, { encoding: 'utf8', env: { ...process.env, ...target.cmdEnv } })
     const stderr = stripAnsiEscapes(r.stderr)
@@ -194,7 +197,7 @@ describe('PowerShell runner integration and resolution', () => {
     expect(stderr).not.toContain('Exception calling')
   })
 
-  it('stops at a top-level return and still prints what ran before it', async () => {
+  itPwsh('stops at a top-level return and still prints what ran before it', async () => {
     let captured = ''
     const exitCode = await run('Write-Output before; if ($true) { return }; Write-Output after', { filterName: 'powershell', shellType: 'pwsh', writeStdout: (s) => { captured += s }, writeStderr: () => {} })
     expect(exitCode).toBe(0)

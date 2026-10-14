@@ -9,7 +9,7 @@ import { hasBareBackgroundOrNewline, hasUnquotedOperator, isRedirectAmpersand } 
 import { dropFileLineRangesIfChanged, getFileLineRanges } from './session.js'
 import { escapeRegExp } from './util.js'
 import { FALSY_ENV_VALUES } from './env.js'
-import { leadWithCommand, docSectionHint, grepLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
+import { leadWithCommand, docTargetHint, headLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import type { HintTarget } from './hint_target.js'
 
 // Defined beside preToolPathDeclined, the rule it applies, so hint_target.ts can gate a path without pulling this module into the core bundle.
@@ -35,34 +35,37 @@ function structuredDataHint(hintPath: string, target: string | null, reason = ''
   return leadWithCommand(query(path), 'to read that value, or `' + outline + '` for every top-level key with its type and size', reason)
 }
 
-/** The SQL branch every whole-file read shares: `read` returns one CREATE TABLE / CREATE TYPE block by the name the SQL adapter indexes it under. It used to print `section "file::table_name"`, which cannot run at all -- `section` finds markdown/TOML/INI headers and exits 1 with "has no headings" on a .sql file (measured 2026-09-24 against the built binary). */
+/** The SQL branch every whole-file read shares: `read` returns one CREATE TABLE / CREATE TYPE block by the name the SQL adapter indexes it under. It used to print `section "file::table_name"`, which cannot run at all -- `section` finds markdown/TOML/INI headers and exits 1 with "has no headings" on a .sql file (measured 2026-09-24 against the built binary). With no table to name, `read "file::table_name"` exits 1 as well, so the file's first lines are offered instead. */
 export function sqlTableHint(hintPath: string, target: HintTarget, reason = ''): string {
+  if (!target.real) return headLinesHint(hintPath, reason)
   return leadWithCommand('token-goat read ' + quotedArg(hintPath + '::' + target.name), 'to pull one CREATE TABLE / CREATE TYPE block', reason)
 }
 
 /** Shared non-SQL surgical-read hint ladder for whole-file dump commands (`cat`, a PowerShell `Get-Content` wrapper, `wsl cat`) -- each caller handles its own SQL branch and passes its lead-in as `reason`, which follows the command. */
 // Every caller passes a hintPath already through displaySafePath, because the path here comes out of the shell command's own arguments and so is whatever a repository named its files, while the hint is delivered on the context channel, which unlike the deny channel neither fences its payload nor escapes the markers token-goat speaks in. Sanitizing at the fifteen assignment sites rather than at the thirty interpolations below is what keeps that invariant checkable, and it is the identity function on every path that does not contain a marker or a control character, so the index lookups keyed on the same value are unaffected for any real file.
 export function surgicalHintFor(hintPath: string, isEnv: boolean, isConfig: boolean, isDoc: boolean, isXml: boolean, target: HintTarget, reason = ''): string {
-  // The whole-file branches are a hard deny, so the command they print is the agent's only next move, and the placeholders they used to print do not run: verified against the built binary on 2026-09-21, `token-goat section "CHANGELOG.md::SectionHeading"` exits 1 with "Section 'SectionHeading' not found" and `token-goat config-get "package.json" KEY_NAME` exits 1 with "Key 'KEY_NAME' not found". `target.name` is a name that file really holds whenever `target.real`, so the command runs verbatim; otherwise it is hint_target.ts's placeholder.
+  // The whole-file branches are a hard deny, so the command they print is the agent's only next move, and the placeholders they used to print do not run: verified against the built binary on 2026-09-21, `token-goat section "CHANGELOG.md::SectionHeading"` exits 1 with "Section 'SectionHeading' not found" and `token-goat config-get "package.json" KEY_NAME` exits 1 with "Key 'KEY_NAME' not found". `target.name` is a name that file really holds whenever `target.real`, so the command runs verbatim; otherwise the hint leads with a command that needs no name: an outline where the format has one for any file, else a read of the first lines, which runs on every text file.
   //
   // A config file's name goes where its format takes it: a JSON/YAML key to the query command, a TOML/INI table to `section` (measured, `config-get "cfg.toml" tool` exits 1 on a table while `section "cfg.toml::tool"` returns it), a .properties key to config-get. A JSON property is never put in a `section` slot: `token-goat section "package.json::name"` exits 1.
   const outline = outlineCommand(hintPath)
-  if (isXml) return leadWithCommand('token-goat xml-outline ' + quotedArg(hintPath), 'to inspect structure, or `token-goat xml-query ' + quotedArgs(hintPath, '<selector>').join(' ') + '` to query specific nodes', reason)
-  if (isEnv) return leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific variable', reason)
-  // .properties has no outline extractor (measured 2026-10-03: `outline app.properties` exits 1), so it gets config-get for a key it holds and a grep otherwise.
+  if (isXml) return leadWithCommand('token-goat xml-outline ' + quotedArg(hintPath), 'to inspect structure', reason)
+  if (isEnv) return target.real ? leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific variable', reason) : headLinesHint(hintPath, reason)
+  // .properties has no outline extractor (measured 2026-10-03: `outline app.properties` exits 1), so it gets config-get for a key it holds and its first lines otherwise.
   if (isConfig && /\.properties$/i.test(hintPath)) {
     return target.real
       ? leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific value', reason)
-      : grepLinesHint('<key>', hintPath, reason)
+      : headLinesHint(hintPath, reason)
   }
   if (isConfig) {
     const structured = structuredDataHint(hintPath, target.real ? target.name : null, reason)
     if (structured !== null) return structured
+    // A flat .conf holds no name outline can list (measured: `outline a.conf` exits 1 with "No indexed symbols found"), and a file with no name found has none for it either.
+    if (!target.real) return headLinesHint(hintPath, reason)
     return target.slice === 'key'
       ? leadWithCommand(configGetCommand(hintPath, target.name), 'to read a specific value, or `' + outline + '` for every key with line ranges', reason)
       : leadWithCommand('token-goat section ' + quotedArg(hintPath + '::' + target.name), 'to read one table, or `' + outline + '` for every key with line ranges', reason)
   }
-  if (isDoc) return docSectionHint(hintPath, target.name, reason)
+  if (isDoc) return docTargetHint(hintPath, target, reason)
   // A source file with no nameable symbol leads with outline, which always runs, rather than a `read "file::SymbolName"` that never does.
   return target.real
     ? leadWithCommand('token-goat read ' + quotedArg(hintPath + '::' + target.name), 'to read one function or class, or `' + outline + '` for all of them', reason)
@@ -531,12 +534,56 @@ export interface PythonFileReadResult {
   isSql: boolean
   isXml?: boolean
   isOutputFile: boolean
+  /** True when the snippet hands the file to a parser and never prints its text ({@link pythonReadFeedsParser}). */
+  feedsParser: boolean
 }
 
 export const KNOWN_PYTHON_EXT_STR = 'java|py|ts|tsx|js|jsx|go|rb|rs|cpp|cc|cxx|c|h|hpp|kt|swift|cs|php|scala|clj|css|scss|sass|less|md|mdx|rst|txt|json|yaml|yml|toml|xml|dtsx|ampkg|xaml|html|htm|conf|cfg|ini|properties|sql|ps1|psm1|env'
 export const OPEN_EXT = new RegExp(`\\.(?:${KNOWN_PYTHON_EXT_STR})$`, 'i')
 
-/** Returns the file path and metadata if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. */
+/** A Python interpreter starting a simple command. */
+const PYTHON_COMMAND_RE = /^(?:python3?|py)(?:\.exe)?\b/i
+
+/** A Python command that reads its program from standard input, which is what makes the heredoc it opens a Python snippet: `python - <<'PY'` and `python3 -u <<EOF` do, while `python script.py <<EOF` feeds the script data. */
+const PYTHON_STDIN_PROGRAM_RE = /^(?:python3?|py)(?:\.exe)?(?:\s+-[A-Za-z]+)*(?:\s+-)?\s*<</i
+
+/** Calls that parse what they are handed rather than print it. */
+const PYTHON_PARSER_CALL_RE = /\b(?:json\s*\.\s*loads?|csv\s*\.\s*(?:reader|DictReader)|yaml\s*\.\s*(?:safe_)?load(?:_all)?|tomllib\s*\.\s*loads?|load_workbook|(?:pd|pandas)\s*\.\s*read_\w+)\s*\(/g
+
+/** True when the snippet in `text` hands the file it reads to a parser (`json.load`, `json.loads`, `csv.reader`, `csv.DictReader`, `yaml.safe_load`, `load_workbook`, `pd.read_*`) and never prints its text: no `.read()`, `.readline()` or `.readlines()` outside a parser call's arguments, and no loop over an open file. Such a script computes on the parsed data, and the measured refusals of one were all routed around (the same script from a file, the file on stdin, a copy elsewhere) at the cost of a turn. */
+export function pythonReadFeedsParser(text: string): boolean {
+  const { masked } = pythonScanText(text)
+  let rest = masked
+  let parsed = false
+  for (const call of masked.matchAll(PYTHON_PARSER_CALL_RE)) {
+    parsed = true
+    const open = (call.index ?? 0) + call[0].length - 1
+    let depth = 0
+    let close = masked.length
+    for (let i = open; i < masked.length; i++) {
+      if (masked[i] === '(') depth += 1
+      else if (masked[i] === ')' && --depth === 0) { close = i; break }
+    }
+    rest = rest.slice(0, open + 1) + ' '.repeat(Math.max(0, close - open - 1)) + rest.slice(close)
+  }
+  if (!parsed || /\.read(?:lines?)?\s*\(/.test(rest)) return false
+  const handles = Array.from(rest.matchAll(/\bopen\s*\((?:[^()]|\([^()]*\))*\)\s*as\s+([A-Za-z_]\w*)/g), (m) => m[1] as string)
+  return !new RegExp(String.raw`\bfor\s+[\w\s,()]+?\s+in\s+(?:enumerate\s*\(\s*)?(?:open\s*\(${handles.map((h) => '|' + h + String.raw`\b`).join('')})`).test(rest)
+}
+
+/** True when `command`, one simple command, sends its standard output to a file, so nothing it prints reaches the conversation. A redirect of another stream (`2>`), a duplication (`>&2`, `2>&1`) and a target that is the terminal or a standard stream again (`/dev/stdout`, `/dev/stderr`, `/dev/tty`) do not count. */
+function stdoutGoesToFile(command: string): boolean {
+  // A `>` inside a quoted argument (`-c "print(a > b)"`) is not a redirect.
+  const masked = maskPythonStrings(command)
+  for (const m of masked.matchAll(/(?:^|[\s;&|(])(?:1|&)?>>?(?![&>(|])/g)) {
+    const target = /^(?:"([^"]*)"|'([^']*)'|([^\s;&|<>]+))/.exec(command.slice((m.index ?? 0) + m[0].length).trimStart())
+    const word = target?.[1] ?? target?.[2] ?? target?.[3]
+    if (word !== undefined && !/^\/dev\/(?:stdout|stderr|tty|fd\/[12])$/.test(word)) return true
+  }
+  return false
+}
+
+/** Returns the file path and metadata if the bash command is a Python snippet that reads a known-extension file via open(). Returns null otherwise. A compound command is read one simple command at a time, and only a Python one is scanned: `python a.py && cat > b.py <<'EOF' ... EOF && python b.py` writes a script whose `open()` reads nothing until it runs, and scanning the whole line refused it as a read of the file that script names (3 of 16 measured refusals). A heredoc is a snippet only when it is the program a `python` reads from standard input, and a Python command whose standard output goes to a file prints nothing into the conversation, so it is no read at all. */
 export function extractPythonFileRead(cmd: string): PythonFileReadResult | null {
   let inner = cmd.trim()
   const w = POWERSHELL_WRAP_RE.exec(inner)
@@ -548,15 +595,26 @@ export function extractPythonFileRead(cmd: string): PythonFileReadResult | null 
   const psHereMatch =
     /^@'([\s\S]*?)'@\s*\|\s*(?:python3?|py)(?:\.exe)?(?:\s+-\S*|\s+-)?\s*$/i.exec(inner) ??
     /^@"([\s\S]*?)"@\s*\|\s*(?:python3?|py)(?:\.exe)?(?:\s+-\S*|\s+-)?\s*$/i.exec(inner)
-  let pythonBody: string | null = null
-  if (psHereMatch) {
-    pythonBody = (psHereMatch[1] ?? '').trim()
-  } else if (/^(?:python3?|py)(?:\.exe)?\b/i.test(inner)) {
-    pythonBody = inner
+  if (psHereMatch) return pythonSnippetRead((psHereMatch[1] ?? '').trim())
+  if (!PYTHON_COMMAND_RE.test(inner)) return null
+
+  const { code, bodies } = splitHeredocBodies(inner)
+  let nextBody = 0
+  for (const segment of splitShellSegments(code)) {
+    // Bodies arrive in the order their openers were written, so each segment takes as many as it opens, Python or not.
+    const opened = Array.from(segment.matchAll(HEREDOC_OPENER_RE)).length
+    const body = opened > 0 ? bodies[nextBody] : undefined
+    nextBody += opened
+    const command = stripLeadingAssignments(segment)
+    if (!PYTHON_COMMAND_RE.test(command) || stdoutGoesToFile(command)) continue
+    const read = pythonSnippetRead(body !== undefined && PYTHON_STDIN_PROGRAM_RE.test(command) ? body : command)
+    if (read !== null) return read
   }
+  return null
+}
 
-  if (pythonBody === null) return null
-
+/** The file a Python snippet reads through open(), as {@link extractPythonFileRead} reports it, or null when it reads none or writes one. */
+function pythonSnippetRead(pythonBody: string): PythonFileReadResult | null {
   // Return null when the command shows write intent — these are edits, not reads
   if (pythonOpenWritesAFile(pythonBody) || pythonWritesThroughFileObject(pythonBody)) return null
 
@@ -565,44 +623,18 @@ export function extractPythonFileRead(cmd: string): PythonFileReadResult | null 
   if (outputOpen?.[1]) {
     const filePath = outputOpen[1]
     if (isOrchestratorStateFile(filePath)) return null
-    return { filePath, isDoc: false, isConfig: false, isEnv: false, isSql: false, isOutputFile: true }
+    return { filePath, isDoc: false, isConfig: false, isEnv: false, isSql: false, isOutputFile: true, feedsParser: false }
   }
 
+  const feedsParser = pythonReadFeedsParser(pythonBody)
   const classifyResult = (filePath: string): PythonFileReadResult => {
     const flags = classifyFileExtensions(filePath)
     if (flags !== null) {
-      return { filePath, isDoc: flags.isDoc, isConfig: flags.isConfig, isEnv: flags.isEnv, isSql: flags.isSql, isXml: flags.isXml, isOutputFile: false }
+      return { filePath, isDoc: flags.isDoc, isConfig: flags.isConfig, isEnv: flags.isEnv, isSql: flags.isSql, isXml: flags.isXml, isOutputFile: false, feedsParser }
     }
     const { isDoc, isConfig, isSql, isXml } = classifyDocConfig(filePath)
     const isEnv = /\.env(\.\w+)?$/i.test(filePath)
-    return { filePath, isDoc, isConfig, isEnv, isSql, isXml, isOutputFile: false }
-  }
-
-  // Heredoc form: python3 - << 'PYEOF'\n...\nPYEOF
-  const heredocMatch = /^python3?\s+-\s+<<\s*'?(\w+)'?\s*\n([\s\S]*?)\n\1\s*$/.exec(pythonBody)
-  if (heredocMatch) {
-    const body = heredocMatch[2] ?? ''
-    // Write-mode exclusion in the heredoc body
-    if (pythonOpenWritesAFile(body) || pythonWritesThroughFileObject(body)) return null
-    // Direct: open(r'path.ext') or open("path.ext") in body
-    const heredocOpen = new RegExp(`open\\s*\\(\\s*r?['"]([^'"]+\\.(?:${KNOWN_PYTHON_EXT_STR}))['"]`, 'i').exec(body)
-    if (heredocOpen?.[1]) {
-      const filePath = heredocOpen[1]
-      if (isOrchestratorStateFile(filePath)) return null
-      return classifyResult(filePath)
-    }
-    // Indirect: open(var, ...) where a string literal with known ext appears in the body
-    if (/open\s*\(/.test(body) && !pythonOpenPathsAreAllLiteral(body)) {
-      const literal = new RegExp(`['"]([^'"]+\\.(?:${KNOWN_PYTHON_EXT_STR}))['"]`, 'i').exec(body)
-      if (literal?.[1]) {
-        const filePath = literal[1]
-        if (isOrchestratorStateFile(filePath)) return null
-        if (OPEN_EXT.test(filePath)) {
-          return classifyResult(filePath)
-        }
-      }
-    }
-    return null
+    return { filePath, isDoc, isConfig, isEnv, isSql, isXml, isOutputFile: false, feedsParser }
   }
 
   // Direct: open('path.ext') or open("path.ext")
@@ -1025,10 +1057,25 @@ export function extractToolResultsFile(cmd: string): { path: string } | null {
   return null
 }
 
-/** Returns true when the command is a directory listing (eza --long or ls … | head) for which `token-goat map --compact` is a cheaper alternative. */
+/** The flags of each listing command that ask for something about the files besides their names: sizes, times, owners, permissions, inodes, or an order by one of them. Short ones may come bundled (`-la`, `-lhS`). */
+const LISTING_METADATA_FLAGS: Readonly<Record<string, { short: RegExp; long: RegExp }>> = {
+  ls: { short: /[lgnoshtSiuc]/, long: /^--(?:format=(?:long|verbose)|full-time|time|size|human-readable|si|inode|author|numeric-uid-gid|sort=(?:size|time)|block-size)/ },
+  eza: { short: /[lghBmuUiS]/, long: /^--(?:long|git|bytes|binary|header|group|modified|accessed|created|changed|inode|blocksize|links|octal-permissions|time|total-size)/ },
+  tree: { short: /[hspugD]/, long: /^--(?:du|si|timefmt)/ },
+}
+
+/** True when a listing asks for metadata. `token-goat map` lists files and symbols, never a size, time or permission, so it cannot stand in for `ls -la dist/`. */
+function listingAsksForMetadata(cmd: string): boolean {
+  const words = splitCommandWords(splitShellSegments(cmd)[0] ?? '')
+  const flags = LISTING_METADATA_FLAGS[words[0] ?? '']
+  if (flags === undefined) return false
+  return words.slice(1).some((w) => (w.startsWith('--') ? flags.long.test(w) : /^-[A-Za-z]/.test(w) && flags.short.test(w.slice(1))))
+}
+
+/** Returns true when the command is a directory listing (eza --tree, tree, a recursive ls, or ls … | head) for which `token-goat map --compact` is a cheaper alternative, and it asks only for names. */
 export function extractDirectoryListing(cmd: string): boolean {
+  if (listingAsksForMetadata(cmd)) return false
   return (
-    /^eza\s+.*--long\s+\S+/.test(cmd) ||
     /^eza\s+.*--tree/.test(cmd) ||
     /^tree(\s|$)/.test(cmd) ||
     /^ls\s+(?:\S+\s+)*-[a-zA-Z]*R[a-zA-Z]*(?:\s|$)/.test(cmd) ||
@@ -1171,17 +1218,31 @@ const HEREDOC_OPENER_RE = /(?<!<)<<(?!<)-?[\t ]*(['"]?)([A-Za-z_]\w*)\1/g
 
 /** `cmd` without its heredoc bodies: each opener's line is kept and the lines after it are dropped through the one holding its terminator. */
 function stripHeredocBodies(cmd: string): string {
+  return splitHeredocBodies(cmd).code
+}
+
+/** {@link stripHeredocBodies}'s `code`, with the bodies it dropped in the order their openers appear, each as its lines joined by newlines. */
+function splitHeredocBodies(cmd: string): { code: string; bodies: string[] } {
   const kept: string[] = []
+  const bodies: string[] = []
   const pending: string[] = []
+  let body: string[] = []
   for (const line of cmd.split('\n')) {
     if (pending.length > 0) {
-      if (line.trim() === pending[0]) pending.shift()
+      if (line.trim() === pending[0]) {
+        pending.shift()
+        bodies.push(body.join('\n'))
+        body = []
+      } else {
+        body.push(line)
+      }
       continue
     }
     kept.push(line)
     for (const m of line.matchAll(HEREDOC_OPENER_RE)) pending.push(m[2] as string)
   }
-  return kept.join('\n')
+  if (pending.length > 0) bodies.push(body.join('\n'))
+  return { code: kept.join('\n'), bodies }
 }
 
 /** Words that can stand in front of a command's own assignments without being the command: `time X=0 cmd`, `do X=0 cmd; done`, `export X=0`. */

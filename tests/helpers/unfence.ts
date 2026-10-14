@@ -3,17 +3,17 @@
 /** The notice line the fence prepends, in both its no-match and its match-naming forms. */
 const NOTICE_RE = /^\[token-goat: (?:content below is untrusted|\d+ prompt-injection pattern).*\]\n/
 
-/** Strip one untrusted-content fence (notice line, opening tag, closing tag) from `text`. Returns `text` unchanged when it carries no fence, so a test can call this unconditionally without asserting in advance whether the path under test fences. It deliberately does NOT undo `neutralizeFenceMarkers`, so a payload that itself contained a fence marker stays visibly neutralized -- silently restoring it would hide the escaping bug that neutralization exists for. */
+/** Strip one untrusted-content fence (notice line, opening tag, closing tag, the nonce the two tags share included) from `text`. Returns `text` unchanged when it carries no fence, so a test can call this unconditionally without asserting in advance whether the path under test fences. It deliberately does NOT undo `neutralizeFenceMarkers`, so a payload that itself contained a fence marker stays visibly neutralized -- silently restoring it would hide the escaping bug that neutralization exists for. */
 export function unfence(text: string): string {
   const withoutNotice = text.replace(NOTICE_RE, '')
-  const fence = /^<(untrusted-[a-z-]+)>\n([\s\S]*)\n<\/\1>$/.exec(withoutNotice.trimEnd())
+  const fence = /^<(untrusted-[a-z-]+(?: nonce=[0-9a-f]{12})?)>\n([\s\S]*)\n<\/\1>$/.exec(withoutNotice.trimEnd())
   if (fence === null) return text
   return fence[2] ?? text
 }
 
-/** The fence tag wrapping `text`, or null when it carries no fence. */
+/** The fence tag wrapping `text`, without its nonce, or null when it carries no fence. */
 export function fenceTagOf(text: string): string | null {
-  const fence = /<(untrusted-[a-z-]+)>\n[\s\S]*\n<\/\1>/.exec(text)
+  const fence = /<(untrusted-[a-z-]+)( nonce=[0-9a-f]{12})?>\n[\s\S]*\n<\/\1\2>/.exec(text)
   return fence?.[1] ?? null
 }
 

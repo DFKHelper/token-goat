@@ -15,13 +15,13 @@ import * as bashRunner from '../src/bash_runner.js'
 describe('a spawn failure is reported as exit 127, not success or a crash', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('passthrough returns 127 and names the error on stderr when the binary does not exist', () => {
+  it('passthrough returns 127 and names the error on stderr when the binary does not exist', async () => {
     const writes: string[] = []
     vi.spyOn(process.stderr, 'write').mockImplementation(((s: string | Uint8Array) => {
       writes.push(String(s))
       return true
     }) as typeof process.stderr.write)
-    const exit = bashRunner.runRaw('Write-Output hi', 5, undefined, 'pwsh')
+    const exit = await bashRunner.runRaw('Write-Output hi', 5, undefined, 'pwsh')
     expect(exit).toBe(127)
     expect(writes.join('')).toContain('ENOENT')
   })

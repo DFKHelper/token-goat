@@ -172,7 +172,8 @@ describe('a compaction resets subagent dedup state (built bundle)', () => {
 
 describe('a compaction resets the repeat-deny key of a subagent (in-process relay)', () => {
   const guide = (): string => {
-    const filler = 'Section prose that pads this fixture past the size floors the gated sites apply. '.repeat(20)
+    // 130 repeats, about 22 KB in all: past the 20 KB under which a whole-file `cat` runs without a refusal.
+    const filler = 'Section prose that pads this fixture past the size floors the gated sites apply. '.repeat(130)
     return '## Install\n\n' + filler + '\n\n## Usage\n\n' + filler + '\n'
   }
 

@@ -219,6 +219,15 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       'output it delivers, which is why the fence is the right shape and displaySafeText is not.',
   ],
   [
+    'hooks_bash_post.ts:redacted.text',
+    "withoutHeartbeats re-emits the Bash result the harness already delivered, redacted, minus the " +
+      "heartbeat lines the compress wrapper wrote ahead of it. That result is the payload the reader " +
+      "asked for, and it arrives already fenced: the pass fires only on the compress runner's own " +
+      "substituted view, which bash_runner.ts::wrapAndCompress builds with fenceWithMatches( around " +
+      "the command's bytes. Fencing it here again would nest the fence, and this pass adds no words " +
+      'of its own beside it (substituted_output_reaches_fence.test.ts records the same reasoning).',
+  ],
+  [
     'read_git.ts:h.text',
     'runDiff joins git diff hunk bodies into its output: these are the payload the reader asked ' +
       'for, and this command delivers file content unfenced by design. The `# name (kind) - path` ' +
@@ -258,6 +267,13 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       'reader asked for, and escaping it would change the markup the command exists to hand back. ' +
       'Scoped to the serializer only. The same property in formatXmlOutline IS escaped, because ' +
       "that line is token-goat's own summary with a child count appended rather than a reproduction.",
+  ],
+  [
+    'cli_skills.ts:extracted.text',
+    'the skill section skill-section was asked to print: the payload the reader asked for, printed ' +
+      'verbatim as it always was (it read out(extracted) before capToCeiling wrapped it to page an ' +
+      'oversized section). capToCeiling only stops at a line boundary and appends token-goat\'s own ' +
+      'continuation notice, whose path is quoted by quotedArg.',
   ],
   [
     'session_store_schema.ts:result.text',

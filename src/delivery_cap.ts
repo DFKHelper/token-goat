@@ -5,8 +5,8 @@
 import { detectHarness } from './bridges/registry.js'
 import type { HarnessName } from './bridges/types.js'
 
-/** Bytes of a Bash tool result Claude Code delivers inline before it persists the rest to disk. Derived by CAPTURE from the recorded session corpus (174,678 Bash results, 1,935 of them persisted): the smallest output that WAS persisted measured 20,013 bytes and the largest that was NOT measured 19,990 -- a 23-byte gap with nothing in between. This is the TRIGGER threshold, not the delivered size: once crossed, the model does not receive up to this many bytes inline, it receives a short `<persisted-output>` preview naming the file (see {@link CLAUDE_CODE_PERSISTED_PREVIEW_BYTES}). A rewrite of an oversized output still remains net-positive against that smaller preview. This constant corrects what gets RECORDED and must never be used to suppress a rewrite. */
-export const CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES = 20_000
+/** How much of a Bash tool result Claude Code delivers inline; a longer result is persisted to a file and the model is shown a short `<persisted-output>` preview of it instead (see {@link CLAUDE_CODE_PERSISTED_PREVIEW_BYTES}). The one measured value every user of the harness's inline limit reads: the savings counterfactual ({@link deliveredOutputBytes}), the rewrite fitting ({@link fitToDeliveryCap}), and the ceiling token-goat's own paged answers keep under (overflow_guard.ts HARNESS_INLINE_CEILING_CHARS). CAPTURE, 2026-10-12, from this machine's transcripts on Claude Code 2.1.220 to 2.1.296 (263 session files; saved files of persisted results survive from 2.1.270 on): the longest Bash result delivered inline held 29,706 characters of stdout (2.1.270), and every persisted result whose saved file was still on disk held 30,695 characters or more (2.1.275); on 2.1.296 alone, 6,042 results came back inline up to 28,240 characters and 22 were persisted from 31,391. No result fell between, so the limit sits in that gap, where Claude Code's own 30,000-character Bash output limit would put it (not verified against its source). The value is the measured lower edge, so a result held to it is known to stay inline. A transcript's toolUseResult stdout for a persisted result holds the truncated text (up to 30,000 characters here), not the size that was persisted, so only the saved file measures it. This replaces 20,000 bytes, an older capture that results up to 29,706 characters delivered inline on these versions contradict. The limit is in characters and callers compare UTF-8 bytes, which are never fewer, so a byte count under it is under it in characters too. */
+export const CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES = 29_706
 
 /** Bytes of its own text Claude Code actually shows the model once an over-cap Bash result is persisted, not the full {@link CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES} head. CAPTURE: live-tested against Claude Code 2.1.276 (`claude --print --model haiku --setting-sources ""`, 41-43 KB outputs), whose own wrapper reads "Preview (first 2KB)" literally -- see memory project_persisted_bash_output_hook_sees_20k_head_model_sees_2kb.md. Applies whether the persisted output is the command's own raw text or a token-goat rewrite that kept `persistedOutputPath`, since the harness re-checks the field it is handed either way. */
 export const CLAUDE_CODE_PERSISTED_PREVIEW_BYTES = 2048
@@ -16,14 +16,59 @@ export function bashOutputCapBytes(harness: HarnessName = detectHarness()): numb
   return harness === 'claudecode' ? CLAUDE_CODE_BASH_OUTPUT_CAP_BYTES : null
 }
 
-/** Cut `text` back so that it plus `reserveBytes` of framing still fits the harness delivery cap. A rewrite that overruns the cap does not merely lose its tail. The harness truncates from the END, which is exactly where a closing fence tag and a recall pointer sit, and it PERSISTS the substitute -- so an over-long rewrite ships an unterminated fence and destroys the only route back to the original. Callers therefore reserve the bytes of everything they intend to wrap around `text` and clip the payload, never the framing. The cut lands on the last complete line so the boundary is one the model can read, which also drops any multi-byte character a byte-wise slice split in half. Returns the text unchanged when the harness has no measured cap or the payload already fits. */
+/** Cut `text` back so that it plus `reserveBytes` of framing still fits the harness delivery cap. A rewrite that overruns the cap does not merely lose its tail. The harness truncates from the END, which is exactly where a closing fence tag and a recall pointer sit, and it PERSISTS the substitute -- so an over-long rewrite ships an unterminated fence and destroys the only route back to the original. Callers therefore reserve the bytes of everything they intend to wrap around `text` and clip the payload, never the framing. The cut lands on the last complete line so the boundary is one the model can read, which also drops any multi-byte character a byte-wise slice split in half. Returns the text unchanged when the harness has no measured cap or the payload already fits, and an empty payload when the framing alone fills the cap: handing the text back whole there shipped a fence of marker-dense output at 54,259 bytes. */
 export function clipToDeliveryCap(text: string, reserveBytes: number): { text: string; clipped: boolean } {
   const cap = bashOutputCapBytes()
   const room = cap === null ? null : cap - reserveBytes
-  if (room === null || room <= 0 || Buffer.byteLength(text, 'utf-8') <= room) return { text, clipped: false }
-  const sliced = Buffer.from(text, 'utf-8').subarray(0, room).toString('utf-8')
-  const lastNewline = sliced.lastIndexOf('\n')
-  return { text: lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced, clipped: true }
+  if (room === null || Buffer.byteLength(text, 'utf-8') <= room) return { text, clipped: false }
+  return { text: cutToBytes(Buffer.from(text, 'utf-8'), room), clipped: true }
+}
+
+/** The longest prefix of `bytes` within `room` of them, ending on a whole line when that gives up no more than an eighth of the cut. Cutting back to the last line break whatever it cost shipped well under the cap: a short line followed by one long one kept the short line alone, and about one clipped output in sixteen came to less than half the cap. The cut backs off to the first byte of a character, so it never ends in the replacement character a split one decodes to, nor between the halves of a surrogate pair: a cut through a 2-byte letter decoded to a 3-byte U+FFFD that overran by the byte it was meant to save. */
+function cutToBytes(bytes: Buffer, room: number): string {
+  let end = Math.min(Math.max(0, room), bytes.length)
+  while (end > 0 && end < bytes.length && ((bytes[end] ?? 0) & 0xc0) === 0x80) end--
+  if (end > 0 && end < bytes.length && bytes[end] !== 0x0a) {
+    const newline = bytes.lastIndexOf(0x0a, end - 1)
+    if (newline > 0 && (end - newline) * 8 <= end) end = newline
+  }
+  return bytes.subarray(0, end).toString('utf-8')
+}
+
+/** `frame(text, false)` when it fits within `cap` bytes, the harness delivery cap unless a caller names another, or else `frame(cut, true)` for the longest cut of `text` this finds whose framed result does. For a rewrite whose framing does not cost a fixed number of bytes, which is every fenced one: the neutralizer can double a marker-dense body (`[tg]` becomes `&#91;tg]`), the escape strip can shrink a coloured one, and a cut can end inside a marker the whole text spelled differently, so a reserve priced off the whole text let a cut of it overrun the cap. Each candidate is framed and measured instead, and the next cut is scaled down by how far the last one ran over, and by at least a byte, for eight tries. A single long line approaches the fit from above and can still be over after eight, so the cut is then found by halving between the empty body, which fits, and the shortest cut that did not. The frame around an empty body is the floor: it still closes, and its pointer still recalls the original. */
+export function fitToDeliveryCap(text: string, frame: (body: string, clipped: boolean) => string, cap: number | null = bashOutputCapBytes()): string {
+  const whole = frame(text, false)
+  if (cap === null || Buffer.byteLength(whole, 'utf-8') <= cap) return whole
+  const bytes = Buffer.from(text, 'utf-8')
+  const empty = frame('', true)
+  const fixed = Buffer.byteLength(empty, 'utf-8')
+  if (fixed > cap) return empty
+  const framedWithin = (room: number): { framed: string; size: number; body: string } => {
+    const body = cutToBytes(bytes, room)
+    const framed = frame(body, true)
+    return { framed, size: Buffer.byteLength(framed, 'utf-8'), body }
+  }
+  let room = Math.min(bytes.length, cap - fixed)
+  let over = room
+  for (let attempt = 0; attempt < 8 && room > 0; attempt++) {
+    const tried = framedWithin(room)
+    if (tried.size <= cap) return tried.framed
+    over = room
+    room = Math.min(room - 1, Math.floor((Buffer.byteLength(tried.body, 'utf-8') * (cap - fixed)) / (tried.size - fixed)))
+  }
+  let best = empty
+  let fits = 0
+  while (over - fits > 1) {
+    const mid = Math.floor((fits + over) / 2)
+    const tried = framedWithin(mid)
+    if (tried.size <= cap) {
+      best = tried.framed
+      fits = mid
+    } else {
+      over = mid
+    }
+  }
+  return best
 }
 
 /** The portion of originalBytes the model would actually have received, given the active harness. This is the single definition of the counterfactual every Bash saving is measured against. Both the CLI wrapper path (bash_runner) and the hook rewrite path (hooks_bash_post) route their recorded figure through it, so the two cannot drift apart. Crossing the cap does not deliver up to `cap` bytes inline -- Claude Code persists the rest and shows only CLAUDE_CODE_PERSISTED_PREVIEW_BYTES of preview, so crediting the full cap there over-counts what the model actually saw. */

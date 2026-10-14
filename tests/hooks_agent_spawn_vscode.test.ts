@@ -34,7 +34,8 @@ beforeEach(() => {
   cwdSandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cwd-vscode-')))
   process.chdir(cwdSandbox)
   workspace = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-vscode-ws-')))
-  fs.writeFileSync(path.join(workspace, 'a.ts'), 'export const a = 1\n')
+  // Five files: a spawn briefing leaves the map out for anything smaller.
+  for (const name of ['a', 'b', 'c', 'd', 'e']) fs.writeFileSync(path.join(workspace, `${name}.ts`), `export const ${name} = 1\n`)
 })
 
 afterEach(() => {

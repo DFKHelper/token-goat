@@ -215,6 +215,15 @@ export const MINIMAL_PDF = '%PDF-1.4\n' +
   '5 0 obj\n<< /Length 44 >>\nstream\nBT /F1 24 Tf 20 100 Td (Hello PDF) Tj ET\nendstream\nendobj\n' +
   'trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n'
 
+// Minimal hand-authored single-page PDF that only paints a 2x2 grayscale image, so its page has no text layer: the shape of a scanned document, for the pdf-extract case below.
+export const IMAGE_ONLY_PDF = '%PDF-1.4\n' +
+  '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
+  '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n' +
+  '3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /XObject << /Im1 4 0 R >> >> /MediaBox [0 0 200 200] /Contents 5 0 R >>\nendobj\n' +
+  '4 0 obj\n<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 9 >>\nstream\n00FFFF00>\nendstream\nendobj\n' +
+  '5 0 obj\n<< /Length 30 >>\nstream\nq 200 0 0 200 0 0 cm /Im1 Do Q\nendstream\nendobj\n' +
+  'trailer\n<< /Size 6 /Root 1 0 R >>\n%%EOF\n'
+
 // Two-font single-line PDF for the pdf-locate case below: pdfjs 6.3.289 only emits separate text items with no space item between them when adjacent Tj operators switch fonts (same-font runs get merged into one item), so a MINIMAL_PDF-style single-Tj fixture never exercises the item join this smoke test is here to cover.
 export const MIXED_FONTS_PDF = '%PDF-1.4\n' +
   '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n' +
@@ -316,6 +325,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(grepMiss.status, grepMiss.stderr).toBe(0)
     expect(grepMiss.stdout).toContain('filtered out by --grep zzznomatch')
     expect(grepMiss.stdout).not.toContain('Run npm install')
+    // Several specs are all read, as their comma form is, rather than all but the first being noted as ignored.
+    const twoSpecs = run(['section', 'README.md::Fixture', 'README.md::Install'])
+    expect(twoSpecs.status, twoSpecs.stderr).toBe(0)
+    expect(twoSpecs.stdout).toContain('# Fixture — ')
+    expect(twoSpecs.stdout).toContain('already included in section')
+    expect(twoSpecs.stdout + twoSpecs.stderr).not.toContain('ignored')
   },
   // Deliberately a keyword smoke test, not a proof of real embedding-vector search: this shared fixture is indexed with embeddings disabled (isolate-home.ts sets TOKEN_GOAT_EMBEDDINGS_ENABLED=false for the whole suite, and tgEnv inherits it), so this case only exercises the FTS keyword fallback and would pass identically whether or not real semantic search is wired up - it is not a substitute for that proof. The dedicated proof - a meaning-only natural-language query finding a symbol whose name/body never uses the query's words, with a control run showing the same query genuinely misses under FTS alone - lives in tests/semantic_embeddings_e2e.test.ts.
   semantic: () => {
@@ -1024,6 +1039,16 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const rLayout = run(['pdf-extract', pdfPath, '--layout'])
     expect(rLayout.status, rLayout.stderr).toBe(0)
     expect(rLayout.stdout).toContain('Hello PDF')
+    // A scanned page used to come back as an empty fence at exit 0. Now it exits 1 so `|| fallback` fires, and stdout alone (as under `2>/dev/null`) names the pages and a rasterize route instead of a fence.
+    const scanPath = path.join(dir, 'scan.pdf')
+    fs.writeFileSync(scanPath, Buffer.from(IMAGE_ONLY_PDF, 'latin1'))
+    const rScan = run(['pdf-extract', scanPath])
+    expect(rScan.status).toBe(1)
+    expect(rScan.stdout).toContain('No text layer on page 1 of 1 page')
+    expect(rScan.stdout).toContain('-dFirstPage=1 -dLastPage=1')
+    expect(rScan.stdout).toContain('token-goat image-text')
+    expect(rScan.stdout).not.toContain('<untrusted-file-content')
+    expect(rScan.stderr).toContain('no text layer on the requested pages')
   },
   'pdf-locate': () => {
     const dir = mkIsolated('tg-matrix-pdfl-')
@@ -1359,6 +1384,14 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const r = run(['bash-output', '--file', 'pkg.json'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('3.2.1')
+    // An answer past the harness's inline limit is held under it, closes its fence, and names the --lines that return the rest.
+    const big = path.join(mkIsolated('tg-matrix-bo-'), 'big.txt')
+    fs.writeFileSync(big, `${Array.from({ length: 600 }, (_, i) => `row ${i + 1} ${'filler '.repeat(14)}`).join('\n')}\n`)
+    const capped = run(['bash-output', '--file', big, '--head', '600'])
+    expect(capped.status, capped.stderr).toBe(0)
+    // HAND-DERIVED: the measured inline limit, 29,706, less the 4,096 kept for the notice and stderr.
+    expect(capped.stdout.length).toBeLessThanOrEqual(25_610)
+    expect(capped.stdout).toMatch(/<\/untrusted-tool-output nonce=[0-9a-f]{12}>\n\[token-goat: output capped at 25610 chars[^\n]*--lines \d+-600`\]/)
   },
   'web-output': () => {
     // Reachability: process-local cache is always empty in a fresh process, so a bogus id is a graceful miss (exit 1), not an "unknown command" / crash.
@@ -1797,9 +1830,10 @@ export const cases: Record<string, () => void | Promise<void>> = {
       manualEffective: number
       manualIneffective: number
     }>
-    expect(rows.length).toBe(9)
+    expect(rows.length).toBe(10)
     expect(rows.every((row) => row.emitted === 0 && row.suppressed === false)).toBe(true)
     expect(rows.map((row) => row.category).sort()).toEqual([
+      'bash_large_output',
       'bash_recall',
       'bash_redirect',
       'edit_reread_suggest',
@@ -2138,6 +2172,16 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status).not.toBe(0)
     expect((r.stdout + r.stderr).length).toBeGreaterThan(0)
     expect(r.stdout + r.stderr).not.toMatch(/unknown command|is not a function/)
+    // A skill with no compact slice used to come back whole from --compact; it now gets its heading tree and a stderr note.
+    const skillDir = path.join(homeBase, '.claude', 'skills', 'tgmatrixskill')
+    fs.mkdirSync(skillDir, { recursive: true })
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), `# Matrix Skill\n\n${Array.from({ length: 8 }, (_, i) => `## Part ${i}\n\n${'w'.repeat(900)}`).join('\n\n')}\n`)
+    const compact = run(['skill-body', 'tgmatrixskill', '--compact'])
+    expect(compact.status, compact.stderr).toBe(0)
+    expect(compact.stdout).toContain('## Part 7')
+    expect(compact.stdout).toContain('token-goat skill-section "tgmatrixskill" "Part 0"')
+    expect(compact.stdout).not.toContain('w'.repeat(900))
+    expect(compact.stderr).toContain('no compact slice')
   },
   'skill-compact': () => {
     const r = run(['skill-compact', 'no-such-skill'])

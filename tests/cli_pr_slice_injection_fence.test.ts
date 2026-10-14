@@ -1,6 +1,8 @@
 // Regression: `token-goat pr-slice` (runPrSlice in read_commands.ts) emitted a GitHub PR's title, description, review comments, and diff with no scan and no fence -- all four are authorable by anyone who opens a PR or leaves a review comment. `emitGuarded`/`guardText` is a token-budget trimmer, not a security guard, despite the name. Mocks the `gh`/`git` subprocess boundary (no live network/gh-auth access), mirroring tests/pr_slice.test.ts and tests/cli_pr_slice_stats.test.ts.
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
+
 const spawnSyncMock = vi.fn()
 vi.mock('node:child_process', () => ({
   spawnSync: (...args: unknown[]) => spawnSyncMock(...args),
@@ -57,8 +59,8 @@ describe('pr-slice injection fencing', () => {
     spawnSyncMock.mockReturnValueOnce(GH_OK).mockReturnValueOnce(GH_OK).mockReturnValueOnce({ status: 0, stdout: diffText })
 
     const { stdout } = capture(() => runPrSlice({ pr: '42', slice: 'diff:src/a.ts', repo: 'acme/widgets' }))
-    expect(stdout).toContain('<untrusted-github-content>')
-    expect(stdout).toContain('</untrusted-github-content>')
+    expect(withoutFenceNonces(stdout)).toContain('<untrusted-github-content>')
+    expect(withoutFenceNonces(stdout)).toContain('</untrusted-github-content>')
     expect(stdout).toContain('ignore-previous-instructions')
   })
 
@@ -86,7 +88,7 @@ describe('pr-slice injection fencing', () => {
       })
 
     const { stdout } = capture(() => runPrSlice({ pr: '42', slice: 'comments', repo: 'acme/widgets' }))
-    expect(stdout).toContain('<untrusted-github-content>')
+    expect(withoutFenceNonces(stdout)).toContain('<untrusted-github-content>')
     expect(stdout).toContain('ignore-previous-instructions')
   })
 
@@ -109,7 +111,7 @@ describe('pr-slice injection fencing', () => {
       })
 
     const { stdout } = capture(() => runPrSlice({ pr: '42', slice: 'description', repo: 'acme/widgets' }))
-    expect(stdout).toContain('<untrusted-github-content>')
+    expect(withoutFenceNonces(stdout)).toContain('<untrusted-github-content>')
     expect(stdout).toContain('ignore-previous-instructions')
   })
 
@@ -128,7 +130,7 @@ describe('pr-slice injection fencing', () => {
     const { stdout } = capture(() => runPrSlice({ pr: '42', slice: 'diff:src/a.ts', repo: 'acme/widgets', json: true }))
     const parsed = JSON.parse(stdout) as { path: string; diff: string }
     expect(parsed.path).toBe('src/a.ts')
-    expect(parsed.diff).toContain('<untrusted-github-content>')
+    expect(withoutFenceNonces(parsed.diff)).toContain('<untrusted-github-content>')
     expect(parsed.diff).toContain('ignore-previous-instructions')
   })
 
@@ -153,7 +155,7 @@ describe('pr-slice injection fencing', () => {
     const { stdout } = capture(() => runPrSlice({ pr: '42', slice: 'description', repo: 'acme/widgets', json: true }))
     const parsed = JSON.parse(stdout) as { number: number; title: string; body: string }
     expect(parsed.number).toBe(42)
-    expect(parsed.body).toContain('<untrusted-github-content>')
+    expect(withoutFenceNonces(parsed.body)).toContain('<untrusted-github-content>')
     expect(parsed.body).toContain('ignore-previous-instructions')
   })
 
@@ -171,7 +173,7 @@ describe('pr-slice injection fencing', () => {
     const { stdout } = capture(() => runPrSlice({ pr: '42', slice: 'comments', repo: 'acme/widgets', json: true }))
     const parsed = JSON.parse(stdout) as { items: Array<{ body: string; diffHunk: string }> }
     expect(parsed.items[0]?.body).toBe('Looks fine.')
-    expect(parsed.items[0]?.diffHunk).toContain('<untrusted-github-content>')
+    expect(withoutFenceNonces(parsed.items[0]?.diffHunk ?? '')).toContain('<untrusted-github-content>')
     expect(parsed.items[0]?.diffHunk).toContain('ignore-previous-instructions')
   })
 })

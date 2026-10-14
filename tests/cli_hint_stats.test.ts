@@ -245,7 +245,7 @@ describe('runHintStatsCommand — efficacy polarity disclosure', () => {
   // FIXTURE PROVENANCE: HAND-DERIVED. The categories come from SUPPRESSION_HINT_CATEGORIES in src/hint_stats.ts (the definition under test, cited deliberately -- this asserts the renderer agrees with the polarity the scorer applies, which is the coupling that broke). The expected output shape is not read off the renderer: it is the minimum a reader needs to avoid the comparison above, written before the assertion was run.
   it('marks a category whose score is an absence, and says so', () => {
     const sid = nonce()
-    logHintEmission('edit_reread_suggest', sid, 'C:/x/a.ts')
+    logHintEmission('read_reread_dedup', sid, 'C:/x/a.ts')
     logHintEmission('bash_redirect', sid, 'C:/x/b.ts')
     expireWindow(sid)
 
@@ -253,7 +253,7 @@ describe('runHintStatsCommand — efficacy polarity disclosure', () => {
     const line = (cat: string) => output.split('\n').find((l) => l.startsWith(cat)) ?? ''
 
     expect(
-      line('edit_reread_suggest'),
+      line('read_reread_dedup'),
       'A suppression-polarity row must carry a marker in its efficacy cell. Without one its ' +
       'percentage is indistinguishable from an affirmative-action score that means something ' +
       'entirely different.',

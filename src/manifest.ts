@@ -219,10 +219,12 @@ function fitManifest(sections: readonly FitSection[], sessionId?: string, cwd?: 
 
 /** The project notes arrive fenced as data, and the cap can land inside the fence. Left open, the truncation notice and everything after the manifest would read as part of the fenced notes, so a cut fence is closed here; a close tag the cut split in half is dropped first so the fence ends on one whole tag. */
 export function closeCutFence(kept: string): string {
-  const open = `<${UNTRUSTED_FILE_TAG}>`
-  const close = `\n</${UNTRUSTED_FILE_TAG}>`
-  const lastOpen = kept.lastIndexOf(open)
-  if (lastOpen === -1 || kept.includes(close, lastOpen)) return kept
+  const lastOpen = kept.lastIndexOf(`<${UNTRUSTED_FILE_TAG} nonce=`)
+  const openEnd = lastOpen === -1 ? -1 : kept.indexOf('>', lastOpen)
+  if (openEnd === -1) return kept
+  // The closing tag carries the opening tag's nonce, so it is spelled from the opening tag.
+  const close = `\n</${kept.slice(lastOpen + 1, openEnd + 1)}`
+  if (kept.includes(close, lastOpen)) return kept
   let body = kept
   for (let n = close.length - 1; n > 0; n--) {
     if (body.endsWith(close.slice(0, n))) { body = body.slice(0, -n); break }
@@ -233,8 +235,8 @@ export function closeCutFence(kept: string): string {
 /** The project notes block as a fitter section: the lines up to and including the open fence tag are the header, the close tag and anything after it the footer, and each note is one row, so the fence is only ever emitted whole. A line that does not open a note belongs to the one before it. A block with no fence is header-only. */
 function notesSection(notes: string): FitSection {
   const lines = notes.split('\n')
-  const open = lines.indexOf(`<${UNTRUSTED_FILE_TAG}>`)
-  const close = lines.lastIndexOf(`</${UNTRUSTED_FILE_TAG}>`)
+  const open = lines.findIndex((line) => line.startsWith(`<${UNTRUSTED_FILE_TAG} nonce=`))
+  const close = open === -1 ? -1 : lines.lastIndexOf(`</${(lines[open] ?? '').slice(1)}`)
   if (open === -1 || close < open) return { header: ['', ...lines], priority: 2 }
   const rows: string[] = []
   for (const line of lines.slice(open + 1, close)) {

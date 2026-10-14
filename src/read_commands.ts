@@ -15,7 +15,9 @@ import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { dataDir, globalDbPath } from './constants.js'
 import { recordKnownRootThrottled } from './known_roots.js'
 import { LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
-import { isReadOnlyDb } from './db.js'
+import { getDb, isReadOnlyDb } from './db.js'
+import { removeFileFromIndex } from './index_prune.js'
+import { isToolOutputPath } from './skip_scope.js'
 import { fileIsAbsent, fingerprintFile } from './fingerprint.js'
 import { decodeSource, runGit, PER_FILE_COUNTERFACTUAL_CEILING, foldCaseForContainment, countNoun, requirePositiveStrictInt } from './util.js'
 import { renderContextWindow } from './util_context.js'
@@ -25,9 +27,10 @@ import { resolveProjectRoot } from './project.js'
 import { loadConfig } from './config.js'
 import { UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
-import { fenceIfScanMatched } from './untrusted_fence.js'
+import { fenceIfScanMatched, injectionFencingEnabled } from './untrusted_fence.js'
 import { guardThenFence } from './fence_cap.js'
-import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
+import { trimToBudget, capJsonRows, HARNESS_INLINE_CEILING_CHARS, type JsonRowCapResult } from './overflow_guard.js'
+import { guardDivisor } from './token_estimate.js'
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
 import {
@@ -79,7 +82,7 @@ import {
   symbolExtractorGap,
 } from './read_meta.js'
 import { formatCommandError } from './command_error.js'
-import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { canQuoteArg, couldNotRead, echoedValue, fencedCommand, HEAD_LINES_READ, quotedArg } from './hint_suggestion_guard.js'
 import { forClient } from './mcp_client_text.js'
 
 const GREP_MAX_LINES = 200
@@ -204,6 +207,11 @@ export function indexFileSyncPinned(resolvedPath: string, dbPath: string): void 
   if (isReadOnlyDb(dbPath)) return
   // A heal triggered by a read can be the only thing that ever indexes a project, so register its root here too rather than relying on a later edit or bulk walk. See recordKnownRootThrottled.
   recordKnownRootThrottled(resolvedPath, dataDir(), dbPath)
+  // A tool's snapshot never enters the index; one an older index still holds is purged, as cmdIndex and the worker purge it.
+  if (isToolOutputPath(resolvedPath)) {
+    removeFileFromIndex(getDb(dbPath), resolvedPath)
+    return
+  }
   const pinned = activePins?.get(pinKey(path.resolve(resolvedPath)))
   if (pinned === undefined) {
     indexFileSync(resolvedPath, dbPath)
@@ -485,14 +493,49 @@ export function guardText(text: string, command: string): string {
   return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
 }
 
+/** The character ceiling a command that pages its answer holds it to ({@link HARNESS_INLINE_CEILING_CHARS}), or less when `overflow_guard.max_tokens` asks for less, at the guard's own ~3 chars a token; null when `overflow_guard` is off, the same switch that turns {@link guardText} off. */
+export function outputCeilingChars(): number | null {
+  const cfg = loadConfig()
+  return cfg.overflow_guard.enabled ? Math.min(HARNESS_INLINE_CEILING_CHARS, cfg.overflow_guard.max_tokens * guardDivisor()) : null
+}
+
+/** Characters a `token-goat read "file@A-B"` header costs, kept out of a continuation range so the read it names fits the ceiling too. */
+const READ_HEADER_RESERVE_CHARS = 120
+
+/** How many leading `lines`, joined with line breaks, fit in `maxChars`. Never fewer than one, so a capped answer is never empty; a single line longer than the ceiling is the caller's to cut. */
+export function linesWithinChars(lines: readonly string[], maxChars: number): number {
+  let used = 0
+  for (let i = 0; i < lines.length; i++) {
+    used += lines[i]!.length + (i > 0 ? 1 : 0)
+    if (used > maxChars) return Math.max(1, i)
+  }
+  return lines.length
+}
+
+/** `lines`, which are lines `firstLine` on of `file`, cut to the leading lines that fit `maxChars` less `reserve` (what the caller prints around them) with room for a closing notice, which names the next part as a `token-goat read "file@A-B"` whose range fits the ceiling itself. Null when the lines already fit. `what` names the output in the notice ("section", "skill body"). A path no quote mark holds in both shells gets the line range without the command. Here beside {@link outputCeilingChars} rather than in overflow_guard.ts, which the hook entry loads eagerly: only the CLI's own paged answers call it. */
+export function capFileLines(allLines: readonly string[], firstLine: number, file: string, maxChars: number, what: string, reserve = 0): { kept: string[]; lastLine: number; notice: string } | null {
+  if (allLines.join('\n').length + reserve <= maxChars) return null
+  // Text ending in a line break splits into a trailing "" that is no line of the file; counting it would page one line past the end.
+  const lines = allLines.length > 1 && allLines[allLines.length - 1] === '' ? allLines.slice(0, -1) : allLines
+  const kept = lines.slice(0, linesWithinChars(lines, maxChars - reserve - (300 + file.length)))
+  const lastLine = firstLine + kept.length - 1
+  const finalLine = firstLine + lines.length - 1
+  const nextEnd = lastLine + linesWithinChars(lines.slice(kept.length), maxChars - READ_HEADER_RESERVE_CHARS)
+  const head = `[token-goat: ${what} capped at ${maxChars} chars to stay under the harness's inline output limit; showing lines ${firstLine}-${lastLine} of ${firstLine}-${finalLine}.`
+  const next = canQuoteArg(file)
+    ? ` Next part: ${fencedCommand(`token-goat read ${quotedArg(`${file}@${lastLine + 1}-${nextEnd}`)}`)}${nextEnd < finalLine ? `, then on to line ${finalLine}` : ''}.]`
+    : ` The rest is lines ${lastLine + 1}-${finalLine} of ${echoedValue(file)}.]`
+  return { kept, lastLine, notice: forClient(head + next) }
+}
+
 /** Cap `text` and fence it under {@link UNTRUSTED_GITHUB_TAG}. A PR's title, description, review comments, and diff are all authorable by anyone who opened the PR or left the comment, so the fence follows that provenance and not the scan result. The scan still runs, purely to name matched pattern(s) in the notice and record the stat. Used by every printed `pr-slice` emit site, each of which has already redacted its text. The `--json` sites use {@link fenceGithubFieldIfMatched} instead -- see the note there. */
 function guardAndFenceGithubText(text: string): string {
   return guardThenFence(text, 'pr-slice', UNTRUSTED_GITHUB_TAG)
 }
 
 /** Per-field variant for the `pr-slice --json` envelopes, still gated on a scan hit. Fencing the envelope once would be O(1) and provenance-correct, but a fence wrapped around JSON is no longer JSON, and `--json` output is parsed by callers; fencing each field unconditionally instead pays a fixed ~129-byte wrapper per field, which a short comment body or a PR title does not absorb. Same deliberate exception as `fenceFileFieldIfMatched` in untrusted_fence.ts, and it needs the same wire-format decision to resolve. */
-function fenceGithubFieldIfMatched(text: string): string {
-  return fenceIfScanMatched(text, UNTRUSTED_GITHUB_TAG)
+function fenceGithubFieldIfMatched(text: string, enabled: boolean): string {
+  return fenceIfScanMatched(text, UNTRUSTED_GITHUB_TAG, enabled)
 }
 
 /** JSON-mode counterpart to {@link guardText}: caps a JSON-serializable array at `config.overflow_guard.max_tokens` (when enabled) by dropping trailing whole items rather than truncating text mid-payload. `symbol`/`refs`/`skeleton`/`outline`'s `--json` branches were the one output path the overflow guard didn't reach -- their text-mode siblings already route through {@link guardText}/{@link emitGuarded}, but JSON mode returned the raw, unbounded array. Exported so `graph_commands.ts` (`types`/`callers`/`dead`/`test-for`) builds the same `{items, truncated, totalCount}` envelope from the same helper rather than reimplementing the cap, which is how the two halves of the envelope migration stay byte-compatible. */
@@ -647,26 +690,26 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     // No candidate resembled the query -- point at the command that lists the file's real symbols instead of leaving the miss with no next step.
     else if (scanned.length > 0) {
       if (/\.(yaml|yml)$/i.test(file)) {
-        messages.push(`Try: token-goat yaml-outline ${quotedArg(file)}\nQuery subtree: token-goat yaml-query ${quotedArg(file)} "<path>"`)
+        messages.push(`Try: token-goat yaml-outline ${quotedArg(file)}\nThen query a key it lists with yaml-query.`)
       } else if (/\.xml$/i.test(file)) {
-        messages.push(`Try: token-goat xml-outline ${quotedArg(file)}\nQuery subtree: token-goat xml-query ${quotedArg(file)} "<path>"`)
+        messages.push(`Try: token-goat xml-outline ${quotedArg(file)}\nThen query an element it lists with xml-query.`)
       } else if (/\.json$/i.test(file)) {
-        messages.push(`Try: token-goat json-outline ${quotedArg(file)}\nQuery subtree: token-goat json-query ${quotedArg(file)} "<path>"`)
+        messages.push(`Try: token-goat json-outline ${quotedArg(file)}\nThen query a key it lists with json-query.`)
       } else {
         messages.push(`Try: token-goat outline ${quotedArg(file)}`)
       }
     } else if (fs.existsSync(resolved)) {
       if (/\.(yaml|yml)$/i.test(file)) {
         messages.push(
-          `${echoedValue(file)} is a YAML file -- YAML keys below top level are not symbols; inspect structure or query values with:\n  token-goat yaml-outline ${quotedArg(file)}\n  token-goat yaml-query ${quotedArg(file)} "<path>"`,
+          `${echoedValue(file)} is a YAML file -- YAML keys below top level are not symbols; inspect structure with:\n  token-goat yaml-outline ${quotedArg(file)}\nthen query a key it lists with yaml-query.`,
         )
       } else if (/\.xml$/i.test(file)) {
         messages.push(
-          `${echoedValue(file)} is an XML file -- inspect structure or query nodes with:\n  token-goat xml-outline ${quotedArg(file)}\n  token-goat xml-query ${quotedArg(file)} "<path>"`,
+          `${echoedValue(file)} is an XML file -- inspect structure with:\n  token-goat xml-outline ${quotedArg(file)}\nthen query an element it lists with xml-query.`,
         )
       } else if (/\.json$/i.test(file)) {
         messages.push(
-          `${echoedValue(file)} is a JSON file -- inspect structure or query values with:\n  token-goat json-outline ${quotedArg(file)}\n  token-goat json-query ${quotedArg(file)} "<path>"`,
+          `${echoedValue(file)} is a JSON file -- inspect structure with:\n  token-goat json-outline ${quotedArg(file)}\nthen query a key it lists with json-query.`,
         )
       } else {
         const gap = symbolExtractorGap(file, resolved)
@@ -713,7 +756,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   const warning = staleWarning(match.filePath, 'read')
   // Appended after the overflow guard, not folded into the guarded lines, so this advisory note never shifts the "showing N of M lines" count the guard reports for the actual body.
   const narrowerSliceHint = bodyLen > LARGE_SYMBOL_LINE_THRESHOLD
-    ? forClient(`\n# for a narrower slice: token-goat grep "<pattern>" ${quotedArg(file)} -C 15 --symbol`)
+    ? forClient(`\n# for a narrower slice, read a line range: token-goat read ${quotedArg(`${file}@${match.lineStart}-${match.lineStart + HEAD_LINES_READ - 1}`)}`)
     : ''
   const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol') + narrowerSliceHint
   if (opts.suppressStat !== true) recordReadStat('read_replacement', fullSourceBytes, text, opts.spec)
@@ -850,7 +893,7 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         // "Full source" is the whole multi-file PR diff fetched before slicing down to one file's hunk -- see the `files` case above for the same recordStat rationale.
         const fullSourceBytes = Buffer.byteLength(diffText, 'utf8')
         if (opts.json === true) {
-          const jsonText = displaySafeJson({ path: parsed.path, diff: fenceGithubFieldIfMatched(fileDiff) }, 0)
+          const jsonText = displaySafeJson({ path: parsed.path, diff: fenceGithubFieldIfMatched(fileDiff, injectionFencingEnabled()) }, 0)
           emit(jsonText)
           recordReadStat('pr_slice', fullSourceBytes, jsonText, `${repo}#${opts.pr} diff:${parsed.path}`)
         } else {
@@ -863,18 +906,20 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
         const rawComments = fetchPrComments(opts.pr, repo)
         // See the `files` case above for the same recordStat rationale.
         const fullSourceBytes = Buffer.byteLength(JSON.stringify(rawComments), 'utf8')
+        const config = loadConfig()
         // Review comments are authored by anyone with review access; redact body/diffHunk before formatting or fencing, same reasoning as the diff case above.
         const comments = rawComments.map((c) => ({
           ...c,
-          body: redactSecrets(c.body).text,
-          ...(c.diffHunk !== undefined ? { diffHunk: redactSecrets(c.diffHunk).text } : {}),
+          body: redactSecrets(c.body, config).text,
+          ...(c.diffHunk !== undefined ? { diffHunk: redactSecrets(c.diffHunk, config).text } : {}),
         }))
         if (opts.json === true) {
           // The diff hunk GitHub quotes under a comment is the PR author's diff, as authorable as the body beside it.
+          const enabled = injectionFencingEnabled(config)
           const fencedComments = comments.map((c) => ({
             ...c,
-            body: fenceGithubFieldIfMatched(c.body),
-            ...(c.diffHunk !== undefined ? { diffHunk: fenceGithubFieldIfMatched(c.diffHunk) } : {}),
+            body: fenceGithubFieldIfMatched(c.body, enabled),
+            ...(c.diffHunk !== undefined ? { diffHunk: fenceGithubFieldIfMatched(c.diffHunk, enabled) } : {}),
           }))
           const capped = guardJsonRows(fencedComments)
           const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }, 0)
@@ -898,10 +943,11 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
           body: rawDesc.body !== null ? redactSecrets(rawDesc.body).text : null,
         }
         if (opts.json === true) {
+          const enabled = injectionFencingEnabled()
           const fencedDesc = {
             ...desc,
-            title: fenceGithubFieldIfMatched(desc.title),
-            body: desc.body !== null ? fenceGithubFieldIfMatched(desc.body) : null,
+            title: fenceGithubFieldIfMatched(desc.title, enabled),
+            body: desc.body !== null ? fenceGithubFieldIfMatched(desc.body, enabled) : null,
           }
           const jsonText = displaySafeJson(fencedDesc, 0)
           emit(jsonText)
@@ -1282,10 +1328,7 @@ export function runGrep(opts: GrepOptions): number {
 
   if (hits.length > maxLines) {
     emitErr(`... (${countNoun(hits.length - maxLines, 'more line')} omitted)`)
-    emitErr(`Tip: To avoid broad grepping and reduce token expenditure, locate specific symbols with:`)
-    emitErr(`  token-goat symbol <name>`)
-    emitErr(`  token-goat locate <name>`)
-    emitErr(`  token-goat outline <file> / token-goat skeleton <file>`)
+    emitErr(`Tip: To avoid broad grepping and reduce token expenditure, locate specific symbols by name with token-goat symbol or token-goat locate, or list a file's symbols with token-goat outline or token-goat skeleton.`)
   }
 
   return 0

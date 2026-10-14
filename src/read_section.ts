@@ -5,8 +5,9 @@ import { ATX_CLASS_BREAK_RE, matchAtxHeading } from './line_matchers.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
 import { displaySafeJson } from './paths.js'
-import { guardText, healStaleIndex, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
-import { stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
+import { capFileLines, guardText, healStaleIndex, linesWithinChars, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
+import { forClient } from './mcp_client_text.js'
+import { namedSpecsMergeable, stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
 import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
 import { listSections, readSection, type SectionResult } from './section_reader.js'
 import { compileGrepMatcher, countNoun } from './util.js'
@@ -38,6 +39,8 @@ export interface SectionOptions {
   maxLines?: number
   /** Keep only the section body lines matching this pattern (regex, literal substring when invalid), each under its nearest sub-heading. */
   grep?: string
+  /** Characters the printed section is held to, paging past them with a `read "file@A-B"` continuation; the CLI passes {@link outputCeilingChars}, and the MCP tool passes none, so its answers are unchanged. A multi-section call splits it across its sections ({@link perSectionOpts}). */
+  maxChars?: number
 }
 
 // Keeps the section's own first line plus each matching line, preceded once by the nearest heading line above it, so a surviving line stays attributable to its sub-section.
@@ -196,12 +199,27 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
 
   const redirectNote =
     result.redirectedFrom !== undefined ? ` (redirected from: ${echoedValue(result.redirectedFrom)})` : ''
-  const text = guardText(
-    `# ${result.heading} — ${filePath}:${result.lineStart}-${lineEnd}${redirectNote}${content.length > 0 ? `\n${content}` : ''}${truncatedNotice}${grepNote}`,
-    'heading',
-  )
+  const header = (end: number): string => `# ${result.heading} — ${filePath}:${result.lineStart}-${end}${redirectNote}`
+  let body = `${header(lineEnd)}${content.length > 0 ? `\n${content}` : ''}${truncatedNotice}${grepNote}`
+  // Paged, not just cut: a section past the harness's inline limit was persisted to a file the agent then had to read back, so the cut names the read that returns the next lines. A --grep view keeps scattered lines with no file range to page through, so it is cut with a pointer at narrowing instead.
+  if (opts.maxChars !== undefined && body.length > opts.maxChars) {
+    if (opts.grep === undefined) {
+      const cut = capFileLines(result.content.split('\n'), result.lineStart, filePath, opts.maxChars, 'section', header(lineEnd).length + 1)
+      if (cut !== null) body = `${header(cut.lastLine)}\n${cut.kept.join('\n')}\n${cut.notice}`
+    } else {
+      const lines = content.split('\n')
+      const kept = lines.slice(0, linesWithinChars(lines, opts.maxChars - header(lineEnd).length - 300))
+      body = `${header(lineEnd)}\n${kept.join('\n')}\n${forClient(`[token-goat: section capped at ${opts.maxChars} chars to stay under the harness's inline output limit; showing ${kept.length} of the ${lines.length} lines --grep kept. Narrow the pattern, or read a sub-heading.]`)}`
+    }
+  }
+  const text = guardText(body, 'heading')
   if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
   return { text, code: 0 }
+}
+
+/** `opts` for one of `count` sections printed in one answer: an even share of `maxChars`, less what its label line costs, so the whole answer stays under the ceiling and a cut section still names its own next part. */
+function perSectionOpts<T extends Omit<SectionOptions, 'spec'>>(opts: T, count: number): T {
+  return opts.maxChars === undefined || count < 2 ? opts : { ...opts, maxChars: Math.max(500, Math.floor(opts.maxChars / count) - 200) }
 }
 
 export function runSectionMulti(
@@ -246,7 +264,7 @@ export function runSectionMulti(
       })
     }
 
-    const sub = runSection({ ...opts, spec: `${specFilePath}::${heading}`, suppressStat: true })
+    const sub = runSection({ ...perSectionOpts(opts, headings.length), spec: `${specFilePath}::${heading}`, suppressStat: true })
     if (sub.code === 0) anyFound = true
     if (opts.json === true) {
       jsonOut[heading] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
@@ -307,7 +325,7 @@ export function runSectionCrossFile(pairs: { file: string; symbol: string }[], o
       includedByFile.set(resolved, fileIncluded)
     }
 
-    const sub = runSection({ ...opts, spec: `${file}::${heading}`, suppressStat: true })
+    const sub = runSection({ ...perSectionOpts(opts, pairs.length), spec: `${file}::${heading}`, suppressStat: true })
     if (sub.code === 0) anyFound = true
     if (opts.json === true) {
       jsonOut[key] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
@@ -322,4 +340,26 @@ export function runSectionCrossFile(pairs: { file: string; symbol: string }[], o
     recordReadStat('section_read', fullSourceBytes, text, opts.spec)
   }
   return { text, code: anyFound ? 0 : 1 }
+}
+
+/** `section a b ...`, several positional specs in one call. Only the first used to be read, behind a note that the rest were ignored, so agents spawned one `section` per heading (14 spawns across three recorded commands, about 1-2 s each). Specs that each name a heading are served exactly as their comma form `a,b` is, by {@link runSectionCrossFile}, but paired from the specs themselves rather than from a comma-joined string, so a heading holding a comma stays one heading. Otherwise each spec runs in turn, one block per spec, and the call succeeds when any of them does, as the comma form's does. */
+export function runSectionSpecs(specs: string[], opts: Omit<SectionOptions, 'spec'>): { text: string; code: number } {
+  const joined = specs.join(',')
+  if (namedSpecsMergeable(specs)) {
+    const pairs = specs.map((spec) => {
+      const idx = findSectionSeparator(spec, opts.projectRoot)
+      return { file: spec.slice(0, idx), symbol: spec.slice(idx + 2) }
+    })
+    return runSectionCrossFile(pairs, { ...opts, spec: joined })
+  }
+  let anyFound = false
+  const jsonOut: Record<string, unknown> = {}
+  const textBlocks: string[] = []
+  for (const spec of specs) {
+    const sub = runSection({ ...perSectionOpts(opts, specs.length), spec })
+    if (sub.code === 0) anyFound = true
+    if (opts.json === true) jsonOut[spec] = sub.code === 0 ? (JSON.parse(sub.text) as unknown) : { error: sub.text }
+    else textBlocks.push(`${spec}:\n${sub.text}`)
+  }
+  return { text: opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n'), code: anyFound ? 0 : 1 }
 }

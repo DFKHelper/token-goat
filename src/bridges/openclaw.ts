@@ -112,6 +112,8 @@ export default definePluginEntry({
   description:
     "Bridges OpenClaw's tool-call and session hooks to token-goat's read-hinting, bash compression, and index-refresh pipeline.",
   register(api) {
+    // OpenClaw exports no environment variable token-goat could detect it by, so its hook calls (in-process, or a spawned child inheriting this environment) would otherwise answer as a generic harness, which gets no image shrink because nothing there is known to turn the shrink payload into an image.
+    process.env.TOKEN_GOAT_HARNESS_OVERRIDE = "openclaw";
     // No confirmed stable per-session id on tool-call context (see module
     // header) -- fall back to a per-process pseudo-id if ctx carries none.
     let sessionId = \`openclaw-\${process.pid}-\${Date.now()}\`;

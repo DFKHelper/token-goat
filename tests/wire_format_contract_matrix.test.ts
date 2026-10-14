@@ -145,8 +145,8 @@ describe('wire-format contract matrix: post_tool_use `context` hint -> hookSpeci
     homeBase = mkIsolated('tg-wireformat-ptu2-home-')
   })
 
-  // postEditHandler (src/hooks_edit.ts) only emits the section-hint context for markdown/rst files whose size clears hints.min_session_hint_savings_bytes (default 512 bytes) -- see meetsSavingsFloor.
-  const MD_BODY = '# heading\n\n' + 'lorem ipsum dolor sit amet, '.repeat(40) + '\n'
+  // postEditHandler (src/hooks_edit.ts) only emits the section-hint context after an Edit of a markdown/rst file of at least hints.reread_deny_min_bytes (default 51,200 bytes), which also clears the 512-byte meetsSavingsFloor: this body is about 56 KB.
+  const MD_BODY = '# heading\n\n' + 'lorem ipsum dolor sit amet, '.repeat(2000) + '\n'
 
   for (const harness of RAW_PASSTHROUGH_HARNESSES) {
     it(`${harness}: editing a markdown file emits hookSpecificOutput.additionalContext with hookEventName "PostToolUse"`, () => {

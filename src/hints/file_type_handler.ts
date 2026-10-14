@@ -55,19 +55,20 @@ export function BYTE_RANGE_ADVICE(filePath: string): string {
   return (
     `This file is mostly one long line (e.g. base64 or minified content) — offset/limit ` +
     `line-windowing won't shrink a read here. Sample raw bytes instead, e.g.: ` +
-    `dd if=${quotedArg(filePath)} bs=1 skip=<N> count=<M> status=none`
+    `dd if=${quotedArg(filePath)} bs=1 skip=0 count=4096 status=none`
   )
 }
 
-/** PDF handler — always blocks regardless of size. */
+/** PDF handler — always blocks regardless of size. Claude Code's Read does return PDFs, through its `pages` parameter, so the refusal is token-goat's own and says why: Read sends each page as an image beside its text, and the extracted text alone costs far fewer tokens. The old wording, "Read cannot return PDF content", was false there. */
 export function handlePdf(filePath: string, contentLength: number): FileTypeResult {
-  const [quoted, range] = quotedArgs(filePath, '<range>')
+  const quoted = quotedArg(filePath)
   return {
     shouldBlock: true,
     message: [
-      `PDF file (${formatBytes(contentLength)}) — Read cannot return PDF content; this is not retryable with different Read parameters.`,
+      `PDF file (${formatBytes(contentLength)}). token-goat refuses every Read of a PDF, one with a pages range included: Read sends each page as an image as well as its text, and the extracted text alone costs far fewer tokens.`,
       `Inspect first: token-goat pdf-meta ${quoted} and token-goat pdf-outline ${quoted}`,
-      `Then extract relevant pages: token-goat pdf-extract ${quoted} --pages ${range}`,
+      `Then extract the pages you need with --pages (a page or a range such as 3-5), the first one here: token-goat pdf-extract ${quoted} --pages 1`,
+      `Where a page's layout is what matters (a chart, a scanned page, the shape of a table), render just that page to an image file and Read the image.`,
     ].join('\n'),
   }
 }
@@ -120,8 +121,36 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   }
 }
 
+/** The line window a ranged Read asked for: its 1-based first line and how many lines it asked for. */
+export interface RequestedLines {
+  readonly offset: number
+  readonly limit: number
+}
+
+/** The refusal for a ranged Read whose requested slice alone is over `threshold`. The request already carries offset/limit, so telling it to use them sent the model round in a loop: the advice is instead the limit that fits, the threshold over the slice's average line length, and the preview is the slice's own first and last lines rather than the whole file's. `content` is the whole file, or empty when the caller could not scan it, in which case the line count is the one the request named and no preview is shown. */
+function rangedSliceResult(kind: string, filePath: string, content: string, sliceBytes: number, threshold: number, range: RequestedLines, alternative?: string): FileTypeResult {
+  const fileLines = content.split('\n')
+  if (fileLines.length > 1 && fileLines[fileLines.length - 1] === '') fileLines.pop()
+  const slice = content.length === 0 ? [] : fileLines.slice(range.offset - 1, range.offset - 1 + range.limit)
+  const sliceLines = slice.length > 0 ? slice.length : range.limit
+  const head = `Requested slice is over the ${kind} cap: lines ${range.offset}-${range.offset + sliceLines - 1} come to ${formatBytes(sliceBytes)}, and the cap is ${formatBytes(threshold)}.`
+  const perLine = sliceBytes / sliceLines
+  if (perLine >= threshold) return { shouldBlock: true, message: `${head} ${BYTE_RANGE_ADVICE(displaySafePath(filePath))}` }
+  const fits = Math.max(1, Math.floor((threshold - 1) / perLine))
+  const advice = `Ask for at most ${fits} lines at a time (limit=${fits}; these lines average ${formatBytes(Math.ceil(perLine))} each).${alternative === undefined ? '' : ` Or: ${alternative}`}`
+  if (slice.length === 0) return { shouldBlock: true, message: `${head}\n${advice}` }
+  const preview = [
+    '--- first 5 lines of the slice ---',
+    ...slice.slice(0, 5),
+    `... (${slice.length.toLocaleString()} lines in the slice, ${fileLines.length.toLocaleString()} in the file) ...`,
+    '--- last 5 lines of the slice ---',
+    ...slice.slice(-5),
+  ].join('\n')
+  return { shouldBlock: true, message: `${head}\n${fenceUntrustedFileContent(preview)}\n\n${advice}` }
+}
+
 /** Plain text / log handler — blocks when file exceeds threshold. */
-export function handleTxt(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+export function handleTxt(filePath: string, content: string, contentLengthHint?: number, range?: RequestedLines): FileTypeResult {
   const length = contentLengthHint ?? content.length
   // Match /logs/ or \logs\ so Windows-native backslash-separated absolute paths (this tool's primary deployment target) get the same log-specific recall hint as POSIX paths.
   const isLog = /\.(log|out|err|trace)$/i.test(filePath) || /[\\/]logs[\\/]/.test(filePath)
@@ -130,6 +159,7 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
 
   // `bash-output <id>` errors for a file read directly off disk (never went through the bash-output cache, so there is no id) -- `--file "<path>"` is the working form, matching hooks_read.ts's sessionArtifactRecall for the same on-disk-but-uncached situation.
   const [quotedLog, errorPattern] = quotedArgs(filePath, 'error|ERROR')
+  if (range !== undefined) return rangedSliceResult(isLog ? 'log-file' : 'text-file', filePath, content, length, threshold, range, isLog ? `token-goat bash-output --file ${quotedLog} --tail 100 --grep ${errorPattern}` : undefined)
   const recall = isLog
     ? `Log file — use Read with offset/limit params, or: token-goat bash-output --file ${quotedLog} --tail 100 --grep ${errorPattern}`
     : 'Use Read with offset and limit params to sample specific line ranges.'
@@ -224,7 +254,6 @@ export function handleXml(filePath: string, content: string, contentLengthHint?:
       message: [
         `Large ${typeLabel} file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
         `Inspect structure: token-goat xml-outline ${quotedArg(filePath)}`,
-        `Query nodes: token-goat xml-query ${quotedArgs(filePath, '<selector>').join(' ')}`,
       ].join('\n'),
     }
   }
@@ -234,7 +263,6 @@ export function handleXml(filePath: string, content: string, contentLengthHint?:
     message: [
       `Large ${typeLabel} file (${formatBytes(length)}).`,
       `Inspect hierarchy: token-goat xml-outline ${quotedArg(filePath)}`,
-      `Query specific elements: token-goat xml-query ${quotedArgs(filePath, '<selector>').join(' ')}`,
     ].join('\n'),
   }
 }
@@ -257,26 +285,26 @@ export function handleOfficeBinary(filePath: string): FileTypeResult {
 
 /** Excel handler — always blocks, redirects to the xlsx-* command family. */
 export function handleXlsx(filePath: string): FileTypeResult {
-  const [quoted, sheet] = quotedArgs(filePath, '<name>')
+  const quoted = quotedArg(filePath)
   return {
     shouldBlock: true,
     message: [
       `Excel file — Read cannot return spreadsheet content; this is not retryable with different Read parameters.`,
       `List sheets: token-goat xlsx-sheets ${quoted}`,
-      `Then preview a sheet: ${fencedCommand(`token-goat xlsx-head ${quoted} --sheet ${sheet}`)}, or filter rows: ${fencedCommand(`token-goat xlsx-query ${quoted} --sheet ${sheet} --where col=value`)}`,
+      `Then preview the first sheet: ${fencedCommand(`token-goat xlsx-head ${quoted}`)}, or list its columns: ${fencedCommand(`token-goat xlsx-columns ${quoted}`)}; --sheet picks another sheet`,
     ].join('\n'),
   }
 }
 
 /** PowerPoint handler — always blocks, redirects to the pptx-* command family. */
 export function handlePptx(filePath: string): FileTypeResult {
-  const [quoted, slide] = quotedArgs(filePath, '<n>')
+  const quoted = quotedArg(filePath)
   return {
     shouldBlock: true,
     message: [
       `PowerPoint file — Read cannot return slide content; this is not retryable with different Read parameters.`,
       `List slides: token-goat pptx-outline ${quoted}`,
-      `Then read one slide: token-goat pptx-slide ${quoted} --slide ${slide}`,
+      `Then read one slide by its number: token-goat pptx-slide ${quoted} --slide 1`,
     ].join('\n'),
   }
 }
@@ -381,19 +409,20 @@ export function handleSqlite(filePath: string): FileTypeResult {
   }
 }
 
-/** `p` as it can sit inside the SQL string of the DuckDB hint, which is a single-quoted SQL literal inside a double-quoted shell argument: only a path holding no quote of either kind, no `$`, backtick or backslash, and no character displaySafePath would escape is written there, and any other is `<file>`, which the reader fills in. A drive-letter path is checked with its backslashes turned to forward slashes first, the spelling DuckDB opens on Windows too, since Claude Code hands Read a Windows path as `C:\\u2026` and that would otherwise never be named. */
-function sqlLiteralPath(p: string): string {
+/** `p` as it can sit inside the SQL string of the DuckDB hint, which is a single-quoted SQL literal inside a double-quoted shell argument: only a path holding no quote of either kind, no `$`, backtick or backslash, and no character displaySafePath would escape is written there, and any other is null, which leaves the command out rather than printing a `<file>` stand-in. A drive-letter path is checked with its backslashes turned to forward slashes first, the spelling DuckDB opens on Windows too, since Claude Code hands Read a Windows path as `C:\\u2026` and that would otherwise never be named. */
+function sqlLiteralPath(p: string): string | null {
   const path = /^[A-Za-z]:[\\/]/.test(p) ? p.replaceAll('\\', '/') : p
-  return displaySafePath(path) === path && !/['"$`\\\u2018-\u201E]/.test(path) ? path : '<file>'
+  return displaySafePath(path) === path && !/['"$`\\\u2018-\u201E]/.test(path) ? path : null
 }
 
 /** Parquet handler — always blocks regardless of size. */
 export function handleParquet(filePath: string): FileTypeResult {
+  const sqlPath = sqlLiteralPath(filePath)
   return {
     shouldBlock: true,
     message: [
       `Parquet file — Read cannot return binary columnar content; this is not retryable with different Read parameters.`,
-      `Query with DuckDB: duckdb -c "SELECT * FROM read_parquet('${sqlLiteralPath(filePath)}') LIMIT 10"`,
+      sqlPath !== null ? `Query with DuckDB: duckdb -c "SELECT * FROM read_parquet('${sqlPath}') LIMIT 10"` : 'Query it with DuckDB\'s read_parquet function; this path cannot be written into the SQL string safely.',
     ].join('\n'),
   }
 }
@@ -402,7 +431,7 @@ export function handleParquet(filePath: string): FileTypeResult {
 export function handleJson(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.json) return { shouldBlock: false, message: '' }
-  const [quoted, query] = quotedArgs(filePath, '<path>')
+  const quoted = quotedArg(filePath)
 
   const isSpill = /(?:^|[/\\])content\.json$/i.test(filePath) || /[/\\](?:tmp|temp)[/\\]/i.test(filePath)
   const spillHeader = isSpill
@@ -417,13 +446,14 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
           ? `This file appears to be an oversized tool output spill (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`
           : `Large JSON file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
         `See structure: token-goat json-outline ${quotedArg(filePath)}`,
-        `Query subtree: token-goat json-query ${quoted} ${query}`,
-        isSpill ? `Slice spill: token-goat mcp-output --file ${quoted} --json-query ${query}` : '',
+        isSpill ? `Slice spill: token-goat mcp-output --file ${quoted} --head 50` : '',
       ].filter(Boolean).join('\n'),
     }
   }
 
   let summary = ''
+  // A top-level key the file really holds, for the query lines below: with none (an array, a key needing quoting, unparseable text) they are left out rather than printed with a stand-in.
+  let firstKey: string | undefined
   try {
     const parsed = JSON.parse(content)
     if (Array.isArray(parsed)) {
@@ -434,20 +464,22 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
       }
     } else if (typeof parsed === 'object' && parsed !== null) {
       const keys = Object.keys(parsed).slice(0, 15)
+      firstKey = keys.find((k) => /^[\w-]+$/.test(k))
       summary = `Top-level keys (${Object.keys(parsed).length}): ${keys.join(', ')}${Object.keys(parsed).length > 15 ? '...' : ''}`
     }
   } catch {
     // Malformed JSON or unparseable
   }
 
+  const [keyedPath, keyArg] = quotedArgs(filePath, firstKey ?? '')
   return {
     shouldBlock: true,
     message: [
       spillHeader,
       summary ? fenceUntrustedFileContent(summary) : '',
       `See structure: token-goat json-outline ${quotedArg(filePath)}`,
-      `Query subtree: token-goat json-query ${quoted} ${query}`,
-      isSpill ? `Slice spill: token-goat mcp-output --file ${quoted} --json-query ${query}` : '',
+      firstKey !== undefined ? `Query subtree: token-goat json-query ${keyedPath} ${keyArg}` : '',
+      isSpill ? (firstKey !== undefined ? `Slice spill: token-goat mcp-output --file ${keyedPath} --json-query ${keyArg}` : `Slice spill: token-goat mcp-output --file ${quoted} --head 50`) : '',
     ].filter(Boolean).join('\n'),
   }
 }
@@ -456,21 +488,24 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
 export function handleYaml(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.yaml) return { shouldBlock: false, message: '' }
+  // The first top-level mapping key, for a query that runs as printed; none in hand (too large to scan, or no plain key) leaves the query line out.
+  const yamlKey = /^([A-Za-z_][\w-]*):/m.exec(content)?.[1]
 
   return {
     shouldBlock: true,
     message: [
       `Large YAML file (${formatBytes(length)}).`,
       `See structure: token-goat yaml-outline ${quotedArg(filePath)}`,
-      `Query subtree: token-goat yaml-query ${quotedArgs(filePath, '<path>').join(' ')}`,
-    ].join('\n'),
+      yamlKey !== undefined ? `Query subtree: token-goat yaml-query ${quotedArgs(filePath, yamlKey).join(' ')}` : '',
+    ].filter(Boolean).join('\n'),
   }
 }
 
 /** JSON Lines (JSONL) handler — blocks when file exceeds threshold. */
-export function handleJsonl(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
+export function handleJsonl(filePath: string, content: string, contentLengthHint?: number, range?: RequestedLines): FileTypeResult {
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.jsonl) return { shouldBlock: false, message: '' }
+  if (range !== undefined) return rangedSliceResult('JSON Lines', filePath, content, length, FILE_TYPE_THRESHOLDS.jsonl, range)
 
   if (previewUnavailable(content, length)) {
     return {
@@ -504,8 +539,10 @@ export function handleJsonl(filePath: string, content: string, contentLengthHint
 }
 
 /** Generic catch-all for unrecognized large files. */
-export function handleGenericLarge(filePath: string, contentLength: number): FileTypeResult {
+export function handleGenericLarge(filePath: string, contentLength: number, range?: RequestedLines): FileTypeResult {
   if (contentLength < FILE_TYPE_THRESHOLDS.generic) return { shouldBlock: false, message: '' }
+  // No preview: this catch-all also takes files no handler knows to be text.
+  if (range !== undefined) return rangedSliceResult('large-file', filePath, '', contentLength, FILE_TYPE_THRESHOLDS.generic, range)
   return {
     shouldBlock: true,
     message: `Large file (${formatBytes(contentLength)}). Use Read with offset and limit parameters to read specific line ranges rather than loading the entire file.`,
@@ -517,6 +554,7 @@ export function dispatchFileTypeHandler(
   filePath: string,
   content: string,
   contentLengthHint?: number,
+  range?: RequestedLines,
 ): FileTypeResult | null {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
 
@@ -529,7 +567,7 @@ export function dispatchFileTypeHandler(
   if (ext === 'svg') return handleSvg(filePath, content, effectiveLength)
   if (['xml', 'dtsx', 'ampkg', 'xaml'].includes(ext)) return handleXml(filePath, content, effectiveLength)
   if (['html', 'htm', 'xhtml'].includes(ext)) return handleHtml(filePath, content, effectiveLength)
-  if (['txt', 'log', 'out', 'err', 'trace'].includes(ext)) return handleTxt(filePath, content, effectiveLength)
+  if (['txt', 'log', 'out', 'err', 'trace'].includes(ext)) return handleTxt(filePath, content, effectiveLength, range)
   if (ext === 'xlsx') return handleXlsx(filePath)
   if (ext === 'pptx') return handlePptx(filePath)
   if (ext === 'docx') return handleDocx(filePath)
@@ -540,8 +578,8 @@ export function dispatchFileTypeHandler(
   if (ext === 'vtt' || ext === 'srt') return handleTranscript(filePath, content, effectiveLength)
   if (ext === 'json') return handleJson(filePath, content, effectiveLength)
   if (['yaml', 'yml'].includes(ext)) return handleYaml(filePath, content, effectiveLength)
-  if (ext === 'jsonl') return handleJsonl(filePath, content, effectiveLength)
+  if (ext === 'jsonl') return handleJsonl(filePath, content, effectiveLength, range)
 
   // Generic catch-all
-  return handleGenericLarge(filePath, effectiveLength)
+  return handleGenericLarge(filePath, effectiveLength, range)
 }

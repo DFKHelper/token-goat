@@ -50,6 +50,32 @@ function reverseArgMap(tool) {
   return rev
 }
 
+// opencode's own tools that hand the model text a remote MCP server wrote (session/tools.ts, v1.18.16). Unlike an MCP tool proper, each reaches tool.execute.after as an ordinary {title, metadata, output} object, so its text is rewritten through output.output like a built-in's.
+const MCP_RESOURCE_TOOLS = new Set(["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"])
+
+// The mcp__<server>__<tool> name token-goat's MCP handlers gate on. opencode keys an MCP tool sanitize(server) + "_" + sanitize(tool) (mcp/catalog.ts toolName), which cannot be split exactly when the server name has an underscore of its own; splitting at the first one still yields an mcp__ name, which is all the fence and redaction need, and only token-goat's own server (whose name has none) has to be recognised from the halves.
+function mcpToolName(tool, args) {
+  if (MCP_RESOURCE_TOOLS.has(tool)) {
+    const server = args && typeof args.server === "string" && args.server !== "" ? args.server : "opencode"
+    return "mcp__" + server + "__" + tool
+  }
+  const sep = tool.indexOf("_")
+  return sep > 0 ? "mcp__" + tool.slice(0, sep) + "__" + tool.slice(sep + 1) : "mcp__" + tool
+}
+
+// The content blocks of an MCP tool result, or undefined for anything else. opencode passes tool.execute.after the MCP CallToolResult itself for an MCP tool (session/tools.ts, v1.18.16 and v1.19.0) and builds the model's text from its content array only after the hook returns, so content is the one field a rewrite has to land in. A content array is what marks the result, whether or not an output string sits beside it: a built-in or plugin tool's result carries none, and requiring the string to be absent meant an opencode that set both would hand the MCP text to the model with no fence at all.
+function mcpResultBlocks(tool, output) {
+  if (TOOL_TO_TG[tool] || MCP_RESOURCE_TOOLS.has(tool)) return undefined
+  return output && Array.isArray(output.content) ? output.content : undefined
+}
+
+// Mirrors isTextualContentBlock (src/hooks_common.ts): a block whose every word is already in the text token-goat fenced. Kept beside the rewrite would hand the model an unfenced, unredacted copy; anything else (an image, a blob-only resource) is a payload no string replaces, so it stays.
+function isTextualBlock(block) {
+  if (!block || typeof block !== "object") return false
+  if (typeof block.text === "string" || block.type === "resource_link") return true
+  return Boolean(block.resource) && typeof block.resource === "object" && typeof block.resource.text === "string"
+}
+
 // opencode's apply_patch tool (tool/apply_patch.ts, v1.18.33) takes one patchText argument and no per-file path; it is the tool opencode offers GPT models in place of edit and write. The file paths are the header lines of the patch (patch/index.ts parsePatchHeader: "*** Add File: ", "*** Delete File: ", "*** Update File: ", plus "*** Move to: " for a rename), each trimmed and resolved against the instance directory, which is the directory this plugin sends as cwd. A trailing carriage return is dropped by the trim. Left unmapped, an edit a GPT model made was never queued for reindexing.
 const PATCH_PATH_HEADERS = ["*** Add File: ", "*** Delete File: ", "*** Update File: ", "*** Move to: "]
 
@@ -124,14 +150,16 @@ export const TokenGoatPlugin = async ({ directory }) => {
     },
 
     "tool.execute.after": async (input, output) => {
-      const tg = TOOL_TO_TG[input.tool]
+      // An MCP result is a remote server's words, the least trusted text a session sees; skipping every tool outside TOOL_TO_TG used to hand it to the model with no fence and no redaction.
+      const mcpBlocks = mcpResultBlocks(input.tool, output)
+      const tg = TOOL_TO_TG[input.tool] ?? (mcpBlocks || MCP_RESOURCE_TOOLS.has(input.tool) ? mcpToolName(input.tool, input.args) : undefined)
       if (!tg) return
 
       const resp = await callHook("post_tool_use", {
         session_id: input.sessionID,
         tool_name: tg,
-        tool_input: toToolInput(input.tool, input.args),
-        tool_response: { output: output.output, exit_code: output.metadata ? output.metadata.exit : undefined },
+        tool_input: TOOL_TO_TG[input.tool] ? toToolInput(input.tool, input.args) : { ...(input.args ?? {}) },
+        tool_response: mcpBlocks ? { content: mcpBlocks } : { output: output.output, exit_code: output.metadata ? output.metadata.exit : undefined },
         cwd: directory,
       })
       if (!resp) return
@@ -140,12 +168,16 @@ export const TokenGoatPlugin = async ({ directory }) => {
       const hso = resp.hookSpecificOutput
       const updatedToolOutput = hso && typeof hso.updatedToolOutput === "string" ? hso.updatedToolOutput : undefined
       if (updatedToolOutput !== undefined) {
-        output.output = updatedToolOutput
+        if (mcpBlocks) output.content = [{ type: "text", text: updatedToolOutput }, ...mcpBlocks.filter((b) => !isTextualBlock(b))]
+        // An MCP result that also carries an output string gets the same rewrite there: whichever of the two fields an opencode version renders, neither holds the server's text unfenced.
+        if (!mcpBlocks || typeof output.output === "string") output.output = updatedToolOutput
         return
       }
 
       const context = extractContext(resp)
-      if (context && typeof output.output === "string") {
+      if (context && mcpBlocks) {
+        output.content = [...mcpBlocks, { type: "text", text: "[token-goat] " + context }]
+      } else if (context && typeof output.output === "string") {
         output.output += \`\\n\\n[token-goat] \${context}\`
       }
     },

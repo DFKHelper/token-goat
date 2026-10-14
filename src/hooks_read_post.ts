@@ -1,7 +1,11 @@
 /** post_tool_use hook for the Read tool. On each completed Read it flags a truncated delivery so the next Read of that file is denied with a surgical hint, snapshots doc files for diff-on-reread, records cross-session evidence and this session's read manifest, and nudges toward skeleton/outline once a source file is long enough. It also rewrites the delivery itself when that pays, choosing at most one rewrite: withholding lines the session already holds, or folding a large untargeted read to its outline, its skeleton, or its code bodies. The pre_tool_use half lives in hooks_read.ts; this module takes six small path and recording helpers from it, and nothing there imports this module. */
 
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
+import { claudeConfigDir } from './claude_config_dir.js'
+import { MARKDOWN_SIZE_THRESHOLD } from './hints/markdown_hints.js'
+import { foldPathForContainment } from './path_containment.js'
 import { emitRewrite, emitRewriteWithContext, extractToolResponseField, getCwd, getFilePath, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, passOutput } from './hooks_common.js'
 import { type HookEvent, registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
@@ -25,7 +29,7 @@ import { findProject, makeProjectAt } from './project.js'
 import { isImagePath } from './image_shrink.js'
 import { readEvidenceFileText, recordEvidence } from './evidence_cache.js'
 import { foldDetail } from './code_fold.js'
-import { ALIGNED_LAYOUT_NOTE, type FoldLayout, foldDelivery, foldingEnabled, pushWithheld } from './fold_delivery.js'
+import { ALIGNED_LAYOUT_NOTE, type FoldLayout, foldDelivery, foldingEnabled, isProseFoldablePath, pushWithheld } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton, type StructuralFold } from './fold_structure.js'
 import { isDiffableSource, isSessionArtifactFile, isSourceExtension, quietContextOutput, recordActualSlice, relPathWithinRoot } from './hooks_read.js'
 
@@ -373,15 +377,39 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   }
 }
 
+/** Whether `normalized` lies under `root` and its remainder there matches `rest`, compared the way the filesystem folds case. */
+function isUnderWith(normalized: string, root: string, rest: RegExp): boolean {
+  const base = foldPathForContainment(normalizePath(root)).replace(/\/+$/, '')
+  const target = foldPathForContainment(normalized)
+  return target.startsWith(base + '/') && rest.test(target.slice(base.length + 1))
+}
+
+/** Whether `normalized` is in a tree Claude Code keeps an agent's own notes in: a project's memory directory, `<config dir>/projects/<project slug>/memory/`, or the session temp tree, `claude/` under `CLAUDE_CODE_TMPDIR` or else the system temp dir, where each session's scratchpad sits at `<project slug>/<session id>/scratchpad/` (read off claude.exe 2.1.296, which joins that root, `claude`, the slug and the session id). An agent writes these for an agent to read back whole, so a fold there saved nothing: in session transcripts 2 of 2 folded memory notes were unfolded with sed in the very next call, and so was a scratchpad report cut down to its headings. */
+function isClaudeCodeNotePath(normalized: string): boolean {
+  if (isUnderWith(normalized, path.join(claudeConfigDir(), 'projects'), /^[^/]+\/memory\//)) return true
+  const tempRoot = process.env['CLAUDE_CODE_TMPDIR'] !== undefined && process.env['CLAUDE_CODE_TMPDIR'] !== '' ? process.env['CLAUDE_CODE_TMPDIR'] : os.tmpdir()
+  return isUnderWith(normalized, path.join(tempRoot, 'claude'), /./)
+}
+
+/** Whether this completed Read goes to the model as delivered, with no outline, skeleton or fold: a Claude Code note (see {@link isClaudeCodeNotePath}), or a document under the size the read hook first looks at a markdown file's structure (MARKDOWN_SIZE_THRESHOLD): one it let through as small is not then folded on the way back, where a folded paragraph only cost the turn that fetched it. The size is the file's, falling back to the delivery's when the file cannot be stat'd. */
+function isReadLeftWhole(event: HookEvent, respText: string): boolean {
+  const filePath = getFilePath(event)
+  if (filePath === undefined) return false
+  const normalized = normalizePath(filePath)
+  if (isClaudeCodeNotePath(normalized)) return true
+  return isProseFoldablePath(normalized) && (statSize(hostPathOfIndexKey(normalized)) ?? Buffer.byteLength(respText, 'utf-8')) < MARKDOWN_SIZE_THRESHOLD
+}
+
 /** Public wrapper: the same hint tracking as hooks_read.ts's preReadHandler, plus the served-line elision. The order of these three lines is the whole correctness argument. The elision runs FIRST, before {@link recordReadAsServedOutput} puts this very read into the store it compares against -- otherwise every line matches itself and the entire result is withheld as "already served". It is the same self-contamination shape as a structural guard that scans its own source. It also runs before {@link postReadHandlerInner}, whose structural-navigation hint would otherwise be composed, booked as shown by {@link applyHintTracking}, and then thrown away in favour of the rewrite -- a hint charged to the efficacy ledger that no model ever saw. The flag is a required parameter rather than a defaulted one so no call site can silently take the un-suppressed path the shipping one does not. The rewrite wins over the hint where both apply, because it acts on the bytes instead of asking: a hint is followed a small fraction of the time, and a withheld run is withheld. */
 export function postReadHandler(event: HookEvent): HookOutput {
   const respText = extractReadOutput(event.raw)
   const elided = elideAlreadyServedLines(event, respText)
+  const foldable = elided === null && !isReadLeftWhole(event, respText)
   // Only one rewrite may win, and elision goes first: it cuts lines the model already holds, which costs the reader nothing, while a fold withholds lines it has never seen. Running both would also double-count the same bytes in the ledger. The outline replacement runs before the granular fold: it only ever fires on a large, untargeted, many-headinged markdown document, which is a coarser and larger win than the line-level body/comment/prose folds below it would find on the same delivery.
-  const outlined = elided === null ? foldMarkdownOutline(event, respText) : null
+  const outlined = foldable ? foldMarkdownOutline(event, respText) : null
   // The source-file sibling of the outline replacement directly above, and it sits at the same level for the same reason: it fires only on a large, untargeted, many-symboled source file, a coarser and larger win than the line-level body/comment folds below would find on the same delivery. The two never contend, one taking documents and the other taking tree-sitter languages, but the ordering is written out rather than left to that: an extension that ever qualified for both would otherwise pick a winner by accident.
-  const skeletoned = elided === null && outlined === null ? foldSourceSkeleton(event, respText) : null
-  const folded = elided === null && outlined === null && skeletoned === null ? foldCodeBodies(event, respText) : null
+  const skeletoned = foldable && outlined === null ? foldSourceSkeleton(event, respText) : null
+  const folded = foldable && outlined === null && skeletoned === null ? foldCodeBodies(event, respText) : null
   const rewrite = elided ?? outlined?.output ?? skeletoned?.output ?? folded?.output ?? null
   const out = applyHintTracking(event, postReadHandlerInner(event, rewrite !== null), classifyReadHint)
   const deliveredRaw = outlined?.deliveredRaw ?? skeletoned?.deliveredRaw ?? folded?.deliveredRaw ?? null

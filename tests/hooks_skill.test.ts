@@ -185,6 +185,8 @@ describe('preSkillHandler — duplicate-load advisory', () => {
 
   // Regression for F5: once a skill body is cached this session, a second Skill invocation must be denied with a compact-recall pointer instead of re-injecting the whole body. Drives the REAL registry: post stores via runHook, then a pre dispatch through runHook must come back deny. A no-op preSkillHandler (the pre-fix scaffold) returns pass here and fails this test.
   it('denies a second load through the real runHook dispatch and points at compact recall', async () => {
+    await fs.mkdir(path.join(sourceDir, 'ollama'), { recursive: true });
+    await fs.writeFile(path.join(sourceDir, 'ollama', 'SKILL.md'), `Short rules.\n<!-- COMPACT_END -->\n${'detail '.repeat(40)}\n`, 'utf-8');
     const post = await runHook(skillPostEvent('ollama', 'Body for ollama.', 'sess-dup'));
     expect(post.hookType).toBe('pass');
 
@@ -193,6 +195,27 @@ describe('preSkillHandler — duplicate-load advisory', () => {
     if (pre.hookType === 'deny') {
       expect(pre.message).toContain('already loaded this session');
       expect(pre.message).toContain('token-goat skill-body "ollama" --compact');
+    }
+  });
+
+  // `skill-body --compact` serves no slice for a skill with no marker, or one whose marker cuts more than half the body (humanizer's cut 97.6% of it), so the reload deny must not name it there: it did for every skill, and the agent then pulled the whole body through it.
+  it.each([
+    ['no marker', 'no-marker-reload', `${'rules '.repeat(40)}\n`],
+    ['a slice over half the body', 'late-marker-reload', `${'rules '.repeat(40)}\n<!-- COMPACT_END -->\ntrailing\n`],
+  ])('names no --compact recall for a reloaded skill with %s', async (_label, skill, installed) => {
+    await fs.mkdir(path.join(sourceDir, skill), { recursive: true });
+    await fs.writeFile(path.join(sourceDir, skill, 'SKILL.md'), installed, 'utf-8');
+    await runHook(skillPostEvent(skill, installed, 'sess-reload-noslice'));
+
+    const pre = await runHook(skillPreEvent(skill, 'sess-reload-noslice'));
+    expect(pre.hookType).toBe('deny');
+    if (pre.hookType === 'deny') {
+      expect(pre.message).toContain('already loaded this session');
+      // The body holds no heading, so no skill-section command is named: a `"<heading>"` stand-in there ran as a request for a section no skill has.
+      expect(pre.message).not.toContain('skill-section');
+      expect(pre.message).not.toContain('<heading>');
+      expect(pre.message).toContain(`token-goat skill-body "${skill}"`);
+      expect(pre.message).not.toContain('--compact');
     }
   });
 
@@ -297,7 +320,8 @@ describe('preSkillHandler — oversized first-load gate', () => {
     await fs.mkdir(skillDir, { recursive: true });
     // Original intent unchanged -- a slice too large to inline still gets the pointer. Only the bound moved: the inline decision no longer reuses the 6000-byte oversize gate, so the fixture has to clear COMPACT_INLINE_MAX_BYTES (24_000) to still be "oversized" for this purpose.
     const compact = 'z'.repeat(24_001);
-    const body = `${compact}\n<!-- COMPACT_END -->\n${'x'.repeat(7000)}`;
+    // Long enough that the slice stays under half the body, the share `skill-body --compact` needs before it serves one.
+    const body = `${compact}\n<!-- COMPACT_END -->\n${'x'.repeat(25_000)}`;
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
 
     const out = await preSkillHandler(skillPreEvent('huge-compact-skill', 'sess-huge'));
@@ -335,7 +359,11 @@ describe('preSkillHandler — oversized first-load gate', () => {
     const out = await preSkillHandler(skillPreEvent('degenerate-compact', 'sess-degen'));
     expect(out.hookType).toBe('deny');
     if (out.hookType === 'deny') {
-      expect(out.message).toContain('token-goat skill-body "degenerate-compact" --compact');
+      expect(out.message).not.toContain(compact);
+      // The slice is the whole body, so `skill-body --compact` would not serve it, and the body holds no heading for skill-section: the pointer names the full-body command only.
+      expect(out.message).not.toContain('skill-section');
+      expect(out.message).toContain('token-goat skill-body "degenerate-compact"');
+      expect(out.message).not.toContain('--compact');
     }
   });
 
@@ -477,9 +505,9 @@ describe('hints.pre_skill_advisory wiring', () => {
     const skillName = 'oversized-skill-section-test';
     const skillDir = path.join(sourceDir, skillName);
     await fs.mkdir(skillDir, { recursive: true });
-    // Create a skill that is oversized but the compact won't inline (compact > COMPACT_INLINE_MAX_BYTES)
+    // Create a skill that is oversized but the compact won't inline (compact > COMPACT_INLINE_MAX_BYTES), while staying under half the body so it is still a slice `skill-body --compact` serves
     const compact = 'x'.repeat(25000);
-    const detail = 'y'.repeat(7000);
+    const detail = 'y'.repeat(26000);
     const body = `${compact}\n<!-- COMPACT_END -->\n${detail}`;
     await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
 
@@ -688,8 +716,8 @@ describe('preSkillHandler -- an oversized skill whose compact slice is too large
     expect(out.message).toContain('Section 7');
     // Anti-vacuity: a branch that regressed to handing back the body would still contain every heading. The replacement has to be materially smaller than what it replaced.
     expect(out.message.length).toBeLessThan(bodyBytes * 0.5);
-    // The slice is still reachable -- it exists, it is just too big to inline, so the pointer to it stays.
-    expect(out.message).toContain('--compact');
+    // The slice is ~97% of the body, which `skill-body --compact` does not serve, so the deny no longer names it.
+    expect(out.message).not.toContain('--compact');
     expect(out.message).toContain('too large to inline');
   });
 
@@ -750,7 +778,11 @@ describe('preSkillHandler -- an oversized skill whose compact slice is too large
     const out = await preSkillHandler(skillPreEvent('late-marker-flat', 'sess-late-flat'));
     expect(out.hookType).toBe('deny');
     if (out.hookType !== 'deny' || !out.message) return;
-    expect(out.message).toContain('has a compact slice available');
+    // The slice is 78% of the body, so the pointer stands without claiming a compact slice it would not serve.
+    expect(out.message).not.toContain('skill-section');
+    expect(out.message).toContain('token-goat skill-body "late-marker-flat"');
+    expect(out.message).not.toContain('has a compact slice available');
+    expect(out.message).not.toContain('--compact');
     expect(out.message).not.toContain('heading tree');
   });
 });

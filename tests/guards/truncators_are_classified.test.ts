@@ -87,6 +87,19 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
         '26c; see tests/hooks_mcp.test.ts for the straddling-key regression.',
     },
   ],
+  ...['truncatePlaywrightSnapshotLine', 'elideSnapshotText', 'truncateNetworkRequestLine'].map(
+    (name): [string, Classification] => [
+      name,
+      {
+        bucket: 'operates-on-already-redacted-input',
+        reason:
+          'Reached only through compressBrowserMcpResult, called from compressMcpResultWithPacks on the text ' +
+          'hooks_mcp.ts::postMcpHandler builds from redactedResult.text (the Playwright pass output, itself ' +
+          'computed from redactedResult.text, or that text directly), the same path as truncateSnapshotLine. ' +
+          'See tests/mcp_compress_playwright.test.ts for the snapshot and network straddling-key regressions.',
+      },
+    ],
+  ),
   [
     'clipWideLines',
     {
@@ -110,6 +123,16 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
       reason:
         'Called from apply() at Step 7.5, after Step 1.5\'s redaction. This is the truncator the ' +
         'capLongLines-straddle regression in tests/tool_filters.test.ts targets directly.',
+    },
+  ],
+  [
+    'capLine',
+    {
+      bucket: 'operates-on-already-redacted-input',
+      reason:
+        'The per-line cut capLongLines makes, split out so a one-line JSON document can be laid out ' +
+        'first and each piece cut alone. capLongLines is its only caller, so it inherits that ' +
+        'function\'s ordering: apply() Step 7.5, after Step 1.5\'s redaction.',
     },
   ],
   [
@@ -299,13 +322,31 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'capFileLines',
+    {
+      bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',
+      reason:
+        'Pages a section of a file the caller named (read_section.ts runSection) or an installed skill file ' +
+        '(cli_skills.ts capToCeiling) by whole lines at the output ceiling. Both are the user\'s own files, printed ' +
+        'unredacted by section and skill-body before this cap existed; it only stops sooner, at a line boundary.',
+    },
+  ],
+  [
+    'capToCeiling',
+    {
+      bucket: 'read-tool-or-transcript-content-not-in-scope-of-the-tool-output-redaction-boundary',
+      reason: 'cli_skills.ts\'s one caller of capFileLines, over a skill file skill-body and skill-section already print whole.',
+    },
+  ],
+  [
     'clipToDeliveryCap',
     {
-      bucket: 'caller-refuses-any-secret-shaped-input-before-reaching-here',
+      bucket: 'operates-on-already-redacted-input',
       reason:
-        'Both call sites in hooks_bash_post.ts sit inside functions that already returned null on ' +
-        '`redactSecrets(output).count > 0` earlier in the same function body, so this only ever ' +
-        'clips text already proven to carry no secret-shaped fragment.',
+        'Its one call site, hooks_bash_post.ts::withoutHeartbeats, hands it `redactSecrets(output).text` and only ' +
+        'asks whether it would clip. The rewrites that ship a cut go through fitToDeliveryCap in the same module, ' +
+        'and every caller of that redacts first (the curl HTML fold, every MCP return in hooks_mcp.ts) or returns ' +
+        'null on `redactSecrets(output).count > 0` before it (the served-line elisions and the body fold).',
     },
   ],
   [

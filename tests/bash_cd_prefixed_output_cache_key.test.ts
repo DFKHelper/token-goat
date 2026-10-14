@@ -69,11 +69,11 @@ interface Call {
 const SUBAGENT: Call = { agentId: 'a3fa4da94f851e86f' }
 
 // CAPTURE: the envelope and the Bash tool_response keys { stdout, stderr, interrupted, isImage, noOutputExpected } are Claude Code's, recorded off real traffic in tests/hooks_real_harness_payload_shape.test.ts; Claude Code reports no exit code there, so none is sent.
-function bashEvent(sid: string, cwd: string, command: string, eventName: 'pre_tool_use' | 'post_tool_use', stdout: string, call: Call): HookEvent {
+function bashEvent(sid: string, cwd: string, command: string, eventName: 'pre_tool_use' | 'post_tool_use', stdout: string, call: Call, response: Record<string, unknown> = {}): HookEvent {
   const raw: Record<string, unknown> = { cwd, tool_name: 'Bash', tool_input: { command } }
   if (call.toolUseId !== undefined) raw['tool_use_id'] = call.toolUseId
   if (call.agentId !== undefined) raw['agent_id'] = call.agentId
-  if (eventName === 'post_tool_use') raw['tool_response'] = { stdout, stderr: '', interrupted: false, isImage: false, noOutputExpected: false }
+  if (eventName === 'post_tool_use') raw['tool_response'] = { stdout, stderr: '', interrupted: false, isImage: false, noOutputExpected: false, ...response }
   return { eventName, toolName: 'Bash', toolInput: { command }, sessionId: sid, agentId: call.agentId, raw }
 }
 
@@ -81,8 +81,17 @@ function text(result: HookOutput): string {
   return result.hookType === 'context' ? result.context : ''
 }
 
-async function post(sid: string, cwd: string, command: string, stdout: string, call: Call = SUBAGENT): Promise<HookOutput> {
-  return asHook(sid, () => postBashHandler(bashEvent(sid, cwd, command, 'post_tool_use', stdout, call)))
+async function post(sid: string, cwd: string, command: string, stdout: string, call: Call = SUBAGENT, response: Record<string, unknown> = {}): Promise<HookOutput> {
+  return asHook(sid, () => postBashHandler(bashEvent(sid, cwd, command, 'post_tool_use', stdout, call, response)))
+}
+
+/** The extra `tool_response` fields of a result Claude Code persisted rather than showed inline. The path names no file, so the hook reads the output from `stdout`; the field alone tells it the model saw only a preview, which is what puts the recall pointer in the large-output hint. */
+const PERSISTED = { persistedOutputPath: 'C:/nowhere/tool-results/cd-key.txt', persistedOutputSize: 0 }
+
+/** The large-output hint on a command's second run in `sid`, the first having produced the same output: the compress suggestion needs a command that produced a large output before in the session. The second run is persisted, so the hint also carries its recall pointer. */
+async function secondRunHint(sid: string, cwd: string, command: string, stdout: string, call: Call = SUBAGENT): Promise<string> {
+  await post(sid, cwd, command, stdout, call)
+  return text(await post(sid, cwd, command, stdout, call, PERSISTED))
 }
 
 async function pre(sid: string, cwd: string, command: string, call: Call = SUBAGENT): Promise<string> {
@@ -164,7 +173,8 @@ describe('a cached Bash result is keyed on the directory the command ran in', ()
     const bigClean = Array.from({ length: 100 }, (_, i) => `   Compiling writer-part${i} v0.1.0`).join('\n') + '\n    Finished dev [unoptimized + debuginfo] target(s) in 4.20s'
     const piped = 'cargo build 2>&1 | tail -n 400'
 
-    expect(text(await post(sid, root, `cd pkgA && ${piped}`, bigFailing))).toContain('KB uncompressed')
+    // Persisted, so the hint fires on this first run: it stores its copy only alongside a recall pointer, which it gives only for a result the harness did not show whole.
+    expect(text(await post(sid, root, `cd pkgA && ${piped}`, bigFailing, SUBAGENT, PERSISTED))).toContain('KB uncompressed')
     // The same build run in the root is not a rerun of pkgA's, so no delta may report pkgA's errors resolved.
     expect(text(await post(sid, root, piped, bigClean))).not.toContain('[token-goat: delta]')
     // Positive control: a second build in pkgA is the rerun.
@@ -187,7 +197,11 @@ describe("the large-output hint's compress suggestion runs the command in the di
     const sid = newSession()
     const call = { toolUseId: 'toolu_cd_hint_1' }
     await pre(sid, root, `cd pkgA && ${piped}`, call)
-    const hint = text(await post(sid, pkgA, `cd pkgA && ${piped}`, big, call))
+    await post(sid, pkgA, `cd pkgA && ${piped}`, big, call)
+    // The same call made again, so the suggestion has a prior large run to follow.
+    const again = { toolUseId: 'toolu_cd_hint_2' }
+    await pre(sid, root, `cd pkgA && ${piped}`, again)
+    const hint = text(await post(sid, pkgA, `cd pkgA && ${piped}`, big, again, PERSISTED))
     expect(suggestion(hint)).toBe(`token-goat compress -c "cd '${pkgA}' && ${piped}"`)
     // The relay's suggestion scrubber lets it through whole.
     expect(stripUnsafeSuggestions(hint)).toBe(hint)
@@ -196,21 +210,21 @@ describe("the large-output hint's compress suggestion runs the command in the di
   it('a subagent call, whose shell stays where it started, is suggested with the same directory', async () => {
     clearModuleCaches()
     const { root, pkgA } = layout()
-    const hint = text(await post(newSession(), root, `cd pkgA && ${piped}`, big))
+    const hint = await secondRunHint(newSession(), root, `cd pkgA && ${piped}`, big)
     expect(suggestion(hint)).toBe(`token-goat compress -c "cd '${pkgA}' && ${piped}"`)
   })
 
   it('a command with no cd prefix is suggested as it ran', async () => {
     clearModuleCaches()
     const { pkgA } = layout()
-    expect(suggestion(text(await post(newSession(), pkgA, piped, big)))).toBe(`token-goat compress -c "${piped}"`)
+    expect(suggestion(await secondRunHint(newSession(), pkgA, piped, big))).toBe(`token-goat compress -c "${piped}"`)
   })
 
   it('a directory holding a single quote, which its quoting cannot hold, gets the recall pointer and no compress suggestion', async () => {
     clearModuleCaches()
     const { root } = layout()
     fs.mkdirSync(path.join(root, "pkg'Q"))
-    const hint = text(await post(newSession(), root, `cd "pkg'Q" && ${piped}`, big))
+    const hint = await secondRunHint(newSession(), root, `cd "pkg'Q" && ${piped}`, big)
     expect(hint).toMatch(/`token-goat bash-output [0-9a-f]+`/)
     expect(suggestion(hint)).toBeNull()
   })
@@ -222,7 +236,7 @@ describe("the large-output hint's compress suggestion runs the command in the di
     clearModuleCaches()
     const { root } = layout()
     homeAt(root)
-    const hint = text(await post(newSession(), root, `cd ${dir} && ${piped}`, big))
+    const hint = await secondRunHint(newSession(), root, `cd ${dir} && ${piped}`, big)
     expect(suggestion(hint)).toBe(`token-goat compress -c "cd '${normalizePath(path.join(root, under))}' && ${piped}"`)
   })
 
@@ -231,7 +245,7 @@ describe("the large-output hint's compress suggestion runs the command in the di
     clearModuleCaches()
     const { root } = layout()
     homeAt(root)
-    const hint = text(await post(newSession(), root, `cd ${dir} && ${piped}`, big))
+    const hint = await secondRunHint(newSession(), root, `cd ${dir} && ${piped}`, big)
     expect(hint).toMatch(/`token-goat bash-output [0-9a-f]+`/)
     expect(suggestion(hint)).toBeNull()
   })

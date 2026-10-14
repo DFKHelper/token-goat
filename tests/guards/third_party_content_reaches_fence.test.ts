@@ -54,6 +54,8 @@ export const THIRD_PARTY_SOURCE_CALLS: readonly string[] = [
   // dep_docs.ts -- an installed package's README, package.json fields and .d.ts declarations, all written by the package's publisher. dep-docs printed them bare until these entries were added.
   'findReadmeFile',
   'extractDtsOutline',
+  // transcript_extract.ts -- a .vtt/.srt file's cue text and speaker names, written by whoever made the recording or captioned it. transcript-outline printed both bare, in text and --json form, until this entry was added.
+  'readTranscript',
 ]
 
 // Deliberately not sources: json-query, yaml-query, xml-query and config-get. They read the structured text files a project is made of (package.json, CI workflows, a pom.xml, .token-goat.toml) the way `read` reads its source, and the guard does not count the user's own project as third party. A fence on every manifest lookup would tax the commonest structured read for text the user's repository already holds. html-query and html-outline are the exception and are fenced, under their own tag, because HTML usually arrives fetched. html-lint is not a source either: it prints token-goat's own structural diagnostics, which quote at most a tag name, an id or one malformed tag, each through displaySafeText. `getBashOutput`/`getWebOutput`/`getWebOutputRaw` (the existing, already-fenced bash/web/mcp recall paths) are deliberately NOT in the population above: those functions are also called internally for dedup/hashing/existence-checking, not only to emit third-party text to the model, so anchoring the population on them produces call sites this guard cannot tell apart from a real violation. Their fencing is proven instead by the dedicated behavioral regression tests for `bash-output`/`web-output`/`mcp-output` in tests/cli.test.ts and its neighbors (verification requirement #4), which assert the actual fenced output, not just that some function reaches the call.
@@ -89,6 +91,7 @@ const FENCE_TERMINALS: readonly string[] = [
   'fenceFileText(',
   'fenceFieldIfMatched(',
   'fenceFileFieldIfMatched(',
+  'fenceFileJsonStrings(',
   'fenceIfScanMatched(',
   'guardThenFence(',
   'guardRedactAndFence(',
@@ -136,6 +139,7 @@ export const SOURCE_MODULE_FILES: ReadonlySet<string> = new Set([
   'archive_query.ts',
   'sqlite_query.ts',
   'html_query.ts',
+  'transcript_extract.ts',
 ])
 
 interface Violation {

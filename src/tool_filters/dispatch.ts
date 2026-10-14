@@ -144,6 +144,8 @@ export interface CompressOptions {
   maxLines?: number
   maxBytes?: number
   compressionProfile?: string
+  /** The line bound a later pipeline stage put on the command, handed to the filter as `CompressContext.outputLineBound` (base.ts). */
+  outputLineBound?: number
 }
 
 /** Canonical wrapper entry point: run `filter` over the captured output and return a {@link CompressedOutput}. Always succeeds (the filter's own `apply` catches exceptions and falls back to truncation). The profile sets the effective line cap; an explicit tighter `maxLines` still wins. */
@@ -162,6 +164,7 @@ export function compressOutput(
   const skipProgress = profile === 'minimal'
   const applyOpts: ApplyOptions = { maxLines: effectiveMaxLines, skipProgress }
   if (opts.maxBytes !== undefined) applyOpts.maxBytes = opts.maxBytes
+  if (opts.outputLineBound !== undefined) applyOpts.outputLineBound = opts.outputLineBound
   return filter.apply(stdout, stderr, exitCode, argv, applyOpts)
 }
 
@@ -175,6 +178,10 @@ export interface DeliveredCompression {
   readonly marker: string
   /** The underlying measurement, for stats and reporting. */
   readonly compressed: CompressedOutput
+  /** The command's bytes within `text`: all of it, less token-goat's own closing notices when the rewrite ships. What a caller that fences puts inside the fence. */
+  readonly untrusted: string
+  /** Token-goat's own closing notices that end `text` when the rewrite ships (see `CompressedOutput.ownNotices`), else `''`. They go after the closing tag. */
+  readonly ownNotices: string
 }
 
 /** The single definition of "what does the model actually receive for this command". A rewrite whose savings do not clear the marker's own byte cost plus the configured floor destabilises the bytes for too small a gain, so below the floor the ORIGINAL streams ship untouched (no compression marker) -- exactly as though no filter had matched, EXCEPT redaction: `compressed` already ran `filter.apply()`, which redacts secret-shaped values before any truncator can cut one below its recognition floor (see base.ts's Step 1.5/9.5 comments). Falling back to the raw `combineStreams(stdout, stderr)` here used to throw that redaction away -- a credential in a command whose compression didn't clear the net-benefit floor shipped to the model raw, live, on this exact rewrite surface. Re-redacting the raw streams on the fallback path keeps the invariant "the net-benefit gate only ever discards compression, never redaction" true for both branches; it is a no-op whenever nothing in stdout/stderr looked like a secret. Callers assemble `text + marker` themselves rather than receiving a finished body, because the runner caps tokens BETWEEN the two so the savings marker survives truncation. Anything measuring delivery (see `token-goat bench`) must go through here rather than re-deriving the gate, or the measurement can disagree with what ships. */
@@ -184,14 +191,22 @@ export function deliverCompressed(
   stderr: string,
   exitCode: number,
   argv: string[],
-  opts: CompressOptions = {},
+  opts: CompressOptions & {
+    /** Bytes the caller appends after the marker whenever the rewrite ships (the runner's recall line), priced into the gate with the marker. */
+    trailerBytes?: number
+    /** Bytes of the framing the caller puts around the command's bytes whenever the rewrite ships (the runner's untrusted-content fence), measured on those bytes, so the gate prices the protection along with the marker rather than declining a rewrite later for its cost. */
+    framingBytes?: (untrusted: string) => number
+  } = {},
 ): DeliveredCompression {
   const compressed = compressOutput(filter, stdout, stderr, exitCode, argv, opts)
   const minNet = resolveMinNetSavingsBytes()
-  const applied = compressed.worthApplying(minNet)
+  const trailerBytes = opts.trailerBytes ?? 0
+  const body = compressed.text.slice(0, compressed.text.length - compressed.ownNotices.length)
+  // Measured only once the cheaper check passes: a rewrite that cannot pay for its marker and trailer cannot pay for a fence on top, and measuring a fence can mean scanning the body.
+  const applied = compressed.worthApplying(minNet, trailerBytes) && (opts.framingBytes === undefined || compressed.worthApplying(minNet, trailerBytes + opts.framingBytes(body)))
   const text = applied ? compressed.text : redactSecrets(combineStreams(stdout, stderr)).text
   const marker = applied ? compressed.withMarker(minNet).slice(compressed.text.length) : ''
-  return { applied, text, marker, compressed }
+  return { applied, text, marker, compressed, untrusted: applied ? body : text, ownNotices: applied ? compressed.ownNotices : '' }
 }
 
 /** Look up a registered filter by name. `"generic"` resolves to a fresh {@link GenericFilter} (the explicit opt-in fallback, not in `TOOL_FILTERS`). Returns null for unknown names; the wrapper then falls back to {@link selectFilter}. */

@@ -18,7 +18,8 @@ import type { HookOutput } from '../src/types.js'
 
 // HAND-DERIVED: a module whose `foo` the surgical read names; the backtick file name is the case under test, and every shell accepts it in single quotes.
 const LINES = Array.from({ length: 80 }, (_, i) => (i === 0 ? 'export function foo(): number { return 1 }' : `export const value${i} = ${i} * 2`))
-const READ_NOTE = 'was already fully read via the Read tool'
+// The Read below covers lines 50-64 only, so the note names that window rather than a full read.
+const READ_NOTE = 'was partially read earlier this session (lines 50-64)'
 const DOWNLOAD_NOTE = 'was already downloaded earlier this session.'
 
 const dirs: string[] = []

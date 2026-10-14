@@ -204,7 +204,8 @@ describe('Unqualified YAML read guidance', () => {
       })
       expect(result.code).toBe(1)
       expect(result.text).toContain('token-goat yaml-outline')
-      expect(result.text).toContain('token-goat yaml-query')
+      expect(result.text).toContain('yaml-query')
+      expect(result.text).not.toContain('"<path>"')
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true })
     }

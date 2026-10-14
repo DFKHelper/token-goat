@@ -8,6 +8,7 @@ import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
+import { awaitProcessExit } from './helpers/process_exit.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 /** Mirrors src/constants.ts's defaultDataDir() for a LOCALAPPDATA/XDG_DATA_HOME of `base`, as tests/worker_daemon_e2e.test.ts does. */
@@ -42,14 +43,14 @@ function pidAlive(pid: number): boolean {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 const bases: string[] = []
+/** Daemons this file started, by PID, each with a time it was known to be running. */
+const daemons = new Map<number, number>()
 afterEach(() => {
-  for (const d of bases.splice(0)) {
-    try {
-      fs.rmSync(d, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
-    } catch {
-      // Best effort, as in tests/worker_daemon_e2e.test.ts: on a loaded Windows runner a just-killed daemon's handles (or a scanner's) can outlive the retries, and a leftover temp directory is not what this test measures.
-    }
-  }
+  // A stopped daemon keeps global.db open until Windows has finished tearing it down, after `pidAlive` already reads it gone.
+  const started = new Map(daemons)
+  daemons.clear()
+  awaitProcessExit(started)
+  for (const d of bases.splice(0)) fs.rmSync(d, { recursive: true, force: true })
 })
 
 /** A git project, an isolated home under a fresh temp base, and the Edit hook run through the bundle for a new one-function file named `name`. */
@@ -79,6 +80,7 @@ describe('an edit wakes the detached worker (built bundle)', () => {
       expect(start.status, start.stderr).toBe(0)
       pid = parseInt(/pid (\d+)/.exec(start.stdout)?.[1] ?? 'NaN', 10)
       expect(Number.isFinite(pid), start.stdout).toBe(true)
+      daemons.set(pid, Date.now())
       const heartbeat = path.join(effectiveDataDir(base), 'queue', 'drain-heartbeat')
       const deadline = Date.now() + 15_000
       while (!(fs.existsSync(heartbeat) && fs.readFileSync(heartbeat, 'utf8').trim() === String(pid))) {

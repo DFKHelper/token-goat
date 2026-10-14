@@ -4,7 +4,7 @@ import { bodyFoldNotice } from './fold_delivery.js'
 import { loadConfig } from './config.js'
 import { extractMarkdownHeadings, type MarkdownHeading } from './hints/markdown_hints.js'
 import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
-import { headingTreeParts, hintTarget } from './hint_target.js'
+import { headingTreeParts, hintTarget, hintTargetFromNames } from './hint_target.js'
 import { displaySafeText } from './paths.js'
 import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
@@ -75,16 +75,18 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
 
   // headings.length is a floor, not a total: extractMarkdownHeadings caps display extraction at 40 entries and H1-H3 only, so a document with more headings or deeper nesting reports fewer than it actually has. Disclosed as "at least" for that reason, never as an exact count. The lead-in clause is worded from what the rewrite actually kept: claiming "its lead-in" when leadInRows came back empty would be a claim the output does not support.
   const headingCount = `at least ${headings.length} heading${headings.length === 1 ? '' : 's'} found`
-  const heading = hintTarget(normalizedPath, 'section', { headings, content: fileText, placeholder: '<Heading>' }).name
+  const heading = hintTarget(normalizedPath, 'section', { headings, content: fileText })
+  // With no heading the reader can name, the pointer is the outline, which lists every heading with its line range, rather than a section command with a stand-in name that exits 1.
+  const readOne = heading.real ? `Run token-goat section ${quotedArg(`${shownPath}::${heading.name}`)} to read one section verbatim.` : `Run token-goat outline ${quotedArg(shownPath)} for every heading with its line range.`
   if (layout === 'aligned') {
     const body = fenceNumberedFileContent([...leadInNumbered, ...planOutlineAlignedRows(rows, headings, leadInNumbered.length, shownPath, normalizedPath)].join('\n'), ALIGNED_LAYOUT_NOTE)
-    const alignedNotice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was cut down to ${leadInRows.length > 0 ? 'its lead-in and ' : ''}its headings (${headingCount}), each on its real line, with the text under each heading withheld behind a pointer. Run token-goat section ${quotedArg(`${shownPath}::${heading}`)} to read one section verbatim.`
+    const alignedNotice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was cut down to ${leadInRows.length > 0 ? 'its lead-in and ' : ''}its headings (${headingCount}), each on its real line, with the text under each heading withheld behind a pointer. ${readOne}`
     return { numbered: [body.body], raw: leadInRaw, kind: 'read:markdown_outline', detail: shownPath, ratioCap: OUTLINE_MAX_REPLACEMENT_RATIO, context: `${body.preamble}\n${alignedNotice}` }
   }
   const notice =
     leadInRows.length > 0
-      ? `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was replaced with its lead-in (the content before its first section) and a heading tree (${headingCount}). Run token-goat section ${quotedArg(`${shownPath}::${heading}`)} to read one section verbatim.`
-      : `Partial view: this ${originalBytes.toLocaleString('en-US')} B document has no lead-in before its first section, so it was replaced with a heading tree alone (${headingCount}). Run token-goat section ${quotedArg(`${shownPath}::${heading}`)} to read one section verbatim.`
+      ? `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was replaced with its lead-in (the content before its first section) and a heading tree (${headingCount}). ${readOne}`
+      : `Partial view: this ${originalBytes.toLocaleString('en-US')} B document has no lead-in before its first section, so it was replaced with a heading tree alone (${headingCount}). ${readOne}`
 
   return {
     // The notice leads so that token-goat speaks first: emitting the lead-in above it let a document open with forged `[token-goat: ...]` or `[tg]` lines that read as this rewrite's own preamble. The lead-in is file bytes like the heading tree, so it gets its own fence rather than riding in the tree's; both fences are part of `numbered`, so their cost is priced by the ratioCap gate below along with everything else.
@@ -222,9 +224,11 @@ export function planSourceSkeleton(rows: readonly FoldRow[], normalizedPath: str
 
   const plan = planSourceSkeletonRuns(rows, symbols, shownPath, layout)
   if (plan === null) return null
+  // A declaration the file really holds, so the read below runs as printed.
+  const firstBody = hintTargetFromNames(symbols.map((s) => s.name), 'symbol')
 
   // "at least", never an exact count: these are the declarations tree-sitter surfaces as symbols, which is not every name in the file (a local, a nested closure, a declaration inside a body the extractors deliberately skip), so the number is a floor on what the file holds and the wording has to say so. The withheld-line count IS exact, being what the notices below it stand for, and no claim is made about how much of the file a reader recovers.
-  const notice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B source file was replaced with its structural skeleton, its preamble and one line per declaration, with ${plan.withheldLines.toLocaleString('en-US')} line${plan.withheldLines === 1 ? '' : 's'} of bodies withheld (at least ${symbols.length} declaration${symbols.length === 1 ? '' : 's'} found). Run ${fencedCommand(`token-goat read ${quotedArg(`${shownPath}::SymbolName`)}`)} for one body verbatim, or Read "${displaySafeText(shownPath)}" with offset=1, limit=${rows.length} for the whole file.`
+  const notice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B source file was replaced with its structural skeleton, its preamble and one line per declaration, with ${plan.withheldLines.toLocaleString('en-US')} line${plan.withheldLines === 1 ? '' : 's'} of bodies withheld (at least ${symbols.length} declaration${symbols.length === 1 ? '' : 's'} found). Run ${firstBody.real ? fencedCommand(`token-goat read ${quotedArg(`${shownPath}::${firstBody.name}`)}`) : fencedCommand(`token-goat skeleton ${quotedArg(shownPath)}`)} for ${firstBody.real ? 'one body verbatim' : 'the declarations with their line ranges'}, or Read "${displaySafeText(shownPath)}" with offset=1, limit=${rows.length} for the whole file.`
 
   // The notice leads so token-goat speaks first, and everything after it is fenced: `plan.numbered` is file bytes -- the preamble verbatim, one declaration line per symbol -- interleaved with this rewrite's own `... N more lines ... folded` pointers. It shipped unfenced, which let a source file's first line arrive as an unlabelled `[tg]`-prefixed instruction wearing token-goat's voice, and let a planted `</untrusted-file-content>` close a fence it was never inside. Fencing the interleaved block escapes nothing token-goat authored: the pointers spell `token-goat read "..."` with no bracket, and neutralizeSpokenMarkers only matches the bracketed forms.
   if (layout === 'aligned') {

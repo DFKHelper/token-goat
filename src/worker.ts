@@ -17,6 +17,7 @@ import { configProjectRootFor, loadConfig, withConfigProjectRoot } from './confi
 import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex, pruneDeletedFiles, sweepKnownRoots } from './index_prune.js'
+import { isToolOutputPath } from './skip_scope.js'
 import { recordKnownRootThrottled, sweepExpiredKnownRootMarkers } from './known_roots.js'
 import { reclaimIndex } from './index_reclaim.js'
 import { applyIndexingPriority } from './process_priority.js'
@@ -330,7 +331,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string) => u
       recordKnownRootThrottled(absPath, dir, dbPath)
       // Skip-eligibility must be checked UNCONDITIONALLY, before the parseUnchanged sha-gate: a file that becomes skip-eligible purely from a config change (same sha) would otherwise never reach indexFileSync's purge at all, leaving symbols/refs/files rows stale forever. Guard on ixCfgForSkip !== undefined for tests that mock loadConfig with a partial { worker: {...} } shape.
       const ixCfgForSkip = loadConfig().indexing
-      if (ixCfgForSkip !== undefined && isParseSkipEligible(absPath, ixCfgForSkip)) {
+      if ((ixCfgForSkip !== undefined && isParseSkipEligible(absPath, ixCfgForSkip)) || isToolOutputPath(absPath)) {
         // Purging stale rows is real work: unlike the `false` sha-gate skip below, this must count as "indexed" in processDirtyBatch's tally.
         removeFileFromIndex(getDb(dbPath), absPath)
         return true
@@ -439,7 +440,7 @@ export function processDirtyBatch(
       continue
     }
     // Decided from the path and a stat before fingerprintFile reads the whole file, as cmdIndex does: a log past large_file_skip_kb was otherwise loaded whole on every drain only to be skipped, and one over 2 GiB failed that read and was requeued as transient until its retries ran out, its stale rows never purged. Counted as indexed for the same reason as makeIndexer's identical branch, which still covers its direct callers.
-    if (ixCfg !== undefined && isParseSkipEligible(p, ixCfg)) {
+    if ((ixCfg !== undefined && isParseSkipEligible(p, ixCfg)) || isToolOutputPath(p)) {
       recordKnownRootThrottled(p, dir, path.join(dir, 'global.db'))
       if (pruneDirtyPath(p, remove, dir, requeue)) indexed += 1
       continue

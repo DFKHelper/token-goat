@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { BUNDLE, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
+import { awaitProcessExit } from './helpers/process_exit.js'
 import { indexableDir } from './helpers/temp-config.js'
 import { stopWorker, workerPidPath } from '../src/worker_lifecycle.js'
 
@@ -46,7 +47,8 @@ function heartbeatNames(dataBase: string, pid: number): boolean {
 }
 
 const tempDirs: string[] = []
-const startedPids: number[] = []
+/** Daemons this file started, by PID, each with a time it was known to be running. */
+const startedPids = new Map<number, number>()
 function mkIsolated(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   tempDirs.push(dir)
@@ -55,7 +57,9 @@ function mkIsolated(prefix: string): string {
 
 /** Only pids this file started: a daemon that retired is already gone, and one that did not is killed so a failing run never leaves it behind. */
 afterEach(() => {
-  for (const pid of startedPids.splice(0)) {
+  const started = new Map(startedPids)
+  startedPids.clear()
+  for (const pid of started.keys()) {
     if (!alive(pid)) continue
     try {
       process.kill(pid, 'SIGKILL')
@@ -63,13 +67,9 @@ afterEach(() => {
       // already gone
     }
   }
-  for (const d of tempDirs.splice(0)) {
-    try {
-      fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
-    } catch {
-      // a daemon that holds global.db open keeps the folder on Windows; the pid kill above is what matters
-    }
-  }
+  // A daemon that retired or was killed holds global.db open until Windows has finished tearing it down, after `alive` already reads it gone.
+  awaitProcessExit(started)
+  for (const d of tempDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
 })
 
 function startWorker(env: NodeJS.ProcessEnv, cwd: string): number {
@@ -78,7 +78,7 @@ function startWorker(env: NodeJS.ProcessEnv, cwd: string): number {
   const m = start.stdout.match(/pid (\d+)/)
   expect(m, `unexpected worker start output: ${JSON.stringify(start.stdout)}`).not.toBeNull()
   const pid = parseInt((m as RegExpMatchArray)[1]!, 10)
-  startedPids.push(pid)
+  startedPids.set(pid, Date.now())
   return pid
 }
 
@@ -143,7 +143,7 @@ describe('the built daemon retires on its own', () => {
         }
         return false
       })
-      if (fresh !== undefined) startedPids.push(fresh)
+      if (fresh !== undefined) startedPids.set(fresh, Date.now())
       expect(runBundle(['worker', 'status'], laterEnv, repo).stdout).toContain('Worker is running.')
     },
     90000,
@@ -163,7 +163,7 @@ describe('the built daemon retires on its own', () => {
       })
       const pid = child.pid as number
       expect(pid, 'spawning the bundle produced no pid').toBeDefined()
-      startedPids.push(pid)
+      startedPids.set(pid, Date.now())
       // What startDetachedWorker does right after the spawn. The child has not booted, so it has written no heartbeat: the same state a CPU-starved daemon is in when `worker stop` arrives.
       fs.writeFileSync(workerPidPath(dir), `${pid}\n`)
 

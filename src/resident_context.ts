@@ -267,7 +267,7 @@ export function repeatedSkillBodyHint(injections: readonly SkillBodyInjection[])
     `(${formatBytes(worst.bytes)} total, ~${tokens} tok est). Slash expansion and the Skill tool both send the ` +
     'whole body every time, and no hook can intercept either. If it is already loaded, work from it instead of ' +
     're-invoking; to reread one part, ' +
-    `use \`token-goat skill-section ${quotedArg(skill)} "<heading>"\`.`
+    `use \`token-goat skill-section\` with ${quotedArg(skill)} and the heading you need.`
   )
 }
 

@@ -60,25 +60,36 @@ describe('pandoc and duckdb commands in file-type hints', () => {
     expect(all.join('\n')).toContain("read_parquet('C:/p/report.x.parquet')")
   })
 
-  it('embed only a plain path in the DuckDB SQL, and name <file> for any other', () => {
-    for (const p of HOSTILE) expect.soft(handleParquet(p + '.parquet').message, JSON.stringify(p)).toContain("read_parquet('<file>')")
-    expect(handleParquet('\\\\server\\share\\a.parquet').message).toContain("read_parquet('<file>')")
+  // The SQL used to carry `read_parquet('<file>')` for any other path, a stand-in a reader had to replace before it ran; the command is now left out and the sentence names the function.
+  it('embed only a plain path in the DuckDB SQL, and print no DuckDB command for any other', () => {
+    for (const p of HOSTILE) expect.soft(handleParquet(p + '.parquet').message, JSON.stringify(p)).toBe(handleParquetWithoutCommand(p + '.parquet'))
+    expect(handleParquet('\\\\server\\share\\a.parquet').message).toBe(handleParquetWithoutCommand('\\\\server\\share\\a.parquet'))
   })
 
   it('name a Windows path with backslashes in the DuckDB SQL by its forward-slash spelling, unless it holds a hostile character', () => {
     expect(handleParquet('C:\\Users\\me\\data\\a.parquet').message).toContain("read_parquet('C:/Users/me/data/a.parquet')")
-    expect(handleParquet("C:\\p\\a'$MARK.parquet").message).toContain("read_parquet('<file>')")
-    expect(handleParquet('C:\\p\\a"b.parquet').message).toContain("read_parquet('<file>')")
-    expect(handleParquet('C:\\p\\a\u202Eb.parquet').message).toContain("read_parquet('<file>')")
+    expect(handleParquet("C:\\p\\a'$MARK.parquet").message).not.toContain('duckdb -c')
+    expect(handleParquet('C:\\p\\a"b.parquet').message).not.toContain('duckdb -c')
+    expect(handleParquet('C:\\p\\a\u202Eb.parquet').message).not.toContain('duckdb -c')
   })
 
   it.skipIf(POSIX_SH === null && POWERSHELL === null)('hand every hostile path to the program as written in both shells, or write the placeholder', () => {
     const commands = HOSTILE.flatMap((p) => messages(p).flatMap(commandsIn))
-    expect(commands.length).toBe(HOSTILE.length * 5)
+    // Five commands for a plain path; a hostile one drops the DuckDB command, whose SQL string cannot hold it.
+    expect(commands.length).toBe(HOSTILE.length * 4)
     for (const c of commands) expect.soft(c, 'raw control, zero-width or bidi character').not.toMatch(RAW_CONTROL)
     expectShellsHoldLiterally(commands)
   })
 })
+
+/** What handleParquet prints for a path its SQL string cannot hold: the sentence naming read_parquet, and no command. */
+function handleParquetWithoutCommand(p: string): string {
+  const message = handleParquet(p).message
+  expect(message).not.toContain('duckdb -c')
+  expect(message).not.toContain('<file>')
+  expect(message).toContain("Query it with DuckDB's read_parquet function")
+  return message
+}
 
 describe('the suggestion guard on commands for other programs', () => {
   it('drops a pandoc or duckdb command a path broke out of, and keeps the sentence', () => {

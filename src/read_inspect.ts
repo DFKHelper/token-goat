@@ -46,7 +46,8 @@ import {
   requireNonNegativeStrictInt,
 } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
-import { fenceFileFieldIfMatched, fenceJsonStrings } from './untrusted_fence.js'
+import { fenceFileFieldIfMatched, fenceFileJsonStrings, fenceJsonStrings } from './untrusted_fence.js'
+import { loadConfig } from './config.js'
 import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { couldNotRead, echoedValue, quotedArg } from './hint_suggestion_guard.js'
@@ -89,7 +90,8 @@ export async function runZipList(opts: ZipListCliOptions): Promise<number> {
 
   const fullSourceBytes = sumFileSizes([opts.file])
   if (opts.json === true) {
-    const jsonText = displaySafeJson(entries.map((e) => ({ ...e, path: fenceFileFieldIfMatched(e.path) })), 0)
+    const config = loadConfig()
+    const jsonText = displaySafeJson(entries.map((e) => ({ ...e, path: fenceFileFieldIfMatched(e.path, config) })), 0)
     emit(jsonText)
     recordReadStat('zip_list', fullSourceBytes, jsonText, opts.file)
   } else {
@@ -153,7 +155,7 @@ export async function runZipRead(opts: ZipReadCliOptions): Promise<number> {
   const fullSourceBytes = sumFileSizes([opts.file])
 
   if (opts.json === true) {
-    const jsonText = displaySafeJson({ path: opts.entry, text: text === null ? BINARY_ENTRY_ELIDED : fenceFileFieldIfMatched(text) }, 0)
+    const jsonText = displaySafeJson({ path: opts.entry, text: text === null ? BINARY_ENTRY_ELIDED : fenceFileFieldIfMatched(text, loadConfig()) }, 0)
     emit(jsonText)
     recordReadStat('zip_read', fullSourceBytes, jsonText, opts.entry)
   } else {
@@ -174,7 +176,7 @@ export function runSqliteSchema(opts: SqliteSchemaCliOptions): number {
     const schema = getSqliteSchema(opts.file)
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
-      const jsonText = capListField(schema, 'tables', (o) => displaySafeJson(fenceJsonStrings(o, fenceFileFieldIfMatched), 0))
+      const jsonText = capListField(schema, 'tables', (o, held) => displaySafeJson(fenceFileJsonStrings(o, held), 0))
       emit(jsonText)
       recordReadStat('sqlite_schema', fullSourceBytes, jsonText, opts.file)
     } else {
@@ -200,7 +202,7 @@ export function runSqliteTables(opts: SqliteTablesCliOptions): number {
     const fullSourceBytes = sumFileSizes([opts.file])
     if (opts.json === true) {
       // A bare array has no room to say it was cut, so a cut listing becomes the {items, truncated, totalCount} envelope every other capped --json listing uses; an uncut one stays the array it always was. The cap is measured on the text as printed, envelope included.
-      const jsonText = capListField({ items: tables }, 'items', (o) => displaySafeJson(fenceJsonStrings(o.truncated === true ? o : o.items, fenceFileFieldIfMatched), 0))
+      const jsonText = capListField({ items: tables }, 'items', (o, held) => displaySafeJson(fenceFileJsonStrings(o.truncated === true ? o : o.items, held), 0))
       if (jsonText.startsWith('{')) {
         const cut = JSON.parse(jsonText) as { items: unknown[]; totalCount: number }
         emitErr(`token-goat: sqlite-tables --json shows ${cut.items.length} of ${cut.totalCount} tables, the most that fit overflow_guard.max_tokens; list fewer with sqlite-query.`)
@@ -242,9 +244,11 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
     const rows = head !== undefined ? result.rows.slice(0, head) : result.rows
 
     if (opts.json === true) {
-      const capped = guardJsonRows(rows.map((r) => fenceJsonStrings(r, fenceFileFieldIfMatched)))
+      const config = loadConfig()
+      const field = (text: string): string => fenceFileFieldIfMatched(text, config)
+      const capped = guardJsonRows(rows.map((r) => fenceJsonStrings(r, field)))
       const jsonText = displaySafeJson({
-        columns: result.columns.map(fenceFileFieldIfMatched),
+        columns: result.columns.map(field),
         items: capped.items,
         truncated: capped.truncated || headTruncated || result.rowCapped,
         totalCount,

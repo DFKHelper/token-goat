@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { postBrowserImageHandler } from '../../src/hooks_browser_image.js'
+import { browserResultBlocks } from '../../src/hooks_browser_image.js'
 import { makeHookEvent } from '../helpers/hook-event.js'
 import { exportSessionState, importSessionState, type SerializedSession } from '../../src/session.js'
 import { readSessionStateFile, saveSessionState } from '../../src/session_store.js'
@@ -40,7 +40,7 @@ afterEach(() => {
 
 describe('session state written to disk', () => {
   it('records the tab list as a fingerprint, so no tab URL is ever written to the file', async () => {
-    await postBrowserImageHandler(
+    await browserResultBlocks(
       makeHookEvent({
         eventName: 'post_tool_use',
         toolName: 'mcp__claude-in-chrome__computer',

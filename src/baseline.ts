@@ -251,8 +251,8 @@ export function buildProjectMap(
   }
 }
 
-/** Render a {@link ProjectMap} to a human-readable block. Compact mode emits a single language summary line and a short symbol list; the full form adds a recent-files section and per-symbol locations. Compact output is strictly fewer lines than the full form for the same map. */
-export function formatProjectMap(map: ProjectMap, compact = false): string {
+/** Render a {@link ProjectMap} to a human-readable block. Compact mode emits a single language summary line and a short symbol list; the full form adds a recent-files section and per-symbol locations. Compact output is strictly fewer lines than the full form for the same map. `suggestIndex: false` keeps the empty-index line but drops the command it names, for a reader who should not be the one to run it: a subagent handed this in its spawn briefing. */
+export function formatProjectMap(map: ProjectMap, compact = false, opts: { suggestIndex?: boolean } = {}): string {
   const lines: string[] = []
   // The folder name and the recent-file paths are the repository's own, so they go through displaySafeText like the symbol lines below: this block reaches the model outside any fence, as the `map` output and in the subagent-start briefing on the context channel.
   const rel = displaySafeText(path.basename(map.rootDir))
@@ -278,7 +278,8 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
   } else {
     // Reuses checkSymbolCount's wording (cli_doctor_index.ts) for the same empty-index condition, so a `map` against an unindexed project says so instead of silently omitting the whole section -- otherwise the missing heading reads as "this project has no notable symbols" rather than "this project has never been indexed". The command is built by suggestedIndexCommand rather than hardcoded: a bare `token-goat index .` refuses outright in a non-git folder, which is exactly the case this branch fires in most, so the hardcoded form printed a command that could not run as shown.
     lines.push('')
-    lines.push(`## Top symbols: none — no files indexed for this project; run ${fencedCommand(suggestedIndexCommand(map.rootDir))}`)
+    const runIndex = opts.suggestIndex === false ? '' : `; run ${fencedCommand(suggestedIndexCommand(map.rootDir))}`
+    lines.push(`## Top symbols: none — no files indexed for this project${runIndex}`)
   }
 
   if (!compact && map.recentFiles.length > 0) {

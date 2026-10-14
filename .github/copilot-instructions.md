@@ -52,6 +52,7 @@ Failure shapes to catch yourself in, and the command that replaces each:
 - not knowing which command answers a question you can already state in words → answer "<question>", which resolves the subject in the index, runs the right command, prints via: <command>, and refuses rather than guess
 - a shell text search with context flags to find a function body → read "file::symbol"
 - paging one function with view/view_range → read "file::symbol"
+- issuing sequential or overlapping line-range reads across a file (paging) → read "file::symbol" / outline file / skeleton file / rg <pattern> <file>
 - a read refused by a [tg] deny, retried with a shifted range, different lines, or another read tool → never retry reading the file at different lines; run the command the deny names or use bash-output / token-goat read
 - reading a symbol plus chasing its callers and containing doc section as separate reads → brief "file::symbol"
 - reading one heading of a large doc → section "file::Heading"

@@ -25,10 +25,19 @@ issueRules:
   #
   # All five are known and none is evidence of tampering. Three (better-sqlite3, exceljs,
   # underscore) are devDependencies and reach no user of the published package. The remaining two
-  # arrive under the optional tesseract.js dependency: tesseract.js-core is pinned to 6.1.2 via
-  # package.json overrides to eliminate the tesseract-core-relaxedsimd.wasm.js Emscripten false
-  # positive introduced in 7.0.0, and zlibjs@0.3.1, a zero-dependency library last published in
-  # 2022.
+  # arrive under the optional tesseract.js dependency: tesseract.js-core@7.0.0, whose flagged file
+  # tesseract-core-relaxedsimd.wasm.js is Emscripten glue, and zlibjs@0.3.1, a zero-dependency
+  # library last published in 2022.
+  #
+  # 7.0.0 was built with a newer Emscripten that minifies the glue; 6.1.2 ships the same loader
+  # unminified, and was not flagged. Each 7.0.0 *.wasm.js embeds, as one base64 string, exactly the
+  # bytes of the .wasm file published beside it, and the remaining ~89 KB of loader code requires
+  # only fs and crypto (6.1.2 also required path). The package has no install scripts and no
+  # dependencies. Commit 5c43197e pinned the core to 6.1.2 through overrides to drop this alert,
+  # which broke OCR: tesseract.js 7 loads the relaxed-SIMD build, which only core 7 ships. Both are
+  # on 7 now, without an override, and
+  # tests/guards/an_override_pin_stays_inside_its_dependents_range.test.ts fails if they are ever on
+  # different majors again.
   #
   # Turning this rule off would silence those five, and would equally silence a genuinely malicious
   # minified payload in some future dependency, which is the case the rule exists for. Five

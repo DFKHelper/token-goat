@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { BUNDLE } from './helpers/bundle.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { dataDirForHome, _resetDataDirCacheForTesting } from '../src/constants.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -137,7 +138,7 @@ describe('retrieve output filters', () => {
 describe('cached-output recall: ranges, line numbers, context and the elision marker', () => {
   /** The recalled lines inside the untrusted-tool-output fence (CAPTURE: the fence is two lines before the body and one after, as printed by `bash-output --file`). */
   function body(stdout: string): string[] {
-    const lines = stdout.trimEnd().split('\n')
+    const lines = withoutFenceNonces(stdout).trimEnd().split('\n')
     return lines[1] === '<untrusted-tool-output>' ? lines.slice(2, -1) : lines
   }
 

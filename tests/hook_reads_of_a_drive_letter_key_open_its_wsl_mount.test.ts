@@ -138,10 +138,11 @@ describe('a hook reading the file behind a drive-letter key opens it where the h
   })
 
   it('the Bash pre hook names a sed range over the whole file as the whole file', async () => {
-    place('x.ts', SOURCE)
+    // Three copies, past the size a whole-file read passes under.
+    place('x.ts', SOURCE.repeat(3))
     const sid = newSession()
-    const out = await asHook(sid, () => preBashHandler(bashEvent(sid, 'pre_tool_use', "sed -n '1,300p' x.ts")))
-    expect(text(out)).toContain('is the whole file (300 lines)')
+    const out = await asHook(sid, () => preBashHandler(bashEvent(sid, 'pre_tool_use', "sed -n '1,900p' x.ts")))
+    expect(text(out)).toContain('is the whole file (900 lines)')
   })
 
   it('the Bash post hook folds a whole-file cat of a long document to its heading tree', async () => {
@@ -160,7 +161,7 @@ describe('a hook reading the file behind a drive-letter key opens it where the h
     await asHook(sid, () => postBashHandler(bashEvent(sid, 'post_tool_use', command)))
     const again = await asHook(sid, () => preBashHandler(bashEvent(sid, 'pre_tool_use', command)))
     expect(again.hookType).toBe('deny')
-    expect(text(again)).toContain(`rg '<pattern>' "${HOST_PROJECT}/out.json"`)
+    expect(text(again)).toMatch(new RegExp('`token-goat [^`]*"' + HOST_PROJECT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/out\\.json'))
     expect(text(again)).toContain('This file was already downloaded earlier this session.')
   })
 

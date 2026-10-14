@@ -41,6 +41,7 @@ export {
 import {
   quoteShellPath,
   quotePowershellPath,
+  resolveOnPath,
   sleepSync,
 } from './process_util.js'
 
@@ -52,7 +53,7 @@ export {
   encodeSource,
 } from './encoding.js'
 
-/** Run git and return its captured output. THE ONLY git spawn site in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
+/** Run git and return its captured output. THE ONLY git spawn site in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - with `timeoutMs` on Windows, spawns the real git.exe behind Git for Windows' launcher (see {@link timedGitExecutable}), so the timeout kills git and not just the launcher; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   const subArgs = args[0] === 'diff' ? [args[0], '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args
   const fullArgs = [
@@ -61,7 +62,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     '-c', 'core.quotepath=false',
     ...subArgs,
   ]
-  const result = spawnSync('git', fullArgs, {
+  const result = spawnSync(opts.timeoutMs !== undefined ? timedGitExecutable() : 'git', fullArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
     ...(opts.input !== undefined ? { input: opts.input } : {}),
@@ -81,6 +82,24 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     stderr: result.stderr ?? '',
     exitCode: result.status ?? 1,
   }
+}
+
+let timedGit: { pathEnv: string | undefined; exe: string } | undefined
+
+/** The git binary a runGit call with a timeout spawns. Git for Windows puts a launcher on PATH (`<root>/cmd/git.exe` or `<root>/bin/git.exe`) that runs the real `<root>/mingw64/bin/git.exe` as a child, and spawnSync's timeout terminates only the process it started: the real git kept running in the caller's cwd, holding that directory open, and `taskkill /T` cannot reach it afterwards because its parent is already gone. Spawning the real binary puts the kill on git itself. It sets MSYSTEM, HOME, PLINK_PROTOCOL and PATH for its own children the way the launcher does. Off Windows, or for a git that is not behind that launcher, this is the plain `git` lookup. Cached per PATH value. */
+function timedGitExecutable(): string {
+  if (process.platform !== 'win32') return 'git'
+  const pathEnv = process.env['PATH']
+  if (timedGit === undefined || timedGit.pathEnv !== pathEnv) {
+    let exe = 'git'
+    const found = resolveOnPath('git')
+    if (found !== null && path.basename(found).toLowerCase() === 'git.exe' && ['cmd', 'bin'].includes(path.basename(path.dirname(found)).toLowerCase())) {
+      const root = path.dirname(path.dirname(found))
+      exe = ['mingw64', 'clangarm64', 'mingw32'].map((prefix) => path.join(root, prefix, 'bin', 'git.exe')).find((real) => existsSync(real)) ?? 'git'
+    }
+    timedGit = { pathEnv, exe }
+  }
+  return timedGit.exe
 }
 
 // Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same path; normalizePath only lowercases the drive letter, so path-equality and dedup comparisons must fold the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0') overrides the platform default for deterministic cross-platform tests.

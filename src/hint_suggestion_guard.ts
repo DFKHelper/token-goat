@@ -281,14 +281,32 @@ export function grepLinesHint(pattern: string, shownPath: string, reason = ''): 
   return leadWithCommand('token-goat grep ' + quotedPattern + ' ' + quotedPath + ' -C 3', 'to read the matching lines', reason)
 }
 
+/** Lines a {@link headLinesCommand} range read covers, when the file has nothing in it to name. */
+export const HEAD_LINES_READ = 80
+
+/** The command that reads the first {@link HEAD_LINES_READ} lines of `shownPath`, which runs on every text file: one with no heading to name (`section` exits 1 on it, and `::HeadingName` is a name no file holds), and one of a type neither `section` nor `outline` serves. */
+export function headLinesCommand(shownPath: string): string {
+  return 'token-goat read ' + quotedArg(shownPath + '::1-' + HEAD_LINES_READ)
+}
+
+/** The hint leading with {@link headLinesCommand}, for a file a hint has no part of to name. */
+export function headLinesHint(shownPath: string, reason = ''): string {
+  return leadWithCommand(headLinesCommand(shownPath), 'to read its first ' + HEAD_LINES_READ + ' lines', reason)
+}
+
 /** `config-get` for one key of one file, the key quoted with the path's mark ({@link quotedArgs}), the form {@link stripUnsafeSuggestions} checks: a bare key sits outside the quotes, where the relay judges it only by its outside-quote allowlist and a shell splits it at a space. hint_target.ts refuses a key holding `"`, so these quotes always hold. */
 export function configGetCommand(shownPath: string, key: string): string {
   return 'token-goat config-get ' + quotedArgs(shownPath, key).join(' ')
 }
 
-/** The hint for one section of a prose document: `section` with the `outline` alternative only where it runs, and a plain grep for a file type neither serves. */
+/** The hint for one section of a prose document: `section` with the `outline` alternative only where it runs, and a read of the first lines for a file type neither serves, whose grep needed a pattern the hint could only print as `<pattern>`. */
 export function docSectionHint(shownPath: string, heading: string, reason = ''): string {
   const nav = docNavigation(shownPath)
-  if (!nav.section) return grepLinesHint('<pattern>', shownPath, reason)
+  if (!nav.section) return headLinesHint(shownPath, reason)
   return leadWithCommand('token-goat section ' + quotedArg(shownPath + '::' + heading), 'to read one section' + (nav.outline ? ', or ' + fencedCommand('token-goat outline ' + quotedArg(shownPath)) + ' for every heading with line ranges' : ''), reason)
+}
+
+/** The hint for one section of a prose document when `heading` is real, else for its first lines, which is every document a heading search found nothing usable in. */
+export function docTargetHint(shownPath: string, heading: { readonly real: true; readonly name: string } | { readonly real: false }, reason = ''): string {
+  return heading.real ? docSectionHint(shownPath, heading.name, reason) : headLinesHint(shownPath, reason)
 }

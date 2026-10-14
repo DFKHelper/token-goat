@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import { extractErrorMessage } from './util.js'
 import { extraFileArgsNote } from './read_spec.js'
 import { out, err, CliError } from './cli.js'
-import { formatCommandError, formatFailedResultText } from './command_error.js'
+import { failureSuggestion, formatCommandError, formatFailedResultText } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
 export function readStdinPaths(): string[] {
@@ -29,12 +29,14 @@ export function runExit(fn: () => number): void {
   }
 }
 
-/** Same adapter as `runExit`, but for the `run*` handlers that return `{ text, code }` instead of printing directly. Writes `text` to stdout on success (code 0), or to stderr as a command error otherwise, then maps `code` onto `process.exitCode` — preserving which stream each handler's message goes to (these handlers only ever write to one stream per call). */
-export function runExitText(fn: () => { text: string; code: number }): void {
+/** Same adapter as `runExit`, but for the `run*` handlers that return `{ text, code }` instead of printing directly. Writes `text` to stdout on success (code 0), or to stderr as a command error otherwise, then maps `code` onto `process.exitCode` — preserving which stream each handler's message goes to (these handlers only ever write to one stream per call). `echoSuggestion` is the read family's exception: the lines after a failure's first one, its Did you mean / Try: guidance ({@link failureSuggestion}), go to stdout as well, so `2>/dev/null` cannot hide them. */
+export function runExitText(fn: () => { text: string; code: number }, opts: { echoSuggestion?: boolean } = {}): void {
   try {
     const { text, code } = fn()
     if (code === 0) out(text)
     else err(formatFailedResultText(text))
+    const suggestion = code !== 0 && opts.echoSuggestion === true ? failureSuggestion(text) : null
+    if (suggestion !== null) out(suggestion)
     process.exitCode = code
   } catch (e) {
     err(formatCommandError(e))

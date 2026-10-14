@@ -14,7 +14,7 @@ import { getBashOutput } from './bash_output_cache.js'
 import { estimateTokens } from './compact.js'
 import { toKB } from './util.js'
 import { mcpHash, mcpOutputId, storeMcpOutput } from './mcp_cache.js'
-import { recordStat, savedTokensFromBytes } from './stats.js'
+import { claimSessionFlag, recordStat, savedTokensFromBytes } from './stats.js'
 import { redactSecrets } from './secret_redact.js'
 import { loadConfig } from './config.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
@@ -25,6 +25,9 @@ import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Target token budget for the entire briefing (project map + cached ids + reminder + report contract). Measured against this repo's own compact map (46 tokens) plus a realistic mid-size project's compact map (~140 tokens, e.g. "Files: 640" + 10 top symbols) combined with the imperative surgical-read reminder (136 tokens, grown from a one-liner in c574b1f6), the report contract added below (~95 tokens), and a 1-3 entry cache-ids block (26-50 tokens): worst-case realistic total lands around 400-470 tokens. 450 left too little headroom once the contract was added, so 550 leaves a real margin above that; revisit this number again if either tail block grows further. */
 const BRIEFING_TARGET_TOKENS = 550
+
+/** Fewest walked files for which the briefing carries a project map. Below it the map names a handful of files the subagent will see in its first listing, plus, when none is indexed, an empty symbol list: 10 of 63 recorded briefings described projects of 0 to 4 files. */
+const BRIEFING_MAP_MIN_FILES = 5
 
 /** How many cached outputs the briefing names. */
 const CACHED_IDS_LISTED = 3
@@ -52,8 +55,8 @@ function buildSubagentBriefing(projectRoot: string | null): string {
     try {
       if (projectRoot === null) throw new Error('no project root')
       const map = buildProjectMap(projectRoot, { compact: true })
-      const mapText = formatProjectMap(map, map.compact)
-      head.push(mapText)
+      // suggestIndex: false because indexing the parent's project is not the subagent's job, and a briefing that said so had every subagent spawned in an unindexed directory start by indexing it.
+      if (map.fileCount >= BRIEFING_MAP_MIN_FILES) head.push(formatProjectMap(map, map.compact, { suggestIndex: false }))
     } catch {
       // Project map unavailable — skip it and continue with cached ids/reminder
     }
@@ -493,8 +496,8 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
   return Array.from(names).sort()
 }
 
-/** Build the once-per-session unrestricted-spawn advisory, or '' when it does not apply. Trigger: the finished spawn ran as general-purpose, either because `subagent_type` was absent (620 of 3,167 corpus spawn blocks) or because it named general-purpose explicitly; both are definitionally unrestricted with no definition file to resolve, which is the only restriction status observable at the hook without reading a roster file for the spawned type. Gate: at least one tools-restricted agent definition exists in ~/.claude/agents, so the advice is actionable and the hint clearable. Dedupe: once per session via the persisted hints-shown set. Accounting: recorded as a zero-credit `session_hint`. The advisory fires AFTER the spawn it observed and cannot save that spawn: the counterfactual it might improve (the user's next spawn, or their roster) is not a branch this code blocks, so crediting anything would repeat the advisory-credited-the-full-file defect class. The text says so explicitly for the same reason. */
-export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>): string {
+/** Build the once-per-session unrestricted-spawn advisory, or '' when it does not apply. Trigger: the finished spawn ran as general-purpose, either because `subagent_type` was absent (620 of 3,167 corpus spawn blocks) or because it named general-purpose explicitly; both are definitionally unrestricted with no definition file to resolve, which is the only restriction status observable at the hook without reading a roster file for the spawned type. Gate: at least one tools-restricted agent definition exists in ~/.claude/agents, so the advice is actionable and the hint clearable. Dedupe: once per session, via the hints-shown set and a durable claim in global.db (claimSessionFlag) that outlives the 24-hour sweep of idle session state. Accounting: recorded as a zero-credit `session_hint`. The advisory fires AFTER the spawn it observed and cannot save that spawn: the counterfactual it might improve (the user's next spawn, or their roster) is not a branch this code blocks, so crediting anything would repeat the advisory-credited-the-full-file defect class. The text says so explicitly for the same reason. */
+export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>, sessionId: string): string {
   try {
     // Gated off entirely on Copilot CLI because the advisory's content is Claude Code's Task schema (subagent_type, ~/.claude/agents rosters). Copilot's own task tool carries agent_type, not subagent_type (captured toolArgs {description, prompt, agent_type, name}, tg-captures C4a), so the absent-field trigger would misclassify every Copilot task spawn as an untyped general-purpose spawn. The channel is not the reason: post_tool_use additionalContext does reach the model on Copilot 1.0.88 (tg-captures C1a). Other bridges are not gated here: their task-tool wire shapes are unverified (loop-ledger BE-06) and their bridges forward additionalContext, so suppressing them would rest on inference. VS Code is gated for the same schema reason, read off its own bundle: runSubagent takes {prompt, description, agentName, model} (RunSubagentTool.getToolData in VS Code 1.137.0's workbench.desktop.main.js), where agentName names a VS Code chat agent, so advice to pass a ~/.claude/agents name as subagent_type names a key the tool does not have.
     const harness = getHarnessName()
@@ -506,6 +509,8 @@ export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown
     const names = findRestrictedAgentNames()
     if (names.length === 0) return ''
     markHintShown(SPAWN_RESTRICT_HINT_KEY)
+    // The mark above lives in the session-state blob, which the worker sweeps after a day idle; the claim is what keeps a resumed session from drawing this again.
+    if (!claimSessionFlag(SPAWN_RESTRICT_HINT_KEY, sessionId)) return ''
     recordStat('session_hint', 0, 0, undefined, 'agent-spawn-restrict')
     // Neutralized even though AGENT_NAME_RE already excludes `[`, because this is the layer that survives someone widening that charset later: only the interpolated names go through it, never the sentence around them, since our own `[token-goat]` prefix is exactly what the neutralizer is built to strip.
     const shown = neutralizeSpokenMarkers(names.slice(0, SPAWN_RESTRICT_MAX_NAMES).join(', '))
@@ -545,6 +550,13 @@ function reportNotice(resultText: string, recallHint: string, spawnAdvisory: str
 
 /** A report that already ends in the notice of a rewrite token-goat made. On Copilot CLI the subagentStop rewrite replaces the subagent's answer before the parent's task result is built (tg-captures C4a-014), so the post-tool pass then sees token-goat's own output, and compacting and caching it again would store the compacted copy as if it were the report. */
 const REWRITTEN_REPORT_RE = /\n\n\[token-goat\] This subagent report \([0-9.]+KB\) is cached for later recall: token-goat mcp-output mcp_[0-9a-f]{16} --full$/
+
+/** True when an Agent `tool_response` is the receipt of a background launch (`run_in_background`), not a report. CAPTURE, Claude Code toolUseResult: `{isAsync: true, status: 'async_launched', agentId, description, resolvedModel, prompt, outputFile, canReadOutputFile, canContinueAgent}`. It carries no content blocks, so the text extracted from it is the whole receipt serialized, mostly the prompt the model just wrote; the report itself arrives later, outside this tool call. */
+function isAsyncLaunchReceipt(toolResponse: unknown): boolean {
+  if (toolResponse === null || typeof toolResponse !== 'object' || Array.isArray(toolResponse)) return false
+  const r = toolResponse as Record<string, unknown>
+  return r['status'] === 'async_launched' || r['isAsync'] === true
+}
 
 /** The compacted report and whether it pays for `notice`. Fence collapse, then intra-report cross-fence dedup, then blank-run collapse, judged by ONE combined net-benefit check rather than a gate each: sub-threshold rewrites could each decline alone when their sum would pass, and firing the notice cost more than once would double-charge it. Shared by the post-tool pass and Copilot's subagentStop rewrite so the two cannot drift. */
 function planReportCompaction(resultText: string, recallHint: string, notice: string): { final: string; worthwhile: boolean } {
@@ -614,8 +626,9 @@ function postAgentHandler(event: HookEvent): HookOutput {
     if (REWRITTEN_REPORT_RE.test(resultText)) return passOutput()
     const agentReportCfg = loadConfig().agent_report
     // Built before the min_bytes early returns because the advisory is about the SPAWN, not the report: a lane that came back with a two-line answer paid the same unrestricted prefix. On the early-return paths it rides alone as the whole context output; past them it is folded into `notice` below, BEFORE the net-benefit gate prices that notice, so the gate-then-emit-extra accounting trap cannot reappear here.
-    const spawnAdvisory = buildUnrestrictedSpawnAdvisory(event.toolInput)
-    if (!resultText || resultText.length < agentReportCfg.min_bytes) {
+    const spawnAdvisory = buildUnrestrictedSpawnAdvisory(event.toolInput, event.sessionId)
+    // A background launch receipt is not a report: cached, it filed the model's own prompt under "This subagent report is cached for later recall".
+    if (!resultText || resultText.length < agentReportCfg.min_bytes || isAsyncLaunchReceipt(event.raw['tool_response'])) {
       return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     }
     const id = storeMcpOutput(event.sessionId, event.toolName ?? 'Agent', event.toolInput, resultText)

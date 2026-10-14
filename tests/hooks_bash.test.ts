@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 
 // vi.mock is hoisted — this redirects configPath() to a per-test-file temp file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests near the bottom of this file can set a non-default config value deterministically. Mirrors tests/config.test.ts and tests/disk_cache.test.ts. dataDir() is also redirected to an isolated temp dir so the git-mutation staleness-enqueue tests below (which exercise the real queue/dirty.txt write path via enqueueDirtyPathSafe) never touch the real local dirty queue -- mirrors tests/hooks_edit.test.ts's isolation pattern.
@@ -121,7 +122,8 @@ describe('postBashHandler', () => {
     expect(getBashOutputId('anything')).toBeNull()
   })
 
-  it('emits an advisory compress hint when vscode harness runs a command with >=4KB uncompressed output', async () => {
+  // The advisory waits for a second large run of the same command: the suggestion is about the next run, which a one-off command does not have. Neither output here was cut by the harness, so neither carries a recall pointer (tests/large_output_hint_needs_a_cut.test.ts covers that half).
+  it('emits an advisory compress hint when vscode harness runs a command a second time with >=4KB uncompressed output', async () => {
     const event: HookEvent = {
       eventName: 'post_tool_use',
       toolName: 'Bash',
@@ -135,21 +137,23 @@ describe('postBashHandler', () => {
         _tg_harness: 'vscode',
       },
     }
+    expect((await postBashHandler(event)).hookType).toBe('pass')
     const result = await postBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('`token-goat compress -c "curl http://example.com/api"`')
-      expect(result.context).toContain('token-goat bash-output')
+      expect(result.context).not.toContain('token-goat bash-output')
     }
   })
 
-  it('emits an advisory compress hint on compound command with >=4KB uncompressed output', async () => {
-    const event = makePostBashEvent('curl http://example.com/api && echo done', 'y'.repeat(5000))
+  it('emits an advisory compress hint on a compound command run a second time with >=4KB uncompressed output', async () => {
+    const event = makeHookEvent({ ...makePostBashEvent('curl http://example.com/api && echo done', 'y'.repeat(5000)), sessionId: 'test-session-compound-hint' })
+    expect((await postBashHandler(event)).hookType).toBe('pass')
     const result = await postBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('`token-goat compress -c "curl http://example.com/api && echo done"`')
-      expect(result.context).toContain('token-goat bash-output')
+      expect(result.context).not.toContain('token-goat bash-output')
     }
   })
 
@@ -159,18 +163,20 @@ describe('postBashHandler', () => {
     const noisy = (esc + '[31m' + 'z'.repeat(60) + esc + '[0m').repeat(120)
     // Its own session and command: the hint fires once per session per command fingerprint, and the shared 'test-session' id is already spent on this command by the compound-command test above.
     const command = 'curl http://example.com/ansi-fence && echo done'
+    // Persisted, as Claude Code reports a result it did not show inline, so the hint carries its recall pointer on this first run. The path names no file, so the hook reads the output from `stdout`.
+    const toolResponse = { stdout: noisy, stderr: '', interrupted: false, isImage: false, persistedOutputPath: 'C:/nowhere/tool-results/ansi.txt', persistedOutputSize: noisy.length }
     const event = makeHookEvent({
       eventName: 'post_tool_use',
       toolName: 'Bash',
       toolInput: { command },
       sessionId: 'test-session-ansi-fence',
       agentId: undefined,
-      raw: { tool_name: 'Bash', tool_input: { command }, tool_response: noisy },
+      raw: { tool_name: 'Bash', tool_input: { command }, tool_response: toolResponse },
     })
     const result = await postBashHandler(event)
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType === 'rewriteOutput') {
-      const out = result.updatedOutput
+      const out = withoutFenceNonces(result.updatedOutput)
       const markerAt = out.indexOf('[tg] Output was')
       const fenceAt = out.indexOf('<untrusted-tool-output>')
       expect(markerAt, 'the hint marker is missing from the rewrite').toBeGreaterThanOrEqual(0)
@@ -965,7 +971,8 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat section')
+      // Not on disk, so no heading can be named: the deny leads with the read of the first lines, which needs none.
+      expect(result.message).toContain('token-goat read "/c/Projects/report.md::1-80"')
     }
   })
 
@@ -982,7 +989,7 @@ describe('preBashHandler — cat source file recall', () => {
 
   it('intercepts python heredoc that reads a markdown file', () => {
     const event = makeBashEvent("python3 - << 'PYEOF'\npath = 'C:/Projects/yeswehack/report-05/report.md'\nwith open(path, encoding='utf-8') as f: content = f.read()\nPYEOF")
-    expect(interceptedReadHint(preBashHandler(event))).toContain('token-goat section')
+    expect(interceptedReadHint(preBashHandler(event))).toContain('token-goat read "C:/Projects/yeswehack/report-05/report.md::1-80"')
   })
 
   it('does not false-positive on a command that merely contains the substring "python3" elsewhere', () => {
@@ -992,25 +999,25 @@ describe('preBashHandler — cat source file recall', () => {
     expect(result.hookType).toBe('pass')
   })
 
+  // Neither env file is on disk, so no variable can be named and the deny leads with the read of the first lines, never `config-get "KEY_NAME"`, which exits 1.
   it('denies cat of a local.env file', () => {
     const result = preBashHandler(makeBashEvent('cat C:/Projects/myapp/local.env'))
     expectHookType(result, 'deny')
-    expect(result.message).toContain('config-get')
+    expect(result.message).toContain('token-goat read "C:/Projects/myapp/local.env::1-80"')
   })
 
   it('denies cat of a .env.local file', () => {
     const result = preBashHandler(makeBashEvent('cat /app/.env.local'))
     expectHookType(result, 'deny')
-    expect(result.message).toContain('config-get')
+    expect(result.message).toContain('token-goat read "/app/.env.local::1-80"')
   })
 
   it('emits advisory context for cat of a SQL migration file', () => {
     const result = preBashHandler(makeBashEvent('cat supabase/migrations/0001_init.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      // `read`, not `section`: `section` finds no headings in a .sql file and exits 1, while `read` returns the CREATE block the SQL adapter indexes by name.
-      expect(result.context).toContain('token-goat read "supabase/migrations/0001_init.sql::table_name"')
-      expect(result.context).toContain('CREATE TABLE')
+      // `read`, not `section`: `section` finds no headings in a .sql file and exits 1. With no table to name (the file is not on disk), `read "file::table_name"` exits 1 too, so the hint reads the first lines.
+      expect(result.context).toBe('Run `token-goat read "supabase/migrations/0001_init.sql::1-80"` to read its first 80 lines.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -1040,11 +1047,11 @@ describe('preBashHandler — cat source file recall', () => {
     },
   )
 
-  it('tail command on a SQL file suggests table_name, matching head\'s SQL hint', () => {
+  it('tail command on a SQL file gets the SQL hint, matching head\'s SQL hint', () => {
     const result = preBashHandler(makeBashEvent('tail -n 30 supabase/migrations/0001_init.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('table_name')
+      expect(result.context).toContain('token-goat read "supabase/migrations/0001_init.sql::1-80"')
       expect(result.context).not.toContain('SectionHeading')
     }
   })
@@ -1057,11 +1064,12 @@ describe('preBashHandler — cat source file recall', () => {
     }
   })
 
-  it('tail command on a TOML config file names a table through section, which config-get cannot read', () => {
+  it('tail command on a TOML config file with no table to name leads with the read of its first lines, never a placeholder table', () => {
     const result = preBashHandler(makeBashEvent('tail -n 30 src/config.toml'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section "src/config.toml::')
+      expect(result.context).toContain('token-goat read "src/config.toml::1-80"')
+      expect(result.context).not.toContain('SectionHeading')
     }
   })
 
@@ -1378,7 +1386,7 @@ describe('preBashHandler — cat source file recall', () => {
     const result = preBashHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "migrations/0001_init.sql::table_name"')
+      expect(result.context).toContain('token-goat read "migrations/0001_init.sql::1-80"')
     }
   })
 
@@ -1818,7 +1826,8 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query "data.json"')
+      expect(result.context).toContain('token-goat json-outline "data.json"')
+      expect(result.context).not.toContain('<selector>')
     }
   })
 
@@ -1827,7 +1836,7 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query "payload.json"')
+      expect(result.context).toContain('token-goat json-outline "payload.json"')
     }
   })
 
@@ -1836,7 +1845,7 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query "payload.json"')
+      expect(result.context).toContain('token-goat json-outline "payload.json"')
     }
   })
 
@@ -1844,7 +1853,9 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     const result = preBashHandler(makeBashEvent('Get-Content payload.json.bak | ConvertFrom-Json'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat json-query <file>')
+      expect(result.context).toContain('json-outline and json-query commands')
+      expect(result.context).not.toContain('payload.json.bak')
+      expect(result.context).not.toContain('<file>')
     }
   })
 
@@ -1853,12 +1864,13 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('pass')
   })
 
-  it('emits generic json-query hint when ConvertFrom-Json has no file path', () => {
+  it('emits a generic json-query hint, naming no stand-in file, when ConvertFrom-Json has no file path', () => {
     const result = preBashHandler(makeBashEvent('$response | ConvertFrom-Json'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query <file>')
+      expect(result.context).toContain('json-outline and json-query commands')
+      expect(result.context).not.toMatch(/<file>|<selector>/)
     }
   })
 })
@@ -2520,7 +2532,7 @@ describe('preBashHandler — awk line-range interception', () => {
   })
 })
 
-/** A line range from line 1 to the last line is `cat` spelled another way. Regression: pricing compared the range against a surgical read of the same lines, which is also the whole file, found no saving and declined, so `awk 'NR>=1 && NR<=324' SKILL.md` over the humanizer skill (324 lines, 53,931 bytes, the ~15.8k-token read named on a feedback card, measured 2026-09-24) passed with no word while `cat SKILL.md` was refused. Provenance: HAND-DERIVED. The fixture is a 40-line markdown file written here; the skill's line and byte counts are read off the file on disk. */
+/** A line range from line 1 to the last line is `cat` spelled another way. Regression: pricing compared the range against a surgical read of the same lines, which is also the whole file, found no saving and declined, so `awk 'NR>=1 && NR<=324' SKILL.md` over the humanizer skill (324 lines, 53,931 bytes, the ~15.8k-token read named on a feedback card, measured 2026-09-24) passed with no word while `cat SKILL.md` was refused. Provenance: HAND-DERIVED. The fixture is a 40-line markdown file written here, its lines padded past the size `cat` passes under; the skill's line and byte counts are read off the file on disk. */
 describe('preBashHandler — a line range spanning the whole file', () => {
   let doc: string
   const LINES = 40
@@ -2531,7 +2543,7 @@ describe('preBashHandler — a line range spanning the whole file', () => {
     mkdirSync(dir, { recursive: true })
     doc = join(dir, 'whole_range_skill.md').replace(/\\/g, '/')
     const body: string[] = []
-    for (let i = 0; body.length < LINES; i++) body.push(i % 10 === 0 ? `## Part ${i / 10 + 1}` : `Line ${i} of the fixture.`)
+    for (let i = 0; body.length < LINES; i++) body.push(i % 10 === 0 ? `## Part ${i / 10 + 1}` : `Line ${i} of the fixture. ${'Padding prose for the line. '.repeat(24)}`)
     writeFileSync(doc, body.join('\n') + '\n')
   })
 
@@ -2610,16 +2622,25 @@ describe('preBashHandler — directory listing map hint', () => {
     clearModuleCaches()
   })
 
-  it('emits map hint for eza --long on a path', () => {
-    const result = preBashHandler(makeBashEvent('eza --git --long src/'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat map')
-    }
+  // CAPTURE (a research session, 2026-10): `ls -la dist/` got "Use `token-goat map --compact`", and map lists files and symbols, not the sizes, times and permissions a long listing asks for. The other spellings are HAND-DERIVED from each tool's metadata flags.
+  it.each([
+    'ls -la dist/',
+    'ls -la dist/ | head -20',
+    'ls -lh dist/ | wc -l',
+    'ls -lt src/ | head',
+    'ls --full-time src/ | grep .ts',
+    'ls -lR src/',
+    'ls -laR',
+    'eza --git --long src/',
+    'eza -l --tree src/',
+    'tree -h src/',
+  ])('names no map for a listing that asks for metadata: %s', (command) => {
+    const result = preBashHandler(makeBashEvent(command))
+    expect(result.hookType === 'context' ? result.context : '').not.toContain('token-goat map')
   })
 
-  it('emits map hint for ls -la piped to head', () => {
-    const result = preBashHandler(makeBashEvent('ls -la src/ | head -20'))
+  it('emits map hint for ls piped to head', () => {
+    const result = preBashHandler(makeBashEvent('ls -a src/ | head -20'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat map')
@@ -2656,24 +2677,8 @@ describe('preBashHandler — directory listing map hint', () => {
     }
   })
 
-  it('emits map hint for ls -lR', () => {
-    const result = preBashHandler(makeBashEvent('ls -lR src/'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat map')
-    }
-  })
-
-  it('emits map hint for ls -laR', () => {
-    const result = preBashHandler(makeBashEvent('ls -laR'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat map')
-    }
-  })
-
-  it('still fires for eza --long (existing path)', () => {
-    const result = preBashHandler(makeBashEvent('eza --git --long src/'))
+  it('emits map hint for ls -aR', () => {
+    const result = preBashHandler(makeBashEvent('ls -aR'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('token-goat map')
@@ -3228,7 +3233,7 @@ describe('preBashHandler — curl download dedup', () => {
       if (result.hookType === 'deny') {
         // The recall message shows the fully-resolved, normalized path recorded at download time (see the "resolves a relative -o path against the ORIGINAL download cwd" regression below), not the raw -o argument as typed on the command line.
         expect(result.message).toContain(resolveIndexPath(v1Path))
-        expect(result.message).toContain('rg')
+        expect(result.message).not.toContain('<pattern>')
         // HAND-DERIVED: the downloaded JSON's first key is `items`, so the lead command queries it.
         expect(result.message).toContain('Run `token-goat json-query "' + resolveIndexPath(v1Path) + '" "items"`')
       }
@@ -3538,13 +3543,13 @@ describe('preBashHandler — markdown heading grep hint', () => {
     clearModuleCaches()
   })
 
-  it('emits outline hint for grep -n "^#" SKILL.md', () => {
+  it('emits a runnable read hint for grep -n "^#" SKILL.md when no heading resolves', () => {
     const result = preBashHandler(makeBashEvent('grep -n "^#" SKILL.md'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat outline')
-      expect(result.context).toContain('SKILL.md')
-      expect(result.context).toContain('token-goat section')
+      // SKILL.md does not exist here, so no heading resolves: the hint reads the first lines rather than naming a section with a stand-in heading.
+      expect(result.context).toContain('token-goat read "SKILL.md::1-80"')
+      expect(result.context).not.toContain('token-goat section')
     }
   })
 
@@ -3726,12 +3731,12 @@ describe('preBashHandler — SQL file cat hint', () => {
     clearModuleCaches()
   })
 
+  // Neither SQL file is on disk, so no table can be named and the hint reads the first lines; tests/bash_deny_names_a_runnable_target.test.ts covers the real-table form.
   it('emits context hint (not deny) for cat of a SQL schema file', () => {
     const result = preBashHandler(makeBashEvent('cat schema.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "schema.sql::table_name"')
-      expect(result.context).toContain('CREATE TABLE')
+      expect(result.context).toBe('Run `token-goat read "schema.sql::1-80"` to read its first 80 lines.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -3739,7 +3744,7 @@ describe('preBashHandler — SQL file cat hint', () => {
     const result = preBashHandler(makeBashEvent('cat migration.sql'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "migration.sql::table_name"')
+      expect(result.context).toContain('token-goat read "migration.sql::1-80"')
     }
   })
 
@@ -3753,8 +3758,7 @@ describe('preBashHandler — SQL file cat hint', () => {
     const result = preBashHandler(makeBashEvent(`powershell -Command "Get-Content 'schema.sql'"`))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "schema.sql::table_name"')
-      expect(result.context).toContain('CREATE TABLE')
+      expect(result.context).toContain('token-goat read "schema.sql::1-80"')
     }
   })
 })
@@ -4899,7 +4903,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat docs/loop46_memory.md 2>/dev/null'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('Run `token-goat section "docs/loop46_memory.md::SectionHeading"` to read one section, or `token-goat outline "docs/loop46_memory.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
+      expect(result.context).toBe('Run `token-goat read "docs/loop46_memory.md::1-80"` to read its first 80 lines.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -4923,7 +4927,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat -n README_loop46.md 2>/dev/null | tail -60'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('Run `token-goat section "README_loop46.md::SectionHeading"` to read one section, or `token-goat outline "README_loop46.md"` for every heading with line ranges.\n`tail` bypasses read hooks.')
+      expect(result.context).toBe('Run `token-goat read "README_loop46.md::1-80"` to read its first 80 lines.\n`tail` bypasses read hooks.')
     }
   })
 
@@ -4994,7 +4998,7 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     const result = await postBashHandler(makePostBashEvent('grep pattern app.log | sort', dup))
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
-    const out = result.updatedOutput
+    const out = withoutFenceNonces(result.updatedOutput)
     expect(out).toContain(OPEN)
     expect(out).toContain(CLOSE)
     // The load-bearing assertion. token-goat's recall pointer must sit after the closing tag: put it inside and anyone who guesses its wording gets to write a line the model reads as ours.
@@ -5008,7 +5012,7 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     const result = await postBashHandler(makePostBashEvent('grep compiling build.log | sort', lines.join('\n') + '\n'))
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
-    const out = result.updatedOutput
+    const out = withoutFenceNonces(result.updatedOutput)
     const notice = out.indexOf('[token-goat: output capped at')
     expect(notice).toBeGreaterThan(-1)
     expect(notice).toBeGreaterThan(out.indexOf(CLOSE))
@@ -5023,7 +5027,7 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     const result = await postBashHandler(makePostBashEvent('grep compiling build.log | sort', lines.join('\n') + '\n'))
     expect(result.hookType).toBe('rewriteOutput')
     if (result.hookType !== 'rewriteOutput') return
-    const out = result.updatedOutput
+    const out = withoutFenceNonces(result.updatedOutput)
     const forged = out.indexOf('&#91;token-goat: output capped at ~10 tokens]')
     expect(forged).toBeGreaterThan(-1)
     expect(forged).toBeLessThan(out.indexOf(CLOSE))
@@ -5055,7 +5059,7 @@ describe('postBashHandler fences the bytes it substitutes', () => {
     if (result.hookType !== 'rewriteOutput') return
 
     // Both halves of the exemption, so it cannot rot into "escape stripping is simply safe": no fence, and nothing of ours inside the block to need one. Give this path a marker or a recall pointer later and this goes red -- correctly, because it would then be substituting rather than passing through, and the fence would be owed.
-    expect(result.updatedOutput).not.toContain(OPEN)
+    expect(result.updatedOutput).not.toContain(`<${UNTRUSTED_TOOL_TAG}`)
     expect(result.updatedOutput).not.toContain('[token-goat')
     // Computed from the input, not read off the stripper: exactly the bytes in, minus the escapes.
     expect(result.updatedOutput).toBe('compiling crate number one\n'.repeat(400))
@@ -5129,7 +5133,7 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
     const result = preBashHandler(makeBashEvent(`[IO.File]::ReadAllText('schema.sql')`))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "schema.sql::table_name"')
+      expect(result.context).toContain('token-goat read "schema.sql::1-80"')
     }
   })
 
@@ -5141,12 +5145,13 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
     }
   })
 
-  // HAND-DERIVED: surgicalHintFor (src/bash_extractors.ts) points an isEnv read at `config-get ... KEY_NAME`, and every other file-read extractor's handler in preBashHandlerInner calls it with isEnv, so a .env read through this same handler must not fall through to the generic "SymbolName" hint a .env file has no symbols to satisfy.
-  it('denies a .NET .env file read with a config-get hint, not the generic symbol hint', () => {
+  // HAND-DERIVED: surgicalHintFor (src/bash_extractors.ts) gives an isEnv read the env ladder (`config-get` on a variable the file holds, else its first lines), and every other file-read extractor's handler in preBashHandlerInner calls it with isEnv, so a .env read through this same handler must not fall through to the generic "SymbolName" hint a .env file has no symbols to satisfy. No .env is on disk here, so there is no variable to name.
+  it('denies a .NET .env file read with the env hint, not the generic symbol hint', () => {
     const result = preBashHandler(makeBashEvent(`[System.IO.File]::ReadAllText('.env')`))
     expect(interceptedReadHint(result)).not.toBeNull()
-    expect(interceptedReadHint(result)).toContain('token-goat config-get ".env" "KEY_NAME"')
+    expect(interceptedReadHint(result)).toContain('token-goat read ".env::1-80"')
     expect(interceptedReadHint(result)).not.toContain('SymbolName')
+    expect(interceptedReadHint(result)).not.toContain('KEY_NAME')
   })
 })
 
@@ -5192,7 +5197,7 @@ describe('extractPythonFileRead — PowerShell here-string and multi-format supp
     const result = preBashHandler(makeBashEvent(cmd))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat read "db/schema.sql::table_name"')
+      expect(result.context).toContain('token-goat read "db/schema.sql::1-80"')
     }
   })
 })

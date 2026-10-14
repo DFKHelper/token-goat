@@ -3,7 +3,9 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { extractErrorMessage } from './util.js'
-import { claudeHookScriptPath, hookEventGaps, installHooks, isInstalled, type HookEventGaps } from './install.js'
+import { claudeHookScriptPath, hookEventGaps, installHooks, isInstalled, staleHookMatchers, type HookEventGaps } from './install.js'
+// Registers every hook handler before anything here rewrites a hook config. installHooks re-narrows the Claude Code matchers and the Gemini writer lists its tools from the registry (toolMatcherFor), and `doctor --repair` reaches this module without having loaded the hook modules, so a repair used to rewrite PreToolUse to `^Read$|^Grep$`, silently dropping every other PreToolUse handler, and PostToolUse to the catch-all. Every caller already imports this module lazily, so the cost lands only on install and repair.
+import './relay.js'
 import { hasCreatedConfig } from './bridges/created_configs.js'
 import { parseNativeInvocation, type WiredHookEntry } from './native_hook.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
@@ -92,7 +94,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     if (userInstalled) {
       const isStaleShim = fs.existsSync(userShim) && !shimIsCurrent(userShim, CLAUDECODE_HOOK_SCRIPT)
       // hookEventGaps compares each entry with the one this build writes, so it also catches an entry left by an older build, and a shim that is gone leaves every event it wired missing.
-      if (isStaleShim || hasHookEventGaps(userGaps)) {
+      if (isStaleShim || hasHookEventGaps(userGaps) || staleHookMatchers('user').length > 0) {
         installHooks('user')
         repairs.push('Repaired Claude Code (user) hooks and shim')
       }
@@ -108,7 +110,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
     const projInstalled = isInstalled('project') || projGaps !== null
     if (projInstalled) {
       const isStaleShim = fs.existsSync(projShim) && !shimIsCurrent(projShim, CLAUDECODE_HOOK_SCRIPT)
-      if (isStaleShim || hasHookEventGaps(projGaps)) {
+      if (isStaleShim || hasHookEventGaps(projGaps) || staleHookMatchers('project').length > 0) {
         installHooks('project')
         repairs.push('Repaired Claude Code (project) hooks and shim')
       }

@@ -11,6 +11,7 @@ import { getBashOutput } from '../src/bash_output_cache.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
 import type { HookEvent } from '../src/hook_registry.js'
+import { withoutFenceNonces } from './helpers/fence_nonce.js'
 
 describe('large-markdown outline replacement on the real Read hook path', () => {
   const tmpFiles: string[] = []
@@ -130,11 +131,12 @@ describe('large-markdown outline replacement on the real Read hook path', () => 
     expect(text).not.toContain(spoof)
     expect(text).toContain(`&#91;${spoof.slice(1)}`)
     expect(text.indexOf('Partial view')).toBeLessThan(text.indexOf(PREAMBLE_LINE_2))
-    const open = text.indexOf('<untrusted-file-content>')
-    const close = text.indexOf('</untrusted-file-content>', open)
+    const plain = withoutFenceNonces(text)
+    const open = plain.indexOf('<untrusted-file-content>')
+    const close = plain.indexOf('</untrusted-file-content>', open)
     expect(open).toBeGreaterThanOrEqual(0)
     expect(close).toBeGreaterThan(open)
-    expect(text.slice(open, close)).toContain(PREAMBLE_LINE_2)
+    expect(plain.slice(open, close)).toContain(PREAMBLE_LINE_2)
   })
 
   it('does not fire on a windowed read (offset/limit present)', () => {

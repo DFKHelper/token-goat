@@ -89,6 +89,7 @@ describe('PowerShell double quotes in a path', () => {
 
   it('names a heading holding a PowerShell double quote only inside single quotes, where the marker is literal text', () => {
     const target = hintTarget('d.md', 'section', { content: HOSTILE_HEADING_DOC })
+    if (!target.real) throw new Error('the hostile heading did not resolve, so this case proves nothing')
     expect(target.name).toBe(HOSTILE_HEADING)
     const command = sliceCommand('d.md', target)
     expect(command).toBe("token-goat section 'd.md::" + HOSTILE_HEADING + "'")
@@ -106,7 +107,9 @@ describe.skipIf(POWERSHELL === null)('every suggestion that survives the guard i
   it('parses each fenced suggestion from the emitters and the relay as exactly one statement with no errors', async () => {
     const texts: string[] = []
     for (const p of [...BREAKOUT_PATHS, ...BENIGN_PATHS, ...ASCII_PAYLOAD_PATHS]) texts.push(...guardedHints(p))
-    const headingCommand = sliceCommand('d.md', hintTarget('d.md', 'section', { content: HOSTILE_HEADING_DOC }))
+    const heading = hintTarget('d.md', 'section', { content: HOSTILE_HEADING_DOC })
+    if (!heading.real) throw new Error('the hostile heading did not resolve, so this case proves nothing')
+    const headingCommand = sliceCommand('d.md', heading)
     texts.push(stripUnsafeSuggestions('Use `' + headingCommand + '` to read one section.'))
     let relayed = 0
     for (const [i, p] of [...BREAKOUT_PATHS, ...BENIGN_PATHS, ...ASCII_PAYLOAD_PATHS].entries()) {
