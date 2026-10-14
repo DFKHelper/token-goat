@@ -42,6 +42,28 @@ const MIN_RECORD_STAT_BYTES = 32
 /** First heartbeat delay for a long, quiet compressed command; each subsequent one doubles (15s, 30s, 60s, 120s, ...) so a 10-minute quiet run adds a handful of lines, not dozens. Injectable via {@link RunOptions.heartbeatIntervalMs} for tests; the shipping path always leaves it at this default. */
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
 
+/** The heartbeat line itself, written to stderr while the wrapped command is quiet. It is for whoever watches the run (a harness polling a long command, the user's terminal), not for the finished result: Claude Code merges stderr into the Bash result, so the PostToolUse hook removes these lines again with {@link stripCompressHeartbeats}. */
+export function compressHeartbeatLine(elapsedSeconds: number): string {
+  return `[token-goat compress] still running, ${elapsedSeconds}s elapsed\n`
+}
+
+const COMPRESS_HEARTBEAT_RE = /^\[token-goat compress\] still running, \d+s elapsed\r?$/
+
+/** `text` without the run of {@link compressHeartbeatLine} lines it opens with. Only the opening run: the heartbeats go to stderr while the command runs and the result is written to stdout once it exits, so in the merged result every heartbeat comes first, and a line further down that reads the same is the command's. */
+export function stripCompressHeartbeats(text: string): string {
+  let cut = 0
+  for (let next = text.indexOf('\n'); next !== -1 && COMPRESS_HEARTBEAT_RE.test(text.slice(cut, next)); next = text.indexOf('\n', cut)) cut = next + 1
+  return cut === 0 ? text : text.slice(cut)
+}
+
+/** The recall line {@link run} prints under a result it compressed or capped, optionally followed by its cap hint line, at the very end of the output. */
+const RUNNER_RECALL_TRAILER_RE = /\n\[token-goat\] full output: bash-output ([0-9a-f]{16}) --full(?:\n\[token-goat\] [^\n]*)?\n?$/
+
+/** The bash-output id named by the recall line {@link run} ends a compressed or capped result with, or null when `text` does not end with one. */
+export function runnerRecallId(text: string): string | null {
+  return RUNNER_RECALL_TRAILER_RE.exec(text)?.[1] ?? null
+}
+
 /** Options for {@link run}. */
 export interface RunOptions {
   filterName?: string | undefined
@@ -304,7 +326,7 @@ async function wrapAndCompress(
     process.stdin.pipe(child.stdin)
   }
   const heartbeat = scheduleHeartbeat(startTime, opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS, (elapsed) => {
-    writeStderr(`[token-goat compress] still running, ${elapsed}s elapsed\n`)
+    writeStderr(compressHeartbeatLine(elapsed))
   })
   const timeoutHandle = setTimeout(() => {
     timedOut = true

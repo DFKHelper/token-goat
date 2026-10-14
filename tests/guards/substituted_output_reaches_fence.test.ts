@@ -76,6 +76,18 @@ const UNFENCED_BY_DESIGN: ReadonlyMap<string, string> = new Map([
       'bytes, so the gate declines and the raw output ships unfenced regardless.',
   ],
   [
+    'hooks_bash_post.ts::withoutHeartbeats',
+    'Re-emits what the harness already delivered, redacted, minus the `[token-goat compress] ' +
+      'still running` lines the wrapper wrote ahead of it, and adds nothing of its own. The block ' +
+      'is not one voice: it fires only on a result that ends with the runner\'s own recall line, ' +
+      "so the runner's marker and recall line sit in it beside the command's bytes, unfenced, " +
+      'exactly as the harness delivered them with no hook at all. That is the wrapped-command ' +
+      'path, where bash_runner prints its compressed view raw; fencing it belongs to the runner, ' +
+      'and this pass, which only removes lines, cannot fence it without also lifting the runner\'s ' +
+      'notices, which it has no provenance for. A hint it carries goes beside the result as ' +
+      'additionalContext, not into the block.',
+  ],
+  [
     'hooks_grep.ts::foldGrepContentHandler',
     'Regroups the tool\'s own match lines under a filename header. The structure is ours, the ' +
       'words are entirely the tool\'s -- no marker, no notice, no pointer -- so there is no second ' +

@@ -73,6 +73,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
   // The six below are outer handlers whose whole contribution is a try/catch and a dispatch to the Inner adjudicated above them. They are in the population because the walk is transitive, which is the right default: a wrapper that started composing its own text would otherwise be invisible.
   'hooks_bash.ts::preBashHandler': 'Wrapper over preBashHandlerInner. Interpolates nothing of its own.',
   'hooks_bash_post.ts::postBashHandler': 'Wrapper over the post-Bash path. Interpolates nothing of its own.',
+  'hooks_bash_post.ts::postBashResultHandler':
+    "The post-Bash path itself, split out of postBashHandler unchanged so the wrapper can take the compress heartbeat out of the output first. Its own hints interpolate a cached output id (hexadecimal, from storeBashOutput) and the rerun delta, which summarizeOutputDelta builds from line and issue counts alone; the gh advisories are built by buildGhApiHint and buildGhViewBatchAdvisory.",
   'hooks_edit.ts::postEditHandler': 'Wrapper over postEditHandlerInner. Interpolates nothing of its own.',
   'hooks_read.ts::preReadHandler': 'Wrapper over preReadHandlerInner. Interpolates nothing of its own.',
   'hooks_read_post.ts::postReadHandler': 'Wrapper over postReadHandlerInner. Interpolates nothing of its own.',

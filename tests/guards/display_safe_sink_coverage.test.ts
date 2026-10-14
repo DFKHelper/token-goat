@@ -219,6 +219,14 @@ const ESCAPING_NOT_OWED: ReadonlyMap<string, string> = new Map([
       'output it delivers, which is why the fence is the right shape and displaySafeText is not.',
   ],
   [
+    'hooks_bash_post.ts:redacted.text',
+    "withoutHeartbeats re-emits the Bash result the harness already delivered, redacted, minus the " +
+      "heartbeat lines the compress wrapper wrote ahead of it. That result is the payload the reader " +
+      'asked for, and it reaches the model unfenced by design here exactly as it does with no hook at ' +
+      "all: escaping it would change the command's output, and this pass adds no words of its own " +
+      'beside it (substituted_output_reaches_fence.test.ts records why its block is left unfenced).',
+  ],
+  [
     'read_git.ts:h.text',
     'runDiff joins git diff hunk bodies into its output: these are the payload the reader asked ' +
       'for, and this command delivers file content unfenced by design. The `# name (kind) - path` ' +

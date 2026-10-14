@@ -32,7 +32,7 @@ import { dataDir } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
 import { isInsideRoot } from './path_containment.js'
 import { projectTranscriptsDir } from './claude_config_dir.js'
-import { MAX_CAPTURE_BYTES } from './bash_runner.js'
+import { MAX_CAPTURE_BYTES, runnerRecallId, stripCompressHeartbeats } from './bash_runner.js'
 import {
   stripCdPrefix,
   resolveCdHintPath,
@@ -654,14 +654,56 @@ async function maybeEmitLargeUncompressedHint(
   return contextOutput(msg)
 }
 
-/** post_tool_use handler for the Bash tool. Caches the output of monitoring and build commands so that `preBashHandler` can emit a recall hint the next time the same command is run, avoiding a redundant re-execution and the token cost of re-reading the output. */
+/** post_tool_use handler for the Bash tool. Caches the output of monitoring and build commands so that `preBashHandler` can emit a recall hint the next time the same command is run, avoiding a redundant re-execution and the token cost of re-reading the output. A wrapped command's result first loses the heartbeat lines `token-goat compress` wrote to stderr while the command was quiet: they were for whoever watched the run, and Claude Code merges stderr into the finished result. */
 export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
+  try {
+    const rawCmd = extractCommand(event)
+    if (rawCmd === undefined) return passOutput()
+    const delivered = extractBashOutput(event)
+    const output = heartbeatFreeOutput(event, rawCmd, delivered)
+    const result = await postBashResultHandler(event, output)
+    return output === delivered ? result : withoutHeartbeats(result, output)
+  } catch {
+    // Never block: hook failures must be silent.
+  }
+  return passOutput()
+}
+
+/** `delivered` without the heartbeat lines the compress runner wrote ahead of it, or `delivered` itself. Taken by provenance, not by wording: only from a wrapped command whose result ends with the runner's own recall line, naming an output the runner stored for this very command, which a command cannot forge, since the id hashes the output it would have to contain. Without that line the runner shipped the command's output as it was (or never ran a capture at all, under `--no-compress`), and a heartbeat-shaped line there is the command's own. A persisted result is left alone too: the model was shown a short preview, and a rewrite would carry the whole output inline. */
+function heartbeatFreeOutput(event: HookEvent, rawCmd: string, delivered: string): string {
+  const inner = unwrapCompressCommand(rawCmd)
+  if (inner === null || resultWasPersisted(event)) return delivered
+  const id = runnerRecallId(delivered)
+  if (id === null || getBashOutput(id)?.command !== redactSecrets(inner).text) return delivered
+  return stripCompressHeartbeats(delivered)
+}
+
+/** True when Claude Code persisted the result rather than showing it inline. */
+function resultWasPersisted(event: HookEvent): boolean {
+  const resp = event.raw['tool_response']
+  if (resp === null || typeof resp !== 'object') return false
+  const persistedPath = (resp as Record<string, unknown>)['persistedOutputPath']
+  return typeof persistedPath === 'string' && persistedPath !== ''
+}
+
+/** What reaches the model once `output`, the delivered result minus its heartbeat lines, differs from what the harness delivered. A rewrite was already built from `output`. A pass or a hint would leave the heartbeats in place, so the result becomes `output` itself, redacted like every rewrite, with a hint carried beside it as additionalContext rather than dropped. A result the delivery cap would cut is left as delivered rather than shipped inline past the cap. */
+function withoutHeartbeats(result: HookOutput, output: string): HookOutput {
+  if (result.hookType !== 'pass' && result.hookType !== 'context') return result
+  const redacted = redactSecrets(output)
+  if (clipToDeliveryCap(redacted.text, 0).clipped) return result
+  // Booked here for the values this pass redacted itself; any placeholder already in the result was put there, and counted, by the runner.
+  if (redacted.count > 0) recordStat('secret_redacted', 0, redacted.count, undefined, 'compress heartbeat removed')
+  const stripped = emitRewrite(redacted.text, 'compress heartbeat removed', undefined, 'counted-elsewhere')
+  if (stripped.hookType !== 'rewriteOutput') return result
+  return result.hookType === 'context' ? { ...stripped, context: result.context } : stripped
+}
+
+async function postBashResultHandler(event: HookEvent, output: string): Promise<HookOutput> {
   try {
     const rawCmdRaw = extractCommand(event)
     if (rawCmdRaw === undefined) return passOutput()
     // True when the call ran as written, not inside a `token-goat compress` wrapper the pre hook rewrote it into.
     const isUnwrapped = unwrapCompressCommand(rawCmdRaw) === null
-    const output = extractBashOutput(event)
     const exitCode = extractExitCode(event.raw)
     const cwd = getCwd(event) ?? null
     // The directory the call started in, which the pre hook saw and held under this call's id. Claude Code's main thread reports the directory a `cd` left the shell in here, so resolving the command's own `cd` against this hook's cwd applies it twice. A call with no pre hook on record falls back to this hook's cwd, which is where the call started whenever the shell does not move: a subagent, or a cd out of the working directories, which the harness resets.
