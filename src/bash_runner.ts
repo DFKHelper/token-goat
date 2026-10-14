@@ -10,6 +10,7 @@ import * as os from 'node:os'
 import { bashOutputIdSync, storeBashOutputSync } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
+import { shortFingerprint } from './fingerprint.js'
 import { displaySafeText } from './paths.js'
 import { adaptPowerShellCommand } from './powershell_compat.js'
 import { powerShellCommandArgs, resolvePowerShell, wrappedShell } from './shell.js'
@@ -64,6 +65,11 @@ const RUNNER_RECALL_TRAILER_RE = /\n\[token-goat\] full output: bash-output ([0-
 /** The bash-output id named by the recall line {@link run} ends a compressed or capped result with, or null when `text` does not end with one. */
 export function runnerRecallId(text: string): string | null {
   return RUNNER_RECALL_TRAILER_RE.exec(text)?.[1] ?? null
+}
+
+/** Digest of a result {@link run} printed, stored with the output it stands for, so the post hook can tell that result from output that only ends with the same recall line. Line endings and surrounding whitespace are left out, since the harness may normalize either on the way to the hook. */
+export function runnerResultDigest(text: string): string {
+  return shortFingerprint(text.replace(/\r\n/g, '\n').trim())
 }
 
 /** Options for {@link run}. */
@@ -363,17 +369,16 @@ async function wrapAndCompress(
     process.stdin.pause()
   }
 
-  let stdoutText = stdoutSink.text()
-  let stderrText = stderrSink.text()
-  if (overflowed) {
-    stdoutText += `\n[token-goat: capture capped at ${MAX_CAPTURE_BYTES / (1024 * 1024)} MiB]`
-  }
-
-  if (spawnError !== null) stderrText = (stderrText ? stderrText + '\n' : '') + `[token-goat: ${displaySafeText((spawnError as Error).message)}]`
+  const stdoutText = stdoutSink.text()
+  const stderrText = stderrSink.text()
+  // How the run ended, in token-goat's voice. Kept out of the command's streams: those go inside the fence, which escaped these lines as forgeries, and into the recall copy, which holds only what the command wrote. They print after the closing tag with token-goat's other lines, or after the output when it passes through.
+  const runNotes: string[] = []
+  if (overflowed) runNotes.push(`[token-goat: capture capped at ${MAX_CAPTURE_BYTES / (1024 * 1024)} MiB]`)
+  if (spawnError !== null) runNotes.push(`[token-goat: ${displaySafeText((spawnError as Error).message)}]`)
   let exitCode: number
   if (timedOut) {
     exitCode = 124
-    stderrText = (stderrText ? stderrText + '\n' : '') + `[token-goat: command exceeded ${timeout}s timeout and was killed]`
+    runNotes.push(`[token-goat: command exceeded ${timeout}s timeout and was killed]`)
   } else if (code !== null) {
     exitCode = code
   } else if (signal) {
@@ -387,9 +392,10 @@ async function wrapAndCompress(
     const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
     const id = storeBashOutputSync(command, fullRaw, 0, opts.cwd ?? null)
     const summary = `[tg: ok] ${command} (${duration}, recall: token-goat bash-output ${id})\n`
-    writeStdout(summary)
+    writeStdout(summary + runNotes.map((n) => n + '\n').join(''))
     return 0
   }
+  const notes = runNotes.map((n) => '\n' + n).join('')
 
   const limits = resolveCompressLimits()
   const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
@@ -416,13 +422,15 @@ async function wrapAndCompress(
     capNotice = cut.notices
   }
   const capped = shown !== untrusted
-  let body = shown
+  let body: string
   // A cap that cut the output is a loss the same as a filter that did, so it gets the same recall. Keyed on `applied` alone, a passthrough run capped to 2,000 tokens dropped the rest with nothing to recover it from.
   if (applied || capped) {
-    // The marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, and a rerun carrying it as a prefix is left unwrapped by the pre-hook, but that costs the command a second run. A recall of the untruncated bytes is the cheaper follow-up, so store them the same way the compound post-hook path already does and point at it.
-    storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null)
-    // What is printed here is token-goat's account of the output, not the output, so the command's bytes go inside the untrusted-content fence and every line token-goat wrote (the filter's closing notices, the cap notice, the marker, the recall line) after the closing tag. Fenced by provenance: the split between the two is the own-notice tag apply() and capTokens put on token-goat's lines, never their wording. Output the runner passes through untouched (below the floor, uncapped) stays unfenced, as the harness would have delivered it; see CLAUDE.arch.md's Security Boundaries.
-    body = fenceWithMatches(shown, scan(shown), UNTRUSTED_TOOL_TAG) + ownNotices + capNotice + marker + trailer
+    // What is printed here is token-goat's account of the output, not the output, so the command's bytes go inside the untrusted-content fence and every line token-goat wrote (the filter's closing notices, the cap notice, the run's own notes, the marker, the recall line) after the closing tag. Fenced by provenance: the split between the two is the own-notice tag apply() and capTokens put on token-goat's lines, never their wording. Output the runner passes through untouched (below the floor, uncapped) stays unfenced, as the harness would have delivered it; see CLAUDE.arch.md's Security Boundaries.
+    body = fenceWithMatches(shown, scan(shown), UNTRUSTED_TOOL_TAG) + ownNotices + capNotice + notes + marker + trailer
+    // The marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, and a rerun carrying it as a prefix is left unwrapped by the pre-hook, but that costs the command a second run. A recall of the untruncated bytes is the cheaper follow-up, so store them the same way the compound post-hook path already does and point at it, with the digest of what is printed here: the recall line is how the post hook knows this result is the runner's, and a command can print that line too.
+    storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null, runnerResultDigest(body))
+  } else {
+    body = shown === '' ? notes.slice(1) : shown + notes
   }
   writeStdout(body.endsWith('\n') ? body : body + '\n')
 

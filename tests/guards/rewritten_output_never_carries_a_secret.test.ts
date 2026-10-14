@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 // Importing relay registers every hook module for its side effects, so both the matcher below and runHook dispatch through the real production registry rather than a test-local subset.
 import { buildEvent } from '../../src/relay.js'
 import { runHook, toolMatcherFor } from '../../src/hook_registry.js'
-import { storeBashOutputSync } from '../../src/bash_output_cache.js'
+import { bashOutputIdSync, storeBashOutputSync } from '../../src/bash_output_cache.js'
+import { runnerResultDigest } from '../../src/bash_runner.js'
 
 /** A live-shaped AWS access key id — `secret_redact.ts`'s `aws_access_key` pattern. */
 const SECRET = 'AKIAABCDEFGHIJKLMNOP'
@@ -188,11 +189,13 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
     expect(rewrote, 'fixtures must actually reach at least one handler rewrite branch').toBeGreaterThan(0)
   })
 
-  // The heartbeat strip on a wrapped command re-emits a result token-goat did not write, which the per-tool sweep above never reaches: it needs a `token-goat compress` command and a result ending with the runner's recall line for an output stored under that command, so this case builds both.
+  // The heartbeat strip on a wrapped command re-emits a result token-goat did not write, which the per-tool sweep above never reaches: it needs a `token-goat compress` command and a result ending with the runner's recall line for an output stored under that command, with the digest of that result the runner stores beside it, so this case builds all three.
   it('redacts the credential out of a wrapped result it takes the compress heartbeat out of', async () => {
     const inner = 'npm run build'
-    const id = storeBashOutputSync(inner, `vite build\nexport AWS_ACCESS_KEY_ID=${SECRET}`, 0, null)
-    const stdout = `[token-goat compress] still running, 15s elapsed\nvite build\nexport AWS_ACCESS_KEY_ID=${SECRET}\n[token-goat] full output: bash-output ${id} --full\n`
+    const captured = `vite build\nexport AWS_ACCESS_KEY_ID=${SECRET}`
+    const printed = `vite build\nexport AWS_ACCESS_KEY_ID=${SECRET}\n[token-goat] full output: bash-output ${bashOutputIdSync(inner, captured, null)} --full\n`
+    storeBashOutputSync(inner, captured, 0, null, runnerResultDigest(printed))
+    const stdout = `[token-goat compress] still running, 15s elapsed\n${printed}`
     const result = await runHook(
       buildEvent('post_tool_use', {
         tool_name: 'Bash',
@@ -204,6 +207,27 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
     expect(result.hookType, 'the fixture must reach the heartbeat rewrite or this case tests nothing').toBe('rewriteOutput')
     const emitted = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
     expect(emitted).not.toContain('still running')
+    expect(emitted).not.toContain(SECRET)
+  })
+
+  // The curl HTML fold is a Bash rewrite the per-tool sweep above never reaches: its Bash fixture is a compound build, and the fold needs an unwrapped `curl` GET whose output sniffs as an HTML page. The credential sits in the article text, which extractCleanText keeps.
+  it('redacts the credential out of a curl HTML page it folds to text', async () => {
+    const page =
+      '<!DOCTYPE html><html><head><title>Deploy notes</title>' +
+      '<style>.filler{color:#000;}</style>\n'.repeat(700) +
+      `</head><body><article><p>Set AWS_ACCESS_KEY_ID=${SECRET} before the deploy step.</p></article></body></html>`
+    const result = await runHook(
+      buildEvent('post_tool_use', {
+        tool_name: 'Bash',
+        tool_input: { command: 'curl https://example.com/deploy-notes' },
+        session_id: 'guard-curl-html',
+        tool_response: { stdout: page, stderr: '', interrupted: false, isImage: false },
+      }),
+    )
+    expect(result.hookType, 'the fixture must reach the curl HTML fold or this case tests nothing').toBe('rewriteOutput')
+    const emitted = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
+    expect(emitted).toContain('curl HTML body cleaned')
+    expect(emitted).toContain('before the deploy step')
     expect(emitted).not.toContain(SECRET)
   })
 })

@@ -31,6 +31,8 @@ export interface BashOutputEntry {
   readonly sizeBytes: number
   /** Optional fingerprints for validation on cache recall. */
   readonly fingerprints?: { git?: string; dir?: string; lockfile?: string; file?: string }
+  /** `runnerResultDigest` of the result the compress runner printed under this output, set only by the runner. The post hook checks a recall line against it, so the line vouches for the result it ends and not for any output that merely ends the same way. */
+  readonly shipped?: string
 }
 
 // id -> entry.
@@ -417,8 +419,8 @@ export function summarizeOutputDelta(oldOutput: string, newOutput: string): stri
   return `[token-goat: delta] output changed: ${oldLines.length} -> ${newLines.length} lines`
 }
 
-/** Store a command's `output` and `exitCode`, returning its id. The id is {@link bashOutputIdSync}, which folds the output into the command hash, so re-running the same command with different output stores a new entry beside the old one rather than overwriting it -- a recall pointer already handed to the model keeps resolving to the body it described. A redirect blob at the plain {@link commandHash} is refreshed to point at the newest entry, so callers that know only the command (cross-run delta folding, `token-goat waste`) still resolve the latest through {@link getBashOutput}. */
-export function storeBashOutputSync(command: string, output: string, exitCode: number, cwd: string | null = null): string {
+/** Store a command's `output` and `exitCode`, returning its id. The id is {@link bashOutputIdSync}, which folds the output into the command hash, so re-running the same command with different output stores a new entry beside the old one rather than overwriting it -- a recall pointer already handed to the model keeps resolving to the body it described. A redirect blob at the plain {@link commandHash} is refreshed to point at the newest entry, so callers that know only the command (cross-run delta folding, `token-goat waste`) still resolve the latest through {@link getBashOutput}. `shipped` is the compress runner's digest of what it printed in place of `output` (see {@link BashOutputEntry.shipped}). */
+export function storeBashOutputSync(command: string, output: string, exitCode: number, cwd: string | null = null, shipped?: string): string {
   // The git state costs two git spawns and is the same for the command hash and the fingerprints below, so it is read once, and only if one of them asks for it.
   let gitState: { value: string | null } | null = null
   const gitStateOnce = (): string | null => (gitState ??= { value: cwd ? gitStateFingerprintSync(cwd) : null }).value
@@ -437,6 +439,7 @@ export function storeBashOutputSync(command: string, output: string, exitCode: n
     storedAt: Date.now(),
     sizeBytes: Buffer.byteLength(redactedOutput, 'utf-8'),
     ...(fingerprints ? { fingerprints } : {}),
+    ...(shipped !== undefined ? { shipped } : {}),
   }
   _byId.set(id, entry)
   _byId.set(commandKey, entry)
@@ -487,6 +490,7 @@ function coerceBashEntry(raw: unknown): BashOutputEntry | null {
     exitCode: o['exitCode'],
     storedAt: o['storedAt'],
     sizeBytes: o['sizeBytes'],
+    ...(typeof o['shipped'] === 'string' ? { shipped: o['shipped'] } : {}),
   }
   const rawFingerprints = o['fingerprints']
   if (rawFingerprints !== null && typeof rawFingerprints === 'object') {

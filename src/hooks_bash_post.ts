@@ -33,7 +33,7 @@ import { dataDir } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
 import { isInsideRoot } from './path_containment.js'
 import { projectTranscriptsDir } from './claude_config_dir.js'
-import { MAX_CAPTURE_BYTES, runnerRecallId, stripCompressHeartbeats } from './bash_runner.js'
+import { MAX_CAPTURE_BYTES, runnerRecallId, runnerResultDigest, stripCompressHeartbeats } from './bash_runner.js'
 import {
   stripCdPrefix,
   resolveCdHintPath,
@@ -442,7 +442,8 @@ function maybeFoldCurlHtml(cmd: string, output: string, id: string): HookOutput 
   if (!cfg.enabled || cfg.disabled_filters.includes('curl-html')) return null
   let cleaned: string
   try {
-    cleaned = extractCleanText(output)
+    // Redacted before the clip below, which could otherwise cut a credential short of the length its pattern recognizes, and before anything reaches the model: an unwrapped `curl` GET (auto mode, a deny or ask rule, a harness that never rewrites the shell) arrives here with the page exactly as served.
+    cleaned = redactSecrets(extractCleanText(output)).text
   } catch {
     return null
   }
@@ -708,12 +709,14 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   return passOutput()
 }
 
-/** True when `delivered` is the compress runner's own account of a wrapped command: it ends with the runner's recall line, naming an output the runner stored for this very command. Provenance, not wording: a command cannot forge it, since the id hashes the output it would have to contain. Without that line the runner shipped the command's output as it was (or never ran a capture at all, under `--no-compress`), so the result is the command's, heartbeat-shaped lines included. */
+/** True when `delivered` is the compress runner's own account of a wrapped command: it ends with the runner's recall line, the line names an entry the runner stored for this very command by its content-addressed id, and that entry's digest of what the runner printed matches `delivered` with its opening heartbeats taken off. The line alone proves nothing, because a command can print it: this used to accept any id that resolved to an entry for the same command, and two such ids are knowable before the command runs: the command-hash redirect (an unkeyed hash of the directory and the command) and the id of an earlier run's output. The digest binds the line to the bytes it ends, so it vouches only for a result the runner printed. An earlier result replayed byte for byte still passes, and may: every byte of it is token-goat's own fenced, redacted output. Without that line the runner shipped the command's output as it was (or never ran a capture at all, under `--no-compress`), so the result is the command's, heartbeat-shaped lines included. */
 function runnerShippedResult(rawCmd: string, delivered: string): boolean {
   const inner = unwrapCompressCommand(rawCmd)
   if (inner === null) return false
   const id = runnerRecallId(delivered)
-  return id !== null && getBashOutput(id)?.command === redactSecrets(inner).text
+  if (id === null) return false
+  const entry = getBashOutput(id)
+  return entry !== null && entry.id === id && entry.command === redactSecrets(inner).text && entry.shipped === runnerResultDigest(stripCompressHeartbeats(delivered))
 }
 
 /** True when Claude Code persisted the result rather than showing it inline. */

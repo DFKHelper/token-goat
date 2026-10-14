@@ -1,8 +1,8 @@
-/** `token-goat compress` writes `[token-goat compress] still running, 15s elapsed` to stderr while a wrapped command is quiet (commit 8e51d477), so a harness polling a long run sees it is alive. Claude Code merges stderr into the Bash result, so the same lines then reached the model as the first lines of the finished result. CAPTURE (recorded session 41690f23, seq 5337, 6454, 6658): the result opened with the heartbeat. The heartbeat stays on stderr while the command runs; the PostToolUse hook takes it back out of the finished result, by provenance: only from a result that ends with the runner's own recall line, naming an output the runner stored for that command, and only the run of heartbeats the result opens with. */
+/** `token-goat compress` writes `[token-goat compress] still running, 15s elapsed` to stderr while a wrapped command is quiet (commit 8e51d477), so a harness polling a long run sees it is alive. Claude Code merges stderr into the Bash result, so the same lines then reached the model as the first lines of the finished result. CAPTURE (recorded session 41690f23, seq 5337, 6454, 6658): the result opened with the heartbeat. The heartbeat stays on stderr while the command runs; the PostToolUse hook takes it back out of the finished result, by provenance: only from a result that ends with the runner's own recall line, naming an output the runner stored for that command with a digest of the result it printed, and only the run of heartbeats the result opens with. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { storeBashOutputSync } from '../src/bash_output_cache.js'
-import { compressHeartbeatLine, runnerRecallId, stripCompressHeartbeats } from '../src/bash_runner.js'
+import { bashOutputIdSync, storeBashOutputSync } from '../src/bash_output_cache.js'
+import { compressHeartbeatLine, runnerRecallId, runnerResultDigest, stripCompressHeartbeats } from '../src/bash_runner.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { serializeOutput } from '../src/hook_registry.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
@@ -15,10 +15,11 @@ const BODY = 'vite v5.4.0 building for production...\n✓ 412 modules transforme
 /** A live-shaped AWS access key id, the shape secret_redact.ts's aws_access_key pattern takes. */
 const SECRET = 'AKIAABCDEFGHIJKLMNOP'
 
-/** What the runner prints under a result it compressed: its marker, then the recall line naming the output it stored for `INNER`. FORMAT-DERIVED from bash_runner.ts's wrapAndCompress. */
-function runnerTail(captured: string): string {
-  const id = storeBashOutputSync(INNER, captured, 0, null)
-  return `\n[token-goat: build filter -40%; disable via TOKEN_GOAT_BASH_COMPRESS]\n[token-goat] full output: bash-output ${id} --full\n`
+/** What the runner prints for a result it compressed: `body`, its marker, then the recall line naming the output it stored for `INNER`, stored the way the runner stores it, with the digest of everything it printed. A recall line over an entry without that digest is what a command can forge (runner_recall_line_is_bound_to_its_result.test.ts). FORMAT-DERIVED from bash_runner.ts's wrapAndCompress. */
+function runnerPrinted(body: string, captured: string): string {
+  const printed = `${body}\n[token-goat: build filter -40%; disable via TOKEN_GOAT_BASH_COMPRESS]\n[token-goat] full output: bash-output ${bashOutputIdSync(INNER, captured, null)} --full\n`
+  storeBashOutputSync(INNER, captured, 0, null, runnerResultDigest(printed))
+  return printed
 }
 
 function event(command: string, stdout: string, extra: Record<string, unknown> = {}): HookEvent {
@@ -69,7 +70,7 @@ describe('the PostToolUse Bash hook on a wrapped command', () => {
   })
 
   it('hands the model the result without the heartbeat lines, in the Bash result shape', async () => {
-    const stdout = compressHeartbeatLine(15) + compressHeartbeatLine(30) + BODY + runnerTail(BODY + ' run 1')
+    const stdout = compressHeartbeatLine(15) + compressHeartbeatLine(30) + runnerPrinted(BODY, BODY + ' run 1')
     const ev = event(WRAPPED, stdout)
     const result = await postBashHandler(ev)
     expect(result.hookType).toBe('rewriteOutput')
@@ -81,7 +82,7 @@ describe('the PostToolUse Bash hook on a wrapped command', () => {
   })
 
   it('redacts what it ships, since the rewrite is token-goat speaking whatever the runner printed', async () => {
-    const stdout = compressHeartbeatLine(15) + `${BODY}\nexport AWS_ACCESS_KEY_ID=${SECRET}` + runnerTail(BODY + ' run 2')
+    const stdout = compressHeartbeatLine(15) + runnerPrinted(`${BODY}\nexport AWS_ACCESS_KEY_ID=${SECRET}`, BODY + ' run 2')
     const result = await postBashHandler(event(WRAPPED, stdout))
     expect(result.hookType).toBe('rewriteOutput')
     const body = result.hookType === 'rewriteOutput' ? result.updatedOutput : ''
@@ -103,13 +104,13 @@ describe('the PostToolUse Bash hook on a wrapped command', () => {
   })
 
   it('leaves a persisted result alone, rather than carrying the whole output inline', async () => {
-    const stdout = compressHeartbeatLine(15) + BODY + runnerTail(BODY + ' run 3')
+    const stdout = compressHeartbeatLine(15) + runnerPrinted(BODY, BODY + ' run 3')
     const result = await postBashHandler(event(WRAPPED, stdout, { persistedOutputPath: 'C:/nowhere/tool-results/hb.txt', persistedOutputSize: 0 }))
     expect(result.hookType).not.toBe('rewriteOutput')
   })
 
   it('leaves a wrapped result with no heartbeat alone', async () => {
-    const result = await postBashHandler(event(WRAPPED, BODY + runnerTail(BODY + ' run 4')))
+    const result = await postBashHandler(event(WRAPPED, runnerPrinted(BODY, BODY + ' run 4')))
     expect(result.hookType).toBe('pass')
   })
 

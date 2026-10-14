@@ -8,7 +8,7 @@ import { storeMcpOutput, getMcpOutput } from './mcp_cache.js'
 import { loadConfig } from './config.js'
 import { recordStat } from './stats.js'
 import { scanAndRecord, fenceWithMatches, fenceJsonStrings } from './untrusted_fence.js'
-import { neutralizeFenceMarkers, UNTRUSTED_WEB_TAG } from './injection_scan.js'
+import { neutralizeFenceMarkers } from './injection_scan.js'
 import { countRedactionPlaceholders, redactSecrets } from './secret_redact.js'
 import { detectHarness } from './bridges/registry.js'
 
@@ -39,7 +39,7 @@ function fenceWebSearchResults(toolResponse: unknown, injectionMatches: readonly
   if (results === null) return null
   let changed = false
   const clean = (text: string): string => {
-    const cleaned = neutralizeFenceMarkers(redactSecrets(text).text, UNTRUSTED_WEB_TAG)
+    const cleaned = neutralizeFenceMarkers(redactSecrets(text).text)
     if (cleaned !== text) changed = true
     return cleaned
   }
