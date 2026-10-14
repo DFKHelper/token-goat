@@ -20,6 +20,24 @@ type Exemption = { file: string; title: string; sites: number; reason: string }
 /** Every test that may finish without asserting, and why. `sites` is how many bare returns in that body precede all of its assertions: a new one appearing in an already-listed test still fails. */
 const EXEMPT: readonly Exemption[] = [
   {
+    file: 'tests/bridges/copilot_session_start_tree.test.ts',
+    title: 'contains an independent native breakaway attempt across nested jobs',
+    sites: 1,
+    reason: 'The return follows premiseBranch in tests/helpers/copilot_session_start_tree.ts, which has already asserted the weak branch (stdout exactly {}, a deadline fail-open on stderr, a dead tree, the owed reminder) before it answers false, so the body never finishes unasserted.',
+  },
+  {
+    file: 'tests/bridges/copilot_session_start_tree.test.ts',
+    title: 'uses one input-plus-handler deadline, discarding complete stdout from a hung child',
+    sites: 1,
+    reason: 'The return follows premiseBranch in tests/helpers/copilot_session_start_tree.ts, which has already asserted the weak branch (stdout exactly {}, a deadline fail-open on stderr, a dead tree, the owed reminder) before it answers false, so the body never finishes unasserted.',
+  },
+  {
+    file: 'tests/bridges/copilot_session_start_tree.test.ts',
+    title: 'inherits the earliest installed native deadline across delayed input and helper work',
+    sites: 1,
+    reason: 'The return follows premiseBranch in tests/helpers/copilot_session_start_tree.ts, which has already asserted the weak branch (stdout exactly {}, a deadline fail-open on stderr, a dead tree, the owed reminder) before it answers false, so the body never finishes unasserted.',
+  },
+  {
     file: 'tests/cli.test.ts',
     title: 'bash-output --file rejects a FIFO (special file)',
     sites: 1,

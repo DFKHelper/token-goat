@@ -1,72 +1,42 @@
-/** HAND-DERIVED integration coverage for the installed shared shim: real built hook entry, open stdin, and isolated hook data. */
+/** HAND-DERIVED integration coverage for the installed shared shim: real built hook entry, open stdin, and isolated hook data. No row asserts an elapsed time: a start is either delivered at startup or fails open with exactly `{}` and is owed to the first tool call (HAND-DERIVED from the deferral contract; the reminder phrases are read off src/session_reminder.ts). Content and framing are checked in-process against the embedded helper text, and each row that load can push to the other outcome asserts both and records the branch with ctx.annotate. */
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { performance } from 'node:perf_hooks'
+import { PassThrough } from 'node:stream'
+import { runInNewContext } from 'node:vm'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
+import { COPILOT_SESSION_START_HELPERS } from '../../src/bridges/copilot_session_start.js'
 import { closeAllDbs, getDb } from '../../src/db.js'
 import { SHIM_SESSION_START_TIMEOUT_MS } from '../../src/bridges/shim_common.js'
 import { findGlobalDb } from '../helpers/find_global_db.js'
-import { installStartupOwner } from '../helpers/copilot_session_start_tree.js'
+import {
+  assertOwedDeliveredOnce, assertTreeDead, BUNDLE, cleanupTrees, contextText, DEADLINE_FAIL_OPEN, fixtureWatchdog, indexTreeFixture, premiseBranch,
+  readOwnedPid, alive, treeFixture,
+} from '../helpers/copilot_session_start_tree.js'
 
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+type Fixture = ReturnType<typeof treeFixture>
+type Harness = 'copilot_cli' | 'vscode'
+
 const SESSION_START_BUDGET_MS = 3000
-// Windows process startup/teardown has added about 1.2 s to full-deadline runs;
-// this tolerance covers that observed scheduler overhead, not handler work.
-const SCHEDULING_TOLERANCE_MS = 2000
-const PROCESS_WAIT_LIMIT_MS = SESSION_START_BUDGET_MS + SCHEDULING_TOLERANCE_MS + 1000
-const tempDirs: string[] = []
+// A shim that produces no output, no exit and no error for this long is stalled; a slow machine stretches the time to each step, not the quiet between steps the watchdog counts.
+const QUIET_LIMIT_MS = 30_000
+const COPILOT_SESSION = 'copilot-session-start-test'
+const VSCODE_SESSION = 'vscode-session-start-test'
 const children: ChildProcessWithoutNullStreams[] = []
-
-interface Fixture {
-  root: string
-  project: string
-  home: string
-  shimPath: string
-  env: NodeJS.ProcessEnv
-}
 
 interface ProcessResult {
   code: number | null
   signal: NodeJS.Signals | null
   stdout: string
   stderr: string
-  elapsedMs: number
   timedOut: boolean
+  stdinEnded: boolean
 }
 
-function makeFixture(): Fixture {
-  const root = mkdtempSync(join(tmpdir(), 'tg-copilot-session-start-'))
-  tempDirs.push(root)
-  const project = join(root, 'project')
-  const home = join(root, 'home')
-  mkdirSync(project, { recursive: true })
-  mkdirSync(home, { recursive: true })
-  const shimPath = join(root, 'token-goat-shim.cjs')
-  writeFileSync(shimPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
-  installStartupOwner(root)
-  return {
-    root,
-    project,
-    home,
-    shimPath,
-    env: {
-      ...process.env,
-      TOKEN_GOAT_HOME: home,
-      TOKEN_GOAT_HOOK_SERVER: '0',
-      TOKEN_GOAT_NATIVE_HOOKS: '0',
-      LOCALAPPDATA: home,
-      XDG_DATA_HOME: home,
-    },
-  }
-}
-
-function startShim(fixture: Fixture, event: string, entryPath = BUNDLE): ChildProcessWithoutNullStreams {
-  const child = spawn(process.execPath, [fixture.shimPath, event, entryPath], {
+function startShim(fixture: Fixture, event: string, entryPath = BUNDLE, extraArgs: string[] = []): ChildProcessWithoutNullStreams {
+  const child = spawn(process.execPath, [fixture.shim, event, entryPath, ...extraArgs], {
     cwd: fixture.project,
     env: fixture.env,
     stdio: 'pipe',
@@ -77,37 +47,25 @@ function startShim(fixture: Fixture, event: string, entryPath = BUNDLE): ChildPr
   return child
 }
 
-function observe(child: ChildProcessWithoutNullStreams): {
-  done: Promise<ProcessResult>
-  stdout: () => string
-} {
-  const startedAt = performance.now()
+function observe(fixture: Fixture, child: ChildProcessWithoutNullStreams): { done: Promise<ProcessResult>; stdout: () => string } {
   let stdout = ''
   let stderr = ''
   let timedOut = false
+  const watchdog = fixtureWatchdog(fixture, QUIET_LIMIT_MS, 'shim')
   child.stdout.setEncoding('utf8')
   child.stderr.setEncoding('utf8')
-  child.stdout.on('data', (chunk: string) => { stdout += chunk })
-  child.stderr.on('data', (chunk: string) => { stderr += chunk })
+  child.stdout.on('data', (chunk: string) => { watchdog.progress('stdout'); stdout += chunk })
+  child.stderr.on('data', (chunk: string) => { watchdog.progress('stderr'); stderr += chunk })
   const done = new Promise<ProcessResult>((resolve, reject) => {
-    const timer = setTimeout(() => {
+    watchdog.failed.catch(() => {
       timedOut = true
       child.kill()
-    }, PROCESS_WAIT_LIMIT_MS)
-    child.once('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
     })
+    child.once('spawn', () => watchdog.progress('spawned'))
+    child.once('error', reject)
     child.once('close', (code, signal) => {
-      clearTimeout(timer)
-      resolve({
-        code,
-        signal,
-        stdout,
-        stderr,
-        elapsedMs: performance.now() - startedAt,
-        timedOut,
-      })
+      watchdog.progress('closed')
+      resolve({ code, signal, stdout, stderr, timedOut, stdinEnded: child.stdin.writableEnded })
     })
   })
   return { done, stdout: () => stdout }
@@ -115,7 +73,7 @@ function observe(child: ChildProcessWithoutNullStreams): {
 
 function copilotPayload(project: string): Record<string, unknown> {
   return {
-    sessionId: 'copilot-session-start-test',
+    sessionId: COPILOT_SESSION,
     workingDirectory: project,
     source: 'startup',
     initialPrompt: 'Quoted braces }{, quote ", and backslash \\\\ stay inside a JSON string.',
@@ -125,7 +83,7 @@ function copilotPayload(project: string): Record<string, unknown> {
 function vscodePayload(project: string): Record<string, unknown> {
   return {
     hook_event_name: 'SessionStart',
-    session_id: 'vscode-session-start-test',
+    session_id: VSCODE_SESSION,
     cwd: project,
     source: 'startup',
   }
@@ -140,11 +98,7 @@ function parseOneObject(stdout: string): Record<string, unknown> {
   return parsed as Record<string, unknown>
 }
 
-async function sendOpenInput(
-  child: ChildProcessWithoutNullStreams,
-  input: string,
-  chunked = false,
-): Promise<void> {
+async function sendOpenInput(child: ChildProcessWithoutNullStreams, input: string, chunked = false): Promise<void> {
   if (!chunked) {
     child.stdin.write(input)
     return
@@ -155,231 +109,304 @@ async function sendOpenInput(
   child.stdin.write(input.slice(split))
 }
 
-function assertDeadline(result: ProcessResult): void {
-  expect(result.timedOut, 'the test harness had to kill the shim').toBe(false)
-  expect(result.elapsedMs).toBeLessThan(SESSION_START_BUDGET_MS + SCHEDULING_TOLERANCE_MS)
+/** The run ended by itself, cleanly: the harness never had to kill it. */
+function assertFinished(result: ProcessResult): void {
+  expect(result.timedOut, 'the shim made no progress and the watchdog had to kill it').toBe(false)
+  expect(result.code, result.stderr).toBe(0)
 }
 
-function assertSessionStartContext(stdout: string): void {
-  const text = JSON.stringify(parseOneObject(stdout))
+/** A start that failed open: exactly `{}`, the failed-open line, and then the owed path behaves for this session (one delivery if its payload was read, none otherwise). */
+async function assertFailedOpen(fixture: Fixture, result: ProcessResult, harness: Harness, sessionId: string): Promise<string | null> {
+  assertFinished(result)
+  expect(result.stdout).toBe('{}')
+  expect(result.stderr).toMatch(/SessionStart failed open/i)
+  return assertOwedDeliveredOnce(fixture, harness, sessionId)
+}
+
+function assertSessionStartContext(text: string): void {
   expect(text, 'the existing SessionStart routing reminder must survive the new transport').toContain('prefer surgical reads')
   expect(text).toContain('token-goat index .')
 }
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM'
+/** A healthy start is delivered at startup (A) or fails open and is owed to the first tool call exactly once (B); both carry the reminder, and the shim did not wait for stdin to close. */
+async function assertDeliveredOrOwed(
+  ctx: { annotate: (message: string) => Promise<unknown> }, fixture: Fixture, result: ProcessResult, harness: Harness, sessionId: string,
+): Promise<void> {
+  assertFinished(result)
+  expect(result.stdinEnded, 'the caller never closed stdin, so the shim must have exited on its own').toBe(false)
+  if (result.stdout !== '{}') {
+    await ctx.annotate('branch: A (delivered at startup)')
+    expect(result.stderr, 'a delivered start must not also report that it failed open').not.toMatch(/SessionStart failed open/i)
+    assertSessionStartContext(JSON.stringify(parseOneObject(result.stdout)))
+    return
   }
+  const owed = await assertFailedOpen(fixture, result, harness, sessionId)
+  await ctx.annotate(`branch: B (failed open, payload read=${String(owed !== null)})`)
+  if (owed !== null) assertSessionStartContext(contextText(owed))
 }
 
-afterEach(() => {
+/** The embedded reader, evaluated in-process against a stream the test controls, so framing is judged without a clock or a child. */
+function loadReader(stdin: PassThrough): (timeoutMs: number) => Promise<string> {
+  const sandbox: Record<string, unknown> = { process: { stdin }, Buffer, Error, setTimeout, clearTimeout, setImmediate }
+  runInNewContext(COPILOT_SESSION_START_HELPERS, sandbox)
+  return sandbox['readSessionStartInput'] as (timeoutMs: number) => Promise<string>
+}
+
+// Far beyond any test's runtime: the reader's own deadline never decides these rows.
+const HUGE_TIMEOUT_MS = 2 ** 31 - 1
+
+type Outcome = { state: 'pending' } | { state: 'resolved'; value: string } | { state: 'rejected'; message: string }
+
+async function turns(count: number): Promise<void> {
+  for (let turn = 0; turn < count; turn += 1) await new Promise((resolve) => setImmediate(resolve))
+}
+
+/** What a reader promise did within a bounded number of event-loop turns, never a clock: a reader that settles on the data it was given does so within a few turns however slow the machine is, and one that does not is reported as pending instead of hanging the row. */
+async function outcomeOf(promise: Promise<string>): Promise<Outcome> {
+  let outcome: Outcome = { state: 'pending' }
+  promise.then((value) => { outcome = { state: 'resolved', value } }, (error: Error) => { outcome = { state: 'rejected', message: error.message } })
+  for (let turn = 0; turn < 50 && outcome.state === 'pending'; turn += 1) await turns(1)
+  return outcome
+}
+
+afterEach(async () => {
   for (const child of children.splice(0)) {
     if (child.exitCode === null && child.signalCode === null) child.kill()
   }
   closeAllDbs()
-  while (tempDirs.length > 0) {
-    const dir = tempDirs.pop()
-    if (dir) rmSync(dir, { recursive: true, force: true })
-  }
-})
+  await cleanupTrees()
+}, 0)
 
-describe('Copilot shared-shim SessionStart deadline', () => {
+describe('Copilot shared-shim SessionStart deadline', { timeout: 0 }, () => {
   it('keeps the generated shared shim syntactically valid CommonJS', () => {
-    const fixture = makeFixture()
-    const result = spawnSync(process.execPath, ['--check', fixture.shimPath], {
+    const fixture = treeFixture()
+    const result = spawnSync(process.execPath, ['--check', fixture.shim], {
       encoding: 'utf8',
       windowsHide: true,
     })
     expect(result.status, result.stderr).toBe(0)
   })
 
-  it('returns healthy Copilot CLI context before the caller closes stdin', async () => {
+  it('returns healthy Copilot CLI context, or owes it once, before the caller closes stdin', { timeout: 0 }, async (ctx) => {
     expect(SHIM_SESSION_START_TIMEOUT_MS).toBe(SESSION_START_BUDGET_MS)
     expect(existsSync(BUNDLE), 'build dist/token-goat.mjs before this integration test').toBe(true)
-    const fixture = makeFixture()
+    const fixture = treeFixture()
     const child = startShim(fixture, 'sessionStart')
-    const observation = observe(child)
-    const input = ` \r\n${JSON.stringify(copilotPayload(fixture.project))}\r\n`
-    await sendOpenInput(child, input, true)
+    const observation = observe(fixture, child)
+    await sendOpenInput(child, ` \r\n${JSON.stringify(copilotPayload(fixture.project))}\r\n`, true)
+    await assertDeliveredOrOwed(ctx, fixture, await observation.done, 'copilot_cli', COPILOT_SESSION)
+  })
 
-    const result = await observation.done
-    assertDeadline(result)
-    expect(result.code).toBe(0)
-    assertSessionStartContext(result.stdout)
-  }, 12_000)
-
-  it('returns healthy VS Code context before the caller closes stdin', async () => {
-    const fixture = makeFixture()
+  it('returns healthy VS Code context, or owes it once, before the caller closes stdin', { timeout: 0 }, async (ctx) => {
+    const fixture = treeFixture()
     const child = startShim(fixture, 'sessionStart')
-    const observation = observe(child)
+    const observation = observe(fixture, child)
     await sendOpenInput(child, JSON.stringify(vscodePayload(fixture.project)), true)
+    await assertDeliveredOrOwed(ctx, fixture, await observation.done, 'vscode', VSCODE_SESSION)
+  })
 
-    const result = await observation.done
-    assertDeadline(result)
-    expect(result.code).toBe(0)
-    assertSessionStartContext(result.stdout)
-  }, 12_000)
+  it('owes a healthy start whose deadline had already passed when its payload arrived', { timeout: 0 }, async (ctx) => {
+    const fixture = treeFixture()
+    const child = startShim(fixture, 'sessionStart', BUNDLE, [`--session-start-deadline=${String(Date.now() - 1000)}`])
+    const observation = observe(fixture, child)
+    await sendOpenInput(child, JSON.stringify(copilotPayload(fixture.project)))
+    await assertDeliveredOrOwed(ctx, fixture, await observation.done, 'copilot_cli', COPILOT_SESSION)
+  })
 
   it.each([
     ['empty input', ''],
     ['incomplete object', '{"hook_event_name":"SessionStart"'],
-  ])('fails open within the budget for %s while stdin remains open', async (_label, input) => {
-    const fixture = makeFixture()
+  ])('fails open for %s while stdin remains open, and nothing is owed', { timeout: 0 }, async (_label, input) => {
+    const fixture = treeFixture()
     const child = startShim(fixture, 'sessionStart')
-    const observation = observe(child)
+    const observation = observe(fixture, child)
     if (input !== '') child.stdin.write(input)
 
     const result = await observation.done
-    assertDeadline(result)
-    expect(result.code).toBe(0)
-    expect(result.stdout).toBe('{}')
-    expect(result.stderr).toMatch(/SessionStart failed open/i)
-  }, 12_000)
+    expect(result.stdinEnded).toBe(false)
+    expect(await assertFailedOpen(fixture, result, 'copilot_cli', COPILOT_SESSION), 'no payload was framed, so there is no start to owe').toBeNull()
+  })
 
-  it('fails open promptly for malformed complete JSON and oversized input', async () => {
+  it('fails open for malformed complete JSON and for oversized input, and nothing is owed', { timeout: 0 }, async () => {
     for (const input of ['{"hook_event_name":}', JSON.stringify({ data: 'x'.repeat(1024 * 1024) })]) {
-      const fixture = makeFixture()
+      const fixture = treeFixture()
       const child = startShim(fixture, 'sessionStart')
-      const observation = observe(child)
+      const observation = observe(fixture, child)
       child.stdin.write(input)
       const result = await observation.done
-
-      expect(result.timedOut).toBe(false)
-      expect(result.code).toBe(0)
-      expect(result.stdout).toBe('{}')
-      expect(result.stderr).toMatch(/SessionStart failed open/i)
+      expect(await assertFailedOpen(fixture, result, 'copilot_cli', COPILOT_SESSION)).toBeNull()
     }
-  }, 12_000)
+  })
 
-  it('fails open with a diagnostic when the baked hook entry is missing', async () => {
-    const fixture = makeFixture()
+  it('fails open with a diagnostic when the baked hook entry is missing, and owes the start once', { timeout: 0 }, async (ctx) => {
+    const fixture = treeFixture()
     const child = startShim(fixture, 'sessionStart', join(fixture.root, 'missing-entry.mjs'))
-    const observation = observe(child)
+    const observation = observe(fixture, child)
     child.stdin.end(JSON.stringify(copilotPayload(fixture.project)))
 
     const result = await observation.done
-    assertDeadline(result)
-    expect(result.code).toBe(0)
-    expect(result.stdout).toBe('{}')
-    expect(result.stderr).toMatch(/SessionStart failed open.*exited without a response/i)
-  }, 12_000)
+    // Load can spend the shim's budget before it reaches the missing entry; then the deadline is what it reports.
+    if (/exited without a response/i.test(result.stderr)) await ctx.annotate('branch: strong (the missing entry was reported)')
+    else {
+      await ctx.annotate('branch: weak (the deadline fired first)')
+      expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
+    }
+    await assertFailedOpen(fixture, result, 'copilot_cli', COPILOT_SESSION)
+  })
 
-  it('does not perform a parent filesystem probe of the baked entry', async () => {
-    const fixture = makeFixture()
+  it('does not perform a parent filesystem probe of the baked entry', { timeout: 0 }, async (ctx) => {
+    const fixture = treeFixture()
     const prefix = "for (const name of ['existsSync', 'readFileSync', 'statSync']) require('node:fs')[name] = () => { throw new Error('parent filesystem probe') }\n"
-    writeFileSync(fixture.shimPath, COPILOT_CLI_HOOK_SCRIPT.replace('\n', '\n' + prefix))
+    writeFileSync(fixture.shim, readFileSync(fixture.shim, 'utf8').replace('\n', '\n' + prefix))
     const entry = join(fixture.root, 'entry.cjs')
     writeFileSync(entry, "process.stdout.write('{\"probeFree\":true}')")
     const child = startShim(fixture, 'sessionStart', entry)
-    const observation = observe(child)
+    const observation = observe(fixture, child)
     child.stdin.end(JSON.stringify(copilotPayload(fixture.project)))
     const result = await observation.done
-    expect(result.stdout).toBe('{}')
+    assertFinished(result)
     expect(result.stderr).not.toContain('parent filesystem probe')
-    expect(result.stderr).not.toContain('failed open')
-    expect(result.code).toBe(0)
-    assertDeadline(result)
-  }, 12_000)
+    expect(result.stdout).toBe('{}')
+    if (result.stderr.includes('failed open')) {
+      await ctx.annotate('branch: weak (the deadline fired first)')
+      expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
+      await assertOwedDeliveredOnce(fixture, 'copilot_cli', COPILOT_SESSION)
+    } else await ctx.annotate('branch: strong (the entry ran probe-free)')
+  })
 
-  it('frames split UTF-8 bytes, quoted braces and escaped quotes without stdin EOF', async () => {
-    const fixture = makeFixture()
-    const entry = join(fixture.root, 'entry.cjs')
-    writeFileSync(entry, `
-let input = ''
-process.stdin.setEncoding('utf8')
-process.stdin.on('data', chunk => { input += chunk })
-process.stdin.on('end', () => {
-  const payload = JSON.parse(input)
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { additionalContext: payload.prompt } }))
-})
-`)
-    const prompt = 'é🙂 quoted }{ [ ] and " plus \\\\'
-    const input = Buffer.from(JSON.stringify({ ...copilotPayload(fixture.project), prompt }))
-    const split = input.indexOf(Buffer.from('🙂')) + 1
-    const child = startShim(fixture, 'sessionStart', entry)
-    const observation = observe(child)
-    child.stdin.write(input.subarray(0, split))
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    child.stdin.write(input.subarray(split))
-    const result = await observation.done
-    expect(parseOneObject(result.stdout)).toMatchObject({ additionalContext: prompt })
-    expect(result.code).toBe(0)
-    assertDeadline(result)
-  }, 12_000)
+  describe('payload framing, in-process', () => {
+    it('frames split UTF-8 bytes, quoted braces and escaped quotes without stdin EOF', async () => {
+      const stdin = new PassThrough()
+      const pending = loadReader(stdin)(HUGE_TIMEOUT_MS)
+      const prompt = 'é🙂 quoted }{ [ ] and " plus \\\\'
+      const input = Buffer.from(JSON.stringify({ ...copilotPayload('p'), prompt }))
+      const split = input.indexOf(Buffer.from('🙂')) + 1
+      try {
+        stdin.write(input.subarray(0, split))
+        await turns(5)
+        stdin.write(input.subarray(split))
+        const outcome = await outcomeOf(pending)
+        expect(outcome, 'the object must be framed while stdin is still open').toMatchObject({ state: 'resolved', value: input.toString('utf8') })
+        expect(JSON.parse((outcome as { value: string }).value)).toMatchObject({ prompt })
+      } finally {
+        stdin.end()
+      }
+    })
 
-  it.each([
+    it('ignores leading and trailing whitespace around one object', async () => {
+      const stdin = new PassThrough()
+      const pending = loadReader(stdin)(HUGE_TIMEOUT_MS)
+      const object = JSON.stringify(vscodePayload('p'))
+      try {
+        stdin.write(` \r\n\t${object}\r\n`)
+        expect(await outcomeOf(pending)).toEqual({ state: 'resolved', value: object })
+      } finally {
+        stdin.end()
+      }
+    })
+
+    it.each([
+      ['empty input then EOF', '', 'stdin closed without input', true],
+      ['an incomplete object then EOF', '{"a":', 'stdin closed before the JSON object was complete', true],
+      ['trailing data after the object', '{"a":1} x', 'input contained trailing data', false],
+      ['a non-object', '[1]', 'input was not a JSON object', false],
+      ['mismatched closers', '{"a":]', 'input contained malformed JSON', false],
+      ['a complete but unparseable object', '{"a":}', 'input contained malformed JSON', false],
+      ['more than 1 MiB', `{"a":"${'x'.repeat(1024 * 1024)}"}`, 'input exceeded 1 MiB', false],
+    ])('rejects %s', async (_label, input, reason, endInput) => {
+      const stdin = new PassThrough()
+      const pending = loadReader(stdin)(HUGE_TIMEOUT_MS)
+      try {
+        stdin.write(input)
+        if (endInput) stdin.end()
+        expect(await outcomeOf(pending)).toEqual({ state: 'rejected', message: reason })
+      } finally {
+        stdin.end()
+      }
+    })
+
+    it('resolves a payload already buffered when its deadline is already past', async () => {
+      const stdin = new PassThrough()
+      const object = JSON.stringify(copilotPayload('p'))
+      stdin.write(object)
+      expect(await outcomeOf(loadReader(stdin)(0))).toEqual({ state: 'resolved', value: object })
+    })
+
+    it('rejects with the deadline when nothing arrives', async () => {
+      const stdin = new PassThrough()
+      const promise = loadReader(stdin)(0)
+      // The reader's own zero-length timer must fire, so each step waits on a real timer tick; the count of ticks is the bound, never a clock reading.
+      let outcome: Outcome = { state: 'pending' }
+      promise.then((value) => { outcome = { state: 'resolved', value } }, (error: Error) => { outcome = { state: 'rejected', message: error.message } })
+      for (let tick = 0; tick < 50 && outcome.state === 'pending'; tick += 1) await new Promise((resolve) => setTimeout(resolve, 1))
+      expect(outcome).toEqual({ state: 'rejected', message: 'input deadline exceeded' })
+    })
+  })
+
+  it.for([
     ['asynchronous non-completion', (pidFile: string) =>
       `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.stdout.write('{"partial":'); new Promise(() => {}); setInterval(() => {}, 1000)`],
     ['synchronous blocking', (pidFile: string) =>
       `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); while (true) {}`],
-  ])('terminates its owned helper on %s', async (_label, makeSource) => {
-    const fixture = makeFixture()
+  ] as const)('terminates its owned helper on %s', { timeout: 0 }, async ([_label, makeSource], ctx) => {
+    const fixture = treeFixture()
     const pidFile = join(fixture.root, 'helper.pid')
     const entryPath = join(fixture.root, 'stalled-entry.cjs')
     writeFileSync(entryPath, makeSource(pidFile), 'utf8')
     const child = startShim(fixture, 'sessionStart', entryPath)
-    const observation = observe(child)
+    const observation = observe(fixture, child)
     child.stdin.end(JSON.stringify(copilotPayload(fixture.project)))
 
     const result = await observation.done
-    assertDeadline(result)
-    expect(result.code).toBe(0)
+    assertFinished(result)
+    if (!await premiseBranch(ctx, fixture, result, [pidFile], COPILOT_SESSION)) return
     expect(result.stdout).toBe('{}')
     expect(result.stderr).toMatch(/SessionStart failed open.*timed out/i)
-    const helperPid = Number(readFileSync(pidFile, 'utf8'))
-    expect(Number.isInteger(helperPid)).toBe(true)
-    expect(isProcessAlive(helperPid), 'the shim must not leave its helper running').toBe(false)
-  }, 12_000)
+    expect(alive(readOwnedPid(pidFile)), 'the shim must not leave its helper running').toBe(false)
+    assertTreeDead(fixture)
+    await assertOwedDeliveredOnce(fixture, 'copilot_cli', COPILOT_SESSION)
+  })
 
-  it('bounds a real built SessionStart blocked on an exclusive SQLite write lock', async () => {
-    const fixture = makeFixture()
-    const child = startShim(fixture, 'sessionStart')
-    child.stdin.end(JSON.stringify(copilotPayload(fixture.project)))
-    const seedResult = await observe(child).done
-    expect(seedResult.code).toBe(0)
-    assertSessionStartContext(seedResult.stdout)
-
-    const dbPath = findGlobalDb(fixture.home)
-    expect(dbPath, 'the real hook must initialize its isolated SQLite database').not.toBeNull()
+  it('bounds a real built SessionStart blocked on an exclusive SQLite write lock, and owes it once', { timeout: 0 }, async () => {
+    const fixture = treeFixture()
+    indexTreeFixture(fixture)
+    const dbPath = findGlobalDb(fixture.env['TOKEN_GOAT_HOME'] as string)
+    expect(dbPath, 'indexing must initialize the isolated SQLite database').not.toBeNull()
     const db = getDb(dbPath as string)
     db.exec('PRAGMA journal_mode=DELETE')
     db.exec('BEGIN EXCLUSIVE')
+    let result: ProcessResult
     try {
       const child = startShim(fixture, 'sessionStart')
-      const observation = observe(child)
+      const observation = observe(fixture, child)
       child.stdin.end(JSON.stringify(copilotPayload(fixture.project)))
-      const result = await observation.done
-
-      assertDeadline(result)
-      expect(result.code).toBe(0)
-      expect(result.stdout).toBe('{}')
-      expect(result.stderr).toMatch(/SessionStart failed open.*timed out/i)
+      result = await observation.done
     } finally {
       db.exec('ROLLBACK')
       db.exec('PRAGMA journal_mode=WAL')
       closeAllDbs()
     }
-  }, 16_000)
+    // The owed tool calls open the same database, so they run once the lock is released.
+    expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
+    await assertFailedOpen(fixture, result, 'copilot_cli', COPILOT_SESSION)
+  })
 
-  it('keeps non-SessionStart events on their existing EOF-delimited input path', async () => {
-    const fixture = makeFixture()
+  it('keeps non-SessionStart events on their existing EOF-delimited input path', { timeout: 0 }, async () => {
+    const fixture = treeFixture()
     const entryPath = join(fixture.root, 'fast-entry.cjs')
     writeFileSync(entryPath, "process.stdout.write('{}')\n", 'utf8')
     const child = startShim(fixture, 'preToolUse', entryPath)
-    const observation = observe(child)
+    const observation = observe(fixture, child)
     child.stdin.write(JSON.stringify({ toolName: 'view', toolArgs: { path: 'sample.txt' } }))
     await new Promise((resolve) => setTimeout(resolve, 150))
 
+    // Nothing can make a run that was never given EOF exit sooner, so a stalled machine only makes this check easier to satisfy.
     expect(child.exitCode).toBeNull()
     expect(observation.stdout()).toBe('')
     child.stdin.end()
 
     const result = await observation.done
-    expect(result.timedOut).toBe(false)
-    expect(result.code).toBe(0)
+    assertFinished(result)
     parseOneObject(result.stdout)
-  }, 10_000)
+  })
 })

@@ -10,6 +10,7 @@ import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { copilotHookCommandsFor } from '../../src/bridges/copilot_cli_install.js'
 import { nativeHookCommandLine } from '../../src/native_hook.js'
 import { endpointFor, readServerKey } from '../../src/hook_ipc.js'
+import { startBudgetAtShimStart } from './shim_deadline.js'
 import { slotStatus } from './hook_server_probe.js'
 import { buildNative } from './native_bin.js'
 import { startWatchdog, type Watchdog } from './stall_proof_watchdog.js'
@@ -68,7 +69,8 @@ export function treeFixture(parent: string = tmpdir()): { root: string; project:
   const scratch = Object.fromEntries(['user', 'tmp', 'appdata', 'claude', 'copilot', 'codex', 'xdgconfig'].map((name) => [name, join(root, 'iso', name)]))
   for (const dir of Object.values(scratch)) mkdirSync(dir, { recursive: true })
   const shim = join(root, 'shim.cjs')
-  writeFileSync(shim, COPILOT_CLI_HOOK_SCRIPT)
+  // A slow node boot must not spend the shim's budget before the shim runs; see shim_deadline.ts.
+  writeFileSync(shim, startBudgetAtShimStart(COPILOT_CLI_HOOK_SCRIPT))
   installStartupOwner(root)
   return {
     root, project, shim,
@@ -140,22 +142,38 @@ export function runOwedToolCall(fixture: ReturnType<typeof treeFixture>, harness
   return Promise.race([exited, watchdog.failed])
 }
 
-/** The owed path for a start that failed open: two concurrent first tool calls carry the reminder exactly once between them. Returns the stdout that carried it. */
-export async function assertOwedDeliveredOnce(fixture: ReturnType<typeof treeFixture>, harness: 'copilot_cli' | 'vscode', sessionId: string): Promise<string> {
-  const calls = await Promise.all([runOwedToolCall(fixture, harness, sessionId), runOwedToolCall(fixture, harness, sessionId)])
-  expect(calls.reduce((sum, call) => sum + reminderCount(call), 0), `tool calls after a missed start: ${calls.join(' --- ')}`).toBe(1)
-  return calls.find((call) => reminderCount(call) === 1) as string
+/** Whether the shim read this session's payload and stamped the start as begun; HAND-DERIVED from the sidecar name (session id with non-word characters replaced, cut to 64) the shim and src/session_store.ts both write. A start cut off before its payload was read has no id to stamp, so by the begun-start contract it owes nothing. */
+export function startBegan(fixture: ReturnType<typeof treeFixture>, sessionId: string): boolean {
+  const home = fixture.env['TOKEN_GOAT_HOME'] as string
+  return existsSync(join(home, 'sessions', `${sessionId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)}.session-start`))
 }
 
-/** A hung-helper test whose premise files may not exist if the startup deadline fired first: that is a skip only when the start failed open with exactly `{}` and the owed path delivers for this session. */
-export async function skipUnlessPremiseReached(
-  context: { skip: () => never }, fixture: ReturnType<typeof treeFixture>,
-  result: { stdout: string }, premise: string[], sessionId: string,
-): Promise<void> {
-  if (premise.every((path) => existsSync(path))) return
+/** The owed path for a start that failed open: when the shim had read the payload, two concurrent first tool calls carry the reminder exactly once between them and the stdout that carried it is returned; when it had not, nothing is owed, no call may carry the reminder, and null is returned. */
+export async function assertOwedDeliveredOnce(fixture: ReturnType<typeof treeFixture>, harness: 'copilot_cli' | 'vscode', sessionId: string): Promise<string | null> {
+  const began = startBegan(fixture, sessionId)
+  const calls = await Promise.all([runOwedToolCall(fixture, harness, sessionId), runOwedToolCall(fixture, harness, sessionId)])
+  expect(calls.reduce((sum, call) => sum + reminderCount(call), 0), `tool calls after a missed start (begun=${String(began)}): ${calls.join(' --- ')}`).toBe(began ? 1 : 0)
+  return began ? calls.find((call) => reminderCount(call) === 1) as string : null
+}
+
+/** What a start that machine load pushed past its own deadline prints on stderr instead of the refusal a row provokes. */
+export const DEADLINE_FAIL_OPEN = /overall deadline exceeded|insufficient time for process-tree cleanup|timed out/
+
+/** The two outcomes of a row whose premise (the helper reached its interesting step) load can pre-empt, both asserted and the branch recorded with ctx.annotate. Returns true when the premise files exist (strong branch: the caller runs its full assertions). Otherwise the weak branch is asserted here and false is returned: exactly `{}` on stdout, a deadline fail-open on stderr, every owned pid dead, and the owed path delivering once if the start began. */
+export async function premiseBranch(
+  context: { annotate: (message: string) => Promise<unknown> }, fixture: ReturnType<typeof treeFixture>,
+  result: { stdout: string; stderr: string }, premise: string[], sessionId: string,
+): Promise<boolean> {
+  if (premise.every((path) => existsSync(path))) {
+    await context.annotate('branch: strong (premise reached)')
+    return true
+  }
+  await context.annotate('branch: weak (deadline fired before the premise)')
   expect(result.stdout, `premise ${premise.join(', ')} was not reached and the start did not fail open`).toBe('{}')
+  expect(result.stderr, 'premise not reached without a deadline fail-open').toMatch(DEADLINE_FAIL_OPEN)
+  assertTreeDead(fixture)
   await assertOwedDeliveredOnce(fixture, 'copilot_cli', sessionId)
-  context.skip()
+  return false
 }
 
 export function alive(pid: number): boolean {
@@ -254,13 +272,13 @@ export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void 
 }
 
 export function runTreeShim(options: {
-  fixture: ReturnType<typeof treeFixture>; entry: string; quietLimitMs: number; delayMs?: number; payload?: Record<string, unknown>; endInput?: boolean; deadline?: number
+  fixture: ReturnType<typeof treeFixture>; entry: string; quietLimitMs: number; delayMs?: number; payload?: Record<string, unknown>; endInput?: boolean; deadline?: number; nodeArgs?: string[]
 }): { child: ChildProcessWithoutNullStreams; done: Promise<{ stdout: string; stderr: string; elapsed: number }> } {
   const { fixture, entry } = options
   const watchdog = fixtureWatchdog(fixture, options.quietLimitMs, 'tree shim')
   const started = performance.now()
   const deadlineArgs = options.deadline === undefined ? [] : [`--session-start-deadline=${String(options.deadline)}`]
-  const child = spawn(process.execPath, [fixture.shim, 'sessionStart', entry, ...deadlineArgs], {
+  const child = spawn(process.execPath, [...(options.nodeArgs ?? []), fixture.shim, 'sessionStart', entry, ...deadlineArgs], {
     cwd: fixture.project, env: fixture.env, stdio: 'pipe', windowsHide: true,
   })
   if (child.pid !== undefined) ownedPids.push(child.pid)

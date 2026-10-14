@@ -168,8 +168,8 @@ describe('built bundle: deferred session start (R2, R5, R8, R9)', () => {
     const fixture = makeFixture()
     const sid = 'bundle-r9-session'
     const past = Date.now() - 60_000
-    const payload = { sessionId: sid, workingDirectory: fixture.project, source: 'startup' }
-    const start = await exec([fixture.shim, 'sessionStart', BUNDLE, `--session-start-deadline=${past}`], fixture, {}, JSON.stringify(payload))
+    // No payload ever arrives: a payload that did arrive would have been stamped begun and owed, which tests/bridges/copilot_session_start_late_payload.test.ts pins.
+    const start = await exec([fixture.shim, 'sessionStart', BUNDLE, `--session-start-deadline=${past}`], fixture, {}, '')
     expect(start.stdout).toBe('{}')
     const first = await hook(fixture, 'post_tool_use', 'copilot_cli', toolPayload(fixture, sid))
     expect(occurrences(first.stdout), first.stdout).toBe(0)
