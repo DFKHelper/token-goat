@@ -10,7 +10,7 @@ import { removeProbe, writeProbe } from '../helpers/vitest-probe.js'
 import { pinnedPopulation } from './population.js'
 
 // Deleted by their own lines in tests/setup/isolate-home.ts, which say why.
-const SCRUBBED_ELSEWHERE: readonly string[] = ['CLAUDE_CONFIG_DIR', 'CLAUDE_PROJECT_DIR']
+const SCRUBBED_ELSEWHERE: readonly string[] = ['CLAUDE_CONFIG_DIR', 'CLAUDE_PROJECT_DIR', 'CLAUDE_CODE_TMPDIR']
 const PROBE_NAME = 'zz_generated_claude_session_probe.test.ts'
 let probe: string | undefined
 

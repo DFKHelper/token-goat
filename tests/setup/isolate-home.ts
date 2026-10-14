@@ -60,6 +60,8 @@ delete process.env['CLAUDE_CONFIG_DIR']
 delete process.env['CLAUDE_PROJECT_DIR']
 // CODEX_HOME points rewrite_permission.ts at Codex's rules files, and an inherited one would hand spawned bundles the developer's own rules; a test that wants it sets its own.
 delete process.env['CODEX_HOME']
+// CLAUDE_CODE_TMPDIR moves Claude Code's temp tree, whose `claude/` folder hooks_read_post.ts leaves unfolded, so an inherited one would decide which fixtures a test sees folded; a test that wants it sets its own.
+delete process.env['CLAUDE_CODE_TMPDIR']
 // A suite run from a Claude Code Bash call inherits the session: CLAUDE_PID sends the hidden-rule check to the developer's own claude command line, CLAUDE_CODE_ENTRYPOINT decides whether it trusts the host, the session id keys its cache, and doctor's probe reads the rest as Claude Code signals; CI has none of them, so they are deleted and a test that wants one sets its own.
 scrubClaudeSessionEnv(process.env)
 
