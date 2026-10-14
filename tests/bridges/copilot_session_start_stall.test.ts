@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { runInNewContext } from 'node:vm'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { COPILOT_SESSION_START_HELPERS } from '../../src/bridges/copilot_session_start.js'
 import { closeAllDbs, getDb } from '../../src/db.js'
@@ -332,14 +332,38 @@ describe('Copilot shared-shim SessionStart deadline', { timeout: 0 }, () => {
       expect(await outcomeOf(loadReader(stdin)(0))).toEqual({ state: 'resolved', value: object })
     })
 
-    it('rejects with the deadline when nothing arrives', async () => {
-      const stdin = new PassThrough()
-      const promise = loadReader(stdin)(0)
-      // The reader's own zero-length timer must fire, so each step waits on a real timer tick; the count of ticks is the bound, never a clock reading.
-      let outcome: Outcome = { state: 'pending' }
-      promise.then((value) => { outcome = { state: 'resolved', value } }, (error: Error) => { outcome = { state: 'rejected', message: error.message } })
-      for (let tick = 0; tick < 50 && outcome.state === 'pending'; tick += 1) await new Promise((resolve) => setTimeout(resolve, 1))
-      expect(outcome).toEqual({ state: 'rejected', message: 'input deadline exceeded' })
+    // HAND-DERIVED: the grace is read off the embedded helper text, so the rows move with the constant instead of restating it.
+    const lateGraceMs = Number(/SESSION_START_LATE_PAYLOAD_GRACE_MS = (\d+)/.exec(COPILOT_SESSION_START_HELPERS)?.[1])
+
+    it('rejects with the deadline when nothing arrives within the grace after expiry', async () => {
+      vi.useFakeTimers()
+      try {
+        const stdin = new PassThrough()
+        const promise = loadReader(stdin)(0)
+        let outcome: Outcome = { state: 'pending' }
+        promise.then((value) => { outcome = { state: 'resolved', value } }, (error: Error) => { outcome = { state: 'rejected', message: error.message } })
+        await vi.advanceTimersByTimeAsync(lateGraceMs - 1)
+        expect(outcome, 'still inside the grace').toEqual({ state: 'pending' })
+        await vi.advanceTimersByTimeAsync(2)
+        expect(outcome).toEqual({ state: 'rejected', message: 'input deadline exceeded' })
+      } finally { vi.useRealTimers() }
+    })
+
+    it('resolves a payload that lands inside the grace after the deadline expired', async () => {
+      vi.useFakeTimers()
+      try {
+        const stdin = new PassThrough()
+        const object = JSON.stringify(copilotPayload('p'))
+        const promise = loadReader(stdin)(0)
+        let outcome: Outcome = { state: 'pending' }
+        promise.then((value) => { outcome = { state: 'resolved', value } }, (error: Error) => { outcome = { state: 'rejected', message: error.message } })
+        // Past the expiry and well inside the grace: the read completion of a Windows pipe lands on a worker thread, so it can arrive after the deadline timer and its setImmediate.
+        await vi.advanceTimersByTimeAsync(Math.floor(lateGraceMs / 2))
+        expect(outcome).toEqual({ state: 'pending' })
+        stdin.write(object)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(outcome).toEqual({ state: 'resolved', value: object })
+      } finally { vi.useRealTimers() }
     })
   })
 

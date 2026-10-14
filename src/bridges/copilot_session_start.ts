@@ -4,6 +4,8 @@ import { SHIM_SESSION_START_TIMEOUT_MS } from './shim_common.js'
 export const COPILOT_SESSION_START_HELPERS = `
 const SHIM_SESSION_START_TIMEOUT_MS = ${SHIM_SESSION_START_TIMEOUT_MS}
 const SESSION_START_CLEANUP_RESERVE_MS = 1000
+// How long past the deadline the shim keeps its stdin listener for a payload already in the pipe: on Windows the pipe read completes on a worker thread, so the completion can land many event-loop turns after the listener attaches. Measured resume-to-data under 52 busy loops on 26 CPUs: p50 5.7 ms, max 204 ms.
+const SESSION_START_LATE_PAYLOAD_GRACE_MS = 1000
 const SESSION_START_MAX_INPUT_BYTES = 1024 * 1024
 
 function failOpenSessionStart(reason) {
@@ -117,8 +119,8 @@ function readSessionStartInput(timeoutMs) {
       finish('stdin could not be read')
     }
 
-    // A payload already in the pipe must be framed even when the deadline has passed, so the expiry is deferred one turn: the poll phase delivers buffered stdin before setImmediate runs.
-    timer = setTimeout(() => setImmediate(() => finish('input deadline exceeded')), Math.max(0, timeoutMs))
+    // A payload already in the pipe must be framed even when the deadline has passed: expiry opens one bounded grace window that data, end or error closes at once, so only a payload that never arrives costs the full grace.
+    timer = setTimeout(() => { timer = setTimeout(() => finish('input deadline exceeded'), SESSION_START_LATE_PAYLOAD_GRACE_MS) }, Math.max(0, timeoutMs))
     process.stdin.on('data', onData)
     process.stdin.on('end', onEnd)
     process.stdin.on('error', onError)
