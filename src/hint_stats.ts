@@ -259,9 +259,12 @@ export function isSuppressionCategory(category: HintCategory): boolean {
 /** Tool-input keys that name the file a non-Bash read/edit tool is about, across harnesses. */
 const EVENT_PATH_KEYS = ['file_path', 'filePath', 'notebook_path', 'path'] as const
 
-/** The text of this event that a correlator can be looked for in: the Bash command, or the file path a Read/Edit-shaped tool was pointed at. A suppression hint is defied by a plain `Read` just as much as by a `cat`, so both shapes have to be visible here. */
+/** The tools whose `command` is a shell command a later hint can be followed or defied in: Bash, and Claude Code's PowerShell tool, which runs `token-goat bash-output <id>` just as well. */
+const SHELL_TOOL_NAMES: ReadonlySet<string> = new Set(['Bash', 'PowerShell'])
+
+/** The text of this event that a correlator can be looked for in: the shell command, or the file path a Read/Edit-shaped tool was pointed at. A suppression hint is defied by a plain `Read` just as much as by a `cat`, so both shapes have to be visible here. */
 function eventTargetText(event: HookEvent): string {
-  if (event.toolName === 'Bash') {
+  if (SHELL_TOOL_NAMES.has(event.toolName ?? '')) {
     const c = event.toolInput['command']
     return typeof c === 'string' ? c : ''
   }
@@ -291,7 +294,7 @@ function isActedOn(category: HintCategory, correlator: string, command: string):
 export function resolvePendingHintsForEvent(event: HookEvent): void {
   try {
     const db = getDb(globalDbPath())
-    const command = event.toolName === 'Bash' && typeof event.toolInput['command'] === 'string' ? event.toolInput['command'] : ''
+    const command = SHELL_TOOL_NAMES.has(event.toolName ?? '') && typeof event.toolInput['command'] === 'string' ? event.toolInput['command'] : ''
     const target = eventTargetText(event)
     const pending = db
       .prepare(`SELECT id, category, correlator, calls_remaining FROM hint_emissions WHERE session_id = ? AND resolved = 0`)

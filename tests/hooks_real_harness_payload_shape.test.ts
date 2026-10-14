@@ -7,7 +7,7 @@ import { buildEvent } from '../src/relay.js'
 import { runHook } from '../src/hook_registry.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import { postFetchHandler } from '../src/hooks_fetch.js'
-import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS } from '../src/hooks_common.js'
+import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, BODY_FIRST_TOOL_RESPONSE_KEYS, replaceToolResponseField } from '../src/hooks_common.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { expectHookType } from './helpers/hook-output.js'
 import { UNTRUSTED_WEB_TAG } from '../src/injection_scan.js'
@@ -95,10 +95,12 @@ describe('real Claude Code tool_response shapes', () => {
     expect(extractToolResponseField({ tool_response: body }, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)).toBe('warning: unused variable `x`')
   })
 
-  it('never lets stderr beat a populated stdout', () => {
-    // Control for the over-fix direction: stderr is a last resort, not a merge. Goes red if stderr is promoted ahead of stdout or the two are concatenated.
+  it('never lets stderr beat a populated stdout, and reads it after stdout when both carry text', () => {
+    // Control for the over-fix direction: stderr is never promoted ahead of stdout. Read together, though, since a rewrite replaces what it read: replacing stdout alone left stderr shipping raw beside token-goat's own notices (see resolveToolResponseFieldPaths).
     const body = { stdout: 'the real output', stderr: 'a progress line', interrupted: false, isImage: false, noOutputExpected: false }
-    expect(extractToolResponseField({ tool_response: body }, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)).toBe('the real output')
+    expect(extractToolResponseField({ tool_response: body }, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)).toBe('the real output\na progress line')
+    const replaced = replaceToolResponseField(body, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, 'rewritten')
+    expect(replaced).toEqual({ ...body, stdout: 'rewritten', stderr: '' })
   })
 
   it('returns empty when every candidate field is present but empty', () => {

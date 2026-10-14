@@ -1,4 +1,4 @@
-/** post_tool_use hook for the Bash tool: caches a finished command's output for recall, records the files it read and the paths it rewrote, and replaces a result with a smaller rendering of the same bytes where one pays (served-line elision, identical-read collapse, structural and body folds, compound-command compression, curl HTML cleanup, ANSI stripping), plus the `gh api`, failing-test and large-output advisories. The pre_tool_use half is hooks_bash.ts. Neither module imports the other: each registers its handlers at module scope. */
+/** post_tool_use hook for the Bash tool: caches a finished command's output for recall, records the files it read and the paths it rewrote, and replaces a result with a smaller rendering of the same bytes where one pays (served-line elision, identical-read collapse, structural and body folds, compound-command compression, curl HTML cleanup, ANSI stripping), plus the `gh api`, failing-test and large-output advisories. Claude Code's PowerShell tool gets the output half of that (compression, the fence, the recall copy, the large-output advisory) from postPowerShellHandler. The pre_tool_use half is hooks_bash.ts. Neither module imports the other: each registers its handlers at module scope. */
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
@@ -22,7 +22,7 @@ import { foldDetail, type BodyFold } from './code_fold.js'
 import { redactSecrets } from './secret_redact.js'
 import { findProject } from './project.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow, type ServedBody } from './served_lines.js'
-import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
+import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, resolveMinNetSavingsBytes, type ToolFilter } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -317,6 +317,16 @@ async function maybeElideServedGenericOutput(
   return emitRewrite(rewrittenText, 'already-served shell output collapsed', { kind: 'bash_compress:generic-served-elision', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
+/** Names PowerShell gives to commands of its own that share a name with a tool token-goat has a filter for, or that it resolves before any program on PATH: `ls`/`dir` are Get-ChildItem, `cat`/`type` Get-Content, `curl`/`wget` Invoke-WebRequest in Windows PowerShell 5.1, `sort` Sort-Object, `diff` Compare-Object, `ps` Get-Process, `echo` Write-Output, `tee` Tee-Object. What they print is a cmdlet's object formatting, not the tool's text, so a filter written for the tool's text would misread it. */
+const POWERSHELL_OWN_NAMES: ReadonlySet<string> = new Set(['ls', 'dir', 'gci', 'cat', 'type', 'gc', 'curl', 'wget', 'iwr', 'irm', 'cp', 'copy', 'mv', 'move', 'rm', 'del', 'rmdir', 'rd', 'ps', 'gps', 'kill', 'sort', 'diff', 'compare', 'echo', 'write', 'tee', 'select', 'where', 'sls', 'man', 'help', 'pwd', 'cd', 'sleep', 'start', 'measure'])
+
+/** The filter for a PowerShell command, or null for the generic filter. Only a single command that runs an external program qualifies, since the program prints the same text whichever shell started it: a cmdlet (`Verb-Noun`) or one of {@link POWERSHELL_OWN_NAMES} prints PowerShell's formatting, and a pipeline, statement list or call operator is PowerShell grammar the bash-shaped command parser cannot read, which detectFromCommand already refuses. */
+function powerShellFilterFor(cmd: string, runDir: string | null): { filter: ToolFilter; argv: string[] } | null {
+  const head = cmd.trimStart().split(/\s+/)[0] ?? ''
+  if (/^[A-Za-z]+-[A-Za-z]+$/.test(head) || POWERSHELL_OWN_NAMES.has(head.toLowerCase())) return null
+  return detectFromCommand(cmd, runDir ?? undefined)
+}
+
 async function maybeCompressCompoundOutput(
   cmd: string,
   optedOut: boolean,
@@ -325,6 +335,7 @@ async function maybeCompressCompoundOutput(
   runDir: string | null,
   cacheMinBytes: number,
   isUnwrapped = false,
+  powerShell = false,
 ): Promise<HookOutput | null> {
   if (optedOut) return null
   // A wrapped command's output already went through the runner, whatever its shape: the capped interpreter-read wrapper runs multi-line scripts and heredocs too, and keyed on the inner command being a single one, their already-capped output was compressed a second time as a compound command's. Unwrapped single commands (e.g. in environments without pre-hook rewriting) reach here and are eligible for compression.
@@ -344,14 +355,14 @@ async function maybeCompressCompoundOutput(
   if (!cfg.enabled || cfg.disabled_filters.includes('generic')) return null
   if (Buffer.byteLength(output, 'utf-8') < cacheMinBytes) return null
   // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; an unwrapped single command gets its command-specific filter; everything else keeps the generic filter this path has always used. Both lookups find a package-manager script's runner in the directory the command ran in, not the event's cwd, which for a subagent is where the call started whatever its cd did, and the store below files the output under that directory too. Under the event's cwd, an unwrapped `cd ../other && git diff` left the other repository's diff where a later `git diff` in the starting one took it for its own prior run, and the waste report, which looks a call up under the directory it ran in, found nothing.
-  const shaped = pipelineShapeFilter(cmd, runDir) ?? (isUnwrapped ? detectFromCommand(cmd, runDir ?? undefined) ?? null : null)
+  const shaped = powerShell ? powerShellFilterFor(cmd, runDir) : pipelineShapeFilter(cmd, runDir) ?? (isUnwrapped ? detectFromCommand(cmd, runDir ?? undefined) ?? null : null)
   const useShaped = shaped !== null && !cfg.disabled_filters.includes(shaped.filter.name)
   const filter = useShaped ? shaped.filter : filterByName('generic')
   if (filter === null) return null
   // Only the shaped filter gets argv: the generic fallback is chosen precisely because no filter claimed this command, so handing it the first stage's tokens would invite it to read flags meant for something else.
   const filterArgv = useShaped ? shaped.argv : []
   // Output is the combined stdout/stderr stream the harness already merged, so pass it as stdout. The shaped filter sees only the first stage's argv, so a `| head -N` the caller already bounded the output with travels beside it.
-  const lineBound = useShaped ? pipelineLineBound(cmd) : null
+  const lineBound = useShaped && !powerShell ? pipelineLineBound(cmd) : null
   const compressed = compressOutput(filter, output, '', exitCode ?? 0, filterArgv, {
     maxLines: cfg.max_lines,
     maxBytes: cfg.max_bytes,
@@ -402,7 +413,7 @@ function maybeStripAnsiOnly(output: string): HookOutput | null {
   if (!cfg.enabled || cfg.disabled_filters.includes('ansi')) return null
   const stripped = stripAnsiEscapes(output)
   const originalBytes = Buffer.byteLength(output, 'utf-8')
-  // Deliberately not fenced, unlike the compressing path above. The fence marks where token-goat stops speaking and third-party bytes begin, and it earns that only where token-goat has something of its own in the block: the compressing path drops lines, vouches for what it kept, and splices a `[token-goat: ...]` marker in beside content it did not write. This path does none of that. It emits `stripped` alone -- no marker, no recall pointer, no summary -- so the model receives the same bytes the harness would have delivered anyway, minus escape sequences it cannot render. There is no token-goat voice here to delimit. Pricing a fence in here also costs the strip itself: the whole saving is the escape bytes, so the fence's ~123 outweighs it on ordinary build output, the gate returns null, and the raw output reaches the model unfenced regardless -- losing the strip and buying no safety.
+  // Deliberately not fenced, unlike the compressing path above. The fence marks where token-goat stops speaking and third-party bytes begin, and it earns that only where token-goat has something of its own in the block: the compressing path drops lines, vouches for what it kept, and splices a `[token-goat: ...]` marker in beside content it did not write. This path does none of that. It emits the stripped output alone, redacted -- no marker, no recall pointer, no summary -- so the model receives the same bytes the harness would have delivered anyway, minus escape sequences it cannot render and any credential. There is no token-goat voice here to delimit. Pricing a fence in here also costs the strip itself: the whole saving is the escape bytes, so the fence's ~123 outweighs it on ordinary build output, the gate returns null, and the raw output reaches the model unfenced regardless -- losing the strip and buying no safety.
   if (
     !isRewriteWorthwhile({
       originalBytes,
@@ -413,8 +424,10 @@ function maybeStripAnsiOnly(output: string): HookOutput | null {
   ) {
     return null
   }
-  // 'counted-elsewhere': this pass redacts nothing, it only removes escape bytes. Any placeholder in `stripped` was already in the original and was booked by whoever put it there, so counting here would credit this path with a redaction it did not perform. Capped at the harness delivery cap for the same reason as the other Bash rewrite sites.
-  return emitRewrite(stripped, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes: deliveredOutputBytes(originalBytes) }, 'counted-elsewhere')
+  // Redacted before it ships, as every rewrite is: once this pass substitutes the result, the bytes are token-goat's emission, and a credential the command printed would reach the model through it. Only the values this pass redacted are booked; a placeholder already in the output was put there, and counted, by whoever wrote it (the compress runner for a wrapped command), so 'counted-elsewhere' keeps emitRewrite from booking it twice. Capped at the harness delivery cap for the same reason as the other Bash rewrite sites.
+  const redacted = redactSecrets(stripped)
+  if (redacted.count > 0) recordStat('secret_redacted', 0, redacted.count, undefined, 'ansi escapes stripped')
+  return emitRewrite(redacted.text, 'ansi escapes stripped', { kind: 'bash_compress:ansi', originalBytes: deliveredOutputBytes(originalBytes) }, 'counted-elsewhere')
 }
 
 // A `curl` GET of an HTML page is the one Bash shape hooks_fetch.ts's WebFetch path already solves and this surface never reached: the harness's delivery cap (see delivery_cap.ts) truncates a Bash result long before article text past the `<head>`/inline CSS/`<script>` preamble arrives, so the model can pay the full cap and still receive zero article content. Modelled on maybeStripAnsiOnly above, but this pass is lossy (extractCleanText drops markup, not just display-only bytes) so, unlike that one, it appends a recall notice pointing at the raw cached copy and prices that notice's own bytes in the net-benefit gate.
@@ -620,6 +633,7 @@ async function maybeEmitLargeUncompressedHint(
   event: HookEvent,
   ansiResult: HookOutput | null,
   persisted: boolean,
+  powerShell = false,
 ): Promise<HookOutput | null> {
   const outputBytes = Buffer.byteLength(output, 'utf-8')
   if (
@@ -628,11 +642,13 @@ async function maybeEmitLargeUncompressedHint(
     (exitCode !== null && exitCode !== 0) ||
     // token-goat's own output is already the narrow form; telling the model to compress it is noise.
     isTokenGoatOwnCommand(cmd) ||
-    // a line-range read, piped or repeated, is already the narrow slice; compressing it saves nothing.
-    extractLineRangeReadsCompound(cmd) !== null ||
-    // nor does compressing a whole-file read such as `cat f | head -200`: the file-read branch already folded whatever it could, and when it found nothing to fold this hint used to fire in its place.
-    pureFileReadPath(cmd) !== null ||
-    (event.raw['_tg_harness'] !== 'vscode' && (isCompressibleSingleCommand(cmd) || !isUnwrapped))
+    // The rest are Bash's: a PowerShell command is never wrapped for compression and has no file-read branch to defer to.
+    (!powerShell &&
+      // a line-range read, piped or repeated, is already the narrow slice; compressing it saves nothing.
+      (extractLineRangeReadsCompound(cmd) !== null ||
+        // nor does compressing a whole-file read such as `cat f | head -200`: the file-read branch already folded whatever it could, and when it found nothing to fold this hint used to fire in its place.
+        pureFileReadPath(cmd) !== null ||
+        (event.raw['_tg_harness'] !== 'vscode' && (isCompressibleSingleCommand(cmd) || !isUnwrapped))))
   ) {
     return null
   }
@@ -650,7 +666,8 @@ async function maybeEmitLargeUncompressedHint(
   const cdHost = cdDir === null ? null : dirAtIndexKey(cdDir)
   const runCmd = cdHost === null ? bare : `cd '${cdHost}' && ${bare}`
   const compressable = !/["`$\r\n]/.test(runCmd) && (cdDir === null || (cdHost !== null && !cdHost.includes("'")))
-  const compress = repeat && compressable && !wasHintShown(compressKey)
+  // `compress -c` runs its command under bash, so a PowerShell command gets no suggestion.
+  const compress = !powerShell && repeat && compressable && !wasHintShown(compressKey)
   if (!recall && !compress) return null
   if (recall) markHintShown(recallKey)
   if (compress) markHintShown(compressKey)
@@ -933,3 +950,30 @@ async function postBashResultHandler(event: HookEvent, output: string): Promise<
 }
 
 registerHook('post_tool_use', postBashHandler, { toolName: 'Bash' })
+
+/** `$env:TOKEN_GOAT_BASH_COMPRESS = '0'` leading a PowerShell command, the spelling of the opt-out the compression marker names. */
+const POWERSHELL_COMPRESS_OPT_OUT_RE = /^\s*\$env:TOKEN_GOAT_BASH_COMPRESS\s*=\s*(?:'0'|"0"|0)\s*(?:;|$)/im
+
+/** post_tool_use handler for Claude Code's PowerShell tool. It runs a command the way the Bash tool does and returns the same `{stdout, stderr, interrupted, isImage}` result, and it got none of the Bash tool's output handling: 372 recorded PowerShell results, none compressed, fenced or kept for recall. This is the output half of the Bash path only. The pre hook rewrites nothing for PowerShell, since its compress wrapper and heredoc handling are bash syntax, so every command arrives here as it ran, and the filter is chosen with PowerShell's own command names in mind (see powerShellFilterFor). The rewrite goes through the same compressor as an unwrapped Bash command (redaction, the untrusted-content fence, the recall copy, the net-benefit gate), then the same lossless ANSI strip and large-output advisory, without the `compress -c` suggestion that would run the command under bash. */
+export async function postPowerShellHandler(event: HookEvent): Promise<HookOutput> {
+  try {
+    const command = extractCommand(event)
+    if (command === undefined) return passOutput()
+    const output = extractBashOutput(event)
+    const exitCode = extractExitCode(event.raw)
+    const runDir = getCwd(event) ?? null
+    const resp = event.raw['tool_response']
+    const persisted = resp !== null && typeof resp === 'object' && typeof (resp as Record<string, unknown>)['persistedOutputPath'] === 'string' && (resp as Record<string, unknown>)['persistedOutputPath'] !== ''
+    const optedOut = POWERSHELL_COMPRESS_OPT_OUT_RE.test(command)
+    const compressed = await maybeCompressCompoundOutput(command, optedOut, output, exitCode, runDir, loadConfig().bash_compress.cache_min_bytes, true, true)
+    if (compressed !== null) return compressed
+    const ansiStripped = optedOut ? null : maybeStripAnsiOnly(output)
+    const largeHint = await maybeEmitLargeUncompressedHint(command, command, optedOut, output, exitCode, runDir, true, event, ansiStripped, persisted, true)
+    return largeHint ?? ansiStripped ?? passOutput()
+  } catch {
+    // Never block: hook failures must be silent.
+  }
+  return passOutput()
+}
+
+registerHook('post_tool_use', postPowerShellHandler, { toolName: 'PowerShell' })

@@ -73,6 +73,9 @@ function responseShapePairs(): { first: Record<string, unknown>; second: Record<
   }
   // The credential goes BEFORE the `## Approved Plan:` marker on purpose. That handler's rewrite keeps the text up to the marker and discards the echoed body after it, so a secret placed in the body would be dropped by the truncation rather than by any redaction -- the assertion would pass while proving nothing about whether the handler redacts.
   const plan = `User has approved your plan. Context: AWS_ACCESS_KEY_ID=${SECRET}\n\n## Approved Plan:\n${PLAN_BODY}`
+  // Colour codes around a short build log, so the ANSI-only strip is the pass that rewrites it: that pass emits the command's bytes minus escapes, and shipped them unredacted. The same bytes both times, so the rerun delta stays out of the way on the second call.
+  const colour = (s: string): string => `\x1b[32m${s}\x1b[0m`
+  const ansi = Array.from({ length: 30 }, (_, i) => colour(`compiled module ${i}`)).join('\n') + `\n${colour(`export AWS_ACCESS_KEY_ID=${SECRET}`)}\n`
   return [
     { first: { output: clean, exit_code: 0 }, second: { output: withSecret, exit_code: 0 } },
     { first: { content: [{ type: 'text', text: report }] }, second: { content: [{ type: 'text', text: report }] } },
@@ -82,6 +85,7 @@ function responseShapePairs(): { first: Record<string, unknown>; second: Record<
     { first: webSearchResponse(withSecret), second: webSearchResponse(withSecret) },
     // The credential only in a hit object's URL: hit objects reach the model as "Links: <json>", outside the fence, so they are redacted where they sit.
     { first: webSearchResponse(clean, `https://example.com/deploy?key=${SECRET}`), second: webSearchResponse(clean, `https://example.com/deploy?key=${SECRET}`) },
+    { first: { stdout: ansi, stderr: '' }, second: { stdout: ansi, stderr: '' } },
   ]
 }
 
@@ -101,6 +105,9 @@ function toolInputFor(toolName: string): Record<string, unknown> {
     // Compound, so it reaches the post-hook's generic compressor rather than the pre-hook wrapper.
     case 'Bash':
       return { command: 'npm install && npm run build' }
+    // A statement list, which the PowerShell output path hands to the generic compressor.
+    case 'PowerShell':
+      return { command: 'npm install; npm run build' }
     case 'BashOutput':
       return { bash_id: 'bash-1' }
     case 'TaskOutput':
@@ -170,6 +177,7 @@ describe('no post_tool_use handler rewrites a tool result into text carrying a c
       'BashOutput',
       'ExitPlanMode',
       'Grep',
+      'PowerShell',
       'Task',
       'TaskOutput',
       'WebFetch',

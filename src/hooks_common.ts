@@ -67,10 +67,23 @@ export function extractToolResponseField(raw: Record<string, unknown>, keys: rea
   if (typeof resp === 'string') return resp
   if (resp !== null && typeof resp === 'object') {
     const r = resp as Record<string, unknown>
-    const path = resolveToolResponseFieldPath(r, keys)
-    if (path !== null) return readAtPath(r, path)
+    const paths = resolveToolResponseFieldPaths(r, keys)
+    if (paths !== null) return joinStreams(paths.map((p) => readAtPath(r, p)))
   }
   return ''
+}
+
+/** The text of the fields {@link resolveToolResponseFieldPaths} names, as one body: each stream's text in order, a newline between them. */
+function joinStreams(parts: readonly string[]): string {
+  return parts.reduce((acc, part) => (acc === '' ? part : acc + (acc.endsWith('\n') ? '' : '\n') + part), '')
+}
+
+/** Every field a body is read from and a rewrite replaces: the one {@link resolveToolResponseFieldPath} names, and `stderr` as well when that field is `stdout` and both carry text. A shell result's streams are one result to the model, so a rewrite that replaced `stdout` alone left `stderr` to ship as it came, unredacted and outside the untrusted-content fence, directly after token-goat's own closing notices, where a command's stderr could pass for them. Reading both, then putting the rewrite in `stdout` and emptying `stderr`, keeps everything the command printed inside what the rewrite handles. */
+export function resolveToolResponseFieldPaths(resp: Record<string, unknown>, keys: readonly string[]): readonly (readonly string[])[] | null {
+  const path = resolveToolResponseFieldPath(resp, keys)
+  if (path === null) return null
+  if (path.length === 1 && path[0] === 'stdout' && keys.includes('stderr') && typeof resp['stderr'] === 'string' && resp['stderr'] !== '') return [path, ['stderr']]
+  return [path]
 }
 
 /** Nested paths probed after the flat key walk fails, in order. Claude Code's `Read` result is `{type: 'text', file: {filePath, content, numLines, startLine, totalLines}}` -- CAPTURE, 13,324 of 13,324 object-shaped Read results in the recorded session corpus. Neither `type` nor `file` appears in any key list, and the body lives one level down at `file.content`, so a flat walk resolved nothing and every Read-shaped consumer read the empty string. That is why `read:served_elide` never fired on the wire. */
@@ -106,23 +119,26 @@ export function replaceToolResponseField(
   keys: readonly string[],
   newText: string,
 ): Record<string, unknown> | null {
-  const path = resolveToolResponseFieldPath(resp, keys)
-  if (path === null) return null
+  const paths = resolveToolResponseFieldPaths(resp, keys)
+  if (paths === null) return null
   const root: Record<string, unknown> = { ...resp }
-  let cur = root
-  for (let i = 0; i < path.length - 1; i++) {
-    const seg = path[i] as string
-    const child = cur[seg]
-    if (child === null || typeof child !== 'object') return null
-    const cloned: Record<string, unknown> = { ...(child as Record<string, unknown>) }
-    cur[seg] = cloned
-    cur = cloned
+  for (const [n, path] of paths.entries()) {
+    let cur = root
+    for (let i = 0; i < path.length - 1; i++) {
+      const seg = path[i] as string
+      const child = cur[seg]
+      if (child === null || typeof child !== 'object') return null
+      const cloned: Record<string, unknown> = { ...(child as Record<string, unknown>) }
+      cur[seg] = cloned
+      cur = cloned
+    }
+    // The rewrite stands for every field the body was read from, so the first carries it and the rest are emptied.
+    cur[path[path.length - 1] as string] = n === 0 ? newText : ''
   }
-  cur[path[path.length - 1] as string] = newText
   return root
 }
 
-/** Shared `extractToolResponseField` key order for Bash/Grep/Read, which all prefer `output` over `body`. `stdout` is last but is the key Claude Code itself actually uses: its Bash `tool_response` is `{stdout, stderr, interrupted, isImage, noOutputExpected}`, carrying none of the four names ahead of it. Without it every post-Bash path that needs the command's output (the bash-output cache, the `gh api` scope/`--jq` hints, the failing-test-runner advisory, compound-command compression) read an empty string and did nothing on the harness token-goat primarily targets. It is appended rather than promoted so no harness that does send `output`/`content`/`text`/`body` changes which field wins. `stderr` is last of all, so it only answers when every earlier field is missing or empty. A command that writes only to stderr (a compiler diagnostic, a linter that reports on the error stream) still produced real output the post-Bash paths should see; without this the whole result read as empty. */
+/** Shared `extractToolResponseField` key order for Bash/Grep/Read, which all prefer `output` over `body`. `stdout` is last but is the key Claude Code itself actually uses: its Bash `tool_response` is `{stdout, stderr, interrupted, isImage, noOutputExpected}`, carrying none of the four names ahead of it. Without it every post-Bash path that needs the command's output (the bash-output cache, the `gh api` scope/`--jq` hints, the failing-test-runner advisory, compound-command compression) read an empty string and did nothing on the harness token-goat primarily targets. It is appended rather than promoted so no harness that does send `output`/`content`/`text`/`body` changes which field wins. `stderr` is last of all, so it only answers when every earlier field is missing or empty. A command that writes only to stderr (a compiler diagnostic, a linter that reports on the error stream) still produced real output the post-Bash paths should see; without this the whole result read as empty. When `stdout` and `stderr` both carry text the two are read together and a rewrite replaces both (see resolveToolResponseFieldPaths). */
 export const OUTPUT_FIRST_TOOL_RESPONSE_KEYS: readonly string[] = ['output', 'content', 'text', 'body', 'stdout', 'stderr']
 
 /** Shared `extractToolResponseField` key order for WebFetch/Skill, which prefer `body` over `content`. `result` is appended for the same reason `stdout` is above: Claude Code's WebFetch `tool_response` is `{result, url, code, codeText, bytes, durationMs}`, so the fetched page body arrives under `result` and nothing else. Without it the injection scan, the secret redaction and the body cache all ran against an empty string on every real fetch. */
