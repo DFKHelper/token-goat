@@ -8,6 +8,7 @@ import { registerReset } from './reset.js'
 import { foldPath } from './util.js'
 import { shortFingerprint } from './fingerprint.js'
 import { redactSecrets } from './secret_redact.js'
+import { clearAllReadRangeEvasion, clearReadRangeEvasion, exportReadRangeEvasion, importReadRangeEvasion, type RangeEvasionEntries } from './read_range_evasion.js'
 
 /** Tracks reads/edits of a single file within the session. Mirrors the load-bearing fields of `session.py::FileEntry` used by the re-read dedup hint: read count, last-read timestamp, whether the file was edited (which invalidates any cached read window), and its size at last read. */
 export interface FileEntry {
@@ -247,8 +248,7 @@ export function filesFullReadCountAtLoad(): ReadonlyMap<string, number> {
 export function recordFileEdit(filePath: string): void {
   const normalized = normalizePath(filePath)
   const key = resolveFilesKey(normalized)
-  _fileLineRanges.delete(foldPath(normalized))
-  _fileLineRangeIdentities.delete(foldPath(normalized))
+  resetFileLineRanges(normalized)
   // Deliberately NOT `_fileServedOutputs.delete(...)`: that index is matched on the served bytes, never on line position, so an edit needs no invalidation here. A line the edit rewrote stops matching on its own; a line it left alone was still served verbatim this session, and dropping the whole file's history throws that evidence away for the (usually large) untouched remainder -- measured as repeated whole re-reads of one file's opening block across an edit-read-edit loop.
   const prev = _files.get(key)
   const now = Date.now()
@@ -318,6 +318,7 @@ export function markCompacted(now: number = Date.now()): void {
   _compactedAt = now
   _fileLineRanges = new Map()
   _fileLineRangeIdentities = new Map()
+  clearAllReadRangeEvasion()
   // Same assumption at whole-body granularity: after compaction the served text is no longer in context, so it can no longer justify withholding a later read.
   _fileServedOutputs = new Map()
   // The same, for the exact-repeat CLI-read ledger: a `token-goat read` the model ran before the compaction is no longer in its context, so a repeat is not a re-run of something it still holds.
@@ -673,6 +674,7 @@ export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [num
 /** Drop every recorded line range for `filePath` without marking it edited (unlike {@link recordFileEdit}, which does both): a change discovered on disk that the session itself never made -- an edit outside this session, or a Read/Write by another process -- still invalidates the ranges the exact-overlap dedup trusts, but it must not falsely mark the file as edited by this session for the compaction manifest and resume logic that read `wasEdited`. */
 export function resetFileLineRanges(filePath: string): void {
   const key = foldPath(normalizePath(filePath))
+  clearReadRangeEvasion(key)
   _fileLineRanges.delete(key)
   _fileLineRangeIdentities.delete(key)
   _fileLineRangesReset.add(key)
@@ -771,6 +773,7 @@ export interface SerializedSession {
   bashReruns?: string[]
   curlDownloads: Array<[string, string]>
   fileLineRanges?: Array<[string, Array<[number, number]>]>
+  readRangeEvasion?: RangeEvasionEntries
   /** path -> the file's size and mtime when a range of it was last recorded. See `_fileLineRangeIdentities`. Optional: sessions written before this field existed simply have none. */
   fileLineRangeIdentities?: Array<[string, { size: number; mtimeMs: number }]>
   /** path -> bash-output ids whose body this session was shown as a read of that file, oldest first. Optional: sessions written before this field existed simply have none. */
@@ -803,6 +806,7 @@ export function exportSessionState(): SerializedSession {
     bashReruns: Array.from(_bashReruns),
     curlDownloads: Array.from(_curlDownloads.entries()),
     fileLineRanges: Array.from(_fileLineRanges.entries()),
+    readRangeEvasion: exportReadRangeEvasion(),
     ...(_fileLineRangeIdentities.size > 0 ? { fileLineRangeIdentities: Array.from(_fileLineRangeIdentities.entries()) } : {}),
     ...(_fileServedOutputs.size > 0 ? { fileServedOutputs: Array.from(_fileServedOutputs.entries()) } : {}),
     cliReads: Array.from(_cliReads),
@@ -819,6 +823,7 @@ export function exportSessionState(): SerializedSession {
 
 /** Replace the in-memory session state with `s` (hydrate from a loaded snapshot). Called once per hook process after loading the on-disk state, before any handler runs. `FileEntry.path` is already the normalized map key, so entries re-key directly. Tolerant of a malformed `path` (skips that entry) but assumes the caller has otherwise validated the shape. */
 export function importSessionState(s: SerializedSession): void {
+  importReadRangeEvasion(s.readRangeEvasion ?? [])
   _files = new Map()
   for (const e of s.files) {
     if (e && typeof e.path === 'string') _files.set(e.path, e)
@@ -853,6 +858,7 @@ export function importSessionState(s: SerializedSession): void {
 }
 
 registerReset(() => {
+  clearAllReadRangeEvasion()
   _files = new Map()
   _filesAtLoad = new Map()
   _filesFullReadCountAtLoad = new Map()

@@ -115,6 +115,7 @@ Paths go in relative to the working directory; `waste` prints absolute ones, so 
 ## Anti-Paging Trap
 
 When encountering sequential read suggestions or denials (such as `Sequential line-range paging detected`), do not attempt to page through a file using adjacent line-range slices (e.g. `1-100`, `101-200`, `201-300`). Paging line-by-line burns tokens, discards structural context, and triggers hook guard denials.
+A shrunk, grown, or shifted Read range after this deny is also denied; switch to token-goat, do not retry the Read tool.
 
 Instead, immediately switch away from line paging to AST/symbol navigation or targeted searches:
 - **AST / Symbol Navigation:** Run `token-goat symbol <name>` or `token-goat read "file::symbol"` to pull the exact function, class, or method definition.

@@ -93,11 +93,53 @@ describe('sequential paging deny through the pre-read hook', () => {
     expect(jump).not.toContain(DENY_ONLY)
   })
 
+  it('persists the range lock after a paging deny without post_tool_use', async () => {
+    const s = uniq('locked-no-post')
+    await page(s, 1, 100)
+    await page(s, 101, 100)
+    await page(s, 201, 100)
+    const denied = await relayInProcess('pre_tool_use', payload('pre_tool_use', s, 'paged.ts', 301, 100))
+    expect(isDeny(denied)).toBe(true)
+    expect(denied).toContain(DENY_ONLY)
+    const shifted = await relayInProcess('pre_tool_use', payload('pre_tool_use', s, 'paged.ts', 306, 90))
+    expect(isDeny(shifted)).toBe(true)
+    expect(shifted).toContain('Line-range reads of this file are locked')
+    const jump = await relayInProcess('pre_tool_use', payload('pre_tool_use', s, 'paged.ts', 601, 50))
+    expect(isDeny(jump)).toBe(true)
+    expect(jump).toContain('Line-range reads of this file are locked')
+  })
+
   it('does not add the paging note to a distant jump after two contiguous slices', async () => {
     const s = uniq('note-jump')
     await page(s, 1, 100)
     await page(s, 101, 100)
     expect(await page(s, 601, 50)).not.toContain('Sequential line-range paging detected')
+  })
+
+  it('locks incremental same-anchor creep through the real hook path', async () => {
+    const s = uniq('creep')
+    expect(isDeny(await page(s, 1, 1))).toBe(false)
+    const creep = await relayInProcess('pre_tool_use', payload('pre_tool_use', s, 'paged.ts', 1, 2))
+    expect(isDeny(creep)).toBe(true)
+    expect(creep).toContain('Line-range reads of this file are locked')
+    const jump = await relayInProcess('pre_tool_use', payload('pre_tool_use', s, 'paged.ts', 601, 10))
+    expect(isDeny(jump)).toBe(true)
+  })
+
+  it('allows three substantial same-anchor windows and locks the fourth through the relay', async () => {
+    const s = uniq('expansion')
+    for (const end of [40, 70, 100]) expect(isDeny(await page(s, 1, end))).toBe(false)
+    const fourth = await relayInProcess('pre_tool_use', payload('pre_tool_use', s, 'paged.ts', 1, 130))
+    expect(isDeny(fourth)).toBe(true)
+    expect(fourth).toContain('Line-range reads of this file are locked')
+  })
+
+  it('locks a second-window backward overlap hunt through the relay', async () => {
+    const s = uniq('overlap')
+    expect(isDeny(await page(s, 415, 31))).toBe(false)
+    const hunt = await relayInProcess('pre_tool_use', payload('pre_tool_use', s, 'paged.ts', 410, 16))
+    expect(isDeny(hunt)).toBe(true)
+    expect(hunt).toContain('Line-range reads of this file are locked')
   })
 
   it('notes the third and denies the fourth slice of a chain read by offset alone', async () => {

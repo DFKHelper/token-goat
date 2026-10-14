@@ -113,6 +113,13 @@ const SESSION_FIELD_COVERAGE: ReadonlyMap<string, FieldCoverage> = new Map([
     },
   ],
   [
+    'readRangeEvasion',
+    {
+      coverage: 'structural-no-free-text',
+      reason: 'Keyed by file path; values contain only numeric line spans, observation/reset timestamps, and optional numeric size/mtime identity, never source text.',
+    },
+    ],
+    [
     'fileLineRangeIdentities',
     {
       coverage: 'structural-no-free-text',

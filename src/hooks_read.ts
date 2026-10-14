@@ -18,7 +18,8 @@ import { displaySafePath, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHA
 import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun, isSequentialPagingChain } from './util.js'
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
-import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges } from './session.js'
+import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged } from './session.js'
+import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -375,18 +376,6 @@ function isLargeSymbolSpan(lineStart: number, lineEnd: number, filePath: string)
   return totalLines > 0 && span > totalLines / 2
 }
 
-/** True when [start, end] lies entirely inside one indexed symbol whose span is at least 3x the window's own line count. At that ratio the ranged read is already the narrowest handle available -- paging through a symbol this much bigger than each slice should not be redirected at reading the whole symbol instead. */
-function isWindowInsideMuchLargerSymbol(filePath: string, start: number, end: number): boolean {
-  try {
-    const windowLines = end - start + 1
-    return querySymbols({ filePath, limit: 500 }).some((s) => {
-      const span = s.lineEnd - s.lineStart + 1
-      return s.lineStart <= start && s.lineEnd >= end && windowLines * 3 <= span
-    })
-  } catch {
-    return false
-  }
-}
 
 /** How many of a file's symbols one hint query reads at a time. */
 const SYMBOL_HINT_PAGE = 500
@@ -539,7 +528,10 @@ function firstReadSymbolOutput(decision: ReadPolicyDecision, policyContext: Read
 export function recordActualSlice(event: HookEvent, filePath: string): void {
   const window = readRequestedSliceWindow(event)
   const span = requestedSliceSpan(window)
-  if (window.isExplicitSlice && span !== undefined) recordFileLineRange(filePath, span.start, span.end)
+  if (window.isExplicitSlice && span !== undefined) {
+    recordFileLineRange(filePath, span.start, span.end)
+    recordRecentReadRange(foldPath(normalizePath(filePath)), [span.start, span.end])
+  }
 }
 
 /** contextOutput, degraded to passOutput during hints.quiet_hours. Only the advisory/ informational hint paths (contextOutput -- lets the call proceed, injects a suggestion) are gated this way; correctness-relevant denyOutput blocks (truncation, oversized-file, reread-deny) are never suppressed by quiet hours. A hint that names a real heading or symbol passes its path as `correlators`, so hint-stats credits a follow-through on any part of that file, as it did when the hint printed a placeholder extractPathCorrelator strips. */
@@ -617,6 +609,19 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const shown = displaySafePath(normalized)
   // The index key the session, snapshots and hints are keyed on is not always a path this host can open: on WSL a drive-letter key (a path typed as `C:\x`, or one recorded by an earlier version) names its mount. Every stat and read below goes through `onDisk`.
   const onDisk = hostPathOfIndexKey(normalized)
+  const rangeWindow = readRequestedSliceWindow(event)
+  const rangeSpan = rangeWindow.isExplicitSlice ? requestedSliceSpan(rangeWindow) : undefined
+  const rangeKey = foldPath(normalized)
+  let rangeIdentity: { size: number; mtimeMs: number } | undefined
+  if (event.toolName !== 'Grep' && rangeSpan !== undefined && loadConfig().hints.reread_deny) {
+    // Identity changes invalidate the lock before any early-return hint or containing-range check.
+    rangeIdentity = dropFileLineRangesIfChanged(normalized)
+    clearReadRangeIfChanged(rangeKey, rangeIdentity)
+    if (getReadRangeDenials(rangeKey).length > 0) {
+      lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+      return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
+    }
+  }
 
   if (isNodeModulesPath(normalized)) {
     return denyOutput(
@@ -1112,12 +1117,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
     }
 
-    // Circuit breaker: at most one re-read denial (verbatim, range, count, or format) per file
-    // per compaction epoch. Transcripts show agents getting trapped in 20+ retry loops shifting
-    // windows across a file (e.g. 1225..1235, 1220..1230, 1229..1234, 1227..1227) after repeated
-    // denials of overlapping ranges. A caller that retries after a re-read denial will not switch
-    // tools on repeated refusals; subsequent read attempts on this file must NOT keep denying in an
-    // infinite loop — allow them to proceed with the quiet advisory note at the bottom of this block.
+    // Whole-file circuit breaker: at most one verbatim/count/format re-read denial per epoch.
+    // Explicit range refusals instead lock subsequent Read/view slices until reset or compaction.
     const fileRereadDenyKey = 'reread-file-deny:' + getCompactedAt() + ':' + foldPath(normalized)
     const fileAlreadyDenied = wasHintShown(fileRereadDenyKey)
 
@@ -1126,6 +1127,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const alreadyServed = alreadyServedOutputId(event, normalized)
       if (alreadyServed !== null && !fileAlreadyDenied) {
         markHintShown(fileRereadDenyKey)
+        if (rangeSpan !== undefined) lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
         // Credit the bytes this read would actually have delivered, not the whole file: a Read carrying offset/limit was only ever going to hand over its window, and crediting the file would book bytes nothing was ever going to spend.
         const blocked = counterfactualCredit(alreadyServed.bytes)
         recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
@@ -1144,11 +1146,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const start = window.offset
         const end = window.offset + window.limit - 1
         const containing = prevRanges.find(([s, e]) => s <= start && e >= end)
-        if (containing !== undefined && !fileAlreadyDenied) {
+        if (containing !== undefined) {
           // A prior overlapping range only proves this span was served before, never that it still matches disk: an edit outside this session (another tool, another process, the user's own editor) can land between the two reads with nothing here to observe it. Reuse the same snapshot-fingerprint mechanism the whole-file "unchanged since last read" check above relies on rather than trusting the recorded range alone; only a confirmed byte-for-byte match denies.
           const snapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
           const denyRangeReread = (): HookOutput => {
             markHintShown(fileRereadDenyKey)
+            lockReadRange(rangeKey, [start, end], rangeIdentity)
             const blocked = counterfactualCredit(rereadCreditBasis)
             recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
             recordStat('session_hint', 0, 0)
@@ -1189,26 +1192,30 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
       // Item 2.5: sequential line-range paging on source files and docs/XML (3+ slices read so far)
       const isPagingTracked = isSourceExt || /\.(md|mdx|markdown|rst|xml|dtsx|ampkg|xaml)$/i.test(basename)
-      // Denied once per file per compaction epoch. A reported session was refused 18 times in a row on one file, each retry an adjusted window: a caller that pages again after this deny has either a reason to want literal lines or will not switch tools, and a second refusal changes neither, it only costs a turn. Later slices pass with the paging note below. The key carries the epoch because the ranges this counts are themselves cleared at compaction, and a caller that no longer holds the deny should see it once more.
-      const pagingDenyKey = 'paging-deny:' + getCompactedAt() + ':' + foldPath(normalized)
+      // The first paging refusal locks all further explicit slices in this epoch, even shifted retries.
       const pagingWindowSpan = requestedSliceSpan(window)
       // The chain is the slices already read plus the one being asked for: three contiguous slices followed by a jump elsewhere in the file are not paging.
       const isSequentialChain = pagingWindowSpan !== undefined && isSequentialPagingChain([...prevRanges, [pagingWindowSpan.start, pagingWindowSpan.end]], 4)
-      if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3 && isSequentialChain && !wasHintShown(pagingDenyKey)) {
-        // A window this narrow relative to the symbol it sits inside (see isWindowInsideMuchLargerSymbol) is already the narrowest handle available -- denying it in favor of reading the whole symbol would hand back a much bigger body than the window ever asked for, so this specific deny is skipped and the read proceeds.
-        if (pagingWindowSpan === undefined || !isWindowInsideMuchLargerSymbol(normalized, pagingWindowSpan.start, pagingWindowSpan.end)) {
-          markHintShown(pagingDenyKey)
-          recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
-          recordStat('session_hint', 0, 0)
-          // Name the symbols at the lines asked for: the file-order names surgicalHint lists sit at the top of the file, so a caller after lines 140..165 was pointed at the first function and went back to slicing. Source files only: docs and XML are paged here too, and their tools are section and xml-query, which surgicalHint already names.
-          const hint = pagingWindowSpan !== undefined && isSourceExt
-            ? 'For lines ' + pagingWindowSpan.start + '..' + pagingWindowSpan.end + ', run ' + realSymbolReadHint(normalized, shown, pagingWindowSpan) + '; `token-goat skeleton ' + quotedArg(shown) + '` maps the rest.'
-            : surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
-          return denyOutput(
-            'Sequential line-range paging detected on ' + readSubject(normalized, hint) + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
-            ' Inspect structure directly without manual chunk paging.',
-          )
-        }
+      if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3 && isSequentialChain && pagingWindowSpan !== undefined) {
+        lockReadRange(rangeKey, [pagingWindowSpan.start, pagingWindowSpan.end], rangeIdentity)
+        recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
+        recordStat('session_hint', 0, 0)
+        // Preserve the requested window, even inside a much larger symbol; never expand to its body.
+        const hint = 'For lines ' + pagingWindowSpan.start + '..' + pagingWindowSpan.end + ', run `token-goat read ' +
+          quotedArg(shown + '@' + pagingWindowSpan.start + '-' + pagingWindowSpan.end) + '`; `token-goat skeleton ' + quotedArg(shown) + '` maps the rest.' +
+          (isSourceExt ? '' : ' ' + surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)))
+        return denyOutput(
+          'Sequential line-range paging detected on ' + readSubject(normalized, hint) + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
+          ' Inspect structure directly without manual chunk paging. Further Read/view line ranges of this file will be denied.',
+        )
+      }
+      if (rangeSpan !== undefined && evaluateRangeEvasion({
+        span: [rangeSpan.start, rangeSpan.end], served: getRecentReadRanges(rangeKey),
+        denied: getReadRangeDenials(rangeKey),
+      }) !== null) {
+        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
       }
     }
 
