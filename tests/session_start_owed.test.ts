@@ -10,7 +10,8 @@ import { sessionStartMayBeDeferred } from '../src/harness_channels.js'
 import { sessionStartHandler } from '../src/hooks_session_start.js'
 import {
   claimOwedSessionStart,
-  clearSessionStartSettled,
+  readSessionStartRecord,
+  recordSessionStartBegun,
   readSessionStartSettled,
   recordSessionStartSettled,
   sessionStartOwed,
@@ -67,8 +68,12 @@ describe('sessionStartOwed (R3)', () => {
     expect(sessionStartOwed({ finishedAtMs: DEADLINE - 1000, deadlineEpoch: DEADLINE }, DEADLINE)).toBe(false)
   })
 
-  it('is owed for a null marker', () => {
-    expect(sessionStartOwed(null, DEADLINE)).toBe(true)
+  it('is not owed when no start began (no settle file at all)', () => {
+    expect(sessionStartOwed(null, DEADLINE)).toBe(false)
+  })
+
+  it('is owed for a start that began and never settled', () => {
+    expect(sessionStartOwed('begun', DEADLINE)).toBe(true)
   })
 
   it('is owed when the marker file on disk is garbage', () => {
@@ -77,9 +82,10 @@ describe('sessionStartOwed (R3)', () => {
     fs.mkdirSync(path.dirname(target as string), { recursive: true })
     for (const body of ['not json {', '[1,2]', '{"finishedAtMs":"soon","deadlineEpoch":null}', '{"finishedAtMs":1}', '{"finishedAtMs":1,"deadlineEpoch":"x"}', 'null']) {
       fs.writeFileSync(target as string, body, 'utf8')
-      const marker = readSessionStartSettled(makeEvent(sid))
-      expect(marker, body).toBeNull()
-      expect(sessionStartOwed(marker, DEADLINE), body).toBe(true)
+      expect(readSessionStartSettled(makeEvent(sid)), body).toBeNull()
+      const record = readSessionStartRecord(makeEvent(sid))
+      expect(record, body).toBe('begun')
+      expect(sessionStartOwed(record, DEADLINE), body).toBe(true)
     }
   })
 })
@@ -89,8 +95,9 @@ describe('marker storage', () => {
     const event = makeEvent(sid)
     recordSessionStartSettled(event, { finishedAtMs: 5, deadlineEpoch: null })
     expect(readSessionStartSettled(event)).toEqual({ finishedAtMs: 5, deadlineEpoch: null })
-    clearSessionStartSettled(event)
+    recordSessionStartBegun(event)
     expect(readSessionStartSettled(event)).toBeNull()
+    expect(readSessionStartRecord(event)).toBe('begun')
   })
 })
 

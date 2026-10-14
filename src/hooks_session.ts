@@ -10,7 +10,7 @@ import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js
 import { peekPendingContext, queuePendingContext } from './pending_context.js';
 import { dropsPreCompactContext, dropsPromptSubmitContext, resumesCompactionOnPrompt, sessionStartMayBeDeferred } from './harness_channels.js';
 import { getHarnessName } from './bridges/registry.js';
-import { claimOwedSessionStart, readSessionStartSettled, releaseOwedSessionStart, sessionStartOwed } from './session_start_owed.js';
+import { claimOwedSessionStart, readSessionStartRecord, releaseOwedSessionStart, sessionStartOwed } from './session_start_owed.js';
 import { sessionStartOutput } from './hooks_session_start.js';
 import { recordStat } from './stats.js';
 import {
@@ -27,7 +27,7 @@ async function deliverOwedSessionStart(event: HookEvent): Promise<void> {
   try {
     if (event.agentId !== undefined || !sessionStartMayBeDeferred(getHarnessName())) return;
     const stateKey = sessionStateKey(event);
-    if (!sessionStartOwed(readSessionStartSettled(event), Date.now()) || !claimOwedSessionStart(event)) return;
+    if (!sessionStartOwed(readSessionStartRecord(event), Date.now()) || !claimOwedSessionStart(event)) return;
     try {
       const owed = await sessionStartOutput(event, { skipRecovery: true });
       if (owed.hookType === 'context') queuePendingContext(stateKey, owed.context);

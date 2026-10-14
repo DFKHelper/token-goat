@@ -16,7 +16,7 @@ import { claimFirstSavingsReceipt, recordStat } from './stats.js'
 import { detectHarness } from './bridges/registry.js'
 import { projectNotesFor } from './project_memory.js'
 import { buildReminder } from './session_reminder.js'
-import { clearSessionStartSettled, recordSessionStartSettled } from './session_start_owed.js'
+import { recordSessionStartBegun, recordSessionStartSettled } from './session_start_owed.js'
 
 /** Sweep the project for index drift and enqueue whatever no longer matches disk. Returns a one-line note when drift was found, or null when the index is already correct -- which is the overwhelmingly common case, and stays silent so the session-start context does not grow a line that says nothing. Only runs against an already-indexed project: on an unindexed one every tracked file is legitimately absent from the index, so the sweep would report the entire repository as drift and enqueue it, which is `token-goat index .`'s job and not a hook's. Never throws. Its caller is a session-start hook, and a sweep that failed is a missed repair, not a reason to degrade the reminder the hook exists to deliver. */
 function reconcileNote(cwd: string, indexed: boolean): string | null {
@@ -75,8 +75,8 @@ async function postCompactRecovery(event: HookEvent): Promise<string | null> {
 }
 
 export async function sessionStartHandler(event: HookEvent): Promise<HookOutput> {
-  // Cleared first and recorded last, so a marker on disk always means this run reached its end.
-  clearSessionStartSettled(event)
+  // Stamped begun first and settled last, so a settled marker on disk always means this run reached its end.
+  recordSessionStartBegun(event)
   const output = withSavingsReceipt(await sessionStartOutput(event))
   recordSessionStartSettled(event, { finishedAtMs: Date.now(), deadlineEpoch: shimDeadlineEpoch() })
   return output

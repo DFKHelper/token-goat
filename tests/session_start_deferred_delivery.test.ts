@@ -32,7 +32,7 @@ import { claimOwedSessionStart, recordSessionStartSettled } from '../src/session
 import { sessionSidecarPath } from '../src/session_store.js'
 import { relayInProcess } from '../src/relay.js'
 
-// Provenance: every row is HAND-DERIVED. The H2a, H2b and H3 rows add a second session start for one session key: the shim-side reset is the real function the generated shim embeds, evaluated from COPILOT_SESSION_START_HELPERS, and nothing else is stubbed except the single queue throw named in the mock above. Provenance of the earlier rows: HAND-DERIVED. The marker epochs are picked by hand against the rule in DESIGN.md section 2.1 (owed iff no marker or finishedAtMs > deadlineEpoch - 1000). The expected text is a phrase read off the user-facing reminder wording, not a call to the matcher: NOTE_REMINDER in src/session_reminder.ts is appended to both the indexed and the generic reminder, so it is in the output whichever the temp cwd resolves to. Rows drive relayInProcess, the production dispatch path, never an injected handler.
+// Provenance (owed means begun, unsettled, unclaimed): every row is HAND-DERIVED. The H2a, H2b and H3 rows add a second session start for one session key: the shim-side reset is the real function the generated shim embeds, evaluated from COPILOT_SESSION_START_HELPERS, and nothing else is stubbed except the single queue throw named in the mock above. Provenance of the earlier rows: HAND-DERIVED. The marker epochs are picked by hand against the rule in DESIGN.md section 2.1 (owed iff no marker or finishedAtMs > deadlineEpoch - 1000). The expected text is a phrase read off the user-facing reminder wording, not a call to the matcher: NOTE_REMINDER in src/session_reminder.ts is appended to both the indexed and the generic reminder, so it is in the output whichever the temp cwd resolves to. Rows drive relayInProcess, the production dispatch path, never an injected handler.
 
 const DEADLINE = 1_800_000_000_000
 const REMINDER_PHRASE = 'must outlive a compaction'
@@ -79,8 +79,17 @@ afterEach(() => {
 })
 
 describe('owed session start delivered on the first tool call (R1)', () => {
-  it('delivers the reminder once when no marker exists, and nothing on the second call', async () => {
+  it('delivers nothing when no start began (no begun marker): a host without the hook, a resumed session', async () => {
     setHarness('copilot_cli')
+    const before = deferredCount()
+    const first = await toolCall(sid)
+    expect(occurrences(first), first).toBe(0)
+    expect(deferredCount()).toBe(before)
+  })
+
+  it('delivers the reminder once when a start began and did not settle, and nothing on the second call', async () => {
+    setHarness('copilot_cli')
+    shimReset(sid)
     const first = await toolCall(sid)
     expect(occurrences(first), first).toBe(1)
     const second = await toolCall(sid)
@@ -119,6 +128,7 @@ describe('subagent first call (R6)', () => {
 
   it('still delivers to the parent after a subagent call came first', async () => {
     setHarness('copilot_cli')
+    shimReset(sid)
     await toolCall(sid, 'agent-1')
     expect(occurrences(await toolCall(sid))).toBe(1)
   })
@@ -139,6 +149,7 @@ describe('harnesses with no deadline (R7)', () => {
 describe('deferral stat (R8)', () => {
   it('counts exactly one deferral after a delivered session start, however many calls follow', async () => {
     setHarness('copilot_cli')
+    shimReset(sid)
     const before = deferredCount()
     await toolCall(sid)
     await toolCall(sid)
@@ -174,6 +185,7 @@ describe('a second missed session start under one key (H2a, H2b)', () => {
 
   it('H2b: a delivered start #1 (claim taken) does not swallow start #2', async () => {
     setHarness('copilot_cli')
+    shimReset(sid)
     expect(occurrences(await toolCall(sid))).toBe(1)
     expect(claimFileExists(sid)).toBe(true)
     shimReset(sid)
@@ -188,6 +200,7 @@ describe('a second missed session start under one key (H2a, H2b)', () => {
 describe('a failure after the claim (H3)', () => {
   it('gives the claim back so a later hook process delivers', async () => {
     setHarness('copilot_cli')
+    shimReset(sid)
     failures.queueThrowsOnce = true
     const before = deferredCount()
     const first = await toolCall(sid)

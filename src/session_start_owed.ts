@@ -55,14 +55,21 @@ function removeSidecar(event: HookEvent, suffix: string): void {
   }
 }
 
-/** Remove the marker so a previous run's finish is never mistaken for this one's. Never throws. */
-export function clearSessionStartSettled(event: HookEvent): void {
-  removeSidecar(event, SETTLED_SUFFIX)
+/** Record that a session start began and has not settled: the settle file holds only a begun stamp, which reads as owed until {@link recordSessionStartSettled} replaces it. A previous run's finish is never mistaken for this one's, and a start killed before it settles is still owed. Never throws. */
+export function recordSessionStartBegun(event: HookEvent): void {
+  const target = sessionSidecarPath(sessionStateKey(event), SETTLED_SUFFIX)
+  if (target === null) return
+  try {
+    ensureDirSync(dirname(target))
+    writeFileSync(target, JSON.stringify({ begunAtMs: Date.now() }), 'utf8')
+  } catch {
+    // Best-effort: an unwritten stamp reads as no start began, which delivers nothing.
+  }
 }
 
-/** Forget everything an earlier session start of this key left: the settle marker and the delivery claim. The Copilot shim does this in plain JS before it spawns the helper (a helper killed before its own clear would otherwise leave a stale marker reading settled); tests pin that mirror against this function. Never throws. */
+/** Begin a session start of this key: drop the delivery claim an earlier start left and stamp the settle file as begun. The Copilot shim does this in plain JS before it spawns the helper (a helper killed before its own stamp would otherwise leave a stale marker reading settled, or nothing reading as not owed), and tests/session_start_owed_reset.test.ts pins both to the same files. Never throws. */
 export function resetSessionStartOwed(event: HookEvent): void {
-  removeSidecar(event, SETTLED_SUFFIX)
+  recordSessionStartBegun(event)
   removeSidecar(event, OWED_CLAIM_SUFFIX)
 }
 
@@ -71,22 +78,35 @@ export function releaseOwedSessionStart(event: HookEvent): void {
   removeSidecar(event, OWED_CLAIM_SUFFIX)
 }
 
-/** The marker for this (sub)agent, or null when absent, unreadable, unparseable or the wrong shape. */
-export function readSessionStartSettled(event: HookEvent): SessionStartMarker | null {
+/** What the settle file of this (sub)agent holds: a settled marker, 'begun' for a file that is present but is not one (a begun stamp, or garbage a killed run left), or null when there is no file. */
+export function readSessionStartRecord(event: HookEvent): SessionStartMarker | 'begun' | null {
   const target = sessionSidecarPath(sessionStateKey(event), SETTLED_SUFFIX)
   if (target === null) return null
+  let raw: string
   try {
-    return parseMarker(JSON.parse(readFileSync(target, 'utf8')))
+    raw = readFileSync(target, 'utf8')
   } catch {
     return null
   }
+  try {
+    return parseMarker(JSON.parse(raw)) ?? 'begun'
+  } catch {
+    return 'begun'
+  }
 }
 
-/** Whether the session start still owes its output: no marker, or one written inside the reserve before the deadline or after it. A marker with no deadline is settled, because nothing was racing. */
-export function sessionStartOwed(marker: SessionStartMarker | null, _now: number): boolean {
-  if (marker === null) return true
-  if (marker.deadlineEpoch === null) return false
-  return marker.finishedAtMs > marker.deadlineEpoch - OWED_RESERVE_MS
+/** The settled marker for this (sub)agent, or null when absent, begun-only, unparseable or the wrong shape. */
+export function readSessionStartSettled(event: HookEvent): SessionStartMarker | null {
+  const record = readSessionStartRecord(event)
+  return record === 'begun' ? null : record
+}
+
+/** Whether the session start still owes its output. Nothing is owed unless a start began (no file); a begun start that never settled is owed; a settled one is owed only when it finished inside the reserve before the deadline or after it. A marker with no deadline is settled, because nothing was racing. */
+export function sessionStartOwed(record: SessionStartMarker | 'begun' | null, _now: number): boolean {
+  if (record === null) return false
+  if (record === 'begun') return true
+  if (record.deadlineEpoch === null) return false
+  return record.finishedAtMs > record.deadlineEpoch - OWED_RESERVE_MS
 }
 
 /** Take the one-time right to deliver the owed session start. An exclusive create, so of any number of concurrent callers exactly one gets true. False also when the claim cannot be stored: a lost delivery is better than a duplicated one. */

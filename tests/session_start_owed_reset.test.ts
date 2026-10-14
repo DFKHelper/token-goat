@@ -1,6 +1,6 @@
 /** HAND-DERIVED: the expected file names are spelled out by hand from the sidecar suffixes, not read from the implementation's path function for the shim side. */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -44,10 +44,12 @@ describe('the shim reset removes exactly what the TypeScript reset removes', () 
     it(`id ${id.slice(0, 24)} (${id.length} chars)`, () => {
       const viaShim = plantBoth(id)
       shimReset({ session_id: id })
-      expect(viaShim.map((p) => existsSync(p))).toEqual([false, false])
+      expect(viaShim.map((p) => existsSync(p))).toEqual([true, false])
+      expect(JSON.parse(readFileSync(viaShim[0] as string, 'utf8'))).toHaveProperty('begunAtMs')
       const viaTs = plantBoth(id)
       resetSessionStartOwed(event(id))
-      expect(viaTs.map((p) => existsSync(p))).toEqual([false, false])
+      expect(viaTs.map((p) => existsSync(p))).toEqual([true, false])
+      expect(JSON.parse(readFileSync(viaTs[0] as string, 'utf8'))).toHaveProperty('begunAtMs')
     })
   }
 
@@ -59,7 +61,7 @@ describe('the shim reset removes exactly what the TypeScript reset removes', () 
 })
 
 describe('the generated shim resets before it spawns the helper', () => {
-  it('removes the marker and the claim even though the helper cannot start', () => {
+  it('drops the claim and stamps the marker begun even though the helper cannot start', () => {
     const root = mkdtempSync(join(tmpdir(), 'tg-owed-reset-'))
     tempDirs.push(root)
     const home = join(root, 'home')
@@ -77,6 +79,7 @@ describe('the generated shim resets before it spawns the helper', () => {
       windowsHide: true,
     })
     expect(result.stdout).toBe('{}')
-    expect(stems.map((p) => existsSync(p))).toEqual([false, false])
+    expect(stems.map((p) => existsSync(p))).toEqual([true, false])
+    expect(JSON.parse(readFileSync(stems[0] as string, 'utf8'))).toHaveProperty('begunAtMs')
   })
 })

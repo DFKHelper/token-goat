@@ -129,7 +129,7 @@ function readSessionStartInput(timeoutMs) {
   })
 }
 
-// Plain-JS mirror of session_start_owed.ts::resetSessionStartOwed for a main-thread key: tests/session_start_owed_reset.test.ts pins both to the same files. It runs before anything can throw so a helper killed before its own clear cannot leave an earlier start's marker reading settled.
+// Plain-JS mirror of session_start_owed.ts::resetSessionStartOwed for a main-thread key: tests/session_start_owed_reset.test.ts pins both to the same files. It runs before anything can throw so a helper killed before its own stamp still leaves the start begun, and an earlier start's marker cannot read settled.
 function resetSessionStartOwedFiles(payload) {
   try {
     const raw = payload && (payload.session_id !== undefined ? payload.session_id : payload.sessionId)
@@ -142,9 +142,10 @@ function resetSessionStartOwedFiles(payload) {
     const home = rooted ? override : require('node:path').join(require('node:os').homedir(), '.token-goat')
     const stem = raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
     if (stem === '') return
-    for (const suffix of ['.session-start', '.session-start-owed']) {
-      require('node:fs').rmSync(require('node:path').join(home, 'sessions', stem + suffix), { force: true })
-    }
+    // The claim goes, and the settle file is rewritten as a begun stamp: only a begun, unsettled start is owed.
+    require('node:fs').rmSync(require('node:path').join(home, 'sessions', stem + '.session-start-owed'), { force: true })
+    require('node:fs').mkdirSync(require('node:path').join(home, 'sessions'), { recursive: true })
+    require('node:fs').writeFileSync(require('node:path').join(home, 'sessions', stem + '.session-start'), JSON.stringify({ begunAtMs: Date.now() }), 'utf8')
   } catch {
     // Best-effort: the helper clears the marker itself when it gets that far.
   }
