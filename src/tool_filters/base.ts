@@ -25,6 +25,7 @@ import {
   positionalArgs,
   preserveStderrOnError,
   safeDecode,
+  splitOwnTrailingNotices,
   squeezeBlankLines,
   truncateMiddleSmart,
 } from './helpers.js'
@@ -87,6 +88,8 @@ export class CompressedOutput {
     readonly filterName: string,
     readonly exitCode = 0,
     readonly notes: string[] = [],
+    /** The notices token-goat appended to the end of `text` (each line with its leading newline), identified by provenance in {@link ToolFilter.apply}: `text` ends with exactly this. A caller that fences the command's bytes fences `text` without it and puts it after the closing tag. */
+    readonly ownNotices = '',
   ) {}
 
   /** Non-negative byte savings (`original - compressed`, clamped at 0). */
@@ -138,6 +141,8 @@ export interface CompressContext {
   readonly inputTruncated?: boolean
   /** The line cap {@link ToolFilter.apply} will enforce after `compress` returns, so a filter can shape its own output against the cap it actually ships into instead of guessing. */
   readonly maxLines?: number
+  /** The most lines the command could have printed, when a later pipeline stage bounded it (`| head -80`): the caller read the pipeline, which a filter handed only the first stage's argv cannot see. A filter that summarises a long result reads this as the caller having already asked for at most that many lines. */
+  readonly outputLineBound?: number
 }
 
 /** Options accepted by {@link ToolFilter.apply}. */
@@ -145,6 +150,7 @@ export interface ApplyOptions {
   maxLines?: number
   maxBytes?: number
   skipProgress?: boolean
+  outputLineBound?: number
 }
 
 /** Per-tool output compressor. Subclasses declare the command `binaries` they accept (matched against the resolved argv stem after prefix stripping) and implement {@link compressBody} to produce the compressed body. The base {@link apply} handles ANSI / progress normalisation, input/line/byte caps, and the trailing compression marker. Set {@link errorPassthrough} to `true` to short-circuit to the raw combined output when the command exits non-zero with non-empty stderr — replacing the `_preserve_stderr_on_error` preamble many filters used to duplicate. */
@@ -294,7 +300,7 @@ export abstract class ToolFilter {
         body = fallbackTruncate(normOut, normErr, maxLines)
       } else {
         // Step 7: structural compression.
-        body = this.compress(normOut, normErr, exitCode, argv, { inputTruncated: soClamped !== null || seClamped !== null, maxLines })
+        body = this.compress(normOut, normErr, exitCode, argv, { inputTruncated: soClamped !== null || seClamped !== null, maxLines, ...(opts.outputLineBound !== undefined ? { outputLineBound: opts.outputLineBound } : {}) })
       }
     } catch (exc) {
       const kind = exc instanceof Error ? exc.constructor.name : 'Error'
@@ -311,6 +317,9 @@ export abstract class ToolFilter {
     if (lines.length > maxLines) body = truncateMiddleSmart(lines, maxLines).join('\n')
     // Step 9: byte cap (backstop for pathological lines).
     body = capBytes(body, maxBytes)
+    // Step 9.25: take token-goat's own closing notices off the end, recognised by the tag ownNotice put on them rather than by their wording, which the command's output can copy. Every tag goes with them, so nothing downstream ever sees one. They rejoin the body below, after it is redacted, and travel separately as `ownNotices` for a caller that fences.
+    const own = splitOwnTrailingNotices(body)
+    body = own.body
     // Step 9.5: defense-in-depth secret redaction, re-run on the final body. The primary pass now runs at Step 1.5, before any truncator in this pipeline can cut a credential below a pattern's recognition floor (see the comment there); EnvFilter's ENV_KEEP_PREFIXES intentionally keeps AWS_/GITHUB_/GITLAB_/AZURE_/GOOGLE_/TF_/PULUMI_-prefixed vars for debugging context, which also keeps any real AWS_ACCESS_KEY_ID/GITHUB_TOKEN/etc. value verbatim until redacted. This second pass is normally a no-op (redactSecrets is idempotent) but stays in place as a choke point for any redaction-shaped text a per-tool filter's own `compress()` might introduce after Step 1.5 already ran.
     const redacted = redactSecrets(body)
     body = redacted.text
@@ -319,7 +328,8 @@ export abstract class ToolFilter {
     // Step 10: prepend the notes the model can act on. Which branch compressed the output is not one of them, and it rode on 773 outputs across 159 recorded sessions; it stays in `notes` for callers and tests.
     const shown = notes.filter((n) => n !== EARLY_EXIT_NOTE)
     if (shown.length) body = `[${shown.join('; ')}]\n${body}`
+    body += own.notices
 
-    return new CompressedOutput(body, originalBytes, byteLength(body), filterRan, exitCode, notes)
+    return new CompressedOutput(body, originalBytes, byteLength(body), filterRan, exitCode, notes, own.notices)
   }
 }

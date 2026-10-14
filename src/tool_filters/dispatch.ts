@@ -144,6 +144,8 @@ export interface CompressOptions {
   maxLines?: number
   maxBytes?: number
   compressionProfile?: string
+  /** The line bound a later pipeline stage put on the command, handed to the filter as `CompressContext.outputLineBound` (base.ts). */
+  outputLineBound?: number
 }
 
 /** Canonical wrapper entry point: run `filter` over the captured output and return a {@link CompressedOutput}. Always succeeds (the filter's own `apply` catches exceptions and falls back to truncation). The profile sets the effective line cap; an explicit tighter `maxLines` still wins. */
@@ -162,6 +164,7 @@ export function compressOutput(
   const skipProgress = profile === 'minimal'
   const applyOpts: ApplyOptions = { maxLines: effectiveMaxLines, skipProgress }
   if (opts.maxBytes !== undefined) applyOpts.maxBytes = opts.maxBytes
+  if (opts.outputLineBound !== undefined) applyOpts.outputLineBound = opts.outputLineBound
   return filter.apply(stdout, stderr, exitCode, argv, applyOpts)
 }
 

@@ -111,10 +111,11 @@ describe('GrepFilter compression', () => {
 
   // A guard on the fix above rather than on the bug: the pass-through must be the named mode only. An earlier attempt bailed whenever nothing was attributable, which also caught `grep -h` -- 14 occurrences against `rg --json`'s 1 across 10,420 grep-family events in the local ledger -- and there the summary is accurate, since every line really is a match and "0 file(s)" is just the suppressed filenames the caller asked for.
   it('still summarises a filename-suppressed search, whose lines are real matches even though none can be attributed', () => {
-    const out = Array.from({ length: 40 }, (_, i) => `export const v${i} = ${i}; // padding`).join('\n')
+    const out = Array.from({ length: 60 }, (_, i) => `export const v${i} = ${i}; // padding`).join('\n')
     const got = compress(f, out, ['grep', '-h', 'padding', 'a.ts', 'b.ts'])
-    expect(got).toContain('40 matches')
-    expect(got).toContain('unattributed lines: 40')
+    expect(got).toContain('export const v39 = 39; // padding')
+    expect(got).toContain('20 more matches')
+    expect(got).toContain('unattributed lines: 20')
   })
 
   it('releases a count-only search whole, keeping each file\'s real count (regression: every `path:6` line was counted as one match for `path`, so every count printed as 1, the header total was the file count rather than the match count, and the 20-file cap then ranked on a number the filter had invented)', () => {
@@ -136,10 +137,10 @@ describe('GrepFilter compression', () => {
 
   // A guard on the fix above rather than on the bug, and the reason the inverse listing's short spelling is grep's alone. FORMAT-DERIVED: `rg --help` prints `-L, --follow` where `grep --help` prints `-L, --files-without-match`, so one shared rule could only ever be right for one of them. Matching `-L` for rg would release an ordinary symlink-following search whole and silently suppress the compression it exists to do.
   it('still summarises an rg -L search, because rg reads -L as --follow rather than as a file listing', () => {
-    const out = Array.from({ length: 40 }, (_, i) => `src/file_${i}.ts:${i + 1}:export const v${i} = ${i}`).join('\n')
+    const out = Array.from({ length: 60 }, (_, i) => `src/file_${i}.ts:${i + 1}:export const v${i} = ${i}`).join('\n')
     const got = compress(f, out, ['rg', '-L', 'export', 'src/'])
     expect(got).not.toBe(out.trimEnd())
-    expect(got).toContain('40 matches')
+    expect(got).toContain('20 more matches')
   })
 
   // HAND-DERIVED: the flag spellings are read off `rg --help`'s own synopsis (`-t, --type <TYPE>`, `-T, --type-not <TYPE>`, `-e, --regexp <PATTERN>`) and the expectation follows from what those flags mean, not from this filter's matcher. Every type name here contains the letter the cluster scan was looking for -- `css`, `html`, `c`, `clojure`, `log` -- which is what made an ordinary `rg -tcss` read as `--count` and ship 600 raw match lines where a summary was due.
@@ -173,32 +174,35 @@ describe('GrepFilter compression', () => {
   })
 
   it('summarises large grep output with file grouping', () => {
-    const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
+    const lines = Array.from({ length: 500 }, (_, i) => `src/file_${i % 50}.ts:${i + 1}: match`)
     const out = compress(f, lines.join('\n'), argv)
     expect(out.split('\n').length).toBeLessThan(lines.length)
   })
 
   it('elides the tail of a many-file result with a narrowing hint that actually applies to file count, not context flags', () => {
     // Regression: this hint used to read "use --context or -C flags to narrow" -- -C/--context controls how many surrounding lines are printed per match, which has nothing to do with the number of distinct files listed here, so the advice never actually helped a user facing this exact elision.
-    const lines = Array.from({ length: 50 }, (_, i) => `src/file_${i}.ts:1: match`)
+    const lines = Array.from({ length: 500 }, (_, i) => `src/file_${i % 50}.ts:${i + 1}: match`)
     const out = compress(f, lines.join('\n'), argv)
     expect(out).toContain('more files elided; use a more specific pattern or --include=<glob> to narrow')
     expect(out).not.toContain('-C flags')
   })
 
   it('attributes matches on a Windows absolute path to its file instead of "unattributed" (regression: line.indexOf(\':\') picked up the drive-letter colon in "C:\\foo\\bar.py:12:text", leaving candidate as just "C")', () => {
-    const lines = Array.from({ length: 35 }, (_, i) => `C:\\Users\\foo\\bar.py:${i + 1}: match`)
+    // Two files, so the result is summarised: one file's matches ship as lines and carry no per-file count to attribute.
+    const lines = Array.from({ length: 100 }, (_, i) => `C:\\Users\\foo\\${i % 2 === 0 ? 'bar' : 'baz'}.py:${i + 1}: match`)
     const out = compress(f, lines.join('\n'), argv)
-    expect(out).toContain('C:\\Users\\foo\\bar.py: 35 matches')
+    expect(out).toContain('C:\\Users\\foo\\bar.py: 30 matches')
+    expect(out).toContain('C:\\Users\\foo\\baz.py: 30 matches')
     expect(out).not.toContain('unattributed')
   })
 
-  it('attributes bare "N:text" lines to the single named file instead of "unattributed" (regression: grep only prefixes a filename across multiple files, so a single-file search left every line unattributable)', () => {
+  it('attributes bare "N:text" lines to the single named file, and so ships them as lines (regression: grep only prefixes a filename across multiple files, so a single-file search left every line unattributable, and a summary of one file is one number that was re-fetched in full every time)', () => {
     // CAPTURE: shape of `grep -n alpha b1.txt` on a single-file target -- GNU grep omits the filename prefix entirely.
     const singleFileArgv = ['grep', '-n', 'alpha', 'b1.txt']
-    const lines = Array.from({ length: 40 }, (_, i) => `${i + 1}:alpha match`)
+    const lines = Array.from({ length: 60 }, (_, i) => `${i + 1}:alpha match`)
     const out = compress(f, lines.join('\n'), singleFileArgv)
-    expect(out).toContain('b1.txt: 40 matches')
+    expect(out).toBe(lines.join('\n'))
+    expect(out).not.toContain('matches across')
     expect(out).not.toContain('unattributed')
   })
 
@@ -207,7 +211,7 @@ describe('GrepFilter compression', () => {
   })
 })
 
-// --------------------------------------------------------------------------- Over-long line clipping on the grep/rg pass-through branch. Under _GREP_COMPRESS_THRESHOLD the filter returned the raw output verbatim with no per-line cap of any kind, and apply()'s line/byte caps only look at whole-output size -- so a twelve-line result carrying one 5,000-char hit inside a minified bundle shipped that line whole. ---------------------------------------------------------------------------
+// --------------------------------------------------------------------------- Over-long line clipping on the grep/rg pass-through branch. Under _GREP_KEPT_MATCH_LINES (then _GREP_COMPRESS_THRESHOLD) the filter returned the raw output verbatim with no per-line cap of any kind, and apply()'s line/byte caps only look at whole-output size -- so a twelve-line result carrying one 5,000-char hit inside a minified bundle shipped that line whole. ---------------------------------------------------------------------------
 
 // CAPTURE: `grep -rn "written against invented output shipped broken" src/tool_filters/` run with GNU grep 3.0 in this repo on 2026-09-01. One 1,254-char line; the matched text starts at offset 1,206, i.e. past any 1,000-char head window.
 const GREP_LONG_CAPTURE = fs.readFileSync(

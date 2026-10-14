@@ -21,7 +21,7 @@ import { foldDetail, type BodyFold } from './code_fold.js'
 import { redactSecrets } from './secret_redact.js'
 import { findProject } from './project.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow, type ServedBody } from './served_lines.js'
-import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, resolveMinNetSavingsBytes, splitOwnTrailingNotices } from './tool_filters/index.js'
+import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -45,6 +45,7 @@ import {
   gitRepoRootOrNull,
   enqueueNonHeadMovingRewrites,
   pipelineShapeFilter,
+  pipelineLineBound,
   isFullRecallCommand,
   isRecallCommand,
   isTokenGoatOwnCommand,
@@ -348,10 +349,12 @@ async function maybeCompressCompoundOutput(
   if (filter === null) return null
   // Only the shaped filter gets argv: the generic fallback is chosen precisely because no filter claimed this command, so handing it the first stage's tokens would invite it to read flags meant for something else.
   const filterArgv = useShaped ? shaped.argv : []
-  // Output is the combined stdout/stderr stream the harness already merged, so pass it as stdout.
+  // Output is the combined stdout/stderr stream the harness already merged, so pass it as stdout. The shaped filter sees only the first stage's argv, so a `| head -N` the caller already bounded the output with travels beside it.
+  const lineBound = useShaped ? pipelineLineBound(cmd) : null
   const compressed = compressOutput(filter, output, '', exitCode ?? 0, filterArgv, {
     maxLines: cfg.max_lines,
     maxBytes: cfg.max_bytes,
+    ...(lineBound !== null ? { outputLineBound: lineBound } : {}),
   })
   const minNet = resolveMinNetSavingsBytes()
   // Cheap necessary pre-check: the recall pointer below only ever makes the rewrite bigger, so anything failing here can never clear the gate once the pointer is priced in either. Failing fast keeps a hopeless case from paying for a cache write.
@@ -359,7 +362,9 @@ async function maybeCompressCompoundOutput(
   // The id is `bashOutputIdSync(cmd, output, runDir)`, exactly what the storeBashOutput call below returns for this same output, so the pointer's real byte cost is known before committing to the cache write -- and the pointer names this run's body rather than whatever the command last produced.
   const id = bashOutputIdSync(cmd, output, runDir)
   // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies head/tail elision, so it would return a truncated view, not the complete original. The fence wraps the command's own bytes and nothing else: token-goat's marker and the recall pointer sit outside it. Fold them in and the model loses its one signal for where our voice ends and the command's output begins, and anyone who guesses the marker's wording gets to write text the model reads as ours. Every other rewrite hook already follows this rule -- fetch, websearch, MCP, and the Read splice sites -- and Bash was the one substitution site in the codebase that handed the model a replacement body with no fence at all. A filter that hit its cap appends a notice saying so, and that notice is ours, so it joins the marker outside the tag rather than riding inside with the command's bytes. Leaving it in was the one case where token-goat's voice really did sit inside its own fence, which is exactly the ambiguity the fence removes -- and the marker neutraliser escapes it, so the symptom was our own cap notice arriving mangled. Nothing positional is lost: the cap trims the tail, so the point it describes is where the body ends, which the closing tag already marks.
-  const { body: untrusted, notices } = splitOwnTrailingNotices(compressed.text)
+  // apply() already told token-goat's closing notices from the command's bytes by provenance and kept them apart; `text` ends with exactly them.
+  const notices = compressed.ownNotices
+  const untrusted = compressed.text.slice(0, compressed.text.length - notices.length)
   const marker = compressed.withMarker(minNet).slice(compressed.text.length)
   const body =
     fenceUntrusted(untrusted, UNTRUSTED_TOOL_TAG) +

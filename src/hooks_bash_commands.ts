@@ -19,6 +19,7 @@ import {
   hasBareBackgroundOrNewline,
   maskQuotedSpans,
   shlexSplit,
+  stageLineBound,
   type ToolFilter,
 } from './tool_filters/index.js'
 import { isTestRunnerCommand, isBuildCommand } from './hints/lang_patterns.js'
@@ -491,6 +492,19 @@ function isCiBuildTestSegment(cleaned: string, cwd: string | null): boolean {
   const detected = detectFromCommand(cleaned, cwd ?? undefined)
   if (detected !== null && CI_FILTER_NAMES.test(detected.filter.name)) return true
   return false
+}
+
+/** The most lines one pipeline lets through, from its `head`/`tail` stages (see stageLineBound), or null when none bounds it. A command chain is null outright: a bound on one of its commands says nothing about the combined output of all of them. */
+export function pipelineLineBound(cmd: string): number | null {
+  if (hasUnquotedOperator(cmd, ['&&', '||', ';'])) return null
+  const forSplit = cmd.replace(/\s2>(?:&1|\/dev\/null)/g, '')
+  if (hasBareBackgroundOrNewline(forSplit)) return null
+  let bound: number | null = null
+  for (const segment of splitShellSegments(forSplit).slice(1)) {
+    const n = stageLineBound(safeShlexSplit(segment) ?? [])
+    if (n !== null && (bound === null || n < bound)) bound = n
+  }
+  return bound
 }
 
 export function pipelineShapeFilter(cmd: string, cwd: string | null): { filter: ToolFilter; argv: string[] } | null {

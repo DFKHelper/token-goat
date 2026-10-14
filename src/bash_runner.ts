@@ -25,6 +25,7 @@ import {
   filterByName,
   selectFilter,
   shlexSplit,
+  stripOwnNoticeTags,
   TOOL_FILTERS,
 } from './tool_filters/index.js'
 import { echoedValue } from './hint_suggestion_guard.js'
@@ -376,7 +377,8 @@ async function wrapAndCompress(
   // Apply the pressure-scaled token cap to the body BEFORE appending the marker so the savings marker survives truncation and stays visible to the agent.
   let text = delivered
   const maxTokens = opts.maxTokens ?? 0
-  if (maxTokens > 0) text = capTokens(text, maxTokens)
+  // Untagged here: this body is printed as it stands, with no fence for the cap notice to stand outside of.
+  if (maxTokens > 0) text = stripOwnNoticeTags(capTokens(text, maxTokens))
   const capped = text !== delivered
   let body = text + marker
   // A cap that cut the output is a loss the same as a filter that did, so it gets the same recall. Keyed on `applied` alone, a passthrough run capped to 2,000 tokens dropped the rest with nothing to recover it from.

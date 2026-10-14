@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { capBytes, capTokens, clampKeepingEnds, truncateMiddleSmart } from '../src/tool_filters/helpers.js'
+import { capBytes, capTokens, clampKeepingEnds, stripOwnNoticeTags, truncateMiddleSmart } from '../src/tool_filters/helpers.js'
 import { filterByName } from '../src/tool_filters/index.js'
 
 /** The pre-filter input cap has to keep the end of the output, not just the beginning. Fixture provenance: CAPTURE for the summary block, HAND-DERIVED for the logic cases. The four summary lines below are the literal tail of a real `npm test` run of this repository on 2026-09-06, captured to a file and read back: 2,406,737 bytes whose last 200 hold `Test Files 577 passed (577)` and `Tests 12100 passed | 17 skipped (12117)`. Under the head-only cut this replaces, that run reached the model as 5.5KB containing none of them. The padding around them is synthetic, because only its size matters. There is no ratio assertion here on purpose: a cap's ratio improves by dropping more, which is the failure under test. Every case names text that must survive. */
@@ -93,7 +93,7 @@ describe('filter input cap keeps both ends', () => {
     // The same filter over an input that fits must keep saying the count flat, or the honest case has been made to lie too.
     const small = Array.from({ length: 200 }, (_, i) => `src/file${i % 4}.ts:${i}:  const value = someCall(${i})`).join('\n')
     const whole = filter?.apply(small, '', 0, ['grep', '-rn', 'value', 'src']).text as string
-    expect(whole).toContain('grep: 200 matches across 4 files')
+    expect(whole).toContain('grep: 160 more matches across 4 files')
     expect(whole).not.toContain('at least')
   })
 
@@ -107,7 +107,8 @@ describe('filter input cap keeps both ends', () => {
     // The elided figure is measured against what survived, so it must exceed the naive `original - cap`, which ignores the clamp's own marker and would report less lost than really was.
     const elided = Number(/\[(\d+) bytes elided by token-goat\]/.exec(capped)?.[1])
     expect(elided).toBeGreaterThan(Buffer.byteLength(body) - 4096)
-    expect(Buffer.byteLength(body) - elided).toBe(Buffer.byteLength(capped.replace(/\n\.\.\. \[\d+ bytes elided by token-goat\]$/, '')))
+    // The notice carries the tag that marks it as token-goat's own (helpers.ts ownNotice); apply() strips it, so the bytes the model sees are measured without it.
+    expect(Buffer.byteLength(body) - elided).toBe(Buffer.byteLength(stripOwnNoticeTags(capped).replace(/\n\.\.\. \[\d+ bytes elided by token-goat\]$/, '')))
   })
 
   it('spends a tight error-context budget on both ends, not on whichever signals come first by line number', () => {
