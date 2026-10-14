@@ -39,3 +39,21 @@ export function gitRepoWithCommit(): string {
   fs.cpSync(committedTemplate, dir, { recursive: true })
   return dir
 }
+
+let subCommitTemplate: string | null = null
+
+/** A fresh repository holding {@link gitRepoWithCommit}'s commit plus a second one that adds `sub/a.txt` (`two\n`) and `café.ts` (`export const c = 1\n`), so a row that needs two commits of history, or a nested directory and a non-ASCII name, pays for the extra add and commit once per process rather than once per row. */
+export function gitRepoWithSubCommit(): string {
+  if (subCommitTemplate === null) {
+    const dir = gitRepoWithCommit()
+    fs.mkdirSync(path.join(dir, 'sub'))
+    fs.writeFileSync(path.join(dir, 'sub', 'a.txt'), 'two\n')
+    fs.writeFileSync(path.join(dir, 'café.ts'), 'export const c = 1\n')
+    git(dir, ['add', 'sub/a.txt', 'café.ts'])
+    git(dir, ['-c', 'user.email=t@t.t', '-c', 'user.name=t', 'commit', '-m', 'sub'])
+    subCommitTemplate = dir
+  }
+  const dir = indexableDir()
+  fs.cpSync(subCommitTemplate, dir, { recursive: true })
+  return dir
+}

@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { run } from '../src/cli.js'
+import { runCliExitCode } from './helpers/run-cli.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
@@ -29,17 +29,6 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-async function runCli(argv: string[]): Promise<number | string | undefined> {
-  const prev = process.exitCode
-  process.exitCode = 0
-  try {
-    await run(['node', 'token-goat', ...argv])
-    return process.exitCode
-  } finally {
-    process.exitCode = prev
-  }
-}
-
 const BODY = ['# Doc', '', "## Bob's notes", 'first', '', "## Bob's notes", 'second', '', '## Other', 'third', ''].join('\n')
 const NEW_B64 = Buffer.from('## New\nx\n', 'utf8').toString('base64')
 
@@ -47,31 +36,31 @@ describe('a heading echoed in a section error', () => {
   it('quotes a missing heading and its file with quotedArg in section', async () => {
     const file = path.join(dir, 'doc.md')
     fs.writeFileSync(file, BODY)
-    expect(await runCli(['section', file + "::it's gone"])).toBe(1)
+    expect(await runCliExitCode(['section', file + "::it's gone"])).toBe(1)
     expect(out.join('')).toContain(`Section "it's gone" not found in "${file}"`)
   })
 
   it('quotes an ambiguous heading in section', async () => {
     const file = path.join(dir, 'doc.md')
     fs.writeFileSync(file, BODY)
-    expect(await runCli(['section', file + "::Bob's notes"])).toBe(1)
+    expect(await runCliExitCode(['section', file + "::Bob's notes"])).toBe(1)
     expect(out.join('')).toContain(`Ambiguous heading "Bob's notes" in "${file}": 2 headings match.`)
   })
 
   it('quotes the heading of an ordinal past its occurrences in section', async () => {
     const file = path.join(dir, 'doc.md')
     fs.writeFileSync(file, BODY)
-    expect(await runCli(['section', file + "::Bob's notes#3"])).toBe(1)
+    expect(await runCliExitCode(['section', file + "::Bob's notes#3"])).toBe(1)
     expect(out.join('')).toContain(`Heading "Bob's notes" has 2 occurrences in "${file}"; valid ordinals are #1 to #2`)
   })
 
   it('quotes a missing and an ambiguous --after heading in insert-section, leaving the file untouched', async () => {
     const file = path.join(dir, 'doc.md')
     fs.writeFileSync(file, BODY)
-    expect(await runCli(['insert-section', file, '--after', "it's gone", '--content-b64', NEW_B64])).toBe(1)
+    expect(await runCliExitCode(['insert-section', file, '--after', "it's gone", '--content-b64', NEW_B64])).toBe(1)
     expect(out.join('')).toContain(`Section "it's gone" not found in "${file}"`)
     out.length = 0
-    expect(await runCli(['insert-section', file, '--after', "Bob's notes", '--content-b64', NEW_B64])).toBe(1)
+    expect(await runCliExitCode(['insert-section', file, '--after', "Bob's notes", '--content-b64', NEW_B64])).toBe(1)
     expect(out.join('')).toContain(`Ambiguous heading "Bob's notes" in "${file}": 2 headings match.`)
     expect(fs.readFileSync(file, 'utf8')).toBe(BODY)
   })

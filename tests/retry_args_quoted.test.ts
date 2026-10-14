@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { run } from '../src/cli.js'
+import { runCliExitCode } from './helpers/run-cli.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { resolveWindowsBash } from '../src/shell.js'
 import { storeWebOutput } from '../src/web_cache.js'
@@ -40,24 +40,13 @@ afterEach(() => {
   clearModuleCaches()
 })
 
-async function runCli(argv: string[]): Promise<number | string | undefined> {
-  const prev = process.exitCode
-  process.exitCode = 0
-  try {
-    await run(['node', 'token-goat', ...argv])
-    return process.exitCode
-  } finally {
-    process.exitCode = prev
-  }
-}
-
 const HEADING = 'Use $HOME'
 const BODY = ['# Doc', '', `## ${HEADING}`, 'first body', '', `## ${HEADING}`, 'second body', ''].join('\n')
 
 describe('the retry form for an ambiguous heading holding $', () => {
   it('single-quotes the --section value of a cached output, and the shell hands it back as written', async () => {
     const id = storeWebOutput('https://example.com/dollar-dup', BODY)
-    expect(await runCli(['web-output', id, '--section', HEADING])).toBe(1)
+    expect(await runCliExitCode(['web-output', id, '--section', HEADING])).toBe(1)
     const err = stderr.join('')
     expect(err).toContain(`--section '${HEADING}#1'`)
     expect(err).toContain(`--section '${HEADING}#2'`)
@@ -66,13 +55,13 @@ describe('the retry form for an ambiguous heading holding $', () => {
     if (SH !== null) expect(shArgs(SH, retry)).toEqual([`${HEADING}#2`])
 
     stdout.length = 0
-    expect(await runCli(['web-output', id, '--section', `${HEADING}#2`])).toBe(0)
+    expect(await runCliExitCode(['web-output', id, '--section', `${HEADING}#2`])).toBe(0)
     expect(unfence(stdout.join(''))).toContain('second body')
   })
 
   it('keeps double quotes for a heading without $', async () => {
     const id = storeWebOutput('https://example.com/plain-dup', BODY.replaceAll(HEADING, 'Install'))
-    expect(await runCli(['web-output', id, '--section', 'Install'])).toBe(1)
+    expect(await runCliExitCode(['web-output', id, '--section', 'Install'])).toBe(1)
     expect(stderr.join('')).toContain('--section "Install#2"')
   })
 
@@ -80,7 +69,7 @@ describe('the retry form for an ambiguous heading holding $', () => {
     const tmp = path.join(os.tmpdir(), `tg-retry-after-${process.pid}-${Date.now()}.md`)
     fs.writeFileSync(tmp, BODY, 'utf8')
     try {
-      expect(await runCli(['insert-section', tmp, '--after', HEADING, '--content-b64', Buffer.from('## New\nx\n').toString('base64')])).toBe(1)
+      expect(await runCliExitCode(['insert-section', tmp, '--after', HEADING, '--content-b64', Buffer.from('## New\nx\n').toString('base64')])).toBe(1)
       const err = stderr.join('')
       expect(err).toContain(`--after '${HEADING}#1'`)
       expect(err).toContain(`--after '${HEADING}#2'`)

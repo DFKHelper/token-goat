@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest'
 import { zipSync, strToU8, unzipSync, Unzip, UnzipInflate } from 'fflate'
 
 import { unzipBounded, ZipOutputTooLargeError, type ZipStreamModule } from '../src/zip_bounds.js'
-import { buildLyingSizeZip, zeroPayload } from './helpers/zip_bomb_fixture.js'
+import { buildLyingSizeZip, withCorruptDeflateStream, zeroPayload } from './helpers/zip_bomb_fixture.js'
 
 const fflateModule: ZipStreamModule = { Unzip, UnzipInflate, unzipSync }
+
+const lyingBomb = (): Uint8Array => withCorruptDeflateStream(buildLyingSizeZip('bomb.bin', new Uint8Array(1024), 40 * 1024 * 1024), 'bomb.bin')
 
 describe('unzipBounded', () => {
   it('extracts a normal small archive correctly (no false positive)', () => {
@@ -31,19 +33,14 @@ describe('unzipBounded', () => {
   })
 
   it('rejects an entry whose declared size alone already exceeds the limit, via the fast declared-size check, without decompressing it', () => {
-    // A real, honestly-labeled bomb: 40MB of zeros, declared size matches reality. Small enough to build fast, but big enough that if the fast path did not fire and the entry were fully decompressed, it would take measurably longer than the assertion below allows.
-    const zip = zipSync({ 'bomb.bin': zeroPayload(40) }, { level: 1 })
+    // A 1KB payload declaring 40MB in both headers, with its DEFLATE stream corrupted: inflating it first would throw a different error, so a ZipOutputTooLargeError proves the declared-size check ran before any decompression.
+    const zip = lyingBomb()
 
-    const t0 = Date.now()
     expect(() => unzipBounded(fflateModule, zip, { limitBytes: 1024 * 1024, shouldExtract: () => true })).toThrow(ZipOutputTooLargeError)
-    const elapsedMs = Date.now() - t0
-
-    // The fast declared-size check rejects before any streaming decompression begins, so this should complete near-instantly (walking the central directory only). A generous bound catches a regression to "decompress first, check after" without being flaky under load.
-    expect(elapsedMs).toBeLessThan(200)
   })
 
   it('reports the limit and the declared size in the fast-path error message', () => {
-    const zip = zipSync({ 'bomb.bin': zeroPayload(40) }, { level: 1 })
+    const zip = lyingBomb()
     let caught: Error | undefined
     try {
       unzipBounded(fflateModule, zip, { limitBytes: 1024 * 1024, shouldExtract: () => true })

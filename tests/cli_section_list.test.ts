@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { run } from '../src/cli.js'
+import { runCliExitCode } from './helpers/run-cli.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let tmpDir: string
@@ -21,17 +21,6 @@ afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true })
 })
 
-async function runCli(argv: string[]): Promise<number | string | undefined> {
-  const prev = process.exitCode
-  process.exitCode = 0
-  try {
-    await run(['node', 'token-goat', ...argv])
-    return process.exitCode
-  } finally {
-    process.exitCode = prev
-  }
-}
-
 describe('section --list', () => {
   it('lists every heading in a file instead of rejecting --list as unknown', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'tg-section-list-'))
@@ -44,7 +33,7 @@ describe('section --list', () => {
     stderr = []
     stderrSpy = spyOnWrite(process.stderr, stderr)
 
-    const code = await runCli(['section', mdFile, '--list'])
+    const code = await runCliExitCode(['section', mdFile, '--list'])
 
     expect(stderr.join('')).not.toMatch(/unknown option/)
     expect(code).toBe(0)
@@ -63,7 +52,7 @@ describe('section --list', () => {
     stderr = []
     stderrSpy = spyOnWrite(process.stderr, stderr)
 
-    const code = await runCli(['section', mdFile, '--list', '--grep', 'First'])
+    const code = await runCliExitCode(['section', mdFile, '--list', '--grep', 'First'])
 
     expect(code).toBe(0)
     const out = stdout.join('')
@@ -81,7 +70,7 @@ describe('section --list', () => {
     stderr = []
     stderrSpy = spyOnWrite(process.stderr, stderr)
 
-    const code = await runCli(['section', mdFile, '--list', '--grep', 'NoSuchHeadingAnywhere'])
+    const code = await runCliExitCode(['section', mdFile, '--list', '--grep', 'NoSuchHeadingAnywhere'])
 
     expect(code).toBe(0)
     const out = stdout.join('')
@@ -99,7 +88,7 @@ describe('section --list', () => {
     stderr = []
     stderrSpy = spyOnWrite(process.stderr, stderr)
 
-    const code = await runCli(['section', mdFile, '--list', '--grep', 'NoSuchHeadingAnywhere', '--json'])
+    const code = await runCliExitCode(['section', mdFile, '--list', '--grep', 'NoSuchHeadingAnywhere', '--json'])
 
     expect(code).toBe(0)
     const payload = JSON.parse(stdout.join(''))
@@ -116,7 +105,7 @@ describe('section --list', () => {
     stderr = []
     stderrSpy = spyOnWrite(process.stderr, stderr)
 
-    const code = await runCli(['section', mdFile, '--list', '--grep', 'anything'])
+    const code = await runCliExitCode(['section', mdFile, '--list', '--grep', 'anything'])
 
     expect(code).toBe(1)
     const out = stdout.join('') + stderr.join('')

@@ -15,7 +15,7 @@ import { normalizePath, resolveIndexPath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { foldPath } from '../src/util.js'
 import { workerErrorLogPath } from '../src/worker_lifecycle.js'
-import { gitRepoWithCommit } from './helpers/git-repo.js'
+import { gitRepoWithCommit, gitRepoWithSubCommit } from './helpers/git-repo.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 type SeamAnswer = { exitCode: number; timedOut?: true; stdout?: string; stderr?: string } | null
@@ -178,11 +178,7 @@ describe('the working-tree status sweep when git does not answer', () => {
     { command: 'git restore --source=HEAD~1 a.txt', effect: (d: string) => { git(d, 'rm', '-q', 'a.txt'); git(d, 'commit', '-m', 'drop a'); git(d, 'restore', '--source=HEAD~1', 'a.txt') }, expected: ['a.txt'], reconcile: false },
   ]
   it.each(rewriteRows)('enqueues exactly the files `$command` rewrote ($expected)', async ({ command, effect, expected, reconcile, reconcileIn }) => {
-    mkdirSync(join(dir, 'sub'))
-    writeFileSync(join(dir, 'sub', 'a.txt'), 'two\n')
-    writeFileSync(join(dir, 'café.ts'), 'export const c = 1\n')
-    git(dir, 'add', 'sub/a.txt', 'café.ts')
-    git(dir, 'commit', '-m', 'sub')
+    dir = gitRepoWithSubCommit()
     clearDirtyQueue()
     effect(dir)
 

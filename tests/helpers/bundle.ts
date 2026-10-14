@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,6 +39,37 @@ export function tgIsolatedEnv(base: string, extra?: NodeJS.ProcessEnv): NodeJS.P
     XDG_DATA_HOME: base,
     ...extra,
   }
+}
+
+export interface BundleProject {
+  readonly root: string
+  readonly project: string
+  readonly env: NodeJS.ProcessEnv
+}
+
+/** A scratch project under a fresh temp root plus the fully isolated env the *_bundle_e2e files spawn the shipped bundle with: TOKEN_GOAT_HOME, data dirs and a throwaway HOME (with its AppData/Roaming created) all under that root, embeddings off. The caller removes `root` when done. */
+export function makeBundleProject(prefix: string): BundleProject {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+  const project = path.join(root, 'project')
+  const home = path.join(root, 'home')
+  fs.mkdirSync(project, { recursive: true })
+  fs.mkdirSync(path.join(home, 'AppData', 'Roaming'), { recursive: true })
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    TOKEN_GOAT_HOME: path.join(root, 'tg-home'),
+    LOCALAPPDATA: path.join(root, 'data'),
+    XDG_DATA_HOME: path.join(root, 'data'),
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: path.join(home, 'AppData', 'Roaming'),
+    TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
+  }
+  return { root, project, env }
+}
+
+/** Runs the bundle in `project` under `env` with the 60 s timeout the bundle e2e files use. */
+export function bundleTg(project: string, env: NodeJS.ProcessEnv, args: string[]): RunResult {
+  return runBundle(args, { cwd: project, env, timeout: 60000 })
 }
 
 export function runBundle(

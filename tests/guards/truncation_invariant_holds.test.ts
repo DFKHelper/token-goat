@@ -19,17 +19,26 @@ const LIMIT = 2
 let projectDir: string
 let homeDir: string
 
-function run(args: string[]): { status: number; out: string; err: string } {
+type RunResult = { status: number; out: string; err: string }
+
+/** Raw results by argv. The fixture is built once in beforeAll and every invocation is read-only, so identical argv share one spawn; the raw result is cached, never the parsed payload, so stderr and the failure message stay intact. */
+const runMemo = new Map<string, RunResult>()
+
+function run(args: string[]): RunResult {
+  const key = args.join('\0')
+  const hit = runMemo.get(key)
+  if (hit) return hit
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: projectDir,
     encoding: 'utf-8',
     // All four, and the home directory deliberately outside projectDir: a home nested inside the indexed root makes `index . --walk` refuse to run, and the resulting empty index turns every case below into a "no matches" pass.
     env: { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, XDG_DATA_HOME: homeDir, USERPROFILE: homeDir },
   })
-  return { status: res.status ?? 1, out: res.stdout ?? '', err: res.stderr ?? '' }
+  const result = { status: res.status ?? 1, out: res.stdout ?? '', err: res.stderr ?? '' }
+  runMemo.set(key, result)
+  return result
 }
 
-/** Parse a `--json` payload, failing with the raw output rather than a bare SyntaxError. */
 /** Parse stdout as JSON, or undefined. Used where the case also needs stderr, so it cannot go through runJson. */
 function safeParse(out: string): unknown {
   try {
@@ -39,6 +48,7 @@ function safeParse(out: string): unknown {
   }
 }
 
+/** Parse a `--json` payload, failing with the raw output rather than a bare SyntaxError. */
 function runJson(args: string[]): unknown {
   const r = run([...args, '--json'])
   try {

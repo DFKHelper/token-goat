@@ -1,38 +1,20 @@
 /** Built-bundle check for the five Lisp-family adapters (Common Lisp, Scheme, Racket, Clojure, Emacs Lisp) added in commit 8c16530e: the shipped dist/token-goat.mjs, not source, indexes a small project with one file per dialect and answers `outline`, `symbol` and `read` from it. These adapters shipped with only two enumeration guards and no dedicated test file (source-level or bundle), unlike the six template adapters this file is modeled on (tests/templates_bundle_e2e.test.ts) which shipped both. This is the only test that proves each masker-then-depth-scan adapter survived bundling and is reached from the real CLI path. */
-import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { BUNDLE } from './helpers/bundle.js'
+import { bundleTg, makeBundleProject } from './helpers/bundle.js'
 
 let root: string
 let project: string
 let env: NodeJS.ProcessEnv
 
 function tg(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [BUNDLE, ...args], { cwd: project, env, encoding: 'utf8', timeout: 60000 })
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+  return bundleTg(project, env, args)
 }
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-lisp-bundle-'))
-  project = path.join(root, 'project')
-  const home = path.join(root, 'home')
-  fs.mkdirSync(project, { recursive: true })
-  fs.mkdirSync(path.join(home, 'AppData', 'Roaming'), { recursive: true })
-  env = {
-    ...process.env,
-    TOKEN_GOAT_HOME: path.join(root, 'tg-home'),
-    LOCALAPPDATA: path.join(root, 'data'),
-    XDG_DATA_HOME: path.join(root, 'data'),
-    HOME: home,
-    USERPROFILE: home,
-    APPDATA: path.join(home, 'AppData', 'Roaming'),
-    TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
-  }
+  ;({ root, project, env } = makeBundleProject('tg-lisp-bundle-'))
   // HAND-DERIVED: minimal Common Lisp per CLHS Chapter 3 (defining forms).
   fs.writeFileSync(project + '/sample.lisp', '(defun cl-greet (name)\n  (format nil "hello, ~a" name))\n')
   // HAND-DERIVED: minimal Scheme per R7RS 5.3 (define).

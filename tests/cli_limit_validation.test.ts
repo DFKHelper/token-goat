@@ -7,7 +7,7 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { run } from '../src/cli.js'
+import { runCliExitCode } from './helpers/run-cli.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
@@ -33,21 +33,10 @@ afterEach(() => {
   stdoutSpy = undefined
 })
 
-async function runCli(argv: string[]): Promise<number | string | undefined> {
-  const prev = process.exitCode
-  process.exitCode = 0
-  try {
-    await run(['node', 'token-goat', ...argv])
-    return process.exitCode
-  } finally {
-    process.exitCode = prev
-  }
-}
-
 describe('non-numeric --limit/--top validation', () => {
   it('rejects a non-numeric --limit on `symbol` with a clean error instead of a SQL datatype mismatch', async () => {
     captureStderr()
-    const code = await runCli(['symbol', 'nonexistent-symbol-zzz', '--limit', 'abc'])
+    const code = await runCliExitCode(['symbol', 'nonexistent-symbol-zzz', '--limit', 'abc'])
     expect(code).toBe(1)
     const message = stderr.join('')
     expect(message).not.toContain('datatype mismatch')
@@ -56,7 +45,7 @@ describe('non-numeric --limit/--top validation', () => {
 
   it('rejects a non-numeric --limit on `refs` with a clean error instead of a SQL datatype mismatch', async () => {
     captureStderr()
-    const code = await runCli(['refs', 'nonexistent-symbol-zzz', '--limit', 'abc'])
+    const code = await runCliExitCode(['refs', 'nonexistent-symbol-zzz', '--limit', 'abc'])
     expect(code).toBe(1)
     const message = stderr.join('')
     expect(message).not.toContain('datatype mismatch')
@@ -65,7 +54,7 @@ describe('non-numeric --limit/--top validation', () => {
 
   it('rejects a numeric-prefixed garbage --limit (e.g. "5abc") with a clean error instead of silently parsing it as 5', async () => {
     captureStderr()
-    const code = await runCli(['symbol', 'nonexistent-symbol-zzz', '--limit', '5abc'])
+    const code = await runCliExitCode(['symbol', 'nonexistent-symbol-zzz', '--limit', '5abc'])
     expect(code).toBe(1)
     const message = stderr.join('')
     expect(message).not.toContain('datatype mismatch')
@@ -81,7 +70,7 @@ describe('non-numeric --max-lines validation on grep', () => {
     try {
       writeFileSync(join(dir, 'fixture.txt'), 'UNIQUE_GREP_MATCH_TOKEN\n', 'utf-8')
       captureStderr()
-      const code = await runCli(['grep', 'UNIQUE_GREP_MATCH_TOKEN', dir, '--max-lines', 'abc'])
+      const code = await runCliExitCode(['grep', 'UNIQUE_GREP_MATCH_TOKEN', dir, '--max-lines', 'abc'])
       expect(code).toBe(1)
       expect(stderr.join('')).toContain('--max-lines')
     } finally {
@@ -102,7 +91,7 @@ describe('negative/zero --max-lines validation on grep (task #105)', () => {
       )
       captureStdout()
       captureStderr()
-      const code = await runCli(['grep', 'UNIQUE_GREP_MATCH_TOKEN', dir, '--max-lines', '-1'])
+      const code = await runCliExitCode(['grep', 'UNIQUE_GREP_MATCH_TOKEN', dir, '--max-lines', '-1'])
       expect(code).toBe(1)
       // Pre-fix: hits.slice(0, -1) on 3 matches silently drops the last one and then reports "... (4 more lines omitted)" -- more than the 3 matches that exist in total. Post-fix this is rejected before runGrep ever executes, so no matches are printed at all.
       expect(stdout.join('')).not.toContain('UNIQUE_GREP_MATCH_TOKEN')
@@ -118,7 +107,7 @@ describe('negative/zero --max-lines validation on grep (task #105)', () => {
       writeFileSync(join(dir, 'fixture.txt'), 'UNIQUE_GREP_MATCH_TOKEN\n', 'utf-8')
       captureStdout()
       captureStderr()
-      const code = await runCli(['grep', 'UNIQUE_GREP_MATCH_TOKEN', dir, '--max-lines', '0'])
+      const code = await runCliExitCode(['grep', 'UNIQUE_GREP_MATCH_TOKEN', dir, '--max-lines', '0'])
       expect(code).toBe(1)
       expect(stderr.join('')).toContain('--max-lines')
     } finally {
@@ -130,7 +119,7 @@ describe('negative/zero --max-lines validation on grep (task #105)', () => {
 describe('non-numeric --depth validation on call-chain', () => {
   it('rejects a non-numeric --depth with a clean error instead of silently ignoring the depth cap', async () => {
     captureStderr()
-    const code = await runCli(['call-chain', 'nonexistent-symbol-zzz', '--depth', 'abc'])
+    const code = await runCliExitCode(['call-chain', 'nonexistent-symbol-zzz', '--depth', 'abc'])
     expect(code).toBe(1)
     expect(stderr.join('')).toContain('--depth')
   })
@@ -143,7 +132,7 @@ describe('non-numeric --budget validation on pack and context-for', () => {
       const file = join(dir, 'fixture.ts')
       writeFileSync(file, 'export const x = 1\n', 'utf-8')
       captureStderr()
-      const code = await runCli(['pack', file, '--budget', 'abc'])
+      const code = await runCliExitCode(['pack', file, '--budget', 'abc'])
       expect(code).toBe(1)
       expect(stderr.join('')).toContain('--budget')
     } finally {
@@ -153,7 +142,7 @@ describe('non-numeric --budget validation on pack and context-for', () => {
 
   it('rejects a non-numeric --budget on `context-for` with a clean error instead of silently skipping the budget check', async () => {
     captureStderr()
-    const code = await runCli(['context-for', 'nonexistent task xyz', '--budget', 'abc'])
+    const code = await runCliExitCode(['context-for', 'nonexistent task xyz', '--budget', 'abc'])
     expect(code).toBe(1)
     expect(stderr.join('')).toContain('--budget')
   })
@@ -163,7 +152,7 @@ describe('non-numeric --min-lines validation on skeleton and outline', () => {
   it('rejects a non-numeric --min-lines on `skeleton` with a clean error instead of silently returning zero symbols', async () => {
     captureStderr()
     captureStdout()
-    const code = await runCli(['skeleton', 'src/cli.ts', '--min-lines', 'abc'])
+    const code = await runCliExitCode(['skeleton', 'src/cli.ts', '--min-lines', 'abc'])
     expect(code).toBe(1)
     // Pre-fix this would print "# Skeleton: src/cli.ts  (0 symbols, 0 lines)" with exit 0 Post-fix it errors and contains --min-lines in stderr
     expect(stdout.join('')).not.toContain('symbols')
@@ -173,7 +162,7 @@ describe('non-numeric --min-lines validation on skeleton and outline', () => {
   it('rejects a non-numeric --min-lines on `outline` with a clean error instead of silently returning zero symbols', async () => {
     captureStderr()
     captureStdout()
-    const code = await runCli(['outline', 'src/cli.ts', '--min-lines', 'abc'])
+    const code = await runCliExitCode(['outline', 'src/cli.ts', '--min-lines', 'abc'])
     expect(code).toBe(1)
     // Pre-fix this would print "# Outline: src/cli.ts  (0 symbols)" with exit 0 Post-fix it errors and contains --min-lines in stderr
     expect(stdout.join('')).not.toContain('symbols')
@@ -200,7 +189,7 @@ describe('negative --limit/--top validation', () => {
 
     captureStdout()
     captureStderr()
-    const code = await runCli(['symbol', 'fixtureNegLimitSymbol', '--limit', '-1', '--json'])
+    const code = await runCliExitCode(['symbol', 'fixtureNegLimitSymbol', '--limit', '-1', '--json'])
     expect(code).toBe(1)
     // Pre-fix this would print a 30-element JSON array of matches; post-fix nothing is printed because requireNonNegativeInt throws before querySymbols ever runs.
     expect(stdout.join('')).not.toContain('fixtureNegLimitSymbol')
@@ -218,7 +207,7 @@ describe('negative --limit/--top validation', () => {
 
     captureStdout()
     captureStderr()
-    const code = await runCli(['refs', 'fixtureNegLimitRef', '--limit', '-1', '--json'])
+    const code = await runCliExitCode(['refs', 'fixtureNegLimitRef', '--limit', '-1', '--json'])
     expect(code).toBe(1)
     expect(stdout.join('')).not.toContain('fixtureNegLimitRef')
     expect(stderr.join('')).toContain('--limit')
@@ -237,7 +226,7 @@ describe('negative --limit/--top validation', () => {
       captureStdout()
       captureStderr()
       // Absolute paths so expandGlobs() uses them as-is regardless of process.cwd().
-      const code = await runCli(['tokens', fileA, fileB, fileC, '--top', '-1', '--json'])
+      const code = await runCliExitCode(['tokens', fileA, fileB, fileC, '--top', '-1', '--json'])
       expect(code).toBe(1)
       // Pre-fix, entries.slice(0, -1) on 3 entries silently returns the first 2 (all but the last) and exits 0 instead of erroring.
       expect(stdout.join('')).not.toContain('fixture-neg-top')
@@ -252,14 +241,14 @@ describe('negative --limit/--top validation', () => {
 describe('non-numeric/negative --max-tokens validation on compress', () => {
   it('rejects a non-numeric --max-tokens with a clean error instead of silently disabling the cap', async () => {
     captureStderr()
-    const code = await runCli(['compress', '-c', 'echo hi', '--max-tokens', 'abc'])
+    const code = await runCliExitCode(['compress', '-c', 'echo hi', '--max-tokens', 'abc'])
     expect(code).toBe(1)
     expect(stderr.join('')).toContain('--max-tokens')
   })
 
   it('rejects a negative --max-tokens with a clean error instead of silently disabling the cap', async () => {
     captureStderr()
-    const code = await runCli(['compress', '-c', 'echo hi', '--max-tokens', '-5'])
+    const code = await runCliExitCode(['compress', '-c', 'echo hi', '--max-tokens', '-5'])
     expect(code).toBe(1)
     expect(stderr.join('')).toContain('--max-tokens')
   })
@@ -275,7 +264,7 @@ describe('bash-output --head/--tail validation', () => {
 
       captureStdout()
       captureStderr()
-      const code = await runCli(['bash-output', '--file', file, '--head', 'abc'])
+      const code = await runCliExitCode(['bash-output', '--file', file, '--head', 'abc'])
       expect(code).toBe(1)
       // Pre-fix this silently prints the first 30 lines and exits 0.
       expect(stdout.join('')).not.toContain('line 0')
@@ -293,7 +282,7 @@ describe('bash-output --head/--tail validation', () => {
 
       captureStdout()
       captureStderr()
-      const code = await runCli(['bash-output', '--file', file, '--tail', '-1'])
+      const code = await runCliExitCode(['bash-output', '--file', file, '--tail', '-1'])
       expect(code).toBe(1)
       expect(stdout.join('')).not.toContain('line 49')
       expect(stderr.join('')).toContain('--tail')
@@ -310,7 +299,7 @@ describe('bash-output --head/--tail validation', () => {
 
       captureStdout()
       captureStderr()
-      const code = await runCli(['bash-output', '--file', file, '--head', '0'])
+      const code = await runCliExitCode(['bash-output', '--file', file, '--head', '0'])
       expect(code).toBe(0)
       // Pre-fix, --head 0 is truthy-falsy-checked wrong and falls back to the 30-line default.
       expect(stdout.join('').trim()).toBe('')
@@ -324,7 +313,7 @@ describe('bash-output --head/--tail validation', () => {
 describe('stats --window-days validation', () => {
   it('rejects trailing garbage instead of silently truncating to the numeric prefix', async () => {
     captureStderr()
-    const code = await runCli(['stats', '--window-days', '30abc'])
+    const code = await runCliExitCode(['stats', '--window-days', '30abc'])
     expect(code).toBe(1)
     expect(stderr.join('')).toContain('--window-days')
   })
@@ -337,7 +326,7 @@ describe('--top on commands that reject zero validates once, with one message', 
     for (const bad of ['-2', '0']) {
       it(`${cmd[0]} --top ${bad} says the value must be positive`, async () => {
         captureStderr()
-        const code = await runCli([...cmd, '--top', bad])
+        const code = await runCliExitCode([...cmd, '--top', bad])
         expect(code).toBe(1)
         const message = stderr.join('')
         expect(message).toContain(`--top must be a positive number, got: "${bad}"`)
@@ -349,7 +338,7 @@ describe('--top on commands that reject zero validates once, with one message', 
 
 // Regression guard: cmdWaste's --top flag was the only --top-style flag in the CLI parsed via requirePositiveInt instead of requireNonNegativeInt, contradicting the documented convention (cli_dispatch.ts's requireNonNegativeInt comment: "Zero is fine ... so only strictly-negative is rejected") that every other --top/--limit/--head/--tail flag follows, and that waste.ts::topExpensiveCalls's own `.slice(0, n)` call handles correctly for n=0. So `waste --top 0` threw "--top must be a positive number" instead of returning zero top calls like the analogous `tokens --top 0` / `impact --top 0` / etc. do.
 describe('waste --top 0 validation', () => {
-  // Without --transcript, cmdWaste resolves the project root to this repo's real cwd and findLatestTranscript (waste.ts) falls back to os.homedir()/.claude/projects/<slug>, which isolate-home.ts's setup does NOT sandbox (it isolates TOKEN_GOAT_HOME and the platform data dir, not os.homedir() outside its darwin branch). On a machine actively running Claude Code against this repo -- i.e. any real dogfooding session, including the one that authored this fix -- that resolves to the developer's own live, actively-growing session transcript (observed at 76 MB and climbing), read synchronously and parsed line-by-line on every call. Unloaded that alone took ~6.7s; under full-suite parallel-fork contention that's enough margin to blow the 30s test timeout, attributed to the `await runCli(...)` call itself (a timeout, not an assertion failure) -- this reproduced the reported flake's code frame. A synthetic, isolated, single-line transcript makes these --top-parsing tests hermetic and fast regardless of what the host machine's real Claude Code session looks like.
+  // Without --transcript, cmdWaste resolves the project root to this repo's real cwd and findLatestTranscript (waste.ts) falls back to os.homedir()/.claude/projects/<slug>, which isolate-home.ts's setup does NOT sandbox (it isolates TOKEN_GOAT_HOME and the platform data dir, not os.homedir() outside its darwin branch). On a machine actively running Claude Code against this repo -- i.e. any real dogfooding session, including the one that authored this fix -- that resolves to the developer's own live, actively-growing session transcript (observed at 76 MB and climbing), read synchronously and parsed line-by-line on every call. Unloaded that alone took ~6.7s; under full-suite parallel-fork contention that's enough margin to blow the 30s test timeout, attributed to the `await runCliExitCode(...)` call itself (a timeout, not an assertion failure) -- this reproduced the reported flake's code frame. A synthetic, isolated, single-line transcript makes these --top-parsing tests hermetic and fast regardless of what the host machine's real Claude Code session looks like.
   let transcriptDir: string
   let transcriptPath: string
 
@@ -369,14 +358,14 @@ describe('waste --top 0 validation', () => {
 
   it('accepts --top 0 like every other --top flag instead of requiring a strictly-positive value', async () => {
     captureStderr()
-    await runCli(['waste', '--transcript', transcriptPath, '--top', '0'])
+    await runCliExitCode(['waste', '--transcript', transcriptPath, '--top', '0'])
     // Pre-fix this exits 1 with "--top must be a positive number, got: \"0\"".
     expect(stderr.join('')).not.toContain('must be a positive number')
   })
 
   it('still rejects a negative --top with a clean error', async () => {
     captureStderr()
-    const code = await runCli(['waste', '--transcript', transcriptPath, '--top', '-1'])
+    const code = await runCliExitCode(['waste', '--transcript', transcriptPath, '--top', '-1'])
     expect(code).toBe(1)
     expect(stderr.join('')).toContain('--top')
   })
@@ -390,7 +379,7 @@ describe('recall and search refuse --limit 0', () => {
       it(`${cmd[0]} --limit ${bad} says the value must be positive and prints nothing`, async () => {
         captureStdout()
         captureStderr()
-        const code = await runCli([...cmd, '--limit', bad])
+        const code = await runCliExitCode([...cmd, '--limit', bad])
         expect(code).toBe(1)
         expect(stderr.join('')).toContain(`--limit must be a positive number, got: "${bad}"`)
         expect(stdout.join('')).toBe('')
@@ -411,7 +400,7 @@ describe('--limit and --depth that refuse zero say so once, in one wording', () 
     for (const bad of ['0', '-1']) {
       it(`${cmd[0]} ${flag} ${bad} says the value must be positive, quoted`, async () => {
         captureStderr()
-        const code = await runCli([...cmd, flag, bad])
+        const code = await runCliExitCode([...cmd, flag, bad])
         expect(code).toBe(1)
         const message = stderr.join('')
         expect(message).toContain(`${flag} must be a positive number, got: "${bad}"`)
@@ -422,7 +411,7 @@ describe('--limit and --depth that refuse zero say so once, in one wording', () 
   for (const bad of ['0', '-1']) {
     it(`recent ${bad} says the count must be positive, quoted`, async () => {
       captureStderr()
-      const code = await runCli(['recent', bad])
+      const code = await runCliExitCode(['recent', bad])
       expect(code).toBe(1)
       const message = stderr.join('')
       expect(message).toContain(`recent: limit must be a positive number, got: "${bad}"`)

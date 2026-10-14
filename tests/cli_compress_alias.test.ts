@@ -3,7 +3,8 @@
 // This drives the real `run()` entry point (src/cli.ts), not a mock, so it exercises actual Commander dispatch -- the same concern raised by the injected-seam trap noted in CLAUDE.md: an alias could look wired up in source while Commander silently fails to route it to the same handler.
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { buildProgram, run } from '../src/cli.js'
+import { buildProgram } from '../src/cli.js'
+import { runCliExitCode } from './helpers/run-cli.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let stderr: string[]
@@ -27,17 +28,6 @@ afterEach(() => {
   stdoutSpy = undefined
 })
 
-async function runCli(argv: string[]): Promise<number | string | undefined> {
-  const prev = process.exitCode
-  process.exitCode = 0
-  try {
-    await run(['node', 'token-goat', ...argv])
-    return process.exitCode
-  } finally {
-    process.exitCode = prev
-  }
-}
-
 // A repeat count large enough to clear bash_compress's net-savings floor, matching the existing `compress` case in tests/command_matrix_e2e.*.test.ts.
 const REPEAT_CMD = `"${process.execPath}" -e "for (let i = 0; i < 60; i++) console.log('compiling...')"`
 
@@ -53,7 +43,7 @@ describe('compress command aliases', () => {
   it('`compress` itself still runs and compresses output identically', async () => {
     captureStdout()
     captureStderr()
-    const code = await runCli(['compress', '--filter', 'generic', '--cmd', REPEAT_CMD])
+    const code = await runCliExitCode(['compress', '--filter', 'generic', '--cmd', REPEAT_CMD])
     expect(code, stderr.join('')).toBe(0)
     expect(stdout.join('')).toContain('×60')
   })
@@ -61,7 +51,7 @@ describe('compress command aliases', () => {
   it('`bash` alias dispatches to the same compress handler', async () => {
     captureStdout()
     captureStderr()
-    const code = await runCli(['bash', '--filter', 'generic', '--cmd', REPEAT_CMD])
+    const code = await runCliExitCode(['bash', '--filter', 'generic', '--cmd', REPEAT_CMD])
     expect(code, stderr.join('')).toBe(0)
     expect(stdout.join('')).toContain('×60')
   })
@@ -69,7 +59,7 @@ describe('compress command aliases', () => {
   it('`run` alias dispatches to the same compress handler', async () => {
     captureStdout()
     captureStderr()
-    const code = await runCli(['run', '--filter', 'generic', '--cmd', REPEAT_CMD])
+    const code = await runCliExitCode(['run', '--filter', 'generic', '--cmd', REPEAT_CMD])
     expect(code, stderr.join('')).toBe(0)
     expect(stdout.join('')).toContain('×60')
   })
@@ -78,7 +68,7 @@ describe('compress command aliases', () => {
     captureStdout()
     captureStderr()
     // Missing --cmd should fail with commander's required-option error, not an "unknown command 'bash' (Did you mean ask?)" suggestion.
-    const code = await runCli(['bash'])
+    const code = await runCliExitCode(['bash'])
     expect(code).not.toBe(0)
     const message = stderr.join('') + stdout.join('')
     expect(message).not.toContain('unknown command')
@@ -88,7 +78,7 @@ describe('compress command aliases', () => {
   it('runs command passed via positional arguments after `--`', async () => {
     captureStdout()
     captureStderr()
-    const code = await runCli(['compress', '--filter', 'generic', '--', REPEAT_CMD])
+    const code = await runCliExitCode(['compress', '--filter', 'generic', '--', REPEAT_CMD])
     expect(code, stderr.join('')).toBe(0)
     expect(stdout.join('')).toContain('×60')
   })
@@ -97,7 +87,7 @@ describe('compress command aliases', () => {
     captureStdout()
     captureStderr()
     // In real sessions, commands like `token-goat compress -f npm -c npm --prefix foo test` failed because Commander parsed `--prefix` as a token-goat option.
-    const code = await runCli(['compress', '--filter', 'generic', '-c', `"${process.execPath}" -e "console.log('hello')" --`, '--prefix', 'extra'])
+    const code = await runCliExitCode(['compress', '--filter', 'generic', '-c', `"${process.execPath}" -e "console.log('hello')" --`, '--prefix', 'extra'])
     const errText = stderr.join('')
     expect(errText).not.toContain("unknown option '--prefix'")
     expect(code).toBe(0)
@@ -106,7 +96,7 @@ describe('compress command aliases', () => {
   it('runs bare positional command without -c or --', async () => {
     captureStdout()
     captureStderr()
-    const code = await runCli(['compress', '--filter', 'generic', REPEAT_CMD])
+    const code = await runCliExitCode(['compress', '--filter', 'generic', REPEAT_CMD])
     expect(code, stderr.join('')).toBe(0)
     expect(stdout.join('')).toContain('×60')
   })

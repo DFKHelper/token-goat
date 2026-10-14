@@ -72,3 +72,11 @@ export function buildLyingSizeZip(entryName: string, realPayload: Uint8Array, de
 export function zeroPayload(sizeMB: number): Uint8Array {
   return new Uint8Array(sizeMB * 1024 * 1024)
 }
+
+/** A copy of a {@link buildLyingSizeZip} archive whose DEFLATE stream opens with the reserved block type 3, so inflating it throws. A reader that rejects the entry on its declared size never touches the stream; one that decompresses first fails with a different error, which is how a test pins the check order without timing anything. */
+export function withCorruptDeflateStream(zip: Uint8Array, entryName: string): Uint8Array {
+  const copy = new Uint8Array(zip)
+  const streamStart = 30 + Buffer.byteLength(entryName, 'utf-8')
+  copy[streamStart] = 0x07
+  return copy
+}

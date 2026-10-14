@@ -1,12 +1,10 @@
 /** Built-bundle check for the Objective-C, Groovy, Perl, Solidity, Thrift, GLSL, HLSL, WGSL and Metal adapters: the shipped dist/token-goat.mjs, not source, indexes one file of each through `index . --walk` and answers `outline`, `symbol` and `read "file::Name"` from them. A Mathematica `.m` and a Prolog `.pl` beside them are left alone, and the index count names exactly the files it indexed. */
-import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { BUNDLE } from './helpers/bundle.js'
+import { bundleTg, makeBundleProject } from './helpers/bundle.js'
 
 const FIXTURES = path.join(process.cwd(), 'tests', 'fixtures', 'language_adapter_symbols')
 
@@ -16,8 +14,7 @@ let env: NodeJS.ProcessEnv
 let indexOut: string
 
 function tg(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [BUNDLE, ...args], { cwd: project, env, encoding: 'utf8', timeout: 60000 })
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+  return bundleTg(project, env, args)
 }
 
 // The CAPTURE fixtures (provenance on their first lines), under the names their projects give them.
@@ -35,21 +32,7 @@ const FILES: Array<[string, string]> = [
 ]
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-brace-bundle-'))
-  project = path.join(root, 'project')
-  const home = path.join(root, 'home')
-  fs.mkdirSync(project, { recursive: true })
-  fs.mkdirSync(path.join(home, 'AppData', 'Roaming'), { recursive: true })
-  env = {
-    ...process.env,
-    TOKEN_GOAT_HOME: path.join(root, 'tg-home'),
-    LOCALAPPDATA: path.join(root, 'data'),
-    XDG_DATA_HOME: path.join(root, 'data'),
-    HOME: home,
-    USERPROFILE: home,
-    APPDATA: path.join(home, 'AppData', 'Roaming'),
-    TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
-  }
+  ;({ root, project, env } = makeBundleProject('tg-brace-bundle-'))
   for (const [src, dst] of FILES) fs.copyFileSync(path.join(FIXTURES, src), path.join(project, dst))
   fs.copyFileSync(path.join(FIXTURES, 'mathematica_package.m'), path.join(project, 'Collatz.m'))
   fs.copyFileSync(path.join(FIXTURES, 'prolog_pairs.pl'), path.join(project, 'pairs.pl'))

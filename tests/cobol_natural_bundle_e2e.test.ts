@@ -1,12 +1,10 @@
 /** Built-bundle check for the COBOL and Natural adapters: the shipped dist/token-goat.mjs, not source, indexes uppercase `.CBL` and `.NSP` files and answers `outline`, `symbol` and `read "file::Name"` from them. This is the only test that proves both adapters survived bundling and are reached from the real CLI path. */
-import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { BUNDLE } from './helpers/bundle.js'
+import { bundleTg, makeBundleProject } from './helpers/bundle.js'
 
 const FIXTURES = path.join(process.cwd(), 'tests', 'fixtures', 'language_adapter_symbols')
 
@@ -15,26 +13,11 @@ let project: string
 let env: NodeJS.ProcessEnv
 
 function tg(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [BUNDLE, ...args], { cwd: project, env, encoding: 'utf8', timeout: 60000 })
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+  return bundleTg(project, env, args)
 }
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cobol-natural-bundle-'))
-  project = path.join(root, 'project')
-  const home = path.join(root, 'home')
-  fs.mkdirSync(project, { recursive: true })
-  fs.mkdirSync(path.join(home, 'AppData', 'Roaming'), { recursive: true })
-  env = {
-    ...process.env,
-    TOKEN_GOAT_HOME: path.join(root, 'tg-home'),
-    LOCALAPPDATA: path.join(root, 'data'),
-    XDG_DATA_HOME: path.join(root, 'data'),
-    HOME: home,
-    USERPROFILE: home,
-    APPDATA: path.join(home, 'AppData', 'Roaming'),
-    TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
-  }
+  ;({ root, project, env } = makeBundleProject('tg-cobol-natural-bundle-'))
   // The FORMAT-DERIVED fixtures (provenance on their first lines), copied under uppercase names as mainframe exports write them.
   fs.copyFileSync(path.join(FIXTURES, 'Sample.cbl'), path.join(project, 'PAYROLL.CBL'))
   fs.copyFileSync(path.join(FIXTURES, 'Sample.nsp'), path.join(project, 'EMPRPT.NSP'))

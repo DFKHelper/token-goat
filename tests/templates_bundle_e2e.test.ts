@@ -1,38 +1,20 @@
 /** Built-bundle check for the six template adapters (Jinja2, Handlebars, ERB, EJS, Nunjucks, Twig): the shipped dist/token-goat.mjs, not source, indexes a small project with one file per dialect and answers `outline`, `symbol` and `read` from it. This is the only test that proves the delimiter-masking-then-HTML-handoff adapter survived bundling and is reached from the real CLI path, matching tests/vhdl_bundle_e2e.test.ts's shape for the tree-sitter-free adapters. */
-import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
-import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { BUNDLE } from './helpers/bundle.js'
+import { bundleTg, makeBundleProject } from './helpers/bundle.js'
 
 let root: string
 let project: string
 let env: NodeJS.ProcessEnv
 
 function tg(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync(process.execPath, [BUNDLE, ...args], { cwd: project, env, encoding: 'utf8', timeout: 60000 })
-  return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
+  return bundleTg(project, env, args)
 }
 
 beforeAll(() => {
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-templates-bundle-'))
-  project = path.join(root, 'project')
-  const home = path.join(root, 'home')
-  fs.mkdirSync(project, { recursive: true })
-  fs.mkdirSync(path.join(home, 'AppData', 'Roaming'), { recursive: true })
-  env = {
-    ...process.env,
-    TOKEN_GOAT_HOME: path.join(root, 'tg-home'),
-    LOCALAPPDATA: path.join(root, 'data'),
-    XDG_DATA_HOME: path.join(root, 'data'),
-    HOME: home,
-    USERPROFILE: home,
-    APPDATA: path.join(home, 'AppData', 'Roaming'),
-    TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
-  }
+  ;({ root, project, env } = makeBundleProject('tg-templates-bundle-'))
   // HAND-DERIVED: minimal Jinja2 template mixing {{ }}/{%  %}/{# #} per https://jinja.palletsprojects.com/en/stable/templates/
   fs.writeFileSync(
     project + '/Page.j2',

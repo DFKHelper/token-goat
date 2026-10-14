@@ -43,14 +43,16 @@ beforeEach(() => {
   projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-annotation-project-'))
   fs.writeFileSync(path.join(projectRoot, 'mod.ts'), 'export function alphaSymbol(): number {\n  return 1\n}\n')
   fs.writeFileSync(path.join(projectRoot, 'notes.md'), '# Heading One\n\nSome text.\n')
+})
+
+/** Makes the fixture project a git work tree with its files staged, which only the per-tool cases need (`changed` shells out to git). Nothing commits, so no identity config is set. */
+function initGitProject(): void {
   const git = (...args: string[]): void => {
     spawnSync('git', args, { cwd: projectRoot, encoding: 'utf-8' })
   }
   git('init')
-  git('config', 'user.email', 't@example.com')
-  git('config', 'user.name', 'T')
   git('add', '-A')
-})
+}
 
 afterEach(async () => {
   if (closeServer !== undefined) {
@@ -165,6 +167,7 @@ describe('MCP tool annotations match tool behavior', () => {
 
   // One case per tool, each with its own server, project and store: the calls used to run in series inside one case, so the slowest (`changed` shells out to git several times) and the sum of all eighteen shared a single 60 s budget that a loaded machine exhausted.
   it.each(TOOL_NAMES)('%s writes to the content store exactly when it declares readOnlyHint: false', async (name) => {
+    initGitProject()
     const client = await buildClient()
     const listed = await client.listTools()
     const declared = listed.tools.find((t) => t.name === name)?.annotations?.['readOnlyHint']

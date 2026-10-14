@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { run } from '../src/cli.js'
+import { runCliExitCode } from './helpers/run-cli.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let dir: string
@@ -27,17 +27,6 @@ afterEach(() => {
 })
 
 /** Drives the real CLI entry, so the command wiring and its error reporting are the shipping ones. */
-async function runCli(argv: string[]): Promise<number | string | undefined> {
-  const prev = process.exitCode
-  process.exitCode = 0
-  try {
-    await run(['node', 'token-goat', ...argv])
-    return process.exitCode
-  } finally {
-    process.exitCode = prev
-  }
-}
-
 /** A directory where the command expects a document, carrying the extension that routes it to that command. */
 function directoryNamed(name: string): string {
   const p = path.join(dir, name)
@@ -50,7 +39,7 @@ describe('a directory named as a document reads as unreadable', () => {
   it('section --list', async () => {
     const p = directoryNamed('notes.md')
 
-    const code = await runCli(['section', p, '--list'])
+    const code = await runCliExitCode(['section', p, '--list'])
 
     expect(code).toBe(1)
     expect(stderr.join('')).toContain(`Could not read: "${p}"`)
@@ -62,7 +51,7 @@ describe('a directory named as a document reads as unreadable', () => {
     it(cmd, async () => {
       const p = directoryNamed('shot.png')
 
-      const code = await runCli([cmd, p])
+      const code = await runCliExitCode([cmd, p])
 
       expect(code).toBe(1)
       expect(stderr.join('')).toContain(`Could not read: "${p}"`)
@@ -76,7 +65,7 @@ describe('the checks that mean anything at the path keep that meaning', () => {
   it('pdf-outline still gets the bounded reader\'s refusal of a non-regular file', async () => {
     const p = directoryNamed('doc.pdf')
 
-    const code = await runCli(['pdf-outline', p])
+    const code = await runCliExitCode(['pdf-outline', p])
 
     expect(code).toBe(1)
     expect(stderr.join('')).toContain('is not a regular file, so its size cannot be checked before reading it')
@@ -87,7 +76,7 @@ describe('the checks that mean anything at the path keep that meaning', () => {
     const sub = directoryNamed('src')
     fs.writeFileSync(path.join(sub, 'a.ts'), 'export const needleValue = 1\n')
 
-    const code = await runCli(['grep', 'needleValue', sub])
+    const code = await runCliExitCode(['grep', 'needleValue', sub])
 
     expect(code).toBe(0)
     expect(stdout.join('')).toContain('needleValue')
@@ -98,7 +87,7 @@ describe('the checks that mean anything at the path keep that meaning', () => {
     const p = path.join(dir, 'doc.md')
     fs.writeFileSync(p, '## Only Heading\nbody\n')
 
-    const code = await runCli(['section', p, '--list'])
+    const code = await runCliExitCode(['section', p, '--list'])
 
     expect(code).toBe(0)
     expect(stdout.join('')).toContain('Only Heading')

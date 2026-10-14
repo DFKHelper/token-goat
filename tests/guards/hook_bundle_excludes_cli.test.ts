@@ -13,10 +13,17 @@ const REPO = path.join(HERE, '..', '..')
 /** Modules a hook must never evaluate. cli.ts is the entry to the whole command surface, and commander is the single largest thing only it needs -- listing the dependency too catches a reintroduction that routes around cli.ts itself. Deliberately not listed: mcp_server.ts, which every entry already reaches only dynamically, so it would assert nothing; and graph_commands.ts, which session-start's index-health check legitimately reaches. */
 const FORBIDDEN = ['src/cli.ts', 'node_modules/commander/lib/command.js']
 
-async function staticGraph(entry: string): Promise<Set<string>> {
-  const result = await esbuild.build({
+/** Every entry the cases below walk. One build covers them all: the metafile records imports per importing module, independent of which entry pulled it in, so a per-entry reachability walk over the shared metafile gives the same set as a build of that entry alone (checked equal for all four when this was merged). */
+const ENTRIES = ['src/hook_lib.ts', 'src/main.ts', 'src/hook_client.ts', 'src/cli_dispatch.ts']
+
+let combinedBuild: Promise<esbuild.BuildResult<{ metafile: true; write: false }>> | undefined
+
+function buildAllEntries(): Promise<esbuild.BuildResult<{ metafile: true; write: false }>> {
+  combinedBuild ??= esbuild.build({
     absWorkingDir: REPO,
-    entryPoints: [entry],
+    entryPoints: ENTRIES,
+    // Required by esbuild for more than one entry point; write:false keeps the output in memory.
+    outdir: 'out',
     bundle: true,
     platform: 'node',
     target: 'node22',
@@ -34,7 +41,11 @@ async function staticGraph(entry: string): Promise<Set<string>> {
     define: { 'import.meta.env': '{}', __TG_MANIFEST__: JSON.stringify('{"version":"0.0.0-test"}') },
     logLevel: 'silent',
   })
-  const inputs = result.metafile.inputs
+  return combinedBuild
+}
+
+async function staticGraph(entry: string): Promise<Set<string>> {
+  const inputs = (await buildAllEntries()).metafile.inputs
   const seen = new Set<string>([entry])
   const queue = [entry]
   while (queue.length > 0) {

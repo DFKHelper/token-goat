@@ -23,14 +23,24 @@ const LIMIT = 3
 
 let projectDir: string
 
-function run(args: string[]): { status: number; out: string; err: string } {
+type RunResult = { status: number; out: string; err: string }
+
+/** Raw results by argv. The store is seeded once in beforeAll and every command here only reads it, so identical argv share one spawn. */
+const runMemo = new Map<string, RunResult>()
+
+function run(args: string[]): RunResult {
+  const key = args.join('\0')
+  const hit = runMemo.get(key)
+  if (hit) return hit
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: projectDir,
     encoding: 'utf-8',
     // Inherited on purpose -- see the header. Overriding the home here would decouple the seed from the reader and make every assertion below vacuous.
     env: { ...process.env },
   })
-  return { status: res.status ?? 1, out: res.stdout ?? '', err: res.stderr ?? '' }
+  const result = { status: res.status ?? 1, out: res.stdout ?? '', err: res.stderr ?? '' }
+  runMemo.set(key, result)
+  return result
 }
 
 function rowsOf(out: string): unknown[] | undefined {

@@ -9,7 +9,7 @@ import {
   type ZipEntry,
 } from '../src/archive_query.js'
 import { ZipOutputTooLargeError } from '../src/zip_bounds.js'
-import { buildLyingSizeZip, zeroPayload } from './helpers/zip_bomb_fixture.js'
+import { buildLyingSizeZip, withCorruptDeflateStream, zeroPayload } from './helpers/zip_bomb_fixture.js'
 
 function makeZip(files: Record<string, string>): Uint8Array {
   const zippable: Record<string, Uint8Array> = {}
@@ -110,20 +110,16 @@ describe('extractZipEntry', () => {
 
   // Gap 2: extractZipEntry used to call fflate's unzipSync with no size bound of any kind, so a requested entry's *declared* uncompressed size sized fflate's own allocation with nothing stopping it from being huge.
   it('rejects an entry over the decompressed-size limit by its declared size, without decompressing it', async () => {
-    // 520MB of zeros, honestly declared, compresses to a few MB in well under a second.
-    const zip = zipSync({ 'bomb.bin': zeroPayload(520) }, { level: 1 })
+    // A 1KB payload that declares 520MB in both headers, with its DEFLATE stream corrupted: inflating it first would throw a different error, so a ZipOutputTooLargeError proves the declared-size check ran before any decompression.
+    const zip = withCorruptDeflateStream(buildLyingSizeZip('bomb.bin', new Uint8Array(1024), 520 * 1024 * 1024), 'bomb.bin')
 
-    const t0 = Date.now()
     const err = await extractZipEntry(zip, 'bomb.bin').then(
       () => null,
       (e: unknown) => e as Error,
     )
-    const elapsedMs = Date.now() - t0
 
     expect(err).toBeInstanceOf(ZipOutputTooLargeError)
     expect(err?.message).toMatch(/over the 500MB decompressed-size limit/)
-    // Proves the declared-size fast path fired instead of decompressing first: fully materializing 520MB would take measurably longer than this.
-    expect(elapsedMs).toBeLessThan(1000)
   })
 
   // The declared size field is attacker-controlled and can understate the truth. A check gated only on it is theatre; this proves the real-time running-total check -- not the declared-size fast path -- is what actually catches an entry that lies.
