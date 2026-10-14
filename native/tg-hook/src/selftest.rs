@@ -58,6 +58,10 @@ fn run_case(case: &Map<String, Value>) -> Result<Value, String> {
                 other => return Err(format!("unknown path fn {other}")),
             }
         }
+        "beginStamp" => {
+            let env: HashMap<String, String> = case.get("env").and_then(Value::as_object).ok_or("missing env")?.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string()))).collect();
+            json!(crate::session_begun::begun_path(case.get("payload").ok_or("missing payload")?, &env, Platform::HOST))
+        }
         "trim" => json!(crate::jsstr::js_trim(str_field(case, "s")?)),
         "bundleDir" => json!(paths::bundle_dir_for_entry(str_field(case, "entry")?)),
         "endpoint" => {

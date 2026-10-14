@@ -2,6 +2,7 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
+import { createRequire } from 'node:module'
 import type * as net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -10,6 +11,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { COPILOT_SESSION_START_HELPERS } from '../src/bridges/copilot_session_start.js'
 import { _resetDataDirCacheForTesting, dataDir } from '../src/constants.js'
 import { encodeFrame, endpointFor, frameFits, mac, macMatches, MAX_FRAME_BYTES, readFrames, readServerKey, resolveBundleDir, serverKeyPath } from '../src/hook_ipc.js'
 import { buildNative } from './helpers/native_bin.js'
@@ -572,5 +574,47 @@ describe('frames', () => {
       streams.map((chunks) => ({ op: 'decode', chunksHex: chunks.map((c) => c.toString('hex')) })),
       streams.map((chunks) => nodeDecode(chunks)),
     )
+  })
+})
+
+describe('begun stamp', () => {
+  it('names the file resetSessionStartOwedFiles writes, for every payload and home', () => {
+    const shimReset = new Function('require', COPILOT_SESSION_START_HELPERS + '\nreturn resetSessionStartOwedFiles')(createRequire(import.meta.url)) as (payload: unknown) => void
+    const payloads: unknown[] = [
+      { session_id: 'plain-id_1' }, { sessionId: 'copilot-0123456789abcdef' }, { session_id: 'with space/and:colon.dots' }, { session_id: 'x'.repeat(90) },
+      { session_id: `a${cp(0x1f642)}b` }, { session_id: 'caf\u00e9-\u65e5\u672c' }, { session_id: 's', sessionId: 'other' }, { session_id: null, sessionId: 'ignored' },
+      { session_id: '' }, { session_id: 7 }, { session_id: 'p:agent:q' }, { session_id: 'p', agent_id: 'sub-1' }, { session_id: 'p', agentId: 'sub-1' }, { session_id: 'p', agent_id: '' }, {},
+    ]
+    const savedHome = process.env['TOKEN_GOAT_HOME']
+    const savedProfile = process.env[HOME_VAR]
+    const mismatches: string[] = []
+    try {
+      let n = 0
+      for (const payload of payloads) {
+        for (const override of ['absolute', 'padded', 'relative', 'unset'] as const) {
+          n += 1
+          const dir = path.join(scratch, 'begun', String(n))
+          const userHome = path.join(dir, 'user')
+          fs.mkdirSync(userHome, { recursive: true })
+          const tgHome = override === 'absolute' ? path.join(dir, 'tg') : override === 'padded' ? ` ${path.join(dir, 'tg')} ` : override === 'relative' ? 'relative/tg' : undefined
+          if (tgHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+          else process.env['TOKEN_GOAT_HOME'] = tgHome
+          process.env[HOME_VAR] = userHome
+          shimReset(payload)
+          const written = (fs.readdirSync(dir, { recursive: true }) as string[]).filter((entry) => entry.endsWith('.session-start'))
+          const expected = written.length === 0 ? null : path.join(dir, written[0] as string)
+          const env: Record<string, string> = { [HOME_VAR]: userHome }
+          if (tgHome !== undefined) env['TOKEN_GOAT_HOME'] = tgHome
+          const [actual] = runVectors([{ op: 'beginStamp', payload, env }]) as Array<string | null>
+          if ((actual === null ? null : path.normalize(actual)) !== (expected === null ? null : path.normalize(expected))) mismatches.push(`${JSON.stringify(payload)} home=${String(tgHome)}: shim wrote ${String(expected)}, tg-hook names ${String(actual)}`)
+        }
+      }
+    } finally {
+      if (savedHome === undefined) delete process.env['TOKEN_GOAT_HOME']
+      else process.env['TOKEN_GOAT_HOME'] = savedHome
+      if (savedProfile === undefined) delete process.env[HOME_VAR]
+      else process.env[HOME_VAR] = savedProfile
+    }
+    expect(mismatches).toEqual([])
   })
 })

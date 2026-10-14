@@ -12,6 +12,7 @@ mod nodepath;
 mod paths;
 mod protocol;
 mod selftest;
+mod session_begun;
 mod startup_entry;
 #[cfg(windows)]
 mod startup_owner;

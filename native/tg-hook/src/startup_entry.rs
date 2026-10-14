@@ -106,7 +106,11 @@ fn execute(command: &[OsString], epoch: u64, deadline: Instant) -> Result<(serde
     });
     let payload = loop {
         if Instant::now() >= work_deadline {
-            return Err("startup input deadline exceeded".into());
+            // A payload framed before the deadline must not be lost to the order of these checks: look once more before giving up.
+            match rx.try_recv() {
+                Ok(result) => break result?,
+                Err(_) => return Err("startup input deadline exceeded".into()),
+            }
         }
         match rx.try_recv() {
             Ok(result) => break result?,
@@ -115,6 +119,8 @@ fn execute(command: &[OsString], epoch: u64, deadline: Instant) -> Result<(serde
         }
     };
     if command.len() < 5 || Instant::now() >= work_deadline {
+        // The payload arrived, so this start has an identity: stamp it begun and the first tool call delivers it.
+        crate::session_begun::stamp(&payload);
         return Err("startup command unavailable or insufficient time for process-tree cleanup".into());
     }
     let mut args = vec![std::env::current_exe().map_err(|e| e.to_string())?.into_os_string(), "--session-start-owner-v1".into(), epoch.to_string().into()];
