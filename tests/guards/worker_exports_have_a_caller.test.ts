@@ -48,12 +48,22 @@ function srcFiles(): readonly string[] {
   return out
 }
 
+let strippedCache: ReadonlyMap<string, readonly string[]> | undefined
+
+/** Every src file read and comment-stripped once for the whole file. The scan asks about each export in turn, and re-reading and re-stripping the whole tree per export made the cost the product of exports and files, which is the part of this test that grows with how slow the machine is. */
+function strippedSrc(): ReadonlyMap<string, readonly string[]> {
+  if (strippedCache === undefined) {
+    const map = new Map<string, readonly string[]>()
+    for (const f of srcFiles()) map.set(f, stripComments(fs.readFileSync(f, 'utf8')).split('\n'))
+    strippedCache = map
+  }
+  return strippedCache
+}
+
 /** True when `name` is referenced anywhere in src (any file) other than on `declLine` of worker.ts itself -- i.e. it has at least one real USE, not just its own declaration. */
 function hasCaller(name: string, declFile: string, declLine: number): boolean {
   const nameRe = new RegExp(`\\b${name}\\b`)
-  for (const f of srcFiles()) {
-    const stripped = stripComments(fs.readFileSync(f, 'utf8'))
-    const lines = stripped.split('\n')
+  for (const [f, lines] of strippedSrc()) {
     for (let i = 0; i < lines.length; i++) {
       if (path.resolve(f) === path.resolve(declFile) && i + 1 === declLine) continue
       if (nameRe.test(lines[i]!)) return true

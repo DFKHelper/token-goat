@@ -20,6 +20,11 @@ type Exemption = { file: string; table: string; reason: string }
 /** Every `.each` table this guard cannot prove non-empty statically, with the assertion that would fail first if it did go empty. */
 const EXEMPT: readonly Exemption[] = [
   {
+    file: 'tests/guards/rewritten_output_never_carries_a_secret.test.ts',
+    table: 'registeredPostToolNames()',
+    reason: 'Read off the hook registry. The first test in the same file asserts the registry reports more than five tools and that every pinned rewriting tool is among them, so an emptied registry fails there before this table matters.',
+  },
+  {
     file: 'tests/recovery_pairs.test.ts',
     table: 'FIX_VERB_ALLOWLIST.map((verb) => [verb.name, verb.example] as const)',
     reason: 'FIX_VERB_ALLOWLIST is an exported literal array. The same file asserts its length is exactly 14, so a list that was emptied fails there before this table matters.',

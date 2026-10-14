@@ -153,19 +153,35 @@ describe('structured-data discoverability', () => {
     expect(r.out).not.toContain('json-query')
   })
 
-  // HAND-DERIVED: the directory name and keys are written here, and each expected command is the path and dot-path those keys sit at, quoted the way the suggestion promises.
-  it('quotes a spaced file path and single-quotes a `$` key, so the suggested command runs and survives the suggestion guard', () => {
+  // HAND-DERIVED: the directory name and keys are written here, and each expected command is the path and dot-path those keys sit at, quoted the way the suggestion promises. One indexed fixture, built on first use and read by the three tests below, each of which then costs a single bundle run rather than the five of one test doing all of it.
+  let spacedFixture: { dir: string; home: string } | undefined
+  function spaced(): { dir: string; home: string } {
+    if (spacedFixture !== undefined) return spacedFixture
     const dir = mkdtempSync(join(tmpdir(), 'tg-structdisc-e2e-spaced-'))
     mkdirSync(join(dir, 'conf dir'))
     writeFileSync(join(dir, 'conf dir', 'settings.json'), JSON.stringify({ server: { portNumber: 8080 }, defs: { item: { $ref: '#/x' } } }, null, 2))
     const home = mkdtempSync(join(tmpdir(), 'tg-structdisc-e2e-spaced-home-'))
     run(['index', '.', '--walk'], dir, home)
-    const spaced = run(['symbol', 'portNumber'], dir, home)
-    expect(spaced.out).toContain('read it with: `token-goat json-query "conf dir/settings.json" "server.portNumber"`')
-    expect(stripUnsafeSuggestions(spaced.out)).toBe(spaced.out)
+    spacedFixture = { dir, home }
+    return spacedFixture
+  }
+
+  it('quotes a spaced file path, so the suggested command survives the suggestion guard', () => {
+    const { dir, home } = spaced()
+    const miss = run(['symbol', 'portNumber'], dir, home)
+    expect(miss.out).toContain('read it with: `token-goat json-query "conf dir/settings.json" "server.portNumber"`')
+    expect(stripUnsafeSuggestions(miss.out)).toBe(miss.out)
+  })
+
+  it('the suggested command for a spaced file path runs', () => {
+    const { dir, home } = spaced()
     const q = run(['json-query', 'conf dir/settings.json', 'server.portNumber'], dir, home)
     expect(q.status).toBe(0)
     expect(q.out.trim()).toBe('8080')
+  })
+
+  it('single-quotes a `$` key in the suggested command', () => {
+    const { dir, home } = spaced()
     const dollar = run(['symbol', '$ref'], dir, home)
     expect(dollar.out).toContain(`read it with: \`token-goat json-query "conf dir/settings.json" 'defs.item.$ref'\``)
   })

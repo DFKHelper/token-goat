@@ -78,7 +78,7 @@ describe('Aura attribute names: the single-pass scanner against the old pattern'
 })
 
 // Time `run` on inputs of size n and 2n, `samples` times interleaved, keeping the minimum of each (load only adds time), and return the ratio. A linear scan is near 2, a quadratic one near 4, a cubic one near 8.
-function growth(make: (n: number) => string, run: (text: string) => unknown, n: number, samples: number): { ratio: number; small: number; large: number } {
+function growth(make: (n: number) => string, run: (text: string) => unknown, n: number, samples: number, stopOnceAbove = false): { ratio: number; small: number; large: number } {
   const small = make(n)
   const large = make(2 * n)
   let a = Infinity
@@ -90,6 +90,8 @@ function growth(make: (n: number) => string, run: (text: string) => unknown, n: 
     t = performance.now()
     run(large)
     b = Math.min(b, performance.now() - t)
+    // A negative control only needs one pair over the bound, and its input is the slow one by construction, so the remaining samples are pure cost that scales with how slow the machine is.
+    if (stopOnceAbove && b / Math.max(a, 0.25) > BOUND) break
   }
   return { ratio: b / Math.max(a, 0.25), small: a, large: b }
 }
@@ -158,48 +160,72 @@ describe('critical path: a component with the pathological shape still indexes',
   // Provenance: HAND-DERIVED. A real attribute declaration followed by a tag that never closes, repeated; realAttr is the one name present in the file.
   const body = (): string => '<aura:component>\n  <aura:attribute name="realAttr" type="String"/>\n</aura:component>\n' + '<aura:attribute name="'.repeat(1500)
 
-  it('the worker default path drains it and realAttr resolves', async () => {
+  // The same bytes with every tag closed: what the machine costs for a file this size when nothing is pathological. The pathological file is timed against it in the same run, so a slow or busy machine slows both and the ratio holds, while a scan that went cubic still lands many times over.
+  const benign = (): string => {
+    const target = body().length
+    const line = '<aura:attribute name="a" type="String"/>\n'
+    return '<aura:component>\n  <aura:attribute name="realAttr" type="String"/>\n</aura:component>\n' + line.repeat(Math.ceil(target / line.length))
+  }
+  const RATIO = 2
+
+  function writeBundle(repo: string, content: string): void {
+    const file = path.join(repo, 'force-app/main/default/aura/pathological/pathological.cmp')
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, content)
+    fs.writeFileSync(path.join(repo, 'sfdx-project.json'), '{"packageDirectories":[{"path":"force-app"}]}')
+  }
+
+  function drainTimed(content: string): { elapsed: number; dbPath: string; dataDir: string } {
     const repo = tempDir('tg-markup-linear-repo-')
     const dataDir = tempDir('tg-markup-linear-data-')
+    writeBundle(repo, content)
     const file = normalizePath(path.join(repo, 'force-app/main/default/aura/pathological/pathological.cmp'))
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, body())
-    fs.writeFileSync(path.join(repo, 'sfdx-project.json'), '{"packageDirectories":[{"path":"force-app"}]}')
     const queue = path.join(dataDir, 'queue', 'dirty.txt')
     fs.mkdirSync(path.dirname(queue), { recursive: true })
     fs.writeFileSync(queue, `${file}\n`)
     const started = performance.now()
     expect(drainOnce(dataDir)).toBe(1)
-    const elapsed = performance.now() - started
+    return { elapsed: performance.now() - started, dbPath: path.join(dataDir, 'global.db'), dataDir }
+  }
+
+  it('the worker default path drains it and realAttr resolves', async () => {
+    // The benign file goes first so the one-time costs (database creation, module warm-up) land on the baseline, which only makes the bound looser for a healthy scan.
+    const baseline = drainTimed(benign())
     await pendingEmbeddings()
-    const dbPath = path.join(dataDir, 'global.db')
+    closeDb(baseline.dbPath)
+    const run = drainTimed(body())
+    await pendingEmbeddings()
     try {
-      expect(querySymbols({ name: 'realAttr' }, dbPath)[0]).toMatchObject({ kind: 'aura_attribute' })
-      expect(querySymbols({ name: 'pathological' }, dbPath)[0]).toMatchObject({ kind: 'aura_bundle' })
+      expect(querySymbols({ name: 'realAttr' }, run.dbPath)[0]).toMatchObject({ kind: 'aura_attribute' })
+      expect(querySymbols({ name: 'pathological' }, run.dbPath)[0]).toMatchObject({ kind: 'aura_bundle' })
     } finally {
-      closeDb(dbPath)
+      closeDb(run.dbPath)
     }
-    expect(elapsed, `drainOnce took ${elapsed.toFixed(0)} ms`).toBeLessThan(5000)
+    const floor = Math.max(baseline.elapsed, 250)
+    expect(run.elapsed, `drainOnce took ${run.elapsed.toFixed(0)} ms against ${baseline.elapsed.toFixed(0)} ms for the same bytes with every tag closed`).toBeLessThan(RATIO * floor)
   })
 
   it('the built CLI indexes it and resolves realAttr', () => {
-    const repo = tempDir('tg-markup-linear-cli-')
-    const dataBase = tempDir('tg-markup-linear-cli-data-')
-    const file = path.join(repo, 'force-app/main/default/aura/pathological/pathological.cmp')
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(file, body())
-    fs.writeFileSync(path.join(repo, 'sfdx-project.json'), '{"packageDirectories":[{"path":"force-app"}]}')
-    execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
-    execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
-    const env = tgIsolatedEnv(dataBase)
-    const started = performance.now()
-    const indexed = runBundle(['index', repo], { cwd: repo, env })
-    const elapsed = performance.now() - started
-    expect(indexed.status, indexed.stderr).toBe(0)
-    const found = runBundle(['symbol', 'realAttr'], { cwd: repo, env })
+    const indexTimed = (content: string): { elapsed: number; repo: string; env: NodeJS.ProcessEnv } => {
+      const repo = tempDir('tg-markup-linear-cli-')
+      const dataBase = tempDir('tg-markup-linear-cli-data-')
+      writeBundle(repo, content)
+      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+      const env = tgIsolatedEnv(dataBase)
+      const started = performance.now()
+      const indexed = runBundle(['index', repo], { cwd: repo, env })
+      const elapsed = performance.now() - started
+      expect(indexed.status, indexed.stderr).toBe(0)
+      return { elapsed, repo, env }
+    }
+    const baseline = indexTimed(benign())
+    const run = indexTimed(body())
+    const found = runBundle(['symbol', 'realAttr'], { cwd: run.repo, env: run.env })
     expect(found.status, found.stderr).toBe(0)
     expect(found.stdout).toContain('realAttr')
-    expect(elapsed, `index took ${elapsed.toFixed(0)} ms`).toBeLessThan(10000)
+    const floor = Math.max(baseline.elapsed, 500)
+    expect(run.elapsed, `index took ${run.elapsed.toFixed(0)} ms against ${baseline.elapsed.toFixed(0)} ms for the same bytes with every tag closed`).toBeLessThan(RATIO * floor)
   })
 })
 
@@ -397,9 +423,10 @@ describe('differential: the hand-written scans return what the old patterns retu
 function settledGrowth(make: (n: number) => string, run: (text: string) => unknown, n: number, want: 'below' | 'above'): { ratio: number; small: number; large: number } {
   const passes = (ratio: number): boolean => (want === 'below' ? ratio < BOUND : ratio > BOUND)
   const samples = want === 'below' ? 9 : 5
-  let kept = growth(make, run, n, samples)
+  const stopOnceAbove = want === 'above'
+  let kept = growth(make, run, n, samples, stopOnceAbove)
   for (let attempt = 1; attempt < 3 && !passes(kept.ratio); attempt++) {
-    const g = growth(make, run, n, samples)
+    const g = growth(make, run, n, samples, stopOnceAbove)
     if (want === 'below' ? g.ratio < kept.ratio : g.ratio > kept.ratio) kept = g
   }
   return kept

@@ -1,4 +1,5 @@
 /** Guard: a path that does not exist must be reported as unreadable, never as a real file that happens to hold nothing. "No indexed symbols found in 'src/nope.ts'" reads as a definitive statement about a file that exists, so a caller who typo'd a path or guessed one from a stale memory concludes there is nothing there and moves on, instead of fixing the path. `exports`, `imports`, `deps`, and `test-for` already close this gap with the wording asserted below; `outline`, `skeleton`, and `types` were the missed siblings. Both halves matter and are asserted per command: a missing file says "Could not read", and a file that exists but has no indexed symbols keeps its original message. A fix that reported everything as unreadable would satisfy the first half alone. */
+// tg-no-regex-preload: spawns the built bundle or runs a subprocess and never calls the parser in this process
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

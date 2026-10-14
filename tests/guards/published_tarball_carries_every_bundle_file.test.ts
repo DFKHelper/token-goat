@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process'
+// tg-no-regex-preload: spawns the built bundle or runs a subprocess and never calls the parser in this process
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 

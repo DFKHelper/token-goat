@@ -78,6 +78,7 @@ describe('the test process inherits no token-goat setting', () => {
 
   it('a test run launched with product settings exported sees none of them', () => {
     probe = writeProbe(PROBE_NAME, [
+      '// tg-no-regex-preload: reads process.env only, so the nested run skips the adapter preload that is slow to start on a busy machine',
       "import { expect, it } from 'vitest'",
       "it('generated probe: inherited token-goat settings are gone', () => {",
       "  expect(process.env['TOKEN_GOAT_BASH_COMPRESS']).toBeUndefined()",

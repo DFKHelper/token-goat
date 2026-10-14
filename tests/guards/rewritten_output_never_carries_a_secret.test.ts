@@ -107,60 +107,51 @@ function toolInputFor(toolName: string): Record<string, unknown> {
   }
 }
 
+/** The tools whose handler composes a replacement result. Pinned by name so a handler that stopped reaching its rewrite branch fails by name, and so is a new one that starts rewriting: a bare `rewrote > 0` floor would stay green while any single handler dropped out, because the others would hold the count up -- which is how Grep once sat in this guard contributing nothing while carrying a real leak. The remaining registered tools (Read, Glob, Write, Edit, MultiEdit, NotebookEdit, Skill) hint or annotate but never substitute a tool result, so they have no rewrite branch to reach. */
+const REWRITING_TOOLS = ['Agent', 'Bash', 'BashOutput', 'ExitPlanMode', 'Grep', 'Task', 'TaskOutput', 'WebFetch', 'WebSearch', 'mcp__server__query', 'task']
+
 describe('no post_tool_use handler rewrites a tool result into text carrying a credential', () => {
-  it('redacts every credential out of every rewriteOutput it produces', async () => {
+  // One test per tool rather than one loop over all of them: each test is a fraction of the work, so a slow machine spends its time budget on one handler at a time instead of on the whole registry at once.
+  it('the registry reports the post_tool_use tools, and every pinned rewriting tool is among them', () => {
     const toolNames = registeredPostToolNames()
     // Guards the guard: an empty or unparsed matcher would make every assertion below vacuous.
     expect(toolNames.length, 'registry must report post_tool_use tools').toBeGreaterThan(5)
+    expect(
+      REWRITING_TOOLS.filter((name) => !toolNames.includes(name)),
+      'a pinned rewriting tool is no longer registered',
+    ).toEqual([])
+  })
 
+  it.each(registeredPostToolNames())('redacts every credential out of every rewriteOutput %s produces', async (toolName) => {
     const leaked: string[] = []
     let rewrote = 0
-    const rewroteTools = new Set<string>()
 
-    for (const toolName of toolNames) {
-      for (const [i, pair] of responseShapePairs().entries()) {
-        // One session id across the pair so poll-diff handlers see the second call as a follow-up to the first; distinct across shapes so one shape's bookkeeping never diverts the next onto an early-return path it would not take in isolation.
-        const sessionId = `guard-${toolName}-${i}`
-        for (const [call, toolResponse] of [pair.first, pair.second].entries()) {
-          const result = await runHook(
-            buildEvent('post_tool_use', {
-              tool_name: toolName,
-              tool_input: toolInputFor(toolName),
-              session_id: sessionId,
-              tool_response: toolResponse,
-            }),
-          )
-          if (result.hookType !== 'rewriteOutput') continue
-          rewrote++
-          rewroteTools.add(toolName)
-          // updatedBlocks is scanned beside updatedOutput, not instead of it: a rewrite that emits blocks ships them in place of the string, so reading only the string would certify a payload the model never receives while the one it does receive goes unread. The blocks are copied out of the tool's own result, which is exactly where a live credential would be.
-          const emitted = result.updatedOutput + JSON.stringify(result.updatedBlocks ?? [])
-          if (emitted.includes(SECRET)) leaked.push(`${toolName} (shape ${i}, call ${call + 1})`)
-        }
+    for (const [i, pair] of responseShapePairs().entries()) {
+      // One session id across the pair so poll-diff handlers see the second call as a follow-up to the first; distinct across shapes so one shape's bookkeeping never diverts the next onto an early-return path it would not take in isolation.
+      const sessionId = `guard-${toolName}-${i}`
+      for (const [call, toolResponse] of [pair.first, pair.second].entries()) {
+        const result = await runHook(
+          buildEvent('post_tool_use', {
+            tool_name: toolName,
+            tool_input: toolInputFor(toolName),
+            session_id: sessionId,
+            tool_response: toolResponse,
+          }),
+        )
+        if (result.hookType !== 'rewriteOutput') continue
+        rewrote++
+        // updatedBlocks is scanned beside updatedOutput, not instead of it: a rewrite that emits blocks ships them in place of the string, so reading only the string would certify a payload the model never receives while the one it does receive goes unread. The blocks are copied out of the tool's own result, which is exactly where a live credential would be.
+        const emitted = result.updatedOutput + JSON.stringify(result.updatedBlocks ?? [])
+        if (emitted.includes(SECRET)) leaked.push(`${toolName} (shape ${i}, call ${call + 1})`)
       }
     }
 
     expect(
       leaked,
-      'these handlers replaced a tool result with text they composed themselves and left a live ' +
-        'credential in it, so the secret reached the model in token-goat-authored output: ' +
-        leaked.join(', '),
+      'this handler replaced a tool result with text it composed itself and left a live credential in it, so the secret reached the model in token-goat-authored output: ' + leaked.join(', '),
     ).toEqual([])
 
-    // Guards the guard again: if the fixtures above stopped reaching any rewrite branch (a raised size floor, a changed response key), every handler would return `pass` and the assertion above would hold without having tested anything. Guards the guard again, and specifically: a bare `rewrote > 0` floor would stay green if any single handler silently stopped reaching its rewrite branch, because the other eight would hold the count up -- which is exactly how Grep sat in this guard's population contributing nothing while carrying a real leak. Pinning the set makes a coverage loss fail by name. The remaining registered tools (Read, Glob, Write, Edit, MultiEdit, NotebookEdit, Skill) hint or annotate but never substitute a tool result, so they have no rewrite branch to reach.
-    expect([...rewroteTools].sort(), 'a handler that stopped rewriting has silently left this guard').toEqual([
-      'Agent',
-      'Bash',
-      'BashOutput',
-      'ExitPlanMode',
-      'Grep',
-      'Task',
-      'TaskOutput',
-      'WebFetch',
-      'WebSearch',
-      'mcp__server__query',
-      'task',
-    ])
-    expect(rewrote, 'fixtures must actually reach at least one handler rewrite branch').toBeGreaterThan(0)
+    // Guards the guard again: if the fixtures stopped reaching a pinned handler's rewrite branch (a raised size floor, a changed response key), it would return `pass` and the assertion above would hold without having tested anything.
+    expect(rewrote > 0, `${toolName} rewrote ${rewrote} results; a pinned rewriting tool must reach its rewrite branch, and an unpinned one must not`).toBe(REWRITING_TOOLS.includes(toolName))
   })
 })
