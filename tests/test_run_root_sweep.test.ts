@@ -6,6 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { startWatchdog } from './helpers/stall_proof_watchdog.js'
 import { killDaemonsUnder, sweepStaleRunRoots } from './setup/build-bundle.js'
 
 // HAND-DERIVED: the directory names and ages are constructed here from the sweep's own contract (a `tg-run-` prefix and an mtime older than 6h), independently of the implementation's code. No wire format is involved.
@@ -82,15 +83,24 @@ describe('killDaemonsUnder', () => {
     }
   })
 
-  function standIn(root: string, ageMs: number): number {
-    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true })
+  /** A stand-in daemon named by a heartbeat under `root`; `ready` resolves once it has started and rejects if it exits first. */
+  function standIn(root: string, ageMs: number): { pid: number; ready: Promise<void> } {
+    const child = spawn(process.execPath, ['-e', 'process.stdout.write("ready"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
     spawned.push(child)
+    const ready = new Promise<void>((resolve, reject) => {
+      child.stdout?.on('data', (chunk: Buffer) => {
+        if (chunk.toString().includes('ready')) resolve()
+      })
+      child.once('exit', (code) => reject(new Error(`stand-in exited with ${String(code)} before it was ready`)))
+    })
+    // A stand-in killed by the test itself, or by afterEach, must not surface as an unhandled rejection.
+    ready.catch(() => undefined)
     const beat = path.join(root, 'tg-test-data-x', 'dfk-helper', 'token-goat', 'queue', 'drain-heartbeat')
     fs.mkdirSync(path.dirname(beat), { recursive: true })
     fs.writeFileSync(beat, `${child.pid}\n`)
     const when = new Date(Date.now() - ageMs)
     fs.utimesSync(beat, when, when)
-    return child.pid as number
+    return { pid: child.pid as number, ready }
   }
 
   const isAlive = (pid: number): boolean => {
@@ -107,13 +117,19 @@ describe('killDaemonsUnder', () => {
     const live = standIn(root, 0)
     const staleRoot = makeDir(`tg-run-killtest-stale-${process.pid}-${Date.now()}`, 0)
     const reused = standIn(staleRoot, 5 * 60_000)
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    const watchdog = startWatchdog({ quietLimitMs: 20_000, label: 'kill stand-ins' })
+    try {
+      await Promise.race([Promise.all([live.ready, reused.ready]), watchdog.failed])
 
-    killDaemonsUnder(root)
-    killDaemonsUnder(staleRoot)
-    await new Promise((resolve) => setTimeout(resolve, 500))
+      // The stale root goes first, so a wrongly sent kill to the reused pid is issued before the live one's is: once the live stand-in is seen dead, that kill has been delivered too, and the reused one's survival below is not a race against it.
+      killDaemonsUnder(staleRoot)
+      killDaemonsUnder(root)
+      while (isAlive(live.pid)) await Promise.race([new Promise((resolve) => setTimeout(resolve, 25)), watchdog.failed])
+    } finally {
+      watchdog.stop()
+    }
 
-    expect(isAlive(live), 'a daemon named by a fresh heartbeat survived').toBe(false)
-    expect(isAlive(reused), 'a pid named only by a stale heartbeat was killed').toBe(true)
+    expect(isAlive(live.pid), 'a daemon named by a fresh heartbeat survived').toBe(false)
+    expect(isAlive(reused.pid), 'a pid named only by a stale heartbeat was killed').toBe(true)
   })
 })

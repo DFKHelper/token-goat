@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // vi.spyOn cannot patch node:child_process either (same non-configurable-namespace-export issue as node:fs below), so verifying the timeoutMs -> spawnSync `timeout` pass-through needs the same hoisted-mock pattern: every call passes straight through to the real spawnSync, and the mock only exists so its call args are inspectable via vi.mocked(...). spawn is wrapped the same way so a test can assert withFileLock never starts a process.
 vi.mock('node:child_process', async (importOriginal) => {
@@ -415,8 +415,9 @@ describe('withFileLock', () => {
         }),
       ])
       expect(existsSync(lockPath)).toBe(true)
-      // Let the lock age past staleMs before trying to steal, so the only thing standing between the stealer and the lock is the holder's pid.
-      await new Promise((r) => setTimeout(r, 1500))
+      // Backdate the lock past staleMs, so the only thing standing between the stealer and the lock is the holder's pid; staleMs + 5 s stays far below LOCK_LIVE_HOLDER_MAX_MS (60 s), the age past which a live holder no longer counts.
+      const past = Date.now() / 1000 - (staleMs / 1000 + 5)
+      utimesSync(lockPath, past, past)
 
       const start = Date.now()
       const stolen = withFileLock(lockPath, () => 'stealer-ran', { staleMs, waitMs: 4000 })
@@ -474,10 +475,12 @@ describe('runGit', () => {
 
   it('includes core.quotepath=false in git args for non-ASCII filename handling', () => {
     // This test verifies that runGit now includes core.quotepath=false in git args. Without this, git will quote/escape non-ASCII filenames (e.g., "café.ts"), causing changed --symbol to miss those files.
-    const result = runGit(['--version'])
-    // If runGit is working correctly with the quotepath flag, this should succeed The actual test is that the source code includes the flag (verified by code inspection)
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout.toLowerCase()).toContain('git version')
+    vi.mocked(childProcess.spawnSync).mockClear()
+    runGit(['status'])
+    const args = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[1] as string[] | undefined
+    const at = args?.indexOf('core.quotepath=false') ?? -1
+    expect(at).toBeGreaterThan(0)
+    expect(args?.[at - 1]).toBe('-c')
   })
 
   // hints.git_hint_max_ms wiring: hooks_session.ts's advisory-only git calls (branch-name hint, uncommitted-changes check) pass this through as timeoutMs so a slow git invocation can never stall a hook. Verified here as a spawnSync option pass-through rather than a genuinely slow subprocess, since forcing git itself to run past a timeout portably isn't practical -- the timeout enforcement itself is Node's spawnSync, not code in this repo.
@@ -565,39 +568,26 @@ describe('runGit', () => {
 
 describe('runGit large output handling', () => {
   let repoDir: string
-  let msgDir: string
+  let blobSha: string
 
-  beforeEach(() => {
+  // One 1.1 MB blob in a bare object store is enough to push more than 1 MiB of stdout through runGit's spawnSync: no commits, no identity config.
+  beforeAll(() => {
     repoDir = mkdtempSync(path.join(tmpdir(), 'tg-biglog-repo-'))
-    msgDir = mkdtempSync(path.join(tmpdir(), 'tg-biglog-msg-'))
-
     runGit(['init'], { cwd: repoDir })
-    runGit(['config', 'user.email', 'test@token-goat.local'], { cwd: repoDir })
-    runGit(['config', 'user.name', 'Token Goat Test'], { cwd: repoDir })
-    runGit(['config', 'commit.gpgsign', 'false'], { cwd: repoDir })
-
-    // 4 commits with ~350 KB commit-message bodies comfortably exceed the 1 MB threshold via git log's combined output, regardless of the real repo's history size (unlike the previous version of this test). The message body is passed via `-F <file>` rather than `-m <string>` so it never has to go through argv/CreateProcess, which caps command-line length on Windows.
-    const filePath = path.join(repoDir, 'file.txt')
-    const msgPath = path.join(msgDir, 'msg.txt')
-    const bigBody = 'x'.repeat(350 * 1024)
-    for (let i = 0; i < 4; i++) {
-      writeFileSync(filePath, `content ${i}`)
-      writeFileSync(msgPath, `commit ${i}\n\n${bigBody}`)
-      runGit(['add', 'file.txt'], { cwd: repoDir })
-      runGit(['commit', '-F', msgPath], { cwd: repoDir })
-    }
+    const filePath = path.join(repoDir, 'big.txt')
+    writeFileSync(filePath, 'x'.repeat(Math.ceil(1.1 * 1024 * 1024)))
+    blobSha = runGit(['hash-object', '-w', filePath], { cwd: repoDir }).stdout.trim()
   })
 
-  afterEach(() => {
+  afterAll(() => {
     rmSync(repoDir, { recursive: true, force: true })
-    rmSync(msgDir, { recursive: true, force: true })
   })
 
   it('handles large git output (>1MB) without ENOBUFS truncation', () => {
     // Regression test for: runGit() previously had no maxBuffer option, causing Node's default 1 MiB limit to truncate large git commands (ls-files, log, diff). When output exceeded 1 MiB, spawnSync would set result.error=ENOBUFS, and runGit would return { stdout: '', stderr: <error>, exitCode: -1 }, silently losing output.
     //
     // This drives a synthetic temp repo (built above) instead of this project's own git history: CI's actions/checkout runs with the default fetch-depth (a shallow, effectively single-commit clone), so `git log --all` against the real repo would return only a few hundred bytes there, and this assertion would never actually exercise runGit's maxBuffer handling in CI.
-    const result = runGit(['log', '--format=%H%n%an%n%ae%n%ai%n%B%n---END---', '--all'], { cwd: repoDir })
+    const result = runGit(['cat-file', '-p', blobSha], { cwd: repoDir })
     expect(result.exitCode).toBe(0)
     expect(result.stdout).not.toBe('')
     expect(result.stdout.length).toBeGreaterThan(1024 * 1024)

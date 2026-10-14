@@ -8,6 +8,7 @@ import sharp from 'sharp'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { BUNDLE } from './helpers/bundle.js'
+import { startWatchdog } from './helpers/stall_proof_watchdog.js'
 
 let root: string
 let sessionClaude: ChildProcess
@@ -15,9 +16,23 @@ let sessionClaude: ChildProcess
 // FORMAT-DERIVED from claude.exe 2.1.x, which gives its hooks CLAUDE_PID and CLAUDE_CODE_ENTRYPOINT: every hook here is a call from a terminal Claude Code session, so each sandbox names an idle process with no flags as that session (a hook that cannot read a claude command line no longer approves).
 beforeAll(async () => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-perm-e2e-'))
-  fs.writeFileSync(path.join(root, 'session.js'), 'setInterval(() => {}, 1 << 30)\n')
-  sessionClaude = spawn(process.execPath, [path.join(root, 'session.js'), '--resume', 'abc'], { stdio: 'ignore', windowsHide: true })
-  await new Promise((resolve) => setTimeout(resolve, 300))
+  fs.writeFileSync(path.join(root, 'session.js'), "process.stdout.write('ready\\n')\nsetInterval(() => {}, 1 << 30)\n")
+  sessionClaude = spawn(process.execPath, [path.join(root, 'session.js'), '--resume', 'abc'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+  const child = sessionClaude
+  const ready = new Promise<void>((resolve, reject) => {
+    // The listener stays attached after the ready line, so the pipe is always drained.
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (chunk.toString().includes('ready')) resolve()
+    })
+    child.once('exit', (code) => reject(new Error(`session.js exited with ${String(code)} before printing its ready line`)))
+  })
+  ready.catch(() => undefined)
+  const watchdog = startWatchdog({ quietLimitMs: 20_000, label: 'fake claude session becoming ready' })
+  try {
+    await Promise.race([ready, watchdog.failed])
+  } finally {
+    watchdog.stop()
+  }
 })
 
 afterAll(() => {

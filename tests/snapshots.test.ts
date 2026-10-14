@@ -96,9 +96,9 @@ describe('store and load', () => {
 describe('load_kind', () => {
   it('stores and retrieves snapshot kind', () => {
     const content = Buffer.from('code')
-    store('sess', 'file.ts', content)
-    const kind = load_kind('sess', 'file.ts')
-    expect(kind).toBe('read')
+    store('sess', 'predictive.ts', content, { kind: 'predictive' })
+    const kind = load_kind('sess', 'predictive.ts')
+    expect(kind).toBe('predictive')
   })
 
   it('defaults to read kind', () => {

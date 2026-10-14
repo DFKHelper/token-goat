@@ -9,15 +9,48 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { commandLineRuleSource, frontmatterAddsRule, hiddenRuleSource, primeProcessReason, resetHiddenRuleCache, stamp, type HiddenRuleHelpers, type HiddenRuleQuery } from '../src/claude_hidden_rules.js'
 import { selfAndAncestors } from '../src/rewrite_permission.js'
 import { runGit } from '../src/util.js'
+import { startWatchdog } from './helpers/stall_proof_watchdog.js'
 
 let root: string
 const idle: ChildProcess[] = []
 
+/** Resolves when the fake has printed its ready line, which every fake script does only after its own setup (process.title included) is done; rejects if it exits first. */
+const ready = new Map<ChildProcess, Promise<void>>()
+
 /** A long-lived process whose command line stands in for claude's. */
-function fakeClaude(args: string[]): string {
-  const child = spawn(process.execPath, [path.join(root, 'idle.js'), ...args], { stdio: 'ignore', windowsHide: true })
+function spawnFake(script: string, args: string[]): ChildProcess {
+  const child = spawn(process.execPath, [path.join(root, script), ...args], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
   idle.push(child)
-  return String(child.pid)
+  const signal = new Promise<void>((resolve, reject) => {
+    // The listener stays attached after the ready line, so the pipe is always drained.
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (chunk.toString().includes('ready')) resolve()
+    })
+    child.once('exit', (code) => reject(new Error(`${script} exited with ${String(code)} before printing its ready line`)))
+  })
+  // A fake killed in afterAll, or one nobody awaited, must not surface as an unhandled rejection.
+  signal.catch(() => undefined)
+  ready.set(child, signal)
+  return child
+}
+
+function fakeClaude(args: string[]): string {
+  return String(spawnFake('idle.js', args).pid)
+}
+
+/** Waits until every named fake has printed its ready line, failing only when none of them has made progress for the quiet limit. */
+async function whenReady(...pids: string[]): Promise<void> {
+  const watchdog = startWatchdog({ quietLimitMs: 20_000, label: 'fake claude processes becoming ready' })
+  try {
+    const waits = pids.map(async (pid) => {
+      const child = idle.find((c) => String(c.pid) === pid)
+      await ready.get(child as ChildProcess)
+      watchdog.progress(`pid ${pid} ready`)
+    })
+    await Promise.race([Promise.all(waits), watchdog.failed])
+  } finally {
+    watchdog.stop()
+  }
 }
 
 let plainPid: string
@@ -26,11 +59,11 @@ let settingsPid: string
 
 beforeAll(async () => {
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hidden-rules-')))
-  fs.writeFileSync(path.join(root, 'idle.js'), 'setInterval(() => {}, 1 << 30)\n')
+  fs.writeFileSync(path.join(root, 'idle.js'), "process.stdout.write('ready\\n')\nsetInterval(() => {}, 1 << 30)\n")
   plainPid = fakeClaude(['--resume', 'abc', '--model', 'opus'])
   disallowPid = fakeClaude(['--resume', 'abc', '--disallowedTools', 'Bash(curl *)'])
   settingsPid = fakeClaude(['--settings=extra.json'])
-  await new Promise((resolve) => setTimeout(resolve, 300))
+  await whenReady(plainPid, disallowPid, settingsPid)
 })
 
 afterAll(() => {
@@ -194,10 +227,9 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
 
   // HAND-DERIVED from observation: on Linux, Node's process.title overwrites the arguments in /proc/<pid>/cmdline and pads the area with NULs (WSL Ubuntu, node 22.11: "claude" followed by NULs, ps shows "claude"); Claude Code sets process.title = "claude" itself (strings in claude.exe 2.1.292). A command line that says nothing of the flags is not a command line with none, so it must read as unreadable; on Windows and macOS the title leaves the command line alone, so the flags are still seen. Either way the session is not approved.
   it('a claude that retitled itself with --disallowedTools is never read as having no flags', async () => {
-    fs.writeFileSync(path.join(root, 'retitle.js'), "process.title = 'claude'\nsetInterval(() => {}, 1 << 30)\n")
-    const child = spawn(process.execPath, [path.join(root, 'retitle.js'), '--disallowedTools', 'Bash(curl *)'], { stdio: 'ignore', windowsHide: true })
-    idle.push(child)
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    fs.writeFileSync(path.join(root, 'retitle.js'), "process.title = 'claude'\nprocess.stdout.write('ready\\n')\nsetInterval(() => {}, 1 << 30)\n")
+    const child = spawnFake('retitle.js', ['--disallowedTools', 'Bash(curl *)'])
+    await whenReady(String(child.pid))
     const reason = lineRules(box('cl-retitled'), { CLAUDE_PID: String(child.pid) })
     expect(reason).not.toBeNull()
     if (process.platform === 'linux') expect(reason).toBe('claude command line unreadable')
@@ -211,7 +243,7 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
     const noValue = fakeClaude(['--setting-sources'])
     const noValueEq = fakeClaude(['--setting-sources='])
     const next = fakeClaude(['--setting-sources', '--model', 'opus'])
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await whenReady(full, fullEq, noLocal, noValue, noValueEq, next)
     expect(lineRules(box('ss-full'), { CLAUDE_PID: full })).toBeNull()
     expect(lineRules(box('ss-full-eq'), { CLAUDE_PID: fullEq })).toBeNull()
     expect(lineRules(box('ss-no-local'), { CLAUDE_PID: noLocal })).toBe('claude started with --setting-sources without local')
@@ -222,10 +254,9 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
 
   // HAND-DERIVED from the same observation as the test above, with a flag that is harmless: a retitled process hides every flag, the harmless ones too, so a command line that was overwritten must read as unreadable wherever the title overwrites it (Linux; macOS ps prints the title in place of the arguments, which the comm check catches). Windows keeps the flags visible. The child is a real node process, so this runs on all three CI platforms.
   it('a claude that retitled itself with only a harmless flag is not read as having no flags where the title hides them', async () => {
-    fs.writeFileSync(path.join(root, 'retitle2.js'), "process.title = 'claude'\nsetInterval(() => {}, 1 << 30)\n")
-    const child = spawn(process.execPath, [path.join(root, 'retitle2.js'), '--model', 'x'], { stdio: 'ignore', windowsHide: true })
-    idle.push(child)
-    await new Promise((resolve) => setTimeout(resolve, 1500))
+    fs.writeFileSync(path.join(root, 'retitle2.js'), "process.title = 'claude'\nprocess.stdout.write('ready\\n')\nsetInterval(() => {}, 1 << 30)\n")
+    const child = spawnFake('retitle2.js', ['--model', 'x'])
+    await whenReady(String(child.pid))
     const reason = lineRules(box('cl-retitled-harmless'), { CLAUDE_PID: String(child.pid) })
     if (process.platform === 'win32') expect(reason).toBeNull()
     else expect(reason).toBe('claude command line unreadable')
@@ -630,7 +661,7 @@ describe('hiddenRuleSource: the subagent a hook fires in', () => {
 describe('primeProcessReason', () => {
   it('reads the claude command line ahead, so the check later finds it cached', async () => {
     const pid = fakeClaude(['--resume', 'abc'])
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await whenReady(pid)
     const env = { CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_PID: pid, CLAUDE_CODE_SESSION_ID: 'prime' }
     const b = box('prime')
     await primeProcessReason(env)
