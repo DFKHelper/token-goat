@@ -2,7 +2,7 @@
 name: token-goat
 description: "Use before reading whole files or grepping wide. token-goat commands (symbol, read, section, semantic, outline, map, refs, bash-output) return narrow slices at low token cost. `/token-goat audit` reviews a session for missed savings."
 argument-hint: "[audit] | bare invocation applies the read gate; 'audit' runs a session retrospective and emits a Maintainer Feedback Card"
-version: "1.9.3"
+version: "1.9.5"
 allowed-tools:
   - Bash
   - Read
