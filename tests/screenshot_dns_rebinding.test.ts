@@ -13,6 +13,7 @@ import {
   validateScreenshotUrl,
 } from '../src/screenshot.js'
 import { invalidateConfigCache } from '../src/config.js'
+import { ensureChromeProfileTree } from './helpers/chrome_profile_tree.js'
 
 const PRIVATE_MARKER = 'SECRET_REBOUND_INTERNAL_MARKER_8871'
 const SANDBOXED_ENV_KEYS = ['LOCALAPPDATA', 'XDG_DATA_HOME', 'HOME', 'USERPROFILE'] as const
@@ -78,6 +79,7 @@ const browserPath = (() => {
   // try/finally: a throw here would otherwise leave HOME/USERPROFILE pointing at the developer's real profile for every test after it in this file.
   useRealEnv()
   try {
+    ensureChromeProfileTree(process.env['USERPROFILE'])
     return resolveBrowserExecutablePath()
   } finally {
     restoreSandboxedEnv()

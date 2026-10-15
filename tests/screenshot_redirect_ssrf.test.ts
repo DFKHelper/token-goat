@@ -7,6 +7,7 @@ import * as path from 'node:path'
 
 import { resolveBrowserExecutablePath, takeScreenshot } from '../src/screenshot.js'
 import { invalidateConfigCache } from '../src/config.js'
+import { ensureChromeProfileTree } from './helpers/chrome_profile_tree.js'
 
 const METADATA_MARKER = 'SECRET_INSTANCE_METADATA_MARKER_4213'
 const SANDBOXED_ENV_KEYS = ['LOCALAPPDATA', 'XDG_DATA_HOME', 'HOME', 'USERPROFILE'] as const
@@ -33,6 +34,7 @@ function restoreSandboxedEnv(): void {
 let browserPath: string | null
 useRealEnv()
 try {
+  ensureChromeProfileTree(process.env['USERPROFILE'])
   browserPath = resolveBrowserExecutablePath()
 } finally {
   restoreSandboxedEnv()
