@@ -1451,6 +1451,55 @@ describe('cli_doctor', () => {
       expect(result?.message).toContain('did not return valid JSON')
     })
 
+    // HAND-DERIVED: each row reads the budget off the options the probe's spawn is given, so it is fixed by the timeoutSec the row writes and no hook has to run slowly or be waited for. The stub answers '{}' at once. 60 s is the ceiling the maintainer chose for how long doctor waits; 15 s is the fallback when the config carries no usable timeoutSec.
+    async function probeSpawnTimeoutMs(timeoutSec: unknown): Promise<unknown> {
+      const { spawnSync } = await import('child_process')
+      const mockedSpawnSync = spawnSync as unknown as ReturnType<typeof vi.fn>
+      mockedSpawnSync.mockClear()
+      const stubPath = path.join(tempDir, 'instant-hook.js')
+      fs.writeFileSync(stubPath, "process.stdout.write('{}')")
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+      const configPath = path.join(tempDir, 'token-goat.json')
+      writeConfig(configPath, { preToolUse: [{ type: 'command', command: `"${process.execPath}" "${stubPath}"`, timeoutSec }] })
+
+      checkCopilotCli(configPath, scriptPath)
+
+      const probes = (mockedSpawnSync.mock.calls as unknown[][]).filter(([command]) => typeof command === 'string' && command.includes(stubPath))
+      expect(probes, 'the hook command should be spawned exactly once').toHaveLength(1)
+      return (probes[0]![1] as { timeout?: unknown }).timeout
+    }
+
+    it('gives the probe the config timeoutSec as its budget when that is under 60 s', async () => {
+      expect(await probeSpawnTimeoutMs(20)).toBe(20_000)
+    })
+
+    it('clamps the probe budget to 60 s when the config timeoutSec is larger', async () => {
+      expect(await probeSpawnTimeoutMs(600)).toBe(60_000)
+    })
+
+    it('falls back to a 15 s probe budget when the config timeoutSec is missing or unusable', async () => {
+      for (const unusable of [undefined, 'soon', 0, -5]) {
+        expect(await probeSpawnTimeoutMs(unusable), `timeoutSec ${JSON.stringify(unusable)}`).toBe(15_000)
+      }
+    })
+
+    it('names the budget it waited for when the hook does not answer in time', async () => {
+      const { spawnSync } = await import('child_process')
+      const mockedSpawnSync = spawnSync as unknown as ReturnType<typeof vi.fn>
+      // HAND-DERIVED: Node documents a spawnSync that hit its timeout as a result whose error has code ETIMEDOUT and whose status is null.
+      mockedSpawnSync.mockReturnValueOnce({ status: null, stdout: '', stderr: '', error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }) })
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+      const configPath = path.join(tempDir, 'token-goat.json')
+      writeConfig(configPath, { preToolUse: [{ type: 'command', command: `"${process.execPath}" "${scriptPath}"`, timeoutSec: 600 }] })
+
+      const result = checkCopilotCli(configPath, scriptPath)
+      expect(result?.status).toBe('fail')
+      expect(result?.message).toContain('did not answer within 60s')
+      expect(result?.message).not.toContain('failed to launch')
+    })
+
     // HAND-DERIVED: the installed shim is compared with the script this build's installer writes. The config command runs a stub that answers '{}', so the launch checks pass without spawning the real bundle, and the shim file on its own decides between ok and the drift warning.
     function writeStubbedInstall(shimText: string): { configPath: string; scriptPath: string } {
       const stubPath = path.join(tempDir, 'stub-hook.js')

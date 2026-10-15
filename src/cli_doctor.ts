@@ -314,6 +314,12 @@ export function checkDiskSpace(dataDir: string): DoctorResult {
   return { name: 'Disk Space', status: 'warn', message: 'disk space check unavailable on this platform' }
 }
 
+/** The preToolUse probe's budget when the hook config carries no usable timeoutSec of its own. */
+const HOOK_PROBE_DEFAULT_BUDGET_MS = 15000
+
+/** The longest the preToolUse probe waits, in seconds, whatever timeoutSec the hook config asks for: a config that lets Copilot wait ten minutes must not make `doctor` hang for ten minutes. */
+const HOOK_PROBE_MAX_BUDGET_SEC = 60
+
 /** Checks the installed Copilot CLI hook end-to-end: config is valid JSON with a preToolUse entry, the node binary baked into that entry's command still exists on disk (it goes stale after an nvm/fnm/volta node upgrade removes the old version -- a silent deny-all trigger, since Copilot's command hooks fail closed on a process that never launches), and running the exact command Copilot itself would run -- through a shell, the same win32 cmd.exe path Copilot uses -- against a synthetic preToolUse payload returns exit 0 and parseable JSON. Returns null (not a result) when Copilot CLI integration isn't installed: this is an opt-in feature, not a core component, so silence rather than a permanent 'warn' entry is correct for users who have never touched `--copilot`. The project scope is `<cwd>/.github/hooks`, which a cloned repository controls, so its command runs only when the created-configs ledger, kept outside the clone, records that an install on this machine wrote that config. */
 
 export function checkCopilotCli(configPath: string, scriptPath: string, scope: 'user' | 'project' = 'user'): DoctorResult | null {
@@ -352,7 +358,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
   // A config that still runs the .js forwarder (a session started before the rename caches it) fails every call once that file is gone, even with the .cjs it forwards to intact.
   if (named.legacy && !fs.existsSync(legacyPath)) return missingShimResult(name, legacyPath, harness, install)
 
-  let config: { hooks?: Partial<Record<string, Array<{ command?: string }>>> }
+  let config: { hooks?: Partial<Record<string, Array<{ command?: string; timeoutSec?: unknown }>>> }
   try {
     config = JSON.parse(stripBom(fs.readFileSync(configPath, 'utf-8')))
   } catch (err) {
@@ -391,6 +397,9 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     }
   }
 
+  // The probe waits as long as the config lets Copilot wait (timeoutSec), so a slow or loaded machine whose hook still answers inside Copilot's own budget is not reported as failed; a fixed 15 s here failed a hook Copilot would have accepted. The wait is capped at 60 s, and a config without a usable timeoutSec keeps the old 15 s.
+  const configuredSec = config.hooks?.['preToolUse']?.[0]?.timeoutSec
+  const probeBudgetMs = typeof configuredSec === 'number' && Number.isFinite(configuredSec) && configuredSec > 0 ? Math.round(Math.min(configuredSec, HOOK_PROBE_MAX_BUDGET_SEC) * 1000) : HOOK_PROBE_DEFAULT_BUDGET_MS
   const synthetic = JSON.stringify({
     sessionId: 'doctor-check',
     cwd: process.cwd(),
@@ -404,9 +413,16 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     env: { ...process.env, [HOOK_PROBE_ENV]: '1' },
     shell: true,
     windowsHide: true,
-    timeout: 15000,
+    timeout: probeBudgetMs,
   })
   if (res.error) {
+    if ((res.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
+      return {
+        name,
+        status: 'fail',
+        message: `hook launched but did not answer within ${probeBudgetMs / 1000}s (the timeoutSec its config gives Copilot, and at most ${HOOK_PROBE_MAX_BUDGET_SEC}s for this check). Recovery: run ${fencedCommand(install)}, then fully restart ${harness}.`,
+      }
+    }
     return {
       name,
       status: 'fail',
