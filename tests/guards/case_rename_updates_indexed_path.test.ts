@@ -4,10 +4,13 @@ import { existsSync, mkdtempSync, renameSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { closeDb, getDb } from '../../src/db.js'
+import { querySymbols } from '../../src/index_reader.js'
 import { normalizePath } from '../../src/paths.js'
 import { indexedPathSpellingIsStale } from '../../src/parser.js'
+import { findGlobalDb } from '../helpers/find_global_db.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
@@ -81,19 +84,49 @@ describe('indexedPathSpellingIsStale', () => {
   })
 })
 
-describe('index after a case-only rename', () => {
-  it('reports the new spelling, not the one the file used to have', () => {
-    const before = run(['symbol', 'betaFn'])
-    expect(before.status, before.out).toBe(0)
-    expect(before.out).toContain('beta.ts')
+// One built-CLI spawn per test (plus the one in beforeAll) rather than three in a single test: the work a test does no longer scales with the spawn count, so no test's pass depends on how many process starts fit inside one 60 s budget. The before/after checks that only read the index read its rows in-process; the calibration and rename flags make a later test fail loudly instead of passing on state an earlier one never set up. Provenance: HAND-DERIVED -- beta.ts is written by this file's beforeAll, and every spelling asserted is the one the test itself gave the file. LIKE folds ASCII case, so one query finds the row under either spelling and ignores the other fixtures in the directory.
+const lastSegment = (p: string): string | undefined => p.replace(/\\/g, '/').split('/').pop()
+// An explicit null check, so a run that never wrote global.db fails with this message rather than a cast handing `null` to the driver.
+const requireGlobalDb = (): string => {
+  const found = findGlobalDb(homeDir)
+  if (found === null) throw new Error(`no global.db under ${homeDir}: the beforeAll index run did not write one`)
+  return found
+}
+const storedSpellings = (): (string | undefined)[] => (getDb(requireGlobalDb()).prepare("SELECT path FROM files WHERE path LIKE '%/beta.ts'").pluck().all() as string[]).map(lastSegment)
 
+describe('index after a case-only rename', () => {
+  // Closes both the writable and the read-only handle that getDb and querySymbols cached for this path, so the temp home is not left open.
+  afterAll(() => {
+    const found = findGlobalDb(homeDir)
+    if (found !== null) closeDb(found)
+  })
+
+  let calibrated = false
+  let renamedAndReindexed = false
+
+  // Calibration: the file is indexed under its first spelling, so whatever the next tests see is the rename at work.
+  it('holds the file under its first spelling before anything is renamed', () => {
+    expect(storedSpellings()).toEqual(['beta.ts'])
+    expect(querySymbols({ name: 'betaFn' }, requireGlobalDb()).map((s) => lastSegment(s.filePath))).toEqual(['beta.ts'])
+    calibrated = true
+  })
+
+  it('rewrites the stored spelling when the walk reindexes after the rename', () => {
+    expect(calibrated, 'the calibration test above did not pass, so a spelling below would not show the rename at work').toBe(true)
     // Two steps: a direct rename to a case variant is a no-op on a case-insensitive filesystem.
     renameSync(join(projectDir, 'beta.ts'), join(projectDir, 'tmp-beta.ts'))
     renameSync(join(projectDir, 'tmp-beta.ts'), join(projectDir, 'BETA.ts'))
 
     const reindex = run(['index', '.', '--walk'])
     expect(reindex.status, reindex.out).toBe(0)
+    renamedAndReindexed = true
 
+    expect(storedSpellings(), 'the index kept a spelling the file no longer has').toEqual(['BETA.ts'])
+    expect(querySymbols({ name: 'betaFn' }, requireGlobalDb()).map((s) => lastSegment(s.filePath))).toEqual(['BETA.ts'])
+  })
+
+  it('reports the new spelling, not the one the file used to have', () => {
+    expect(renamedAndReindexed, 'the rename test above did not reindex, so the answer below would not show the rename at work').toBe(true)
     const after = run(['symbol', 'betaFn'])
     expect(after.status, after.out).toBe(0)
     expect(after.out, 'the index kept a spelling the file no longer has').toContain('BETA.ts')
