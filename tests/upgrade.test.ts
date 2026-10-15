@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import type * as ChildProcessModule from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   compareSemver,
@@ -29,6 +30,13 @@ import { stripAnsiEscapes } from '../src/render/ansi.js'
 import type { StatsData } from '../src/render/types.js'
 import { dataDir } from '../src/constants.js'
 import { invalidateConfigCache } from '../src/config.js'
+
+// Records the arguments of every spawnSync call (the real one still runs), so a test can read the options a spawn was given. The deadline on `npm root -g` cannot be seen from the stand-in npm, which only sees its argv.
+const spawnSyncCalls = vi.hoisted(() => ({ list: [] as unknown[][] }))
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcessModule>()
+  return { ...actual, spawnSync: (...a: unknown[]) => { spawnSyncCalls.list.push(a); return Reflect.apply(actual.spawnSync, undefined, a) as unknown } }
+})
 
 // Every test here is hermetic: TOKEN_GOAT_OFFLINE is on unless a test turns it off, and a test that goes online points npm and the HTTP fallback at a fake registry on 127.0.0.1 with a temp npm cache, prefix and userconfig. Nothing reaches the public registry and nothing installs globally.
 
@@ -367,6 +375,7 @@ describe('performUpgrade', () => {
     vi.stubEnv('FAKE_NPM_ROOT', globalRoot)
     vi.stubEnv('FAKE_NPM_INSTALL_EXIT', '0')
     vi.stubEnv('FAKE_LAUNCHER_EXIT', '0')
+    spawnSyncCalls.list = []
     captureConsole()
   })
   afterEach(() => { fs.rmSync(tmp, { recursive: true, force: true }) })
@@ -387,6 +396,20 @@ describe('performUpgrade', () => {
     expect(outcome.ok).toBe(false)
     if (!outcome.ok) expect(outcome.message).toContain('npm install failed')
     expect(calls()).toEqual([['install', '-g', 'token-goat@latest']])
+  })
+
+  // HAND-DERIVED: a loaded PC can take longer than any fixed deadline to start npm for `root -g`, and a deadline there drops silently into the in-process fallback below. Read from the options the spawn is given, so the check holds on any machine speed and waits on nothing.
+  it('asks npm where the new copy lives with no deadline, and uses the answer', async () => {
+    vi.stubEnv('FAKE_LAUNCHER_EXIT', '3')
+    const onSync = vi.fn(async () => undefined)
+    const outcome = await performUpgrade(onSync, npm())
+    const rootCalls = spawnSyncCalls.list.filter((a) => Array.isArray(a[1]) && (a[1] as string[]).includes('root'))
+    expect(rootCalls, 'the `npm root -g` lookup was not spawned exactly once').toHaveLength(1)
+    expect(Object.keys((rootCalls[0]![2] ?? {}) as object), 'a deadline on `npm root -g` makes a slow npm fall back silently to the old in-process sync').not.toContain('timeout')
+    expect(outcome.ok).toBe(false)
+    if (!outcome.ok) expect(outcome.message).toContain('`token-goat install` failed (exit code 3)')
+    expect(onSync).not.toHaveBeenCalled()
+    expect(calls()).toContainEqual(['launcher', 'install'])
   })
 
   it('falls back to the in-process sync when npm cannot name the new copy', async () => {
