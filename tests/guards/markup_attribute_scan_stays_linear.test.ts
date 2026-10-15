@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { closeDb } from '../../src/db.js'
 import { querySymbols } from '../../src/index_reader.js'
 import { drainOnce, pendingEmbeddings } from '../../src/worker.js'
-import { extractLwcTemplate, extractSalesforceMarkup } from '../../src/languages/salesforce_frontend.js'
+import { attributeScanWork, extractLwcTemplate, extractSalesforceMarkup } from '../../src/languages/salesforce_frontend.js'
 import { normalizePath } from '../../src/paths.js'
 import type { SymbolEntry } from '../../src/parser_types.js'
 import { escapeRegExp } from '../../src/util.js'
@@ -98,7 +98,7 @@ function growth(make: (n: number) => string, run: (text: string) => unknown, n: 
 
 const BOUND = 3.5
 
-// Tag starts that never close, and quotes that never pair: the shapes that make an unbounded run re-read the rest of the file from every start.
+// Tag starts that never close, and quotes that never pair: the shapes that make an unbounded run re-read the rest of the file from every start. Provenance: HAND-DERIVED. Each shape is written from the malformation its label names, independently of the scanner under test.
 const HOSTILE: Record<string, (n: number) => string> = {
   'attribute tag starts, name quote open, no >': (n) => '<aura:attribute name="'.repeat(n),
   'attribute tag starts, name quote open, trailing >': (n) => '<aura:attribute name="'.repeat(n) + '>',
@@ -112,12 +112,29 @@ const HOSTILE: Record<string, (n: number) => string> = {
   'single quotes open': (n) => "<aura:attribute name='".repeat(n) + '>',
   'name tokens only': (n) => '<aura:attribute ' + 'name '.repeat(n) + '>',
   'name= tokens only': (n) => '<aura:attribute ' + 'name='.repeat(n) + '>',
+}
+
+// Provenance: HAND-DERIVED. Each shape is an unclosed controller= or extensions= attribute value repeated n times, written from the malformation its label names rather than from the attributeRefs patterns under test. The controller and extensions values are read by regular expressions in attributeRefs, which scanAttributeTags does not count, so these two shapes keep the growth-ratio measurement.
+const HOSTILE_REF_PATTERNS: Record<string, (n: number) => string> = {
   'controller attributes open': (n) => '<aura:component controller="'.repeat(n),
   'extensions attributes open': (n) => '<aura:component extensions="'.repeat(n) + '>',
 }
 
-describe('the Salesforce markup extractors grow linearly on malformed tags', () => {
+describe('the Salesforce markup extractors scan malformed tags in linear work', () => {
   for (const [label, make] of Object.entries(HOSTILE)) {
+    it(`.cmp: ${label}`, () => {
+      const text = make(3000)
+      const work = attributeScanWork(text)
+      // Work, not time: the characters the scan passed over are counted, so a slow machine cannot change the result. One pass reads each character about once; a scan that re-reads the rest of the file from every start reads it thousands of times.
+      expect(work, `3000 starts, ${text.length} characters`).toBeLessThanOrEqual(2 * text.length)
+      // The count must be live: every shape holds a tag start, so a counter that reports nothing would pass the bound above for the wrong reason.
+      expect(work, `3000 starts, ${text.length} characters`).toBeGreaterThan(0)
+    })
+  }
+})
+
+describe('the Salesforce markup extractors grow linearly on malformed tags', () => {
+  for (const [label, make] of Object.entries(HOSTILE_REF_PATTERNS)) {
     it(`.cmp: ${label}`, () => {
       const run = (text: string): unknown => extractSalesforceMarkup(text, 'aura/x/x.cmp')
       // A small pair first so an exponential or cubic pattern fails here, in milliseconds, before the large pair is ever run.
@@ -160,14 +177,6 @@ describe('critical path: a component with the pathological shape still indexes',
   // Provenance: HAND-DERIVED. A real attribute declaration followed by a tag that never closes, repeated; realAttr is the one name present in the file.
   const body = (): string => '<aura:component>\n  <aura:attribute name="realAttr" type="String"/>\n</aura:component>\n' + '<aura:attribute name="'.repeat(1500)
 
-  // The same bytes with every tag closed: what the machine costs for a file this size when nothing is pathological. The pathological file is timed against it in the same run, so a slow or busy machine slows both and the ratio holds, while a scan that went cubic still lands many times over.
-  const benign = (): string => {
-    const target = body().length
-    const line = '<aura:attribute name="a" type="String"/>\n'
-    return '<aura:component>\n  <aura:attribute name="realAttr" type="String"/>\n</aura:component>\n' + line.repeat(Math.ceil(target / line.length))
-  }
-  const RATIO = 2
-
   function writeBundle(repo: string, content: string): void {
     const file = path.join(repo, 'force-app/main/default/aura/pathological/pathological.cmp')
     fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -175,7 +184,7 @@ describe('critical path: a component with the pathological shape still indexes',
     fs.writeFileSync(path.join(repo, 'sfdx-project.json'), '{"packageDirectories":[{"path":"force-app"}]}')
   }
 
-  function drainTimed(content: string): { elapsed: number; dbPath: string; dataDir: string } {
+  function drain(content: string): { dbPath: string } {
     const repo = tempDir('tg-markup-linear-repo-')
     const dataDir = tempDir('tg-markup-linear-data-')
     writeBundle(repo, content)
@@ -183,17 +192,12 @@ describe('critical path: a component with the pathological shape still indexes',
     const queue = path.join(dataDir, 'queue', 'dirty.txt')
     fs.mkdirSync(path.dirname(queue), { recursive: true })
     fs.writeFileSync(queue, `${file}\n`)
-    const started = performance.now()
     expect(drainOnce(dataDir)).toBe(1)
-    return { elapsed: performance.now() - started, dbPath: path.join(dataDir, 'global.db'), dataDir }
+    return { dbPath: path.join(dataDir, 'global.db') }
   }
 
   it('the worker default path drains it and realAttr resolves', async () => {
-    // The benign file goes first so the one-time costs (database creation, module warm-up) land on the baseline, which only makes the bound looser for a healthy scan.
-    const baseline = drainTimed(benign())
-    await pendingEmbeddings()
-    closeDb(baseline.dbPath)
-    const run = drainTimed(body())
+    const run = drain(body())
     await pendingEmbeddings()
     try {
       expect(querySymbols({ name: 'realAttr' }, run.dbPath)[0]).toMatchObject({ kind: 'aura_attribute' })
@@ -201,31 +205,24 @@ describe('critical path: a component with the pathological shape still indexes',
     } finally {
       closeDb(run.dbPath)
     }
-    const floor = Math.max(baseline.elapsed, 250)
-    expect(run.elapsed, `drainOnce took ${run.elapsed.toFixed(0)} ms against ${baseline.elapsed.toFixed(0)} ms for the same bytes with every tag closed`).toBeLessThan(RATIO * floor)
   })
 
   it('the built CLI indexes it and resolves realAttr', () => {
-    const indexTimed = (content: string): { elapsed: number; repo: string; env: NodeJS.ProcessEnv } => {
-      const repo = tempDir('tg-markup-linear-cli-')
-      const dataBase = tempDir('tg-markup-linear-cli-data-')
-      writeBundle(repo, content)
-      execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
-      execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
-      const env = tgIsolatedEnv(dataBase)
-      const started = performance.now()
-      const indexed = runBundle(['index', repo], { cwd: repo, env })
-      const elapsed = performance.now() - started
-      expect(indexed.status, indexed.stderr).toBe(0)
-      return { elapsed, repo, env }
-    }
-    const baseline = indexTimed(benign())
-    const run = indexTimed(body())
-    const found = runBundle(['symbol', 'realAttr'], { cwd: run.repo, env: run.env })
+    // Correctness only: how much work the scan does is bounded in-process by the work-count rows above, so no clock decides this test. Provenance: HAND-DERIVED. The same shape as body() at 50 starts: one real declaration, then tags that never close.
+    const small = '<aura:component>\n  <aura:attribute name="realAttr" type="String"/>\n</aura:component>\n' + '<aura:attribute name="'.repeat(50)
+    const repo = tempDir('tg-markup-linear-cli-')
+    const dataBase = tempDir('tg-markup-linear-cli-data-')
+    writeBundle(repo, small)
+    // `index <folder>` refuses a folder that is not a git repository unless --walk is passed, and lists the files with git, so the repository has to hold the file.
+    execFileSync('git', ['init'], { cwd: repo, stdio: 'ignore' })
+    execFileSync('git', ['add', '.'], { cwd: repo, stdio: 'ignore' })
+    const env = tgIsolatedEnv(dataBase)
+    const indexed = runBundle(['index', repo], { cwd: repo, env })
+    expect(indexed.status, indexed.stderr).toBe(0)
+    const found = runBundle(['symbol', 'realAttr'], { cwd: repo, env })
     expect(found.status, found.stderr).toBe(0)
     expect(found.stdout).toContain('realAttr')
-    const floor = Math.max(baseline.elapsed, 500)
-    expect(run.elapsed, `index took ${run.elapsed.toFixed(0)} ms against ${baseline.elapsed.toFixed(0)} ms for the same bytes with every tag closed`).toBeLessThan(RATIO * floor)
+    expect(found.stdout).toContain('aura_attribute')
   })
 })
 

@@ -144,34 +144,58 @@ function addAttributeSymbols(
   tag: string,
   kind: string,
 ): void {
+  scanAttributeTags(content, tag, (name, index) => symbols.push(symbol(filePath, name, kind, offsetToLine(lineIndex, index))))
+}
+
+// Walks every `<tag` start in a document, hands each tag's last name="..." to onName, and returns the characters scanned in total, so a test can bound the scan by the work it did rather than the time it took.
+function scanAttributeTags(content: string, tag: string, onName: (name: string, index: number) => void): number {
   const tagStart = new RegExp(`<\\s*${tag}\\b`, 'gi')
+  let work = 0
   for (let found = tagStart.exec(content); found !== null; found = tagStart.exec(content)) {
     const scanned = scanTagForName(content, tagStart.lastIndex)
-    if (scanned.end < 0) return
-    if (scanned.name !== undefined) symbols.push(symbol(filePath, scanned.name, kind, offsetToLine(lineIndex, found.index)))
+    work += scanned.scanned
+    if (scanned.end < 0) break
+    if (scanned.name !== undefined) onName(scanned.name, found.index)
     tagStart.lastIndex = scanned.end + 1
   }
+  return work
+}
+
+const AURA_NAME_TAGS = [
+  ['aura:attribute', 'aura_attribute'],
+  ['aura:handler', 'aura_handler'],
+  ['aura:registerEvent', 'aura_event'],
+  ['design:attribute', 'aura_design_attribute'],
+] as const
+
+/** The characters extractSalesforceMarkup scans across every name-bearing tag start in a document; a linear scan keeps this within a small multiple of content.length. */
+export function attributeScanWork(content: string): number {
+  const text = stripXmlComments(content)
+  return AURA_NAME_TAGS.reduce((sum, [tag]) => sum + scanAttributeTags(text, tag, () => undefined), 0)
 }
 
 const NAME_ATTRIBUTE = /name\s*=\s*["']([^"']+)["']/iy
 
-// One left-to-right pass over a start tag: quoted values are skipped whole, the last name="..." outside them wins, and end is the closing > or -1.
-function scanTagForName(content: string, from: number): { name: string | undefined; end: number } {
+// One left-to-right pass over a start tag: quoted values are skipped whole, the last name="..." outside them wins, end is the closing > or -1, and scanned counts the characters passed over, a failed search for a closing quote included.
+function scanTagForName(content: string, from: number): { name: string | undefined; end: number; scanned: number } {
   let name: string | undefined
+  let searched = 0
   const unpaired: Record<string, boolean> = {}
   for (let i = from; i < content.length; i++) {
     const ch = content[i] ?? ''
-    if (ch === '>') return { name, end: i }
+    if (ch === '>') return { name, end: i, scanned: i - from + searched }
     if (ch === '"' || ch === "'") {
       const close = unpaired[ch] ? -1 : content.indexOf(ch, i + 1)
-      if (close < 0) unpaired[ch] = true
-      else i = close
+      if (close < 0) {
+        if (!unpaired[ch]) searched += content.length - i - 1
+        unpaired[ch] = true
+      } else i = close
     } else if ((ch === 'n' || ch === 'N') && !/\w/.test(content[i - 1] ?? '')) {
       NAME_ATTRIBUTE.lastIndex = i
       name = NAME_ATTRIBUTE.exec(content)?.[1] ?? name
     }
   }
-  return { name, end: -1 }
+  return { name, end: -1, scanned: content.length - from + searched }
 }
 
 function attributeRefs(
@@ -206,10 +230,7 @@ export function extractSalesforceMarkup(content: string, filePath: string): Sale
   const lineIndex = buildLineIndex(content)
 
   if (isAura) {
-    addAttributeSymbols(symbols, markupNoComments, lineIndex, filePath, 'aura:attribute', 'aura_attribute')
-    addAttributeSymbols(symbols, markupNoComments, lineIndex, filePath, 'aura:handler', 'aura_handler')
-    addAttributeSymbols(symbols, markupNoComments, lineIndex, filePath, 'aura:registerEvent', 'aura_event')
-    addAttributeSymbols(symbols, markupNoComments, lineIndex, filePath, 'design:attribute', 'aura_design_attribute')
+    for (const [tag, tagKind] of AURA_NAME_TAGS) addAttributeSymbols(symbols, markupNoComments, lineIndex, filePath, tag, tagKind)
   }
 
   attributeRefs(refs, markupNoComments, lineIndex, filePath, 'controller')
