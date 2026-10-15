@@ -186,6 +186,8 @@ export async function fetchViaHttp(registryUrl: string, timeoutMs = 3500): Promi
         targetUrl,
         {
           headers: { 'User-Agent': `token-goat/${VERSION} (node/${process.version})` },
+          // A fresh connection, never one pooled by the global agent: after npm's blocking spawn the registry may have closed the pooled one, and reusing it fails with ECONNRESET.
+          agent: false,
           timeout: timeoutMs,
         },
         (res) => {

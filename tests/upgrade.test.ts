@@ -481,6 +481,47 @@ describe('against a registry', () => {
     expect(await fetchViaHttp(online('bad'), 10_000)).toBeNull()
   })
 
+  // HAND-DERIVED: a check that runs after a blocking npm spawn finds the registry's keep-alive timer long expired. The child closes each idle connection 2 s after replying (the keep-alive timer of Node http, 5 s by default) and marks `closed`; this thread then stalls, as the npm spawn does, until that mark exists, so nothing here reads the close and the order is set by files, not sleeps.
+  it('the HTTP fallback does not reuse a connection the registry closed while the event loop was blocked', async () => {
+    const KEEPALIVE = [
+      "const http = require('node:http'), fs = require('node:fs'), path = require('node:path')",
+      'const gate = process.argv[2]',
+      'const server = http.createServer((req, res) => {',
+      "  res.writeHead(200, { 'content-type': 'application/json' })",
+      "  res.end(JSON.stringify({ name: 'token-goat', version: '99.0.0' }))",
+      '})',
+      'server.keepAliveTimeout = 2000',
+      "server.on('connection', (socket) => socket.on('close', () => fs.writeFileSync(path.join(gate, 'closed'), '')))",
+      "server.listen(0, '127.0.0.1', () => process.stdout.write('PORT ' + server.address().port + '\\n'))",
+    ].join('\n')
+    const gate = fs.mkdtempSync(path.join(dir, 'gate-'))
+    const script = path.join(gate, 'keepalive.cjs')
+    fs.writeFileSync(script, KEEPALIVE)
+    const child = spawn(process.execPath, [script, gate], { stdio: ['ignore', 'pipe', 'inherit'] })
+    try {
+      const keepalivePort = await new Promise<number>((resolve, reject) => {
+        let out = ''
+        child.stdout!.on('data', (c: Buffer) => {
+          out += c.toString()
+          const m = /PORT (\d+)/.exec(out)
+          if (m) resolve(Number(m[1]))
+        })
+        child.on('exit', (code) => reject(new Error(`keep-alive registry exited (${code})`)))
+      })
+      const url = `http://127.0.0.1:${keepalivePort}/`
+      expect(await fetchViaHttp(url, 10_000)).toBe('99.0.0')
+      const pause = new Int32Array(new SharedArrayBuffer(4))
+      // The wait ends on the event (the close mark) or on the registry process dying; the exit event cannot fire while this thread is blocked, so liveness is read from the pid, which throws once the process is gone.
+      while (!fs.existsSync(path.join(gate, 'closed'))) {
+        process.kill(child.pid as number, 0)
+        Atomics.wait(pause, 0, 0, 10)
+      }
+      expect(await fetchViaHttp(url, 10_000)).toBe('99.0.0')
+    } finally {
+      child.kill()
+    }
+  }, 90_000)
+
   it('upgrade from a development checkout reports the update and replaces nothing', async () => {
     online('new')
     const { logs } = captureConsole()
