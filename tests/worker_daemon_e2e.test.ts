@@ -4,9 +4,11 @@ import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { pathToFileURL } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { appendDirtyQueuePaths } from '../src/dirty_queue.js'
 import { BUNDLE, readCoreBundleText, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
@@ -39,11 +41,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Poll `check` every 50ms until it returns true, then return how long that took. Throws with `label` once `timeoutMs` elapses. Every wait in this file used to be a fixed sleep sized to the worst case with a generous margin on top -- 2000ms to see the daemon survive, 5000ms to see it drain, 300ms to see it die. That is 7.3s of wall clock spent waiting for things that are typically done in a fraction of it, and the margins existed precisely because a fixed sleep is also the flakiest possible way to wait: too short and it fails on a slow machine, too long and it still tells you nothing about when the condition actually became true. Polling is both faster and stricter, since the elapsed time it returns can itself be asserted on. */
-async function waitFor(label: string, timeoutMs: number, check: () => boolean): Promise<number> {
+/** Poll `check` every 50ms until it returns true. Throws with `label` once `timeoutMs` elapses; that bound is a hang backstop for a daemon that is alive and silent, never a measurement, and nothing in this file asserts on how long a wait took. */
+async function waitFor(label: string, timeoutMs: number, check: () => boolean): Promise<void> {
   const start = Date.now()
   for (;;) {
-    if (check()) return Date.now() - start
+    if (check()) return
     if (Date.now() - start > timeoutMs) {
       throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label}`)
     }
@@ -51,8 +53,8 @@ async function waitFor(label: string, timeoutMs: number, check: () => boolean): 
   }
 }
 
-/** Milliseconds from one observed rewrite of `file` to the `rewrites`-th after it. Every worker cycle replaces the drain heartbeat through a rename, even with an empty queue, so its identity changes once per poll interval; a stat spawns no process, so a loaded runner cannot stretch the measurement the way a timed `symbol` probe did. */
-async function msForRewrites(file: string, rewrites: number, timeoutMs: number): Promise<number> {
+/** Wait until `file` has been replaced `rewrites` times since this call, or fail as soon as the daemon `pid` is gone. Every worker cycle replaces the drain heartbeat through a rename, even with an empty queue, so its identity changes once per cycle. The wait ends on that event and measures nothing; an observer that stalls across two rewrites counts one, which only makes it wait longer. */
+async function waitForDaemonRewrites(file: string, rewrites: number, pid: number): Promise<void> {
   const identity = (): string => {
     try {
       const st = fs.statSync(file, { bigint: true })
@@ -62,24 +64,45 @@ async function msForRewrites(file: string, rewrites: number, timeoutMs: number):
     }
   }
   let last = identity()
-  let seen = -1
-  let start = 0
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
+  let seen = 0
+  await waitForDaemon(`${rewrites} drain heartbeat rewrites`, 15000, pid, () => {
     const now = identity()
     if (now !== '' && now !== last) {
       last = now
       seen++
-      if (seen === 0) start = Date.now()
-      else if (seen === rewrites) return Date.now() - start
     }
-    await sleep(10)
-  }
-  throw new Error(`timed out after ${timeoutMs}ms waiting for ${rewrites} heartbeat rewrites (saw ${Math.max(seen, 0)})`)
+    return seen >= rewrites
+  })
 }
+
+/** A preload (`node --import`) that appends the delay of every `setTimeout` call to `<TG_E2E_TIMER_LOG>.<pid>`. Provenance: HAND-DERIVED; it wraps the global `setTimeout` that worker's queue waker calls as `setTimeout(done, ms)` (src/queue_waker.ts), so the file holds the exact interval each worker cycle asked to sleep, read from the real daemon process instead of inferred from how long cycles took. */
+const TIMER_LOG_PRELOAD = [
+  "import { openSync, writeSync } from 'node:fs'",
+  'let fd = -1',
+  'const base = process.env.TG_E2E_TIMER_LOG',
+  'const real = globalThis.setTimeout',
+  'globalThis.setTimeout = function (fn, ms, ...rest) {',
+  "  try { if (base) { if (fd < 0) fd = openSync(base + '.' + process.pid, 'a'); writeSync(fd, String(ms) + '\\n') } } catch {}",
+  '  return real.call(this, fn, ms, ...rest)',
+  '}',
+  '',
+].join('\n')
+
+/** Every delay the daemon `pid` passed to `setTimeout`, in call order, from the log the preload wrote. */
+function recordedTimerDelays(logBase: string, pid: number): number[] {
+  try {
+    return fs.readFileSync(`${logBase}.${pid}`, 'utf8').split('\n').filter((l) => l !== '').map(Number)
+  } catch {
+    return []
+  }
+}
+
 
 /** Poll interval handed to the daemon under test. Fast enough that the drain assertion resolves in well under the 2000ms production default, which is what makes that assertion able to detect the default being forced back on. */
 const DAEMON_POLL_MS = 200
+
+/** The main test's poll interval: a value no other timer in the daemon uses and no default of this codebase, so seeing it in the recorded timer delays can only mean TG_WORKER_POLL_MS travelled from the `worker start` environment to the loop's sleep. */
+const CADENCE_POLL_MS = 237
 
 const tempDirs: string[] = []
 function mkIsolated(prefix: string): string {
@@ -106,31 +129,31 @@ describe('detached worker daemon (built bundle)', () => {
   })
 
   it(
-    '`worker start` stays alive well past the point the old bug killed it, and the running daemon drains real work',
+    '`worker start` stays alive well past the point the old bug killed it, the daemon cycles at the interval it was given, and the running daemon drains real work',
     async () => {
       const dataBase = mkIsolated('tg-daemon-data-')
       const repo = mkIsolated('tg-daemon-repo-')
-      const env = tgEnv(dataBase, DAEMON_POLL_MS)
+      const probe = mkIsolated('tg-daemon-probe-')
+      const env = tgEnv(dataBase, CADENCE_POLL_MS)
+      // The preload goes into `worker start` only: the daemon it spawns inherits the environment, and every later command runs without it.
+      const preload = path.join(probe, 'timer-log.mjs')
+      fs.writeFileSync(preload, TIMER_LOG_PRELOAD)
+      const timerLog = path.join(probe, 'timers')
+      const startEnv = { ...env, NODE_OPTIONS: `${env['NODE_OPTIONS'] ?? ''} --import ${pathToFileURL(preload).href}`.trim(), TG_E2E_TIMER_LOG: timerLog }
       let pid: number | undefined
+      let stop: RunResult
 
       try {
         // 1. Start the daemon for real, through the actual CLI command a user would run.
-        const start = runBundle(['worker', 'start'], env, repo)
+        const start = runBundle(['worker', 'start'], startEnv, repo)
         expect(start.status, `worker start stderr: ${start.stderr}`).toBe(0)
         const m = start.stdout.match(/pid (\d+)/)
         expect(m, `unexpected worker start output: ${JSON.stringify(start.stdout)}`).not.toBeNull()
         pid = parseInt((m as RegExpMatchArray)[1], 10)
 
-        // 2. Wait for positive proof the child reached the daemon loop rather than for a fixed interval: runDetachedWorkerDaemon writes its own pid to queue/drain-heartbeat as its first act, so that file naming this pid can only happen on the far side of the argv dispatch the pre-fix bug died at (commander rejected --worker-daemon and the process exited before ever reaching the loop). A dead child never writes it, so that failure still fails here -- as a timeout rather than a liveness assertion.
+        // 2. Wait for positive proof the child reached the daemon loop rather than for a fixed interval: runDetachedWorkerDaemon writes its own pid to queue/drain-heartbeat as its first act, so that file naming this pid can only happen on the far side of the argv dispatch the pre-fix bug died at (commander rejected --worker-daemon and the process exited before ever reaching the loop). A dead child never writes it, so that failure still fails here, as soon as the process is seen to be gone.
         const heartbeat = path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat')
-        const daemonPid = pid
-        await waitFor('the daemon to write its drain heartbeat', 15000, () => {
-          try {
-            return fs.readFileSync(heartbeat, 'utf8').trim() === String(daemonPid)
-          } catch {
-            return false
-          }
-        })
+        await waitForDaemonHeartbeat(dataBase, pid)
 
         expect(
           pidAlive(pid),
@@ -140,72 +163,53 @@ describe('detached worker daemon (built bundle)', () => {
         const status = runBundle(['worker', 'status'], env, repo)
         expect(status.stdout).toContain('Worker is running.')
 
-        // 3. Prove it does real work, not just "a process that stays alive": seed a real dirty-queue entry for a fixture file directly on disk (bypassing any manual `index` call) and confirm the ALREADY-RUNNING daemon drains it on its own poll cycle.
+        // 3. The cycle cadence: TG_WORKER_POLL_MS has to reach the daemon through `worker start`, which used to hardcode the 2000ms default into the child's env regardless of what it inherited. Two heartbeat rewrites after the first mean the daemon has finished at least one between-cycle sleep, so its setTimeout delay is in the log by then; the assertion is on that recorded value, not on how long anything took. With the bug back the daemon asks for 2000, this value never appears, and the assertion fails on every run.
+        await waitForDaemonRewrites(heartbeat, 2, pid)
+        const delays = recordedTimerDelays(timerLog, pid)
+        expect(
+          delays,
+          `the daemon never asked to sleep ${CADENCE_POLL_MS}ms between cycles -- TG_WORKER_POLL_MS is being ignored again (timer delays it set: ${delays.join(', ')})`,
+        ).toContain(CADENCE_POLL_MS)
+
+        // 4. Prove it does real work, not just "a process that stays alive": seed a real dirty-queue entry for a fixture file directly on disk (bypassing any manual `index` call) and confirm the ALREADY-RUNNING daemon drains it on its own poll cycle. Provenance: HAND-DERIVED. Each fixture below is source text written for this test, with the symbol names it must produce read off the text itself.
         const srcFile = path.join(repo, 'daemon_e2e_sample.ts')
         fs.writeFileSync(srcFile, 'export function daemonDrainedSymbol(): number {\n  return 1\n}\nexport function daemonCaller(): number {\n  return daemonDrainedSymbol()\n}\n')
         // A regex-adapter language too: those adapters load through parser.ts's dynamic import (loadRegexExtractors), which the drain loop awaits before its first cycle. Miss that await and the daemon indexes this file to nothing, while the tree-sitter file beside it still resolves -- so only a second language proves the lazy load reached the daemon.
         const fortranFile = path.join(repo, 'daemon_e2e_sample.f90')
         fs.writeFileSync(fortranFile, 'subroutine daemon_drained_fortran(x)\n  integer :: x\n  x = 1\nend subroutine daemon_drained_fortran\n')
-
-        const queueDir = path.join(effectiveDataDir(dataBase), 'queue')
-        fs.mkdirSync(queueDir, { recursive: true })
         const auraFile = path.join(repo, 'daemon_e2e_sample.cmp')
         fs.writeFileSync(auraFile, '<aura:component>\n  <aura:attribute name="daemonDrainedAttr" type="String"/>\n</aura:component>\n')
-        fs.writeFileSync(path.join(queueDir, 'dirty.txt'), `${srcFile}\n${fortranFile}\n${auraFile}\n`)
 
-        let sym: RunResult | undefined
-        await waitFor('the running daemon to drain the seeded queue entry', 20000, () => {
-          sym = runBundle(['symbol', 'daemonDrainedSymbol'], env, repo)
-          return sym.status === 0 && sym.stdout.includes('daemonDrainedSymbol')
-        })
-        expect(sym?.stdout).toContain('daemonDrainedSymbol')
+        // The queue producer the hooks use, which appends in one write and writes again when the daemon claims the queue under it, so a claim can never take a half-written queue.
+        const queueDir = path.join(effectiveDataDir(dataBase), 'queue')
+        expect(appendDirtyQueuePaths(effectiveDataDir(dataBase), [srcFile, fortranFile, auraFile])).toBe(true)
+
+        // The wait ends when the queue is gone: a drain renames dirty.txt to dirty.txt.draining, indexes the batch, and only then removes that file, so no queue file left means the batch was committed. Embeddings are off for the suite, so nothing requeues behind it.
+        await waitForDaemon('the running daemon to drain the seeded queue entries', 20000, pid, () => !fs.readdirSync(queueDir).some((name) => name.startsWith('dirty.txt')))
+
+        // One lookup per fixture, after the drain: a daemon that drained into a stub, or dropped refs or a lazily loaded adapter's rows, fails right here rather than being waited on.
+        const sym = runBundle(['symbol', 'daemonDrainedSymbol'], env, repo)
+        expect(sym.status, `symbol stderr: ${sym.stderr}`).toBe(0)
+        expect(sym.stdout).toContain('daemonDrainedSymbol')
 
         // Provenance: HAND-DERIVED. The seeded file calls daemonDrainedSymbol from daemonCaller, so a daemon that writes symbols but drops the refs rows leaves `callers` empty while `symbol` above still resolves.
-        let callers: RunResult | undefined
-        await waitFor('the running daemon to write the call reference from the seeded file', 20000, () => {
-          callers = runBundle(['callers', 'daemonDrainedSymbol'], env, repo)
-          return callers.status === 0 && callers.stdout.includes('daemonCaller')
-        })
-        expect(callers?.stdout).toContain('daemonCaller')
+        const callers = runBundle(['callers', 'daemonDrainedSymbol'], env, repo)
+        expect(callers.status, `callers stderr: ${callers.stderr}`).toBe(0)
+        expect(callers.stdout).toContain('daemonCaller')
 
-        let fortranSym: RunResult | undefined
-        await waitFor('the running daemon to index the Fortran file through the lazily loaded adapter', 20000, () => {
-          fortranSym = runBundle(['symbol', 'daemon_drained_fortran'], env, repo)
-          return fortranSym.status === 0 && fortranSym.stdout.includes('daemon_drained_fortran')
-        })
-        expect(fortranSym?.stdout).toContain('daemon_drained_fortran')
+        const fortranSym = runBundle(['symbol', 'daemon_drained_fortran'], env, repo)
+        expect(fortranSym.status, `symbol stderr: ${fortranSym.stderr}`).toBe(0)
+        expect(fortranSym.stdout).toContain('daemon_drained_fortran')
 
         // The Salesforce frontend adapters load through the same lazy path as the registry; an Aura attribute resolving proves the daemon awaited that load too.
-        let auraSym: RunResult | undefined
-        await waitFor('the running daemon to index the Aura component through the lazily loaded frontend adapter', 20000, () => {
-          auraSym = runBundle(['symbol', 'daemonDrainedAttr'], env, repo)
-          return auraSym.status === 0 && auraSym.stdout.includes('daemonDrainedAttr')
-        })
-        expect(auraSym?.stdout).toContain('daemonDrainedAttr')
-
-        // The cycle cadence is the assertion that TG_WORKER_POLL_MS reached the daemon. `worker start` used to hardcode the 2000ms default into the child's env regardless of what it inherited, so the variable the daemon reads was a no-op on the only path that actually starts one. The drain latency cannot show that: a queue append wakes the sleep early whatever the interval, and timing it through `symbol` spawns measured the runner's load instead. Three cycles take about 3 x DAEMON_POLL_MS; with that bug back they take at least 6000ms.
-        const cyclesMs = await msForRewrites(heartbeat, 3, 15000)
-        expect(
-          cyclesMs,
-          `3 worker cycles took ${cyclesMs}ms, at the 2000ms default's pace -- TG_WORKER_POLL_MS is being ignored again`,
-        ).toBeLessThan(4000)
+        const auraSym = runBundle(['symbol', 'daemonDrainedAttr'], env, repo)
+        expect(auraSym.status, `symbol stderr: ${auraSym.stderr}`).toBe(0)
+        expect(auraSym.stdout).toContain('daemonDrainedAttr')
       } finally {
-        // 4. Clean teardown so this test never leaks a real background process.
-        const stop = runBundle(['worker', 'stop'], env, repo)
-        expect(stop.stdout).toMatch(/Worker stopped\.|No running worker\./)
-        const stopped = pid
-        if (stopped !== undefined) {
-          // Give SIGTERM a moment to land, but stop waiting the instant it has: the SIGKILL below is the backstop for a daemon that ignores it, not the expected path.
-          await waitFor('the stopped daemon to exit', 5000, () => !pidAlive(stopped)).catch(() => 0)
-        }
-        if (pid !== undefined && pidAlive(pid)) {
-          try {
-            process.kill(pid, 'SIGKILL')
-          } catch {
-            // already gone
-          }
-        }
+        // 5. Clean teardown on every path, including a `worker start` whose output never parsed, so this test never leaks a real background process.
+        stop = await shutDownDaemon(env, repo, dataBase, pid)
       }
+      expect(stop.stdout).toMatch(/Worker stopped\.|No running worker\./)
     },
     45000,
   )
@@ -228,8 +232,7 @@ describe('detached worker daemon (built bundle)', () => {
         expectDirectoryReleasedBy(pid, trigger)
       } finally {
         // Run from the data base: the trigger directory is gone once the assertion above has passed.
-        runBundle(['worker', 'stop'], env, dataBase)
-        await stopDaemon(pid)
+        await shutDownDaemon(env, dataBase, dataBase, pid)
       }
     },
     45000,
@@ -265,13 +268,38 @@ describe('detached worker daemon (built bundle)', () => {
 /** Wait until the daemon `pid` has written its drain heartbeat: `runDetachedWorkerDaemon` writes it only after it has moved to its own working directory, so a heartbeat naming `pid` means that move has already happened. */
 async function waitForDaemonHeartbeat(dataBase: string, pid: number): Promise<void> {
   const heartbeat = path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat')
-  await waitFor('the daemon to write its drain heartbeat', 15000, () => {
+  await waitForDaemon('the daemon to write its drain heartbeat', 15000, pid, () => {
     try {
       return fs.readFileSync(heartbeat, 'utf8').trim() === String(pid)
     } catch {
       return false
     }
   })
+}
+
+/** `waitFor` for a condition only the live daemon `pid` can bring about: the wait also ends, with a failure naming the cause, the moment that process is gone, so a daemon that crashed is reported at once instead of after the whole backstop. */
+async function waitForDaemon(label: string, timeoutMs: number, pid: number, check: () => boolean): Promise<void> {
+  await waitFor(label, timeoutMs, () => {
+    if (check()) return true
+    if (!pidAlive(pid)) throw new Error(`the daemon (pid ${pid}) exited while waiting for: ${label}`)
+    return false
+  })
+}
+
+/** Stop whatever daemon a test started, on any path. The pid file is read before `worker stop` removes it, because it is the only record of the daemon when `worker start` failed before its output could be parsed; both pids are then terminated if still alive. Returns the `worker stop` result. */
+async function shutDownDaemon(env: NodeJS.ProcessEnv, cwd: string, dataBase: string, startedPid: number | undefined): Promise<RunResult> {
+  let recorded: number | undefined
+  try {
+    const raw = fs.readFileSync(path.join(effectiveDataDir(dataBase), 'worker.pid'), 'utf8').trim()
+    if (/^\d+$/.test(raw)) recorded = parseInt(raw, 10)
+  } catch {
+    // no pid file: nothing recorded one
+  }
+  try {
+    return runBundle(['worker', 'stop'], env, cwd)
+  } finally {
+    for (const pid of new Set([startedPid, recorded])) await stopDaemon(pid)
+  }
 }
 
 /** Assert the live daemon `pid` does not hold `dir` as its working directory. On Windows that handle is what blocks deleting `dir`, so the delete is the assertion; Linux lets a working directory be deleted, so there the kernel's record of it is checked first. macOS offers neither cheaply, and there only the delete runs. */
@@ -293,7 +321,7 @@ async function stopDaemon(pid: number | undefined): Promise<void> {
   } catch {
     // already gone
   }
-  await waitFor('the daemon to exit', 5000, () => !pidAlive(pid)).catch(() => 0)
+  await waitFor('the daemon to exit', 5000, () => !pidAlive(pid)).catch(() => undefined)
   if (pidAlive(pid)) {
     try {
       process.kill(pid, 'SIGKILL')
