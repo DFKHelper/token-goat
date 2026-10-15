@@ -118,9 +118,9 @@ fn execute(command: &[OsString], epoch: u64, deadline: Instant) -> Result<(serde
             Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(2)),
         }
     };
+    // The payload arrived, so this start has an identity: stamp it begun before any relay work, so a start the 3 s budget cuts off anywhere after this point is delivered by the first tool call (a start that settles replaces the stamp with its own marker).
+    crate::session_begun::stamp(&payload);
     if command.len() < 5 || Instant::now() >= work_deadline {
-        // The payload arrived, so this start has an identity: stamp it begun and the first tool call delivers it.
-        crate::session_begun::stamp(&payload);
         return Err("startup command unavailable or insufficient time for process-tree cleanup".into());
     }
     let mut args = vec![std::env::current_exe().map_err(|e| e.to_string())?.into_os_string(), "--session-start-owner-v1".into(), epoch.to_string().into()];

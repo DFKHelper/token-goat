@@ -205,10 +205,10 @@ function wiringFor(c: HookPayloadCase): Wiring {
   return any
 }
 
-function runShim(c: HookPayloadCase, sid: string): Promise<{ stdout: string; exit: number | null; stderr: string }> {
+function runShim(c: HookPayloadCase, sid: string, over: { entry?: string; extraArgs?: string[] } = {}): Promise<{ stdout: string; exit: number | null; stderr: string }> {
   const { shim, entry } = wiringFor(c)
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [shim, c.event, entry], { cwd: sb.proj, env: caseEnv(c, sid), stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(process.execPath, [shim, c.event, over.entry ?? entry, ...(over.extraArgs ?? [])], { cwd: sb.proj, env: caseEnv(c, sid), stdio: ['pipe', 'pipe', 'pipe'] })
     const out: Buffer[] = []
     let stderr = ''
     child.stdout.on('data', (d: Buffer) => out.push(d))
@@ -232,8 +232,9 @@ async function runV2(c: HookPayloadCase, sid: string): Promise<{ out: string[]; 
 const TRIPWIRE = [process.execPath, '-e', 'process.stdout.write("TRIPWIRE");process.exit(99)']
 
 /** The native client's argv for the case, built by the installers' own builders in src/native_hook.ts from the same wiring the shim runs with: `wired` is the whole command line an installer writes (nativeHookExecParts), `tripwire` the same flags (nativeHookFlags) in front of {@link TRIPWIRE}. */
-function nativeArgs(c: HookPayloadCase, tail: 'wired' | 'tripwire'): string[] {
-  const { shim, entry } = wiringFor(c)
+function nativeArgs(c: HookPayloadCase, tail: 'wired' | 'tripwire', entryOverride?: string): string[] {
+  const { shim, entry: wiredEntry } = wiringFor(c)
+  const entry = entryOverride ?? wiredEntry
   if (tail === 'tripwire') return [...nativeHookFlags(c.harness, c.event, entry, shim), '--', ...TRIPWIRE]
   const parts = nativeHookExecParts(bin, c.harness, shim, c.event, entry)
   if (parts === undefined) throw new Error('nativeHookExecParts returned nothing')
@@ -258,6 +259,29 @@ function runNative(c: HookPayloadCase, sid: string, args: readonly string[]): Pr
 
 /** Where the shim's stderr and the native client's differ, by case, which the last test in the suite requires to be none. */
 const stderrDiffs: Array<{ id: string; shim: string; native: string }> = []
+
+/** Every string a hook's JSON stdout carries, JSON escaping removed; non-JSON yields none. */
+function carriedStrings(stdout: string): string[] {
+  const out: string[] = []
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') out.push(v)
+    else if (Array.isArray(v)) v.forEach(walk)
+    else if (v !== null && typeof v === 'object') Object.values(v).forEach(walk)
+  }
+  try { walk(JSON.parse(stdout)) } catch { /* not JSON: carries nothing */ }
+  return out
+}
+
+/** The first tool call the Copilot hooks file wires after a start: the case a cut-off start's owed context rides on. */
+const FIRST_TOOL_CALL = HARNESS_HOOK_PAYLOADS.find((c) => c.harness === 'copilot_cli' && c.event === 'postToolUse' && c.name === 'view result') as HookPayloadCase
+
+/** A start that was cut off must not lose its context: the first tool call of that session, through the same adapter, carries every string the resident answered the start with. An always-fail-open product delivers nothing here and fails. */
+function expectOwedDelivered(firstCall: { stdout: string; stderr: string }, resident: string, where: string): void {
+  const owed = carriedStrings(resident)
+  expect(owed.length, `${where}: the resident's start answer carries no context to be owed`).toBeGreaterThan(0)
+  const delivered = carriedStrings(firstCall.stdout).join('\n')
+  for (const text of owed) expect(delivered, `${where}: first tool call after a cut-off start (stdout ${firstCall.stdout}, stderr ${firstCall.stderr})`).toContain(text)
+}
 
 /** What the shim itself must answer for the cases that carry each adapter's distinctive behaviour, so the equality above cannot pass by both sides collapsing to the same no-op. HAND-DERIVED from each shim's documented contract (the comments in src/bridges/*.ts), not from either run's output. */
 const ANCHORS: Record<string, { stdout: string | RegExp; exit?: number }> = {
@@ -310,7 +334,20 @@ describe('a v2 request answers exactly as the installed shim', () => {
   let n = 0
   for (const c of HARNESS_HOOK_PAYLOADS) {
     const id = n++
+    // A Copilot start runs the real helper under a fixed 3 s budget, so how it ends depends on the machine; the start has its own cases below, each of which fixes which side of the budget it is on.
+    const boundedStartup = c.harness === 'copilot_cli' && c.event === 'sessionStart'
     it(`${c.harness} ${c.event}: ${c.name}`, async () => {
+      if (boundedStartup) {
+        // Startup must neither dispatch to the resident nor execute this invalid wrapped command, even when the resident is available.
+        await waitIdle(endpoint)
+        const before = (await slotStatus(endpoint, key))?.served
+        const native = await runNative(c, `nat-tripwire-${c.harness}-${id}`, nativeArgs(c, 'tripwire'))
+        await waitIdle(endpoint)
+        expect({ stdout: native.stdout, exit: native.exit }).toEqual({ stdout: '{}', exit: 0 })
+        expect(native.stderr).toContain('SessionStart failed open: installed startup command unavailable')
+        expect((await slotStatus(endpoint, key))?.served, 'startup tripwire reached the resident').toBe(before)
+        return
+      }
       // Each run gets its own session, so neither sees what the other left in session state (a repeated denial answers with a shorter refusal).
       let shim = { stdout: '', exit: null as number | null, stderr: '' }
       for (let call = 1; call <= (c.repeat ?? 1); call++) {
@@ -327,17 +364,8 @@ describe('a v2 request answers exactly as the installed shim', () => {
           const native = await runNative(c, `nat-${label}-${c.harness}-${id}`, nativeArgs(c, label))
           await waitIdle(endpoint)
           const after = (await slotStatus(endpoint, key))?.served
-          const boundedStartup = c.harness === 'copilot_cli' && c.event === 'sessionStart'
-          if (boundedStartup && label === 'tripwire') {
-            // Startup must neither dispatch to the resident nor execute this
-            // invalid wrapped command, even when the resident is available.
-            expect({ stdout: native.stdout, exit: native.exit }).toEqual({ stdout: '{}', exit: 0 })
-            expect(native.stderr).toContain('SessionStart failed open: installed startup command unavailable')
-            expect(after, 'startup tripwire reached the resident').toBe(before)
-            continue
-          }
           expect({ label, call, stdout: native.stdout, exit: native.exit }, native.stderr).toEqual({ label, call, stdout: shim.stdout, exit: shim.exit })
-          expect(after, `${label}: unexpected native dispatch`).toBe(boundedStartup ? before : (before ?? NaN) + 1)
+          expect(after, `${label}: unexpected native dispatch`).toBe((before ?? NaN) + 1)
           if (native.stderr !== shim.stderr) stderrDiffs.push({ id: `${c.harness}|${c.name}|${label}|${call}`, shim: shim.stderr, native: native.stderr })
         }
       }
@@ -359,6 +387,54 @@ describe('a v2 request answers exactly as the installed shim', () => {
   it('the native client writes the same stderr as the shim for every case', () => {
     expect(stderrDiffs).toEqual([])
   })
+})
+
+/** The Copilot start payload the cases below drive. */
+const START = HARNESS_HOOK_PAYLOADS.find((c) => c.harness === 'copilot_cli' && c.event === 'sessionStart' && c.name === 'session start') as HookPayloadCase
+
+/** The resident's own answer to the start, the text every other path must deliver. */
+async function residentStartAnswer(sid: string): Promise<string> {
+  const v2 = await runV2(START, sid)
+  const answer = v2.out.join('') + v2.stdout
+  expect(carriedStrings(answer).length, 'the resident answers the start with context').toBeGreaterThan(0)
+  return answer
+}
+
+describe('a Copilot start and the 3 s budget', () => {
+  // A start that finishes inside the budget is not a case here: the budget is a fixed wall clock the shim and the native owner both enforce, so whether a completing start makes it depends on the machine and no assertion on it can be made speed-independent. Both cut-off cases below are fixed by construction, and the first tool call carries the resident's strings.
+  it('a shim start cut off by its deadline answers {} and the first tool call delivers what the resident answered', async () => {
+    await waitIdle(endpoint)
+    const resident = await residentStartAnswer('v2-start-shim-cut')
+    // The inherited deadline is the moment the shim is started, so the budget is spent before the helper can run, whatever the machine's speed. Provenance: FORMAT-DERIVED from the --session-start-deadline=<epoch> argument src/bridges/copilot_cli.ts parses.
+    const cut = await runShim(START, 'start-cut-shim', { extraArgs: [`--session-start-deadline=${Date.now()}`] })
+    expect({ stdout: cut.stdout, exit: cut.exit }).toEqual({ stdout: '{}', exit: 0 })
+    expect(cut.stderr).toContain('SessionStart failed open: ')
+    expectOwedDelivered(await runShim(FIRST_TOOL_CALL, 'start-cut-shim'), resident, 'shim')
+  }, 60_000)
+
+  it('a native start cut off by the 3 s budget answers {} and the first tool call delivers what the resident answered', async () => {
+    await waitIdle(endpoint)
+    const resident = await residentStartAnswer('v2-start-native-cut')
+    await waitIdle(endpoint)
+    const before = (await slotStatus(endpoint, key))?.served
+    // A command that answers nothing until released, so the budget ends the start in every run; the release is a file the command polls, written once the client has exited, so no process outlives the case.
+    const release = path.join(sb.base, 'start-cut-native.release')
+    // Provenance: HAND-DERIVED. A script written for this case, not captured output: it answers nothing, polls for the release file named in its first argument and exits when it appears.
+    const hang = 'const f = process.argv[1]; setInterval(() => { if (require("node:fs").existsSync(f)) process.exit(0) }, 50)'
+    const { shim, entry } = wiringFor(START)
+    const args = [...nativeHookFlags(START.harness, START.event, entry, shim), '--', process.execPath, '-e', hang, release, 'unanswered']
+    let cut: { stdout: string; exit: number | null; stderr: string }
+    try {
+      cut = await runNative(START, 'start-cut-native', args)
+    } finally {
+      fs.writeFileSync(release, 'released')
+    }
+    expect({ stdout: cut.stdout, exit: cut.exit }).toEqual({ stdout: '{}', exit: 0 })
+    expect(cut.stderr).toContain('SessionStart failed open: ')
+    await waitIdle(endpoint)
+    expect((await slotStatus(endpoint, key))?.served, 'a cut-off start reached the resident').toBe(before)
+    expectOwedDelivered(await runNative(FIRST_TOOL_CALL, 'start-cut-native', nativeArgs(FIRST_TOOL_CALL, 'wired')), resident, 'native')
+  }, 60_000)
 })
 
 function fixture(harness: PayloadHarness, name: string, sid: string): string {

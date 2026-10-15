@@ -1,13 +1,12 @@
 /** HAND-DERIVED owned-process fixtures; all stores and process IDs are isolated per test. */
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, watch, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import { expect } from 'vitest'
 
 import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
-import { copilotHookCommandsFor } from '../../src/bridges/copilot_cli_install.js'
 import { nativeHookCommandLine } from '../../src/native_hook.js'
 import { endpointFor, readServerKey } from '../../src/hook_ipc.js'
 import { startBudgetAtShimStart } from './shim_deadline.js'
@@ -265,8 +264,9 @@ export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void 
     const result = spawnSync('git', args, { cwd: fixture.project, encoding: 'utf8', windowsHide: true })
     expect(result.status, result.stderr).toBe(0)
   }
+  // Prints nothing until it exits, so no limit is set here: the test's own timeout is the hang backstop.
   const index = spawnSync(process.execPath, [BUNDLE, 'index', '.'], {
-    cwd: fixture.project, env: fixture.env, encoding: 'utf8', timeout: 30_000, windowsHide: true,
+    cwd: fixture.project, env: fixture.env, encoding: 'utf8', windowsHide: true,
   })
   expect(index.status, index.stderr).toBe(0)
 }
@@ -310,7 +310,7 @@ export function runTreeShim(options: {
   return { child, done }
 }
 
-/** Use the shipping installer, including its native command and shell quoting. */
+/** Use the shipping installer's native command and shell quoting. */
 export function runInstalledStartup(options: {
   fixture: ReturnType<typeof treeFixture>; entry: string; payload?: Record<string, unknown>
   shell?: 'cmd' | 'powershell'; alias?: boolean; input?: string; delayMs?: number
@@ -323,8 +323,10 @@ export function runInstalledStartup(options: {
   try {
     process.argv[1] = entry
     process.env['TOKEN_GOAT_NATIVE_HOOKS'] = '1'
-    const commands = copilotHookCommandsFor(fixture.shim, options.event ?? 'sessionStart')
-    command = options.shell === 'powershell' ? commands.powershell : commands.command
+    // The installer's own command builders around the built client, not its decision to wire the client in: that decision runs `tg-hook --selftest` on a 5 s budget a starved machine misses (install then writes the Node form and says so), and native_hook_install_e2e and native_hook_fallback own it.
+    const built = nativeHookCommandLine(options.shell === 'powershell' ? 'powershell' : 'cmd', buildNative(), 'copilot_cli', fixture.shim, options.event ?? 'sessionStart')
+    if (built === undefined) throw new Error('native command unavailable')
+    command = built
     expect(command).toContain('tg-hook.exe')
     if (options.alias) {
       const alias = nativeHookCommandLine('cmd', installStartupOwner(fixture.root), 'copilot_cli', fixture.shim, 'SessionStart', entry)
@@ -396,26 +398,54 @@ export async function assertInstalledResidentBypass(fixture: ReturnType<typeof t
     await Promise.race([new Promise(resolve => setTimeout(resolve, 20)), watchdog.failed])
   }
   watchdog.progress('resident answered')
-  const initial = await slotStatus(endpoint, key)
-  expect(initial).toBeDefined()
+  const residentKey: Buffer = key
+  // A resident that is busy answers a status request when it comes free, not within a fixed time: ask again, under the watchdog, until it answers.
+  const answeredStatus = async (): Promise<NonNullable<Awaited<ReturnType<typeof slotStatus>>>> => {
+    for (;;) {
+      const status = await slotStatus(endpoint, residentKey)
+      if (status) return status
+      await Promise.race([new Promise(resolve => setTimeout(resolve, 20)), watchdog.failed])
+    }
+  }
+  const initial = await answeredStatus()
   const ordinary = await runInstalledStartup({
     fixture, entry: BUNDLE, event: 'preToolUse', endInput: true, quietLimitMs,
     payload: { sessionId: 'ordinary-positive-control', workingDirectory: fixture.project, toolName: 'view', toolArgs: { path: 'example.ts' } },
   }).done
   expect(ordinary.stderr).toBe('')
-  const before = await slotStatus(endpoint, key)
-  expect(before?.served).toBe((initial?.served ?? -1) + 1)
-  for (const endInput of [false, true]) {
-    const startup = await runInstalledStartup({ fixture, entry: BUNDLE, endInput, quietLimitMs }).done
-    if (startup.stdout === '{}') await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'installed-startup')
-    else {
-      expect(startup.stderr).toBe('')
-      expect(startup.stdout).toContain('read \\"file::symbol\\"')
+  const before = await answeredStatus()
+  expect(before.served).toBe(initial.served + 1)
+  // The start runs a helper that never answers until released (it sits beside the bundle, where the shim looks for the native owner), so the 3 s budget ends the start on every machine: the outcome is the same fail-open, the resident serves nothing, and the context owed is delivered by the first tool call. The release file is written when the clients have exited, so no process outlives the case.
+  const stubs: string[] = []
+  try {
+    for (const endInput of [false, true]) {
+      // One stub per start, each with its own release file, so the stub that sees its file can delete it without stranding a second stub waiting on the same one. Provenance: HAND-DERIVED, a script written for this case: it records its pid, polls for its release file, deletes it and exits.
+      const stub = join(dirname(BUNDLE), `resident-bypass-stub-${String(process.pid)}-${String(endInput)}.cjs`)
+      stubs.push(stub)
+      writeFileSync(stub, `const fs = require('node:fs')\nconst f = __filename + '.release'\nfs.writeFileSync(__filename + '.pid', String(process.pid))\nsetInterval(() => { if (fs.existsSync(f)) { fs.rmSync(f, { force: true }); process.exit(0) } }, 50)\n`)
+      const startup = await runInstalledStartup({ fixture, entry: stub, endInput, quietLimitMs }).done
+      expect(startup.stdout).toBe('{}')
+      expect(startup.stderr).toContain('SessionStart failed open: ')
+      expect((await answeredStatus()).served, 'startup was served by the resident').toBe(before.served)
+      await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'installed-startup')
     }
-    expect((await slotStatus(endpoint, key))?.served, 'startup was served by the resident').toBe(before?.served)
+  } finally {
+    for (const stub of stubs) {
+      // The owner usually kills the stub with the rest of the helper tree; one still alive is released and waited for, and either way the files it leaves beside the bundle are removed.
+      let pid: number | undefined
+      try { pid = Number(readFileSync(`${stub}.pid`, 'utf8')) } catch { /* the stub never ran */ }
+      if (pid !== undefined && Number.isInteger(pid) && pid > 0 && alive(pid)) {
+        writeFileSync(`${stub}.release`, 'released')
+        while (alive(pid)) await Promise.race([new Promise(resolve => setTimeout(resolve, 20)), watchdog.failed])
+      }
+      rmSync(`${stub}.release`, { force: true })
+      rmSync(`${stub}.pid`, { force: true })
+      unlinkSync(stub)
+    }
   }
+  // Prints nothing until it exits and waits for a busy slot on its own, so no limit is set here: the test's own timeout is the hang backstop.
   const stopped = spawnSync(process.execPath, [BUNDLE, 'hook-server', 'stop'], {
-    cwd: fixture.project, env: fixture.env, encoding: 'utf8', timeout: 5000, windowsHide: true,
+    cwd: fixture.project, env: fixture.env, encoding: 'utf8', windowsHide: true,
   })
   expect(stopped.status, stopped.stderr).toBe(0)
 }

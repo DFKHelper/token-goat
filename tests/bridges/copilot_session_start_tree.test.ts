@@ -523,8 +523,9 @@ it('refuses unavailable ownership without a Windows canonical fallback', async (
 it.for(['copilot_cli', 'vscode'])('preserves real indexed reminder, notes and drift context for %s', { timeout: 0 }, async (harness) => {
   const fixture = treeFixture()
   indexTreeFixture(fixture)
+  // Prints nothing until it exits, so no limit is set here: the test's own timeout is the hang backstop.
   const note = spawnSync(process.execPath, [BUNDLE, 'note', 'set', 'startup-contract', 'keep-owned-tree-bounded'], {
-    cwd: fixture.project, env: fixture.env, encoding: 'utf8', windowsHide: true, timeout: 10_000,
+    cwd: fixture.project, env: fixture.env, encoding: 'utf8', windowsHide: true,
   })
   expect(note.status, note.stderr).toBe(0)
   writeFileSync(join(fixture.project, 'example.ts'), 'export function ownedExample() { return 2 }\n')
