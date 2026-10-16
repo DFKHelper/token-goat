@@ -41,10 +41,13 @@ to_wsl_path() {
 
 # The Linux-side half. Positional values arrive as a generated header so nothing needs quoting through wsl.exe.
 {
-    printf 'TAR=%q\nBUNDLE=%q\nNAMES=%q\nNODE_VERSION=%q\nNODE_MAJOR_MIN=%q\nNODE_MIRROR=%q\nSKIP_STATUS=%q\n' \
-        "$(to_wsl_path "$TMPD/src.tar")" "$(to_wsl_path "$TMPD/history.bundle")" "$(to_wsl_path "$TMPD/confidential-names.txt")" "$NODE_VERSION" "$NODE_MAJOR_MIN" "$NODE_MIRROR" "$SKIP_STATUS"
+    printf 'TAR=%q\nBUNDLE=%q\nNAMES=%q\nNODE_VERSION=%q\nNODE_MAJOR_MIN=%q\nNODE_MIRROR=%q\nSKIP_STATUS=%q\nPIDFILE=%q\n' \
+        "$(to_wsl_path "$TMPD/src.tar")" "$(to_wsl_path "$TMPD/history.bundle")" "$(to_wsl_path "$TMPD/confidential-names.txt")" "$NODE_VERSION" "$NODE_MAJOR_MIN" "$NODE_MIRROR" "$SKIP_STATUS" "$(to_wsl_path "$TMPD/inner.pid")"
     cat <<'INNER'
 set -euo pipefail
+
+# The Windows side reads this pid to end the whole Linux process tree if the push is interrupted.
+echo $$ >"$PIDFILE"
 
 skip() {
     echo "wsl-test: $1, skipping"
@@ -186,8 +189,26 @@ INNER
 } >"$TMPD/inner.sh"
 
 status=0
-# A login shell gives the inner script the user's PATH; exec leaves ~/.bash_logout out of the exit status (Ubuntu's ends in a failing test).
-wsl.exe -d "$DISTRO" -- bash -lc "exec bash '$(to_wsl_path "$TMPD/inner.sh")'" || status=$?
+# Kill the Linux tree rooted at the pid the inner script recorded, children first. Bounded to that one tree.
+kill_linux_tree() {
+    [[ -s "$TMPD/inner.pid" ]] || return 0
+    wsl.exe -d "$DISTRO" -- bash -c 'kt() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do kt "$c"; done; kill -KILL "$1" 2>/dev/null || true; }; kt "$(cat "$1")"' _ "$(to_wsl_path "$TMPD/inner.pid")" &>/dev/null || true
+}
+WSL_PID=""
+# owner: this script; the trap runs when run-all-checks.sh sends TERM or INT on an interrupted push, and wsl.exe is waited on below so the trap fires at once.
+on_signal() {
+    trap - INT TERM
+    kill_linux_tree
+    if [[ -n "$WSL_PID" ]]; then kill "$WSL_PID" 2>/dev/null || true; fi
+    rm -rf -- "$TMPD"
+    exit 143
+}
+trap on_signal INT TERM
+# A login shell gives the inner script the user's PATH; exec leaves ~/.bash_logout out of the exit status (Ubuntu's ends in a failing test). Backgrounded and waited on so a signal reaches the trap while the suite runs.
+wsl.exe -d "$DISTRO" -- bash -lc "exec bash '$(to_wsl_path "$TMPD/inner.sh")'" &
+WSL_PID=$!
+wait "$WSL_PID" || status=$?
+trap - INT TERM
 rm -rf -- "$TMPD"
 if [[ "$status" -eq "$SKIP_STATUS" ]]; then
     exit 0
