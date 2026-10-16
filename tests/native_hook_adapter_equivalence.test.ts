@@ -422,7 +422,12 @@ describe('a Copilot start and the 3 s budget', () => {
     // Provenance: HAND-DERIVED. A script written for this case, not captured output: it answers nothing, polls for the release file named in its first argument and exits when it appears.
     const hang = 'const f = process.argv[1]; setInterval(() => { if (require("node:fs").existsSync(f)) process.exit(0) }, 50)'
     const { shim, entry } = wiringFor(START)
-    const args = [...nativeHookFlags(START.harness, START.event, entry, shim), '--', process.execPath, '-e', hang, release, 'unanswered']
+    // Only the Windows client enforces the budget itself (startup_entry.rs, its owner job); the POSIX client hands the command its stdin and the deadline and the shim cuts the start off, so a bare hanging command there is never cut and the case waited for its own timeout. There the command is the installed shim over an entry that hangs. Provenance: HAND-DERIVED, an entry written for this case that polls for the same release file and exits when it appears.
+    const hangEntry = path.join(sb.base, 'start-cut-native-entry.cjs')
+    fs.writeFileSync(hangEntry, `const f = ${JSON.stringify(release)}; setInterval(() => { if (require("node:fs").existsSync(f)) process.exit(0) }, 50)\n`, 'utf8')
+    const args = process.platform === 'win32'
+      ? [...nativeHookFlags(START.harness, START.event, entry, shim), '--', process.execPath, '-e', hang, release, 'unanswered']
+      : nativeArgs(START, 'wired', hangEntry)
     let cut: { stdout: string; exit: number | null; stderr: string }
     try {
       cut = await runNative(START, 'start-cut-native', args)

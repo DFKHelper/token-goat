@@ -30,7 +30,8 @@ import {
   uninstallCopilotCli,
 } from '../src/bridges/copilot_cli_install.js'
 import { writeInProcessFake } from './helpers/copilot_inprocess_fake.js'
-import { installStartupOwner } from './helpers/copilot_session_start_tree.js'
+import { runNodeAsync } from './helpers/copilot_shim_run.js'
+import { assertOwedDeliveredOnce, assertTreeDead, cleanupTrees, DEADLINE_FAIL_OPEN, installStartupOwner, ownedRoots, premiseBranch, runTreeShim, treeFixture } from './helpers/copilot_session_start_tree.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
 import { VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END } from '../src/bridges/visualstudio_install.js'
 import { HOOK_EVENTS } from '../src/types.js'
@@ -586,18 +587,10 @@ describe('copilot-instructions.md routing block', () => {
 
 // --- shim script (COPILOT_CLI_HOOK_SCRIPT) behavior --- Mirrors tests/bridges/shims.test.ts's approach: run the embedded script as a standalone Node process exactly as Copilot CLI would (argv[2] = event name, stdin = the hook payload JSON), and inspect what it writes to stdout.
 
-const tempDirs: string[] = []
-
-afterEach(() => {
-  while (tempDirs.length > 0) {
-    const dir = tempDirs.pop()
-    if (dir) fs.rmSync(dir, { recursive: true, force: true })
-  }
-})
-
+// Registered as an owned root, not removed by a hook of its own: after-hooks run in reverse order, so a separate remover registered after cleanupTrees ran first and hit EPERM on a directory a shim descendant still held; cleanupTrees kills those processes, then deletes every owned root. It is hooked inside the shim describe below: file-scope it also ran after the 39 installer tests that start no process, each paying two PowerShell process listings (about 4 s apiece on this machine).
 function mkIsolated(): string {
   const dir = fs.mkdtempSync(path.join(tmpdir(), 'tg-copilot-shim-test-'))
-  tempDirs.push(dir)
+  ownedRoots.push(dir)
   return dir
 }
 
@@ -613,6 +606,15 @@ function runShim(eventName: string, stdin: string, cwd: string, env?: NodeJS.Pro
     env: shimEnv,
   })
   return res.stdout ?? ''
+}
+
+/** runShim for a shim run that may start descendants (SessionStart runs a native owner and a hook child): the exit is awaited with no timer of this test's choosing, and cleanupTrees kills the whole tree on every path. */
+async function runShimAsync(eventName: string, stdin: string, cwd: string, env?: NodeJS.ProcessEnv): Promise<string> {
+  const scriptPath = path.join(cwd, 'shim.js')
+  const { [SHIM_ENTRY_ENV]: entryPath, ...shimEnv } = env ?? process.env
+  fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
+  const res = await runNodeAsync({ args: entryPath === undefined ? [scriptPath, eventName] : [scriptPath, eventName, entryPath], cwd, stdin, env: shimEnv })
+  return res.stdout
 }
 
 /** Key a test env uses to hand runShim the shim's argv[3] (the token-goat entry path); runShim strips it before spawning, so the shim never sees it. */
@@ -672,6 +674,8 @@ function writeFakeEntry(cwd: string): { entryPath: string; capturePath: string }
 }
 
 describe('COPILOT_CLI_HOOK_SCRIPT', () => {
+  afterEach(cleanupTrees, 0)
+
   it("invokes the baked entry path (argv[3]) directly via process.execPath, bypassing PATH resolution entirely, when the shim receives one", () => {
     const cwd = mkIsolated()
     const { entryPath, capturePath } = writeFakeEntry(cwd)
@@ -706,39 +710,41 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     }
   })
 
-  // sessionStart is the only channel that reaches the model before it chooses its first read tool, so it is where token-goat's command-routing reminder has to land. It used to be a hard-coded early return, justified in a comment by the claim that token-goat had no session_start handler -- untrue, and the reason Copilot CLI sessions alone were never told token-goat exists. Verified live against Copilot CLI 1.0.77 before wiring: with the hook registered, a session asked for a canary that appears only in the reminder answered "131072, boundSymbolBody"; with sessionStart removed and nothing else changed, the same question in the same directory answered "ABSENT".
-  it('forwards sessionStart to the real session_start handler instead of short-circuiting it', () => {
-    const cwd = mkIsolated()
-    const { entryPath, capturePath } = writeFakeEntry(cwd)
-    const scriptPath = path.join(cwd, 'shim.js')
-    fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
-    const res = spawnSync(process.execPath, [scriptPath, 'sessionStart', entryPath], {
-      cwd,
-      input: JSON.stringify({ sessionId: 's1', cwd: '/tmp' }),
-      encoding: 'utf8',
-      timeout: 60000,
-      env: process.env,
-    })
-    expect(res.status).toBe(0)
+  // sessionStart is the only channel that reaches the model before it chooses its first read tool, so it is where token-goat's command-routing reminder has to land. It used to be a hard-coded early return, justified in a comment by the claim that token-goat had no session_start handler -- untrue, and the reason Copilot CLI sessions alone were never told token-goat exists. Verified live against Copilot CLI 1.0.77 before wiring: with the hook registered, a session asked for a canary that appears only in the reminder answered "131072, boundSymbolBody"; with sessionStart removed and nothing else changed, the same question in the same directory answered "ABSENT". The 3 s start budget makes whether the fake entry ran before the shim failed open depend on the machine, so both outcomes are accepted, each with its own proof: the capture file with the mapped event name, or a deadline fail-open on stderr plus the owed start delivered once. Provenance: HAND-DERIVED, the entry is written for this case and records its own argv.
+  it('forwards sessionStart to the real session_start handler instead of short-circuiting it', async (ctx) => {
+    const fixture = treeFixture()
+    const entry = path.join(fixture.root, 'fake-entry.js')
+    const capturePath = path.join(fixture.root, 'captured-argv.json')
+    fs.writeFileSync(entry, `require('fs').writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(process.argv.slice(2)))\nprocess.stdout.write('{}')\n`, 'utf8')
+    const sessionId = 'forwards-session-start'
+    const result = await runTreeShim({ fixture, entry, quietLimitMs: 20_000, payload: { sessionId, cwd: fixture.project } }).done
+    assertTreeDead(fixture)
+    if (!(await premiseBranch(ctx, fixture, result, [capturePath], sessionId))) return
     // The proof the early return is gone: token-goat was actually invoked, with the mapped internal event name. A behavioural '{}' assertion could not distinguish "no-op" from "invoked and had nothing to say".
-    expect(fs.existsSync(capturePath)).toBe(true)
     expect(JSON.parse(fs.readFileSync(capturePath, 'utf8')) as string[]).toEqual([
       'hook',
       'session_start',
     ])
-  })
+  }, 0)
 
-  it("surfaces the session_start handler's context to Copilot as additionalContext", () => {
-    const cwd = mkIsolated()
-    const env = withFakeHookOutput(
-      cwd,
-      JSON.stringify({
-        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ROUTING GATE' },
-      }),
-    )
-    const stdout = runShim('sessionStart', JSON.stringify({ sessionId: 's1', cwd }), cwd, env)
-    expect(JSON.parse(stdout) as Record<string, unknown>).toEqual({ additionalContext: 'ROUTING GATE' })
-  })
+  // The shim and the native owner both enforce a fixed 3 s wall clock, so whether a start finishes inside it depends on the machine and no assertion on that can be speed-independent: the context arrives inline, or the start fails open with `{}` and the deadline named on stderr and the first tool call delivers the owed start once. Provenance: HAND-DERIVED, the helper prints one fixed response and the diagnostic is read off failOpenSessionStart in src/bridges/copilot_session_start.ts.
+  it("surfaces the session_start handler's context to Copilot as additionalContext", async (ctx) => {
+    const fixture = treeFixture()
+    const entry = path.join(fixture.root, 'fake-hook-output.js')
+    const response = JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'ROUTING GATE' } })
+    fs.writeFileSync(entry, `process.stdout.write(${JSON.stringify(response)})\n`, 'utf8')
+    const sessionId = 'surfaces-session-start-context'
+    const result = await runTreeShim({ fixture, entry, quietLimitMs: 20_000, payload: { sessionId, cwd: fixture.project } }).done
+    assertTreeDead(fixture)
+    if (result.stdout === '{}') {
+      await ctx.annotate('branch: weak (the 3 s budget ended the start)')
+      expect(result.stderr, 'an empty answer without a deadline fail-open').toMatch(DEADLINE_FAIL_OPEN)
+      await assertOwedDeliveredOnce(fixture, 'copilot_cli', sessionId)
+    } else {
+      await ctx.annotate('branch: strong (delivered inline)')
+      expect(JSON.parse(result.stdout) as Record<string, unknown>).toEqual({ additionalContext: 'ROUTING GATE' })
+    }
+  }, 0)
 
   it('still emits {} for sessionStart when the handler produces no context, rather than a stray key', () => {
     const cwd = mkIsolated()
@@ -1022,13 +1028,13 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(parsed.additionalContext).toBeUndefined()
   })
 
-  it('does not emit modifiedResult for sessionStart even when the response carries updatedToolOutput', () => {
+  it('does not emit modifiedResult for sessionStart even when the response carries updatedToolOutput', async () => {
     const cwd = mkIsolated()
     const env = withFakeHookOutput(
       cwd,
       JSON.stringify({ hookSpecificOutput: { updatedToolOutput: 'should never surface here' } }),
     )
-    const stdout = runShim('sessionStart', JSON.stringify({ sessionId: 's1', cwd: '/tmp' }), cwd, env)
+    const stdout = await runShimAsync('sessionStart', JSON.stringify({ sessionId: 's1', cwd: '/tmp' }), cwd, env)
     const parsed = JSON.parse(stdout)
     expect(parsed.modifiedResult).toBeUndefined()
     expect(parsed.additionalContext).toBeUndefined()
@@ -1273,32 +1279,31 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(canonicalFor('bash', { command: 'ls' })).not.toHaveProperty('error')
   })
 
-  it('never propagates an uncaught exception or a non-zero exit code, even for adversarial/malformed payloads the per-step guards were not written against', () => {
+  // One test per payload, so each one is bounded on its own and a slow machine cannot sum six process starts into one test's budget.
+  const adversarialStdins = [
+    '[1,2,3]',
+    '"just a string"',
+    '42',
+    'null',
+    JSON.stringify({ toolName: 'bash', toolArgs: { a: { b: { c: { d: { e: 'deeply nested' } } } } } }),
+    JSON.stringify({ toolName: { nested: 'object as tool name' }, toolArgs: [] }),
+  ]
+
+  it.each(adversarialStdins)('never propagates an uncaught exception or a non-zero exit code, even for the adversarial/malformed payload %s the per-step guards were not written against', (stdin) => {
     const cwd = mkIsolated()
     const scriptPath = path.join(cwd, 'shim.js')
     fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
     const env = withFakeTokenGoat(cwd, JSON.stringify({ hookSpecificOutput: { updatedInput: null } }))
 
-    const adversarialStdins = [
-      '[1,2,3]',
-      '"just a string"',
-      '42',
-      'null',
-      JSON.stringify({ toolName: 'bash', toolArgs: { a: { b: { c: { d: { e: 'deeply nested' } } } } } }),
-      JSON.stringify({ toolName: { nested: 'object as tool name' }, toolArgs: [] }),
-    ]
-
-    for (const stdin of adversarialStdins) {
-      const res = spawnSync(process.execPath, [scriptPath, 'preToolUse'], {
-        cwd,
-        input: stdin,
-        encoding: 'utf8',
-        timeout: 60000,
-        env,
-      })
-      expect(res.status).toBe(0)
-      expect(() => JSON.parse(res.stdout ?? '')).not.toThrow()
-    }
+    const res = spawnSync(process.execPath, [scriptPath, 'preToolUse'], {
+      cwd,
+      input: stdin,
+      encoding: 'utf8',
+      timeout: 60000,
+      env,
+    })
+    expect(res.status).toBe(0)
+    expect(() => JSON.parse(res.stdout ?? '')).not.toThrow()
   })
 
   it('parses a JSON-encoded-string toolArgs (github/copilot-cli#3349) into an object instead of forwarding a raw string', () => {
@@ -1378,7 +1383,8 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     expect(captured.tracestate).toBe('rojo=1')
   })
 
-  it('runs cleanly in projects with "type": "module" in package.json (both .cjs and .js forwarder)', () => {
+  /** A "type": "module" project with the shim installed into its hooks dir, plus the payload both shim files are run with. */
+  function esmProject(): { cwd: string; cjsPath: string; legacyPath: string; payload: string } {
     const cwd = mkIsolated()
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 'esm-project', type: 'module' }), 'utf8')
     const hooksDir = path.join(cwd, '.github', 'hooks')
@@ -1397,25 +1403,21 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
       toolName: 'powershell',
       toolArgs: { command: 'dir' },
     })
+    return { cwd, cjsPath: res.scriptPath, legacyPath, payload }
+  }
 
-    // 1. Primary .cjs shim
-    const outCjs = spawnSync(process.execPath, [res.scriptPath, 'preToolUse'], {
-      cwd,
-      input: payload,
-      encoding: 'utf8',
-      timeout: 10000,
-    })
+  // The exit is awaited, not cut off by a timer this test chose: a start that a loaded machine stretches past 10 s is slow, not wrong, and the per-test vitest timeout is the one bound.
+  it('runs cleanly in projects with "type": "module" in package.json (the .cjs shim)', async () => {
+    const { cwd, cjsPath, payload } = esmProject()
+    const outCjs = await runNodeAsync({ args: [cjsPath, 'preToolUse'], cwd, stdin: payload })
     expect(outCjs.status).toBe(0)
     expect(outCjs.stderr).toBe('')
     expect(() => JSON.parse(outCjs.stdout.trim())).not.toThrow()
+  })
 
-    // 2. Legacy .js forwarder
-    const outJs = spawnSync(process.execPath, [legacyPath, 'preToolUse'], {
-      cwd,
-      input: payload,
-      encoding: 'utf8',
-      timeout: 10000,
-    })
+  it('runs cleanly in projects with "type": "module" in package.json (the legacy .js forwarder)', async () => {
+    const { cwd, legacyPath, payload } = esmProject()
+    const outJs = await runNodeAsync({ args: [legacyPath, 'preToolUse'], cwd, stdin: payload })
     expect(outJs.status).toBe(0)
     expect(outJs.stderr).toBe('')
     expect(() => JSON.parse(outJs.stdout.trim())).not.toThrow()

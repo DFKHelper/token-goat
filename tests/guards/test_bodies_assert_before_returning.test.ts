@@ -85,6 +85,12 @@ const EXEMPT: readonly Exemption[] = [
     sites: 1,
     reason: 'Same missing FTS5 table. The escaping itself is pinned unconditionally by the sanitizeFtsQuery unit test alongside it.',
   },
+  {
+    file: 'tests/install_copilot_cli.test.ts',
+    title: 'forwards sessionStart to the real session_start handler instead of short-circuiting it',
+    sites: 1,
+    reason: 'The return follows premiseBranch in tests/helpers/copilot_session_start_tree.ts, which has already asserted the weak branch (stdout exactly {}, a deadline fail-open on stderr, a dead tree, the owed reminder) before it answers false, so the body never finishes unasserted.',
+  },
 ] as const
 
 /** Floors: a scan that found no files, or implausibly few test bodies, must fail rather than pass empty. */

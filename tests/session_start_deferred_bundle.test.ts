@@ -49,6 +49,8 @@ function makeFixture(): Fixture {
     CODEX_HOME: dirs['codex'],
     TEMP: dirs['tmp'],
     TMP: dirs['tmp'],
+    // os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP only on Windows; unset, the hook's OS temp dir is /tmp, which holds this fixture's project, so the dirty queue refuses its files and the drift note says they could not be queued.
+    TMPDIR: dirs['tmp'],
     TOKEN_GOAT_HOOK_SERVER: '0',
     TOKEN_GOAT_NATIVE_HOOKS: '0',
     TOKEN_GOAT_EMBED: '0',
