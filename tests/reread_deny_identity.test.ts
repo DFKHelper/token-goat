@@ -112,6 +112,34 @@ describe('reread_deny_identity', () => {
     expect(identityRows().slice(before)).toEqual([])
   })
 
+  it('reads a tasks output that grew below the diff floor through, and still refuses an unchanged re-read', () => {
+    // HAND-DERIVED: a background task's output file (tasks/<id>.output) gaining one line while the task runs; no post_tool_use ran, so no snapshot exists and the size alone speaks for it.
+    const file = path.join(dir, 'tasks', 'abc123.output')
+    fs.mkdirSync(path.dirname(file))
+    fs.writeFileSync(file, 'line one\n')
+    pre(file)
+    expect(pre(file).hookType).toBe('deny')
+    fs.appendFileSync(file, 'line two\n')
+    expect(pre(file).hookType).not.toBe('deny')
+  })
+
+  it('reads an improve-state file that changed through, and still refuses an unchanged re-read', () => {
+    // HAND-DERIVED: an orchestrator state file another process rewrites between reads.
+    const file = write('.improve-state-run.json', '{"step":1}\n')
+    pre(file)
+    expect(pre(file).hookType).toBe('deny')
+    fs.writeFileSync(file, '{"step":2,"more":true}\n')
+    expect(pre(file).hookType).not.toBe('deny')
+  })
+
+  it('reads a markdown file empty at its first read and filled since through', () => {
+    // HAND-DERIVED: a file created empty, read, then filled by another process.
+    const file = write('filled.md', '')
+    pre(file)
+    fs.writeFileSync(file, '# Filled\n\nSome content that arrived later.\n')
+    expect(pre(file).hookType).not.toBe('deny')
+  })
+
   it('books nothing on a re-read that no whole-file deny refuses', () => {
     const file = write('Once.cs', 'class Once {}\n')
     const before = identityRows().length

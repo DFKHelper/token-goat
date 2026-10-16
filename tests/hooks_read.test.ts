@@ -74,7 +74,24 @@ function makeTmpFileNamed(basename: string, content = '{}'): string {
   return p
 }
 
+// HAND-DERIVED: a file's mtime is stamped by the filesystem clock, which on Windows runs up to a few milliseconds ahead of Date.now(), so a file written an instant before its first read can carry an mtime later than that read and look changed to rereadIdentity's stat comparison. The first time a path is read it is stamped an hour back, so the mtime precedes the read on any host and any load; a write made afterwards keeps its natural mtime and still reads as a change.
+const stampedBeforeFirstRead = new Set<string>()
+function stampAnHourBack(filePath: string): void {
+  try {
+    const earlier = new Date(Date.now() - 3_600_000)
+    fs.utimesSync(filePath, earlier, earlier)
+  } catch {
+    // Not a file on disk (a missing-path case): nothing to stamp.
+  }
+}
+function stampBeforeFirstRead(filePath: string | undefined): void {
+  if (filePath === undefined || stampedBeforeFirstRead.has(filePath)) return
+  stampedBeforeFirstRead.add(filePath)
+  stampAnHourBack(filePath)
+}
+
 function readEvent(filePath: string | undefined): HookEvent {
+  stampBeforeFirstRead(filePath)
   return makeHookEvent({
     toolName: 'Read',
     toolInput: filePath === undefined ? {} : { file_path: filePath },
@@ -2605,6 +2622,7 @@ content here` },
     const p = path.join(os.tmpdir(), '.improve-state-bugfixing.json')
     fs.writeFileSync(p, JSON.stringify({ phase: 'bugfixing' }))
     tmpFiles.push(p)
+    stampAnHourBack(p)
     recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')

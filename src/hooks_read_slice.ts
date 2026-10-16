@@ -524,8 +524,6 @@ function parseNumberedReadResult(respText: string, firstLine: number): ParsedRea
   return plainReadResult(respText, firstLine)
 }
 
-const MTIME_CLOCK_SLACK_MS = 50
-
 /** Whether a file the whole-file re-read denies are refusing still holds what the session last read, and how that was decided. */
 export interface RereadIdentity {
   readonly identity: 'identical' | 'changed' | 'unknown'
@@ -553,8 +551,9 @@ export function rereadIdentity(
       // Unreadable now: fall through to the stat comparison.
     }
   }
-  if (prior === undefined || prior.sizeBytes <= 0) return { identity: 'unknown', basis: 'none' }
-  // The read time comes from Date.now() and the mtime from the filesystem clock, which can differ by tens of milliseconds on Windows; a write within that slack of the read is not told apart from the read itself, and a size change still is.
-  const changed = current.size !== prior.sizeBytes || current.mtimeMs > (prior.lastFullReadAt ?? prior.lastReadAt) + MTIME_CLOCK_SLACK_MS
+  if (prior === undefined) return { identity: 'unknown', basis: 'none' }
+  // A file empty at the last read and holding bytes now has changed; empty then and now withholds nothing.
+  if (prior.sizeBytes <= 0) return current.size > 0 ? { identity: 'changed', basis: 'stat' } : { identity: 'unknown', basis: 'none' }
+  const changed = current.size !== prior.sizeBytes || current.mtimeMs > (prior.lastFullReadAt ?? prior.lastReadAt)
   return { identity: changed ? 'changed' : 'identical', basis: 'stat' }
 }

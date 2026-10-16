@@ -597,6 +597,11 @@ function alreadyServedOutputId(event: HookEvent, normalized: string): { id: stri
 }
 
 /** pre_tool_use handler for Read/Grep/Glob. Returns `deny` for: node_modules, lock files, .tsbuildinfo, build artifacts, large markdown files with headings, re-reads of files >50KB, first reads of files >500KB, and file-type specific oversize files. Returns `context` for: manifest/tsconfig re-reads, and large files 100KB–500KB. Returns `pass` otherwise. Always records the read so the re-read hint fires on the next touch. */
+/** True when the session's last read of `normalized` is shown to be stale (rereadIdentity), measured before the read being decided is recorded. The whole-file "already read" denies that decide from a read count alone gate on this so a changed file is read through. */
+function knownChangedSinceRead(event: HookEvent, normalized: string): boolean {
+  return rereadIdentity(sessionStateKey(event), normalized, getSessionFileEntry(normalized)).identity === 'changed'
+}
+
 function preReadHandlerInner(event: HookEvent): HookOutput {
   let filePath = getFilePath(event)
   if (filePath === undefined && event.toolName === 'Grep') {
@@ -892,7 +897,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   }
 
   // Item 5: .improve-state-*.json re-read denial
-  if (/^\.improve-state-.*\.json$/.test(basename) && wasFileReadThisSession(normalized)) {
+  if (/^\.improve-state-.*\.json$/.test(basename) && wasFileReadThisSession(normalized) && !knownChangedSinceRead(event, normalized)) {
     recordActualRead(event, normalized)
     recordStat('session_hint', 0, 0)
     return denyOutput(
@@ -925,7 +930,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Session artifact re-read dedup: tasks/<id>.output and tool-results/<id>.txt On first read of tasks/*.output, emit a proactive hint toward --tail/--grep. On re-reads (either type), inject a diff or "unchanged" denial using the same snapshot logic as doc files.
   if (isSessionArtifactFile(normalized)) {
     if (wasFileFullyReadThisSession(normalized)) {
-      if (wasFileTruncatedThisSession(normalized)) {
+      // A task output grows while its task runs: a file shown to have changed is never refused as "already read", so it falls through to the read-through path below.
+      const artifactKnownChanged = knownChangedSinceRead(event, normalized)
+      if (wasFileTruncatedThisSession(normalized) && !artifactKnownChanged) {
         recordActualRead(event, normalized)
         recordStat('session_hint', 0, 0)
         return denyOutput(
@@ -948,12 +955,14 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           return denyOutput(diffBody)
         }
       }
-      // No snapshot or file too large — generic re-read denial
-      recordActualRead(event, normalized)
-      recordStat('session_hint', 0, 0)
-      return denyOutput(
-        'This file was already read this session. ' + sessionArtifactRecall(normalized),
-      )
+      // No snapshot or file too large — generic re-read denial, only for a file not known to have changed
+      if (!artifactKnownChanged) {
+        recordActualRead(event, normalized)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          'This file was already read this session. ' + sessionArtifactRecall(normalized),
+        )
+      }
     }
     // First read of tasks/*.output or tool-results/*.txt — size-gated like every other first-read intercept in this function. A small file is a cheap advisory pass; at/above TASK_OUTPUT_DENY_BYTES it's denied outright, forcing even the first read through bash-output --file/--tail instead of one free unsized full dump. Both artifact kinds share this gate -- tool-results/*.txt previously fell through to the lenient generic 100KB threshold with no advisory at all, unlike tasks/*.output.
     {
