@@ -433,10 +433,14 @@ describe('serving hook calls', () => {
 
     const a1 = relay(sb, 'pre_tool_use', read, { env: { TOKEN_GOAT_HOME: homeA } })
     expect(decision(a1)).not.toBe('block')
+    // The server writes its stats row and closes its connections after the caller has the answer, and a call that reaches it meanwhile is answered busy and falls back (src/hook_client.ts HANDSHAKE_TIMEOUT_MS); the served count is the signal that work is over.
+    await expectServedTotal(sb, 1)
     const b1 = relay(sb, 'pre_tool_use', read, { env: { TOKEN_GOAT_HOME: homeB } })
     expect(b1).toBe(a1)
+    await expectServedTotal(sb, 2)
     const a2 = relay(sb, 'pre_tool_use', read, { env: { TOKEN_GOAT_HOME: homeA } })
     expect(decision(a2), `second read answered ${String(a2)}`).toBe('block')
+    await expectServedTotal(sb, 3)
     expect(fs.existsSync(path.join(homeA, 'sessions', 'hs-shared-session.json'))).toBe(true)
     expect(fs.existsSync(path.join(homeB, 'sessions', 'hs-shared-session.json'))).toBe(true)
     expect(fs.existsSync(path.join(sb.home, 'sessions', 'hs-shared-session.json'))).toBe(false)
