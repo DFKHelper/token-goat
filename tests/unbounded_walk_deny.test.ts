@@ -86,6 +86,104 @@ describe('detectUnboundedWalk -- POSIX find', () => {
   })
 })
 
+// Provenance: every command string below is HAND-DERIVED from shell semantics (`cd` changes the directory of the commands after it in the same shell, a `( ... )` subshell or a pipeline stage does not leak it) and from the same root definition as the tests above; the path-less and `.`-relative starts are the ones POSIX find resolves against the working directory. None is a wire-format claim.
+describe('detectUnboundedWalk -- find after a cd to a root or the home directory', () => {
+  it.each([
+    ['cd / && find . -name x'],
+    ['cd / && find -name x'],
+    ['cd / && find'],
+    ['cd / && find ./ -name y'],
+    ['cd / && find .. -name y'],
+    ['cd ~ && find ../ -name y'],
+    ['cd / && find .'],
+    ['cd / ; find . -name x'],
+    ['cd /\nfind . -name x'],
+    ['cd ~ && find . -name x'],
+    ['cd && find . -name x'],
+    ['cd $HOME && find . -name x'],
+    ['cd "$HOME" && find . -name x'],
+    ['cd ${HOME}/ && find . -name x'],
+    ['cd C:/ && find . -name x'],
+    ['cd C:\\ && find . -name x'],
+    ['cd /c && find . -name x'],
+    ['cd /mnt/c && find . -name x'],
+    ['cd -P / && find . -name x'],
+    ['cd -- / && find . -name x'],
+    ['pushd / && find . -name x'],
+    ['pushd ~ && find . -name x'],
+    ['(cd / && find .)'],
+    ['(cd / && find . -name x) | head -5'],
+    ['echo a; (cd / && find . -name x)'],
+    ['cd /tmp && cd / && find . -name x'],
+    ['cd /tmp; (cd /proj); cd / && find . -name x'],
+    ['cd / && (find . -name x)'],
+    ['cd / && echo a | find . -name x'],
+    ['cd / && sudo find . -name x'],
+    ['cd / && timeout 30 find . -name x'],
+    ['cd / && echo ok && find . -name x'],
+    ['cd / && bash -c "find . -name x"'],
+    ['bash -c "cd / && find . -name x"'],
+    ['if cd /; then find . -name x; fi'],
+    ['cd / && cd .. && find . -name x'],
+    ['cd /\r\nfind . -name x'],
+  ])('refuses %s', (command) => {
+    expect(form(command, POSIX)).toBe('find')
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBe('find')
+  })
+
+  it.each([
+    ['cd / && find . -maxdepth 2 -name x'],
+    ['cd / && find . -name x -maxdepth 2'],
+    ['cd ~ && find . -maxdepth 1'],
+    ['cd /proj && find . -name x'],
+    ['cd /tmp && find'],
+    ['cd ~/project && find . -name x'],
+    ['cd $HOME/project && find . -name x'],
+    ['cd src && find . -name x'],
+    ['find . -name x'],
+    ['find'],
+    ['cd / && cd tmp && find . -name x'],
+    ['cd / && cd /proj && find . -name x'],
+    ['cd / && cd - && find . -name x'],
+    ['cd / && popd && find . -name x'],
+    ['cd / && cd ~/p && find . -name x'],
+    ['(cd / && ls); find . -name x'],
+    ['(cd /); find . -name x'],
+    ['(cd /) && find . -name x'],
+    ['cd / | cat; find . -name x'],
+    ['cd / & find . -name x'],
+    ['echo a | cd /; find . -name x'],
+    ['cd /proj; (cd /; ls); find . -name x'],
+    ['cd / && find src -name x'],
+    ['cd / && find ./src -name x'],
+    ['cd / && find ./x -name y'],
+    ["cd ~ && find ./proj -name '*.ts'"],
+    ['cd / || find . -name x'],
+    ['cd / || find'],
+    ['cd / && find /proj -name x'],
+    ['cd / && echo "find . -name x"'],
+    ['cd / && ls'],
+    ['cd / && bash -c "cd /proj && find . -name x"'],
+    ['echo cd / && find . -name x'],
+  ])('lets %s through', (command) => {
+    expect(form(command, POSIX)).toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it('does not read a bare cd as going home under PowerShell, which only prints the location, but still follows a cd to a named root', () => {
+    expect(form('cd; find . -name x', POWERSHELL)).toBeNull()
+    expect(form('sl; find . -name x', POWERSHELL)).toBeNull()
+    expect(form('Set-Location; find . -name x', POWERSHELL)).toBeNull()
+    expect(form('cd; find . -name x', POSIX)).toBe('find')
+    expect(form('cd C:/; find . -name x', POWERSHELL)).toBe('find')
+    expect(form('cd ~; find . -name x', POWERSHELL)).toBe('find')
+  })
+
+  it('gives the same reason as a find that names the root', () => {
+    expect(detectUnboundedWalk('cd / && find . -name x', POSIX)?.message).toBe(detectUnboundedWalk('find / -name x', POSIX)?.message)
+  })
+})
+
 describe('detectUnboundedWalk -- telling Git find from Windows find.exe', () => {
   it('lets the Windows text search through when it has something to read', () => {
     for (const command of ['find "text" file.txt', 'find /i "x" f', 'find /c "x" f', 'find /v "x" f', 'dir | find "x"', 'type f.txt | find /i "x"', 'find "x" < f.txt']) {

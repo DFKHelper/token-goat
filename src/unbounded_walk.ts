@@ -23,6 +23,11 @@ interface Segment {
   readonly pipedIn: boolean
   /** The command redirects its input with `<`, `<<` or `<<<`. */
   readonly redirectedIn: boolean
+  /** The `( ... )` group that encloses the command (0 outside any), and the group around that one, so a `cd` inside a subshell can be told from one that changes the directory of what follows. */
+  readonly group: number
+  readonly parentGroup: number
+  /** The operator that ended this command when a `cd` before it cannot change the directory of what follows: `|` or a single `&` (its own process) or `||` (what follows runs only if the `cd` failed); otherwise an empty string. */
+  readonly endOp: '' | '|' | '&' | '||'
 }
 
 const MAX_NESTING = 3
@@ -114,6 +119,8 @@ function scan(command: string): Segment[] {
   let quote: string | null = null
   let subshells = 0
   let piped = false
+  const groups = [0]
+  let groupCount = 0
   const heredocs: Heredoc[] = []
   const quotedHeredocs: Heredoc[] = []
   const endWord = (): void => {
@@ -123,11 +130,11 @@ function scan(command: string): Segment[] {
     has = false
     quoted = false
   }
-  const endSegment = (nextPiped: boolean): void => {
+  const endSegment = (nextPiped: boolean, endOp: '' | '|' | '&' | '||' = ''): void => {
     endWord()
     if (words.length > 0) {
       const redirectedIn = words.some((w) => !w.quoted && /^\d*</.test(w.text))
-      segments.push({ words: withoutRedirects(words), pipedIn: piped, redirectedIn })
+      segments.push({ words: withoutRedirects(words), pipedIn: piped, redirectedIn, group: groups[groups.length - 1]!, parentGroup: groups[groups.length - 2] ?? 0, endOp })
     }
     words = []
     piped = nextPiped
@@ -192,13 +199,19 @@ function scan(command: string): Segment[] {
       }
       continue
     }
-    if (ch === ';' || ch === '(' || ch === ')' || ch === '`') {
+    if (ch === ';' || ch === '`') {
       endSegment(false)
+      continue
+    }
+    if (ch === '(' || ch === ')') {
+      endSegment(false)
+      if (ch === '(') groups.push(++groupCount)
+      else if (groups.length > 1) groups.pop()
       continue
     }
     if (ch === '|') {
       const logicalOr = command[i + 1] === '|'
-      endSegment(!logicalOr)
+      endSegment(!logicalOr, logicalOr ? '||' : '|')
       if (logicalOr) i++
       continue
     }
@@ -209,8 +222,9 @@ function scan(command: string): Segment[] {
         has = true
         continue
       }
-      endSegment(false)
-      if (command[i + 1] === '&') i++
+      const andIf = command[i + 1] === '&'
+      endSegment(false, andIf ? '' : '&')
+      if (andIf) i++
       continue
     }
     text += ch
@@ -318,6 +332,24 @@ function positionals(args: readonly Word[], valued: ReadonlySet<string>, slashOp
   return out
 }
 
+const CD_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd', 'set-location', 'sl'])
+
+/** Whether a directory-changing command leaves the shell in a filesystem root or the home directory (`wasRoot` is where it started, which `cd ..` keeps), or null when the segment changes no directory. `cd -`, `popd` and anything else that lands somewhere unknown count as not a root, so only a visible root target is refused. */
+function cdLandsAtRoot(seg: Segment, wasRoot: boolean, ctx: WalkContext): boolean | null {
+  const at = commandIndex(seg.words)
+  const head = seg.words[at]
+  if (head === undefined) return null
+  const { name } = commandName(head.text)
+  if (!CD_COMMANDS.has(name)) return null
+  const target = positionals(seg.words.slice(at + 1), new Set<string>())[0]
+  // A bare `cd` goes home in a POSIX shell, but PowerShell 5.1 only prints the location.
+  if (target === undefined) return !ctx.powershell && name !== 'popd' && name !== 'pushd'
+  return isRoot(target.text) || (wasRoot && /^\.\.([\\/]\.\.)*[\\/]*$/.test(target.text))
+}
+
+/** A find start that is the working directory itself or only steps up from it (`.`, `./`, `..`, `../..`), as opposed to a subdirectory of it. */
+const isRelativeStart = (start: string): boolean => /^\.\.?([\\/]+\.\.?)*[\\/]*$/.test(start)
+
 const texts = (words: readonly Word[]): string[] => words.map((w) => w.text)
 const anyRoot = (words: readonly Word[], glob = false, winOptions = false): boolean => words.some((w) => isRoot(w.text, glob, winOptions))
 
@@ -334,7 +366,7 @@ function clusterHas(t: string, letters: string): boolean {
   return /^-[A-Za-z0-9]+$/.test(t) && !t.startsWith('--') && [...t.slice(1)].some((c) => letters.includes(c))
 }
 
-function inspectFind(args: readonly Word[], dir: string, seg: Segment, ctx: WalkContext): WalkRefusal | null {
+function inspectFind(args: readonly Word[], dir: string, seg: Segment, ctx: WalkContext, fromRoot: boolean): WalkRefusal | null {
   const t = texts(args)
   const system32 = /[\\/](system32|syswow64|windows)[\\/]$/i.test(dir)
   const qualified = dir !== '' && !system32
@@ -358,7 +390,8 @@ function inspectFind(args: readonly Word[], dir: string, seg: Segment, ctx: Walk
     if (x.startsWith('-') || x === '!' || x.startsWith('\\(')) break
     starts.push(x)
   }
-  if (starts.some((s) => isRoot(s)) && !t.includes('-maxdepth')) return refuse('find')
+  // After `cd /` a find with no path, or a `.`-relative one, starts at that root.
+  if ((starts.some((s) => isRoot(s)) || (fromRoot && (starts.length === 0 || starts.some(isRelativeStart)))) && !t.includes('-maxdepth')) return refuse('find')
   // PowerShell runs a bare `find "text"` as the Windows find.exe, which reads standard input when it is given no file.
   const sole = args.length === 1 ? args[0]! : null
   if (ctx.powershell && !primary && !winOption && !qualified && sole !== null && sole.quoted && !seg.pipedIn && !seg.redirectedIn) return refuse('find-stdin')
@@ -440,17 +473,17 @@ function nestedScript(name: string, args: readonly Word[]): string | null {
   return null
 }
 
-function inspectSegment(seg: Segment, ctx: WalkContext, depth: number): WalkRefusal | null {
+function inspectSegment(seg: Segment, ctx: WalkContext, depth: number, fromRoot: boolean): WalkRefusal | null {
   const at = commandIndex(seg.words)
   const head = seg.words[at]
   if (head === undefined) return null
   const { name, dir } = commandName(head.text)
   const args = seg.words.slice(at + 1)
   const script = nestedScript(name, args)
-  if (script !== null) return depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1) : null
+  if (script !== null) return depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1, fromRoot) : null
   switch (name) {
     case 'find':
-      return inspectFind(args, dir, seg, ctx)
+      return inspectFind(args, dir, seg, ctx, fromRoot)
     case 'fd':
     case 'fdfind':
       return inspectFd(args)
@@ -476,11 +509,18 @@ function inspectSegment(seg: Segment, ctx: WalkContext, depth: number): WalkRefu
   }
 }
 
-/** The refusal for a command that starts an unbounded walk of a filesystem root or the home directory, in any pipeline stage, chain or subshell, or null when it does not. */
-export function detectUnboundedWalk(command: string, ctx: WalkContext, depth = 0): WalkRefusal | null {
+/** The refusal for a command that starts an unbounded walk of a filesystem root or the home directory, in any pipeline stage, chain or subshell, or null when it does not. A `find` with no path or a `.`-relative one is refused after a `cd` to a root or the home directory; `startsAtRoot` carries that state into a nested `bash -c` script. */
+export function detectUnboundedWalk(command: string, ctx: WalkContext, depth = 0, startsAtRoot = false): WalkRefusal | null {
+  // Whether the shell sits in a root or the home directory, per `( ... )` group: a subshell starts from its parent's state and its `cd` does not reach the commands after it.
+  const atRoot = new Map<number, boolean>([[0, startsAtRoot]])
   for (const seg of scan(command)) {
-    const hit = inspectSegment(seg, ctx, depth)
+    if (!atRoot.has(seg.group)) atRoot.set(seg.group, atRoot.get(seg.parentGroup) ?? startsAtRoot)
+    const fromRoot = atRoot.get(seg.group)!
+    const hit = inspectSegment(seg, ctx, depth, fromRoot)
     if (hit !== null) return hit
+    // A `cd` piped to or from another command, or sent to the background, runs in its own process and leaves the shell where it was; one followed by `||` leaves what follows to run only after it failed.
+    const landed = seg.pipedIn || seg.endOp !== '' ? null : cdLandsAtRoot(seg, fromRoot, ctx)
+    if (landed !== null) atRoot.set(seg.group, landed)
   }
   return null
 }
