@@ -203,7 +203,9 @@ function superviseSessionStart({ args, env, payload, deadline }) {
   ].join(';')
   return new Promise((resolve, reject) => {
     const root = spawn(process.execPath, ['-e', supervisor, ...args], {
-      env, windowsHide: true, detached: process.platform !== 'win32',
+      env, windowsHide: true,
+      // owner: this shim, which SIGKILLs the whole group in beginCleanup and, when that fails or the supervisor died first, in cleanupFailed; dies when the helper reports its exit, on an error, a timeout or the hard deadline (descendants that left the group, or the shim itself being SIGKILLed, are not covered).
+      detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
     })
     let helperCode
@@ -237,6 +239,7 @@ function superviseSessionStart({ args, env, payload, deadline }) {
       root.stdout.destroy()
       root.stderr.destroy()
       if (root.connected) root.disconnect()
+      // owner: this shim, which has killed the group by now (beginCleanup, or the group kill in cleanupFailed); dies when that kill lands, and the unref only lets the shim exit.
       root.unref()
       if (error) reject(new Error(error))
       else resolve(Buffer.concat(output, outputBytes).toString('utf8'))
@@ -250,7 +253,15 @@ function superviseSessionStart({ args, env, payload, deadline }) {
       finish(failure)
     }
 
+    function killGroup() { process.kill(-root.pid, 'SIGKILL') }
+
     function cleanupFailed(reason) {
+      // The group outlives its leader while any member runs, so this reaches descendants even after the supervisor died; ESRCH means no member is left. Descendants that left the group are still unverified.
+      if (root.pid) {
+        try { killGroup() } catch (error) {
+          if (error.code !== 'ESRCH') reason += '; group kill failed'
+        }
+      }
       // Verify the known owned PIDs before falling back to direct kills. Unknown
       // descendants cannot be certified clean when the tree utility has failed.
       const remaining = [root.pid].filter(alive)
@@ -272,7 +283,7 @@ function superviseSessionStart({ args, env, payload, deadline }) {
       clearTimeout(timer)
       if (!root.pid) { finish(failure || 'hook helper could not run'); return }
       try {
-        process.kill(-root.pid, 'SIGKILL')
+        killGroup()
         cleaned = true
         complete()
       } catch (error) {
@@ -328,6 +339,7 @@ function superviseWindowsSessionStart({ args, env, payload, deadline }) {
   // synchronous filesystem probing in the externally visible parent.
   const binary = path.join(path.dirname(args[0]), 'native', 'win32-' + process.arch, 'tg-hook.exe')
   return new Promise((resolve, reject) => {
+    // owner: the native tg-hook client, which holds a strict Job Object and ends every descendant when this shim closes its handle; dies when the job closes or the deadline passes.
     const root = spawn(binary, ['--session-start-owner-v1', String(deadline), process.execPath, ...args], {
       env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
     })
@@ -347,6 +359,7 @@ function superviseWindowsSessionStart({ args, env, payload, deadline }) {
       // Killing the owner closes the sole non-inherited job handle. Never
       // traverse a dead canonical PID or launch an unowned Windows fallback.
       if (error && root.pid) root.kill('SIGKILL')
+      // owner: this shim, which kills the native owner on any error (its job handle closing ends the tree) and finds it closed on success; dies when that kill lands or the owner has exited.
       root.unref()
       if (error) reject(new Error(error))
       else resolve(JSON.stringify(candidate))
@@ -388,9 +401,12 @@ function superviseWindowsSessionStart({ args, env, payload, deadline }) {
           delete workerEnv.TG_SESSION_START_DEFER_WORKER
           try {
             const worker = spawn(process.execPath, [args[0], '--worker-daemon', '--claim-worker'], {
-              env: workerEnv, cwd: require('node:os').tmpdir(), detached: true, windowsHide: true, stdio: 'ignore',
+              env: workerEnv, cwd: require('node:os').tmpdir(), windowsHide: true, stdio: 'ignore',
+              // owner: none, the daemon outlives this shim on purpose; dies when its pid file or data directory is gone, when it sits idle, or on worker stop.
+              detached: true,
             })
             worker.on('error', () => {})
+            // owner: none, the daemon outlives this shim on purpose; dies when its pid file or data directory is gone, when it sits idle, or on worker stop.
             worker.unref()
           } catch {
             // Queue remains durable; ordinary lifecycle activation can retry.

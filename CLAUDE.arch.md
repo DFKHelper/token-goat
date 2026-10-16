@@ -550,6 +550,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/pr_slice.ts`](src/pr_slice.ts) | Surgical GitHub PR reads via the `gh` CLI. |
 | [`src/probe_marker.ts`](src/probe_marker.ts) | The hook half of `token-goat doctor --probe`. |
 | [`src/process_priority.ts`](src/process_priority.ts) | Scheduling priority for the processes that index. |
+| [`src/process_tree.ts`](src/process_tree.ts) | Spawns a command it owns and ends its whole process tree, not just the shell. |
 | [`src/process_util.ts`](src/process_util.ts) | Process and OS execution utilities. |
 | [`src/purge.ts`](src/purge.ts) | `uninstall --purge`: delete everything token-goat has written to disk. |
 | [`src/query_limits.ts`](src/query_limits.ts) | The sentinel that means "no cap" in a `LIMIT ?` bound parameter. |

@@ -119,11 +119,13 @@ function startServer(slot: number): void {
   const disabled = markerAgeMs('disabled') < DISABLED_MARKER_TTL_MS && readMarker('disabled') === configStamp()
   if (disabled || markerAgeMs(`spawn-${slot}`) < SPAWN_RETRY_MS || !fs.existsSync(launcher)) return
   touchMarker(`spawn-${slot}`)
+  // The server is started in the temp directory, where it moves itself anyway (runHookServer), never in the calling hook's directory: on Windows a working directory is an open handle, and until the server's own chdir runs it would hold a throwaway project directory undeletable.
   try {
-    // Started in the temp directory, where the server moves itself anyway (runHookServer), never in the calling hook's directory: on Windows a working directory is an open handle, and until the server's own chdir runs it would hold a throwaway project directory undeletable.
+    // owner: none, the server outlives this hook on purpose; dies when idle for 30 minutes (3 for an overflow slot), when its key file is deleted, or when its build is replaced (runHookServer).
     const child = spawn(process.execPath, [launcher, 'hook-server', 'run', '--slot', String(slot)], { cwd: os.tmpdir(), detached: true, stdio: 'ignore', windowsHide: true })
     // A spawn that fails for want of that directory (TEMP naming one since deleted) reports it as an 'error' event after this returns, which the catch below never sees and which, unheard, would crash the hook that asked.
     child.on('error', () => undefined)
+    // owner: none, the server outlives this hook on purpose; dies when idle for 30 minutes (3 for an overflow slot), when its key file is deleted, or when its build is replaced.
     child.unref()
   } catch {
     // a server that cannot start leaves every caller on the path it used before

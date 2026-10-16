@@ -187,8 +187,8 @@ describe('bash_runner.run (in-process)', () => {
     })
   })
 
-  it('runRaw streams raw output and returns the exit code', () => {
-    expect(runRaw('exit 4')).toBe(4)
+  it('runRaw streams raw output and returns the exit code', async () => {
+    expect(await runRaw('exit 4')).toBe(4)
   })
 })
 

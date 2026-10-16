@@ -29,6 +29,7 @@ export function rerunWithEnvProxy(
   nodeVersion: string = process.versions.node,
 ): number | null {
   if (!fetchBypassesProxy(env, nodeVersion)) return null
+  // owner: this process, which waits for it and exits with its status; dies when its command finishes, or when a group-wide kill reaches it (it is not detached). Not covered: a SIGKILL of this process alone.
   const result = spawn(process.execPath, [...process.execArgv, ...argv.slice(1)], { env: withEnvProxyEnabled(env, nodeVersion), stdio: 'inherit' })
   // A child ended by a signal has no status; that is a failure, not a success.
   return result.status ?? 1

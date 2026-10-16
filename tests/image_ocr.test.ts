@@ -1,6 +1,7 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import * as vm from 'node:vm'
 
 import type * as ChildProcess from 'node:child_process'
 
@@ -13,6 +14,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 import {
+  buildChildScript,
   formatOcrSummary,
   getActiveOcrLangs,
   isTextHeavy,
@@ -216,5 +218,31 @@ describe('resolveOcrLang and getActiveOcrLangs', () => {
       delete process.env['TOKEN_GOAT_OCR_LANG']
       invalidateConfigCache()
     }
+  })
+})
+
+describe('the OCR child ends itself if its parent is killed outright', () => {
+  it('schedules an exit(1) timer that outlasts the parent timeout and does not hold the child open, and the timer fires that exit', () => {
+    // Provenance: HAND-DERIVED. The script text the shipping code builds is run in a sandbox whose setTimeout only records the timer, so no clock runs and no child process is needed.
+    const timers: Array<{ fn: () => void; delay: number; unrefed: boolean }> = []
+    const exits: unknown[] = []
+    const sandbox = {
+      require: () => ({ createWorker: () => new Promise(() => {}) }),
+      process: { stdin: { on: () => {} }, stdout: { write: () => {} }, exit: (code: unknown) => exits.push(code) },
+      Buffer,
+      setTimeout: (fn: () => void, delay: number) => {
+        const timer = { fn, delay, unrefed: false }
+        timers.push(timer)
+        return { unref: () => { timer.unrefed = true } }
+      },
+    }
+    const parentTimeoutMs = 1234
+    vm.runInNewContext(buildChildScript('/stub/tesseract.cjs', '/stub/cache', undefined, parentTimeoutMs), sandbox)
+    expect(timers, 'the child script schedules no self-exit timer').toHaveLength(1)
+    expect(timers[0]!.delay, 'the child would exit before the parent gives up on it').toBeGreaterThan(parentTimeoutMs)
+    expect(timers[0]!.unrefed, 'a finished child would be held open by its own death timer').toBe(true)
+    expect(exits).toEqual([])
+    timers[0]!.fn()
+    expect(exits).toEqual([1])
   })
 })

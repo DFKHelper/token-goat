@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const runner = vi.hoisted(() => ({
   run: vi.fn().mockResolvedValue(0),
-  runRaw: vi.fn().mockReturnValue(0),
+  runRaw: vi.fn().mockResolvedValue(0),
 }))
 vi.mock('../src/bash_runner.js', () => ({
   ...runner,
@@ -20,7 +20,7 @@ let previousExitCode: typeof process.exitCode
 beforeEach(() => {
   vi.clearAllMocks()
   runner.run.mockResolvedValue(0)
-  runner.runRaw.mockReturnValue(0)
+  runner.runRaw.mockResolvedValue(0)
   stderr = []
   stderrSpy = spyOnWrite(process.stderr, stderr)
   stdoutSpy = spyOnWrite(process.stdout, [])
@@ -118,7 +118,7 @@ describe('compress hook transport', () => {
   })
 
   it('emits the advisory on a raw runner failure behind a payload that is not UTF-8', async () => {
-    runner.runRaw.mockReturnValue(9)
+    runner.runRaw.mockResolvedValue(9)
     await run(['node', 'token-goat', 'compress', '--no-compress', '--cmd-b64', NOT_UTF8])
     expect(process.exitCode).toBe(9)
     expect(stderr.join('')).toContain(NOTE)

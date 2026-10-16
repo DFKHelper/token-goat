@@ -1,4 +1,5 @@
 /** Scheduling priority for the processes that index. Indexing is never the user's foreground task. It is either a detached daemon draining a dirty queue with `stdio: 'ignore'`, or a bulk walk the user started and then went back to their editor. Until this existed, both ran at normal priority and competed with the desktop on equal terms, which on a machine with a large index is felt as the whole box stalling for as long as the walk lasts. Lowering the priority class costs nothing when the machine is idle: the scheduler only demotes a process when something else actually wants the CPU. That makes it the cheapest of the two levers here -- the other being `worker.embed_threads`, which caps how wide one inference can fan out. They are independent and compose: the cap bounds the ceiling, the priority decides who yields. */
+import * as fs from 'node:fs'
 import * as os from 'node:os'
 
 import { loadConfig } from './config.js'
@@ -21,10 +22,35 @@ export function resolveWorkerPriority(name: string | undefined): number {
 
 /** Ask the OS to run this process at the configured indexing priority. Best-effort by design, and silent on failure. `os.setPriority` throws `EPERM` where the platform or the container refuses the change (some hardened Linux configurations forbid even lowering one's own niceness, and a few CI sandboxes reject it outright). A failure means indexing runs exactly as it did before this module existed, which is a worse experience but a correct one, so it is not worth failing an index run or writing a line the user cannot act on. Returns whether the change was applied, for tests and for `doctor` to report on. */
 export function applyIndexingPriority(): boolean {
+  return applyIndexingPriorityTo(0)
+}
+
+/** The same request for another process, by pid: the launcher of a detached daemon calls it right after the spawn, so the daemon is not running at normal priority through the seconds its own boot takes before {@link applyIndexingPriority} can run (on a slow or busy machine that is the stretch a user feels). Same rules: configured name, never above normal, best-effort and silent (a child that already exited, or a host that refuses, just leaves the daemon to lower itself). */
+export function applyIndexingPriorityTo(pid: number): boolean {
   try {
-    os.setPriority(0, resolveWorkerPriority(loadConfig().worker.priority))
+    const priority = resolveWorkerPriority(loadConfig().worker.priority)
+    os.setPriority(pid, priority)
+    lowerOtherThreads(pid, priority)
     return true
   } catch {
     return false
+  }
+}
+
+/** Linux only: `setpriority` on a pid changes that one thread, not the process, so the helper threads V8 and libuv had already started (garbage collection and compilation, which run in step with the indexer's allocation) stayed at normal after the main thread was lowered. Threads created later inherit from their creator and need nothing. Each thread is lowered by its own id; a thread that ended meanwhile, or a host that refuses, is skipped. The other platforms set a whole-process class and have nothing to do here. */
+function lowerOtherThreads(pid: number, priority: number): void {
+  if (process.platform !== 'linux') return
+  let threads: string[]
+  try {
+    threads = fs.readdirSync(`/proc/${pid === 0 ? 'self' : String(pid)}/task`)
+  } catch {
+    return
+  }
+  for (const thread of threads) {
+    try {
+      os.setPriority(Number(thread), priority)
+    } catch {
+      // ended meanwhile, or refused
+    }
   }
 }

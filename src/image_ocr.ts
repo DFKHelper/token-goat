@@ -1,6 +1,6 @@
 /** OCR — extract text from text-heavy images (screenshots of a terminal, a stack trace, a table, an editor, a doc page) instead of paying vision tokens to reconstruct their pixels. `tesseract.js` is the only realistic offline-capable OCR engine for a Node CLI with no guaranteed network at runtime: it is pure JS/WASM (no native binary to cross-compile, unlike a Tesseract C++ binding), and its one genuinely network-dependent piece — the `eng.traineddata` language model (5.2 MB, ~2.9 MB gzipped in transit) — is fetched once and then cached under `tokenGoatHome()`, so every read after the first works fully offline. It is registered as `optionalDependencies` and added to `esbuild.config.mjs`'s `EXTERNAL_NATIVE_DEPS` (see that file's comment) so an install that skips optional deps degrades gracefully instead of breaking the build. The one thing that makes this module unusually shaped: `tesseract.js` v6's Node worker does NOT reliably surface load failures as a rejected promise. Verified directly against this package/Node version: pointing `createWorker` at an unreadable local `langPath` throws an uncaught exception from inside the worker's internal `worker_threads` message handler (bypassing any surrounding try/catch — Node's `Worker` is an `EventEmitter`, and tesseract.js's `worker.onerror = ...` assignment is not the same as `worker.on('error', ...)`, so the default "unhandled error event" throw applies); pointing it at an unreachable network host (an offline machine with no cached model) instead makes `createWorker`'s returned promise hang forever, settling neither way. Either failure mode would violate this hook's "must fail open, never blocks a Read" contract if `createWorker` were called in-process — a crash kills the whole hook invocation, and a hang is worse: `main.ts` deliberately never calls `process.exit()` (so buffered stdout flushes cleanly on Windows pipes), so a hung promise here would hang the entire CLI process forever. The fix is process isolation, not a try/catch: {@link ocrImage} spawns a short-lived Node child process to do the actual `tesseract.js` work, talks to it over stdin/stdout, and enforces its own hard kill-timeout from the parent. However the child misbehaves — crash, hang, garbage output — the parent's timeout guarantees a `SIGKILL` and a `null` result, never a hang or a crash in the process the hook actually runs in. */
 
-import { spawn } from 'node:child_process'
+import { spawnOwned, type OwnedChild } from './process_tree.js'
 import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
@@ -23,6 +23,9 @@ export interface OcrResult {
 
 /** Hard ceiling on the whole spawn-recognize-parse round trip, including a cold-cache language-model download. Bounded low enough that an offline machine with no cached model doesn't stall a Read for long, high enough that a real download over a slow link usually completes. Overridable for tests exercising the timeout path itself, which would otherwise have to burn the real 12s per case. */
 let _ocrTimeoutMs = 12_000
+
+/** How long past the parent's own timeout the OCR child waits before it ends itself. */
+const OCR_CHILD_GRACE_MS = 5_000
 
 /** Test seam for {@link _ocrTimeoutMs}. */
 export function setOcrTimeoutForTesting(ms: number | undefined): void {
@@ -169,11 +172,13 @@ export function resetOcrStateForTesting(): void {
 }
 
 /** Inline child-process script: loads `tesseract.js` from the resolved absolute entry path (never a bare specifier — the child's own module resolution starts from `process.cwd()`, which for a globally installed CLI is the caller's project directory, not token-goat's install dir), reads the image bytes from stdin, OCRs them, and prints a one-line JSON result to stdout. `errorHandler: () => {}` swallows tesseract.js's internal "load failed" event so it does not throw inside the worker's message handler (see module doc comment) — the parent's timeout is what actually bounds a load failure, not this handler. */
-export function buildChildScript(entryPath: string, cacheDir: string, lang?: string): string {
+export function buildChildScript(entryPath: string, cacheDir: string, lang?: string, timeoutMs: number = _ocrTimeoutMs): string {
   const activeLangs = getActiveOcrLangs(lang)
   const activeLangString = activeLangs.join('+')
   const spec = getOcrLangSpec(lang ?? activeLangString)
   return [
+    // Death condition for the case no parent handler can run (the parent was killed outright): the child ends itself shortly after the parent's own timeout would have, and the unref'd timer never keeps a finished child alive.
+    `setTimeout(() => process.exit(1), ${Math.max(1, Math.trunc(timeoutMs)) + OCR_CHILD_GRACE_MS}).unref();`,
     `const { createWorker } = require(${JSON.stringify(entryPath)});`,
     'const chunks = [];',
     "process.stdin.on('data', (c) => chunks.push(c));",
@@ -237,11 +242,12 @@ export async function ocrImage(input: Buffer, lang?: string): Promise<OcrResult 
 
   return new Promise<OcrResult | null>((resolve) => {
     let settled = false
-    let child: ReturnType<typeof spawn>
+    let owned: OwnedChild
     try {
       // tesseract.js swallows a failed cache write, so an absent directory does not fail the OCR -- it silently re-downloads the ~2.9 MB language model on every single call, and leaves the warm-cache verification above with nothing to verify. Nothing else creates this directory.
       ensureOcrCacheDir()
-      child = spawn(process.execPath, ['-e', buildChildScript(entryPath, ocrCacheDir(), lang)], {
+      // Owned: the child (and any process it starts) is ended on the timeout, when this process exits, and on INT/TERM/HUP, and it ends itself if this process is killed outright (see buildChildScript).
+      owned = spawnOwned(process.execPath, ['-e', buildChildScript(entryPath, ocrCacheDir(), lang, _ocrTimeoutMs)], {
         stdio: ['pipe', 'pipe', 'ignore'],
       })
     } catch {
@@ -249,6 +255,7 @@ export async function ocrImage(input: Buffer, lang?: string): Promise<OcrResult 
       resolve(null)
       return
     }
+    const child = owned.child
 
     const chunks: Buffer[] = []
 
@@ -258,7 +265,7 @@ export async function ocrImage(input: Buffer, lang?: string): Promise<OcrResult 
       clearTimeout(timer)
       if (subprocessBroken) _ocrUnavailableThisProcess = true
       try {
-        child.kill()
+        owned.kill()
       } catch {
         // Already exited; nothing to clean up.
       }

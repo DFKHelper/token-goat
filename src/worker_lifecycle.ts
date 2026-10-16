@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { dataDir } from './constants.js'
 import { withEnvProxyEnabled } from './env_proxy.js'
 import { displaySafeText } from './paths.js'
+import { applyIndexingPriorityTo } from './process_priority.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage, withFileLock } from './util.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
@@ -260,6 +261,7 @@ function discardSpawnedWorker(child: ChildProcess, pid: number): void {
   } catch {
     // already gone
   }
+  // owner: none, the daemon was killed just above; dies when that kill lands, and the unref only lets the caller exit.
   child.unref()
 }
 
@@ -384,6 +386,7 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
     [daemonEntryScript(), '--worker-daemon'],
     {
       cwd,
+      // owner: none, the daemon outlives its launcher on purpose; dies when its pid file or data directory is gone, when it sits idle, or on `worker stop` (runWorkerLoop, runDetachedWorkerDaemon).
       detached: true,
       stdio: 'ignore',
       windowsHide: true,
@@ -401,6 +404,8 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
   if (pid === undefined) {
     throw new Error('startDetachedWorker: spawn produced no pid')
   }
+  // Before the pid-file claim and before anything can fail: the daemon is already booting at the launcher's priority, and a launcher is usually a hook running at normal.
+  applyIndexingPriorityTo(pid)
 
   let claimed: boolean
   try {
@@ -421,6 +426,7 @@ export function startDetachedWorker(opts?: WorkerOptions): number {
     // best-effort
   }
 
+  // owner: none, the daemon outlives its launcher on purpose; dies when its pid file or data directory is gone, when it sits idle, or on `worker stop`.
   child.unref()
   return pid
 }

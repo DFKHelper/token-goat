@@ -1,5 +1,5 @@
 /** The drain heartbeat must never be observed half-written. `writeDrainHeartbeat` used to rewrite `queue/drain-heartbeat` in place with `fs.writeFileSync`, which truncates the file to zero bytes before writing the pid. A reader in another process that opened it inside that window read an empty string, `hasFreshWorkerHeartbeat` compared '' against the pid and answered false, and `isWorkerRunning` reported a live, draining worker as dead: that is the one-off "Worker is not running" flake `worker_daemon_e2e` produced once the worker started waking on every queue append and so rewrote the heartbeat far more often. The race needs two processes, so the reader is a plain child `node` loop reading the real file as fast as it can while this process calls the real `writeDrainHeartbeat` in a tight loop. Measured against the in-place write: thousands of empty reads per run (6134 of 25819 in the report that found it). Against the temp-file-and-rename write: none. Provenance: CAPTURE. Both the torn reads and their absence are what a real second process sees on the real filesystem; nothing is asserted on the implementation's own source. */
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -8,11 +8,18 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { drainHeartbeatPathFor, writeDrainHeartbeat } from '../src/worker_lifecycle.js'
 
+// The loop has no deadline of its own, so it carries its own death conditions: the stop file appears, its directory is gone, or its parent process is. Without them a test that throws before writing the stop file leaves it spinning at full CPU, since the cleanup that deletes the directory is also what removes any chance of the stop file appearing. The directory and parent checks run every 64 spins so they do not change how hard the reader contends for the file.
 const READER = `
 const fs = require('node:fs')
-const [file, expected, stopFile, outFile] = process.argv.slice(1)
-let reads = 0, torn = 0, errors = 0
+const path = require('node:path')
+const [file, expected, stopFile, outFile, parentPid] = process.argv.slice(1)
+const dir = path.dirname(stopFile)
+const orphaned = () => {
+  try { process.kill(Number(parentPid), 0); return false } catch (e) { return e.code !== 'EPERM' }
+}
+let reads = 0, torn = 0, errors = 0, spins = 0
 while (!fs.existsSync(stopFile)) {
+  if (++spins % 64 === 0 && (!fs.existsSync(dir) || orphaned())) process.exit(0)
   try {
     const text = fs.readFileSync(file, 'utf8')
     reads++
@@ -25,7 +32,12 @@ fs.writeFileSync(outFile, JSON.stringify({ reads, torn, errors }))
 `
 
 const dirs: string[] = []
+const children: ChildProcess[] = []
 afterEach(() => {
+  // The reader first, then its directory: a test that failed before the stop file was written must not leave the reader spinning.
+  for (const child of children.splice(0)) {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+  }
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
 })
 
@@ -38,7 +50,8 @@ describe('writeDrainHeartbeat', () => {
     const stopFile = path.join(dir, 'stop')
     const outFile = path.join(dir, 'result.json')
 
-    const child = spawn(process.execPath, ['-e', READER, file, `${process.pid}\n`, stopFile, outFile], { stdio: 'ignore' })
+    const child = spawn(process.execPath, ['-e', READER, file, `${process.pid}\n`, stopFile, outFile, String(process.pid)], { stdio: 'ignore' })
+    children.push(child)
     const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()))
     // Let the reader get going before the writes start, so the window is actually contested.
     await new Promise((resolve) => setTimeout(resolve, 300))
@@ -60,4 +73,30 @@ describe('writeDrainHeartbeat', () => {
     expect(result.reads).toBeGreaterThan(100)
     expect(result).toMatchObject({ torn: 0, errors: 0 })
   }, 20000)
+
+  it('the reader ends by itself when its directory is deleted, with no stop file', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-heartbeat-'))
+    dirs.push(dir)
+    writeDrainHeartbeat(dir, true)
+    const child = spawn(process.execPath, ['-e', READER, drainHeartbeatPathFor(dir), 'x', path.join(dir, 'stop'), path.join(dir, 'result.json'), String(process.pid)], { stdio: 'ignore' })
+    children.push(child)
+    const exited = new Promise<void>((resolve) => child.on('exit', () => resolve()))
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    await exited
+    expect(child.exitCode).toBe(0)
+  })
+
+  it('the reader ends by itself when its parent is gone', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-heartbeat-'))
+    dirs.push(dir)
+    writeDrainHeartbeat(dir, true)
+    // A process that has already exited stands in for the dead parent.
+    const gone = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' })
+    const goneExited = new Promise<void>((resolve) => gone.on('exit', () => resolve()))
+    await goneExited
+    const child = spawn(process.execPath, ['-e', READER, drainHeartbeatPathFor(dir), 'x', path.join(dir, 'stop'), path.join(dir, 'result.json'), String(gone.pid)], { stdio: 'ignore' })
+    children.push(child)
+    await new Promise<void>((resolve) => child.on('exit', () => resolve()))
+    expect(child.exitCode).toBe(0)
+  })
 })

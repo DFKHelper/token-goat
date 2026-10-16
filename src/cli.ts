@@ -770,7 +770,7 @@ async function cmdCompress(
     const bashRunner = await import('./bash_runner.js')
     if (opts.compress === false) {
       // Commander maps `--no-compress` to `opts.compress === false`.
-      process.exitCode = bashRunner.runRaw(
+      process.exitCode = await bashRunner.runRaw(
         command,
         parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS),
         opts.native,
