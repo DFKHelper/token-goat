@@ -74,13 +74,13 @@ describe('the depth ceiling reports itself rather than reporting no match', () =
 })
 
 describe('a comparison operator this grammar does not implement is refused, not absorbed', () => {
-  // The grammar is equality-only by design. The bracket parser matched `^([^=]+)==?(.*)$`, so on `price>=10` the greedy field group swallowed the `>` and the op became a field literally named `price>`, which no document has -- an empty result, silently, for a query the user believes filtered.
+  // The bracket parser once matched `^([^=]+)==?(.*)$`, so an operator it did not know was swallowed into the field name (`price>=10` became a field literally named `price>`), an empty result, silently, for a query the user believes filtered. The operators that grammar lacked are implemented now; this pins that one it still lacks is refused rather than absorbed.
   const doc = { items: [{ price: 5 }, { price: 50 }] }
 
   it.each([
-    ['>=', 'items[price>=10]'],
-    ['<=', 'items[price<=10]'],
-    ['!=', 'items[price!=5]'],
+    ['<>', 'items[price<>10]'],
+    ['!==', 'items[price!==5]'],
+    ['>>', 'items[price>>10]'],
   ])('refuses %s rather than returning an empty filter', (_op, spec) => {
     expect(() => queryJson(doc, spec)).toThrow(/unsupported comparison operator/)
   })

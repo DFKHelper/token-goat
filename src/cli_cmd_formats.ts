@@ -58,6 +58,15 @@ import {
 import { cmdInsertSection, cmdReplace, cmdWriteFile } from './cli_file_ops.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
+/** The filter half of the json-query and yaml-query path grammar, the one copy of it, so the two help texts cannot drift. docs/cli.md only points here. */
+const FILTER_HELP =
+  'Filters go in one bracket. [field=value] with an unquoted value is plain text equality up to the closing bracket ([x=1] matches 1 and "1", [x=true] matches true and "true", and [run=npm ci && npm test] looks for that text); && and || combine tests only when each piece has its own operator or !, and quoting a value always uses the filters below. ' +
+  '!= < <= > >= compare as numbers when both sides are numbers (a numeric string such as "100" counts) and as text otherwise, so ISO dates order; a quoted value is always text. ' +
+  '*= contains, ^= starts with, $= ends with, and an i after a quoted value ignores case: [name*="bob" i]. ' +
+  '[field] keeps elements that have the key (a null value counts) and [!field] those that lack it; a name with punctuation goes in quotes: [@."first-name"]. ' +
+  '[@>3] tests an array element itself. && binds tighter than ||, there are no parentheses, and a second bracket after a filter does not narrow it. ' +
+  'A missing field matches only !=; ~= regular expressions are not supported. A filter that keeps nothing says why on stderr and exits 1. mcp-output --json-query takes the same filters.'
+
 // Shared by csv-query, csv-profile and xlsx-query; a blank header cell is named by its position the same way, so the help says so once.
 const NO_HEADER_DESCRIPTION = 'treat the first row as data, not a header (columns become col1, col2, ...); a blank header cell is also named colN by its position'
 
@@ -365,9 +374,10 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .description(
       "extract one value or a projected/filtered subset from a JSON document by dot-path instead of a raw Read\n\n" +
         "file: path to a JSON document or - to read from stdin\n\n" +
-        "path grammar: dot-separated keys with optional bracket segments -- [n] index, [*] wildcard " +
-        '(projects every element/value), [field=value] filter (keeps array elements whose field ' +
-        "stringifies to value), [\"key\"] for a key holding a dot or space. Examples: data.items[3].name, items[*].id, items[status=active], [\"a.b\"].c",
+        "path grammar: dot-separated keys with optional bracket segments -- [n] index (negative counts from the end), [a:b] [:b] [a:] slice, [*] wildcard " +
+        '(projects every element/value), ["key"] for a key holding a dot or space, and filters that keep array elements. ' +
+        FILTER_HELP +
+        ' Examples: data.items[3].name, items[*].id, items[status=active], items[price>=10 && stock>0].name, items[name*="bob" i], items[!deleted], tags[@^=prod], items[-1], ["a.b"].c',
     )
     .option('--head <n>', 'limit a projected/filtered result to the first N items')
     .option('--json', 'emit the result as JSON instead of text')
@@ -385,9 +395,10 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .description(
       "extract one value or a projected/filtered subset from a YAML document by dot-path instead of a raw Read (same grammar as json-query)\n\n" +
         "file: path to a YAML document or - to read from stdin\n\n" +
-        "path grammar: dot-separated keys with optional bracket segments -- [n] index, [*] wildcard " +
-        '(projects every element/value), [field=value] filter (keeps array elements whose field ' +
-        "stringifies to value), [\"key\"] for a key holding a dot or space. Examples: spec.containers[0].image, items[*].name, items[kind=Service]",
+        "path grammar: dot-separated keys with optional bracket segments -- [n] index (negative counts from the end), [a:b] [:b] [a:] slice, [*] wildcard " +
+        '(projects every element/value), ["key"] for a key holding a dot or space, and filters that keep array elements. ' +
+        FILTER_HELP +
+        ' Examples: spec.containers[0].image, items[*].name, items[kind=Service], items[replicas>=2 || kind=Job].name',
     )
     .option('--head <n>', 'limit a projected/filtered result to the first N items')
     .option('--json', 'emit the result as JSON instead of text')

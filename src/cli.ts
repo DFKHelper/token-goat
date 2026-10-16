@@ -1399,7 +1399,7 @@ export function buildProgram(): Command {
     .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405; with --section, the numbers -n prints')
     .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
     .option('--context <n>', 'with --grep, also show N lines around each match')
-    .option('--json-query <path>', 'query JSON content using a dot/bracket path expression (e.g. "issues[*].key")')
+    .option('--json-query <path>', 'query JSON content using a dot/bracket path expression (e.g. "issues[*].key"); filters are the ones json-query takes, see json-query --help')
     .option('--file <path>', 'read and query an on-disk tool spill file (e.g. content.json) instead of cache')
     .option('--json', 'emit query results as structured JSON envelope')
     .action(guard(cmdMcpOutput))
