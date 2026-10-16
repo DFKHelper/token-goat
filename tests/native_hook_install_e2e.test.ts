@@ -626,7 +626,17 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
     fs.copyFileSync(src, file)
   }
 
-  it('reports a stale copy, a binary that fails its self-test and a build without one, and install moves the entries to what it reports', () => {
+  // One sandbox per scenario, each installed and checked on its own: a single test chaining all four ran about ten installs and doctors under one 300 s budget, which a starved Windows machine overran with nothing wrong in the product.
+  function wiredSandbox(): {
+    sb: Sandbox
+    packaged: string
+    good: string
+    run: string
+    row: () => { status: string; message: string }
+    expectOk: () => void
+    wiredBin: () => string | undefined
+    bin: string
+  } {
     const sb = copiedSandbox('tg native build')
     const packaged = path.join(sb.home, 'pkg', 'dist', 'native', TARGET, WIN ? 'tg-hook.exe' : 'tg-hook')
     const good = path.join(sb.root, 'tg-hook.good')
@@ -647,28 +657,34 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
     const bin = wiredBin()
     expect(bin, `the native form was not written; doctor says: ${row().message}`).toBeDefined()
     expectOk()
+    return { sb, packaged, good, run, row, expectOk, wiredBin, bin: bin! }
+  }
 
-    if (WIN) {
-      // An upgrade ships different bytes, and the entries still run the data-directory copy of the old ones.
-      fs.appendFileSync(packaged, Buffer.from('a later build'))
-      const stale = row()
-      expect(stale.status, stale.message).toBe('warn')
-      expect(stale.message).toContain(`self-test passed, but the copy differs from this build's binary; run \`${run}\` to refresh it`)
-      install(sb, ['--codex'])
-      expect(fs.readFileSync(bin!).equals(fs.readFileSync(packaged))).toBe(true)
-      expectOk()
-      replace(packaged, good)
-      install(sb, ['--codex'])
-      expectOk()
-    }
+  // An upgrade ships different bytes, and the entries still run the data-directory copy of the old ones.
+  it.runIf(WIN)('reports a stale copy and install refreshes it', () => {
+    const { sb, packaged, good, run, row, expectOk, bin } = wiredSandbox()
+    fs.appendFileSync(packaged, Buffer.from('a later build'))
+    const stale = row()
+    expect(stale.status, stale.message).toBe('warn')
+    expect(stale.message).toContain(`self-test passed, but the copy differs from this build's binary; run \`${run}\` to refresh it`)
+    install(sb, ['--codex'])
+    expect(fs.readFileSync(bin).equals(fs.readFileSync(packaged))).toBe(true)
+    expectOk()
+    replace(packaged, good)
+    install(sb, ['--codex'])
+    expectOk()
+  }, 300_000)
 
-    // The binary the entries run fails its self-test.
-    replace(bin!, FAILING_BINARY)
+  it('reports a binary the entries run that fails its self-test', () => {
+    const { run, row, bin } = wiredSandbox()
+    replace(bin, FAILING_BINARY)
     const broken = row()
     expect(broken.status, broken.message).toBe('fail')
-    expect(broken.message).toContain(`the native hook client at ${bin!} fails its self-test (exit code 1); run \`${run}\` to rewrite the entries as Node commands`)
+    expect(broken.message).toContain(`the native hook client at ${bin} fails its self-test (exit code 1); run \`${run}\` to rewrite the entries as Node commands`)
+  }, 300_000)
 
-    // The binary this build ships fails its self-test: install writes the Node form and doctor says why.
+  it('writes the Node form when the binary this build ships fails its self-test, and restores the native form when it passes again', () => {
+    const { sb, packaged, good, row, expectOk, wiredBin, bin } = wiredSandbox()
     replace(packaged, FAILING_BINARY)
     install(sb, ['--codex'])
     expect(wiredBin()).toBeUndefined()
@@ -679,8 +695,10 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
     install(sb, ['--codex'])
     expect(wiredBin(), `the native form was not restored; doctor says: ${row().message}`).toBe(bin)
     expectOk()
+  }, 300_000)
 
-    // A build that ships no native binary for this machine.
+  it('reports a build that ships no native binary for this machine, and install moves the entries to the Node form', () => {
+    const { sb, packaged, run, row, wiredBin } = wiredSandbox()
     const nativeDir = path.dirname(path.dirname(packaged))
     fs.renameSync(nativeDir, `${nativeDir}.gone`)
     const absent = row()

@@ -8,6 +8,8 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { runHook as RunHookFn } from '../src/hook_registry.js'
+import type * as UtilModule from '../src/util.js'
+import type { RunGitOptions } from '../src/util.js'
 import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
 import { claimsChangeTheTreeLacks, parkAgentReceipt, receiptLines, takeAgentReceipt, waitAgentReceipts } from '../src/agent_receipt.js'
@@ -19,6 +21,19 @@ import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
 import { withFileLock } from '../src/util.js'
 import { noteFailedVerificationRun, type VerificationState } from '../src/verification_state.js'
+
+// The product bounds `git status` at 5 s and reads a timeout as "no evidence", which is right for a hook and wrong for a test: a Windows machine busy enough to stall a git spawn that long turned "clean tree, claim flagged" into "not flagged". Real git still runs; only the wall-clock bound is lifted.
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  return {
+    ...actual,
+    runGit: (args: string[], opts: RunGitOptions = {}) => {
+      const { timeoutMs, ...unbounded } = opts
+      void timeoutMs
+      return actual.runGit(args, unbounded)
+    },
+  }
+})
 
 // clearModuleCaches also empties the hook registry, so the registry tests reload the modules instead and dispatch through the production registrations.
 let runHook: typeof RunHookFn
