@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { formatTable, parseDurations, slowest } from '../scripts/test-durations.mjs'
+import { formatTable, parseDurations, parseFailedFiles, slowest } from '../scripts/test-durations.mjs'
 
 const SCRIPT = path.join(fileURLToPath(new URL('..', import.meta.url)), 'scripts', 'test-durations.mjs')
 const ESC = '\u001b'
@@ -73,5 +73,28 @@ describe('command line', () => {
     expect(out).toBe('   25112ms  tests/cli.test.ts  (108 tests | 6 skipped)\n')
     writeFileSync(log, 'nothing here\n')
     expect(execFileSync(process.execPath, [SCRIPT, log], { encoding: 'utf8' })).toContain('no per-file timings found')
+  })
+})
+
+// CAPTURE: failure lines from the same two logs. Windows: tests.log lines 8523, 8536 and 2142 (plain); WSL: wsl-test.log line 825 (colour codes, cut after the test title). A file with several failing tests and a file listed by both a FAIL line and a counted line must appear once.
+const FAILED_WINDOWS = [
+  ' FAIL  tests/embed_gates_asset_and_chunk_count.test.ts > indexFileEmbeddings refuses files with no embeddable text > keeps embedding a file just under the ceiling, so the gate is a ceiling and no',
+  ' FAIL  tests/hooks_stop.test.ts > the built hook entry, per host > codex: a test run that reported no status, then an edit, then a stop names the file and the run',
+  ' ❯ tests/hooks_stop.test.ts (239 tests | 1 failed) 4933ms',
+  ' ✓ tests/cli.test.ts (108 tests | 6 skipped) 25112ms',
+].join('\n')
+const FAILED_WSL = `${ESC}[41m${ESC}[1m FAIL ${ESC}[22m${ESC}[49m tests/parser_fingerprint_gate.test.ts${ESC}[2m > ${ESC}[22mparser fingerprint freshness gate${ESC}[2m > ${ESC}[22mhas a checked-in fingerprint that still matches the extraction sourc`
+
+describe('parseFailedFiles', () => {
+  it('lists each failing file once and leaves passing and skipped files out', () => {
+    expect(parseFailedFiles(FAILED_WINDOWS)).toEqual(['tests/embed_gates_asset_and_chunk_count.test.ts', 'tests/hooks_stop.test.ts'])
+  })
+
+  it('reads a coloured FAIL line', () => {
+    expect(parseFailedFiles(FAILED_WSL)).toEqual(['tests/parser_fingerprint_gate.test.ts'])
+  })
+
+  it('finds nothing in a green log', () => {
+    expect(parseFailedFiles(WINDOWS_LOG.split('\n')[0] + '\n' + WSL_LOG)).toEqual([])
   })
 })

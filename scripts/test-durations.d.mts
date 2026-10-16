@@ -4,5 +4,6 @@ export interface FileDuration {
   detail: string
 }
 export function parseDurations(text: string): FileDuration[]
+export function parseFailedFiles(text: string): string[]
 export function slowest(entries: readonly FileDuration[], n: number): FileDuration[]
 export function formatTable(entries: readonly FileDuration[]): string

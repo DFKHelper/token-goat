@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Single entry point for all pre-push checks. Typecheck, ts-checks and the Windows suite run concurrently; the WSL (Linux) suite follows the Windows suite unless PREPUSH_PARALLEL_WSL=1 starts it at once, and it runs only when wsl-gate.sh says so (TG_PREPUSH_WSL=1 or a pushed path listed in wsl-paths.txt) and the Windows leg passed. The WSL leg runs from its own Linux-side copy in a separate VM, so its files and node_modules never overlap the Windows run; both suites then share the workstation's CPU, which is why serial is the default: concurrent, they were slower and flaky.
+# Single entry point for all pre-push checks. Typecheck, ts-checks and the Windows suite run concurrently; the WSL (Linux) suite follows the Windows suite unless PREPUSH_PARALLEL_WSL=1 starts it at once, and it runs only when wsl-gate.sh says so (TG_PREPUSH_WSL=1 or a pushed path listed in wsl-paths.txt) and the Windows leg passed. After a red suite leg the next push re-runs only the failing files and what changed since (prepush-focus.sh; TG_PREPUSH_FULL=1 forces the full leg). The WSL leg runs from its own Linux-side copy in a separate VM, so its files and node_modules never overlap the Windows run; both suites then share the workstation's CPU, which is why serial is the default: concurrent, they were slower and flaky.
 set -euo pipefail
 
 # Always anchor to git root so this script works whether lefthook invokes it
@@ -9,6 +9,8 @@ source "$SCRIPT_DIR/tmp-base.sh"
 source "$SCRIPT_DIR/wsl-gate.sh"
 LOG_DIR="$(mktemp -d "${TMP_BASE}/token-goat-pre-push.XXXXXX")"
 ROOT_DIR="$(git rev-parse --show-toplevel)"
+HEAD_SHA="$(git rev-parse HEAD)"
+source "$SCRIPT_DIR/prepush-focus.sh"
 
 # The ref lines git gives a pre-push hook (lefthook passes them on with use_stdin). The read is bounded so a stdin that never closes cannot hang the push; no lines means the pushed range is unknown and the WSL leg runs.
 PUSH_STDIN=""
@@ -71,6 +73,23 @@ leg_secs() {
   fi
 }
 
+# Starts a suite leg (win or wsl), focused on the failures of the last push when prepush-focus.sh can say so safely, otherwise in full. $1: log name, $2: leg, $3: the leg's script.
+start_suite_leg() {
+  focus_decide "$2"
+  echo "pre-push: $FOCUS_NOTE"
+  if [[ -n "$FOCUS_FILE" ]]; then
+    run_check "$1" env TG_PREPUSH_FOCUS="$FOCUS_FILE" bash "$3"
+  else
+    run_check "$1" env -u TG_PREPUSH_FOCUS bash "$3"
+  fi
+}
+
+# Keeps the failing-files record in step with a finished suite leg: a red leg records its failures, a green one clears them, a leg that did not run or was aborted changes nothing. $1: log name, $2: leg.
+record_leg_outcome() {
+  [[ -n "${END[$1]:-}" && -z "${ABORTED[$1]:-}" ]] || return 0
+  if [[ -n "${FAILED[$1]:-}" ]]; then focus_record_failure "$2" "$LOG_DIR/$1.log"; else focus_clear "$2"; fi
+}
+
 # Prints the slowest test files of one leg's vitest log. A failure of this report never changes the push result.
 report_slowest() {
   local name=$1 title=$2
@@ -125,10 +144,10 @@ fi
 
 run_check typecheck bash "$SCRIPT_DIR/run-typecheck.sh"
 run_check ts-checks bash "$SCRIPT_DIR/run-ts-checks.sh"
-run_check tests bash "$SCRIPT_DIR/run-test.sh"
+start_suite_leg tests win "$SCRIPT_DIR/run-test.sh"
 # Default is serial, as before: a measured concurrent run took 2150 s against 1423 s serial and failed 21 Windows and 2 Linux test files under the shared CPU. PREPUSH_PARALLEL_WSL=1 starts the WSL leg now instead of after the Windows suite.
 if [[ "$WSL_RUN" -eq 1 && "${PREPUSH_PARALLEL_WSL:-0}" == "1" ]]; then
-  run_check wsl-test bash "$SCRIPT_DIR/wsl-test.sh"
+  start_suite_leg wsl-test wsl "$SCRIPT_DIR/wsl-test.sh"
   WSL_PID=$RUN_PID
 fi
 
@@ -139,10 +158,11 @@ wait_legs typecheck ts-checks tests
 [[ -z "${FAILED[tests]:-}" ]]     || { report_failure tests; FAIL=1; }
 [[ -z "${FAILED[typecheck]:-}" ]] || { report_failure typecheck; FAIL=1; }
 [[ -z "${FAILED[ts-checks]:-}" ]] || { report_failure ts-checks; FAIL=1; }
+record_leg_outcome tests win
 
 if [[ "$WSL_RUN" -eq 1 ]]; then
   if [[ -z "$WSL_PID" && "$FAIL" -eq 0 ]]; then
-    run_check wsl-test bash "$SCRIPT_DIR/wsl-test.sh"
+    start_suite_leg wsl-test wsl "$SCRIPT_DIR/wsl-test.sh"
     WSL_PID=$RUN_PID
   elif [[ -z "$WSL_PID" ]]; then
     echo "pre-push: WSL leg skipped because the Windows leg failed (lint, typecheck or the Windows suite)"
@@ -150,6 +170,7 @@ if [[ "$WSL_RUN" -eq 1 ]]; then
   if [[ -n "$WSL_PID" ]]; then
     wait_legs wsl-test
     [[ -z "${FAILED[wsl-test]:-}" ]] || { report_failure wsl-test; FAIL=1; }
+    record_leg_outcome wsl-test wsl
   fi
 fi
 

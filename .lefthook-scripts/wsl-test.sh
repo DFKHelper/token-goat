@@ -43,6 +43,12 @@ to_wsl_path() {
 {
     printf 'TAR=%q\nBUNDLE=%q\nNAMES=%q\nNODE_VERSION=%q\nNODE_MAJOR_MIN=%q\nNODE_MIRROR=%q\nSKIP_STATUS=%q\nPIDFILE=%q\n' \
         "$(to_wsl_path "$TMPD/src.tar")" "$(to_wsl_path "$TMPD/history.bundle")" "$(to_wsl_path "$TMPD/confidential-names.txt")" "$NODE_VERSION" "$NODE_MAJOR_MIN" "$NODE_MIRROR" "$SKIP_STATUS" "$(to_wsl_path "$TMPD/inner.pid")"
+    # The focus list (see prepush-focus.sh) travels as an array in the generated header; empty means the whole suite.
+    printf 'FOCUS_FILES=('
+    if [[ -n "${TG_PREPUSH_FOCUS:-}" ]]; then
+        while IFS= read -r focus_file; do [[ -n "$focus_file" ]] && printf '%q ' "$focus_file"; done <"$TG_PREPUSH_FOCUS"
+    fi
+    printf ')\n'
     cat <<'INNER'
 set -euo pipefail
 
@@ -180,7 +186,10 @@ fi
 
 echo "wsl-test: running npm test in $WORK"
 # TOKEN_GOAT_NO_WORKER_SPAWN and TOKEN_GOAT_HARNESS_OVERRIDE are pinned by tests/setup/isolate-home.ts (vitest setupFiles) so local pre-push and CI run under the same defaults. Don't re-export them here.
-if [[ "${#NATIVE_EXCLUDES[@]}" -gt 0 ]]; then
+if [[ "${#FOCUS_FILES[@]}" -gt 0 ]]; then
+    echo "wsl-test: re-running ${#FOCUS_FILES[@]} focused file(s) with vitest related"
+    npx vitest related --run "${FOCUS_FILES[@]}" "${NATIVE_EXCLUDES[@]}"
+elif [[ "${#NATIVE_EXCLUDES[@]}" -gt 0 ]]; then
     npm test -- "${NATIVE_EXCLUDES[@]}"
 else
     npm test

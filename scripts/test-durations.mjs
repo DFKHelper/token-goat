@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Lists the slowest test files of a vitest run from its captured log. Usage: node scripts/test-durations.mjs LOG [--top N]. Reads the default reporter's per-file lines (`✓ tests/x.test.ts (N tests) 1234ms`, `❯` when a test failed), with or without colour codes. Built-in modules only, so the pre-push hook can run it before and without node_modules.
+// Lists the slowest test files of a vitest run from its captured log. Usage: node scripts/test-durations.mjs LOG [--top N], or LOG --failed to list the failing test files. Reads the default reporter's per-file lines (`✓ tests/x.test.ts (N tests) 1234ms`, `❯` when a test failed), with or without colour codes. Built-in modules only, so the pre-push hook can run it before and without node_modules.
 import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
@@ -20,6 +20,20 @@ export function parseDurations(text) {
   return [...byFile.values()]
 }
 
+const FAIL_LINE = /^ FAIL +(\S+\.(?:test|spec)\.[cm]?[jt]sx?)(?: |$)/
+const FAILED_FILE_LINE = /^ (?:❯|×) (\S+\.(?:test|spec)\.[cm]?[jt]sx?) \([^)]*\bfailed\)/
+
+/** @param {string} text a vitest log @returns {string[]} the test files with a failing test or a failed import, from the ` FAIL  file > test` lines and the per-file lines that count failures, in first-seen order */
+export function parseFailedFiles(text) {
+  const files = new Set()
+  for (const raw of text.replace(ANSI, '').split(/\r?\n/)) {
+    const line = raw.trimEnd()
+    const m = FAIL_LINE.exec(line) ?? FAILED_FILE_LINE.exec(line)
+    if (m) files.add(m[1])
+  }
+  return [...files]
+}
+
 /** @param {{file: string, ms: number, detail: string}[]} entries @param {number} n */
 export function slowest(entries, n) {
   return [...entries].sort((a, b) => b.ms - a.ms || a.file.localeCompare(b.file)).slice(0, n)
@@ -35,10 +49,15 @@ if (isMain) {
   const args = process.argv.slice(2)
   const topAt = args.indexOf('--top')
   const top = topAt >= 0 ? Number(args[topAt + 1]) : 20
+  const failedOnly = args.includes('--failed')
   const log = args.find((a, i) => !a.startsWith('--') && (topAt < 0 || i !== topAt + 1))
   if (!log || !Number.isInteger(top) || top < 1) {
     process.stderr.write('usage: node scripts/test-durations.mjs LOG [--top N]\n')
     process.exit(2)
+  }
+  if (failedOnly) {
+    for (const f of parseFailedFiles(readFileSync(log, 'utf8'))) process.stdout.write(`${f}\n`)
+    process.exit(0)
   }
   const entries = parseDurations(readFileSync(log, 'utf8'))
   if (entries.length === 0) {
