@@ -53,6 +53,18 @@ Guards: [tests/guards/symbol_body_bound.test.ts](tests/guards/symbol_body_bound.
 
 The failure mode to watch for is the **injected-seam trap**: a test always supplies the dependency that the shipping path omits, so the production default is never exercised and the suite stays green over a broken feature. It applies wherever behavior hides behind an injectable callback or a default parameter.
 
+## No forever ghost or orphan processes
+
+Nothing token-goat runs, and nothing its tests or scripts run, may outlive its owner. Shells killed on a timeout left the `find /` they had started walking the disk for hours, and the worker daemons of 2.9.30, which never exited on idle, piled up (one report: 19 processes, about 75 CPU-hours). Three rules follow.
+
+- **Bound every walk.** No code, test or script walks a filesystem root or the home directory without a depth or count limit. The `hook` command refuses a shell search that starts at a root or the home directory.
+- **Reap every tree you spawn, on every path.** A child is ended with its whole tree, on success, failure, timeout and signal alike: in `finally` or `afterEach`, never only on the happy path. In `src/`, start a child through `spawnOwned` in `src/process_tree.ts`, which ends the tree (freeze then kill on Linux and macOS, `taskkill /T` on Windows) when the caller asks, when token-goat exits, and on INT, TERM or HUP. `src/bash_runner.ts` and the image-text helper in `src/image_ocr.ts` use it. In tests, the shell oracle in `tests/helpers/shell_argv.ts` tags every process of a run with a `TG_SHARGV_OWNER` token in its environment and, after a failed run, kills everything carrying that token, so a subshell a timeout orphaned is still found.
+- **A detached helper carries a death condition tied to its owner.** A child started `detached` or released with `.unref()` must say, in a single-line comment on the line itself or the line above, who owns it and what ends it: `// owner: <who> ... dies when <condition>`. `tests/guards/background_spawns_name_their_death.test.ts` fails a site without that comment. Two residents are the deliberate exceptions, because each outlives the process that started it: the worker daemon ends when its pid file or data directory is gone or names another process, after six hours idle (`TG_WORKER_IDLE_EXIT_MS` changes that), or on `worker stop`; the hook server ends after 30 minutes idle, when its key file is deleted, or when its build is replaced.
+
+Cleanup of strays matches by command line and launcher path, never by process name: `upgrade` and `doctor --fix` end the worker daemons and hook servers of the same install through `src/stray_residents.ts`, and leave every other process alone. Kill only a process tree you started, never one you did not.
+
+None of this covers token-goat being killed outright (SIGKILL, or TerminateProcess on Windows): no handler runs then, so a child started before that can survive.
+
 ## Security boundaries
 
 Six invariants govern redaction, fencing, persisted keys, untrusted config, and path confinement, each established by a defect that shipped past a green suite. Read them before changing any of those surfaces: `token-goat section "CLAUDE.arch.md::Security Boundaries"`, or the same heading in [CLAUDE.arch.md](CLAUDE.arch.md). A change touching one needs a test that fails when the invariant is removed, not just a green suite.
