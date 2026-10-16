@@ -19,6 +19,7 @@ import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
 import { agentTypeOf, loadCodexRules, loadingHiddenRuleCheck, permissionNeutralRewrite, readHintCrossesRule, shellPathWords } from './rewrite_permission.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
+import { detectUnboundedWalk } from './unbounded_walk.js'
 import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
@@ -259,6 +260,15 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     return syntaxOutput(denyOutput(
       'This command has two backslashes in a row. Claude Code\'s Bash tool on Windows halves every run of two or more backslashes before Git Bash sees the command, so it would run with different text than you wrote, with no error (anthropics/claude-code#85856). Write text containing backslashes to a file with the Write tool and run it by path, or use the PowerShell tool, which passes the command unchanged. For paths, use forward slashes: C:/Users/me works in Git Bash. To turn this check off, set hints.deny_bash_double_backslash = false or TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH=0.',
     ))
+  }
+  // A walk of a whole filesystem root or the home directory with no depth bound outlives the shell that timed out and keeps burning CPU, so it is refused here before it starts; the harness decides whether a bare `find` is Git's or the Windows text-search one. There is no config switch for it on purpose: a switch nobody has asked for is a rule that can be left off.
+  const walk = detectUnboundedWalk(rawCmd, {
+    windows: process.platform === 'win32',
+    powershell: process.platform === 'win32' && (event.raw['_tg_harness'] === 'codex' || event.raw['_tg_harness'] === 'copilot_cli' || (typeof event.raw['tool_name'] === 'string' && event.raw['tool_name'].toLowerCase() === 'powershell')),
+  })
+  if (walk !== null) {
+    recordStat('session_hint', 0, 0)
+    return syntaxOutput(denyOutput(walk.message))
   }
   // Check for unbalanced shell quoting or unterminated heredocs
   if (cfg.hints.warn_unbalanced_shell_quoting) {

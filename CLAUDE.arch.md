@@ -593,6 +593,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/transcript_extract.ts`](src/transcript_extract.ts) | Zero-dependency WebVTT/SRT transcript reader. |
 | [`src/ts_compiler.ts`](src/ts_compiler.ts) | The `typescript` compiler API behind ts_refs.ts (the type-resolved `refs` tier) and dep_docs.ts (the `.d.ts` outline), required on first use. |
 | [`src/ts_refs.ts`](src/ts_refs.ts) | Type-resolved reference disambiguation for TypeScript, using the TypeScript compiler API. |
+| [`src/unbounded_walk.ts`](src/unbounded_walk.ts) | Refuses a shell command that walks a whole filesystem root or the home directory with no depth bound, or that starts the Windows `find.exe` text search with nothing to read, because both outlive a timed-out shell and keep burning CPU. It has its own scanner because `shlexSplit` consumes backslashes (so `C:\` stops being a path) and `splitShellSegments` drops which operator joined two commands (a piped `find "x"` reads stdin, a chained one waits on it forever). The scanner skips comments, heredoc bodies and quoted text. |
 | [`src/untrusted_fence.ts`](src/untrusted_fence.ts) | The single decision point for "should this text be fenced, and under what notice". |
 | [`src/url_policy.ts`](src/url_policy.ts) | Shared allow/deny matching for URL policy (`webfetch.allow` / `webfetch.deny`). |
 | [`src/verification_state.ts`](src/verification_state.ts) | What the session has verified. |

@@ -25,7 +25,8 @@ function srcTypeScriptFiles(): readonly string[] {
     }
   }
   walk(SRC)
-  return pinnedPopulation({ what: 'TypeScript modules under src/', items: found.sort(), floor: 414, ceiling: 524, mustIncludeExact: ['src/parser_types.ts'] })
+  // Moved 524 -> 525 when src/unbounded_walk.ts was added.
+  return pinnedPopulation({ what: 'TypeScript modules under src/', items: found.sort(), floor: 414, ceiling: 525, mustIncludeExact: ['src/parser_types.ts'] })
 }
 
 function srcFilesDefining(pattern: RegExp): string[] {
