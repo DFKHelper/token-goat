@@ -22,7 +22,7 @@ import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenanc
 import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { foregroundDownloadDeferred, offlineEmbedNotice, WARM_COMMAND } from './embed_preflight.js'
 import { rerunWithEnvProxy } from './env_proxy.js'
-import { allowReadOnlyIndex, getDb } from './db.js'
+import { allowReadOnlyIndex, getDb, limitDbWaitsForHook } from './db.js'
 import { pruneDeletedFiles, removeFileFromIndex } from './index_prune.js'
 import { recordIndexedRoot } from './indexed_roots.js'
 import { recordKnownRootThrottled } from './known_roots.js'
@@ -548,6 +548,8 @@ async function cmdHook(event: string, opts: { harness?: string }): Promise<void>
   }
   // Imported here rather than at module scope: relay.ts side-effect-imports every hook handler to register them, so a top-level import made every CLI command -- `symbol`, `read`, even `--version` -- parse the whole hook subsystem, the bash tool-filter registry and the HTML extractor before doing anything. Only this one command needs any of it. Hooks themselves are unaffected: they run through dist/token-goat-hook.mjs, which imports relay directly.
   const { relay } = await import('./relay.js')
+  // A hook is the agent's tool call, so no database lock a wedged process holds may stall it for the 15 s the worker waits.
+  limitDbWaitsForHook()
   // relay handles its own stdin read / stdout write and never throws on a malformed/unknown event — it emits `{}` and returns.
   await relay(event)
 }

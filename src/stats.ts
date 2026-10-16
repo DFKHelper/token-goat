@@ -733,12 +733,12 @@ function recordStatWriteFailure(kind: string, err: unknown, dir: string = dataDi
   }
 }
 
-// getDb()'s connection to global.db is shared with the indexer and worker and keeps db.ts's 15000ms busy_timeout on purpose (initConnection); telemetry writes (recordStat, recordSemanticQuery) have the opposite contract -- a lost row costs a measurement, never a result, so withTelemetryWriteDb gives each write its own short-budget connection, opened and closed per call, instead of ever waiting out indexing's contention. 200ms is sized against the hook path's own ~65-92ms synchronous cost, not against 15000ms.
+// getDb()'s connection to global.db is shared with the indexer and worker and gets db.ts's connectionWaitBudgets busy_timeout on purpose (initConnection): 15000ms in the worker and the CLI, the hook's 250ms in a hook process; telemetry writes (recordStat, recordSemanticQuery) have the opposite contract -- a lost row costs a measurement, never a result, so withTelemetryWriteDb gives each write its own short-budget connection, opened and closed per call, instead of ever waiting out indexing's contention. 200ms is sized against the hook path's own ~65-92ms synchronous cost, not against 15000ms.
 const STATS_WRITE_BUSY_TIMEOUT_MS = 200
 
 /** Runs one telemetry write against global.db on its own short-budget connection, opened and closed per call, so a held lock costs the caller STATS_WRITE_BUSY_TIMEOUT_MS rather than the shared connection's 15000ms. Throws whatever the write throws; a served read-only database skips the write. */
 export function withTelemetryWriteDb(write: (db: SqliteDatabase) => void): void {
-  // getGlobalDb() ensures schema/migrations exist via the shared, patient connection first -- a rare, idempotent bootstrap step left on db.ts's normal budget rather than given a second timeout regime.
+  // getGlobalDb() ensures schema/migrations exist via the shared connection first -- a rare, idempotent bootstrap step left on whatever budget connectionWaitBudgets gives the process (short in a hook, patient elsewhere) rather than given a second timeout regime.
   getGlobalDb()
   const dbPath = path.join(dataDir(), 'global.db')
   // Served read-only (db.ts's allowReadOnlyIndex): the row has nowhere to go, and the run has already said stats are not recorded.

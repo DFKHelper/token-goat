@@ -423,11 +423,11 @@ function stealAbandoned(lockPath: string, staleMs: number): boolean {
   return true
 }
 
-/** Runs `fn` while holding an exclusive lock at `lockPath`, so the same critical section never runs concurrently across separate OS processes. The mutex primitive is an atomic exclusive-create write (`wx`), which behaves identically on Windows and POSIX, unlike advisory `flock`. If another process already holds the lock, this waits (backoff style mirrors atomicWriteCore's rename retry) for up to `waitMs` before giving up. A lock file whose mtime is older than `staleMs` is treated as abandoned by a holder that crashed without releasing it and is stolen, so one crashed process can never permanently wedge every future caller of this critical section. A lock whose holder is still running (see lockHolderAlive above) is not stolen at staleMs, so a live holder -- even one whose fn() blocks the thread for longer than staleMs -- is never mistaken for a crashed one. Returns `undefined` -- without ever calling `fn` -- if the lock could not be acquired in time. Callers whose own persistence must never block forever should treat that as "proceed without the lock" (e.g. fall back to an unprotected write), not as a hard failure. */
+/** Runs `fn` while holding an exclusive lock at `lockPath`, so the same critical section never runs concurrently across separate OS processes. The mutex primitive is an atomic exclusive-create write (`wx`), which behaves identically on Windows and POSIX, unlike advisory `flock`. If another process already holds the lock, this waits (backoff style mirrors atomicWriteCore's rename retry) for up to `waitMs` before giving up. A lock file whose mtime is older than `staleMs` is treated as abandoned by a holder that crashed without releasing it and is stolen, so one crashed process can never permanently wedge every future caller of this critical section. A lock whose holder is still running (see lockHolderAlive above) is not stolen at staleMs, so a live holder -- even one whose fn() blocks the thread for longer than staleMs -- is never mistaken for a crashed one. Returns `undefined` -- without ever calling `fn` -- if the lock could not be acquired in time. `onContended`, when given, is called just before that return when the cause is another holder outlasting the wait, and not when the lock could not be created at all, so a caller that must never write unlocked can tell "held by someone" from "cannot lock here". Callers whose own persistence must never block forever should treat that as "proceed without the lock" (e.g. fall back to an unprotected write), not as a hard failure. */
 export function withFileLock<T>(
   lockPath: string,
   fn: () => T,
-  opts: { waitMs?: number; staleMs?: number } = {},
+  opts: { waitMs?: number; staleMs?: number; onContended?: () => void } = {},
 ): T | undefined {
   const waitMs = opts.waitMs ?? LOCK_WAIT_MS
   const staleMs = opts.staleMs ?? LOCK_STALE_MS
@@ -444,7 +444,11 @@ export function withFileLock<T>(
       // Windows answers a create over a lock file another holder is still deleting with EPERM, not EEXIST, and the file is gone a moment later, so nothing observable separates it from a real permission error. It is retried as contention, but a refusal that lasts LOCK_EPERM_RUN_MS without a break is a real permission error, reported as no lock rather than waited out to the deadline.
       if (process.platform === 'win32' && errnoCode(err) === 'EPERM') {
         epermSince ??= Date.now()
-        if (Date.now() >= deadline || Date.now() - epermSince >= LOCK_EPERM_RUN_MS) return undefined
+        if (Date.now() >= deadline) {
+          opts.onContended?.()
+          return undefined
+        }
+        if (Date.now() - epermSince >= LOCK_EPERM_RUN_MS) return undefined
         sleepSync(Math.min(20 * ++attempt, 200))
         continue
       }
@@ -461,7 +465,10 @@ export function withFileLock<T>(
       stale = false
     }
     if (stale && stealAbandoned(lockPath, staleMs)) continue // no sleep: the steal made forward progress
-    if (Date.now() >= deadline) return undefined
+    if (Date.now() >= deadline) {
+      opts.onContended?.()
+      return undefined
+    }
     sleepSync(Math.min(20 * ++attempt, 200))
   }
   try {

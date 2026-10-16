@@ -79,13 +79,14 @@ export function recordKnownRootThrottled(
     // No marker yet: first check ever for this data dir, proceed.
   }
   try {
-    ensureDirSync(dir)
-    fs.writeFileSync(markerPath, '')
-  } catch {
-    // If we can't even write the marker, don't let that block the record below -- worst case we just record more often than intended.
-  }
-  try {
     recordKnownRoot(filePath, dbPath)
+    // Written only once the record went through: a hook's database wait is short, so a busy database refuses the insert, and a marker already in place would then cost this root its record for the whole interval.
+    try {
+      ensureDirSync(dir)
+      fs.writeFileSync(markerPath, '')
+    } catch {
+      // If we can't write the marker the record above stands; worst case we record more often than intended.
+    }
   } catch {
     // Bookkeeping must never take down the operation that triggered it. Every caller is an indexing or edit path whose actual job is already done or about to be, and the callers include ones that legitimately hand over a dbPath this cannot write to at all -- an in-memory database, for instance, which has no project root to record in the first place. The failure is not logged, because the only sink available is the database that just refused the write. Missing a record costs one sweep window: the next successful call for this root registers it, and the rows stay exactly where they were until then.
   }

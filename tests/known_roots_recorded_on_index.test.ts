@@ -75,6 +75,20 @@ describe('indexing registers the project root for sweeping', () => {
     expect(() => recordKnownRootThrottled(file, dbDir, ':memory:')).not.toThrow()
   })
 
+  it('leaves the hour-long throttle unstarted when the record is refused, so the next call records the root', () => {
+    // A hook waits only briefly on a busy database, so the insert can be refused; a throttle marker written before it would then cost this root its record for the whole interval. HAND-DERIVED: a database path beneath a regular file, whose directory cannot be created, stands in for a refused write.
+    const file = writeFile('e.ts', 'export const e = 5\n')
+    fs.writeFileSync(path.join(dbDir, 'blocker'), '')
+    const refused = path.join(dbDir, 'blocker', 'index.db')
+
+    recordKnownRootThrottled(file, dbDir, refused)
+    expect(fs.readdirSync(dbDir).filter((name) => name.endsWith('.marker'))).toEqual([])
+
+    recordKnownRootThrottled(file, dbDir, dbPath)
+    expect(recordedRoots(), UNREACHABLE).toContain(normalizePath(projectDir))
+    expect(fs.readdirSync(dbDir).filter((name) => name.endsWith('.marker'))).toHaveLength(1)
+  })
+
   it('records a root whose files are all already fresh', async () => {
     // The case a recorder placed inside indexFileSync cannot reach at all: the drain gates the file out as unchanged long before any parse happens. Writing the row through indexFileSync directly reproduces the state an older build left behind -- rows present, no root recorded -- which is the majority of what the live measurement above found stranded, and it leaves no throttle marker for the drain below to short-circuit on.
     const file = writeFile('c.ts', 'export const c = 3\n')

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { ensureDirSync, atomicWriteText, foldPath, LOCK_WAIT_MS_HARDENED, sanitizeIdForFilename, withFileLock, withRetryOnLock } from './util.js'
+import { ensureDirSync, atomicWriteText, foldPath, sanitizeIdForFilename, withFileLock, withRetryOnLock } from './util.js'
 import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSerializedJson } from './secret_redact.js'
@@ -589,11 +589,10 @@ export function loadSessionState(sessionId: string): void {
 /** Sidecar holding the epoch of the latest compaction of a session, written by PreCompact whatever agent it carries. */
 export const COMPACTED_AT_SUFFIX = '.compacted-at'
 
-/** A subagent's state is keyed `<sid>:agent:<id>` but its PreCompact arrives without an `agent_id`, so the epoch is stamped on the parent's state, never its own. Reading the few-byte sidecar the stamp also writes brings the subagent's served-lines, line-range, CLI-read and repeat-deny state up to that compaction without parsing the parent's state file. */
+/** A subagent's state is keyed `<sid>:agent:<id>` but its PreCompact arrives without an `agent_id`, so the epoch is stamped on the parent's state, never its own. Reading the few-byte sidecar the stamp also writes brings the subagent's served-lines, line-range, CLI-read and repeat-deny state up to that compaction without parsing the parent's state file. The main session reads it too: its own PreCompact save is skipped when another process holds the session lock past saveSessionState's budget, and the sidecar, written outside that lock, is then the only place the epoch survives, so without it every read before the compaction would count as still in context. */
 function applySessionCompaction(stateKey: string): void {
   const at = stateKey.indexOf(':agent:')
-  if (at < 0) return
-  const p = sessionSidecarPath(stateKey.slice(0, at), COMPACTED_AT_SUFFIX)
+  const p = sessionSidecarPath(at < 0 ? stateKey : stateKey.slice(0, at), COMPACTED_AT_SUFFIX)
   if (!p) return
   try {
     const epoch = Number(fs.readFileSync(p, 'utf8').trim())
@@ -602,6 +601,9 @@ function applySessionCompaction(stateKey: string): void {
     // fail-soft: no sidecar means no compaction has been recorded for this session
   }
 }
+
+/** How long saveSessionState waits behind another process's session-file lock, in milliseconds. A holder keeps it for one read-merge-write of a small JSON file, so contention that resolves does so well inside this; a holder that has outlived it is wedged, and waiting longer only charges the agent 15 s per tool call (measured 15.6-18.4 s per Read behind a live holder). */
+const SESSION_SAVE_LOCK_WAIT_MS = 500
 
 /** Persist the in-memory session state for `sessionId`, merged with whatever is already on disk (so a concurrent same-session hook process is not clobbered). No-op when the id is empty/unusable. Fail-soft: a disk error is swallowed, and a cache that exists but cannot be read is left as it is rather than written over. */
 export function saveSessionState(sessionId: string): void {
@@ -627,8 +629,10 @@ export function saveSessionState(sessionId: string): void {
       atomicWriteText(p, json)
       return true
     }
-    // Two concurrent hook processes for the same session_id contend on this lock for their *entire* lifetime (every save re-acquires it), not just once -- so under real machine load (e.g. a parallel test run competing for CPU), the default withFileLock budget (2s) can plausibly miss its deadline even though no lock holder is actually stuck. Falling back to an unprotected write on that miss would reintroduce the exact clobber this lock exists to prevent, precisely when contention (and therefore risk) is highest, so give this hot, contended call site a much larger wait budget instead -- an actually-wedged holder still gets its lock stolen well before this via withFileLock's own staleMs abandonment check, so this only lengthens the wait for *genuine*, resolving contention, not a real hang. The unprotected fallback remains only for withFileLock's other undefined case: a hard failure (e.g. missing dir) that waiting longer cannot fix.
-    if (withFileLock(`${p}.lock`, writeMerged, { waitMs: LOCK_WAIT_MS_HARDENED }) === undefined) writeMerged()
+    // Two concurrent hook processes for the same session_id contend on this lock for their entire lifetime (every save re-acquires it), and a saver that writes without it can clobber the other's update with no error.
+    let heldByAnother = false
+    // A hook is the agent's tool call, so it waits SESSION_SAVE_LOCK_WAIT_MS and no longer. A lock still held after that skips this save: the next call's save merges from disk, whereas an unlocked write is the clobber the lock exists to prevent.
+    if (withFileLock(`${p}.lock`, writeMerged, { waitMs: SESSION_SAVE_LOCK_WAIT_MS, onContended: () => { heldByAnother = true } }) === undefined && !heldByAnother) writeMerged()
   } catch {
     // fail-soft: never let persistence break a hook
   }

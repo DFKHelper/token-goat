@@ -500,10 +500,25 @@ function walSwitchError(lastError: unknown): Error {
   return new Error(`db: failed to enable WAL mode (${lastError instanceof Error ? lastError.message : String(lastError)})`, { cause: lastError })
 }
 
+/** How long a connection opened by a one-shot hook process waits on another process's lock, and how long its WAL switch is retried, in milliseconds. The hook is the agent's tool call: every wait here is wall-clock the agent sits through, and every write a hook makes is a hint, a stat or a session note that is fail-soft by contract, so a lost row costs far less than the 15 s a wedged lock holder charged per write (measured 32.8-38.3 s for one Read whose hint made two ledger writes). Sized like {@link PROBE_BUSY_TIMEOUT_MS}, the other pre-tool read bound. */
+const HOOK_DB_WAIT_MS = 250
+let _hookWaits = false
+
+/** Switch this process to the short waits of {@link HOOK_DB_WAIT_MS} for every connection it opens from now on. Called once by the one-shot `hook` command and by no other path: the worker, the indexer and every other CLI command keep the 15 s budget `initConnection` documents, because a patient wait is right for them. Connections opened before the call keep the budget they were opened with. `on = false` restores the patient budget, for tests. */
+export function limitDbWaitsForHook(on = true): void {
+  _hookWaits = on
+}
+
+/** The busy_timeout and the WAL-switch deadline, in milliseconds, that a connection opened now gets: the patient indexing budgets, or the hook's short ones after {@link limitDbWaitsForHook}. */
+export function connectionWaitBudgets(): { busyMs: number; walSwitchMs: number } {
+  return _hookWaits ? { busyMs: HOOK_DB_WAIT_MS, walSwitchMs: HOOK_DB_WAIT_MS } : { busyMs: 15000, walSwitchMs: WAL_SWITCH_DEADLINE_MS }
+}
+
 function initConnection(conn: SqliteDatabase, walStopOn?: (e: unknown) => boolean): void {
-  // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging. Set FIRST, before any statement that can contend, rather than after the two pragmas below as it used to be. The switch to WAL and the schema creation that follows it both need an exclusive lock, and on a database that does not exist yet every process racing to create it runs both -- with the timeout armed only afterwards, those two steps ran with SQLite's default of no wait at all. This is hardening rather than a fix for a reproduced failure: the concurrent-index failure that prompted the look was a deferred-BEGIN upgrade elsewhere (see writeParseResult in parser.ts), and moving this line did not change it.
-  conn.pragma('busy_timeout = 15000')
-  enableWalWithRetry(conn, WAL_SWITCH_DEADLINE_MS, walStopOn)
+  // busy_timeout makes a writer wait for a held write lock instead of failing immediately with SQLITE_BUSY; token-goat runs multiple processes against one global.db (worker daemon draining the queue plus CLI hook invocations), so concurrent writers are normal and 15s absorbs contention spikes without hanging (15s is the budget of a worker or CLI process; a hook process gets the short one from connectionWaitBudgets). Set FIRST, before any statement that can contend, rather than after the two pragmas below as it used to be. The switch to WAL and the schema creation that follows it both need an exclusive lock, and on a database that does not exist yet every process racing to create it runs both -- with the timeout armed only afterwards, those two steps ran with SQLite's default of no wait at all. This is hardening rather than a fix for a reproduced failure: the concurrent-index failure that prompted the look was a deferred-BEGIN upgrade elsewhere (see writeParseResult in parser.ts), and moving this line did not change it.
+  const waits = connectionWaitBudgets()
+  conn.pragma(`busy_timeout = ${waits.busyMs}`)
+  enableWalWithRetry(conn, waits.walSwitchMs, walStopOn)
   conn.pragma('synchronous = NORMAL')
   conn.pragma('cache_size = -32000')
   conn.pragma('temp_store = MEMORY')
@@ -829,4 +844,8 @@ export function closeAllDbs(): void {
 registerReset(closeAllDbs, { perRequest: true })
 registerReset(() => {
   _readOnlyFallback = undefined
+}, { perRequest: true })
+// Per request too: the resident hook server switches to the hook waits for a hook request and must hand the patient ones back to the CLI requests it serves next.
+registerReset(() => {
+  _hookWaits = false
 }, { perRequest: true })

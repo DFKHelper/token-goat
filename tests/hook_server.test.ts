@@ -31,6 +31,7 @@ import {
 } from '../src/hook_ipc.js'
 import Database from '../src/sqlite_driver.js'
 import { BUNDLE, ROOT } from './helpers/bundle.js'
+import { busyTrace } from './helpers/sqlite_busy_trace.js'
 
 type Env = Record<string, string>
 
@@ -388,6 +389,18 @@ describe('serving hook calls', () => {
     const payload = JSON.stringify({ ...(JSON.parse(bashDenyPayload('hs-oversize')) as object), padding: 'x'.repeat(65 * 1024 * 1024) })
     expect(relay(sb, 'pre_tool_use', payload)).toBeNull()
     expect(servedBySlot(sb)).toEqual({ 0: 0 })
+  })
+
+  // HAND-DERIVED: the recorder (tests/helpers/sqlite_busy_trace.ts) lists every busy_timeout the server process sets on a connection; the deny payload opens no database for its decision, so the connections seen are the stats write the request makes after it answers.
+  it('opens the connections of a hook request with the short hook waits, not the 15 s indexing budget', async () => {
+    const sb = sandbox()
+    const trace = busyTrace(sb.base)
+    blockAutostart(sb, [1])
+    startServer(sb, 0, trace.env)
+    await waitForSlots(sb, [0])
+    expect(relay(sb, 'pre_tool_use', bashDenyPayload('hs-db-waits'))).not.toBeNull()
+    await until('the hook request set a busy_timeout', () => (trace.seen().length > 0 ? true : undefined))
+    expect(Math.max(...trace.seen())).toBeLessThan(1000)
   })
 
   it('does the same through the CommonJS client a shim loads, which finds the launcher beside its own file', async () => {

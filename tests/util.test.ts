@@ -234,6 +234,20 @@ describe('withFileLock', () => {
     expect(elapsed).toBeLessThan(2000) // bounded: a live holder can never wedge the caller forever
   })
 
+  it('tells the caller when it gave up on a held lock, and not when it ran or could not lock at all', () => {
+    const held = path.join(dir, 'e.lock')
+    writeFileSync(held, 'live-holder', { flag: 'wx' })
+    let contended = 0
+    expect(withFileLock(held, () => true, { waitMs: 50, staleMs: 60_000, onContended: () => { contended++ } })).toBeUndefined()
+    expect(contended).toBe(1)
+
+    const free = path.join(dir, 'f.lock')
+    expect(withFileLock(free, () => 'ran', { onContended: () => { contended++ } })).toBe('ran')
+    const noDir = path.join(dir, 'missing', 'g.lock')
+    expect(withFileLock(noDir, () => 'ran', { onContended: () => { contended++ } })).toBeUndefined()
+    expect(contended).toBe(1)
+  })
+
   it('steals a lock file abandoned by a crashed holder instead of waiting out the full timeout (regression: task #15)', () => {
     const lockPath = path.join(dir, 'd.lock')
     // Simulate a holder that crashed without releasing: an old lock file with a stale mtime.

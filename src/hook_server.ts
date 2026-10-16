@@ -6,6 +6,7 @@ import * as os from 'node:os'
 import { serveOne, swapEnv } from './batch_serve.js'
 import { hookServerEnabled } from './config.js'
 import { configPath, ensureDataDirPrivate } from './constants.js'
+import { limitDbWaitsForHook } from './db.js'
 import { isAdapterHarness, noopFor, noopOutputs, runAdapter, type AdapterHarness } from './hook_adapters.js'
 import {
   bundleEntryFiles,
@@ -83,6 +84,8 @@ async function handle(request: WorkRequest, runCli: RunCli, send: (res: ServerRe
     const res = await serveOne({ id: 0, argv: request.argv, cwd: request.cwd, env: request.env }, runCli, clearPerRequestCaches)
     return send({ ok: true, stdout: res.stdout, stderr: res.stderr, status: res.status })
   }
+  // A hook request is the agent's tool call, so its connections wait as a one-shot hook's do; the per-request reset in the finally below hands the patient waits back to the CLI requests this process serves next.
+  limitDbWaitsForHook()
   const startedAt = performance.now()
   const cwdBefore = process.cwd()
   const restoreEnv = swapEnv(request.env)
@@ -136,6 +139,8 @@ function parseHarnessRequest(body: string, harness: AdapterHarness): HarnessHook
 /** Serve one v2 request through its harness's adapter (hook_adapters.ts). `early` sends an `out` frame at once; `finish` sends the `done` frame, after which the stats row is written, as {@link handle} does for v1. */
 async function handleHarness(request: HarnessHookRequest, harness: AdapterHarness, early: (data: string) => void, finish: (stdout: string, exit: number) => void): Promise<void> {
   clearPerRequestCaches()
+  // Same short database waits as a hook request over the v1 protocol; see handle.
+  limitDbWaitsForHook()
   const startedAt = performance.now()
   const cwdBefore = process.cwd()
   const restoreEnv = swapEnv(request.env)
