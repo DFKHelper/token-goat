@@ -2,6 +2,17 @@
 
 All notable changes to Token-Goat are documented in this file. Format follows Keep a Changelog. Token-Goat follows Semantic Versioning starting at 1.0.
 
+## [Unreleased]
+
+### Changed
+
+- **The native hook helper now builds on Rust 1.99.1, and CI checks it on the oldest Rust it supports.** The pinned toolchain moved from 1.94.0 to 1.99.1. The minimum supported version stays at 1.94, and the `native-targets` job now builds against it, so a change that needs a newer compiler fails in CI instead of for someone building from source. A monthly workflow compares the pin with the current stable Rust and opens an issue when the pin has fallen behind.
+
+### Fixed
+
+- **A search that walks a whole disk is now also refused when it follows a `cd` to a root or home directory.** `cd / && find . -name x` walks the same disk as `find / -name x`, but the check only looked at the path given to `find`, so the `cd` hid it. The check now follows the `cd`, and only a search of the whole directory is refused: a `find` limited to a depth, a name pattern in a subfolder or a path below the root still runs.
+- **A file you already read is no longer blocked from being read again when it has changed.** The refusal to re-read a whole file (markdown, JSON and HTML, source files with a line count, truncated reads, session output and tool-result files, and the `.improve-state` JSON) now fires only when the file is known to be unchanged: the saved bytes still match, or the size and modified time are unchanged. A file that was empty when first read and has since been filled counts as changed, and the 50 ms of slack that let a quick edit pass for no change is gone. The separate refusal for memory files is removed.
+
 ## [2.9.31] - 2026-10-16
 
 This is a big release: more than 450 commits since 2.9.30, touching the indexer, the hooks on every supported host, the installer, the read commands and the MCP server. If anything gets in your way after upgrading, such as a slow hook, a refusal that should not have fired, a symbol that will not resolve or a note that keeps repeating, please tell me, small annoyances included: open a bug report on [the issue tracker](https://github.com/DFKHelper/token-goat/issues), or [send me an email](mailto:token-goat@dfkhelper.com) if you would rather not post publicly. Say which harness you use and its version (Claude Code, Copilot CLI, Codex, VS Code Chat, Visual Studio, JetBrains or another), your operating system and shell, the output of `token-goat --version` and `token-goat doctor`, and the command or tool call that misbehaved, with what you saw and what you expected. Remove anything private, such as secrets and file contents, before you send it.
