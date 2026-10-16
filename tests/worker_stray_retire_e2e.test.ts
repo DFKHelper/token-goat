@@ -9,7 +9,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { readAllProcesses } from '../src/cli_doctor_process.js'
-import { isResidentOfInstall, readProcessCommandLine } from '../src/resident_process.js'
+import { isResidentOfInstall, readProcessCommandLine, terminateProcessTree } from '../src/resident_process.js'
 import { ROOT, tgIsolatedEnv } from './helpers/bundle.js'
 
 /** Mirrors constants.ts's defaultDataDir() platform join; see worker_daemon_e2e.test.ts for why it cannot be imported. */
@@ -102,16 +102,21 @@ afterEach(async () => {
   }
   // Every path, a failed `worker start` included: a daemon it spawned is not in `started`, so sweep the process table for residents of the two private launchers, which no other process runs. Pids this file recorded are checked the same way, in case the table cannot be read.
   const table = readAllProcesses()
-  const mine = (cmd: string | null): boolean => cmd !== null && [launcher, launcher2].some((l) => isResidentOfInstall(cmd, l, ['worker', 'hook-server']))
+  // Both spellings of each launcher: a command line may carry the realpath (a symlinked temp dir, an 8.3 short name) where this file built the path from mkdtemp. Read before the directory is deleted.
+  const spellings = [launcher, launcher2].flatMap((l) => {
+    try {
+      return [l, fs.realpathSync.native(l)]
+    } catch {
+      return [l]
+    }
+  })
+  const mine = (cmd: string | null): boolean => cmd !== null && spellings.some((l) => isResidentOfInstall(cmd, l, ['worker', 'hook-server']))
   const doomed = new Set<number>(started.splice(0).filter((pid) => alive(pid) && mine(readProcessCommandLine(pid))))
   if (Array.isArray(table)) for (const p of table) if (mine(p.commandLine)) doomed.add(p.processId)
   for (const pid of doomed) {
     if (pid === process.pid) continue
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch {
-      // already gone
-    }
+    // The whole tree: taskkill /T /F on Windows, where process.kill ends the daemon alone; SIGKILL to the daemon's group elsewhere.
+    terminateProcessTree(pid, true)
   }
   try {
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
@@ -227,10 +232,10 @@ describe('stray resident processes on the built bundle', () => {
   it(
     'a claim over a lease-less pid-file slot ends the daemon it replaces',
     async () => {
+      // No lease, for good: a directory stands where the heartbeat file goes, so the daemon's rename onto it fails whenever its first cycle runs and nothing it writes can restore a lease. A planted file naming another pid was overwritten when that first cycle ended after the plant (a slow start), and the claim was refused as already running.
+      fs.mkdirSync(path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat'), { recursive: true })
       const old = startWorker()
-      await waitFor('the daemon to write its heartbeat', 30000, () => heartbeatNames(old))
-      // No lease: the heartbeat names someone else and the pid file is older than the startup grace.
-      fs.writeFileSync(path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat'), '1\n')
+      // The pid file is older than the startup grace.
       const aged = new Date(Date.now() - 10 * 60_000)
       fs.utimesSync(pidFile(), aged, aged)
 

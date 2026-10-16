@@ -10,7 +10,7 @@ import { dataDir } from './constants.js'
 import { withEnvProxyEnabled } from './env_proxy.js'
 import { displaySafeText } from './paths.js'
 import { applyIndexingPriorityTo } from './process_priority.js'
-import { isResidentOfInstall, readProcessCommandLine, terminateProcessTree } from './resident_process.js'
+import { isResidentOfInstall, PROCESS_QUERY_TIMEOUT_MS, readProcessCommandLine, terminateProcessTree } from './resident_process.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage, withFileLock } from './util.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
@@ -307,6 +307,7 @@ function sameDataDir(a: string, b: string): boolean {
 
 /** The pids in the note that a claim for `dir` wrote less than `maxAgeMs` before `nowMs`: a note outliving its claim, written for another data dir, or in the old pid-only format names nothing, since its pid may long since belong to an unrelated process. */
 export function readDisplacedPids(dir: string, nowMs: number = Date.now(), maxAgeMs: number = WORKER_STARTUP_GRACE_MS): number[] {
+  // The default age is one startup grace, which fails safe: an older note is dropped, so a stray stays until the next upgrade and no pid is signalled on a stale name.
   let text: string
   try {
     text = fs.readFileSync(displacedWorkerPath(dir), 'utf8')
@@ -332,8 +333,15 @@ function removeDisplacedNote(dir: string): void {
   }
 }
 
+export interface DisplacedRetireOptions {
+  /** Reads one pid's command line; defaults to the real query. */
+  readonly readCommandLine?: (pid: number) => string | null
+  /** Total time the holder loop may take; defaults to the one-query bound, resident_process.ts::PROCESS_QUERY_TIMEOUT_MS. */
+  readonly deadlineMs?: number
+}
+
 /** Runs in a daemon that has just found its own pid in the pid file, never on a hook path: ends the daemon whose slot the claim took over, which a 2.9.30 daemon never leaves on its own. The note holds pids that may have been reused, so one is read only while it is younger than the startup grace and names this data dir, and the process is signalled only when it holds no lease and its command line is this install's `--worker-daemon`; any other process is left alone. A legitimate daemon whose heartbeat merely went stale (sleep, long synchronous work) is ended here too, where it would otherwise have exited at its next poll: accepted, since the claim already gave its slot away. */
-export function retireDisplacedWorker(dir: string): void {
+export function retireDisplacedWorker(dir: string, opts: DisplacedRetireOptions = {}): void {
   const holders = readDisplacedPids(dir)
   try {
     fs.rmSync(displacedWorkerPath(dir), { force: true })
@@ -341,12 +349,16 @@ export function retireDisplacedWorker(dir: string): void {
     return
   }
   const entry = daemonEntryScript()
+  const readCommandLine = opts.readCommandLine ?? readProcessCommandLine
+  // Each holder costs up to two synchronous queries on this daemon's event loop, and a note can name several: past one query bound in total the rest are left for the next upgrade.
+  const deadline = Date.now() + (opts.deadlineMs ?? PROCESS_QUERY_TIMEOUT_MS)
   for (const holder of holders) {
+    if (Date.now() >= deadline) break
     if (holder === process.pid || !pidAlive(holder) || hasFreshWorkerHeartbeat(dir, holder)) continue
-    const cmd = readProcessCommandLine(holder)
+    const cmd = readCommandLine(holder)
     if (cmd === null || !isResidentOfInstall(cmd, entry, ['worker'])) continue
     // The query above can take seconds on a cold machine, and the OS may have reused the pid since: signal only what a second read, taken right before, still shows as this install's daemon.
-    const latest = readProcessCommandLine(holder)
+    const latest = readCommandLine(holder)
     if (latest !== null && isResidentOfInstall(latest, entry, ['worker'])) terminateProcessTree(holder, false)
   }
 }

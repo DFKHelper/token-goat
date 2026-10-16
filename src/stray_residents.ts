@@ -2,8 +2,11 @@
 
 import { readAllProcesses } from './cli_doctor_process.js'
 import { displaySafeText } from './paths.js'
-import { isResidentOfInstall, PROCESS_QUERY_TIMEOUT_MS, terminateProcessTree, zombiePids, type ResidentKind } from './resident_process.js'
+import { isResidentOfInstall, PROCESS_QUERY_TIMEOUT_MS, readProcessCommandLine, terminateProcessTree, zombiePids, type ResidentKind } from './resident_process.js'
 import { daemonEntryScript, pidAlive } from './worker_lifecycle.js'
+
+/** What `upgrade` (and `doctor --fix`, through performUpgrade) ends: both resident kinds, since both hold the replaced files open. */
+export const UPGRADE_RESIDENT_KINDS: readonly ResidentKind[] = ['worker', 'hook-server']
 
 export interface RetireOptions {
   /** Which resident processes to end. */
@@ -12,6 +15,8 @@ export interface RetireOptions {
   readonly skip?: readonly number[]
   /** Total time the sequential kill calls may take before the rest are left alone; defaults to the one-call bound, resident_process.ts::PROCESS_QUERY_TIMEOUT_MS. */
   readonly deadlineMs?: number
+  /** Reads one pid's command line, just before that pid is signalled; a pid whose line no longer matches is left alone. Defaults to the real query on Windows, where a kill list can run for seconds and the OS may reuse a pid meanwhile, and to none elsewhere, where a signal follows the second list at once. */
+  readonly readCommandLine?: (pid: number) => string | null
 }
 
 export interface RetireReport {
@@ -76,12 +81,19 @@ export async function retireStrayResidents(opts: RetireOptions): Promise<RetireR
   const found = listed.filter((pid) => confirmed.includes(pid))
   // Each Windows kill is a taskkill of up to the per-call bound, and the list reached hundreds of daemons in the field: past one such bound in total the rest are reported, not waited on.
   const deadline = Date.now() + (opts.deadlineMs ?? PROCESS_QUERY_TIMEOUT_MS)
+  // The second list can be seconds old by the time a later pid's turn comes: a pid the OS reused since is not ours, so its own command line is read again right before its kill.
+  const recheck = opts.readCommandLine ?? (process.platform === 'win32' ? readProcessCommandLine : null)
+  const entry = daemonEntryScript()
   const signalled: number[] = []
   const notTried: number[] = []
   for (const pid of found) {
     if (Date.now() >= deadline) {
       notTried.push(pid)
       continue
+    }
+    if (recheck !== null) {
+      const latest = recheck(pid)
+      if (latest === null || !isResidentOfInstall(latest, entry, opts.kinds)) continue
     }
     terminateProcessTree(pid, process.platform === 'win32')
     signalled.push(pid)

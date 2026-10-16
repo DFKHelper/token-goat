@@ -385,8 +385,8 @@ export async function performUpgrade(onSyncHooks?: () => Promise<void>, npm: Npm
   }
   try {
     // Whatever the pid file and the hook servers' sockets no longer name is a stray that holds the same native modules open, and nothing else stops it.
-    const { retireStrayResidents, describeRetirement } = await import('./stray_residents.js')
-    const note = describeRetirement(await retireStrayResidents({ kinds: ['worker', 'hook-server'], skip: stoppedPid }))
+    const { retireStrayResidents, describeRetirement, UPGRADE_RESIDENT_KINDS } = await import('./stray_residents.js')
+    const note = describeRetirement(await retireStrayResidents({ kinds: UPGRADE_RESIDENT_KINDS, skip: stoppedPid }))
     if (note !== null) console.log(note)
   } catch {
     // The process list is best effort: the install below reports any lock a stray still holds.

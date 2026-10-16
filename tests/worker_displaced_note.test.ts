@@ -117,6 +117,15 @@ describe('the displaced-worker note', () => {
     expect(fs.existsSync(displacedWorkerPath(dir)), 'a fast-path claim displaced nobody').toBe(false)
   })
 
+  it('stops at the total deadline and ends no later holder', () => {
+    const holders = [startDecoy(), startDecoy()]
+    fs.writeFileSync(displacedWorkerPath(dir), holders.map((pid) => noteLine(pid, Date.now(), dir)).join(''))
+
+    retireDisplacedWorker(dir, { readCommandLine: () => 'node launcher.mjs --worker-daemon', deadlineMs: 0 })
+
+    expect(terminatedPids(), 'a loop already past its deadline signals nobody').toEqual([])
+  }, 60_000)
+
   it('keeps the first pid when a second claim lands before any daemon consumed the note, and ends both', async () => {
     const first = startDecoy()
     const second = startDecoy()
@@ -129,7 +138,8 @@ describe('the displaced-worker note', () => {
     expect(claimWorkerPidFile(dir, process.pid)).toBe(true)
     expect([...readDisplacedPids(dir)].sort((a, b) => a - b)).toEqual([first, second].sort((a, b) => a - b))
 
-    retireDisplacedWorker(dir)
+    // The query is injected: this test is about the list, and a real process-list query is slow on a loaded machine; the first test above runs the real one.
+    retireDisplacedWorker(dir, { readCommandLine: () => 'node launcher.mjs --worker-daemon' })
 
     await Promise.all([exited(first), exited(second)])
     expect([...terminatedPids()].sort((a, b) => a - b)).toEqual([first, second].sort((a, b) => a - b))
