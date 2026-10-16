@@ -252,7 +252,7 @@ describe('runProbe end to end through the built bundle', () => {
       "if (mode === 'hangloggedout') { console.log('Not logged in · Please run /login'); setTimeout(() => process.exit(1), 8000); await new Promise(() => {}) }",
       "if (mode === 'hang') { setTimeout(() => process.exit(0), 8000); await new Promise(() => {}) }",
       "if (mode === 'blocked') process.exit(1)",
-      "if (mode === 'flood') { process.stdout.write('x'.repeat(2 * 1024 * 1024)); process.exit(0) }",
+      "if (mode === 'flood') { process.stdout.write('x'.repeat(2 * 1024 * 1024), () => process.exit(0)); await new Promise(() => {}) }",
       "if (mode === 'dieburied') { console.error(\"error: unknown option '--x'\"); for (let i = 0; i < 8; i++) console.error('usage line ' + i); process.exit(1) }",
       'const contexts = []',
       "if (mode !== 'skip') {",
@@ -386,7 +386,7 @@ describe('runProbe end to end through the built bundle', () => {
     expect(JSON.stringify(report)).not.toContain('no-such-dir')
   })
 
-  // HAND-DERIVED: a harness that prints more than spawnSync's default 1 MiB buffer is stopped with ENOBUFS after it started, so it is judged, not reported as unstartable.
+  // HAND-DERIVED: a harness that prints more than spawnSync's default 1 MiB buffer is stopped with ENOBUFS after it started, so it is judged, not reported as unstartable. The stand-in exits from the write callback, not right after the write: on Linux a pipe write is asynchronous, so an exit straight after it drops all but the first ~140 KiB, the output never reaches the cap and the run reads as a clean exit.
   it('judges a harness that overflowed the output buffer instead of calling it unstartable', () => {
     const report = probe('flood')
     expect(report.status).toBe('failed')

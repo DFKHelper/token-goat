@@ -102,10 +102,12 @@ function entriesOf(dir: string, scope: Scope): string[] {
   return names
 }
 
-/** `abs` as the reader would type it: relative to `cwd` when it sits under it, forward slashes either way. */
+/** `abs` as the reader would type it: relative to `cwd` when it sits under it, forward slashes either way. "Under" is judged on case-folded paths where the filesystem folds, because `path.relative` is case-sensitive on macOS and the index root may spell the directory in another case than the working directory does; the tail is cut from `abs` itself so it keeps the spelling on disk. */
 function displayPath(abs: string, cwd: string): string {
-  const rel = path.relative(cwd, abs)
-  const shown = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel) ? rel : abs
+  const full = path.resolve(abs)
+  const rel = path.relative(foldPath(path.resolve(cwd)), foldPath(full))
+  const under = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
+  const shown = under ? full.split(/[\\/]/).slice(-rel.split(/[\\/]/).length).join('/') : abs
   return shown.replace(/\\/g, '/')
 }
 

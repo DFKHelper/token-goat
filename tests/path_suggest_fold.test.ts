@@ -52,6 +52,13 @@ describe('one file spelled two ways', () => {
     fake.indexed = ['src/config.ts']
     expect(suggestPaths('src/confg.ts', CWD, path.resolve('/fakeproj'))).toEqual(['src/config.ts'])
   })
+
+  it('keeps the spelling on disk for the part below the working directory', () => {
+    fake.files.clear()
+    put('src/Config.ts')
+    fake.indexed = ['src/Config.ts']
+    expect(suggestPaths('src/confg.ts', CWD, path.resolve('/fakeproj'))).toEqual(['src/Config.ts'])
+  })
 })
 
 describe('input that is refused', () => {
