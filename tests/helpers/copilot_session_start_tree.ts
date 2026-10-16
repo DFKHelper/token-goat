@@ -1,5 +1,5 @@
 /** HAND-DERIVED owned-process fixtures; all stores and process IDs are isolated per test. */
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams, type SpawnSyncReturns } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -214,14 +214,16 @@ export function cleanupTrees(): void {
       if (Number.isInteger(pid) && pid > 0 && !ownedPids.includes(pid)) ownedPids.push(pid)
     }
   }
-  const table = listProcesses()
   const victims = new Map<number, string>()
+  const recorded = ownedPids.splice(0).reverse().filter(alive)
+  // The tree walk needs the table only while a recorded pid is still alive: a row that started nothing, or whose helpers have all exited, has no tree to walk.
+  const table = recorded.length === 0 ? new Map<number, { ppid: number; args: string }>() : listProcesses()
   const walk = (pid: number): void => {
     if (victims.has(pid)) return
     victims.set(pid, table.get(pid)?.args ?? '')
     for (const [child, entry] of table) if (entry.ppid === pid) walk(child)
   }
-  for (const pid of ownedPids.splice(0).reverse()) if (alive(pid)) walk(pid)
+  for (const pid of recorded) walk(pid)
   killAndVerify(victims)
   // Sweep what the fixture started that no recorded pid reaches, such as an owner that outlived its dead parent.
   const roots = ownedRoots.map((root) => root.toLowerCase().replaceAll('/', '\\'))
@@ -234,14 +236,25 @@ export function cleanupTrees(): void {
   for (const root of ownedRoots.splice(0)) removeWhenReleased(root)
 }
 
-function listProcesses(): Map<number, { ppid: number; args: string }> {
-  const win = process.platform === 'win32'
-  const listing = win
+/** One launch of the process lister; the seam listProcesses launches through. */
+export type ProcessListingLaunch = () => Pick<SpawnSyncReturns<string>, 'status' | 'signal' | 'error' | 'stdout' | 'stderr'>
+
+function launchProcessListing(): ReturnType<ProcessListingLaunch> {
+  return process.platform === 'win32'
     ? spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       'Get-CimInstance Win32_Process | ForEach-Object { [string]$_.ProcessId + [char]9 + $_.ParentProcessId + [char]9 + $_.CommandLine }'],
     { encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 })
     : spawnSync('ps', ['-eo', 'pid=,ppid=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
-  if (listing.status !== 0) throw new Error(`process listing failed: ${listing.error?.message ?? listing.stderr}`)
+}
+
+/** A lister that exits non-zero having printed nothing on either stream never ran its query: Windows fails the start of a process that way (a DLL initialisation failure) when many processes start at once. The listing is this fixture's tool for finding what to kill, not something a test asserts, so a start that produced no output at all is launched again, three launches in all. A lister that ran and failed, or could not be spawned, is reported at once with its status, signal and stderr. */
+const LISTING_LAUNCHES = 3
+
+export function listProcesses(launch: ProcessListingLaunch = launchProcessListing): Map<number, { ppid: number; args: string }> {
+  const win = process.platform === 'win32'
+  let listing = launch()
+  for (let launched = 1; launched < LISTING_LAUNCHES && listing.error === undefined && listing.status !== 0 && (listing.stdout ?? '') === '' && (listing.stderr ?? '').trim() === ''; launched++) listing = launch()
+  if (listing.error !== undefined || listing.status !== 0) throw new Error(`process listing failed: status ${String(listing.status)}, signal ${String(listing.signal)}, ${listing.error?.message ?? (listing.stderr ?? '')}`)
   const table = new Map<number, { ppid: number; args: string }>()
   for (const line of listing.stdout.split(/\r?\n/)) {
     const match = win ? /^(\d+)\t(\d+)\t(.*)$/.exec(line) : /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line)
