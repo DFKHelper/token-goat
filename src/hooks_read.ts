@@ -891,37 +891,6 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
-  // Item 8: MEMORY.md re-read denial — content is already in the compact manifest. Also generalised to any .md file under a memory/ directory (e.g. memory/project_findings.md).
-  const isMemoryMd = (
-    normalized.toLowerCase().includes('memory/memory.md') ||
-    /[/\\]memory[/\\][^/\\]+\.md$/i.test(normalized)
-  )
-  if (isMemoryMd && wasFileFullyReadThisSession(normalized)) {
-    // Prefer the same unchanged/diff snapshot machinery the isDocDiffable block further below uses, rather than the bare denial that says nothing about whether the file actually changed. Reuses that block's exact message shapes (see the analogous markdown heading-tree branch above) so the session-audit census (DENY_TEMPLATES in session_audit.ts) recognizes them as doc_unchanged_deny/doc_diff_deny rather than a new, invisible shape. recordStat stays session_hint/0 on every branch here (never a byte credit) because these denies are measured to be frequently routed around anyway, so crediting withheld bytes would book a saving this path cannot back up.
-    const memSnapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
-    if (memSnapDiff.kind === 'unchanged') {
-      recordActualRead(event, normalized)
-      recordStat('session_hint', 0, 0)
-      return denyOutput(docSnapshotDenyText(normalized, basename, memSnapDiff))
-    }
-    if (memSnapDiff.kind === 'diff') {
-      const diffBody = docSnapshotDenyText(normalized, basename, memSnapDiff)
-      if (diffHintCredit(memSnapDiff.currentContent.length, diffBody) !== null) {
-        recordActualRead(event, normalized)
-        recordStat('session_hint', 0, 0)
-        return denyOutput(diffBody)
-      }
-    }
-    // No snapshot, a snapshot too large/truncated for loadSnapshotDiff to use (kind 'none'), or a diff that doesn't clear the savings floor -- fall back to the existing hard deny below, unchanged.
-    recordActualRead(event, normalized)
-    recordStat('session_hint', 0, 0)
-    return denyOutput(leadWithCommand(
-      'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section').name),
-      'to extract one section',
-      'This file was already read this session. Memory files rarely change mid-session.',
-    ))
-  }
-
   // Item 5: .improve-state-*.json re-read denial
   if (/^\.improve-state-.*\.json$/.test(basename) && wasFileReadThisSession(normalized)) {
     recordActualRead(event, normalized)

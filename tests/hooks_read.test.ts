@@ -2616,8 +2616,9 @@ content here` },
     expect(result.hookType).toBe('pass')
   })
 
-  // Item 8: MEMORY.md re-read denial
-  it('denies 2nd read of memory/MEMORY.md', () => {
+  // Item 8: the memory-specific re-read deny is gone; memory files take the generic markdown path.
+  // HAND-DERIVED: a re-read of a memory file whose content changed on disk (no snapshot to diff) must not be hard-denied on the false premise that memory files never change mid-session.
+  it('a memory/MEMORY.md re-read after an outside change, with no snapshot, is not hard-denied', () => {
     const dir = path.join(os.tmpdir(), `tg-mem-${process.pid}`)
     fs.mkdirSync(dir, { recursive: true })
     const p = path.join(dir, 'memory', 'MEMORY.md')
@@ -2625,12 +2626,12 @@ content here` },
     fs.writeFileSync(p, '# Memory\ncontent')
     tmpFiles.push(p)
     recordFileRead(normalizePath(p))
+    fs.writeFileSync(p, '# Memory\ncontent\n- [New fact](new.md) written by another process\n')
     const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('This file was already read this session')
-      expect(result.message).toContain('token-goat section')
-      expect(result.message).not.toContain('compact manifest')
+    // The Read goes through (context hint, not a deny), so the model sees the new bytes.
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).not.toContain('Memory files rarely change mid-session')
     }
   })
 
@@ -2645,19 +2646,19 @@ content here` },
     expect(result.hookType).toBe('pass')
   })
 
-  it('denies 2nd read of any .md file under memory/ directory', () => {
+  // HAND-DERIVED: a project's own docs/memory/design.md is ordinary documentation, not a Claude Code memory file, so it gets no memory-specific message.
+  it('a docs/memory/design.md re-read gets no memory-specific message', () => {
     const dir = path.join(os.tmpdir(), `tg-mem3-${process.pid}`)
     fs.mkdirSync(dir, { recursive: true })
-    const p = path.join(dir, 'memory', 'project_findings.md')
+    const p = path.join(dir, 'docs', 'memory', 'design.md')
     fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, '# Findings\ncontent')
+    fs.writeFileSync(p, '# Design\ncontent')
     tmpFiles.push(p)
     recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('already read this session')
-      expect(result.message).toContain('token-goat section')
+    expect(result.hookType).not.toBe('deny')
+    if (result.hookType === 'context') {
+      expect(result.context).not.toContain('Memory files rarely change mid-session')
     }
   })
 
@@ -2736,8 +2737,7 @@ content here` },
 
       fs.writeFileSync(p, content2)
 
-      const before = summarize(30).by_kind['session_hint']?.events ?? 0
-      const beforeBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+      const before = summarize(30).by_kind['diff_hint']?.events ?? 0
 
       const result = preReadHandler(readEvent(p))
       expect(result.hookType).toBe('deny')
@@ -2761,56 +2761,9 @@ content here` },
         expect(diffIdx).toBeLessThan(closeIdx)
       }
 
-      const after = summarize(30).by_kind['session_hint']?.events ?? 0
-      const afterBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+      const after = summarize(30).by_kind['diff_hint']?.events ?? 0
       expect(after).toBe(before + 1)
-      expect(afterBytes).toBe(beforeBytes)
     })
-  })
-
-  it('a memory/MEMORY.md re-read with no snapshot gets the exact bare deny text, led by a section command naming the file\'s real heading (loadSnapshotDiff returns kind "none" when nothing was ever saved by postReadHandler)', () => {
-    const dir = path.join(os.tmpdir(), `tg-mem7-${process.pid}`)
-    fs.mkdirSync(dir, { recursive: true })
-    const p = path.join(dir, 'memory', 'MEMORY.md')
-    fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, '# Memory\ncontent')
-    tmpFiles.push(p)
-
-    // Only recordFileRead — no postReadHandler call, so no snapshot exists.
-    recordFileRead(normalizePath(p))
-
-    const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toBe(
-        // HAND-DERIVED: the file's only heading is `# Memory`.
-        '[tg] Run `token-goat section "' + normalizePath(p) + '::Memory"` to extract one section. ' +
-        'This file was already read this session. Memory files rarely change mid-session.',
-      )
-    }
-  })
-
-  it('a generic memory-file re-read with no snapshot gets the exact bare deny text, led by a section command naming the file\'s real heading', () => {
-    const dir = path.join(os.tmpdir(), `tg-mem8-${process.pid}`)
-    fs.mkdirSync(dir, { recursive: true })
-    const p = path.join(dir, 'memory', 'project_findings.md')
-    fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, '# Findings\ncontent')
-    tmpFiles.push(p)
-
-    // Only recordFileRead — no postReadHandler call, so no snapshot exists.
-    recordFileRead(normalizePath(p))
-
-    const shownPath = normalizePath(p)
-    const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toBe(
-        // HAND-DERIVED: the file's only heading is `# Findings`.
-        '[tg] Run `token-goat section "' + shownPath + '::Findings"` to extract one section. ' +
-        'This file was already read this session. Memory files rarely change mid-session.',
-      )
-    }
   })
 
   // Doc-file auto-diff on re-read
