@@ -4,10 +4,14 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolveWindowsBash } from '../src/shell.js'
 import { readsTreeOrBundle } from '../scripts/prepush-tree-readers.mjs'
 
 const REPO = process.cwd().replace(/\\/g, '/')
 const posix = (p: string): string => p.replace(/\\/g, '/')
+// Git Bash on Windows, never the WSL launcher that a bare bash resolves to there; null skips the suite where no bash exists
+const BASH = process.platform === 'win32' ? resolveWindowsBash() : '/bin/bash'
+// The script pipes through sort, which must be the POSIX one next to bash and not Windows sort.exe that a System32-first PATH finds
 let dir = ''
 afterEach(() => {
   if (dir) rmSync(dir, { recursive: true, force: true })
@@ -56,13 +60,13 @@ function decide(change: Record<string, string>): { note: string; focus: string[]
     'echo "NOTE=$FOCUS_NOTE"',
     'echo "FILE=$FOCUS_FILE"',
   ].join('\n')
-  const out = execFileSync('bash', ['-c', script], { cwd: root, encoding: 'utf8' })
+  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
   const note = /^NOTE=(.*)$/m.exec(out)?.[1] ?? ''
   const file = /^FILE=(.*)$/m.exec(out)?.[1]?.trim() ?? ''
   return { note, focus: file ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [] }
 }
 
-describe('prepush focus decision', () => {
+describe.skipIf(BASH === null)('prepush focus decision', () => {
   it('adds the tree-reading and bundle tests when a src file changed', () => {
     const r = decide({ 'src/a.ts': 'export const a = 2\n' })
     expect(r.focus).toEqual(['src/a.ts', 'tests/a.test.ts', 'tests/bundle_user.test.ts', 'tests/guards/tree.test.ts'])
@@ -83,7 +87,7 @@ describe('readsTreeOrBundle', () => {
   })
 })
 
-describe('prepush focus note', () => {
+describe.skipIf(BASH === null)('prepush focus note', () => {
   it('counts an empty range as no change', () => {
     const r = decide({})
     expect(r.note).toContain('0 changed since')

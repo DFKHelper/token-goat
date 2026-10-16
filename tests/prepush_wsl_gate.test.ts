@@ -4,8 +4,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { resolveWindowsBash } from '../src/shell.js'
 
 const GATE = path.join(process.cwd(), '.lefthook-scripts', 'wsl-gate.sh').replace(/\\/g, '/')
+// Git Bash on Windows, never the WSL launcher that a bare bash resolves to there; null skips the suite where no bash exists
+const BASH = process.platform === 'win32' ? resolveWindowsBash() : '/bin/bash'
 let dir = ''
 afterEach(() => {
   if (dir) rmSync(dir, { recursive: true, force: true })
@@ -38,11 +41,11 @@ function gate(changed: string, patterns: string | null): { run: string; reason: 
     'echo "RUN=$WSL_RUN"',
     'echo "REASON=$WSL_REASON"',
   ].join('\n')
-  const out = execFileSync('bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...process.env, TG_PREPUSH_WSL: '' } })
+  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...process.env, TG_PREPUSH_WSL: '' } })
   return { run: /^RUN=(.*)$/m.exec(out)?.[1] ?? '', reason: /^REASON=(.*)$/m.exec(out)?.[1] ?? '' }
 }
 
-describe('wsl gate', () => {
+describe.skipIf(BASH === null)('wsl gate', () => {
   it('matches a changed path with non-ASCII characters against its glob', () => {
     // HAND-DERIVED: git quotes such a path as "src/\303\251.ts" unless the listing is NUL-separated.
     const r = gate('src/é.ts', 'src/é*\n')
