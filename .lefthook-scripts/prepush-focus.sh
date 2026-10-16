@@ -60,7 +60,10 @@ focus_decide() {
     FOCUS_NOTE="$leg leg full: none of the recorded or changed files exists now"; return 0
   fi
   FOCUS_FILE="$LOG_DIR/focus-$leg.txt"
-  printf '%s\n' "${list[@]}" | sort -u >"$FOCUS_FILE"
+  # /usr/bin/sort by path: under a PATH with C:/Windows/System32 ahead of Git's usr/bin a bare sort is Windows sort.exe, which has no -u.
+  local posix_sort=sort
+  [[ -x /usr/bin/sort ]] && posix_sort=/usr/bin/sort
+  printf '%s\n' "${list[@]}" | "$posix_sort" -u >"$FOCUS_FILE"
   FOCUS_NOTE="$leg leg focused: $(wc -l <"$FOCUS_FILE" | tr -d ' ') file(s) (${#failed[@]} failed before, ${n_changed} changed since ${rec_sha:0:9}, ${#readers[@]} tree-reading or bundle tests); set TG_PREPUSH_FULL=1 for the full leg"
 }
 

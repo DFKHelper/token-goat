@@ -28,7 +28,7 @@ function write(root: string, rel: string, text: string): void {
 }
 
 /** A sandbox repo with one recorded failing test, then the given files changed in a second commit. Returns the decision note and the focus list. */
-function decide(change: Record<string, string>): { note: string; focus: string[] } {
+function decide(change: Record<string, string>, shadowSort = false): { note: string; focus: string[] } {
   dir = mkdtempSync(path.join(tmpdir(), 'tg-focus-'))
   const root = path.join(dir, 'repo')
   mkdirSync(path.join(root, 'scripts'), { recursive: true })
@@ -60,7 +60,12 @@ function decide(change: Record<string, string>): { note: string; focus: string[]
     'echo "NOTE=$FOCUS_NOTE"',
     'echo "FILE=$FOCUS_FILE"',
   ].join('\n')
-  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
+  // A failing sort first on PATH stands in for Windows sort.exe ahead of Git's usr/bin: a bare `sort` in the script would lose the focus list
+  const shadow = path.join(dir, 'shadow')
+  mkdirSync(shadow)
+  writeFileSync(path.join(shadow, 'sort'), '#!/bin/sh\necho "not the POSIX sort" >&2\nexit 1\n', { mode: 0o755 })
+  const lead = shadowSort ? `${shadow}${path.delimiter}` : ''
+  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${lead}${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
   const note = /^NOTE=(.*)$/m.exec(out)?.[1] ?? ''
   const file = /^FILE=(.*)$/m.exec(out)?.[1]?.trim() ?? ''
   return { note, focus: file ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [] }
@@ -71,6 +76,11 @@ describe.skipIf(BASH === null)('prepush focus decision', () => {
     const r = decide({ 'src/a.ts': 'export const a = 2\n' })
     expect(r.focus).toEqual(['src/a.ts', 'tests/a.test.ts', 'tests/bundle_user.test.ts', 'tests/guards/tree.test.ts'])
     expect(r.note).toContain('2 tree-reading or bundle tests')
+  })
+
+  it('still sorts with the POSIX sort when another sort leads PATH', () => {
+    const r = decide({ 'src/a.ts': 'export const a = 2\n' }, true)
+    expect(r.focus).toEqual(['src/a.ts', 'tests/a.test.ts', 'tests/bundle_user.test.ts', 'tests/guards/tree.test.ts'])
   })
 
   it('does not add them when only a test changed', () => {
