@@ -82,3 +82,15 @@ describe('readsTreeOrBundle', () => {
     expect(readsTreeOrBundle("import { x } from '../src/x'\nreadFileSync(tmpFile)")).toBe(false)
   })
 })
+
+describe('prepush focus note', () => {
+  it('counts an empty range as no change', () => {
+    const r = decide({})
+    expect(r.note).toContain('0 changed since')
+    expect(r.focus).toEqual(['tests/a.test.ts'])
+  })
+
+  it('counts each changed path once', () => {
+    expect(decide({ 'tests/other.test.ts': 'export const x = 1\n' }).note).toContain('1 changed since')
+  })
+})

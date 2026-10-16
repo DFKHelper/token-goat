@@ -19,7 +19,7 @@ focus_covered() {
 focus_decide() {
   local leg=$1 rec rec_sha f diff_out
   local -a failed=() changed=() list=() readers=()
-  local readers_out src_changed=0
+  local readers_out src_changed=0 n_changed=0
   FOCUS_FILE=""
   if [[ "${TG_PREPUSH_FULL:-0}" == "1" ]]; then
     FOCUS_NOTE="$leg leg full: TG_PREPUSH_FULL=1"; return 0
@@ -38,6 +38,7 @@ focus_decide() {
   mapfile -t changed <<<"$diff_out"
   for f in "${changed[@]}"; do
     [[ -n "$f" ]] || continue
+    n_changed=$((n_changed + 1))
     if ! focus_covered "$f"; then
       FOCUS_NOTE="$leg leg full: $f changed since ${rec_sha:0:9} and vitest related cannot see it"; return 0
     fi
@@ -60,7 +61,7 @@ focus_decide() {
   fi
   FOCUS_FILE="$LOG_DIR/focus-$leg.txt"
   printf '%s\n' "${list[@]}" | sort -u >"$FOCUS_FILE"
-  FOCUS_NOTE="$leg leg focused: $(wc -l <"$FOCUS_FILE" | tr -d ' ') file(s) (${#failed[@]} failed before, ${#changed[@]} changed since ${rec_sha:0:9}, ${#readers[@]} tree-reading or bundle tests); set TG_PREPUSH_FULL=1 for the full leg"
+  FOCUS_NOTE="$leg leg focused: $(wc -l <"$FOCUS_FILE" | tr -d ' ') file(s) (${#failed[@]} failed before, ${n_changed} changed since ${rec_sha:0:9}, ${#readers[@]} tree-reading or bundle tests); set TG_PREPUSH_FULL=1 for the full leg"
 }
 
 # $1: leg, $2: the leg's log. Records the failing files of a red leg; a leg with no parsable failure clears the record so the next run is full.
