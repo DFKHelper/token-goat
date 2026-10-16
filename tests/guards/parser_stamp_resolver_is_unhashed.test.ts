@@ -25,8 +25,8 @@ function srcTypeScriptFiles(): readonly string[] {
     }
   }
   walk(SRC)
-  // Moved 524 -> 526 when src/unbounded_walk.ts (find2) and src/process_tree.ts (orph4) were added.
-  return pinnedPopulation({ what: 'TypeScript modules under src/', items: found.sort(), floor: 414, ceiling: 526, mustIncludeExact: ['src/parser_types.ts'] })
+  // Moved 524 -> 528 when src/unbounded_walk.ts (find2), src/process_tree.ts (orph4), src/resident_process.ts and src/stray_residents.ts (s1) were added (measured: 528 modules).
+  return pinnedPopulation({ what: 'TypeScript modules under src/', items: found.sort(), floor: 414, ceiling: 528, mustIncludeExact: ['src/parser_types.ts'] })
 }
 
 function srcFilesDefining(pattern: RegExp): string[] {

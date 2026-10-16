@@ -30,7 +30,7 @@ import { failedAtOf } from './model_download_gate.js'
 import { appendDirtyQueueFile, appendDirtyQueuePaths, dirtyQueuePathFor, parseDirtyQueueLines } from './dirty_queue.js'
 import { createQueueWaker, noteOwnQueueWrite } from './queue_waker.js'
 import { drainReconcileRequests } from './reconcile_requests.js'
-import { appendWorkerErrorLog, claimCurrentWorker, readPidFile, resolvePollIntervalMs, WORKER_STARTUP_GRACE_MS, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
+import { appendWorkerErrorLog, claimCurrentWorker, readPidFile, resolvePollIntervalMs, retireDisplacedWorker, WORKER_STARTUP_GRACE_MS, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
 
 // Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness window doesn't need finer-grained sweeping than hourly, and a full directory scan on every 2s poll tick would be wasteful.
 const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
@@ -758,8 +758,11 @@ export async function runWorkerLoop(
     if (!fs.existsSync(dir)) break
     // Self-terminate once another daemon has taken over this data dir's pid file. claimWorkerPidFile's reclaim path takes the pid file from a daemon whose heartbeat lease lapsed without signalling it (by then the pid may name an unrelated process), so this check is what retires a superseded daemon that is still running: without it that daemon keeps draining the same queue forever, because the existsSync check above never fires while the shared data dir still exists -- exactly how several stray daemons accumulate over successive sessions. Once we have observed the pid file naming our own pid, a later poll that finds it naming a *different* pid means we lost ownership, so exit and leave the current owner as the sole drainer. We only act on a concrete different pid, never on readPidFile returning null: null also covers a transient read failure or a mid-write empty file (pid-file replacement is not atomic to a concurrent reader), and treating that as lost ownership would let a single filesystem hiccup terminate the sole legitimate daemon -- a self-inflicted version of the very leak this check exists to stop. A genuinely removed pid file leaves us running until either fs.existsSync(dir) fires or a real successor writes its own pid, which is the safe direction.
     const pidOwner = readPidFile(dir)
-    if (pidOwner === process.pid) ownedPidFile = true
-    else if (ownedPidFile && pidOwner !== null) break
+    if (pidOwner === process.pid) {
+      // First time this daemon owns the slot: end the daemon the claim displaced, off the hook path that spawned us.
+      if (!ownedPidFile) retireDisplacedWorker(dir)
+      ownedPidFile = true
+    } else if (ownedPidFile && pidOwner !== null) break
     // The two cases the takeover check above cannot see, both of which strand a daemon that nothing can then find or stop. A pid file that is gone for longer than the grace: `stopWorker` and a `rm -rf` of the data dir both remove it, and on Windows the second cannot remove the rest (this daemon holds global.db and a watch on queue/ open), so the directory-gone exit never fires; a single missing read is still ignored, since a successor claiming the slot removes and recreates the file. And a pid file naming another process after a whole grace in which it never named us: the daemon it was handed to lost the slot before it ever owned it.
     const loopNowMs = Date.now()
     if (pidFileIsAbsent(dir)) {

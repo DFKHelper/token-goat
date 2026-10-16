@@ -4,6 +4,7 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 
 import type { DoctorResult } from './doctor_result.js'
 import { displaySafeText } from './paths.js'
+import { isTokenGoatResidentProcess } from './resident_process.js'
 import { powerShellCommandArgs, windowsPowerShellPath } from './windows_powershell.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
 
@@ -39,10 +40,7 @@ function describeProcess(commandLine: string): string {
   return trimmed.length > 0 ? (trimmed.length > 60 ? trimmed.slice(0, 60) + '…' : trimmed) : '(no command line)'
 }
 
-/** Determines whether a process command line belongs to one of token-goat's resident background processes (such as the detached indexer worker daemon or the detached hook server). */
-export function isTokenGoatResidentProcess(cmd: string): boolean {
-  return /--worker-daemon\b/.test(cmd) || /\bhook-server\s+run\b/.test(cmd)
-}
+export { isTokenGoatResidentProcess }
 
 export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | ProcessListFailure): DoctorResult {
   if (!Array.isArray(processes)) {
@@ -137,6 +135,32 @@ export function readWindowsProcesses(runCommand: () => string = runProcessListCo
     const reason = e instanceof Error ? e.message : String(e)
     return e instanceof ProcessListTimeout ? { reason, transient: true } : { reason }
   }
+}
+
+/** The rows of `ps -A -ww -o pid=,ppid=,args=`: a pid, a parent pid and the full command line, with no header. A row that does not start with two numbers is skipped. `name` is the basename of the first word of the command line. */
+export function parsePsProcessList(stdout: string): ProcessInfo[] {
+  return stdout.split(/\r?\n/).flatMap((line): ProcessInfo[] => {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\S.*)$/.exec(line)
+    if (m === null) return []
+    const commandLine = m[3] ?? ''
+    return [{ processId: Number(m[1]), parentProcessId: Number(m[2]), name: (commandLine.split(/\s+/)[0] ?? '').split('/').pop() ?? '', commandLine }]
+  })
+}
+
+/** Every running process on a POSIX host, or a {@link ProcessListFailure} when `ps` could not be read. */
+function readPosixProcesses(): ProcessInfo[] | ProcessListFailure {
+  const result = spawnSync('ps', ['-A', '-ww', '-o', 'pid=,ppid=,args='], { encoding: 'utf8', timeout: PROCESS_LIST_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 })
+  if (result.error !== undefined) {
+    const code = (result.error as NodeJS.ErrnoException).code
+    return code === 'ETIMEDOUT' ? { reason: `ps did not finish within ${PROCESS_LIST_TIMEOUT_MS / 1000}s`, transient: true } : { reason: result.error.message }
+  }
+  if (result.status !== 0) return { reason: `ps exited with code ${String(result.status)}` }
+  return parsePsProcessList(result.stdout)
+}
+
+/** Every running process on this host, whichever platform it is, or why the list could not be read. */
+export function readAllProcesses(): ProcessInfo[] | ProcessListFailure {
+  return process.platform === 'win32' ? readWindowsProcesses() : readPosixProcesses()
 }
 
 /** Check if the token-goat worker process is running for `dataDir`. */

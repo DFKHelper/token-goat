@@ -370,16 +370,26 @@ export type UpgradeOutcome = { ok: true } | { ok: false; message: string }
 
 const MANUAL_INSTALL = 'npm install -g token-goat@latest'
 
-/** Installs the latest token-goat globally, then re-runs `token-goat install` from the NEW copy so hooks and bridge manifests match the code now installed. Never exits the process: `doctor --fix` calls this mid-repair. The worker and the resident hook servers are stopped first, because on Windows the native modules they hold open from the global install make npm's replace fail with EPERM; the next hook restarts both from the new copy. */
+/** Installs the latest token-goat globally, then re-runs `token-goat install` from the NEW copy so hooks and bridge manifests match the code now installed. Never exits the process: `doctor --fix` calls this mid-repair. The worker and the resident hook servers are stopped first, because on Windows the native modules they hold open from the global install make npm's replace fail with EPERM; the next hook restarts both from the new copy. Resident processes of this install that neither the pid file nor a hook-server socket names (strays left by 2.9.30 daemons that never idled out) are ended the same way, as is every other worker and hook server that runs this install's launcher, whatever its TOKEN_GOAT_HOME: they run files the upgrade replaces and, on Windows, hold them open. */
 export async function performUpgrade(onSyncHooks?: () => Promise<void>, npm: NpmInvocation | null = hostNpm()): Promise<UpgradeOutcome> {
   if (!npm) return { ok: false, message: `npm was not found next to this Node.js, so token-goat could not upgrade itself. Run ${fencedCommand(MANUAL_INSTALL)} yourself.` }
+  let stoppedPid: number[] = []
   try {
-    const { stopWorker } = await import('./worker_lifecycle.js')
+    const { stopWorker, readPidFile } = await import('./worker_lifecycle.js')
     const { queryServers } = await import('./hook_client.js')
     await queryServers('stop')
-    stopWorker()
+    const tracked = readPidFile(dataDir())
+    if (stopWorker() && tracked !== null) stoppedPid = [tracked]
   } catch {
     // Nothing running, or unreadable state: the install below reports any lock it actually hits.
+  }
+  try {
+    // Whatever the pid file and the hook servers' sockets no longer name is a stray that holds the same native modules open, and nothing else stops it.
+    const { retireStrayResidents, describeRetirement } = await import('./stray_residents.js')
+    const note = describeRetirement(await retireStrayResidents({ kinds: ['worker', 'hook-server'], skip: stoppedPid }))
+    if (note !== null) console.log(note)
+  } catch {
+    // The process list is best effort: the install below reports any lock a stray still holds.
   }
   const install = spawnSync(npm.file, [...npm.prefix, 'install', '-g', 'token-goat@latest'], { stdio: 'inherit', windowsHide: true })
   if (install.status !== 0) {

@@ -10,6 +10,7 @@ import { dataDir } from './constants.js'
 import { withEnvProxyEnabled } from './env_proxy.js'
 import { displaySafeText } from './paths.js'
 import { applyIndexingPriorityTo } from './process_priority.js'
+import { isResidentOfInstall, readProcessCommandLine, terminateProcessTree } from './resident_process.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage, withFileLock } from './util.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
@@ -105,7 +106,7 @@ export function appendWorkerErrorLog(dir: string, line: string): void {
 }
 
 /** Is `pid` a live process? Uses signal 0 (probe) — no signal is delivered. */
-function pidAlive(pid: number): boolean {
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
     return true
@@ -270,6 +271,8 @@ export function claimWorkerPidFile(dir: string, pid: number): boolean {
   const pidPath = workerPidPath(dir)
   try {
     fs.writeFileSync(pidPath, `${pid}\n`, { flag: 'wx' })
+    // No pid file existed, so a note left by an earlier claim names a daemon this claim did not displace.
+    removeDisplacedNote(dir)
     return true
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
@@ -292,6 +295,62 @@ export function claimCurrentWorker(dir: string): boolean {
   return true
 }
 
+/** Absolute path to the note a claim leaves for the daemon it installs: one line per pid whose slot it took over, `<pid> <epoch ms> <data dir>`. */
+export function displacedWorkerPath(dir: string): string {
+  return `${workerPidPath(dir)}.displaced`
+}
+
+function sameDataDir(a: string, b: string): boolean {
+  const resolve = (d: string): string => (process.platform === 'win32' ? path.resolve(d).toLowerCase() : path.resolve(d))
+  return resolve(a) === resolve(b)
+}
+
+/** The pids in the note that a claim for `dir` wrote less than `maxAgeMs` before `nowMs`: a note outliving its claim, written for another data dir, or in the old pid-only format names nothing, since its pid may long since belong to an unrelated process. */
+export function readDisplacedPids(dir: string, nowMs: number = Date.now(), maxAgeMs: number = WORKER_STARTUP_GRACE_MS): number[] {
+  let text: string
+  try {
+    text = fs.readFileSync(displacedWorkerPath(dir), 'utf8')
+  } catch {
+    return []
+  }
+  const pids: number[] = []
+  for (const line of text.split('\n')) {
+    const m = /^(\d+) (\d+) (.+?)\r?$/.exec(line)
+    if (m === null) continue
+    const pid = Number(m[1])
+    const age = nowMs - Number(m[2])
+    if (pid > 0 && age >= 0 && age < maxAgeMs && sameDataDir(m[3]!, dir) && !pids.includes(pid)) pids.push(pid)
+  }
+  return pids
+}
+
+function removeDisplacedNote(dir: string): void {
+  try {
+    fs.rmSync(displacedWorkerPath(dir), { force: true })
+  } catch {
+    // best-effort: a note that stays is ignored once it is older than the startup grace
+  }
+}
+
+/** Runs in a daemon that has just found its own pid in the pid file, never on a hook path: ends the daemon whose slot the claim took over, which a 2.9.30 daemon never leaves on its own. The note holds pids that may have been reused, so one is read only while it is younger than the startup grace and names this data dir, and the process is signalled only when it holds no lease and its command line is this install's `--worker-daemon`; any other process is left alone. A legitimate daemon whose heartbeat merely went stale (sleep, long synchronous work) is ended here too, where it would otherwise have exited at its next poll: accepted, since the claim already gave its slot away. */
+export function retireDisplacedWorker(dir: string): void {
+  const holders = readDisplacedPids(dir)
+  try {
+    fs.rmSync(displacedWorkerPath(dir), { force: true })
+  } catch {
+    return
+  }
+  const entry = daemonEntryScript()
+  for (const holder of holders) {
+    if (holder === process.pid || !pidAlive(holder) || hasFreshWorkerHeartbeat(dir, holder)) continue
+    const cmd = readProcessCommandLine(holder)
+    if (cmd === null || !isResidentOfInstall(cmd, entry, ['worker'])) continue
+    // The query above can take seconds on a cold machine, and the OS may have reused the pid since: signal only what a second read, taken right before, still shows as this install's daemon.
+    const latest = readProcessCommandLine(holder)
+    if (latest !== null && isResidentOfInstall(latest, entry, ['worker'])) terminateProcessTree(holder, false)
+  }
+}
+
 /** Replaces the pid file with `pid` when the pid it names holds no worker lease; returns false when that pid is a live worker or another claimer wins the recreate. Runs only under claimWorkerPidFile's reclaim lock. */
 function reclaimStalePidFile(dir: string, pid: number): boolean {
   const pidPath = workerPidPath(dir)
@@ -303,7 +362,17 @@ function reclaimStalePidFile(dir: string, pid: number): boolean {
   ) {
     return false
   }
-  // Stale, dead, or unreadable: reclaim the slot. Never signal the pid it names: this path is reached only when that pid proves no worker lease, which is what a daemon killed without its exit handler leaves behind once the OS reuses its pid, so a kill here lands on an unrelated process. A superseded daemon that is still running exits on its own at its next poll (see worker.ts::runWorkerLoop).
+  // Stale, dead, or unreadable: reclaim the slot. Never signal the pid it names from here: this path is reached only when that pid proves no worker lease, which is what a daemon killed without its exit handler leaves behind once the OS reuses its pid, and this runs on a hook path, where nothing may spawn a process-list query. A 2.9.30 daemon whose slot was reclaimed this way never exited on its own and piled up, one per reclaim, so the claim leaves a note for the daemon it installs, which ends the old one once it owns the slot (see retireDisplacedWorker).
+  try {
+    // A note no daemon has consumed yet is carried over, so a second claim does not strand the pid the first one named; only pids still alive and written within the startup grace are kept.
+    const held = readDisplacedPids(dir).filter((p) => p !== pid && pidAlive(p))
+    if (existingPid !== null && existingPid !== pid && pidAlive(existingPid) && !held.includes(existingPid)) held.push(existingPid)
+    const stamp = Date.now()
+    if (held.length === 0) fs.rmSync(displacedWorkerPath(dir), { force: true })
+    else fs.writeFileSync(displacedWorkerPath(dir), held.map((p) => `${p} ${stamp} ${dir}\n`).join(''))
+  } catch {
+    // best-effort: without the note a stale daemon is simply not retired here
+  }
   try {
     fs.rmSync(pidPath, { force: true })
   } catch {
@@ -314,13 +383,14 @@ function reclaimStalePidFile(dir: string, pid: number): boolean {
     return true
   } catch (e2) {
     // A first-time claimer's create, which takes no lock, landed between the remove and this create: report already-running rather than clobber it.
+    removeDisplacedNote(dir)
     if ((e2 as NodeJS.ErrnoException).code === 'EEXIST') return false
     throw e2
   }
 }
 
 /** The script the daemon child must be spawned on: the CLI launcher sitting next to this module, when there is one. `fileURLToPath(import.meta.url)` is not it, and only looked like it while the core build emitted a single file. Under `splitting: true` this module's code lands in a hashed chunk, which has no entrypoint of its own: spawning it starts a process that loads a library and exits without ever reaching the `--worker-daemon` dispatch, so `worker start` reported a pid for a child that was already dead and no drain heartbeat ever appeared. Every chunk is emitted beside the launcher, so resolving it by name is stable however the bundler arranges the code, and it re-enables the V8 compile cache for the child as a side benefit. Falls back to this module's own path for a non-bundled (source) run, where no launcher exists beside it. */
-function daemonEntryScript(): string {
+export function daemonEntryScript(): string {
   const self = fileURLToPath(import.meta.url)
   const launcher = path.join(path.dirname(self), 'token-goat.mjs')
   try {

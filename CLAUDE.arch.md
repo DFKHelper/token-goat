@@ -563,6 +563,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/ref_blindness.ts`](src/ref_blindness.ts) | Honest answers for questions the reference index cannot answer. |
 | [`src/regex_guard.ts`](src/regex_guard.ts) | Refusing a regular expression that can stall the process that runs it. |
 | [`src/resident_context.ts`](src/resident_context.ts) | Accounting for the context the harness injects and token-goat's hooks never see. |
+| [`src/resident_process.ts`](src/resident_process.ts) | Recognising, reading and ending token-goat's own resident background processes (the worker daemon and the hook servers) by command line. |
 | [`src/rewrite_permission.ts`](src/rewrite_permission.ts) | Decides whether a PreToolUse input rewrite may ship, and whether it may carry Claude Code's `permissionDecision: "allow"`, so that rewriting a tool call never changes the permissio |
 | [`src/screenshot.ts`](src/screenshot.ts) | Local screenshot capture for `token-goat screenshot`, so a page render can reach the model as a small shrunk image instead of round-tripping through a separate browser-automation M |
 | [`src/search/parallel_search.ts`](src/search/parallel_search.ts) | Exports: `executeParallelSearch` |
@@ -586,6 +587,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/spec_path.ts`](src/spec_path.ts) | `expandSpecPath()` and `resolveSpecPath()`: `~` and Windows shell mount paths in a typed file spec, shared by every file-spec command and its MCP tool. |
 | [`src/sql_path.ts`](src/sql_path.ts) | Exports: `pathEqClause`, `pathSuffixClause`, `projectScopeClause` |
 | [`src/stdin_json.ts`](src/stdin_json.ts) | Reading a JSON payload off stdin, with a timeout and a byte cap. |
+| [`src/stray_residents.ts`](src/stray_residents.ts) | Ends the token-goat resident processes of this install that no pid file or reachable hook server names any more, and every other worker and hook server running this launcher under any data directory. |
 | [`src/symbol_body_probe.ts`](src/symbol_body_probe.ts) | Doctor's oversized-stored-body check, hosted outside cli_doctor.ts. |
 | [`src/symbol_scan.ts`](src/symbol_scan.ts) | Full-scope symbol scanning for the commands that filter symbol names client-side. |
 | [`src/tool_error_census.ts`](src/tool_error_census.ts) | Per-tool and per-model tool-error census behind `session-audit --tool-errors`. |
