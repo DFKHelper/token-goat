@@ -26,8 +26,8 @@ interface Segment {
   /** The `( ... )` group that encloses the command (0 outside any), and the group around that one, so a `cd` inside a subshell can be told from one that changes the directory of what follows. */
   readonly group: number
   readonly parentGroup: number
-  /** The operator that ended this command when it makes the command run in its own process (`|` or a single `&`), where a `cd` cannot change the directory of what follows; otherwise an empty string. */
-  readonly endOp: '' | '|' | '&'
+  /** The operator that ended this command when a `cd` before it cannot change the directory of what follows: `|` or a single `&` (its own process) or `||` (what follows runs only if the `cd` failed); otherwise an empty string. */
+  readonly endOp: '' | '|' | '&' | '||'
 }
 
 const MAX_NESTING = 3
@@ -130,7 +130,7 @@ function scan(command: string): Segment[] {
     has = false
     quoted = false
   }
-  const endSegment = (nextPiped: boolean, endOp: '' | '|' | '&' = ''): void => {
+  const endSegment = (nextPiped: boolean, endOp: '' | '|' | '&' | '||' = ''): void => {
     endWord()
     if (words.length > 0) {
       const redirectedIn = words.some((w) => !w.quoted && /^\d*</.test(w.text))
@@ -211,7 +211,7 @@ function scan(command: string): Segment[] {
     }
     if (ch === '|') {
       const logicalOr = command[i + 1] === '|'
-      endSegment(!logicalOr, logicalOr ? '' : '|')
+      endSegment(!logicalOr, logicalOr ? '||' : '|')
       if (logicalOr) i++
       continue
     }
@@ -335,19 +335,20 @@ function positionals(args: readonly Word[], valued: ReadonlySet<string>, slashOp
 const CD_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd', 'set-location', 'sl'])
 
 /** Whether a directory-changing command leaves the shell in a filesystem root or the home directory (`wasRoot` is where it started, which `cd ..` keeps), or null when the segment changes no directory. `cd -`, `popd` and anything else that lands somewhere unknown count as not a root, so only a visible root target is refused. */
-function cdLandsAtRoot(seg: Segment, wasRoot: boolean): boolean | null {
+function cdLandsAtRoot(seg: Segment, wasRoot: boolean, ctx: WalkContext): boolean | null {
   const at = commandIndex(seg.words)
   const head = seg.words[at]
   if (head === undefined) return null
   const { name } = commandName(head.text)
   if (!CD_COMMANDS.has(name)) return null
   const target = positionals(seg.words.slice(at + 1), new Set<string>())[0]
-  if (target === undefined) return name !== 'popd' && name !== 'pushd'
+  // A bare `cd` goes home in a POSIX shell, but PowerShell 5.1 only prints the location.
+  if (target === undefined) return !ctx.powershell && name !== 'popd' && name !== 'pushd'
   return isRoot(target.text) || (wasRoot && /^\.\.([\\/]\.\.)*[\\/]*$/.test(target.text))
 }
 
-/** A find start path that is relative, so it begins wherever the last `cd` left the shell. */
-const isRelativeStart = (start: string): boolean => /^\.\.?([\\/].*)?$/.test(start)
+/** A find start that is the working directory itself or only steps up from it (`.`, `./`, `..`, `../..`), as opposed to a subdirectory of it. */
+const isRelativeStart = (start: string): boolean => /^\.\.?([\\/]+\.\.?)*[\\/]*$/.test(start)
 
 const texts = (words: readonly Word[]): string[] => words.map((w) => w.text)
 const anyRoot = (words: readonly Word[], glob = false, winOptions = false): boolean => words.some((w) => isRoot(w.text, glob, winOptions))
@@ -517,8 +518,8 @@ export function detectUnboundedWalk(command: string, ctx: WalkContext, depth = 0
     const fromRoot = atRoot.get(seg.group)!
     const hit = inspectSegment(seg, ctx, depth, fromRoot)
     if (hit !== null) return hit
-    // A `cd` piped to or from another command, or sent to the background, runs in its own process and leaves the shell where it was.
-    const landed = seg.pipedIn || seg.endOp !== '' ? null : cdLandsAtRoot(seg, fromRoot)
+    // A `cd` piped to or from another command, or sent to the background, runs in its own process and leaves the shell where it was; one followed by `||` leaves what follows to run only after it failed.
+    const landed = seg.pipedIn || seg.endOp !== '' ? null : cdLandsAtRoot(seg, fromRoot, ctx)
     if (landed !== null) atRoot.set(seg.group, landed)
   }
   return null

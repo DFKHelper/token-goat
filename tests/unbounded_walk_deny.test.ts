@@ -92,10 +92,11 @@ describe('detectUnboundedWalk -- find after a cd to a root or the home directory
     ['cd / && find . -name x'],
     ['cd / && find -name x'],
     ['cd / && find'],
-    ['cd / && find ./x -name y'],
+    ['cd / && find ./ -name y'],
+    ['cd / && find .. -name y'],
+    ['cd ~ && find ../ -name y'],
     ['cd / && find .'],
     ['cd / ; find . -name x'],
-    ['cd / || find . -name x'],
     ['cd /\nfind . -name x'],
     ['cd ~ && find . -name x'],
     ['cd && find . -name x'],
@@ -154,6 +155,11 @@ describe('detectUnboundedWalk -- find after a cd to a root or the home directory
     ['echo a | cd /; find . -name x'],
     ['cd /proj; (cd /; ls); find . -name x'],
     ['cd / && find src -name x'],
+    ['cd / && find ./src -name x'],
+    ['cd / && find ./x -name y'],
+    ["cd ~ && find ./proj -name '*.ts'"],
+    ['cd / || find . -name x'],
+    ['cd / || find'],
     ['cd / && find /proj -name x'],
     ['cd / && echo "find . -name x"'],
     ['cd / && ls'],
@@ -162,6 +168,15 @@ describe('detectUnboundedWalk -- find after a cd to a root or the home directory
   ])('lets %s through', (command) => {
     expect(form(command, POSIX)).toBeNull()
     expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it('does not read a bare cd as going home under PowerShell, which only prints the location, but still follows a cd to a named root', () => {
+    expect(form('cd; find . -name x', POWERSHELL)).toBeNull()
+    expect(form('sl; find . -name x', POWERSHELL)).toBeNull()
+    expect(form('Set-Location; find . -name x', POWERSHELL)).toBeNull()
+    expect(form('cd; find . -name x', POSIX)).toBe('find')
+    expect(form('cd C:/; find . -name x', POWERSHELL)).toBe('find')
+    expect(form('cd ~; find . -name x', POWERSHELL)).toBe('find')
   })
 
   it('gives the same reason as a find that names the root', () => {
