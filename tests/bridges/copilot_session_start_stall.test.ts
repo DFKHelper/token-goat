@@ -13,7 +13,7 @@ import { closeAllDbs, getDb } from '../../src/db.js'
 import { findGlobalDb } from '../helpers/find_global_db.js'
 import {
   assertOwedDeliveredOnce, assertTreeDead, BUNDLE, cleanupTrees, contextText, DEADLINE_FAIL_OPEN, fixtureWatchdog, indexTreeFixture, premiseBranch,
-  readOwnedPid, alive, treeFixture,
+  readOwnedPid, alive, runTreeShim, treeFixture,
 } from '../helpers/copilot_session_start_tree.js'
 
 type Fixture = ReturnType<typeof treeFixture>
@@ -209,6 +209,26 @@ describe('Copilot shared-shim SessionStart deadline', { timeout: 0 }, () => {
     const observation = observe(fixture, child)
     await sendOpenInput(child, JSON.stringify(copilotPayload(fixture.project)))
     await assertDeliveredOrOwed(ctx, fixture, await observation.done, 'copilot_cli', COPILOT_SESSION)
+  })
+
+  // FORMAT-DERIVED: the stub writes the settle marker in the shape of src/session_start_owed.ts::SessionStartMarker, dated 5 s before the shim's deadline, so the helper reads as having settled in time whatever the machine's speed. It then prints a complete response and never exits, which is a helper whose exit (cleanup, a slow teardown) outlasts the budget: the shim discards the response and fails open.
+  it('owes a start whose helper settled in time but did not exit before the shim failed open', { timeout: 0 }, async (ctx) => {
+    const fixture = treeFixture()
+    const entry = join(fixture.root, 'entry.cjs')
+    const entered = join(fixture.root, 'entry.started')
+    const marker = join(fixture.env['TOKEN_GOAT_HOME'] as string, 'sessions', `${COPILOT_SESSION}.session-start`)
+    writeFileSync(entry, [
+      `const deadline = Number(process.env.TG_SESSION_START_DEADLINE_EPOCH)`,
+      `require('node:fs').writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ finishedAtMs: deadline - 5000, deadlineEpoch: deadline }))`,
+      `require('node:fs').writeFileSync(${JSON.stringify(entered)}, 'yes')`,
+      `process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`,
+    ].join('; '))
+    const result = await runTreeShim({ fixture, entry, quietLimitMs: QUIET_LIMIT_MS, payload: copilotPayload(fixture.project) }).done
+    assertTreeDead(fixture)
+    if (!await premiseBranch(ctx, fixture, result, [entered], COPILOT_SESSION)) return
+    expect(result.stdout, 'the response of a helper that never exited is discarded').toBe('{}')
+    expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
+    expect(await assertOwedDeliveredOnce(fixture, 'copilot_cli', COPILOT_SESSION), 'the start settled in time by its own marker, but the shim failed open').not.toBeNull()
   })
 
   it.each([

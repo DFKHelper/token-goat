@@ -138,6 +138,11 @@ function readSessionStartInput(timeoutMs) {
 
 // Plain-JS mirror of session_start_owed.ts::resetSessionStartOwed for a main-thread key: tests/session_start_owed_reset.test.ts pins both to the same files. It runs before anything can throw so a helper killed before its own stamp still leaves the start begun, and an earlier start's marker cannot read settled.
 function resetSessionStartOwedFiles(payload) {
+  stampSessionStartOwedFiles(payload, true)
+}
+
+// A start this shim failed open on is owed whatever the helper's own marker says: the helper judges "settled in time" from its own clock, and the shim can still discard its response (a helper whose exit outlasts the budget, a cleanup that fails, an unreadable response). The shim is the party that knows it printed nothing, so it re-stamps the start begun after the helper tree is gone. A plain-JS mirror of session_start_owed.ts::recordSessionStartBegun.
+function stampSessionStartOwedFiles(payload, dropClaim) {
   try {
     const raw = payload && (payload.session_id !== undefined ? payload.session_id : payload.sessionId)
     if (typeof raw !== 'string' || raw === '' || raw.indexOf(':agent:') !== -1) return
@@ -150,7 +155,7 @@ function resetSessionStartOwedFiles(payload) {
     const stem = raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64)
     if (stem === '') return
     // The claim goes, and the settle file is rewritten as a begun stamp: only a begun, unsettled start is owed.
-    require('node:fs').rmSync(require('node:path').join(home, 'sessions', stem + '.session-start-owed'), { force: true })
+    if (dropClaim) require('node:fs').rmSync(require('node:path').join(home, 'sessions', stem + '.session-start-owed'), { force: true })
     require('node:fs').mkdirSync(require('node:path').join(home, 'sessions'), { recursive: true })
     require('node:fs').writeFileSync(require('node:path').join(home, 'sessions', stem + '.session-start'), JSON.stringify({ begunAtMs: Date.now() }), 'utf8')
   } catch {
@@ -183,7 +188,14 @@ async function runBoundedSessionStart(entryPath, eventName, payload, harness, de
     env.TOKEN_GOAT_COPILOT_HOOKS_DIR = __dirname
   }
 
-  const stdout = await superviseSessionStart({ args, env, payload, deadline })
+  let stdout
+  try {
+    stdout = await superviseSessionStart({ args, env, payload, deadline })
+  } catch (error) {
+    // The caller prints the failed-open line and exactly {}: the start is owed, whatever marker the helper left.
+    stampSessionStartOwedFiles(payload, false)
+    throw error
+  }
   try {
     const parsed = JSON.parse(stdout.trim())
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -191,6 +203,7 @@ async function runBoundedSessionStart(entryPath, eventName, payload, harness, de
     }
     return JSON.stringify(parsed)
   } catch {
+    stampSessionStartOwedFiles(payload, false)
     throw new Error('hook helper returned invalid JSON')
   }
 }
