@@ -85,6 +85,17 @@ const UNPROVABLE_FIRST_WORDS: ReadonlySet<string> = new Set(['timeout', 'time', 
 const PROTECTED_PATH_FRAGMENTS: readonly string[] = ['.git', '.config/git', '.vscode', '.idea', '.husky', '.cargo', '.devcontainer', '.yarn', '.mvn', '.claude', '.bashrc', '.zshrc', '.profile', '.envrc', '.npmrc', '.pnp.', 'bunfig.toml', '.bazelrc', '.pre-commit-config.yaml', 'lefthook.yml', '.mcp.json']
 // rm and rmdir on a critical path prompt in every mode, whatever a hook answers, including inside `bash -c` and `$()`: never hidden inside a wrapper.
 const RM_WORD = /(?:^|[^a-z0-9_.-])(?:rm|rmdir)(?:[^a-z0-9_-]|$)/
+/** Whether text names rm or rmdir or a path Claude Code protects: the two checks decideShell makes on a command as typed, for a caller that must make them on what the shell will run once its quoting is removed. */
+export function namesRmOrProtectedPath(text: string): boolean {
+  const lowered = text.toLowerCase()
+  return RM_WORD.test(lowered) || PROTECTED_PATH_FRAGMENTS.some((p) => lowered.includes(p))
+}
+const INTERPRETER_WORDS: ReadonlySet<string> = new Set(['python', 'python3', 'py', 'node', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'awk', 'gawk', 'busybox', 'ssh'])
+/** Whether a command is plain words with no operator, expansion, glob, brace or escape, and none of them a shell, launcher or interpreter (path prefix and .exe ignored): quoted text holding a shell metacharacter (a bare word cannot, so any such word was quoted) is code a launcher such as `git -c 'alias.x=!{r,}m x'` or `sed '1e ...'` may run, and the lexical checks cannot read it. */
+export function isSimpleCommand(command: string): boolean {
+  const words = simpleWords(command)
+  return words !== null && !words.some((w) => /[{}[\]*?~!#|;&<>()^]/.test(w)) && !words.some((w, i) => { const base = (w.split('/').pop() ?? w).toLowerCase().replace(/\.exe$/, ''); return (base !== '.' || i === 0) && (UNPROVABLE_FIRST_WORDS.has(base) || INTERPRETER_WORDS.has(base)) })
+}
 const FILE_RULE_TOOLS: readonly string[] = ['read', 'edit', 'write', 'multiedit', 'notebookedit']
 const BASH_COMMAND_CEILING = 10_000
 

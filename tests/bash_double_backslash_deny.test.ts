@@ -1,4 +1,7 @@
 // Provenance: the halving itself is CAPTURE -- a probe spawning Git Bash (`C:/Program Files/Git/usr/bin/bash.exe -c <cmd>`) through Node's child_process on Windows 11 with runs of one to five backslashes before letters, quotes, spaces and the end of the argument: every run of two or more arrived shortened, a lone one arrived intact. Upstream report: anthropics/claude-code#85856. The gating cases below are HAND-DERIVED from that finding: the deny must fire only where the halving happens (Windows, Claude Code's Bash tool) and only for a run of two or more.
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { preBashHandler } from '../src/hooks_bash.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -24,10 +27,15 @@ function isBackslashDeny(result: ReturnType<typeof preBashHandler>): boolean {
   return result.hookType === 'deny' && result.message.includes('two backslashes in a row')
 }
 
-describe('preBashHandler -- denies a run of two backslashes in Claude Code on Windows', () => {
+// A Bash deny rule is what makes the repair decline, so the refusal under test is the fallback the damaged command gets when it cannot be run from a script file (bash_backslash_repair.test.ts covers the repair).
+describe('preBashHandler -- refuses a run of two backslashes in Claude Code on Windows when it cannot be repaired', () => {
   const realPlatform = process.platform
+  let configDir = ''
 
   beforeEach(() => {
+    configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-dbl-bs-'))
+    fs.writeFileSync(path.join(configDir, 'settings.json'), JSON.stringify({ permissions: { deny: ['Bash(curl:*)'] } }))
+    vi.stubEnv('CLAUDE_CONFIG_DIR', configDir)
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', '')
     vi.stubEnv('HERMES_SESSION_ID', '')
@@ -43,6 +51,7 @@ describe('preBashHandler -- denies a run of two backslashes in Claude Code on Wi
     vi.unstubAllEnvs()
     clearModuleCaches()
     invalidateConfigCache()
+    fs.rmSync(configDir, { recursive: true, force: true })
   })
 
   it('the fixtures hold what their names say', () => {

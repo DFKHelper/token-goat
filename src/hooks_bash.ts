@@ -20,6 +20,7 @@ import { detectStructuralIndexRewrite } from './bash_structural_index.js'
 import { agentTypeOf, loadCodexRules, loadingHiddenRuleCheck, permissionNeutralRewrite, readHintCrossesRule, shellPathWords } from './rewrite_permission.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
 import { detectUnboundedWalk } from './unbounded_walk.js'
+import { hasHalvedRun, msysDamagesCommand, REPAIR_DECLINE_TEXT, repairByScriptFile } from './bash_backslash_repair.js'
 import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
@@ -254,13 +255,6 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   const cfg = loadConfig()
-  // Claude Code's Bash tool on Windows passes the command to Git Bash as a `-c` argument, and the argv quoting plus the MSYS2 runtime's decoding halve every run of two or more backslashes, so the command that runs is not the one written and nothing reports the difference (anthropics/claude-code#85856). Denied rather than rewritten: a rewrite goes out as updatedInput, which permission rules evaluate again. `_tg_harness` is 'claude' for every harness relay.ts does not map, so detectHarness() is what pins this to Claude Code; the hook server answers under the caller's own environment, so it sees the same variables here.
-  if (cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && rawCmd.includes('\\\\') && detectHarness() === 'claudecode') {
-    recordStat('session_hint', 0, 0)
-    return syntaxOutput(denyOutput(
-      'This command has two backslashes in a row. Claude Code\'s Bash tool on Windows halves every run of two or more backslashes before Git Bash sees the command, so it would run with different text than you wrote, with no error (anthropics/claude-code#85856). Write text containing backslashes to a file with the Write tool and run it by path, or use the PowerShell tool, which passes the command unchanged. For paths, use forward slashes: C:/Users/me works in Git Bash. To turn this check off, set hints.deny_bash_double_backslash = false or TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH=0.',
-    ))
-  }
   // A walk of a whole filesystem root or the home directory with no depth bound outlives the shell that timed out and keeps burning CPU, so it is refused here before it starts; the harness decides whether a bare `find` is Git's or the Windows text-search one. There is no config switch for it on purpose: a switch nobody has asked for is a rule that can be left off.
   const walk = detectUnboundedWalk(rawCmd, {
     windows: process.platform === 'win32',
@@ -269,6 +263,21 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (walk !== null) {
     recordStat('session_hint', 0, 0)
     return syntaxOutput(denyOutput(walk.message))
+  }
+  // The script holds the command exactly as typed, where rawCmd has its surrounding whitespace trimmed.
+  const typedCmd = event.toolInput['command'] as string
+  // Claude Code's Bash tool on Windows passes the command to Git Bash as a `-c` argument, and the argv quoting plus the MSYS2 runtime's decoding halve every run of two or more backslashes not directly before a double quote, and cut the command off near 8,186 characters, so the command that runs is not the one written and nothing reports the difference (anthropics/claude-code#85856). A command Claude Code would run with no prompt is run from a script file instead, rewritten through the permission check like any shell rewrite; any other is refused when a backslash run damages it, and left as it was when only its length is over the bound, since the cut-off sits well above that bound. This comes after the walk refusal so that judges the command as written, and returns before the compress wrapper so a repaired command is not wrapped twice. `_tg_harness` is 'claude' for every harness relay.ts does not map, so detectHarness() is what pins this to Claude Code; the hook server answers under the caller's own environment, so it sees the same variables here.
+  if (cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && msysDamagesCommand(typedCmd) && detectHarness() === 'claudecode') {
+    // The shell-wrap kind: the sourcing command is judged against the rules exactly as the compress wrapper is, with the model's command as the original, and only an approval ships.
+    const repaired = repairByScriptFile(typedCmd, (sourced) => shellRewrite(event, 'shell-wrap', rawCmd, sourced))
+    if (typeof repaired !== 'string') return repaired
+    if (hasHalvedRun(typedCmd)) {
+      recordStat('session_hint', 0, 0)
+      return syntaxOutput(denyOutput(
+        'This command has two backslashes in a row. Claude Code\'s Bash tool on Windows halves every run of two or more backslashes that is not directly before a double quote, so Git Bash would run it with different text than you wrote, with no error (anthropics/claude-code#85856). ' +
+        `It was not run from a temp file, because ${REPAIR_DECLINE_TEXT[repaired]}. Write the text to a file with the Write tool and run it by path, or use the PowerShell tool, which passes the command unchanged. For paths, use forward slashes: C:/Users/me works in Git Bash. To turn this check off, set hints.deny_bash_double_backslash = false or TOKEN_GOAT_DENY_BASH_DOUBLE_BACKSLASH=0.`,
+      ))
+    }
   }
   // Check for unbalanced shell quoting or unterminated heredocs
   if (cfg.hints.warn_unbalanced_shell_quoting) {

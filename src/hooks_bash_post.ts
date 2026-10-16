@@ -6,6 +6,7 @@ import { contextOutput, emitRewrite, passOutput, extractToolResponseField, OUTPU
 import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import type { HookOutput } from './types.js'
+import { sweepStaleRepairScripts } from './bash_backslash_repair.js'
 import { mayBeVerificationCommand } from './hooks_verification.js'
 import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordSymbolRead, takeBashStartCwd, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
 import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText, dirAtIndexKey, hostPathOfIndexKey, hostPathOfTypedPath, isFileAtIndexKey } from './paths.js'
@@ -653,6 +654,8 @@ async function maybeEmitLargeUncompressedHint(
 /** post_tool_use handler for the Bash tool. Caches the output of monitoring and build commands so that `preBashHandler` can emit a recall hint the next time the same command is run, avoiding a redundant re-execution and the token cost of re-reading the output. */
 export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   try {
+    // A script the pre hook wrote for a call that never reached a shell stays until a sweep removes it, and this runs after every Bash call.
+    if (process.platform === 'win32') sweepStaleRepairScripts()
     const rawCmdRaw = extractCommand(event)
     if (rawCmdRaw === undefined) return passOutput()
     // True when the call ran as written, not inside a `token-goat compress` wrapper the pre hook rewrote it into.
