@@ -136,6 +136,9 @@ describe('compaction epoch invalidates in-context read state', () => {
   function tmpSource(): string {
     const p = path.join(os.tmpdir(), `tg-epoch-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
     fs.writeFileSync(p, 'export const a = 1\n')
+    // The tests below backdate their reads by seconds; backdate the file too so it does not look modified after them.
+    const old = new Date(Date.now() - 60_000)
+    fs.utimesSync(p, old, old)
     tmpFiles.push(p)
     return p
   }

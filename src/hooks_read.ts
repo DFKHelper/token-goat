@@ -1194,7 +1194,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const { identity, basis } = rereadIdentity(sessionStateKey(event), normalized, entry)
       recordStat('reread_deny_identity', 0, 0, undefined, `branch=${branch} identity=${identity} basis=${basis} edited=${entry?.wasEdited === true ? 1 : 0}`)
     }
-    if (config.hints.reread_deny && !protectedRead) {
+    // A whole-file re-read deny never fires on a file shown to have changed since the read the model holds (snapshot bytes, else size and mtime); that Read goes through. 'unknown' only arises for a file that is gone or was empty, where a deny withholds nothing.
+    const knownChanged = rereadIdentity(sessionStateKey(event), normalized, entry).identity === 'changed'
+    if (config.hints.reread_deny && !protectedRead && !knownChanged) {
       // Item 1: file was truncated on last read — surgical reads only, gated on hints.truncated_read_min_lines (same gate as the doc/source diff-on-reread branch above) so a small file that happened to trip the token-based truncation marker doesn't get denied for a redirect that wouldn't help it.
       if (wasFileTruncatedThisSession(normalized)) {
         if (estimateTruncatedLineCount(normalized) >= config.hints.truncated_read_min_lines) {
@@ -1237,7 +1239,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     }
 
     const hint = surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized))
-    if (config.hints.reread_deny && !protectedRead && !isSmallUnseenSlice && ((fullReads >= 1 && rereadBytes >= config.hints.reread_deny_min_bytes) || fullReads >= 2) && !fileAlreadyDenied) {
+    if (config.hints.reread_deny && !protectedRead && !knownChanged && !isSmallUnseenSlice && ((fullReads >= 1 && rereadBytes >= config.hints.reread_deny_min_bytes) || fullReads >= 2) && !fileAlreadyDenied) {
       markHintShown(fileRereadDenyKey)
       recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-count-deny')
       bookDenyIdentity('count')

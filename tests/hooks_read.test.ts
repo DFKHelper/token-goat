@@ -254,6 +254,8 @@ describe('preReadHandler', () => {
       invalidateConfigCache()
 
       const p = makeTmpFile('x'.repeat(60 * 1024))
+      // The fake clock predates the real write time; align the mtime so the file does not look modified after the read.
+      fs.utimesSync(p, new Date(), new Date())
       recordFileRead(normalizePath(p))
 
       const result = preReadHandler(readEvent(p))
@@ -551,6 +553,8 @@ describe('preReadHandler', () => {
       vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0))
 
       const target = makeTmpFile('x'.repeat(60 * 1024))
+      // The fake clock predates the real write time; align the mtime so the file does not look modified after the read.
+      fs.utimesSync(target, new Date(), new Date())
       recordFileRead(normalizePath(target))
 
       // Three other files read strictly after the target, each with an advancing timestamp, push the target's recency rank to 3 -- past the configured window of 2.
@@ -575,6 +579,8 @@ describe('preReadHandler', () => {
       vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0))
 
       const target = makeTmpFile('x'.repeat(60 * 1024))
+      // The fake clock predates the real write time; align the mtime so the file does not look modified after the read.
+      fs.utimesSync(target, new Date(), new Date())
       recordFileRead(normalizePath(target))
 
       // Exactly two other files read after the target push its recency rank to 2 (0-indexed) -- the boundary itself. With protect_recent_reads=2, ranks 0 and 1 are protected but rank 2 is not (rank < n, not rank <= n), so this must still deny.
@@ -2619,6 +2625,7 @@ content here` },
   // Item 8: the memory-specific re-read deny is gone; memory files take the generic markdown path.
   // HAND-DERIVED: a re-read of a memory file whose content changed on disk (no snapshot to diff) must not be hard-denied on the false premise that memory files never change mid-session.
   it('a memory/MEMORY.md re-read after an outside change, with no snapshot, is not hard-denied', () => {
+    pinProtectRecentReadsToZero()
     const dir = path.join(os.tmpdir(), `tg-mem-${process.pid}`)
     fs.mkdirSync(dir, { recursive: true })
     const p = path.join(dir, 'memory', 'MEMORY.md')
@@ -2633,6 +2640,32 @@ content here` },
     if (result.hookType === 'context') {
       expect(result.context).not.toContain('Memory files rarely change mid-session')
     }
+  })
+
+  // HAND-DERIVED: a snapshot exists and the file then gained one line; that diff is far below the default 1000-token savings floor, so no diff is served, and the unprotected re-read must go through rather than fall to the markdown count deny.
+  it('a changed memory/MEMORY.md re-read whose diff is below the savings floor is read through, not denied', () => {
+    pinProtectRecentReadsToZero()
+    withMinTokensSaved(1000, () => {
+      const dir = path.join(os.tmpdir(), `tg-mem9-${process.pid}`)
+      fs.mkdirSync(dir, { recursive: true })
+      const p = path.join(dir, 'memory', 'MEMORY.md')
+      fs.mkdirSync(path.dirname(p), { recursive: true })
+      const content1 = '# Memory\n\nSome memory content here.\n'
+      fs.writeFileSync(p, content1)
+      tmpFiles.push(p)
+      postReadHandler({
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        agentId: undefined,
+        raw: { tool_response: content1 },
+      })
+      recordFileRead(normalizePath(p))
+      fs.writeFileSync(p, content1 + '- [New fact](new.md) written by another process\n')
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).not.toBe('deny')
+    })
   })
 
   it('passes first read of memory/MEMORY.md', () => {
@@ -3062,15 +3095,12 @@ content here` },
       // 100 contiguous changed lines -> 200 diff body lines, far past buildLineDiff's 50-line cap.
       fs.writeFileSync(p, manyLineDoc('rewritten'))
 
+      // The file changed and the diff is too large to serve whole, so the Read goes through: a changed file is never denied, and no truncated diff is offered in its place.
       const result = preReadHandler(readEvent(p))
-      expect(result.hookType).toBe('deny')
-      if (result.hookType === 'deny') {
-        // The message must not claim "here is what changed" while omitting most of what changed.
-        expect(result.message).not.toContain('```diff')
-        expect(result.message).not.toContain('more changed lines')
-        // Pin the branch it falls through to, so "no truncated diff" can't silently become "no output at all": the pre-existing markdown re-read deny, which redirects to a surgical read and leaves an escape hatch.
-        expect(result.message).toContain('Markdown file already read this session')
-        expect(result.message).toContain('token-goat read')
+      expect(result.hookType).not.toBe('deny')
+      if (result.hookType === 'context') {
+        expect(result.context).not.toContain('```diff')
+        expect(result.context).not.toContain('more changed lines')
       }
     })
   })

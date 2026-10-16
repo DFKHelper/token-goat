@@ -73,7 +73,7 @@ describe('reread_deny_identity', () => {
     expect(identityRows().slice(before)).toEqual(['branch=source-count identity=identical basis=stat edited=0'])
   })
 
-  it('books a source file whose size moved since the last read as changed', () => {
+  it('reads a source file whose size moved since the last read through, booking no deny', () => {
     const file = write('Grown.cs', 'class Grown {}\n')
     const before = identityRows().length
     pre(file)
@@ -82,11 +82,12 @@ describe('reread_deny_identity', () => {
     // HAND-DERIVED: stamped an hour before the reads, so the mtime says nothing moved and only the size can report the change.
     const earlier = new Date(Date.now() - 3_600_000)
     fs.utimesSync(file, earlier, earlier)
-    expect(pre(file).hookType).toBe('deny')
-    expect(identityRows().slice(before)).toEqual(['branch=source-count identity=changed basis=stat edited=0'])
+    // A changed file is never refused: the model's last read is stale, so the Read goes through and no deny row is booked.
+    expect(pre(file).hookType).not.toBe('deny')
+    expect(identityRows().slice(before)).toEqual([])
   })
 
-  it('books a same-size rewrite after the last read as changed, from the mtime', () => {
+  it('reads a same-size rewrite after the last read through, from the mtime, booking no deny', () => {
     const file = write('Swap.cs', 'class AAAA {}\n')
     const before = identityRows().length
     pre(file)
@@ -95,21 +96,20 @@ describe('reread_deny_identity', () => {
     fs.writeFileSync(file, 'class BBBB {}\n')
     const later = new Date(Date.now() + 60_000)
     fs.utimesSync(file, later, later)
-    expect(pre(file).hookType).toBe('deny')
-    expect(identityRows().slice(before)).toEqual(['branch=source-count identity=changed basis=stat edited=0'])
+    // A changed file is never refused: the model's last read is stale, so the Read goes through and no deny row is booked.
+    expect(pre(file).hookType).not.toBe('deny')
+    expect(identityRows().slice(before)).toEqual([])
   })
 
-  it('books a markdown file edited too slightly to diff as changed, from the snapshot', () => {
-    // HAND-DERIVED: a small doc whose one-word edit yields a diff larger than the file, so the diff-on-reread branch declines and the markdown deny refuses it instead.
+  it('reads a markdown file edited too slightly to diff through, from the snapshot, booking no deny', () => {
+    // HAND-DERIVED: a small doc whose one-word edit yields a diff larger than the file, so the diff-on-reread branch declines and the changed file must then be read through, not refused by the markdown deny.
     const file = write('notes.md', '# Notes\n\nSome content here.\n')
     const before = identityRows().length
     pre(file)
     post(file)
     fs.writeFileSync(file, '# Notes\n\nSame content here.\n')
-    const out = pre(file)
-    expect(out.hookType).toBe('deny')
-    if (out.hookType === 'deny') expect(out.message).toContain('Markdown file already read this session')
-    expect(identityRows().slice(before)).toEqual(['branch=doc identity=changed basis=snapshot edited=0'])
+    expect(pre(file).hookType).not.toBe('deny')
+    expect(identityRows().slice(before)).toEqual([])
   })
 
   it('books nothing on a re-read that no whole-file deny refuses', () => {
