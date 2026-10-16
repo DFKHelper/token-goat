@@ -14,6 +14,7 @@ import { nativeHookExecParts, nativeHookFlags } from '../src/native_hook.js'
 import { HOOK_EVENTS, type HookOutput } from '../src/types.js'
 import { HARNESS_HOOK_PAYLOADS, type HookPayloadCase, type PayloadHarness } from './fixtures/harness_hook_payloads.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { SESSION_START_TEST_BUDGET_ENV } from '../src/bridges/shim_common.js'
 import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
 import { callV2, verifyResponseFrames, type Frame, type V2Served } from './helpers/hook_v2_client.js'
@@ -241,10 +242,10 @@ function nativeArgs(c: HookPayloadCase, tail: 'wired' | 'tripwire', entryOverrid
   return parts.args
 }
 
-function runNative(c: HookPayloadCase, sid: string, args: readonly string[]): Promise<{ stdout: string; exit: number | null; stderr: string }> {
+function runNative(c: HookPayloadCase, sid: string, args: readonly string[], extraEnv: Env = {}): Promise<{ stdout: string; exit: number | null; stderr: string }> {
   return new Promise((resolve, reject) => {
     // sb.env turns the server off for the cold shim runs; the native client honours that switch as the Node client does, so it is turned back on here.
-    const child = spawn(bin, args, { cwd: sb.proj, env: { ...caseEnv(c, sid), TOKEN_GOAT_HOOK_SERVER: '1' }, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(bin, args, { cwd: sb.proj, env: { ...caseEnv(c, sid), TOKEN_GOAT_HOOK_SERVER: '1', ...extraEnv }, stdio: ['pipe', 'pipe', 'pipe'] })
     const out: Buffer[] = []
     let stderr = ''
     child.stdout.on('data', (d: Buffer) => out.push(d))
@@ -334,7 +335,7 @@ describe('a v2 request answers exactly as the installed shim', () => {
   let n = 0
   for (const c of HARNESS_HOOK_PAYLOADS) {
     const id = n++
-    // A Copilot start runs the real helper under a fixed 3 s budget, so how it ends depends on the machine; the start has its own cases below, each of which fixes which side of the budget it is on.
+    // A Copilot start runs the real helper under a fixed budget, so how it ends depends on the machine; the start has its own cases below, each of which fixes which side of the budget it is on.
     const boundedStartup = c.harness === 'copilot_cli' && c.event === 'sessionStart'
     it(`${c.harness} ${c.event}: ${c.name}`, async () => {
       if (boundedStartup) {
@@ -400,7 +401,7 @@ async function residentStartAnswer(sid: string): Promise<string> {
   return answer
 }
 
-describe('a Copilot start and the 3 s budget', () => {
+describe('a Copilot start and its budget', () => {
   // A start that finishes inside the budget is not a case here: the budget is a fixed wall clock the shim and the native owner both enforce, so whether a completing start makes it depends on the machine and no assertion on it can be made speed-independent. Both cut-off cases below are fixed by construction, and the first tool call carries the resident's strings.
   it('a shim start cut off by its deadline answers {} and the first tool call delivers what the resident answered', async () => {
     await waitIdle(endpoint)
@@ -412,12 +413,12 @@ describe('a Copilot start and the 3 s budget', () => {
     expectOwedDelivered(await runShim(FIRST_TOOL_CALL, 'start-cut-shim'), resident, 'shim')
   }, 60_000)
 
-  it('a native start cut off by the 3 s budget answers {} and the first tool call delivers what the resident answered', async () => {
+  it('a native start cut off by the budget answers {} and the first tool call delivers what the resident answered', async () => {
     await waitIdle(endpoint)
     const resident = await residentStartAnswer('v2-start-native-cut')
     await waitIdle(endpoint)
     const before = (await slotStatus(endpoint, key))?.served
-    // A command that answers nothing until released, so the budget ends the start in every run; the release is a file the command polls, written once the client has exited, so no process outlives the case.
+    // The seam budget is 3 s, short enough for this case to end in seconds. A command that answers nothing until released, so the budget ends the start in every run; the release is a file the command polls, written once the client has exited, so no process outlives the case.
     const release = path.join(sb.base, 'start-cut-native.release')
     // Provenance: HAND-DERIVED. A script written for this case, not captured output: it answers nothing, polls for the release file named in its first argument and exits when it appears.
     const hang = 'const f = process.argv[1]; setInterval(() => { if (require("node:fs").existsSync(f)) process.exit(0) }, 50)'
@@ -430,7 +431,7 @@ describe('a Copilot start and the 3 s budget', () => {
       : nativeArgs(START, 'wired', hangEntry)
     let cut: { stdout: string; exit: number | null; stderr: string }
     try {
-      cut = await runNative(START, 'start-cut-native', args)
+      cut = await runNative(START, 'start-cut-native', args, { [SESSION_START_TEST_BUDGET_ENV]: '3000' })
     } finally {
       fs.writeFileSync(release, 'released')
     }

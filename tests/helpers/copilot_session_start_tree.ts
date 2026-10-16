@@ -9,12 +9,15 @@ import { expect } from 'vitest'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { nativeHookCommandLine } from '../../src/native_hook.js'
 import { endpointFor, readServerKey } from '../../src/hook_ipc.js'
+import { SESSION_START_TEST_BUDGET_ENV } from '../../src/bridges/shim_common.js'
 import { startBudgetAtShimStart } from './shim_deadline.js'
 import { slotStatus } from './hook_server_probe.js'
 import { buildNative } from './native_bin.js'
 import { startWatchdog, type Watchdog } from './stall_proof_watchdog.js'
 
 export const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+/** The budget the tree fixtures give a start, through the test-only seam: the shorter budget production used before it became 10 s, so a case that waits for a hung helper to be cut off ends in seconds, not in the production budget. */
+export const HUNG_START_BUDGET_MS = 3000
 export const ownedRoots: string[] = []
 export const ownedPids: number[] = []
 const watchdogs = new Map<string, { watchdog: Watchdog; quietLimitMs: number }>()
@@ -76,7 +79,7 @@ export function treeFixture(parent: string = tmpdir()): { root: string; project:
     env: { ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: home, XDG_DATA_HOME: home,
       HOME: scratch['user'], USERPROFILE: scratch['user'], APPDATA: scratch['appdata'], XDG_CONFIG_HOME: scratch['xdgconfig'],
       CLAUDE_CONFIG_DIR: scratch['claude'], COPILOT_HOME: scratch['copilot'], CODEX_HOME: scratch['codex'], TEMP: scratch['tmp'], TMP: scratch['tmp'],
-      TOKEN_GOAT_HOOK_SERVER: '0', TOKEN_GOAT_NATIVE_HOOKS: '0', TOKEN_GOAT_EMBED: '0' },
+      TOKEN_GOAT_HOOK_SERVER: '0', TOKEN_GOAT_NATIVE_HOOKS: '0', TOKEN_GOAT_EMBED: '0', [SESSION_START_TEST_BUDGET_ENV]: String(HUNG_START_BUDGET_MS) },
   }
 }
 
@@ -415,7 +418,7 @@ export async function assertInstalledResidentBypass(fixture: ReturnType<typeof t
   expect(ordinary.stderr).toBe('')
   const before = await answeredStatus()
   expect(before.served).toBe(initial.served + 1)
-  // The start runs a helper that never answers until released (it sits beside the bundle, where the shim looks for the native owner), so the 3 s budget ends the start on every machine: the outcome is the same fail-open, the resident serves nothing, and the context owed is delivered by the first tool call. The release file is written when the clients have exited, so no process outlives the case.
+  // The start runs a helper that never answers until released (it sits beside the bundle, where the shim looks for the native owner), so the seam budget ends the start on every machine: the outcome is the same fail-open, the resident serves nothing, and the context owed is delivered by the first tool call. The release file is written when the clients have exited, so no process outlives the case.
   const stubs: string[] = []
   try {
     for (const endInput of [false, true]) {

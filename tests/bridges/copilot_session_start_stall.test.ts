@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { COPILOT_SESSION_START_HELPERS } from '../../src/bridges/copilot_session_start.js'
 import { closeAllDbs, getDb } from '../../src/db.js'
-import { SHIM_SESSION_START_TIMEOUT_MS } from '../../src/bridges/shim_common.js'
 import { findGlobalDb } from '../helpers/find_global_db.js'
 import {
   assertOwedDeliveredOnce, assertTreeDead, BUNDLE, cleanupTrees, contextText, DEADLINE_FAIL_OPEN, fixtureWatchdog, indexTreeFixture, premiseBranch,
@@ -19,7 +18,6 @@ import {
 type Fixture = ReturnType<typeof treeFixture>
 type Harness = 'copilot_cli' | 'vscode'
 
-const SESSION_START_BUDGET_MS = 3000
 // A shim that produces no output, no exit and no error for this long is stalled; a slow machine stretches the time to each step, not the quiet between steps the watchdog counts.
 const QUIET_LIMIT_MS = 30_000
 const COPILOT_SESSION = 'copilot-session-start-test'
@@ -188,7 +186,6 @@ describe('Copilot shared-shim SessionStart deadline', { timeout: 0 }, () => {
   })
 
   it('returns healthy Copilot CLI context, or owes it once, before the caller closes stdin', { timeout: 0 }, async (ctx) => {
-    expect(SHIM_SESSION_START_TIMEOUT_MS).toBe(SESSION_START_BUDGET_MS)
     expect(existsSync(BUNDLE), 'build dist/token-goat.mjs before this integration test').toBe(true)
     const fixture = treeFixture()
     const child = startShim(fixture, 'sessionStart')

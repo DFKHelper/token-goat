@@ -13,7 +13,7 @@ fn remaining(epoch: u64, now: u64) -> Result<u64, String> {
     if remaining <= RESERVE_MS {
         return Err("insufficient time for process-tree cleanup".into());
     }
-    if remaining > 3000 {
+    if remaining > crate::startup_entry::budget_ms() {
         return Err("invalid absolute startup deadline".into());
     }
     Ok(remaining)
@@ -232,6 +232,7 @@ mod tests {
         assert!(remaining(4000, 3000).is_err());
         assert_eq!(remaining(4001, 3000).unwrap(), 1001);
         assert!(remaining(4000, 4001).is_err());
-        assert!(remaining(7001, 3000).is_err());
+        assert_eq!(remaining(13000, 3000).unwrap(), crate::startup_entry::DEFAULT_BUDGET_MS);
+        assert!(remaining(13001, 3000).is_err());
     }
 }

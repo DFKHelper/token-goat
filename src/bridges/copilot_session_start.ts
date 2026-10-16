@@ -1,8 +1,16 @@
-import { SHIM_SESSION_START_TIMEOUT_MS } from './shim_common.js'
+import { SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MAX_MS, SESSION_START_TEST_BUDGET_MIN_MS, SHIM_SESSION_START_TIMEOUT_MS } from './shim_common.js'
 
 /** Standalone helpers embedded into the generated shared Copilot/VS Code shim. */
 export const COPILOT_SESSION_START_HELPERS = `
 const SHIM_SESSION_START_TIMEOUT_MS = ${SHIM_SESSION_START_TIMEOUT_MS}
+
+// Test-only seam, mirrored by the native owner: a plain decimal in range replaces the budget so a test need not race the clock; anything else is ignored.
+function sessionStartBudgetMs() {
+  const text = process.env.${SESSION_START_TEST_BUDGET_ENV}
+  if (typeof text !== 'string' || !/^[0-9]+$/.test(text)) return SHIM_SESSION_START_TIMEOUT_MS
+  const value = Number(text)
+  return value >= ${SESSION_START_TEST_BUDGET_MIN_MS} && value <= ${SESSION_START_TEST_BUDGET_MAX_MS} ? value : SHIM_SESSION_START_TIMEOUT_MS
+}
 const SESSION_START_CLEANUP_RESERVE_MS = 1000
 // How long past the deadline the shim keeps its stdin listener for a payload already in the pipe: on Windows the pipe read completes on a worker thread, so the completion can land many event-loop turns after the listener attaches. Measured resume-to-data under 52 busy loops on 26 CPUs: p50 5.7 ms, max 204 ms.
 const SESSION_START_LATE_PAYLOAD_GRACE_MS = 1000
@@ -325,7 +333,7 @@ function superviseSessionStart({ args, env, payload, deadline }) {
     root.stdout.on('error', () => beginCleanup('hook helper stdout failed'))
     root.stderr.on('error', () => beginCleanup('hook helper stderr failed'))
     const remaining = deadline - Date.now()
-    // Reserve the final second of the single 3 s budget for owned-tree teardown.
+    // Reserve the final second of the single budget for owned-tree teardown.
     timer = setTimeout(() => beginCleanup('hook helper timed out'), Math.max(0, remaining - SESSION_START_CLEANUP_RESERVE_MS))
     hardTimer = setTimeout(() => cleanupFailed('overall deadline exceeded'), Math.max(0, remaining))
     root.stdin.end(JSON.stringify(payload))

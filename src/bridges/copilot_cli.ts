@@ -365,9 +365,9 @@ async function main() {
   let sessionStartDeadline
   if (tgEvent === 'session_start') {
     const inherited = process.argv[4]
-    const epoch = inherited === undefined ? startedAt + SHIM_SESSION_START_TIMEOUT_MS
+    const epoch = inherited === undefined ? startedAt + sessionStartBudgetMs()
       : inherited.startsWith('--session-start-deadline=') ? Number(inherited.slice('--session-start-deadline='.length)) : NaN
-    if (!Number.isSafeInteger(epoch) || epoch <= 0 || epoch > startedAt + SHIM_SESSION_START_TIMEOUT_MS) {
+    if (!Number.isSafeInteger(epoch) || epoch <= 0 || epoch > startedAt + sessionStartBudgetMs()) {
       failOpenSessionStart('invalid inherited startup deadline')
       return
     }

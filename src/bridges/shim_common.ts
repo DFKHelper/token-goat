@@ -82,8 +82,15 @@ export const SHIM_SPAWN_LADDER = `    const res = entryPath
 // FORMAT-DERIVED per harness from the hook timeout its docs or install writer names: Claude Code 30 s for UserPromptSubmit and 600 s elsewhere (https://code.claude.com/docs/en/hooks, the timeout field; token-goat writes no timeout on its entries), Codex 600 s (codex_install.ts), Copilot 60 s (HOOK_TIMEOUT_SEC in copilot_cli_install.ts), Grok 5 s default (its hooks doc, cited in grok.ts), Kimi 30 s default (docs/en/customization/hooks.md, cited in kimi.ts), OpenClaw 15 s for before_tool_call (DEFAULT_MODIFYING_HOOK_TIMEOUT_MS_BY_HOOK in src/plugins/hooks.ts of github.com/openclaw/openclaw, main), and none for pi (the extension runner in packages/coding-agent/src/core/extensions/runner.ts of github.com/badlogic/pi-mono awaits a handler with no timer) or opencode (Plugin.trigger in packages/opencode/src/plugin/index.ts of github.com/anomalyco/opencode awaits it the same way), so those two hosts are bounded only by this cap and a hung hook would freeze the agent until it expires. `relay` is the block shared by opencode and OpenClaw, so it takes the smaller of the two. Each cap is the fallback's whole budget, so it sits under the smallest timeout the harness applies to any event token-goat registers, and well over the cold start of a loaded machine.
 export const SHIM_FALLBACK_TIMEOUT_MS = { claudecode: 20_000, codex: 45_000, copilot: 45_000, grok: 3_000, kimi: 20_000, pi: 20_000, relay: 10_000 } as const
 
-/** End-to-end deadline for SessionStart in the shared Copilot/VS Code shim. */
-export const SHIM_SESSION_START_TIMEOUT_MS = 3_000
+/** End-to-end deadline for SessionStart in the shared Copilot/VS Code shim; ours, not the host's (the generated hook config gives Copilot 60 s), and equal to DEFAULT_BUDGET_MS in native/tg-hook/src/startup_entry.rs. */
+export const SHIM_SESSION_START_TIMEOUT_MS = 10_000
+
+/** Test-only seam: the name of the env var that replaces the SessionStart budget in the shim and in the native startup owner (native/tg-hook/src/startup_entry.rs::budget_ms). */
+export const SESSION_START_TEST_BUDGET_ENV = 'TG_TEST_SESSION_START_BUDGET_MS'
+
+/** The seam's accepted range in ms; the lower bound is the cleanup reserve, so the smallest budget leaves no time to start the handler. */
+export const SESSION_START_TEST_BUDGET_MIN_MS = 1_000
+export const SESSION_START_TEST_BUDGET_MAX_MS = 600_000
 
 /** The `const` line each shim declares for {@link SHIM_FALLBACK_TIMEOUT_MS}, so every spawn site in the script reads one name and the number lives only above. */
 export function shimFallbackTimeoutConst(harness: keyof typeof SHIM_FALLBACK_TIMEOUT_MS): string {

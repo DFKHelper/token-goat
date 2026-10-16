@@ -3,7 +3,26 @@ use crate::client::Call;
 use std::ffi::OsString;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const BUDGET_MS: u64 = 3000;
+/// The SessionStart budget; src/bridges/shim_common.ts::SHIM_SESSION_START_TIMEOUT_MS must stay equal (tests/bridges/copilot_session_start_budget_seam.test.ts reads this line).
+pub(crate) const DEFAULT_BUDGET_MS: u64 = 10_000;
+const TEST_BUDGET_ENV: &str = "TG_TEST_SESSION_START_BUDGET_MS";
+const TEST_BUDGET_MIN_MS: u64 = 1000;
+const TEST_BUDGET_MAX_MS: u64 = 600_000;
+
+// Test-only seam, read by the Node shim as well: a plain decimal value in range replaces the budget so a test need not race the clock; anything else is ignored and the default applies.
+pub(crate) fn budget_ms() -> u64 {
+    budget_from(std::env::var(TEST_BUDGET_ENV).ok().as_deref())
+}
+
+fn budget_from(value: Option<&str>) -> u64 {
+    match value {
+        Some(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => match text.parse::<u64>() {
+            Ok(ms) if (TEST_BUDGET_MIN_MS..=TEST_BUDGET_MAX_MS).contains(&ms) => ms,
+            _ => DEFAULT_BUDGET_MS,
+        },
+        _ => DEFAULT_BUDGET_MS,
+    }
+}
 
 pub fn is_startup(call: &Call) -> bool {
     matches!(call.harness.as_str(), "copilot_cli" | "vscode") && matches!(call.event.as_str(), "sessionStart" | "SessionStart" | "session_start")
@@ -13,7 +32,7 @@ pub fn run(mut command: Vec<OsString>, started: Instant) -> i32 {
     if command.len() < 4 {
         return fail_open("installed startup command unavailable");
     }
-    let deadline = started + Duration::from_millis(BUDGET_MS);
+    let deadline = started + Duration::from_millis(budget_ms());
     let epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(now) => now.as_millis() as u64 + deadline.saturating_duration_since(Instant::now()).as_millis() as u64,
         Err(error) => return fail_open(&error.to_string()),
@@ -118,7 +137,7 @@ fn execute(command: &[OsString], epoch: u64, deadline: Instant) -> Result<(serde
             Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(2)),
         }
     };
-    // The payload arrived, so this start has an identity: stamp it begun before any relay work, so a start the 3 s budget cuts off anywhere after this point is delivered by the first tool call (a start that settles replaces the stamp with its own marker).
+    // The payload arrived, so this start has an identity: stamp it begun before any relay work, so a start the budget cuts off anywhere after this point is delivered by the first tool call (a start that settles replaces the stamp with its own marker).
     crate::session_begun::stamp(&payload);
     if command.len() < 5 || Instant::now() >= work_deadline {
         return Err("startup command unavailable or insufficient time for process-tree cleanup".into());
@@ -203,6 +222,21 @@ mod tests {
         assert!(frame(&b"{\"braces\":\"}{\", \"nested\":[{}]}"[..]).is_ok());
         for input in [b"[".as_slice(), b"{}{}", b"{\"x\":}", b""] {
             assert!(frame(input).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    #[test]
+    fn only_a_plain_in_range_decimal_replaces_the_budget() {
+        assert_eq!(budget_from(None), DEFAULT_BUDGET_MS);
+        assert_eq!(budget_from(Some("120000")), 120000);
+        assert_eq!(budget_from(Some("1000")), 1000);
+        assert_eq!(budget_from(Some("600000")), 600000);
+        for ignored in ["", "999", "600001", "+5000", "-5000", "5000ms", " 5000", "0x1388", "99999999999999999999999"] {
+            assert_eq!(budget_from(Some(ignored)), DEFAULT_BUDGET_MS, "{ignored:?}");
         }
     }
 }

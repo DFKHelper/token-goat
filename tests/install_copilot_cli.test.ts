@@ -33,6 +33,7 @@ import { writeInProcessFake } from './helpers/copilot_inprocess_fake.js'
 import { runNodeAsync } from './helpers/copilot_shim_run.js'
 import { assertOwedDeliveredOnce, assertTreeDead, cleanupTrees, DEADLINE_FAIL_OPEN, installStartupOwner, ownedRoots, premiseBranch, runTreeShim, treeFixture } from './helpers/copilot_session_start_tree.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../src/bridges/copilot_cli.js'
+import { SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MAX_MS } from '../src/bridges/shim_common.js'
 import { VISUALSTUDIO_GUIDANCE_BEGIN, VISUALSTUDIO_GUIDANCE_END } from '../src/bridges/visualstudio_install.js'
 import { HOOK_EVENTS } from '../src/types.js'
 import { copilotCapture } from './fixtures/copilot_cli_1_0_88.js'
@@ -620,6 +621,9 @@ async function runShimAsync(eventName: string, stdin: string, cwd: string, env?:
 /** Key a test env uses to hand runShim the shim's argv[3] (the token-goat entry path); runShim strips it before spawning, so the shim never sees it. */
 const SHIM_ENTRY_ENV = 'TG_TEST_SHIM_ENTRY'
 
+// A sessionStart run whose outcome must not depend on how loaded this PC is: the shim and the native owner take the longest budget the test-only seam allows, so only a hang can end it early, and the spawn's own timeout is the backstop.
+const CLOCKLESS_SESSION_START: NodeJS.ProcessEnv = { [SESSION_START_TEST_BUDGET_ENV]: String(SESSION_START_TEST_BUDGET_MAX_MS) }
+
 /** Env for a capture test: the shim gets an entry path whose sibling `token-goat-hook.mjs` exports a `relayInProcess` that records the canonical payload (and, with `argvPath`, the event name) and answers `response`. That is the shim's in-process route (copilot_cli.ts tryInProcess), so the call never has to finish a child process inside the shim's fixed 3000 ms spawn timeout. The previous fake was a token-goat.cmd that started `node`: two process starts, each taking from ~55 ms to several seconds on a loaded Windows host, and a start that overran got the call killed, the shim wrote `{}`, and captured.json never appeared (ENOENT). The payload translation under test is built before the route splits, so both routes record the same canonical object. Provenance: HAND-DERIVED from COPILOT_CLI_HOOK_SCRIPT (src/bridges/copilot_cli.ts: `timeout: 3000` on the spawn fallback; tryInProcess imports `token-goat-hook.mjs` beside the entry and calls `relayInProcess(tgEvent, canonical)`); the spawn route itself stays covered by withFakeTokenGoat and writeFakeEntry. */
 function captureInProcess(cwd: string, capturePath: string | undefined, opts: { argvPath?: string; response?: string } = {}): NodeJS.ProcessEnv {
   return { ...process.env, [SHIM_ENTRY_ENV]: writeInProcessFake(cwd, { capturePath, ...opts }) }
@@ -656,7 +660,7 @@ function withFakeHookOutput(cwd: string, response: string): NodeJS.ProcessEnv {
   installStartupOwner(cwd)
   const entryPath = path.join(cwd, 'fake-hook-output.js')
   fs.writeFileSync(entryPath, `process.stdout.write(${JSON.stringify(response)})\n`, 'utf8')
-  return { ...process.env, [SHIM_ENTRY_ENV]: entryPath }
+  return { ...process.env, ...CLOCKLESS_SESSION_START, [SHIM_ENTRY_ENV]: entryPath }
 }
 
 /** Writes a fake token-goat "entry" -- a plain Node script, not a PATH-resolvable binary -- that records the argv it was invoked with to `captured-argv.json` in `cwd` and exits 0 with an empty JSON response. Used to prove the shim's inner call, when given a third argv (the baked entry path), invokes that path directly via process.execPath rather than shelling out to a PATH-resolved `token-goat` at all. */
@@ -710,7 +714,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     }
   })
 
-  // sessionStart is the only channel that reaches the model before it chooses its first read tool, so it is where token-goat's command-routing reminder has to land. It used to be a hard-coded early return, justified in a comment by the claim that token-goat had no session_start handler -- untrue, and the reason Copilot CLI sessions alone were never told token-goat exists. Verified live against Copilot CLI 1.0.77 before wiring: with the hook registered, a session asked for a canary that appears only in the reminder answered "131072, boundSymbolBody"; with sessionStart removed and nothing else changed, the same question in the same directory answered "ABSENT". The 3 s start budget makes whether the fake entry ran before the shim failed open depend on the machine, so both outcomes are accepted, each with its own proof: the capture file with the mapped event name, or a deadline fail-open on stderr plus the owed start delivered once. Provenance: HAND-DERIVED, the entry is written for this case and records its own argv.
+  // sessionStart is the only channel that reaches the model before it chooses its first read tool, so it is where token-goat's command-routing reminder has to land. It used to be a hard-coded early return, justified in a comment by the claim that token-goat had no session_start handler -- untrue, and the reason Copilot CLI sessions alone were never told token-goat exists. Verified live against Copilot CLI 1.0.77 before wiring: with the hook registered, a session asked for a canary that appears only in the reminder answered "131072, boundSymbolBody"; with sessionStart removed and nothing else changed, the same question in the same directory answered "ABSENT". The start budget makes whether the fake entry ran before the shim failed open depend on the machine, so both outcomes are accepted, each with its own proof: the capture file with the mapped event name, or a deadline fail-open on stderr plus the owed start delivered once. Provenance: HAND-DERIVED, the entry is written for this case and records its own argv.
   it('forwards sessionStart to the real session_start handler instead of short-circuiting it', async (ctx) => {
     const fixture = treeFixture()
     const entry = path.join(fixture.root, 'fake-entry.js')
@@ -727,7 +731,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     ])
   }, 0)
 
-  // The shim and the native owner both enforce a fixed 3 s wall clock, so whether a start finishes inside it depends on the machine and no assertion on that can be speed-independent: the context arrives inline, or the start fails open with `{}` and the deadline named on stderr and the first tool call delivers the owed start once. Provenance: HAND-DERIVED, the helper prints one fixed response and the diagnostic is read off failOpenSessionStart in src/bridges/copilot_session_start.ts.
+  // The shim and the native owner both enforce a fixed wall clock, so whether a start finishes inside it depends on the machine and no assertion on that can be speed-independent: the context arrives inline, or the start fails open with `{}` and the deadline named on stderr and the first tool call delivers the owed start once. Provenance: HAND-DERIVED, the helper prints one fixed response and the diagnostic is read off failOpenSessionStart in src/bridges/copilot_session_start.ts.
   it("surfaces the session_start handler's context to Copilot as additionalContext", async (ctx) => {
     const fixture = treeFixture()
     const entry = path.join(fixture.root, 'fake-hook-output.js')
