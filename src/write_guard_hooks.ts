@@ -8,6 +8,7 @@ import { preToolPathDeclined } from './vscode_path_gate.js'
 import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { lcsLength, splitLines } from './line_diff.js'
+import { canonicalize } from './path_containment.js'
 import { normalizePath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { readShapeOf } from './read_shape.js'
@@ -63,7 +64,7 @@ export function siblingCopyGuard(event: HookEvent, filePath: string, newContent:
   const candidates = siblingCandidates(filePath)
   if (candidates.length === 0) return passOutput()
   const cwd = getCwd(event)
-  if (siblingCopyExcluded(filePath, cfg.write_sibling_copy_allow, cwd === undefined ? null : resolveProjectRoot({ project: cwd }))) return passOutput()
+  if (siblingCopyExcluded(canonicalize(filePath, cwd), cfg.write_sibling_copy_allow, cwd === undefined ? null : resolveProjectRoot({ project: cwd }))) return passOutput()
   const newLines = splitLines(newContent)
   if (newLines.length > MAX_LINES_FOR_DIFF) return passOutput()
   for (const original of candidates) {

@@ -3,10 +3,11 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConstantsModule from '../src/constants.js'
 import type { HookEvent } from '../src/hook_registry.js'
+import { shortPathOf } from './helpers/short_path.js'
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-write-rev-'))
 const TEST_CONFIG_PATH = path.join(DATA_DIR, 'config.toml')
@@ -568,5 +569,20 @@ describe('removedLineIndexes keeps its answer without the full table', () => {
     const kept = oldText.split('\n')
     const newText = kept.slice(0, 100).concat(kept.slice(2 * MAX_DIFF_SPAN)).join('\n') + 'edited\n'
     expect((await preWriteRewriteHandler(writeEvent(big, newText))).hookType).toBe('deny')
+  })
+})
+
+describe('a project reached through a Windows short name', () => {
+  // HAND-DERIVED: the 8.3 spelling names the same directory the canonical project root names, as the runner temp directory does on Windows CI; skipped where no short name exists.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-proj-with-a-long-name-'))
+  const short = shortPathOf(base)
+  afterAll(() => fs.rmSync(base, { recursive: true, force: true }))
+
+  it.skipIf(short === null)('still stays silent for a migrations file when the path is spelled short and the root is not', async () => {
+    fs.mkdirSync(path.join(base, '.git'), { recursive: true })
+    fs.mkdirSync(path.join(base, 'db', 'migrations', 'sql'), { recursive: true })
+    fs.writeFileSync(path.join(base, 'db', 'migrations', 'sql', 'solver.py'), lines(50))
+    const target = path.join(short ?? base, 'db', 'migrations', 'sql', 'solver_v2.py')
+    expect((await preWriteRewriteHandler(writeEvent(target, lines(49) + 'changed last line\n', short ?? base))).hookType).toBe('pass')
   })
 })
