@@ -8,6 +8,7 @@ import { runInNewContext } from 'node:vm'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { COPILOT_SESSION_START_HELPERS } from '../../src/bridges/copilot_session_start.js'
+import { SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MAX_MS } from '../../src/bridges/shim_common.js'
 import { closeAllDbs, getDb } from '../../src/db.js'
 import { findGlobalDb } from '../helpers/find_global_db.js'
 import {
@@ -388,18 +389,20 @@ describe('Copilot shared-shim SessionStart deadline', { timeout: 0 }, () => {
     await assertOwedDeliveredOnce(fixture, 'copilot_cli', COPILOT_SESSION)
   })
 
-  it('bounds a real built SessionStart blocked on an exclusive SQLite write lock, and owes it once', { timeout: 0 }, async () => {
+  // The hook command bounds its own database wait (a48f72408), so a held write lock no longer runs a SessionStart into the shim deadline: the start is answered while the lock is still held. The row takes the longest seam budget so the deadline cannot decide the outcome on a slow cold start (the 3 s fixture budget did that on Windows and passed this row on the fail-open branch without ever reaching the lock); a wait that never ends is caught by the quiet watchdog instead. Moved: fail-open `{}` plus an owed delivery -> a delivered start that names the lock; the deadline and owed paths stay covered by the stalled-helper rows above.
+  it('answers a real built SessionStart whose database holds an exclusive write lock without waiting for the lock or the deadline', { timeout: 0 }, async () => {
     const fixture = treeFixture()
     indexTreeFixture(fixture)
     const dbPath = findGlobalDb(fixture.env['TOKEN_GOAT_HOME'] as string)
     expect(dbPath, 'indexing must initialize the isolated SQLite database').not.toBeNull()
+    const clockless = { ...fixture, env: { ...fixture.env, [SESSION_START_TEST_BUDGET_ENV]: String(SESSION_START_TEST_BUDGET_MAX_MS) } }
     const db = getDb(dbPath as string)
     db.exec('PRAGMA journal_mode=DELETE')
     db.exec('BEGIN EXCLUSIVE')
     let result: ProcessResult
     try {
-      const child = startShim(fixture, 'sessionStart')
-      const observation = observe(fixture, child)
+      const child = startShim(clockless, 'sessionStart')
+      const observation = observe(clockless, child)
       child.stdin.end(JSON.stringify(copilotPayload(fixture.project)))
       result = await observation.done
     } finally {
@@ -407,9 +410,13 @@ describe('Copilot shared-shim SessionStart deadline', { timeout: 0 }, () => {
       db.exec('PRAGMA journal_mode=WAL')
       closeAllDbs()
     }
-    // The owed tool calls open the same database, so they run once the lock is released.
-    expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
-    await assertFailedOpen(fixture, result, 'copilot_cli', COPILOT_SESSION)
+    // The lock was held for the whole run, so an answer at all means the start did not wait for its release; the maximum budget means the deadline did not end it either.
+    assertFinished(result)
+    expect(result.stderr, 'a start answered under the lock must not report that it failed open').not.toMatch(/SessionStart failed open/i)
+    // CAPTURE: stdout of this exact run on Linux (WSL Ubuntu) and Windows with the lock held and a 9 s budget: one additionalContext object with the routing reminder and "token-goat: could not query symbol body size: db: failed to enable WAL mode (database is locked)" (src/symbol_body_probe.ts and src/db.ts word it).
+    const text = JSON.stringify(parseOneObject(result.stdout))
+    assertSessionStartContext(text)
+    expect(text, 'the start must say which wait it gave up on').toContain('database is locked')
   })
 
   it('keeps non-SessionStart events on their existing EOF-delimited input path', { timeout: 0 }, async () => {
