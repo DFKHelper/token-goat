@@ -54,10 +54,10 @@ describe('installClaudeMd', () => {
     expect(content).toContain('answer one question first')
     expect(content).toContain('violation, not an oversight')
     expect(content).toContain('Read, Grep, and Glob')
-    expect(content).toContain('Fallback clauses may name')
     expect(content).toContain('never tool identifiers')
+    expect(content).not.toContain('This paragraph deliberately names')
     expect(content).toContain(
-      "Fallback clauses may name your harness's own native read, search, and edit tools, or its shell helpers. Shell binaries and editor programs are commands invoked through the shell tool, never tool identifiers, and must never appear in an agent's tools frontmatter or an allowed-tools list. This paragraph deliberately names no specific tool or binary: instruction-file loaders harvest such names into a tool allowlist and then warn that every one of them is unknown.",
+      "Shell binaries and editor programs are commands run through the shell tool, never tool identifiers: keep them out of an agent's tools and allowed-tools lists, where loaders harvest the names and warn that each is unknown.",
     )
     expect(content).toContain('`map --compact`')
   })
@@ -181,9 +181,11 @@ describe('installSkill', () => {
     expect(jsonShape[0]).toContain('JSON/YAML')
     expect(jsonShape[0]).toContain('yaml-query')
 
+    // The query commands live in the failure shape; the Commands line carries the outline family the shape does not name.
+    expect(jsonShape[0]).toContain('xml-query')
     const commandsLine = sharedBody.split('\n').find((l) => l.startsWith('Commands: '))
     expect(commandsLine).toBeDefined()
-    for (const cmd of ['json-query', 'yaml-query', 'xml-query', 'json-outline', 'yaml-outline', 'xml-outline']) {
+    for (const cmd of ['json-outline', 'yaml-outline', 'xml-outline']) {
       expect(commandsLine).toContain(cmd)
     }
   })
@@ -200,10 +202,8 @@ describe('installSkill', () => {
     expect(imageShape.length).toBe(1)
     expect(imageShape[0]).toContain('image')
 
-    const commandsLine = sharedBody.split('\n').find((l) => l.startsWith('Commands: '))
-    expect(commandsLine).toBeDefined()
-    expect(commandsLine).toContain('image-meta')
-    expect(commandsLine).toContain('image-text')
+    // image-text has its own row, so the Commands line no longer repeats either image command.
+    expect(failureShapes.filter((l) => l.includes('image-text')).length).toBe(1)
   })
 
   it('keeps well-formed frontmatter that is unaffected by the gate body', () => {

@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { afterAll, describe, expect, it } from 'vitest'
+import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const bundle = path.join(repoRoot, 'dist', 'token-goat.mjs')
@@ -89,6 +90,7 @@ function envFor(name: string, extra: Record<string, string> = {}): { env: NodeJS
       USERPROFILE: home,
       TOKEN_GOAT_BASH_COMPRESS: '0',
       TOKEN_GOAT_NO_WORKER_SPAWN: '1',
+      TOKEN_GOAT_MCP_TOOLS: ALL_MCP_TOOLS_ENV,
       GIT_SPAWN_PROBE_OUT: log,
       ...extra,
     },

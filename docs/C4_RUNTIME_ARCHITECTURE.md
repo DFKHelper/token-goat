@@ -83,7 +83,7 @@ flowchart TB
         HookShim["🪝 Hook Shim<br/><small>[~/.claude/hooks/token-goat-shim.cjs]</small><br/>In-process fast path / Subprocess launcher"]:::shim
         HookRelay["⚡ Hook Relay & Normalizer<br/><small>[dist/token-goat-hook.mjs]</small><br/>Normalizes Codex/Gemini/Claude schemas"]:::process
         CLIBinary["💻 CLI Tool & Command Suite<br/><small>[dist/token-goat.mjs]</small><br/>100+ surgical read, outline, pack commands"]:::process
-        MCPServer["🔌 MCP stdio Server<br/><small>[token-goat mcp-serve]</small><br/>18 tools: symbol, read, retrieve, section"]:::process
+        MCPServer["🔌 MCP stdio Server<br/><small>[token-goat mcp-serve]</small><br/>7 tools by default (symbol, read, section, outline, semantic, refs, retrieve_text; 11 more opt-in)"]:::process
         WorkerDaemon["🔄 Background Indexer Daemon<br/><small>[worker.ts / worker_daemon.ts]</small><br/>Wakes on each dirty-queue append (2s poll fallback), reindexes changes"]:::process
     end
 

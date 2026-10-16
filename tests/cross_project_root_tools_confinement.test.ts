@@ -15,6 +15,10 @@ import { createMcpServer } from '../src/mcp_server.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { runParallelSearch } from '../src/search/search_cli.js'
+import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+
+// These cases call tools that are opt-in by default; name them all so the server registers them.
+process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
 
 const OWN_MARKER = 'AAA-FROM-PROJECT-A'
 const OTHER_MARKER = 'BBB-CONFIDENTIAL-FROM-PROJECT-B'

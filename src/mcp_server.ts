@@ -54,6 +54,9 @@ const MCP_MAX_OUTPUT_LINES = 10_000
 // minLines only filters, so its bound need only exceed any real symbol's length; left unbounded, an integer field advertises plus and minus 2^53 in its schema.
 const MCP_MAX_MIN_LINES = 100_000
 
+/** The tools `tools/list` advertises when `TOKEN_GOAT_MCP_TOOLS` is unset: the core lookups, because every advertised tool costs its schema on each request of the session (13,029 bytes for all eighteen at 2.9.30, about 5.5 KB for these seven). `retrieve_text` is in it because text and the VS Code decoder server send the model there to recover a compressed payload. The rest are opt-in by naming them in `TOKEN_GOAT_MCP_TOOLS`, and no text token-goat sends over MCP may name one of them as a tool to call unless the effective list holds it. */
+export const DEFAULT_MCP_TOOLS: readonly string[] = ['symbol', 'read', 'section', 'outline', 'semantic', 'refs', 'retrieve_text']
+
 /** Wraps a `{ text, code }` result from a read_commands handler into an MCP `CallToolResult`. A failure is token-goat's own words around names taken from the index, so it gets what the CLI's stderr and every hook's output get: each line display-safe (formatFailedResultText's escaping) and any suggested command whose quoting a name broke out of dropped (the relay's guard), and then its CLI retry commands and `--flag` switches worded as tool-call guidance. A success is left as its handler built it, because it carries a file's own content, which none of the three may rewrite: a note token-goat appends to a success is worded for MCP where it is built (mcp_client_text.ts forClient). */
 function toCallToolResult(result: { text: string; code: number }): CallToolResult {
   const text = result.code === 0 ? result.text : mcpFriendlyText(stripUnsafeSuggestions(displaySafeFailureText(result.text)))
@@ -467,10 +470,10 @@ function noteOmittedProjectRoot(result: CallToolResult, root: string, projectRoo
 }
 
 /** Builds the MCP server and registers every tool listed in tests/mcp_server.test.ts's TOOL_NAMES, which is asserted against a live listTools() call. Does not connect a transport. Async purely so the protocol layer and `zod` load here rather than at module scope. cli.ts already defers this whole module behind `await import('./mcp_server.js')` and says so, but that only defers token-goat's own code: a static `import` of a package gets hoisted to the top of the bundle, where ESM evaluates it before anything runs, and code splitting can only keep a module out of the startup chunk if the edge reaching it is dynamic. This once cost 181ms and 131 module file loads on every invocation of the binary -- `--version`, every hook Claude Code fires on every tool call, every test that spawns the bundle -- to serve the one command that is an MCP server. Keep both loads inside this function; a static import here is not local to this file. */
-/** The set of tools to register, from `TOKEN_GOAT_MCP_TOOLS`, or null to register everything. Every tool's name, description, and full JSON input schema is sent to the model on every single request for the life of the session -- measured on this server's own `tools/list` output, the full surface is ~16 KB, roughly 4k tokens, and the schemas outweigh the descriptions. A harness using token-goat for two or three lookups pays for all eighteen. This is the lever for that, and it is a filter rather than a redesign because trimming descriptions is the wrong cut: they are what steers a model to the right tool, and a surface that is cheap and unusable costs more than one that is expensive and correct. Deny by omission: an unknown name can only fail to match a tool, never invent one, so a typo shrinks the surface rather than widening it. That failure is silent by nature -- a smaller tool list looks exactly like a correctly-filtered one -- so an unmatched name is reported on stderr (never stdout, which carries the JSON-RPC stream). An empty or whitespace-only value is treated as unset rather than as "register nothing": a server with zero tools is useless, so that value is far more likely an unset variable expanding to nothing than a deliberate request for a dead server. */
-export function mcpToolAllowlist(): Set<string> | null {
+/** The set of tools to register, from `TOKEN_GOAT_MCP_TOOLS`, or DEFAULT_MCP_TOOLS when it is unset. An explicit value replaces the default entirely, so a user who already set a list keeps exactly that list, and naming a tool the default leaves out (or all eighteen) is how it is switched back on. Every tool's name, description, and full JSON input schema is sent to the model on every single request for the life of the session -- measured on this server's own `tools/list` output, the full surface is ~12.7 KB, roughly 3k tokens, and the schemas outweigh the descriptions. A harness using token-goat for two or three lookups pays for all eighteen. This is the lever for that, and it is a filter rather than a redesign because trimming descriptions is the wrong cut: they are what steers a model to the right tool, and a surface that is cheap and unusable costs more than one that is expensive and correct. Deny by omission: an unknown name can only fail to match a tool, never invent one, so a typo shrinks the surface rather than widening it. That failure is silent by nature -- a smaller tool list looks exactly like a correctly-filtered one -- so an unmatched name is reported on stderr (never stdout, which carries the JSON-RPC stream). An empty or whitespace-only value is treated as unset rather than as "register nothing": a server with zero tools is useless, so that value is far more likely an unset variable expanding to nothing than a deliberate request for a dead server. */
+export function mcpToolAllowlist(): Set<string> {
   const names = envStrList(ENV_KEYS.MCP_TOOLS, [], ',')
-  return names.length === 0 ? null : new Set(names)
+  return new Set(names.length === 0 ? DEFAULT_MCP_TOOLS : names)
 }
 
 export async function createMcpServer(): Promise<McpServer> {
@@ -479,25 +482,23 @@ export async function createMcpServer(): Promise<McpServer> {
 
   // Applied by wrapping `registerTool` rather than guarding each of the registration calls below. A per-call guard is a list that has to be extended by hand every time a tool is added, and the omission ships silently -- the new tool simply ignores the allowlist and nobody sees it. Here a tool cannot be registered without passing the filter, so a tool added later is covered by construction rather than by remembering.
   const allowlist = mcpToolAllowlist()
-  if (allowlist !== null) {
-    const matched = new Set<string>()
-    const registerAll = server.registerTool.bind(server)
-    server.registerTool = ((name: string, definition: never, handler: never) => {
-      if (!allowlist.has(name)) return
-      matched.add(name)
-      registerAll(name, definition, handler)
-    }) as typeof server.registerTool
-    // Deferred one tick so it runs after every registration below, and reported at startup rather than at exit: a stdio server lives as long as its client, so a typo surfaced on shutdown is one the operator debugs for the whole session first. `unref` so this never holds the process open on its own.
-    setTimeout(() => {
-      const unmatched = [...allowlist].filter((n) => !matched.has(n))
-      if (unmatched.length > 0) {
-        process.stderr.write(`token-goat: ${ENV_KEYS.MCP_TOOLS} names no such tool: ${unmatched.join(', ')}\n`)
-      }
-    }, 0).unref()
-  }
+  const matched = new Set<string>()
+  const registerAll = server.registerTool.bind(server)
+  server.registerTool = ((name: string, definition: never, handler: never) => {
+    if (!allowlist.has(name)) return
+    matched.add(name)
+    registerAll(name, definition, handler)
+  }) as typeof server.registerTool
+  // Deferred one tick so it runs after every registration below, and reported at startup rather than at exit: a stdio server lives as long as its client, so a typo surfaced on shutdown is one the operator debugs for the whole session first. `unref` so this never holds the process open on its own.
+  setTimeout(() => {
+    const unmatched = [...allowlist].filter((n) => !matched.has(n))
+    if (unmatched.length > 0) {
+      process.stderr.write(`token-goat: ${ENV_KEYS.MCP_TOOLS} names no such tool: ${unmatched.join(', ')}\n`)
+    }
+  }, 0).unref()
 
   // One wording for every tool: it is repeated in each schema of every tools/list, which a client puts in the model's context on each turn.
-  const projectRootField = z.string().optional().describe("absolute workspace root; defaults to the server's cwd, which may not be the workspace, so pass it when unsure")
+  const projectRootField = z.string().optional().describe("absolute workspace root; defaults to the server's cwd, which may not be your workspace")
 
   server.registerTool(
     'symbol',

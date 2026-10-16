@@ -27,6 +27,10 @@ vi.mock('node:fs', async (importOriginal) => {
 import { createMcpServer } from '../src/mcp_server.js'
 import { collectFiles, estimateBudget } from '../src/pack.js'
 import { invalidateConfigCache } from '../src/config.js'
+import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+
+// These cases call tools that are opt-in by default; name them all so the server registers them.
+process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
 
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
   const server = await createMcpServer()

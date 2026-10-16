@@ -12,6 +12,10 @@ import { globalDbPath } from '../src/constants.js'
 import { closeAllDbs } from '../src/db.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { indexFileSync } from '../src/parser.js'
+import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+
+// These cases call tools that are opt-in by default; name them all so the server registers them.
+process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
 
 // HAND-DERIVED: comment lines written by hand to hold each pattern the MCP wording rewrites (a double- and a single-quoted retry command, the three flags, the cached-output narrowing phrase), inside an ordinary function long enough that `symbol` previews it and notes the rest.
 const PATTERN_LINES = [

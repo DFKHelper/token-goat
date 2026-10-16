@@ -104,6 +104,10 @@ vi.mock('node:fs', async (importOriginal) => {
 import { createMcpServer } from '../src/mcp_server.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { ConfinementIdentityError, healStaleIndex, pinKey, runRead, withPinnedReads } from '../src/read_commands.js'
+import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+
+// These cases call tools that are opt-in by default; name them all so the server registers them.
+process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
 
 /** Directory-symlink counterpart to `canCreateSymlinks`: a `dir`-type symlink needs the same elevated privilege on Windows without Developer Mode, but is a separate capability check from a file symlink (the two link types are created and permission-checked independently). */
 function canCreateDirSymlinks(): boolean {

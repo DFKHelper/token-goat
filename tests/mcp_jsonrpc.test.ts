@@ -16,6 +16,10 @@ import {
   type JsonRpcMessage,
   type McpTransport,
 } from '../src/mcp_jsonrpc.js'
+import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+
+// These cases call tools that are opt-in by default; name them all so the server registers them.
+process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

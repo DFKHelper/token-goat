@@ -474,7 +474,7 @@ describe('copilot-instructions.md routing block', () => {
     expect(text).toContain('~200 lines')
     // The Copilot instructions surface is sanitized so the body contains no backtick-quoted command names for the fallback parser to misclassify.
     expect(text).not.toContain('`')
-    expect(text).toContain('Fallback clauses may name')
+    expect(text).toContain('never tool identifiers')
     expect(text).toContain("Copilot CLI's native view, grep, and glob tools")
     expect(text).toContain('PowerShell commands Get-Content/Select-String as search fallbacks')
     expect(text).toContain('Get-Content')

@@ -34,7 +34,7 @@ describe('gdrive.enabled guidance gate', () => {
     const on = commandsLine(buildGuidanceBody(CLAUSE, { gdrive: true }))
 
     expect(off).toBe(on.replace('`gdrive-sections <file-id>`, ', ''))
-    expect(off).toContain('`bash-output`/`web-output`/`mcp-output`, `image-meta file`')
+    expect(off).toContain('`json-outline`/`yaml-outline`/`xml-outline`, and `token-goat --help`')
     expect(off).not.toContain(', ,')
   })
 

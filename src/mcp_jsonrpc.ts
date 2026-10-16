@@ -278,7 +278,7 @@ export class McpServer {
       )
     }
     try {
-      return await answeringMcpToolCall(() => handler(parsed.data))
+      return await answeringMcpToolCall(() => handler(parsed.data), new Set(this.tools.keys()))
     } catch (err) {
       return errorText(err instanceof Error ? err.message : String(err))
     }

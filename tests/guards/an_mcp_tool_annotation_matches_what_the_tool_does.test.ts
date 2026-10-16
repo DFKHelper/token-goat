@@ -13,6 +13,10 @@ import { clearModuleCaches } from '../../src/reset.js'
 import { _resetDataDirCacheForTesting, dataDirForHome, tokenGoatHome } from '../../src/constants.js'
 import { CONTENT_SUBDIR } from '../../src/content_store.js'
 import { pinnedPopulation } from './population.js'
+import { ALL_MCP_TOOLS_ENV } from '../helpers/mcp_all_tools.js'
+
+// These cases call tools that are opt-in by default; name them all so the server registers them.
+process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
 
 const { createMcpServer } = await import('../../src/mcp_server.js')
 

@@ -13,6 +13,10 @@ import { closeAllDbs } from '../src/db.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
+import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+
+// These cases call tools that are opt-in by default; name them all so the server registers them.
+process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
 
 // Fixture provenance: HAND-DERIVED. A two-function TypeScript file written below; every assertion keys on its own marker strings and on the refusal wording, never on a parser output format.
 const OWN_MARKER = 'AAA-FROM-PROJECT-A'

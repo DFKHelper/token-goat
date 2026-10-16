@@ -18,27 +18,11 @@ import { runSemantic } from '../src/read_semantic.js'
 import { runRefs } from '../src/read_refs.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { runGit } from '../src/util.js'
+import { ALL_MCP_TOOLS, ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
 
-const TOOL_NAMES = [
-  'read',
-  'symbol',
-  'section',
-  'outline',
-  'skeleton',
-  'semantic',
-  'index_status',
-  'refs',
-  'brief',
-  'map',
-  'changed',
-  'grep',
-  'imports',
-  'exports',
-  'compress_text',
-  'retrieve_text',
-  'handoff_create',
-  'handoff_resolve',
-]
+// Every tool, not just the default core: the cases below call the opt-in ones, and the first case compares a live tools/list against ALL_MCP_TOOLS so the list cannot go stale.
+process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
+const TOOL_NAMES = ALL_MCP_TOOLS
 
 /** Captures everything written to `process.stdout`/`process.stderr` during `fn()`, mirroring `mcp_server.ts`'s own `captureOutput` -- used to get the "expected" text out of the `run*` handlers (`runRefs`/`runChanged`/`runGrep`/`runImports`/`runExports`) that print their own output and return only an exit code, the same way the MCP tool wrappers under test do. */
 function captureStdout(fn: () => number): { code: number; text: string } {

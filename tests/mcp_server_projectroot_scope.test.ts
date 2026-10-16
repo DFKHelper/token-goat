@@ -16,6 +16,10 @@ import { getDb } from '../src/db.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { resolveProjectRoot } from '../src/project.js'
 import type * as SectionReaderModule from '../src/section_reader.js'
+import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+
+// These cases call tools that are opt-in by default; name them all so the server registers them.
+process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
 
 const querySymbolsMock = vi.fn()
 const readSectionMock = vi.fn()

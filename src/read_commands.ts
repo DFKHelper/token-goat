@@ -81,7 +81,7 @@ import {
 import { formatCommandError } from './command_error.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { couldNotReadError } from './could_not_read.js'
-import { forClient } from './mcp_client_text.js'
+import { forClient, mcpToolListed } from './mcp_client_text.js'
 
 const GREP_MAX_LINES = 200
 
@@ -712,8 +712,8 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
     body,
   ]
   const warning = staleWarning(match.filePath, 'read')
-  // Appended after the overflow guard, not folded into the guarded lines, so this advisory note never shifts the "showing N of M lines" count the guard reports for the actual body.
-  const narrowerSliceHint = bodyLen > LARGE_SYMBOL_LINE_THRESHOLD
+  // Appended after the overflow guard, not folded into the guarded lines, so this advisory note never shifts the "showing N of M lines" count the guard reports for the actual body. Over MCP the hint is only written when the server lists the grep tool; the default list does not, and a note must not name a tool the model cannot call.
+  const narrowerSliceHint = bodyLen > LARGE_SYMBOL_LINE_THRESHOLD && mcpToolListed('grep')
     ? forClient(`\n# for a narrower slice: token-goat grep "<pattern>" ${quotedArg(file)} -C 15 --symbol`)
     : ''
   const text = guardText(warning + trimBlankLines(lines).join('\n'), 'symbol') + narrowerSliceHint

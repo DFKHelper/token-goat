@@ -20,6 +20,11 @@ type Exemption = { file: string; table: string; reason: string }
 /** Every `.each` table this guard cannot prove non-empty statically, with the assertion that would fail first if it did go empty. */
 const EXEMPT: readonly Exemption[] = [
   {
+    file: 'tests/mcp_tool_allowlist.test.ts',
+    table: 'OPT_IN_TOOLS',
+    reason: 'The full tool list minus the default list. The same file asserts OPT_IN_TOOLS has length 11 and names each of the eleven, so an emptied list fails there before this table matters.',
+  },
+  {
     file: 'tests/guards/rewritten_output_never_carries_a_secret.test.ts',
     table: 'registeredPostToolNames()',
     reason: 'Read off the hook registry. The first test in the same file asserts the registry reports more than five tools and that every pinned rewriting tool is among them, so an emptied registry fails there before this table matters.',

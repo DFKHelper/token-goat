@@ -177,7 +177,7 @@ describe('installCodex', () => {
     expect(agents).toContain('<!-- token-goat-codex-end -->')
     expect(agents).toContain('Codex\'s native `exec`, `apply_patch`, and `view_image` tools')
     expect(agents).toContain('shell commands like `cat`/`type` run inside `exec`')
-    expect(agents).toContain('Fallback clauses may name')
+    expect(agents).toContain('never tool identifiers')
 
     // Verifies all token-goat hooks have trusted_hash set in [hooks.state]
     const state = (config.hooks?.['state'] as unknown as Record<string, { trusted_hash?: string }>) ?? {}

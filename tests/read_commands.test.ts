@@ -96,6 +96,7 @@ vi.mock('../src/screenshot.js', () => ({
 }))
 
 import { runRead, runGrep, withPinnedReads, runScreenshot } from '../src/read_commands.js'
+import { answeringMcpToolCall } from '../src/mcp_client_text.js'
 import { runSymbol } from '../src/read_symbol.js'
 import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { runSection } from '../src/read_section.js'
@@ -1077,6 +1078,27 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([sym as any])
       const { text: stdout } = runRead({ spec: 'src/foo.ts::bigFn' })
       expect(stdout).toContain('# for a narrower slice: token-goat grep "<pattern>" "src/foo.ts" -C 15 --symbol')
+    })
+
+    // HAND-DERIVED: the same 400-line body as above, read as an MCP client would, once with a server that lists the grep tool and once with the default list that does not. The sentence is the grep hint at src/read_commands.ts; a note over MCP may name a tool only if the server lists it.
+    describe('the narrower-slice hint over MCP', () => {
+      const bigSymbol = (): MockSymbol => ({ name: 'bigFn', kind: 'function', filePath: 'src/foo.ts', lineStart: 1, lineEnd: 400, body: Array.from({ length: 400 }, (_, i) => `  line${i + 1}()`).join('\n'), docstring: '' })
+
+      it('is left out when the server does not list grep', () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([bigSymbol() as any])
+        const { text } = answeringMcpToolCall(() => runRead({ spec: 'src/foo.ts::bigFn' }), new Set(['symbol', 'read', 'section', 'outline', 'semantic', 'refs', 'retrieve_text']))
+        expect(text).toContain('line400()')
+        expect(text).not.toContain('narrower slice')
+        expect(text).not.toContain('grep')
+      })
+
+      it('is written, naming the grep tool, when the server lists grep', () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockQuerySymbols.mockReturnValue([bigSymbol() as any])
+        const { text } = answeringMcpToolCall(() => runRead({ spec: 'src/foo.ts::bigFn' }), new Set(['symbol', 'read', 'grep']))
+        expect(text).toContain('# for a narrower slice: the "grep" tool again')
+      })
     })
 
     it('does not add the narrower-slice header for a symbol under the large-symbol threshold', () => {

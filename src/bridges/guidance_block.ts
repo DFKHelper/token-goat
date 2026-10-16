@@ -18,7 +18,7 @@ export interface GuidanceOptions {
   readonly gdrive?: boolean
 }
 
-/** Render the shared token-goat routing gate *body* — the guidance itself, without any delimited-block markers. This is the single source of the gate wording used by all four surfaces: - `buildGuidanceBlock` wraps it in begin/end markers for the three files upserted into user-owned instruction files (CLAUDE.md, AGENTS.md, copilot-instructions.md); - the SKILL.md writer in `../install.ts` embeds it whole, under its own frontmatter, because a skill file is written as a complete standalone document rather than patched into a delimited region. `fallbackToolClause` names the surface's own read tools for the conflict-resolution clause, e.g. "Claude Code's own Read, Grep, and Glob preference rules". */
+/** Render the shared token-goat routing gate *body* — the guidance itself, without any delimited-block markers. This is the single source of the gate wording used by all four surfaces: - `buildGuidanceBlock` wraps it in begin/end markers for the three files upserted into user-owned instruction files (CLAUDE.md, AGENTS.md, copilot-instructions.md); - the SKILL.md writer in `../install.ts` embeds it whole, under its own frontmatter, because a skill file is written as a complete standalone document rather than patched into a delimited region. `fallbackToolClause` names the surface's own read tools for the conflict-resolution clause, e.g. "Claude Code's own Read, Grep, and Glob preference rules". The sentence about shell binaries and tool identifiers is a shortened form of an older paragraph, kept because instruction-file loaders harvest names into a tool allowlist and warn on each unknown one; it names no tool or binary itself, and the body is byte-budgeted by tests/guards/always_on_payload_budgets.test.ts. */
 export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOptions = {}): string {
   const gdrive = opts.gdrive !== false
   return [
@@ -28,15 +28,15 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     '',
     `This gate decides *whether* to reach for a read tool at all. ${fallbackToolClause} only pick the *fallback* once token-goat has been ruled out for this read — they never authorize skipping the gate.`,
     '',
-    "Fallback clauses may name your harness's own native read, search, and edit tools, or its shell helpers. Shell binaries and editor programs are commands invoked through the shell tool, never tool identifiers, and must never appear in an agent's tools frontmatter or an allowed-tools list. This paragraph deliberately names no specific tool or binary: instruction-file loaders harvest such names into a tool allowlist and then warn that every one of them is unknown.",
+    "Shell binaries and editor programs are commands run through the shell tool, never tool identifiers: keep them out of an agent's tools and allowed-tools lists, where loaders harvest the names and warn that each is unknown.",
     '',
     'Exemptions (gate passes, read directly): the file is under ~200 lines and you need all of it; it was never indexed (new, untracked, or generated this turn); it is a genuinely opaque binary (not an image); the target has no symbol handle (e.g. a literal mid-function).',
     '',
     'Failure shapes to catch yourself in, and the command that replaces each:',
-    '- not knowing which command answers a question you can already state in words → `answer "<question>"`, which resolves the subject in the index, runs the right command, prints `via: <command>`, and refuses rather than guess',
+    '- not knowing which command answers a question you can already state in words → `answer "<question>"`, which runs the right command and refuses rather than guess',
     '- a shell text search with context flags to find a function body → `read "file::symbol"`',
     '- paging one function with view/view_range → `read "file::symbol"`',
-    '- issuing sequential or overlapping line-range reads across a file (paging) → read "file::symbol" / outline file / skeleton file / rg <pattern> <file>',
+    '- issuing sequential or overlapping line-range reads across a file (paging) → `read "file::symbol"` / `outline file` / `skeleton file` / rg <pattern> <file>',
     '- a read refused by a `[tg]` deny, retried with a shifted range, different lines, or another read tool → never retry reading the file at different lines; run the command the deny names or use bash-output / token-goat read',
     '- reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`',
     '- reading one heading of a large doc → `section "file::Heading"`',
@@ -48,13 +48,12 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     "- pulling one value or subtree out of a JSON/YAML/XML file (manifest, lockfile, spec, config) → `json-query file 'a.b.c'` / `yaml-query file 'a.b.c'` / `xml-query file 'a.b.c'`",
     '- opening an image to check its dimensions, format, or size → `image-meta file`',
     '- opening a screenshot, diagram, or scan to read the text in it → `image-text file`',
-    '- opening a PDF or Office document → inspect its format first, then read a narrow slice: PDF `pdf-meta`/`pdf-outline` then `pdf-locate` to find the pages and `pdf-extract` only those; Word `docx-outline` then `docx-tables`/`docx-text`; PowerPoint `pptx-outline` then `pptx-slide`/`pptx-notes`; Excel `xlsx-sheets` then `xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`',
     '- running tests immediately on edited code without fast static validation → run language validator first (e.g. `ruff check --select F821 <file>`, `node --check`, `tsc --noEmit`) to catch missing imports and syntax errors before test execution',
     '- passing concatenated or unquoted paths to shell tools → verify whitespace and argument separation in multi-path commands (e.g. `git add path1 path2`, never `git add path1path2`)',
     '',
-    'Commands: `search "<query>"`, `answer "<question>"`, `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file \'a.b.c\'`/`yaml-query`/`xml-query`, `json-outline file`/`yaml-outline`/`xml-outline`, `bash-output`/`web-output`/`mcp-output`, ' +
+    'Commands: `symbol NAME`, `changed --symbol`, `config-get file KEY`, `json-outline`/`yaml-outline`/`xml-outline`, ' +
       (gdrive ? '`gdrive-sections <file-id>`, ' : '') +
-      '`image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-locate`/`pdf-extract`, `docx-outline`/`docx-tables`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`.',
+      'and `token-goat --help` for the rest.',
     '',
     'Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.',
     '',

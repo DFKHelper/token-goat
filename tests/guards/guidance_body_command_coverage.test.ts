@@ -14,6 +14,8 @@ const LIFECYCLE_REASON = "operator/lifecycle command (installs, configures, star
 const SESSION_REASON = "inspects token-goat's own session, cache, or spend state, not a file the gate is meant to intercept a read of"
 const ANALYSIS_REASON = "derived analysis/graph command (dependency, call, coverage, or noise-fold output) — not a drop-in replacement for a plain file read"
 const FORMAT_EXTRACT_REASON = "narrow single-format extractor; the generic failure-shape rows (json/yaml-query, image-meta/image-text) already name the pattern without enumerating every supported format"
+// The pre-read hint (src/hints/file_type_handler.ts) names the exact command when an agent reaches for one of these files, and the installed skill documents the family, so the always-on gate no longer spends bytes on it.
+const DOCUMENT_REASON = "document extractor (PDF, Word, PowerPoint, Excel); the pre-read hint names it at the moment of the read and the skill documents the family, so the always-on gate leaves it out"
 const WRITE_REASON = "writes or mutates a file rather than reading one — outside the read-routing gate's scope"
 const NAV_REASON = "read-adjacent search/listing utility that falls outside the gate's four core failure shapes (symbol body, doc section, callers, concept search); omitted to keep the gate small enough to actually apply on every read"
 
@@ -128,6 +130,24 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'fetch-image', reason: FORMAT_EXTRACT_REASON },
   { command: 'screenshot', reason: FORMAT_EXTRACT_REASON },
 
+  // Document extractors, moved out of the always-on gate in 2.9.31
+  { command: 'pdf-meta', reason: DOCUMENT_REASON },
+  { command: 'pdf-outline', reason: DOCUMENT_REASON },
+  { command: 'pdf-locate', reason: DOCUMENT_REASON },
+  { command: 'pdf-extract', reason: DOCUMENT_REASON },
+  { command: 'docx-outline', reason: DOCUMENT_REASON },
+  { command: 'docx-tables', reason: DOCUMENT_REASON },
+  { command: 'docx-text', reason: DOCUMENT_REASON },
+  { command: 'pptx-outline', reason: DOCUMENT_REASON },
+  { command: 'pptx-slide', reason: DOCUMENT_REASON },
+  { command: 'pptx-notes', reason: DOCUMENT_REASON },
+  { command: 'pptx-text', reason: DOCUMENT_REASON },
+  { command: 'xlsx-sheets', reason: DOCUMENT_REASON },
+  { command: 'xlsx-columns', reason: DOCUMENT_REASON },
+  { command: 'xlsx-head', reason: DOCUMENT_REASON },
+  { command: 'xlsx-range', reason: DOCUMENT_REASON },
+  { command: 'xlsx-query', reason: DOCUMENT_REASON },
+
   // Write / mutation
   { command: 'write-file', reason: WRITE_REASON },
   { command: 'replace', reason: WRITE_REASON },
@@ -172,12 +192,13 @@ describe('guidance body command coverage', () => {
 
   it('every registered CLI command is either named in the guidance gate or has a reasoned omission', () => {
     const body = buildGuidanceBody("Claude Code's own Read, Grep, and Glob preference rules")
-    const commandsLine = body.split('\n').find((line) => line.startsWith('Commands:')) ?? ''
+    // Where a command may be named: a failure-shape row or the Commands line, matched as a backtick-led token so prose ("read tool", "map") cannot count as naming `read` or `map`.
+    const gateSurface = body.split('\n').filter((line) => line.startsWith('- ') || line.startsWith('Commands:')).join('\n')
     const omitted = new Set(OMISSIONS.map((o) => o.command))
 
     const undecided = allCommandNames().filter((name) => {
       const base = name.split(' ')[0] ?? name // top-level word for subcommands like "worker start"
-      const namedInGate = new RegExp(`\\b${base}\\b`).test(commandsLine)
+      const namedInGate = new RegExp(`\`${base}(?![\\w-])`).test(gateSurface)
       return !namedInGate && !omitted.has(name)
     })
 
@@ -185,10 +206,10 @@ describe('guidance body command coverage', () => {
       undecided,
       undecided.length === 0
         ? ''
-        : `New CLI command(s) exist that are neither named in buildGuidanceBody's "Commands:" line ` +
+        : `New CLI command(s) exist that are neither named in a failure-shape row or the "Commands:" line of buildGuidanceBody ` +
           `nor listed in OMISSIONS: ${undecided.join(', ')}. This is the exact gap that shipped three ` +
           `real bugs (a command worked but the routing gate never told an agent it existed). Decide, ` +
-          `then either (a) add it to the "Commands:" line in src/bridges/guidance_block.ts (and a ` +
+          `then either (a) add it to a failure-shape row or the "Commands:" line in src/bridges/guidance_block.ts (and a ` +
           `failure-shape row if it replaces a recognizable misuse pattern), or (b) add ` +
           `{ command: '${undecided[0] ?? ''}', reason: '...' } to OMISSIONS in ` +
           `tests/guards/guidance_body_command_coverage.test.ts with a one-line reason it doesn't belong in the gate.`,
