@@ -1,0 +1,51 @@
+name: Rust toolchain staleness
+
+# Dependabot's cargo ecosystem ignores native/tg-hook/rust-toolchain.toml, so nothing else notices when the pinned compiler falls behind stable. Opens one issue; never edits the pin.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # The 1st of each month at 07:17 UTC, off the hour because the top of the hour is when every cron-scheduled workflow queues at once.
+    - cron: '17 7 1 * *'
+
+permissions:
+  contents: read
+
+jobs:
+  staleness:
+    name: Compare the pin with current stable
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Open an issue when the pin is behind stable
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title="Rust toolchain pin in native/tg-hook is behind stable"
+          pinned=$(sed -n 's/^channel *= *"\([0-9.]*\)".*/\1/p' native/tg-hook/rust-toolchain.toml)
+          stable=$(curl -sSfL https://static.rust-lang.org/dist/channel-rust-stable.toml | sed -n '/^\[pkg\.rust\]$/,/^$/s/^version = "\([0-9.]*\) .*/\1/p')
+          if [[ ! "$pinned" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ || ! "$stable" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "could not read versions: pinned='$pinned' stable='$stable'" >&2
+            exit 1
+          fi
+          echo "pinned=$pinned stable=$stable"
+          newest=$(printf '%s\n%s\n' "$pinned" "$stable" | sort -V | tail -n 1)
+          if [[ "$pinned" == "$stable" || "$newest" == "$pinned" ]]; then
+            echo "pin is current"
+            exit 0
+          fi
+          existing=$(gh issue list --state open --limit 100 --json title --jq "[.[] | select(.title == \"$title\")] | length")
+          if [[ "$existing" != "0" ]]; then
+            echo "an open issue already carries this title"
+            exit 0
+          fi
+          body="native/tg-hook/rust-toolchain.toml pins $pinned and current stable is $stable. Bump the channel, then run cargo fmt --check, cargo clippy --locked --all-targets -- -D warnings, cargo test --locked and cargo check --locked for each target ci.yml checks. rust-version in Cargo.toml (the MSRV) moves only when the code needs a newer feature."
+          gh issue create --title "$title" --body "$body"
