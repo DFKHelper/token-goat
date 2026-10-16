@@ -64,12 +64,12 @@ fs.writeFileSync(path.join(dir, 'gc.tmp'), String(process.pid))
 fs.renameSync(path.join(dir, 'gc.tmp'), path.join(dir, 'gc.pid'))
 setInterval(() => { if (!fs.existsSync(dir)) process.exit(0) }, 200)
 `
-// The parent hands the grandchild its own stdout and stderr and exits once the grandchild has recorded its pid, so the shell is gone while a descendant still holds the pipes the capture path reads. Exiting earlier loses the grandchild on Windows before it starts.
+// The parent hands the grandchild its own stdout and stderr and exits once the grandchild has recorded its pid, so the shell is gone while a descendant still holds the pipes the capture path reads. The grandchild is detached because libuv on Windows puts every non-detached child in a kill-on-close job object, so it would die with its parent and release the pipes (measured: a plain spawn from node, no token-goat code, saw the pipes close and the pid dead within 20 ms of the parent's exit; detached, the pid stayed alive and the pipes open).
 const ORPHANING_PARENT_SCRIPT = `
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
-spawn(process.execPath, [process.argv[3], process.argv[2]], { stdio: ['ignore', 'inherit', 'inherit'] }).unref()
+spawn(process.execPath, [process.argv[3], process.argv[2]], { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true }).unref()
 setInterval(() => {
   if (!fs.existsSync(path.join(process.argv[2], 'gc.pid'))) return
   fs.writeFileSync(path.join(process.argv[2], 'parent.pid'), String(process.pid))
