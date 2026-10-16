@@ -9,6 +9,7 @@ import { echoedValue, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { sharpenRepeatedDeny } from './hint_target.js'
 import { normalizePayload, type Harness } from './hooks_cli.js'
 import { commitPendingContext } from './pending_context.js'
+import { requeueUndeliveredOwedSessionStart } from './session_start_owed.js'
 import { applyProbeMarker } from './probe_marker.js'
 import { HOOK_EVENTS, type HookEventName, type HookOutput } from './types.js'
 import { loadSessionState, saveSessionState } from './session_store.js'
@@ -207,6 +208,7 @@ async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: n
     return '{}'
   }
   // Wall-clock from process start, not from this line: what a harness actually waits on is everything since `node` began -- module load and import resolution included -- not just dispatch, which used to be all this recorded (~28ms of an ~89ms real wait, confirmed against an external stopwatch on the production shim). `performance.now()` reads elapsed time since `performance.timeOrigin` (process start), so reading it once in the finally block below, rather than diffing two timestamps taken inside this function, is what makes the total include everything before this function ever ran -- true for every synchronous call, and for an async-detached one whose caller did not pass `harnessWaitMs`.
+  let spentEvent: ReturnType<typeof buildEvent> | undefined
   try {
     // serializeOutput needs the true harness to decide the pre_compact wire form. The CLAUDE_CODE_SESSION_ID seeding below does not change this answer: detectHarness() discounts a value relay seeded (registry.ts::relaySeededSessionId), which a long-lived host still carries from its previous call.
     const harness = detectHarness()
@@ -216,6 +218,7 @@ async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: n
         ? normalizePayload(rawPayload, harnessForNormalization())
         : rawPayload
     const event = buildEvent(eventName, payload)
+    spentEvent = event
     // VS Code runs every hooks file it discovers, so one event can arrive here two or more times (user scope alongside project scope, or once per workspace folder). Stand down when another copy is already handling this exact event; see vscode_duplicate.ts for which cases are elected here and which the path gate already settles. Fails open by construction.
     if (shouldSuppressDuplicateVscodeHook(event, harness)) return '{}'
     // getSessionId() (session.ts) only ever resolves CLAUDE_CODE_SESSION_ID from the environment, which Claude Code sets itself but every other bridge (Codex, opencode, pi, Gemini, Grok, Copilot, OpenClaw) never does — those harnesses deliver the session id only on the wire, via event.sessionId above. Since each hook invocation is a fresh short-lived process, leaving the env var unseeded means every call on a non-Claude-Code harness gets a brand-new random session id from getSessionId(), breaking read-dedup/reread-diffing, context-pressure tiering, and manifest continuity for those harnesses. Seed it here, once, before any handler runs, rather than patching each getSessionId() call site individually. The pi, opencode and OpenClaw bridges run this in one long-lived host process serving session after session, so a value seeded here follows the wire id: replaced when the next event names another session, removed when one names none. A value relay did not seed is the harness's own (Claude Code sets it) and is never touched.
@@ -252,7 +255,9 @@ async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: n
     const output = applyProbeMarker(event.eventName, safeSuggestions(sharpenRepeatedDeny(event, applyCallStreak(event, await runHook(event), receivedAt))))
     // Clear the deferred-hint queue only once the text is in the output that is about to be serialized. The handler that reads that queue is advisory, and runHook discards an advisory result whenever a later non-advisory handler returns one of its own, so consuming the queue at read time deleted queued compaction manifests that then reached nothing. Checking the emitted string makes delivery a fact rather than an assumption, and leaves an undelivered hint queued for the next tool call. See pending_context.ts.
     if (event.sessionId) {
-      commitPendingContext(stateKey, output.hookType === 'context' ? output.context : null)
+      const delivered = output.hookType === 'context' ? output.context : null
+      commitPendingContext(stateKey, delivered)
+      requeueUndeliveredOwedSessionStart(event, delivered)
     }
     try {
       saveSessionState(stateKey)
@@ -261,6 +266,8 @@ async function relayOne(eventName: string, rawPayload: unknown, harnessWaitMs: n
     }
     return serializeOutput(output, event.eventName, harness, event)
   } catch {
+    // The owed session start was claimed and carried in memory only, so a step that threw after the handler ran must put it back on the queue or it is lost for good; a no-op when the success path already settled it.
+    if (spentEvent !== undefined) requeueUndeliveredOwedSessionStart(spentEvent, null)
     // Pass-through on every failure path — a hook must never block the caller's tool call.
     return '{}'
   } finally {

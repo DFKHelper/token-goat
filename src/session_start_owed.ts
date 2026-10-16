@@ -3,6 +3,8 @@
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { sessionStateKey } from './hook_registry.js'
+import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { queuePendingContext } from './pending_context.js'
 import type { HookEvent } from './hook_registry.js'
 import { sessionSidecarPath } from './session_store.js'
 import { ensureDirSync } from './util.js'
@@ -119,5 +121,42 @@ export function claimOwedSessionStart(event: HookEvent): boolean {
     return true
   } catch {
     return false
+  }
+}
+
+/** The owed text each claim winner holds between producing it and the relay proving it was emitted, keyed by the event object so no other call, in this process or another, can reach it. */
+const carriedOwed = new WeakMap<HookEvent, string>()
+
+/** The text the pending-context handler offered for this call, which is what the relay can find in the emitted output: the carried text cut to the queue cap, plus anything queued ahead of it. Without it an owed start over the cap is looked for whole, never found, and queued again, so it is shown twice. */
+const offeredOwed = new WeakMap<HookEvent, string>()
+
+/** Hold the owed text for this call alone. It is deliberately not queued: a queued text is visible to a concurrent call that lost the claim, which peeked it before the winner's relay cleared it, and the reminder was then emitted by both. A winner that is killed before its output goes out loses the text by design, because a lost delivery is better than a duplicated one. */
+export function carryOwedSessionStart(event: HookEvent, text: string): void {
+  carriedOwed.set(event, text.trim())
+}
+
+/** Record the text the pending-context handler returned for this call, so {@link requeueUndeliveredOwedSessionStart} looks for what was offered and not for the uncut carried text. */
+export function offerOwedSessionStart(event: HookEvent, offered: string): void {
+  offeredOwed.set(event, offered)
+}
+
+/** The text {@link carryOwedSessionStart} holds for this call, or undefined. */
+export function carriedOwedSessionStart(event: HookEvent): string | undefined {
+  return carriedOwed.get(event)
+}
+
+/** Once the relay knows what it is about to emit: queue the carried text for the next tool call unless the emitted output already carries it. An advisory result can lose to another handler's, and the claim is spent, so without this the owed text would be gone for good. The emitted string is compared the way {@link commitPendingContext} compares it, after the suggestion guard the relay applies, against the text the handler offered. The relay also calls it with null when a step after the handler threw, since nothing was emitted and the claim is spent. Never throws. */
+export function requeueUndeliveredOwedSessionStart(event: HookEvent, delivered: string | null): void {
+  const carried = carriedOwed.get(event)
+  if (carried === undefined) return
+  carriedOwed.delete(event)
+  const offered = offeredOwed.get(event) ?? carried
+  offeredOwed.delete(event)
+  if (carried === '') return
+  try {
+    if (delivered !== null && (delivered.includes(offered) || delivered.includes(stripUnsafeSuggestions(offered)))) return
+    queuePendingContext(sessionStateKey(event), carried)
+  } catch {
+    // Best-effort, as for queuePendingContext: a text that cannot be queued is a lost delivery, never a failed hook.
   }
 }

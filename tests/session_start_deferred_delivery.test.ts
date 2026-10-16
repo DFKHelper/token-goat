@@ -4,21 +4,21 @@ import { createRequire } from 'node:module'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type * as PendingContext from '../src/pending_context.js'
+import type * as SessionStart from '../src/hooks_session_start.js'
 
-const failures = vi.hoisted(() => ({ queueThrowsOnce: false }))
+const failures = vi.hoisted(() => ({ startThrowsOnce: false }))
 
-vi.mock('../src/pending_context.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof PendingContext>()
+vi.mock('../src/hooks_session_start.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof SessionStart>()
   return {
     ...actual,
-    // STUBBED: no real failure path reaches queuePendingContext or sessionStartOutput (every storage and lookup failure there is swallowed), so the one throw H3 needs is injected here, once, and everything else passes through.
-    queuePendingContext: (stateKey: string, text: string): void => {
-      if (failures.queueThrowsOnce) {
-        failures.queueThrowsOnce = false
-        throw new Error('simulated queue failure')
+    // STUBBED: no real failure path reaches sessionStartOutput's caller (every storage and lookup failure inside it is swallowed), so the one throw H3 needs is injected here, once, and everything else passes through.
+    sessionStartOutput: (...args: Parameters<typeof actual.sessionStartOutput>): ReturnType<typeof actual.sessionStartOutput> => {
+      if (failures.startThrowsOnce) {
+        failures.startThrowsOnce = false
+        throw new Error('simulated session start failure')
       }
-      actual.queuePendingContext(stateKey, text)
+      return actual.sessionStartOutput(...args)
     },
   }
 })
@@ -32,7 +32,7 @@ import { claimOwedSessionStart, recordSessionStartSettled } from '../src/session
 import { sessionSidecarPath } from '../src/session_store.js'
 import { relayInProcess } from '../src/relay.js'
 
-// Provenance (owed means begun, unsettled, unclaimed): every row is HAND-DERIVED. The H2a, H2b and H3 rows add a second session start for one session key: the shim-side reset is the real function the generated shim embeds, evaluated from COPILOT_SESSION_START_HELPERS, and nothing else is stubbed except the single queue throw named in the mock above. Provenance of the earlier rows: HAND-DERIVED. The marker epochs are picked by hand against the rule in DESIGN.md section 2.1 (owed iff no marker or finishedAtMs > deadlineEpoch - 1000). The expected text is a phrase read off the user-facing reminder wording, not a call to the matcher: NOTE_REMINDER in src/session_reminder.ts is appended to both the indexed and the generic reminder, so it is in the output whichever the temp cwd resolves to. Rows drive relayInProcess, the production dispatch path, never an injected handler.
+// Provenance (owed means begun, unsettled, unclaimed): every row is HAND-DERIVED. The H2a, H2b and H3 rows add a second session start for one session key: the shim-side reset is the real function the generated shim embeds, evaluated from COPILOT_SESSION_START_HELPERS, and nothing else is stubbed except the single session start throw named in the mock above. Provenance of the earlier rows: HAND-DERIVED. The marker epochs are picked by hand against the rule in DESIGN.md section 2.1 (owed iff no marker or finishedAtMs > deadlineEpoch - 1000). The expected text is a phrase read off the user-facing reminder wording, not a call to the matcher: NOTE_REMINDER in src/session_reminder.ts is appended to both the indexed and the generic reminder, so it is in the output whichever the temp cwd resolves to. Rows drive relayInProcess, the production dispatch path, never an injected handler.
 
 const DEADLINE = 1_800_000_000_000
 const REMINDER_PHRASE = 'must outlive a compaction'
@@ -201,7 +201,7 @@ describe('a failure after the claim (H3)', () => {
   it('gives the claim back so a later hook process delivers', async () => {
     setHarness('copilot_cli')
     shimReset(sid)
-    failures.queueThrowsOnce = true
+    failures.startThrowsOnce = true
     const before = deferredCount()
     const first = await toolCall(sid)
     expect(occurrences(first), first).toBe(0)

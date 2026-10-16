@@ -51,6 +51,21 @@ export function peekPendingContext(stateKey: string): string | null {
   return target === null ? null : readPending(target)
 }
 
+/** What a tool call delivers when it also holds text of its own that is not in the queue: `carried` appended to what is queued, within the cap. The carried text is for this call alone -- it is in no file another process could peek, so a racing call cannot deliver it too -- and {@link commitPendingContext} still clears the queued part once the output proves it landed. When the cap pushes the queued text out whole, the file is cleared with it, as {@link queuePendingContext} would have done, so the dropped text is not delivered later. */
+export function peekPendingContextWith(stateKey: string, carried: string): string {
+  const target = sessionSidecarPath(stateKey, PENDING_SUFFIX)
+  const existing = target === null ? null : readPending(target)
+  const text = fitPending(existing, carried.trim())
+  if (target !== null && existing !== null && !text.includes(existing)) {
+    try {
+      rmSync(target, { force: true })
+    } catch {
+      // An unremovable file is delivered again later; never a blocked tool call.
+    }
+  }
+  return text
+}
+
 /** Clear the queue for `stateKey`, but only when `delivered` actually carries the queued text. Delivery is proven from the string about to be serialized rather than assumed from the fact that the reading handler ran, so a peek whose result lost the turn leaves the text queued for the next tool call instead of dropping it. When it did land, this clear is what keeps a one-shot hint one-shot. `delivered` is compared against the queued text put through the same suggestion guard the relay applies on its way out, because the relay sanitizes AFTER the handler returns and BEFORE this runs. A queued block naming an unsafe `token-goat ...` span therefore arrives here rewritten, a raw substring test fails on text that plainly was delivered, and the sidecar is never cleared -- so the same block is re-emitted on every subsequent tool call for the rest of the session, each time counted as a fresh emission. The manifest's own safe-to-discard section embeds this session's cached commands, so the trigger is ordinary content, not a crafted one. The guard is idempotent, which is what lets it stand in for identity here: comparing two canonical forms answers "did this text go out" without either side needing to know who rewrote it. */
 export function commitPendingContext(stateKey: string, delivered: string | null): void {
   if (delivered === null || delivered === '') return
