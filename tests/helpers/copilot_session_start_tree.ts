@@ -18,7 +18,7 @@ import { startWatchdog, type Watchdog } from './stall_proof_watchdog.js'
 export const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 /** The budget the tree fixtures give a start, through the test-only seam: the shorter budget production used before it became 10 s, so a case that waits for a hung helper to be cut off ends in seconds, not in the production budget. */
 export const HUNG_START_BUDGET_MS = 3000
-/** Quiet time with no child output, exit or awaited file before a watched row is declared hung. The product bounds every start by its own deadline (HUNG_START_BUDGET_MS plus cleanup), so this only catches a child that never answers at all; it is never asserted on and sits far above any loaded-machine delay of that deadline, which a 12 s limit did not (no progress for 12000 ms, last progress: child spawned). */
+/** Quiet time with no child output, exit or awaited file before a watched row is declared hung. The product bounds every start by its own deadline (HUNG_START_BUDGET_MS plus cleanup), so this only catches a child that never answers at all; it is never asserted on and sits far above any loaded-machine delay of that deadline, which a 12 s limit did not (no progress for 12000 ms, last progress: child spawned). Moved 12000/15000/20000/40000/60000 -> 120000: a loaded Windows pre-push failed with "no progress for 12000 ms, last progress: child spawned" while the product's own deadline bounds every start. */
 export const HANG_BACKSTOP_MS = 120_000
 export const ownedRoots: string[] = []
 export const ownedPids: number[] = []
@@ -259,6 +259,7 @@ function killAndVerify(victims: Map<number, string>): void {
     }
   }
   for (const pid of victims.keys()) kill(pid)
+  // Moved 5000 -> 120000: EPERM on an already-exiting process answers for a moment before the process is gone.
   const gone = Date.now() + HANG_BACKSTOP_MS
   for (;;) {
     const remaining = [...victims.keys()].filter(alive)

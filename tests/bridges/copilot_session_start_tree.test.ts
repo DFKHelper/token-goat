@@ -228,7 +228,8 @@ it.runIf(process.platform === 'win32')('rejects breakaway from the strict job wi
     protocol: 'tg-session-start-owner-v1', capability: 'atomic-job-list',
     activeProcesses: 0, rootExited: true, pipesDrained: true, candidate: {},
   })
-}, 0)
+// Moved 40000 -> 150000: the inner spawnSync is bounded by HANG_BACKSTOP_MS; this only backs it.
+}, HANG_BACKSTOP_MS + 30_000)
 
 it.runIf(process.platform === 'win32').for(['before-input', 'at-creation', 'with-live-descendant'])('closes the owned job after abrupt native owner death %s', { timeout: 0 }, async (phase, ctx) => {
   const fixture = treeFixture()

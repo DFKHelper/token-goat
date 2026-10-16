@@ -98,7 +98,7 @@ function recordedTimerDelays(logBase: string, pid: number): number[] {
 }
 
 
-/** Hang backstop for every wait on the live daemon: the same 45000ms as each test's own budget, so the budget reports a slow daemon and these only fire for a daemon that is alive and silent. Each wait already ends at once, naming the cause, when the daemon process is gone, so a smaller number here only converted load into failure (the daemon taking over 15000ms to reach its first heartbeat on a loaded machine). */
+/** Hang backstop for every wait on the live daemon: the same 45000ms as each test's own budget, so the budget reports a slow daemon and these only fire for a daemon that is alive and silent. Each wait already ends at once, naming the cause, when the daemon process is gone, so a smaller number here only converted load into failure (the daemon taking over 15000ms to reach its first heartbeat on a loaded machine). Moved 15000/20000 -> 45000: the daemon took over 15000 ms to reach its first heartbeat on a loaded Windows pre-push. */
 const DAEMON_WAIT_BACKSTOP_MS = 45000
 
 /** Poll interval handed to the daemon under test. Fast enough that the drain assertion resolves in well under the 2000ms production default, which is what makes that assertion able to detect the default being forced back on. */
