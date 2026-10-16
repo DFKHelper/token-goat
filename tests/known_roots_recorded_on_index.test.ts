@@ -4,7 +4,23 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type * as DbModule from '../src/db.js'
+
+// Every path getDb is asked to open, in order, so a test can count the insert attempts a call makes. The wrapper opens the database exactly as the real function does.
+const opened = vi.hoisted(() => ({ paths: [] as string[] }))
+
+vi.mock('../src/db.js', async (importOriginal) => {
+  const original = await importOriginal<typeof DbModule>()
+  return {
+    ...original,
+    getDb: (...args: Parameters<typeof original.getDb>) => {
+      opened.paths.push(String(args[0]))
+      return original.getDb(...args)
+    },
+  }
+})
 
 import { getDb } from '../src/db.js'
 import { fingerprintFile } from '../src/fingerprint.js'
@@ -87,6 +103,20 @@ describe('indexing registers the project root for sweeping', () => {
     recordKnownRootThrottled(file, dbDir, dbPath)
     expect(recordedRoots(), UNREACHABLE).toContain(normalizePath(projectDir))
     expect(fs.readdirSync(dbDir).filter((name) => name.endsWith('.marker'))).toHaveLength(1)
+  })
+
+  it('tries a database that refused the record once, not again for every later file of the same drain', () => {
+    // The worker calls recordKnownRootThrottled once per drained file, and a refused record leaves no marker, so without a memo each file would wait out the database budget again. HAND-DERIVED: a database path beneath a regular file stands in for a locked or unwritable database; getDb is asked for it once per attempt.
+    const first = writeFile('f.ts', 'export const f = 6\n')
+    const second = writeFile('g.ts', 'export const g = 7\n')
+    fs.writeFileSync(path.join(dbDir, 'blocker'), '')
+    const refused = path.join(dbDir, 'blocker', 'index.db')
+    opened.paths.length = 0
+
+    recordKnownRootThrottled(first, dbDir, refused)
+    recordKnownRootThrottled(second, dbDir, refused)
+
+    expect(opened.paths.filter((p) => p === refused)).toHaveLength(1)
   })
 
   it('records a root whose files are all already fresh', async () => {

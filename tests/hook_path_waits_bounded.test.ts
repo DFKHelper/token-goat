@@ -70,7 +70,7 @@ function runHook(sessionId: string, file: string, holder: ChildProcess | null, e
     : ['-e', LIB_SCRIPT, path.join(path.dirname(BUNDLE), 'token-goat-hook.mjs'), JSON.stringify(payload)]
   const child = spawn(process.execPath, args, {
     cwd: repo,
-    env: { ...process.env, ...trace.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase },
+    env: { ...process.env, ...trace.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase, TOKEN_GOAT_NO_WORKER_SPAWN: '1' },
     stdio: ['pipe', 'pipe', 'ignore'],
   })
   holders.push(child)

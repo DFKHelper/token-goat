@@ -6,6 +6,7 @@ import { dataDir, globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { shortFingerprint } from './fingerprint.js'
 import { findProject } from './project.js'
+import { registerReset } from './reset.js'
 import { ensureDirSync, normalizePath } from './util.js'
 
 // A drive root (`c:/`) or empty prefix would scope the prune to an entire drive across every project in the shared global DB; refuse it so a malformed root can never mass-delete another project's rows.
@@ -38,6 +39,11 @@ const KNOWN_ROOT_RECORD_MIN_INTERVAL_MS = 60 * 60 * 1000
 function knownRootRecordMarkerPath(dir: string, filePath: string): string {
   return path.join(dir, `known-root-record-${shortFingerprint(path.dirname(filePath))}.marker`)
 }
+
+/** When this process last failed to record a root, keyed by marker path and database path. A failed record leaves no marker on disk (a hook's short database wait would otherwise cost the root its record for the whole interval), so without this memo the worker, which calls {@link recordKnownRootThrottled} once per drained file, would retry a locked or unwritable database for every file of a drain, each try waiting out the full indexing budget. The memo dies with the process, so the next hook still retries at once, and a different database path is a different key. */
+const failedRecordAt = new Map<string, number>()
+
+registerReset(() => failedRecordAt.clear())
 
 /** Filename prefix shared by every {@link knownRootRecordMarkerPath}, so the sweep below can find them without recomputing a fingerprint. */
 const KNOWN_ROOT_MARKER_PREFIX = 'known-root-record-'
@@ -78,8 +84,12 @@ export function recordKnownRootThrottled(
   } catch {
     // No marker yet: first check ever for this data dir, proceed.
   }
+  const failKey = `${markerPath}|${dbPath}`
+  const failedAt = failedRecordAt.get(failKey)
+  if (failedAt !== undefined && Date.now() - failedAt < KNOWN_ROOT_RECORD_MIN_INTERVAL_MS) return
   try {
     recordKnownRoot(filePath, dbPath)
+    failedRecordAt.delete(failKey)
     // Written only once the record went through: a hook's database wait is short, so a busy database refuses the insert, and a marker already in place would then cost this root its record for the whole interval.
     try {
       ensureDirSync(dir)
@@ -88,6 +98,7 @@ export function recordKnownRootThrottled(
       // If we can't write the marker the record above stands; worst case we record more often than intended.
     }
   } catch {
+    failedRecordAt.set(failKey, Date.now())
     // Bookkeeping must never take down the operation that triggered it. Every caller is an indexing or edit path whose actual job is already done or about to be, and the callers include ones that legitimately hand over a dbPath this cannot write to at all -- an in-memory database, for instance, which has no project root to record in the first place. The failure is not logged, because the only sink available is the database that just refused the write. Missing a record costs one sweep window: the next successful call for this root registers it, and the rows stay exactly where they were until then.
   }
 }
