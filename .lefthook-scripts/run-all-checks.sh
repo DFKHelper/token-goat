@@ -18,7 +18,7 @@ fi
 
 PIDS=()
 WSL_PID=""
-declare -A START=() END=() PID_OF=() FAILED=()
+declare -A START=() END=() PID_OF=() FAILED=() ABORTED=()
 
 run_check() {
   local name=$1
@@ -41,11 +41,20 @@ wait_legs() {
     rc=0
     wait -n -p fin "${pid_of[@]}" || rc=$?
     for name in "${!pid_of[@]}"; do
-      if [[ "${pid_of[$name]}" == "$fin" ]]; then
+      if [[ "${pid_of[$name]:-}" == "$fin" ]]; then
         END[$name]=$SECONDS
         [[ "$rc" -eq 0 ]] || FAILED[$name]=1
         unset "pid_of[$name]"
         left=$((left - 1))
+        # Lint or typecheck red: the push is lost already, so end the Windows suite's tree instead of waiting for it.
+        if [[ "$rc" -ne 0 && "$name" != "tests" && -n "${pid_of[tests]:-}" ]]; then
+          echo "pre-push: $name failed, stopping the Windows suite"
+          kill_tree "${pid_of[tests]}"
+          wait "${pid_of[tests]}" 2>/dev/null || true
+          ABORTED[tests]=1
+          unset "pid_of[tests]"
+          left=$((left - 1))
+        fi
       fi
     done
   done
@@ -53,7 +62,9 @@ wait_legs() {
 
 # Seconds a leg took, or "skipped" when it never started.
 leg_secs() {
-  if [[ -n "${START[$1]:-}" && -n "${END[$1]:-}" ]]; then
+  if [[ -n "${ABORTED[$1]:-}" ]]; then
+    printf 'aborted'
+  elif [[ -n "${START[$1]:-}" && -n "${END[$1]:-}" ]]; then
     printf '%ss' "$((END[$1] - START[$1]))"
   else
     printf 'skipped'
@@ -63,7 +74,7 @@ leg_secs() {
 # Prints the slowest test files of one leg's vitest log. A failure of this report never changes the push result.
 report_slowest() {
   local name=$1 title=$2
-  [[ -n "${START[$name]:-}" ]] || return 0
+  [[ -n "${START[$name]:-}" && -z "${ABORTED[$name]:-}" ]] || return 0
   echo "pre-push: 20 slowest test files, $title leg"
   node "$ROOT_DIR/scripts/test-durations.mjs" "$LOG_DIR/$name.log" --top 20 || true
 }
