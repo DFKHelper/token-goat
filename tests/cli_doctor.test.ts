@@ -12,7 +12,7 @@ import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../src/bridges/codex.js'
 import { classifyTreeSitterLoadError } from '../src/cli_doctor.js'
 import { missingTreeSitterGrammarPackages, oversizeEmbedSha, setTreeSitterCoreForTesting } from '../src/parser.js'
-import { createRequire } from 'node:module'
+import Module, { createRequire } from 'node:module'
 import { dirtyQueuePathFor } from '../src/dirty_queue.js'
 import { drainHeartbeatPathFor, workerPidPath } from '../src/worker_lifecycle.js'
 import { getDb } from '../src/db.js'
@@ -1162,7 +1162,30 @@ describe('cli_doctor', () => {
     function scratch(): string {
       return fs.mkdtempSync(path.join(os.tmpdir(), 'tg-ts-err-'))
     }
-    const absentError = (): Error => thrown(() => createRequire(path.join(scratch(), 'x.js'))('tree-sitter'))
+    // Resolution from a scratch dir must find nothing beside it, whatever stray install sits in an ancestor (C:/node_modules) or NODE_PATH names: Node's walk-up and its global lookup paths are both narrowed for the call, then put back. Provenance: FORMAT-DERIVED, node:module Module._nodeModulePaths and Module._initPaths (the NODE_PATH reader), so the error is still thrown by the real resolver.
+    function requireFromBareDir(id: string): unknown {
+      const mod = Module as unknown as { _nodeModulePaths: (from: string) => string[]; _initPaths: () => void }
+      const savedPaths = mod._nodeModulePaths
+      const savedNodePath = process.env['NODE_PATH']
+      const savedHome = { HOME: process.env['HOME'], USERPROFILE: process.env['USERPROFILE'] }
+      const dir = scratch()
+      try {
+        mod._nodeModulePaths = (from: string) => [path.join(from, 'node_modules')]
+        delete process.env['NODE_PATH']
+        process.env['HOME'] = dir
+        process.env['USERPROFILE'] = dir
+        mod._initPaths()
+        return createRequire(path.join(dir, 'x.js'))(id)
+      } finally {
+        mod._nodeModulePaths = savedPaths
+        for (const [k, v] of Object.entries({ NODE_PATH: savedNodePath, ...savedHome })) {
+          if (v === undefined) delete process.env[k]
+          else process.env[k] = v
+        }
+        mod._initPaths()
+      }
+    }
+    const absentError = (): Error => thrown(() => requireFromBareDir('tree-sitter'))
     const noPrebuildError = (): Error => thrown(() => (createRequire(import.meta.url)('node-gyp-build') as (dir: string) => unknown)(scratch()))
     const dlopenError = (): Error =>
       thrown(() => {
@@ -1176,7 +1199,7 @@ describe('cli_doctor', () => {
       expect(classifyTreeSitterLoadError(noPrebuildError())).toBe('no-prebuild')
       expect(classifyTreeSitterLoadError(dlopenError())).toBe('dlopen')
       // A dependency missing inside tree-sitter is not tree-sitter itself missing.
-      expect(classifyTreeSitterLoadError(thrown(() => createRequire(path.join(scratch(), 'x.js'))('node-gyp-build')))).toBe('other')
+      expect(classifyTreeSitterLoadError(thrown(() => requireFromBareDir('node-gyp-build')))).toBe('other')
       expect(classifyTreeSitterLoadError(null)).toBe('other')
     })
 

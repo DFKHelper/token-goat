@@ -23,6 +23,8 @@ const NAMES = ['package.json', ...Array.from({ length: SOURCE_FILES }, (_, i) =>
 const SAVED = ['TOKEN_GOAT_EMBEDDINGS_ENABLED', 'TOKEN_GOAT_OFFLINE', 'TOKEN_GOAT_MODEL_CACHE_DIR', 'NODE_USE_ENV_PROXY', ...PROXY_VARS] as const
 const prev: Partial<Record<(typeof SAVED)[number], string | undefined>> = {}
 let stopWorker: (() => Promise<void>) | null = null
+let checks = 0
+let checkWaiter: { at: number; resolve: () => void } | null = null
 
 beforeEach(() => {
   for (const k of SAVED) {
@@ -64,19 +66,42 @@ function freshProject(): string {
 async function startRunningWorker(): Promise<void> {
   // The walk only runs once the index exists, so it is created before the loop's first cycle looks.
   getDb(globalDbPath())
-  let checks = 0
+  checks = 0
   let stopping = false
-  const loop = runWorkerLoop(dataDir(), 10, () => {
-    checks += 1
-    return stopping
-  })
+  // The loop retires itself once its pid file has been missing for 10 s (WORKER_STARTUP_GRACE_MS), and this loop has none: on a slow machine the file's wall clock outran that and the worker left before index handed it anything. The test ends the loop through shouldStop, so the grace is made unreachable.
+  const loop = runWorkerLoop(
+    dataDir(),
+    10,
+    () => {
+      checks += 1
+      if (checkWaiter !== null && checks >= checkWaiter.at) {
+        checkWaiter.resolve()
+        checkWaiter = null
+      }
+      return stopping
+    },
+    { pidFileGraceMs: Number.MAX_SAFE_INTEGER },
+  )
   stopWorker = async () => {
     stopping = true
     await loop
     await pendingEmbeddings()
   }
   // The loop asks twice a cycle, once before its drain and once before its sleep.
-  await vi.waitFor(() => expect(checks).toBeGreaterThanOrEqual(4), { timeout: 10_000, interval: 10 })
+  await loopChecks(4)
+}
+
+/** Resolve once the running loop has asked shouldStop `n` more times: progress counted in worker cycles, so a slow machine takes longer to get there without ever running out of time. */
+function loopChecks(n: number): Promise<void> {
+  return new Promise((resolve) => {
+    checkWaiter = { at: checks + n, resolve }
+  })
+}
+
+/** Everything the worker owes the files has been done: it has drained the queue over further cycles and every embed it started has settled. */
+async function workerSettled(): Promise<void> {
+  await loopChecks(12)
+  await pendingEmbeddings()
 }
 
 async function runIndex(root: string, opts: { embedBudgetMs?: number }): Promise<string> {
@@ -121,7 +146,8 @@ describe('index hands the files it leaves unembedded to a worker that is already
     const stderr = await runIndex(root, { embedBudgetMs: 0 })
     // Calibration: one file was embedded here and the rest really were left for the worker.
     expect(stderr).toContain(`${NAMES.length - 1} files left for the background worker to embed`)
-    await vi.waitFor(() => expect(unembedded(root)).toEqual([]), { timeout: 10_000, interval: 25 })
+    await workerSettled()
+    expect(unembedded(root)).toEqual([])
   })
 
   it.skipIf(!nodeFetchHonoursEnvProxy())('embeds the files whose model download was left to the worker', async () => {
@@ -132,6 +158,7 @@ describe('index hands the files it leaves unembedded to a worker that is already
     const stderr = await runIndex(root, {})
     // Calibration: nothing was embedded here.
     expect(stderr).toContain(`${NAMES.length} files not embedded yet`)
-    await vi.waitFor(() => expect(unembedded(root)).toEqual([]), { timeout: 10_000, interval: 25 })
+    await workerSettled()
+    expect(unembedded(root)).toEqual([])
   })
 })
