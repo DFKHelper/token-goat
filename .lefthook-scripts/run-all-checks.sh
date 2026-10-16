@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Single entry point for all pre-push checks. Every check runs concurrently: typecheck, ts-checks, the Windows suite and the WSL (Linux) suite. The WSL leg runs from its own Linux-side copy in a separate VM, so its files and node_modules never overlap the Windows run; the cost is that both suites share the workstation's CPU, which is why they were serial before. The suites are meant to hold under that load (a timing-dependent test is the defect, not the load), and the wall time is now that of the slower leg instead of the sum.
+# Single entry point for all pre-push checks. Typecheck, ts-checks and the Windows suite run concurrently; the WSL (Linux) suite follows the Windows suite unless PREPUSH_PARALLEL_WSL=1 starts it at once. The WSL leg runs from its own Linux-side copy in a separate VM, so its files and node_modules never overlap the Windows run; both suites then share the workstation's CPU, which is why serial is the default: concurrent, they were slower and flaky.
 set -euo pipefail
 
 # Always anchor to git root so this script works whether lefthook invokes it
@@ -64,13 +64,20 @@ run_check ts-checks bash "$SCRIPT_DIR/run-ts-checks.sh"
 TS_PID=$RUN_PID
 run_check tests bash "$SCRIPT_DIR/run-test.sh"
 TEST_PID=$RUN_PID
-run_check wsl-test bash "$SCRIPT_DIR/wsl-test.sh"
-WSL_PID=$RUN_PID
+# Default is serial, as before: a measured concurrent run took 2150 s against 1423 s serial and failed 21 Windows and 2 Linux test files under the shared CPU. PREPUSH_PARALLEL_WSL=1 starts the WSL leg now instead of after the Windows suite.
+if [[ "${PREPUSH_PARALLEL_WSL:-0}" == "1" ]]; then
+  run_check wsl-test bash "$SCRIPT_DIR/wsl-test.sh"
+  WSL_PID=$RUN_PID
+fi
 
 FAIL=0
 
-wait "$TEST_PID"      || { report_failure tests; FAIL=1; }
-wait "$WSL_PID"       || { report_failure wsl-test; FAIL=1; }
+wait "$TEST_PID" || { report_failure tests; FAIL=1; }
+if [[ -z "$WSL_PID" ]]; then
+  run_check wsl-test bash "$SCRIPT_DIR/wsl-test.sh"
+  WSL_PID=$RUN_PID
+fi
+wait "$WSL_PID" || { report_failure wsl-test; FAIL=1; }
 wait "$TYPECHECK_PID" || { report_failure typecheck; FAIL=1; }
 wait "$TS_PID"        || { report_failure ts-checks; FAIL=1; }
 
