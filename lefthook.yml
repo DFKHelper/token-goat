@@ -51,6 +51,8 @@ pre-push:
   commands:
     all-checks:
       # Single bash wrapper runs typecheck + tests in parallel internally. Avoids lefthook's parallel-mode EvalSymlinks canonicalize failure on Windows (affects commands with glob: on parallel runners when stdin is read concurrently).
+      # use_stdin hands run-all-checks.sh the ref lines git gives a pre-push hook, which decide whether the WSL leg runs (.lefthook-scripts/wsl-gate.sh).
+      use_stdin: true
       run: bash .lefthook-scripts/run-all-checks.sh
 
 post-merge:

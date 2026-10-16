@@ -1,0 +1,58 @@
+# One glob per line, matched against repo-relative paths with `[[ path == glob ]]` (so `*` also crosses `/`); a push that changes a path matching any line runs the WSL (Linux) suite. Blank lines and lines starting with # are ignored. List only code whose behaviour differs between Windows and Linux; CI runs the full suite on Linux regardless.
+# Process spawning, killing and resident processes: Windows taskkill and job handling versus Linux process groups and signals.
+src/process_tree.ts
+src/process_util.ts
+src/process_priority.ts
+src/bash_runner.ts
+src/resident_process.ts
+src/resident_context.ts
+src/stray_residents.ts
+src/worker.ts
+src/worker_lifecycle.ts
+src/hook_server.ts
+src/hook_client.ts
+src/hook_ipc.ts
+# Shell parsing, rewrites and permissions: POSIX shell versus PowerShell and cmd quoting.
+src/shell.ts
+src/powershell_compat.ts
+src/windows_powershell.ts
+src/windows_system32.ts
+src/rewrite_permission.ts
+src/hooks_bash*.ts
+src/bash_backslash_repair.ts
+# Path, case and separator handling plus path confinement.
+src/paths.ts
+src/path_containment.ts
+src/path_miss.ts
+src/path_suggest.ts
+src/spec_path.ts
+src/sql_path.ts
+src/vscode_path_gate.ts
+src/constants.ts
+# File locking and on-disk state shared between processes: SQLite, the disk cache, atomic writes.
+src/db.ts
+src/db_integrity.ts
+src/sqlite_driver.ts
+src/disk_cache.ts
+# Install, upgrade and hook-shim paths.
+src/install.ts
+src/install_index.ts
+src/cli_install.ts
+src/cli_upgrade.ts
+src/bridges/*_install.ts
+scripts/post-merge.mjs
+scripts/install-git-hooks.mjs
+# Native hook binary, wasm and embedding runtime loading.
+src/native_hook.ts
+native/*
+scripts/build-native.mjs
+scripts/verify-native-dist.mjs
+src/embed_runtime.ts
+src/embed_runtime_web.ts
+src/embed_model.ts
+esbuild.config.mjs
+# Dependencies and the pre-push scripts themselves.
+package.json
+package-lock.json
+.lefthook-scripts/*
+lefthook.yml
