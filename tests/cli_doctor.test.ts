@@ -1286,6 +1286,20 @@ describe('cli_doctor', () => {
       expect(readWindowsProcesses(() => 'Get-CimInstance : Access denied')).toEqual({ reason: 'PowerShell printed something other than the JSON process list' })
     })
 
+    // CAPTURE (Windows PowerShell 5.1 on Windows 11, this machine, `Get-CimInstance Win32_Process | Select-Object ... | ConvertTo-Json -Compress` while a git hook's grep was alive): the grep row carried a raw 0x1a byte inside the CommandLine string, and JSON.parse failed on the whole table with "Bad control character in string literal" (seen as a flaky tests/cli_doctor_process.test.ts failure). The row is rebuilt here with String.fromCharCode(26); the other rows are HAND-DERIVED.
+    it.runIf(process.platform === 'win32')('reads a process table whose command line holds a raw control character', () => {
+      const raw = String.fromCharCode(26)
+      const table = `[{"ProcessId":4,"ParentProcessId":0,"Name":"System","CommandLine":null},{"ProcessId":43032,"ParentProcessId":43592,"Name":"grep.exe","CommandLine":"grep.exe -HnE ${raw}[[:space:]]+ agents/x.md"}]`
+      expect(() => JSON.parse(table)).toThrow()
+
+      const processes = readWindowsProcesses(() => table)
+
+      expect(processes).toEqual([
+        { processId: 4, parentProcessId: 0, name: 'System', commandLine: '' },
+        { processId: 43032, parentProcessId: 43592, name: 'grep.exe', commandLine: `grep.exe -HnE ${raw}[[:space:]]+ agents/x.md` },
+      ])
+    })
+
     // HAND-DERIVED spawn results; the fields are the ones Node documents on spawnSync's return value (status, stdout, stderr, error), and the stderr text is arbitrary: any failing exit with nothing on stdout must read as a failure.
     describe('processListOutput', () => {
       // Regression: a non-zero exit with an empty stdout came back as '', which readWindowsProcesses reads as a machine with no processes, and doctor printed "no duplicate MCP launchers or orphaned Node processes detected" with nothing behind it.

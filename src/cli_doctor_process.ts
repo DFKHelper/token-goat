@@ -107,6 +107,18 @@ export function processListOutput(result: Pick<SpawnSyncReturns<string>, 'error'
   return stdout
 }
 
+/** Parses the JSON process list. Windows PowerShell 5.1's ConvertTo-Json writes a control character in a command line (a grep run with a raw 0x1a, say) into the string unescaped, which JSON.parse rejects, so the whole table was reported unreadable whenever such a process was alive. Compressed output has no whitespace between tokens, so every control character in it sits inside a string and is escaped before the retry; clean output never takes the second parse. */
+function parseProcessListJson(output: string): unknown {
+  try {
+    return JSON.parse(output)
+  } catch (first) {
+    // eslint-disable-next-line no-control-regex -- the control characters are the point
+    const escaped = output.replace(/[\u0000-\u001f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`)
+    if (escaped === output) throw first
+    return JSON.parse(escaped)
+  }
+}
+
 /** A {@link ProcessListFailure} when the process list could not be read at all, so a caller can tell that apart from an empty machine. */
 export function readWindowsProcesses(runCommand: () => string = runProcessListCommand): ProcessInfo[] | ProcessListFailure {
   if (process.platform !== 'win32') return []
@@ -115,7 +127,7 @@ export function readWindowsProcesses(runCommand: () => string = runProcessListCo
     if (output === '') return []
     let parsed: unknown
     try {
-      parsed = JSON.parse(output)
+      parsed = parseProcessListJson(output)
     } catch {
       return { reason: 'PowerShell printed something other than the JSON process list' }
     }
