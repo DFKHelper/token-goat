@@ -273,21 +273,6 @@ const SITES: Site[] = [
     },
   },
   {
-    name: 'hooks_read.ts memory re-read deny',
-    real: (h) => '::' + h + '"` to extract one section.',
-    fallback: '::SectionHeading"` to extract one section.',
-    guarded: true,
-    fallbackHeadings: [],
-    run: async (headings) => {
-      // Small, so the large-markdown heading tree above this branch does not answer first.
-      const p = write(path.join(uniq('memory'), 'memory', 'notes.md'), doc(headings, 40))
-      recordFileRead(normalizePath(p))
-      const out = preReadHandler(makeHookEvent({ toolName: 'Read', toolInput: { file_path: p }, sessionId: uniq('read') }))
-      if (out.hookType !== 'deny') throw new Error('expected a deny, got ' + out.hookType)
-      return out.message
-    },
-  },
-  {
     name: 'hooks_read.ts large-markdown heading-tree deny',
     real: (h) => '::' + h + '"` to read one section.\n',
     fallback: '::Heading Name"',

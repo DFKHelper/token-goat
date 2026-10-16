@@ -551,7 +551,10 @@ export function rereadIdentity(
       // Unreadable now: fall through to the stat comparison.
     }
   }
-  if (prior === undefined || prior.sizeBytes <= 0) return { identity: 'unknown', basis: 'none' }
-  const changed = current.size !== prior.sizeBytes || current.mtimeMs > (prior.lastFullReadAt ?? prior.lastReadAt)
+  if (prior === undefined) return { identity: 'unknown', basis: 'none' }
+  // A file empty at the last read and holding bytes now has changed; empty then and now withholds nothing.
+  if (prior.sizeBytes <= 0) return current.size > 0 ? { identity: 'changed', basis: 'stat' } : { identity: 'unknown', basis: 'none' }
+  // Floor mtime: Windows mtimeMs is fractional and Date.now() is floored, so a sub-ms lead is no write; any later edit still lands in a later whole ms.
+  const changed = current.size !== prior.sizeBytes || Math.floor(current.mtimeMs) > (prior.lastFullReadAt ?? prior.lastReadAt)
   return { identity: changed ? 'changed' : 'identical', basis: 'stat' }
 }

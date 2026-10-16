@@ -74,7 +74,24 @@ function makeTmpFileNamed(basename: string, content = '{}'): string {
   return p
 }
 
+// HAND-DERIVED: a file's mtime is stamped by the filesystem clock, which on Windows runs up to a few milliseconds ahead of Date.now(), so a file written an instant before its first read can carry an mtime later than that read and look changed to rereadIdentity's stat comparison. The first time a path is read it is stamped an hour back, so the mtime precedes the read on any host and any load; a write made afterwards keeps its natural mtime and still reads as a change.
+const stampedBeforeFirstRead = new Set<string>()
+function stampAnHourBack(filePath: string): void {
+  try {
+    const earlier = new Date(Date.now() - 3_600_000)
+    fs.utimesSync(filePath, earlier, earlier)
+  } catch {
+    // Not a file on disk (a missing-path case): nothing to stamp.
+  }
+}
+function stampBeforeFirstRead(filePath: string | undefined): void {
+  if (filePath === undefined || stampedBeforeFirstRead.has(filePath)) return
+  stampedBeforeFirstRead.add(filePath)
+  stampAnHourBack(filePath)
+}
+
 function readEvent(filePath: string | undefined): HookEvent {
+  stampBeforeFirstRead(filePath)
   return makeHookEvent({
     toolName: 'Read',
     toolInput: filePath === undefined ? {} : { file_path: filePath },
@@ -254,6 +271,8 @@ describe('preReadHandler', () => {
       invalidateConfigCache()
 
       const p = makeTmpFile('x'.repeat(60 * 1024))
+      // The fake clock predates the real write time; align the mtime so the file does not look modified after the read.
+      fs.utimesSync(p, new Date(), new Date())
       recordFileRead(normalizePath(p))
 
       const result = preReadHandler(readEvent(p))
@@ -551,6 +570,8 @@ describe('preReadHandler', () => {
       vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0))
 
       const target = makeTmpFile('x'.repeat(60 * 1024))
+      // The fake clock predates the real write time; align the mtime so the file does not look modified after the read.
+      fs.utimesSync(target, new Date(), new Date())
       recordFileRead(normalizePath(target))
 
       // Three other files read strictly after the target, each with an advancing timestamp, push the target's recency rank to 3 -- past the configured window of 2.
@@ -575,6 +596,8 @@ describe('preReadHandler', () => {
       vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0))
 
       const target = makeTmpFile('x'.repeat(60 * 1024))
+      // The fake clock predates the real write time; align the mtime so the file does not look modified after the read.
+      fs.utimesSync(target, new Date(), new Date())
       recordFileRead(normalizePath(target))
 
       // Exactly two other files read after the target push its recency rank to 2 (0-indexed) -- the boundary itself. With protect_recent_reads=2, ranks 0 and 1 are protected but rank 2 is not (rank < n, not rank <= n), so this must still deny.
@@ -2599,6 +2622,7 @@ content here` },
     const p = path.join(os.tmpdir(), '.improve-state-bugfixing.json')
     fs.writeFileSync(p, JSON.stringify({ phase: 'bugfixing' }))
     tmpFiles.push(p)
+    stampAnHourBack(p)
     recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
     expect(result.hookType).toBe('deny')
@@ -2616,8 +2640,10 @@ content here` },
     expect(result.hookType).toBe('pass')
   })
 
-  // Item 8: MEMORY.md re-read denial
-  it('denies 2nd read of memory/MEMORY.md', () => {
+  // Item 8: the memory-specific re-read deny is gone; memory files take the generic markdown path.
+  // HAND-DERIVED: a re-read of a memory file whose content changed on disk (no snapshot to diff) must not be hard-denied on the false premise that memory files never change mid-session.
+  it('a memory/MEMORY.md re-read after an outside change, with no snapshot, is not hard-denied', () => {
+    pinProtectRecentReadsToZero()
     const dir = path.join(os.tmpdir(), `tg-mem-${process.pid}`)
     fs.mkdirSync(dir, { recursive: true })
     const p = path.join(dir, 'memory', 'MEMORY.md')
@@ -2625,13 +2651,39 @@ content here` },
     fs.writeFileSync(p, '# Memory\ncontent')
     tmpFiles.push(p)
     recordFileRead(normalizePath(p))
+    fs.writeFileSync(p, '# Memory\ncontent\n- [New fact](new.md) written by another process\n')
     const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('This file was already read this session')
-      expect(result.message).toContain('token-goat section')
-      expect(result.message).not.toContain('compact manifest')
+    // The Read goes through (context hint, not a deny), so the model sees the new bytes.
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).not.toContain('Memory files rarely change mid-session')
     }
+  })
+
+  // HAND-DERIVED: a snapshot exists and the file then gained one line; that diff is far below the default 1000-token savings floor, so no diff is served, and the unprotected re-read must go through rather than fall to the markdown count deny.
+  it('a changed memory/MEMORY.md re-read whose diff is below the savings floor is read through, not denied', () => {
+    pinProtectRecentReadsToZero()
+    withMinTokensSaved(1000, () => {
+      const dir = path.join(os.tmpdir(), `tg-mem9-${process.pid}`)
+      fs.mkdirSync(dir, { recursive: true })
+      const p = path.join(dir, 'memory', 'MEMORY.md')
+      fs.mkdirSync(path.dirname(p), { recursive: true })
+      const content1 = '# Memory\n\nSome memory content here.\n'
+      fs.writeFileSync(p, content1)
+      tmpFiles.push(p)
+      postReadHandler({
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: p },
+        sessionId: 'test',
+        agentId: undefined,
+        raw: { tool_response: content1 },
+      })
+      recordFileRead(normalizePath(p))
+      fs.writeFileSync(p, content1 + '- [New fact](new.md) written by another process\n')
+      const result = preReadHandler(readEvent(p))
+      expect(result.hookType).not.toBe('deny')
+    })
   })
 
   it('passes first read of memory/MEMORY.md', () => {
@@ -2645,19 +2697,19 @@ content here` },
     expect(result.hookType).toBe('pass')
   })
 
-  it('denies 2nd read of any .md file under memory/ directory', () => {
+  // HAND-DERIVED: a project's own docs/memory/design.md is ordinary documentation, not a Claude Code memory file, so it gets no memory-specific message.
+  it('a docs/memory/design.md re-read gets no memory-specific message', () => {
     const dir = path.join(os.tmpdir(), `tg-mem3-${process.pid}`)
     fs.mkdirSync(dir, { recursive: true })
-    const p = path.join(dir, 'memory', 'project_findings.md')
+    const p = path.join(dir, 'docs', 'memory', 'design.md')
     fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, '# Findings\ncontent')
+    fs.writeFileSync(p, '# Design\ncontent')
     tmpFiles.push(p)
     recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toContain('already read this session')
-      expect(result.message).toContain('token-goat section')
+    expect(result.hookType).not.toBe('deny')
+    if (result.hookType === 'context') {
+      expect(result.context).not.toContain('Memory files rarely change mid-session')
     }
   })
 
@@ -2736,8 +2788,7 @@ content here` },
 
       fs.writeFileSync(p, content2)
 
-      const before = summarize(30).by_kind['session_hint']?.events ?? 0
-      const beforeBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+      const before = summarize(30).by_kind['diff_hint']?.events ?? 0
 
       const result = preReadHandler(readEvent(p))
       expect(result.hookType).toBe('deny')
@@ -2761,56 +2812,9 @@ content here` },
         expect(diffIdx).toBeLessThan(closeIdx)
       }
 
-      const after = summarize(30).by_kind['session_hint']?.events ?? 0
-      const afterBytes = summarize(30).by_kind['session_hint']?.bytes_saved ?? 0
+      const after = summarize(30).by_kind['diff_hint']?.events ?? 0
       expect(after).toBe(before + 1)
-      expect(afterBytes).toBe(beforeBytes)
     })
-  })
-
-  it('a memory/MEMORY.md re-read with no snapshot gets the exact bare deny text, led by a section command naming the file\'s real heading (loadSnapshotDiff returns kind "none" when nothing was ever saved by postReadHandler)', () => {
-    const dir = path.join(os.tmpdir(), `tg-mem7-${process.pid}`)
-    fs.mkdirSync(dir, { recursive: true })
-    const p = path.join(dir, 'memory', 'MEMORY.md')
-    fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, '# Memory\ncontent')
-    tmpFiles.push(p)
-
-    // Only recordFileRead — no postReadHandler call, so no snapshot exists.
-    recordFileRead(normalizePath(p))
-
-    const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toBe(
-        // HAND-DERIVED: the file's only heading is `# Memory`.
-        '[tg] Run `token-goat section "' + normalizePath(p) + '::Memory"` to extract one section. ' +
-        'This file was already read this session. Memory files rarely change mid-session.',
-      )
-    }
-  })
-
-  it('a generic memory-file re-read with no snapshot gets the exact bare deny text, led by a section command naming the file\'s real heading', () => {
-    const dir = path.join(os.tmpdir(), `tg-mem8-${process.pid}`)
-    fs.mkdirSync(dir, { recursive: true })
-    const p = path.join(dir, 'memory', 'project_findings.md')
-    fs.mkdirSync(path.dirname(p), { recursive: true })
-    fs.writeFileSync(p, '# Findings\ncontent')
-    tmpFiles.push(p)
-
-    // Only recordFileRead — no postReadHandler call, so no snapshot exists.
-    recordFileRead(normalizePath(p))
-
-    const shownPath = normalizePath(p)
-    const result = preReadHandler(readEvent(p))
-    expect(result.hookType).toBe('deny')
-    if (result.hookType === 'deny') {
-      expect(result.message).toBe(
-        // HAND-DERIVED: the file's only heading is `# Findings`.
-        '[tg] Run `token-goat section "' + shownPath + '::Findings"` to extract one section. ' +
-        'This file was already read this session. Memory files rarely change mid-session.',
-      )
-    }
   })
 
   // Doc-file auto-diff on re-read
@@ -3109,15 +3113,12 @@ content here` },
       // 100 contiguous changed lines -> 200 diff body lines, far past buildLineDiff's 50-line cap.
       fs.writeFileSync(p, manyLineDoc('rewritten'))
 
+      // The file changed and the diff is too large to serve whole, so the Read goes through: a changed file is never denied, and no truncated diff is offered in its place.
       const result = preReadHandler(readEvent(p))
-      expect(result.hookType).toBe('deny')
-      if (result.hookType === 'deny') {
-        // The message must not claim "here is what changed" while omitting most of what changed.
-        expect(result.message).not.toContain('```diff')
-        expect(result.message).not.toContain('more changed lines')
-        // Pin the branch it falls through to, so "no truncated diff" can't silently become "no output at all": the pre-existing markdown re-read deny, which redirects to a surgical read and leaves an escape hatch.
-        expect(result.message).toContain('Markdown file already read this session')
-        expect(result.message).toContain('token-goat read')
+      expect(result.hookType).not.toBe('deny')
+      if (result.hookType === 'context') {
+        expect(result.context).not.toContain('```diff')
+        expect(result.context).not.toContain('more changed lines')
       }
     })
   })
