@@ -14,7 +14,10 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { spawn } from 'node:child_process'
 
+import { createHash } from 'node:crypto'
+
 import { tokenGoatHome } from '../src/disk_cache.js'
+import { OCR_LANG_HASHES } from '../src/ocr_hashes.js'
 import {
   OCR_LANG_PATH,
   OCR_LANG_SHA256,
@@ -177,22 +180,36 @@ describe('the child script the engine actually receives', () => {
   })
 
   it('passes the pinned langPath for opt-in languages like French and Spanish', async () => {
-    for (const lang of ['fra', 'spa'] as const) {
-      const recordTo = path.join(TMP, `opts-${lang}-${Math.random().toString(36).slice(2)}.json`)
-      setTesseractEntryForTesting(writeRecordingStub(recordTo))
+    // ocrImage fetches an absent opt-in language model from the CDN before it starts the engine, which this claim never needs: the pin comes from the child script, not from the download. A model already in the cache is not fetched, so each one is seeded (HAND-DERIVED bytes, with the pinned digest pointed at them for this test only) and a fetch fails the test at once instead of waiting on a network.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('the language model must come from the seeded cache, not the network'))
+    const pinned = { ...OCR_LANG_HASHES }
+    try {
+      for (const lang of ['fra', 'spa'] as const) {
+        const bytes = Buffer.from(`seeded ${lang} model`, 'utf8')
+        OCR_LANG_HASHES[lang] = createHash('sha256').update(bytes).digest('hex')
+        fs.mkdirSync(path.join(tokenGoatHome(), 'ocr-cache'), { recursive: true })
+        fs.writeFileSync(path.join(tokenGoatHome(), 'ocr-cache', `${lang}.traineddata`), bytes)
+        const recordTo = path.join(TMP, `opts-${lang}-${Math.random().toString(36).slice(2)}.json`)
+        setTesseractEntryForTesting(writeRecordingStub(recordTo))
 
-      const result = await ocrImage(Buffer.from('image bytes'), lang)
+        const result = await ocrImage(Buffer.from('image bytes'), lang)
 
-      expect(result).not.toBeNull()
-      expect(fs.existsSync(recordTo)).toBe(true)
-      const recorded = JSON.parse(fs.readFileSync(recordTo, 'utf8')) as {
-        lang: string
-        oem: number
-        options: { cachePath?: string; langPath?: string }
+        expect(result).not.toBeNull()
+        expect(fs.existsSync(recordTo)).toBe(true)
+        const recorded = JSON.parse(fs.readFileSync(recordTo, 'utf8')) as {
+          lang: string
+          oem: number
+          options: { cachePath?: string; langPath?: string }
+        }
+        expect(recorded.options.langPath).toBe(SUPPORTED_OCR_LANGS[lang].langPath)
+        expect(recorded.oem).toBe(1)
+        expect(recorded.lang).toBe(`eng+${lang}`)
       }
-      expect(recorded.options.langPath).toBe(SUPPORTED_OCR_LANGS[lang].langPath)
-      expect(recorded.oem).toBe(1)
-      expect(recorded.lang).toBe(`eng+${lang}`)
+      expect(fetchSpy).not.toHaveBeenCalled()
+    } finally {
+      Object.assign(OCR_LANG_HASHES, pinned)
+      fetchSpy.mockRestore()
+      for (const lang of ['fra', 'spa']) fs.rmSync(path.join(tokenGoatHome(), 'ocr-cache', `${lang}.traineddata`), { force: true })
     }
   })
 })
