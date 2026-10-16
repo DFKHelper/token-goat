@@ -108,6 +108,11 @@ const SUMMARY_1 = ' Test Files  1 failed | 1352 passed (1365)'
 const SUMMARY_8 = ' Test Files  8 failed | 1352 passed | 5 skipped (1365)'
 
 describe('parseFailedRun', () => {
+  it('adds the summaries of a log holding one vitest run per chunk', () => {
+    const run = parseFailedRun([FAIL_A, SUMMARY_1, FAIL_B, SUMMARY_1].join('\n'))
+    expect(run).toEqual({ files: ['tests/ref_blindness.test.ts', 'tests/brief_caller_count_scope.test.ts'], trusted: true, reason: '' })
+  })
+
   it('trusts a log whose summary count equals the parsed files', () => {
     expect(parseFailedRun([FAIL_A, FAIL_B, SUMMARY_2].join('\n'))).toEqual({ files: ['tests/ref_blindness.test.ts', 'tests/brief_caller_count_scope.test.ts'], trusted: true, reason: '' })
   })

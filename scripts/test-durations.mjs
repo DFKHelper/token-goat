@@ -45,7 +45,7 @@ export function parseFailedRun(text) {
   for (const raw of text.replace(ANSI, '').split(/\r?\n/)) {
     const line = raw.trimEnd()
     const s = SUMMARY_FAILED.exec(line)
-    if (s) summary = Number(s[1])
+    if (s) summary = (summary ?? 0) + Number(s[1])
     if (!marker && CRASH_MARKER.test(line)) marker = line.slice(0, 80)
   }
   if (marker) return { files, trusted: false, reason: `the log reports a worker crash or unhandled error (${marker})` }
