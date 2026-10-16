@@ -18,6 +18,8 @@ import { startWatchdog, type Watchdog } from './stall_proof_watchdog.js'
 export const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 /** The budget the tree fixtures give a start, through the test-only seam: the shorter budget production used before it became 10 s, so a case that waits for a hung helper to be cut off ends in seconds, not in the production budget. */
 export const HUNG_START_BUDGET_MS = 3000
+/** Quiet time with no child output, exit or awaited file before a watched row is declared hung. The product bounds every start by its own deadline (HUNG_START_BUDGET_MS plus cleanup), so this only catches a child that never answers at all; it is never asserted on and sits far above any loaded-machine delay of that deadline, which a 12 s limit did not (no progress for 12000 ms, last progress: child spawned). */
+export const HANG_BACKSTOP_MS = 120_000
 export const ownedRoots: string[] = []
 export const ownedPids: number[] = []
 const watchdogs = new Map<string, { watchdog: Watchdog; quietLimitMs: number }>()
@@ -192,7 +194,7 @@ export function readOwnedPid(path: string): number {
 }
 
 function removeWhenReleased(root: string): void {
-  const deadline = Date.now() + 15_000
+  const deadline = Date.now() + HANG_BACKSTOP_MS
   for (;;) {
     try { return rmSync(root, { recursive: true, force: true }) } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
@@ -248,17 +250,24 @@ function listProcesses(): Map<number, { ppid: number; args: string }> {
   return table
 }
 
-// TerminateProcess/SIGKILL, never a time-boxed taskkill; ESRCH means already dead. A target that stays alive is a defect, reported with its command line.
+// TerminateProcess/SIGKILL, never a time-boxed taskkill. ESRCH means already dead. EPERM is not a failure of its own: Windows refuses TerminateProcess on a process that is already exiting, so a victim that died between the process listing and the kill (the common case, since these are the fixture's own just-cut-off helpers) answers EPERM for a moment and is gone on the next look. The authority is whether the pid is still there, so the kill is re-issued each round until it is gone; a target that stays alive past the backstop is a defect, reported with its command line.
 function killAndVerify(victims: Map<number, string>): void {
-  for (const pid of victims.keys()) {
+  const kill = (pid: number): void => {
     try { process.kill(pid, 'SIGKILL') } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ESRCH' && code !== 'EPERM') throw error
     }
   }
-  const gone = Date.now() + 5000
-  while ([...victims.keys()].some(alive) && Date.now() < gone) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+  for (const pid of victims.keys()) kill(pid)
+  const gone = Date.now() + HANG_BACKSTOP_MS
+  for (;;) {
+    const remaining = [...victims.keys()].filter(alive)
+    if (remaining.length === 0 || Date.now() >= gone) break
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+    for (const pid of remaining) kill(pid)
+  }
   const survivors = [...victims].filter(([pid]) => alive(pid)).map(([pid, args]) => `${pid} ${args}`)
-  if (survivors.length > 0) throw new Error(`fixture process still alive 5 s after SIGKILL: ${survivors.join('; ')}`)
+  if (survivors.length > 0) throw new Error(`fixture process still alive ${String(HANG_BACKSTOP_MS / 1000)} s after SIGKILL: ${survivors.join('; ')}`)
 }
 
 export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void {

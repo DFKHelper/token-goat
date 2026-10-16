@@ -65,7 +65,7 @@ async function waitForDaemonRewrites(file: string, rewrites: number, pid: number
   }
   let last = identity()
   let seen = 0
-  await waitForDaemon(`${rewrites} drain heartbeat rewrites`, 15000, pid, () => {
+  await waitForDaemon(`${rewrites} drain heartbeat rewrites`, DAEMON_WAIT_BACKSTOP_MS, pid, () => {
     const now = identity()
     if (now !== '' && now !== last) {
       last = now
@@ -98,6 +98,9 @@ function recordedTimerDelays(logBase: string, pid: number): number[] {
 }
 
 
+/** Hang backstop for every wait on the live daemon: the same 45000ms as each test's own budget, so the budget reports a slow daemon and these only fire for a daemon that is alive and silent. Each wait already ends at once, naming the cause, when the daemon process is gone, so a smaller number here only converted load into failure (the daemon taking over 15000ms to reach its first heartbeat on a loaded machine). */
+const DAEMON_WAIT_BACKSTOP_MS = 45000
+
 /** Poll interval handed to the daemon under test. Fast enough that the drain assertion resolves in well under the 2000ms production default, which is what makes that assertion able to detect the default being forced back on. */
 const DAEMON_POLL_MS = 200
 
@@ -129,7 +132,7 @@ describe('detached worker daemon (built bundle)', () => {
   })
 
   it(
-    '`worker start` stays alive well past the point the old bug killed it, the daemon cycles at the interval it was given, and the running daemon drains real work',
+    '`worker start` stays alive well past the point the old bug killed it, the daemon cycles at the interval it was given',
     async () => {
       const dataBase = mkIsolated('tg-daemon-data-')
       const repo = mkIsolated('tg-daemon-repo-')
@@ -171,23 +174,21 @@ describe('detached worker daemon (built bundle)', () => {
           `the daemon never asked to sleep ${CADENCE_POLL_MS}ms between cycles -- TG_WORKER_POLL_MS is being ignored again (timer delays it set: ${delays.join(', ')})`,
         ).toContain(CADENCE_POLL_MS)
 
-        // 4. Prove it does real work, not just "a process that stays alive": seed a real dirty-queue entry for a fixture file directly on disk (bypassing any manual `index` call) and confirm the ALREADY-RUNNING daemon drains it on its own poll cycle. Provenance: HAND-DERIVED. Each fixture below is source text written for this test, with the symbol names it must produce read off the text itself.
-        const srcFile = path.join(repo, 'daemon_e2e_sample.ts')
-        fs.writeFileSync(srcFile, 'export function daemonDrainedSymbol(): number {\n  return 1\n}\nexport function daemonCaller(): number {\n  return daemonDrainedSymbol()\n}\n')
-        // A regex-adapter language too: those adapters load through parser.ts's dynamic import (loadRegexExtractors), which the drain loop awaits before its first cycle. Miss that await and the daemon indexes this file to nothing, while the tree-sitter file beside it still resolves -- so only a second language proves the lazy load reached the daemon.
-        const fortranFile = path.join(repo, 'daemon_e2e_sample.f90')
-        fs.writeFileSync(fortranFile, 'subroutine daemon_drained_fortran(x)\n  integer :: x\n  x = 1\nend subroutine daemon_drained_fortran\n')
-        const auraFile = path.join(repo, 'daemon_e2e_sample.cmp')
-        fs.writeFileSync(auraFile, '<aura:component>\n  <aura:attribute name="daemonDrainedAttr" type="String"/>\n</aura:component>\n')
+      } finally {
+        // Clean teardown on every path, including a `worker start` whose output never parsed, so this test never leaks a real background process.
+        stop = await shutDownDaemon(env, repo, dataBase, pid)
+      }
+      expect(stop.stdout).toMatch(/Worker stopped\.|No running worker\./)
+    },
+    45000,
+  )
 
-        // The queue producer the hooks use, which appends in one write and writes again when the daemon claims the queue under it, so a claim can never take a half-written queue.
-        const queueDir = path.join(effectiveDataDir(dataBase), 'queue')
-        expect(appendDirtyQueuePaths(effectiveDataDir(dataBase), [srcFile, fortranFile, auraFile])).toBe(true)
-
-        // The wait ends when the queue is gone: a drain renames dirty.txt to dirty.txt.draining, indexes the batch, and only then removes that file, so no queue file left means the batch was committed. Embeddings are off for the suite, so nothing requeues behind it.
-        await waitForDaemon('the running daemon to drain the seeded queue entries', 20000, pid, () => !fs.readdirSync(queueDir).some((name) => name.startsWith('dirty.txt')))
-
-        // One lookup per fixture, after the drain: a daemon that drained into a stub, or dropped refs or a lazily loaded adapter's rows, fails right here rather than being waited on.
+  // The drain proofs below each start their own daemon and own a share of the sequential CLI spawns, so no single test's 45000ms budget has to cover every `symbol` lookup of the old one-test version: that sum, not any one wait, was what a loaded Windows machine ran out of.
+  it(
+    'the running daemon drains a seeded queue entry into symbols and refs',
+    async () => {
+      // Provenance: HAND-DERIVED. The fixture is source text written for this test, with the symbol names it must produce read off the text itself.
+      await withDrainedDaemon({ 'daemon_e2e_sample.ts': 'export function daemonDrainedSymbol(): number {\n  return 1\n}\nexport function daemonCaller(): number {\n  return daemonDrainedSymbol()\n}\n' }, (env, repo) => {
         const sym = runBundle(['symbol', 'daemonDrainedSymbol'], env, repo)
         expect(sym.status, `symbol stderr: ${sym.stderr}`).toBe(0)
         expect(sym.stdout).toContain('daemonDrainedSymbol')
@@ -196,7 +197,20 @@ describe('detached worker daemon (built bundle)', () => {
         const callers = runBundle(['callers', 'daemonDrainedSymbol'], env, repo)
         expect(callers.status, `callers stderr: ${callers.stderr}`).toBe(0)
         expect(callers.stdout).toContain('daemonCaller')
+      })
+    },
+    45000,
+  )
 
+  // Regex-adapter languages load through parser.ts's dynamic import (loadRegexExtractors), which the drain loop awaits before its first cycle. Miss that await and the daemon indexes these files to nothing, while the tree-sitter file in the test above still resolves -- so only these prove the lazy load reached the daemon.
+  it(
+    'the running daemon drains files of lazily loaded adapters (Fortran, Salesforce Aura)',
+    async () => {
+      // Provenance: HAND-DERIVED. Source text written for this test, with the names it must produce read off the text itself.
+      await withDrainedDaemon({
+        'daemon_e2e_sample.f90': 'subroutine daemon_drained_fortran(x)\n  integer :: x\n  x = 1\nend subroutine daemon_drained_fortran\n',
+        'daemon_e2e_sample.cmp': '<aura:component>\n  <aura:attribute name="daemonDrainedAttr" type="String"/>\n</aura:component>\n',
+      }, (env, repo) => {
         const fortranSym = runBundle(['symbol', 'daemon_drained_fortran'], env, repo)
         expect(fortranSym.status, `symbol stderr: ${fortranSym.stderr}`).toBe(0)
         expect(fortranSym.stdout).toContain('daemon_drained_fortran')
@@ -205,11 +219,7 @@ describe('detached worker daemon (built bundle)', () => {
         const auraSym = runBundle(['symbol', 'daemonDrainedAttr'], env, repo)
         expect(auraSym.status, `symbol stderr: ${auraSym.stderr}`).toBe(0)
         expect(auraSym.stdout).toContain('daemonDrainedAttr')
-      } finally {
-        // 5. Clean teardown on every path, including a `worker start` whose output never parsed, so this test never leaks a real background process.
-        stop = await shutDownDaemon(env, repo, dataBase, pid)
-      }
-      expect(stop.stdout).toMatch(/Worker stopped\.|No running worker\./)
+      })
     },
     45000,
   )
@@ -265,10 +275,40 @@ describe('detached worker daemon (built bundle)', () => {
   )
 })
 
+/** Start a real daemon through `worker start`, write `files` (name -> text) into a repo and queue them with the producer the hooks use, wait for the daemon to drain the queue, then run `lookups`. The daemon is shut down on every path. */
+async function withDrainedDaemon(files: Record<string, string>, lookups: (env: NodeJS.ProcessEnv, repo: string) => void): Promise<void> {
+  const dataBase = mkIsolated('tg-daemon-data-')
+  const repo = mkIsolated('tg-daemon-repo-')
+  const env = tgEnv(dataBase, DAEMON_POLL_MS)
+  let pid: number | undefined
+  try {
+    const start = runBundle(['worker', 'start'], env, repo)
+    expect(start.status, `worker start stderr: ${start.stderr}`).toBe(0)
+    const m = start.stdout.match(/pid (\d+)/)
+    expect(m, `unexpected worker start output: ${JSON.stringify(start.stdout)}`).not.toBeNull()
+    pid = parseInt((m as RegExpMatchArray)[1], 10)
+    await waitForDaemonHeartbeat(dataBase, pid)
+    const written = Object.entries(files).map(([name, text]) => {
+      const file = path.join(repo, name)
+      fs.writeFileSync(file, text)
+      return file
+    })
+    // The queue producer the hooks use, which appends in one write and writes again when the daemon claims the queue under it, so a claim can never take a half-written queue.
+    const queueDir = path.join(effectiveDataDir(dataBase), 'queue')
+    expect(appendDirtyQueuePaths(effectiveDataDir(dataBase), written)).toBe(true)
+    // The wait ends when the queue is gone: a drain renames dirty.txt to dirty.txt.draining, indexes the batch, and only then removes that file, so no queue file left means the batch was committed. Embeddings are off for the suite, so nothing requeues behind it.
+    await waitForDaemon('the running daemon to drain the seeded queue entries', DAEMON_WAIT_BACKSTOP_MS, pid, () => !fs.readdirSync(queueDir).some((name) => name.startsWith('dirty.txt')))
+    // One lookup per fixture, after the drain: a daemon that drained into a stub, or dropped refs or a lazily loaded adapter's rows, fails right here rather than being waited on.
+    lookups(env, repo)
+  } finally {
+    await shutDownDaemon(env, repo, dataBase, pid)
+  }
+}
+
 /** Wait until the daemon `pid` has written its drain heartbeat: `runDetachedWorkerDaemon` writes it only after it has moved to its own working directory, so a heartbeat naming `pid` means that move has already happened. */
 async function waitForDaemonHeartbeat(dataBase: string, pid: number): Promise<void> {
   const heartbeat = path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat')
-  await waitForDaemon('the daemon to write its drain heartbeat', 15000, pid, () => {
+  await waitForDaemon('the daemon to write its drain heartbeat', DAEMON_WAIT_BACKSTOP_MS, pid, () => {
     try {
       return fs.readFileSync(heartbeat, 'utf8').trim() === String(pid)
     } catch {
