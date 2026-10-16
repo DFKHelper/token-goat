@@ -42,6 +42,7 @@ jobs:
             echo "pin is current"
             exit 0
           fi
+          # Closing the issue without bumping the pin makes next month's run open a new one, by design.
           existing=$(gh issue list --state open --limit 100 --json title --jq "[.[] | select(.title == \"$title\")] | length")
           if [[ "$existing" != "0" ]]; then
             echo "an open issue already carries this title"
