@@ -62,10 +62,17 @@ function write(name: string, body: string): string {
   return file
 }
 
+// HAND-DERIVED: on Windows a file's mtime can run a few ms ahead of Date.now(), so a file written an instant before its first read could look changed; an hour back precedes the read on any host and load, and a later write keeps its natural mtime.
+function backdate(file: string): void {
+  const earlier = new Date(Date.now() - 3_600_000)
+  fs.utimesSync(file, earlier, earlier)
+}
+
 describe('reread_deny_identity', () => {
   it('books an unchanged source file denied on its third read as identical, from the stat', () => {
     // HAND-DERIVED: a one-line C# file, a source extension with no snapshot on this path (no post_tool_use ran), so only size and mtime can speak for it.
     const file = write('Same.cs', 'class Same {}\n')
+    backdate(file)
     const before = identityRows().length
     pre(file)
     pre(file)
@@ -117,8 +124,31 @@ describe('reread_deny_identity', () => {
     const file = path.join(dir, 'tasks', 'abc123.output')
     fs.mkdirSync(path.dirname(file))
     fs.writeFileSync(file, 'line one\n')
+    backdate(file)
     pre(file)
     expect(pre(file).hookType).toBe('deny')
+    fs.appendFileSync(file, 'line two\n')
+    expect(pre(file).hookType).not.toBe('deny')
+  })
+
+  it('lets a session artifact truncated on its last read through once it changed, and still refuses it unchanged', () => {
+    // HAND-DERIVED: a tasks output delivered with the harness's partial-view notice, so it counts as truncated; the truncated deny must hold only while the file is unchanged. The notice is the head of the CAPTURE in tests/hooks_read.test.ts::HARNESS_TRUNCATION_NOTICE.
+    const file = path.join(dir, 'tasks', 'trunc1.output')
+    fs.mkdirSync(path.dirname(file))
+    fs.writeFileSync(file, 'line one\n')
+    backdate(file)
+    postReadHandler(
+      makeHookEvent({
+        eventName: 'post_tool_use',
+        toolName: 'Read',
+        toolInput: { file_path: file },
+        sessionId: sid,
+        raw: { tool_response: '[Truncated: PARTIAL view — probe.text: showing lines 1-529 of 1601 total (64247 tokens, cap 25000). Call Read with offset=530 limit=529 for the next page, or Grep to find a specific section. Do NOT answer from this page alone if the answer may be further in the file.]\nline one\n' },
+      }),
+    )
+    const unchanged = pre(file)
+    expect(unchanged.hookType).toBe('deny')
+    if (unchanged.hookType === 'deny') expect(unchanged.message).toContain('truncated on last read')
     fs.appendFileSync(file, 'line two\n')
     expect(pre(file).hookType).not.toBe('deny')
   })
