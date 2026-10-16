@@ -543,7 +543,7 @@ describe('the built hook entry, per host', () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  function hook(event: string, harness: string, payload: Record<string, unknown>): { status: number; stdout: string } {
+  function hook(event: string, harness: string, payload: Record<string, unknown>): { status: number; stdout: string; stderr: string } {
     const res = spawnSync(process.execPath, [BUNDLE, 'hook', event], {
       cwd: project,
       encoding: 'utf-8',
@@ -564,7 +564,31 @@ describe('the built hook entry, per host', () => {
         TOKEN_GOAT_NO_WORKER_SPAWN: '1',
       },
     })
-    return { status: res.status ?? 1, stdout: res.stdout ?? '' }
+    return { status: res.status ?? 1, stdout: res.stdout ?? '', stderr: `${res.error?.message ?? ''}${res.stderr ?? ''}` }
+  }
+
+  /** A hook call that sets a row up: the process has to have run and answered, because a call that did not leaves the state the stop reads without its step and the row then fails on the wrong thing, the stop's text. Every answer a hook gives is a JSON object, so an empty stdout or a non-zero status means it never got that far. */
+  function setUpHook(event: string, harness: string, payload: Record<string, unknown>): void {
+    const res = hook(event, harness, payload)
+    expect(res.status, `${event} hook did not run: ${res.stderr}`).toBe(0)
+    expect(() => JSON.parse(res.stdout), `${event} hook printed no JSON object: ${JSON.stringify(res.stdout)} ${res.stderr}`).not.toThrow()
+  }
+
+  /** The verification runs the session blob holds on disk, read the way the stop reads them: from the file, never from what a hook process printed. */
+  function storedRunCommands(): string[] {
+    const found: string[] = []
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else if (entry.name.endsWith('.json') && full.includes(`${path.sep}sessions${path.sep}`)) {
+          const blob = JSON.parse(fs.readFileSync(full, 'utf8')) as { verificationRuns?: Array<{ command: string }> }
+          for (const run of blob.verificationRuns ?? []) found.push(run.command)
+        }
+      }
+    }
+    walk(path.join(root, 'tg'))
+    return found
   }
 
   it('codex: a test run that reported no status, then an edit, then a stop names the file and the run', () => {
@@ -573,8 +597,10 @@ describe('the built hook entry, per host', () => {
     fs.mkdirSync(path.join(project, 'src'), { recursive: true })
     fs.writeFileSync(path.join(project, 'src', 'widget.ts'), 'export const w = 1\n')
     const base = { session_id: 'e2e-stop-codex', permission_mode: 'default', turn_id: 'turn-1', transcript_path: null }
-    hook('post_tool_use', 'codex', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 'call_1', tool_input: { command: 'npm test' }, tool_response: 'ok' })
-    hook('post_tool_use', 'codex', { ...base, hook_event_name: 'PostToolUse', tool_name: 'apply_patch', tool_use_id: 'call_2', tool_input: { command: `*** Begin Patch\n*** Update File: ${file}\n@@\n-export const w = 1\n+export const w = 2\n*** End Patch` }, tool_response: 'Success' })
+    setUpHook('post_tool_use', 'codex', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_use_id: 'call_1', tool_input: { command: 'npm test' }, tool_response: 'ok' })
+    // The step the stop's text is about, checked where it lands: a run the hook did not store is named here, not by a missing word in the stop's message.
+    expect(storedRunCommands()).toEqual(['npm test'])
+    setUpHook('post_tool_use', 'codex', { ...base, hook_event_name: 'PostToolUse', tool_name: 'apply_patch', tool_use_id: 'call_2', tool_input: { command: `*** Begin Patch\n*** Update File: ${file}\n@@\n-export const w = 1\n+export const w = 2\n*** End Patch` }, tool_response: 'Success' })
     const out = hook('stop', 'codex', { ...base, hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'Done.' })
     expect(out.status).toBe(0)
     const message = (JSON.parse(out.stdout) as { systemMessage?: string }).systemMessage ?? ''
@@ -590,8 +616,8 @@ describe('the built hook entry, per host', () => {
     fs.mkdirSync(path.join(project, 'src'), { recursive: true })
     fs.writeFileSync(path.join(project, 'src', 'widget.ts'), 'export const w = 1\n')
     const base = { session_id: sid, permission_mode: 'default' }
-    hook('post_tool_use', harness, { ...base, hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: file, content: 'export const w = 1\n' }, tool_response: { filePath: file, success: true } })
-    hook('post_tool_use_failure', harness, { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'toolu_1', error: 'Exit code 1\nFAIL', is_interrupt: false })
+    setUpHook('post_tool_use', harness, { ...base, hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: file, content: 'export const w = 1\n' }, tool_response: { filePath: file, success: true } })
+    setUpHook('post_tool_use_failure', harness, { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'toolu_1', error: 'Exit code 1\nFAIL', is_interrupt: false })
     const out = hook('stop', harness, { ...base, hook_event_name: stopName, stop_hook_active: false, last_assistant_message: 'Done.' })
     expect(out.status).toBe(0)
     const message = (JSON.parse(out.stdout) as { systemMessage?: string }).systemMessage ?? ''
