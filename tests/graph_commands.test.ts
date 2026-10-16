@@ -571,12 +571,12 @@ describe('runTypes integration', () => {
 
   it('returns valid JSON for --json flag', () => {
     const captured = withoutOverflowGuard(() => captureStdout(() => {
-      const code = runTypes({ json: true })
+      // The per-kind display cap is applied after sorting by path, and the repo's own src tree now holds more than 500 interfaces, so the default cap cut parser_types.ts (where SymbolEntry lives) out of the rows. Raised, as in the neighbouring runTypes cases, so the cap cannot decide whether the row is present.
+      const code = runTypes({ json: true, limit: 100000 })
       expect(code).toBe(0)
     }))
     // Shape pin updated from "bare array" to the shared envelope (envelopeItems asserts items/truncated/totalCount); the content pin below is untouched.
-    const parsed = envelopeItems<SymbolEntry>(captured)
-    // Length-only would still pass if --json returned unrelated rows (e.g. a broken kind filter that fell through to every symbol in the project) -- assert a known real project type interface is actually present by name, matching the plain-text sibling test above's own toMatch(/SymbolEntry|RefEntry|Language/) content pin.
+    const parsed = envelopeItems<SymbolEntry>(captured)    // Length-only would still pass if --json returned unrelated rows (e.g. a broken kind filter that fell through to every symbol in the project) -- assert a known real project type interface is actually present by name, matching the plain-text sibling test above's own toMatch(/SymbolEntry|RefEntry|Language/) content pin.
     expect(parsed.some((r) => r.name === 'SymbolEntry')).toBe(true)
   })
 

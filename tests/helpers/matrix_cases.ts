@@ -2256,26 +2256,8 @@ export const cases: Record<string, () => void | Promise<void>> = {
         child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
         child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })}\n`)
       })
-      expect(toolNames.sort()).toEqual([
-        'brief',
-        'changed',
-        'compress_text',
-        'exports',
-        'grep',
-        'handoff_create',
-        'handoff_resolve',
-        'imports',
-        'index_status',
-        'map',
-        'outline',
-        'read',
-        'refs',
-        'retrieve_text',
-        'section',
-        'semantic',
-        'skeleton',
-        'symbol',
-      ])
+      // HAND-DERIVED from the stated intent of 531ef1982 (the server offers a core subset when TOKEN_GOAT_MCP_TOOLS is unset): the built bundle, spawned with no such variable, must list exactly these seven. The full set is reachable only by naming it, and tests/mcp_server.test.ts pins that.
+      expect(toolNames.sort()).toEqual(['outline', 'read', 'refs', 'retrieve_text', 'section', 'semantic', 'symbol'])
     } finally {
       child.kill()
     }
