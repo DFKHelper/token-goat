@@ -378,6 +378,11 @@ const LOCK_LIVE_HOLDER_MAX_MS = 60_000
 // How long withFileLock keeps retrying a lock create that Windows refuses with EPERM and nothing else. A lock file being deleted stops refusing within milliseconds, so a refusal this long is a permission the caller will not get by waiting.
 const LOCK_EPERM_RUN_MS = 1000
 
+/** How long withFileLock sleeps before its `attempt`th retry: the 20 ms-per-attempt backoff, capped at 200 ms and at a fiftieth of the wait budget so a short budget still gets about fifty looks at the lock. A holder that releases and re-takes the lock in a tight loop is free for only a moment between its turns, so a waiter that looks five times in 500 ms (20, 40, 60, 80, 100 ms) can find it held every time while nothing is stuck; measured on Windows, two such savers lost an entry in 5 of 11 runs of tests/session_store_race.test.ts, each at a skipped save whose lock was 0-2 ms old. */
+export function lockPollMs(attempt: number, waitMs: number): number {
+  return Math.max(1, Math.min(20 * attempt, 200, Math.floor(waitMs / 50)))
+}
+
 /** Whether the process that wrote lock token `token` (`<pid>:<hrtime>`) is still running and is not this one. A token naming no pid, a pid that is gone, or this process's own pid (a synchronous holder here has already returned or thrown, and released) reads as not alive, so that lock is judged by its age alone. `EPERM` means the process exists under another user, which is alive. */
 function lockHolderAlive(token: string): boolean {
   const pid = Number(/^(\d+):/.exec(token)?.[1])
@@ -449,7 +454,7 @@ export function withFileLock<T>(
           return undefined
         }
         if (Date.now() - epermSince >= LOCK_EPERM_RUN_MS) return undefined
-        sleepSync(Math.min(20 * ++attempt, 200))
+        sleepSync(lockPollMs(++attempt, waitMs))
         continue
       }
       if (!isEExist(err)) return undefined // can't lock at all (e.g. missing dir); let the caller fall back
@@ -469,7 +474,7 @@ export function withFileLock<T>(
       opts.onContended?.()
       return undefined
     }
-    sleepSync(Math.min(20 * ++attempt, 200))
+    sleepSync(lockPollMs(++attempt, waitMs))
   }
   try {
     return fn()
