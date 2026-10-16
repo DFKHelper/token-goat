@@ -79,6 +79,16 @@ jobs:
           rustup toolchain install
           rustup target add "${targets[@]}"
           for t in "${targets[@]}"; do cargo check --locked --target "$t"; done
+      - name: Check native/tg-hook on its minimum supported Rust version
+        shell: bash
+        working-directory: native/tg-hook
+        # The pin in rust-toolchain.toml is newer than rust-version, so every other Rust step here stays green on code that needs a newer compiler than Cargo.toml promises; the version is read from Cargo.toml so the two cannot drift.
+        run: |
+          set -euo pipefail
+          msrv=$(sed -n 's/^rust-version *= *"\([0-9.]*\)".*/\1/p' Cargo.toml)
+          [[ "$msrv" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || { echo "could not read rust-version from Cargo.toml: '$msrv'" >&2; exit 1; }
+          rustup toolchain install "$msrv" --profile minimal
+          cargo "+$msrv" check --locked
 
   test-linux:
     runs-on: ubuntu-latest
