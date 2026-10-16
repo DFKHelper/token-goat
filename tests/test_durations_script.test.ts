@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { formatTable, parseDurations, parseFailedFiles, slowest } from '../scripts/test-durations.mjs'
+import { formatTable, parseDurations, parseFailedFiles, parseFailedRun, slowest } from '../scripts/test-durations.mjs'
 
 const SCRIPT = path.join(fileURLToPath(new URL('..', import.meta.url)), 'scripts', 'test-durations.mjs')
 const ESC = '\u001b'
@@ -96,5 +96,46 @@ describe('parseFailedFiles', () => {
 
   it('finds nothing in a green log', () => {
     expect(parseFailedFiles(WINDOWS_LOG.split('\n')[0] + '\n' + WSL_LOG)).toEqual([])
+  })
+})
+
+// CAPTURE: a Windows pre-push log (token-goat-pre-push tests.log). Line 4515 is the worker-timeout line, lines 8913 and 8929 are FAIL lines, and line 9034 is the summary of that run (8 failed files).
+const WORKER_TIMEOUT = '[vitest-pool]: Timeout terminating forks worker for test files C:/tgwt/flk-d/tests/semantic_foreground_defers_download.test.ts.'
+const FAIL_A = ' FAIL  tests/ref_blindness.test.ts > refs: the all-or-nothing ref-blind probe must not sample a truncated prefix'
+const FAIL_B = ' FAIL  tests/brief_caller_count_scope.test.ts > brief caller count is scoped to the resolved definition > counts only the callers of THIS widget, not the same-named widget in another file'
+const SUMMARY_2 = ' Test Files  2 failed | 1352 passed | 5 skipped (1365)'
+const SUMMARY_1 = ' Test Files  1 failed | 1352 passed (1365)'
+const SUMMARY_8 = ' Test Files  8 failed | 1352 passed | 5 skipped (1365)'
+
+describe('parseFailedRun', () => {
+  it('trusts a log whose summary count equals the parsed files', () => {
+    expect(parseFailedRun([FAIL_A, FAIL_B, SUMMARY_2].join('\n'))).toEqual({ files: ['tests/ref_blindness.test.ts', 'tests/brief_caller_count_scope.test.ts'], trusted: true, reason: '' })
+  })
+
+  it('distrusts a summary that counts more failed files than were parsed', () => {
+    const run = parseFailedRun([FAIL_A, FAIL_B, SUMMARY_8].join('\n'))
+    expect(run.trusted).toBe(false)
+    expect(run.reason).toContain('counts 8 failed file(s) but 2 were parsed')
+  })
+
+  it('distrusts a log with a worker timeout line even when the counts agree', () => {
+    const run = parseFailedRun([WORKER_TIMEOUT, FAIL_A, FAIL_B, SUMMARY_2].join('\n'))
+    expect(run.trusted).toBe(false)
+    expect(run.reason).toContain('vitest-pool')
+  })
+
+  it.each(['⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯', 'Error: Worker exited unexpectedly', 'Unhandled Rejection: boom'])('distrusts the marker %s', (marker) => {
+    // HAND-DERIVED: vitest prints these markers at the start of a line; the worker-timeout capture above is the only captured marker.
+    expect(parseFailedRun([FAIL_A, marker, SUMMARY_1].join('\n')).trusted).toBe(false)
+  })
+
+  it('does not take a passing test title that mentions an unhandled exception for a marker', () => {
+    const title = '     ✓ parses a bare .NET exception (no "Unhandled exception." prefix) and filters out a frame 424ms'
+    expect(parseFailedRun([title, FAIL_A, SUMMARY_1].join('\n')).trusted).toBe(true)
+  })
+
+  it('distrusts failures with no summary line and accepts a green log', () => {
+    expect(parseFailedRun(FAIL_A).trusted).toBe(false)
+    expect(parseFailedRun(' Test Files  3 passed (3)').trusted).toBe(true)
   })
 })

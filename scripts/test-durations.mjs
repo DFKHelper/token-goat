@@ -34,6 +34,26 @@ export function parseFailedFiles(text) {
   return [...files]
 }
 
+const SUMMARY_FAILED = /^ Test Files +(\d+) failed\b/
+const CRASH_MARKER = /^(?:⎯+ )?Unhandled (?:Errors?|Rejections?)\b|^Vitest caught \d+ unhandled error|^\[vitest-pool\]:|^Error: Worker exited|^Unhandled Rejection/
+
+/** @param {string} text a vitest log @returns {{files: string[], trusted: boolean, reason: string}} the failing files plus whether they are the whole story: false when a worker crash or unhandled error is reported, when failures were parsed without a summary line, or when the summary counts a different number of failed files */
+export function parseFailedRun(text) {
+  const files = parseFailedFiles(text)
+  let summary = null
+  let marker = ''
+  for (const raw of text.replace(ANSI, '').split(/\r?\n/)) {
+    const line = raw.trimEnd()
+    const s = SUMMARY_FAILED.exec(line)
+    if (s) summary = Number(s[1])
+    if (!marker && CRASH_MARKER.test(line)) marker = line.slice(0, 80)
+  }
+  if (marker) return { files, trusted: false, reason: `the log reports a worker crash or unhandled error (${marker})` }
+  if (files.length > 0 && summary === null) return { files, trusted: false, reason: 'the log has failures but no "Test Files N failed" summary line' }
+  if (summary !== null && summary !== files.length) return { files, trusted: false, reason: `the summary counts ${summary} failed file(s) but ${files.length} were parsed` }
+  return { files, trusted: true, reason: '' }
+}
+
 /** @param {{file: string, ms: number, detail: string}[]} entries @param {number} n */
 export function slowest(entries, n) {
   return [...entries].sort((a, b) => b.ms - a.ms || a.file.localeCompare(b.file)).slice(0, n)

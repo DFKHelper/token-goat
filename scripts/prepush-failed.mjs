@@ -3,7 +3,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { parseFailedFiles } from './test-durations.mjs'
+import { parseFailedRun } from './test-durations.mjs'
 
 /** @param {string} store @returns {Record<string, {sha: string, files: string[]}>} an unreadable or malformed store counts as empty, so the next run is a full one */
 export function loadStore(store) {
@@ -50,9 +50,11 @@ const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileUR
 if (isMain) {
   const [cmd, store, leg, sha, log] = process.argv.slice(2)
   if (cmd === 'record' && store && leg && sha && log) {
-    const files = parseFailedFiles(readFileSync(log, 'utf8'))
+    const run = parseFailedRun(readFileSync(log, 'utf8'))
+    const files = run.trusted ? run.files : []
     recordFailure(store, leg, sha, files)
-    process.stdout.write(files.length > 0 ? `recorded ${files.length} failing file(s) for ${leg}\n` : `no failing test file found in ${log}; the next ${leg} run will be full\n`)
+    if (!run.trusted) process.stdout.write(`${run.reason}; the next ${leg} run will be full\n`)
+    else process.stdout.write(files.length > 0 ? `recorded ${files.length} failing file(s) for ${leg}\n` : `no failing test file found in ${log}; the next ${leg} run will be full\n`)
   } else if (cmd === 'read' && store && leg) {
     const rec = readFailure(store, leg)
     if (!rec) process.exit(1)
