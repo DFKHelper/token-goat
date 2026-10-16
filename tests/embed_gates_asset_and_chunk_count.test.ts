@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs, getDb } from '../src/db.js'
 import { assetEmbedSha, canonicalizeIndexPath, indexFileEmbeddings, indexFileSync, isEmbedFresh, maxChunksEmbedSha } from '../src/parser.js'
-import { isAvailable, searchSemantic } from '../src/embeddings.js'
+import { DEFAULT_DIM, isAvailable, searchSemantic, setPipelineFnForTesting } from '../src/embeddings.js'
 import { modelFilesPresent } from '../src/embed_model.js'
 import { encodeJpeg } from '../src/image_engine.js'
 import { fingerprintFile } from '../src/fingerprint.js'
@@ -71,6 +71,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  setPipelineFnForTesting(null)
   closeAllDbs()
   fs.rmSync(TMP, { recursive: true, force: true })
   if (prevEmbeddings === undefined) delete process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']
@@ -126,10 +127,18 @@ describe('indexFileEmbeddings refuses files with no embeddable text', () => {
     const dbPath = path.join(TMP, 'index.db')
     const jsonPath = path.join(TMP, 'small-snapshot.json')
     fs.writeFileSync(jsonPath, snapshotJson(20))
+    // The claim is that the gate lets this file through to the embedder, not that a real model runs: without a stand-in this call downloaded 33 MB into the isolated data dir and hit the 60 s bound on a loaded machine. HAND-DERIVED stand-in, a constant-shape vector of the model's width, like tests/embed_oversize_threshold_regate.test.ts.
+    let embedderCalls = 0
+    setPipelineFnForTesting((async () => async (text: string) => {
+      embedderCalls += 1
+      return { data: Float32Array.from({ length: DEFAULT_DIM }, (_, i) => ((text.length + i) % 17) / 1700) }
+    }) as never)
 
     indexFileSync(jsonPath, dbPath)
     await indexFileEmbeddings(jsonPath, dbPath, fingerprintFile(jsonPath) ?? undefined)
 
+    // Without this a gate that refused the file under some other stamp, or an embedder that never ran, could still leave the assertions below true.
+    expect(embedderCalls).toBeGreaterThan(0)
     const sha = fingerprintFile(jsonPath) as string
     const embedSha = getFileEntry(jsonPath, dbPath)?.embedSha
     expect(embedSha).not.toContain('maxchunks:')
