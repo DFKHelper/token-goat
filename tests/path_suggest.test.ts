@@ -1,5 +1,5 @@
 /** suggestPaths (src/path_suggest.ts): the existing paths a missing one was probably meant to name. Every expectation is HAND-DERIVED: the project tree is built in a temp directory below and the expected answer is the path written there, not anything computed with the module's own rewrites. The two filesystem-dependent rungs (Unicode normalization forms, case-only names) assert only where the filesystem under test distinguishes the spellings, because on one that folds them the missing path is not missing. */
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -194,5 +194,18 @@ describe('bounds and refusals', () => {
 
   it('returns nothing for an unrelated name', () => {
     expect(ask('zzqq_nothing_like_it.rs')).toEqual([])
+  })
+})
+
+describe('a working directory spelled through a link or a Windows short name', () => {
+  it('still shows an indexed file relative to the working directory, not as an absolute path', () => {
+    // HAND-DERIVED: the junction names the same directory the index root does, spelled differently, as an 8.3 short name does for the runner temp directory on Windows CI.
+    const link = join(mkdtempSync(join(tmpdir(), 'tg-path-suggest-link-')), 'via')
+    try {
+      symlinkSync(project, link, 'junction')
+      expect(suggestPaths('token_estimate.ts', link, project)).toEqual(['src/token_estimate.ts'])
+    } finally {
+      rmSync(join(link, '..'), { recursive: true, force: true })
+    }
   })
 })

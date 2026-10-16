@@ -1,6 +1,6 @@
 /** Existing paths a missing one was probably meant to be. A path a model or a user types is wrong in a handful of recurring ways (a screenshot name whose AM/PM space is U+202F, a leading `@` from a mention, a `:12` line suffix, a directory dropped, a one-letter typo), and each has a cheap, exact repair. Every candidate returned was checked against the disk, so a suggestion never leads to a second miss. The missing path is whatever the model typed, so the lookup is a probe a hostile prompt could aim anywhere: every candidate, directory read and index row is confined to the project root (the working directory when there is no project), left out when it is a credential file name, a vendored or generated tree, a `skip_dirs` directory or an excluded project root. */
 
-import { existsSync, opendirSync } from 'node:fs'
+import { existsSync, opendirSync, realpathSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { isIgnoredIndexPath } from './baseline.js'
@@ -105,10 +105,20 @@ function entriesOf(dir: string, scope: Scope): string[] {
 /** `abs` as the reader would type it: relative to `cwd` when it sits under it, forward slashes either way. "Under" is judged on case-folded paths where the filesystem folds, because `path.relative` is case-sensitive on macOS and the index root may spell the directory in another case than the working directory does; the tail is cut from `abs` itself so it keeps the spelling on disk. */
 function displayPath(abs: string, cwd: string): string {
   const full = path.resolve(abs)
-  const rel = path.relative(foldPath(path.resolve(cwd)), foldPath(full))
-  const under = rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
-  const shown = under ? full.split(/[\\/]/).slice(-rel.split(/[\\/]/).length).join('/') : abs
-  return shown.replace(/\\/g, '/')
+  for (const base of [path.resolve(cwd), realCwd(path.resolve(cwd))]) {
+    const rel = path.relative(foldPath(base), foldPath(full))
+    if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) return full.split(/[\\/]/).slice(-rel.split(/[\\/]/).length).join('/')
+  }
+  return abs.replace(/\\/g, '/')
+}
+
+/** The spelling of `cwd` the disk reports, or `cwd` itself when it cannot be resolved: a Windows 8.3 short name or a link names the directory the index root names, but not by the same string. */
+function realCwd(cwd: string): string {
+  try {
+    return realpathSync.native(cwd)
+  } catch {
+    return cwd
+  }
 }
 
 /** How many trailing directory names two paths share, case-folded: the signal that an indexed file with the right basename sits where the missing one was meant to. */
