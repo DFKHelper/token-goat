@@ -10,13 +10,19 @@ const DIR = path.join(fileURLToPath(new URL('../..', import.meta.url)), '.leftho
 /** Constructs bash 3.2 lacks, each with the first bash that has it. */
 const BASH4_ONLY: ReadonlyArray<{ name: string; re: RegExp }> = [
   { name: 'mapfile / readarray (4.0)', re: /(^|[\s;&|(])(mapfile|readarray)(\s|$)/ },
-  { name: 'associative array: declare/local/typeset -A (4.0)', re: /\b(declare|local|typeset)\s+-[a-zA-Z]*A/ },
+  { name: 'associative array: declare/local/typeset/readonly -A (4.0)', re: /\b(declare|local|typeset|readonly)\s+-[a-zA-Z]*A/ },
+  { name: 'global declaration: declare/local/typeset -g (4.2)', re: /\b(declare|local|typeset)\s+-[a-zA-Z]*g/ },
+  { name: 'shopt globstar, lastpipe, autocd, dirspell, checkjobs (4.x)', re: /\bshopt\s+(-[a-z]+\s+)*(globstar|lastpipe|autocd|dirspell|checkjobs)\b/ },
+  { name: 'printf time format %(...)T (4.2)', re: /\bprintf\b[^\n]*%\([^)]*\)T/ },
+  { name: 'fd-variable redirect {name}< {name}> {name}>> (4.1)', re: /(^|[\s;&|(])\{[A-Za-z_][A-Za-z_0-9]*\}(<|>)/ },
+  { name: 'read -N (4.1)', re: /\bread\b[^\n]*\s-[a-zA-Z]*N/ },
   { name: 'case-changing expansion ${v,,} ${v^^} (4.0)', re: /\$\{[A-Za-z_][A-Za-z_0-9]*(,,?|\^\^?)[^}]*\}/ },
   { name: 'case fallthrough ;& ;;& (4.0)', re: /;;?&(?!&)/ },
   { name: 'pipe stderr |& (4.0)', re: /\|&/ },
   { name: 'append both streams &>> (4.0)', re: /&>>/ },
   { name: 'coproc (4.0)', re: /(^|[\s;&|(])coproc(\s|$)/ },
-  { name: 'negative array subscript (4.3)', re: /\[-[0-9]+\]/ },
+  { name: 'negative array subscript a[-1] (4.3)', re: /\[\s*-([0-9]+|\$\{?[A-Za-z_][A-Za-z_0-9]*\}?)\s*\]/ },
+  { name: 'negative array slice offset ${a[@]: -1} (4.2)', re: /\$\{[A-Za-z_][A-Za-z_0-9]*\[[@*]\]:\s*-[0-9]/ },
   { name: 'namerefs: declare/local -n (4.3)', re: /\b(declare|local|typeset)\s+-[a-zA-Z]*n\b/ },
   { name: 'wait -n (4.3)', re: /(^|[\s;&|(])wait\s+-[a-zA-Z]*n/ },
   { name: '[[ -v var ]] (4.2)', re: /\[\[\s+-v\s/ },
@@ -31,9 +37,28 @@ const ALLOWED: Readonly<Record<string, string>> = {
   'wsl-test.sh': 'drives wsl.exe, which exists on Windows only, where Git for Windows ships bash 5',
 }
 
-/** Drops whole-line comments and the trailing `# ...` of a line, so prose that names a builtin is not a use of it. A `#` inside `${#a[@]}`, `$#` or a word is not preceded by whitespace and stays. */
+/** The line up to its first comment: a `#` that opens a word outside single and double quotes. A `#` inside quotes, after a backslash, or in `${#a[@]}` and `$#` is not a comment and stays. Quotes are tracked per line, so a string that spans lines can leave a later comment in place, which only adds a flag. Quoted text is kept whole: an expansion inside double quotes is code. */
+function stripComment(line: string): string {
+  let quote = ''
+  for (let i = 0; i < line.length; i++) {
+    const c = line.charAt(i)
+    if (quote === "'") {
+      if (c === "'") quote = ''
+    } else if (c === '\\') {
+      i++
+    } else if (quote === '"') {
+      if (c === '"') quote = ''
+    } else if (c === "'" || c === '"') {
+      quote = c
+    } else if (c === '#' && (i === 0 || /\s/.test(line.charAt(i - 1)))) {
+      return line.slice(0, i)
+    }
+  }
+  return line
+}
+
 function code(text: string): string[] {
-  return text.split('\n').map((line) => line.replace(/(^|\s)#.*$/, '$1'))
+  return text.split('\n').map(stripComment)
 }
 
 /** Every flagged construct in a script's text, as `line N: <name>`. */
@@ -61,6 +86,28 @@ describe('the matchers see each bash-4 construct and spare bash-3.2 code', () =>
     ['wait -n -p fin "$pid"', 'wait -n'],
     ['[[ -v name ]]', '-v var'],
     ['read -t 0.5 line', 'fractional'],
+    ['readonly -A m', 'associative'],
+    ['declare -g total=0', 'global declaration'],
+    ['  local -g total', 'global declaration'],
+    ['typeset -g total', 'global declaration'],
+    ['shopt -s globstar', 'shopt'],
+    ['shopt -s lastpipe', 'shopt'],
+    ["printf '%(%Y-%m-%d)T\\n' -1", 'printf time format'],
+    ['exec {fd}<file', 'fd-variable'],
+    ['cmd {out}>log', 'fd-variable'],
+    ['cmd {out}>>log', 'fd-variable'],
+    ['read -N 4 chunk', 'read -N'],
+    ['read -rN4 chunk', 'read -N'],
+    ['x=${a[-1]}', 'negative array subscript'],
+    ['a[-2]=x', 'negative array subscript'],
+    ['x=${a[-$n]}', 'negative array subscript'],
+    ['echo "${a[@]: -1}"', 'negative array slice'],
+    // a # inside quotes opens no comment, so what follows it is still code
+    ['echo "x #" ; mapfile -t a', 'mapfile'],
+    ["echo 'x #' ; mapfile -t a", 'mapfile'],
+    ['echo "a \\" # b" ; mapfile -t a', 'mapfile'],
+    ['echo "${#a[@]}" ; mapfile -t a', 'mapfile'],
+    ['echo $# ; mapfile -t a', 'mapfile'],
   ]
   for (const [snippet, name] of bad) {
     it(`flags ${JSON.stringify(snippet)}`, () => {
@@ -68,7 +115,7 @@ describe('the matchers see each bash-4 construct and spare bash-3.2 code', () =>
     })
   }
 
-  const good = ['while IFS= read -r l || [[ -n "$l" ]]; do a+=("$l"); done <f', 'n=${#a[@]}; echo "$#"', 'echo ${a[@]+"${a[@]}"}', 'x=1 # mapfile -t a is bash 4', '# declare -A m', 'shopt -s nocasematch', 'printf "%s\\n" "${a[0]}" | sort -u', 'cmd 2>&1 | tee log', 'wait "$pid"', 'read -r -t 5 line']
+  const good = ['while IFS= read -r l || [[ -n "$l" ]]; do a+=("$l"); done <f', 'n=${#a[@]}; echo "$#"', 'echo ${a[@]+"${a[@]}"}', 'x=1 # mapfile -t a is bash 4', '# declare -A m', 'shopt -s nocasematch', 'printf "%s\\n" "${a[0]}" | sort -u', 'cmd 2>&1 | tee log', 'wait "$pid"', 'read -r -t 5 line', 'x=${s: -1}', 'local -a arr', 'local -r name=1', 'shopt -s nullglob', "printf '%s %s\\n' a b", 'echo "${x}">log', 'echo ${x}>log', 'read -r line < <(ls)', 'if [ "$n" -gt 1 ]; then :; fi', 'a[0]=x; echo "$((n-1))"', 'echo "x #mapfile"', 'echo "a # b" | sort -u', "echo '#' | sort -u", 'echo "x" # mapfile -t a', 'echo "it" ; echo done # shopt -s globstar']
   for (const snippet of good) {
     it(`spares ${JSON.stringify(snippet)}`, () => {
       expect(bash4Uses(snippet)).toEqual([])
