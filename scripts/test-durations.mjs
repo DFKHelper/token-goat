@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Lists the slowest test files of a vitest run from its captured log. Usage: node scripts/test-durations.mjs LOG [--top N], or LOG --failed to list the failing test files. Reads the default reporter's per-file lines (`✓ tests/x.test.ts (N tests) 1234ms`, `❯` when a test failed), with or without colour codes. Built-in modules only, so the pre-push hook can run it before and without node_modules.
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g')
@@ -64,7 +64,8 @@ export function formatTable(entries) {
   return entries.map((e) => `${String(e.ms).padStart(8)}ms  ${e.file}  (${e.detail})`).join('\n')
 }
 
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+// import.meta.url is the entry module's real path while argv[1] keeps any symlink it was started through (macOS /var and /tmp), so compare the resolved path or the CLI silently does nothing
+const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
 if (isMain) {
   const args = process.argv.slice(2)
   const topAt = args.indexOf('--top')

@@ -36,7 +36,8 @@ function stagedFiles() {
   return out.split('\0').filter(Boolean)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// import.meta.url is the entry module's real path while argv[1] keeps any symlink it was started through (macOS /var and /tmp), so compare the resolved path or the CLI silently does nothing
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
   const messageFile = process.argv[2]
   if (!messageFile || !fs.existsSync(messageFile)) process.exit(0)
   let files

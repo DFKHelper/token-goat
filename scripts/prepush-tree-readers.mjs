@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Lists the test files `vitest related` cannot link to a src/ change: tests that read the source tree through fs (everything under tests/guards, and any test that reads fs and names a src path outside an import) and tests that spawn or read the built bundle in dist. Usage: node scripts/prepush-tree-readers.mjs [ROOT]. Prints one repo-relative path per line, sorted; exits 1 when tests/ cannot be listed, so the caller falls back to the full leg. Built-in modules only.
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -35,7 +35,8 @@ export function treeReaders(root) {
   return out.sort()
 }
 
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+// import.meta.url is the entry module's real path while argv[1] keeps any symlink it was started through (macOS /var and /tmp), so compare the resolved path or the CLI silently does nothing
+const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
 if (isMain) {
   try {
     const list = treeReaders(path.resolve(process.argv[2] ?? '.'))
