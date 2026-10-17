@@ -53,17 +53,31 @@ export {
   encodeSource,
 } from './encoding.js'
 
-// Git for Windows puts `cmd/git.exe` (older installs: `bin/git.exe`) first on PATH: a launcher that starts `<root>/mingw64/bin/git.exe` as its child. A timeout (or an output overflow) ends only the direct child, so with the launcher in between the real git survived the call, holding its working directory open and the inherited pipes (measured: Git 2.53 on Windows 11, launcher pid dead, real git.exe alive with that dead pid as parent, `taskkill /T` on the dead pid answers "not found"). Starting the real binary makes the process Node ends the process that matters. A Scoop shim is followed to its target the same way. Not reached: a helper the real git itself started (a clean/smudge filter such as git-lfs), which a synchronous call has no live pid to end.
-const GIT_FOR_WINDOWS_BINARY_DIRS = ['mingw64', 'clangarm64', 'mingw32']
+// Git for Windows puts `cmd/git.exe` (older installs: `bin/git.exe`) first on PATH: a launcher that starts `<root>/mingw64/bin/git.exe` as its child. A timeout (or an output overflow) ends only the direct child, so with the launcher in between the real git survived the call, holding its working directory open and the inherited pipes (measured: Git 2.53 on Windows 11, launcher pid dead, real git.exe alive with that dead pid as parent, `taskkill /T` on the dead pid answers "not found"). Starting the real binary makes the process Node ends the process that matters. A Scoop shim is followed to its target the same way. Not reached: a helper the real git itself started (a clean/smudge filter such as git-lfs), which a synchronous call has no live pid to end. CAPTURE: the windows-latest image of 2026-10-17 (Git 2.56.0.windows.2) has its real git at `Git/ucrt64/bin/git.exe` and no `mingw64/bin/git.exe` (CI run 39003789603: `where git` lists the ucrt64 path, and the old mapping found nothing beside the launcher), so a list of MSYSTEM folder names goes stale when Git for Windows renames the folder; the ones named here are tried first, in this order, and any other folder with a bin/git.exe beside the launcher is the fallback.
+const GIT_FOR_WINDOWS_BINARY_DIRS = ['mingw64', 'ucrt64', 'clangarm64', 'clang64', 'mingw32']
+// Folders of a Git for Windows root that hold a launcher or tools, never the real git.
+const GIT_FOR_WINDOWS_NON_BINARY_DIRS = new Set(['cmd', 'bin', 'usr', 'etc', 'dev', 'tmp', 'var'])
 let gitFileCache: { pathEnv: string; file: string } | undefined
 
-/** The real git behind a Git for Windows launcher (`<root>/cmd/git.exe` or `<root>/bin/git.exe`): the `<root>/mingw64|clangarm64|mingw32/bin/git.exe` beside it, or null when `launcher` is not laid out that way or no such sibling exists. */
+/** The real git behind a Git for Windows launcher (`<root>/cmd/git.exe` or `<root>/bin/git.exe`): the `<root>/mingw64|ucrt64|clangarm64|clang64|mingw32/bin/git.exe` beside it (else any other `<root>/<folder>/bin/git.exe`), or null when `launcher` is not laid out that way or no such sibling exists. */
 export function realGitBehindLauncher(launcher: string): string | null {
   const dir = path.dirname(launcher)
   const folder = path.basename(dir).toLowerCase()
   if (path.basename(launcher).toLowerCase() !== 'git.exe' || (folder !== 'cmd' && folder !== 'bin')) return null
   for (const sub of GIT_FOR_WINDOWS_BINARY_DIRS) {
     const real = path.resolve(dir, '..', sub, 'bin', 'git.exe')
+    if (existsSync(real)) return real
+  }
+  const root = path.resolve(dir, '..')
+  let siblings: string[]
+  // Names only, no Dirent type test: a junction or symlink folder is not isDirectory(), and existsSync on its bin/git.exe below decides.
+  try {
+    siblings = readdirSync(root).filter((name) => !GIT_FOR_WINDOWS_NON_BINARY_DIRS.has(name.toLowerCase())).sort()
+  } catch {
+    return null
+  }
+  for (const sub of siblings) {
+    const real = path.join(root, sub, 'bin', 'git.exe')
     if (existsSync(real)) return real
   }
   return null

@@ -133,7 +133,8 @@ const cp = require('node:child_process')
 fs.writeFileSync(${JSON.stringify(helperFile)}, String(process.pid))
 const original = cp.spawnSync
 cp.spawnSync = function(command, args, options) {
-  if (command === 'git' && args.includes('ls-files')) {
+  // runGit starts the real git by its full path on Windows, so git is recognised by its file name.
+  if (require('node:path').basename(String(command)).toLowerCase().replace(/[.]exe$/, '') === 'git' && args.includes('ls-files')) {
     fs.writeFileSync(${JSON.stringify(invocation)}, JSON.stringify({ args, stack: new Error().stack }))
     ${nativeBoundary ? `return original(${JSON.stringify(nativeBoundary)}, ['hold', ${JSON.stringify(gitFile)}], { ...options, detached: true })` : ''}
     // Windows' libuv job may close ordinary descendants when Node dies. A detached
