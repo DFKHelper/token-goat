@@ -6,11 +6,12 @@ import { join } from 'node:path'
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { closeAllDbs, getDb } from '../../src/db.js'
+import { getDb } from '../../src/db.js'
 import { querySymbols } from '../../src/index_reader.js'
 import { normalizePath } from '../../src/paths.js'
 import { indexedPathSpellingIsStale } from '../../src/parser.js'
 import { findGlobalDb } from '../helpers/find_global_db.js'
+import { releaseFixture } from '../helpers/release_fixture.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
@@ -33,21 +34,6 @@ function hostFsIsCaseInsensitive(): boolean {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
-}
-
-// Closes every db handle this file's getDb and querySymbols calls cached, then removes each directory. Each step runs in its own try, so one that throws does not skip the rest, and the failures are still reported together. A removal that hits EBUSY means a handle is still open, which is a defect to find, not to retry.
-function releaseFixture(...dirs: string[]): void {
-  const failures: unknown[] = []
-  const step = (fn: () => void): void => {
-    try {
-      fn()
-    } catch (err) {
-      failures.push(err)
-    }
-  }
-  step(closeAllDbs)
-  for (const dir of dirs) if (dir !== '') step(() => rmSync(dir, { recursive: true, force: true }))
-  if (failures.length > 0) throw new AggregateError(failures, 'fixture cleanup failed')
 }
 
 describe('indexedPathSpellingIsStale', () => {

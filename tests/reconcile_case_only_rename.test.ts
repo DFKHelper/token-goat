@@ -6,11 +6,12 @@ import { dirname, join } from 'node:path'
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { closeAllDbs, getDb } from '../src/db.js'
+import { getDb } from '../src/db.js'
 import { querySymbols } from '../src/index_reader.js'
 import { normalizePath } from '../src/paths.js'
 import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 import { findGlobalDb } from './helpers/find_global_db.js'
+import { releaseFixture, releaseFixtureAfter } from './helpers/release_fixture.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
@@ -20,6 +21,8 @@ interface Sweep {
   added: string[]
   removed: string[]
   enqueued: number
+  scanned: number
+  budgetExhausted: boolean
 }
 
 function run(projectDir: string, homeDir: string, args: string[]): { out: string; err: string; code: number } {
@@ -31,12 +34,20 @@ function run(projectDir: string, homeDir: string, args: string[]): { out: string
   return { out: res.stdout ?? '', err: res.stderr ?? '', code: res.status ?? -1 }
 }
 
+// A sweep that ran out of budget saw only a prefix of the project, and an empty drift list from it says nothing, so it is never returned. It runs again (a sweep that is not a dry run resumes from its saved cursor) for as long as each pass scans more files than any pass before it; a pass that gains nothing fails the test, so no outcome here depends on how long the PC took.
 function sweep(projectDir: string, homeDir: string, ...extra: string[]): Sweep {
-  const r = run(projectDir, homeDir, ['reconcile', '--budget-ms', '30000', '--json', ...extra])
-  try {
-    return JSON.parse(r.out) as Sweep
-  } catch {
-    return expect.fail(`reconcile emitted no JSON.\nstdout: ${r.out.slice(0, 400)}\nstderr: ${r.err.slice(0, 400)}`)
+  let mostScanned = -1
+  for (;;) {
+    const r = run(projectDir, homeDir, ['reconcile', '--budget-ms', '30000', '--json', ...extra])
+    let swept: Sweep
+    try {
+      swept = JSON.parse(r.out) as Sweep
+    } catch {
+      return expect.fail(`reconcile emitted no JSON.\nstdout: ${r.out.slice(0, 400)}\nstderr: ${r.err.slice(0, 400)}`)
+    }
+    if (!swept.budgetExhausted) return swept
+    expect(swept.scanned, `reconcile ran out of budget after ${swept.scanned} files and the next pass gained nothing (best so far ${mostScanned})`).toBeGreaterThan(mostScanned)
+    mostScanned = swept.scanned
   }
 }
 
@@ -79,21 +90,6 @@ function cwdKeepsTypedCase(): boolean {
 
 const lastSegment = (p: string): string | undefined => p.replace(/\\/g, '/').split('/').pop()
 
-// Closes every handle this file's getDb, querySymbols and drainOnce calls cached, then removes each directory. Each step runs in its own try, so one that throws does not skip the rest, and the failures are still reported together. A removal that hits EBUSY means a handle is still open, which is a defect to find, not to retry.
-function releaseFixture(...dirs: string[]): void {
-  const failures: unknown[] = []
-  const step = (fn: () => void): void => {
-    try {
-      fn()
-    } catch (err) {
-      failures.push(err)
-    }
-  }
-  step(closeAllDbs)
-  for (const dir of dirs) if (dir !== '') step(() => rmSync(dir, { recursive: true, force: true }))
-  if (failures.length > 0) throw new AggregateError(failures, 'fixture cleanup failed')
-}
-
 describe('reconcile after a case-only rename', () => {
   let projectDir = ''
   let homeDir = ''
@@ -108,11 +104,12 @@ describe('reconcile after a case-only rename', () => {
     expect(indexed.code, `indexing the fixture failed: ${indexed.err.slice(0, 400)}`).toBe(0)
   })
 
-  afterEach(() => {
+  // Awaits pending embeddings first, on every path: a drain that threw before the test's own wait would otherwise leave an embedding write running against a home about to be removed.
+  afterEach(async () => {
     const dirs = [projectDir, homeDir]
     projectDir = ''
     homeDir = ''
-    releaseFixture(...dirs)
+    await releaseFixtureAfter(pendingEmbeddings, ...dirs)
   })
 
   // Calibration: the file is indexed under its first spelling and a sweep finds nothing yet, so whatever the sweep reports in the next test is the rename at work.
