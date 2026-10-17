@@ -159,10 +159,14 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   }
 }
 
-/** {@link runGitAsync} (src/git_async.ts), loaded when the call is made. A hook runs git only after it has decided to, and a hook entry that imported git_async.ts statically would carry it and process_tree.ts into every hook process; the module loads once per process, so the long-lived hook server pays for it once. Same arguments, limit and result as runGitAsync. */
+/** {@link runGitAsync} (src/git_async.ts), loaded when the call is made. A hook runs git only after it has decided to, and a hook entry that imported git_async.ts statically would carry it and process_tree.ts into every hook process; the module loads once per process, so the long-lived hook server pays for it once. Same arguments, limit and result as runGitAsync, and like it never rejects: a chunk that fails to load (a missing or replaced file under a long-lived hook server) is the "git never ran" result of runGit, exit -1 with the reason in `stderr`, so a hook goes on to the rest of its work. */
 export async function runGitAsyncLazy(args: string[], opts?: RunGitAsyncOptions): Promise<GitResult> {
-  const { runGitAsync } = await import('./git_async.js')
-  return runGitAsync(args, opts)
+  try {
+    const { runGitAsync } = await import('./git_async.js')
+    return await runGitAsync(args, opts)
+  } catch (err) {
+    return { stdout: '', stderr: String((err as Error).message ?? err), exitCode: -1 }
+  }
 }
 
 // Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same path; normalizePath only lowercases the drive letter, so path-equality and dedup comparisons must fold the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0') overrides the platform default for deterministic cross-platform tests.
