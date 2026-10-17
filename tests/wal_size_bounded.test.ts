@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeAllDbs, getDb, WAL_SIZE_LIMIT_BYTES } from '../src/db.js'
-import { reclaimIndex, walCheckpointBusyNoWait } from '../src/index_reclaim.js'
+import { cmdReclaimIndex, reclaimIndex, walCheckpointBusyNoWait } from '../src/index_reclaim.js'
 import { clearModuleCaches } from '../src/reset.js'
 import Database from '../src/sqlite_driver.js'
 import type { SqliteDatabase } from '../src/sqlite_driver.js'
@@ -338,6 +338,129 @@ describe('the checkpoints of a reclaim pass over a log a reader pins', () => {
     })
 
     expect(timeouts, 'both checkpoints ran with the connection timeout').toEqual([777, 777])
+  })
+})
+
+// Provenance: HAND-DERIVED. 777 ms is any nonzero value other than the connection's 15000, so a VACUUM that waits sees 777 and one that does not sees 0. The pragma is read at the moment VACUUM is issued, so the rows observe the wait setting and never a clock. The refusal is a stub on the connection's exec that throws for VACUUM only, with the code SQLite reports for a lock held elsewhere (SQLITE_BUSY, sqlite.org/rescode.html), because holding a real writer lock for the length of a wait would make the row a timing test.
+describe('the VACUUM of a reclaim pass', () => {
+  function vacuumableDb(dbPath: string): ReturnType<typeof getDb> {
+    const db = getDb(dbPath)
+    db.exec('CREATE TABLE payload (id INTEGER PRIMARY KEY, body BLOB)')
+    db.transaction(() => {
+      const insert = db.prepare('INSERT INTO payload (body) VALUES (zeroblob(65536))')
+      for (let i = 0; i < 40; i++) insert.run()
+    }).immediate()
+    db.prepare('DELETE FROM payload WHERE id <= 30').run()
+    db.pragma('busy_timeout = 777')
+    return db
+  }
+
+  /** Run `pass` with every VACUUM on `db` recording the busy_timeout in effect when it is issued; `refuseWith` makes the VACUUM throw it instead of running. */
+  function timeoutsAtVacuum(db: ReturnType<typeof getDb>, pass: () => void, refuseWith?: Error): number[] {
+    const timeouts: number[] = []
+    const exec = db.exec.bind(db) as (sql: string) => unknown
+    const spy = vi.spyOn(db, 'exec').mockImplementation(((sql: string) => {
+      if (sql === 'VACUUM') {
+        timeouts.push(Number(db.pragma('busy_timeout', { simple: true })))
+        if (refuseWith !== undefined) throw refuseWith
+      }
+      return exec(sql)
+    }) as typeof db.exec)
+    try {
+      pass()
+    } finally {
+      spy.mockRestore()
+    }
+    return timeouts
+  }
+
+  function busyError(): Error {
+    return Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' })
+  }
+
+  it('runs with no wait in the idle pass and puts the connection timeout back after it', () => {
+    const dbPath = tmpDbPath()
+    const db = vacuumableDb(dbPath)
+    const before = schemaCookie(db)
+
+    const timeouts = timeoutsAtVacuum(db, () => {
+      expect(idleReclaim(dbPath), 'the pass is settled').toBe(true)
+    })
+
+    expect(timeouts, 'the one VACUUM ran with no wait').toEqual([0])
+    expect(schemaCookie(db), 'the VACUUM ran').toBe(before + 1)
+    expect(Number(db.pragma('busy_timeout', { simple: true })), 'the connection timeout is back').toBe(777)
+  })
+
+  it('keeps the connection timeout when a reclaim is not the idle pass', () => {
+    const dbPath = tmpDbPath()
+    const db = vacuumableDb(dbPath)
+
+    const timeouts = timeoutsAtVacuum(db, () => {
+      reclaimIndex(dbPath)
+    })
+
+    expect(timeouts, 'the VACUUM waited as the connection says').toEqual([777])
+    expect(Number(db.pragma('busy_timeout', { simple: true })), 'the connection timeout is unchanged').toBe(777)
+  })
+
+  it('keeps the connection timeout in the reclaim-index command', () => {
+    const dbPath = tmpDbPath()
+    const db = vacuumableDb(dbPath)
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((() => true) as typeof process.stdout.write)
+
+    let timeouts: number[]
+    try {
+      timeouts = timeoutsAtVacuum(db, () => {
+        cmdReclaimIndex({ dbPath, force: true })
+      })
+    } finally {
+      stdout.mockRestore()
+    }
+
+    expect(timeouts, 'the command VACUUM waited as the connection says').toEqual([777])
+  })
+
+  it('is deferred at once when the idle pass finds the lock held, with the connection timeout back', () => {
+    const dbPath = tmpDbPath()
+    const db = vacuumableDb(dbPath)
+    const before = schemaCookie(db)
+    let result: ReturnType<typeof reclaimIndex> | undefined
+
+    const timeouts = timeoutsAtVacuum(
+      db,
+      () => {
+        result = reclaimIndex(dbPath, { rebuild: false, waitForReaders: false })
+      },
+      busyError(),
+    )
+
+    expect(timeouts, 'the refused VACUUM ran with no wait').toEqual([0])
+    expect(result?.vacuumDeferred, 'the refusal is reported as a deferral').toBe(true)
+    expect(schemaCookie(db), 'nothing was vacuumed').toBe(before)
+    expect(Number(db.pragma('busy_timeout', { simple: true })), 'the connection timeout is back after the refusal').toBe(777)
+  })
+
+  it('lets a fault other than a held lock through, with the connection timeout back', () => {
+    const dbPath = tmpDbPath()
+    const db = vacuumableDb(dbPath)
+    const fault = Object.assign(new Error('disk I/O error'), { code: 'SQLITE_IOERR' })
+    let thrown: unknown
+
+    timeoutsAtVacuum(
+      db,
+      () => {
+        try {
+          reclaimIndex(dbPath, { rebuild: false, waitForReaders: false })
+        } catch (err) {
+          thrown = err
+        }
+      },
+      fault,
+    )
+
+    expect(thrown, 'the fault reaches the caller').toBe(fault)
+    expect(Number(db.pragma('busy_timeout', { simple: true })), 'the connection timeout is back after the fault').toBe(777)
   })
 })
 
