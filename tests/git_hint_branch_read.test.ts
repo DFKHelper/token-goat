@@ -208,6 +208,25 @@ describe('readBranchWithoutSpawn says unknown rather than guess', () => {
       expect(readBranchWithoutSpawn(linked)).toBeNull()
     })
 
+    // CAPTURE: each ref is made by git itself in a repository whose HEAD is the branch, and git's own answer is asserted before the hint is, so the expectation is git's output and not this module's rule (git 2.53 prints heads/<name> for every row).
+    it.each([
+      ['a remote HEAD symref of the same name (refs/remotes/<name>/HEAD)', 'origin', ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']],
+      ['a remote HEAD ref that pack-refs can hold', 'upstream', ['update-ref', 'refs/remotes/upstream/HEAD', 'HEAD']],
+      ['a remote-tracking ref of the same name (refs/remotes/<name>)', 'mirror', ['update-ref', 'refs/remotes/mirror', 'HEAD']],
+      ['a ref directly under refs/ of the same name, as a stash is', 'stash', ['update-ref', 'refs/stash', 'HEAD']],
+    ])('%s, where git prints heads/<name>, loose or packed', (_label, name, makeRef) => {
+      const repo = newRepo(`ambiguous-${name}`)
+      git(repo, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+      git(repo, 'checkout', '-q', '-b', name)
+      expect(readBranchWithoutSpawn(repo)).toBe(name)
+      git(repo, ...makeRef)
+      expect(gitsAnswer(repo)).toBe(`heads/${name}`)
+      expect(readBranchWithoutSpawn(repo)).toBeNull()
+      git(repo, 'pack-refs', '--all')
+      expect(gitsAnswer(repo)).toBe(`heads/${name}`)
+      expect(readBranchWithoutSpawn(repo)).toBeNull()
+    })
+
     it('an exported GIT_CEILING_DIRECTORIES, which can stop the walk short of the repository', () => {
       const repo = newRepo('ceiling')
       const saved = process.env['GIT_CEILING_DIRECTORIES']

@@ -1,6 +1,6 @@
 /** Git facts the hooks read inside the `hints.git_hint_max_ms` budget: the branch from the HEAD file with no spawn, and a dirty-state probe that says timed-out instead of clean. A slow machine cannot meet that budget with a spawn (a cold `git status` measured 61 ms at best against the 50 ms default), so a hint that waits on a spawn never arrives there; the branch needs no process, and a probe that is still killed is reported as unknown so no caller reads a killed git as an answer. */
 
-import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 import type { GitResult } from './types.js'
@@ -50,19 +50,22 @@ function repositoryDir(cwd: string): string | null {
   }
 }
 
-/** Whether git might print something other than the plain `name` for the branch HEAD names in `dir`. It prints `heads/<name>` when a tag has that name, loose or packed, in the shared refs: the directory a linked worktree's `commondir` file names (relative to its own git directory), else `dir` itself. It refuses outright when that directory has no HEAD. A packed-refs over 8 MB is not scanned, and one that cannot be read for a reason other than being absent counts as holding the tag. */
+/** Whether git might print something other than the plain `name` for the branch HEAD names in `dir`. It prints `heads/<name>` when another ref could be spelled `name` (git's strict abbreviation): `refs/<name>` (a stash is `refs/stash`), a tag, `refs/remotes/<name>` or `refs/remotes/<name>/HEAD`, loose or packed, in the shared refs: the directory a linked worktree's `commondir` file names (relative to its own git directory), else `dir` itself. It refuses outright when that directory has no HEAD. A packed-refs over 8 MB is not scanned, and one that cannot be read for a reason other than being absent counts as holding the tag. */
 function branchNameIsUncertain(dir: string, name: string): boolean {
   const text = readPrefix(resolve(dir, 'commondir'))
   const common = text === null ? dir : resolve(dir, text.trim())
   const packed = resolve(common, 'packed-refs')
+  const rivals = [`refs/${name}`, `refs/tags/${name}`, `refs/remotes/${name}`, `refs/remotes/${name}/HEAD`]
   try {
-    return readPrefix(resolve(common, 'HEAD')) === null || existsSync(resolve(common, 'refs/tags', name)) || statSync(packed).size > 8e6 || `${readFileSync(packed, 'utf8')}\n`.includes(` refs/tags/${name}\n`)
+    if (readPrefix(resolve(common, 'HEAD')) === null || rivals.some((r) => statSync(resolve(common, r), { throwIfNoEntry: false })?.isFile())) return true
+    const held = statSync(packed).size > 8e6 ? null : `${readFileSync(packed, 'utf8')}\n`
+    return held === null || rivals.some((r) => held.includes(` ${r}\n`))
   } catch (e) {
     return (e as NodeJS.ErrnoException).code !== 'ENOENT'
   }
 }
 
-/** What `git rev-parse --abbrev-ref HEAD` prints, read from the HEAD file with no process: the branch name for `ref: refs/heads/<name>`, `HEAD` for a detached HEAD (a bare object id), as git does. Null when it cannot be told, never a guess: no repository, an unreadable or garbled HEAD, a ref outside `refs/heads/`, a name outside {@link PRINTABLE_BRANCH}, a tag of the same name (git prints `heads/<name>` then), a linked worktree whose common directory is gone, or the reftable stub `refs/heads/.invalid` that a reftable repository keeps in HEAD (the real branch is in the table). The caller then asks git. An unborn branch reads as its name, where git exits 128. A `safe.directory` ownership refusal is not modelled: it needs the merged git configuration and, on Windows, the owner's SID, which Node cannot read; the hint then names the branch of a repository git would refuse, a one-word label for the user's own working directory. */
+/** What `git rev-parse --abbrev-ref HEAD` prints, read from the HEAD file with no process: the branch name for `ref: refs/heads/<name>`, `HEAD` for a detached HEAD (a bare object id), as git does. Null when it cannot be told, never a guess: no repository, an unreadable or garbled HEAD, a ref outside `refs/heads/`, a name outside {@link PRINTABLE_BRANCH}, a tag or other ref that abbreviates to the same name (git prints `heads/<name>` then), a linked worktree whose common directory is gone, or the reftable stub `refs/heads/.invalid` that a reftable repository keeps in HEAD (the real branch is in the table). The caller then asks git. An unborn branch reads as its name, where git exits 128. A `safe.directory` ownership refusal is not modelled: it needs the merged git configuration and, on Windows, the owner's SID, which Node cannot read; the hint then names the branch of a repository git would refuse, a one-word label for the user's own working directory. */
 export function readBranchWithoutSpawn(cwd: string): string | null {
   const dir = repositoryDir(cwd)
   if (dir === null) return null
