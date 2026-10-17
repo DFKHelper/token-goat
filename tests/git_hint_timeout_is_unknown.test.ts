@@ -125,7 +125,7 @@ describe('the subagent stop check on a git that is slower than the hint budget',
     await stop(scratch())
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toMatch(/could not check the report against git status/)
-    expect(warnings[0]).toMatch(/did not answer in time/)
+    expect(warnings[0]).toMatch(/git did not finish/)
     expect(warnings[0]).not.toMatch(/possible hallucination/)
     expect(git.calls).toEqual([{ args: ['status', '--porcelain'], timeoutMs: HINT_BUDGET_MS }])
   })
