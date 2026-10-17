@@ -89,6 +89,19 @@ describe('a reconcile request whose sweep git could not list', () => {
     expect(requested()).toEqual([projectDir])
   })
 
+  it('goes back for the next cycle when rev-parse is killed, and is dropped when git names no repository', () => {
+    git.answer = (args) => (args[0] === 'rev-parse' ? KILLED : ok(''))
+    appendReconcileRequest(_testDataDir, projectDir)
+    expect(drainReconcileRequests(_testDataDir)).toBe(0)
+    expect(requested()).toEqual([projectDir])
+
+    fs.rmSync(reconcileRequestPathFor(_testDataDir), { force: true })
+    git.answer = () => REFUSED
+    appendReconcileRequest(_testDataDir, projectDir)
+    expect(drainReconcileRequests(_testDataDir)).toBe(0)
+    expect(fs.existsSync(reconcileRequestPathFor(_testDataDir))).toBe(false)
+  })
+
   it('is spent when git ran and listed nothing', () => {
     git.answer = (args) => (args[0] === 'ls-files' ? ok('') : ok(`${projectDir}\n`))
     appendReconcileRequest(_testDataDir, projectDir)
