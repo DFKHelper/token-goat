@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { extractErrorMessage } from '../src/util.js'
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
 import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { indexableDir } from './helpers/temp-config.js'
@@ -75,6 +76,8 @@ describe('an edit wakes the detached worker (built bundle)', () => {
   it('indexes a file the post_tool_use hook queued long before the daemon\'s 120 s poll would', async () => {
     const { base, env, repo } = setup('tg-wake-bundle-')
     let pid: number | undefined
+    let bodyFailure: { error: unknown } | undefined
+    let killFailure: { error: unknown } | undefined
     try {
       const start = runBundle(['worker', 'start'], { cwd: repo, env, timeout: 30_000 })
       expect(start.status, start.stderr).toBe(0)
@@ -95,6 +98,8 @@ describe('an edit wakes the detached worker (built bundle)', () => {
       let count = 0
       while ((count = indexedSymbolCount(base, 'bundleWakeProbe')) === 0 && Date.now() < until) await sleep(25)
       expect(count, 'the daemon never indexed the edit, so the queue wake did not fire').toBeGreaterThan(0)
+    } catch (error) {
+      bodyFailure = { error }
     } finally {
       runBundle(['worker', 'stop'], { cwd: repo, env, timeout: 30_000 })
       const stopped = pid
@@ -103,13 +108,20 @@ describe('an edit wakes the detached worker (built bundle)', () => {
         while (pidAlive(stopped) && Date.now() < until) await sleep(50)
         try {
           killIfCommandLine(stopped, isWorkerDaemonCommandLine)
-        } finally {
-          // A pid whose command line could not be read throws above; the wait for the daemon to let go of its directory still runs before it surfaces.
-          const killed = Date.now() + 5000
-          while (pidAlive(stopped) && Date.now() < killed) await sleep(50)
+        } catch (error) {
+          killFailure = { error }
         }
+        // A pid whose command line could not be read throws above; the wait for the daemon to let go of its directory still runs before it surfaces.
+        const killed = Date.now() + 5000
+        while (pidAlive(stopped) && Date.now() < killed) await sleep(50)
       }
     }
+    // A failed kill is reported beside the test's own failure, never in its place: the test's error stays first in the aggregate and in the message. Thrown here, not in the finally, which would discard the pending error unannounced.
+    if (bodyFailure !== undefined) {
+      if (killFailure === undefined) throw bodyFailure.error
+      throw new AggregateError([bodyFailure.error, killFailure.error], `${extractErrorMessage(bodyFailure.error)} (ending the daemon also failed: ${extractErrorMessage(killFailure.error)})`, { cause: bodyFailure.error })
+    }
+    if (killFailure !== undefined) throw killFailure.error
   }, 60_000)
 
   it('leaves the edit unindexed with no daemon running, so the count above can only have come from the daemon', async () => {

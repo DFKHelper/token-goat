@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { appendDirtyQueuePaths } from '../src/dirty_queue.js'
+import { extractErrorMessage } from '../src/util.js'
 import { BUNDLE, readCoreBundleText, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
 import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { stopOwnedChild } from './helpers/stop_owned_child.js'
@@ -146,6 +147,7 @@ describe('detached worker daemon (built bundle)', () => {
       const timerLog = path.join(probe, 'timers')
       const startEnv = { ...env, NODE_OPTIONS: `${env['NODE_OPTIONS'] ?? ''} --import ${pathToFileURL(preload).href}`.trim(), TG_E2E_TIMER_LOG: timerLog }
       let pid: number | undefined
+      let bodyFailure: { error: unknown } | undefined
       let stop: RunResult
 
       try {
@@ -176,9 +178,12 @@ describe('detached worker daemon (built bundle)', () => {
           `the daemon never asked to sleep ${CADENCE_POLL_MS}ms between cycles -- TG_WORKER_POLL_MS is being ignored again (timer delays it set: ${delays.join(', ')})`,
         ).toContain(CADENCE_POLL_MS)
 
+      } catch (error) {
+        bodyFailure = { error }
+        throw error
       } finally {
         // Clean teardown on every path, including a `worker start` whose output never parsed, so this test never leaks a real background process.
-        stop = await shutDownDaemon(env, repo, dataBase, pid)
+        stop = await settleShutdown(bodyFailure, () => shutDownDaemon(env, repo, dataBase, pid))
       }
       expect(stop.stdout).toMatch(/Worker stopped\.|No running worker\./)
     },
@@ -234,6 +239,7 @@ describe('detached worker daemon (built bundle)', () => {
       const trigger = mkIsolated('tg-daemon-trigger-')
       const env = tgEnv(dataBase, DAEMON_POLL_MS)
       let pid: number | undefined
+      let bodyFailure: { error: unknown } | undefined
       try {
         const start = runBundle(['worker', 'start'], env, trigger)
         expect(start.status, `worker start stderr: ${start.stderr}`).toBe(0)
@@ -242,9 +248,12 @@ describe('detached worker daemon (built bundle)', () => {
         pid = parseInt((m as RegExpMatchArray)[1], 10)
         await waitForDaemonHeartbeat(dataBase, pid)
         expectDirectoryReleasedBy(pid, trigger)
+      } catch (error) {
+        bodyFailure = { error }
+        throw error
       } finally {
         // Run from the data base: the trigger directory is gone once the assertion above has passed.
-        await shutDownDaemon(env, dataBase, dataBase, pid)
+        await settleShutdown(bodyFailure, () => shutDownDaemon(env, dataBase, dataBase, pid))
       }
     },
     45000,
@@ -265,12 +274,14 @@ describe('detached worker daemon (built bundle)', () => {
         windowsHide: true,
       })
       const pid = child.pid
+      let bodyFinished = false
       try {
         expect(pid, 'spawning the bundle produced no pid').toBeDefined()
         await waitForDaemonHeartbeat(dataBase, pid as number)
         expectDirectoryReleasedBy(pid as number, trigger)
+        bodyFinished = true
       } finally {
-        await stopOwnedChild(child)
+        await stopOwnedChild(child, { graceful: bodyFinished })
       }
     },
     45000,
@@ -283,6 +294,7 @@ async function withDrainedDaemon(files: Record<string, string>, lookups: (env: N
   const repo = mkIsolated('tg-daemon-repo-')
   const env = tgEnv(dataBase, DAEMON_POLL_MS)
   let pid: number | undefined
+  let bodyFailure: { error: unknown } | undefined
   try {
     const start = runBundle(['worker', 'start'], env, repo)
     expect(start.status, `worker start stderr: ${start.stderr}`).toBe(0)
@@ -302,8 +314,11 @@ async function withDrainedDaemon(files: Record<string, string>, lookups: (env: N
     await waitForDaemon('the running daemon to drain the seeded queue entries', DAEMON_WAIT_BACKSTOP_MS, pid, () => !fs.readdirSync(queueDir).some((name) => name.startsWith('dirty.txt')))
     // One lookup per fixture, after the drain: a daemon that drained into a stub, or dropped refs or a lazily loaded adapter's rows, fails right here rather than being waited on.
     lookups(env, repo)
+  } catch (error) {
+    bodyFailure = { error }
+    throw error
   } finally {
-    await shutDownDaemon(env, repo, dataBase, pid)
+    await settleShutdown(bodyFailure, () => shutDownDaemon(env, repo, dataBase, pid))
   }
 }
 
@@ -326,6 +341,16 @@ async function waitForDaemon(label: string, timeoutMs: number, pid: number, chec
     if (!pidAlive(pid)) throw new Error(`the daemon (pid ${pid}) exited while waiting for: ${label}`)
     return false
   })
+}
+
+/** Await the shutdown a test's finally runs. When the test body had already failed, a failure of the shutdown joins it in an AggregateError, the body's error first and first in the message, instead of replacing it. */
+async function settleShutdown<T>(bodyFailure: { error: unknown } | undefined, shutdown: () => Promise<T>): Promise<T> {
+  try {
+    return await shutdown()
+  } catch (shutdownError) {
+    if (bodyFailure === undefined) throw shutdownError
+    throw new AggregateError([bodyFailure.error, shutdownError], `${extractErrorMessage(bodyFailure.error)} (shutting the daemon down also failed: ${extractErrorMessage(shutdownError)})`, { cause: shutdownError })
+  }
 }
 
 /** Stop whatever daemon a test started, on any path. The pid file is read before `worker stop` removes it, because it is the only record of the daemon when `worker start` failed before its output could be parsed; both pids are then terminated if still alive. Returns the `worker stop` result. */
