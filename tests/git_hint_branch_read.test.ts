@@ -1,0 +1,154 @@
+// Provenance: CAPTURE for every layout built by git itself below (`git init`, `git worktree add`, `git checkout --detach`, and `git init --ref-format=reftable` where this git has it), each checked against what `git rev-parse --abbrev-ref HEAD` prints for the same directory in the same run. HAND-DERIVED for the layouts only a hand-built tree can reach: a garbled HEAD, a `.git` file with a relative gitdir (the `gitdir: <path>` file format is gitrepository-layout(5)), and the reftable stub `ref: refs/heads/.invalid` (FORMAT-DERIVED from Documentation/technical/reftable.adoc in git's source: a reftable repository keeps that placeholder in HEAD and the real branch in the table).
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+
+import { readBranchWithoutSpawn } from '../src/git_hint.js'
+import { runGit } from '../src/util.js'
+
+const IDENTITY = ['-c', 'user.name=tg', '-c', 'user.email=tg@example.invalid']
+let root = ''
+let savedGitDir: string | undefined
+
+function git(cwd: string, ...args: string[]): string {
+  const result = runGit([...IDENTITY, ...args], { cwd, timeoutMs: 60_000 })
+  expect(result.exitCode, `git ${args.join(' ')}: ${result.stderr}`).toBe(0)
+  return result.stdout.trim()
+}
+
+/** What git itself says for `cwd`, the oracle every spawn-free answer is held to. */
+function gitsAnswer(cwd: string): string {
+  return git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD')
+}
+
+function newRepo(name: string): string {
+  const dir = path.join(root, name)
+  fs.mkdirSync(dir)
+  git(dir, 'init', '-q', '-b', 'main')
+  git(dir, 'commit', '-q', '--allow-empty', '-m', 'first')
+  return dir
+}
+
+beforeEach(() => {
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-branch-read-'))
+  savedGitDir = process.env['GIT_DIR']
+  delete process.env['GIT_DIR']
+})
+
+afterEach(() => {
+  if (savedGitDir === undefined) delete process.env['GIT_DIR']
+  else process.env['GIT_DIR'] = savedGitDir
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+describe('readBranchWithoutSpawn agrees with git', () => {
+  it('reads a branch from the repository root and from a subdirectory', () => {
+    const repo = newRepo('repo')
+    const sub = path.join(repo, 'a', 'b')
+    fs.mkdirSync(sub, { recursive: true })
+    expect(readBranchWithoutSpawn(repo)).toBe(gitsAnswer(repo))
+    expect(readBranchWithoutSpawn(sub)).toBe('main')
+  })
+
+  it('reads a branch with a slash in its name', () => {
+    const repo = newRepo('slash')
+    git(repo, 'checkout', '-q', '-b', 'feature/x-1')
+    expect(readBranchWithoutSpawn(repo)).toBe(gitsAnswer(repo))
+    expect(readBranchWithoutSpawn(repo)).toBe('feature/x-1')
+  })
+
+  it('reads each side of a linked worktree from its own HEAD', () => {
+    const repo = newRepo('main-tree')
+    const linked = path.join(root, 'linked-tree')
+    git(repo, 'worktree', 'add', '-q', linked, '-b', 'other')
+    fs.mkdirSync(path.join(linked, 'sub'))
+    expect(fs.statSync(path.join(linked, '.git')).isFile(), 'precondition: a linked worktree has a .git file').toBe(true)
+    expect(readBranchWithoutSpawn(linked)).toBe(gitsAnswer(linked))
+    expect(readBranchWithoutSpawn(path.join(linked, 'sub'))).toBe('other')
+    expect(readBranchWithoutSpawn(repo)).toBe('main')
+  })
+
+  it('reads a detached HEAD as HEAD, as git does', () => {
+    const repo = newRepo('detached')
+    git(repo, 'checkout', '-q', '--detach')
+    expect(gitsAnswer(repo)).toBe('HEAD')
+    expect(readBranchWithoutSpawn(repo)).toBe('HEAD')
+  })
+
+  it('reads the branch of a repository with no commit yet, where git itself exits 128', () => {
+    const repo = path.join(root, 'unborn')
+    fs.mkdirSync(repo)
+    git(repo, 'init', '-q', '-b', 'trunk')
+    expect(runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: repo, timeoutMs: 60_000 }).exitCode).not.toBe(0)
+    expect(readBranchWithoutSpawn(repo)).toBe('trunk')
+  })
+
+  it('follows a .git file whose gitdir is relative to the folder holding it', () => {
+    const bare = path.join(root, 'store.git')
+    fs.mkdirSync(bare)
+    git(bare, 'init', '-q', '--bare', '-b', 'relative-branch')
+    const work = path.join(root, 'work')
+    fs.mkdirSync(work)
+    fs.writeFileSync(path.join(work, '.git'), 'gitdir: ../store.git\n')
+    expect(readBranchWithoutSpawn(work)).toBe('relative-branch')
+  })
+})
+
+describe('readBranchWithoutSpawn says unknown rather than guess', () => {
+  function repoWithHead(head: string): string {
+    const dir = path.join(root, 'hand')
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(dir, '.git', 'HEAD'), head)
+    return dir
+  }
+
+  it.each([
+    ['a garbled HEAD', 'not a head\n'],
+    ['an empty HEAD', ''],
+    ['the reftable placeholder', 'ref: refs/heads/.invalid\n'],
+    ['a ref outside refs/heads', 'ref: refs/remotes/origin/main\n'],
+    ['a name with a space', 'ref: refs/heads/two words\n'],
+    ['a name with a control character', 'ref: refs/heads/a\u0001b\n'],
+    ['a name with a dot-dot', 'ref: refs/heads/a..b\n'],
+    ['a name ending in .lock', 'ref: refs/heads/main.lock\n'],
+    ['a short object id', 'abc123\n'],
+  ])('%s', (_label, head) => {
+    expect(readBranchWithoutSpawn(repoWithHead(head))).toBeNull()
+  })
+
+  it('a repository directory with no HEAD file', () => {
+    const dir = path.join(root, 'no-head')
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
+    expect(readBranchWithoutSpawn(dir)).toBeNull()
+  })
+
+  it('a .git file that names nothing', () => {
+    const dir = path.join(root, 'bad-file')
+    fs.mkdirSync(dir)
+    fs.writeFileSync(path.join(dir, '.git'), 'nonsense\n')
+    expect(readBranchWithoutSpawn(dir)).toBeNull()
+  })
+
+  it('a .git file pointing at a missing directory', () => {
+    const dir = path.join(root, 'dangling')
+    fs.mkdirSync(dir)
+    fs.writeFileSync(path.join(dir, '.git'), 'gitdir: ./gone\n')
+    expect(readBranchWithoutSpawn(dir)).toBeNull()
+  })
+
+  it('an exported GIT_DIR, which names a repository the directory walk cannot see', () => {
+    const repo = newRepo('with-git-dir')
+    process.env['GIT_DIR'] = path.join(repo, '.git')
+    expect(readBranchWithoutSpawn(repo)).toBeNull()
+  })
+
+  it('a reftable repository, whose HEAD file is only a placeholder', (ctx) => {
+    const dir = path.join(root, 'reftable')
+    fs.mkdirSync(dir)
+    const init = runGit(['init', '-q', '--ref-format=reftable', '-b', 'tabled'], { cwd: dir, timeoutMs: 60_000 })
+    if (init.exitCode !== 0) ctx.skip()
+    expect(readBranchWithoutSpawn(dir)).toBeNull()
+  })
+})

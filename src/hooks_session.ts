@@ -3,6 +3,7 @@ import { registerHook, sessionStateKey } from './hook_registry.js';
 import type { HookOutput } from './types.js';
 import crypto from 'node:crypto';
 import { passOutput, contextOutput, getCwd } from './hooks_common.js';
+import { readBranchWithoutSpawn } from './git_hint.js';
 import { runGit } from './util.js';
 import { loadConfig } from './config.js';
 import { checkSkillVersionDrift } from './skill_version_drift.js';
@@ -147,12 +148,14 @@ async function userPromptSubmitHandler(event: HookEvent): Promise<HookOutput> {
       const cwd = getCwd(event);
       if (cwd) {
         try {
-          const result = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms });
-          if (result.exitCode === 0 && result.stdout) {
-            const branch = result.stdout.trim();
-            if (branch) {
-              parts.push(`branch: ${branch}`);
-            }
+          // HEAD is read from disk first: a spawn cannot answer inside the hint budget on a slow machine. Only an unreadable HEAD asks git, and a git that is killed there gives no hint rather than a wrong one.
+          let branch = readBranchWithoutSpawn(cwd);
+          if (branch === null) {
+            const result = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms });
+            branch = result.exitCode === 0 ? result.stdout.trim() : '';
+          }
+          if (branch) {
+            parts.push(`branch: ${branch}`);
           }
         } catch {
           // Swallow errors

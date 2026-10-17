@@ -8,7 +8,9 @@ import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 import { WEB_FETCH_KEY_SEP, epochReadCounts, getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns, mergeEpochBase, wasEditedSinceCompaction } from './session.js'
 import type { FileEntry, SerializedSession } from './session.js'
 import { listSiblingSessionStates } from './session_store.js'
-import { foldPath, toKB, runGit } from './util.js'
+import { foldPath, toKB } from './util.js'
+import { gitFindings } from './git_hint.js'
+import type { GitFindings } from './git_hint.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { hasWebOutput } from './web_cache.js'
 import { loadConfig } from './config.js'
@@ -186,41 +188,33 @@ function insideGitWorkTree(cwd: string): boolean {
   }
 }
 
-/** Detect real, pre-compaction git dirty state for `cwd` -- `hasPendingDiff` mirrors the Python predecessor's `_get_git_diff_stat_summary()` signal (`git diff --stat HEAD` non-empty: tracked working-tree/staged changes vs HEAD), `hasUncommittedChanges` mirrors `_get_uncommitted_changes()` (`git status --porcelain` non-empty: also catches untracked files `diff --stat HEAD` misses). Both feed {@link computeAdaptiveBudget}'s git-derived bonuses via {@link adaptiveCharBonus}. Uses {@link runGit} (the only git spawn site in the codebase) with `hints.git_hint_max_ms` (same bound `hooks_session.ts`'s own git-hint calls use) so a slow/hung git can never block compaction; any spawn failure or non-zero exit fails soft to `false` for that signal. */
-function gitDirtySignals(cwd: string): { hasPendingDiff: boolean; hasUncommittedChanges: boolean } {
+/** Detect real, pre-compaction git dirty state for `cwd` -- `hasPendingDiff` mirrors the Python predecessor's `_get_git_diff_stat_summary()` signal (`git diff --stat HEAD` non-empty: tracked working-tree/staged changes vs HEAD), `hasUncommittedChanges` mirrors `_get_uncommitted_changes()` (`git status --porcelain` non-empty: also catches untracked files `diff --stat HEAD` misses). Both feed {@link computeAdaptiveBudget}'s git-derived bonuses via {@link adaptiveCharBonus}. Uses {@link gitFindings} (over `runGit`, the only git spawn site in the codebase) with `hints.git_hint_max_ms` (same bound `hooks_session.ts`'s own git-hint calls use) so a slow/hung git can never block compaction; each signal is a {@link GitFindings}: a git that is killed at the bound reads `timed-out`, never `clean`, and a refusal or spawn failure reads `refused`. */
+function gitDirtySignals(cwd: string): { pendingDiff: GitFindings; uncommitted: GitFindings } {
   // A directory outside every work tree has no dirty state to read; git would only exit 128 after a spawn that, past the short probe bound, is killed while its process may still hold `cwd` open.
-  if (!insideGitWorkTree(cwd)) return { hasPendingDiff: false, hasUncommittedChanges: false }
+  if (!insideGitWorkTree(cwd)) return { pendingDiff: 'clean', uncommitted: 'clean' }
   const timeoutMs = loadConfig().hints.git_hint_max_ms
-  let hasPendingDiff = false
-  try {
-    const diffResult = runGit(['diff', '--no-color', '--stat', 'HEAD'], { cwd, timeoutMs })
-    hasPendingDiff = diffResult.exitCode === 0 && diffResult.stdout.trim() !== ''
-  } catch {
-    // fail-soft: treat as no pending diff
+  return {
+    pendingDiff: gitFindings(['diff', '--no-color', '--stat', 'HEAD'], cwd, timeoutMs),
+    uncommitted: gitFindings(['status', '--porcelain'], cwd, timeoutMs),
   }
-  let hasUncommittedChanges = false
-  try {
-    const statusResult = runGit(['status', '--porcelain'], { cwd, timeoutMs })
-    hasUncommittedChanges = statusResult.exitCode === 0 && statusResult.stdout.trim() !== ''
-  } catch {
-    // fail-soft: treat as no uncommitted changes
-  }
-  return { hasPendingDiff, hasUncommittedChanges }
 }
 
-/** Extra manifest-char budget to add on top of the configured `compact_assist.max_manifest_chars` cap, driven by real git dirty state right before this compaction fires. Reuses `compact.ts`'s `computeAdaptiveBudget` -- ported from the Python predecessor's `build_manifest_adaptive` (see `eb119425`) but never wired to this, the real production PreCompact path, until now -- rather than reimplementing its bonus formula here. Calls it twice with identical cache/age/pressure inputs, toggling only the git-derived opts, and returns the *delta* between the two (in chars, at `estimateTokens`'s ~3 chars/token, floored at 0). Using the delta -- instead of using `computeAdaptiveBudget`'s absolute result as the cap outright -- guarantees the common case (a clean working tree: no pending diff, no uncommitted changes) adds exactly 0 and therefore reproduces today's fixed `max_manifest_chars` cap unchanged; a dirty tree only ever grows the cap, giving the compaction LLM more room for the "Pending Changes"-equivalent git context precisely when there is git state worth preserving, without ever shrinking below the configured default. No-op (returns 0) when `cwd` is unavailable (harness didn't send one) -- fails soft rather than guessing a working directory for the git spawns. */
-function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefined, transcriptPath: string | undefined): number {
-  if (!cwd) return 0
+/** Extra manifest-char budget to add on top of the configured `compact_assist.max_manifest_chars` cap, driven by real git dirty state right before this compaction fires. Reuses `compact.ts`'s `computeAdaptiveBudget` -- ported from the Python predecessor's `build_manifest_adaptive` (see `eb119425`) but never wired to this, the real production PreCompact path, until now -- rather than reimplementing its bonus formula here. Calls it twice with identical cache/age/pressure inputs, toggling only the git-derived opts, and returns the *delta* between the two (in chars, at `estimateTokens`'s ~3 chars/token, floored at 0). Using the delta -- instead of using `computeAdaptiveBudget`'s absolute result as the cap outright -- guarantees the common case (a clean working tree: no pending diff, no uncommitted changes) adds exactly 0 and therefore reproduces today's fixed `max_manifest_chars` cap unchanged; a dirty tree only ever grows the cap, giving the compaction LLM more room for the "Pending Changes"-equivalent git context precisely when there is git state worth preserving, without ever shrinking below the configured default. No-op (zero chars) when `cwd` is unavailable (harness didn't send one) -- fails soft rather than guessing a working directory for the git spawns. `gitUnread` is true when a git probe was killed at the bound, so the caller can say the git-derived room is unknown instead of reading it as none. */
+function adaptiveCharBonus(sessionId: string | undefined, cwd: string | undefined, transcriptPath: string | undefined): { chars: number; gitUnread: boolean } {
+  if (!cwd) return { chars: 0, gitUnread: false }
   const cache = loadSessionCache(sessionId ?? '') ?? {}
   const ageSecs = cache.created_ts !== undefined ? Math.max(0, Date.now() / 1000 - cache.created_ts) : 0
   const contextPressure = getContextPressure(cache, transcriptPath)
-  const { hasPendingDiff, hasUncommittedChanges } = gitDirtySignals(cwd)
-  if (!hasPendingDiff && !hasUncommittedChanges) return 0
+  const { pendingDiff, uncommitted } = gitDirtySignals(cwd)
+  const gitUnread = pendingDiff === 'timed-out' || uncommitted === 'timed-out'
+  const hasPendingDiff = pendingDiff === 'dirty'
+  const hasUncommittedChanges = uncommitted === 'dirty'
+  if (!hasPendingDiff && !hasUncommittedChanges) return { chars: 0, gitUnread }
 
   const baseline = computeAdaptiveBudget(cache, ageSecs, { contextPressure })
   const withGitSignal = computeAdaptiveBudget(cache, ageSecs, { hasPendingDiff, hasUncommittedChanges, contextPressure })
   const deltaTokens = Math.max(0, withGitSignal - baseline)
-  return deltaTokens * 3
+  return { chars: deltaTokens * 3, gitUnread }
 }
 
 /** Enforce `compact_assist.max_manifest_chars` (default 1600) on the sections by dropping whole rows through {@link fitSections}, so no row or fence is ever cut. The unbudgeted render is built first and returned as is when it fits, which keeps the git probe behind {@link adaptiveCharBonus} off the common path. A fit that dropped anything ends with the truncation notice, naming any section left out entirely. */
@@ -228,11 +222,13 @@ function fitManifest(sections: readonly FitSection[], sessionId?: string, cwd?: 
   const full = fitSections(sections, Infinity)
   const cap = loadConfig().compact_assist.max_manifest_chars
   if (cap <= 0 || full.text.length <= cap) return full
-  const effectiveCap = cap + adaptiveCharBonus(sessionId, cwd, transcriptPath)
+  const bonus = adaptiveCharBonus(sessionId, cwd, transcriptPath)
+  const effectiveCap = cap + bonus.chars
   if (full.text.length <= effectiveCap) return full
   const fit = fitSections(sections, effectiveCap)
   const gone = fit.omitted.length > 0 ? `; sections omitted: ${fit.omitted.map((h) => h.replace(/^#+\s*/, '')).join(', ')}` : ''
-  const notice = `\n...(manifest truncated at ${effectiveCap} chars; ${full.text.length - fit.text.length} chars omitted${gone})`
+  const unread = bonus.gitUnread ? '; git did not answer in time, so the room its uncommitted changes would have earned is unknown' : ''
+  const notice = `\n...(manifest truncated at ${effectiveCap} chars; ${full.text.length - fit.text.length} chars omitted${gone}${unread})`
   return { text: closeCutFence(fit.text) + notice, shown: fit.shown }
 }
 
