@@ -97,7 +97,7 @@ export function shimFallbackTimeoutConst(harness: keyof typeof SHIM_FALLBACK_TIM
   return `const SHIM_FALLBACK_TIMEOUT_MS = ${SHIM_FALLBACK_TIMEOUT_MS[harness]}`
 }
 
-/** 32 MiB, matching `MAX_CAPTURE_BYTES` in bash_runner.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */
+/** 32 MiB, matching `MAX_CAPTURE_BYTES` in constants.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */
 export const SHIM_MAX_BUFFER_CONST = `const SHIM_MAX_BUFFER_BYTES = 32 * 1024 * 1024`
 
 // A second copy of this logic lives in src/hook_adapters.ts, which the resident hook server runs for a harness-aware (v2) client; tests/native_hook_adapter_equivalence.test.ts drives this installed shim and a server request with the same payloads and fails unless both print the same bytes and exit code.

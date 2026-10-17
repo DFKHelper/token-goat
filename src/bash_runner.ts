@@ -8,6 +8,7 @@ import * as os from 'node:os'
 
 import { storeBashOutputSync } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
+import { MAX_CAPTURE_BYTES } from './constants.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { displaySafeText } from './paths.js'
 import { adaptPowerShellCommand } from './powershell_compat.js'
@@ -31,9 +32,6 @@ import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Default wall-clock timeout for the wrapped subprocess, in seconds. */
 export const DEFAULT_TIMEOUT_SECONDS = 600
-
-/** Per-process capture cap (stdout and stderr each). Beyond this the child is killed and an overflow marker is appended — 32 MiB covers any real command. */
-export const MAX_CAPTURE_BYTES = 32 * 1024 * 1024
 
 /** Minimum bytes saved before a stat row is worth writing (skips noise rows). */
 const MIN_RECORD_STAT_BYTES = 32

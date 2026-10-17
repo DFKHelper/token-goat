@@ -14,8 +14,6 @@ import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED } from './types.js'
 import type { GitResult, RunGitAsyncOptions, RunGitOptions } from './types.js'
 
 export { normalizePath }
-// Re-exported for git_async.ts, which takes it from here: a bundle chunk is the set of modules the same entries reach, so with util.ts reaching process_tree.ts the two stay in one chunk, and the hook entry's eager set does not pay a chunk header (about 0.3 KB, measured) for splitting them.
-export { spawnOwned } from './process_tree.js'
 export type { GitResult, RunGitAsyncOptions, RunGitOptions }
 
 export {

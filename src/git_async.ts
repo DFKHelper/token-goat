@@ -1,8 +1,8 @@
 /** The non-blocking git runner. Kept apart from util.ts so the hook entry's static import graph does not carry it (and process_tree.ts with it): a hook loads this module with `await import('./git_async.js')` only once it has decided to run git. The argument list, executable and time limit come from util.ts, shared with runGit so the two cannot drift. Like `runGit`, a git spawn site named by tests/guards/git_is_spawned_only_by_runGit.test.ts. */
 
-import type { OwnedChild } from './process_tree.js'
+import { spawnOwned, type OwnedChild } from './process_tree.js'
 import type { GitResult, RunGitAsyncOptions } from './types.js'
-import { forgetGitExecutable, gitExecutable, gitInvocation, gitTimeoutMs, spawnOwned } from './util.js'
+import { forgetGitExecutable, gitExecutable, gitInvocation, gitTimeoutMs } from './util.js'
 
 const GIT_MAX_OUTPUT_BYTES = 200 * 1024 * 1024
 

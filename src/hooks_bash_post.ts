@@ -30,11 +30,10 @@ import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
 import { IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
-import { dataDir } from './constants.js'
+import { dataDir, MAX_CAPTURE_BYTES } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
 import { isInsideRoot } from './path_containment.js'
 import { projectTranscriptsDir } from './claude_config_dir.js'
-import { MAX_CAPTURE_BYTES } from './bash_runner.js'
 import {
   stripCdPrefix,
   resolveCdHintPath,
