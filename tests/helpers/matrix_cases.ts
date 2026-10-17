@@ -5,7 +5,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { expect } from 'vitest'
+import { expect, onTestFinished } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
 import sharp from 'sharp'
 
@@ -2105,26 +2105,26 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Worker started \(pid \d+\)\.|Worker already running\./)
     const pid = parseInt(r.stdout.match(/Worker started \(pid (\d+)\)/)?.[1] ?? '', 10)
-    try {
-      // A stop that lands before the daemon's first heartbeat is the state a loaded machine produces; wait for the heartbeat naming this pid so the stop below takes the ordinary path and is asserted, not assumed.
-      if (Number.isInteger(pid)) {
-        const beat = path.join(dataBase, process.platform === 'win32' ? path.join('dfk-helper', 'token-goat') : 'token-goat', 'queue', 'drain-heartbeat')
-        const deadline = Date.now() + 20000
-        while (Date.now() < deadline) {
-          try {
-            if (fs.readFileSync(beat, 'utf8').trim() === String(pid)) break
-          } catch {
-            // not written yet
-          }
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
-        }
-      }
-      const stopped = run(['worker', 'stop'], { env })
-      expect(stopped.stdout).toContain('Worker stopped.')
-    } finally {
+    // A failed kill is reported beside the case's own failure, never in its place.
+    onTestFinished(() => {
       // After a stop that worked this pid is dead and may belong to a new process (a killed vitest worker exits with code 1), so only a process still running as a worker daemon is signalled.
       if (Number.isInteger(pid)) killIfCommandLine(pid, isWorkerDaemonCommandLine)
+    })
+    // A stop that lands before the daemon's first heartbeat is the state a loaded machine produces; wait for the heartbeat naming this pid so the stop below takes the ordinary path and is asserted, not assumed.
+    if (Number.isInteger(pid)) {
+      const beat = path.join(dataBase, process.platform === 'win32' ? path.join('dfk-helper', 'token-goat') : 'token-goat', 'queue', 'drain-heartbeat')
+      const deadline = Date.now() + 20000
+      while (Date.now() < deadline) {
+        try {
+          if (fs.readFileSync(beat, 'utf8').trim() === String(pid)) break
+        } catch {
+          // not written yet
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+      }
     }
+    const stopped = run(['worker', 'stop'], { env })
+    expect(stopped.stdout).toContain('Worker stopped.')
   },
   'hook-server': () => {
     // Parent command with subcommands and no own action; `run` is hidden, so usage lists status and stop.
