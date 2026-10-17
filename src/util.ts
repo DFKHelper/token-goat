@@ -53,24 +53,53 @@ export {
   encodeSource,
 } from './encoding.js'
 
-// Git for Windows puts `cmd/git.exe` first on PATH: a launcher that starts `<root>/mingw64/bin/git.exe` as its child. A timeout (or an output overflow) ends only the direct child, so with the launcher in between the real git survived the call, holding its working directory open and the inherited pipes (measured: Git 2.53 on Windows 11, launcher pid dead, real git.exe alive with that dead pid as parent, `taskkill /T` on the dead pid answers "not found"). Starting the real binary makes the process Node ends the process that matters. Not reached: a helper the real git itself started (a clean/smudge filter such as git-lfs), which a synchronous call has no live pid to end.
+// Git for Windows puts `cmd/git.exe` (older installs: `bin/git.exe`) first on PATH: a launcher that starts `<root>/mingw64/bin/git.exe` as its child. A timeout (or an output overflow) ends only the direct child, so with the launcher in between the real git survived the call, holding its working directory open and the inherited pipes (measured: Git 2.53 on Windows 11, launcher pid dead, real git.exe alive with that dead pid as parent, `taskkill /T` on the dead pid answers "not found"). Starting the real binary makes the process Node ends the process that matters. A Scoop shim is followed to its target the same way. Not reached: a helper the real git itself started (a clean/smudge filter such as git-lfs), which a synchronous call has no live pid to end.
 const GIT_FOR_WINDOWS_BINARY_DIRS = ['mingw64', 'clangarm64', 'mingw32']
 let gitFileCache: { pathEnv: string; file: string } | undefined
 
-function gitExecutable(): string {
-  if (process.platform !== 'win32') return 'git'
+/** The real git behind a Git for Windows launcher (`<root>/cmd/git.exe` or `<root>/bin/git.exe`): the `<root>/mingw64|clangarm64|mingw32/bin/git.exe` beside it, or null when `launcher` is not laid out that way or no such sibling exists. */
+export function realGitBehindLauncher(launcher: string): string | null {
+  const dir = path.dirname(launcher)
+  const folder = path.basename(dir).toLowerCase()
+  if (path.basename(launcher).toLowerCase() !== 'git.exe' || (folder !== 'cmd' && folder !== 'bin')) return null
+  for (const sub of GIT_FOR_WINDOWS_BINARY_DIRS) {
+    const real = path.resolve(dir, '..', sub, 'bin', 'git.exe')
+    if (existsSync(real)) return real
+  }
+  return null
+}
+
+/** The git.exe a Scoop shim (`shims/git.exe` with `shims/git.shim` holding `path = "<target>"`) starts, or null when there is no readable shim file, it carries extra arguments, or its target is missing. */
+function scoopShimTarget(shim: string): string | null {
+  let text: string
+  try {
+    text = readFileSync(path.join(path.dirname(shim), `${path.basename(shim, path.extname(shim))}.shim`), 'utf-8')
+  } catch {
+    return null
+  }
+  let target: string | undefined
+  for (const raw of text.split(/\r?\n/)) {
+    const eq = raw.indexOf('=')
+    if (eq === -1) continue
+    const key = raw.slice(0, eq).trim()
+    if (key === 'args') return null
+    if (key === 'path') target = raw.slice(eq + 1).trim().replace(/^"|"$/g, '')
+  }
+  return target !== undefined && existsSync(target) ? target : null
+}
+
+/** The file runGit starts: on Windows the real git behind a launcher or a Scoop shim, otherwise plain `git`. `platform` and `findGit` are parameters only so the path mapping can be run on any platform against a made-up layout; runGit passes neither. The answer is kept for as long as PATH is unchanged. */
+export function gitExecutable(platform: NodeJS.Platform = process.platform, findGit: () => string | null = () => resolveOnPath('git')): string {
+  if (platform !== 'win32') return 'git'
   const pathEnv = process.env['PATH'] ?? ''
   if (gitFileCache !== undefined && gitFileCache.pathEnv === pathEnv) return gitFileCache.file
   let file = 'git'
-  const found = resolveOnPath('git')
-  if (found !== null && path.basename(found).toLowerCase() === 'git.exe' && path.basename(path.dirname(found)).toLowerCase() === 'cmd') {
-    for (const dir of GIT_FOR_WINDOWS_BINARY_DIRS) {
-      const real = path.resolve(path.dirname(found), '..', dir, 'bin', 'git.exe')
-      if (existsSync(real)) {
-        file = real
-        break
-      }
-    }
+  const found = findGit()
+  if (found !== null) {
+    const target = scoopShimTarget(found) ?? found
+    const real = realGitBehindLauncher(target)
+    if (real !== null) file = real
+    else if (target !== found) file = target
   }
   gitFileCache = { pathEnv, file }
   return file

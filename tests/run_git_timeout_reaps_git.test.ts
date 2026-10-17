@@ -1,3 +1,5 @@
+// Provenance: the trace2 `sid` parsed below is FORMAT-DERIVED from git's trace2 documentation (Documentation/technical/api-trace2.adoc, the "sid" session id: `<timestamp>-H<host hash>-P<pid in hex>`), and from one real trace captured with Git 2.53.0.windows.1; no shipped build of every git version was checked.
+// Platform: on Linux and macOS git is not a launcher, so this test passes before and after the fix there; the red proof against the old code is Windows-only.
 // Real git, real process table: no runGit stub. A git that is blocked for as long as a lock file exists stands in for a slow command; its own trace file says when it started and which pid it had.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import * as os from 'node:os'
@@ -8,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { resolveOnPath, sleepSync } from '../src/process_util.js'
 import { runGit } from '../src/util.js'
 
+const TEST_BUDGET_MS = 120_000
 let repo = ''
 let tracePath = ''
 const savedEnv: Record<string, string | undefined> = {}
@@ -81,19 +84,21 @@ describe('runGit timeout', () => {
     writeFileSync(path.join(repo, '.git', 'packed-refs.lock'), '')
     setEnv('GIT_TRACE2_EVENT', tracePath)
 
+    // The timeout firing is the behaviour under test and spawnSync cannot be told to fire it on an event, so the call is repeated with a timeout that doubles until git's trace shows it started: a slow machine just takes more turns and never fails on slowness. A synchronous loop cannot be cut short by vitest's timeout, so the loop stops itself at the budget this test is given.
     let timeoutMs = 1000
     let observed: number[] = []
-    // A machine that needs longer than the timeout to start git has no pid to look at yet: widen the timeout until the trace shows git started, never assert on an empty observation.
-    for (let attempt = 0; attempt < 6 && observed.length === 0; attempt++, timeoutMs *= 2) {
+    const stopAt = Date.now() + TEST_BUDGET_MS - 20_000
+    while (observed.length === 0 && Date.now() < stopAt) {
       const result = runGit(['-c', 'core.packedRefsTimeout=-1', 'pack-refs', '--all'], { cwd: repo, timeoutMs })
       expect(result.timedOut).toBe(true)
       expect(result.exitCode).toBe(-1)
       observed = tracedPids()
       for (const pid of observed) startedPids.add(pid)
+      timeoutMs *= 2
     }
     expect(observed.length, 'git never wrote its trace, so there was no process to check').toBeGreaterThan(0)
     expect(observed.filter(alive)).toEqual([])
-  }, 120_000)
+  }, TEST_BUDGET_MS)
 
   it('still returns a finished command whole when the timeout was not reached', () => {
     const result = runGit(['rev-parse', '--git-dir'], { cwd: repo, timeoutMs: 60_000 })
