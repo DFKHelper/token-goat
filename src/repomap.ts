@@ -2,6 +2,7 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
+import { CliError } from './command_error.js'
 import { runGit } from './util.js'
 
 /** What `git ls-files` answered for a directory: the tracked files, and whether they are missing because git was killed for running too long. Empty `files` with `timedOut` false means git had nothing to list (not a repository, nothing tracked, git failed); with `timedOut` true it means nothing is known. */
@@ -43,4 +44,11 @@ export function listTrackedFiles(cwd: string = process.cwd()): TrackedFilesResul
   } catch {
     return { files: [], timedOut: false }
   }
+}
+
+/** The tracked files under `cwd` for a command that cannot go on without a real answer. A listing git did not finish throws a {@link CliError}, so it is never read as "no tracked files" (which sends `index --walk` to a directory walk and tells `arch` the project is empty); a git that ran and found nothing still returns an empty list. */
+export function requireTrackedFiles(cwd: string = process.cwd()): string[] {
+  const tracked = listTrackedFiles(cwd)
+  if (tracked.timedOut) throw new CliError(`git did not answer in time while listing the tracked files under ${cwd}. Try again once git responds.`)
+  return tracked.files
 }

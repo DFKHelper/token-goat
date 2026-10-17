@@ -56,6 +56,8 @@ export function queueInstallIndex(cwd: string, opts: { enabled?: boolean | undef
       return { status: 'skipped', reason: kind === 'timed-out' ? 'git-timeout' : kind === 'own' ? 'untracked' : 'not-git', root }
     }
     const result = reconcileProject({ cwd: root, budgetMs: INSTALL_INDEX_BUDGET_MS })
+    // A listing git did not finish in the sweep itself (the check above passed on an earlier call) is unknown, not an indexed project: marking the root would stop session start from ever sweeping what was never listed.
+    if (result.gitTimedOut) return { status: 'skipped', reason: 'git-timeout', root }
     // Marked whether or not anything was queued: nothing queued means every tracked file is already indexed, which is an indexed project too.
     recordIndexedRoot(root)
     if (result.enqueued === 0) return { status: 'skipped', reason: 'nothing-queued', root }

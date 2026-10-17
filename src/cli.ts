@@ -13,7 +13,7 @@ import { recordStat, savedTokensFromBytes } from './stats.js'
 import { _useRichStats } from './stats_report.js'
 import { UNTRUSTED_WEB_TAG } from './injection_scan.js'
 import { fenceUntrusted } from './untrusted_fence.js'
-import { getTrackedFiles } from './repomap.js'
+import { requireTrackedFiles } from './repomap.js'
 import { collectWalkIndexFiles, MAX_FILES_SCANNED_FORCED } from './walk_index.js'
 import { dataDir, ENV_KEYS, globalDbPath, VERSION } from './constants.js'
 import { assetEmbedSha, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
@@ -275,7 +275,7 @@ export async function cmdIndex(
   const dbPath = opts.dbPath ?? globalDbPath()
   const force = opts.force === true
   const useWalk = opts.walk === true || opts.forceWalk === true
-  let files = getTrackedFiles(root)
+  let files = requireTrackedFiles(root)
   if (files.length === 0) {
     if (!useWalk) {
       throw new CliError(

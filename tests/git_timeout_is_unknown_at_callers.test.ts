@@ -10,9 +10,13 @@ vi.mock('../src/util.js', async (importOriginal) => {
   return { ...actual, runGit: (args: string[]) => git.answer(args) }
 })
 
+import { cmdIndex } from '../src/cli.js'
+import { buildImportGraph } from '../src/import_graph.js'
+import { isIndexedRoot } from '../src/indexed_roots.js'
 import { formatInstallIndexResult, queueInstallIndex } from '../src/install_index.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { runChanged } from '../src/read_git.js'
+import { reconcileProject } from '../src/reconcile.js'
 import { getTrackedFiles, listTrackedFiles } from '../src/repomap.js'
 import { indexableDir } from './helpers/temp-config.js'
 
@@ -69,6 +73,50 @@ describe('queueInstallIndex when git does not answer', () => {
     const dir = indexableDir()
     git.answer = () => REFUSED
     expect(queueInstallIndex(dir)).toMatchObject({ status: 'skipped', reason: 'not-git' })
+  })
+})
+
+describe('callers that read the tracked-file list when git does not answer', () => {
+  it('index refuses with a git-timeout error, also under --walk, instead of reading "no tracked files"', async () => {
+    const dir = indexableDir()
+    git.answer = () => KILLED
+    await expect(cmdIndex(dir, { walk: true })).rejects.toThrow(/git did not answer in time/)
+    await expect(cmdIndex(dir)).rejects.toThrow(/git did not answer in time/)
+  })
+
+  it('index still says "no tracked files" when git ran and refused', async () => {
+    git.answer = () => REFUSED
+    await expect(cmdIndex(indexableDir())).rejects.toThrow(/no tracked files found/)
+  })
+
+  it('the import graph (arch, affected, deps) refuses instead of building an empty graph', () => {
+    git.answer = () => KILLED
+    expect(() => buildImportGraph(indexableDir())).toThrow(/git did not answer in time/)
+    git.answer = () => REFUSED
+    expect(buildImportGraph(indexableDir()).files).toEqual([])
+  })
+
+  it('reconcile reports a killed listing as unknown, and a refused one as not killed', () => {
+    const dir = indexableDir()
+    git.answer = () => KILLED
+    expect(reconcileProject({ cwd: dir, dryRun: true }).gitTimedOut).toBe(true)
+    git.answer = () => REFUSED
+    expect(reconcileProject({ cwd: dir, dryRun: true }).gitTimedOut).toBe(false)
+  })
+
+  it('install does not record the root as indexed when the listing is killed on the second call', () => {
+    const dir = indexableDir()
+    let listings = 0
+    // The first listing (install's own non-git check) answers; reconcile's listing is the one git then fails to finish.
+    git.answer = (args) => {
+      if (args[0] !== 'ls-files') return REFUSED
+      listings += 1
+      return listings === 1 ? ok('a.ts\n') : KILLED
+    }
+    const result = queueInstallIndex(dir)
+    expect(listings).toBe(2)
+    expect(result).toMatchObject({ status: 'skipped', reason: 'git-timeout' })
+    expect(isIndexedRoot(dir)).toBe(false)
   })
 })
 

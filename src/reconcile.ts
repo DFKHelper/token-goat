@@ -10,7 +10,7 @@ import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from 
 import { indexedPathSpellingIsStale } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { getDisplayRoot } from './project.js'
-import { getTrackedFiles } from './repomap.js'
+import { listTrackedFiles } from './repomap.js'
 import { projectScopeClause } from './sql_path.js'
 import { countNoun, foldPath } from './util.js'
 
@@ -80,6 +80,8 @@ export interface ReconcileResult {
   budgetExhausted: boolean
   /** True when the tracked-file enumeration came back empty against a non-empty index -- the project is not a git repository, git is missing, or git errored. Distinguished from a genuinely emptied project because the two are identical in the numbers and opposite in what they mean. */
   trackedUnavailable: boolean
+  /** True when `git ls-files` was killed for running too long, so what the project tracks is unknown rather than empty. The sweep then checks only what the index already holds; a caller that must not act on a listing it never got (install marking the root indexed) reads this. */
+  gitTimedOut: boolean
   /** Tracked files never examined because the budget ran out. */
   unscanned: number
   /** Paths that reached the dirty queue (0 when `dryRun`). Fewer than changed + added + removed when the queue refused some: it takes nothing under the OS temp dir, and nothing at all when it cannot be written. */
@@ -119,7 +121,7 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
   const lines: string[] = []
   if (isReconcileClean(result)) {
     // Not claimed when the enumeration failed: an empty drift set there means nothing was compared, and "Index matches disk" over zero comparisons is the confident wrong answer this whole command exists to avoid. The disclosure below carries that case instead.
-    if (!result.trackedUnavailable) {
+    if (!result.trackedUnavailable && !result.gitTimedOut) {
       lines.push(`Index matches disk: ${countNoun(result.scanned, 'file')} checked in ${result.elapsedMs}ms.`)
     }
   } else {
@@ -149,7 +151,9 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
   if (unqueued > 0) {
     lines.push(`${countNoun(unqueued, 'file')} of the above could not be queued for reindexing: the queue takes nothing under the OS temp dir, and nothing at all when it cannot be written. Run token-goat index here to bring the index up to date.`)
   }
-  if (result.trackedUnavailable) {
+  if (result.gitTimedOut) {
+    lines.push('git did not answer in time while listing the tracked files, so new files could not be found. Indexed files that changed or are gone from disk were still detected. Run token-goat reconcile again once git responds.')
+  } else if (result.trackedUnavailable) {
     lines.push('This project has an index but git listed no files in it, so new files could not be found. Indexed files that changed or are gone from disk were still detected. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
   }
   if (result.budgetExhausted) {
@@ -171,7 +175,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const calledAt = Date.now()
   const dbPath = opts.dbPath ?? globalDbPath()
 
-  const tracked = getTrackedFiles(cwd)
+  const listing = listTrackedFiles(cwd)
+  const tracked = listing.files
   // Absolutized before scoping: the index stores absolute paths, and `projectScopeClause` builds a prefix-range bound straight from the root it is handed. A relative `cwd` -- what `token-goat reconcile` from inside the project passes -- would produce a relative prefix that matches no stored row, so every tracked file would look unindexed and the sweep would enqueue the entire project as "added" on every run.
   const projectRoot = resolveIndexPath('.', cwd)
   const indexed = getProjectFileEntries(projectRoot, dbPath)
@@ -315,6 +320,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     embedStale,
     budgetExhausted,
     trackedUnavailable,
+    gitTimedOut: listing.timedOut,
     unscanned: Math.max(0, tracked.length - scanned),
     enqueued,
     elapsedMs: Date.now() - calledAt,
