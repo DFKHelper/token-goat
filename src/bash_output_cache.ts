@@ -15,6 +15,9 @@ import { redactSecrets } from './secret_redact.js'
 /** Bound for the git calls of the state fingerprint: a stuck git must not hold the hook server, and a timeout reads as an unknown state. */
 const GIT_STATE_TIMEOUT_MS = 5000
 
+/** The git fingerprint of a repository whose state a killed git could not read: it names no state, so an entry stored under it is never served as fresh and a recall that meets it is stale (null stays for "not a repository", where nothing can change). */
+const GIT_STATE_UNKNOWN = 'unknown'
+
 /** Subdir under the token-goat home where bash-output blobs live. */
 export const BASH_OUTPUT_SUBDIR = 'bash_outputs'
 
@@ -113,11 +116,13 @@ function statusPathStats(root: string, porcelainZ: string): string {
 function gitStateFingerprintSync(cwd: string): string | null {
   try {
     const headResult = runGit(['rev-parse', '--show-toplevel', 'HEAD'], { cwd, timeoutMs: GIT_STATE_TIMEOUT_MS })
+    if (headResult.timedOut === true) return GIT_STATE_UNKNOWN
     if (headResult.exitCode !== 0) return null
     const [root = '', headSha = ''] = headResult.stdout.trim().split(/\r?\n/)
 
     let statusHash = ''
     const statusResult = runGit(['status', '--porcelain', '-z', '--untracked-files=all'], { cwd, timeoutMs: GIT_STATE_TIMEOUT_MS })
+    if (statusResult.timedOut === true) return GIT_STATE_UNKNOWN
     if (statusResult.exitCode === 0) {
       statusHash = shortFingerprint(`${statusResult.stdout}\x00${statusPathStats(root, statusResult.stdout)}`)
     }
@@ -330,7 +335,7 @@ export function isBashEntryStale(entry: BashOutputEntry, command: string, cwd: s
   const stored = entry.fingerprints
   if (!stored) return false
   const current = computeBashFingerprints(command, cwd)
-  if (stored.git !== undefined && stored.git !== current?.git) return true
+  if (stored.git !== undefined && (stored.git === GIT_STATE_UNKNOWN || stored.git !== current?.git)) return true
   if (stored.dir !== undefined && stored.dir !== current?.dir) return true
   if (stored.lockfile !== undefined && stored.lockfile !== current?.lockfile) return true
   if (stored.file !== undefined && stored.file !== current?.file) return true
