@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { appendDirtyQueuePaths } from '../src/dirty_queue.js'
 import { BUNDLE, readCoreBundleText, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
+import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
   return sharedRunBundle(args, { cwd, env, timeout: 30000 })
@@ -355,20 +356,9 @@ function expectDirectoryReleasedBy(pid: number, dir: string): void {
 
 /** Terminate a daemon a test started, so no test leaves a real background process behind. */
 async function stopDaemon(pid: number | undefined): Promise<void> {
-  if (pid === undefined || !pidAlive(pid)) return
-  try {
-    process.kill(pid, 'SIGTERM')
-  } catch {
-    // already gone
-  }
+  if (pid === undefined || !killIfCommandLine(pid, isWorkerDaemonCommandLine, { signal: 'SIGTERM' })) return
   await waitFor('the daemon to exit', 5000, () => !pidAlive(pid)).catch(() => undefined)
-  if (pidAlive(pid)) {
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch {
-      // already gone
-    }
-  }
+  killIfCommandLine(pid, isWorkerDaemonCommandLine)
 }
 
 // POSIX only: a mode bit is how this platform refuses a directory write, and root ignores it. Windows refuses through an ACL, which tests/worker_unwritable_data_dir.test.ts covers through the same probe.

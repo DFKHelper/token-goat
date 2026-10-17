@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { BUNDLE, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
+import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { indexableDir } from './helpers/temp-config.js'
 import { stopWorker, workerPidPath } from '../src/worker_lifecycle.js'
 
@@ -56,12 +57,7 @@ function mkIsolated(prefix: string): string {
 /** Only pids this file started: a daemon that retired is already gone, and one that did not is killed so a failing run never leaves it behind. */
 afterEach(() => {
   for (const pid of startedPids.splice(0)) {
-    if (!alive(pid)) continue
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch {
-      // already gone
-    }
+    killIfCommandLine(pid, isWorkerDaemonCommandLine)
   }
   for (const d of tempDirs.splice(0)) {
     try {

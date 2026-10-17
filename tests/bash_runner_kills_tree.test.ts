@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { run, runRaw } from '../src/bash_runner.js'
 import { BUNDLE, tgIsolatedEnv } from './helpers/bundle.js'
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { processAlive } from './helpers/process_alive.js'
 
 // Every tree kill goes through spawnSync (ps on POSIX, taskkill on Windows), so counting those calls is a clock-free, immediate signal that the runner ended the tree itself rather than leaving it to the grandchild's own directory check.
@@ -99,13 +100,7 @@ afterEach(async () => {
   for (const c of hosts.splice(0)) {
     if (c.exitCode === null && c.signalCode === null) c.kill('SIGKILL')
   }
-  if (grandchildPid !== undefined && alive(grandchildPid)) {
-    try {
-      process.kill(grandchildPid, 'SIGKILL')
-    } catch {
-      // already gone
-    }
-  }
+  if (grandchildPid !== undefined) killIfCommandLine(grandchildPid, (cmd) => cmd.includes('grandchild.cjs'))
   grandchildPid = undefined
   // Deleting the directory ends the parent script, which releases any pipe it still holds so a run left pending can settle.
   for (const d of [dir, isolatedBase]) {

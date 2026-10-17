@@ -7,6 +7,8 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+
 const passes = vi.hoisted(() => [] as string[])
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -106,13 +108,7 @@ describe.skipIf(process.platform === 'win32')('a tree that is forking while it i
     const owned = spawnOwned('sh', ['-c', loop], { stdio: 'ignore' })
     children.push(owned.child)
     cleanups.push(() => {
-      for (const pid of liveWithArgs(marker)) {
-        try {
-          process.kill(pid, 'SIGKILL')
-        } catch {
-          // already gone
-        }
-      }
+      for (const pid of liveWithArgs(marker)) killIfCommandLine(pid, (cmd) => cmd.includes(marker))
     })
     // Only a kill that lands while the loop is still forking is the case under test.
     while (liveWithArgs(marker).length < 30) await new Promise<void>((resolve) => setImmediate(resolve))

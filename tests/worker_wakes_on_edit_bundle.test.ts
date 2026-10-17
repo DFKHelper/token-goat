@@ -8,6 +8,7 @@ import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { runBundle, tgIsolatedEnv } from './helpers/bundle.js'
+import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 /** Mirrors src/constants.ts's defaultDataDir() for a LOCALAPPDATA/XDG_DATA_HOME of `base`, as tests/worker_daemon_e2e.test.ts does. */
@@ -100,7 +101,7 @@ describe('an edit wakes the detached worker (built bundle)', () => {
       if (stopped !== undefined && Number.isFinite(stopped)) {
         const until = Date.now() + 5000
         while (pidAlive(stopped) && Date.now() < until) await sleep(50)
-        if (pidAlive(stopped)) process.kill(stopped, 'SIGKILL')
+        killIfCommandLine(stopped, isWorkerDaemonCommandLine)
         const killed = Date.now() + 5000
         while (pidAlive(stopped) && Date.now() < killed) await sleep(50)
       }

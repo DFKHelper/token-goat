@@ -27,6 +27,7 @@ import {
 import { BUNDLE } from './helpers/bundle.js'
 import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { buildNative } from './helpers/native_bin.js'
 
 type Env = Record<string, string>
@@ -850,7 +851,7 @@ describe('process behaviour', () => {
       while (alive(grandchild) && Date.now() < deadline) await sleep(50)
       expect(alive(grandchild)).toBe(false)
     } finally {
-      if (grandchild > 0 && alive(grandchild)) process.kill(grandchild)
+      if (grandchild > 0) killIfCommandLine(grandchild, (cmd) => cmd.includes(pidFile), { signal: 'SIGTERM' })
     }
   }, 30_000)
 })

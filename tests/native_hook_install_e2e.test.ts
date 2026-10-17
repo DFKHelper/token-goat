@@ -16,6 +16,7 @@ import { HARNESS_HOOK_PAYLOADS, type HookPayloadCase, type PayloadHarness } from
 import { ROOT } from './helpers/bundle.js'
 import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
+import { isHookServerCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { buildNative } from './helpers/native_bin.js'
 
 type Env = Record<string, string>
@@ -397,7 +398,7 @@ afterAll(async () => {
     const deadline = Date.now() + 5000
     for (const pid of sb.pids) {
       while (pidAlive(pid) && Date.now() < deadline) await sleep(50)
-      if (pidAlive(pid)) process.kill(pid)
+      killIfCommandLine(pid, isHookServerCommandLine, { signal: 'SIGTERM' })
     }
     // The link first, on its own: removing the tree through it would reach the repository.
     if (WIN) fs.rmdirSync(sb.link)

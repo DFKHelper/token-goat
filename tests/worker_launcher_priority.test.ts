@@ -6,9 +6,12 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+
 // tg-no-regex-preload
 
 // The stand-in ends when its owner (this test process) does, or when the test kills it.
+const STAND_IN_MARK = 'const owner = Number(process.argv[1])'
 const STAND_IN = 'const owner = Number(process.argv[1]); setInterval(() => { try { process.kill(owner, 0) } catch { process.exit(0) } }, 500)'
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -20,22 +23,12 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 const { startDetachedWorker } = await import('../src/worker_lifecycle.js')
-const { killProcessTree } = await import('../src/process_tree.js')
 
 const tempDirs: string[] = []
 const started: number[] = []
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM'
-  }
-}
-
 afterEach(() => {
-  for (const pid of started.splice(0)) if (alive(pid)) killProcessTree(pid)
+  for (const pid of started.splice(0)) killIfCommandLine(pid, (cmd) => cmd.includes(STAND_IN_MARK), { tree: true })
   for (const d of tempDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 

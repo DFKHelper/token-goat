@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { BUNDLE, runBundle, tgIsolatedEnv } from './helpers/bundle.js'
-import { killProcessTree } from '../src/process_tree.js'
+import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 // tg-no-regex-preload
 
@@ -15,15 +15,6 @@ import { killProcessTree } from '../src/process_tree.js'
 function effectiveDataDir(base: string): string {
   if (process.platform === 'win32') return path.join(base, 'dfk-helper', 'token-goat')
   return path.join(base, 'token-goat')
-}
-
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM'
-  }
 }
 
 /** Poll until the condition holds; the per-test timeout is the only bound, so a slow machine is not failed by a clock of this file's own. */
@@ -57,7 +48,7 @@ afterEach(() => {
     }
   }
   for (const pid of startedPids.splice(0)) {
-    if (alive(pid)) killProcessTree(pid)
+    killIfCommandLine(pid, isWorkerDaemonCommandLine, { tree: true })
   }
   for (const d of tempDirs.splice(0)) {
     try {
