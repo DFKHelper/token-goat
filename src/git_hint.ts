@@ -25,36 +25,39 @@ function readPrefix(file: string): string | null {
   }
 }
 
-/** The repository directory for `cwd`: the nearest ancestor's `.git` directory, or the directory a `.git` file (a linked worktree or submodule) points at, relative paths read from the folder holding that file. Null when there is none, a `.git` directory lacks objects/ or refs/ (git skips it), or a `.git` file names nothing readable. An exported GIT_DIR names a repository independent of the directory, and an exported GIT_CEILING_DIRECTORIES can stop the walk short of it; neither is modelled, so each is unknown too. */
+/** The first line of `file`, trimmed; empty when it cannot be read, which no caller's pattern accepts. */
+const firstLine = (file: string): string => (readPrefix(file)?.split(/\r?\n/, 1)[0] ?? '').trim()
+
+/** The repository directory for `cwd`: the nearest ancestor's `.git` directory, or the directory a `.git` file (a linked worktree or submodule) points at, relative paths read from the folder holding that file. Null when there is none, a `.git` directory lacks objects/ or refs/ (git skips it), the walk crosses onto another device (a mount point stops git), or a `.git` file names nothing readable. An exported GIT_DIR names a repository independent of the directory, and an exported GIT_CEILING_DIRECTORIES can stop the walk short of it; neither is modelled, so each is unknown too. */
 function repositoryDir(cwd: string): string | null {
   if (process.env['GIT_DIR'] !== undefined || process.env['GIT_CEILING_DIRECTORIES']) return null
   let dir = resolve(cwd)
   // Git walks up from the physical directory, so a junction or symlink is followed first; an unreadable path keeps the unresolved spelling.
   try { dir = realpathSync.native(dir) } catch { /* keep the unresolved path */ }
-  for (;;) {
-    const marker = resolve(dir, '.git')
-    let kind: 'dir' | 'file' | null = null
-    try {
-      const info = statSync(marker)
-      kind = info.isDirectory() ? 'dir' : info.isFile() ? 'file' : null
-    } catch { /* no marker here */ }
-    // Git skips a `.git` directory that holds no objects/ or refs/ and walks up, so a hollow one means the answer is the spawn's.
-    if (kind === 'dir') return ['objects', 'refs'].every((part) => existsSync(resolve(marker, part))) ? marker : null
-    if (kind === 'file') {
-      const line = ((readPrefix(marker) ?? '').split(/\r?\n/, 1)[0] ?? '').trim()
-      const target = line.startsWith('gitdir:') ? line.slice('gitdir:'.length).trim() : ''
-      return target === '' ? null : resolve(dir, target)
+  try {
+    for (;;) {
+      const marker = resolve(dir, '.git')
+      const info = statSync(marker, { throwIfNoEntry: false })
+      // Git skips a `.git` directory that holds no objects/ or refs/ and walks up, so a hollow one means the answer is the spawn's.
+      if (info?.isDirectory()) return ['objects', 'refs'].every((part) => existsSync(resolve(marker, part))) ? marker : null
+      if (info?.isFile()) {
+        const line = firstLine(marker)
+        const target = line.startsWith('gitdir:') ? line.slice('gitdir:'.length).trim() : ''
+        return target === '' ? null : resolve(dir, target)
+      }
+      const parent = dirname(dir)
+      // Git stops at a filesystem boundary (unless GIT_DISCOVERY_ACROSS_FILESYSTEM is set), so a change of device leaves the answer to the spawn.
+      if (parent === dir || statSync(parent).dev !== statSync(dir).dev) return null
+      dir = parent
     }
-    const parent = dirname(dir)
-    if (parent === dir) return null
-    dir = parent
+  } catch {
+    return null // a path this process cannot stat is one it cannot tell git's answer for
   }
 }
 
 /** Whether git might print something other than the plain `name` for the branch HEAD names in `dir`. It prints `heads/<name>` when another ref could be spelled `name` (git's strict abbreviation): `refs/<name>` (a stash is `refs/stash`), a tag, `refs/remotes/<name>` or `refs/remotes/<name>/HEAD`, loose or packed, in the shared refs: the directory a linked worktree's `commondir` file names (relative to its own git directory), else `dir` itself. It refuses outright when that directory has no HEAD. A packed-refs over 8 MB is not scanned, and one that cannot be read for a reason other than being absent counts as holding the tag. */
 function branchNameIsUncertain(dir: string, name: string): boolean {
-  const text = readPrefix(resolve(dir, 'commondir'))
-  const common = text === null ? dir : resolve(dir, text.trim())
+  const common = resolve(dir, readPrefix(resolve(dir, 'commondir'))?.trim() ?? '.')
   const packed = resolve(common, 'packed-refs')
   const rivals = [`refs/${name}`, `refs/tags/${name}`, `refs/remotes/${name}`, `refs/remotes/${name}/HEAD`]
   try {
@@ -70,12 +73,10 @@ function branchNameIsUncertain(dir: string, name: string): boolean {
 export function readBranchWithoutSpawn(cwd: string): string | null {
   const dir = repositoryDir(cwd)
   if (dir === null) return null
-  const head = readPrefix(resolve(dir, 'HEAD'))
-  if (head === null) return null
-  const line = (head.split(/\r?\n/, 1)[0] ?? '').trim()
+  const line = firstLine(resolve(dir, 'HEAD'))
   const named = /^ref:[ \t]*refs\/heads\/(.+)$/.exec(line)?.[1]
   if (named !== undefined) return PRINTABLE_BRANCH.test(named) && !branchNameIsUncertain(dir, named) ? named : null
-  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(line) ? 'HEAD' : null
+  return /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(line) ? 'HEAD' : null
 }
 
 /** What a git query that prints one line per finding answered: `clean` (ran, printed nothing), `dirty` (printed something), `timed-out` (killed at `timeoutMs`: unknown, neither of the others), or `refused` (git exited non-zero or never ran: not a repository, a missing git). */

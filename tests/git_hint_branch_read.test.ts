@@ -3,10 +3,21 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { readBranchWithoutSpawn } from '../src/git_hint.js'
 import { runGit } from '../src/util.js'
+
+// The seam for the mount-point test: while `of` is set, every statSync reports the device number it returns for that path, and is the real stat otherwise.
+const mountDevices = vi.hoisted(() => ({ of: null as ((p: string) => number) | null }))
+vi.mock('node:fs', async (importOriginal) => {
+  const real = await importOriginal<typeof fs>()
+  const statSync = (...args: unknown[]): unknown => {
+    const stat = (real.statSync as (...a: unknown[]) => unknown)(...args)
+    return mountDevices.of === null || stat === undefined ? stat : Object.create(stat as object, { dev: { value: mountDevices.of(String(args[0])) } })
+  }
+  return { ...real, statSync, default: { ...real, statSync } }
+})
 
 const IDENTITY = ['-c', 'user.name=tg', '-c', 'user.email=tg@example.invalid']
 let root = ''
@@ -262,6 +273,22 @@ describe('readBranchWithoutSpawn says unknown rather than guess', () => {
       expect(readBranchWithoutSpawn(inner)).toBeNull()
       fs.mkdirSync(path.join(inner, '.git', missing))
       expect(readBranchWithoutSpawn(inner), 'with both directories it is the repository').toBe('hollow')
+    })
+
+    // HAND-DERIVED from git(1): discovery stops at a filesystem boundary unless GIT_DISCOVERY_ACROSS_FILESYSTEM is set. A real cross-device fixture is not possible on this machine (the temp directory is one volume, and mounting needs privileges the suite does not have), so the device numbers come from the injected statSync above; the real-git half of the claim is not exercised here.
+    it('an upward walk that crosses onto another device, where git stops at the mount point', () => {
+      const repo = newRepo('mounted')
+      const sub = path.join(repo, 'mount-edge', 'sub')
+      fs.mkdirSync(sub, { recursive: true })
+      expect(readBranchWithoutSpawn(sub)).toBe('main')
+      try {
+        mountDevices.of = (p) => (p.includes('mount-edge') ? 2 : 1)
+        expect(readBranchWithoutSpawn(sub)).toBeNull()
+        mountDevices.of = () => 1
+        expect(readBranchWithoutSpawn(sub), 'the same walk on one device').toBe('main')
+      } finally {
+        mountDevices.of = null
+      }
     })
 
     it('a .git file naming a directory that exists but holds no repository', () => {
