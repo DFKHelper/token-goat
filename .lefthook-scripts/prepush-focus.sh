@@ -3,6 +3,7 @@
 
 FAILED_STORE="$(git rev-parse --path-format=absolute --git-common-dir)/token-goat-prepush/last-failed.json"
 FAILED_TOOL="$ROOT_DIR/scripts/prepush-failed.mjs"
+READERS_TOOL="$ROOT_DIR/scripts/prepush-tree-readers.mjs"
 
 # Paths a focused run can trust vitest's module graph for: TypeScript and JavaScript modules under src/ and tests/, except test setup and fixtures. Anything else (scripts a test spawns, the native client, JSON and Markdown a test reads, config, dependencies) is invisible to `vitest related`, so a change to it means the full leg.
 focus_covered() {
@@ -17,7 +18,8 @@ focus_covered() {
 # $1: leg (win or wsl). Sets FOCUS_FILE to a list of paths for `vitest related`, or "" for the full leg, and FOCUS_NOTE to the one line that says which and why.
 focus_decide() {
   local leg=$1 rec rec_sha f diff_out
-  local -a failed=() changed=() list=()
+  local -a failed=() changed=() list=() readers=()
+  local readers_out src_changed=0 n_changed=0
   FOCUS_FILE=""
   if [[ "${TG_PREPUSH_FULL:-0}" == "1" ]]; then
     FOCUS_NOTE="$leg leg full: TG_PREPUSH_FULL=1"; return 0
@@ -36,20 +38,33 @@ focus_decide() {
   mapfile -t changed <<<"$diff_out"
   for f in "${changed[@]}"; do
     [[ -n "$f" ]] || continue
+    n_changed=$((n_changed + 1))
     if ! focus_covered "$f"; then
       FOCUS_NOTE="$leg leg full: $f changed since ${rec_sha:0:9} and vitest related cannot see it"; return 0
     fi
+    [[ "$f" == src/* ]] && src_changed=1
     [[ -f "$ROOT_DIR/$f" ]] && list+=("$f")
   done
   for f in "${failed[@]}"; do
     [[ -f "$ROOT_DIR/$f" ]] && list+=("$f")
   done
+  # `vitest related` follows imports only: a src change also needs every test that reads the source tree through fs or spawns the built bundle.
+  if [[ "$src_changed" -eq 1 ]]; then
+    if ! readers_out="$(node "$READERS_TOOL" "$ROOT_DIR" 2>/dev/null)" || [[ -z "$readers_out" ]]; then
+      FOCUS_NOTE="$leg leg full: src changed since ${rec_sha:0:9} and the tree-reading and bundle tests could not be listed"; return 0
+    fi
+    mapfile -t readers <<<"$readers_out"
+    list+=("${readers[@]}")
+  fi
   if [[ "${#list[@]}" -eq 0 ]]; then
     FOCUS_NOTE="$leg leg full: none of the recorded or changed files exists now"; return 0
   fi
   FOCUS_FILE="$LOG_DIR/focus-$leg.txt"
-  printf '%s\n' "${list[@]}" | sort -u >"$FOCUS_FILE"
-  FOCUS_NOTE="$leg leg focused: $(wc -l <"$FOCUS_FILE" | tr -d ' ') file(s) (${#failed[@]} failed before, ${#changed[@]} changed since ${rec_sha:0:9}); set TG_PREPUSH_FULL=1 for the full leg"
+  # /usr/bin/sort by path: under a PATH with C:/Windows/System32 ahead of Git's usr/bin a bare sort is Windows sort.exe, which has no -u.
+  local posix_sort=sort
+  [[ -x /usr/bin/sort ]] && posix_sort=/usr/bin/sort
+  printf '%s\n' "${list[@]}" | "$posix_sort" -u >"$FOCUS_FILE"
+  FOCUS_NOTE="$leg leg focused: $(wc -l <"$FOCUS_FILE" | tr -d ' ') file(s) (${#failed[@]} failed before, ${n_changed} changed since ${rec_sha:0:9}, ${#readers[@]} tree-reading or bundle tests); set TG_PREPUSH_FULL=1 for the full leg"
 }
 
 # $1: leg, $2: the leg's log. Records the failing files of a red leg; a leg with no parsable failure clears the record so the next run is full.

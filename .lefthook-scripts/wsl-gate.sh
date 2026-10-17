@@ -17,7 +17,8 @@ wsl_pushed_paths() {
       base="$rsha"
       git cat-file -e "$base^{commit}" 2>/dev/null || return 1
     fi
-    git diff --name-only --no-renames "$base" "$lsha" 2>/dev/null || return 1
+    # NUL-separated so a non-ASCII path arrives raw instead of quoted; the subshell keeps a failing git from hiding behind tr.
+    ( set -o pipefail; git diff -z --name-only --no-renames "$base" "$lsha" 2>/dev/null | tr '\0' '\n' ) || return 1
   done <<<"$input"
   [[ "$seen" -eq 1 ]]
 }
@@ -46,6 +47,9 @@ wsl_decide() {
     1) WSL_RUN=1; WSL_REASON="opt-in (TG_PREPUSH_WSL=1)"; return 0 ;;
     0) WSL_RUN=0; WSL_REASON="opt-out (TG_PREPUSH_WSL=0)"; return 0 ;;
   esac
+  if [[ ! -r "$patterns" ]]; then
+    WSL_RUN=1; WSL_REASON="pattern file $patterns is missing or unreadable"; return 0
+  fi
   if ! changed="$(wsl_pushed_paths "$input")"; then
     WSL_RUN=1; WSL_REASON="pushed range could not be determined"; return 0
   fi

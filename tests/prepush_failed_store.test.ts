@@ -54,7 +54,7 @@ describe('prepush failure record', () => {
 
   it('records from a log on the command line and prints the sha then the files on read', () => {
     const log = path.join(dir, 'tests.log')
-    writeFileSync(log, ' FAIL  tests/hooks_stop.test.ts > the built hook entry, per host > codex: a test run\n')
+    writeFileSync(log, ' FAIL  tests/hooks_stop.test.ts > the built hook entry, per host > codex: a test run\n Test Files  1 failed | 1352 passed | 5 skipped (1365)\n')
     execFileSync(process.execPath, [SCRIPT, 'record', store, 'win', 'abc123', log])
     expect(execFileSync(process.execPath, [SCRIPT, 'read', store, 'win'], { encoding: 'utf8' })).toBe('abc123\ntests/hooks_stop.test.ts\n')
     expect(() => execFileSync(process.execPath, [SCRIPT, 'read', store, 'wsl'], { stdio: 'pipe' })).toThrow()
