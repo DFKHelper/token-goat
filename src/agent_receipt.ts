@@ -228,7 +228,7 @@ export async function subagentStopHandler(event: HookEvent): Promise<HookOutput>
       console.warn(`subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`)
     } else if (tree === 'timed-out') {
       // A killed git is neither a clean tree nor a dirty one: say the check did not finish, so a silent stop is never read as a clean verdict.
-      console.warn(`subagent-stop: could not check the report against git status — session=${event.sessionId}, git did not answer in time`)
+      console.warn(`subagent-stop: could not check the report against git status — session=${event.sessionId}, git did not finish`)
     }
     return passOutput()
   } catch {

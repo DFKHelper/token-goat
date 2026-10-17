@@ -307,7 +307,7 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     repo = repoHeldByFilter(hold)
     await stopWhileHeld(sid, hold)
     expect(bound.statusCalls).toBe(1)
-    expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not answer in time`])
+    expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not finish`])
     expect(JSON.stringify(await agentResult(sid, CLAIM))).toContain(NOTE)
   })
 
@@ -331,7 +331,7 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     await stopped
     expect(bound.statusCalls).toBe(1)
     expect(bound.timeouts).toEqual([HINT_MS])
-    expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not answer in time`])
+    expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not finish`])
   })
 
   it('the stop warning asked alone runs the real runner under the hint bound', async () => {
@@ -408,7 +408,7 @@ describe('a git that was cut off without a timeout', () => {
     })
   })
   const OVERFLOW: GitResult = { stdout: '', stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer', exitCode: -1 }
-  const UNCHECKED_WARNING = (sid: string): string => `subagent-stop: could not check the report against git status — session=${sid}, git did not answer in time`
+  const UNCHECKED_WARNING = (sid: string): string => `subagent-stop: could not check the report against git status — session=${sid}, git did not finish`
 
   it('reads as unchecked on the receipt and the stop warning, never as a clean tree', async () => {
     bound.answer = OVERFLOW
@@ -439,6 +439,14 @@ describe('a git that was cut off without a timeout', () => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-eacces-'))
     await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect(warnings).toEqual([UNCHECKED_WARNING(sid)])
+  })
+
+  it('words a git that overflowed its output as not finished, never as a git that was too slow', async () => {
+    bound.answer = OVERFLOW
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-overflow-wording-'))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not finish`])
   })
 
   // Decision pinned, not endorsed: both runners report a git killed by a signal as exit 1, so it cannot be told from an error exit and stays silent like one; a missing git or a gone directory (ENOENT) stays silent as it always did.
