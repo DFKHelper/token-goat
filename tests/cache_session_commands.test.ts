@@ -806,7 +806,7 @@ describe('cmdBaseline', () => {
 
   it('compact variant is terser than full output', () => {
     // HAND-DERIVED fixture: three source files in a private folder, under repomap.compact_file_threshold so the plain call renders the full form. Run against the repository's own tree (the old cwd), the plain call crossed that threshold and auto-switched to compact too, so the test compared compact with compact, and the Languages line tracked whatever other test files had in the tree at that moment (a one-off 239 vs 231 failure).
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-project-'))
+    const project = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-baseline-project-')))
     const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(project)
     try {
       for (const name of ['a.ts', 'b.py', 'c.rs']) fs.writeFileSync(path.join(project, name), 'x\n')

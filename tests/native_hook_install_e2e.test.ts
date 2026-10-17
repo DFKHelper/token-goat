@@ -16,7 +16,7 @@ import { HARNESS_HOOK_PAYLOADS, type HookPayloadCase, type PayloadHarness } from
 import { ROOT } from './helpers/bundle.js'
 import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
-import { isHookServerCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { isHookServerCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { buildNative } from './helpers/native_bin.js'
 
 type Env = Record<string, string>
@@ -389,6 +389,8 @@ beforeAll(() => {
 }, 900_000)
 
 afterAll(async () => {
+  // A pid whose command line could not be read is reported after every sandbox has been cleaned up.
+  let unreadable: unknown
   for (const sb of sandboxes) {
     try {
       stopServer(sb)
@@ -398,13 +400,18 @@ afterAll(async () => {
     const deadline = Date.now() + 5000
     for (const pid of sb.pids) {
       while (pidAlive(pid) && Date.now() < deadline) await sleep(50)
-      killIfCommandLine(pid, isHookServerCommandLine, { signal: 'SIGTERM' })
+    }
+    try {
+      killAllIfCommandLine(sb.pids, isHookServerCommandLine, { signal: 'SIGTERM' })
+    } catch (err) {
+      unreadable ??= err
     }
     // The link first, on its own: removing the tree through it would reach the repository.
     if (WIN) fs.rmdirSync(sb.link)
     else fs.unlinkSync(sb.link)
     fs.rmSync(sb.root, { recursive: true, force: true })
   }
+  if (unreadable !== undefined) throw unreadable
   expect(fs.existsSync(path.join(ROOT, 'package.json'))).toBe(true)
 }, 60_000)
 

@@ -10,7 +10,7 @@ import { zipSync, strToU8 } from 'fflate'
 import sharp from 'sharp'
 
 import { BUNDLE, ROOT } from './bundle.js'
-import { killIfCommandLine } from './kill_if_command_line.js'
+import { isWorkerDaemonCommandLine, killIfCommandLine } from './kill_if_command_line.js'
 import { buildDocxFixture, buildDocxWithTableFixture, buildPptxFixture } from './ooxml_fixtures.js'
 
 export let repo: string // indexed fixture; default cwd for read commands
@@ -2123,7 +2123,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       expect(stopped.stdout).toContain('Worker stopped.')
     } finally {
       // After a stop that worked this pid is dead and may belong to a new process (a killed vitest worker exits with code 1), so only a process still running as a worker daemon is signalled.
-      if (Number.isInteger(pid)) killIfCommandLine(pid, (commandLine) => /(?:^|\s)--worker-daemon(?:\s|["']|$)/.test(commandLine))
+      if (Number.isInteger(pid)) killIfCommandLine(pid, isWorkerDaemonCommandLine)
     }
   },
   'hook-server': () => {

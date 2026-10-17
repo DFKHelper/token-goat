@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { readAllProcesses } from '../src/cli_doctor_process.js'
 import { isResidentOfInstall, readProcessCommandLine } from '../src/resident_process.js'
 import { ROOT, tgIsolatedEnv } from './helpers/bundle.js'
-import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 
 /** Mirrors constants.ts's defaultDataDir() platform join; see worker_daemon_e2e.test.ts for why it cannot be imported. */
 function effectiveDataDir(base: string): string {
@@ -114,15 +114,16 @@ afterEach(async () => {
   const mine = (cmd: string | null): boolean => cmd !== null && spellings.some((l) => isResidentOfInstall(cmd, l, ['worker', 'hook-server']))
   const doomed = new Set<number>(started.splice(0).filter((pid) => alive(pid) && mine(readProcessCommandLine(pid))))
   if (Array.isArray(table)) for (const p of table) if (mine(p.commandLine)) doomed.add(p.processId)
-  for (const pid of doomed) {
-    if (pid === process.pid) continue
-    // The whole tree: taskkill /T /F on Windows, where process.kill ends the daemon alone; SIGKILL to the daemon's group elsewhere. The command line is read again right here, so a pid that exited since the table was read and was reused is left alone.
-    killIfCommandLine(pid, mine, { tree: true })
-  }
+  doomed.delete(process.pid)
   try {
-    fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
-  } catch {
-    // a daemon still unwinding holds a handle on Windows; the pid kill above is what matters
+    // The whole tree: taskkill /T /F on Windows, where process.kill ends the daemon alone; SIGKILL to the daemon's group elsewhere. The command line is read again right here, so a pid that exited since the table was read and was reused is left alone.
+    killAllIfCommandLine([...doomed], mine, { tree: true })
+  } finally {
+    try {
+      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    } catch {
+      // a daemon still unwinding holds a handle on Windows; the pid kill above is what matters
+    }
   }
 })
 

@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { isHookServerCommandLine, isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { isHookServerCommandLine, isWorkerDaemonCommandLine, killAllIfCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 const children: ChildProcess[] = []
 
@@ -94,6 +94,34 @@ describe('killIfCommandLine', () => {
       }
     }
     expect(alive, 'the grandchild survived a tree kill of its parent').toBe(false)
+  })
+})
+
+// Provenance: HAND-DERIVED. readProcessCommandLine returns null both for a gone process and for a failed query (a spawn error, a nonzero exit, its timeout, empty output), read off src/resident_process.ts; the failed query is stood in for by an injected reader that returns null for a real, live sleeper, since no portable way makes the real query fail on demand.
+describe('killIfCommandLine when the command line cannot be read', () => {
+  it('throws, naming the pid, for a live process, and leaves it unsignalled', () => {
+    const live = sleeper('tg-kill-unreadable')
+    const pid = live.pid as number
+    expect(() => killIfCommandLine(pid, () => true, { readCommandLine: () => null })).toThrow(`pid ${pid}: its command line could not be read`)
+    expect(live.exitCode).toBeNull()
+    expect(live.signalCode).toBeNull()
+    expect(() => process.kill(pid, 0)).not.toThrow()
+  })
+
+  it('returns false for a process that is gone', () => {
+    const done = spawnSync(process.execPath, ['-e', '0'])
+    expect(killIfCommandLine(done.pid as number, () => true, { readCommandLine: () => null })).toBe(false)
+  })
+
+  it('killAllIfCommandLine signals every pid it can read, then throws for the one it could not', async () => {
+    const unreadable = sleeper('tg-kill-all-unreadable')
+    const readable = sleeper('tg-kill-all-readable')
+    const read = (pid: number): string | null => (pid === unreadable.pid ? null : `node -e /* tg-kill-all-readable */ ${pid}`)
+    expect(() => killAllIfCommandLine([unreadable.pid as number, readable.pid as number], (line) => line.includes('tg-kill-all-readable'), { readCommandLine: read })).toThrow('its command line could not be read')
+    await exited(readable)
+    expect(readable.exitCode !== null || readable.signalCode !== null).toBe(true)
+    expect(unreadable.exitCode).toBeNull()
+    expect(unreadable.signalCode).toBeNull()
   })
 })
 

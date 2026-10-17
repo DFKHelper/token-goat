@@ -100,7 +100,13 @@ afterEach(async () => {
   for (const c of hosts.splice(0)) {
     if (c.exitCode === null && c.signalCode === null) c.kill('SIGKILL')
   }
-  if (grandchildPid !== undefined) killIfCommandLine(grandchildPid, (cmd) => cmd.includes('grandchild.cjs'))
+  // A grandchild whose command line could not be read is reported after the rest of the cleanup has run.
+  let unreadable: unknown
+  try {
+    if (grandchildPid !== undefined) killIfCommandLine(grandchildPid, (cmd) => cmd.includes('grandchild.cjs'))
+  } catch (err) {
+    unreadable = err
+  }
   grandchildPid = undefined
   // Deleting the directory ends the parent script, which releases any pipe it still holds so a run left pending can settle.
   for (const d of [dir, isolatedBase]) {
@@ -112,6 +118,7 @@ afterEach(async () => {
     await pending
     pending = undefined
   }
+  if (unreadable !== undefined) throw unreadable
 })
 
 function treeCommand(): string {

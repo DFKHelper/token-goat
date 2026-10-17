@@ -31,7 +31,7 @@ import {
 } from '../src/hook_ipc.js'
 import Database from '../src/sqlite_driver.js'
 import { BUNDLE, ROOT } from './helpers/bundle.js'
-import { isHookServerCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { isHookServerCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { busyTrace } from './helpers/sqlite_busy_trace.js'
 
 type Env = Record<string, string>
@@ -98,6 +98,8 @@ function pidAlive(pid: number): boolean {
 }
 
 afterEach(async () => {
+  // A pid whose command line could not be read is reported after every sandbox has been cleaned up.
+  let unreadable: unknown
   while (sandboxes.length > 0) {
     const sb = sandboxes.pop() as Sandbox
     for (const release of sb.releases) release()
@@ -109,12 +111,17 @@ afterEach(async () => {
     const deadline = Date.now() + 5000
     for (const pid of sb.pids) {
       while (pidAlive(pid) && Date.now() < deadline) await sleep(50)
-      killIfCommandLine(pid, isHookServerCommandLine, { signal: 'SIGTERM' })
+    }
+    try {
+      killAllIfCommandLine(sb.pids, isHookServerCommandLine, { signal: 'SIGTERM' })
+    } catch (err) {
+      unreadable ??= err
     }
     for (const child of sb.children) if (child.exitCode === null && child.signalCode === null) child.kill()
     for (const fn of sb.cleanup) fn()
     fs.rmSync(sb.base, { recursive: true, force: true })
   }
+  if (unreadable !== undefined) throw unreadable
 })
 
 interface Run {

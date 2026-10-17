@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { BUNDLE, runBundle, tgIsolatedEnv } from './helpers/bundle.js'
-import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { isWorkerDaemonCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 
 // tg-no-regex-preload
 
@@ -47,14 +47,15 @@ afterEach(() => {
       // best effort: the pid kill below is the backstop
     }
   }
-  for (const pid of startedPids.splice(0)) {
-    killIfCommandLine(pid, isWorkerDaemonCommandLine, { tree: true })
-  }
-  for (const d of tempDirs.splice(0)) {
-    try {
-      fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
-    } catch {
-      // a daemon that holds global.db open keeps the folder on Windows; the kill above is what matters
+  try {
+    killAllIfCommandLine(startedPids.splice(0), isWorkerDaemonCommandLine, { tree: true })
+  } finally {
+    for (const d of tempDirs.splice(0)) {
+      try {
+        fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+      } catch {
+        // a daemon that holds global.db open keeps the folder on Windows; the kill above is what matters
+      }
     }
   }
 })

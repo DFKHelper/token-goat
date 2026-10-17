@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { BUNDLE, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
-import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { isWorkerDaemonCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { indexableDir } from './helpers/temp-config.js'
 import { stopWorker, workerPidPath } from '../src/worker_lifecycle.js'
 
@@ -56,14 +56,15 @@ function mkIsolated(prefix: string): string {
 
 /** Only pids this file started: a daemon that retired is already gone, and one that did not is killed so a failing run never leaves it behind. */
 afterEach(() => {
-  for (const pid of startedPids.splice(0)) {
-    killIfCommandLine(pid, isWorkerDaemonCommandLine)
-  }
-  for (const d of tempDirs.splice(0)) {
-    try {
-      fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
-    } catch {
-      // a daemon that holds global.db open keeps the folder on Windows; the pid kill above is what matters
+  try {
+    killAllIfCommandLine(startedPids.splice(0), isWorkerDaemonCommandLine)
+  } finally {
+    for (const d of tempDirs.splice(0)) {
+      try {
+        fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+      } catch {
+        // a daemon that holds global.db open keeps the folder on Windows; the pid kill above is what matters
+      }
     }
   }
 })

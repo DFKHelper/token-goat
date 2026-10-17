@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { killDaemonsUnder, sweepStaleRunRoots } from './setup/build-bundle.js'
 
 // HAND-DERIVED: the directory names and ages are constructed here from the sweep's own contract (a `tg-run-` prefix and an mtime older than 6h), independently of the implementation's code. No wire format is involved.
@@ -93,7 +93,7 @@ ${OWNER_LIVENESS_SOURCE}
     // Through the handle, which signals the process it holds and never a number the OS may have given away since.
     for (const c of spawned.splice(0)) c.kill('SIGKILL')
     // The sweep under test ends these on a passing run, so their numbers may belong to new processes (a killed vitest worker exits with code 1): only one still running the stand-in's liveness poll is signalled.
-    for (const pid of grandchildPids.splice(0)) killIfCommandLine(pid, (commandLine) => commandLine.includes(OWNER_PID_ENV))
+    killAllIfCommandLine(grandchildPids.splice(0), (commandLine) => commandLine.includes(OWNER_PID_ENV))
   })
 
   interface Started {

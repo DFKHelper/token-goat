@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 
 // tg-no-regex-preload
 
@@ -28,8 +28,11 @@ const tempDirs: string[] = []
 const started: number[] = []
 
 afterEach(() => {
-  for (const pid of started.splice(0)) killIfCommandLine(pid, (cmd) => cmd.includes(STAND_IN_MARK), { tree: true })
-  for (const d of tempDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  try {
+    killAllIfCommandLine(started.splice(0), (cmd) => cmd.includes(STAND_IN_MARK), { tree: true })
+  } finally {
+    for (const d of tempDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  }
 })
 
 // The stand-in inherits this process's priority. A test process that already runs below normal (CI under nice, an earlier in-process lowering) would pass whether or not the launcher lowered anything, so there the test is skipped rather than left to pass vacuously.
