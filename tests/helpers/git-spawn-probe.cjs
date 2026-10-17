@@ -9,7 +9,8 @@ const failCatFile = process.env.GIT_SPAWN_PROBE_FAIL_CATFILE === '1'
 const realSpawnSync = cp.spawnSync
 
 cp.spawnSync = function (cmd, args, ...rest) {
-  if (String(cmd) === 'git' && Array.isArray(args)) {
+  // runGit starts the real git by its full path on Windows, so git is recognised by its file name.
+  if (require('node:path').basename(String(cmd)).toLowerCase().replace(/[.]exe$/, '') === 'git' && Array.isArray(args)) {
     const sub = args.filter((a, i) => !(a === '-c' || args[i - 1] === '-c' || a === '--no-optional-locks'))
     if (out) fs.appendFileSync(out, JSON.stringify(sub) + String.fromCharCode(10))
     if (failCatFile && sub[0] === 'cat-file') {

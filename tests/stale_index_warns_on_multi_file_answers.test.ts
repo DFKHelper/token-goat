@@ -15,7 +15,8 @@ vi.mock('node:child_process', async (importOriginal) => {
     ...actual,
     execFileSync: vi.fn(() => (process.platform === 'win32' ? 'C:\\Windows\\System32\\cmd.exe\n' : '/bin/echo\n')),
     spawnSync: vi.fn((command: unknown, args?: unknown, options?: unknown) => {
-      if (command === 'git') return (realSpawnSync as (...a: unknown[]) => unknown)(command, args, options)
+      // runGit starts the real git by its full path on Windows (src/util.ts::gitExecutable), so git is recognised by its file name, not by the bare word.
+      if (typeof command === 'string' && /(^|[\\/])git(\.exe)?$/i.test(command)) return (realSpawnSync as (...a: unknown[]) => unknown)(command, args, options)
       return { status: 0, stdout: 'answer', stderr: '', pid: 1, output: [], signal: null }
     }),
   }
