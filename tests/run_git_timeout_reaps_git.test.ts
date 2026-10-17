@@ -8,7 +8,8 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { resolveOnPath, sleepSync } from '../src/process_util.js'
-import { runGit } from '../src/util.js'
+import { spawnSync } from 'node:child_process'
+import { gitExecutable, runGit } from '../src/util.js'
 
 const TEST_BUDGET_MS = 120_000
 let repo = ''
@@ -60,11 +61,12 @@ afterEach(() => {
   for (const pid of startedPids) {
     try {
       process.kill(pid, 'SIGKILL')
-    } catch {
-      // already gone: what the test wants
+    } catch (err) {
+      process.stderr.write('DIAG afterEach kill ' + pid + ' threw ' + (err as NodeJS.ErrnoException).code + ' alive=' + alive(pid) + '\n')
     }
     // The kill is asked for, not done: wait (bounded) until the process is gone, since a live one still holds the directory open.
     for (let waited = 0; waited < 100 && alive(pid); waited++) sleepSync(50)
+    process.stderr.write('DIAG afterEach pid ' + pid + ' alive after wait=' + alive(pid) + '\n')
   }
   startedPids.clear()
   for (const key of Object.keys(savedEnv)) {
@@ -97,7 +99,22 @@ describe('runGit timeout', () => {
       timeoutMs *= 2
     }
     expect(observed.length, 'git never wrote its trace, so there was no process to check').toBeGreaterThan(0)
-    expect(observed.filter(alive)).toEqual([])
+    const survivors = observed.filter(alive)
+    if (survivors.length > 0) {
+      const ps = (cmd: string): string => spawnSync('powershell', ['-NoProfile', '-Command', cmd], { encoding: 'utf8' }).stdout
+      const diag = [
+        'DIAG gitExecutable=' + gitExecutable(),
+        'DIAG where=' + spawnSync('where', ['git'], { encoding: 'utf8' }).stdout.split('\n').join(' | '),
+        'DIAG version=' + spawnSync('git', ['--version'], { encoding: 'utf8' }).stdout.trim(),
+        'DIAG observed=' + JSON.stringify(observed) + ' survivors=' + JSON.stringify(survivors),
+        'DIAG PATH=' + (process.env['PATH'] ?? ''),
+        'DIAG trace=' + readFileSync(tracePath, 'utf8').split('\n').filter((l) => /"event":"(version|start|cmd_name|child_start|child_exit|exit|atexit)"/.test(l)).map((l) => l.slice(0, 400)).join('\nDIAG   '),
+        'DIAG procs=' + ps("Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'git*' -or $_.ProcessId -in @(" + survivors.join(',') + ") } | ForEach-Object { '{0} ppid={1} name={2} created={3} cmd={4}' -f $_.ProcessId, $_.ParentProcessId, $_.Name, $_.CreationDate, $_.CommandLine } | Out-String"),
+        'DIAG now=' + new Date().toISOString(),
+      ]
+      process.stderr.write(diag.join('\n') + '\n')
+    }
+    expect(survivors).toEqual([])
   }, TEST_BUDGET_MS)
 
   it('still returns a finished command whole when the timeout was not reached', () => {
