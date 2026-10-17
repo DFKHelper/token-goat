@@ -41,6 +41,11 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/** The polite stop of the daemon through the bundle; the kill by recorded pid in the caller runs whether or not this throws. */
+function stopDaemon(repo: string, env: NodeJS.ProcessEnv): void {
+  runBundle(['worker', 'stop'], { cwd: repo, env, timeout: 30_000 })
+}
+
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 const bases: string[] = []
@@ -77,7 +82,7 @@ describe('an edit wakes the detached worker (built bundle)', () => {
     const { base, env, repo } = setup('tg-wake-bundle-')
     let pid: number | undefined
     let bodyFailure: { error: unknown } | undefined
-    let killFailure: { error: unknown } | undefined
+    const cleanupFailures: unknown[] = []
     try {
       const start = runBundle(['worker', 'start'], { cwd: repo, env, timeout: 30_000 })
       expect(start.status, start.stderr).toBe(0)
@@ -101,7 +106,12 @@ describe('an edit wakes the detached worker (built bundle)', () => {
     } catch (error) {
       bodyFailure = { error }
     } finally {
-      runBundle(['worker', 'stop'], { cwd: repo, env, timeout: 30_000 })
+      // A throw from the polite stop is kept and raised below; it never skips the kill of the recorded daemon that follows.
+      try {
+        stopDaemon(repo, env)
+      } catch (error) {
+        cleanupFailures.push(error)
+      }
       const stopped = pid
       if (stopped !== undefined && Number.isFinite(stopped)) {
         const until = Date.now() + 5000
@@ -109,19 +119,20 @@ describe('an edit wakes the detached worker (built bundle)', () => {
         try {
           killIfCommandLine(stopped, isWorkerDaemonCommandLine)
         } catch (error) {
-          killFailure = { error }
+          cleanupFailures.push(error)
         }
         // A pid whose command line could not be read throws above; the wait for the daemon to let go of its directory still runs before it surfaces.
         const killed = Date.now() + 5000
         while (pidAlive(stopped) && Date.now() < killed) await sleep(50)
       }
     }
-    // A failed kill is reported beside the test's own failure, never in its place: the test's error stays first in the aggregate and in the message. Thrown here, not in the finally, which would discard the pending error unannounced.
+    // A failed stop or kill is reported beside the test's own failure, never in its place: the test's error stays first in the aggregate and in the message. Thrown here, not in the finally, which would discard the pending error unannounced.
     if (bodyFailure !== undefined) {
-      if (killFailure === undefined) throw bodyFailure.error
-      throw new AggregateError([bodyFailure.error, killFailure.error], `${extractErrorMessage(bodyFailure.error)} (ending the daemon also failed: ${extractErrorMessage(killFailure.error)})`, { cause: bodyFailure.error })
+      if (cleanupFailures.length === 0) throw bodyFailure.error
+      throw new AggregateError([bodyFailure.error, ...cleanupFailures], `${extractErrorMessage(bodyFailure.error)} (ending the daemon also failed: ${cleanupFailures.map((failure) => extractErrorMessage(failure)).join('; ')})`, { cause: bodyFailure.error })
     }
-    if (killFailure !== undefined) throw killFailure.error
+    if (cleanupFailures.length === 1) throw cleanupFailures[0]
+    if (cleanupFailures.length > 1) throw new AggregateError(cleanupFailures, `ending the daemon failed ${String(cleanupFailures.length)} ways: ${cleanupFailures.map((failure) => extractErrorMessage(failure)).join('; ')}`)
   }, 60_000)
 
   it('leaves the edit unindexed with no daemon running, so the count above can only have come from the daemon', async () => {
