@@ -74,11 +74,15 @@ describe('killDaemonsUnder', () => {
   // FORMAT-DERIVED: a daemon's command line is `node <launcher> --worker-daemon`, read off its launch site src/worker_lifecycle.ts::startDetachedWorker (`spawn(process.execPath, [daemonEntryScript(), '--worker-daemon'])`), and its heartbeat is the file queue/drain-heartbeat holding its pid (src/worker_lifecycle.ts::drainHeartbeatPathFor, writeDrainHeartbeat). The stand-ins below are node processes given that argv shape; the real-bundle case runs the shipped launcher itself.
   const WORKER_DAEMON_FLAG = '--worker-daemon'
   const STAND_IN_SOURCE = 'process.stdout.write("ready"); setInterval(() => {}, 1000)'
+  // The death condition of a stand-in that can outlive the test (one detached from the runner's process tree): it polls whether the vitest process that started it is still alive and exits once it is not. It never looks at its parent daemon, so a root-only kill of the daemon leaves the child running, as a real tree would be.
+  const OWNER_PID_ENV = 'TG_STAND_IN_OWNER_PID'
+  const OWNER_LIVENESS_SOURCE = `const owner = Number(process.env.${OWNER_PID_ENV}); setInterval(() => { try { process.kill(owner, 0) } catch { process.exit(0) } }, 1000)`
   // HAND-DERIVED: a daemon with a child of its own; the child shares the daemon's stdout pipe (stdio inherit), so that pipe closes only once both are gone, and the daemon prints "ready <child pid>". On Windows the child is detached so that it is not in the job object libuv gives the daemon's non-detached children, which the OS closes, ending them, when the daemon dies: without that the child would die with a root-only kill and the test could not tell it from a tree kill. This is a stand-in for the process tree the real daemon leads, not a wire format.
   const STAND_IN_WITH_CHILD_SOURCE = `import { spawn } from 'node:child_process'
-const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'ignore'], windowsHide: true, detached: process.platform === 'win32' })
+// owner: the vitest process that started this daemon (its pid is in ${OWNER_PID_ENV}); dies when that process is gone, found by the liveness check both processes run
+const child = spawn(process.execPath, ['-e', ${JSON.stringify(OWNER_LIVENESS_SOURCE)}], { stdio: ['ignore', 'inherit', 'ignore'], windowsHide: true, detached: process.platform === 'win32' })
 process.stdout.write('ready ' + child.pid + ' ')
-setInterval(() => {}, 1000)
+${OWNER_LIVENESS_SOURCE}
 `
 
   const spawned: ChildProcess[] = []
@@ -115,6 +119,7 @@ setInterval(() => {}, 1000)
 
   /** Starts `node ...argv`, which must print "ready" once it is running. `detached` makes it lead its own process group, as the real daemon does, which is what a POSIX tree kill signals. */
   function start(argv: string[], options: { env?: NodeJS.ProcessEnv; detached?: boolean } = {}): Started {
+    // owner: this test, whose afterEach kills it; dies when the vitest process is gone, because a stand-in started detached (the only kind that outlives the runner's tree) polls for that process and exits
     const child = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, env: options.env ?? process.env, detached: options.detached === true })
     spawned.push(child)
     let printed = ''
@@ -215,7 +220,8 @@ setInterval(() => {}, 1000)
 
   it('ends the tree of the worker daemon it kills, not only the daemon', async () => {
     const launcher = launcherScript('tree', STAND_IN_WITH_CHILD_SOURCE)
-    const daemon = start([launcher, WORKER_DAEMON_FLAG], { detached: process.platform !== 'win32' })
+    // owner: the vitest process, which passes its pid in the stand-in's environment; dies when that process is gone, because the launcher and its child poll for it
+    const daemon = start([launcher, WORKER_DAEMON_FLAG], { detached: process.platform !== 'win32', env: { ...process.env, [OWNER_PID_ENV]: String(process.pid) } })
     const root = rootNaming('tree', daemon.pid, 0)
     await daemon.ready
     const childPid = Number(/ready (\d+) /.exec(daemon.output())?.[1])
