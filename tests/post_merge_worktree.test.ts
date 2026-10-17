@@ -1,4 +1,4 @@
-// scripts/post-merge.mjs runs after every pull, merge and rebase, and past the build it acts on the user's real home: hook-server stop, worker restart, install, doctor --repair, prune and index. Run from a linked worktree it re-pointed every installed hook at that worktree's dist and started a worker there, so a linked worktree must stop after the build. CAPTURE: the repositories are real (`git init`, `git commit`, `git worktree add`) and the script is the shipped one, copied beside a stub bundle that only records the arguments it was run with.
+// scripts/post-merge.mjs runs after every pull, merge and rebase, and past the build it acts on the user's real home: hook-server stop, worker restart, install, doctor --repair, prune and index. Run from a linked worktree it re-pointed every installed hook at that worktree's dist and started a worker there, so a linked worktree must stop after the build. CAPTURE: the repositories are real (`git init`, `git commit`, `git worktree add`) and the script is the shipped one, copied beside a stub bundle that only records the arguments it was run with. The same holds for a checkout that is not the active install: with the global token-goat a registry copy, a pull in the checkout started a worker and a hook server from the checkout's dist while the hooks still ran the registry copy.
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -27,17 +27,42 @@ function stageCheckout(root: string): void {
 }
 
 /** Fresh home, CODEX_HOME and COPILOT_HOME, all apart from each other and from the real ones, so the script's host check never sees a developer's own Codex or Copilot install. */
-function isolatedHosts(): { home: string; codexHome: string; copilotHome: string } {
+function isolatedHosts(): { home: string; codexHome: string; copilotHome: string; npmPrefix: string; localAppData: string; tokenGoatHome: string } {
   const base = tempDir()
-  return { home: path.join(base, 'home'), codexHome: path.join(base, 'codex'), copilotHome: path.join(base, 'copilot') }
+  return {
+    home: path.join(base, 'home'),
+    codexHome: path.join(base, 'codex'),
+    copilotHome: path.join(base, 'copilot'),
+    npmPrefix: path.join(base, 'npm-prefix'),
+    localAppData: path.join(base, 'local-app-data'),
+    tokenGoatHome: path.join(base, 'token-goat-home'),
+  }
 }
 
 function runPostMerge(root: string, log: string, hosts = isolatedHosts()) {
   return spawnSync(process.execPath, [path.join(root, 'scripts', 'post-merge.mjs')], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, TG_POST_MERGE_LOG: log, HOME: hosts.home, USERPROFILE: hosts.home, CODEX_HOME: hosts.codexHome, COPILOT_HOME: hosts.copilotHome },
+    env: {
+      ...process.env,
+      TG_POST_MERGE_LOG: log,
+      HOME: hosts.home,
+      USERPROFILE: hosts.home,
+      LOCALAPPDATA: hosts.localAppData,
+      XDG_DATA_HOME: hosts.localAppData,
+      TOKEN_GOAT_HOME: hosts.tokenGoatHome,
+      CODEX_HOME: hosts.codexHome,
+      COPILOT_HOME: hosts.copilotHome,
+      NPM_CONFIG_PREFIX: hosts.npmPrefix,
+    },
   })
+}
+
+/** Where npm puts global packages for this prefix, as npm itself says it (`npm root -g`), so the fixture does not restate npm's per-platform layout. */
+function globalRoot(npmPrefix: string): string {
+  const res = spawnSync('npm root -g', { shell: true, encoding: 'utf8', env: { ...process.env, NPM_CONFIG_PREFIX: npmPrefix } })
+  expect(res.status, res.stderr).toBe(0)
+  return res.stdout.trim()
 }
 
 function writeShim(shimPath: string): void {
@@ -131,5 +156,51 @@ describe('post-merge refresh of the Codex and Copilot hosts', () => {
       writeShim(copilotCliScriptPath({ local: true, projectRoot: root }))
     })
     expect(args).toEqual([...BASE, 'install --copilot', 'install --copilot --local', 'install --codex', ...TAIL])
+  })
+})
+
+describe('post-merge sync in a checkout that is not the active install', () => {
+  // CAPTURE: the global root is what `npm root -g` prints under a throwaway NPM_CONFIG_PREFIX. HAND-DERIVED: a registry install is a real directory named token-goat in that root and `npm install -g .` leaves a link to the checkout there (npm's global folder layout, https://docs.npmjs.com/cli/v10/configuring-npm/folders), so the two are built here the way npm leaves them.
+  const FULL_SYNC = ['hook-server stop', 'worker stop', 'worker start', 'install', 'doctor --repair', 'project prune', 'index']
+
+  function stageMain(): { main: string; hosts: ReturnType<typeof isolatedHosts>; log: string; globalDir: string } {
+    const main = gitRepoWithCommit()
+    stageCheckout(main)
+    const hosts = isolatedHosts()
+    return { main, hosts, log: path.join(tempDir(), 'run.log'), globalDir: path.join(globalRoot(hosts.npmPrefix), 'token-goat') }
+  }
+
+  it('builds and touches nothing else when the global token-goat is a registry copy elsewhere', { timeout: 120_000 }, () => {
+    const { main, hosts, log, globalDir } = stageMain()
+    fs.mkdirSync(globalDir, { recursive: true })
+    fs.writeFileSync(path.join(globalDir, 'package.json'), JSON.stringify({ name: 'token-goat', version: '2.9.31' }))
+    const res = runPostMerge(main, log, hosts)
+    expect(res.status, res.stderr).toBe(0)
+    expect(fs.existsSync(path.join(main, 'dist', 'token-goat.mjs'))).toBe(true)
+    expect(fs.existsSync(log), 'no step ran the bundle').toBe(false)
+    expect(res.stdout).toContain('Not the active install')
+    expect(res.stdout).toContain(fs.realpathSync(globalDir))
+    expect(res.stdout).toContain('npm install -g .')
+    expect(res.stdout).not.toContain('Synchronization complete')
+    for (const dir of [hosts.home, hosts.codexHome, hosts.copilotHome, hosts.tokenGoatHome]) expect(fs.existsSync(dir), dir).toBe(false)
+  })
+
+  it('syncs as before when the global token-goat links to this checkout, even through a second link', { timeout: 120_000 }, () => {
+    const { main, hosts, log, globalDir } = stageMain()
+    const alias = path.join(tempDir(), 'alias')
+    fs.symlinkSync(main, alias, 'junction')
+    fs.mkdirSync(path.dirname(globalDir), { recursive: true })
+    fs.symlinkSync(alias, globalDir, 'junction')
+    const res = runPostMerge(main, log, hosts)
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stdout).not.toContain('Not the active install')
+    expect(loggedArgs(log)).toEqual(FULL_SYNC)
+  })
+
+  it('syncs as before when no global token-goat exists to compare with', { timeout: 120_000 }, () => {
+    const { main, hosts, log } = stageMain()
+    const res = runPostMerge(main, log, hosts)
+    expect(res.status, res.stderr).toBe(0)
+    expect(loggedArgs(log)).toEqual(FULL_SYNC)
   })
 })
