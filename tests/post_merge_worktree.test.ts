@@ -56,6 +56,8 @@ function isolatedHosts(): {
 function isolatedEnv(hosts: ReturnType<typeof isolatedHosts>, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env }
   for (const key of Object.keys(env)) if (key.toLowerCase().startsWith('npm_config_')) delete env[key]
+  // A developer's exported override would force the full sync in every test; only a test's own `extra` may set it.
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'tg_post_merge_sync') delete env[key]
   return {
     ...env,
     HOME: hosts.home,
@@ -83,7 +85,7 @@ function runPostMerge(root: string, log: string, hosts = isolatedHosts(), extra:
 
 /** Where npm puts global packages for this prefix, as npm itself says it (`npm root -g`), under the same isolated environment the script runs in, so the fixture does not restate npm's per-platform layout and never reads the developer's own npm configuration. */
 function globalRoot(hosts: ReturnType<typeof isolatedHosts>): string {
-  const res = spawnSync('npm root -g', { shell: true, encoding: 'utf8', env: isolatedEnv(hosts) })
+  const res = spawnSync('npm root -g', { shell: true, encoding: 'utf8', cwd: tempDir(), env: isolatedEnv(hosts) })
   expect(res.status, res.stderr).toBe(0)
   return res.stdout.trim()
 }
@@ -118,6 +120,21 @@ describe('post-merge sync in a linked worktree', () => {
     expect(fromMain.status, fromMain.stderr).toBe(0)
     expect(fromMain.stdout).not.toContain('Linked worktree')
     expect(loggedArgs(mainLog)).toEqual(['hook-server stop', 'worker stop', 'worker start', 'install', 'doctor --repair', 'project prune', 'index'])
+  })
+
+  it('TG_POST_MERGE_SYNC=1 does not lift the linked-worktree stop, and the message says so', { timeout: 120_000 }, () => {
+    const main = gitRepoWithCommit()
+    const linked = path.join(tempDir(), 'linked')
+    const added = spawnSync('git', ['worktree', 'add', '--detach', linked], { cwd: main, encoding: 'utf8' })
+    expect(added.status, added.stderr).toBe(0)
+    stageCheckout(linked)
+    const log = path.join(tempDir(), 'linked.log')
+    const res = runPostMerge(linked, log, isolatedHosts(), { TG_POST_MERGE_SYNC: '1' })
+    expect(res.status, res.stderr).toBe(0)
+    expect(res.stdout).toContain('Linked worktree: built the bundle only.')
+    expect(res.stdout).toContain('TG_POST_MERGE_SYNC=1 does not lift this stop.')
+    expect(fs.existsSync(log), 'no step ran the bundle').toBe(false)
+    expect(res.stdout).not.toContain('Full sync')
   })
 })
 
