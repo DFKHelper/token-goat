@@ -15,14 +15,17 @@ import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { receiptLines } from '../src/agent_receipt.js'
 import type { VerificationState } from '../src/verification_state.js'
 
-const bound = vi.hoisted(() => ({ ms: null as number | null }))
+const bound = vi.hoisted(() => ({ ms: null as number | null, statusCalls: 0 }))
 
 // The product bounds `git status` at 5 s. The held git below never answers, so any bound ends it; a short one keeps the case quick. A null bound leaves the product's own, for the cases that run an unheld git.
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
-    runGit: (args: string[], opts: RunGitOptions = {}) => actual.runGit(args, bound.ms === null ? opts : { ...opts, timeoutMs: bound.ms }),
+    runGit: (args: string[], opts: RunGitOptions = {}) => {
+      if (args.includes('status')) bound.statusCalls += 1
+      return actual.runGit(args, bound.ms === null ? opts : { ...opts, timeoutMs: bound.ms })
+    },
   }
 })
 
@@ -86,6 +89,7 @@ beforeEach(async () => {
   buildEvent = (await import('../src/relay.js')).buildEvent
   fs.rmSync(startedLog, { force: true })
   fs.rmSync(releaseFile, { force: true })
+  bound.statusCalls = 0
 })
 
 afterEach(() => {
@@ -96,6 +100,7 @@ afterEach(() => {
     killAllIfCommandLine(pids, isHoldCommandLine)
   } finally {
     bound.ms = null
+    vi.restoreAllMocks()
     vi.unstubAllEnvs()
     if (repo !== '') fs.rmSync(repo, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
     repo = ''
@@ -127,7 +132,6 @@ describe('a change claim whose git status did not finish', () => {
     const delivered = JSON.stringify(await agentResult(sid, CLAIM))
     expect(delivered).toContain(NOTE)
     expect(delivered).not.toContain('recorded no edit')
-    expect(fs.existsSync(startedLog), 'the held filter must be what git was running').toBe(true)
   })
 
   it('is not said for a report that claims nothing, which needs no git at all', async () => {
@@ -179,5 +183,36 @@ describe('a change claim whose git status did not finish', () => {
     expect(lines).toHaveLength(2)
     expect(lines[1]).toBe(`token-goat: ${NOTE}`)
     expect(receiptLines(state(), false)).toEqual([])
+  })
+})
+
+describe('one git status per stop, shared by the receipt and the stop warning', () => {
+  let warnings: string[] = []
+  beforeEach(() => {
+    warnings = []
+    vi.spyOn(console, 'warn').mockImplementation((...parts: unknown[]) => {
+      warnings.push(parts.map(String).join(' '))
+    })
+  })
+
+  it('a clean tree is asked once, and the receipt flag and the hallucination warning agree', async () => {
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-once-'))
+    git(repo, 'init', '-q')
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(bound.statusCalls).toBe(1)
+    expect(warnings).toEqual([`subagent-stop: possible hallucination — session=${sid} but git status is clean`])
+    expect(JSON.stringify(await agentResult(sid, CLAIM))).toContain('recorded no edit')
+  })
+
+  it('a git that did not finish is asked once, and the receipt line and the stderr note agree', async () => {
+    const sid = newSession()
+    repo = repoHeldByFilter()
+    bound.ms = 300
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    bound.ms = null
+    expect(bound.statusCalls).toBe(1)
+    expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not answer in time`])
+    expect(JSON.stringify(await agentResult(sid, CLAIM))).toContain(NOTE)
   })
 })

@@ -11,7 +11,7 @@ import { sessionStateKey } from './hook_registry.js'
 import { echoedCommand, nameSubject } from './hint_suggestion_guard.js'
 import { contextOutput, getCwd, passOutput } from './hooks_common.js'
 import { claimsOwnChange } from './change_claim.js'
-import { gitFindings } from './git_hint.js'
+import { gitFindings, type GitFindings } from './git_hint.js'
 import { claimsCommittedChange } from './hooks_session.js'
 import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
@@ -28,6 +28,8 @@ const MAX_NAMED_FILES = 3
 /** A subagent stop is not a hot path, and the 50 ms hint budget is shorter than a cold git start on Windows. */
 const GIT_STATUS_TIMEOUT_MS = 5000
 const LINE_PREFIX = 'token-goat:'
+/** The `git status` answer the receipt handler got for a stop, read by the stop handler that runs on the same event object: one git process per stop, and one answer, instead of a second ask at the 50 ms hint budget that a cold git misses while the first, at the hang guard, had answered. */
+const treeFindingsByStop = new WeakMap<HookEvent, GitFindings>()
 
 /** A parked receipt no delivery has claimed within this long is dropped: the report it belonged to was never delivered here (or was delivered unmatched), and a stale receipt must not attach to a later, unrelated report. */
 const RECEIPT_TTL_MS = 30 * 60 * 1000
@@ -84,15 +86,11 @@ export function receiptLines(state: VerificationState, claimsChangeWithoutEdit: 
   return lines
 }
 
-/** True when the report claims a change the working tree does not show: a first-person change claim, no commit claim anywhere (a commit leaves a clean tree, and a stray mention of one only silences the flag, the safe direction), and git status clean. A dirty tree silences it whoever dirtied it, the parent's own work included: the subagent's Bash edits are not recorded, so the tree is the only evidence left, and a missed flag costs less than a false accusation. */
-export function claimsChangeTheTreeLacks(report: string, cwd: string | null): boolean {
-  return checkChangeClaim(report, cwd) === 'lacks'
-}
-
-/** {@link claimsChangeTheTreeLacks} with the one answer it cannot give as a boolean: 'unchecked' when the report claims a change and `git status` was killed at {@link GIT_STATUS_TIMEOUT_MS}, which is neither a clean tree nor a dirty one. Any other git failure (not a repository, git missing) reads 'clear', as it always has. */
-export function checkChangeClaim(report: string, cwd: string | null): 'lacks' | 'unchecked' | 'clear' {
+/** What `git status` says about a report's change claim: 'lacks' when the report makes a first-person change claim, no commit claim anywhere (a commit leaves a clean tree, and a stray mention of one only silences the flag, the safe direction), and git status is clean; 'unchecked' when the claim stands and `git status` was killed at {@link GIT_STATUS_TIMEOUT_MS}, which is neither a clean tree nor a dirty one; otherwise 'clear'. A dirty tree reads 'clear' whoever dirtied it, the parent's own work included: the subagent's Bash edits are not recorded, so the tree is the only evidence left, and a missed flag costs less than a false accusation. Any other git failure (not a repository, git missing) reads 'clear' too. With `stop`, the answer is kept for subagentStopHandler, which runs on the same event and must not ask git again. */
+export function checkChangeClaim(report: string, cwd: string | null, stop?: HookEvent): 'lacks' | 'unchecked' | 'clear' {
   if (cwd === null || !claimsOwnChange(report) || claimsCommittedChange(report)) return 'clear'
   const tree = gitFindings(['status', '--porcelain'], cwd, GIT_STATUS_TIMEOUT_MS)
+  if (stop !== undefined) treeFindingsByStop.set(stop, tree)
   return tree === 'clean' ? 'lacks' : tree === 'timed-out' ? 'unchecked' : 'clear'
 }
 
@@ -101,7 +99,7 @@ export function receiptForStoppedAgent(event: HookEvent, redactedReport: string)
   const config = loadConfig().hints
   if (!config.agent_receipt || isWithinQuietHours(config.quiet_hours)) return null
   const state = evaluateVerification(sessionStateKey(event))
-  const claim = state.editedAnyFile ? 'clear' : checkChangeClaim(redactedReport, getCwd(event) || null)
+  const claim = state.editedAnyFile ? 'clear' : checkChangeClaim(redactedReport, getCwd(event) || null, event)
   const lines = receiptLines(state, claim === 'lacks', claim === 'unchecked')
   return lines.length === 0 ? null : lines.join('\n')
 }
@@ -204,7 +202,8 @@ export function subagentStopHandler(event: HookEvent): HookOutput {
     const message = typeof event.raw['last_assistant_message'] === 'string' ? event.raw['last_assistant_message'] : ''
     // The report decides first: most stops claim nothing, and none of those needs a git process.
     if (!claimsOwnChange(message) || claimsCommittedChange(message)) return passOutput()
-    const tree = gitFindings(['status', '--porcelain'], cwd, loadConfig().hints.git_hint_max_ms)
+    // The receipt handler runs first on this event and has asked already when it needed to; alone (receipt off, an edit recorded, Copilot CLI), this handler asks within the hint budget and names a miss on stderr.
+    const tree = treeFindingsByStop.get(event) ?? gitFindings(['status', '--porcelain'], cwd, loadConfig().hints.git_hint_max_ms)
     if (tree === 'clean') {
       console.warn(`subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`)
     } else if (tree === 'timed-out') {

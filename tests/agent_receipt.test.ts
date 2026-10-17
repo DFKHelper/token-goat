@@ -12,7 +12,7 @@ import type * as UtilModule from '../src/util.js'
 import type { RunGitOptions } from '../src/util.js'
 import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
-import { claimsChangeTheTreeLacks, parkAgentReceipt, receiptLines, takeAgentReceipt, waitAgentReceipts } from '../src/agent_receipt.js'
+import { checkChangeClaim, parkAgentReceipt, receiptLines, takeAgentReceipt, waitAgentReceipts } from '../src/agent_receipt.js'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -358,7 +358,7 @@ describe('the receipt through the real hook registry', () => {
     ['Changes: nothing, this was a read-only review.'],
     ["I'll add the guard next."],
   ])('read-only report %j with a clean tree is not flagged', (message) => {
-    expect(claimsChangeTheTreeLacks(message, repo)).toBe(false)
+    expect(checkChangeClaim(message, repo)).toBe('clear')
   })
 
   it.each([
@@ -372,7 +372,7 @@ describe('the receipt through the real hook registry', () => {
     ['Fixed the parser bug.'],
     ['Done:\n- I fixed the parser\n- I added tests'],
   ])('own-work claim %j with a clean tree is flagged', (message) => {
-    expect(claimsChangeTheTreeLacks(message, repo)).toBe(true)
+    expect(checkChangeClaim(message, repo)).toBe('lacks')
   })
 
   it('a read-only report from an Explore agent gets no receipt through the registry', async () => {
