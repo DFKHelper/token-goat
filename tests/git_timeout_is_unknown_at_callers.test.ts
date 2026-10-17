@@ -11,13 +11,14 @@ vi.mock('../src/util.js', async (importOriginal) => {
 })
 
 import { cmdIndex } from '../src/cli.js'
+import { formatCommandError } from '../src/command_error.js'
 import { buildImportGraph } from '../src/import_graph.js'
 import { isIndexedRoot } from '../src/indexed_roots.js'
 import { formatInstallIndexResult, queueInstallIndex } from '../src/install_index.js'
 import { resolveProjectRoot } from '../src/project.js'
 import { runChanged } from '../src/read_git.js'
 import { reconcileProject } from '../src/reconcile.js'
-import { listTrackedFiles } from '../src/repomap.js'
+import { listTrackedFiles, requireTrackedFiles } from '../src/repomap.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 const KILLED: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, timedOut: true }
@@ -81,6 +82,15 @@ describe('callers that read the tracked-file list when git does not answer', () 
     git.answer = () => KILLED
     await expect(cmdIndex(dir, { walk: true })).rejects.toThrow(/git did not answer in time/)
     await expect(cmdIndex(dir)).rejects.toThrow(/git did not answer in time/)
+  })
+
+  it('prints the directory in the timeout error display-safe, where a name can carry an escape sequence', () => {
+    // Provenance: HAND-DERIVED. A directory name may hold any byte but NUL and a slash; the control character here is the one a terminal would act on.
+    git.answer = () => KILLED
+    let thrown: unknown
+    try { requireTrackedFiles('/project/\u001b[31mred') } catch (e) { thrown = e }
+    expect(formatCommandError(thrown)).toMatch(/git did not answer in time while listing the tracked files under \/project\//)
+    expect(formatCommandError(thrown)).not.toContain('\u001b')
   })
 
   it('index still says "no tracked files" when git ran and refused', async () => {
