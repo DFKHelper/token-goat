@@ -294,8 +294,9 @@ ${OWNER_LIVENESS_SOURCE}
       await sweepThenWaitForDaemon(noHeartbeats, root, daemon, path.join(link, path.basename(launcher)))
       expect(isAlive(daemon.pid), 'a daemon whose launcher is spelled by its real path survived a sweep given the link').toBe(false)
     } finally {
-      // The link only: rmdir on a junction or symlink removes it and never the directory it points at.
-      fs.rmdirSync(link)
+      // Removes the link, never what it points at: a junction is a directory entry to Windows, a symlink a file entry elsewhere.
+      if (process.platform === 'win32') fs.rmdirSync(link)
+      else fs.unlinkSync(link)
     }
   })
 })
