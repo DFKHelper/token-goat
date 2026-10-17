@@ -143,6 +143,23 @@ function isHandlePid(target: string, handles: ReadonlySet<string>): boolean {
   return handles.has(owner) || handles.has(owner.split('.').pop()!)
 }
 
+/** The opening parenthesis of the innermost call that holds `lines[i][col]`, found by walking back over balanced brackets, or undefined when the position is in no call. */
+function enclosingParen(lines: readonly string[], i: number, col: number): { line: number; col: number } | undefined {
+  let depth = 0
+  for (let n = i; n >= 0; n--) {
+    const code = codeOf(lines[n]!)
+    for (let c = (n === i ? col : code.length) - 1; c >= 0; c--) {
+      const ch = code[c]!
+      if (ch === ')' || ch === ']' || ch === '}') depth++
+      else if (ch === '(' || ch === '[' || ch === '{') {
+        if (depth > 0) depth--
+        else if (ch === '(') return { line: n, col: c }
+      }
+    }
+  }
+  return undefined
+}
+
 /** The pid expression of a `${...}` or `String(...)` inside a taskkill argument list, or the whole argument when it is a bare identifier or member. */
 function taskkillTargets(args: string): string[] {
   const out: string[] = []
@@ -356,10 +373,12 @@ function flaggedSites(file: string, source: string): string[] {
       const args = splitArgs(callText(lines, i, m.index + m[0].length - 1))
       if (!isHandlePid(bareTarget(args[0] ?? ''), handles)) flag(i)
     }
-    for (const m of code.matchAll(/\(\s*['"`]taskkill(?:\.exe)?['"`]/g)) {
-      // Only the first argument of a call is a program, so `run('taskkill', [...])` of any helper counts and a later `'taskkill'` such as a git search term does not.
-      const args = callText(lines, i, m.index)
-      const targets = taskkillTargets(args)
+    for (const m of code.matchAll(/['"`]taskkill(?:\.exe)?['"`]/g)) {
+      // A literal is a program only as the first argument, the first element of an array, or the file/command/cmd property of an object, so `run(['taskkill', ...])` and `run({ file: 'taskkill' })` of any helper count and a later `'taskkill'` such as a git search term does not.
+      if (!/(?:[([]|\b(?:file|command|cmd)\s*:)\s*$/.test(code.slice(0, m.index))) continue
+      const open = enclosingParen(lines, i, m.index)
+      if (open === undefined) continue
+      const targets = taskkillTargets(callText(lines, open.line, open.col))
       if (targets.length === 0 || targets.some((t) => !isHandlePid(t, handles))) flag(i)
     }
   })
@@ -569,6 +588,11 @@ describe('the scan', () => {
     ['a kill behind docker exec and sudo', ["execSync('docker exec web sudo kill -9 1')"], 1],
     ['a taskkill called through a helper', ["await run('taskkill', ['/F', '/PID', String(pid)])"], 1],
     ['a taskkill.exe called through a helper', ["run('taskkill.exe', ['/F', '/PID', String(pid)])"], 1],
+    // HAND-DERIVED: re-review 3 of this guard; the program is the first argument, the first element of an array argument or the file/command/cmd property of an object argument of any call.
+    ['a taskkill as the first element of an array argument', ["await run(['taskkill', '/F', '/PID', String(pid)])"], 1],
+    ['a taskkill as the file of an object argument', ["await run({ file: 'taskkill', args: ['/F', '/PID', String(pid)] })"], 1],
+    ['a taskkill as the command of an object argument over several lines', ['await run({', "  command: 'taskkill.exe',", "  args: ['/PID', `${pid}`],", '})'], 2],
+    ['a taskkill as the first element of a later array argument', ["await run(opts, ['taskkill', '/PID', String(pid)])"], 1],
   ]
   it.each(ROUND_6_FORMS)('flags %s', (_name, source, line) => {
     expect(flaggedSites('a.ts', source.join('\n')).map((s) => s.split(':')[1])).toEqual([String(line)])
@@ -581,6 +605,9 @@ describe('the scan', () => {
       "spawnSync('git', ['log', '--grep', 'taskkill'])",
       "spawnSync('git', ['log', '--grep=taskkill', '--', 'a.ts'])",
       "execFileSync('git', ['log', '-S', 'taskkill'])",
+      "await run(['git', 'log', '--grep', 'taskkill'])",
+      "await run({ file: 'git', args: ['log', '-S', 'taskkill'] })",
+      "await run({ file: 'git', args: ['log', '--grep', 'taskkill'], cwd: dir })",
       "await promisify(execFile)('git', ['log', '--grep', 'kill'])",
       "await promisify(execFile)('kill', ['-9', String(child.pid)])",
       "execSync('sudo -D /tmp echo kill')",
