@@ -699,7 +699,7 @@ export function cmdRecent(nStr: string | undefined, opts: { json?: boolean }): v
 
 interface IgnoresReport {
   walkMode: 'git' | 'non-git'
-  // Scoped to `token-goat index` specifically -- it alone resolves files via getTrackedFiles() (git ls-files in git mode, so .gitignore is genuinely honored there). `map`/`todo`/ `conflicts`/`hot --project` all resolve files via baseline.ts's walkProject instead, which never shells out to git and so never consults .gitignore regardless of walkMode -- see skipDirs below for what those commands actually exclude.
+  // Scoped to `token-goat index` specifically -- it alone resolves files via requireTrackedFiles() (git ls-files in git mode, so .gitignore is genuinely honored there). `map`/`todo`/ `conflicts`/`hot --project` all resolve files via baseline.ts's walkProject instead, which never shells out to git and so never consults .gitignore regardless of walkMode -- see skipDirs below for what those commands actually exclude.
   indexRespectsGitignore: boolean
   // Scoped to `token-goat index --walk` specifically (walk_index.ts's isWalkExcluded) -- the only place `.env`/`.d.ts` filtering is wired in. `map`/`todo`/`conflicts`/`hot --project` never call it and so never exclude these files, in git mode or non-git mode alike.
   walkIndexBuiltinExclusions: string[]

@@ -25,8 +25,8 @@ function srcTypeScriptFiles(): readonly string[] {
     }
   }
   walk(SRC)
-  // Moved 524 -> 529 when src/unbounded_walk.ts (find2), src/process_tree.ts (orph4), src/resident_process.ts and src/stray_residents.ts (s1), and src/bash_backslash_repair.ts (BS) were added (measured: 529 modules).
-  return pinnedPopulation({ what: 'TypeScript modules under src/', items: found.sort(), floor: 414, ceiling: 529, mustIncludeExact: ['src/parser_types.ts'] })
+  // Moved 524 -> 529 when src/unbounded_walk.ts (find2), src/process_tree.ts (orph4), src/resident_process.ts and src/stray_residents.ts (s1), and src/bash_backslash_repair.ts (BS) were added (measured: 529 modules). Moved 529 -> 530 when src/git_hint.ts (gitasync 1b: the spawn-free branch read and the timed-out dirty probe) was added (measured: 530 modules).
+  return pinnedPopulation({ what: 'TypeScript modules under src/', items: found.sort(), floor: 414, ceiling: 530, mustIncludeExact: ['src/parser_types.ts'] })
 }
 
 function srcFilesDefining(pattern: RegExp): string[] {

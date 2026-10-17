@@ -4,13 +4,13 @@ import { describe, it, expect, vi } from 'vitest'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
-import { getTrackedFiles } from '../src/repomap.js'
+import { listTrackedFiles } from '../src/repomap.js'
 import * as util from '../src/util.js'
 
 vi.mock('../src/util.js')
 
 describe('repomap', () => {
-  describe('getTrackedFiles', () => {
+  describe('listTrackedFiles', () => {
     it('parses git ls-files output into paths', () => {
       const mockResult = {
         exitCode: 0,
@@ -20,7 +20,7 @@ describe('repomap', () => {
       vi.mocked(util.runGit).mockReturnValue(mockResult)
 
       const cwd = '/project'
-      const files = getTrackedFiles(cwd)
+      const files = listTrackedFiles(cwd).files
 
       expect(util.runGit).toHaveBeenCalledWith(['ls-files'], { cwd })
       expect(files).toHaveLength(3)
@@ -33,7 +33,7 @@ describe('repomap', () => {
       const mockResult = { exitCode: 128, stdout: '', stderr: 'not a git repo' }
       vi.mocked(util.runGit).mockReturnValue(mockResult)
 
-      const files = getTrackedFiles('/project')
+      const files = listTrackedFiles('/project').files
 
       expect(files).toEqual([])
     })
@@ -46,7 +46,7 @@ describe('repomap', () => {
       }
       vi.mocked(util.runGit).mockReturnValue(mockResult)
 
-      const files = getTrackedFiles('/project')
+      const files = listTrackedFiles('/project').files
 
       expect(files).toHaveLength(2)
     })
@@ -58,7 +58,7 @@ describe('repomap', () => {
       fs.writeFileSync(file, 'export const a = 1\n')
       vi.mocked(util.runGit).mockReturnValue({ exitCode: 0, stdout: 'campaign-detectors.js\n', stderr: '' })
 
-      const files = getTrackedFiles(file)
+      const files = listTrackedFiles(file).files
 
       expect(util.runGit).toHaveBeenCalledWith(['ls-files', '--error-unmatch', '--', 'campaign-detectors.js'], { cwd: dir })
       expect(files).toEqual([file])
@@ -72,7 +72,7 @@ describe('repomap', () => {
       fs.writeFileSync(file, 'export const a = 1\n')
       vi.mocked(util.runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'did not match any file(s) known to git' })
 
-      expect(getTrackedFiles(file)).toEqual([])
+      expect(listTrackedFiles(file).files).toEqual([])
       // Asserted explicitly: without the flag git would exit 0 and list the directory's other tracked files, so the empty result above alone does not prove the flag survived.
       expect(vi.mocked(util.runGit).mock.lastCall?.[0]).toContain('--error-unmatch')
       fs.rmSync(dir, { recursive: true, force: true })
@@ -83,7 +83,7 @@ describe('repomap', () => {
         throw new Error('test error')
       })
 
-      const files = getTrackedFiles('/project')
+      const files = listTrackedFiles('/project').files
 
       expect(files).toEqual([])
     })

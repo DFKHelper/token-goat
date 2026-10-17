@@ -25,8 +25,8 @@ function reconcileNote(cwd: string, indexed: boolean): string | null {
   try {
     const budgetMs = envInt(ENV_KEYS.RECONCILE_BUDGET_MS, DEFAULT_RECONCILE_BUDGET_MS, 0, 60_000)
     const result = reconcileProject({ cwd, budgetMs })
-    // isReconcileClean only looks at changed/added/removed, all three of which come back empty when the sweep never reached the files that would have populated them -- a budget-exhausted pass over a large project can find zero drift purely because it ran out of time before it got past the first few tracked files, not because the rest of the project agrees with the index. Gating the early return on isReconcileClean alone reported that as silence, the same "confident wrong answer over a partial scan" runReconcile's CLI text output already refuses to give (see its own "clean or not" comment) -- this note must refuse it too.
-    if (isReconcileClean(result) && !result.budgetExhausted) return null
+    // isReconcileClean only looks at changed/added/removed, all three of which come back empty when the sweep never reached the files that would have populated them -- a budget-exhausted pass over a large project can find zero drift purely because it ran out of time before it got past the first few tracked files, not because the rest of the project agrees with the index. Gating the early return on isReconcileClean alone reported that as silence, the same "confident wrong answer over a partial scan" runReconcile's CLI text output already refuses to give (see its own "clean or not" comment) -- this note must refuse it too. A listing git did not finish is the same partial scan: no new file could be found, so an empty drift set is not silence.
+    if (isReconcileClean(result) && !result.budgetExhausted && !result.gitTimedOut) return null
     // The breakdown is only worth its bytes when there is more than one kind of drift: with a single kind it restates the total it sits beside, and this line is paid for on every session start that finds anything. Files reindexed only because an upgrade changed the parser or the chunker never changed on disk, so calling them "changed outside this session" tells the model to distrust every file it has already read; they get their own clause.
     const upgraded = result.parserStale + result.embedStale
     const edited = result.changed.length - upgraded
@@ -36,9 +36,9 @@ function reconcileNote(cwd: string, indexed: boolean): string | null {
     if (result.removed.length > 0) parts.push(`${result.removed.length} removed`)
     const breakdown = parts.length > 1 ? ` (${parts.join(', ')})` : ''
     // The truncation is disclosed rather than smoothed over: a budget-limited sweep found the drift it had time to find, and a caller reading "3 files drifted" as "3 files drifted in total" would be reading a floor as a total.
-    const truncated = result.budgetExhausted
-      ? ` (sweep stopped at its time budget with ${countNoun(result.unscanned, 'file')} unchecked, so there may be more)`
-      : ''
+    const truncated =
+      (result.budgetExhausted ? ` (sweep stopped at its time budget with ${countNoun(result.unscanned, 'file')} unchecked, so there may be more)` : '') +
+      (result.gitTimedOut ? ' (git did not answer in time listing the project files, so new files could not be found)' : '')
     const total = result.changed.length + result.added.length + result.removed.length
     if (total === 0) {
       // budgetExhausted with nothing found yet: say the sweep was incomplete instead of nothing at all.

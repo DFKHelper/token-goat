@@ -10,7 +10,7 @@ import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from 
 import { indexedPathSpellingIsStale } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { getDisplayRoot } from './project.js'
-import { getTrackedFiles } from './repomap.js'
+import { listTrackedFiles } from './repomap.js'
 import { projectScopeClause } from './sql_path.js'
 import { countNoun, foldPath } from './util.js'
 
@@ -80,6 +80,8 @@ export interface ReconcileResult {
   budgetExhausted: boolean
   /** True when the tracked-file enumeration came back empty against a non-empty index -- the project is not a git repository, git is missing, or git errored. Distinguished from a genuinely emptied project because the two are identical in the numbers and opposite in what they mean. */
   trackedUnavailable: boolean
+  /** True when `git ls-files` was killed for running too long, so what the project tracks is unknown rather than empty. The sweep then checks only what the index already holds; a caller that must not act on a listing it never got (install marking the root indexed) reads this. */
+  gitTimedOut: boolean
   /** Tracked files never examined because the budget ran out. */
   unscanned: number
   /** Paths that reached the dirty queue (0 when `dryRun`). Fewer than changed + added + removed when the queue refused some: it takes nothing under the OS temp dir, and nothing at all when it cannot be written. */
@@ -119,7 +121,7 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
   const lines: string[] = []
   if (isReconcileClean(result)) {
     // Not claimed when the enumeration failed: an empty drift set there means nothing was compared, and "Index matches disk" over zero comparisons is the confident wrong answer this whole command exists to avoid. The disclosure below carries that case instead.
-    if (!result.trackedUnavailable) {
+    if (!result.trackedUnavailable && !result.gitTimedOut) {
       lines.push(`Index matches disk: ${countNoun(result.scanned, 'file')} checked in ${result.elapsedMs}ms.`)
     }
   } else {
@@ -149,7 +151,9 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
   if (unqueued > 0) {
     lines.push(`${countNoun(unqueued, 'file')} of the above could not be queued for reindexing: the queue takes nothing under the OS temp dir, and nothing at all when it cannot be written. Run token-goat index here to bring the index up to date.`)
   }
-  if (result.trackedUnavailable) {
+  if (result.gitTimedOut) {
+    lines.push('git did not answer in time while listing the tracked files, so new files could not be found. Indexed files that changed or are gone from disk were still detected. Run token-goat reconcile again once git responds.')
+  } else if (result.trackedUnavailable) {
     lines.push('This project has an index but git listed no files in it, so new files could not be found. Indexed files that changed or are gone from disk were still detected. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
   }
   if (result.budgetExhausted) {
@@ -171,7 +175,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const calledAt = Date.now()
   const dbPath = opts.dbPath ?? globalDbPath()
 
-  const tracked = getTrackedFiles(cwd)
+  const listing = listTrackedFiles(cwd)
+  const tracked = listing.files
   // Absolutized before scoping: the index stores absolute paths, and `projectScopeClause` builds a prefix-range bound straight from the root it is handed. A relative `cwd` -- what `token-goat reconcile` from inside the project passes -- would produce a relative prefix that matches no stored row, so every tracked file would look unindexed and the sweep would enqueue the entire project as "added" on every run.
   const projectRoot = resolveIndexPath('.', cwd)
   const indexed = getProjectFileEntries(projectRoot, dbPath)
@@ -245,7 +250,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     try {
       mtimeMs = fs.statSync(file).mtimeMs
     } catch {
-      // Vanished between `getTrackedFiles` and now, or unreadable. Treat as drift rather than silently skipping: enqueueing it lets the worker's own read decide, and a genuinely missing file is reconciled as a deletion there.
+      // Vanished between `listTrackedFiles` and now, or unreadable. Treat as drift rather than silently skipping: enqueueing it lets the worker's own read decide, and a genuinely missing file is reconciled as a deletion there.
       changed.push(file)
       continue
     }
@@ -265,7 +270,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     changed.push(file)
   }
 
-  // Reported, not gated on: `getTrackedFiles` returns an empty list for a directory git cannot enumerate -- not a repository, git not installed, git errored -- so `changed`/`added` are computed over nothing and the caller must be told. It used to suppress the deletion pass below as well, from when that pass inferred a deletion from absence from `seenOnDisk` and would therefore have called every live file in a non-git project deleted. The pass now stats each row instead, so absence from a failed enumeration cannot reach `removed` at all, and suppressing it only left deleted files sitting in the index of every non-git root forever.
+  // Reported, not gated on: `listTrackedFiles` returns an empty `files` list for a directory git cannot enumerate -- not a repository, git not installed, git errored -- so `changed`/`added` are computed over nothing and the caller must be told. It used to suppress the deletion pass below as well, from when that pass inferred a deletion from absence from `seenOnDisk` and would therefore have called every live file in a non-git project deleted. The pass now stats each row instead, so absence from a failed enumeration cannot reach `removed` at all, and suppressing it only left deleted files sitting in the index of every non-git root forever.
   const trackedUnavailable = tracked.length === 0 && indexed.size > 0
   const removed: string[] = []
   if (!budgetExhausted) {
@@ -293,7 +298,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
 
   let enqueued = 0
   if (opts.dryRun !== true) {
-    // Resolved here rather than passed raw: `getTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
+    // Resolved here rather than passed raw: `listTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
     const toEnqueue = [...changed, ...added, ...removed].map((p) => resolveIndexPath(p, cwd))
     // Batched rather than enqueued one at a time: a sweep routinely fans out four figures of paths at session start, and the single-path form appends each one separately. The count is what the queue took, not what it was offered: it refuses every path under the OS temp dir, and a project there reported files enqueued that no worker would ever see.
     enqueued = enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true, ...(opts.queueDir !== undefined ? { dir: opts.queueDir } : {}) })
@@ -315,6 +320,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     embedStale,
     budgetExhausted,
     trackedUnavailable,
+    gitTimedOut: listing.timedOut,
     unscanned: Math.max(0, tracked.length - scanned),
     enqueued,
     elapsedMs: Date.now() - calledAt,

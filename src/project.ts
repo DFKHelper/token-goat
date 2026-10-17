@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { shortFingerprint } from './fingerprint.js';
 import { extractErrorMessage, runGit } from './util.js';
 import { canonicalize, foldPath } from './path_containment.js';
-import { normalizeDarwinSystemAlias } from './paths.js';
+import { displaySafeText, normalizeDarwinSystemAlias } from './paths.js';
 import { registerReset } from './reset.js';
 
 // Re-exported so every existing `import { canonicalize, isInsideRoot } from './project.js'` keeps resolving to the same live binding. The definitions moved to a leaf module because util.ts's write helpers now run isInsideRoot on every write; see path_containment.ts's header.
@@ -207,10 +207,24 @@ export function isUnderSystemTemp(filePath: string): boolean {
   return foldedTarget === foldedTemp || foldedTarget.startsWith(`${foldedTemp}/`);
 }
 
+// Bases already reported, so a caller that resolves the same directory many times in one run says it once. Cleared per request for the same reason _displayRootCache is.
+const _reportedGitRootTimeouts = new Set<string>();
+registerReset(() => {
+  _reportedGitRootTimeouts.clear();
+}, { perRequest: true });
+
+/** Says on stderr that git did not answer while resolving the root of `base`, so the marker-file fallback that follows is not mistaken for git's own answer: in a nested repository or a submodule the two roots differ. */
+function noteGitRootTimeout(base: string): void {
+  if (_reportedGitRootTimeouts.has(base)) return;
+  _reportedGitRootTimeouts.add(base);
+  process.stderr.write(`token-goat: git did not answer while finding the project root of ${displaySafeText(base)}; using the nearest folder with a project marker instead, which can differ from git's top level.\n`);
+}
+
 /** Resolve "the current project root" using one shared precedence, replacing three previously-divergent conventions that had drifted apart across the codebase: - read_commands.ts's `runChanged` used `opts.projectRoot ?? process.cwd()`, then unconditionally tried to override that with `git rev-parse --show-toplevel`. - resume.ts used `findProject(process.cwd())?.root ?? process.cwd()`, with no git step at all. - cli_context_stats.ts used a bare `path.resolve(opts.project ?? process.cwd())`, with neither a git nor a findProject step. Resolution starts from a base directory -- `opts.project` if given (resolved to an absolute path), else `process.cwd()` -- and then, from that base: 1. `git rev-parse --show-toplevel`, if the base directory is inside a git repo. This matters because callers that pass changed-file paths through (e.g. `git diff --name-only`) always get them relative to the repo top-level, regardless of which subdirectory git was invoked from; resolving to the top-level keeps those relative paths correct even when the base directory is a subdirectory of the repo. 2. Else, {@link findProject}'s marker-based project root (package.json, .git, etc.), walking up from the base directory -- this covers non-git projects. 3. Else, the base directory itself. */
 export function resolveProjectRoot(opts?: { project?: string }): string {
   const base = opts?.project !== undefined ? path.resolve(opts.project) : process.cwd();
   const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: base });
+  if (toplevel.timedOut === true) noteGitRootTimeout(base);
   if (toplevel.exitCode === 0) {
     const trimmed = toplevel.stdout.trim();
     // `git rev-parse` echoes back whatever drive-letter casing the OS reports (often uppercase on Windows), unlike every other project-root source in this module (findProject, makeProjectAt), which is always canonicalize()'d. Canonicalizing here too keeps the return value consistent regardless of which resolution step produced it.

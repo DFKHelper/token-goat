@@ -1,4 +1,4 @@
-// HAND-DERIVED: the fixture is a two-file git repo indexed here, and the slow enumeration is a clock advance injected around the real getTrackedFiles; the expected counts follow from the budget arithmetic, not from reconcile's own output.
+// HAND-DERIVED: the fixture is a two-file git repo indexed here, and the slow enumeration is a clock advance injected around the real listTrackedFiles; the expected counts follow from the budget arithmetic, not from reconcile's own output.
 /** `reconcile`'s budget bounds the sweep, so the time spent enumerating the project and opening the index must not be charged to it. The clock used to start before `git ls-files` and the index reads; under a loaded suite (and on a slow machine at session start) those alone took longer than the 1.5 s default, every sweep scanned zero files, and because a sweep that scanned nothing saves no resume point, the next session started from the same place and scanned zero again. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -16,10 +16,10 @@ vi.mock('../src/repomap.js', async (importOriginal) => {
   const actual = await importOriginal<typeof Repomap>()
   return {
     ...actual,
-    getTrackedFiles: (cwd?: string) => {
-      const files = actual.getTrackedFiles(cwd)
+    listTrackedFiles: (cwd?: string) => {
+      const listing = actual.listTrackedFiles(cwd)
       virtualNow += SETUP_COST_MS
-      return files
+      return listing
     },
   }
 })

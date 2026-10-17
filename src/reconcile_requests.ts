@@ -73,8 +73,9 @@ export function drainReconcileRequests(dir: string): number {
       }
       const result = reconcileProject({ cwd: root, dbPath, queueDir: dir })
       swept++
-      if (result.budgetExhausted) requeue.push(root)
-      logOutcome(dir, projectDir, `swept ${root}: ${result.scanned} scanned, ${result.enqueued} queued${result.budgetExhausted ? ', budget spent, continuing next cycle' : ''}`)
+      // A sweep whose file listing git did not finish found no new files, so the request goes back for the next cycle instead of being spent.
+      if (result.budgetExhausted || result.gitTimedOut) requeue.push(root)
+      logOutcome(dir, projectDir, `swept ${root}: ${result.scanned} scanned, ${result.enqueued} queued${result.gitTimedOut ? ', git did not answer in time listing the files, continuing next cycle' : result.budgetExhausted ? ', budget spent, continuing next cycle' : ''}`)
     } catch (e) {
       logOutcome(dir, projectDir, `failed: ${e instanceof Error ? e.message : String(e)}`)
     }

@@ -73,7 +73,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 |--------|------|
 | [`src/paths.ts`](src/paths.ts) | `normalizePath()` (backslash to forward-slash, WSL `/mnt/` expansion, drive-letter lowercase); `resolveIndexPath()` (canonical WRITE==READ DB key); `safeJoin()` (colon-rejection to block Windows drive-letter escapes) |
 | [`src/project.ts`](src/project.ts) | `findProject()` walks up for project markers; `makeProjectAt()` for marker-free dirs; `projectHash()` (SHA1 of canonical path) |
-| [`src/repomap.ts`](src/repomap.ts) | `getTrackedFiles()` via `git ls-files`; `buildMap()` / `buildCompactMap()` / `formatMap()` for `token-goat map` |
+| [`src/repomap.ts`](src/repomap.ts) | `listTrackedFiles()` / `requireTrackedFiles()` via `git ls-files`; `buildMap()` / `buildCompactMap()` / `formatMap()` for `token-goat map` |
 
 **Hook Subsystem**
 
@@ -478,6 +478,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/filter_notice.ts`](src/filter_notice.ts) | The notices a listing command prints when a filter left nothing of what the store holds, so a filtered view never reads as a definitive "nothing here". |
 | [`src/fold_delivery.ts`](src/fold_delivery.ts) | Turning a delivered slice of a source file into a folded one: pick the spans, render the notices. |
 | [`src/fold_structure.ts`](src/fold_structure.ts) | Turning a whole-file delivery into a structural view of it: a heading tree for a document, a declaration skeleton for source. |
+| [`src/git_hint.ts`](src/git_hint.ts) | Git facts the hooks read inside the `hints.git_hint_max_ms` budget: the branch from the HEAD file with no spawn, and a dirty-state probe that says timed-out instead of clean. |
 | [`src/git_porcelain.ts`](src/git_porcelain.ts) | One entry of `git status --porcelain -z`: the path as git names it, relative to the repository root, plus the path a rename or copy came from. |
 | [`src/graph_analysis.ts`](src/graph_analysis.ts) | Code graph analysis and query commands: similar, context-for, test-for, coverage-gaps, arch, blame, and ask. |
 | [`src/graph_commands.ts`](src/graph_commands.ts) | CLI command handlers for code-graph commands. |
@@ -665,7 +666,7 @@ Project hash = `crypto.createHash('sha1').update(canonicalRoot)` from [`src/proj
 
 ### (a) Initial indexing
 
-`token-goat index [path]` calls `getTrackedFiles()` (via `git ls-files`) to enumerate files, then calls `indexFileSync(absPath, dbPath)` for each. `indexFileSync` in [`src/parser.ts`](src/parser.ts) calls `detectLanguage()` then `parseContent()` (tree-sitter or regex extractor) then `writeParseResult()`, which runs a single transaction: DELETE existing rows for the file, then INSERT new `files`, `symbols`, and `refs` rows. Embeddings are written separately by `embeddings.ts::upsertChunks()`.
+`token-goat index [path]` calls `requireTrackedFiles()` (via `git ls-files`) to enumerate files, then calls `indexFileSync(absPath, dbPath)` for each. `indexFileSync` in [`src/parser.ts`](src/parser.ts) calls `detectLanguage()` then `parseContent()` (tree-sitter or regex extractor) then `writeParseResult()`, which runs a single transaction: DELETE existing rows for the file, then INSERT new `files`, `symbols`, and `refs` rows. Embeddings are written separately by `embeddings.ts::upsertChunks()`.
 
 ### (b) Incremental updates (background worker)
 

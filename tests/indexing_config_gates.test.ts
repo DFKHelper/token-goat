@@ -242,7 +242,7 @@ describe('cmdIndex skip pre-filter also removes orphaned embeddings (regression)
   it.skipIf(!canExerciseRealEmbeddings)(
     'removes chunk_vectors/chunks, not just symbol rows, once a file becomes skip_dirs-excluded, and semantic search stops matching it',
     async () => {
-      // walkProject (behind cmdIndex's --walk fallback) already prunes skip_dirs directories during the walk itself, before cmdIndex's loop ever sees the file -- so the buggy pre-filter branch inside cmdIndex's loop (the actual site of this fix) is unreachable in walk mode. Only the git-tracked path (getTrackedFiles / git ls-files, which does NOT consult skip_dirs) still hands cmdIndex a file whose directory was added to skip_dirs AFTER it was first indexed, exactly matching the real-world scenario this bug describes. A bare `git init` + `git add` (no commit, no user.name/user.email needed) is enough for `git ls-files` to list the file.
+      // walkProject (behind cmdIndex's --walk fallback) already prunes skip_dirs directories during the walk itself, before cmdIndex's loop ever sees the file -- so the buggy pre-filter branch inside cmdIndex's loop (the actual site of this fix) is unreachable in walk mode. Only the git-tracked path (requireTrackedFiles / git ls-files, which does NOT consult skip_dirs) still hands cmdIndex a file whose directory was added to skip_dirs AFTER it was first indexed, exactly matching the real-world scenario this bug describes. A bare `git init` + `git add` (no commit, no user.name/user.email needed) is enough for `git ls-files` to list the file.
       execFileSync('git', ['init', '-q'], { cwd: TMP })
 
       process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED'] = 'true'
@@ -280,7 +280,7 @@ describe('cmdIndex skip pre-filter also removes orphaned embeddings (regression)
       cfg.indexing.skip_dirs = ['toskip']
       saveConfig(cfg)
 
-      // The file is still git-tracked (skip_dirs only affects the walk-mode fallback and cmdIndex's own pre-filter, not what git considers tracked), so getTrackedFiles still hands it to cmdIndex's loop, where the isUnderSkipDir pre-filter branch now fires.
+      // The file is still git-tracked (skip_dirs only affects the walk-mode fallback and cmdIndex's own pre-filter, not what git considers tracked), so requireTrackedFiles still hands it to cmdIndex's loop, where the isUnderSkipDir pre-filter branch now fires.
       await cmdIndex(TMP, { dbPath })
 
       expect(querySymbols({ name: 'lookUpAccountByEmailAddress', limit: 10 }, dbPath).length).toBe(0)
