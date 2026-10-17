@@ -73,3 +73,18 @@ it('sweeps a detached grandchild that is not in the kill list, and spares a proc
     bystander.kill('SIGKILL')
   }
 })
+
+// HAND-DERIVED: a root that does not exist makes the pid-file recovery phase throw ENOENT; the orphan and the second folder are real, so the later sweep and delete phases have something to do.
+it('still sweeps the orphans and removes the folders when an earlier phase throws', () => {
+  const missing = join(tmpdir(), `tg-cleanup-missing-${String(process.pid)}-${String(Date.now())}`)
+  const root = mkdtempSync(join(tmpdir(), 'tg-cleanup-row-'))
+  ownedRoots.push(missing, root)
+  const { spawner, grandPidFile } = writeSpawner(root, 'orphan')
+  const parent = spawn(process.execPath, [spawner], { stdio: 'ignore', windowsHide: true })
+  spawners.push(parent)
+  const grandchild = waitFor(grandPidFile)
+  expect(alive(grandchild)).toBe(true)
+  expect(() => { cleanupTrees() }).toThrow(/ENOENT/)
+  expect(alive(grandchild)).toBe(false)
+  expect(existsSync(root)).toBe(false)
+})

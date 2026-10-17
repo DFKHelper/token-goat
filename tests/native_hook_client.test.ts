@@ -6,7 +6,7 @@ import * as net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest'
 
 import { dataDirForHome } from '../src/constants.js'
 import {
@@ -27,6 +27,7 @@ import {
 import { BUNDLE } from './helpers/bundle.js'
 import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { buildNative } from './helpers/native_bin.js'
 
 type Env = Record<string, string>
@@ -831,26 +832,26 @@ describe('process behaviour', () => {
         return (e as NodeJS.ErrnoException).code === 'EPERM'
       }
     }
-    try {
-      await runNative(hookArgs(fbTail(0, 'hang', pidFile)), '{}', { TOKEN_GOAT_HOOK_SERVER: '0' }, {
-        onSpawn: (child) => {
-          const poll = setInterval(() => {
-            if (!fs.existsSync(pidFile)) return
-            const text = fs.readFileSync(pidFile, 'utf8')
-            if (text === '') return
-            grandchild = Number(text)
-            clearInterval(poll)
-            child.kill()
-          }, 20)
-          setTimeout(() => clearInterval(poll), 20_000)
-        },
-      })
-      expect(grandchild).toBeGreaterThan(0)
-      const deadline = Date.now() + 5000
-      while (alive(grandchild) && Date.now() < deadline) await sleep(50)
-      expect(alive(grandchild)).toBe(false)
-    } finally {
-      if (grandchild > 0 && alive(grandchild)) process.kill(grandchild)
-    }
+    // A failed kill is reported beside the test's own failure, never in its place.
+    onTestFinished(() => {
+      if (grandchild > 0) killIfCommandLine(grandchild, (cmd) => cmd.includes(pidFile), { signal: 'SIGTERM' })
+    })
+    await runNative(hookArgs(fbTail(0, 'hang', pidFile)), '{}', { TOKEN_GOAT_HOOK_SERVER: '0' }, {
+      onSpawn: (child) => {
+        const poll = setInterval(() => {
+          if (!fs.existsSync(pidFile)) return
+          const text = fs.readFileSync(pidFile, 'utf8')
+          if (text === '') return
+          grandchild = Number(text)
+          clearInterval(poll)
+          child.kill()
+        }, 20)
+        setTimeout(() => clearInterval(poll), 20_000)
+      },
+    })
+    expect(grandchild).toBeGreaterThan(0)
+    const deadline = Date.now() + 5000
+    while (alive(grandchild) && Date.now() < deadline) await sleep(50)
+    expect(alive(grandchild)).toBe(false)
   }, 30_000)
 })

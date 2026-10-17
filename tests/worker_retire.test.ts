@@ -58,13 +58,8 @@ function sleepingProcess(): ChildProcess {
 afterEach(() => {
   embedHold.held = false
   for (const c of children.splice(0)) {
-    if (c.pid !== undefined && alive(c.pid)) {
-      try {
-        process.kill(c.pid, 'SIGKILL')
-      } catch {
-        // already gone
-      }
-    }
+    // The handle signals the process it holds and nothing once that process has exited, so a freed pid number is never reached.
+    c.kill('SIGKILL')
   }
   for (const d of dirs.splice(0)) {
     closeDb(path.join(d, 'global.db'))
@@ -112,7 +107,7 @@ describe('stopWorker never strands a daemon', () => {
     const child = sleepingProcess()
     const pid = child.pid as number
     await waitFor('the stand-in to be alive', 5000, () => alive(pid))
-    process.kill(pid, 'SIGKILL')
+    child.kill('SIGKILL')
     await waitFor('the stand-in to die', 5000, () => !alive(pid))
     fs.writeFileSync(workerPidPath(dir), `${pid}\n`)
 

@@ -7,6 +7,8 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
+
 const passes = vi.hoisted(() => [] as string[])
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -34,10 +36,13 @@ const cleanups: Array<() => void> = []
 afterEach(() => {
   passes.length = 0
   vi.restoreAllMocks()
-  for (const cleanup of cleanups.splice(0)) cleanup()
-  for (const c of children.splice(0)) if (c.exitCode === null && c.signalCode === null) c.kill('SIGKILL')
-  if (dir !== undefined) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
-  dir = undefined
+  try {
+    for (const cleanup of cleanups.splice(0)) cleanup()
+  } finally {
+    for (const c of children.splice(0)) if (c.exitCode === null && c.signalCode === null) c.kill('SIGKILL')
+    if (dir !== undefined) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    dir = undefined
+  }
 })
 
 describe('the tree of an owned child is ended at most once', () => {
@@ -106,13 +111,7 @@ describe.skipIf(process.platform === 'win32')('a tree that is forking while it i
     const owned = spawnOwned('sh', ['-c', loop], { stdio: 'ignore' })
     children.push(owned.child)
     cleanups.push(() => {
-      for (const pid of liveWithArgs(marker)) {
-        try {
-          process.kill(pid, 'SIGKILL')
-        } catch {
-          // already gone
-        }
-      }
+      killAllIfCommandLine(liveWithArgs(marker), (cmd) => cmd.includes(marker))
     })
     // Only a kill that lands while the loop is still forking is the case under test.
     while (liveWithArgs(marker).length < 30) await new Promise<void>((resolve) => setImmediate(resolve))

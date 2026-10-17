@@ -6,9 +6,12 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
+
 // tg-no-regex-preload
 
 // The stand-in ends when its owner (this test process) does, or when the test kills it.
+const STAND_IN_MARK = 'const owner = Number(process.argv[1])'
 const STAND_IN = 'const owner = Number(process.argv[1]); setInterval(() => { try { process.kill(owner, 0) } catch { process.exit(0) } }, 500)'
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -20,23 +23,16 @@ vi.mock('node:child_process', async (importOriginal) => {
 })
 
 const { startDetachedWorker } = await import('../src/worker_lifecycle.js')
-const { killProcessTree } = await import('../src/process_tree.js')
 
 const tempDirs: string[] = []
 const started: number[] = []
 
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM'
-  }
-}
-
 afterEach(() => {
-  for (const pid of started.splice(0)) if (alive(pid)) killProcessTree(pid)
-  for (const d of tempDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  try {
+    killAllIfCommandLine(started.splice(0), (cmd) => cmd.includes(STAND_IN_MARK), { tree: true })
+  } finally {
+    for (const d of tempDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  }
 })
 
 // The stand-in inherits this process's priority. A test process that already runs below normal (CI under nice, an earlier in-process lowering) would pass whether or not the launcher lowered anything, so there the test is skipped rather than left to pass vacuously.

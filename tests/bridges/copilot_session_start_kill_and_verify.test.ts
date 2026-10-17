@@ -75,3 +75,66 @@ it('re-issues a kill that left the victim alive, and reports nothing once the se
   expect(() => { killAndVerify(new Map([[16, 'node ours.js']]), seam) }).not.toThrow()
   expect(calls).toEqual([16, 16])
 })
+
+// HAND-DERIVED: the fake checked kill throws the way killIfCommandLine does for a live pid whose command line cannot be read (tests/helpers/kill_if_command_line.ts::killIfCommandLine); nothing is signalled for real.
+it('signals the other victims when the checked kill cannot decide one, and carries that failure on the survivor error', () => {
+  const { seam, kills } = world({ 30: 'node ours.js', 31: 'node ours.js' })
+  const inner = seam.killIfCommandLine
+  seam.killIfCommandLine = (pid, isOurs) => {
+    if (pid === 30) throw new Error('pid 30: its command line could not be read')
+    return inner?.(pid, isOurs) ?? false
+  }
+  let caught: unknown
+  try { killAndVerify(new Map([[30, 'node ours.js'], [31, 'node ours.js']]), seam) } catch (error) { caught = error }
+  expect((caught as Error).message).toMatch(/30 node ours\.js/)
+  expect(((caught as Error).cause as Error).message).toMatch(/pid 30/)
+  expect(kills).toEqual([31])
+})
+
+it('asks again after the checked kill could not decide, and reports nothing once a later call ends the victim', () => {
+  const { seam, kills } = world({ 32: 'node ours.js' })
+  const inner = seam.killIfCommandLine
+  let calls = 0
+  seam.killIfCommandLine = (pid, isOurs) => {
+    calls++
+    if (calls === 1) throw new Error('pid 32: its command line could not be read')
+    return inner?.(pid, isOurs) ?? false
+  }
+  seam.backstopMs = 60_000
+  expect(() => { killAndVerify(new Map([[32, 'node ours.js']]), seam) }).not.toThrow()
+  expect(kills).toEqual([32])
+})
+
+// HAND-DERIVED: review 3 of this branch. The fake checked kill throws the way killIfCommandLine does for a live pid whose command line cannot be read (tests/helpers/kill_if_command_line.ts::killIfCommandLine); a pid that throws and leaves the table exited while its line was being read. One round only (backstopMs 0), so nothing waits.
+function exitingAfterFailure(seam: KillSeam, failing: ReadonlyMap<number, boolean>): void {
+  const inner = seam.killIfCommandLine
+  const live = seam.alive
+  const gone = new Set<number>()
+  seam.alive = (pid) => !gone.has(pid) && (live?.(pid) ?? false)
+  seam.killIfCommandLine = (pid, isOurs) => {
+    const exits = failing.get(pid)
+    if (exits === undefined) return inner?.(pid, isOurs) ?? false
+    if (exits) gone.add(pid)
+    throw new Error(`pid ${pid}: its command line could not be read`)
+  }
+}
+
+it('puts on the survivor error the failure of the pid that survives, not one of a pid that is gone', () => {
+  const { seam } = world({ 40: 'node ours.js', 41: 'node ours.js' })
+  exitingAfterFailure(seam, new Map([[40, true], [41, false]]))
+  let caught: unknown
+  try { killAndVerify(new Map([[40, 'node ours.js'], [41, 'node ours.js']]), seam) } catch (error) { caught = error }
+  expect((caught as Error).message).toMatch(/41 node ours\.js/)
+  expect((caught as Error).message).not.toMatch(/40 node ours\.js/)
+  expect(((caught as Error).cause as Error).message).toMatch(/pid 41/)
+})
+
+it('attaches no cause to the survivor error when the only failure was for a pid that is gone', () => {
+  const { seam } = world({ 42: 'node ours.js', 43: 'node ours.js' })
+  exitingAfterFailure(seam, new Map([[42, true]]))
+  seam.killIfCommandLine = ((inner) => (pid, isOurs) => (pid === 43 ? false : inner(pid, isOurs)))(seam.killIfCommandLine as NonNullable<KillSeam['killIfCommandLine']>)
+  let caught: unknown
+  try { killAndVerify(new Map([[42, 'node ours.js'], [43, 'node ours.js']]), seam) } catch (error) { caught = error }
+  expect((caught as Error).message).toMatch(/43 node ours\.js/)
+  expect((caught as Error).cause).toBeUndefined()
+})

@@ -18,6 +18,7 @@ import { SESSION_START_TEST_BUDGET_ENV } from '../src/bridges/shim_common.js'
 import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { slotStatus, waitIdle } from './helpers/hook_server_probe.js'
 import { callV2, verifyResponseFrames, type Frame, type V2Served } from './helpers/hook_v2_client.js'
+import { isHookServerCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { buildNative } from './helpers/native_bin.js'
 
 type Env = Record<string, string>
@@ -177,9 +178,12 @@ afterAll(async () => {
   const deadline = Date.now() + 5000
   for (const pid of sb.pids) {
     while (pidAlive(pid) && Date.now() < deadline) await sleep(50)
-    if (pidAlive(pid)) process.kill(pid)
   }
-  fs.rmSync(sb.base, { recursive: true, force: true })
+  try {
+    killAllIfCommandLine(sb.pids, isHookServerCommandLine, { signal: 'SIGTERM' })
+  } finally {
+    fs.rmSync(sb.base, { recursive: true, force: true })
+  }
 }, 30_000)
 
 function substitute(text: string, sid: string): string {
