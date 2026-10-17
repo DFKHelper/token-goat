@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** `post-merge` / `post-rewrite` hook: automatically synchronize token-goat after git pull/merge/rebase. Automatically: 1. Checks if package-lock.json changed; if so, runs `npm install`. 2. Rebuilds the bundle (`npm run build`). 3. Stops resident hook-servers so fresh code is loaded on the next hook invocation. 4. Restarts the worker daemon. 5. Refreshes shims and instructions for Claude Code, and for Copilot CLI and Codex CLI only where token-goat already installed its shim there. 6. Triggers index update for any files needing re-parsing. In a linked worktree (`git worktree add`) it stops after step 2: steps 3-6 act on the user's real home, so running them from a scratch checkout would point every installed hook at that checkout's build and start a worker from it. */
+/** `post-merge` / `post-rewrite` hook: automatically synchronize token-goat after git pull/merge/rebase. Automatically: 1. Checks if package-lock.json changed; if so, runs `npm install`. 2. Rebuilds the bundle (`npm run build`). 3. Stops resident hook-servers so fresh code is loaded on the next hook invocation. 4. Restarts the worker daemon. 5. Refreshes shims and instructions for Claude Code, and for Copilot CLI and Codex CLI only where token-goat already installed its shim there. 6. Triggers index update for any files needing re-parsing. In a linked worktree (`git worktree add`) it stops after step 2: steps 3-6 act on the user's real home, so running them from a scratch checkout would point every installed hook at that checkout's build and start a worker from it. It stops there too in a checkout that is not the active install (the global `token-goat` package, from `npm root -g`, resolves elsewhere, e.g. a registry install): the residents it started would run this checkout's build while the hooks run the other. When npm cannot say, or no global package exists, it syncs as before. The run says which of the two it took and why, and TG_POST_MERGE_SYNC=1 forces the full sync without asking npm (it does not lift the linked-worktree stop). */
 
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -13,16 +13,16 @@ const npmCmd = isWin ? 'npm.cmd' : 'npm'
 const nodeCmd = process.execPath
 const bundlePath = path.join(projectRoot, 'dist', 'token-goat.mjs')
 
+/** The command and arguments to hand `spawnSync`: a Windows `.cmd` shim (npm) cannot be spawned directly, so it runs through cmd.exe. */
+function launchable(cmd, args) {
+  return isWin && cmd.endsWith('.cmd') ? { cmd: 'cmd.exe', args: ['/d', '/s', '/c', cmd, ...args] } : { cmd, args }
+}
+
 function runStep(label, cmd, args, options = {}) {
   process.stdout.write(`[token-goat post-merge] ${label}... `)
   const start = Date.now()
-  let finalCmd = cmd
-  let finalArgs = args
-  if (isWin && cmd.endsWith('.cmd')) {
-    finalCmd = 'cmd.exe'
-    finalArgs = ['/d', '/s', '/c', cmd, ...args]
-  }
-  const res = spawnSync(finalCmd, finalArgs, {
+  const launch = launchable(cmd, args)
+  const res = spawnSync(launch.cmd, launch.args, {
     cwd: projectRoot,
     encoding: 'utf8',
     ...options,
@@ -78,6 +78,38 @@ function isLinkedWorktree(cwd) {
   return Boolean(gitDir && commonDir) && path.resolve(gitDir) !== path.resolve(commonDir)
 }
 
+/** What npm says about the global token-goat: `{ dir }` with the directory a global `npm install` really lives in, else `{ dir: null, reason }` naming why there is none. `npm install -g .` links the checkout into npm's global root (`npm root -g`), a registry install puts a real copy there, so the realpath says which one the user runs. No dir means npm cannot say or no global token-goat exists: the evidence is missing, not against this checkout. Unbounded in time like `installedLauncher` in src/cli_upgrade.ts: `npm root -g` reads no network and a deadline would only turn a slow machine into a wrong answer. */
+function globalInstallDir() {
+  const launch = launchable(npmCmd, ['root', '-g'])
+  const res = spawnSync(launch.cmd, launch.args, { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+  if (res.status !== 0 || typeof res.stdout !== 'string') {
+    return { dir: null, reason: `\`npm root -g\` failed (${res.error ? res.error.message : `exit ${res.status}`})` }
+  }
+  const root = res.stdout.trim()
+  if (!root) return { dir: null, reason: '`npm root -g` printed nothing' }
+  try {
+    return { dir: fs.realpathSync.native(path.join(root, 'token-goat')) }
+  } catch {
+    return { dir: null, reason: `no global token-goat package under ${root}` }
+  }
+}
+
+/** Whether this checkout is the install the hooks run: `{ other, reason }`, with `other` the global install directory when it is somewhere else (build only) and null when the full sync should run, `reason` saying why. TG_POST_MERGE_SYNC=1 forces the full sync without asking npm. Both sides go through realpath, and compare case-folded on Windows, where one directory has several spellings. */
+function installDecision() {
+  if (process.env.TG_POST_MERGE_SYNC === '1') return { other: null, reason: 'TG_POST_MERGE_SYNC=1 forces it' }
+  const found = globalInstallDir()
+  if (found.dir === null) return { other: null, reason: `${found.reason}, so nothing says another install is active` }
+  const fold = (p) => (isWin ? p.toLowerCase() : p)
+  let here
+  try {
+    here = fs.realpathSync.native(projectRoot)
+  } catch {
+    return { other: null, reason: 'this checkout\'s own path does not resolve, so nothing says another install is active' }
+  }
+  if (fold(path.resolve(found.dir)) === fold(path.resolve(here))) return { other: null, reason: 'the global token-goat is this checkout' }
+  return { other: found.dir, reason: `the global token-goat is ${found.dir}` }
+}
+
 /** Where `node_modules` really lives when it is a symlink or junction resolving outside this checkout (a linked worktree sharing the main checkout's install), else null. lstat sees the link itself and realpath follows it; Node reports a Windows junction as a symbolic link to lstat, which `tests/post_merge_lock_and_links.test.ts` pins. */
 function externalNodeModules() {
   const modules = path.join(projectRoot, 'node_modules')
@@ -126,10 +158,19 @@ function main() {
 
   if (isLinkedWorktree(projectRoot)) {
     console.log(
-      '[token-goat post-merge] Linked worktree: built the bundle only. The installed hooks, shims, worker and index belong to the main checkout, so run `npm run sync` there to move them to a new build.',
+      '[token-goat post-merge] Linked worktree: built the bundle only. The installed hooks, shims, worker and index belong to the main checkout, so run `npm run sync` there to move them to a new build.' + (process.env.TG_POST_MERGE_SYNC === '1' ? ' TG_POST_MERGE_SYNC=1 does not lift this stop.' : ''),
     )
     return
   }
+
+  const decision = installDecision()
+  if (decision.other !== null) {
+    console.log(
+      `[token-goat post-merge] Build only, not the active install: ${decision.reason}, so left the hooks, shims, worker, index and doctor alone. To make this checkout the active install, run \`npm install -g .\` here, then \`token-goat install\`; \`npm run sync\` keeps it current after that. To run the full sync anyway, set TG_POST_MERGE_SYNC=1.`,
+    )
+    return
+  }
+  console.log(`[token-goat post-merge] Full sync: ${decision.reason}.`)
 
   // 3. Stop resident hook servers (they will respawn with the new build on next hook call)
   runStep('Stopping resident hook servers', nodeCmd, [bundlePath, 'hook-server', 'stop'])
