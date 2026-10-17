@@ -2,6 +2,7 @@
 
 // tg-no-regex-preload Provenance: HAND-DERIVED. The expected spawnSync `timeout` values follow from the stated contract (omitted -> default, positive number -> itself, GIT_UNBOUNDED -> none, 0/negative/NaN -> default) and are computed from the test inputs, not from the implementation; the esbuild rendering of util.ts is the real source.
 import type * as cp from 'node:child_process'
+import type * as processTree from '../../src/process_tree.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,18 +12,43 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
 
-// Every call passes straight through to the real spawnSync; the mock exists so the options runGit hands it are inspectable.
+// No git starts here: spawnSync and spawnOwned are stubs that record the options they are given and answer with a clean exit, and every other way to start a process throws. The claim under test is which limit is handed over, which the outcome of a real git adds nothing to and a loaded machine can only spoil.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof cp>()
+  const refuse = (name: string) => (): never => {
+    throw new Error(`${name} would start a real process in a test that stubs every git spawn`)
+  }
   return {
     ...actual,
-    spawnSync: vi.fn((...args: Parameters<typeof actual.spawnSync>) => actual.spawnSync(...args)),
+    spawnSync: vi.fn(() => ({ status: 0, stdout: '', stderr: '', output: ['', '', ''], pid: 0, signal: null })),
+    spawn: vi.fn(refuse('spawn')),
+    exec: vi.fn(refuse('exec')),
+    execSync: vi.fn(refuse('execSync')),
+    execFile: vi.fn(refuse('execFile')),
+    execFileSync: vi.fn(refuse('execFileSync')),
+    fork: vi.fn(refuse('fork')),
+  }
+})
+
+vi.mock('../../src/process_tree.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof processTree>()
+  const { EventEmitter } = await import('node:events')
+  const { PassThrough } = await import('node:stream')
+  return {
+    ...actual,
+    // A child that exits cleanly on the next microtask, once runGitAsync has attached its listeners; nothing waits on a clock.
+    spawnOwned: vi.fn(() => {
+      const child = Object.assign(new EventEmitter(), { pid: 1, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() })
+      queueMicrotask(() => child.emit('close', 0))
+      return { child, kill: vi.fn(), release: vi.fn() }
+    }),
   }
 })
 
 import * as childProcess from 'node:child_process'
 
 import { runGitAsync } from '../../src/git_async.js'
+import { spawnOwned } from '../../src/process_tree.js'
 import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED, runGit } from '../../src/util.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -92,9 +118,9 @@ describe('git calls are bounded', () => {
   it('an omitted timeout reaches spawnSync as the default, an explicit one wins, GIT_UNBOUNDED sends none', () => {
     const timeoutOf = (opts?: Parameters<typeof runGit>[1]): unknown => {
       vi.mocked(childProcess.spawnSync).mockClear()
-      const result = runGit(['--version'], opts)
-      expect(result.exitCode, result.stderr).toBe(0)
-      const spawnOpts = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[2] as Record<string, unknown> | undefined
+      runGit(['--version'], opts)
+      expect(vi.mocked(childProcess.spawnSync).mock.calls, 'runGit must make exactly one spawn').toHaveLength(1)
+      const spawnOpts = (vi.mocked(childProcess.spawnSync).mock.calls[0] as unknown[])[2] as Record<string, unknown> | undefined
       return spawnOpts?.['timeout']
     }
     expect(timeoutOf()).toBe(GIT_DEFAULT_TIMEOUT_MS)
@@ -109,10 +135,11 @@ describe('git calls are bounded', () => {
 
   it('runGitAsync arms the same limit: omitted is the default, explicit wins, GIT_UNBOUNDED arms none', async () => {
     const armed = async (opts?: Parameters<typeof runGitAsync>[1]): Promise<unknown[]> => {
+      vi.mocked(spawnOwned).mockClear()
       const timers = vi.spyOn(globalThis, 'setTimeout')
       try {
-        const result = await runGitAsync(['--version'], opts)
-        expect(result.exitCode, result.stderr).toBe(0)
+        await runGitAsync(['--version'], opts)
+        expect(vi.mocked(spawnOwned).mock.calls, 'runGitAsync must make exactly one spawn').toHaveLength(1)
         return timers.mock.calls.map((call) => call[1])
       } finally {
         timers.mockRestore()
