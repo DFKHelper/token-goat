@@ -18,7 +18,7 @@ import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex, pruneDeletedFiles, sweepKnownRoots } from './index_prune.js'
 import { recordKnownRootThrottled, sweepExpiredKnownRootMarkers } from './known_roots.js'
-import { reclaimIndex, walCheckpointBusy } from './index_reclaim.js'
+import { reclaimIndex, walCheckpointBusyNoWait } from './index_reclaim.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { cleanup_stale } from './snapshots.js'
 import { sweepCacheRoots } from './disk_cache.js'
@@ -660,19 +660,18 @@ const IDLE_VACUUM_COOLDOWN_MS = 5 * 60 * 1000
 // Smallest share of the database file that must be free pages before the idle pass vacuums it. VACUUM rewrites every page, and in WAL mode it writes them through the log, so on a 5 GB database with nothing to give back it costs a 5 GB write and a 5 GB -wal for no gain; the idle pass runs every six hours, so it must not be that expensive when there is nothing to reclaim.
 const IDLE_VACUUM_MIN_FREE_SHARE = 0.1
 
-/** One idle reclaim pass over the database at `dbPath`: vacuum it when at least {@link IDLE_VACUUM_MIN_FREE_SHARE} of the file is free pages, otherwise only fold and truncate its -wal (a checkpoint writes the live frames once and rewrites nothing else). True when the pass is settled for this interval (vacuumed, or nothing worth reclaiming); false when there is no database yet, the vacuum could not get its lock, or a reader refused the truncating checkpoint after the vacuum, so the next cycle tries again (the vacuumed file has no free pages left, so that retry is the checkpoint alone and not a second rewrite). */
+/** One idle reclaim pass over the database at `dbPath`: vacuum it when at least {@link IDLE_VACUUM_MIN_FREE_SHARE} of the file is free pages, otherwise only fold and truncate its -wal (a checkpoint writes the live frames once and rewrites nothing else). True when the pass is settled for this interval (vacuumed, or nothing worth reclaiming); false when there is no database yet, the vacuum could not get its lock, or a reader refused the truncating checkpoint (after a vacuum or alone), so the next cycle tries again. That retry is a checkpoint that does not wait for the reader and copies only the frames written since the last one; the vacuumed file has no free pages left, so it is never a second rewrite. */
 export function idleReclaim(dbPath: string): boolean {
   if (!fs.existsSync(dbPath)) return false
   const db = getDb(dbPath)
   const free = Number(db.pragma('freelist_count', { simple: true }))
   const total = Number(db.pragma('page_count', { simple: true }))
   if (!(total > 0) || free / total < IDLE_VACUUM_MIN_FREE_SHARE) {
-    // A reader that refuses the truncation leaves the log for the next interval, so the busy answer is not a failure of this pass.
-    walCheckpointBusy(db)
-    return true
+    // A reader that refuses the truncation leaves the log full-size, so the pass is not settled and the next cycle asks again; the checkpoint does not wait, so asking every cycle costs one pass over the new frames and stalls nothing.
+    return !walCheckpointBusyNoWait(db)
   }
   const reclaimed = reclaimIndex(dbPath, { rebuild: false })
-  // A vacuum rewrites every page through the log, so a refused truncation after it leaves a log as large as the database. The retry cannot vacuum again (no free pages remain) and costs one checkpoint, and a refusal of that one is left for the next interval: a refused checkpoint waits out busy_timeout, so retrying it every cycle would stall the drain.
+  // A vacuum rewrites every page through the log, so a refused truncation after it leaves a log as large as the database. The retry cannot vacuum again (no free pages remain) and is the non-waiting checkpoint above.
   return !reclaimed.vacuumDeferred && !reclaimed.checkpointBusy
 }
 

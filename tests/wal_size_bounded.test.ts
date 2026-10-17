@@ -241,15 +241,17 @@ describe('idleReclaim', () => {
   })
 
   // The state of the user's 5.0 GB -wal: the vacuum rewrote every page through the log and a reader that pinned the old snapshot refused the truncating checkpoint after it. Provenance: HAND-DERIVED. The 0.75 share is the one the vacuum test above uses, over the tenth that makes the first pass vacuum; the vacuum leaves no free pages, so the retry takes the checkpoint-only path and the schema cookie (raised by one per vacuum, as above) counts the vacuums.
-  it('reports a vacuum whose truncating checkpoint a reader refused as not done, and the next pass truncates the log without a second vacuum', () => {
+  it('reports a vacuum whose truncating checkpoint a reader refused as not done, keeps asking without a second vacuum, and truncates once the reader is gone', () => {
     const dbPath = tmpDbPath()
     const db = filledDb(dbPath, 0.75)
-    // A refused checkpoint waits out busy_timeout (15 s) before it answers busy; zero makes the refusal immediate, so this test waits on nothing.
+    // The vacuum pass's own checkpoints wait out busy_timeout (15 s) before they answer busy; zero makes the refusal immediate, so this test waits on nothing.
     db.pragma('busy_timeout = 0')
     const before = schemaCookie(db)
 
     withPinningReader(dbPath, () => {
       expect(idleReclaim(dbPath), 'the pass whose truncation was refused is not settled').toBe(false)
+      expect(idleReclaim(dbPath), 'the retry with the reader still there is not settled either').toBe(false)
+      expect(schemaCookie(db), 'the retry did not vacuum again').toBe(before + 1)
     })
     expect(schemaCookie(db), 'the first pass vacuumed').toBe(before + 1)
     expect(walBytes(dbPath), 'the refused truncation left the log in place').toBeGreaterThan(0)
@@ -258,9 +260,82 @@ describe('idleReclaim', () => {
     expect(schemaCookie(db), 'the retry did not vacuum again').toBe(before + 1)
     expect(walBytes(dbPath), 'the retry truncated the log').toBe(0)
   })
+
+  // Provenance: HAND-DERIVED. 777 ms is any nonzero value other than the connection's 15000, so a checkpoint that waits or a timeout that is not put back shows as a different number, and so small that a wait costs well under a second. The pragma is read at the moment each checkpoint is issued, so the test observes the wait setting and never a clock.
+  it('leaves a log a reader pins unsettled on every pass without a pass waiting for the reader, and puts the connection timeout back', () => {
+    const dbPath = tmpDbPath()
+    const db = filledDb(dbPath, 0)
+    db.pragma('busy_timeout = 777')
+    const before = schemaCookie(db)
+    const timeoutAtCheckpoint: number[] = []
+    const pragma = db.pragma.bind(db) as (...args: unknown[]) => unknown
+    const spy = vi.spyOn(db, 'pragma').mockImplementation(((...args: unknown[]) => {
+      if (String(args[0]).startsWith('wal_checkpoint')) timeoutAtCheckpoint.push(Number(pragma('busy_timeout', { simple: true })))
+      return pragma(...args)
+    }) as typeof db.pragma)
+
+    try {
+      withPinningReader(dbPath, () => {
+        db.prepare('INSERT INTO payload (body) VALUES (zeroblob(16))').run()
+        expect(idleReclaim(dbPath), 'the first pass is refused').toBe(false)
+        expect(idleReclaim(dbPath), 'the second pass is refused').toBe(false)
+      })
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(timeoutAtCheckpoint, 'each checkpoint ran with no wait').toEqual([0, 0])
+    expect(Number(db.pragma('busy_timeout', { simple: true })), 'the connection timeout is back').toBe(777)
+    expect(schemaCookie(db), 'no pass vacuumed').toBe(before)
+    expect(walBytes(dbPath), 'the log is still there').toBeGreaterThan(0)
+  })
 })
 
+/** The text between the braces of each arrow-function afterEach block in `source`, found by counting braces (these files keep braces out of the strings and comments inside those blocks). */
+function afterEachBodies(source: string): string[] {
+  const bodies: string[] = []
+  for (const match of source.matchAll(/afterEach\(\(\) => \{/g)) {
+    const start = match.index + match[0].length
+    let depth = 1
+    let end = start
+    while (depth > 0 && end < source.length) {
+      const char = source[end]
+      if (char === '{') depth++
+      else if (char === '}') depth--
+      end++
+    }
+    bodies.push(source.slice(start, end - 1))
+  }
+  return bodies
+}
+
+/** `body` with the argument of its `runTeardown(...)` call cut out, found by counting parentheses. */
+function withoutRunTeardownCall(body: string): string {
+  const open = body.indexOf('runTeardown(')
+  if (open < 0) return body
+  let depth = 0
+  let end = open + 'runTeardown'.length
+  do {
+    const char = body[end]
+    if (char === '(') depth++
+    else if (char === ')') depth--
+    end++
+  } while (depth > 0 && end < body.length)
+  return body.slice(0, open) + body.slice(end)
+}
+
 describe('the teardown', () => {
+  // This is the check that a swallow written straight into an afterEach cannot slip past runTeardown. What it cannot see: a swallow inside a helper an afterEach calls, or an afterEach written in another form than an arrow function with no parameters.
+  it.each(['wal_size_bounded.test.ts', 'worker_idle_vacuum_bookkeeping.test.ts'])('%s removes nothing in an afterEach except through runTeardown', (name) => {
+    const bodies = afterEachBodies(fs.readFileSync(path.join(import.meta.dirname, name), 'utf8'))
+
+    expect(bodies.length, 'the file has an afterEach block').toBeGreaterThan(0)
+    for (const body of bodies) {
+      expect(body, 'the block tears down through runTeardown').toContain('runTeardown(')
+      expect(withoutRunTeardownCall(body), 'nothing removes or swallows outside it').not.toMatch(/rmSync|rmdirSync|unlinkSync|catch/)
+    }
+  })
+
   it('fails with every step that failed, and still runs the steps after it, instead of swallowing a removal it could not do', () => {
     const refused = new Error('EBUSY: resource busy or locked')
     const ran: string[] = []

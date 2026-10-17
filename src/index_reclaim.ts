@@ -146,6 +146,17 @@ export function walCheckpointBusy(db: ReturnType<typeof getDb>): boolean {
   return rows[0]?.busy === 1
 }
 
+/** {@link walCheckpointBusy} that answers busy at once instead of waiting out the connection's busy_timeout for the reader to leave (15 s on the shared connection), for a caller that retries on a later cycle. The timeout is set to 0 for this one checkpoint and put back in a finally; the driver is synchronous and nothing else runs on this connection in between, so the swap cannot be seen by another statement. */
+export function walCheckpointBusyNoWait(db: ReturnType<typeof getDb>): boolean {
+  const priorWaitMs = Number(db.pragma('busy_timeout', { simple: true }))
+  db.pragma('busy_timeout = 0')
+  try {
+    return walCheckpointBusy(db)
+  } finally {
+    db.pragma(`busy_timeout = ${priorWaitMs}`)
+  }
+}
+
 /** Format a byte count as MB with one decimal, for human-readable reporting. */
 function mb(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
