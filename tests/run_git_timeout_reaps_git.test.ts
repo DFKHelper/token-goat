@@ -1,12 +1,11 @@
-// Provenance: the trace2 `sid` parsed below is FORMAT-DERIVED from the example events in git's trace2 documentation (Documentation/technical/api-trace2.adoc, e.g. `20190408T191610.507018Z-H9b68c35f-P000059a8`; the page itself calls the sid only "a unique string"), plus a CAPTURE from Git 2.53.0.windows.1. That the P part is the process id in hex, and that a child git's sid is its parent's sid with its own component appended (so the last -P part is the git that wrote the line), is read from git's trace2/tr2_sid.c (master, fetched and read).
-// Platform: on Linux and macOS git is not a launcher, so this test passes before and after the fix there; the red proof against the old code is Windows-only.
-// Real git, real process table: no runGit stub. A git that is blocked for as long as a lock file exists stands in for a slow command; its own trace file says when it started and which pid it had.
+// Provenance: the trace2 `sid` parsed below is FORMAT-DERIVED from the example events in git's trace2 documentation (Documentation/technical/api-trace2.adoc, e.g. `20190408T191610.507018Z-H9b68c35f-P000059a8`; the page itself calls the sid only "a unique string"), plus a CAPTURE from Git 2.53.0.windows.1. That the P part is the process id in hex, and that a child git's sid is its parent's sid with its own component appended (so the last -P part is the git that wrote the line), is read from git's trace2/tr2_sid.c (master, fetched and read). Platform: on Linux and macOS git is not a launcher, so this test passes before and after the fix there; the red proof against the old code is Windows-only. Real git, real process table: no runGit stub. A git that is blocked for as long as a lock file exists stands in for a slow command; its own trace file says when it started and which pid it had.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { resolveOnPath, sleepSync } from '../src/process_util.js'
 import { runGit } from '../src/util.js'
 
@@ -19,6 +18,11 @@ const startedPids = new Set<number>()
 function setEnv(key: string, value: string): void {
   if (!(key in savedEnv)) savedEnv[key] = process.env[key]
   process.env[key] = value
+}
+
+// HAND-DERIVED: a git process starts with the git executable, bare or by path, quoted or not; a vitest worker or node child starts with node.
+function isGitCommandLine(commandLine: string): boolean {
+  return /^["']?(?:[^"']*[/\\])?git(?:\.exe)?["']?(?:\s|$)/i.test(commandLine.trim())
 }
 
 function alive(pid: number): boolean {
@@ -58,11 +62,8 @@ beforeEach(() => {
 afterEach(() => {
   // A survivor of a failed run is ended here by the pid it announced, and the lock is dropped so a git still waiting on it ends by itself.
   for (const pid of startedPids) {
-    try {
-      process.kill(pid, 'SIGKILL')
-    } catch {
-      // already gone: what the test wants
-    }
+    // A passing run leaves these pids dead, and the OS may have given a number to a new process since (on Windows a killed stranger exits with code 1, as a vitest worker did): only a process whose command line is still git is signalled.
+    if (!killIfCommandLine(pid, isGitCommandLine)) continue
     // The kill is asked for, not done: wait (bounded) until the process is gone, since a live one still holds the directory open.
     for (let waited = 0; waited < 100 && alive(pid); waited++) sleepSync(50)
   }
