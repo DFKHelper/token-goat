@@ -83,6 +83,21 @@ describe('runPrSlice', () => {
     expect(stderr).toMatch(/--repo/)
   })
 
+  it('says git did not answer, not that the repo cannot be resolved, when the remote read is killed', async () => {
+    // Provenance: HAND-DERIVED. A killed git is { exitCode: -1, timedOut: true } (src/types.ts::GitResult).
+    spawnSyncMock.mockReturnValueOnce(GH_OK) // gh --version
+    runGitMock.mockReturnValueOnce({ exitCode: -1, stdout: '', stderr: 'spawnSync git ETIMEDOUT', timedOut: true })
+    const { runPrSlice } = await loadModule()
+    let code: number | undefined
+    const { stderr } = capture(() => {
+      code = runPrSlice({ pr: '42', slice: 'files' })
+    })
+    expect(code).toBe(1)
+    expect(stderr).toMatch(/git did not answer in time/)
+    expect(stderr).not.toMatch(/Could not resolve a GitHub repo/)
+    expect(stderr).toMatch(/--repo/)
+  })
+
   it('reports a clear error when gh is not authenticated', async () => {
     spawnSyncMock
       .mockReturnValueOnce(GH_OK) // gh --version

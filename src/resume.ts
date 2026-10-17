@@ -148,6 +148,9 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
       // Per line rather than over the block: the diffstat's own newlines are its structure, and displaySafeText escapes a newline. The filenames in it are the repository's, so the block carries the same marker risk every other row here does.
       lines.push(result.stdout.trim().split('\n').map(displaySafeText).join('\n'))
       lines.push('')
+    } else if (result.timedOut === true) {
+      // A killed diff is unknown, not clean: leaving the section out would tell the next session the tree has no uncommitted changes.
+      lines.push('## Uncommitted changes (git diff --stat)', 'git did not answer in time, so whether the tree has uncommitted changes is unknown', '')
     }
   } catch {
     // fail-soft: git not available or not a repo

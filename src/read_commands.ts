@@ -794,6 +794,10 @@ export function runPrSlice(opts: PrSliceCliOptions): number {
     try {
       const result = runGit(['remote', 'get-url', 'origin'], { cwd })
       if (result.exitCode === 0) remoteUrl = result.stdout.trim()
+      else if (result.timedOut === true) {
+        emitErr(formatCommandError("git did not answer in time reading the git remote 'origin' -- pass --repo owner/repo"))
+        return 1
+      }
     } catch {
       // Fall through to the resolution-failure error below.
     }
