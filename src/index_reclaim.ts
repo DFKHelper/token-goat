@@ -141,7 +141,7 @@ function vacuumOrDefer(db: ReturnType<typeof getDb>): boolean {
 }
 
 /** Run a truncating WAL checkpoint, reporting whether SQLite declined it. `pragma wal_checkpoint(TRUNCATE)` yields `busy = 1` (not an exception) when a concurrent reader prevents truncation. Swallowing that would let the command report a reclaim that silently left the WAL in place. */
-function walCheckpointBusy(db: ReturnType<typeof getDb>): boolean {
+export function walCheckpointBusy(db: ReturnType<typeof getDb>): boolean {
   const rows = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy?: number }>
   return rows[0]?.busy === 1
 }

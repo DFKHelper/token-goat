@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import type { SqliteDatabase } from './sqlite_driver.js'
 import Database from './sqlite_driver.js'
-import { getDb, isReadOnlyDb } from './db.js'
+import { applyWalSizeLimit, getDb, isReadOnlyDb } from './db.js'
 import { dataDir, dataDirForHome } from './constants.js'
 import { VERSION } from './version.js'
 import type { ContentClass } from './token_estimate.js'
@@ -745,6 +745,7 @@ export function withTelemetryWriteDb(write: (db: SqliteDatabase) => void): void 
   if (isReadOnlyDb(dbPath)) return
   const db = new Database(dbPath, { timeout: STATS_WRITE_BUSY_TIMEOUT_MS })
   try {
+    applyWalSizeLimit(db)
     // A telemetry row under WAL: NORMAL drops the flush to disk on every commit, measured at 1.4ms of each hook's 1.45ms insert, and can lose only the latest rows to a power cut, never corrupt the file. Outside WAL it could, so the default stays there.
     if (String(db.pragma('journal_mode', { simple: true })).toLowerCase() === 'wal') db.pragma('synchronous = NORMAL')
     write(db)
