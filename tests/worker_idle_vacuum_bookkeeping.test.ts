@@ -16,6 +16,7 @@ vi.mock('../src/queue_waker.js', async (importOriginal) => {
     ...actual,
     createQueueWaker: () => ({
       sleep: (): Promise<void> => {
+        // Provenance: HAND-DERIVED. Ten minutes is past the five-minute IDLE_VACUUM_COOLDOWN_MS in src/worker.ts after one step, and three steps (thirty minutes) stay inside the six-hour IDLE_VACUUM_INTERVAL_MS there.
         clock.nowMs += 10 * 60 * 1000
         clock.onSleep()
         return Promise.resolve()
@@ -27,6 +28,7 @@ vi.mock('../src/queue_waker.js', async (importOriginal) => {
 
 import { closeAllDbs, getDb } from '../src/db.js'
 import { runWorkerLoop } from '../src/worker.js'
+import { runTeardown } from './helpers/strict_teardown.js'
 
 // Longer than the three fake ten-minute steps, so the loop's pid-file grace and idle exit (both read the fake clock) never end the run before the cycle count does.
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -40,10 +42,10 @@ beforeEach(() => {
   vi.spyOn(Date, 'now').mockImplementation(() => clock.nowMs)
 })
 
+// Connections are closed before the directories go, each step on its own, and a failed removal fails the test: a retry would hide the connection that still holds the file.
 afterEach(() => {
   vi.restoreAllMocks()
-  closeAllDbs()
-  for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  runTeardown([closeAllDbs, ...dirs.splice(0).map((d) => () => fs.rmSync(d, { recursive: true, force: true }))])
 })
 
 function schemaCookie(db: ReturnType<typeof getDb>): number {
@@ -56,6 +58,7 @@ describe('the idle vacuum interval', () => {
     dirs.push(dir)
     const db = getDb(path.join(dir, 'global.db'))
     db.exec('CREATE TABLE payload (id INTEGER PRIMARY KEY, body BLOB)')
+    // Provenance: HAND-DERIVED. Forty 64 KiB blobs take about 680 4096-byte pages, and the DELETE of every row frees nearly all of them, far over the tenth (IDLE_VACUUM_MIN_FREE_SHARE, 0.1 in src/worker.ts) that makes a pass vacuum.
     const fillAndEmpty = (): void => {
       db.transaction(() => {
         const insert = db.prepare('INSERT INTO payload (body) VALUES (zeroblob(65536))')
@@ -73,6 +76,7 @@ describe('the idle vacuum interval', () => {
       // After the second cycle (the one that vacuumed) the file is made mostly free again, so only the interval can stop a third pass.
       if (sleeps === 2) fillAndEmpty()
     }
+    // Provenance: HAND-DERIVED. The 5 is the poll interval handed to the fake sleep, which ignores it; 3 stops the loop after the three cycles the comments below count.
     await runWorkerLoop(dir, 5, () => sleeps >= 3, { pidFileGraceMs: DAY_MS, idleExitMs: DAY_MS })
 
     // Cycle 1 runs inside the cooldown and leaves the file alone; cycle 2 vacuums (cookie + 1); cycle 3 is inside the six-hour interval and must not vacuum.
