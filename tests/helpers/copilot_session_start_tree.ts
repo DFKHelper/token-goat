@@ -188,9 +188,16 @@ export function alive(pid: number): boolean {
   }
 }
 
-/** Whether `pid` is still the process whose command line was `commandLine` when it was recorded. A bare pid is a claim: the OS hands a freed number to the next process it starts (36 of 300 sequential spawns on Windows), so `alive` on a pid whose owner has been ended can report a stranger. A null line means the owner was already gone when it was recorded. */
-export function aliveAs(pid: number, commandLine: string | null): boolean {
-  return commandLine !== null && alive(pid) && readProcessCommandLine(pid)?.trim() === commandLine.trim()
+/** The process table aliveAs and killAndVerify consult; each member defaults to the real probe, and a test supplies fakes. */
+export interface LivenessSeam { alive?: (pid: number) => boolean; readLine?: (pid: number) => string | null }
+
+/** Whether `pid` is still the process whose command line was `commandLine` when it was recorded. A bare pid is a claim: the OS hands a freed number to the next process it starts (36 of 300 sequential spawns on Windows), so `alive` on a pid whose owner has been ended can report a stranger. An identity that cannot be read fails closed, because a missed orphan is silent and a false survivor is loud: a null or empty recorded line means the query failed or the process was absent from the listing (it does not mean gone), and a null live read means the query failed now (it does not mean gone); a live pid in either case counts as ours. Pass a recorded line only for a pid seen alive when it was recorded; a pid that was not alive then is not a survivor, and the caller leaves it out. */
+export function aliveAs(pid: number, commandLine: string | null, seam: LivenessSeam = {}): boolean {
+  if (!(seam.alive ?? alive)(pid)) return false
+  const recorded = commandLine?.trim() ?? ''
+  if (recorded === '') return true
+  const current = (seam.readLine ?? readProcessCommandLine)(pid)
+  return current === null || current.trim() === recorded
 }
 
 export function readOwnedPid(path: string): number {
@@ -270,28 +277,31 @@ export function listProcesses(launch: ProcessListingLaunch = launchProcessListin
   return table
 }
 
-// TerminateProcess/SIGKILL, never a time-boxed taskkill. ESRCH means already dead. EPERM is not a failure of its own: Windows refuses TerminateProcess on a process that is already exiting, so a victim that died between the process listing and the kill (the common case, since these are the fixture's own just-cut-off helpers) answers EPERM for a moment and is gone on the next look. The authority is whether the pid is still there, so the kill is re-issued each round until it is gone; a target that stays alive past the backstop is a defect, reported with its command line.
-function killAndVerify(victims: Map<number, string>): void {
-  // A victim recorded without a command line was not in the listing, so it had already exited: a signal to that number now would reach whatever holds it. A victim whose line changed since the listing has been replaced by a stranger the same way.
-  const still = (pid: number): boolean => (victims.get(pid) ?? '') !== '' && aliveAs(pid, victims.get(pid) ?? null)
-  const kill = (pid: number): void => {
-    try { process.kill(pid, 'SIGKILL') } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== 'ESRCH' && code !== 'EPERM') throw error
+/** The seams killAndVerify reads through, each defaulting to the real probe: the table, the checked kill, and the quiet time a victim gets before it is reported. */
+export interface KillSeam extends LivenessSeam { killIfCommandLine?: typeof killIfCommandLine; backstopMs?: number }
+
+// SIGKILL/TerminateProcess through killIfCommandLine, never a time-boxed taskkill and never a bare number: a pid is signalled only while its current command line equals the one recorded in the listing. A victim recorded with an empty line (a CIM null CommandLine, or a root missing from the listing) has no identity to check, so it is never signalled blind and, while its pid is alive, it is reported as a survivor. A running victim whose line cannot be read is not signalled either: the next round asks again, and a victim still alive at the backstop is reported with its command line.
+export function killAndVerify(victims: Map<number, string>, seam: KillSeam = {}): void {
+  const still = (pid: number): boolean => aliveAs(pid, victims.get(pid) ?? null, seam)
+  const checkedKill = seam.killIfCommandLine ?? killIfCommandLine
+  const killRound = (pids: Iterable<number>): void => {
+    for (const pid of pids) {
+      const recorded = (victims.get(pid) ?? '').trim()
+      if (recorded !== '') checkedKill(pid, (line) => line.trim() === recorded)
     }
   }
-  // The first signal follows the listing within milliseconds, so it is sent unchecked; every later one re-reads the line first.
-  for (const [pid, line] of victims) if (line !== '') kill(pid)
+  // A kill that was refused or missed in one round (Windows refuses TerminateProcess on a process that is exiting) is re-issued next round until the pid is gone.
+  killRound(victims.keys())
   // Moved 5000 -> 120000: EPERM on an already-exiting process answers for a moment before the process is gone.
-  const gone = Date.now() + HANG_BACKSTOP_MS
+  const gone = Date.now() + (seam.backstopMs ?? HANG_BACKSTOP_MS)
   for (;;) {
     const remaining = [...victims.keys()].filter(still)
     if (remaining.length === 0 || Date.now() >= gone) break
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
-    for (const pid of remaining) killIfCommandLine(pid, (line) => line.trim() === (victims.get(pid) ?? '').trim())
+    killRound(remaining)
   }
   const survivors = [...victims].filter(([pid]) => still(pid)).map(([pid, args]) => `${pid} ${args}`)
-  if (survivors.length > 0) throw new Error(`fixture process still alive ${String(HANG_BACKSTOP_MS / 1000)} s after SIGKILL: ${survivors.join('; ')}`)
+  if (survivors.length > 0) throw new Error(`fixture process still alive ${String((seam.backstopMs ?? HANG_BACKSTOP_MS) / 1000)} s after SIGKILL: ${survivors.join('; ')}`)
 }
 
 export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void {

@@ -18,10 +18,10 @@ afterEach(() => {
       if (!ownedPids.includes(pid)) ownedPids.push(pid)
     }
   }
-  // Each worker is asked about as the process it was before the kill: the number is free for reuse the moment it dies, and a stranger that took it is not a survivor.
-  const lines = new Map(workers.map(pid => [pid, readProcessCommandLine(pid)]))
+  // Each worker is asked about as the process it was before the kill: the number is free for reuse the moment it dies, and a stranger that took it is not a survivor. Only a worker seen alive here can survive: a line the query could not read still counts it as ours, and a number already free is not a survivor.
+  const lines = new Map(workers.filter(alive).map(pid => [pid, readProcessCommandLine(pid)]))
   cleanupTrees()
-  for (const pid of workers) expect(aliveAs(pid, lines.get(pid) ?? null), `owned worker ${pid} survived teardown`).toBe(false)
+  for (const [pid, line] of lines) expect(aliveAs(pid, line), `owned worker ${pid} survived teardown`).toBe(false)
   console.log(`owned startup workers cleaned: ${workers.join(',')}`)
 })
 
