@@ -1,4 +1,4 @@
-/** Guard against a test signalling a pid it merely recorded. A pid read from a file, a heartbeat, a status listing or an earlier `alive` probe is a claim: the OS hands a freed number to the next process it starts, and on Windows process.kill(pid, 'SIGKILL') and taskkill are TerminateProcess(handle, 1), so the kill of a pid that had already exited ends whatever holds the number now. That is how a vitest worker forked a moment earlier died with "Worker exited unexpectedly with exit code 1 during started state" in a file that had nothing to do with the kill. A test signals a child through the ChildProcess handle it owns (the handle signals the process it holds and nothing once that has exited), or through killIfCommandLine in tests/helpers/kill_if_command_line.ts, which reads the command line immediately before the signal. This scan fails on any other signal (process.kill with a signal other than 0, a process-group kill, a taskkill, terminateProcessTree, killProcessTree) whose target is not the pid of a handle bound in the same file. Provenance: HAND-DERIVED; the planted sites below are written from the rule, and the allowlist is read off the tree on 2026-10-17. What the scan cannot see: a command built in a variable (`execSync(cmd)`, `spawn(bin, args)` with a non-literal program), a kill alias that crosses a module or a function parameter, a script file that kills, and `child` bindings are file-wide rather than scoped to a function. A computed `process[key](...)`, `process.kill.call/apply/bind` fail closed: they are flagged. A bare `process.kill` passed around as a value (an argument, an object field) is not followed: sampled on 2026-10-17 it matched 4 sites, 3 of them type casts or prose, so that rule was dropped. Round 4 folds `globalThis.process`, a cast `(process as X)` or `(<X>process)`, and optional chaining onto the plain spelling before any rule reads a line; follows `const proc = process` (also `globalThis.process`, `require('node:process')`, a default or namespace import) and a kill taken or destructured from it, or from `require`/`import()` of `node:process`; and reads PowerShell `Stop-Process`, `spps` and `kill` inside a command string or the argv of a `powershell`/`pwsh` call. Still not seen, because no sound textual rule exists: `proc = process` assigned after its declaration, `cond ? process : x`, `(0, process.kill)(pid)`, `Reflect.apply(process.kill, ...)`, a cast over several lines, a PowerShell command held in a variable or script file, and `Stop-Process -Name`/`-InputObject` (flagged like `-Id`, since the target cannot be told from a recorded pid). */
+/** Guard against a test signalling a pid it merely recorded. A pid read from a file, a heartbeat, a status listing or an earlier `alive` probe is a claim: the OS hands a freed number to the next process it starts, and on Windows process.kill(pid, 'SIGKILL') and taskkill are TerminateProcess(handle, 1), so the kill of a pid that had already exited ends whatever holds the number now. That is how a vitest worker forked a moment earlier died with "Worker exited unexpectedly with exit code 1 during started state" in a file that had nothing to do with the kill. A test signals a child through the ChildProcess handle it owns (the handle signals the process it holds and nothing once that has exited), or through killIfCommandLine in tests/helpers/kill_if_command_line.ts, which reads the command line immediately before the signal. This scan fails on any other signal (process.kill with a signal other than 0, a process-group kill, a taskkill, terminateProcessTree, killProcessTree) whose target is not the pid of a handle bound in the same file. Provenance: HAND-DERIVED; the planted sites below are written from the rule, and the allowlist is read off the tree on 2026-10-17. What the scan cannot see: a command built in a variable (`execSync(cmd)`, `spawn(bin, args)` with a non-literal program), a kill alias that crosses a module or a function parameter, a script file that kills, and `child` bindings are file-wide rather than scoped to a function. A computed `process[key](...)`, `process.kill.call/apply/bind` fail closed: they are flagged. A bare `process.kill` passed around as a value (an argument, an object field) is not followed: sampled on 2026-10-17 it matched 4 sites, 3 of them type casts or prose, so that rule was dropped. Round 4 folds `globalThis.process`, a cast `(process as X)` or `(<X>process)`, and optional chaining onto the plain spelling before any rule reads a line; follows `const proc = process` (also `globalThis.process`, `require('node:process')`, a default or namespace import) and a kill taken or destructured from it, or from `require`/`import()` of `node:process`; and reads PowerShell `Stop-Process`, `spps` and `kill` inside a command string or the argv of a `powershell`/`pwsh` call. Round 4c reads a destructure or import that spans lines, a call through a member (`require('node:child_process').execSync(...)`), an import or destructure alias of a child_process function (`import { execSync as sh }`), and a kill program behind `sudo`, `xargs`, `env`, `nohup`, `command`, `exec`, `time`, `nice`, `setsid`, `doas` or after a `(`, `{`, `$(` or backtick. Still not seen, because no sound textual rule exists: a wrapper option that takes a value (`sudo -u root kill`), `const { execSync } = cp` taken off a namespace, an alias of spawnOwned, `proc = process` assigned after its declaration, `cond ? process : x`, `(0, process.kill)(pid)`, `Reflect.apply(process.kill, ...)`, a cast over several lines, a PowerShell command held in a variable or script file, and `Stop-Process -Name`/`-InputObject` (flagged like `-Id`, since the target cannot be told from a recorded pid). */
 
 // tg-no-regex-preload
 import * as fs from 'node:fs'
@@ -179,14 +179,33 @@ function killAliases(lines: readonly string[], procs: readonly string[]): Set<st
   }
   const source = anyOf(procs)
   const destructure = new RegExp(String.raw`\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?(?:${source}\b(?!\.)|${PROCESS_MODULE})`, 'g')
-  const decl = new RegExp(String.raw`\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*${source}\.kill\s*(?:;|$)`, 'g')
-  for (const line of lines) {
-    const code = codeOf(line)
-    for (const m of code.matchAll(destructure)) fromBraces(m[1]!)
-    for (const m of code.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*['"](?:node:)?process['"]/g)) fromBraces(m[1]!.replace(/\bkill\s+as\s+/, 'kill:'))
-    for (const m of code.matchAll(decl)) names.add(m[1]!)
-  }
+  const decl = new RegExp(String.raw`\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*${source}\.kill\s*(?:;|$)`, 'gm')
+  const code = lines.map(codeOf).join('\n')
+  for (const m of code.matchAll(destructure)) fromBraces(m[1]!)
+  for (const m of code.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*['"](?:node:)?process['"]/g)) fromBraces(m[1]!.replace(/\bkill\s+as\s+/, 'kill:'))
+  for (const m of code.matchAll(decl)) names.add(m[1]!)
   return names
+}
+
+/** The spawning and exec functions of node:child_process. */
+const SPAWN_NAMES: readonly string[] = ['execFileSync', 'execFile', 'execSync', 'exec', 'spawnSync', 'spawnOwned', 'spawn']
+
+/** The child_process module, as a specifier: `'node:child_process'` or `'child_process'`. */
+const CHILD_PROCESS_MODULE = String.raw`['"](?:node:)?child_process['"]`
+
+/** Local names a file binds to a spawning or exec function of node:child_process under another name: `import { execSync as sh } from 'node:child_process'` and `const { execSync: sh } = require('node:child_process')`, over as many lines as the braces take. */
+function spawnAliases(lines: readonly string[]): string[] {
+  const names = new Set<string>()
+  const fromBraces = (body: string, separator: RegExp): void => {
+    for (const part of body.split(',')) {
+      const [key, local] = part.split(separator).map((x) => x.trim())
+      if (key !== undefined && SPAWN_NAMES.includes(key) && local !== undefined && local !== '') names.add(local)
+    }
+  }
+  const code = lines.map(codeOf).join('\n')
+  for (const m of code.matchAll(new RegExp(String.raw`\bimport\s*(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]*)\}\s*from\s*${CHILD_PROCESS_MODULE}`, 'g'))) fromBraces(m[1]!, /\s+as\s+/)
+  for (const m of code.matchAll(new RegExp(String.raw`\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?(?:require|import)\(\s*${CHILD_PROCESS_MODULE}\s*\)`, 'g'))) fromBraces(m[1]!, /:/)
+  return [...names]
 }
 
 const KILL_PROGRAM = /^(?:taskkill(?:\.exe)?|pkill|killall|kill|stop-process|spps)$/i
@@ -197,12 +216,24 @@ const POWERSHELL_PROGRAM = /^(?:.*[\\/])?(?:powershell|pwsh)(?:\.exe)?(?:\s|$)/i
 /** A PowerShell stop command anywhere in a script literal, not only at the start of a segment: `try { Stop-Process -Id 1 }`, `Get-Process | kill`. */
 const POWERSHELL_STOP = /(?:^|[\s;|&({"'])(?:stop-process|spps|kill)(?=\s|$)/i
 
-/** The spawning and exec calls of node:child_process, bare or qualified by the usual namespace names. */
-const SPAWN_CALL = /(?:^|[^\w$.])(?:(?:child_process|cp|childProcess)\.)?(?:execFileSync|execFile|execSync|exec|spawnSync|spawnOwned|spawn)\(/g
+/** A call to one of `names`, bare or as a member of anything: `execSync(`, `cp.execSync(`, `require('node:child_process').execSync(`. */
+const callsTo = (names: readonly string[]): RegExp => new RegExp(String.raw`(?:^|[^\w$])${anyOf(names)}\(`, 'g')
 
-/** True when `command`, read as shell text, starts any segment with a kill program (path and `.exe` allowed). */
+/** Programs that run the command after them: `sudo kill 1`, `echo 1 | xargs kill`, `env X=1 kill 1`. */
+const WRAPPER_PROGRAM = /^(?:sudo|doas|xargs|env|nohup|command|exec|time|nice|setsid)$/i
+
+/** True when `command`, read as shell text, starts any segment with a kill program (path and `.exe` allowed), also behind a wrapper program, its options and its `NAME=value` words, or after a `(`, `{`, `$(` or backtick. */
 function runsKillProgram(command: string): boolean {
-  return command.split(/[;&|\n]+/).some((segment) => KILL_PROGRAM.test((segment.trim().split(/\s+/)[0] ?? '').replace(/^.*[\\/]/, '')))
+  const programOf = (word: string): string => word.replace(/^.*[\\/]/, '')
+  return command.split(/[;&|\n(){}`]+/).some((segment) => {
+    const words = segment.trim().replace(/^!\s*/, '').split(/\s+/)
+    let at = 0
+    while (WRAPPER_PROGRAM.test(programOf(words[at] ?? ''))) {
+      at++
+      while (/^(?:-\S*|\w+=\S*)$/.test(words[at] ?? '')) at++
+    }
+    return KILL_PROGRAM.test(programOf(words[at] ?? ''))
+  })
 }
 
 /** The contents of every string, template and character literal in `text`. */
@@ -217,6 +248,7 @@ function flaggedSites(file: string, source: string): string[] {
   const procs = processNames(lines)
   const aliases = killAliases(lines, procs)
   const proc = anyOf(procs)
+  const spawnCalls = callsTo([...SPAWN_NAMES, ...spawnAliases(lines)])
   const found: string[] = []
   const flag = (i: number): void => void found.push(`${file}:${i + 1}: ${lines[i]!.trim()}`)
   /** The call whose opening parenthesis is at `lines[i][open]` is a process.kill: a probe or a handle's pid passes. */
@@ -237,7 +269,7 @@ function flaggedSites(file: string, source: string): string[] {
       else if (literal[2] === 'kill') checkKill(i, m.index + m[0].length - 1)
     }
     if (new RegExp(String.raw`(?:^|[^\w$.])${proc}\.kill\.(?:call|apply|bind)\(`).test(code)) flag(i)
-    for (const m of code.matchAll(SPAWN_CALL)) {
+    for (const m of code.matchAll(spawnCalls)) {
       const text = callText(lines, i, m.index + m[0].length - 1)
       const literals = stringLiterals(text)
       const viaPowerShell = literals.some((l) => POWERSHELL_PROGRAM.test(l))
@@ -363,6 +395,47 @@ describe('the scan', () => {
   ]
   it.each(MISSED_FORMS)('flags %s', (_name, source, line) => {
     expect(flaggedSites('a.ts', source.join('\n')).map((s) => s.split(':')[1])).toEqual([String(line)])
+  })
+
+  // HAND-DERIVED: round 4c of this guard; review 3 listed these forms as missed. Each reaches the same signal as the plain form through a spelling the line-by-line rules did not read.
+  const ROUND_4C_FORMS: ReadonlyArray<readonly [string, readonly string[], number]> = [
+    ['a destructure over several lines', ['const {', '  kill,', '} = process', "kill(pid, 'SIGKILL')"], 4],
+    ['a renamed destructure over several lines', ['const {', '  kill: stop,', '} = process', "stop(pid, 'SIGKILL')"], 4],
+    ['a kill behind xargs', ["execSync('echo 1 | xargs kill -9')"], 1],
+    ['a kill behind xargs and its options', ["execSync('echo 1 | xargs -n1 kill -9')"], 1],
+    ['a kill behind sudo', ["execSync('sudo kill -9 1234')"], 1],
+    ['a kill behind env and an assignment', ["execSync('env LANG=C kill -9 1234')"], 1],
+    ['a kill behind nohup', ["execSync('nohup kill -9 1234')"], 1],
+    ['a kill behind command', ["execSync('command kill -9 1234')"], 1],
+    ['a kill in parentheses', ["execSync('( kill -9 1234 )')"], 1],
+    ['a kill in a command substitution', ["execSync('echo $(kill -9 1234)')"], 1],
+    ['a kill in braces', ["execSync('{ kill -9 1234; }')"], 1],
+    ['a call through require', ["require('node:child_process').execSync('kill -9 1234')"], 1],
+    ['a call through a dynamic import', ["(await import('node:child_process')).execSync('kill -9 1234')"], 1],
+    ['an import alias', ["import { execSync as sh } from 'node:child_process'", "sh('kill -9 1234')"], 2],
+    ['an import alias among others', ["import { spawn, execSync as sh } from 'child_process'", "sh('kill -9 1234')"], 2],
+    ['an import alias over several lines', ["import {", "  execSync as sh,", "} from 'node:child_process'", "sh('kill -9 1234')"], 4],
+    ['a destructured alias of require', ["const { execSync: sh } = require('node:child_process')", "sh('kill -9 1234')"], 2],
+    ['a destructured alias over several lines', ['const {', '  spawnSync: run,', "} = require('child_process')", "run('kill', ['-9', String(pid)])"], 4],
+  ]
+  it.each(ROUND_4C_FORMS)('flags %s', (_name, source, line) => {
+    expect(flaggedSites('a.ts', source.join('\n')).map((s) => s.split(':')[1])).toEqual([String(line)])
+  })
+
+  it('accepts the round 4c spellings when nothing is killed or the target is a handle', () => {
+    const good = [
+      "const child = spawn(process.execPath, ['-e', '0'])",
+      'execSync(`sudo kill -9 ${child.pid}`)',
+      "execSync('xargs echo kill')",
+      "execSync('sudo echo kill')",
+      "execSync('(echo kill)')",
+      "require('node:child_process').execSync('git status')",
+      "import { execSync as sh } from 'node:child_process'",
+      "sh('git status')",
+      "import { readFileSync as read } from 'node:fs'",
+      "read('kill -9 1234')",
+    ].join('\n')
+    expect(flaggedSites('a.ts', good)).toEqual([])
   })
 
   it('accepts the missed spellings when the target is a handle the file owns, or a probe', () => {
