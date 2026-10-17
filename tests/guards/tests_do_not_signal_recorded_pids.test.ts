@@ -27,6 +27,7 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'helpers/kill_if_command_line.ts', text: 'terminateProcessTree(pid', reason: 'the implementation: the tree kill follows the same command-line read' },
   { file: 'setup/build-bundle.ts', text: 'terminateProcessTree(pid, true)', reason: 'killDaemonsUnder reads the command line of the heartbeat pid and checks isResidentOfInstall on the lines just above, then kills' },
   { file: 'process_tree_freeze_passes.test.ts', text: 'killProcessTree(ROOT)', reason: 'ROOT is a made-up number and spawnSync is mocked, so no real process is signalled' },
+  { file: 'process_tree_root_signal_fails.test.ts', text: 'killProcessTree(ROOT_PID)', reason: 'ROOT_PID is a made-up number, process.kill is a stand-in that only records and throws, and ps is scripted, so no real process is signalled' },
   { file: 'worker.test.ts', text: 'process.kill.bind(process)', reason: 'a spy that forwards to the real kill only what claimWorkerPidFile sends it, which is the signal-0 liveness probe of src/worker_lifecycle.ts:111, for pid 999999999' },
   { file: 'resident_process.test.ts', text: 'terminateProcessTree(pid, true)', reason: 'the refusal cases: pids 0, 1, -1 and this process and its parent must be refused, so nothing is signalled' },
 ]
@@ -227,6 +228,9 @@ function spawnAliases(lines: readonly string[]): string[] {
   return [...names]
 }
 
+/** The end of a call text that is a string comparison, so a `'taskkill'` argument of it is compared and not run. */
+const COMPARISON_CALL = /\.(?:endsWith|startsWith|includes|indexOf|lastIndexOf)\s*$/
+
 const KILL_PROGRAM = /^(?:taskkill(?:\.exe)?|pkill|killall|kill|stop-process|spps)$/i
 
 /** A program literal that runs PowerShell text, the shell whose `Stop-Process` (and its aliases `spps` and `kill`) ends a pid. */
@@ -378,6 +382,8 @@ function flaggedSites(file: string, source: string): string[] {
       if (!/(?:[([]|\b(?:file|command|cmd)\s*:)\s*$/.test(code.slice(0, m.index))) continue
       const open = enclosingParen(lines, i, m.index)
       if (open === undefined) continue
+      // A string comparison such as `file.endsWith('taskkill.exe')` names the program, it does not run it.
+      if (COMPARISON_CALL.test(codeOf(lines[open.line]!).slice(0, open.col))) continue
       const targets = taskkillTargets(callText(lines, open.line, open.col))
       if (targets.length === 0 || targets.some((t) => !isHandlePid(t, handles))) flag(i)
     }
@@ -628,6 +634,22 @@ describe('the scan', () => {
     expect(flaggedSites('a.ts', good)).toEqual([])
   })
 
+  // Provenance: FORMAT-DERIVED from the spawnSync stand-ins in tests/process_tree_kill_fallback.test.ts, tests/process_tree_kill_notice.test.ts and tests/run_git_async_kill_fails.test.ts (the first good row is their line, taken 2026-10-17 on land11, where the guard flagged all three); HAND-DERIVED for the other good rows and for the bad rows, which put a real taskkill call on the same line as a comparison.
+  it('accepts a taskkill name compared as a string, and still flags a taskkill that runs next to one', () => {
+    const good = [
+      "const helper = file.toLowerCase().endsWith('taskkill.exe') || file === 'ps'",
+      "const helper = file.startsWith('taskkill') || file === 'ps'",
+      "const helper = [file].includes('taskkill.exe')",
+      "const at = file.indexOf('taskkill')",
+    ]
+    expect(flaggedSites('a.ts', good.join('\n')), 'a name comparison was read as a signal').toEqual([])
+    const bad = [
+      "const named = file.endsWith('x') && run('taskkill', ['/F', '/PID', String(pid)])",
+      "const named = file.endsWith('x') && run(['taskkill', '/F', '/PID', String(pid)])",
+      "const at = names.indexOf(await run({ file: 'taskkill', args: ['/PID', String(pid)] }))",
+    ]
+    for (const line of bad) expect(flaggedSites('a.ts', line), `a taskkill beside a comparison escaped: ${line}`).toHaveLength(1)
+  })
   // HAND-DERIVED: round 6 bound; a `'taskkill'` first argument of a spawn call is read by the spawn rule, and of any other call by the literal rule, so each row names the call it is in. Dropping the literal rule would lose the helper row.
   it.each([
     ['spawnSync', "spawnSync('taskkill', ['/F', '/PID', String(pid)])"],
