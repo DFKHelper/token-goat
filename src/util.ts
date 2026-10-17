@@ -65,23 +65,11 @@ export function realGitBehindLauncher(launcher: string): string | null {
   const dir = path.dirname(launcher)
   const folder = path.basename(dir).toLowerCase()
   if (path.basename(launcher).toLowerCase() !== 'git.exe' || (folder !== 'cmd' && folder !== 'bin')) return null
-  for (const sub of GIT_FOR_WINDOWS_BINARY_DIRS) {
-    const real = path.resolve(dir, '..', sub, 'bin', 'git.exe')
-    if (existsSync(real)) return real
-  }
   const root = path.resolve(dir, '..')
-  let siblings: string[]
-  // Names only, no Dirent type test: a junction or symlink folder is not isDirectory(), and existsSync on its bin/git.exe below decides.
-  try {
-    siblings = readdirSync(root).filter((name) => !GIT_FOR_WINDOWS_NON_BINARY_DIRS.has(name.toLowerCase())).sort()
-  } catch {
-    return null
-  }
-  for (const sub of siblings) {
-    const real = path.join(root, sub, 'bin', 'git.exe')
-    if (existsSync(real)) return real
-  }
-  return null
+  let siblings: string[] = []
+  // Names only, no Dirent type test: a junction or symlink folder is not isDirectory(), and existsSync on its bin/git.exe below decides. The known folders are tried first, and still when the listing fails.
+  try { siblings = readdirSync(root).filter((name) => !GIT_FOR_WINDOWS_NON_BINARY_DIRS.has(name.toLowerCase())).sort() } catch { /* the known folders only */ }
+  return [...GIT_FOR_WINDOWS_BINARY_DIRS, ...siblings].map((sub) => path.join(root, sub, 'bin', 'git.exe')).find((real) => existsSync(real)) ?? null
 }
 
 /** The git.exe a Scoop shim (`shims/git.exe` with `shims/git.shim` holding `path = "<target>"`) starts, or null when there is no readable shim file, it carries extra arguments, or its target is missing. */
