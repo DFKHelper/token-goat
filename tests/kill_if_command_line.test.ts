@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { isHookServerCommandLine, isWorkerDaemonCommandLine, killAllIfCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 const children: ChildProcess[] = []
+// Pids of grandchildren a test started through a parent it then killed, ended here when the kill under test did not.
+const grandchildren: number[] = []
+const GRANDCHILD_MARKER = 'tg-kill-tree-grandchild'
 
 // owner: this test file; dies on its own after 60 s, and afterEach ends it through its handle sooner.
 function sleeper(marker: string): ChildProcess {
@@ -22,9 +25,13 @@ function exited(child: ChildProcess): Promise<void> {
 }
 
 afterEach(async () => {
-  for (const child of children.splice(0)) {
-    child.kill('SIGKILL')
-    await exited(child)
+  try {
+    killAllIfCommandLine(grandchildren.splice(0), (line) => line.includes(GRANDCHILD_MARKER))
+  } finally {
+    for (const child of children.splice(0)) {
+      child.kill('SIGKILL')
+      await exited(child)
+    }
   }
 })
 
@@ -70,30 +77,26 @@ describe('killIfCommandLine', () => {
 
   it('ends the whole tree under tree, and only when the command line matches', async () => {
     const marker = 'tg-kill-tree-parent'
-    const childMarker = 'tg-kill-tree-grandchild'
-    const code = `/* ${marker} */ const c = require('node:child_process').spawn(process.execPath, ['-e', '/* ${childMarker} */ setTimeout(() => {}, 60000)'], { stdio: 'ignore' }); process.stdout.write(String(c.pid)); setTimeout(() => {}, 60000)`
-    const parent = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+    const code = `/* ${marker} */ const c = require('node:child_process').spawn(process.execPath, ['-e', '/* ${GRANDCHILD_MARKER} */ setTimeout(() => {}, 600000)'], { stdio: ['ignore', 'inherit', 'ignore'] }); process.stdout.write(String(c.pid)); setTimeout(() => {}, 60000)`
+    // owner: this test; leads its own process group on POSIX, where the tree kill signals the group, and dies when the kill under test or afterEach ends it (the grandchild's 600 s timer is the backstop).
+    const parent = spawn(process.execPath, ['-e', code], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, detached: process.platform !== 'win32' })
     children.push(parent)
     const grandchildPid = await new Promise<number>((resolve) => {
       parent.stdout?.once('data', (d: Buffer) => resolve(Number(d.toString('utf8').trim())))
+    })
+    grandchildren.push(grandchildPid)
+    // The grandchild holds the parent's stdout pipe, so the pipe closes only when the parent and every process it passed the pipe to have exited: an event, not a clock.
+    const pipeClosed = new Promise<void>((resolve) => {
+      parent.stdout?.once('close', () => resolve())
+      parent.stdout?.resume()
     })
     const pid = parent.pid as number
     expect(killIfCommandLine(pid, (line) => line.includes('tg-kill-no-such'), { tree: true })).toBe(false)
     expect(() => process.kill(grandchildPid, 0)).not.toThrow()
     expect(killIfCommandLine(pid, (line) => line.includes(marker), { tree: true })).toBe(true)
     await exited(parent)
-    // The grandchild goes with the tree; its liveness probe throws once the number is free.
-    const until = Date.now() + 15_000
-    let alive = true
-    while (alive && Date.now() < until) {
-      try {
-        process.kill(grandchildPid, 0)
-        await new Promise((resolve) => setTimeout(resolve, 25))
-      } catch {
-        alive = false
-      }
-    }
-    expect(alive, 'the grandchild survived a tree kill of its parent').toBe(false)
+    // A grandchild that survived the tree kill keeps the pipe open and this wait runs into the test timeout.
+    await pipeClosed
   })
 })
 
