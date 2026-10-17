@@ -1,6 +1,6 @@
 /** The compaction manifest: what this session touched, rendered for whoever reads it next. Ports the intent of `hooks_compact.py` / `build_manifest`: a concise summary of the files read, the files edited and the web URLs fetched, so a compaction preserves that context instead of dropping it. The manifest is intentionally compact -- aim well under 2000 chars. Two things the discarded builder did are deliberately not here. It inferred a session goal from the file names it saw and put that sentence at the top of the injected text: an inference stated as fact to the one reader who cannot check it, and wrong exactly when a session changed direction, which is when a manifest matters most. It also grouped rows by directory, which collapses the per-file read counts the rows exist to carry. Its noise-path filtering was worth keeping and is here, through {@link isNoisePath}. Reopen either decision by measuring against a real compaction, not by preference. It lives apart from the hook that emits it because it has two callers with different jobs. `hooks_compact.ts` builds it at `pre_compact` and hands it to the summarizing model; `cache_session_commands.ts` builds it for `compact-hint`, which reports what the next compaction will carry. Those two used to build different text from different code, so the command sized a manifest the hook would never produce and a reader checking one learned nothing about the other. One builder, two callers, and the module holds no `registerHook` call of its own -- importing it from a command must not install a hook as a side effect. */
 
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 import { resolveOnPath, spawnResolvedSync } from './process_util.js'
@@ -176,6 +176,8 @@ export function buildManifest(sessionId?: string, cwd?: string, transcriptPath?:
 function insideGitWorkTree(cwd: string): boolean {
   if (process.env['GIT_DIR'] !== undefined) return true
   let dir = resolve(cwd)
+  // Git walks up from the physical directory, so a junction or symlink is followed first; an unreadable path keeps the unresolved spelling.
+  try { dir = realpathSync.native(dir) } catch { /* keep the unresolved path */ }
   for (;;) {
     if (existsSync(join(dir, '.git'))) return true
     const parent = dirname(dir)
@@ -186,7 +188,7 @@ function insideGitWorkTree(cwd: string): boolean {
 
 /** Detect real, pre-compaction git dirty state for `cwd` -- `hasPendingDiff` mirrors the Python predecessor's `_get_git_diff_stat_summary()` signal (`git diff --stat HEAD` non-empty: tracked working-tree/staged changes vs HEAD), `hasUncommittedChanges` mirrors `_get_uncommitted_changes()` (`git status --porcelain` non-empty: also catches untracked files `diff --stat HEAD` misses). Both feed {@link computeAdaptiveBudget}'s git-derived bonuses via {@link adaptiveCharBonus}. Uses {@link runGit} (the only git spawn site in the codebase) with `hints.git_hint_max_ms` (same bound `hooks_session.ts`'s own git-hint calls use) so a slow/hung git can never block compaction; any spawn failure or non-zero exit fails soft to `false` for that signal. */
 function gitDirtySignals(cwd: string): { hasPendingDiff: boolean; hasUncommittedChanges: boolean } {
-  // A directory outside every work tree has no dirty state to read; git would only exit 128 after a spawn that, past the short probe bound, is killed while its process still holds `cwd` open.
+  // A directory outside every work tree has no dirty state to read; git would only exit 128 after a spawn that, past the short probe bound, is killed while its process may still hold `cwd` open.
   if (!insideGitWorkTree(cwd)) return { hasPendingDiff: false, hasUncommittedChanges: false }
   const timeoutMs = loadConfig().hints.git_hint_max_ms
   let hasPendingDiff = false

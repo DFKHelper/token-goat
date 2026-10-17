@@ -6,6 +6,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CAN_JUNCTION } from './helpers/can-symlink.js'
+
 import { importSessionState, recordFileEdit, recordFileRead } from '../src/session.js'
 import { saveSessionState } from '../src/session_store.js'
 import { buildManifest } from '../src/manifest.js'
@@ -18,6 +20,16 @@ vi.mock('../src/util.js', async (importOriginal) => {
 })
 
 const runGitMock = vi.mocked(runGit)
+
+// HAND-DERIVED: every fixture is built on disk by this file (a bare `.git` marker, a junction to a folder holding one) and the expected probe calls follow from what git itself walks up for, not from reading the matcher.
+
+/** The nearest ancestor of `dir` that holds a `.git` entry, or null when none does. */
+function gitAncestor(dir: string): string | null {
+  for (let cur = path.resolve(dir); ; cur = path.dirname(cur)) {
+    if (fs.existsSync(path.join(cur, '.git'))) return cur
+    if (path.dirname(cur) === cur) return null
+  }
+}
 
 /** A session whose manifest is well past the default 1600-character cap, so the cap engages and the adaptive bonus (the git probe) is consulted. */
 function seedLongSession(sessionId: string): void {
@@ -51,6 +63,8 @@ describe('manifest git probe needs a work tree', () => {
 
   it('spawns no git for a directory outside every work tree, even when the cap engages', () => {
     const projectDir = scratch()
+    const ancestor = gitAncestor(projectDir)
+    expect(ancestor, `precondition: the temp directory ${os.tmpdir()} must sit outside every work tree, but ${String(ancestor)} holds a .git entry; point TMPDIR/TEMP at a folder outside it`).toBeNull()
     fs.writeFileSync(path.join(projectDir, 'package.json'), '{}')
     seedLongSession('no-worktree-session')
 
@@ -80,6 +94,26 @@ describe('manifest git probe needs a work tree', () => {
     seedLongSession('nested-session')
 
     buildManifest('nested-session', projectDir)
+
+    expect(runGitMock.mock.calls.map(([args]) => args[0])).toEqual(['diff', 'status'])
+  })
+
+  it.skipIf(!CAN_JUNCTION)('still probes git when the directory is a junction into a work tree', () => {
+    const repo = scratch()
+    fs.mkdirSync(path.join(repo, '.git'))
+    const target = path.join(repo, 'app')
+    fs.mkdirSync(target)
+    const outside = scratch()
+    const link = path.join(outside, 'link')
+    fs.symlinkSync(target, link, 'junction')
+    expect(gitAncestor(outside), `precondition: ${outside} must sit outside every work tree, but ${String(gitAncestor(outside))} holds a .git entry`).toBeNull()
+    seedLongSession('junction-session')
+
+    try {
+      buildManifest('junction-session', link)
+    } finally {
+      fs.rmSync(link, { recursive: true, force: true })
+    }
 
     expect(runGitMock.mock.calls.map(([args]) => args[0])).toEqual(['diff', 'status'])
   })
