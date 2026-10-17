@@ -6,7 +6,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { gitExecutable, runGit, runGitAsync } from '../src/util.js'
+import { runGitAsync } from '../src/git_async.js'
+import { gitExecutable, runGit } from '../src/util.js'
 
 /** Connects to the test's server, announces its pid, then blocks. It ends when that socket closes or cannot open, so a holder that outlives a failed test dies as soon as the test tears its server down. */
 const HOLDER = [

@@ -8,8 +8,8 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { runHook as RunHookFn } from '../src/hook_registry.js'
-import type * as UtilModule from '../src/util.js'
-import type { RunGitOptions } from '../src/util.js'
+import type * as GitAsyncModule from '../src/git_async.js'
+import type { RunGitAsyncOptions } from '../src/util.js'
 import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
 import { claimsChangeTheTreeLacks, parkAgentReceipt, receiptLines, takeAgentReceipt, waitAgentReceipts } from '../src/agent_receipt.js'
@@ -23,14 +23,14 @@ import { withFileLock } from '../src/util.js'
 import { noteFailedVerificationRun, type VerificationState } from '../src/verification_state.js'
 
 // The product bounds `git status` at 5 s and reads a timeout as "no evidence", which is right for a hook and wrong for a test: a Windows machine busy enough to stall a git spawn that long turned "clean tree, claim flagged" into "not flagged". Real git still runs; only the wall-clock bound is lifted.
-vi.mock('../src/util.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof UtilModule>()
+vi.mock('../src/git_async.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof GitAsyncModule>()
   return {
     ...actual,
-    runGit: (args: string[], opts: RunGitOptions = {}) => {
+    runGitAsync: (args: string[], opts: RunGitAsyncOptions = {}) => {
       const { timeoutMs, ...unbounded } = opts
       void timeoutMs
-      return actual.runGit(args, unbounded)
+      return actual.runGitAsync(args, unbounded)
     },
   }
 })
@@ -357,8 +357,8 @@ describe('the receipt through the real hook registry', () => {
     ['Changes made:\n- None'],
     ['Changes: nothing, this was a read-only review.'],
     ["I'll add the guard next."],
-  ])('read-only report %j with a clean tree is not flagged', (message) => {
-    expect(claimsChangeTheTreeLacks(message, repo)).toBe(false)
+  ])('read-only report %j with a clean tree is not flagged', async (message) => {
+    expect(await claimsChangeTheTreeLacks(message, repo)).toBe(false)
   })
 
   it.each([
@@ -371,8 +371,8 @@ describe('the receipt through the real hook registry', () => {
     ['We replaced the cache layer.'],
     ['Fixed the parser bug.'],
     ['Done:\n- I fixed the parser\n- I added tests'],
-  ])('own-work claim %j with a clean tree is flagged', (message) => {
-    expect(claimsChangeTheTreeLacks(message, repo)).toBe(true)
+  ])('own-work claim %j with a clean tree is flagged', async (message) => {
+    expect(await claimsChangeTheTreeLacks(message, repo)).toBe(true)
   })
 
   it('a read-only report from an Explore agent gets no receipt through the registry', async () => {

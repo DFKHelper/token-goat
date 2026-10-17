@@ -28,7 +28,7 @@ import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
 import * as path from 'node:path'
-import { runGit, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
+import { IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun } from './util.js'
 import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
 import { dataDir } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
@@ -45,6 +45,7 @@ import {
   ORIG_HEAD_ELIGIBLE_GIT_RE,
   ORIG_HEAD_REFLOG_MSG_RE,
   gitRepoRootOrNull,
+  hookGitRead,
   enqueueNonHeadMovingRewrites,
   pipelineShapeFilter,
   isFullRecallCommand,
@@ -686,13 +687,13 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       // Set when a read could not start git at all (missing, or a working directory that is gone): the worker needs git to sweep, so it could not do better and gets no request.
       let gitNeverRan = false
       if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
-        const reflogTop = runGit(['reflog', '-1', '--format=%gs', 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+        const reflogTop = await hookGitRead(gitDir, ['reflog', '-1', '--format=%gs', 'HEAD'])
         if (reflogTop.exitCode === -1) {
           unanswered = `git reflog: ${reflogTop.stderr}`
           if (reflogTop.timedOut !== true) gitNeverRan = true
         }
         if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {
-          const origHead = runGit(['rev-parse', '--verify', '-q', 'ORIG_HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+          const origHead = await hookGitRead(gitDir, ['rev-parse', '--verify', '-q', 'ORIG_HEAD'])
           if (origHead.exitCode === -1) {
             unanswered = `git rev-parse ORIG_HEAD: ${origHead.stderr}`
             if (origHead.timedOut !== true) gitNeverRan = true
@@ -700,10 +701,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
           if (origHead.exitCode === 0 && origHead.stdout.trim() !== '') diffBase = 'ORIG_HEAD'
         }
       }
-      const mutationDiff = runGit(['diff', '--name-only', diffBase, 'HEAD'], { cwd: gitDir, timeoutMs: 5000 })
+      const mutationDiff = await hookGitRead(gitDir, ['diff', '--name-only', diffBase, 'HEAD'])
       if (mutationDiff.exitCode === 0) {
         // `git diff --name-only` always reports paths relative to the repo top-level, regardless of which directory git was invoked from -- resolving them against the raw event cwd (a monorepo subpackage, or a `cd sub && git checkout ...`) would compute the wrong absolute path and silently enqueue nothing useful. Resolve the real top-level first, and treat a root git would not name as a failed read rather than guessing the working directory.
-        const repoRoot = gitRepoRootOrNull(gitDir)
+        const repoRoot = await gitRepoRootOrNull(gitDir)
         if (repoRoot === null) {
           unanswered ??= 'git rev-parse --show-toplevel named no root'
         } else {
@@ -726,7 +727,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Working-tree rewrites that never move HEAD, so the block above cannot see them: `git restore`, `git stash pop|apply`, and the plain shell in-place writes (`sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`). Same staleness failure class, one gap over -- none of these go through the Edit tool either, so before this nothing enqueued them and every surgical read kept serving pre-mutation content. See enqueueNonHeadMovingRewrites.
     if (exitCode === null || exitCode === 0) {
-      enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd())
+      await enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd())
     }
 
     // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.

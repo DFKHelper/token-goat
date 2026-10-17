@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
-import { runGit } from './util.js'
+import { runGitAsyncLazy } from './util.js'
 import { parsePorcelainZ } from './git_porcelain.js'
 import type { GitResult } from './util.js'
 import { dataDir } from './constants.js'
@@ -390,9 +390,14 @@ function extractGitRestorePathspecs(cmd: string): string[] {
   return specs
 }
 
+/** A git read run in `gitDir` under the hook's 5 s budget, off the event loop so a resident hook server keeps answering other callers while git runs. */
+export function hookGitRead(gitDir: string, args: string[]): Promise<GitResult> {
+  return runGitAsyncLazy(args, { cwd: gitDir, timeoutMs: 5000 })
+}
+
 /** The repository top-level for `gitDir`, or null when git could not name one (not a repository, or the read failed or timed out), so a caller that must not guess can tell that apart from a root that is `gitDir` itself. `git diff`/`status --porcelain`/`ls-files --full-name` all report paths relative to this, never to the invoking directory, so a monorepo subpackage cwd must not be used as the resolution base. */
-export function gitRepoRootOrNull(gitDir: string): string | null {
-  const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: gitDir, timeoutMs: 5000 })
+export async function gitRepoRootOrNull(gitDir: string): Promise<string | null> {
+  const toplevel = await hookGitRead(gitDir, ['rev-parse', '--show-toplevel'])
   return toplevel.exitCode === 0 && toplevel.stdout.trim() !== '' ? toplevel.stdout.trim() : null
 }
 
@@ -404,13 +409,13 @@ function reconcileIfGitTimedOut(result: GitResult, gitDir: string, what: string,
 }
 
 /** Expand `git restore` pathspecs (which may be `.`, a directory, or a glob) into the concrete tracked files git itself matches, repo-root-relative. */
-function expandGitPathspecs(specs: string[], gitDir: string): string[] {
+async function expandGitPathspecs(specs: string[], gitDir: string): Promise<string[]> {
   if (specs.length === 0) return []
   // `-z` names each path as written; without it a non-ASCII name comes back octal-quoted and names no file.
-  const listed = runGit(['ls-files', '-z', '--full-name', '--', ...specs], { cwd: gitDir, timeoutMs: 5000 })
+  const listed = await hookGitRead(gitDir, ['ls-files', '-z', '--full-name', '--', ...specs])
   reconcileIfGitTimedOut(listed, gitDir, 'git restore', 'git ls-files')
   if (listed.exitCode !== 0) return []
-  const repoRoot = gitRepoRootOrNull(gitDir)
+  const repoRoot = await gitRepoRootOrNull(gitDir)
   if (repoRoot === null) {
     requestReconcileSafe(gitDir)
     return []
@@ -425,18 +430,18 @@ function expandGitPathspecs(specs: string[], gitDir: string): string[] {
 const STATUS_SWEEP_CAP = 2000
 
 /** Every path git currently reports as changed or untracked, plus the source of each rename, absolute. The fallback for rewrites whose file set is not on the command line (stash, patch application, formatter runs). Read with `-z`, which names each path as written: plain porcelain octal-quotes a non-ASCII name and joins a rename as `old -> new`, which a name holding ` -> ` makes ambiguous. Untracked files are listed one by one, since plain porcelain folds a new directory into `dir/`, which names no file the index can take. A file the rewrite put back to its committed content is on no listing at all, so every sweep also asks the worker to reconcile the project. */
-function workingTreeStatusPaths(gitDir: string): string[] {
-  const status = runGit(['status', '--porcelain', '-z', '--untracked-files=all'], { cwd: gitDir, timeoutMs: 5000 })
+async function workingTreeStatusPaths(gitDir: string): Promise<string[]> {
+  const status = await hookGitRead(gitDir, ['status', '--porcelain', '-z', '--untracked-files=all'])
   reconcileIfGitTimedOut(status, gitDir, 'status sweep', 'git status')
   const stamp = `${new Date().toISOString()} post-bash status sweep in ${gitDir}`
   if (status.exitCode === -1 && status.timedOut !== true && /ENOBUFS/.test(status.stderr)) {
-    // Git ran but listed more than runGit's output buffer holds, so this sweep names no file; the worker's reconcile, which reads the index rather than this listing, can still find the changed ones.
+    // Git ran but listed more than runGitAsync's output buffer holds, so this sweep names no file; the worker's reconcile, which reads the index rather than this listing, can still find the changed ones.
     const recorded = requestReconcileSafe(gitDir)
     appendWorkerErrorLog(dataDir(), `${stamp}: git status listed more than the output buffer holds; ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
   }
   if (status.exitCode !== 0) return []
   const recorded = requestReconcileSafe(gitDir)
-  const repoRoot = gitRepoRootOrNull(gitDir)
+  const repoRoot = await gitRepoRootOrNull(gitDir)
   if (repoRoot === null) return []
   const entries = parsePorcelainZ(status.stdout)
   // Untracked paths first: the worker's reconcile finds every tracked file this cap leaves out, but it never lists a new untracked file, so the sweep is the only thing that queues one.
@@ -463,14 +468,14 @@ function enqueueRewrittenPath(absPath: string): void {
 }
 
 /** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
-export function enqueueNonHeadMovingRewrites(cmd: string, runDir: string): void {
+export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string): Promise<void> {
   const atRunDir = (f: string): string => resolveIndexPath(f, runDir)
   const paths: string[] = []
   // Each directory whose working tree needs a status sweep: the run directory for a patch or formatter, or wherever `git -C` pointed a stash.
   const sweepDirs = new Set<string>()
   if (GIT_RESTORE_RE.test(cmd) && !GIT_RESTORE_STAGED_ONLY_RE.test(cmd)) {
     const specs = extractGitRestorePathspecs(cmd)
-    paths.push(...expandGitPathspecs(specs, runDir))
+    paths.push(...(await expandGitPathspecs(specs, runDir)))
     // `ls-files` lists only what the index holds, so a file `--source` brought back that the index lacks is found by its literal name instead; globs, `:` magic and `.` name nothing literally.
     for (const spec of specs) if (spec !== '.' && !spec.startsWith(':') && !/[*?[]/.test(spec)) paths.push(atRunDir(spec))
   }
@@ -484,7 +489,7 @@ export function enqueueNonHeadMovingRewrites(cmd: string, runDir: string): void 
     for (const f of extractRedirectTargets(segment)) paths.push(atRunDir(f))
   }
   for (const p of new Set(paths)) enqueueRewrittenPath(p)
-  for (const dir of sweepDirs) for (const p of workingTreeStatusPaths(dir)) enqueueSweptPath(p)
+  for (const dir of sweepDirs) for (const p of await workingTreeStatusPaths(dir)) enqueueSweptPath(p)
 }
 
 /** Enqueue a path the status sweep listed: a file to reindex, or a path that is no longer on disk (deleted, or the source of a rename) so the drain drops its rows. Anything else, such as a submodule directory, names nothing the index holds. */

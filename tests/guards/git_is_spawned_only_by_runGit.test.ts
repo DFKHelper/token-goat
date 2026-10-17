@@ -1,4 +1,4 @@
-/** Guard: git is started in exactly one place, `runGit` in src/util.ts. That one site is where `core.fsmonitor` is turned off, diff drivers are kept from running, and (on Windows) the real git is started instead of its launcher so a timeout ends the process that matters. A second spawn site skips all three. The scan reads each src file whole with its comments removed (so a call split over lines is seen and prose that mentions a spawn is not), and covers spawn, spawnSync, spawnOwned, spawnResolvedSync, execFile, execFileSync, exec and execSync called with a literal git or the file gitExecutable() resolves, and any resolveOnPath('git'). It replaced an older guard that looked at four of those calls one line at a time. */
+/** Guard: git is started in exactly two places, `runGit` in src/util.ts and `runGitAsync` in src/git_async.ts, which share one argument builder. Those sites are where `core.fsmonitor` is turned off, diff drivers are kept from running, and (on Windows) the real git is started instead of its launcher so a timeout ends the process that matters. A second spawn site skips all three. The scan reads each src file whole with its comments removed (so a call split over lines is seen and prose that mentions a spawn is not), and covers spawn, spawnSync, spawnOwned, spawnResolvedSync, execFile, execFileSync, exec and execSync called with a literal git or the file gitExecutable() resolves, and any resolveOnPath('git'). It replaced an older guard that looked at four of those calls one line at a time. */
 
 // tg-no-regex-preload
 import * as fs from 'node:fs'
@@ -38,24 +38,26 @@ function walkSrc(dir: string): string[] {
 }
 
 describe('git is spawned only by runGit', () => {
-  it('no file in src/ but util.ts starts git', () => {
+  it('no file in src/ but util.ts and git_async.ts starts git', () => {
     const files = pinnedPopulation({
       what: 'src/**/*.ts files scanned for git spawns',
       items: walkSrc(SRC_DIR).map((f) => f.split(path.sep).join('/')),
       floor: 150,
-      mustInclude: ['src/util.ts', 'src/manifest.ts', 'src/hooks_session.ts'],
+      mustInclude: ['src/util.ts', 'src/git_async.ts', 'src/manifest.ts', 'src/hooks_session.ts'],
     })
     const stray: string[] = []
     for (const file of files) {
-      if (file.endsWith('/src/util.ts')) continue
+      // util.ts holds runGit; git_async.ts holds runGitAsync, which lives apart so the hook entry's static graph does not carry it. Each is pinned to its one site below.
+      if (file.endsWith('/src/util.ts') || file.endsWith('/src/git_async.ts')) continue
       for (const site of gitSpawnSites(fs.readFileSync(file, 'utf8'))) stray.push(`${path.relative(SRC_DIR, file)}:${site}`)
     }
     expect(stray, 'git must be started through runGit in src/util.ts, never by a spawn of its own').toEqual([])
   })
 
-  it('src/util.ts has exactly two git spawn sites: runGit (spawnSync) and runGitAsync (spawnOwned)', () => {
-    const sites = gitSpawnSites(fs.readFileSync(path.join(SRC_DIR, 'util.ts'), 'utf8'))
-    expect(sites.map((s) => s.replace(/^\d+: /, '').replace(/^[^\w$]/, ''))).toEqual(['spawnSync(gitExecutable(', 'spawnOwned(gitExecutable('])
+  it('src/util.ts has exactly one git spawn site (runGit, spawnSync) and src/git_async.ts exactly one (runGitAsync, spawnOwned)', () => {
+    const siteTexts = (file: string): string[] => gitSpawnSites(fs.readFileSync(path.join(SRC_DIR, file), 'utf8')).map((s) => s.replace(/^\d+: /, '').replace(/^[^\w$]/, ''))
+    expect(siteTexts('util.ts')).toEqual(['spawnSync(gitExecutable('])
+    expect(siteTexts('git_async.ts')).toEqual(['spawnOwned(gitExecutable('])
   })
 
   // Provenance: HAND-DERIVED. Each snippet is written to be, or not to be, a git spawn by reading it, not by running the matcher.

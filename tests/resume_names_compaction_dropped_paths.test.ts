@@ -11,9 +11,9 @@ import { recordFileRead } from '../src/session.js'
 import { saveSessionState } from '../src/session_store.js'
 
 // The git diff section is the only part of the packet that reads the working tree; stubbed so the real repository's state cannot leak into the packet under test.
-vi.mock('../src/util.js', async (importOriginal) => {
+vi.mock('../src/git_async.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
-  return { ...actual, runGit: () => ({ exitCode: 1, stdout: '', stderr: '' }) }
+  return { ...actual, runGitAsync: async () => ({ exitCode: 1, stdout: '', stderr: '' }) }
 })
 
 const { buildResumePacket } = await import('../src/resume.js')

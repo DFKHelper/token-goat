@@ -591,7 +591,7 @@ export async function subagentReportRewriteHandler(event: HookEvent): Promise<Ho
     const redactedReport = redactSecrets(raw)
     const resultText = redactedReport.text
     // Computed here because this event IS the subagent's stop: Copilot's post-tool pass never sees the child's state key, and the report the rewrite returns is the one the parent reads.
-    const receipt = (await loadAgentReceipt()).receiptForStoppedAgent(event, resultText)
+    const receipt = await (await loadAgentReceipt()).receiptForStoppedAgent(event, resultText)
     const receiptOnly = (): HookOutput => (receipt === null ? passOutput() : receiptRewrite(resultText, receipt))
     if (resultText.length < loadConfig().agent_report.min_bytes) return receiptOnly()
     // Keyed on the subagent's own id: the payload names no tool call, and agentId is unique per spawn (tg-captures C4a-013).

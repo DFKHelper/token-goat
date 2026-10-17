@@ -22,7 +22,8 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import * as childProcess from 'node:child_process'
 
-import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED, runGit, runGitAsync } from '../../src/util.js'
+import { runGitAsync } from '../../src/git_async.js'
+import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED, runGit } from '../../src/util.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
@@ -67,19 +68,20 @@ function gitSpawnCalls(code: string): string[] {
 }
 
 const UTIL_CODE = withoutComments(fs.readFileSync(path.join(SRC_DIR, 'util.ts'), 'utf8'))
+const GIT_ASYNC_CODE = withoutComments(fs.readFileSync(path.join(SRC_DIR, 'git_async.ts'), 'utf8'))
 
 describe('git calls are bounded', () => {
-  it('every git spawn in util.ts takes its limit from gitTimeoutMs, whose fallback is `?? GIT_DEFAULT_TIMEOUT_MS`', () => {
-    const spawns = gitSpawnCalls(UTIL_CODE)
+  it('every git spawn in util.ts and git_async.ts takes its limit from gitTimeoutMs, whose fallback is `?? GIT_DEFAULT_TIMEOUT_MS`', () => {
+    const spawnsByCode = [UTIL_CODE, GIT_ASYNC_CODE].map((code) => ({ code, spawns: gitSpawnCalls(code) }))
     const fallbacks = [...UTIL_CODE.matchAll(/\?\? GIT_DEFAULT_TIMEOUT_MS\b/g)]
-    expect(spawns.length, 'util.ts must start git somewhere, or this guard reads nothing').toBeGreaterThan(0)
+    for (const entry of spawnsByCode) expect(entry.spawns.length, 'util.ts and git_async.ts must each start git, or this guard reads nothing').toBeGreaterThan(0)
     expect(fallbacks.length, 'gitTimeoutMs is the one place the default is applied').toBe(1)
     expect(UTIL_CODE.slice(UTIL_CODE.indexOf('function gitTimeoutMs'), fallbacks[0]!.index), 'the fallback must sit inside gitTimeoutMs').not.toMatch(/\nfunction |\nexport function /)
-    for (const call of spawns) {
-      const at = UTIL_CODE.indexOf(call)
-      const start = Math.max(UTIL_CODE.lastIndexOf('\nfunction ', at), UTIL_CODE.lastIndexOf('\nexport function ', at))
-      const end = UTIL_CODE.indexOf('\n}\n', at)
-      const whole = UTIL_CODE.slice(start, end)
+    for (const { code, spawns } of spawnsByCode) for (const call of spawns) {
+      const at = code.indexOf(call)
+      const start = Math.max(code.lastIndexOf('\nfunction ', at), code.lastIndexOf('\nexport function ', at))
+      const end = code.indexOf('\n}\n', at)
+      const whole = code.slice(start, end)
       expect(whole, 'a git spawn must ask gitTimeoutMs for its limit, so a new spawn path is bounded too').toMatch(/\bgitTimeoutMs\(/)
       // spawnSync enforces the limit itself; spawnOwned has no timeout option, so its function arms a timer that kills the tree.
       if (call.startsWith('spawnSync')) expect(call, 'the spawnSync options must carry the timeout').toMatch(/\btimeout\b/)
