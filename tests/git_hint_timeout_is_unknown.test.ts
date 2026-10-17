@@ -44,10 +44,10 @@ function scratch(): string {
   return dir
 }
 
-/** A folder with a `.git` directory whose HEAD reads `head`. */
+/** A folder with a `.git` directory whose HEAD reads `head`, and the objects/ and refs/ git requires of a git directory (gitrepository-layout(5)). */
 function repoWithHead(head: string): string {
   const dir = scratch()
-  fs.mkdirSync(path.join(dir, '.git'))
+  for (const part of ['objects', 'refs']) fs.mkdirSync(path.join(dir, '.git', part), { recursive: true })
   fs.writeFileSync(path.join(dir, '.git', 'HEAD'), head)
   return dir
 }

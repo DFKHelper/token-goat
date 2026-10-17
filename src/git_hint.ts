@@ -1,6 +1,6 @@
 /** Git facts the hooks read inside the `hints.git_hint_max_ms` budget: the branch from the HEAD file with no spawn, and a dirty-state probe that says timed-out instead of clean. A slow machine cannot meet that budget with a spawn (a cold `git status` measured 61 ms at best against the 50 ms default), so a hint that waits on a spawn never arrives there; the branch needs no process, and a probe that is still killed is reported as unknown so no caller reads a killed git as an answer. */
 
-import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 import type { GitResult } from './types.js'
@@ -25,7 +25,7 @@ function readPrefix(file: string): string | null {
   }
 }
 
-/** The repository directory for `cwd`: the nearest ancestor's `.git` directory, or the directory a `.git` file (a linked worktree or submodule) points at, relative paths read from the folder holding that file. Null when there is none, or a `.git` file names nothing readable. An exported GIT_DIR names a repository independent of the directory, and an exported GIT_CEILING_DIRECTORIES can stop the walk short of it; neither is modelled, so each is unknown too. */
+/** The repository directory for `cwd`: the nearest ancestor's `.git` directory, or the directory a `.git` file (a linked worktree or submodule) points at, relative paths read from the folder holding that file. Null when there is none, a `.git` directory lacks objects/ or refs/ (git skips it), or a `.git` file names nothing readable. An exported GIT_DIR names a repository independent of the directory, and an exported GIT_CEILING_DIRECTORIES can stop the walk short of it; neither is modelled, so each is unknown too. */
 function repositoryDir(cwd: string): string | null {
   if (process.env['GIT_DIR'] !== undefined || process.env['GIT_CEILING_DIRECTORIES']) return null
   let dir = resolve(cwd)
@@ -38,7 +38,8 @@ function repositoryDir(cwd: string): string | null {
       const info = statSync(marker)
       kind = info.isDirectory() ? 'dir' : info.isFile() ? 'file' : null
     } catch { /* no marker here */ }
-    if (kind === 'dir') return marker
+    // Git skips a `.git` directory that holds no objects/ or refs/ and walks up, so a hollow one means the answer is the spawn's.
+    if (kind === 'dir') return ['objects', 'refs'].every((part) => existsSync(resolve(marker, part))) ? marker : null
     if (kind === 'file') {
       const line = ((readPrefix(marker) ?? '').split(/\r?\n/, 1)[0] ?? '').trim()
       const target = line.startsWith('gitdir:') ? line.slice('gitdir:'.length).trim() : ''

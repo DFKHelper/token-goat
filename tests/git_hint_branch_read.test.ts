@@ -251,6 +251,19 @@ describe('readBranchWithoutSpawn says unknown rather than guess', () => {
       expect(readBranchWithoutSpawn(linked)).toBeNull()
     })
 
+    // CAPTURE: git itself answers for the inner directory in the same run; the layout is HAND-DERIVED (git's rule is that a git directory holds HEAD, objects and refs, gitrepository-layout(5)).
+    it.each(['objects', 'refs'])('a .git directory with no %s/, which git skips for the repository above it', (missing) => {
+      const outer = newRepo('outer')
+      const inner = path.join(outer, 'inner')
+      fs.mkdirSync(path.join(inner, '.git'), { recursive: true })
+      fs.writeFileSync(path.join(inner, '.git', 'HEAD'), 'ref: refs/heads/hollow\n')
+      for (const part of ['objects', 'refs']) if (part !== missing) fs.mkdirSync(path.join(inner, '.git', part))
+      expect(gitsAnswer(inner), 'precondition: git walked up to the outer repository').toBe('main')
+      expect(readBranchWithoutSpawn(inner)).toBeNull()
+      fs.mkdirSync(path.join(inner, '.git', missing))
+      expect(readBranchWithoutSpawn(inner), 'with both directories it is the repository').toBe('hollow')
+    })
+
     it('a .git file naming a directory that exists but holds no repository', () => {
       const dir = path.join(root, 'hollow')
       fs.mkdirSync(path.join(root, 'empty-target'))
