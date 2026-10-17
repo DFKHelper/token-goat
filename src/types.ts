@@ -52,11 +52,17 @@ export interface GitResult {
   readonly timedOut?: boolean
 }
 
+/** How long a git call may run when its caller names no bound. A ceiling for one-shot calls, not a budget: the slowest call measured in this codebase's own commands was 1530 ms (`log --oneline -n 2000` in a 12,645-file repository on a loaded machine), so 30 s is about twenty times that. Residents (hook server, worker, MCP server) pass tighter explicit values; this default exists so a call that forgets one can never hang a process for good. */
+export const GIT_DEFAULT_TIMEOUT_MS = 30_000
+
+/** The opt-out of runGit's default timeout: pass it as `timeoutMs` to run git with no limit. Unbounded is never casual, so it is a named export and a guard lists every file that uses it. */
+export const GIT_UNBOUNDED: unique symbol = Symbol('git-unbounded')
+
 /** Options accepted by `runGit`. */
 export interface RunGitOptions {
   readonly cwd?: string
-  /** Kill the git process if it runs longer than this (ms). Used by opportunistic, advisory-only callers (e.g. hooks_session.ts's hint-computation git calls) that must never stall a hook; omit for functional git calls that need to complete regardless of duration. */
-  readonly timeoutMs?: number
+  /** Kill the git process if it runs longer than this (ms). Omit it and `GIT_DEFAULT_TIMEOUT_MS` applies, so no call is unbounded by accident; a value that is not a positive number (0, negative, NaN) reads as omitted. Advisory callers that must never stall a hook (hooks_session.ts's hint-computation git calls) and every call made from a resident process (hook server, worker, MCP server) name a tighter value. `GIT_UNBOUNDED` is the only way to run without a limit, and tests/guards/git_calls_are_bounded.test.ts allowlists the files that may name it. A killed git returns exit -1 with `timedOut: true`: callers must read that as "unknown", never as "absent". */
+  readonly timeoutMs?: number | typeof GIT_UNBOUNDED
   /** Text written to git's stdin, for a subcommand that reads a batch of queries (`cat-file --batch-check`) so one spawn answers them all. */
   readonly input?: string
 }

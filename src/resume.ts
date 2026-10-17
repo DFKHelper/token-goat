@@ -15,6 +15,9 @@ import { readCompactDroppedPaths } from './compact_dropped.js'
 export const MAX_RESUME_TOKENS = 2000
 export const MAX_RESUME_CHARS = MAX_RESUME_TOKENS * 4
 
+/** Bound for the packet's `git diff --stat`: the packet is built inside the hook server, and a stuck git only drops that section. */
+const RESUME_GIT_TIMEOUT_MS = 5000
+
 /** How many of a session's most recent web fetches the packet names. Eight matches the top-files-read cap: one line each, and a session that fetched more than eight pages has almost certainly moved on from the first ones. */
 const MAX_RESUME_WEB_FETCHES = 8
 
@@ -139,12 +142,15 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
 
   try {
     const projectRoot = resolveProjectRoot()
-    const result = runGit(['diff', '--stat'], { cwd: projectRoot })
+    const result = runGit(['diff', '--stat'], { cwd: projectRoot, timeoutMs: RESUME_GIT_TIMEOUT_MS })
     if (result.exitCode === 0 && result.stdout.trim().length > 0) {
       lines.push('## Uncommitted changes (git diff --stat)')
       // Per line rather than over the block: the diffstat's own newlines are its structure, and displaySafeText escapes a newline. The filenames in it are the repository's, so the block carries the same marker risk every other row here does.
       lines.push(result.stdout.trim().split('\n').map(displaySafeText).join('\n'))
       lines.push('')
+    } else if (result.timedOut === true) {
+      // A killed diff is unknown, not clean: leaving the section out would tell the next session the tree has no uncommitted changes.
+      lines.push('## Uncommitted changes (git diff --stat)', 'git did not answer in time, so whether the tree has uncommitted changes is unknown', '')
     }
   } catch {
     // fail-soft: git not available or not a repo

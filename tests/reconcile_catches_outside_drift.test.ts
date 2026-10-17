@@ -168,7 +168,7 @@ describe('reconcile', () => {
   })
 })
 
-/** A directory git cannot enumerate is the one input where a deletion cannot be inferred at all. `getTrackedFiles` returns an empty list for a non-repository, for a missing git, and for a git that errored -- and an empty tracked list against a populated index is numerically identical to a project whose every file was deleted. Measured against the built bundle before the guard existed: two live files on disk, both reported "indexed but gone from disk", both queued for removal. Nothing failed; the index just lost working rows. Provenance: CAPTURE. The fixture is built here and the expectations come from running the real bundle against it, not from reading `reconcile.ts`. */
+/** A directory git cannot enumerate is the one input where a deletion cannot be inferred at all. `listTrackedFiles` returns an empty list for a non-repository, for a missing git, and for a git that errored -- and an empty tracked list against a populated index is numerically identical to a project whose every file was deleted. Measured against the built bundle before the guard existed: two live files on disk, both reported "indexed but gone from disk", both queued for removal. Nothing failed; the index just lost working rows. Provenance: CAPTURE. The fixture is built here and the expectations come from running the real bundle against it, not from reading `reconcile.ts`. */
 describe('reconcile in a directory git cannot enumerate', () => {
   let dir: string
   let home: string

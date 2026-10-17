@@ -8,10 +8,11 @@ import { storeBashOutput } from '../src/bash_output_cache.js'
 import { storeOutput, setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import { WEB_FETCH_KEY_SEP, exportSessionState, recordWebFetch } from '../src/session.js'
 import { clearModuleCaches } from '../src/reset.js'
+import type { GitResult } from '../src/types.js'
 import { storeWebOutput } from '../src/web_cache.js'
 
 // Only runGit (used for the "## Uncommitted changes (git diff --stat)" section) is mocked -- resolveProjectRoot resolves the real project root normally, but every git subprocess call resume.ts makes goes through this mock so no test depends on the real repo's working-tree state. Default: no diff output, matching the pre-existing tests' expectations (that section absent) unless a test overrides the mock.
-const runGitMock = vi.fn((..._args: unknown[]) => ({ exitCode: 1, stdout: '', stderr: '' }))
+const runGitMock = vi.fn((..._args: unknown[]): GitResult => ({ exitCode: 1, stdout: '', stderr: '' }))
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
   return { ...actual, runGit: (...args: unknown[]) => runGitMock(...(args as [string[], unknown])) }
@@ -183,6 +184,17 @@ describe('buildResumePacket', () => {
     const packet = await buildResumePacket(sessionId)
     expect(packet).not.toBeNull()
     expect(packet).not.toContain('## Uncommitted changes')
+  })
+
+  it('says the uncommitted changes are unknown when git diff --stat is killed, where a clean diff adds no section', async () => {
+    // Provenance: HAND-DERIVED. A killed git is { exitCode: -1, timedOut: true } (src/types.ts::GitResult).
+    runGitMock.mockReturnValue({ exitCode: -1, stdout: '', stderr: 'spawnSync git ETIMEDOUT', timedOut: true })
+    const sessionId = 'sid-git-diff-killed'
+    expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
+
+    const packet = await buildResumePacket(sessionId)
+    expect(packet).toContain('## Uncommitted changes (git diff --stat)')
+    expect(packet).toContain('git did not answer in time')
   })
 
   it('truncates to MAX_RESUME_CHARS and appends a truncation marker when the packet is oversized', async () => {

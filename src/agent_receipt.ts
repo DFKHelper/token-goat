@@ -11,6 +11,7 @@ import { sessionStateKey } from './hook_registry.js'
 import { echoedCommand, nameSubject } from './hint_suggestion_guard.js'
 import { contextOutput, getCwd, passOutput } from './hooks_common.js'
 import { claimsOwnChange } from './change_claim.js'
+import { gitFindings } from './git_hint.js'
 import { claimsCommittedChange } from './hooks_session.js'
 import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
@@ -196,9 +197,12 @@ export function subagentStopHandler(event: HookEvent): HookOutput {
     const message = typeof event.raw['last_assistant_message'] === 'string' ? event.raw['last_assistant_message'] : ''
     // The report decides first: most stops claim nothing, and none of those needs a git process.
     if (!claimsOwnChange(message) || claimsCommittedChange(message)) return passOutput()
-    const result = runGit(['status', '--porcelain'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms })
-    if (result.exitCode === 0 && result.stdout.trim() === '') {
+    const tree = gitFindings(['status', '--porcelain'], cwd, loadConfig().hints.git_hint_max_ms)
+    if (tree === 'clean') {
       console.warn(`subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`)
+    } else if (tree === 'timed-out') {
+      // A killed git is neither a clean tree nor a dirty one: say the check did not finish, so a silent stop is never read as a clean verdict.
+      console.warn(`subagent-stop: could not check the report against git status — session=${event.sessionId}, git did not answer in time`)
     }
     return passOutput()
   } catch {

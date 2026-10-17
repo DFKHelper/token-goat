@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { extractImports, importsExtensionFor } from './import_export_extract.js'
-import { getTrackedFiles } from './repomap.js'
+import { requireTrackedFiles } from './repomap.js'
 import { foldPath } from './util.js'
 
 /** Extensions probed when a relative specifier does not name an existing file outright. `.cjs`/`.cts` are present deliberately: an earlier version of this list omitted them, so a relative import landing on a `.cjs`/`.cts` source resolved to nothing here while `runDeps` resolved it fine. */
@@ -13,7 +13,7 @@ const DIRECT_PROBE_EXTENSIONS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs
 const INDEX_PROBE_EXTENSIONS = ['.ts', '.js', '.tsx', '.jsx', '.mts', '.cts'] as const
 
 export interface ImportGraph {
-  /** Every git-tracked file considered, in `getTrackedFiles` order. */
+  /** Every git-tracked file considered, in `requireTrackedFiles` order. */
   files: string[]
   /** file -> the project-internal files it imports. Every tracked file has an entry, possibly empty. */
   graph: Map<string, string[]>
@@ -25,7 +25,7 @@ export interface ImportGraph {
 
 /** Build the internal import graph for `cwd`. Only *relative* specifiers become edges: a bare specifier (`react`, `node:fs`) is external by definition and has no tracked file to point at. A file that cannot be read is skipped rather than aborting the build -- one unreadable file must not erase the whole graph. */
 export function buildImportGraph(cwd: string): ImportGraph {
-  const files = getTrackedFiles(cwd)
+  const files = requireTrackedFiles(cwd)
 
   // Case-insensitive filesystems (Windows/macOS) treat Foo.ts and foo.ts as the same file, and an import specifier's casing need not match the tracked path's, so membership is checked through foldPath() rather than raw string equality.
   const filesByFoldedPath = new Map<string, string>()
