@@ -49,7 +49,7 @@ export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Prom
     const stop = (why: 'timeout' | 'overflow' | 'abort'): void => {
       if (cause !== undefined || settled) return
       cause = why
-      // Synchronous on purpose: OwnedChild.kill is shared with the exit hooks, which cannot wait, and this runs only on a timeout, overflow or abort; the worst case is one taskkill of HELPER_TIMEOUT_MS (10 s) on win32, or MAX_FREEZE_PASSES (64) ps calls of 10 s each (640 s) on POSIX, where a pass is milliseconds in practice.
+      // Synchronous on purpose: OwnedChild.kill is shared with the exit hooks, which cannot wait, and this runs only on a timeout, overflow or abort; a wedged helper costs one HELPER_TIMEOUT_MS (10 s): taskkill is one call on win32, and on POSIX a timed-out ps ends the walk, so only MAX_FREEZE_PASSES (64) ps calls that each answer, in milliseconds in practice, can add to it.
       owned.kill()
       if (exited) finish(null)
     }
