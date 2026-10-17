@@ -42,6 +42,7 @@ describe('canonical skill source', () => {
     fs.mkdirSync(path.join(root, 'scripts'))
     fs.mkdirSync(path.join(root, 'src'))
     fs.copyFileSync(path.join(REPO, SCRIPT), path.join(root, SCRIPT))
+    fs.copyFileSync(path.join(REPO, 'scripts', 'is-main-module.mjs'), path.join(root, 'scripts', 'is-main-module.mjs'))
     fs.copyFileSync(path.join(REPO, OUT), path.join(root, OUT))
     const edited = `${fs.readFileSync(path.join(REPO, SOURCE), 'utf8')}\nAn edit the blob has not seen.\n`
     fs.writeFileSync(path.join(root, SOURCE), edited)

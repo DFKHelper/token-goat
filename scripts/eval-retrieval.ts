@@ -21,6 +21,7 @@ import {
   type RankedHit,
   type RelevantSpan,
 } from '../evals/retrieval/metrics.js'
+import { isMainModule } from './is-main-module.mjs'
 
 const K = 10
 
@@ -395,4 +396,4 @@ function main(): void {
   if (outPath !== undefined) writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`)
 }
 
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === path.resolve(import.meta.filename)) main()
+if (isMainModule(import.meta.url)) main()

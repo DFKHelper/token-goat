@@ -6,6 +6,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { resolveWindowsBash } from '../src/shell.js'
 import { readsTreeOrBundle } from '../scripts/prepush-tree-readers.mjs'
+import { CAN_JUNCTION } from './helpers/can-symlink.js'
 
 const REPO = process.cwd().replace(/\\/g, '/')
 const posix = (p: string): string => p.replace(/\\/g, '/')
@@ -49,7 +50,7 @@ function decide(change: Record<string, string>, shadowSort = false): { note: str
   symlinkSync(realDir, dir, 'junction')
   const root = path.join(dir, 'repo')
   mkdirSync(path.join(root, 'scripts'), { recursive: true })
-  for (const f of ['prepush-failed.mjs', 'test-durations.mjs', 'prepush-tree-readers.mjs']) copyFileSync(path.join(REPO, 'scripts', f), path.join(root, 'scripts', f))
+  for (const f of ['prepush-failed.mjs', 'test-durations.mjs', 'prepush-tree-readers.mjs', 'is-main-module.mjs']) copyFileSync(path.join(REPO, 'scripts', f), path.join(root, 'scripts', f))
   write(root, 'src/a.ts', 'export const a = 1\n')
   write(root, 'tests/a.test.ts', "import { a } from '../src/a'\n")
   write(root, 'tests/bundle_user.test.ts', "import { BUNDLE } from './helpers/bundle'\n")
@@ -88,7 +89,7 @@ function decide(change: Record<string, string>, shadowSort = false): { note: str
   return { note, focus: file ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [] }
 }
 
-describe.skipIf(BASH === null)('prepush focus decision', () => {
+describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => {
   it('adds the tree-reading and bundle tests when a src file changed', () => {
     const r = decide({ 'src/a.ts': 'export const a = 2\n' })
     expect(r.focus).toEqual(['src/a.ts', 'tests/a.test.ts', 'tests/bundle_user.test.ts', 'tests/guards/tree.test.ts'])
@@ -114,7 +115,7 @@ describe('readsTreeOrBundle', () => {
   })
 })
 
-describe.skipIf(BASH === null)('prepush focus note', () => {
+describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus note', () => {
   it('counts an empty range as no change', () => {
     const r = decide({})
     expect(r.note).toContain('0 changed since')

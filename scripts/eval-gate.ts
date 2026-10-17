@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { compareToBaseline, toBaseline, type Baseline, type RunRow } from '../evals/retrieval/gate.js'
 import { num } from '../evals/retrieval/quality.js'
+import { isMainModule } from './is-main-module.mjs'
 
 export const GATED_ARMS = 'fused,semantic'
 export const BASELINE_PATH = 'evals/retrieval/baseline.json'
@@ -52,4 +53,4 @@ function main(): void {
   process.stdout.write('eval-gate: ok, retrieval matches the committed baseline\n')
 }
 
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === path.resolve(import.meta.filename)) main()
+if (isMainModule(import.meta.url)) main()

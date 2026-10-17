@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gunzipSync, gzipSync } from 'node:zlib'
+import { isMainModule } from './is-main-module.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SOURCE = path.join(ROOT, 'src', 'canonical_skill.md')
@@ -59,16 +60,8 @@ function isCurrent(onDisk, source) {
   return blob !== null && decodeBlob(blob) === source && onDisk === render(blob)
 }
 
-const realOrResolved = (p) => {
-  try {
-    return fs.realpathSync.native(p)
-  } catch {
-    return path.resolve(p)
-  }
-}
 const invokedDirectly =
-  process.argv[1] !== undefined &&
-  realOrResolved(process.argv[1]) === realOrResolved(fileURLToPath(import.meta.url))
+  isMainModule(import.meta.url)
 
 const USAGE = [
   'usage: node scripts/generate-canonical-skill.mjs [--check | --help]',

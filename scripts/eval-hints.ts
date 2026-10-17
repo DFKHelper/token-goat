@@ -4,12 +4,11 @@ The model: a category meets `occasions` detections in a row; each shown hint is 
 
 Run it: `npx tsx scripts/eval-hints.ts` for the tables, `--db <path to global.db>` to add the ledger report. The ledger is opened read-only and must already exist. */
 import { existsSync } from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { getDefaultConfig } from '../src/config_defaults.js'
 import type { HintStatsConfig } from '../src/config_types.js'
 import { HINT_CATEGORIES, isProbeOccasion, isSuppressionCategory, suppressesAt, wilsonInterval, type HintCategory } from '../src/hint_stats.js'
 import Database from '../src/sqlite_driver.js'
+import { isMainModule } from './is-main-module.mjs'
 
 export interface Gate {
   readonly name: string
@@ -192,7 +191,7 @@ function main(): void {
   console.log(`\n"undecided": the interval straddles ${pct(bar)}, so the ledger cannot yet say which side of the bar the category is on.`)
 }
 
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     main()
   } catch (err: unknown) {

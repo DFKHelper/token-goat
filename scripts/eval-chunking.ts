@@ -7,7 +7,6 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { globalDbPath } from '../src/constants.js'
 import { buildEmbeddingBoundaries } from '../src/embedding_boundaries.js'
 import { DEFAULT_MODEL, EmbeddingModel } from '../src/embed_model.js'
@@ -28,6 +27,7 @@ import { mergeNearbyHits } from '../src/semantic_merge.js'
 import { canonicalizeIndexPath } from '../src/parser.js'
 import { resolveLabel, type GoldenLabel } from '../evals/retrieval/labels.js'
 import { bootstrapCI, firstRelevantRank, mean, pairedBootstrapDelta, reciprocalRank, hitAtK, splitOf, type Interval, type RelevantSpan } from '../evals/retrieval/metrics.js'
+import { isMainModule } from './is-main-module.mjs'
 
 const K = 10
 
@@ -289,7 +289,7 @@ async function main(): Promise<void> {
   console.log(`recommendation: ${report.recommendation}`)
 }
 
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   main().catch((err: unknown) => {
     console.error(err)
     process.exitCode = 1

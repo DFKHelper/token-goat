@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Keeps the record of which test files failed in the last pre-push, per leg, so the next push can re-run just those. Usage: node scripts/prepush-failed.mjs record STORE LEG SHA LOG | read STORE LEG | clear STORE LEG. `read` prints the recorded sha, then one failing file per line, and exits 1 when the leg has no record. Built-in modules only.
-import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isMainModule } from './is-main-module.mjs'
 import { parseFailedRun } from './test-durations.mjs'
 
 /** @param {string} store @returns {Record<string, {sha: string, files: string[]}>} an unreadable or malformed store counts as empty, so the next run is a full one */
@@ -46,8 +46,7 @@ export function clearFailure(store, leg) {
   saveStore(store, data)
 }
 
-// import.meta.url is the entry module's real path while argv[1] keeps any symlink it was started through (macOS /var and /tmp), so compare the resolved path or the CLI silently does nothing
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+const isMain = isMainModule(import.meta.url)
 if (isMain) {
   const [cmd, store, leg, sha, log] = process.argv.slice(2)
   if (cmd === 'record' && store && leg && sha && log) {

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Lists the test files `vitest related` cannot link to a src/ change: tests that read the source tree through fs (everything under tests/guards, and any test that reads fs and names a src path outside an import) and tests that spawn or read the built bundle in dist. Usage: node scripts/prepush-tree-readers.mjs [ROOT]. Prints one repo-relative path per line, sorted; exits 1 when tests/ cannot be listed, so the caller falls back to the full leg. Built-in modules only.
-import { readdirSync, readFileSync, realpathSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { isMainModule } from './is-main-module.mjs'
 
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
 const BUNDLE_REF = /token-goat(?:\.core|-hook)?\.mjs|helpers\/bundle|\bBUNDLE\b|\bHOOK_BUNDLE\b|\bCORE_BUNDLE\b|makeBundleProject|runBundle|bundleTg|copilot_session_start_tree|['"`]dist['"`]/
@@ -35,8 +35,7 @@ export function treeReaders(root) {
   return out.sort()
 }
 
-// import.meta.url is the entry module's real path while argv[1] keeps any symlink it was started through (macOS /var and /tmp), so compare the resolved path or the CLI silently does nothing
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+const isMain = isMainModule(import.meta.url)
 if (isMain) {
   try {
     const list = treeReaders(path.resolve(process.argv[2] ?? '.'))

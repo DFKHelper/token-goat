@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 /** Weekly adoption numbers for token-goat: npm downloads, GitHub stars and GitHub forks, one row per ISO week (Monday to Sunday, UTC). The whole series is rebuilt from the public APIs on every run, so nothing is stored between runs and nothing is committed back: `.github/workflows/adoption.yml` prints the table to the job summary once a week. Usage: `node scripts/adoption-baseline.mjs [--json] [--since YYYY-MM-DD]`. It needs a GitHub token in GH_TOKEN or GITHUB_TOKEN, because GitHub will not list stargazers without one; any token works, including the one Actions hands every job. */
-import { realpathSync } from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main-module.mjs'
 
 export const PACKAGE = 'token-goat'
 export const REPO = 'DFKHelper/token-goat'
@@ -183,15 +181,7 @@ async function main(argv) {
   process.stdout.write(json ? `${JSON.stringify({ package: PACKAGE, repo: REPO, ...report }, null, 2)}\n` : formatMarkdown(report))
 }
 
-// Both sides are real paths: Node resolves symlinks in import.meta.url but leaves argv[1] as typed, so a run through a linked directory would otherwise skip main and exit 0.
-const realOrResolved = (p) => {
-  try {
-    return realpathSync.native(p)
-  } catch {
-    return path.resolve(p)
-  }
-}
-if (process.argv[1] && realOrResolved(process.argv[1]) === realOrResolved(fileURLToPath(import.meta.url))) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).catch((err) => {
     console.error(`adoption-baseline: ${err instanceof Error ? err.message : String(err)}`)
     process.exitCode = 1

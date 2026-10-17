@@ -32,7 +32,7 @@ async function copySources(): Promise<SourceCopy> {
     const rel = path.relative(path.join(ROOT, 'src'), file)
     if (!rel.startsWith('languages')) fs.copyFileSync(file, path.join(dir, 'src', rel))
   }
-  fs.copyFileSync(path.join(ROOT, 'scripts', 'parser-fingerprint.mjs'), path.join(dir, 'scripts', 'parser-fingerprint.mjs'))
+  for (const name of ['parser-fingerprint.mjs', 'is-main-module.mjs']) fs.copyFileSync(path.join(ROOT, 'scripts', name), path.join(dir, 'scripts', name))
   return { dir, gen: (await import(pathToFileURL(path.join(dir, 'scripts', 'parser-fingerprint.mjs')).href)) as typeof generator }
 }
 

@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import * as path from 'node:path'
 
 import { buildDefines, ENTRY_POINTS, EXTERNAL_NATIVE_DEPS } from './build-options.mjs'
+import { isMainModule } from './is-main-module.mjs'
 
 export const NOTICES_FILE = 'THIRD_PARTY_NOTICES.md'
 
@@ -161,10 +162,7 @@ export async function renderNotices(repoRoot = process.cwd()) {
   return toLf(`${header}\n${sections.join('\n\n')}\n`)
 }
 
-// `node -e` leaves argv[1] undefined, so importing this module for its exports must not crash here.
-const invokedAs = (process.argv[1] ?? '').replaceAll('\\', '/')
-
-if (import.meta.url === `file://${invokedAs}` || invokedAs.endsWith('generate-third-party-notices.mjs')) {
+if (isMainModule(import.meta.url)) {
   const repoRoot = process.cwd()
   const target = path.join(repoRoot, NOTICES_FILE)
   const rendered = await renderNotices(repoRoot)
