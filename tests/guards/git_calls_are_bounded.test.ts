@@ -1,6 +1,6 @@
-/** Guard: no git process token-goat starts can run without a time limit by accident. `runGit` takes its limit from `opts.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS`, so a call site that forgets one is bounded by the default instead of hanging a resident process (hook server, worker, MCP server) for good; the only opt-out is the named `GIT_UNBOUNDED`, and the files allowed to name it are listed below, each with a reason. Four checks: the fallback is in the spawn path (source), an omitted limit reaches spawnSync as the default and an explicit one wins (behaviour), `GIT_UNBOUNDED` appears only where allowed, and each scan sees a real population. */
+/** Guard: no git process token-goat starts can run without a time limit by accident. `runGit` takes its limit from `opts.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS`, so a call site that forgets one is bounded by the default instead of hanging a resident process (hook server, worker, MCP server) for good; the only opt-out is the named `GIT_UNBOUNDED`, and the files allowed to name it are listed below, each with a reason. Five checks: the fallback is in both spawn paths (source), an omitted limit reaches spawnSync as the default and an explicit one wins (behaviour), `runGitAsync` arms the same limit as a timer that ends the git tree and reports it (behaviour), `GIT_UNBOUNDED` appears only where allowed, and each scan sees a real population. */
 
-// tg-no-regex-preload Provenance: HAND-DERIVED. The expected spawnSync `timeout` values follow from the stated contract (omitted -> default, positive number -> itself, GIT_UNBOUNDED -> none, 0/negative/NaN -> default) and are computed from the test inputs, not from the implementation; the esbuild rendering of util.ts is the real source.
+// tg-no-regex-preload Provenance: HAND-DERIVED. The expected spawnSync `timeout` values follow from the stated contract (omitted -> default, positive number -> itself, GIT_UNBOUNDED -> none, 0/negative/NaN -> default) and are computed from the test inputs, not from the implementation; the esbuild rendering of util.ts is the real source. Provenance: FORMAT-DERIVED from src/git_async.ts (runGitAsync): the stub child is an EventEmitter that answers the `exit` and `close` listeners the function registers and carries the stdin, stdout and stderr streams it destroys on settling, and the expected timeout message wording `after N ms` is the text its `finish` builds; this proves agreement with that source, not that a shipped build emits it.
 import type * as cp from 'node:child_process'
 import type * as processTree from '../../src/process_tree.js'
 import type { GitResult } from '../../src/types.js'
@@ -134,36 +134,30 @@ describe('git calls are bounded', () => {
   })
 
   it('runGitAsync arms the same limit: omitted is the default, explicit wins, GIT_UNBOUNDED arms none', async () => {
-    // Lets the call reach its pending state on events alone: every microtask already queued runs, with no clock; a timer armed after an await is armed by then.
-    const SETTLE_HOPS = 8
-    const flush = async (): Promise<void> => {
-      for (let hop = 0; hop < SETTLE_HOPS; hop++) await Promise.resolve()
-    }
-    // Runs one call to its end with a child that never exits by itself: fires the timers the call armed, then lets the child exit. A git timer is told by what it does (it ends the child through kill), not by its delay alone. The spy stays on until the call has settled, so a timer armed late is seen too.
+    type StubOwned = { child: { emit: (event: string, ...args: unknown[]) => boolean }; kill: () => void }
+    // Runs one call to its end with a child that never exits by itself: fires the timers the call armed, then lets the child exit. A git timer is told by what it does (it ends the child through kill), not by its delay alone. The timers are read the moment runGitAsync returns, which is when its executor has spawned and armed its limit; a timer armed only after an await is not among them, so a bounded call fails its "must be armed" check with no clock and no count of event-loop turns. The spy stays on until the child has closed, so a timer armed after that is seen too.
     const drive = async (opts: Parameters<typeof runGitAsync>[1], delay: number | undefined): Promise<{ result: GitResult; kills: number; fired: number; late: number }> => {
       vi.mocked(spawnOwned).mockClear()
       const timers = vi.spyOn(globalThis, 'setTimeout')
-      let owned: { child: { emit: (event: string, ...args: unknown[]) => boolean }; kill: ReturnType<typeof vi.fn> } | undefined
-      let pending: Promise<GitResult> | undefined
       try {
-        pending = runGitAsync(['--version'], opts)
-        await flush()
-        expect(vi.mocked(spawnOwned).mock.calls, 'runGitAsync must make exactly one spawn').toHaveLength(1)
-        const spawned = vi.mocked(spawnOwned).mock.results[0]!.value as NonNullable<typeof owned>
-        owned = spawned
-        const armed = timers.mock.calls.map((call) => [...call])
-        // A bounded call is held to the timers of its delay; an unbounded one to every timer it armed.
-        const fire = armed.filter((call) => delay === undefined || call[1] === delay)
-        for (const call of fire) (call[0] as () => void)()
-        const kills = spawned.kill.mock.calls.length
-        spawned.child.emit('exit', kills > 0 ? null : 0)
-        spawned.child.emit('close', kills > 0 ? null : 0)
-        const result = await pending
-        await flush()
-        return { result, kills, fired: fire.length, late: timers.mock.calls.length - armed.length }
+        try {
+          const pending = runGitAsync(['--version'], opts)
+          const armed = timers.mock.calls.map((call) => [...call])
+          expect(vi.mocked(spawnOwned).mock.calls, 'runGitAsync must make exactly one spawn, before it returns').toHaveLength(1)
+          const spawned = vi.mocked(spawnOwned).mock.results[0]!.value as StubOwned
+          // A bounded call is held to the timers of its delay; an unbounded one to every timer it armed.
+          const fire = armed.filter((call) => delay === undefined || call[1] === delay)
+          for (const call of fire) (call[0] as () => void)()
+          const kills = vi.mocked(spawned.kill).mock.calls.length
+          spawned.child.emit('exit', kills > 0 ? null : 0)
+          spawned.child.emit('close', kills > 0 ? null : 0)
+          const result = await pending
+          return { result, kills, fired: fire.length, late: timers.mock.calls.length - armed.length }
+        } finally {
+          // Every child the call started is closed, whichever check threw: a call that spawned twice or not at all leaves nothing open and no real timer armed. Closing settles the call synchronously, so nothing here waits on it.
+          for (const made of vi.mocked(spawnOwned).mock.results) if (made.type === 'return') (made.value as StubOwned).child.emit('close', 0)
+        }
       } finally {
-        owned?.child.emit('close', 0)
-        if (pending) await pending
         timers.mockRestore()
       }
     }
