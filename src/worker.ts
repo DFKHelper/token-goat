@@ -877,7 +877,7 @@ export async function runWorkerLoop(
     const now = Date.now()
     if (now - lastIdleVacuumMs >= IDLE_VACUUM_INTERVAL_MS && now - lastActiveMs >= IDLE_VACUUM_COOLDOWN_MS) {
       const reclaimTarget = path.join(dir, 'global.db')
-      // No database yet is nothing to reclaim, not a refusal: it neither counts nor logs, and the mark stays put so the next cycle looks again. idleReclaim keeps its own false for a missing file, which its other callers rely on.
+      // No database yet is nothing to reclaim, not a refusal: it neither counts nor logs, and the mark stays put so the next cycle looks again. idleReclaim keeps its own false for a missing file, which tests/wal_size_bounded.test.ts pins.
       if (fs.existsSync(reclaimTarget)) {
         try {
           const settled = idleReclaim(reclaimTarget)
