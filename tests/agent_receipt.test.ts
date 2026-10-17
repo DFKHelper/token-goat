@@ -12,13 +12,12 @@ import type * as GitAsyncModule from '../src/git_async.js'
 import type { RunGitAsyncOptions } from '../src/util.js'
 import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
-import { claimsChangeTheTreeLacks, parkAgentReceipt, receiptLines, takeAgentReceipt, waitAgentReceipts } from '../src/agent_receipt.js'
-import { globalDbPath } from '../src/constants.js'
-import { getDb } from '../src/db.js'
+import { checkChangeClaim, parkAgentReceipt, receiptLines, takeAgentReceipt, waitAgentReceipts } from '../src/agent_receipt.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { redactSecrets } from '../src/secret_redact.js'
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
+import { readGlobalDb } from '../src/stats.js'
 import { withFileLock } from '../src/util.js'
 import { noteFailedVerificationRun, type VerificationState } from '../src/verification_state.js'
 
@@ -301,7 +300,7 @@ describe('the receipt through the real hook registry', () => {
   })
 
   it('books one agent_receipt stat for the delivered receipt and none for a clean report', async () => {
-    const receiptRows = (): number => (getDb(globalDbPath()).prepare("SELECT count(*) c FROM stats WHERE kind='agent_receipt'").get() as { c: number }).c
+    const receiptRows = (): number => (readGlobalDb().prepare("SELECT count(*) c FROM stats WHERE kind='agent_receipt'").get() as { c: number }).c
     const before = receiptRows()
     const flagged = newSession()
     inSession(`${flagged}:agent:sub1`, () => recordVerificationRun('npm test', 1, T0 + 1000))
@@ -358,7 +357,7 @@ describe('the receipt through the real hook registry', () => {
     ['Changes: nothing, this was a read-only review.'],
     ["I'll add the guard next."],
   ])('read-only report %j with a clean tree is not flagged', async (message) => {
-    expect(await claimsChangeTheTreeLacks(message, repo)).toBe(false)
+    expect(await checkChangeClaim(message, repo)).toBe('clear')
   })
 
   it.each([
@@ -372,7 +371,7 @@ describe('the receipt through the real hook registry', () => {
     ['Fixed the parser bug.'],
     ['Done:\n- I fixed the parser\n- I added tests'],
   ])('own-work claim %j with a clean tree is flagged', async (message) => {
-    expect(await claimsChangeTheTreeLacks(message, repo)).toBe(true)
+    expect(await checkChangeClaim(message, repo)).toBe('lacks')
   })
 
   it('a read-only report from an Explore agent gets no receipt through the registry', async () => {
@@ -521,7 +520,7 @@ describe('the receipt through the real hook registry', () => {
   it('on Copilot CLI a long report is compacted and still carries the receipt and books the stat', async () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
     await freshRegistry()
-    const receiptRows = (): number => (getDb(globalDbPath()).prepare("SELECT count(*) c FROM stats WHERE kind='agent_receipt'").get() as { c: number }).c
+    const receiptRows = (): number => (readGlobalDb().prepare("SELECT count(*) c FROM stats WHERE kind='agent_receipt'").get() as { c: number }).c
     const before = receiptRows()
     const sid = newSession()
     inSession(`${sid}:agent:sub1`, () => recordVerificationRun('npm test', 1, T0 + 1000))
@@ -560,7 +559,7 @@ describe('the receipt through the real hook registry', () => {
     await freshRegistry()
     const sid = newSession()
     inSession(`${sid}:agent:sub1`, () => recordVerificationRun('npm test', 1, T0 + 1000))
-    const receiptRows = (): number => (getDb(globalDbPath()).prepare("SELECT count(*) c FROM stats WHERE kind='agent_receipt'").get() as { c: number }).c
+    const receiptRows = (): number => (readGlobalDb().prepare("SELECT count(*) c FROM stats WHERE kind='agent_receipt'").get() as { c: number }).c
     const before = receiptRows()
     const out = await runHook(buildEvent('subagent_stop', stopPayload(sid, report)))
     expect(out.hookType).toBe('rewriteOutput')
@@ -620,7 +619,7 @@ describe('the built hook entry, per host', () => {
     fs.rmSync(root, { recursive: true, force: true })
   })
 
-  function hook(event: string, harness: string, payload: Record<string, unknown>): string {
+  function hookRun(event: string, harness: string, payload: Record<string, unknown>): { status: number | null; stdout: string } {
     const res = spawnSync(process.execPath, [BUNDLE, 'hook', event], {
       cwd: project,
       encoding: 'utf-8',
@@ -642,7 +641,11 @@ describe('the built hook entry, per host', () => {
         TOKEN_GOAT_NO_WORKER_SPAWN: '1',
       },
     })
-    return res.stdout ?? ''
+    return { status: res.status, stdout: res.stdout ?? '' }
+  }
+
+  function hook(event: string, harness: string, payload: Record<string, unknown>): string {
+    return hookRun(event, harness, payload).stdout
   }
 
   it('claudecode: a subagent edit, a failed check, its stop, then the parent Agent result', () => {
@@ -726,5 +729,19 @@ describe('the built hook entry, per host', () => {
     const out = hook('post_tool_use', 'codex', { ...base, hook_event_name: 'PostToolUse', tool_name: 'multi_agent_v1wait_agent', tool_use_id: 'call_3', tool_input: { targets: ['agent-1'], timeout_ms: 30000 }, tool_response: waited })
     expect(out).toContain('edited after its last passing check')
     expect(out).toContain('widget.ts')
+  })
+
+  // FORMAT-DERIVED: the Claude Code SubagentStop keys from https://code.claude.com/docs/en/hooks, the Codex ones from the subagent-stop.command.input schema in codex.exe 0.159.3, the VS Code ones from executeSubagentStopHook in the Copilot Chat extension.js of VS Code 1.140.0 (no last_assistant_message); a claim on a clean git tree is HAND-DERIVED.
+  it.each([
+    ['claudecode', { session_id: 'e2e-nb-cc', agent_id: 'sub1', agent_type: 'general-purpose', hook_event_name: 'SubagentStop', stop_hook_active: false, last_assistant_message: 'I fixed the parser bug in widget.ts.' }],
+    ['codex', { session_id: 'e2e-nb-cx', turn_id: 'turn-1', agent_id: 'thread-a', agent_type: 'default', hook_event_name: 'SubagentStop', stop_hook_active: false, transcript_path: null, last_assistant_message: 'I fixed the parser bug in widget.ts.' }],
+    ['vscode', { session_id: 'e2e-nb-vs', agent_id: 'sub-vs', agent_type: 'Explore', hook_event_name: 'SubagentStop', stop_hook_active: false }],
+  ] as const)('%s: a change claim on a clean tree never re-prompts the stopped subagent', (harness, payload) => {
+    expect(spawnSync('git', ['init', '-q'], { cwd: project }).status).toBe(0)
+    const res = hookRun('subagent_stop', harness, payload)
+    expect(res.status).toBe(0)
+    const parsed = JSON.parse(res.stdout) as Record<string, unknown>
+    for (const key of ['decision', 'reason', 'continue', 'hookSpecificOutput']) expect(parsed[key], key).toBeUndefined()
+    expect(res.stdout).not.toContain('additionalContext')
   })
 })

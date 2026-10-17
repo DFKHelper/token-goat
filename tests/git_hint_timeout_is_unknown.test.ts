@@ -20,6 +20,11 @@ vi.mock('../src/util.js', async (importOriginal) => {
       git.calls.push({ args, timeoutMs: opts?.timeoutMs })
       return git.answer(args)
     },
+    // The stop handler asks through the async runner; the same stand-in answers it.
+    runGitAsyncLazy: async (args: string[], opts?: { timeoutMs?: unknown }) => {
+      git.calls.push({ args, timeoutMs: opts?.timeoutMs })
+      return git.answer(args)
+    },
   }
 })
 
@@ -112,35 +117,35 @@ describe('the subagent stop check on a git that is slower than the hint budget',
     })
   })
 
-  function stop(cwd: string): void {
-    subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'git-unknown-stop', agentId: undefined, raw: { cwd, last_assistant_message: REPORT } })
+  async function stop(cwd: string): Promise<void> {
+    await subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'git-unknown-stop', agentId: undefined, raw: { cwd, last_assistant_message: REPORT } })
   }
 
-  it('says the check did not finish: not a hallucination warning, and not silence', () => {
-    stop(scratch())
+  it('says the check did not finish: not a hallucination warning, and not silence', async () => {
+    await stop(scratch())
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toMatch(/could not check the report against git status/)
-    expect(warnings[0]).toMatch(/did not answer in time/)
+    expect(warnings[0]).toMatch(/git did not finish/)
     expect(warnings[0]).not.toMatch(/possible hallucination/)
     expect(git.calls).toEqual([{ args: ['status', '--porcelain'], timeoutMs: HINT_BUDGET_MS }])
   })
 
-  it('still warns of a hallucination when git answers clean', () => {
+  it('still warns of a hallucination when git answers clean', async () => {
     git.answer = () => ok('')
-    stop(scratch())
+    await stop(scratch())
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toMatch(/possible hallucination/)
   })
 
-  it('says nothing when git shows a dirty tree', () => {
+  it('says nothing when git shows a dirty tree', async () => {
     git.answer = () => ok(' M src/a.ts\n')
-    stop(scratch())
+    await stop(scratch())
     expect(warnings).toEqual([])
   })
 
-  it('says nothing when git refuses, as before: that is not a timeout', () => {
+  it('says nothing when git refuses, as before: that is not a timeout', async () => {
     git.answer = () => REFUSED
-    stop(scratch())
+    await stop(scratch())
     expect(warnings).toEqual([])
   })
 })
