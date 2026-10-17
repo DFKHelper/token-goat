@@ -20,6 +20,9 @@ vi.mock('../src/types.js', async (importOriginal) => {
 
 import { runGit } from '../src/util.js'
 
+/** How long git retries for packed-refs.lock before it exits 128 by itself (core.packedRefsTimeout, in ms; git-config(1) gives -1 as indefinitely). Three orders of magnitude above the 100 ms default the test lowers to, so the default is always what ends the call. */
+const LOCK_WAIT_MS = 120_000
+
 let repo = ''
 
 beforeEach(() => {
@@ -38,7 +41,8 @@ describe('runGit default timeout', () => {
   it('ends a git blocked on a lock when the call names no timeout, and says it timed out', () => {
     writeFileSync(path.join(repo, '.git', 'packed-refs.lock'), '')
     defaults.ms = 100
-    const result = runGit(['-c', 'core.packedRefsTimeout=-1', 'pack-refs', '--all'], { cwd: repo })
+    // The lock wait is finite so that a runGit with no default gives up on its own and this fails, instead of blocking the event loop in spawnSync until someone kills git.
+    const result = runGit(['-c', `core.packedRefsTimeout=${LOCK_WAIT_MS}`, 'pack-refs', '--all'], { cwd: repo })
     expect(result.timedOut).toBe(true)
     expect(result.exitCode).toBe(-1)
   })
