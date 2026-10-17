@@ -9,13 +9,19 @@ export interface StopOptions {
   readonly graceful: boolean
 }
 
-/** Stop a child this test spawned and holds the ChildProcess of: the handle signals the process it holds and nothing once that has exited, so no recorded number is signalled. A graceful stop sends SIGTERM and waits for the child's own exit event, which cannot be missed because an exit that already happened is read from exitCode/signalCode first and the listener is attached before the signal is sent; that wait has no deadline of its own, so nothing here measures how long an exit took. A stop that is not graceful ends the child's whole tree through its handle (SIGKILL cannot be ignored), then waits for the exit event, which that signal guarantees. The helper registers onTestFinished before it signals, which ends a child that is still alive through its handle with SIGKILL when the test finishes by any path. That makes an orphan impossible, and it must be called while a test is running (vitest refuses the registration anywhere else). */
+/** Stop a child this test spawned and holds the ChildProcess of: the handle signals the process it holds and nothing once that has exited, so no recorded number is signalled. A child with no pid (its spawn failed) is left alone and returns at once; an 'error' event also ends the wait. A graceful stop sends SIGTERM and waits for the child's own exit event, which cannot be missed because an exit that already happened is read from exitCode/signalCode first and the listener is attached before the signal is sent; that wait has no deadline of its own, so nothing here measures how long an exit took. A stop that is not graceful ends the child's whole tree through its handle (SIGKILL cannot be ignored), then waits for the exit event, which that signal guarantees. The helper registers onTestFinished before it signals, which ends a child that is still alive through its handle with SIGKILL when the test finishes by any path. That makes an orphan impossible, and it must be called while a test is running (vitest refuses the registration anywhere else). */
 export async function stopOwnedChild(child: ChildProcess, options: StopOptions): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return
+  // A spawn that failed has no pid and will never emit 'exit': there is nothing to signal, and a kill of its half-made handle throws EINVAL.
+  if (child.pid === undefined) return
   onTestFinished(() => {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
   })
-  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+  // 'error' also settles the wait: a kill that failed emits 'error' with the child still running and no 'exit' to follow.
+  const exited = new Promise<void>((resolve) => {
+    child.once('exit', () => resolve())
+    child.once('error', () => resolve())
+  })
   if (options.graceful) child.kill('SIGTERM')
   else if (!killProcessTree(child.pid).ok) child.kill('SIGKILL')
   await exited
