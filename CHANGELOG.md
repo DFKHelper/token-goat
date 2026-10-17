@@ -6,6 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- **Upgrading reindexes once more, because the git helper changed again.** The shared helpers that start git and end a whole process tree are among the sources that decide what a parse extracts, so the parser fingerprint moved. Token-goat reparses each indexed file the first time it is needed after the upgrade, and nothing else changes for you.
 - **The native hook helper now builds on Rust 1.99.1, and CI checks it on the oldest Rust it supports.** The pinned toolchain moved from 1.94.0 to 1.99.1. The minimum supported version stays at 1.94, and the `native-targets` job now builds against it, so a change that needs a newer compiler fails in CI instead of for someone building from source. A monthly workflow compares the pin with the current stable Rust and opens an issue when the pin has fallen behind.
 
 ### Fixed
