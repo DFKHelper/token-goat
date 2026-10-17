@@ -12,10 +12,11 @@ const MAX_FREEZE_PASSES = 64
 // The signals that end a CLI run from outside. SIGHUP is the terminal closing; on Windows Node emulates it for a console close, and SIGTERM is never delivered there.
 const OWNER_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
 
-/** The outcome of ending a tree: `ok` is false only when a live tree could not be ended with certainty, with the reason in `note`. */
+/** The outcome of ending a tree: `ok` is false only when a live tree could not be ended with certainty, with the reason in `note`; `gone` marks the one failure where the root no longer exists (taskkill status 128, "process not found"), so no tree was left to end. */
 export interface KillResult {
   ok: boolean
   note?: string
+  gone?: boolean
 }
 
 function taskkillPath(): string {
@@ -64,7 +65,7 @@ export function killProcessTree(pid: number | undefined): KillResult {
   if (process.platform === 'win32') {
     const result = spawnSync(taskkillPath(), ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true, timeout: HELPER_TIMEOUT_MS })
     if (result.status === 0) return { ok: true }
-    return { ok: false, note: `taskkill ended with ${result.status === null ? (result.error?.message ?? 'no status') : `status ${result.status}`}` }
+    return { ok: false, note: `taskkill ended with ${result.status === null ? (result.error?.message ?? 'no status') : `status ${result.status}`}`, gone: result.status === 128 }
   }
   signalPid(pid, 'SIGSTOP')
   const frozen = [pid]
@@ -147,8 +148,8 @@ export function spawnOwned(file: string, args: string[], options: SpawnOptions):
     if (killed || ended || child.pid === undefined) return
     killed = true
     const result = killProcessTree(child.pid)
-    // A tree that was already gone by the time taskkill ran is not a failure worth a line.
-    if (!result.ok && !ended) process.stderr.write(`[token-goat: could not end the process tree of pid ${child.pid}: ${result.note ?? 'unknown reason'}]\n`)
+    // A root that was already gone by the time taskkill ran is not a failure worth a line.
+    if (!result.ok && !result.gone && !ended) process.stderr.write(`[token-goat: could not end the process tree of pid ${child.pid}: ${result.note ?? 'unknown reason'}]\n`)
   }
   const handle = { kill }
   const release = (): void => {
