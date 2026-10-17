@@ -1,4 +1,4 @@
-// Provenance: the trace2 `sid` parsed below is FORMAT-DERIVED from git's trace2 documentation (Documentation/technical/api-trace2.adoc, the "sid" session id: `<timestamp>-H<host hash>-P<pid in hex>`), and from one real trace captured with Git 2.53.0.windows.1; no shipped build of every git version was checked.
+// Provenance: the trace2 `sid` parsed below is FORMAT-DERIVED from the example events in git's trace2 documentation (Documentation/technical/api-trace2.adoc, e.g. `20190408T191610.507018Z-H9b68c35f-P000059a8`; the page itself calls the sid only "a unique string"), plus a CAPTURE from Git 2.53.0.windows.1. That the P part is the process id in hex, and that a child git's sid is its parent's sid with its own component appended (so the last -P part is the git that wrote the line), is read from git's trace2/tr2_sid.c (master, fetched and read).
 // Platform: on Linux and macOS git is not a launcher, so this test passes before and after the fix there; the red proof against the old code is Windows-only.
 // Real git, real process table: no runGit stub. A git that is blocked for as long as a lock file exists stands in for a slow command; its own trace file says when it started and which pid it had.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -84,12 +84,12 @@ describe('runGit timeout', () => {
     writeFileSync(path.join(repo, '.git', 'packed-refs.lock'), '')
     setEnv('GIT_TRACE2_EVENT', tracePath)
 
-    // The timeout firing is the behaviour under test and spawnSync cannot be told to fire it on an event, so the call is repeated with a timeout that doubles until git's trace shows it started: a slow machine just takes more turns and never fails on slowness. A synchronous loop cannot be cut short by vitest's timeout, so the loop stops itself at the budget this test is given.
+    // The timeout firing is the behaviour under test and spawnSync cannot be told to fire it on an event, so the call is repeated with a timeout that doubles until git's trace shows it started: a slow machine just takes more turns and never fails on slowness. A synchronous loop cannot be cut short by vitest's timeout, so the loop stops itself at the budget this test is given (each call is capped to what is left of it); that deadline can trip only when git never starts, since the timeout doubles until it does.
     let timeoutMs = 1000
     let observed: number[] = []
     const stopAt = Date.now() + TEST_BUDGET_MS - 20_000
     while (observed.length === 0 && Date.now() < stopAt) {
-      const result = runGit(['-c', 'core.packedRefsTimeout=-1', 'pack-refs', '--all'], { cwd: repo, timeoutMs })
+      const result = runGit(['-c', 'core.packedRefsTimeout=-1', 'pack-refs', '--all'], { cwd: repo, timeoutMs: Math.max(1, Math.min(timeoutMs, stopAt - Date.now())) })
       expect(result.timedOut).toBe(true)
       expect(result.exitCode).toBe(-1)
       observed = tracedPids()

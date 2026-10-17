@@ -1,4 +1,4 @@
-/** Cross-cutting helpers shared across token-goat modules. Kept intentionally small: only utilities with no natural owner that would otherwise be duplicated. Imports only Node built-ins and other Layer 1 files. IMPORTANT: `runGit` is the ONLY place in the entire codebase that spawns git. A structural test (git_chokepoint.test.ts) greps every src/*.ts for bare git spawn patterns outside this file and fails if any are found. */
+/** Cross-cutting helpers shared across token-goat modules. Kept intentionally small: only utilities with no natural owner that would otherwise be duplicated. Imports only Node built-ins and other Layer 1 files. IMPORTANT: `runGit` is the ONLY place in the entire codebase that spawns git. A structural test (tests/guards/git_is_spawned_only_by_runGit.test.ts) scans every src/*.ts for git spawn patterns outside this file and fails if any are found. */
 
 import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
@@ -88,7 +88,7 @@ function scoopShimTarget(shim: string): string | null {
   return target !== undefined && existsSync(target) ? target : null
 }
 
-/** The file runGit starts: on Windows the real git behind a launcher or a Scoop shim, otherwise plain `git`. `platform` and `findGit` are parameters only so the path mapping can be run on any platform against a made-up layout; runGit passes neither. The answer is kept for as long as PATH is unchanged. */
+/** The file runGit starts: on Windows the real git behind a launcher or a Scoop shim, otherwise plain `git`. `platform` and `findGit` are parameters only so the path mapping can be run on any platform against a made-up layout; runGit passes neither. The answer is kept for as long as PATH is unchanged and no spawn has failed with ENOENT (runGit drops it then, so a long-lived process recovers after git is uninstalled or a Scoop version folder is removed). */
 export function gitExecutable(platform: NodeJS.Platform = process.platform, findGit: () => string | null = () => resolveOnPath('git')): string {
   if (platform !== 'win32') return 'git'
   const pathEnv = process.env['PATH'] ?? ''
@@ -126,6 +126,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   if (result.error) {
     // CAPTURE: Node 24.12 on Windows 11 reports a spawnSync timeout as error.code ETIMEDOUT (signal SIGTERM), and a missing binary, a missing cwd, a maxBuffer overflow as ENOENT, ENOENT, ENOBUFS.
     const timedOut = (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
+    if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') gitFileCache = undefined
     return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, ...(timedOut ? { timedOut } : {}) }
   }
 

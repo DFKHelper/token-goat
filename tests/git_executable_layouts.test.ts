@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { gitExecutable, realGitBehindLauncher } from '../src/util.js'
+import { gitExecutable, realGitBehindLauncher, runGit } from '../src/util.js'
 
 let root = ''
 let savedPath: string | undefined
@@ -134,5 +134,22 @@ describe('gitExecutable', () => {
     process.env['PATH'] = 'path-two'
     expect(gitExecutable('win32', () => { finds++; return second })).toBe(secondReal)
     expect(finds).toBe(2)
+  })
+
+  // HAND-DERIVED: a spawn into a directory that does not exist fails with ENOENT on every platform, the same code a vanished git file gives.
+  it('looks again after a spawn fails with ENOENT, though PATH is unchanged', () => {
+    const first = touch('A', 'cmd', 'git.exe')
+    const firstReal = touch('A', 'mingw64', 'bin', 'git.exe')
+    const second = touch('B', 'bin', 'git.exe')
+    const secondReal = touch('B', 'mingw64', 'bin', 'git.exe')
+
+    process.env['PATH'] = 'enoent-path'
+    expect(gitExecutable('win32', () => first)).toBe(firstReal)
+    expect(gitExecutable('win32', () => second)).toBe(firstReal)
+
+    const missingCwd = path.join(os.tmpdir(), 'tg-no-such-dir-for-enoent', 'x')
+    expect(runGit(['--version'], { cwd: missingCwd }).exitCode).toBe(-1)
+
+    expect(gitExecutable('win32', () => second)).toBe(secondReal)
   })
 })
