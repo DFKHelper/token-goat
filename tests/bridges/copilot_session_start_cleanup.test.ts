@@ -22,8 +22,8 @@ function lifeline(): string {
   return dir
 }
 
-// The fixture ignores SIGTERM, which is what the cleanup under test must cope with, so its own death condition is the only thing that ends it when the test's cleanup never runs: argv[2] is a folder and argv[3] a pid, and it exits within a quarter second of the folder being gone or that process being gone. The poll is the fixture's own, not the test's.
-const LOOP = 'process.on("SIGTERM",()=>{});const fs=require("node:fs");const gone=()=>{if(!fs.existsSync(process.argv[2]))return true;try{process.kill(Number(process.argv[3]),0);return false}catch(e){return e.code==="ESRCH"}};setInterval(()=>{if(gone())process.exit(0)},250)'
+// The fixture ignores SIGTERM, which is what the cleanup under test must cope with, so its own death condition is the only thing that ends it when the test's cleanup never runs: argv[2] is a folder and argv[3] a pid, and it exits within a quarter second of the folder being gone or that process being gone, or once argv[4] ms (default one hour, far above any test run even on a slow PC) have passed since it started, which is its last resort when a reused owner pid reads as alive and a SIGKILLed test never removed the folder. The poll is the fixture's own, not the test's, and the default bound never decides a verdict.
+const LOOP = 'process.on("SIGTERM",()=>{});const fs=require("node:fs");const born=Date.now();const limit=process.argv[4]===undefined?3600000:Number(process.argv[4]);const gone=()=>{if(!fs.existsSync(process.argv[2]))return true;if(Date.now()-born>=limit)return true;try{process.kill(Number(process.argv[3]),0);return false}catch(e){return e.code==="ESRCH"}};setInterval(()=>{if(gone())process.exit(0)},250)'
 
 function waitFor(path: string): number {
   const deadline = Date.now() + 20_000
@@ -102,21 +102,23 @@ it('still sweeps the orphans and removes the folders when an earlier phase throw
 
 // HAND-DERIVED: the fixture is the real LOOP script run as a direct child, and the wait is its own 'exit' event. Without the death condition it never exits and the row waits for the test timeout.
 describe('the SIGTERM-ignoring fixture ends without the test cleanup running', () => {
-  it.each(['its folder is removed', 'its owner process is gone'])('exits once %s', async (when) => {
+  it.each(['its folder is removed', 'its owner process is gone', 'its own life bound is reached'])('exits once %s', async (when) => {
     const folder = lifeline()
     // owner: this test; dies on its own after 60 s, and afterEach ends it through its handle sooner.
     const owner = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore', windowsHide: true })
     spawners.push(owner)
     await new Promise<void>((resolve, reject) => { owner.once('error', reject); owner.once('spawn', () => resolve()) })
-    // owner: this test; dies on its own once its folder or owner is gone, and afterEach ends it through its handle sooner.
-    const fixture = spawn(process.execPath, ['-e', LOOP, 'tg-cleanup-row-death', folder, String(owner.pid)], { stdio: 'ignore', windowsHide: true })
+    // owner: this test; dies on its own once its folder or owner is gone or its life bound passes, and afterEach ends it through its handle sooner. The bound row passes a zero bound through argv[4], so the folder and the owner both exist and only the fixture's own life bound can end it; the other rows keep the default.
+    const bound = when === 'its own life bound is reached' ? ['0'] : []
+    const fixture = spawn(process.execPath, ['-e', LOOP, 'tg-cleanup-row-death', folder, String(owner.pid), ...bound], { stdio: 'ignore', windowsHide: true })
     spawners.push(fixture)
     await new Promise<void>((resolve, reject) => { fixture.once('error', reject); fixture.once('spawn', () => resolve()) })
     const exited = new Promise<void>((resolve) => { fixture.once('exit', () => resolve()) })
-    expect(fixture.exitCode, 'the fixture runs while its folder and owner exist').toBeNull()
     if (when === 'its folder is removed') {
+      expect(fixture.exitCode, 'the fixture runs while its folder and owner exist').toBeNull()
       rmSync(folder, { recursive: true, force: true })
-    } else {
+    } else if (when === 'its owner process is gone') {
+      expect(fixture.exitCode, 'the fixture runs while its folder and owner exist').toBeNull()
       owner.kill('SIGKILL')
     }
     await exited
