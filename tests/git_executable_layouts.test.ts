@@ -41,11 +41,33 @@ describe('realGitBehindLauncher', () => {
     expect(realGitBehindLauncher(launcher)).toBe(real)
   })
 
-  it('prefers mingw64, then clangarm64, then mingw32', () => {
+  it('prefers mingw64, then ucrt64, then clangarm64, then clang64, then mingw32', () => {
     const launcher = touch('Git', 'cmd', 'git.exe')
+    const mingw32 = touch('Git', 'mingw32', 'bin', 'git.exe')
+    expect(realGitBehindLauncher(launcher)).toBe(mingw32)
+    const clang = touch('Git', 'clang64', 'bin', 'git.exe')
+    expect(realGitBehindLauncher(launcher)).toBe(clang)
     const arm = touch('Git', 'clangarm64', 'bin', 'git.exe')
-    touch('Git', 'mingw32', 'bin', 'git.exe')
     expect(realGitBehindLauncher(launcher)).toBe(arm)
+    const ucrt = touch('Git', 'ucrt64', 'bin', 'git.exe')
+    expect(realGitBehindLauncher(launcher)).toBe(ucrt)
+    const mingw64 = touch('Git', 'mingw64', 'bin', 'git.exe')
+    expect(realGitBehindLauncher(launcher)).toBe(mingw64)
+  })
+
+  // CAPTURE: the windows-latest image of 2026-10-17 (Git 2.56.0.windows.2), CI run 39003789603: `where git` listed C:/Program Files/Git/bin/git.exe, C:/Program Files/Git/cmd/git.exe and C:/Program Files/Git/ucrt64/bin/git.exe, and the real git of a timed-out run (pid 5456, parent dead) was alive after the call.
+  it('maps the launchers of a Git for Windows that keeps its real git in ucrt64 (no mingw64 folder)', () => {
+    const real = touch('Git', 'ucrt64', 'bin', 'git.exe')
+    expect(realGitBehindLauncher(touch('Git', 'cmd', 'git.exe'))).toBe(real)
+    expect(realGitBehindLauncher(touch('Git', 'bin', 'git.exe'))).toBe(real)
+  })
+
+  it('finds a real git in a folder it has no name for, and ignores the tool folders', () => {
+    const launcher = touch('Git', 'cmd', 'git.exe')
+    touch('Git', 'usr', 'bin', 'git.exe')
+    expect(realGitBehindLauncher(launcher)).toBeNull()
+    const future = touch('Git', 'futuresys64', 'bin', 'git.exe')
+    expect(realGitBehindLauncher(launcher)).toBe(future)
   })
 
   it('answers null for a launcher with no real git beside it', () => {
