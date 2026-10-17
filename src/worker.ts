@@ -18,7 +18,7 @@ import { getDb } from './db.js'
 import { pathEqClause } from './sql_path.js'
 import { removeFileFromIndex, pruneDeletedFiles, sweepKnownRoots } from './index_prune.js'
 import { recordKnownRootThrottled, sweepExpiredKnownRootMarkers } from './known_roots.js'
-import { reclaimIndex } from './index_reclaim.js'
+import { reclaimIndex, walCheckpointBusyNoWait } from './index_reclaim.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { cleanup_stale } from './snapshots.js'
 import { sweepCacheRoots } from './disk_cache.js'
@@ -657,6 +657,44 @@ const IDLE_VACUUM_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 const IDLE_VACUUM_COOLDOWN_MS = 5 * 60 * 1000
 
+// Smallest share of the database file that must be free pages before the idle pass vacuums it. VACUUM rewrites every page, and in WAL mode it writes them through the log, so on a 5 GB database with nothing to give back it costs a 5 GB write and a 5 GB -wal for no gain; the idle pass runs every six hours, so it must not be that expensive when there is nothing to reclaim.
+const IDLE_VACUUM_MIN_FREE_SHARE = 0.1
+
+/** One idle reclaim pass over the database at `dbPath`: vacuum it when at least {@link IDLE_VACUUM_MIN_FREE_SHARE} of the file is free pages, otherwise only fold and truncate its -wal (a checkpoint writes the live frames once and rewrites nothing else). True when the pass is settled for this interval (vacuumed, or nothing worth reclaiming); false when there is no database yet, the vacuum could not get its lock, or a reader refused the truncating checkpoint (after a vacuum or alone), so the next cycle tries again. That retry is a checkpoint that does not wait for the reader and, while the reader still holds the log, copies no frames (those written after the reader's snapshot stay in the log until it leaves); the vacuumed file has no free pages left, so it is never a second rewrite. */
+export function idleReclaim(dbPath: string): boolean {
+  if (!fs.existsSync(dbPath)) return false
+  const db = getDb(dbPath)
+  const free = Number(db.pragma('freelist_count', { simple: true }))
+  const total = Number(db.pragma('page_count', { simple: true }))
+  if (!(total > 0) || free / total < IDLE_VACUUM_MIN_FREE_SHARE) {
+    // A reader that refuses the truncation leaves the log full-size, so the pass is not settled and the next cycle asks again; the checkpoint does not wait, so asking every cycle costs a lock attempt and no page copying while the reader stays, and stalls nothing.
+    return !walCheckpointBusyNoWait(db)
+  }
+  // Neither of the pass's own checkpoints waits for a reader either: while one stays, a wait would hold the whole worker for the connection's busy_timeout on every poll.
+  const reclaimed = reclaimIndex(dbPath, { rebuild: false, waitForReaders: false })
+  // A vacuum rewrites every page through the log, so a refused truncation after it leaves a log as large as the database. The retry cannot vacuum again (no free pages remain) and is the non-waiting checkpoint above.
+  return !reclaimed.vacuumDeferred && !reclaimed.checkpointBusy
+}
+
+/** The run of idle reclaim polls that were not settled, as the loop sees it: how many so far since the last one that settled. */
+export interface IdleReclaimRefusals {
+  polls: number
+}
+
+/** Write the worker error log's two lines for a run of refused idle reclaims: one when the first poll of the run is refused (the database and why), and one when a later poll settles (how many were refused). Polls in between write nothing, so a reader that stays for hours costs two lines. `error` is set when the pass threw instead of answering false. */
+export function logIdleReclaimPoll(dir: string, dbPath: string, run: IdleReclaimRefusals, poll: { settled: boolean; error?: unknown }): void {
+  if (!poll.settled) {
+    run.polls++
+    if (run.polls > 1) return
+    const why = poll.error === undefined ? 'a reader is holding the -wal or the database is locked' : extractErrorMessage(poll.error)
+    appendWorkerErrorLog(dir, `${new Date().toISOString()} idle reclaim of ${dbPath} was refused (${why}); asking again each idle cycle without waiting\n`)
+    return
+  }
+  if (run.polls === 0) return
+  appendWorkerErrorLog(dir, `${new Date().toISOString()} idle reclaim of ${dbPath} settled and the -wal was truncated after ${run.polls} refused ${run.polls === 1 ? 'poll' : 'polls'}\n`)
+  run.polls = 0
+}
+
 // How many files owed an embed the worker puts back on its queue at a time. The next batch waits until every embed in flight has settled, so a backlog of any size is worked through at the pace the embedding slots allow and never ahead of an edit that arrives meanwhile.
 const EMBED_BACKLOG_BATCH = 50
 
@@ -739,6 +777,7 @@ export async function runWorkerLoop(
   let lastSnapshotCleanupMs = 0
   let lastKnownRootsSweepMs = 0
   let lastIdleVacuumMs = 0
+  const idleReclaimRefusals: IdleReclaimRefusals = { polls: 0 }
   let lastActiveMs = Date.now()
   let embedBacklogCursor: string | null = ''
   let embeddingsWereReady = true
@@ -837,16 +876,17 @@ export async function runWorkerLoop(
     // Perform off-peak idle space reclamation / vacuum on global.db when the daemon has been continuously idle (no dirty items) for at least IDLE_VACUUM_COOLDOWN_MS and at least IDLE_VACUUM_INTERVAL_MS has elapsed since the last vacuum.
     const now = Date.now()
     if (now - lastIdleVacuumMs >= IDLE_VACUUM_INTERVAL_MS && now - lastActiveMs >= IDLE_VACUUM_COOLDOWN_MS) {
-      try {
-        const dbPath = path.join(dir, 'global.db')
-        if (fs.existsSync(dbPath)) {
-          const res = reclaimIndex(dbPath, { rebuild: false })
-          if (!res.vacuumDeferred) {
-            lastIdleVacuumMs = now
-          }
+      const reclaimTarget = path.join(dir, 'global.db')
+      // No database yet is nothing to reclaim, not a refusal: it neither counts nor logs, and the mark stays put so the next cycle looks again. idleReclaim keeps its own false for a missing file, which tests/wal_size_bounded.test.ts pins.
+      if (fs.existsSync(reclaimTarget)) {
+        try {
+          const settled = idleReclaim(reclaimTarget)
+          if (settled) lastIdleVacuumMs = now
+          logIdleReclaimPoll(dir, reclaimTarget, idleReclaimRefusals, { settled })
+        } catch (err) {
+          // Best-effort non-blocking maintenance; a pass that threw counts as refused so the log still says the reclaim is not getting done.
+          logIdleReclaimPoll(dir, reclaimTarget, idleReclaimRefusals, { settled: false, error: err })
         }
-      } catch {
-        // Best-effort non-blocking maintenance
       }
     }
     if (shouldStop()) break

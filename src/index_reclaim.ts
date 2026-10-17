@@ -75,8 +75,10 @@ function tableExists(db: ReturnType<typeof getDb>, table: string): boolean {
   return row?.present === 1
 }
 
-/** Reclaim space in the index DB, optionally rebuilding derived rows first. Returns before/after sizes so the caller can report what was actually recovered rather than asserting success blindly. */
-export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddingsOnly?: boolean } = {}): ReclaimResult {
+/** Reclaim space in the index DB, optionally rebuilding derived rows first. Returns before/after sizes so the caller can report what was actually recovered rather than asserting success blindly. `waitForReaders: false` makes both checkpoints and the VACUUM answer busy at once instead of waiting out the connection's busy_timeout for a reader or writer to leave, for a caller that asks again on a later cycle (the worker's idle pass); the default waits. */
+export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddingsOnly?: boolean; waitForReaders?: boolean } = {}): ReclaimResult {
+  const noWait = opts.waitForReaders === false
+  const checkpoint = noWait ? walCheckpointBusyNoWait : walCheckpointBusy
   const rebuild = opts.rebuild === true
   const embeddingsOnly = opts.embeddingsOnly === true
   const beforeBytes = indexSizeBytes(dbPath)
@@ -109,10 +111,10 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddin
   }
 
   // Fold the WAL back into the main DB first. VACUUM rewrites the main file only, so an unchecked WAL (88 MB, in the case that motivated this command) would otherwise survive the vacuum and understate the reclaim. wal_checkpoint returns a busy indicator instead of throwing when a reader blocks truncation, so read it rather than assuming success.
-  const checkpointBusy = walCheckpointBusy(db)
+  const checkpointBusy = checkpoint(db)
   // VACUUM cannot run inside a transaction, hence its position outside the block above.
-  const vacuumDeferred = !vacuumOrDefer(db)
-  const finalCheckpointBusy = walCheckpointBusy(db)
+  const vacuumDeferred = !vacuumOrDefer(db, { noWait })
+  const finalCheckpointBusy = checkpoint(db)
 
   return {
     beforeBytes,
@@ -127,10 +129,11 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddin
   }
 }
 
-/** Run VACUUM, returning whether it succeeded rather than throwing on lock contention. Deliberately a single attempt. SQLite's own `busy_timeout` (set on the shared connection) already retries internally for its full window, so an extra retry loop here would not add patience -- it would multiply an already-long wait by the attempt count while the user stares at a hung command. What is actually missing is the honest outcome: VACUUM runs *after* the `--rebuild` deletes have committed, so throwing would abandon a successful, irreversible recovery behind a stack trace over its freely-repeatable final step. Only lock contention is absorbed; any other SQLite error is a real fault and rethrows. */
-function vacuumOrDefer(db: ReturnType<typeof getDb>): boolean {
+/** Run VACUUM, returning whether it succeeded rather than throwing on lock contention. Deliberately a single attempt. SQLite's own `busy_timeout` (set on the shared connection) already retries internally for its full window, so an extra retry loop here would not add patience -- it would multiply an already-long wait by the attempt count while the user stares at a hung command. What is actually missing is the honest outcome: VACUUM runs *after* the `--rebuild` deletes have committed, so throwing would abandon a successful, irreversible recovery behind a stack trace over its freely-repeatable final step. Only lock contention is absorbed; any other SQLite error is a real fault and rethrows. With `noWait` the VACUUM runs at busy_timeout 0 and is deferred at once on contention, for a caller that asks again on a later cycle. */
+function vacuumOrDefer(db: ReturnType<typeof getDb>, opts: { noWait: boolean }): boolean {
   try {
-    db.exec('VACUUM')
+    if (opts.noWait) withoutBusyWait(db, () => db.exec('VACUUM'))
+    else db.exec('VACUUM')
     return true
   } catch (err) {
     const code = (err as { code?: string }).code ?? ''
@@ -141,9 +144,25 @@ function vacuumOrDefer(db: ReturnType<typeof getDb>): boolean {
 }
 
 /** Run a truncating WAL checkpoint, reporting whether SQLite declined it. `pragma wal_checkpoint(TRUNCATE)` yields `busy = 1` (not an exception) when a concurrent reader prevents truncation. Swallowing that would let the command report a reclaim that silently left the WAL in place. */
-function walCheckpointBusy(db: ReturnType<typeof getDb>): boolean {
+export function walCheckpointBusy(db: ReturnType<typeof getDb>): boolean {
   const rows = db.pragma('wal_checkpoint(TRUNCATE)') as Array<{ busy?: number }>
   return rows[0]?.busy === 1
+}
+
+/** {@link walCheckpointBusy} that answers busy at once instead of waiting out the connection's busy_timeout for the reader to leave (15 s on the shared connection), for a caller that retries on a later cycle. The timeout is set to 0 for this one checkpoint and put back in a finally; the driver is synchronous and nothing else runs on this connection in between, so the swap cannot be seen by another statement. */
+export function walCheckpointBusyNoWait(db: ReturnType<typeof getDb>): boolean {
+  return withoutBusyWait(db, () => walCheckpointBusy(db))
+}
+
+/** Run `body` with the connection's busy_timeout at 0, so a lock held elsewhere is refused at once instead of waited for, and put the prior value back in a finally on every path. The driver is synchronous and nothing else runs on this connection in between, so the swap cannot be seen by another statement. */
+function withoutBusyWait<T>(db: ReturnType<typeof getDb>, body: () => T): T {
+  const priorWaitMs = Number(db.pragma('busy_timeout', { simple: true }))
+  db.pragma('busy_timeout = 0')
+  try {
+    return body()
+  } finally {
+    db.pragma(`busy_timeout = ${priorWaitMs}`)
+  }
 }
 
 /** Format a byte count as MB with one decimal, for human-readable reporting. */
