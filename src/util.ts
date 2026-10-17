@@ -41,6 +41,7 @@ export {
 import {
   quoteShellPath,
   quotePowershellPath,
+  resolveOnPath,
   sleepSync,
 } from './process_util.js'
 
@@ -52,6 +53,29 @@ export {
   encodeSource,
 } from './encoding.js'
 
+// Git for Windows puts `cmd/git.exe` first on PATH: a launcher that starts `<root>/mingw64/bin/git.exe` as its child. A timeout (or an output overflow) ends only the direct child, so with the launcher in between the real git survived the call, holding its working directory open and the inherited pipes (measured: Git 2.53 on Windows 11, launcher pid dead, real git.exe alive with that dead pid as parent, `taskkill /T` on the dead pid answers "not found"). Starting the real binary makes the process Node ends the process that matters. Not reached: a helper the real git itself started (a clean/smudge filter such as git-lfs), which a synchronous call has no live pid to end.
+const GIT_FOR_WINDOWS_BINARY_DIRS = ['mingw64', 'clangarm64', 'mingw32']
+let gitFileCache: { pathEnv: string; file: string } | undefined
+
+function gitExecutable(): string {
+  if (process.platform !== 'win32') return 'git'
+  const pathEnv = process.env['PATH'] ?? ''
+  if (gitFileCache !== undefined && gitFileCache.pathEnv === pathEnv) return gitFileCache.file
+  let file = 'git'
+  const found = resolveOnPath('git')
+  if (found !== null && path.basename(found).toLowerCase() === 'git.exe' && path.basename(path.dirname(found)).toLowerCase() === 'cmd') {
+    for (const dir of GIT_FOR_WINDOWS_BINARY_DIRS) {
+      const real = path.resolve(path.dirname(found), '..', dir, 'bin', 'git.exe')
+      if (existsSync(real)) {
+        file = real
+        break
+      }
+    }
+  }
+  gitFileCache = { pathEnv, file }
+  return file
+}
+
 /** Run git and return its captured output. THE ONLY git spawn site in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   const subArgs = args[0] === 'diff' ? [args[0], '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args
@@ -61,7 +85,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     '-c', 'core.quotepath=false',
     ...subArgs,
   ]
-  const result = spawnSync('git', fullArgs, {
+  const result = spawnSync(gitExecutable(), fullArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
     ...(opts.input !== undefined ? { input: opts.input } : {}),
