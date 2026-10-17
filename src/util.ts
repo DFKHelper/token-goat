@@ -123,11 +123,6 @@ export function gitExecutable(platform: NodeJS.Platform = process.platform, find
 // Defined in types.ts (a leaf) and re-exported here, so a test can lower the default by mocking that one module while runGit still reads it.
 export { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED }
 
-/** `requested` when it is a positive finite number of milliseconds, else undefined: a configured 0 reads as "no limit" to spawnSync, which is the hang the default exists to end, and a negative or NaN value is no bound either. */
-function positiveMs(requested: number | undefined): number | undefined {
-  return requested !== undefined && Number.isFinite(requested) && requested > 0 ? requested : undefined
-}
-
 /** The argument list every git call of this codebase starts with, shared so a second spawn path cannot drift from runGit: no optional locks, fsmonitor off, unquoted paths, and for a `diff` the flags that keep a repository's diff drivers from running. */
 export function gitInvocation(args: readonly string[]): string[] {
   const subArgs = args[0] === 'diff' ? [args[0], '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args
@@ -141,9 +136,9 @@ export function gitInvocation(args: readonly string[]): string[] {
 
 /** Run git and return its captured output. THE ONLY git spawn site in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. Every call is bounded: `timeoutMs` when it is a positive number, else {@link GIT_DEFAULT_TIMEOUT_MS}; only the named {@link GIT_UNBOUNDED} runs without a limit. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
-  const asked = opts.timeoutMs === GIT_UNBOUNDED ? GIT_UNBOUNDED : positiveMs(opts.timeoutMs)
-  const bound = asked ?? GIT_DEFAULT_TIMEOUT_MS
-  const timeout = bound === GIT_UNBOUNDED ? undefined : bound
+  const asked = opts.timeoutMs
+  // A configured 0 reads as "no limit" to spawnSync, which is the hang the default ends, and a negative or NaN value is no bound either.
+  const timeout = asked === GIT_UNBOUNDED ? undefined : (typeof asked === 'number' && asked > 0 && Number.isFinite(asked) ? asked : undefined) ?? GIT_DEFAULT_TIMEOUT_MS
   const result = spawnSync(gitExecutable(), gitInvocation(args), {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(timeout !== undefined ? { timeout } : {}),

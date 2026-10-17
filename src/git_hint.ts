@@ -9,8 +9,8 @@ import { runGit } from './util.js'
 /** HEAD and a `.git` file are a line or two; a bounded read keeps a hostile oversized one from being slurped whole. */
 const READ_BYTES = 1024
 
-/** Branch names this module will print: letters, digits and the punctuation git allows in practice. Anything else (a space, a control character, or one of ~ ^ : ? * [ and a backslash) is left to git itself, which applies its own ref-name rules. */
-const SAFE_BRANCH = /^[\p{L}\p{N}_./+@#%=,&()'!-]+$/u
+/** Branch names this module will print: letters, digits and the punctuation git allows in practice, and none of the shapes git's ref-name rules forbid (`..`, `@{`, `//`, a component starting with a dot, a trailing dot or slash, `.lock`). Anything else (a space, a control character, or one of ~ ^ : ? * [ and a backslash) is left to git itself, which applies its own ref-name rules. */
+const PRINTABLE_BRANCH = /^(?!.*(?:\.\.|@\{|\/\/|\.lock$|[./]$)|\.|.*\/\.)[\p{L}\p{N}_./+@#%=,&()'!-]+$/u
 
 function readPrefix(file: string): string | null {
   let fd: number | undefined
@@ -62,12 +62,7 @@ function branchNameIsUncertain(dir: string, name: string): boolean {
   }
 }
 
-/** Whether `name` is a branch name safe to print: allowlisted characters, and none of the shapes git's ref-name rules forbid. */
-function isPrintableBranch(name: string): boolean {
-  return SAFE_BRANCH.test(name) && !name.includes('..') && !name.includes('@{') && !name.includes('//') && !/(^|\/)\./.test(name) && !/[./]$/.test(name) && !name.endsWith('.lock')
-}
-
-/** What `git rev-parse --abbrev-ref HEAD` prints, read from the HEAD file with no process: the branch name for `ref: refs/heads/<name>`, `HEAD` for a detached HEAD (a bare object id), as git does. Null when it cannot be told, never a guess: no repository, an unreadable or garbled HEAD, a ref outside `refs/heads/`, a name outside {@link isPrintableBranch}, a tag of the same name (git prints `heads/<name>` then), a linked worktree whose common directory is gone, or the reftable stub `refs/heads/.invalid` that a reftable repository keeps in HEAD (the real branch is in the table). The caller then asks git. An unborn branch reads as its name, where git exits 128. A `safe.directory` ownership refusal is not modelled: it needs the merged git configuration and, on Windows, the owner's SID, which Node cannot read; the hint then names the branch of a repository git would refuse, a one-word label for the user's own working directory. */
+/** What `git rev-parse --abbrev-ref HEAD` prints, read from the HEAD file with no process: the branch name for `ref: refs/heads/<name>`, `HEAD` for a detached HEAD (a bare object id), as git does. Null when it cannot be told, never a guess: no repository, an unreadable or garbled HEAD, a ref outside `refs/heads/`, a name outside {@link PRINTABLE_BRANCH}, a tag of the same name (git prints `heads/<name>` then), a linked worktree whose common directory is gone, or the reftable stub `refs/heads/.invalid` that a reftable repository keeps in HEAD (the real branch is in the table). The caller then asks git. An unborn branch reads as its name, where git exits 128. A `safe.directory` ownership refusal is not modelled: it needs the merged git configuration and, on Windows, the owner's SID, which Node cannot read; the hint then names the branch of a repository git would refuse, a one-word label for the user's own working directory. */
 export function readBranchWithoutSpawn(cwd: string): string | null {
   const dir = repositoryDir(cwd)
   if (dir === null) return null
@@ -75,7 +70,7 @@ export function readBranchWithoutSpawn(cwd: string): string | null {
   if (head === null) return null
   const line = (head.split(/\r?\n/, 1)[0] ?? '').trim()
   const named = /^ref:[ \t]*refs\/heads\/(.+)$/.exec(line)?.[1]
-  if (named !== undefined) return isPrintableBranch(named) && !branchNameIsUncertain(dir, named) ? named : null
+  if (named !== undefined) return PRINTABLE_BRANCH.test(named) && !branchNameIsUncertain(dir, named) ? named : null
   return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(line) ? 'HEAD' : null
 }
 
