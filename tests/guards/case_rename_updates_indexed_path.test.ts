@@ -1,10 +1,10 @@
 /** Guard: a case-only rename must not leave the index reporting the old spelling. On a case-insensitive filesystem (Windows, macOS) `mv b.ts B.ts` changes nothing about the file's content, so the indexer's sha gate saw a byte-identical file and skipped it, and the deletion sweep left it alone because the file still exists. The row went on saying `b.ts` forever, and `symbol beta` answered `b.ts:1-3` for a file spelled `B.ts` on disk. Only a later change to the file's *content* ever corrected it. Why didn't a test catch this: every rename covered elsewhere in the suite changes the name to a genuinely different one, which the "file is gone" branch prunes on a case-insensitive filesystem exactly as it does on a case-sensitive one. A case-only rename is the single rename shape where the old path still resolves, so it is the only one that reaches the sha gate at all -- and no fixture ever performed one. The negative case is the one that costs something: `indexedPathSpellingIsStale` is narrowed to a pure case difference precisely so that a project reached through a symlink or a Windows junction (whose realpath is structurally different, not just differently cased) does not read as stale on every single file, every single run. Both halves are mutation-proved: forcing the helper to return false reddens the rename case alone, and dropping the fold comparison against the resolved spelling reddens the structural case alone. */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeDb, getDb } from '../../src/db.js'
 import { querySymbols } from '../../src/index_reader.js'
@@ -14,10 +14,7 @@ import { findGlobalDb } from '../helpers/find_global_db.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
-let projectDir: string
-let homeDir: string
-
-function run(args: string[]): { status: number; out: string } {
+function run(projectDir: string, homeDir: string, args: string[]): { status: number; out: string } {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], {
     cwd: projectDir,
     encoding: 'utf-8',
@@ -34,14 +31,15 @@ function hostFsIsCaseInsensitive(): boolean {
   return existsSync(join(dir, 'caseprobe.txt'))
 }
 
-beforeAll(() => {
-  projectDir = mkdtempSync(join(tmpdir(), 'tg-caserename-'))
-  homeDir = mkdtempSync(join(tmpdir(), 'tg-caserename-home-'))
-  writeFileSync(join(projectDir, 'beta.ts'), 'export function betaFn(): number {\n  return 2\n}\n')
-  run(['index', '.', '--walk'])
-})
-
 describe('indexedPathSpellingIsStale', () => {
+  // Only a directory holding a real beta.ts: nothing here reads the index, so nothing is indexed.
+  let projectDir = ''
+
+  beforeAll(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'tg-caserename-'))
+    writeFileSync(join(projectDir, 'beta.ts'), 'export function betaFn(): number {\n  return 2\n}\n')
+  })
+
   it('is false when the stored spelling already matches', () => {
     expect(indexedPathSpellingIsStale(normalizePath(join(projectDir, 'beta.ts')), join(projectDir, 'beta.ts'))).toBe(false)
   })
@@ -84,50 +82,61 @@ describe('indexedPathSpellingIsStale', () => {
   })
 })
 
-// One built-CLI spawn per test (plus the one in beforeAll) rather than three in a single test: the work a test does no longer scales with the spawn count, so no test's pass depends on how many process starts fit inside one 60 s budget. The before/after checks that only read the index read its rows in-process; the calibration and rename flags make a later test fail loudly instead of passing on state an earlier one never set up. Provenance: HAND-DERIVED -- beta.ts is written by this file's beforeAll, and every spelling asserted is the one the test itself gave the file. LIKE folds ASCII case, so one query finds the row under either spelling and ignores the other fixtures in the directory.
+// One built-CLI spawn per step rather than a dozen in a single test: no test's pass depends on how many process starts fit inside one 60 s budget. The checks that only read the index read its rows in-process. Provenance: HAND-DERIVED -- beta.ts is written by each test's own fixture, and every spelling asserted is the one the test itself gave the file. LIKE folds ASCII case, so one query finds the row under either spelling and ignores the other fixtures in the directory.
 const lastSegment = (p: string): string | undefined => p.replace(/\\/g, '/').split('/').pop()
 // An explicit null check, so a run that never wrote global.db fails with this message rather than a cast handing `null` to the driver.
-const requireGlobalDb = (): string => {
+const requireGlobalDb = (homeDir: string): string => {
   const found = findGlobalDb(homeDir)
-  if (found === null) throw new Error(`no global.db under ${homeDir}: the beforeAll index run did not write one`)
+  if (found === null) throw new Error(`no global.db under ${homeDir}: the fixture's index run did not write one`)
   return found
 }
-const storedSpellings = (): (string | undefined)[] => (getDb(requireGlobalDb()).prepare("SELECT path FROM files WHERE path LIKE '%/beta.ts'").pluck().all() as string[]).map(lastSegment)
+const storedSpellings = (homeDir: string): (string | undefined)[] => (getDb(requireGlobalDb(homeDir)).prepare("SELECT path FROM files WHERE path LIKE '%/beta.ts'").pluck().all() as string[]).map(lastSegment)
 
 describe('index after a case-only rename', () => {
-  // Closes both the writable and the read-only handle that getDb and querySymbols cached for this path, so the temp home is not left open.
-  afterAll(() => {
-    const found = findGlobalDb(homeDir)
-    if (found !== null) closeDb(found)
+  let projectDir = ''
+  let homeDir = ''
+
+  // Each test builds its own project and home: the rename mutates both the directory and the index, so nothing may carry from one test to the next.
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'tg-caserename-'))
+    homeDir = mkdtempSync(join(tmpdir(), 'tg-caserename-home-'))
+    writeFileSync(join(projectDir, 'beta.ts'), 'export function betaFn(): number {\n  return 2\n}\n')
+    const indexed = run(projectDir, homeDir, ['index', '.', '--walk'])
+    expect(indexed.status, `indexing the fixture failed: ${indexed.out.slice(0, 400)}`).toBe(0)
   })
 
-  let calibrated = false
-  let renamedAndReindexed = false
+  // Closes both the writable and the read-only handle that getDb and querySymbols cached for this path, then removes the test's own directories.
+  afterEach(() => {
+    const found = findGlobalDb(homeDir)
+    if (found !== null) closeDb(found)
+    rmSync(projectDir, { recursive: true, force: true })
+    rmSync(homeDir, { recursive: true, force: true })
+  })
 
-  // Calibration: the file is indexed under its first spelling, so whatever the next tests see is the rename at work.
+  // Two steps: a direct rename to a case variant is a no-op on a case-insensitive filesystem. Asserts the starting spelling first, so what follows is the rename at work.
+  function renameAndReindex(): void {
+    expect(storedSpellings(homeDir), 'the fixture was not indexed under its first spelling, so a spelling after the rename would not show the rename at work').toEqual(['beta.ts'])
+    renameSync(join(projectDir, 'beta.ts'), join(projectDir, 'tmp-beta.ts'))
+    renameSync(join(projectDir, 'tmp-beta.ts'), join(projectDir, 'BETA.ts'))
+    const reindex = run(projectDir, homeDir, ['index', '.', '--walk'])
+    expect(reindex.status, reindex.out).toBe(0)
+  }
+
+  // Calibration: the file is indexed under its first spelling, so whatever the other tests see is the rename at work.
   it('holds the file under its first spelling before anything is renamed', () => {
-    expect(storedSpellings()).toEqual(['beta.ts'])
-    expect(querySymbols({ name: 'betaFn' }, requireGlobalDb()).map((s) => lastSegment(s.filePath))).toEqual(['beta.ts'])
-    calibrated = true
+    expect(storedSpellings(homeDir)).toEqual(['beta.ts'])
+    expect(querySymbols({ name: 'betaFn' }, requireGlobalDb(homeDir)).map((s) => lastSegment(s.filePath))).toEqual(['beta.ts'])
   })
 
   it('rewrites the stored spelling when the walk reindexes after the rename', () => {
-    expect(calibrated, 'the calibration test above did not pass, so a spelling below would not show the rename at work').toBe(true)
-    // Two steps: a direct rename to a case variant is a no-op on a case-insensitive filesystem.
-    renameSync(join(projectDir, 'beta.ts'), join(projectDir, 'tmp-beta.ts'))
-    renameSync(join(projectDir, 'tmp-beta.ts'), join(projectDir, 'BETA.ts'))
-
-    const reindex = run(['index', '.', '--walk'])
-    expect(reindex.status, reindex.out).toBe(0)
-    renamedAndReindexed = true
-
-    expect(storedSpellings(), 'the index kept a spelling the file no longer has').toEqual(['BETA.ts'])
-    expect(querySymbols({ name: 'betaFn' }, requireGlobalDb()).map((s) => lastSegment(s.filePath))).toEqual(['BETA.ts'])
+    renameAndReindex()
+    expect(storedSpellings(homeDir), 'the index kept a spelling the file no longer has').toEqual(['BETA.ts'])
+    expect(querySymbols({ name: 'betaFn' }, requireGlobalDb(homeDir)).map((s) => lastSegment(s.filePath))).toEqual(['BETA.ts'])
   })
 
   it('reports the new spelling, not the one the file used to have', () => {
-    expect(renamedAndReindexed, 'the rename test above did not reindex, so the answer below would not show the rename at work').toBe(true)
-    const after = run(['symbol', 'betaFn'])
+    renameAndReindex()
+    const after = run(projectDir, homeDir, ['symbol', 'betaFn'])
     expect(after.status, after.out).toBe(0)
     expect(after.out, 'the index kept a spelling the file no longer has').toContain('BETA.ts')
   })

@@ -1,10 +1,10 @@
-/** `token-goat reconcile` must notice a case-only rename made while no hook was watching. On a case-insensitive filesystem `git mv beta.ts Beta.ts` leaves the file's bytes as they were, and `git mv` leaves its mtime alone too, so every check the sweep made (parser stamp, embedding stamp, mtime, content) passed. The row kept the old spelling and `symbol betaFn` went on answering `beta.ts` for a file that git and the disk both spell `Beta.ts`. The drain and `token-goat index` correct a stale spelling once a file reaches them (`indexedPathSpellingIsStale`), but nothing brings a renamed, unedited file to either, and the session-start sweep called the project clean. Why didn't a test catch this: every reconcile test drifts a file by its bytes, its parser stamp or its existence, and the case-rename tests drive `index` and the drain directly, never the sweep that has to hand them the file. The assertions hold on a case-sensitive filesystem as well, where the rename is a new path plus a deleted one: either way the sweep reports the drift and the drain leaves one row, spelled the new way. Provenance: CAPTURE. The rename is made by real git in a real repository indexed by the built bundle, the sweep is the bundle's own `reconcile`, and the drain is `drainOnce` with its real default indexer. The working directory typed in another case is a real one the bundle is started in, and the calibration reads the spelling it left in the row. Each describe builds its fixture in a beforeAll and spends one test per few spawns, because a single test that ran a dozen git and bundle spawns in a row lost its 60 s budget on a loaded PC to nothing but process start-up (git --version alone took 4 to 7 s there): every step is bounded by its own process exit and none by a sleep or a poll, so a slow machine takes longer and still passes. */
+/** `token-goat reconcile` must notice a case-only rename made while no hook was watching. On a case-insensitive filesystem `git mv beta.ts Beta.ts` leaves the file's bytes as they were, and `git mv` leaves its mtime alone too, so every check the sweep made (parser stamp, embedding stamp, mtime, content) passed. The row kept the old spelling and `symbol betaFn` went on answering `beta.ts` for a file that git and the disk both spell `Beta.ts`. The drain and `token-goat index` correct a stale spelling once a file reaches them (`indexedPathSpellingIsStale`), but nothing brings a renamed, unedited file to either, and the session-start sweep called the project clean. Why didn't a test catch this: every reconcile test drifts a file by its bytes, its parser stamp or its existence, and the case-rename tests drive `index` and the drain directly, never the sweep that has to hand them the file. The assertions hold on a case-sensitive filesystem as well, where the rename is a new path plus a deleted one: either way the sweep reports the drift and the drain leaves one row, spelled the new way. Provenance: CAPTURE. The rename is made by real git in a real repository indexed by the built bundle, the sweep is the bundle's own `reconcile`, and the drain is `drainOnce` with its real default indexer. The working directory typed in another case is a real one the bundle is started in, and the calibration reads the spelling it left in the row. Each test builds its own fixture in a beforeEach (the one-test describe in a beforeAll) and spends few spawns, because a single test that ran a dozen git and bundle spawns in a row lost its 60 s budget on a loaded PC to nothing but process start-up (git --version alone took 4 to 7 s there): every step is bounded by its own process exit and none by a sleep or a poll, so a slow machine takes longer and still passes. */
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { getDb } from '../src/db.js'
 import { querySymbols } from '../src/index_reader.js'
@@ -82,9 +82,9 @@ const lastSegment = (p: string): string | undefined => p.replace(/\\/g, '/').spl
 describe('reconcile after a case-only rename', () => {
   let projectDir = ''
   let homeDir = ''
-  let calibrated = false
 
-  beforeAll(() => {
+  // Each test builds its own repository and index: the rename test mutates both, so nothing may carry from one test to the next.
+  beforeEach(() => {
     projectDir = indexableDir()
     homeDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-rename-home-'))
     writeFileSync(join(projectDir, 'beta.ts'), 'export function betaFn(): number {\n  return 2\n}\n')
@@ -98,11 +98,11 @@ describe('reconcile after a case-only rename', () => {
     expect(run(projectDir, homeDir, ['symbol', 'betaFn']).out).toContain('beta.ts')
     const clean = sweep(projectDir, homeDir, '--dry-run')
     expect([...clean.changed, ...clean.added, ...clean.removed], 'a freshly indexed project reported drift before anything was renamed').toEqual([])
-    calibrated = true
   })
 
   it('reports the renamed file, and the drain leaves one row spelled the new way', async () => {
-    expect(calibrated, 'the calibration test above did not pass, so a sweep result below would not show the rename at work').toBe(true)
+    const before = getDb(findGlobalDb(homeDir) as string).prepare("SELECT path FROM files WHERE path LIKE '%/beta.ts'").pluck().all() as string[]
+    expect(before.map(lastSegment), 'the fixture was not indexed under its first spelling, so a spelling after the rename would not show the rename at work').toEqual(['beta.ts'])
     git(projectDir, 'mv', 'beta.ts', 'Beta.ts')
     expect(readdirSync(projectDir), 'git did not rename the file on disk').toContain('Beta.ts')
 
