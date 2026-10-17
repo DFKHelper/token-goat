@@ -219,35 +219,50 @@ function removeWhenReleased(root: string): void {
 }
 
 export function cleanupTrees(): void {
-  for (const { watchdog } of watchdogs.values()) watchdog.stop()
-  watchdogs.clear()
-  // Also recover PIDs if an observation rejected before the assertion registered them. Only this fixture's own root-level PID files are considered.
-  for (const root of ownedRoots) {
-    for (const name of readdirSync(root).filter((name) => name.endsWith('.pid'))) {
-      const pid = Number(readFileSync(join(root, name), 'utf8'))
-      if (Number.isInteger(pid) && pid > 0 && !ownedPids.includes(pid)) ownedPids.push(pid)
+  // Every phase runs whatever an earlier one threw (a pid whose line cannot be read, a failed listing, a locked directory), so a failure to end one tree never leaves the others running; the failures are then raised together.
+  const failures: unknown[] = []
+  const attempt = (phase: () => void): void => {
+    try { phase() } catch (error) { failures.push(error) }
+  }
+  attempt(() => {
+    for (const { watchdog } of watchdogs.values()) watchdog.stop()
+    watchdogs.clear()
+  })
+  attempt(() => {
+    // Also recover PIDs if an observation rejected before the assertion registered them. Only this fixture's own root-level PID files are considered.
+    for (const root of ownedRoots) {
+      for (const name of readdirSync(root).filter((name) => name.endsWith('.pid'))) {
+        const pid = Number(readFileSync(join(root, name), 'utf8'))
+        if (Number.isInteger(pid) && pid > 0 && !ownedPids.includes(pid)) ownedPids.push(pid)
+      }
     }
-  }
-  const victims = new Map<number, string>()
-  const recorded = ownedPids.splice(0).reverse().filter(alive)
-  // The tree walk needs the table only while a recorded pid is still alive: a row that started nothing, or whose helpers have all exited, has no tree to walk.
-  const table = recorded.length === 0 ? new Map<number, { ppid: number; args: string }>() : listProcesses()
-  const walk = (pid: number): void => {
-    if (victims.has(pid)) return
-    victims.set(pid, table.get(pid)?.args ?? '')
-    for (const [child, entry] of table) if (entry.ppid === pid) walk(child)
-  }
-  for (const pid of recorded) walk(pid)
-  killAndVerify(victims)
+  })
+  attempt(() => {
+    const victims = new Map<number, string>()
+    const recorded = ownedPids.splice(0).reverse().filter(alive)
+    // The tree walk needs the table only while a recorded pid is still alive: a row that started nothing, or whose helpers have all exited, has no tree to walk.
+    const table = recorded.length === 0 ? new Map<number, { ppid: number; args: string }>() : listProcesses()
+    const walk = (pid: number): void => {
+      if (victims.has(pid)) return
+      victims.set(pid, table.get(pid)?.args ?? '')
+      for (const [child, entry] of table) if (entry.ppid === pid) walk(child)
+    }
+    for (const pid of recorded) walk(pid)
+    killAndVerify(victims)
+  })
   // Sweep what the fixture started that no recorded pid reaches, such as an owner that outlived its dead parent.
-  const roots = ownedRoots.map((root) => root.toLowerCase().replaceAll('/', '\\'))
-  const strays = new Map<number, string>()
-  for (const [pid, entry] of listProcesses()) {
-    if (pid !== process.pid && roots.some((root) => entry.args.toLowerCase().replaceAll('/', '\\').includes(root))) strays.set(pid, entry.args)
-  }
-  killAndVerify(strays)
+  attempt(() => {
+    const roots = ownedRoots.map((root) => root.toLowerCase().replaceAll('/', '\\'))
+    const strays = new Map<number, string>()
+    for (const [pid, entry] of listProcesses()) {
+      if (pid !== process.pid && roots.some((root) => entry.args.toLowerCase().replaceAll('/', '\\').includes(root))) strays.set(pid, entry.args)
+    }
+    killAndVerify(strays)
+  })
   // The delete retry covers handle rundown only (12-25 ms measured on a quiet machine); the long EPERM locks came from a time-boxed taskkill that left the worker alive and from an owner orphaned outside the kill list.
-  for (const root of ownedRoots.splice(0)) removeWhenReleased(root)
+  for (const root of ownedRoots.splice(0)) attempt(() => { removeWhenReleased(root) })
+  if (failures.length === 1) throw failures[0]
+  if (failures.length > 1) throw new AggregateError(failures, `${String(failures.length)} cleanup phases failed`)
 }
 
 /** One launch of the process lister; the seam listProcesses launches through. */
@@ -284,10 +299,13 @@ export interface KillSeam extends LivenessSeam { killIfCommandLine?: typeof kill
 export function killAndVerify(victims: Map<number, string>, seam: KillSeam = {}): void {
   const still = (pid: number): boolean => aliveAs(pid, victims.get(pid) ?? null, seam)
   const checkedKill = seam.killIfCommandLine ?? killIfCommandLine
+  // A pid the checked kill cannot decide (it throws for a live pid whose line cannot be read) neither stops the round nor ends the wait: the rest are still signalled, the pid is asked again next round, and the first such failure rides on the survivor error as its cause.
+  let undecided: unknown
   const killRound = (pids: Iterable<number>): void => {
     for (const pid of pids) {
       const recorded = (victims.get(pid) ?? '').trim()
-      if (recorded !== '') checkedKill(pid, (line) => line.trim() === recorded)
+      if (recorded === '') continue
+      try { checkedKill(pid, (line) => line.trim() === recorded) } catch (error) { undecided ??= error }
     }
   }
   // A kill that was refused or missed in one round (Windows refuses TerminateProcess on a process that is exiting) is re-issued next round until the pid is gone.
@@ -301,7 +319,7 @@ export function killAndVerify(victims: Map<number, string>, seam: KillSeam = {})
     killRound(remaining)
   }
   const survivors = [...victims].filter(([pid]) => still(pid)).map(([pid, args]) => `${pid} ${args}`)
-  if (survivors.length > 0) throw new Error(`fixture process still alive ${String((seam.backstopMs ?? HANG_BACKSTOP_MS) / 1000)} s after SIGKILL: ${survivors.join('; ')}`)
+  if (survivors.length > 0) throw new Error(`fixture process still alive ${String((seam.backstopMs ?? HANG_BACKSTOP_MS) / 1000)} s after SIGKILL: ${survivors.join('; ')}`, { cause: undecided })
 }
 
 export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void {
