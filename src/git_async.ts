@@ -49,7 +49,10 @@ export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Prom
     const stop = (why: 'timeout' | 'overflow' | 'abort'): void => {
       if (cause !== undefined || settled) return
       cause = why
+      // Synchronous on purpose: OwnedChild.kill is shared with the exit hooks, which cannot wait, and this runs only on a timeout, overflow or abort; the worst case is one taskkill of HELPER_TIMEOUT_MS (10 s) on win32, or MAX_FREEZE_PASSES (64) ps calls of 10 s each (640 s) on POSIX, where a pass is milliseconds in practice.
       owned.kill()
+      // A tree kill that failed (taskkill unreachable or wedged) reached nothing, and git's exit is what settles this call; the handle Node owns ends git itself and cannot hit a reused pid, and on a git already ended it does nothing. Here and not in spawnOwned to keep the hook's eager set under its ceiling.
+      child.kill('SIGKILL')
       if (exited) finish(null)
     }
     const collect = (into: Buffer[]) => (chunk: Buffer): void => {
