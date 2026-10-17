@@ -29,7 +29,7 @@ function mkTemp(prefix: string): string {
 }
 
 /** Runs the shim the real installer wrote, the way Copilot runs it: `node <shim> <event> <token-goat entry>`, payload on stdin, pointed at the built bundle. */
-function runInstalledShim(event: string, payload: unknown, cwd: string): Record<string, unknown> {
+function runInstalledShim(event: string, payload: unknown, cwd: string, env: Record<string, string> = {}): Record<string, unknown> {
   const dir = mkTemp('tg-subagent-stop-hooks-')
   installCopilotHooksFile(dir, 'copilot')
   const res = spawnSync(process.execPath, [path.join(dir, HOOKS_SCRIPT_FILE), event, BUNDLE], {
@@ -37,7 +37,7 @@ function runInstalledShim(event: string, payload: unknown, cwd: string): Record<
     input: JSON.stringify(payload),
     encoding: 'utf8',
     timeout: 60000,
-    env: { ...process.env },
+    env: { ...process.env, ...env },
   })
   expect(res.status, res.stderr).toBe(0)
   return JSON.parse(res.stdout) as Record<string, unknown>
@@ -128,6 +128,22 @@ describe('Copilot CLI evidence receipt through the installed shim and the built 
     post['sessionId'] = stop['sessionId']
     post['toolResult'] = { resultType: 'success', textResultForLlm: text }
     expect(runInstalledShim('postToolUse', post, proj)).toEqual({})
+  })
+
+  it('keeps both the compaction and the clean-tree verdict when a long report claims a change, and still answers with nothing but the rewrite', () => {
+    const proj = cleanRepo()
+    const claim = 'I fixed the parser bug in widget.ts.'
+    const out = runInstalledShim('subagentStop', stopPayload(proj, `${claim}\n${longReport()}`), proj)
+    expect(Object.keys(out)).toEqual(['modifiedResponse'])
+    const text = out['modifiedResponse'] as string
+    expect(text).toContain('mcp-output')
+    expect(text).toContain('the report claims a change, but this subagent recorded no edit and the working tree is clean')
+    expect(text).toContain(CAVEAT)
+  })
+
+  it('leaves a short report that claims a change alone when the receipt is switched off, and does not block the stop', () => {
+    const proj = cleanRepo()
+    expect(runInstalledShim('subagentStop', stopPayload(proj, 'I fixed the parser bug in widget.ts.'), proj, { TOKEN_GOAT_AGENT_RECEIPT: '0' })).toEqual({ decision: 'allow' })
   })
 
   it('parks nothing, so a post-tool result with the unrewritten report adds no receipt of its own', () => {
