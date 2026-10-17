@@ -1,4 +1,4 @@
-/** Cross-cutting helpers shared across token-goat modules. Kept intentionally small: only utilities with no natural owner that would otherwise be duplicated. Imports only Node built-ins and other Layer 1 files. IMPORTANT: `runGit` is the ONLY place in the entire codebase that spawns git. A structural test (git_chokepoint.test.ts) greps every src/*.ts for bare git spawn patterns outside this file and fails if any are found. */
+/** Cross-cutting helpers shared across token-goat modules. Kept intentionally small: only utilities with no natural owner that would otherwise be duplicated. Imports only Node built-ins and other Layer 1 files. IMPORTANT: `runGit` is the ONLY place in the entire codebase that spawns git. A structural test (tests/guards/git_is_spawned_only_by_runGit.test.ts) scans every src/*.ts for git spawn patterns outside this file and fails if any are found. */
 
 import { chmodSync, closeSync, constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs'
 import * as path from 'node:path'
@@ -41,6 +41,7 @@ export {
 import {
   quoteShellPath,
   quotePowershellPath,
+  resolveOnPath,
   sleepSync,
 } from './process_util.js'
 
@@ -52,6 +53,58 @@ export {
   encodeSource,
 } from './encoding.js'
 
+// Git for Windows puts `cmd/git.exe` (older installs: `bin/git.exe`) first on PATH: a launcher that starts `<root>/mingw64/bin/git.exe` as its child. A timeout (or an output overflow) ends only the direct child, so with the launcher in between the real git survived the call, holding its working directory open and the inherited pipes (measured: Git 2.53 on Windows 11, launcher pid dead, real git.exe alive with that dead pid as parent, `taskkill /T` on the dead pid answers "not found"). Starting the real binary makes the process Node ends the process that matters. A Scoop shim is followed to its target the same way. Not reached: a helper the real git itself started (a clean/smudge filter such as git-lfs), which a synchronous call has no live pid to end.
+const GIT_FOR_WINDOWS_BINARY_DIRS = ['mingw64', 'clangarm64', 'mingw32']
+let gitFileCache: { pathEnv: string; file: string } | undefined
+
+/** The real git behind a Git for Windows launcher (`<root>/cmd/git.exe` or `<root>/bin/git.exe`): the `<root>/mingw64|clangarm64|mingw32/bin/git.exe` beside it, or null when `launcher` is not laid out that way or no such sibling exists. */
+export function realGitBehindLauncher(launcher: string): string | null {
+  const dir = path.dirname(launcher)
+  const folder = path.basename(dir).toLowerCase()
+  if (path.basename(launcher).toLowerCase() !== 'git.exe' || (folder !== 'cmd' && folder !== 'bin')) return null
+  for (const sub of GIT_FOR_WINDOWS_BINARY_DIRS) {
+    const real = path.resolve(dir, '..', sub, 'bin', 'git.exe')
+    if (existsSync(real)) return real
+  }
+  return null
+}
+
+/** The git.exe a Scoop shim (`shims/git.exe` with `shims/git.shim` holding `path = "<target>"`) starts, or null when there is no readable shim file, it carries extra arguments, or its target is missing. */
+function scoopShimTarget(shim: string): string | null {
+  let text: string
+  try {
+    text = readFileSync(path.join(path.dirname(shim), `${path.basename(shim, path.extname(shim))}.shim`), 'utf-8')
+  } catch {
+    return null
+  }
+  let target: string | undefined
+  for (const raw of text.split(/\r?\n/)) {
+    const eq = raw.indexOf('=')
+    if (eq === -1) continue
+    const key = raw.slice(0, eq).trim()
+    if (key === 'args') return null
+    if (key === 'path') target = raw.slice(eq + 1).trim().replace(/^"|"$/g, '')
+  }
+  return target !== undefined && existsSync(target) ? target : null
+}
+
+/** The file runGit starts: on Windows the real git behind a launcher or a Scoop shim, otherwise plain `git`. `platform` and `findGit` are parameters only so the path mapping can be run on any platform against a made-up layout; runGit passes neither. The answer is kept for as long as PATH is unchanged and no spawn has failed with ENOENT (runGit drops it then, so a long-lived process recovers after git is uninstalled or a Scoop version folder is removed). */
+export function gitExecutable(platform: NodeJS.Platform = process.platform, findGit: () => string | null = () => resolveOnPath('git')): string {
+  if (platform !== 'win32') return 'git'
+  const pathEnv = process.env['PATH'] ?? ''
+  if (gitFileCache !== undefined && gitFileCache.pathEnv === pathEnv) return gitFileCache.file
+  let file = 'git'
+  const found = findGit()
+  if (found !== null) {
+    const target = scoopShimTarget(found) ?? found
+    const real = realGitBehindLauncher(target)
+    if (real !== null) file = real
+    else if (target !== found) file = target
+  }
+  gitFileCache = { pathEnv, file }
+  return file
+}
+
 /** Run git and return its captured output. THE ONLY git spawn site in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   const subArgs = args[0] === 'diff' ? [args[0], '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args
@@ -61,7 +114,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     '-c', 'core.quotepath=false',
     ...subArgs,
   ]
-  const result = spawnSync('git', fullArgs, {
+  const result = spawnSync(gitExecutable(), fullArgs, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(opts.timeoutMs !== undefined ? { timeout: opts.timeoutMs } : {}),
     ...(opts.input !== undefined ? { input: opts.input } : {}),
@@ -73,6 +126,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   if (result.error) {
     // CAPTURE: Node 24.12 on Windows 11 reports a spawnSync timeout as error.code ETIMEDOUT (signal SIGTERM), and a missing binary, a missing cwd, a maxBuffer overflow as ENOENT, ENOENT, ENOBUFS.
     const timedOut = (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
+    if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') gitFileCache = undefined
     return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, ...(timedOut ? { timedOut } : {}) }
   }
 
