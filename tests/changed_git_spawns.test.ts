@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterAll, describe, expect, it } from 'vitest'
 import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+import { indexableDir } from './helpers/temp-config.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const bundle = path.join(repoRoot, 'dist', 'token-goat.mjs')
@@ -97,13 +98,17 @@ function envFor(name: string, extra: Record<string, string> = {}): { env: NodeJS
   }
 }
 
+// A probe that saw nothing is blind, not a command that spawned nothing: every case below runs git at least once, and an exact list of subcommands that is empty would pass for a bundle whose spawns the preload no longer patches.
 function spawned(log: string): string[][] {
-  if (!fs.existsSync(log)) return []
-  return fs
-    .readFileSync(log, 'utf8')
-    .split('\n')
-    .filter(Boolean)
-    .map((l) => JSON.parse(l) as string[])
+  const rows = fs.existsSync(log)
+    ? fs
+        .readFileSync(log, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as string[])
+    : []
+  expect(rows.length, 'the spawn probe recorded no git spawn, so it is not seeing the bundle spawns').toBeGreaterThan(0)
+  return rows
 }
 
 function cliChanged(dir: string, name: string, extra: Record<string, string> = {}): { stderr: string; git: string[][] } {
@@ -157,6 +162,37 @@ async function mcpChanged(dir: string, name: string, args: Record<string, unknow
 }
 
 const subcommands = (rows: string[][]): string[] => rows.map((r) => r[0] ?? '')
+
+// HAND-DERIVED: the repo is built by git itself; `git checkout feature` after `git checkout main` leaves HEAD@{1} on main and HEAD on feature, so the one file the branch adds is the hook's expected enqueue. Outside the OS temp dir, which the dirty queue refuses a path under.
+const switched = indexableDir()
+git(switched, 'init', '-q', '-b', 'main')
+git(switched, 'config', 'user.email', 't@example.com')
+git(switched, 'config', 'user.name', 'T')
+commit(switched, 'a.ts')
+git(switched, 'checkout', '-q', '-b', 'feature')
+commit(switched, 'b.ts')
+git(switched, 'checkout', '-q', 'main')
+git(switched, 'checkout', '-q', 'feature')
+
+describe('the Bash post hook after a git checkout: its git reads go through spawn, the async runner', () => {
+  it('spawns the changed-file diff and the root lookup, and queues the file the branch adds', () => {
+    const cwdLog = path.join(scratch, 'spawn-cwds-post-bash-checkout.txt')
+    const { env, log } = envFor('post-bash-checkout', { TOKEN_GOAT_HOOK_SERVER: '0', GIT_SPAWN_PROBE_CWD_OUT: cwdLog })
+    const payload = { session_id: 'spawn-probe-checkout', hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'git checkout feature' }, tool_response: { stdout: "Switched to branch 'feature'\n", stderr: '', interrupted: false }, cwd: switched }
+    // The hook process runs in `scratch`, not in the payload's directory, so a git that dropped its cwd would run in `scratch` and be recorded there.
+    const res = spawnSync(process.execPath, [bundle, 'hook', 'post_tool_use'], { cwd: scratch, encoding: 'utf8', env, input: JSON.stringify(payload), timeout: 120_000 })
+    expect(res.status, res.stderr).toBe(0)
+    const rows = spawned(log)
+    const cwds = fs.readFileSync(cwdLog, 'utf8').split('\n').filter(Boolean).map((c) => fs.realpathSync(c))
+    expect(cwds, 'each git spawn ran in the payload cwd, not the hook process cwd').toEqual(rows.map(() => fs.realpathSync(switched)))
+    expect(subcommands(rows)).toEqual(['diff', 'rev-parse'])
+    expect(rows[0]).toEqual(expect.arrayContaining(['--name-only', 'HEAD@{1}', 'HEAD']))
+    const home = env['TOKEN_GOAT_HOME'] ?? ''
+    const queued = (fs.readdirSync(home, { recursive: true }) as string[]).filter((p) => p.split(path.sep).join('/').endsWith('queue/dirty.txt'))
+    expect(queued, 'the hook wrote one dirty queue').toHaveLength(1)
+    expect(fs.readFileSync(path.join(home, queued[0] ?? ''), 'utf8')).toContain('b.ts')
+  }, 120_000)
+})
 
 describe('changed on a repo shorter than HEAD~5: git spawn counts through the built bundle', () => {
   it('CLI, linear history: diff, one rev-list count, one batched ref check, and nothing else', () => {

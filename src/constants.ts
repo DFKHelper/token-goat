@@ -220,3 +220,6 @@ export const SYMBOL_BODY_CHAR_CAP = 128 * 1024
 
 /** Upper bound on the number of symbols fetched in one SQL query for skeleton/outline, and on the number listed in one result. */
 export const SKELETON_SYMBOL_CAP = 5000
+
+/** Per-process capture cap (stdout and stderr each). Beyond this the child is killed and an overflow marker is appended — 32 MiB covers any real command. Held here, not in bash_runner.ts, so the hook that reads it does not import bash_runner.ts and process_tree.ts. */
+export const MAX_CAPTURE_BYTES = 32 * 1024 * 1024

@@ -12,10 +12,11 @@ const MAX_FREEZE_PASSES = 64
 // The signals that end a CLI run from outside. SIGHUP is the terminal closing; on Windows Node emulates it for a console close, and SIGTERM is never delivered there.
 const OWNER_SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
 
-/** The outcome of ending a tree: `ok` is false only when a live tree could not be ended with certainty, with the reason in `note`. */
+/** The outcome of ending a tree: `ok` is false only when a live tree could not be ended with certainty, with the reason in `note`; `gone` marks the one failure where the root no longer exists (taskkill status 128, "process not found"), so the caller prints nothing about it, but the root is still ended through its handle, which does nothing to an exited child. */
 export interface KillResult {
   ok: boolean
   note?: string
+  gone?: boolean
 }
 
 function taskkillPath(): string {
@@ -50,23 +51,27 @@ function descendantsOf(root: number, table: Map<number, number[]>): number[] {
   return found
 }
 
-function signalPid(pid: number, signal: NodeJS.Signals): void {
+/** Why *signal* did not reach *pid*, or undefined when it did or the process was already gone (ESRCH, which is what the walk is for). */
+function signalPid(pid: number, signal: NodeJS.Signals): string | undefined {
   try {
     process.kill(pid, signal)
-  } catch {
-    // already gone: what the walk was for
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === 'ESRCH' ? undefined : (code ?? 'unknown error')
   }
+  return undefined
 }
 
-/** End *pid* and everything it started. The caller must know *pid* is a live child of its own: a pid that has already exited may belong to an unrelated process by now, and this never falls back to signalling a bare pid after the walk failed. POSIX: the root is stopped first, then every descendant the process table shows is stopped, pass after pass until a pass finds none new, and only then is the whole set killed. A stopped process cannot fork and its children are not reparented, so a tree that is forking while it is ended (make -j, a shell loop) cannot grow or lose members behind the walk; killing in the same pass instead would let the children of an already-killed process escape to init. When `ps` is unavailable only the root is killed and the result says the descendants were not reached. Windows: `taskkill /T /F`, which also ends the root; a non-zero status is reported, never retried with a bare pid kill. */
+/** End *pid* and everything it started. The caller must know *pid* is a live child of its own: a pid that has already exited may belong to an unrelated process by now, and this never falls back to signalling a bare pid after the walk failed. POSIX: the root is stopped first, then every descendant the process table shows is stopped, pass after pass until a pass finds none new, and only then is the whole set killed. A stopped process cannot fork and its children are not reparented, so a tree that is forking while it is ended (make -j, a shell loop) cannot grow or lose members behind the walk; killing in the same pass instead would let the children of an already-killed process escape to init. When `ps` is unavailable only the root is killed and the result says the descendants were not reached. Windows: `taskkill /T /F`, which also ends the root; a non-zero status is reported, never retried with a bare pid kill. On POSIX a root that refuses a signal for any reason but being gone (EPERM) is reported as a failure too. */
 export function killProcessTree(pid: number | undefined): KillResult {
   if (pid === undefined || !Number.isInteger(pid) || pid <= 0) return { ok: true }
   if (process.platform === 'win32') {
     const result = spawnSync(taskkillPath(), ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true, timeout: HELPER_TIMEOUT_MS })
     if (result.status === 0) return { ok: true }
-    return { ok: false, note: `taskkill ended with ${result.status === null ? (result.error?.message ?? 'no status') : `status ${result.status}`}` }
+    return { ok: false, note: `taskkill ended with ${result.status === null ? (result.error?.message ?? 'no status') : `status ${result.status}`}`, gone: result.status === 128 }
   }
   signalPid(pid, 'SIGSTOP')
+  let rootFailure: string | undefined
   const frozen = [pid]
   const known = new Set(frozen)
   let note: string | undefined
@@ -89,7 +94,12 @@ export function killProcessTree(pid: number | undefined): KillResult {
   }
   if (!settled) note = `the tree was still growing after ${MAX_FREEZE_PASSES} passes, so it was killed as found`
   // Deepest first, root last; every member is stopped, so the order only matters for tidiness.
-  for (const p of frozen.reverse()) signalPid(p, 'SIGKILL')
+  for (const p of frozen.reverse()) {
+    const failure = signalPid(p, 'SIGKILL')
+    if (p === pid) rootFailure = failure
+  }
+  // The root's last signal decides: one that refused the stop but took the kill is ended. A root that refuses the kill (EPERM) is still running, so the caller must not read this as an ended tree.
+  if (rootFailure !== undefined) note = `pid ${pid} could not be signalled (${rootFailure})${note === undefined ? '' : `; ${note}`}`
   return note === undefined ? { ok: true } : { ok: false, note }
 }
 
@@ -130,7 +140,7 @@ function unhook(): void {
   for (const s of OWNER_SIGNALS) process.removeListener(s, onProcessSignal)
 }
 
-/** Spawn *file* as a child this process answers for. The tree is ended when the caller asks (`kill`, for a timeout or an overflow), when this process exits normally, and when it receives INT, TERM or HUP, in each case only while the child is still running. After a signal the process dies of that signal as it would have without the hook (POSIX), or exits 128 plus the signal number (Windows, where a signal cannot be re-raised). The hooks come off when the last live child closes or fails to start. Not covered: this process being killed outright (SIGKILL, TerminateProcess, a harness killing only its pid) runs nothing here. */
+/** Spawn *file* as a child this process answers for. The tree is ended when the caller asks (`kill`, for a timeout or an overflow), when this process exits normally, and when it receives INT, TERM or HUP, in each case only while the child is still running. After a signal the process dies of that signal as it would have without the hook (POSIX), or exits 128 plus the signal number (Windows, where a signal cannot be re-raised). The hooks come off when the last live child closes or fails to start. Not covered: this process being killed outright (SIGKILL, TerminateProcess, a harness killing only its pid) runs nothing here. A tree kill that fails (the helper could not run, or a growing tree) is reported on stderr and the root is then ended through its handle, so a caller waiting on its exit is not left waiting. */
 export function spawnOwned(file: string, args: string[], options: SpawnOptions): OwnedChild {
   const child = spawn(file, args, options)
   let killed = false
@@ -147,8 +157,11 @@ export function spawnOwned(file: string, args: string[], options: SpawnOptions):
     if (killed || ended || child.pid === undefined) return
     killed = true
     const result = killProcessTree(child.pid)
-    // A tree that was already gone by the time taskkill ran is not a failure worth a line.
-    if (!result.ok && !ended) process.stderr.write(`[token-goat: could not end the process tree of pid ${child.pid}: ${result.note ?? 'unknown reason'}]\n`)
+    if (result.ok || ended) return
+    // A root that was already gone by the time taskkill ran is not a failure worth a line, but taskkill may also say that of a root that still runs, so the handle is ended either way.
+    if (result.gone !== true) process.stderr.write(`[token-goat: could not end the process tree of pid ${child.pid}: ${result.note ?? 'unknown reason'}]\n`)
+    // A tree kill that failed reached nothing (taskkill unreachable or wedged), so a caller waiting on the child's exit would wait for ever; the handle Node owns ends the root itself and cannot hit a reused pid, which a signal to the bare pid could.
+    child.kill('SIGKILL')
   }
   const handle = { kill }
   const release = (): void => {
@@ -158,6 +171,9 @@ export function spawnOwned(file: string, args: string[], options: SpawnOptions):
   live.add(handle)
   hook()
   child.once('close', release)
-  child.once('error', release)
+  // An error with a pid is a failed kill or send on a child that still runs, which stays hooked until it closes; only a failed spawn has nothing left to wait for.
+  child.on('error', () => {
+    if (child.pid === undefined) release()
+  })
   return { child, kill, release }
 }
