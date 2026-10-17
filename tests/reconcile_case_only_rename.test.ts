@@ -34,21 +34,17 @@ function run(projectDir: string, homeDir: string, args: string[]): { out: string
   return { out: res.stdout ?? '', err: res.stderr ?? '', code: res.status ?? -1 }
 }
 
-// A sweep that ran out of budget saw only a prefix of the project, and an empty drift list from it says nothing, so it is never returned. It runs again (a sweep that is not a dry run resumes from its saved cursor) for as long as each pass scans more files than any pass before it; a pass that gains nothing fails the test, so no outcome here depends on how long the PC took.
+// The budget is one no clock can spend, so the sweep always runs to completion and the pass never depends on how long the PC took; vitest's test timeout is the only clock left. A sweep that still reports budgetExhausted saw only a prefix of the project, and an empty drift list from it says nothing, so that fails the test instead of returning.
 function sweep(projectDir: string, homeDir: string, ...extra: string[]): Sweep {
-  let mostScanned = -1
-  for (;;) {
-    const r = run(projectDir, homeDir, ['reconcile', '--budget-ms', '30000', '--json', ...extra])
-    let swept: Sweep
-    try {
-      swept = JSON.parse(r.out) as Sweep
-    } catch {
-      return expect.fail(`reconcile emitted no JSON.\nstdout: ${r.out.slice(0, 400)}\nstderr: ${r.err.slice(0, 400)}`)
-    }
-    if (!swept.budgetExhausted) return swept
-    expect(swept.scanned, `reconcile ran out of budget after ${swept.scanned} files and the next pass gained nothing (best so far ${mostScanned})`).toBeGreaterThan(mostScanned)
-    mostScanned = swept.scanned
+  const r = run(projectDir, homeDir, ['reconcile', '--budget-ms', String(Number.MAX_SAFE_INTEGER), '--json', ...extra])
+  let swept: Sweep
+  try {
+    swept = JSON.parse(r.out) as Sweep
+  } catch {
+    return expect.fail(`reconcile emitted no JSON.\nstdout: ${r.out.slice(0, 400)}\nstderr: ${r.err.slice(0, 400)}`)
   }
+  expect(swept.budgetExhausted, `reconcile stopped on its budget after ${swept.scanned} files, so its drift list is a prefix and says nothing about the rest`).toBe(false)
+  return swept
 }
 
 function git(projectDir: string, ...args: string[]): void {
