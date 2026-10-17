@@ -299,13 +299,18 @@ export interface KillSeam extends LivenessSeam { killIfCommandLine?: typeof kill
 export function killAndVerify(victims: Map<number, string>, seam: KillSeam = {}): void {
   const still = (pid: number): boolean => aliveAs(pid, victims.get(pid) ?? null, seam)
   const checkedKill = seam.killIfCommandLine ?? killIfCommandLine
-  // A pid the checked kill cannot decide (it throws for a live pid whose line cannot be read) neither stops the round nor ends the wait: the rest are still signalled, the pid is asked again next round, and the first such failure rides on the survivor error as its cause.
-  let undecided: unknown
+  // A pid the checked kill cannot decide (it throws for a live pid whose line cannot be read) neither stops the round nor ends the wait: the rest are still signalled, the pid is asked again next round, and the first such failure of a pid that is still alive at the end rides on the survivor error as its cause, and a pid a later call decided or that is gone leaves none.
+  const undecided = new Map<number, unknown>()
   const killRound = (pids: Iterable<number>): void => {
     for (const pid of pids) {
       const recorded = (victims.get(pid) ?? '').trim()
       if (recorded === '') continue
-      try { checkedKill(pid, (line) => line.trim() === recorded) } catch (error) { undecided ??= error }
+      try {
+        checkedKill(pid, (line) => line.trim() === recorded)
+        undecided.delete(pid)
+      } catch (error) {
+        if (!undecided.has(pid)) undecided.set(pid, error)
+      }
     }
   }
   // A kill that was refused or missed in one round (Windows refuses TerminateProcess on a process that is exiting) is re-issued next round until the pid is gone.
@@ -318,8 +323,11 @@ export function killAndVerify(victims: Map<number, string>, seam: KillSeam = {})
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
     killRound(remaining)
   }
-  const survivors = [...victims].filter(([pid]) => still(pid)).map(([pid, args]) => `${pid} ${args}`)
-  if (survivors.length > 0) throw new Error(`fixture process still alive ${String((seam.backstopMs ?? HANG_BACKSTOP_MS) / 1000)} s after SIGKILL: ${survivors.join('; ')}`, { cause: undecided })
+  const survivorPids = [...victims.keys()].filter(still)
+  if (survivorPids.length === 0) return
+  const survivors = survivorPids.map((pid) => `${pid} ${victims.get(pid) ?? ''}`)
+  const undecidedPid = survivorPids.find((pid) => undecided.has(pid))
+  throw new Error(`fixture process still alive ${String((seam.backstopMs ?? HANG_BACKSTOP_MS) / 1000)} s after SIGKILL: ${survivors.join('; ')}`, { cause: undecidedPid === undefined ? undefined : undecided.get(undecidedPid) })
 }
 
 export function indexTreeFixture(fixture: ReturnType<typeof treeFixture>): void {
