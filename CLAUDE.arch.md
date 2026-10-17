@@ -293,7 +293,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/bash_extractors.ts`](src/bash_extractors.ts) | Command line extractors, classification, and surgical hint builders for bash hook handlers. |
 | [`src/bash_output_cache.ts`](src/bash_output_cache.ts) | Bash stdout/stderr disk store (byte cap plus 4096 file-count cap, oldest-first eviction) |
 | [`src/bash_range_savings.ts`](src/bash_range_savings.ts) | Prices a line-range read's proposed surgical replacement against the read itself, so a hint that redirects a line-range read can be required to prove it saves something before it i |
-| [`src/bash_runner.ts`](src/bash_runner.ts) | Exports: `DEFAULT_TIMEOUT_SECONDS`, `MAX_CAPTURE_BYTES`, `RunOptions`, `run` |
+| [`src/bash_runner.ts`](src/bash_runner.ts) | Exports: `DEFAULT_TIMEOUT_SECONDS`, `RunOptions`, `run` |
 | [`src/bash_structural_index.ts`](src/bash_structural_index.ts) | Recognizes a plain-enumeration `rg`/`grep` invocation over a single, already-fresh-indexed file whose pattern maps exactly to a token-goat index answer (`outline`/`imports`), and r |
 | [`src/filters.ts`](src/filters.ts) | Shared output-filter helpers |
 | [`src/tool_filters/ai_clis.ts`](src/tool_filters/ai_clis.ts) | Bash output compression and normalization filter for ai_clis |
@@ -478,6 +478,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/filter_notice.ts`](src/filter_notice.ts) | The notices a listing command prints when a filter left nothing of what the store holds, so a filtered view never reads as a definitive "nothing here". |
 | [`src/fold_delivery.ts`](src/fold_delivery.ts) | Turning a delivered slice of a source file into a folded one: pick the spans, render the notices. |
 | [`src/fold_structure.ts`](src/fold_structure.ts) | Turning a whole-file delivery into a structural view of it: a heading tree for a document, a declaration skeleton for source. |
+| [`src/git_async.ts`](src/git_async.ts) | The non-blocking git runner. |
 | [`src/git_hint.ts`](src/git_hint.ts) | Git facts the hooks read inside the `hints.git_hint_max_ms` budget: the branch from the HEAD file with no spawn, and a dirty-state probe that says timed-out instead of clean. |
 | [`src/git_porcelain.ts`](src/git_porcelain.ts) | One entry of `git status --porcelain -z`: the path as git names it, relative to the repository root, plus the path a rename or copy came from. |
 | [`src/graph_analysis.ts`](src/graph_analysis.ts) | Code graph analysis and query commands: similar, context-for, test-for, coverage-gaps, arch, blame, and ask. |

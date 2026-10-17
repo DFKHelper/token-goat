@@ -4,6 +4,8 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import type * as ReconcileModule from '../src/reconcile.js'
+import type { GitResult } from '../src/types.js'
+import type * as GitAsyncModule from '../src/git_async.js'
 import type * as UtilModule from '../src/util.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -24,24 +26,37 @@ import { indexableDir } from './helpers/temp-config.js'
 
 const seam = vi.hoisted(() => ({ failReflog: false, timeOutDiff: false, gitMissing: false, timeOutTopLevelReads: 0, reconcileBudgetMs: null as number | null }))
 
-// The product gives each of its git reads 5 s and fails closed past it, which a loaded machine reaches (a spawn takes 2.5 s or more) and which these tests are not about: every real git call here runs with this much longer budget so the answers come back, and the timeout itself is injected below as the answer runGit gives for one (exit -1 with timedOut, CAPTURE: Node 24.12 spawnSync reports ETIMEDOUT).
-const UNHURRIED_MS = 120_000
+// The product gives each of its git reads 5 s and fails closed past it, which a loaded machine reaches (a spawn takes 2.5 s or more) and which these tests are not about: every real git call here runs with this much longer budget so the answers come back, and the timeout itself is injected below as the answer runGit gives for one (exit -1 with timedOut, CAPTURE: Node 24.12 spawnSync reports ETIMEDOUT). The hook's reads run through runGitAsync and the worker's reconcile through runGit, so both runners answer from this one seam. Hoisted with the mocks that use it, which run before any later top-level statement.
+const answers = vi.hoisted(() => {
+  const UNHURRIED_MS = 120_000
+  const injected = (args: string[]): GitResult | null => {
+    // CAPTURE: Node 24.12 on Windows 11 reports a missing git (and a working directory that is gone) as ENOENT, with no timeout flag; runGitAsync hands it back as `spawn git ENOENT` (tests/run_git_async_parity.test.ts).
+    if (seam.gitMissing) return { stdout: '', stderr: 'spawn git ENOENT', exitCode: -1 }
+    if (seam.failReflog && args[0] === 'reflog') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+    if (seam.timeOutDiff && args[0] === 'diff') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+    if (seam.timeOutTopLevelReads > 0 && args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
+      seam.timeOutTopLevelReads--
+      return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+    }
+    return null
+  }
+  const unhurried = <T extends { timeoutMs?: number | symbol }>(opts: T | undefined): T | undefined => (opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: UNHURRIED_MS })
+  return { injected, unhurried }
+})
 
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
-    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
-      // CAPTURE: Node 24.12 on Windows 11 spawnSync reports a missing git (and a working directory that is gone) as ENOENT, with no timeout flag.
-      if (seam.gitMissing) return { stdout: '', stderr: 'spawnSync git ENOENT', exitCode: -1 }
-      if (seam.failReflog && args[0] === 'reflog') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
-      if (seam.timeOutDiff && args[0] === 'diff') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
-      if (seam.timeOutTopLevelReads > 0 && args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
-        seam.timeOutTopLevelReads--
-        return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
-      }
-      return actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: UNHURRIED_MS })
-    },
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => answers.injected(args) ?? actual.runGit(args, answers.unhurried(opts)),
+  }
+})
+
+vi.mock('../src/git_async.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof GitAsyncModule>()
+  return {
+    ...actual,
+    runGitAsync: async (args: string[], opts?: Parameters<typeof actual.runGitAsync>[1]) => answers.injected(args) ?? actual.runGitAsync(args, answers.unhurried(opts)),
   }
 })
 

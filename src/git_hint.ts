@@ -91,6 +91,11 @@ export function gitFindings(args: string[], cwd: string, timeoutMs: number): Git
     // runGit reports failures in its result; a throw (a cwd that is not a string) is a git that never answered.
     return 'refused'
   }
+  return findingsOfGitResult(result)
+}
+
+/** The {@link GitFindings} answer for a finished git result, shared by the sync probe above and callers that ran git asynchronously. */
+export function findingsOfGitResult(result: GitResult): GitFindings {
   if (result.timedOut === true) return 'timed-out'
   if (result.exitCode !== 0) return 'refused'
   return result.stdout.trim() === '' ? 'clean' : 'dirty'

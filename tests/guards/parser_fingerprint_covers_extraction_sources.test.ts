@@ -89,6 +89,8 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/pdf_extract.ts': 'PDF text extraction feeding indexFileEmbeddings only, gated by files.embed_sha',
   'src/pptx_extract.ts': 'PPTX text extraction feeding indexFileEmbeddings only, gated by files.embed_sha',
   'src/process_util.ts': 'process/shell-quoting utilities for installers, unrelated to parsing',
+  'src/process_tree.ts': 'starts a child process and ends its whole tree, re-exported by util.ts for git_async.ts runGitAsync, unrelated to parsing',
+  'src/git_async.ts': 'runs git without blocking and ends its process tree, loaded by util.ts runGitAsyncLazy; it runs git commands for hooks and never reads a file or produces a symbol, ref or section row',
   'src/project.ts': 'project-root detection and hashing for scoping the index database, not content extraction',
   'src/query_notices.ts': 'formats the trailing --head/traversal-limit notices on structured-query CLI output (reached through csv_query.ts); writes no symbol, ref or section row',
   'src/regex_guard.ts': 'ReDoS-safety guard for user-supplied CLI regex flags (grep/affected/secret-redact); reached in this closure only via util.ts, never by a language extractor\'s own pattern',

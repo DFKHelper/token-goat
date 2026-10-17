@@ -11,13 +11,13 @@ import { sessionStateKey } from './hook_registry.js'
 import { echoedCommand, nameSubject } from './hint_suggestion_guard.js'
 import { contextOutput, getCwd, passOutput } from './hooks_common.js'
 import { claimsOwnChange } from './change_claim.js'
-import { gitFindings, type GitFindings } from './git_hint.js'
+import { findingsOfGitResult, gitFindings, type GitFindings } from './git_hint.js'
 import { claimsCommittedChange } from './hooks_session.js'
 import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
 import { recordStat } from './stats.js'
 import type { HookOutput } from './types.js'
-import { atomicWriteText, ensureDirSync, isWithinQuietHours, withFileLock } from './util.js'
+import { atomicWriteText, ensureDirSync, isWithinQuietHours, runGitAsyncLazy, withFileLock } from './util.js'
 import { evaluateVerification, type VerificationState } from './verification_state.js'
 
 // Not `.json`: sessionSidecarPath refuses any other file ending in `.json`, because every reader that lists the sessions directory takes one to be a session.
@@ -87,19 +87,19 @@ export function receiptLines(state: VerificationState, claimsChangeWithoutEdit: 
 }
 
 /** What `git status` says about a report's change claim: 'lacks' when the report makes a first-person change claim, no commit claim anywhere (a commit leaves a clean tree, and a stray mention of one only silences the flag, the safe direction), and git status is clean; 'unchecked' when the claim stands and `git status` was killed at {@link GIT_STATUS_TIMEOUT_MS}, which is neither a clean tree nor a dirty one; otherwise 'clear'. A dirty tree reads 'clear' whoever dirtied it, the parent's own work included: the subagent's Bash edits are not recorded, so the tree is the only evidence left, and a missed flag costs less than a false accusation. Any other git failure (not a repository, git missing) reads 'clear' too. With `stop`, the answer is kept for subagentStopHandler, which runs on the same event and must not ask git again. */
-export function checkChangeClaim(report: string, cwd: string | null, stop?: HookEvent): 'lacks' | 'unchecked' | 'clear' {
+export async function checkChangeClaim(report: string, cwd: string | null, stop?: HookEvent): Promise<'lacks' | 'unchecked' | 'clear'> {
   if (cwd === null || !claimsOwnChange(report) || claimsCommittedChange(report)) return 'clear'
-  const tree = gitFindings(['status', '--porcelain'], cwd, GIT_STATUS_TIMEOUT_MS)
+  const tree = findingsOfGitResult(await runGitAsyncLazy(['status', '--porcelain'], { cwd, timeoutMs: GIT_STATUS_TIMEOUT_MS }))
   if (stop !== undefined) treeFindingsByStop.set(stop, tree)
   return tree === 'clean' ? 'lacks' : tree === 'timed-out' ? 'unchecked' : 'clear'
 }
 
 /** The receipt text for a subagent that has just stopped, or null when it is clean or the receipt is off. */
-export function receiptForStoppedAgent(event: HookEvent, redactedReport: string): string | null {
+export async function receiptForStoppedAgent(event: HookEvent, redactedReport: string): Promise<string | null> {
   const config = loadConfig().hints
   if (!config.agent_receipt || isWithinQuietHours(config.quiet_hours)) return null
   const state = evaluateVerification(sessionStateKey(event))
-  const claim = state.editedAnyFile ? 'clear' : checkChangeClaim(redactedReport, getCwd(event) || null, event)
+  const claim = state.editedAnyFile ? 'clear' : await checkChangeClaim(redactedReport, getCwd(event) || null, event)
   const lines = receiptLines(state, claim === 'lacks', claim === 'unchecked')
   return lines.length === 0 ? null : lines.join('\n')
 }
@@ -181,12 +181,12 @@ export function takeAgentReceipt(sessionId: string, resultText: string, agentId?
 }
 
 /** subagent_stop, registered by hooks_agent_spawn.ts, which loads this module on first use to keep it out of the hook entry's eager set: park the receipt for the Agent result the parent is about to get. Copilot CLI delivers it from its own subagentStop rewrite instead (hooks_agent_spawn.ts), so nothing is parked there. */
-export function subagentReceiptHandler(event: HookEvent): HookOutput {
+export async function subagentReceiptHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const raw = event.raw['last_assistant_message']
     if (getHarnessName() === 'copilot_cli' || !event.sessionId || typeof raw !== 'string' || raw === '' || event.raw['stop_hook_active'] === true) return passOutput()
     const report = redactSecrets(raw).text
-    const text = receiptForStoppedAgent(event, report)
+    const text = await receiptForStoppedAgent(event, report)
     if (text !== null || loadConfig().hints.agent_receipt) parkAgentReceipt(event.sessionId, report, text ?? '', event.agentId)
     return passOutput()
   } catch {

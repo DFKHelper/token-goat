@@ -69,7 +69,7 @@ async function tryInProcess(entryPath, eventName, input, harnessWaitMs) {
   }
 }`
 
-/** The `spawnSync` fallback ladder, indented for use inside `main()`'s `if (stdout === undefined)`. Node's `spawnSync` defaults `maxBuffer` to 1 MB; a fenced MCP tool result (see hooks_mcp.ts's unconditional `passOrFence`) has no upper size bound of its own, so without an explicit override a large one gets ENOBUFS-killed, the shim fails open to `{}`, and the fence protecting that untrusted payload never reaches the model. `SHIM_MAX_BUFFER_BYTES` below matches this codebase's existing largest capture ceiling (`MAX_CAPTURE_BYTES` in bash_runner.ts) so this path is bounded by the same number rather than an arbitrary new one. */
+/** The `spawnSync` fallback ladder, indented for use inside `main()`'s `if (stdout === undefined)`. Node's `spawnSync` defaults `maxBuffer` to 1 MB; a fenced MCP tool result (see hooks_mcp.ts's unconditional `passOrFence`) has no upper size bound of its own, so without an explicit override a large one gets ENOBUFS-killed, the shim fails open to `{}`, and the fence protecting that untrusted payload never reaches the model. `SHIM_MAX_BUFFER_BYTES` below matches this codebase's existing largest capture ceiling (`MAX_CAPTURE_BYTES` in constants.ts) so this path is bounded by the same number rather than an arbitrary new one. */
 export const SHIM_SPAWN_LADDER = `    const res = entryPath
       ? spawnSync(process.execPath, [entryPath, 'hook', eventName], {
           input,
@@ -97,7 +97,7 @@ export function shimFallbackTimeoutConst(harness: keyof typeof SHIM_FALLBACK_TIM
   return `const SHIM_FALLBACK_TIMEOUT_MS = ${SHIM_FALLBACK_TIMEOUT_MS[harness]}`
 }
 
-/** 32 MiB, matching `MAX_CAPTURE_BYTES` in bash_runner.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */
+/** 32 MiB, matching `MAX_CAPTURE_BYTES` in constants.ts: the largest payload a hook response is allowed to reach without Node's `spawnSync` truncating it via its 1 MB default. */
 export const SHIM_MAX_BUFFER_CONST = `const SHIM_MAX_BUFFER_BYTES = 32 * 1024 * 1024`
 
 // A second copy of this logic lives in src/hook_adapters.ts, which the resident hook server runs for a harness-aware (v2) client; tests/native_hook_adapter_equivalence.test.ts drives this installed shim and a server request with the same payloads and fails unless both print the same bytes and exit code.

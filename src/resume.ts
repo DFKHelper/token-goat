@@ -6,7 +6,7 @@ import { displaySafePath, displaySafeText } from './paths.js'
 import { neutralizeSpokenMarkers } from './injection_scan.js'
 import { quotedArg } from './hint_suggestion_guard.js'
 import { resolveProjectRoot } from './project.js'
-import { runGit, safeSlice } from './util.js'
+import { runGitAsyncLazy, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { listSkills, getSkillFilePath, extractChecklistSection } from './skill_cache.js'
 import { renderWebFetchRows } from './manifest.js'
@@ -142,7 +142,7 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
 
   try {
     const projectRoot = resolveProjectRoot()
-    const result = runGit(['diff', '--stat'], { cwd: projectRoot, timeoutMs: RESUME_GIT_TIMEOUT_MS })
+    const result = await runGitAsyncLazy(['diff', '--stat'], { cwd: projectRoot, timeoutMs: RESUME_GIT_TIMEOUT_MS })
     if (result.exitCode === 0 && result.stdout.trim().length > 0) {
       lines.push('## Uncommitted changes (git diff --stat)')
       // Per line rather than over the block: the diffstat's own newlines are its structure, and displaySafeText escapes a newline. The filenames in it are the repository's, so the block carries the same marker risk every other row here does.

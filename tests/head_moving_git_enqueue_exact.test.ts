@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { basename, join } from 'node:path'
 
-import type * as UtilModule from '../src/util.js'
+import type * as GitAsyncModule from '../src/git_async.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { dataDir } from '../src/constants.js'
@@ -20,13 +20,13 @@ import { indexableDir } from './helpers/temp-config.js'
 
 const seam = vi.hoisted(() => ({ calls: [] as string[][] }))
 
-vi.mock('../src/util.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof UtilModule>()
+vi.mock('../src/git_async.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof GitAsyncModule>()
   return {
     ...actual,
-    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
+    runGitAsync: (args: string[], opts?: Parameters<typeof actual.runGitAsync>[1]) => {
       seam.calls.push(args)
-      return actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })
+      return actual.runGitAsync(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })
     },
   }
 })
