@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeAllDbs, getDb, WAL_SIZE_LIMIT_BYTES } from '../src/db.js'
+import { walCheckpointBusyNoWait } from '../src/index_reclaim.js'
 import { clearModuleCaches } from '../src/reset.js'
 import Database from '../src/sqlite_driver.js'
 import type { SqliteDatabase } from '../src/sqlite_driver.js'
@@ -288,6 +289,33 @@ describe('idleReclaim', () => {
     expect(Number(db.pragma('busy_timeout', { simple: true })), 'the connection timeout is back').toBe(777)
     expect(schemaCookie(db), 'no pass vacuumed').toBe(before)
     expect(walBytes(dbPath), 'the log is still there').toBeGreaterThan(0)
+  })
+})
+
+describe('walCheckpointBusyNoWait', () => {
+  // Provenance: HAND-DERIVED. 777 ms is any nonzero value other than the connection's 15000, so a timeout left at zero or put back as a default shows as a different number. The failure is a stub on the connection's pragma that throws for the checkpoint only, because a real checkpoint does not throw on a busy reader (it answers busy), so the throw path cannot be reached without it; nothing here waits on the clock.
+  it('puts the connection timeout back and lets the error through when the checkpoint throws', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    db.pragma('busy_timeout = 777')
+    const refused = new Error('checkpoint failed')
+    const pragma = db.pragma.bind(db) as (...args: unknown[]) => unknown
+    const spy = vi.spyOn(db, 'pragma').mockImplementation(((...args: unknown[]) => {
+      if (String(args[0]).startsWith('wal_checkpoint')) throw refused
+      return pragma(...args)
+    }) as typeof db.pragma)
+
+    let thrown: unknown
+    try {
+      walCheckpointBusyNoWait(db)
+    } catch (err) {
+      thrown = err
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(thrown, 'the checkpoint error reaches the caller').toBe(refused)
+    expect(Number(db.pragma('busy_timeout', { simple: true })), 'the connection timeout is back after a throw').toBe(777)
   })
 })
 
