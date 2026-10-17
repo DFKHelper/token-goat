@@ -75,8 +75,9 @@ function tableExists(db: ReturnType<typeof getDb>, table: string): boolean {
   return row?.present === 1
 }
 
-/** Reclaim space in the index DB, optionally rebuilding derived rows first. Returns before/after sizes so the caller can report what was actually recovered rather than asserting success blindly. */
-export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddingsOnly?: boolean } = {}): ReclaimResult {
+/** Reclaim space in the index DB, optionally rebuilding derived rows first. Returns before/after sizes so the caller can report what was actually recovered rather than asserting success blindly. `waitForReaders: false` makes both checkpoints answer busy at once instead of waiting out the connection's busy_timeout for a reader to leave, for a caller that asks again on a later cycle (the worker's idle pass); the default waits. */
+export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddingsOnly?: boolean; waitForReaders?: boolean } = {}): ReclaimResult {
+  const checkpoint = opts.waitForReaders === false ? walCheckpointBusyNoWait : walCheckpointBusy
   const rebuild = opts.rebuild === true
   const embeddingsOnly = opts.embeddingsOnly === true
   const beforeBytes = indexSizeBytes(dbPath)
@@ -109,10 +110,10 @@ export function reclaimIndex(dbPath: string, opts: { rebuild?: boolean; embeddin
   }
 
   // Fold the WAL back into the main DB first. VACUUM rewrites the main file only, so an unchecked WAL (88 MB, in the case that motivated this command) would otherwise survive the vacuum and understate the reclaim. wal_checkpoint returns a busy indicator instead of throwing when a reader blocks truncation, so read it rather than assuming success.
-  const checkpointBusy = walCheckpointBusy(db)
+  const checkpointBusy = checkpoint(db)
   // VACUUM cannot run inside a transaction, hence its position outside the block above.
   const vacuumDeferred = !vacuumOrDefer(db)
-  const finalCheckpointBusy = walCheckpointBusy(db)
+  const finalCheckpointBusy = checkpoint(db)
 
   return {
     beforeBytes,

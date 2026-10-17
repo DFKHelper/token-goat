@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { closeAllDbs, getDb, WAL_SIZE_LIMIT_BYTES } from '../src/db.js'
-import { walCheckpointBusyNoWait } from '../src/index_reclaim.js'
+import { reclaimIndex, walCheckpointBusyNoWait } from '../src/index_reclaim.js'
 import { clearModuleCaches } from '../src/reset.js'
 import Database from '../src/sqlite_driver.js'
 import type { SqliteDatabase } from '../src/sqlite_driver.js'
@@ -245,8 +245,6 @@ describe('idleReclaim', () => {
   it('reports a vacuum whose truncating checkpoint a reader refused as not done, keeps asking without a second vacuum, and truncates once the reader is gone', () => {
     const dbPath = tmpDbPath()
     const db = filledDb(dbPath, 0.75)
-    // The vacuum pass's own checkpoints wait out busy_timeout (15 s) before they answer busy; zero makes the refusal immediate, so this test waits on nothing.
-    db.pragma('busy_timeout = 0')
     const before = schemaCookie(db)
 
     withPinningReader(dbPath, () => {
@@ -289,6 +287,57 @@ describe('idleReclaim', () => {
     expect(Number(db.pragma('busy_timeout', { simple: true })), 'the connection timeout is back').toBe(777)
     expect(schemaCookie(db), 'no pass vacuumed').toBe(before)
     expect(walBytes(dbPath), 'the log is still there').toBeGreaterThan(0)
+  })
+})
+
+// Provenance: HAND-DERIVED. 777 ms is any nonzero value other than the connection's 15000, so a checkpoint that waits records 777 and one that does not records 0. The pragma is read at the moment each checkpoint is issued, so the rows observe the wait setting and never a clock.
+describe('the checkpoints of a reclaim pass over a log a reader pins', () => {
+  function timeoutsAtCheckpoints(dbPath: string, db: ReturnType<typeof getDb>, pass: () => void): number[] {
+    db.pragma('busy_timeout = 777')
+    const timeouts: number[] = []
+    const pragma = db.pragma.bind(db) as (...args: unknown[]) => unknown
+    const spy = vi.spyOn(db, 'pragma').mockImplementation(((...args: unknown[]) => {
+      if (String(args[0]).startsWith('wal_checkpoint')) timeouts.push(Number(pragma('busy_timeout', { simple: true })))
+      return pragma(...args)
+    }) as typeof db.pragma)
+    try {
+      withPinningReader(dbPath, pass)
+    } finally {
+      spy.mockRestore()
+    }
+    return timeouts
+  }
+
+  it('run with no wait in the idle pass, the one that vacuums included', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    db.exec('CREATE TABLE payload (id INTEGER PRIMARY KEY, body BLOB)')
+    db.transaction(() => {
+      const insert = db.prepare('INSERT INTO payload (body) VALUES (zeroblob(65536))')
+      for (let i = 0; i < 40; i++) insert.run()
+    }).immediate()
+    db.prepare('DELETE FROM payload WHERE id <= 30').run()
+    const before = schemaCookie(db)
+
+    const timeouts = timeoutsAtCheckpoints(dbPath, db, () => {
+      expect(idleReclaim(dbPath), 'the pass whose truncation was refused is not settled').toBe(false)
+    })
+
+    expect(schemaCookie(db), 'the pass vacuumed, so both of its own checkpoints ran').toBe(before + 1)
+    expect(timeouts, 'the checkpoint before the vacuum and the one after it ran with no wait').toEqual([0, 0])
+  })
+
+  it('wait out the connection timeout for the reader by default, so a manual reclaim keeps its patience', () => {
+    const dbPath = tmpDbPath()
+    const db = getDb(dbPath)
+    db.exec('CREATE TABLE payload (id INTEGER PRIMARY KEY, body BLOB)')
+
+    const timeouts = timeoutsAtCheckpoints(dbPath, db, () => {
+      db.prepare('INSERT INTO payload (body) VALUES (zeroblob(16))').run()
+      reclaimIndex(dbPath)
+    })
+
+    expect(timeouts, 'both checkpoints ran with the connection timeout').toEqual([777, 777])
   })
 })
 
