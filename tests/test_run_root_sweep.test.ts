@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { startWatchdog } from './helpers/stall_proof_watchdog.js'
 import { killDaemonsUnder, sweepStaleRunRoots } from './setup/build-bundle.js'
 
 // HAND-DERIVED: the directory names and ages are constructed here from the sweep's own contract (a `tg-run-` prefix and an mtime older than 6h), independently of the implementation's code. No wire format is involved.
@@ -91,6 +90,8 @@ describe('killDaemonsUnder', () => {
     pid: number
     /** Resolves once the process has started and rejects if it exits first. */
     ready: Promise<void>
+    /** Resolves when the process has exited, by any cause. */
+    exited: Promise<void>
   }
 
   /** Starts `node ...argv`, which must print "ready" once it is running. */
@@ -105,7 +106,8 @@ describe('killDaemonsUnder', () => {
     })
     // A stand-in killed by the test itself, or by afterEach, must not surface as an unhandled rejection.
     ready.catch(() => undefined)
-    return { pid: child.pid as number, ready }
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    return { pid: child.pid as number, ready, exited }
   }
 
   /** A script a stand-in daemon runs as its launcher, in a directory removed after the test. */
@@ -140,20 +142,12 @@ describe('killDaemonsUnder', () => {
     }
   }
 
-  const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
-
-  /** Sweeps `bystander` first, then `target` (named by `daemon`) and waits until `daemon` is dead: a kill wrongly sent for the bystander was issued before the daemon's, so once the daemon is seen dead that kill has been delivered too, and the bystander's survival is not a race against it. */
+  /** Sweeps `bystander` first, then `target` (named by `daemon`) and waits for `daemon`'s exit event: a kill wrongly sent for the bystander was issued before the daemon's, so once the daemon is seen exited that kill has been delivered too, and the bystander's survival is not a race against it. No clock bounds the wait: a sweep that never kills `daemon` ends only when vitest's testTimeout fires, and that failure reads "Test timed out" under the name of the test that ran this, which is the only place the cause is named. */
   async function sweepThenWaitForDaemon(bystander: string, target: string, daemon: Started, entryScript?: string): Promise<void> {
-    const watchdog = startWatchdog({ quietLimitMs: 20_000, label: 'kill stand-ins' })
-    try {
-      await Promise.race([daemon.ready, watchdog.failed])
-      watchdog.progress('daemon started')
-      killDaemonsUnder(bystander, entryScript)
-      killDaemonsUnder(target, entryScript)
-      while (isAlive(daemon.pid)) await Promise.race([sleep(25), watchdog.failed])
-    } finally {
-      watchdog.stop()
-    }
+    await daemon.ready
+    killDaemonsUnder(bystander, entryScript)
+    killDaemonsUnder(target, entryScript)
+    await daemon.exited
   }
 
   it('kills the pid a fresh heartbeat names when it is a worker daemon of the launcher, and leaves the pid a stale heartbeat names alone', async () => {
