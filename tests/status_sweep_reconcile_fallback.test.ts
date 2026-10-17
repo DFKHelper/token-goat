@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { join } from 'node:path'
 
 import type * as DirtyQueueModule from '../src/dirty_queue.js'
-import type * as UtilModule from '../src/util.js'
+import type * as GitAsyncModule from '../src/git_async.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { dataDir } from '../src/constants.js'
@@ -26,13 +26,13 @@ vi.mock('../src/dirty_queue.js', async (importOriginal) => {
   return { ...actual, appendReconcileRequest: (dir: string, projectDir: string) => (seam.reconcileUnrecorded ? false : actual.appendReconcileRequest(dir, projectDir)) }
 })
 
-vi.mock('../src/util.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof UtilModule>()
+vi.mock('../src/git_async.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof GitAsyncModule>()
   return {
     ...actual,
-    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
+    runGitAsync: async (args: string[], opts?: Parameters<typeof actual.runGitAsync>[1]) => {
       const answer = args[0] === 'status' ? seam.status : args[0] === 'ls-files' ? seam.lsFiles : args[0] === 'rev-parse' ? seam.revParse : null
-      return answer !== null ? { stdout: '', stderr: 'no answer', ...answer } : actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })
+      return answer !== null ? { stdout: '', stderr: 'no answer', ...answer } : actual.runGitAsync(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })
     },
   }
 })
@@ -118,9 +118,9 @@ describe('the working-tree status sweep when git does not answer', () => {
     expect(workerLog()).toBe('')
   })
 
-  // CAPTURE: Node v24.12.0 on Windows 11, spawnSync('git', ['log', '--oneline', '-50'], { maxBuffer: 64 }) reported error.code ENOBUFS with the message "spawnSync git ENOBUFS", which runGit hands back as stderr with exit -1 and no timedOut.
+  // FORMAT-DERIVED: the overflow result src/util.ts::runGitAsync settles with (exit -1, no timedOut, this stderr text); tests/run_git_async_reaps_tree.test.ts pins that the real 200 MiB flood returns an ENOBUFS stderr, which is all the sweep's /ENOBUFS/ match reads.
   it('asks the worker to reconcile the project, and logs it, when git status lists more than the output buffer holds', async () => {
-    seam.status = { exitCode: -1, stderr: 'spawnSync git ENOBUFS' }
+    seam.status = { exitCode: -1, stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer' }
 
     await formatterRun(dir)
 

@@ -11,10 +11,10 @@ import { spawnSync } from 'node:child_process'
 import { normalizePath } from './paths.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED } from './types.js'
-import type { GitResult, RunGitOptions } from './types.js'
+import type { GitResult, RunGitAsyncOptions, RunGitOptions } from './types.js'
 
 export { normalizePath }
-export type { GitResult, RunGitOptions }
+export type { GitResult, RunGitAsyncOptions, RunGitOptions }
 
 export {
   type HookEntryLike,
@@ -122,11 +122,20 @@ export function gitInvocation(args: readonly string[]): string[] {
   ]
 }
 
-/** Run git and return its captured output. THE ONLY git spawn site in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. Every call is bounded: `timeoutMs` when it is a positive number, else {@link GIT_DEFAULT_TIMEOUT_MS}; only the named {@link GIT_UNBOUNDED} runs without a limit. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
+/** Forget the git executable gitExecutable resolved, so the next call looks again: runGitAsync calls this when the file it started is gone (ENOENT), as runGit does for its own spawn failure. */
+export function forgetGitExecutable(): void {
+  gitFileCache = undefined
+}
+
+/** The limit a git call runs under, shared by runGit and runGitAsync so the two cannot disagree: undefined only for {@link GIT_UNBOUNDED}. A configured 0 reads as "no limit" to spawnSync, which is the hang the default ends, and a negative or NaN value is no bound either. */
+export function gitTimeoutMs(asked: RunGitOptions['timeoutMs']): number | undefined {
+  if (asked === GIT_UNBOUNDED) return undefined
+  return (typeof asked === 'number' && asked > 0 && Number.isFinite(asked) ? asked : undefined) ?? GIT_DEFAULT_TIMEOUT_MS
+}
+
+/** Run git and return its captured output. With {@link runGitAsync}, the only git spawn sites in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. Every call is bounded: `timeoutMs` when it is a positive number, else {@link GIT_DEFAULT_TIMEOUT_MS}; only the named {@link GIT_UNBOUNDED} runs without a limit. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
-  const asked = opts.timeoutMs
-  // A configured 0 reads as "no limit" to spawnSync, which is the hang the default ends, and a negative or NaN value is no bound either.
-  const timeout = asked === GIT_UNBOUNDED ? undefined : (typeof asked === 'number' && asked > 0 && Number.isFinite(asked) ? asked : undefined) ?? GIT_DEFAULT_TIMEOUT_MS
+  const timeout = gitTimeoutMs(opts.timeoutMs)
   const result = spawnSync(gitExecutable(), gitInvocation(args), {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(timeout !== undefined ? { timeout } : {}),
@@ -147,6 +156,16 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
     exitCode: result.status ?? 1,
+  }
+}
+
+/** {@link runGitAsync} (src/git_async.ts), loaded when the call is made. A hook runs git only after it has decided to, and a hook entry that imported git_async.ts statically would carry it and process_tree.ts into every hook process; the module loads once per process, so the long-lived hook server pays for it once. Same arguments, limit and result as runGitAsync, and like it never rejects: a chunk that fails to load (a missing or replaced file under a long-lived hook server) is the "git never ran" result of runGit, exit -1 with the reason in `stderr`, so a hook goes on to the rest of its work. */
+export async function runGitAsyncLazy(args: string[], opts?: RunGitAsyncOptions): Promise<GitResult> {
+  try {
+    const { runGitAsync } = await import('./git_async.js')
+    return await runGitAsync(args, opts)
+  } catch (err) {
+    return { stdout: '', stderr: String((err as Error).message ?? err), exitCode: -1 }
   }
 }
 

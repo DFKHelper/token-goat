@@ -17,7 +17,7 @@ import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
 import { recordStat } from './stats.js'
 import type { HookOutput } from './types.js'
-import { atomicWriteText, ensureDirSync, isWithinQuietHours, runGit, withFileLock } from './util.js'
+import { atomicWriteText, ensureDirSync, isWithinQuietHours, runGitAsyncLazy, withFileLock } from './util.js'
 import { evaluateVerification, type VerificationState } from './verification_state.js'
 
 // Not `.json`: sessionSidecarPath refuses any other file ending in `.json`, because every reader that lists the sessions directory takes one to be a session.
@@ -83,18 +83,18 @@ export function receiptLines(state: VerificationState, claimsChangeWithoutEdit: 
 }
 
 /** True when the report claims a change the working tree does not show: a first-person change claim, no commit claim anywhere (a commit leaves a clean tree, and a stray mention of one only silences the flag, the safe direction), and git status clean. A dirty tree silences it whoever dirtied it, the parent's own work included: the subagent's Bash edits are not recorded, so the tree is the only evidence left, and a missed flag costs less than a false accusation. */
-export function claimsChangeTheTreeLacks(report: string, cwd: string | null): boolean {
+export async function claimsChangeTheTreeLacks(report: string, cwd: string | null): Promise<boolean> {
   if (cwd === null || !claimsOwnChange(report) || claimsCommittedChange(report)) return false
-  const result = runGit(['status', '--porcelain'], { cwd, timeoutMs: GIT_STATUS_TIMEOUT_MS })
+  const result = await runGitAsyncLazy(['status', '--porcelain'], { cwd, timeoutMs: GIT_STATUS_TIMEOUT_MS })
   return result.exitCode === 0 && result.stdout.trim() === ''
 }
 
 /** The receipt text for a subagent that has just stopped, or null when it is clean or the receipt is off. */
-export function receiptForStoppedAgent(event: HookEvent, redactedReport: string): string | null {
+export async function receiptForStoppedAgent(event: HookEvent, redactedReport: string): Promise<string | null> {
   const config = loadConfig().hints
   if (!config.agent_receipt || isWithinQuietHours(config.quiet_hours)) return null
   const state = evaluateVerification(sessionStateKey(event))
-  const claimsWithoutEdit = !state.editedAnyFile && claimsChangeTheTreeLacks(redactedReport, getCwd(event) || null)
+  const claimsWithoutEdit = !state.editedAnyFile && (await claimsChangeTheTreeLacks(redactedReport, getCwd(event) || null))
   const lines = receiptLines(state, claimsWithoutEdit)
   return lines.length === 0 ? null : lines.join('\n')
 }
@@ -176,12 +176,12 @@ export function takeAgentReceipt(sessionId: string, resultText: string, agentId?
 }
 
 /** subagent_stop, registered by hooks_agent_spawn.ts, which loads this module on first use to keep it out of the hook entry's eager set: park the receipt for the Agent result the parent is about to get. Copilot CLI delivers it from its own subagentStop rewrite instead (hooks_agent_spawn.ts), so nothing is parked there. */
-export function subagentReceiptHandler(event: HookEvent): HookOutput {
+export async function subagentReceiptHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const raw = event.raw['last_assistant_message']
     if (getHarnessName() === 'copilot_cli' || !event.sessionId || typeof raw !== 'string' || raw === '' || event.raw['stop_hook_active'] === true) return passOutput()
     const report = redactSecrets(raw).text
-    const text = receiptForStoppedAgent(event, report)
+    const text = await receiptForStoppedAgent(event, report)
     if (text !== null || loadConfig().hints.agent_receipt) parkAgentReceipt(event.sessionId, report, text ?? '', event.agentId)
     return passOutput()
   } catch {

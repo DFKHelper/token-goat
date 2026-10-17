@@ -1,5 +1,8 @@
 // Provenance: HAND-DERIVED. The stand-in is a `node -e` sleeper started here; the 'exit' event, exitCode and signalCode are the documented ChildProcess surface (Node.js child_process docs), and the wait is judged under faked timers so that any wait on a clock never ends: a stop that returns anyway waited on the exit event. Real child process, no stubbed handle except the kill spy on the already-exited case.
 import { spawn, type ChildProcess } from 'node:child_process'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import * as util from 'node:util'
 
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -129,5 +132,65 @@ describe('stopOwnedChild when the test body threw', () => {
     }
     await expect(run()).rejects.toThrow('the test body failed')
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true)
+  })
+})
+
+// HAND-DERIVED: Node documents that spawn of an executable that does not exist emits 'error' (ENOENT) and leaves pid undefined, and that 'error' is also emitted when a process could not be killed; in both cases 'exit' may never come. A stop that settles does so within microtasks, so the race below is against one macrotask turn and uses no clock: a stop still pending after the turn is a hang.
+const hangsAfterOneTurn = (stop: Promise<void>): Promise<boolean> => Promise.race([stop.then(() => false), new Promise<boolean>((resolve) => setImmediate(() => resolve(true)))])
+
+describe('stopOwnedChild when no exit event can come', () => {
+  // HAND-DERIVED: probed on Node 24: right after spawn() of a missing executable pid is undefined and exitCode is still null, then only 'error' (ENOENT) is emitted and exitCode becomes negative; no 'exit' follows.
+  it.each([{ graceful: true }, { graceful: false }])('settles for a spawn that failed, called before its error is emitted (graceful: $graceful)', async ({ graceful }) => {
+    const child = spawn(path.join(os.tmpdir(), 'tg-no-such-executable-for-stop-owned-child'), [], { stdio: 'ignore', windowsHide: true })
+    child.on('error', () => {})
+    expect(child.pid, 'a failed spawn has no pid').toBeUndefined()
+    expect(child.exitCode, 'the failure is not yet recorded when the stop is called').toBeNull()
+    expect(await hangsAfterOneTurn(stopOwnedChild(child, { graceful })), 'the stop must settle without an exit event').toBe(false)
+  })
+
+  it.each([{ graceful: true }, { graceful: false }])('settles when the child reports an error instead of exiting, and ends the child (graceful: $graceful)', async ({ graceful }) => {
+    const signals: Array<NodeJS.Signals | number | undefined> = []
+    const child = swallowSigterm(sleeper(), signals)
+    await spawned(child)
+    // HAND-DERIVED: the stand-in for a kill that failed is an 'error' event on a live child, which Node documents as the signal for a process that could not be killed.
+    const stop = stopOwnedChild(child, { graceful }).then(() => undefined, (error: unknown) => error)
+    if (graceful) expect(signals, 'the stop signalled the live child').toEqual(['SIGTERM'])
+    const failure = new Error('HAND-DERIVED: the process could not be killed')
+    child.emit('error', failure)
+    const outcome = await Promise.race([stop.then((value) => ({ value })), new Promise<null>((resolve) => setImmediate(() => resolve(null)))])
+    expect(outcome, 'the error event must end the wait').not.toBeNull()
+    // A graceful stop follows a finished body, so nothing is masked and the error is shown; after a failed body the body's own error is the one reported.
+    expect(outcome?.value, graceful ? 'the error reaches the caller' : 'the error is dropped behind the failed body').toBe(graceful ? failure : undefined)
+    await exited(child)
+    expect(child.exitCode !== null || child.signalCode !== null, 'the child was ended, not left running').toBe(true)
+  })
+
+  // FORMAT-DERIVED: Node v24.12.0 lib/internal/child_process.js, printed with ChildProcess.prototype.kill.toString() on 2026-10-17: kill() calls this._handle.kill(signal) and, for an errno that is neither 0, ESRCH, EINVAL nor ENOSYS ("almost certainly EPERM"), does this.emit('error', new ErrnoException(err, 'kill')); an 'error' with no listener is thrown by emit. The EPERM code is read from util.getSystemErrorMap() because libuv's value differs by platform. The failing handle is real (a replaced _handle.kill returning that code); the test restores it so the child can be reaped.
+  it('keeps the body error when the final kill of a child fails, after the first failure consumed the error listener', async () => {
+    const eperm = [...util.getSystemErrorMap()].find(([, [name]]) => name === 'EPERM')?.[0]
+    expect(eperm, 'this platform defines EPERM').toBeDefined()
+    const child = sleeper()
+    await spawned(child)
+    const handle = (child as unknown as { _handle: { kill: (signal: number) => number } })._handle
+    const realKill = handle.kill.bind(handle)
+    handle.kill = (): number => eperm!
+    try {
+      const run = async (): Promise<void> => {
+        try {
+          throw new Error('the test body failed')
+        } finally {
+          const stop = stopOwnedChild(child, { graceful: false })
+          // The stop is waiting on the exit event; a kill the handle refuses is the 'error' that ends that wait, and the final kill then fails the same way with no listener left.
+          child.kill('SIGTERM')
+          await stop
+        }
+      }
+      await expect(run()).rejects.toThrow('the test body failed')
+    } finally {
+      handle.kill = realKill
+      child.kill('SIGKILL')
+      await exited(child)
+    }
+    expect(child.exitCode !== null || child.signalCode !== null, 'the child was ended, not left running').toBe(true)
   })
 })

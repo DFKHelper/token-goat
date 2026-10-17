@@ -66,3 +66,8 @@ export interface RunGitOptions {
   /** Text written to git's stdin, for a subcommand that reads a batch of queries (`cat-file --batch-check`) so one spawn answers them all. */
   readonly input?: string
 }
+
+/** Options accepted by `runGitAsync`: those of `runGit` plus a signal whose abort ends the git process tree and settles the call with exit -1. */
+export interface RunGitAsyncOptions extends RunGitOptions {
+  readonly signal?: AbortSignal
+}
