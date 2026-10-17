@@ -11,7 +11,7 @@ import { sessionStateKey } from './hook_registry.js'
 import { echoedCommand, nameSubject } from './hint_suggestion_guard.js'
 import { contextOutput, getCwd, passOutput } from './hooks_common.js'
 import { claimsOwnChange } from './change_claim.js'
-import { findingsOfGitResult, gitFindings, type GitFindings } from './git_hint.js'
+import { findingsOfGitResult, type GitFindings } from './git_hint.js'
 import { claimsCommittedChange } from './hooks_session.js'
 import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
@@ -195,7 +195,7 @@ export async function subagentReceiptHandler(event: HookEvent): Promise<HookOutp
 }
 
 /** subagent_stop, registered by hooks_agent_spawn.ts (lazily, with the receipt handler): a subagent whose report claims a change of its own while `git status` shows a clean tree, and does not also claim a commit or push, gets a warning on the operator's stderr. It never changes the stop. */
-export function subagentStopHandler(event: HookEvent): HookOutput {
+export async function subagentStopHandler(event: HookEvent): Promise<HookOutput> {
   try {
     const cwd = getCwd(event)
     if (!event.sessionId || !cwd) return passOutput()
@@ -203,7 +203,7 @@ export function subagentStopHandler(event: HookEvent): HookOutput {
     // The report decides first: most stops claim nothing, and none of those needs a git process.
     if (!claimsOwnChange(message) || claimsCommittedChange(message)) return passOutput()
     // The receipt handler runs first on this event and has asked already when it needed to; alone (receipt off, an edit recorded, Copilot CLI), this handler asks within the hint budget and names a miss on stderr.
-    const tree = treeFindingsByStop.get(event) ?? gitFindings(['status', '--porcelain'], cwd, loadConfig().hints.git_hint_max_ms)
+    const tree = treeFindingsByStop.get(event) ?? findingsOfGitResult(await runGitAsyncLazy(['status', '--porcelain'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms }))
     if (tree === 'clean') {
       console.warn(`subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`)
     } else if (tree === 'timed-out') {

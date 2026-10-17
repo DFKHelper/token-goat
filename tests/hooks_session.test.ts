@@ -8,7 +8,9 @@ import * as util from '../src/util.js';
 
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, runGit: vi.fn() };
+  const runGit = vi.fn();
+  // The stop handler asks git through the async runner; it answers from the same mock, so one stand-in serves both.
+  return { ...actual, runGit, runGitAsyncLazy: async (args: string[], opts?: unknown) => runGit(args, opts) };
 });
 
 // Redirects configPath() to a per-test-file temp file so the hints.git_hint_max_ms wiring tests can set a non-default config value deterministically. Mirrors tests/hooks_bash.test.ts.
@@ -212,7 +214,7 @@ describe('hooks_session', () => {
       agentId: undefined,
       raw: { cwd: '/tmp/repo' },
     };
-    const result = subagentStopHandler(event);
+    const result = await subagentStopHandler(event);
     expect(result.hookType).toBe('pass');
     expect(util.runGit).not.toHaveBeenCalled();
   });
@@ -226,29 +228,29 @@ describe('hooks_session', () => {
       agentId: undefined,
       raw: {},
     };
-    const result = subagentStopHandler(event);
+    const result = await subagentStopHandler(event);
     expect(result.hookType).toBe('pass');
     expect(util.runGit).not.toHaveBeenCalled();
   });
 
   describe('subagentStopHandler - hallucination detection', () => {
     // HAND-DERIVED: reports that name no change of the agent's own, which the older verb match took for one ("I'll add X next", "Changed: none").
-    it.each([["I'll add the guard next."], ['Changed: none'], ['We updated nothing'], ['Renamed symbols are listed below.']])('does not warn on the clean-tree report %j', (message) => {
+    it.each([["I'll add the guard next."], ['Changed: none'], ['We updated nothing'], ['Renamed symbols are listed below.']])('does not warn on the clean-tree report %j', async (message) => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       vi.mocked(util.runGit).mockReset();
       vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
-      subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'test-session', agentId: undefined, raw: { cwd: '/tmp/repo', last_assistant_message: message } });
+      await subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'test-session', agentId: undefined, raw: { cwd: '/tmp/repo', last_assistant_message: message } });
       expect(warnSpy).not.toHaveBeenCalled();
       // A report that claims nothing is decided before git is asked.
       expect(util.runGit).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     });
 
-    it('asks git only for a report that claims a change', () => {
+    it('asks git only for a report that claims a change', async () => {
       vi.mocked(util.runGit).mockReset();
       vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'test-session', agentId: undefined, raw: { cwd: '/tmp/repo', last_assistant_message: 'I renamed foo to bar.' } });
+      await subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'test-session', agentId: undefined, raw: { cwd: '/tmp/repo', last_assistant_message: 'I renamed foo to bar.' } });
       expect(util.runGit).toHaveBeenCalledTimes(1);
       expect(warnSpy).toHaveBeenCalledTimes(1);
       warnSpy.mockRestore();
@@ -275,7 +277,7 @@ describe('hooks_session', () => {
         },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
@@ -302,7 +304,7 @@ describe('hooks_session', () => {
         },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
@@ -329,7 +331,7 @@ describe('hooks_session', () => {
         },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
@@ -356,7 +358,7 @@ describe('hooks_session', () => {
         },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('subagent-stop')
@@ -385,7 +387,7 @@ describe('hooks_session', () => {
         },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
@@ -412,7 +414,7 @@ describe('hooks_session', () => {
         },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
@@ -440,7 +442,7 @@ describe('hooks_session', () => {
         },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
@@ -473,7 +475,7 @@ describe('hooks_session', () => {
         },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
@@ -501,7 +503,7 @@ describe('hooks_session', () => {
         },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining('subagent-stop')
@@ -553,7 +555,7 @@ describe('hooks_session', () => {
         raw: { cwd: '/tmp/repo', last_assistant_message: 'I renamed foo to bar.' },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(util.runGit).toHaveBeenCalledWith(
         ['status', '--porcelain'],
@@ -588,7 +590,7 @@ describe('hooks_session', () => {
         raw: { cwd: 12345 },
       };
 
-      subagentStopHandler(event);
+      await subagentStopHandler(event);
 
       expect(util.runGit).not.toHaveBeenCalled();
     });
