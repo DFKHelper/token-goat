@@ -15,9 +15,17 @@ focus_covered() {
   return 1
 }
 
+# $1: array name, $2: text. Appends each line of the text to the caller's array (a bare name, declared in the caller). Stands in for `mapfile -t`, which bash 3.2 (macOS /bin/bash) lacks; like `mapfile -t <<<"$text"` it yields one empty element for empty text, which callers skip.
+focus_read_lines() {
+  local _name=$1 _line
+  while IFS= read -r _line || [[ -n "$_line" ]]; do
+    eval "$_name+=(\"\$_line\")"
+  done <<<"$2"
+}
+
 # $1: leg (win or wsl). Sets FOCUS_FILE to a list of paths for `vitest related`, or "" for the full leg, and FOCUS_NOTE to the one line that says which and why.
 focus_decide() {
-  local leg=$1 rec rec_sha f diff_out
+  local leg=$1 rec rec_sha f diff_out nl
   local -a failed=() changed=() list=() readers=()
   local readers_out src_changed=0 n_changed=0
   FOCUS_FILE=""
@@ -27,15 +35,17 @@ focus_decide() {
   if ! rec="$(node "$FAILED_TOOL" read "$FAILED_STORE" "$leg" 2>/dev/null)"; then
     FOCUS_NOTE="$leg leg full: no record of failing test files from an earlier push"; return 0
   fi
-  rec_sha="$(head -n 1 <<<"$rec")"
-  mapfile -t failed < <(tail -n +2 <<<"$rec")
+  # Plain parameter expansion rather than head and tail on a here-string: no process, no temp file, so nothing for a BSD userland to differ on.
+  nl=$'\n'
+  rec_sha="${rec%%"$nl"*}"
+  focus_read_lines failed "${rec#*"$nl"}"
   if ! git merge-base --is-ancestor "$rec_sha" "$HEAD_SHA" 2>/dev/null; then
     FOCUS_NOTE="$leg leg full: recorded commit ${rec_sha:0:9} is not an ancestor of this push"; return 0
   fi
   if ! diff_out="$(git diff --name-only --no-renames "$rec_sha" "$HEAD_SHA" 2>/dev/null)"; then
     FOCUS_NOTE="$leg leg full: could not list the changes since ${rec_sha:0:9}"; return 0
   fi
-  mapfile -t changed <<<"$diff_out"
+  focus_read_lines changed "$diff_out"
   for f in "${changed[@]}"; do
     [[ -n "$f" ]] || continue
     n_changed=$((n_changed + 1))
@@ -53,7 +63,7 @@ focus_decide() {
     if ! readers_out="$(node "$READERS_TOOL" "$ROOT_DIR" 2>/dev/null)" || [[ -z "$readers_out" ]]; then
       FOCUS_NOTE="$leg leg full: src changed since ${rec_sha:0:9} and the tree-reading and bundle tests could not be listed"; return 0
     fi
-    mapfile -t readers <<<"$readers_out"
+    focus_read_lines readers "$readers_out"
     list+=("${readers[@]}")
   fi
   if [[ "${#list[@]}" -eq 0 ]]; then
