@@ -176,11 +176,15 @@ git(switched, 'checkout', '-q', 'feature')
 
 describe('the Bash post hook after a git checkout: its git reads go through spawn, the async runner', () => {
   it('spawns the changed-file diff and the root lookup, and queues the file the branch adds', () => {
-    const { env, log } = envFor('post-bash-checkout', { TOKEN_GOAT_HOOK_SERVER: '0' })
+    const cwdLog = path.join(scratch, 'spawn-cwds-post-bash-checkout.txt')
+    const { env, log } = envFor('post-bash-checkout', { TOKEN_GOAT_HOOK_SERVER: '0', GIT_SPAWN_PROBE_CWD_OUT: cwdLog })
     const payload = { session_id: 'spawn-probe-checkout', hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'git checkout feature' }, tool_response: { stdout: "Switched to branch 'feature'\n", stderr: '', interrupted: false }, cwd: switched }
-    const res = spawnSync(process.execPath, [bundle, 'hook', 'post_tool_use'], { cwd: switched, encoding: 'utf8', env, input: JSON.stringify(payload), timeout: 120_000 })
+    // The hook process runs in `scratch`, not in the payload's directory, so a git that dropped its cwd would run in `scratch` and be recorded there.
+    const res = spawnSync(process.execPath, [bundle, 'hook', 'post_tool_use'], { cwd: scratch, encoding: 'utf8', env, input: JSON.stringify(payload), timeout: 120_000 })
     expect(res.status, res.stderr).toBe(0)
     const rows = spawned(log)
+    const cwds = fs.readFileSync(cwdLog, 'utf8').split('\n').filter(Boolean).map((c) => fs.realpathSync(c))
+    expect(cwds, 'each git spawn ran in the payload cwd, not the hook process cwd').toEqual(rows.map(() => fs.realpathSync(switched)))
     expect(subcommands(rows)).toEqual(['diff', 'rev-parse'])
     expect(rows[0]).toEqual(expect.arrayContaining(['--name-only', 'HEAD@{1}', 'HEAD']))
     const home = env['TOKEN_GOAT_HOME'] ?? ''
