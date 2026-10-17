@@ -1,4 +1,4 @@
-/** Guard against a test signalling a pid it merely recorded. A pid read from a file, a heartbeat, a status listing or an earlier `alive` probe is a claim: the OS hands a freed number to the next process it starts, and on Windows process.kill(pid, 'SIGKILL') and taskkill are TerminateProcess(handle, 1), so the kill of a pid that had already exited ends whatever holds the number now. That is how a vitest worker forked a moment earlier died with "Worker exited unexpectedly with exit code 1 during started state" in a file that had nothing to do with the kill. A test signals a child through the ChildProcess handle it owns (the handle signals the process it holds and nothing once that has exited), or through killIfCommandLine in tests/helpers/kill_if_command_line.ts, which reads the command line immediately before the signal. This scan fails on any other signal (process.kill with a signal other than 0, a process-group kill, a taskkill, terminateProcessTree, killProcessTree) whose target is not the pid of a handle bound in the same file. Provenance: HAND-DERIVED; the planted sites below are written from the rule, and the allowlist is read off the tree on 2026-10-17. */
+/** Guard against a test signalling a pid it merely recorded. A pid read from a file, a heartbeat, a status listing or an earlier `alive` probe is a claim: the OS hands a freed number to the next process it starts, and on Windows process.kill(pid, 'SIGKILL') and taskkill are TerminateProcess(handle, 1), so the kill of a pid that had already exited ends whatever holds the number now. That is how a vitest worker forked a moment earlier died with "Worker exited unexpectedly with exit code 1 during started state" in a file that had nothing to do with the kill. A test signals a child through the ChildProcess handle it owns (the handle signals the process it holds and nothing once that has exited), or through killIfCommandLine in tests/helpers/kill_if_command_line.ts, which reads the command line immediately before the signal. This scan fails on any other signal (process.kill with a signal other than 0, a process-group kill, a taskkill, terminateProcessTree, killProcessTree) whose target is not the pid of a handle bound in the same file. Provenance: HAND-DERIVED; the planted sites below are written from the rule, and the allowlist is read off the tree on 2026-10-17. What the scan cannot see: a command built in a variable (`execSync(cmd)`, `spawn(bin, args)` with a non-literal program), a kill alias that crosses a module or a function parameter, a script file that kills, and `child` bindings are file-wide rather than scoped to a function. A computed `process[key](...)`, `process.kill.call/apply/bind` fail closed: they are flagged. A bare `process.kill` passed around as a value (an argument, an object field) is not followed: sampled on 2026-10-17 it matched 4 sites, 3 of them type casts or prose, so that rule was dropped. */
 
 // tg-no-regex-preload
 import * as fs from 'node:fs'
@@ -27,6 +27,7 @@ const ALLOWED: readonly Allowed[] = [
   { file: 'helpers/kill_if_command_line.ts', text: 'terminateProcessTree(pid', reason: 'the implementation: the tree kill follows the same command-line read' },
   { file: 'setup/build-bundle.ts', text: 'terminateProcessTree(pid, true)', reason: 'killDaemonsUnder reads the command line of the heartbeat pid and checks isResidentOfInstall on the lines just above, then kills' },
   { file: 'process_tree_freeze_passes.test.ts', text: 'killProcessTree(ROOT)', reason: 'ROOT is a made-up number and spawnSync is mocked, so no real process is signalled' },
+  { file: 'worker.test.ts', text: 'process.kill.bind(process)', reason: 'a spy that forwards to the real kill only what claimWorkerPidFile sends it, which is the signal-0 liveness probe of src/worker_lifecycle.ts:111, for pid 999999999' },
   { file: 'resident_process.test.ts', text: 'terminateProcessTree(pid, true)', reason: 'the refusal cases: pids 0, 1, -1 and this process and its parent must be refused, so nothing is signalled' },
 ]
 
@@ -100,9 +101,9 @@ function splitArgs(text: string): string[] {
   return args
 }
 
-/** Names this file binds to a child process it owns: assigned from a spawning call (spawn, fork, execFile, spawnOwned's `.child`), typed ChildProcess, or the element of a list of them. A pid read off one of these is the handle's own. */
+/** Names this file binds to a child process it owns: assigned from a spawning call (spawn, fork, execFile, spawnOwned's `.child`) or typed ChildProcess. Nothing is assumed by name: a `child` that no spawn in the file bound is not a handle. A pid read off one of these is the handle's own. */
 function handleNames(lines: readonly string[]): Set<string> {
-  const names = new Set<string>(['child', 'this.child'])
+  const names = new Set<string>()
   for (const line of lines) {
     const code = codeOf(line)
     for (const m of code.matchAll(/\b([A-Za-z_$][\w$]*)\s*(?::\s*ChildProcess[\w<>]*\s*)?=\s*(?:await\s+)?(?:[A-Za-z_$][\w$]*\.)?(?:spawn|fork|execFile|spawnOwned|startHost)\(/g)) names.add(m[1]!)
@@ -129,7 +130,8 @@ function isHandlePid(target: string, handles: ReadonlySet<string>): boolean {
   const m = /^([A-Za-z_$][\w$.]*)\.pid$/.exec(target)
   if (m === null) return false
   const owner = m[1]!
-  return handles.has(owner) || owner.endsWith('.child') || handles.has(owner.split('.').pop()!)
+  if (owner.endsWith('.child') && handles.has(owner.slice(0, -'.child'.length).split('.').pop()!)) return true
+  return handles.has(owner) || handles.has(owner.split('.').pop()!)
 }
 
 /** The pid expression of a `${...}` or `String(...)` inside a taskkill argument list, or the whole argument when it is a bare identifier or member. */
@@ -140,19 +142,71 @@ function taskkillTargets(args: string): string[] {
   return out
 }
 
+/** Names a file binds to `process.kill` itself: `const { kill } = process`, `const { kill: stop } = process`, `const k = process.kill`, `import { kill } from 'node:process'`. A call through one of them is a process.kill call. */
+function killAliases(lines: readonly string[]): Set<string> {
+  const names = new Set<string>()
+  const fromBraces = (body: string): void => {
+    for (const part of body.split(',')) {
+      const [key, local] = part.split(':').map((x) => x.trim())
+      if (key === 'kill') names.add(local === undefined || local === '' ? key : local)
+    }
+  }
+  for (const line of lines) {
+    const code = codeOf(line)
+    for (const m of code.matchAll(/\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*process\b(?!\.)/g)) fromBraces(m[1]!)
+    for (const m of code.matchAll(/\bimport\s*\{([^}]*)\}\s*from\s*['"](?:node:)?process['"]/g)) fromBraces(m[1]!.replace(/\bkill\s+as\s+/, 'kill:'))
+    for (const m of code.matchAll(KILL_ALIAS_DECL)) names.add(m[1]!)
+  }
+  return names
+}
+
+const KILL_ALIAS_DECL = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*process\.kill\s*(?:;|$)/g
+
+const KILL_PROGRAM = /^(?:taskkill(?:\.exe)?|pkill|killall|kill)$/i
+
+/** The spawning and exec calls of node:child_process, bare or qualified by the usual namespace names. */
+const SPAWN_CALL = /(?:^|[^\w$.])(?:(?:child_process|cp|childProcess)\.)?(?:execFileSync|execFile|execSync|exec|spawnSync|spawnOwned|spawn)\(/g
+
+/** True when `command`, read as shell text, starts any segment with a kill program (path and `.exe` allowed). */
+function runsKillProgram(command: string): boolean {
+  return command.split(/[;&|\n]+/).some((segment) => KILL_PROGRAM.test((segment.trim().split(/\s+/)[0] ?? '').replace(/^.*[\\/]/, '')))
+}
+
+/** The contents of every string, template and character literal in `text`. */
+function stringLiterals(text: string): string[] {
+  return [...text.matchAll(/(['"`])((?:\\.|(?!\1)[^\\])*)\1/g)].map((m) => m[2]!)
+}
+
 /** One entry per site in `source` that signals a pid which is not a handle's own: `file:line: text`. */
 function flaggedSites(file: string, source: string): string[] {
   const lines = source.split(/\r?\n/)
   const handles = handleNames(lines)
+  const aliases = killAliases(lines)
   const found: string[] = []
   const flag = (i: number): void => void found.push(`${file}:${i + 1}: ${lines[i]!.trim()}`)
+  /** The call whose opening parenthesis is at `lines[i][open]` is a process.kill: a probe or a handle's pid passes. */
+  const checkKill = (i: number, open: number): void => {
+    const args = splitArgs(callText(lines, i, open))
+    if (args[1] === '0') return
+    if (!isHandlePid(bareTarget(args[0] ?? ''), handles)) flag(i)
+  }
   lines.forEach((line, i) => {
     const code = codeOf(line)
-    for (const m of code.matchAll(/(?:^|[^\w$.])process\.kill\(/g)) {
-      const args = splitArgs(callText(lines, i, m.index + m[0].length - 1))
-      const signal = args[1]
-      if (signal === '0') continue
-      if (!isHandlePid(bareTarget(args[0] ?? ''), handles)) flag(i)
+    for (const m of code.matchAll(/(?:^|[^\w$.])process\.kill\(/g)) checkKill(i, m.index + m[0].length - 1)
+    for (const name of aliases) {
+      for (const m of code.matchAll(new RegExp(`(?:^|[^\\w$.])${name.replace(/\$/g, '\\$')}\\(`, 'g'))) checkKill(i, m.index + m[0].length - 1)
+    }
+    for (const m of code.matchAll(/(?:^|[^\w$.])process\[\s*([^\]]*?)\s*\]\(/g)) {
+      const literal = /^(['"`])(.*)\1$/.exec(m[1]!)
+      if (literal === null) flag(i)
+      else if (literal[2] === 'kill') checkKill(i, m.index + m[0].length - 1)
+    }
+    if (/(?:^|[^\w$.])process\.kill\.(?:call|apply|bind)\(/.test(code)) flag(i)
+    for (const m of code.matchAll(SPAWN_CALL)) {
+      const text = callText(lines, i, m.index + m[0].length - 1)
+      if (!stringLiterals(text).some(runsKillProgram)) continue
+      const targets = taskkillTargets(text)
+      if (targets.length === 0 || targets.some((t) => !isHandlePid(t, handles))) flag(i)
     }
     for (const m of code.matchAll(/(?:^|[^\w$.])(?:terminateProcessTree|killProcessTree)\(/g)) {
       const args = splitArgs(callText(lines, i, m.index + m[0].length - 1))
@@ -215,6 +269,56 @@ describe('the scan', () => {
       "const owned = spawnOwned('sh', [])",
       'killProcessTree(owned.child.pid)',
     ].join('\n')
+    expect(flaggedSites('a.ts', good)).toEqual([])
+  })
+
+  // HAND-DERIVED: each spelling is a way to reach the same signal that the plain `process.kill(pid, ...)` form does, written from the rule, not read off a tree. Review 1 of this guard listed the first six as missed.
+  const BAD_FORMS: ReadonlyArray<readonly [string, readonly string[], number]> = [
+    ['a destructured kill', ["const { kill } = process", "kill(pid, 'SIGKILL')"], 2],
+    ['a renamed destructured kill', ["const { kill: stop } = process", "stop(pid, 'SIGKILL')"], 2],
+    ['an aliased process.kill', ['const k = process.kill', "k(pid, 'SIGKILL')"], 2],
+    ['a computed literal key', ["process['kill'](pid, 'SIGKILL')"], 1],
+    ['a computed variable key', ["process[method](pid, 'SIGKILL')"], 1],
+    ['process.kill.call', ["process.kill.call(process, pid, 'SIGKILL')"], 1],
+    ['a taskkill in a command string', ['execSync(`taskkill /F /PID ${pid}`)'], 1],
+    ['a kill in a command string', ['execSync(`kill -9 ${pid}`)'], 1],
+    ['a literal pid in a command string', ["execSync('kill -9 4242')"], 1],
+    ['a kill in a shell script argument', ["spawn('sh', ['-c', `kill -9 ${pid}`])"], 1],
+    ['execFileSync of kill', ["execFileSync('kill', ['-9', String(pid)])"], 1],
+    ['spawnSync of kill', ["spawnSync('kill', ['-9', String(pid)])"], 1],
+    ['a qualified spawnSync of kill', ["cp.spawnSync('kill', ['-TERM', String(pid)])"], 1],
+  ]
+  it.each(BAD_FORMS)('flags %s', (_name, source, line) => {
+    expect(flaggedSites('a.ts', source.join('\n')).map((s) => s.split(':')[1])).toEqual([String(line)])
+  })
+
+  it('accepts the same spellings when the target is a handle the file owns, or a probe', () => {
+    const good = [
+      "const child = spawn(process.execPath, ['-e', '0'])",
+      'const { kill } = process',
+      "kill(child.pid as number, 'SIGTERM')",
+      'kill(pid, 0)',
+      'const k = process.kill',
+      "k(child.pid as number, 'SIGKILL')",
+      "process['kill'](child.pid as number, 'SIGKILL')",
+      'execSync(`taskkill /F /PID ${child.pid}`)',
+      "execFileSync('kill', ['-9', String(child.pid)])",
+      "execSync('echo kill the build')",
+      "spawnSync('git', ['status'])",
+    ].join('\n')
+    expect(flaggedSites('a.ts', good)).toEqual([])
+  })
+
+  // HAND-DERIVED: `child` is only a handle where the file binds it to a spawn, fork or exec result; a name that merely looks like one is the stale-pid hazard itself.
+  it('does not treat a child that no spawn bound as a handle', () => {
+    const bad = ['const child = { pid: Number(fs.readFileSync(f, "utf8")) }', "process.kill(child.pid, 'SIGKILL')"].join('\n')
+    expect(flaggedSites('a.ts', bad).map((s) => s.split(':')[1])).toEqual(['2'])
+    const badThis = ['this.child = readRecord()', "process.kill(this.child.pid, 'SIGKILL')"].join('\n')
+    expect(flaggedSites('a.ts', badThis).map((s) => s.split(':')[1])).toEqual(['2'])
+  })
+
+  it('treats a child that a spawn bound as a handle, on a field too', () => {
+    const good = ["this.child = spawn(process.execPath, ['-e', '0'])", "process.kill(this.child.pid as number, 'SIGKILL')", "const child = await spawnOwned('sh', [])", "process.kill(child.pid as number, 'SIGKILL')"].join('\n')
     expect(flaggedSites('a.ts', good)).toEqual([])
   })
 
