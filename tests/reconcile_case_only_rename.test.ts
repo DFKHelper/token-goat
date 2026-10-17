@@ -4,9 +4,9 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { getDb } from '../src/db.js'
+import { closeAllDbs, getDb } from '../src/db.js'
 import { querySymbols } from '../src/index_reader.js'
 import { normalizePath } from '../src/paths.js'
 import { drainOnce, pendingEmbeddings } from '../src/worker.js'
@@ -79,6 +79,21 @@ function cwdKeepsTypedCase(): boolean {
 
 const lastSegment = (p: string): string | undefined => p.replace(/\\/g, '/').split('/').pop()
 
+// Closes every handle this file's getDb, querySymbols and drainOnce calls cached, then removes each directory. Each step runs in its own try, so one that throws does not skip the rest, and the failures are still reported together. A removal that hits EBUSY means a handle is still open, which is a defect to find, not to retry.
+function releaseFixture(...dirs: string[]): void {
+  const failures: unknown[] = []
+  const step = (fn: () => void): void => {
+    try {
+      fn()
+    } catch (err) {
+      failures.push(err)
+    }
+  }
+  step(closeAllDbs)
+  for (const dir of dirs) if (dir !== '') step(() => rmSync(dir, { recursive: true, force: true }))
+  if (failures.length > 0) throw new AggregateError(failures, 'fixture cleanup failed')
+}
+
 describe('reconcile after a case-only rename', () => {
   let projectDir = ''
   let homeDir = ''
@@ -91,6 +106,13 @@ describe('reconcile after a case-only rename', () => {
     commitAll(projectDir)
     const indexed = run(projectDir, homeDir, ['index', '.'])
     expect(indexed.code, `indexing the fixture failed: ${indexed.err.slice(0, 400)}`).toBe(0)
+  })
+
+  afterEach(() => {
+    const dirs = [projectDir, homeDir]
+    projectDir = ''
+    homeDir = ''
+    releaseFixture(...dirs)
   })
 
   // Calibration: the file is indexed under its first spelling and a sweep finds nothing yet, so whatever the sweep reports in the next test is the rename at work.
@@ -126,12 +148,14 @@ describe('reconcile after a case-only rename', () => {
 
 // The spelling check compares paths below the project root: compared whole, a directory spelled in another case above it would read as a rename of every file, and each sweep would send the whole project back through the drain.
 describe.skipIf(!cwdKeepsTypedCase())('reconcile with the working directory typed in another case', () => {
+  let root = ''
   let projectDir = ''
   let typed = ''
   let homeDir = ''
 
   beforeAll(() => {
-    projectDir = join(indexableDir(), 'CaseProj')
+    root = indexableDir()
+    projectDir = join(root, 'CaseProj')
     mkdirSync(projectDir)
     typed = projectDir.toLowerCase()
     homeDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-cwdcase-home-'))
@@ -140,6 +164,8 @@ describe.skipIf(!cwdKeepsTypedCase())('reconcile with the working directory type
     const indexed = run(typed, homeDir, ['index', '.'])
     expect(indexed.code, `indexing the fixture failed: ${indexed.err.slice(0, 400)}`).toBe(0)
   })
+
+  afterAll(() => releaseFixture(root, homeDir))
 
   it('reports nothing when the index was built from a working directory typed in another case', () => {
     // Calibration: the row carries the typed spelling, so the sweep below compares two spellings of one path rather than one spelling with itself.
