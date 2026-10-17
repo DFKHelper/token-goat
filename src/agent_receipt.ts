@@ -17,7 +17,7 @@ import { redactSecrets } from './secret_redact.js'
 import { sessionSidecarPath } from './session_store.js'
 import { recordStat } from './stats.js'
 import type { HookOutput } from './types.js'
-import { atomicWriteText, ensureDirSync, isWithinQuietHours, runGit, withFileLock } from './util.js'
+import { atomicWriteText, ensureDirSync, isWithinQuietHours, withFileLock } from './util.js'
 import { evaluateVerification, type VerificationState } from './verification_state.js'
 
 // Not `.json`: sessionSidecarPath refuses any other file ending in `.json`, because every reader that lists the sessions directory takes one to be a session.
@@ -68,7 +68,7 @@ function reportHash(trimmedReport: string): string {
 }
 
 /** The receipt lines for a verdict, at most three, or an empty list when no red flag fires. */
-export function receiptLines(state: VerificationState, claimsChangeWithoutEdit: boolean): string[] {
+export function receiptLines(state: VerificationState, claimsChangeWithoutEdit: boolean, treeCheckUnfinished = false): string[] {
   const lines: string[] = []
   if (state.failingUnresolved && state.latestRun !== undefined) {
     lines.push(`${LINE_PREFIX} this subagent's last check failed: ${echoedCommand(state.latestRun.command)} (exit ${state.latestRun.exitCode}).`)
@@ -79,14 +79,21 @@ export function receiptLines(state: VerificationState, claimsChangeWithoutEdit: 
     lines.push(`${LINE_PREFIX} this subagent edited after its last passing check: ${named}${more > 0 ? ` (+${more} more)` : ''}.`)
   }
   if (claimsChangeWithoutEdit) lines.push(`${LINE_PREFIX} the report claims a change, but this subagent recorded no edit and the working tree is clean.`)
+  // Said in one plain line, so a slow machine never turns an unchecked claim into a silent pass.
+  else if (treeCheckUnfinished) lines.push(`${LINE_PREFIX} git status did not finish, so this report's change claim was not checked.`)
   return lines
 }
 
 /** True when the report claims a change the working tree does not show: a first-person change claim, no commit claim anywhere (a commit leaves a clean tree, and a stray mention of one only silences the flag, the safe direction), and git status clean. A dirty tree silences it whoever dirtied it, the parent's own work included: the subagent's Bash edits are not recorded, so the tree is the only evidence left, and a missed flag costs less than a false accusation. */
 export function claimsChangeTheTreeLacks(report: string, cwd: string | null): boolean {
-  if (cwd === null || !claimsOwnChange(report) || claimsCommittedChange(report)) return false
-  const result = runGit(['status', '--porcelain'], { cwd, timeoutMs: GIT_STATUS_TIMEOUT_MS })
-  return result.exitCode === 0 && result.stdout.trim() === ''
+  return checkChangeClaim(report, cwd) === 'lacks'
+}
+
+/** {@link claimsChangeTheTreeLacks} with the one answer it cannot give as a boolean: 'unchecked' when the report claims a change and `git status` was killed at {@link GIT_STATUS_TIMEOUT_MS}, which is neither a clean tree nor a dirty one. Any other git failure (not a repository, git missing) reads 'clear', as it always has. */
+export function checkChangeClaim(report: string, cwd: string | null): 'lacks' | 'unchecked' | 'clear' {
+  if (cwd === null || !claimsOwnChange(report) || claimsCommittedChange(report)) return 'clear'
+  const tree = gitFindings(['status', '--porcelain'], cwd, GIT_STATUS_TIMEOUT_MS)
+  return tree === 'clean' ? 'lacks' : tree === 'timed-out' ? 'unchecked' : 'clear'
 }
 
 /** The receipt text for a subagent that has just stopped, or null when it is clean or the receipt is off. */
@@ -94,8 +101,8 @@ export function receiptForStoppedAgent(event: HookEvent, redactedReport: string)
   const config = loadConfig().hints
   if (!config.agent_receipt || isWithinQuietHours(config.quiet_hours)) return null
   const state = evaluateVerification(sessionStateKey(event))
-  const claimsWithoutEdit = !state.editedAnyFile && claimsChangeTheTreeLacks(redactedReport, getCwd(event) || null)
-  const lines = receiptLines(state, claimsWithoutEdit)
+  const claim = state.editedAnyFile ? 'clear' : checkChangeClaim(redactedReport, getCwd(event) || null)
+  const lines = receiptLines(state, claim === 'lacks', claim === 'unchecked')
   return lines.length === 0 ? null : lines.join('\n')
 }
 
