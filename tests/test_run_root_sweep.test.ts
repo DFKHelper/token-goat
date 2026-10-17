@@ -74,12 +74,27 @@ describe('killDaemonsUnder', () => {
   // FORMAT-DERIVED: a daemon's command line is `node <launcher> --worker-daemon`, read off its launch site src/worker_lifecycle.ts::startDetachedWorker (`spawn(process.execPath, [daemonEntryScript(), '--worker-daemon'])`), and its heartbeat is the file queue/drain-heartbeat holding its pid (src/worker_lifecycle.ts::drainHeartbeatPathFor, writeDrainHeartbeat). The stand-ins below are node processes given that argv shape; the real-bundle case runs the shipped launcher itself.
   const WORKER_DAEMON_FLAG = '--worker-daemon'
   const STAND_IN_SOURCE = 'process.stdout.write("ready"); setInterval(() => {}, 1000)'
+  // HAND-DERIVED: a daemon with a child of its own; the child shares the daemon's stdout pipe (stdio inherit), so that pipe closes only once both are gone, and the daemon prints "ready <child pid>". On Windows the child is detached so that it is not in the job object libuv gives the daemon's non-detached children, which the OS closes, ending them, when the daemon dies: without that the child would die with a root-only kill and the test could not tell it from a tree kill. This is a stand-in for the process tree the real daemon leads, not a wire format.
+  const STAND_IN_WITH_CHILD_SOURCE = `import { spawn } from 'node:child_process'
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'ignore'], windowsHide: true, detached: process.platform === 'win32' })
+process.stdout.write('ready ' + child.pid + ' ')
+setInterval(() => {}, 1000)
+`
 
   const spawned: ChildProcess[] = []
+  // Pids of processes a stand-in daemon started itself, reaped by afterEach when the sweep under test did not end them.
+  const grandchildPids: number[] = []
   afterEach(() => {
     for (const c of spawned.splice(0)) {
       try {
         if (c.pid !== undefined) process.kill(c.pid, 'SIGKILL')
+      } catch {
+        // already gone
+      }
+    }
+    for (const pid of grandchildPids.splice(0)) {
+      try {
+        process.kill(pid, 'SIGKILL')
       } catch {
         // already gone
       }
@@ -92,29 +107,36 @@ describe('killDaemonsUnder', () => {
     ready: Promise<void>
     /** Resolves when the process has exited, by any cause. */
     exited: Promise<void>
+    /** Resolves when the process has exited and every holder of its stdout pipe has closed it, a process it started and passed the pipe to included. */
+    closed: Promise<void>
+    /** Everything the process has printed so far. */
+    output: () => string
   }
 
-  /** Starts `node ...argv`, which must print "ready" once it is running. */
-  function start(argv: string[], env: NodeJS.ProcessEnv = process.env): Started {
-    const child = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, env })
+  /** Starts `node ...argv`, which must print "ready" once it is running. `detached` makes it lead its own process group, as the real daemon does, which is what a POSIX tree kill signals. */
+  function start(argv: string[], options: { env?: NodeJS.ProcessEnv; detached?: boolean } = {}): Started {
+    const child = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, env: options.env ?? process.env, detached: options.detached === true })
     spawned.push(child)
+    let printed = ''
     const ready = new Promise<void>((resolve, reject) => {
       child.stdout?.on('data', (chunk: Buffer) => {
-        if (chunk.toString().includes('ready')) resolve()
+        printed += chunk.toString()
+        if (printed.includes('ready')) resolve()
       })
       child.once('exit', (code) => reject(new Error(`stand-in exited with ${String(code)} before it was ready`)))
     })
     // A stand-in killed by the test itself, or by afterEach, must not surface as an unhandled rejection.
     ready.catch(() => undefined)
     const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
-    return { pid: child.pid as number, ready, exited }
+    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
+    return { pid: child.pid as number, ready, exited, closed, output: () => printed }
   }
 
   /** A script a stand-in daemon runs as its launcher, in a directory removed after the test. */
-  function launcherScript(label: string): string {
+  function launcherScript(label: string, source: string = STAND_IN_SOURCE): string {
     const dir = makeDir(`tg-run-killtest-${label}-${process.pid}-${Date.now()}`, 0)
     const script = path.join(dir, 'launcher.mjs')
-    fs.writeFileSync(script, STAND_IN_SOURCE)
+    fs.writeFileSync(script, source)
     return script
   }
 
@@ -189,6 +211,33 @@ describe('killDaemonsUnder', () => {
 
     expect(isAlive(ours.pid), 'the daemon of the launcher survived the sweep').toBe(false)
     expect(isAlive(theirs.pid), 'a worker daemon run from another launcher was killed').toBe(true)
+  })
+
+  it('ends the tree of the worker daemon it kills, not only the daemon', async () => {
+    const launcher = launcherScript('tree', STAND_IN_WITH_CHILD_SOURCE)
+    const daemon = start([launcher, WORKER_DAEMON_FLAG], { detached: process.platform !== 'win32' })
+    const root = rootNaming('tree', daemon.pid, 0)
+    await daemon.ready
+    const childPid = Number(/ready (\d+) /.exec(daemon.output())?.[1])
+    expect(Number.isInteger(childPid) && childPid > 0, `the daemon did not print its child's pid: ${daemon.output()}`).toBe(true)
+    grandchildPids.push(childPid)
+
+    killDaemonsUnder(root, launcher)
+    await daemon.exited
+    // The daemon's child holds the stdout pipe too, so the pipe closes only when the child is gone as well; a kill of the daemon alone leaves this unresolved until vitest's testTimeout fires.
+    await daemon.closed
+  })
+
+  it.skipIf(process.platform !== 'win32')('kills a worker daemon whose command line spells the launcher with a different drive-letter case', async (ctx) => {
+    const launcher = launcherScript('case')
+    const drive = /^([A-Za-z]):/.exec(launcher)?.[1]
+    if (drive === undefined) return ctx.skip()
+    const flipped = (drive === drive.toLowerCase() ? drive.toUpperCase() : drive.toLowerCase()) + launcher.slice(1)
+    const daemon = start([flipped, WORKER_DAEMON_FLAG])
+    const root = rootNaming('case', daemon.pid, 0)
+    const noHeartbeats = makeDir(`tg-run-killtest-none-${process.pid}-${Date.now()}`, 0)
+    await sweepThenWaitForDaemon(noHeartbeats, root, daemon, launcher)
+    expect(isAlive(daemon.pid), 'a daemon whose launcher differs only in drive-letter case survived the sweep').toBe(false)
   })
 
   it('kills the real worker daemon of the built bundle with no launcher passed', async () => {

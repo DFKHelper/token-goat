@@ -113,7 +113,7 @@ export function killDaemonsUnder(root: string, entryScript: string = DAEMON_LAUN
         if (commandLine !== null || pidExists(pid)) process.stderr.write(`[build-bundle] not killing pid ${String(pid)} named by ${beat}: ${commandLine === null ? 'its command line cannot be read' : 'its command line is not a worker daemon of this checkout'}\n`)
         continue
       }
-      terminateProcessTree(pid, true)
+      if (!terminateProcessTree(pid, true)) process.stderr.write(`[build-bundle] could not kill worker daemon pid ${String(pid)} named by ${beat}: the kill request failed\n`)
     } catch {
       // best-effort: already gone, not ours to signal, or unreadable
     }
