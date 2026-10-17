@@ -1,4 +1,4 @@
-/** Guard against the unowned-background-process class. A child started `detached: true`, or let go with `.unref()`, outlives the process that started it; the audit that produced this guard found 29 `find /` walks left behind by timed-out agent shells, each running for hours. So every such site in src/ must say, in a single-line comment on the line itself or the line above, who owns the process and what ends it: `// owner: <who> ... dies when <condition>`. A site with no real death condition cannot honestly carry that comment, which is the point: it is reported, not papered over. A child that is neither detached nor unref'd is held to the same rule unless it is started through spawnOwned (src/process_tree.ts), because it is the case that left the OCR helper running for ever once its parent was killed. Limits: it checks that the comment has the shape, not that what it claims is true (a false comment passes), it reads the .ts files under src/ only so the Rust shims under native/ are not scanned, and a child bound to a name another way (destructuring, a returned handle) is only seen when it is released in the same expression as its spawn. Provenance: HAND-DERIVED. The sample sources below are written for this file from the rule, not from the scanner's own regexes; the real-tree test reads src/ as shipped. */
+/** Guard against the unowned-background-process class. A child started `detached: true`, or let go with `.unref()`, outlives the process that started it; the audit that produced this guard found 29 `find /` walks left behind by timed-out agent shells, each running for hours. So every such site in src/ and tests/ must say, in a single-line comment on the line itself or the line above, who owns the process and what ends it: `// owner: <who> ... dies when <condition>`. A site with no real death condition cannot honestly carry that comment, which is the point: it is reported, not papered over. A child that is neither detached nor unref'd is held to the same rule unless it is started through spawnOwned (src/process_tree.ts), because it is the case that left the OCR helper running for ever once its parent was killed. Limits: it checks that the comment has the shape, not that what it claims is true (a false comment passes), it reads the .ts files under src/ and tests/ only (tests/fixtures and this file excluded; this file's sample sources spell the patterns as text), so the Rust shims under native/ and the Rust fixtures under tests/helpers/ are not scanned, and a child bound to a name another way (destructuring, a returned handle) is only seen when it is released in the same expression as its spawn. Provenance: HAND-DERIVED. The sample sources below are written for this file from the rule, not from the scanner's own regexes; the real-tree test reads src/ as shipped. */
 
 // tg-no-regex-preload
 import * as fs from 'node:fs'
@@ -11,6 +11,7 @@ import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
+const TESTS_DIR = path.join(HERE, '..')
 
 const OWNER_COMMENT = /\/\/\s*owner:.*\bdies when\b/
 
@@ -103,6 +104,16 @@ function siteCount(source: string): number {
   return unownedSites('x', stripped).length
 }
 
+/** The test files, relative to tests/, except fixtures and this file: its sample sources spell `detached: true` and `.unref()` as text for the scanner, they start nothing. */
+function testFiles(): readonly string[] {
+  const self = path.basename(fileURLToPath(import.meta.url))
+  const items = fs
+    .readdirSync(TESTS_DIR, { recursive: true, encoding: 'utf8' })
+    .map((rel) => rel.split(path.sep).join('/'))
+    .filter((rel) => rel.endsWith('.ts') && !rel.startsWith('fixtures/') && !rel.includes('node_modules/') && rel !== `guards/${self}`)
+  return pinnedPopulation({ what: 'TypeScript files under tests/', items, floor: 1000, mustInclude: ['test_run_root_sweep.test.ts', 'setup/build-bundle.ts', 'guards/population.ts'] })
+}
+
 function sourceFiles(): readonly string[] {
   const items = fs.readdirSync(SRC_DIR, { recursive: true, encoding: 'utf8' }).filter((rel) => rel.endsWith('.ts')).map((rel) => rel.split(path.sep).join('/'))
   return pinnedPopulation({ what: 'TypeScript files under src/', items, floor: 400, mustInclude: ['worker_lifecycle.ts', 'hook_client.ts', 'bridges/copilot_session_start.ts', 'process_tree.ts'] })
@@ -180,6 +191,16 @@ describe('every detached or unref\'d child names who owns it and what ends it', 
   it('finds every site in src/ owned', () => {
     const unowned = sourceFiles().flatMap((rel) => unownedSites(`src/${rel}`, fs.readFileSync(path.join(SRC_DIR, rel), 'utf8')))
     expect(unowned, 'a detached or unref\'d child with no `// owner: ... dies when ...` comment on its line or the line above').toEqual([])
+  })
+
+  it('catches a detached option whose value is computed, not only a literal true', () => {
+    const src = ["const a = spawn('x', [], { detached: options.detached === true })", "const b = spawn('y', [], { stdio: 'pipe', detached: process.platform === 'win32' })"].join('\n')
+    expect(unownedSites('a.ts', src).map((s) => s.split(': ')[0])).toEqual(['a.ts:1', 'a.ts:2'])
+  })
+
+  it('finds every detached or unref\'d child in tests/ owned, including one named in a source string a test writes out', () => {
+    const unowned = testFiles().flatMap((rel) => unownedSites(`tests/${rel}`, fs.readFileSync(path.join(TESTS_DIR, rel), 'utf8')))
+    expect(unowned, 'a detached or unref\'d child in a test with no `// owner: ... dies when ...` comment on its line or the line above').toEqual([])
   })
 
   it('is looking at the sites that exist: each launcher is seen by the scan', () => {
