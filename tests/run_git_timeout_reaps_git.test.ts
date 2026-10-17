@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { resolveOnPath, sleepSync } from '../src/process_util.js'
 import { runGit } from '../src/util.js'
 
@@ -61,21 +61,26 @@ beforeEach(() => {
 
 afterEach(() => {
   // A survivor of a failed run is ended here by the pid it announced, and the lock is dropped so a git still waiting on it ends by itself.
-  for (const pid of startedPids) {
-    // A passing run leaves these pids dead, and the OS may have given a number to a new process since (on Windows a killed stranger exits with code 1, as a vitest worker did): only a process whose command line is still git is signalled.
-    if (!killIfCommandLine(pid, isGitCommandLine)) continue
-    // The kill is asked for, not done: wait (bounded) until the process is gone, since a live one still holds the directory open.
-    for (let waited = 0; waited < 100 && alive(pid); waited++) sleepSync(50)
+  try {
+    // A passing run leaves these pids dead, and the OS may have given a number to a new process since (on Windows a killed stranger exits with code 1, as a vitest worker did): only a process whose command line is still git is signalled. A pid whose command line cannot be read throws, after every other pid was tried.
+    const live = [...startedPids].filter(alive)
+    killAllIfCommandLine(startedPids, isGitCommandLine)
+    // The kill is asked for, not done: wait (bounded) until the processes are gone, since a live one still holds the directory open.
+    for (const pid of live) {
+      for (let waited = 0; waited < 100 && alive(pid); waited++) sleepSync(50)
+    }
+  } finally {
+    // A throw above still reaches the rest of the cleanup: the environment is restored, the pids forgotten and the files removed before it surfaces.
+    startedPids.clear()
+    for (const key of Object.keys(savedEnv)) {
+      if (savedEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = savedEnv[key] as string
+      delete savedEnv[key]
+    }
+    rmSync(path.join(repo, '.git', 'packed-refs.lock'), { force: true })
+    rmSync(repo, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+    rmSync(tracePath, { force: true })
   }
-  startedPids.clear()
-  for (const key of Object.keys(savedEnv)) {
-    if (savedEnv[key] === undefined) delete process.env[key]
-    else process.env[key] = savedEnv[key] as string
-    delete savedEnv[key]
-  }
-  rmSync(path.join(repo, '.git', 'packed-refs.lock'), { force: true })
-  rmSync(repo, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
-  rmSync(tracePath, { force: true })
 })
 
 describe('runGit timeout', () => {

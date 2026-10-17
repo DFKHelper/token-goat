@@ -101,9 +101,13 @@ describe('an edit wakes the detached worker (built bundle)', () => {
       if (stopped !== undefined && Number.isFinite(stopped)) {
         const until = Date.now() + 5000
         while (pidAlive(stopped) && Date.now() < until) await sleep(50)
-        killIfCommandLine(stopped, isWorkerDaemonCommandLine)
-        const killed = Date.now() + 5000
-        while (pidAlive(stopped) && Date.now() < killed) await sleep(50)
+        try {
+          killIfCommandLine(stopped, isWorkerDaemonCommandLine)
+        } finally {
+          // A pid whose command line could not be read throws above; the wait for the daemon to let go of its directory still runs before it surfaces.
+          const killed = Date.now() + 5000
+          while (pidAlive(stopped) && Date.now() < killed) await sleep(50)
+        }
       }
     }
   }, 60_000)
