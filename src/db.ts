@@ -500,6 +500,9 @@ function walSwitchError(lastError: unknown): Error {
   return new Error(`db: failed to enable WAL mode (${lastError instanceof Error ? lastError.message : String(lastError)})`, { cause: lastError })
 }
 
+/** Size a -wal file is cut back to once its log has been folded into the database and the next write restarts it. A WAL never shrinks on its own: SQLite reuses the file from its start and leaves it at the largest size it ever reached, and `journal_size_limit` is its only setting that truncates one, per connection and not stored in the database, so every read-write connection sets it. Without it one whole-database rewrite (a VACUUM in WAL mode writes every page through the log) whose truncating checkpoint was refused by a concurrent reader left a 5.0 GB -wal beside a 5.0 GB global.db for as long as any process held the database open, the hook server being one for days; all but 704 of its 1.2 million frames were stale. The limit is a floor for the file after a restart, not a cap: a transaction larger than it still writes what it must. */
+export const WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
+
 /** How long a connection opened by a one-shot hook process waits on another process's lock, and how long its WAL switch is retried, in milliseconds. The hook is the agent's tool call: every wait here is wall-clock the agent sits through, and every write a hook makes is a hint, a stat or a session note that is fail-soft by contract, so a lost row costs far less than the 15 s a wedged lock holder charged per write (measured 32.8-38.3 s for one Read whose hint made two ledger writes). Sized like {@link PROBE_BUSY_TIMEOUT_MS}, the other pre-tool read bound. */
 const HOOK_DB_WAIT_MS = 250
 let _hookWaits = false
@@ -520,6 +523,7 @@ function initConnection(conn: SqliteDatabase, walStopOn?: (e: unknown) => boolea
   conn.pragma(`busy_timeout = ${waits.busyMs}`)
   enableWalWithRetry(conn, waits.walSwitchMs, walStopOn)
   conn.pragma('synchronous = NORMAL')
+  conn.pragma(`journal_size_limit = ${WAL_SIZE_LIMIT_BYTES}`)
   conn.pragma('cache_size = -32000')
   conn.pragma('temp_store = MEMORY')
   conn.pragma('mmap_size = 134217728')

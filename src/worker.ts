@@ -657,6 +657,19 @@ const IDLE_VACUUM_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 const IDLE_VACUUM_COOLDOWN_MS = 5 * 60 * 1000
 
+// Smallest share of the database file that must be free pages before the idle pass vacuums it. VACUUM rewrites every page, and in WAL mode it writes them through the log, so on a 5 GB database with nothing to give back it costs a 5 GB write and a 5 GB -wal for no gain; the idle pass runs every six hours, so it must not be that expensive when there is nothing to reclaim.
+const IDLE_VACUUM_MIN_FREE_SHARE = 0.1
+
+/** One idle reclaim pass over the database at `dbPath`: vacuum it when at least {@link IDLE_VACUUM_MIN_FREE_SHARE} of the file is free pages. True when the pass is settled for this interval (vacuumed, or nothing worth reclaiming); false when there is no database yet or the vacuum could not get its lock, so the next cycle tries again. */
+export function idleReclaim(dbPath: string): boolean {
+  if (!fs.existsSync(dbPath)) return false
+  const db = getDb(dbPath)
+  const free = Number(db.pragma('freelist_count', { simple: true }))
+  const total = Number(db.pragma('page_count', { simple: true }))
+  if (!(total > 0) || free / total < IDLE_VACUUM_MIN_FREE_SHARE) return true
+  return !reclaimIndex(dbPath, { rebuild: false }).vacuumDeferred
+}
+
 // How many files owed an embed the worker puts back on its queue at a time. The next batch waits until every embed in flight has settled, so a backlog of any size is worked through at the pace the embedding slots allow and never ahead of an edit that arrives meanwhile.
 const EMBED_BACKLOG_BATCH = 50
 
@@ -838,13 +851,7 @@ export async function runWorkerLoop(
     const now = Date.now()
     if (now - lastIdleVacuumMs >= IDLE_VACUUM_INTERVAL_MS && now - lastActiveMs >= IDLE_VACUUM_COOLDOWN_MS) {
       try {
-        const dbPath = path.join(dir, 'global.db')
-        if (fs.existsSync(dbPath)) {
-          const res = reclaimIndex(dbPath, { rebuild: false })
-          if (!res.vacuumDeferred) {
-            lastIdleVacuumMs = now
-          }
-        }
+        if (idleReclaim(path.join(dir, 'global.db'))) lastIdleVacuumMs = now
       } catch {
         // Best-effort non-blocking maintenance
       }
