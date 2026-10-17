@@ -28,8 +28,17 @@ const MAX_NAMED_FILES = 3
 /** A subagent stop is not a hot path, and the 50 ms hint budget is shorter than a cold git start on Windows. The receipt and the stop warning both ask git within it. */
 export const GIT_STATUS_TIMEOUT_MS = 5000
 const LINE_PREFIX = 'token-goat:'
-/** The `git status` answer the receipt handler got for a stop, read by the stop handler that runs on the same event object: one git process per stop, and one answer, instead of a second ask at the 50 ms hint budget that a cold git misses while the first, at the hang guard, had answered. */
+/** The `git status` answer the first handler to need one got for a stop, read by the other handlers that run on the same event object, whichever runs first: one git process per stop, and one answer, instead of a second ask that a cold git misses while the first had answered. */
 const treeFindingsByStop = new WeakMap<HookEvent, GitFindings>()
+
+/** What `git status --porcelain` says in `cwd`, within {@link GIT_STATUS_TIMEOUT_MS}; with `stop`, asked once per stop event and kept for the other handlers on it. */
+async function treeFindingsOnce(cwd: string, stop?: HookEvent): Promise<GitFindings> {
+  const known = stop === undefined ? undefined : treeFindingsByStop.get(stop)
+  if (known !== undefined) return known
+  const tree = findingsOfGitResult(await runGitAsyncLazy(['status', '--porcelain'], { cwd, timeoutMs: GIT_STATUS_TIMEOUT_MS }))
+  if (stop !== undefined) treeFindingsByStop.set(stop, tree)
+  return tree
+}
 
 /** A parked receipt no delivery has claimed within this long is dropped: the report it belonged to was never delivered here (or was delivered unmatched), and a stale receipt must not attach to a later, unrelated report. */
 const RECEIPT_TTL_MS = 30 * 60 * 1000
@@ -86,11 +95,10 @@ export function receiptLines(state: VerificationState, claimsChangeWithoutEdit: 
   return lines
 }
 
-/** What `git status` says about a report's change claim: 'lacks' when the report makes a first-person change claim, no commit claim anywhere (a commit leaves a clean tree, and a stray mention of one only silences the flag, the safe direction), and git status is clean; 'unchecked' when the claim stands and `git status` was killed at {@link GIT_STATUS_TIMEOUT_MS}, which is neither a clean tree nor a dirty one; otherwise 'clear'. A dirty tree reads 'clear' whoever dirtied it, the parent's own work included: the subagent's Bash edits are not recorded, so the tree is the only evidence left, and a missed flag costs less than a false accusation. Any other git failure (not a repository, git missing) reads 'clear' too. With `stop`, the answer is kept for subagentStopHandler, which runs on the same event and must not ask git again. */
+/** What `git status` says about a report's change claim: 'lacks' when the report makes a first-person change claim, no commit claim anywhere (a commit leaves a clean tree, and a stray mention of one only silences the flag, the safe direction), and git status is clean; 'unchecked' when the claim stands and `git status` was killed at {@link GIT_STATUS_TIMEOUT_MS}, which is neither a clean tree nor a dirty one; otherwise 'clear'. A dirty tree reads 'clear' whoever dirtied it, the parent's own work included: the subagent's Bash edits are not recorded, so the tree is the only evidence left, and a missed flag costs less than a false accusation. Any other git failure (not a repository, git missing) reads 'clear' too. With `stop`, the answer is kept for the other handlers on the same event (subagentStopHandler, and the Copilot rewrite), which must not ask git again. */
 export async function checkChangeClaim(report: string, cwd: string | null, stop?: HookEvent): Promise<'lacks' | 'unchecked' | 'clear'> {
   if (cwd === null || !claimsOwnChange(report) || claimsCommittedChange(report)) return 'clear'
-  const tree = findingsOfGitResult(await runGitAsyncLazy(['status', '--porcelain'], { cwd, timeoutMs: GIT_STATUS_TIMEOUT_MS }))
-  if (stop !== undefined) treeFindingsByStop.set(stop, tree)
+  const tree = await treeFindingsOnce(cwd, stop)
   return tree === 'clean' ? 'lacks' : tree === 'timed-out' ? 'unchecked' : 'clear'
 }
 
@@ -202,8 +210,8 @@ export async function subagentStopHandler(event: HookEvent): Promise<HookOutput>
     const message = typeof event.raw['last_assistant_message'] === 'string' ? event.raw['last_assistant_message'] : ''
     // The report decides first: most stops claim nothing, and none of those needs a git process.
     if (!claimsOwnChange(message) || claimsCommittedChange(message)) return passOutput()
-    // The receipt handler runs first on this event and has asked already when it needed to; alone (receipt off, an edit recorded, Copilot CLI), this handler asks within the same {@link GIT_STATUS_TIMEOUT_MS} and names a miss on stderr.
-    const tree = treeFindingsByStop.get(event) ?? findingsOfGitResult(await runGitAsyncLazy(['status', '--porcelain'], { cwd, timeoutMs: GIT_STATUS_TIMEOUT_MS }))
+    // The receipt handler runs first on this event and has asked already when it needed to; when it did not (receipt off, an edit recorded, Copilot CLI), this handler asks, and the Copilot rewrite handler that follows reuses its answer.
+    const tree = await treeFindingsOnce(cwd, event)
     if (tree === 'clean') {
       console.warn(`subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`)
     } else if (tree === 'timed-out') {

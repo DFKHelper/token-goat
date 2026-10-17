@@ -334,4 +334,17 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toMatch(new RegExp(`^subagent-stop: (possible hallucination|could not check the report against git status) — session=${sid}[ ,]`))
   })
+
+  // On Copilot CLI the receipt handler stands aside and the rewrite handler, registered after the stop handler, builds the receipt: both reach for the same git status, and the answer one of them gets must serve the other.
+  it('on Copilot CLI the stop warning and the report rewrite share one git status, the clean-tree line included', async () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-copilot-once-'))
+    git(repo, 'init', '-q')
+    const out = await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(bound.statusCalls).toBe(1)
+    expect(bound.timeouts).toEqual([GIT_STATUS_TIMEOUT_MS])
+    expect(warnings).toEqual([`subagent-stop: possible hallucination — session=${sid} but git status is clean`])
+    expect(JSON.stringify(out)).toContain('recorded no edit')
+  })
 })
