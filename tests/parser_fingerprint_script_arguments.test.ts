@@ -21,7 +21,7 @@ beforeAll(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pf-args-'))
   fs.cpSync(path.join(ROOT, 'src'), path.join(dir, 'src'), { recursive: true })
   fs.mkdirSync(path.join(dir, 'scripts'))
-  fs.copyFileSync(path.join(ROOT, 'scripts', 'parser-fingerprint.mjs'), path.join(dir, 'scripts', 'parser-fingerprint.mjs'))
+  for (const name of ['parser-fingerprint.mjs', 'is-main-module.mjs']) fs.copyFileSync(path.join(ROOT, 'scripts', name), path.join(dir, 'scripts', name))
   for (const name of OUTPUTS) fs.writeFileSync(path.join(dir, 'src', name), SENTINEL)
 })
 

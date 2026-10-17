@@ -29,6 +29,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { isMainModule } from './is-main-module.mjs'
 
 /** Interfaces whose names end in this are the hook payload shapes we care about. */
 const HOOK_INPUT_SUFFIX = 'HookInput'
@@ -204,6 +205,6 @@ function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('extract_harness_schema.mjs')) {
+if (isMainModule(import.meta.url)) {
   main(process.argv)
 }

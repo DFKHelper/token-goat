@@ -1,11 +1,12 @@
 /** The pre-push focus decision (.lefthook-scripts/prepush-focus.sh) in a sandbox repo: a src change must add the tests `vitest related` cannot reach, and an empty range must not be counted as one change. */
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { resolveWindowsBash } from '../src/shell.js'
 import { readsTreeOrBundle } from '../scripts/prepush-tree-readers.mjs'
+import { CAN_JUNCTION } from './helpers/can-symlink.js'
 
 const REPO = process.cwd().replace(/\\/g, '/')
 const posix = (p: string): string => p.replace(/\\/g, '/')
@@ -13,9 +14,23 @@ const posix = (p: string): string => p.replace(/\\/g, '/')
 const BASH = process.platform === 'win32' ? resolveWindowsBash() : '/bin/bash'
 // The script pipes through sort, which must be the POSIX one next to bash and not Windows sort.exe that a System32-first PATH finds
 let dir = ''
+let realDir = ''
 afterEach(() => {
-  if (dir) rmSync(dir, { recursive: true, force: true })
+  // The real directory goes first, so removing the link can never reach into it
+  if (realDir) rmSync(realDir, { recursive: true, force: true })
+  if (dir) {
+    try {
+      unlinkSync(dir)
+    } catch {
+      try {
+        rmdirSync(dir)
+      } catch {
+        // already gone
+      }
+    }
+  }
   dir = ''
+  realDir = ''
 })
 
 function git(cwd: string, ...args: string[]): string {
@@ -29,10 +44,13 @@ function write(root: string, rel: string, text: string): void {
 
 /** A sandbox repo with one recorded failing test, then the given files changed in a second commit. Returns the decision note and the focus list. */
 function decide(change: Record<string, string>, shadowSort = false): { note: string; focus: string[] } {
-  dir = mkdtempSync(path.join(tmpdir(), 'tg-focus-'))
+  // The sandbox is reached through a symlink, as every macOS temp directory is (/var points into /private): a script that mistakes a symlinked path for a different file does nothing here
+  realDir = mkdtempSync(path.join(tmpdir(), 'tg-focus-'))
+  dir = `${realDir}-link`
+  symlinkSync(realDir, dir, 'junction')
   const root = path.join(dir, 'repo')
   mkdirSync(path.join(root, 'scripts'), { recursive: true })
-  for (const f of ['prepush-failed.mjs', 'test-durations.mjs', 'prepush-tree-readers.mjs']) copyFileSync(path.join(REPO, 'scripts', f), path.join(root, 'scripts', f))
+  for (const f of ['prepush-failed.mjs', 'test-durations.mjs', 'prepush-tree-readers.mjs', 'is-main-module.mjs']) copyFileSync(path.join(REPO, 'scripts', f), path.join(root, 'scripts', f))
   write(root, 'src/a.ts', 'export const a = 1\n')
   write(root, 'tests/a.test.ts', "import { a } from '../src/a'\n")
   write(root, 'tests/bundle_user.test.ts', "import { BUNDLE } from './helpers/bundle'\n")
@@ -71,7 +89,7 @@ function decide(change: Record<string, string>, shadowSort = false): { note: str
   return { note, focus: file ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [] }
 }
 
-describe.skipIf(BASH === null)('prepush focus decision', () => {
+describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => {
   it('adds the tree-reading and bundle tests when a src file changed', () => {
     const r = decide({ 'src/a.ts': 'export const a = 2\n' })
     expect(r.focus).toEqual(['src/a.ts', 'tests/a.test.ts', 'tests/bundle_user.test.ts', 'tests/guards/tree.test.ts'])
@@ -97,7 +115,7 @@ describe('readsTreeOrBundle', () => {
   })
 })
 
-describe.skipIf(BASH === null)('prepush focus note', () => {
+describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus note', () => {
   it('counts an empty range as no change', () => {
     const r = decide({})
     expect(r.note).toContain('0 changed since')

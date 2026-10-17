@@ -15,6 +15,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isMainModule } from './is-main-module.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ARCH_DOC = path.join(ROOT, 'CLAUDE.arch.md')
@@ -344,17 +345,8 @@ export function syncArchDocs({ check = false } = {}) {
   return { ok: true, count: modules.length }
 }
 
-// Both sides are real paths: Node resolves symlinks in import.meta.url but leaves argv[1] as typed, so a run through a linked directory would otherwise skip main and exit 0.
-const realOrResolved = (p) => {
-  try {
-    return fs.realpathSync.native(p)
-  } catch {
-    return path.resolve(p)
-  }
-}
 const invokedDirectly =
-  process.argv[1] !== undefined &&
-  realOrResolved(process.argv[1]) === realOrResolved(fileURLToPath(import.meta.url))
+  isMainModule(import.meta.url)
 
 if (invokedDirectly) {
   const check = process.argv.includes('--check')

@@ -2,7 +2,7 @@
 /** A commit that changes a package-lock.json must say so in its subject: `chore(deps...)` for a dependency change, `release`/`chore(release)` for a version bump. The lock is the file `npm install` rewrites as a side effect (npm on Windows drops the `libc` fields from optional platform packages, and a stale nested map is rewritten on the next install), so a lock change tucked into a `fix(...)` commit reads as incidental churn and reaches review unexamined. One predicate, two callers: the lefthook commit-msg hook runs this file with the message path, and `tests/guards/lock_changes_only_in_dependency_commits.test.ts` applies `lockSubjectProblem` to every unpushed commit, which also covers a rebase, an amend or a clone with no hooks. */
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
-import { pathToFileURL } from 'node:url'
+import { isMainModule } from './is-main-module.mjs'
 
 /** The subjects this repository's own history uses: `chore(deps): ...` and Dependabot's `chore(deps-dev): ...`, `release: 2.9.30`, and the older `chore(release): 2.9.19`. */
 const DEPENDENCY_OR_RELEASE = /^(?:chore\(deps[a-z-]*\)|chore\(release\)|release)!?:/
@@ -36,7 +36,7 @@ function stagedFiles() {
   return out.split('\0').filter(Boolean)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isMainModule(import.meta.url)) {
   const messageFile = process.argv[2]
   if (!messageFile || !fs.existsSync(messageFile)) process.exit(0)
   let files
