@@ -25,8 +25,8 @@ const RECEIPTS_SUFFIX = '.agent-receipts'
 /** Receipts kept per parent session. Over the cap, clean (hash-only) entries go first, oldest first, then the oldest flagged ones: a flagged entry is the evidence, and a clean one only keeps two identical reports apart. */
 const MAX_RECEIPTS = 16
 const MAX_NAMED_FILES = 3
-/** A subagent stop is not a hot path, and the 50 ms hint budget is shorter than a cold git start on Windows. */
-const GIT_STATUS_TIMEOUT_MS = 5000
+/** A subagent stop is not a hot path, and the 50 ms hint budget is shorter than a cold git start on Windows. The receipt and the stop warning both ask git within it. */
+export const GIT_STATUS_TIMEOUT_MS = 5000
 const LINE_PREFIX = 'token-goat:'
 /** The `git status` answer the receipt handler got for a stop, read by the stop handler that runs on the same event object: one git process per stop, and one answer, instead of a second ask at the 50 ms hint budget that a cold git misses while the first, at the hang guard, had answered. */
 const treeFindingsByStop = new WeakMap<HookEvent, GitFindings>()
@@ -202,8 +202,8 @@ export async function subagentStopHandler(event: HookEvent): Promise<HookOutput>
     const message = typeof event.raw['last_assistant_message'] === 'string' ? event.raw['last_assistant_message'] : ''
     // The report decides first: most stops claim nothing, and none of those needs a git process.
     if (!claimsOwnChange(message) || claimsCommittedChange(message)) return passOutput()
-    // The receipt handler runs first on this event and has asked already when it needed to; alone (receipt off, an edit recorded, Copilot CLI), this handler asks within the hint budget and names a miss on stderr.
-    const tree = treeFindingsByStop.get(event) ?? findingsOfGitResult(await runGitAsyncLazy(['status', '--porcelain'], { cwd, timeoutMs: loadConfig().hints.git_hint_max_ms }))
+    // The receipt handler runs first on this event and has asked already when it needed to; alone (receipt off, an edit recorded, Copilot CLI), this handler asks within the same {@link GIT_STATUS_TIMEOUT_MS} and names a miss on stderr.
+    const tree = treeFindingsByStop.get(event) ?? findingsOfGitResult(await runGitAsyncLazy(['status', '--porcelain'], { cwd, timeoutMs: GIT_STATUS_TIMEOUT_MS }))
     if (tree === 'clean') {
       console.warn(`subagent-stop: possible hallucination — session=${event.sessionId} but git status is clean`)
     } else if (tree === 'timed-out') {

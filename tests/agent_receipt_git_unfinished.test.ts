@@ -9,25 +9,33 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { runHook as RunHookFn } from '../src/hook_registry.js'
 import type * as UtilModule from '../src/util.js'
 import type { RunGitAsyncOptions } from '../src/types.js'
+import type { subagentStopHandler as SubagentStopHandlerFn } from '../src/agent_receipt.js'
 import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
 import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
-import { receiptLines } from '../src/agent_receipt.js'
+import { GIT_STATUS_TIMEOUT_MS, receiptLines } from '../src/agent_receipt.js'
 import type { VerificationState } from '../src/verification_state.js'
 
-const bound = vi.hoisted(() => ({ statusCalls: 0, abort: undefined as AbortController | undefined }))
+const bound = vi.hoisted(() => ({ statusCalls: 0, timeouts: [] as unknown[], passThrough: false, abort: undefined as AbortController | undefined }))
 
-// Every git status the receipt or the stop warning asks for is counted, sync or async. Async git runs with no time limit (GIT_UNBOUNDED), so a slow git is never read as a killed one; a run the test aborts is reported as the timed-out answer.
+// Every git status the receipt or the stop warning asks for is counted, sync or async. Async git runs with no time limit (GIT_UNBOUNDED), so a slow git is never read as a killed one; a run the test aborts is reported as the timed-out answer. The bound each status call asked for is recorded before it is replaced, and `passThrough` sends a call to the real runner untouched.
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
     runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
-      if (args.includes('status')) bound.statusCalls += 1
+      if (args.includes('status')) {
+        bound.statusCalls += 1
+        bound.timeouts.push(opts?.timeoutMs)
+      }
       return actual.runGit(args, opts)
     },
     runGitAsyncLazy: async (args: string[], opts: RunGitAsyncOptions = {}) => {
-      if (args.includes('status')) bound.statusCalls += 1
+      if (args.includes('status')) {
+        bound.statusCalls += 1
+        bound.timeouts.push(opts.timeoutMs)
+      }
+      if (bound.passThrough) return actual.runGitAsyncLazy(args, opts)
       const abort = bound.abort
       const result = await actual.runGitAsyncLazy(args, { ...opts, timeoutMs: actual.GIT_UNBOUNDED, ...(abort ? { signal: abort.signal } : {}) })
       return abort?.signal.aborted === true ? { ...result, timedOut: true as const } : result
@@ -37,6 +45,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
 
 let runHook: typeof RunHookFn
 let buildEvent: typeof BuildEventFn
+let subagentStopHandler: typeof SubagentStopHandlerFn
 
 const CLAIM = 'I fixed the parser bug.'
 const NOTE = "git status did not finish, so this report's change claim was not checked."
@@ -128,7 +137,10 @@ beforeEach(async () => {
   vi.resetModules()
   runHook = (await import('../src/hook_registry.js')).runHook
   buildEvent = (await import('../src/relay.js')).buildEvent
+  subagentStopHandler = (await import('../src/agent_receipt.js')).subagentStopHandler
   bound.statusCalls = 0
+  bound.timeouts = []
+  bound.passThrough = false
   bound.abort = undefined
   holds = []
 })
@@ -140,6 +152,7 @@ afterEach(() => {
     killAllIfCommandLine(holds.flatMap(announcedPids), isHoldCommandLine)
   } finally {
     bound.abort = undefined
+    bound.passThrough = false
     vi.restoreAllMocks()
     vi.unstubAllEnvs()
     if (repo !== '') fs.rmSync(repo, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
@@ -271,6 +284,7 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     git(repo, 'init', '-q')
     await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect(bound.statusCalls).toBe(1)
+    expect(bound.timeouts).toEqual([GIT_STATUS_TIMEOUT_MS])
     expect(warnings).toEqual([`subagent-stop: possible hallucination — session=${sid} but git status is clean`])
     expect(JSON.stringify(await agentResult(sid, CLAIM))).toContain('recorded no edit')
   })
@@ -283,5 +297,41 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     expect(bound.statusCalls).toBe(1)
     expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not answer in time`])
     expect(JSON.stringify(await agentResult(sid, CLAIM))).toContain(NOTE)
+  })
+
+  it('the stop warning asked alone leaves the event loop free while git is held, within the receipt bound', async () => {
+    const sid = newSession()
+    const hold = newHold()
+    repo = repoHeldByFilter(hold)
+    const abort = new AbortController()
+    bound.abort = abort
+    let settled = false
+    const stopped = Promise.resolve(subagentStopHandler(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))).then(() => {
+      settled = true
+    })
+    const endedFirst = stopped.then(() => {
+      throw new Error('the stop handler finished while git was still to be held')
+    })
+    // The announcement is an fs.watch event: it can only be delivered to a loop the handler left free, and the handler cannot have finished while git is held.
+    await Promise.race([holdStarted(hold), endedFirst])
+    expect(settled).toBe(false)
+    abort.abort()
+    await stopped
+    expect(bound.statusCalls).toBe(1)
+    expect(bound.timeouts).toEqual([GIT_STATUS_TIMEOUT_MS])
+    expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not answer in time`])
+  })
+
+  it('the stop warning asked alone runs the real runner under the receipt bound', async () => {
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-real-'))
+    git(repo, 'init', '-q')
+    bound.passThrough = true
+    await subagentStopHandler(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(bound.statusCalls).toBe(1)
+    expect(bound.timeouts).toEqual([GIT_STATUS_TIMEOUT_MS])
+    // A git slower than the bound reads as unfinished and a faster one as clean: either way exactly one warning, naming this session.
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toMatch(new RegExp(`^subagent-stop: (possible hallucination|could not check the report against git status) — session=${sid}[ ,]`))
   })
 })
