@@ -70,7 +70,8 @@ export function killProcessTree(pid: number | undefined): KillResult {
     if (result.status === 0) return { ok: true }
     return { ok: false, note: `taskkill ended with ${result.status === null ? (result.error?.message ?? 'no status') : `status ${result.status}`}`, gone: result.status === 128 }
   }
-  let rootFailure = signalPid(pid, 'SIGSTOP')
+  signalPid(pid, 'SIGSTOP')
+  let rootFailure: string | undefined
   const frozen = [pid]
   const known = new Set(frozen)
   let note: string | undefined
@@ -95,9 +96,9 @@ export function killProcessTree(pid: number | undefined): KillResult {
   // Deepest first, root last; every member is stopped, so the order only matters for tidiness.
   for (const p of frozen.reverse()) {
     const failure = signalPid(p, 'SIGKILL')
-    if (p === pid) rootFailure ??= failure
+    if (p === pid) rootFailure = failure
   }
-  // A root that refuses the signal (EPERM) is still running, so the caller must not read this as an ended tree.
+  // The root's last signal decides: one that refused the stop but took the kill is ended. A root that refuses the kill (EPERM) is still running, so the caller must not read this as an ended tree.
   if (rootFailure !== undefined) note = `pid ${pid} could not be signalled (${rootFailure})${note === undefined ? '' : `; ${note}`}`
   return note === undefined ? { ok: true } : { ok: false, note }
 }
@@ -170,6 +171,9 @@ export function spawnOwned(file: string, args: string[], options: SpawnOptions):
   live.add(handle)
   hook()
   child.once('close', release)
-  child.once('error', release)
+  // An error with a pid is a failed kill or send on a child that still runs, which stays hooked until it closes; only a failed spawn has nothing left to wait for.
+  child.on('error', () => {
+    if (child.pid === undefined) release()
+  })
   return { child, kill, release }
 }

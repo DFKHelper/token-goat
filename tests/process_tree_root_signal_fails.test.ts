@@ -23,13 +23,13 @@ afterEach(() => {
   Object.defineProperty(process, 'platform', realPlatform)
 })
 
-/** Runs the POSIX walk with `process.kill` throwing `code` for the root only, and returns the result with every signal sent as `pid SIGNAL`. */
-function killRootRefusing(code: string): { result: ReturnType<typeof killProcessTree>; sent: string[] } {
+/** Runs the POSIX walk with `process.kill` throwing `code` for the root only (for `onlySignal` alone when given), and returns the result with every signal sent as `pid SIGNAL`. */
+function killRootRefusing(code: string, onlySignal?: string): { result: ReturnType<typeof killProcessTree>; sent: string[] } {
   Object.defineProperty(process, 'platform', { ...realPlatform, value: 'linux' })
   const sent: string[] = []
   vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
     sent.push(`${pid} ${String(signal)}`)
-    if (pid === ROOT_PID) throw Object.assign(new Error(`kill ${code}`), { code })
+    if (pid === ROOT_PID && (onlySignal === undefined || signal === onlySignal)) throw Object.assign(new Error(`kill ${code}`), { code })
     return true
   }) as typeof process.kill)
   const result = killProcessTree(ROOT_PID)
@@ -49,6 +49,12 @@ describe('a root that refuses a signal', () => {
     const { sent } = killRootRefusing('EPERM')
     expect(sent).toContain(`${CHILD_PID} SIGSTOP`)
     expect(sent).toContain(`${CHILD_PID} SIGKILL`)
+  })
+
+  it('refusing only the stop is not a failure when the kill lands, since the root is ended', () => {
+    const { result, sent } = killRootRefusing('EPERM', 'SIGSTOP')
+    expect(sent).toContain(`${ROOT_PID} SIGKILL`)
+    expect(result, 'a root that took the final kill was reported as a failed kill').toEqual({ ok: true })
   })
 
   it('ESRCH (already gone) stays quiet', () => {
