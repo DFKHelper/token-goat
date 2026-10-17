@@ -152,7 +152,7 @@ describe('git calls are bounded', () => {
           spawned.child.emit('exit', kills > 0 ? null : 0)
           spawned.child.emit('close', kills > 0 ? null : 0)
           let settled = false
-          void pending.then(() => { settled = true })
+          void pending.then(() => { settled = true }, () => { settled = true })
           await new Promise<void>((resolve) => setImmediate(resolve))
           expect(settled, 'the call must settle once its child has closed').toBe(true)
           const result = await pending
