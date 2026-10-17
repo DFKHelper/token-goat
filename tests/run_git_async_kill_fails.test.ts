@@ -1,4 +1,4 @@
-// Provenance: FORMAT-DERIVED for the alias form `alias.NAME=!command` (git runs it through the shell), from git's own documentation, Documentation/git-config.adoc, section "alias.*"; HAND-DERIVED for the rule that a call whose tree kill failed must still settle with runGit's shape (exit -1, timedOut for a timeout). The tree helper (taskkill on Windows, ps on POSIX) is made to fail by answering for it in the spawnSync seam process_tree.ts already calls; everything else, including git's spawn, is real. Events only: the call settles on git's own exit once the child is ended through its handle, and a red run is that settle never coming, which the vitest per-test timeout ends. The holder tells the test it exists by writing to a socket and dies when that socket closes or cannot open, so it cannot outlive the test.
+// Provenance: FORMAT-DERIVED for the alias form `alias.NAME=!command` (git runs it through the shell), from git's own documentation, Documentation/git-config.adoc, section "alias.*"; HAND-DERIVED for the rule that a call whose tree kill failed must still settle with runGit's shape (exit -1, timedOut for a timeout). The tree helper (taskkill on Windows, ps on POSIX) is made to fail by answering for it in the spawnSync seam process_tree.ts already calls; everything else, including git's spawn, is real, except that process.kill is a no-op while the call is being ended, so the POSIX walk's own signals cannot end git and the handle fallback is what does. Events only: the call settles on git's own exit once the child is ended through its handle, and a red run is that settle never coming, which the vitest per-test timeout ends. The holder tells the test it exists by writing to a socket and dies when that socket closes or cannot open, so it cannot outlive the test.
 import type * as ChildProcessModule from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import * as net from 'node:net'
@@ -88,20 +88,29 @@ function holdingGit(opts: { timeoutMs?: number } = {}): Promise<Awaited<ReturnTy
   return run
 }
 
+/** Stands in for process.kill until restored, so the POSIX walk's own signals reach nothing and only the handle fallback can end git (taskkill is already unreachable on Windows). */
+function stubSignals(): { mockRestore: () => void } {
+  return vi.spyOn(process, 'kill').mockImplementation(() => true)
+}
+
 describe('runGitAsync settles when the tree kill fails', () => {
   it('an abort settles as aborted (a hang at the last await means git was left running)', async () => {
     failing.on = true
     const run = holdingGit()
     expect(await announced, 'the holder announces its pid').toMatch(/^\d+$/)
+    const signals = stubSignals()
     controller.abort()
     const result = await run
+    signals.mockRestore()
     expect(result.exitCode).toBe(-1)
     expect(result.timedOut).toBeUndefined()
   })
 
   it('a timeout settles as timedOut (a hang at the last await means git was left running)', async () => {
     failing.on = true
+    const signals = stubSignals()
     const result = await holdingGit({ timeoutMs: 1 })
+    signals.mockRestore()
     expect(result.exitCode).toBe(-1)
     expect(result.timedOut).toBe(true)
   })
