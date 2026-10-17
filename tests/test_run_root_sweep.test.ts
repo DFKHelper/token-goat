@@ -71,7 +71,6 @@ describe('sweepStaleRunRoots', () => {
   })
 })
 
-
 describe('killDaemonsUnder', () => {
   // FORMAT-DERIVED: a daemon's command line is `node <launcher> --worker-daemon`, read off its launch site src/worker_lifecycle.ts::startDetachedWorker (`spawn(process.execPath, [daemonEntryScript(), '--worker-daemon'])`), and its heartbeat is the file queue/drain-heartbeat holding its pid (src/worker_lifecycle.ts::drainHeartbeatPathFor, writeDrainHeartbeat). The stand-ins below are node processes given that argv shape; the real-bundle case runs the shipped launcher itself.
   const WORKER_DAEMON_FLAG = '--worker-daemon'
@@ -202,30 +201,52 @@ describe('killDaemonsUnder', () => {
     const bundle = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'dist', 'token-goat.mjs')
     const root = makeDir(`tg-run-killtest-real-${process.pid}-${Date.now()}`, 0)
     const dataDirectory = path.dirname(path.dirname(heartbeatPath(root)))
-    fs.mkdirSync(dataDirectory, { recursive: true })
-    // The daemon prints nothing, so its own heartbeat is the readiness signal.
+    // The queue directory too, so the watch below has a directory to watch before the daemon exists.
+    fs.mkdirSync(path.dirname(heartbeatPath(root)), { recursive: true })
+    // The daemon prints nothing, so its own heartbeat is the readiness signal, awaited by a directory watch and raced against the process exiting: no clock decides how long a cold boot may take.
     const child = spawn(process.execPath, [bundle, WORKER_DAEMON_FLAG], { stdio: 'ignore', windowsHide: true, env: { ...process.env, TG_WORKER_DATA_DIR: dataDirectory } })
     spawned.push(child)
-    let exited = false
-    child.once('exit', () => {
-      exited = true
+    const exited = new Promise<'exited'>((resolve) => child.once('exit', () => resolve('exited')))
+    const beat = heartbeatPath(root)
+    let watcher: fs.FSWatcher | undefined
+    const written = new Promise<'written'>((resolve) => {
+      watcher = fs.watch(path.dirname(beat), () => {
+        if (fs.existsSync(beat)) resolve('written')
+      })
+      if (fs.existsSync(beat)) resolve('written')
     })
-    const watchdog = startWatchdog({ quietLimitMs: 20_000, label: 'real worker daemon' })
     try {
-      const beat = heartbeatPath(root)
-      while (!fs.existsSync(beat)) {
-        if (exited) throw new Error('the real worker daemon exited before it wrote its heartbeat')
-        await Promise.race([sleep(25), watchdog.failed])
-      }
-      watchdog.progress('heartbeat written')
+      expect(await Promise.race([written, exited]), 'the real worker daemon exited before it wrote its heartbeat').toBe('written')
       expect(fs.readFileSync(beat, 'utf8').trim()).toBe(String(child.pid))
 
       killDaemonsUnder(root)
-      while (!exited) await Promise.race([sleep(25), watchdog.failed])
+      await exited
     } finally {
-      watchdog.stop()
+      watcher?.close()
     }
 
-    expect(exited, 'the real worker daemon survived the sweep').toBe(true)
+    expect(child.exitCode !== null || child.signalCode !== null, 'the real worker daemon survived the sweep').toBe(true)
+  })
+
+  it('kills a worker daemon whose command line spells the launcher by its real path while the sweep is given a link to it', async (ctx) => {
+    const launcher = fs.realpathSync.native(launcherScript('d'))
+    const linkHome = makeDir(`tg-run-killtest-link-${process.pid}-${Date.now()}`, 0)
+    const link = path.join(linkHome, 'link')
+    try {
+      // A junction on Windows, which needs no privilege; a directory symlink elsewhere.
+      fs.symlinkSync(path.dirname(launcher), link, 'junction')
+    } catch {
+      return ctx.skip()
+    }
+    try {
+      const daemon = start([launcher, WORKER_DAEMON_FLAG])
+      const root = rootNaming('linked', daemon.pid, 0)
+      const noHeartbeats = makeDir(`tg-run-killtest-none-${process.pid}-${Date.now()}`, 0)
+      await sweepThenWaitForDaemon(noHeartbeats, root, daemon, path.join(link, path.basename(launcher)))
+      expect(isAlive(daemon.pid), 'a daemon whose launcher is spelled by its real path survived a sweep given the link').toBe(false)
+    } finally {
+      // The link only: rmdir on a junction or symlink removes it and never the directory it points at.
+      fs.rmdirSync(link)
+    }
   })
 })

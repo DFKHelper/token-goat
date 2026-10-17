@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { BUNDLE_OUTPUTS } from '../../scripts/build-options.mjs'
 import { readBundleStamp, sourceDigest } from '../../scripts/source-digest.mjs'
-import { isResidentOfInstall, readProcessCommandLine } from '../../src/resident_process.js'
+import { isResidentOfInstall, readProcessCommandLine, terminateProcessTree } from '../../src/resident_process.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -79,21 +79,41 @@ function heartbeatFiles(dir: string, depth: number, found: string[]): void {
 // The launcher every daemon this checkout's tests start runs: src/worker_lifecycle.ts::startDetachedWorker spawns `node <daemonEntryScript()> --worker-daemon`, and daemonEntryScript() is dist/token-goat.mjs for a built checkout.
 const DAEMON_LAUNCHER = path.join(ROOT, 'dist', 'token-goat.mjs')
 
-// A pid in a heartbeat is a claim, not proof: the OS reuses pids, and on Windows SIGKILL is TerminateProcess, so an unchecked kill ends whatever process holds the number now, a vitest worker included. The pid is signalled only when its command line, read right now, is `node <entryScript> --worker-daemon` (the project rule: match by command line and launcher path, never by name). A line that cannot be read, or does not match, leaves the process and the heartbeat alone and is logged.
+// The daemon's command line carries daemonEntryScript(), which is realpath'd, so a checkout reached through a junction, symlink, subst or 8.3 path spells its launcher differently here: both spellings are accepted.
+function launcherSpellings(entryScript: string): string[] {
+  try {
+    return [entryScript, fs.realpathSync.native(entryScript)]
+  } catch {
+    return [entryScript]
+  }
+}
+
+// EPERM means the process exists and belongs to someone else.
+function pidExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+// A pid in a heartbeat is a claim, not proof: the OS reuses pids, and on Windows SIGKILL is TerminateProcess, so an unchecked kill ends whatever process holds the number now, a vitest worker included. The pid is ended, with its children, only when its command line, read right now, is `node <entryScript> --worker-daemon` (the project rule: match by command line and launcher path, never by name). A line that does not match leaves the process and the heartbeat alone and is logged; a pid that has already exited has no line and is skipped quietly.
 export function killDaemonsUnder(root: string, entryScript: string = DAEMON_LAUNCHER): void {
   const beats: string[] = []
   heartbeatFiles(root, 0, beats)
+  const launchers = launcherSpellings(entryScript)
   for (const beat of beats) {
     try {
       if (Date.now() - fs.statSync(beat).mtimeMs > DAEMON_HEARTBEAT_FRESH_MS) continue
       const pid = parseInt(fs.readFileSync(beat, 'utf8').trim(), 10)
       if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue
       const commandLine = readProcessCommandLine(pid)
-      if (commandLine === null || !isResidentOfInstall(commandLine, entryScript, ['worker'])) {
-        process.stderr.write(`[build-bundle] not killing pid ${String(pid)} named by ${beat}: ${commandLine === null ? 'its command line cannot be read' : 'its command line is not a worker daemon of this checkout'}\n`)
+      if (commandLine === null || !launchers.some((launcher) => isResidentOfInstall(commandLine, launcher, ['worker']))) {
+        if (commandLine !== null || pidExists(pid)) process.stderr.write(`[build-bundle] not killing pid ${String(pid)} named by ${beat}: ${commandLine === null ? 'its command line cannot be read' : 'its command line is not a worker daemon of this checkout'}\n`)
         continue
       }
-      process.kill(pid, 'SIGKILL')
+      terminateProcessTree(pid, true)
     } catch {
       // best-effort: already gone, not ours to signal, or unreadable
     }
