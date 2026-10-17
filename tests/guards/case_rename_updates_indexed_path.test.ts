@@ -4,9 +4,9 @@ import { existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import { closeDb, getDb } from '../../src/db.js'
+import { closeAllDbs, getDb } from '../../src/db.js'
 import { querySymbols } from '../../src/index_reader.js'
 import { normalizePath } from '../../src/paths.js'
 import { indexedPathSpellingIsStale } from '../../src/parser.js'
@@ -27,8 +27,27 @@ function run(projectDir: string, homeDir: string, args: string[]): { status: num
 function hostFsIsCaseInsensitive(): boolean {
   // Its own directory, not projectDir: skipIf is evaluated at collection time, before beforeAll has assigned projectDir at all.
   const dir = mkdtempSync(join(tmpdir(), 'tg-caseprobe-'))
-  writeFileSync(join(dir, 'CaseProbe.txt'), 'x')
-  return existsSync(join(dir, 'caseprobe.txt'))
+  try {
+    writeFileSync(join(dir, 'CaseProbe.txt'), 'x')
+    return existsSync(join(dir, 'caseprobe.txt'))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// Closes every db handle this file's getDb and querySymbols calls cached, then removes each directory. Each step runs in its own try, so one that throws does not skip the rest, and the failures are still reported together. A removal that hits EBUSY means a handle is still open, which is a defect to find, not to retry.
+function releaseFixture(...dirs: string[]): void {
+  const failures: unknown[] = []
+  const step = (fn: () => void): void => {
+    try {
+      fn()
+    } catch (err) {
+      failures.push(err)
+    }
+  }
+  step(closeAllDbs)
+  for (const dir of dirs) if (dir !== '') step(() => rmSync(dir, { recursive: true, force: true }))
+  if (failures.length > 0) throw new AggregateError(failures, 'fixture cleanup failed')
 }
 
 describe('indexedPathSpellingIsStale', () => {
@@ -39,6 +58,8 @@ describe('indexedPathSpellingIsStale', () => {
     projectDir = mkdtempSync(join(tmpdir(), 'tg-caserename-'))
     writeFileSync(join(projectDir, 'beta.ts'), 'export function betaFn(): number {\n  return 2\n}\n')
   })
+
+  afterAll(() => releaseFixture(projectDir))
 
   it('is false when the stored spelling already matches', () => {
     expect(indexedPathSpellingIsStale(normalizePath(join(projectDir, 'beta.ts')), join(projectDir, 'beta.ts'))).toBe(false)
@@ -105,12 +126,11 @@ describe('index after a case-only rename', () => {
     expect(indexed.status, `indexing the fixture failed: ${indexed.out.slice(0, 400)}`).toBe(0)
   })
 
-  // Closes both the writable and the read-only handle that getDb and querySymbols cached for this path, then removes the test's own directories.
   afterEach(() => {
-    const found = findGlobalDb(homeDir)
-    if (found !== null) closeDb(found)
-    rmSync(projectDir, { recursive: true, force: true })
-    rmSync(homeDir, { recursive: true, force: true })
+    const dirs = [projectDir, homeDir]
+    projectDir = ''
+    homeDir = ''
+    releaseFixture(...dirs)
   })
 
   // Two steps: a direct rename to a case variant is a no-op on a case-insensitive filesystem. Asserts the starting spelling first, so what follows is the rename at work.
