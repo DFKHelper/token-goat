@@ -14,6 +14,8 @@ import { startBudgetAtShimStart } from './shim_deadline.js'
 import { slotStatus } from './hook_server_probe.js'
 import { buildNative } from './native_bin.js'
 import { startWatchdog, type Watchdog } from './stall_proof_watchdog.js'
+import { killIfCommandLine } from './kill_if_command_line.js'
+import { readProcessCommandLine } from '../../src/resident_process.js'
 
 export const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 /** The budget the tree fixtures give a start, through the test-only seam: the shorter budget production used before it became 10 s, so a case that waits for a hung helper to be cut off ends in seconds, not in the production budget. */
@@ -186,6 +188,11 @@ export function alive(pid: number): boolean {
   }
 }
 
+/** Whether `pid` is still the process whose command line was `commandLine` when it was recorded. A bare pid is a claim: the OS hands a freed number to the next process it starts (36 of 300 sequential spawns on Windows), so `alive` on a pid whose owner has been ended can report a stranger. A null line means the owner was already gone when it was recorded. */
+export function aliveAs(pid: number, commandLine: string | null): boolean {
+  return commandLine !== null && alive(pid) && readProcessCommandLine(pid)?.trim() === commandLine.trim()
+}
+
 export function readOwnedPid(path: string): number {
   const pid = Number(readFileSync(path, 'utf8'))
   expect(Number.isInteger(pid) && pid > 0).toBe(true)
@@ -265,22 +272,25 @@ export function listProcesses(launch: ProcessListingLaunch = launchProcessListin
 
 // TerminateProcess/SIGKILL, never a time-boxed taskkill. ESRCH means already dead. EPERM is not a failure of its own: Windows refuses TerminateProcess on a process that is already exiting, so a victim that died between the process listing and the kill (the common case, since these are the fixture's own just-cut-off helpers) answers EPERM for a moment and is gone on the next look. The authority is whether the pid is still there, so the kill is re-issued each round until it is gone; a target that stays alive past the backstop is a defect, reported with its command line.
 function killAndVerify(victims: Map<number, string>): void {
+  // A victim recorded without a command line was not in the listing, so it had already exited: a signal to that number now would reach whatever holds it. A victim whose line changed since the listing has been replaced by a stranger the same way.
+  const still = (pid: number): boolean => (victims.get(pid) ?? '') !== '' && aliveAs(pid, victims.get(pid) ?? null)
   const kill = (pid: number): void => {
     try { process.kill(pid, 'SIGKILL') } catch (error) {
       const code = (error as NodeJS.ErrnoException).code
       if (code !== 'ESRCH' && code !== 'EPERM') throw error
     }
   }
-  for (const pid of victims.keys()) kill(pid)
+  // The first signal follows the listing within milliseconds, so it is sent unchecked; every later one re-reads the line first.
+  for (const [pid, line] of victims) if (line !== '') kill(pid)
   // Moved 5000 -> 120000: EPERM on an already-exiting process answers for a moment before the process is gone.
   const gone = Date.now() + HANG_BACKSTOP_MS
   for (;;) {
-    const remaining = [...victims.keys()].filter(alive)
+    const remaining = [...victims.keys()].filter(still)
     if (remaining.length === 0 || Date.now() >= gone) break
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
-    for (const pid of remaining) kill(pid)
+    for (const pid of remaining) killIfCommandLine(pid, (line) => line.trim() === (victims.get(pid) ?? '').trim())
   }
-  const survivors = [...victims].filter(([pid]) => alive(pid)).map(([pid, args]) => `${pid} ${args}`)
+  const survivors = [...victims].filter(([pid]) => still(pid)).map(([pid, args]) => `${pid} ${args}`)
   if (survivors.length > 0) throw new Error(`fixture process still alive ${String(HANG_BACKSTOP_MS / 1000)} s after SIGKILL: ${survivors.join('; ')}`)
 }
 

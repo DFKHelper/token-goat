@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 
 import Database from '../../src/sqlite_driver.js'
-import { alive, assertOwedDeliveredOnce, BUNDLE, cleanupTrees, fixtureWatchdog, indexTreeFixture, ownedPids, ownedRoots, runInstalledStartup, runOwedToolCall, runTreeShim, startBegan, treeFixture } from '../helpers/copilot_session_start_tree.js'
+import { readProcessCommandLine } from '../../src/resident_process.js'
+import { alive, aliveAs, assertOwedDeliveredOnce, BUNDLE, cleanupTrees, fixtureWatchdog, indexTreeFixture, ownedPids, ownedRoots, runInstalledStartup, runOwedToolCall, runTreeShim, startBegan, treeFixture } from '../helpers/copilot_session_start_tree.js'
 
 afterEach(() => {
   const workers: number[] = []
@@ -17,8 +18,10 @@ afterEach(() => {
       if (!ownedPids.includes(pid)) ownedPids.push(pid)
     }
   }
+  // Each worker is asked about as the process it was before the kill: the number is free for reuse the moment it dies, and a stranger that took it is not a survivor.
+  const lines = new Map(workers.map(pid => [pid, readProcessCommandLine(pid)]))
   cleanupTrees()
-  for (const pid of workers) expect(alive(pid), `owned worker ${pid} survived teardown`).toBe(false)
+  for (const pid of workers) expect(aliveAs(pid, lines.get(pid) ?? null), `owned worker ${pid} survived teardown`).toBe(false)
   console.log(`owned startup workers cleaned: ${workers.join(',')}`)
 })
 
