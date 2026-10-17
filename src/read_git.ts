@@ -187,16 +187,31 @@ function batchRowResolved(row: string | undefined): boolean {
   return row !== undefined && /^[0-9a-f]{40,64} /.test(row)
 }
 
-// Whether `ref` resolves and the first (deepest) candidate that does, from one `cat-file --batch-check` spawn. A batch git refused or cut short falls back to one `rev-parse --verify` per name, the behaviour before the batch existed, so a git that lacks the batch mode still gets its hint.
-function resolveHintRefs(cwd: string, ref: string, candidates: readonly string[]): { refResolves: boolean; suggestedRef: string | null } {
+// Whether `ref` resolves and the first (deepest) candidate that does, from one `cat-file --batch-check` spawn. A batch git refused or cut short falls back to one `rev-parse --verify` per name, the behaviour before the batch existed, so a git that lacks the batch mode still gets its hint. Null when git was killed for running too long: that answers neither question, and "the ref does not resolve" would be a claim about the repository the run never established.
+function resolveHintRefs(cwd: string, ref: string, candidates: readonly string[]): { refResolves: boolean; suggestedRef: string | null } | null {
   const batch = runGit(['cat-file', '--batch-check'], { cwd, input: `${[ref, ...candidates].join('\n')}\n` })
+  if (batch.timedOut === true) return null
   const rows = batch.stdout.split(/\r?\n/)
   if (batch.exitCode === 0 && rows.length >= candidates.length + 1) {
     return { refResolves: batchRowResolved(rows[0]), suggestedRef: candidates.find((_, i) => batchRowResolved(rows[i + 1])) ?? null }
   }
-  const resolves = (name: string): boolean => runGit(['rev-parse', '--verify', '--quiet', name], { cwd }).exitCode === 0
+  let timedOut = false
+  const resolves = (name: string): boolean => {
+    const probe = runGit(['rev-parse', '--verify', '--quiet', name], { cwd })
+    if (probe.timedOut === true) timedOut = true
+    return probe.exitCode === 0
+  }
   if (resolves(ref)) return { refResolves: true, suggestedRef: null }
-  return { refResolves: false, suggestedRef: candidates.find((c) => resolves(c)) ?? null }
+  if (timedOut) return null
+  let suggestedRef: string | null = null
+  for (const candidate of candidates) {
+    if (resolves(candidate)) {
+      suggestedRef = candidate
+      break
+    }
+    if (timedOut) return null
+  }
+  return { refResolves: false, suggestedRef }
 }
 
 function buildChangedRefHint(cwd: string, ref: string): string | null {
@@ -218,7 +233,7 @@ function buildChangedRefHint(cwd: string, ref: string): string | null {
     candidates.push(`HEAD~${n}`)
   }
   const answer = resolveHintRefs(cwd, ref, candidates)
-  if (answer.refResolves) {
+  if (answer === null || answer.refResolves) {
     return null
   }
   let suggestedRef = answer.suggestedRef

@@ -68,7 +68,7 @@ vi.mock('node:fs', async (importOriginal) => {
 import type * as fs from 'node:fs'
 import * as childProcess from 'node:child_process'
 
-import { atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, hookCommandFor, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, quoteShellPath, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
+import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED, atomicWriteBytes, atomicWriteText, backupFile, ensureDirSync, escapeRegExp, gitInvocation, hookCommandFor, isCodeFenceDelimiter, isWithinQuietHours, normalizePathForwardSlash, quoteShellPath, requireNonNegativeStrictInt, requirePositiveStrictInt, requireStrictInt, runGit, sanitizeIdForFilename, sleepSync, noWindowCreationFlags, safeSlice, stripDelimitedBlock, stripLower, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, windowsCmdQuoteArg, withFileLock } from '../src/util.js'
 import { commandHookFields, type HookEntryLike, isOwnHookEntry } from '../src/util_config.js'
 import { levenshteinDistance } from '../src/util_suggest.js'
 import { ROOT } from './helpers/bundle.js'
@@ -505,11 +505,33 @@ describe('runGit', () => {
     expect(opts?.['timeout']).toBe(1234)
   })
 
-  it('omits the timeout option entirely when timeoutMs is not provided', () => {
+  // Changed with the task that made every git call bounded: this test used to pin the opposite (no `timeout` key at all when timeoutMs was omitted), which is the unbounded call the default exists to end.
+  it('passes GIT_DEFAULT_TIMEOUT_MS as the timeout when timeoutMs is not provided', () => {
     vi.mocked(childProcess.spawnSync).mockClear()
     runGit(['--version'])
     const opts = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[2] as Record<string, unknown> | undefined
+    expect(opts?.['timeout']).toBe(GIT_DEFAULT_TIMEOUT_MS)
+  })
+
+  it('omits the timeout option only for the named GIT_UNBOUNDED opt-out', () => {
+    vi.mocked(childProcess.spawnSync).mockClear()
+    runGit(['--version'], { timeoutMs: GIT_UNBOUNDED })
+    const opts = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[2] as Record<string, unknown> | undefined
     expect(opts).not.toHaveProperty('timeout')
+  })
+
+  // Provenance: HAND-DERIVED from the contract that only a positive number is a bound; 0 is what hints.git_hint_max_ms accepts (src/config.ts bounds {min: 0}) and spawnSync reads as no limit.
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('treats timeoutMs %s as no bound named and applies the default', (timeoutMs) => {
+    vi.mocked(childProcess.spawnSync).mockClear()
+    runGit(['--version'], { timeoutMs })
+    const opts = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[2] as Record<string, unknown> | undefined
+    expect(opts?.['timeout']).toBe(GIT_DEFAULT_TIMEOUT_MS)
+  })
+
+  // Provenance: HAND-DERIVED. The expected list is the fixed prefix runGit has always sent, written out from the doc comment above runGit, plus the diff-only flags.
+  it('builds the argument list from gitInvocation, with the diff flags only for diff', () => {
+    expect(gitInvocation(['status'])).toEqual(['--no-optional-locks', '-c', 'core.fsmonitor=', '-c', 'core.quotepath=false', 'status'])
+    expect(gitInvocation(['diff', '--stat'])).toEqual(['--no-optional-locks', '-c', 'core.fsmonitor=', '-c', 'core.quotepath=false', 'diff', '--no-ext-diff', '--no-textconv', '--stat'])
   })
 
   it('inserts --no-ext-diff --no-textconv right after a diff subcommand, to block a repo-local .gitattributes diff driver/textconv filter from running', () => {

@@ -7,7 +7,7 @@ import { loadConfig } from './config.js'
 import { envBool } from './env.js'
 import { findProject, isUnderSystemTemp } from './project.js'
 import { reconcileProject } from './reconcile.js'
-import { getTrackedFiles } from './repomap.js'
+import { listTrackedFiles } from './repomap.js'
 import { canonicalize, foldPath } from './path_containment.js'
 import { countNoun, extractErrorMessage, isUnderBlockedRoot, runGit } from './util.js'
 import { assertWalkableRoot } from './walk_index.js'
@@ -20,14 +20,15 @@ export const INSTALL_INDEX_ENV = 'TOKEN_GOAT_INSTALL_INDEX'
 
 export type InstallIndexResult =
   | { status: 'queued'; root: string; files: number }
-  | { status: 'skipped'; reason: 'disabled' | 'no-project' | 'broad-root' | 'temp' | 'blocked' | 'indexed' | 'not-git' | 'untracked' | 'nothing-queued'; root?: string }
+  | { status: 'skipped'; reason: 'disabled' | 'no-project' | 'broad-root' | 'temp' | 'blocked' | 'indexed' | 'not-git' | 'untracked' | 'git-timeout' | 'nothing-queued'; root?: string }
   | { status: 'failed'; error: string }
 
-/** True when `root` is itself a git top level: a repository with nothing tracked yet, as opposed to a plain folder (or one nested in somebody else's repository, whose top level is a different directory). */
-function isOwnGitToplevel(root: string): boolean {
+/** Whether `root` is itself a git top level (`own`: a repository with nothing tracked yet), a plain folder or one nested in somebody else's repository whose top level is a different directory (`other`), or unknown because git was killed for running too long (`timed-out`). */
+function gitToplevelKind(root: string): 'own' | 'other' | 'timed-out' {
   const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: root })
-  if (toplevel.exitCode !== 0 || toplevel.stdout.trim() === '') return false
-  return foldPath(canonicalize(fs.realpathSync(toplevel.stdout.trim()))) === foldPath(canonicalize(fs.realpathSync(root)))
+  if (toplevel.timedOut === true) return 'timed-out'
+  if (toplevel.exitCode !== 0 || toplevel.stdout.trim() === '') return 'other'
+  return foldPath(canonicalize(fs.realpathSync(toplevel.stdout.trim()))) === foldPath(canonicalize(fs.realpathSync(root))) ? 'own' : 'other'
 }
 
 /** Queue the project containing `cwd` for its first index and wake the worker. Default on, with `--no-index` or TOKEN_GOAT_INSTALL_INDEX=0 as the opt-out: an install that indexes nothing is the failure this module exists to remove. Never throws: install has already succeeded by the time this runs, and a failure here must not turn that into an error. */
@@ -47,8 +48,13 @@ export function queueInstallIndex(cwd: string, opts: { enabled?: boolean | undef
     if (isUnderBlockedRoot(root, loadConfig().worker.blocked_roots)) return { status: 'skipped', reason: 'blocked', root }
     // Already indexed means session start's reconcile owns it from here; sweeping it again at install would only duplicate that.
     if (isIndexedRoot(root)) return { status: 'skipped', reason: 'indexed', root }
-    // reconcileProject enumerates through git, so a non-git folder would come back as zero files and read as "nothing to do". It is said instead, because `index --walk` is the way in for that folder.
-    if (getTrackedFiles(root).length === 0) return { status: 'skipped', reason: isOwnGitToplevel(root) ? 'untracked' : 'not-git', root }
+    // reconcileProject enumerates through git, so a non-git folder would come back as zero files and read as "nothing to do". It is said instead, because `index --walk` is the way in for that folder. A listing git did not finish is unknown, not empty: it must not be reported as a folder that is not a repository.
+    const tracked = listTrackedFiles(root)
+    if (tracked.timedOut) return { status: 'skipped', reason: 'git-timeout', root }
+    if (tracked.files.length === 0) {
+      const kind = gitToplevelKind(root)
+      return { status: 'skipped', reason: kind === 'timed-out' ? 'git-timeout' : kind === 'own' ? 'untracked' : 'not-git', root }
+    }
     const result = reconcileProject({ cwd: root, budgetMs: INSTALL_INDEX_BUDGET_MS })
     // Marked whether or not anything was queued: nothing queued means every tracked file is already indexed, which is an indexed project too.
     recordIndexedRoot(root)
@@ -78,6 +84,8 @@ export function formatInstallIndexResult(result: InstallIndexResult): string | n
       return `${result.root ?? 'This folder'} is not a git repository, so it was not indexed. Run \`token-goat index --walk\` inside it to index it anyway.`
     case 'untracked':
       return `${result.root ?? 'This folder'} is a git repository with no tracked files yet, so it was not indexed. Run \`token-goat index --walk\` inside it, or \`git add\` the files and run \`token-goat index\`.`
+    case 'git-timeout':
+      return `${result.root ?? 'This folder'} was not indexed because git did not answer in time. Run \`token-goat index\` inside it once git responds.`
     case 'blocked':
       return `${result.root ?? 'This folder'} is excluded by worker.blocked_roots, so it was not indexed.`
     default:
