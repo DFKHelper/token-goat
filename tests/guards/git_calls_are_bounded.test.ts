@@ -1,7 +1,9 @@
-/** Guard: no git process token-goat starts can run without a time limit by accident. `runGit` takes its limit from `opts.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS`, so a call site that forgets one is bounded by the default instead of hanging a resident process (hook server, worker, MCP server) for good; the only opt-out is the named `GIT_UNBOUNDED`, and the files allowed to name it are listed below, each with a reason. Four checks: the fallback is in the spawn path (source), an omitted limit reaches spawnSync as the default and an explicit one wins (behaviour), `GIT_UNBOUNDED` appears only where allowed, and each scan sees a real population. */
+/** Guard: no git process token-goat starts can run without a time limit by accident. `runGit` takes its limit from `opts.timeoutMs ?? GIT_DEFAULT_TIMEOUT_MS`, so a call site that forgets one is bounded by the default instead of hanging a resident process (hook server, worker, MCP server) for good; the only opt-out is the named `GIT_UNBOUNDED`, and the files allowed to name it are listed below, each with a reason. Five checks: the fallback is in both spawn paths (source), an omitted limit reaches spawnSync as the default and an explicit one wins (behaviour), `runGitAsync` arms the same limit as a timer that ends the git tree and reports it (behaviour), `GIT_UNBOUNDED` appears only where allowed, and each scan sees a real population. */
 
-// tg-no-regex-preload Provenance: HAND-DERIVED. The expected spawnSync `timeout` values follow from the stated contract (omitted -> default, positive number -> itself, GIT_UNBOUNDED -> none, 0/negative/NaN -> default) and are computed from the test inputs, not from the implementation; the esbuild rendering of util.ts is the real source.
+// tg-no-regex-preload Provenance: HAND-DERIVED. The expected spawnSync `timeout` values follow from the stated contract (omitted -> default, positive number -> itself, GIT_UNBOUNDED -> none, 0/negative/NaN -> default) and are computed from the test inputs, not from the implementation; the esbuild rendering of util.ts is the real source. Provenance: FORMAT-DERIVED from src/git_async.ts (runGitAsync): the stub child is an EventEmitter that answers the `exit` and `close` listeners the function registers and carries the stdin, stdout and stderr streams it destroys on settling, and the expected timeout message wording `after N ms` is the text its `finish` builds; this proves agreement with that source, not that a shipped build emits it.
 import type * as cp from 'node:child_process'
+import type * as processTree from '../../src/process_tree.js'
+import type { GitResult } from '../../src/types.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,18 +13,42 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
 
-// Every call passes straight through to the real spawnSync; the mock exists so the options runGit hands it are inspectable.
+// No git starts here: spawnSync and spawnOwned are stubs that record the options they are given and answer with a clean exit, and every other way to start a process throws. The claim under test is which limit is handed over, which the outcome of a real git adds nothing to and a loaded machine can only spoil.
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof cp>()
+  const refuse = (name: string) => (): never => {
+    throw new Error(`${name} would start a real process in a test that stubs every git spawn`)
+  }
   return {
     ...actual,
-    spawnSync: vi.fn((...args: Parameters<typeof actual.spawnSync>) => actual.spawnSync(...args)),
+    spawnSync: vi.fn(() => ({ status: 0, stdout: '', stderr: '', output: ['', '', ''], pid: 0, signal: null })),
+    spawn: vi.fn(refuse('spawn')),
+    exec: vi.fn(refuse('exec')),
+    execSync: vi.fn(refuse('execSync')),
+    execFile: vi.fn(refuse('execFile')),
+    execFileSync: vi.fn(refuse('execFileSync')),
+    fork: vi.fn(refuse('fork')),
+  }
+})
+
+vi.mock('../../src/process_tree.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof processTree>()
+  const { EventEmitter } = await import('node:events')
+  const { PassThrough } = await import('node:stream')
+  return {
+    ...actual,
+    // A child that stays alive until the test emits its exit, so a timer the call arms can be fired while the call is pending; `kill` records the call and ends nothing.
+    spawnOwned: vi.fn(() => {
+      const child = Object.assign(new EventEmitter(), { pid: 1, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() })
+      return { child, kill: vi.fn(), release: vi.fn() }
+    }),
   }
 })
 
 import * as childProcess from 'node:child_process'
 
 import { runGitAsync } from '../../src/git_async.js'
+import { spawnOwned } from '../../src/process_tree.js'
 import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED, runGit } from '../../src/util.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -92,9 +118,9 @@ describe('git calls are bounded', () => {
   it('an omitted timeout reaches spawnSync as the default, an explicit one wins, GIT_UNBOUNDED sends none', () => {
     const timeoutOf = (opts?: Parameters<typeof runGit>[1]): unknown => {
       vi.mocked(childProcess.spawnSync).mockClear()
-      const result = runGit(['--version'], opts)
-      expect(result.exitCode, result.stderr).toBe(0)
-      const spawnOpts = vi.mocked(childProcess.spawnSync).mock.calls[0]?.[2] as Record<string, unknown> | undefined
+      runGit(['--version'], opts)
+      expect(vi.mocked(childProcess.spawnSync).mock.calls, 'runGit must make exactly one spawn').toHaveLength(1)
+      const spawnOpts = (vi.mocked(childProcess.spawnSync).mock.calls[0] as unknown[])[2] as Record<string, unknown> | undefined
       return spawnOpts?.['timeout']
     }
     expect(timeoutOf()).toBe(GIT_DEFAULT_TIMEOUT_MS)
@@ -108,22 +134,56 @@ describe('git calls are bounded', () => {
   })
 
   it('runGitAsync arms the same limit: omitted is the default, explicit wins, GIT_UNBOUNDED arms none', async () => {
-    const armed = async (opts?: Parameters<typeof runGitAsync>[1]): Promise<unknown[]> => {
+    type StubOwned = { child: { emit: (event: string, ...args: unknown[]) => boolean }; kill: () => void }
+    // Runs one call to its end with a child that never exits by itself: fires the timers the call armed, then lets the child exit. A git timer is told by what it does (it ends the child through kill), not by its delay alone. The timers are read the moment runGitAsync returns, which is when its executor has spawned and armed its limit; a timer armed only after an await is not among them, so a bounded call fails its "must be armed" check with no clock and no count of event-loop turns. The spy stays on through one setImmediate after the child closes, which runs after every queued microtask, so a timer armed from any chain of awaits is counted as late; one armed from a later macrotask (another setImmediate, an I/O callback) is not seen.
+    const drive = async (opts: Parameters<typeof runGitAsync>[1], delay: number | undefined): Promise<{ result: GitResult; kills: number; fired: number; late: number }> => {
+      vi.mocked(spawnOwned).mockClear()
       const timers = vi.spyOn(globalThis, 'setTimeout')
       try {
-        const result = await runGitAsync(['--version'], opts)
-        expect(result.exitCode, result.stderr).toBe(0)
-        return timers.mock.calls.map((call) => call[1])
+        try {
+          const pending = runGitAsync(['--version'], opts)
+          const armed = timers.mock.calls.map((call) => [...call])
+          expect(vi.mocked(spawnOwned).mock.calls, 'runGitAsync must make exactly one spawn, before it returns').toHaveLength(1)
+          const spawned = vi.mocked(spawnOwned).mock.results[0]!.value as StubOwned
+          // A bounded call is held to the timers of its delay; an unbounded one to every timer it armed.
+          const fire = armed.filter((call) => delay === undefined || call[1] === delay)
+          for (const call of fire) (call[0] as () => void)()
+          const kills = vi.mocked(spawned.kill).mock.calls.length
+          spawned.child.emit('exit', kills > 0 ? null : 0)
+          spawned.child.emit('close', kills > 0 ? null : 0)
+          let settled = false
+          void pending.then(() => { settled = true }, () => { settled = true })
+          await new Promise<void>((resolve) => setImmediate(resolve))
+          expect(settled, 'the call must settle once its child has closed').toBe(true)
+          const result = await pending
+          return { result, kills, fired: fire.length, late: timers.mock.calls.length - armed.length }
+        } finally {
+          // Every child the call started is closed, whichever check threw: a call that spawned twice or not at all leaves nothing open and no real timer armed. Closing settles the call synchronously, so nothing here waits on it.
+          for (const made of vi.mocked(spawnOwned).mock.results) if (made.type === 'return') (made.value as StubOwned).child.emit('close', 0)
+        }
       } finally {
+        // A mutant can arm a real timer nothing clears; end every handle the spy returned so none outlives the row.
+        for (const made of timers.mock.results) if (made.type === 'return') clearTimeout(made.value as ReturnType<typeof setTimeout>)
         timers.mockRestore()
       }
     }
-    expect(await armed()).toContain(GIT_DEFAULT_TIMEOUT_MS)
-    expect(await armed({ timeoutMs: 1_234_567 })).toContain(1_234_567)
-    expect(await armed({ timeoutMs: 0 })).toContain(GIT_DEFAULT_TIMEOUT_MS)
-    expect(await armed({ timeoutMs: Number.NaN })).toContain(GIT_DEFAULT_TIMEOUT_MS)
-    const unbounded = await armed({ timeoutMs: GIT_UNBOUNDED })
-    expect(unbounded).not.toContain(GIT_DEFAULT_TIMEOUT_MS)
+    const expectTimesOut = async (opts: Parameters<typeof runGitAsync>[1], delay: number): Promise<void> => {
+      const { result, kills, fired } = await drive(opts, delay)
+      expect(fired, `a timer of ${delay} ms must be armed`).toBeGreaterThan(0)
+      expect(kills, `the timer of ${delay} ms must end the git tree`).toBeGreaterThan(0)
+      expect(result.timedOut, 'the call must report the timeout').toBe(true)
+      expect(result.stderr, 'the timeout message must name the limit that applied').toContain(`after ${delay} ms`)
+    }
+    await expectTimesOut(undefined, GIT_DEFAULT_TIMEOUT_MS)
+    await expectTimesOut({ timeoutMs: 1_234_567 }, 1_234_567)
+    await expectTimesOut({ timeoutMs: 0 }, GIT_DEFAULT_TIMEOUT_MS)
+    await expectTimesOut({ timeoutMs: Number.NaN }, GIT_DEFAULT_TIMEOUT_MS)
+    // Whatever delay an unbounded call arms, firing every timer it armed must neither end the child nor mark the call timed out.
+    const unbounded = await drive({ timeoutMs: GIT_UNBOUNDED }, undefined)
+    expect(unbounded.late, 'an unbounded git must arm no timer once it has exited').toBe(0)
+    expect(unbounded.kills, 'an unbounded git must not be ended by a timer').toBe(0)
+    expect(unbounded.result.timedOut, 'an unbounded git must not time out').toBeUndefined()
+    expect(unbounded.result.exitCode, 'the unbounded call must run to the exit of its child').toBe(0)
   })
 
   it('GIT_UNBOUNDED is named only by the allowlisted files', () => {
