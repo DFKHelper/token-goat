@@ -21,7 +21,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 const _testConfigPath = tempConfigPath('tg-hooks-session-config-test.toml');
 
-import { GIT_STATUS_TIMEOUT_MS, subagentStopHandler } from '../src/agent_receipt.js';
+import { subagentStopHandler } from '../src/agent_receipt.js';
 import { pendingContextHandler, userPromptSubmitHandler } from '../src/hooks_session.js';
 import { recordSessionStartSettled } from '../src/session_start_owed.js';
 import { clearModuleCaches } from '../src/reset.js';
@@ -538,7 +538,7 @@ describe('hooks_session', () => {
       );
     });
 
-    it('subagentStopHandler asks git within the receipt bound, whatever hints.git_hint_max_ms says', async () => {
+    it('subagentStopHandler passes the configured value through to runGit as timeoutMs', async () => {
       const cfg = defaultConfig();
       cfg.hints.git_hint_max_ms = 333;
       saveConfig(cfg);
@@ -559,7 +559,7 @@ describe('hooks_session', () => {
 
       expect(util.runGit).toHaveBeenCalledWith(
         ['status', '--porcelain'],
-        { cwd: '/tmp/repo', timeoutMs: GIT_STATUS_TIMEOUT_MS },
+        { cwd: '/tmp/repo', timeoutMs: 333 },
       );
     });
   });

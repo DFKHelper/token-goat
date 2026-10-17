@@ -28,7 +28,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
   }
 })
 
-import { GIT_STATUS_TIMEOUT_MS, subagentStopHandler } from '../src/agent_receipt.js'
+import { subagentStopHandler } from '../src/agent_receipt.js'
 import { importSessionState, recordFileEdit, recordFileRead } from '../src/session.js'
 import { saveSessionState } from '../src/session_store.js'
 import { buildManifest } from '../src/manifest.js'
@@ -127,7 +127,7 @@ describe('the subagent stop check on a git that is slower than the hint budget',
     expect(warnings[0]).toMatch(/could not check the report against git status/)
     expect(warnings[0]).toMatch(/did not answer in time/)
     expect(warnings[0]).not.toMatch(/possible hallucination/)
-    expect(git.calls).toEqual([{ args: ['status', '--porcelain'], timeoutMs: GIT_STATUS_TIMEOUT_MS }])
+    expect(git.calls).toEqual([{ args: ['status', '--porcelain'], timeoutMs: HINT_BUDGET_MS }])
   })
 
   it('still warns of a hallucination when git answers clean', async () => {

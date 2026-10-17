@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import type { runHook as RunHookFn } from '../src/hook_registry.js'
 import type * as UtilModule from '../src/util.js'
-import type { RunGitAsyncOptions } from '../src/types.js'
+import type { GitResult, RunGitAsyncOptions } from '../src/types.js'
 import type { subagentStopHandler as SubagentStopHandlerFn } from '../src/agent_receipt.js'
 import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
@@ -16,9 +16,9 @@ import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { GIT_STATUS_TIMEOUT_MS, receiptLines } from '../src/agent_receipt.js'
 import type { VerificationState } from '../src/verification_state.js'
 
-const bound = vi.hoisted(() => ({ statusCalls: 0, timeouts: [] as unknown[], passThrough: false, abort: undefined as AbortController | undefined }))
+const bound = vi.hoisted(() => ({ statusCalls: 0, timeouts: [] as unknown[], passThrough: false, abort: undefined as AbortController | undefined, answer: undefined as GitResult | undefined }))
 
-// Every git status the receipt or the stop warning asks for is counted, sync or async. Async git runs with no time limit (GIT_UNBOUNDED), so a slow git is never read as a killed one; a run the test aborts is reported as the timed-out answer. The bound each status call asked for is recorded before it is replaced, and `passThrough` sends a call to the real runner untouched.
+// Every git status the receipt or the stop warning asks for is counted, sync or async. Async git runs with no time limit (GIT_UNBOUNDED), so a slow git is never read as a killed one; a run the test aborts is reported as the timed-out answer. The bound each status call asked for is recorded before it is replaced, and `passThrough` sends a call to the real runner untouched, and `answer` stands in for a result the real runner cannot be made to give.
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
@@ -35,6 +35,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
         bound.statusCalls += 1
         bound.timeouts.push(opts.timeoutMs)
       }
+      if (bound.answer !== undefined) return bound.answer
       if (bound.passThrough) return actual.runGitAsyncLazy(args, opts)
       const abort = bound.abort
       const result = await actual.runGitAsyncLazy(args, { ...opts, timeoutMs: actual.GIT_UNBOUNDED, ...(abort ? { signal: abort.signal } : {}) })
@@ -61,6 +62,8 @@ let holdScript = ''
 let repo = ''
 let holdCounter = 0
 let holds: Hold[] = []
+// Every directory watch holdStarted opened, closed by afterEach so one that never saw its hold announce itself (a test that failed or timed out first) does not outlive its test.
+let watchers: fs.FSWatcher[] = []
 
 // HAND-DERIVED: the held process is the node run of the hold script, whose path is on its command line (spelled with either slash on Windows).
 const isHoldCommandLine = (commandLine: string): boolean => commandLine.replaceAll('\\', '/').toLowerCase().includes(holdScript.toLowerCase())
@@ -112,6 +115,7 @@ function holdStarted(hold: Hold): Promise<void> {
         resolve()
       }
     })
+    watchers.push(watcher)
     watcher.once('error', reject)
     if (check()) {
       watcher.close()
@@ -142,7 +146,9 @@ beforeEach(async () => {
   bound.timeouts = []
   bound.passThrough = false
   bound.abort = undefined
+  bound.answer = undefined
   holds = []
+  watchers = []
 })
 
 afterEach(() => {
@@ -151,7 +157,9 @@ afterEach(() => {
     for (const hold of holds) fs.writeFileSync(hold.release, '')
     killAllIfCommandLine(holds.flatMap(announcedPids), isHoldCommandLine)
   } finally {
+    for (const watcher of watchers) watcher.close()
     bound.abort = undefined
+    bound.answer = undefined
     bound.passThrough = false
     vi.restoreAllMocks()
     vi.unstubAllEnvs()
@@ -174,7 +182,7 @@ const newSession = (): string => `s-unfinished-${process.pid}-${sessionCounter++
 const agentResult = (sid: string, text: string) => runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look into it.' }, session_id: sid, tool_response: text }))
 
 /** Runs the stop hook over the repo held by `hold`'s filter, waits for the filter to have announced itself, then aborts git: the order is decided by those two events and no clock. Rejects when git ends before the filter started, which is a broken fixture and not a pass. */
-async function stopWhileHeld(sid: string, hold: Hold): Promise<void> {
+async function stopWhileHeld(sid: string, hold: Hold): Promise<Awaited<ReturnType<typeof runHook>>> {
   const abort = new AbortController()
   bound.abort = abort
   const stopped = runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
@@ -183,7 +191,7 @@ async function stopWhileHeld(sid: string, hold: Hold): Promise<void> {
   })
   await Promise.race([holdStarted(hold), endedFirst])
   abort.abort()
-  await stopped
+  return stopped
 }
 
 const state = (overrides: Partial<VerificationState> = {}): VerificationState => ({ runs: [], failingUnresolved: false, editedFiles: [], editedAnyFile: false, editedSinceLastPass: [], ...overrides })
@@ -269,10 +277,14 @@ describe('a change claim whose git status did not finish', () => {
   })
 })
 
+// A user-set hints.git_hint_max_ms, below the receipt's bound as the default 50 ms is: the stop warning asks within it and never within the longer one.
+const HINT_MS = 1234
+
 describe('one git status per stop, shared by the receipt and the stop warning', () => {
   let warnings: string[] = []
   beforeEach(() => {
     warnings = []
+    vi.stubEnv('TOKEN_GOAT_GIT_HINT_MAX_MS', String(HINT_MS))
     vi.spyOn(console, 'warn').mockImplementation((...parts: unknown[]) => {
       warnings.push(parts.map(String).join(' '))
     })
@@ -299,7 +311,7 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     expect(JSON.stringify(await agentResult(sid, CLAIM))).toContain(NOTE)
   })
 
-  it('the stop warning asked alone leaves the event loop free while git is held, within the receipt bound', async () => {
+  it('the stop warning asked alone leaves the event loop free while git is held, and asks within the hint bound', async () => {
     const sid = newSession()
     const hold = newHold()
     repo = repoHeldByFilter(hold)
@@ -318,18 +330,18 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     abort.abort()
     await stopped
     expect(bound.statusCalls).toBe(1)
-    expect(bound.timeouts).toEqual([GIT_STATUS_TIMEOUT_MS])
+    expect(bound.timeouts).toEqual([HINT_MS])
     expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not answer in time`])
   })
 
-  it('the stop warning asked alone runs the real runner under the receipt bound', async () => {
+  it('the stop warning asked alone runs the real runner under the hint bound', async () => {
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-real-'))
     git(repo, 'init', '-q')
     bound.passThrough = true
     await subagentStopHandler(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect(bound.statusCalls).toBe(1)
-    expect(bound.timeouts).toEqual([GIT_STATUS_TIMEOUT_MS])
+    expect(bound.timeouts).toEqual([HINT_MS])
     // A git slower than the bound reads as unfinished and a faster one as clean: either way exactly one warning, naming this session.
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toMatch(new RegExp(`^subagent-stop: (possible hallucination|could not check the report against git status) — session=${sid}[ ,]`))
@@ -343,8 +355,102 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     git(repo, 'init', '-q')
     const out = await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect(bound.statusCalls).toBe(1)
-    expect(bound.timeouts).toEqual([GIT_STATUS_TIMEOUT_MS])
+    expect(bound.timeouts).toEqual([HINT_MS])
     expect(warnings).toEqual([`subagent-stop: possible hallucination — session=${sid} but git status is clean`])
     expect(JSON.stringify(out)).toContain('recorded no edit')
+  })
+
+  it('a user-set hint bound is what the stop warning hands the runner', async () => {
+    vi.stubEnv('TOKEN_GOAT_GIT_HINT_MAX_MS', '777')
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-userbound-'))
+    git(repo, 'init', '-q')
+    await subagentStopHandler(buildEvent('subagent_stop', stopPayload(newSession(), repo, CLAIM)))
+    expect(bound.timeouts).toEqual([777])
+  })
+
+  // On Copilot CLI the stop warning asks first, under the short hint bound; the rewrite is allowed the receipt's longer one and must not take a timeout of the shorter as its own answer.
+  it('on Copilot CLI a timeout under the hint bound is not the rewrite\'s answer: it asks again under its own', async () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
+    const sid = newSession()
+    const hold = newHold()
+    repo = repoHeldByFilter(hold)
+    const out = await stopWhileHeld(sid, hold)
+    expect(bound.statusCalls).toBe(2)
+    expect(bound.timeouts).toEqual([HINT_MS, GIT_STATUS_TIMEOUT_MS])
+    expect(JSON.stringify(out)).toContain(NOTE)
+  })
+
+  it.each([
+    ['Claude Code', undefined],
+    ['Copilot CLI', 'copilot_cli'],
+  ])('a dirty tree is asked once on %s, and nothing is said', async (_host, harness) => {
+    if (harness !== undefined) vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', harness)
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-dirty-'))
+    git(repo, 'init', '-q')
+    fs.writeFileSync(path.join(repo, 'new.txt'), 'x\n')
+    const out = await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(bound.statusCalls).toBe(1)
+    expect(warnings).toEqual([])
+    expect(JSON.stringify(out)).not.toContain('recorded no edit')
+    expect(JSON.stringify(out)).not.toContain(NOTE)
+    expect(JSON.stringify(await agentResult(sid, CLAIM))).not.toContain('recorded no edit')
+  })
+})
+
+// HAND-DERIVED from src/git_async.ts::runGitAsync, which reports an output overflow, a refused spawn and an abort as exit -1 with no timedOut and the reason in stderr, and from src/util.ts::runGit/runGitAsync, which report a git killed by a signal as exit 1 (`code ?? 1`), the same as any error exit. A real 200 MiB overflow is not worth producing.
+describe('a git that was cut off without a timeout', () => {
+  let warnings: string[] = []
+  beforeEach(() => {
+    warnings = []
+    vi.spyOn(console, 'warn').mockImplementation((...parts: unknown[]) => {
+      warnings.push(parts.map(String).join(' '))
+    })
+  })
+  const OVERFLOW: GitResult = { stdout: '', stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer', exitCode: -1 }
+  const UNCHECKED_WARNING = (sid: string): string => `subagent-stop: could not check the report against git status — session=${sid}, git did not answer in time`
+
+  it('reads as unchecked on the receipt and the stop warning, never as a clean tree', async () => {
+    bound.answer = OVERFLOW
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-overflow-'))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(bound.statusCalls).toBe(1)
+    expect(warnings).toEqual([UNCHECKED_WARNING(sid)])
+    const delivered = JSON.stringify(await agentResult(sid, CLAIM))
+    expect(delivered).toContain(NOTE)
+    expect(delivered).not.toContain('recorded no edit')
+  })
+
+  it('reads as unchecked on the Copilot CLI rewrite and the stop warning', async () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
+    bound.answer = OVERFLOW
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-overflow-copilot-'))
+    const out = JSON.stringify(await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM))))
+    expect(warnings).toEqual([UNCHECKED_WARNING(sid)])
+    expect(out).toContain(NOTE)
+    expect(out).not.toContain('recorded no edit')
+  })
+
+  it('reads as unchecked when the spawn itself was refused for a reason other than a missing git', async () => {
+    bound.answer = { stdout: '', stderr: 'spawn git EACCES', exitCode: -1 }
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-eacces-'))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(warnings).toEqual([UNCHECKED_WARNING(sid)])
+  })
+
+  // Decision pinned, not endorsed: both runners report a git killed by a signal as exit 1, so it cannot be told from an error exit and stays silent like one; a missing git or a gone directory (ENOENT) stays silent as it always did.
+  it.each([
+    ['an error exit that a signal kill also reports', { stdout: '', stderr: '', exitCode: 1 }],
+    ['a missing git or a gone working directory', { stdout: '', stderr: 'spawn git ENOENT', exitCode: -1 }],
+  ] as Array<[string, GitResult]>)('stays silent for %s', async (_what, answer) => {
+    bound.answer = answer
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-silent-'))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(warnings).toEqual([])
+    expect((await agentResult(sid, CLAIM)).hookType).toBe('pass')
   })
 })
