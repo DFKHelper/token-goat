@@ -1,6 +1,6 @@
 /** End-to-end proof that `token-goat worker start` actually keeps a background daemon running and draining the dirty queue, against the BUILT bundle (dist/token-goat.mjs). Regression for: {@link import('../src/worker.js').startDetachedWorker} spawns `node <bundle> --worker-daemon`, but the bundle's real entrypoint (main.ts -> cli.ts::run()) used to call commander's `parseAsync()` unconditionally, with no pre-check for `--worker-daemon` -- commander has no such registered option or command, so it rejected the flag as unknown and the freshly-spawned daemon child exited (code 1) before ever reaching the daemon loop. `token-goat worker start` reported a pid (the spawn call itself succeeds and returns a pid even for a child that is about to crash), but `token-goat worker status` moments later reported "not running" -- the entire detached background-indexing feature was silently non-functional. A unit test that mocks the daemon dispatch (as worker_daemon.test.ts and most of worker.test.ts do) cannot catch this: the bug is in argv wiring at the real process entrypoint, which only spawning the actual built bundle exercises. This test drives `worker start` for real, confirms the daemon process is still alive well past the point the old bug already killed it, then proves it does real work by seeding a real dirty-queue entry and confirming the running daemon (not a manual `index` call) drains it. */
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { appendDirtyQueuePaths } from '../src/dirty_queue.js'
 import { BUNDLE, readCoreBundleText, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
 import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { stopOwnedChild } from './helpers/stop_owned_child.js'
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
   return sharedRunBundle(args, { cwd, env, timeout: 30000 })
@@ -269,7 +270,7 @@ describe('detached worker daemon (built bundle)', () => {
         await waitForDaemonHeartbeat(dataBase, pid as number)
         expectDirectoryReleasedBy(pid as number, trigger)
       } finally {
-        await stopOwnedDaemon(child)
+        await stopOwnedChild(child)
       }
     },
     45000,
@@ -340,7 +341,14 @@ async function shutDownDaemon(env: NodeJS.ProcessEnv, cwd: string, dataBase: str
   try {
     stopped = runBundle(['worker', 'stop'], env, cwd)
   } catch (err) {
-    await stopDaemons([startedPid, recorded])
+    let cleanupErr: unknown
+    try {
+      await stopDaemons([startedPid, recorded])
+    } catch (cleanupFailure) {
+      cleanupErr = cleanupFailure
+    }
+    // The failed stop stays the primary failure (first in the list and the cause); the cleanup failure is kept beside it, never in its place.
+    if (cleanupErr !== undefined) throw new AggregateError([err, cleanupErr], 'worker stop failed, and then so did stopping the daemons it left', { cause: err })
     throw err
   }
   await stopDaemons([startedPid, recorded])
@@ -369,15 +377,6 @@ function expectDirectoryReleasedBy(pid: number, dir: string): void {
   // Retries absorb a brief handle from a virus scanner or indexer; a directory pinned as a working directory stays pinned through all of them.
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   expect(fs.existsSync(dir)).toBe(false)
-}
-
-/** Stop a daemon this test spawned and holds the ChildProcess of: the handle signals the process it holds and nothing once that has exited, so no recorded number is signalled. SIGTERM first, SIGKILL if it has not exited by the time the wait gives up. */
-async function stopOwnedDaemon(child: ChildProcess): Promise<void> {
-  const hasExited = (): boolean => child.exitCode !== null || child.signalCode !== null
-  if (hasExited()) return
-  child.kill('SIGTERM')
-  await waitFor('the daemon to exit', 5000, hasExited).catch(() => undefined)
-  if (!hasExited()) child.kill('SIGKILL')
 }
 
 /** Terminate a daemon a test started, so no test leaves a real background process behind. */
