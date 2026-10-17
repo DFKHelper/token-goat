@@ -34,7 +34,7 @@ function run(projectDir: string, homeDir: string, args: string[]): { out: string
   return { out: res.stdout ?? '', err: res.stderr ?? '', code: res.status ?? -1 }
 }
 
-// The budget is one no clock can spend, so the sweep always runs to completion and the pass never depends on how long the PC took; vitest's test timeout is the only clock left. A sweep that still reports budgetExhausted saw only a prefix of the project, and an empty drift list from it says nothing, so that fails the test instead of returning.
+// The budget is one no clock can spend, so the sweep always runs to completion and the pass never depends on how long the PC took; vitest's test timeout only fails a sweep that finishes late, and a child that never returns is not ended by it. A sweep that still reports budgetExhausted saw only a prefix of the project, and an empty drift list from it says nothing, so that fails the test instead of returning.
 function sweep(projectDir: string, homeDir: string, ...extra: string[]): Sweep {
   const r = run(projectDir, homeDir, ['reconcile', '--budget-ms', String(Number.MAX_SAFE_INTEGER), '--json', ...extra])
   let swept: Sweep

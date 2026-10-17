@@ -1,4 +1,4 @@
-/** Teardown for a test fixture that cached db handles and made temp directories. Every step runs in its own try, so one that throws does not skip the rest, and the failures are reported together as one AggregateError. closeAllDbs swallows close errors, so the close step records nothing; a handle left open shows only as a failed removal (EBUSY), and only on Windows, so elsewhere an open handle goes unseen. A failed removal is a defect to find, not to retry. */
+/** Teardown for a test fixture that cached db handles and made temp directories. Every step runs in its own try, so one that throws does not skip the rest, and the failures are reported together as one AggregateError. closeAllDbs swallows close errors, so the close step records nothing; a handle left open shows only as a failed removal (EBUSY or EPERM), and only on Windows, so elsewhere an open handle goes unseen. A failed removal is a defect to find, not to retry. */
 import { rmSync } from 'node:fs'
 
 import { closeAllDbs } from '../../src/db.js'
