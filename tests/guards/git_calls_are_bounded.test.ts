@@ -135,7 +135,7 @@ describe('git calls are bounded', () => {
 
   it('runGitAsync arms the same limit: omitted is the default, explicit wins, GIT_UNBOUNDED arms none', async () => {
     type StubOwned = { child: { emit: (event: string, ...args: unknown[]) => boolean }; kill: () => void }
-    // Runs one call to its end with a child that never exits by itself: fires the timers the call armed, then lets the child exit. A git timer is told by what it does (it ends the child through kill), not by its delay alone. The timers are read the moment runGitAsync returns, which is when its executor has spawned and armed its limit; a timer armed only after an await is not among them, so a bounded call fails its "must be armed" check with no clock and no count of event-loop turns. The spy stays on until the child has closed, so a timer armed after that is seen too.
+    // Runs one call to its end with a child that never exits by itself: fires the timers the call armed, then lets the child exit. A git timer is told by what it does (it ends the child through kill), not by its delay alone. The timers are read the moment runGitAsync returns, which is when its executor has spawned and armed its limit; a timer armed only after an await is not among them, so a bounded call fails its "must be armed" check with no clock and no count of event-loop turns. The spy stays on through one setImmediate after the child closes, which runs after every queued microtask, so a timer armed from any chain of awaits is counted as late; one armed from a later macrotask (another setImmediate, an I/O callback) is not seen.
     const drive = async (opts: Parameters<typeof runGitAsync>[1], delay: number | undefined): Promise<{ result: GitResult; kills: number; fired: number; late: number }> => {
       vi.mocked(spawnOwned).mockClear()
       const timers = vi.spyOn(globalThis, 'setTimeout')
@@ -151,6 +151,10 @@ describe('git calls are bounded', () => {
           const kills = vi.mocked(spawned.kill).mock.calls.length
           spawned.child.emit('exit', kills > 0 ? null : 0)
           spawned.child.emit('close', kills > 0 ? null : 0)
+          let settled = false
+          void pending.then(() => { settled = true })
+          await new Promise<void>((resolve) => setImmediate(resolve))
+          expect(settled, 'the call must settle once its child has closed').toBe(true)
           const result = await pending
           return { result, kills, fired: fire.length, late: timers.mock.calls.length - armed.length }
         } finally {
@@ -158,6 +162,8 @@ describe('git calls are bounded', () => {
           for (const made of vi.mocked(spawnOwned).mock.results) if (made.type === 'return') (made.value as StubOwned).child.emit('close', 0)
         }
       } finally {
+        // A mutant can arm a real timer nothing clears; end every handle the spy returned so none outlives the row.
+        for (const made of timers.mock.results) if (made.type === 'return') clearTimeout(made.value as ReturnType<typeof setTimeout>)
         timers.mockRestore()
       }
     }
