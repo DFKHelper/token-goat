@@ -147,14 +147,20 @@ describe('stopOwnedChild when no exit event can come', () => {
     expect(await hangsAfterOneTurn(stopOwnedChild(child, { graceful })), 'the stop must settle without an exit event').toBe(false)
   })
 
-  it('settles when the child reports an error instead of exiting', async () => {
+  it.each([{ graceful: true }, { graceful: false }])('settles when the child reports an error instead of exiting, and ends the child (graceful: $graceful)', async ({ graceful }) => {
     const signals: Array<NodeJS.Signals | number | undefined> = []
     const child = swallowSigterm(sleeper(), signals)
     await spawned(child)
-    const stop = stopOwnedChild(child, { graceful: true })
-    expect(signals, 'the stop signalled the live child').toEqual(['SIGTERM'])
-    child.emit('error', new Error('HAND-DERIVED: the process could not be killed'))
-    expect(await hangsAfterOneTurn(stop), 'the error event must end the wait').toBe(false)
-    expect(child.exitCode === null && child.signalCode === null, 'the child is still running, so no exit event ended the wait').toBe(true)
+    // HAND-DERIVED: the stand-in for a kill that failed is an 'error' event on a live child, which Node documents as the signal for a process that could not be killed.
+    const stop = stopOwnedChild(child, { graceful }).then(() => undefined, (error: unknown) => error)
+    if (graceful) expect(signals, 'the stop signalled the live child').toEqual(['SIGTERM'])
+    const failure = new Error('HAND-DERIVED: the process could not be killed')
+    child.emit('error', failure)
+    const outcome = await Promise.race([stop.then((value) => ({ value })), new Promise<null>((resolve) => setImmediate(() => resolve(null)))])
+    expect(outcome, 'the error event must end the wait').not.toBeNull()
+    // A graceful stop follows a finished body, so nothing is masked and the error is shown; after a failed body the body's own error is the one reported.
+    expect(outcome?.value, graceful ? 'the error reaches the caller' : 'the error is dropped behind the failed body').toBe(graceful ? failure : undefined)
+    await exited(child)
+    expect(child.exitCode !== null || child.signalCode !== null, 'the child was ended, not left running').toBe(true)
   })
 })
