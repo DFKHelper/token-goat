@@ -61,3 +61,17 @@ it('counts a live pid as ours when its line cannot be read or was never recorded
   expect(aliveAs(23, 'node ours.js', seam)).toBe(false)
   expect(aliveAs(23, null, seam)).toBe(false)
 })
+
+it('re-issues a kill that left the victim alive, and reports nothing once the second call removes it', () => {
+  // The first call fails the way a Windows kill on an exiting process does (nothing signalled, pid still there); the backstop is an upper bound the fake never reaches, so no assertion depends on elapsed time.
+  const { seam } = world({ 16: 'node ours.js' })
+  const calls: number[] = []
+  const inner = seam.killIfCommandLine
+  seam.killIfCommandLine = (pid, isOurs) => {
+    calls.push(pid)
+    return calls.length === 1 ? false : (inner?.(pid, isOurs) ?? false)
+  }
+  seam.backstopMs = 60_000
+  expect(() => { killAndVerify(new Map([[16, 'node ours.js']]), seam) }).not.toThrow()
+  expect(calls).toEqual([16, 16])
+})
