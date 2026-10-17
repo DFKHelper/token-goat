@@ -121,6 +121,7 @@ describe('the worker error log for a run of refused idle reclaims', () => {
     expect(lines[1], 'the second line counts the refused polls').toContain('settled and the -wal was truncated after 7 refused polls')
   })
 
+  // Provenance: HAND-DERIVED. A settle with no refusal before it has nothing to report, so the log stays empty; the one-poll run then pins the singular ("1 refused poll", with nothing after it) and the thrown error's message is the text the third line must carry.
   it('writes nothing for a poll that settles with no refusal before it, and starts a new run after one that ended', () => {
     const dir = logDir()
     const dbPath = path.join(dir, 'global.db')
@@ -136,7 +137,7 @@ describe('the worker error log for a run of refused idle reclaims', () => {
 
     expect(lines, 'a second run writes its own first line').toHaveLength(3)
     expect(lines[0], 'the first run starts with a refusal line').toContain('was refused')
-    expect(lines[1], 'the first run counted one poll').toContain('after 1 refused polls')
+    expect(lines[1], 'the first run counted one poll, in the singular').toMatch(/after 1 refused poll$/)
     expect(lines[2], 'a pass that threw says why').toContain('(database is locked)')
   })
 
@@ -173,5 +174,43 @@ describe('the worker error log for a run of refused idle reclaims', () => {
     expect(lines, 'two refused polls and the settling one wrote two lines').toHaveLength(2)
     expect(lines[0], 'the first refusal is logged').toContain('was refused')
     expect(lines[1], 'the settling poll logs the count').toContain('after 2 refused polls')
+  })
+
+  // Provenance: HAND-DERIVED. A directory where global.db belongs exists, so the loop's existence check passes, and opening it as a database throws (the error text "unable to open database file" is CAPTURE from a run of this row on Windows, SQLite's own CANTOPEN message), the pass the loop's catch arm answers; no clock is involved, the fake sleep only counts cycles. Cycle 1 is inside the idle cooldown, so cycles 2 and 3 are the thrown passes and only the first writes a line.
+  it('reaches the log from the real loop when the idle pass throws: one line that names the error', async () => {
+    const dir = logDir()
+    fs.mkdirSync(path.join(dir, 'global.db'))
+    let sleeps = 0
+    clock.onSleep = (): void => {
+      sleeps++
+    }
+    await runWorkerLoop(dir, 5, () => sleeps >= 3, { pidFileGraceMs: DAY_MS, idleExitMs: DAY_MS })
+
+    const lines = errorLogLines(dir).filter((line) => line.includes('idle reclaim'))
+    expect(lines, 'two thrown passes wrote the refusal-start line once').toHaveLength(1)
+    expect(lines[0], 'the line names the database').toContain(`idle reclaim of ${path.join(dir, 'global.db')} was refused (`)
+    expect(lines[0], 'the line carries the thrown error, not the reader text').toContain('(unable to open database file); asking again')
+  })
+
+  // Provenance: HAND-DERIVED. The loop's first cycle creates global.db itself (its known-roots sweep is due at once), so the fake sleep after cycle 1 closes the connections and deletes the file and its log files: cycle 1 is inside the idle cooldown, so cycles 2 and 3 are the polls that find no database. The sleep after cycle 3 creates it empty (no free pages), and cycle 4 settles with no refusal counted before it.
+  it('writes nothing for a missing database across several polls, nor when the database then appears and settles', async () => {
+    const dir = logDir()
+    const dbPath = path.join(dir, 'global.db')
+    const missingAtPoll: boolean[] = []
+    let sleeps = 0
+    clock.onSleep = (): void => {
+      sleeps++
+      if (sleeps === 1) {
+        closeAllDbs()
+        for (const suffix of ['', '-wal', '-shm']) fs.rmSync(dbPath + suffix, { force: true })
+      }
+      if (sleeps >= 1 && sleeps <= 3) missingAtPoll.push(!fs.existsSync(dbPath))
+      if (sleeps === 3) getDb(dbPath)
+    }
+    await runWorkerLoop(dir, 5, () => sleeps >= 5, { pidFileGraceMs: DAY_MS, idleExitMs: DAY_MS })
+
+    expect(missingAtPoll, 'the database was gone for the polls after cycles 1 and 2 and still gone when cycle 3 ended').toEqual([true, true, true])
+    expect(fs.existsSync(dbPath), 'the database appeared for the last polls').toBe(true)
+    expect(errorLogLines(dir).filter((line) => line.includes('idle reclaim')), 'a missing database is not a refusal, and a later settle has nothing to count').toEqual([])
   })
 })

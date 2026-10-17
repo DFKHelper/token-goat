@@ -691,7 +691,7 @@ export function logIdleReclaimPoll(dir: string, dbPath: string, run: IdleReclaim
     return
   }
   if (run.polls === 0) return
-  appendWorkerErrorLog(dir, `${new Date().toISOString()} idle reclaim of ${dbPath} settled and the -wal was truncated after ${run.polls} refused polls\n`)
+  appendWorkerErrorLog(dir, `${new Date().toISOString()} idle reclaim of ${dbPath} settled and the -wal was truncated after ${run.polls} refused ${run.polls === 1 ? 'poll' : 'polls'}\n`)
   run.polls = 0
 }
 
@@ -877,13 +877,16 @@ export async function runWorkerLoop(
     const now = Date.now()
     if (now - lastIdleVacuumMs >= IDLE_VACUUM_INTERVAL_MS && now - lastActiveMs >= IDLE_VACUUM_COOLDOWN_MS) {
       const reclaimTarget = path.join(dir, 'global.db')
-      try {
-        const settled = idleReclaim(reclaimTarget)
-        if (settled) lastIdleVacuumMs = now
-        logIdleReclaimPoll(dir, reclaimTarget, idleReclaimRefusals, { settled })
-      } catch (err) {
-        // Best-effort non-blocking maintenance; a pass that threw counts as refused so the log still says the reclaim is not getting done.
-        logIdleReclaimPoll(dir, reclaimTarget, idleReclaimRefusals, { settled: false, error: err })
+      // No database yet is nothing to reclaim, not a refusal: it neither counts nor logs, and the mark stays put so the next cycle looks again. idleReclaim keeps its own false for a missing file, which its other callers rely on.
+      if (fs.existsSync(reclaimTarget)) {
+        try {
+          const settled = idleReclaim(reclaimTarget)
+          if (settled) lastIdleVacuumMs = now
+          logIdleReclaimPoll(dir, reclaimTarget, idleReclaimRefusals, { settled })
+        } catch (err) {
+          // Best-effort non-blocking maintenance; a pass that threw counts as refused so the log still says the reclaim is not getting done.
+          logIdleReclaimPoll(dir, reclaimTarget, idleReclaimRefusals, { settled: false, error: err })
+        }
       }
     }
     if (shouldStop()) break
