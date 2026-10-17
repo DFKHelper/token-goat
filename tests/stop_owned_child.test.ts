@@ -2,6 +2,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import * as util from 'node:util'
 
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -161,6 +162,35 @@ describe('stopOwnedChild when no exit event can come', () => {
     // A graceful stop follows a finished body, so nothing is masked and the error is shown; after a failed body the body's own error is the one reported.
     expect(outcome?.value, graceful ? 'the error reaches the caller' : 'the error is dropped behind the failed body').toBe(graceful ? failure : undefined)
     await exited(child)
+    expect(child.exitCode !== null || child.signalCode !== null, 'the child was ended, not left running').toBe(true)
+  })
+
+  // FORMAT-DERIVED: Node v24.12.0 lib/internal/child_process.js, printed with ChildProcess.prototype.kill.toString() on 2026-10-17: kill() calls this._handle.kill(signal) and, for an errno that is neither 0, ESRCH, EINVAL nor ENOSYS ("almost certainly EPERM"), does this.emit('error', new ErrnoException(err, 'kill')); an 'error' with no listener is thrown by emit. The EPERM code is read from util.getSystemErrorMap() because libuv's value differs by platform. The failing handle is real (a replaced _handle.kill returning that code); the test restores it so the child can be reaped.
+  it('keeps the body error when the final kill of a child fails, after the first failure consumed the error listener', async () => {
+    const eperm = [...util.getSystemErrorMap()].find(([, [name]]) => name === 'EPERM')?.[0]
+    expect(eperm, 'this platform defines EPERM').toBeDefined()
+    const child = sleeper()
+    await spawned(child)
+    const handle = (child as unknown as { _handle: { kill: (signal: number) => number } })._handle
+    const realKill = handle.kill.bind(handle)
+    handle.kill = (): number => eperm!
+    try {
+      const run = async (): Promise<void> => {
+        try {
+          throw new Error('the test body failed')
+        } finally {
+          const stop = stopOwnedChild(child, { graceful: false })
+          // The stop is waiting on the exit event; a kill the handle refuses is the 'error' that ends that wait, and the final kill then fails the same way with no listener left.
+          child.kill('SIGTERM')
+          await stop
+        }
+      }
+      await expect(run()).rejects.toThrow('the test body failed')
+    } finally {
+      handle.kill = realKill
+      child.kill('SIGKILL')
+      await exited(child)
+    }
     expect(child.exitCode !== null || child.signalCode !== null, 'the child was ended, not left running').toBe(true)
   })
 })
