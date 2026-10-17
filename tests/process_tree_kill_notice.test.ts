@@ -39,8 +39,8 @@ afterEach(() => {
   dir = undefined
 })
 
-/** Ends a live child while the tree helper answers `status`, and returns the failure lines that reached stderr. */
-function killWith(status: number | null): string[] {
+/** Ends a live child while the tree helper answers `status`, and returns the failure lines that reached stderr and whether the child's own handle was signalled. */
+function killWith(status: number | null): { written: string[]; handleSignalled: boolean } {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-tree-notice-'))
   const script = path.join(dir, 'idle.cjs')
   fs.writeFileSync(script, IDLE_SCRIPT)
@@ -51,22 +51,27 @@ function killWith(status: number | null): string[] {
   owned.kill()
   const written = stderr.mock.calls.map(([text]) => String(text)).filter((text) => text.includes('could not end'))
   vi.restoreAllMocks()
-  return written
+  return { written, handleSignalled: owned.child.killed }
 }
 
 describe('a failed tree kill is reported once', () => {
   it('a helper that could not run is named on stderr', () => {
-    expect(killWith(null)).toHaveLength(1)
+    expect(killWith(null).written).toHaveLength(1)
   })
 })
 
 describe.skipIf(process.platform !== 'win32')('taskkill statuses', () => {
   it('status 128 (process not found) prints nothing', () => {
-    expect(killWith(128), 'a vanished root was reported as a failed kill').toEqual([])
+    expect(killWith(128).written, 'a vanished root was reported as a failed kill').toEqual([])
+  })
+
+  it('status 128 still ends a root that is alive, through its handle', () => {
+    // The stand-in helper answers 128 without ending anything, so the root is live and only the handle can end it.
+    expect(killWith(128).handleSignalled, 'a 128 answer left a live root running').toBe(true)
   })
 
   it('any other non-zero status is still reported', () => {
-    const written = killWith(1)
+    const { written } = killWith(1)
     expect(written).toHaveLength(1)
     expect(written[0]).toContain('status 1')
   })
