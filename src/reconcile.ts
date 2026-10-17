@@ -250,7 +250,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     try {
       mtimeMs = fs.statSync(file).mtimeMs
     } catch {
-      // Vanished between `getTrackedFiles` and now, or unreadable. Treat as drift rather than silently skipping: enqueueing it lets the worker's own read decide, and a genuinely missing file is reconciled as a deletion there.
+      // Vanished between `listTrackedFiles` and now, or unreadable. Treat as drift rather than silently skipping: enqueueing it lets the worker's own read decide, and a genuinely missing file is reconciled as a deletion there.
       changed.push(file)
       continue
     }
@@ -270,7 +270,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     changed.push(file)
   }
 
-  // Reported, not gated on: `getTrackedFiles` returns an empty list for a directory git cannot enumerate -- not a repository, git not installed, git errored -- so `changed`/`added` are computed over nothing and the caller must be told. It used to suppress the deletion pass below as well, from when that pass inferred a deletion from absence from `seenOnDisk` and would therefore have called every live file in a non-git project deleted. The pass now stats each row instead, so absence from a failed enumeration cannot reach `removed` at all, and suppressing it only left deleted files sitting in the index of every non-git root forever.
+  // Reported, not gated on: `listTrackedFiles` returns an empty `files` list for a directory git cannot enumerate -- not a repository, git not installed, git errored -- so `changed`/`added` are computed over nothing and the caller must be told. It used to suppress the deletion pass below as well, from when that pass inferred a deletion from absence from `seenOnDisk` and would therefore have called every live file in a non-git project deleted. The pass now stats each row instead, so absence from a failed enumeration cannot reach `removed` at all, and suppressing it only left deleted files sitting in the index of every non-git root forever.
   const trackedUnavailable = tracked.length === 0 && indexed.size > 0
   const removed: string[] = []
   if (!budgetExhausted) {
@@ -298,7 +298,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
 
   let enqueued = 0
   if (opts.dryRun !== true) {
-    // Resolved here rather than passed raw: `getTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
+    // Resolved here rather than passed raw: `listTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
     const toEnqueue = [...changed, ...added, ...removed].map((p) => resolveIndexPath(p, cwd))
     // Batched rather than enqueued one at a time: a sweep routinely fans out four figures of paths at session start, and the single-path form appends each one separately. The count is what the queue took, not what it was offered: it refuses every path under the OS temp dir, and a project there reported files enqueued that no worker would ever see.
     enqueued = enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true, ...(opts.queueDir !== undefined ? { dir: opts.queueDir } : {}) })

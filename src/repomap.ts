@@ -11,11 +11,6 @@ export interface TrackedFilesResult {
   readonly timedOut: boolean
 }
 
-/** {@link listTrackedFiles} without the timeout flag: a listing git did not finish comes back as an empty list, so a caller that must tell that from "nothing tracked" uses {@link listTrackedFiles}. */
-export function getTrackedFiles(cwd: string = process.cwd()): string[] {
-  return listTrackedFiles(cwd).files
-}
-
 /** Get all git-tracked files under cwd, unfiltered -- callers apply their own source/language filtering (see `cli.ts`'s `cmdIndex` and `graph_commands.ts`'s `runArch`). Returns `path.join(cwd, rel)` for each tracked file -- absolute or relative depending on whether `cwd` itself is absolute, not on platform. A single file path is accepted as well, and resolves to just that file when it is tracked: git cannot chdir into a file, so passing one as `cwd` would spawn with a non-zero exit and report a tracked file as untracked. */
 export function listTrackedFiles(cwd: string = process.cwd()): TrackedFilesResult {
   try {

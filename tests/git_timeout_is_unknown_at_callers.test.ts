@@ -17,7 +17,7 @@ import { formatInstallIndexResult, queueInstallIndex } from '../src/install_inde
 import { resolveProjectRoot } from '../src/project.js'
 import { runChanged } from '../src/read_git.js'
 import { reconcileProject } from '../src/reconcile.js'
-import { getTrackedFiles, listTrackedFiles } from '../src/repomap.js'
+import { listTrackedFiles } from '../src/repomap.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 const KILLED: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, timedOut: true }
@@ -47,7 +47,6 @@ describe('listTrackedFiles', () => {
   it('says a killed ls-files is unknown, and a refused one is empty', () => {
     git.answer = () => KILLED
     expect(listTrackedFiles('/project')).toEqual({ files: [], timedOut: true })
-    expect(getTrackedFiles('/project')).toEqual([])
     git.answer = () => REFUSED
     expect(listTrackedFiles('/project')).toEqual({ files: [], timedOut: false })
   })
