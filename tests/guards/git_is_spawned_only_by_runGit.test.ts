@@ -53,8 +53,9 @@ describe('git is spawned only by runGit', () => {
     expect(stray, 'git must be started through runGit in src/util.ts, never by a spawn of its own').toEqual([])
   })
 
-  it('src/util.ts, the one sanctioned site, is seen by the matcher', () => {
-    expect(gitSpawnSites(fs.readFileSync(path.join(SRC_DIR, 'util.ts'), 'utf8')).length).toBeGreaterThan(0)
+  it('src/util.ts has exactly two git spawn sites: runGit (spawnSync) and runGitAsync (spawnOwned)', () => {
+    const sites = gitSpawnSites(fs.readFileSync(path.join(SRC_DIR, 'util.ts'), 'utf8'))
+    expect(sites.map((s) => s.replace(/^\d+: /, '').replace(/^[^\w$]/, ''))).toEqual(['spawnSync(gitExecutable(', 'spawnOwned(gitExecutable('])
   })
 
   // Provenance: HAND-DERIVED. Each snippet is written to be, or not to be, a git spawn by reading it, not by running the matcher.

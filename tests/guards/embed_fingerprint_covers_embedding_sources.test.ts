@@ -81,6 +81,7 @@ const NOT_EMBEDDING: Record<string, string> = {
   'src/parser_fingerprint.ts': 'the generated PARSER_FINGERPRINT digest constant, imported by parser.ts to gate reparse -- a files.parser_sha concern, not files.embed_sha, and hashing a fingerprint constant into a different fingerprint would be circular',
   'src/paths.ts': 'cross-platform path normalization and display-time content fencing; affects path identity/display, not chunk text or boundaries -- excluded per explicit design, same as PARSER_FINGERPRINT',
   'src/process_util.ts': 'process/shell-quoting utilities for installers, reached only via util.ts, unrelated to chunking',
+  'src/process_tree.ts': 'starts a child process and ends its whole tree, reached only via util.ts runGitAsync, unrelated to chunking',
   'src/skip_scope.ts': 'decides which directory segments of an indexed path count against skip_dirs, i.e. whether a file is embedded at all, never its chunk content',
   'src/project.ts': 'project-root detection and hashing for scoping the index database, not chunk content',
   'src/query_notices.ts': 'formats the trailing --head/traversal-limit notices on structured-query CLI output (reached through csv_query.ts, which the embedding path never calls); no chunk text or boundary passes through it',

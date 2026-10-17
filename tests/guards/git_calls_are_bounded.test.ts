@@ -22,7 +22,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import * as childProcess from 'node:child_process'
 
-import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED, runGit } from '../../src/util.js'
+import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED, runGit, runGitAsync } from '../../src/util.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC_DIR = path.join(HERE, '..', '..', 'src')
@@ -69,12 +69,22 @@ function gitSpawnCalls(code: string): string[] {
 const UTIL_CODE = withoutComments(fs.readFileSync(path.join(SRC_DIR, 'util.ts'), 'utf8'))
 
 describe('git calls are bounded', () => {
-  it('every git spawn in util.ts takes its timeout from the `?? GIT_DEFAULT_TIMEOUT_MS` fallback', () => {
+  it('every git spawn in util.ts takes its limit from gitTimeoutMs, whose fallback is `?? GIT_DEFAULT_TIMEOUT_MS`', () => {
     const spawns = gitSpawnCalls(UTIL_CODE)
     const fallbacks = [...UTIL_CODE.matchAll(/\?\? GIT_DEFAULT_TIMEOUT_MS\b/g)]
     expect(spawns.length, 'util.ts must start git somewhere, or this guard reads nothing').toBeGreaterThan(0)
-    expect(fallbacks.length, 'one `?? GIT_DEFAULT_TIMEOUT_MS` per git spawn: a new spawn path needs its own bound').toBeGreaterThanOrEqual(spawns.length)
-    for (const call of spawns) expect(call, 'the spawn options must carry the timeout').toMatch(/\btimeout\b/)
+    expect(fallbacks.length, 'gitTimeoutMs is the one place the default is applied').toBe(1)
+    expect(UTIL_CODE.slice(UTIL_CODE.indexOf('function gitTimeoutMs'), fallbacks[0]!.index), 'the fallback must sit inside gitTimeoutMs').not.toMatch(/\nfunction |\nexport function /)
+    for (const call of spawns) {
+      const at = UTIL_CODE.indexOf(call)
+      const start = Math.max(UTIL_CODE.lastIndexOf('\nfunction ', at), UTIL_CODE.lastIndexOf('\nexport function ', at))
+      const end = UTIL_CODE.indexOf('\n}\n', at)
+      const whole = UTIL_CODE.slice(start, end)
+      expect(whole, 'a git spawn must ask gitTimeoutMs for its limit, so a new spawn path is bounded too').toMatch(/\bgitTimeoutMs\(/)
+      // spawnSync enforces the limit itself; spawnOwned has no timeout option, so its function arms a timer that kills the tree.
+      if (call.startsWith('spawnSync')) expect(call, 'the spawnSync options must carry the timeout').toMatch(/\btimeout\b/)
+      else expect(whole, 'an owned git must be killed when its limit passes').toMatch(/\bsetTimeout\(/)
+    }
   })
 
   it('an omitted timeout reaches spawnSync as the default, an explicit one wins, GIT_UNBOUNDED sends none', () => {
@@ -93,6 +103,25 @@ describe('git calls are bounded', () => {
     expect(timeoutOf({ timeoutMs: 0 })).toBe(GIT_DEFAULT_TIMEOUT_MS)
     expect(timeoutOf({ timeoutMs: -5 })).toBe(GIT_DEFAULT_TIMEOUT_MS)
     expect(timeoutOf({ timeoutMs: Number.NaN })).toBe(GIT_DEFAULT_TIMEOUT_MS)
+  })
+
+  it('runGitAsync arms the same limit: omitted is the default, explicit wins, GIT_UNBOUNDED arms none', async () => {
+    const armed = async (opts?: Parameters<typeof runGitAsync>[1]): Promise<unknown[]> => {
+      const timers = vi.spyOn(globalThis, 'setTimeout')
+      try {
+        const result = await runGitAsync(['--version'], opts)
+        expect(result.exitCode, result.stderr).toBe(0)
+        return timers.mock.calls.map((call) => call[1])
+      } finally {
+        timers.mockRestore()
+      }
+    }
+    expect(await armed()).toContain(GIT_DEFAULT_TIMEOUT_MS)
+    expect(await armed({ timeoutMs: 1_234_567 })).toContain(1_234_567)
+    expect(await armed({ timeoutMs: 0 })).toContain(GIT_DEFAULT_TIMEOUT_MS)
+    expect(await armed({ timeoutMs: Number.NaN })).toContain(GIT_DEFAULT_TIMEOUT_MS)
+    const unbounded = await armed({ timeoutMs: GIT_UNBOUNDED })
+    expect(unbounded).not.toContain(GIT_DEFAULT_TIMEOUT_MS)
   })
 
   it('GIT_UNBOUNDED is named only by the allowlisted files', () => {

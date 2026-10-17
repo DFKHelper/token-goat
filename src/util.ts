@@ -9,12 +9,13 @@ import { ensureStorageRootPrivate } from './constants.js'
 import { spawnSync } from 'node:child_process'
 
 import { normalizePath } from './paths.js'
+import { spawnOwned, type OwnedChild } from './process_tree.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { GIT_DEFAULT_TIMEOUT_MS, GIT_UNBOUNDED } from './types.js'
-import type { GitResult, RunGitOptions } from './types.js'
+import type { GitResult, RunGitAsyncOptions, RunGitOptions } from './types.js'
 
 export { normalizePath }
-export type { GitResult, RunGitOptions }
+export type { GitResult, RunGitAsyncOptions, RunGitOptions }
 
 export {
   type HookEntryLike,
@@ -122,11 +123,15 @@ export function gitInvocation(args: readonly string[]): string[] {
   ]
 }
 
-/** Run git and return its captured output. THE ONLY git spawn site in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. Every call is bounded: `timeoutMs` when it is a positive number, else {@link GIT_DEFAULT_TIMEOUT_MS}; only the named {@link GIT_UNBOUNDED} runs without a limit. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
+/** The limit a git call runs under, shared by runGit and runGitAsync so the two cannot disagree: undefined only for {@link GIT_UNBOUNDED}. A configured 0 reads as "no limit" to spawnSync, which is the hang the default ends, and a negative or NaN value is no bound either. */
+function gitTimeoutMs(asked: RunGitOptions['timeoutMs']): number | undefined {
+  if (asked === GIT_UNBOUNDED) return undefined
+  return (typeof asked === 'number' && asked > 0 && Number.isFinite(asked) ? asked : undefined) ?? GIT_DEFAULT_TIMEOUT_MS
+}
+
+/** Run git and return its captured output. With {@link runGitAsync}, the only git spawn sites in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. Every call is bounded: `timeoutMs` when it is a positive number, else {@link GIT_DEFAULT_TIMEOUT_MS}; only the named {@link GIT_UNBOUNDED} runs without a limit. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
-  const asked = opts.timeoutMs
-  // A configured 0 reads as "no limit" to spawnSync, which is the hang the default ends, and a negative or NaN value is no bound either.
-  const timeout = asked === GIT_UNBOUNDED ? undefined : (typeof asked === 'number' && asked > 0 && Number.isFinite(asked) ? asked : undefined) ?? GIT_DEFAULT_TIMEOUT_MS
+  const timeout = gitTimeoutMs(opts.timeoutMs)
   const result = spawnSync(gitExecutable(), gitInvocation(args), {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(timeout !== undefined ? { timeout } : {}),
@@ -148,6 +153,80 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     stderr: result.stderr ?? '',
     exitCode: result.status ?? 1,
   }
+}
+
+const GIT_MAX_OUTPUT_BYTES = 200 * 1024 * 1024
+
+/** Run git without blocking the event loop, and end its whole process tree (a launcher, a `!` alias shell, a filter or credential helper) when the call times out, overflows or is aborted. The same invocation, limit and result as {@link runGit}, plus `signal`; it never rejects. A call that times out or overflows ends with exit -1 (`timedOut` for the first; the second carries ENOBUFS in `stderr`, which callers of runGit already read), and an aborted one with exit -1 and neither. After a kill the call settles on git's own exit and destroys the pipes, so a survivor holding one cannot keep it pending. Output beyond 200 MiB in total is an overflow. {@link GIT_UNBOUNDED} with a survivor holding the pipe of a git that exited normally has no bound to end the wait. */
+export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Promise<GitResult> {
+  const failed = (stderr: string, timedOut?: true): GitResult => ({ stdout: '', stderr, exitCode: -1, ...(timedOut ? { timedOut } : {}) })
+  if (opts.signal?.aborted) return Promise.resolve(failed('git was aborted before it started'))
+  const timeout = gitTimeoutMs(opts.timeoutMs)
+  return new Promise<GitResult>((resolve) => {
+    let owned: OwnedChild
+    try {
+      owned = spawnOwned(gitExecutable(), gitInvocation(args), { ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    } catch (err) {
+      resolve(failed(String((err as Error).message ?? err)))
+      return
+    }
+    const { child } = owned
+    const out: Buffer[] = []
+    const err: Buffer[] = []
+    let bytes = 0
+    let cause: 'timeout' | 'overflow' | 'abort' | undefined
+    let exited = false
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    const onAbort = (): void => stop('abort')
+    const settle = (result: GitResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      opts.signal?.removeEventListener('abort', onAbort)
+      child.stdin?.destroy()
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+      owned.release()
+      resolve(result)
+    }
+    const finish = (exitCode: number | null): void => {
+      if (cause === 'timeout') settle(failed(`spawn git ETIMEDOUT after ${timeout} ms`, true))
+      else if (cause === 'overflow') settle(failed('spawn git ENOBUFS: output exceeded the 200 MiB buffer'))
+      else if (cause === 'abort') settle(failed('git was aborted'))
+      else settle({ stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), exitCode: exitCode ?? 1 })
+    }
+    // The first cause wins. A git that already exited has no exit event to wait for, so its call settles here.
+    const stop = (why: 'timeout' | 'overflow' | 'abort'): void => {
+      if (cause !== undefined || settled) return
+      cause = why
+      owned.kill()
+      if (exited) finish(null)
+    }
+    const collect = (into: Buffer[]) => (chunk: Buffer): void => {
+      if (cause === 'overflow') return
+      bytes += chunk.length
+      if (bytes > GIT_MAX_OUTPUT_BYTES) stop('overflow')
+      else into.push(chunk)
+    }
+    child.stdout?.on('data', collect(out))
+    child.stderr?.on('data', collect(err))
+    child.stdin?.on('error', () => undefined)
+    child.once('error', (e: NodeJS.ErrnoException) => {
+      if (child.pid !== undefined) return
+      if (e.code === 'ENOENT') gitFileCache = undefined
+      settle(failed(e.message))
+    })
+    child.once('exit', (code) => {
+      exited = true
+      if (cause !== undefined) finish(code)
+    })
+    // Without a cause, close follows the exit once every pipe has ended, so all of git's output is in.
+    child.once('close', (code) => finish(code))
+    if (timeout !== undefined) timer = setTimeout(() => stop('timeout'), timeout)
+    opts.signal?.addEventListener('abort', onAbort, { once: true })
+    child.stdin?.end(opts.input)
+  })
 }
 
 // Case-insensitive filesystems (Windows, macOS) treat C:/Foo and C:/foo as the same path; normalizePath only lowercases the drive letter, so path-equality and dedup comparisons must fold the whole string. TOKEN_GOAT_CASE_INSENSITIVE_FS ('1' or '0') overrides the platform default for deterministic cross-platform tests.
