@@ -187,5 +187,5 @@ describe('the built worker daemon sweeps a reconcile request', () => {
     const gate = await openGitGate()
     gates.push(gate)
     await sweepsDriftedProject(gate)
-  }, 120_000)
+  })
 })
