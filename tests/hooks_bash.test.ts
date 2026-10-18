@@ -8,6 +8,27 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
+import type { GitResult } from '../src/types.js'
+import type * as UtilModule from '../src/util.js'
+
+// Seam over the git calls that fingerprint a repository (src/bash_output_cache.ts::gitStateFingerprintSync): `killed` names the git subcommand (`status`, `rev-parse`) reported as killed at its time bound for the next `kills` calls (every call when unset), and `unbounded` runs every other git call without that bound so a loaded machine cannot kill a healthy one. Both are test-only and reset by the scoped-git describe below.
+const gitSeam = vi.hoisted(() => ({ killed: null as string | null, kills: Infinity, unbounded: false }))
+// Provenance: HAND-DERIVED. A killed git is `{ exitCode: -1, timedOut: true }` (src/types.ts::GitResult, the Node ETIMEDOUT CAPTURE documented at src/util.ts::runGit).
+const KILLED_GIT: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, timedOut: true }
+
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  return {
+    ...actual,
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
+      if (args[0] === gitSeam.killed && gitSeam.kills > 0) {
+        gitSeam.kills -= 1
+        return KILLED_GIT
+      }
+      return actual.runGit(args, gitSeam.unbounded ? { ...opts, timeoutMs: actual.GIT_UNBOUNDED } : opts)
+    },
+  }
+})
 
 // vi.mock is hoisted — this redirects configPath() to a per-test-file temp file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests near the bottom of this file can set a non-default config value deterministically. Mirrors tests/config.test.ts and tests/disk_cache.test.ts. dataDir() is also redirected to an isolated temp dir so the git-mutation staleness-enqueue tests below (which exercise the real queue/dirty.txt write path via enqueueDirtyPathSafe) never touch the real local dirty queue -- mirrors tests/hooks_edit.test.ts's isolation pattern.
 vi.mock('../src/constants.js', async (importOriginal) => {
@@ -2979,6 +3000,16 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
 describe('preBashHandler/postBashHandler — scoped git status/diff --stat recall (Bug D regression)', () => {
   beforeEach(() => {
     clearModuleCaches()
+    // The recall rows below assert the fingerprint comparison, not git's speed: a git killed at its 5 s bound reads as an unknown state and is never claimed unchanged (the timed-out rows pin that), so a loaded machine must not be able to kill the healthy calls.
+    gitSeam.killed = null
+    gitSeam.kills = Infinity
+    gitSeam.unbounded = true
+  })
+
+  afterEach(() => {
+    gitSeam.killed = null
+    gitSeam.kills = Infinity
+    gitSeam.unbounded = false
   })
 
   it('recalls a cached scoped `git status --porcelain -- <path>` on an identical rerun with no intervening edit', async () => {
@@ -3088,6 +3119,75 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
       if (result.hookType === 'context') {
         expect(result.context).not.toContain('is cached and unchanged')
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('preBashHandler/postBashHandler — scoped git recall while git is killed at its time bound', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+    gitSeam.killed = null
+    gitSeam.kills = Infinity
+    gitSeam.unbounded = true
+  })
+
+  afterEach(() => {
+    gitSeam.killed = null
+    gitSeam.kills = Infinity
+    gitSeam.unbounded = false
+  })
+
+  const cmd = 'git status --porcelain -- a.txt'
+  const output = (' M a.txt\n').repeat(80)
+  const GENERIC_RECALL = 'Output from a prior `git status --porcelain -- a.txt` run is cached. Use `token-goat bash-output '
+
+  // The pre hook fingerprints the repository twice for one call: once in the scoped-git recall branch, once more in the generic recall branch that follows it. A git killed at its bound for only the first of the two leaves the scoped branch with an unknown state (stale) and the generic branch with a healthy one, which serves the generic hint -- the text a full-suite run once received where this file expected "is cached and unchanged". The output is cached either way; only the claim that the repository is unchanged is withheld.
+  it.each(['status', 'rev-parse'])('serves the generic recall hint, not "unchanged", when only the first recall-time git %s is killed', async (killed) => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+
+      // Control: same entry, same repository, no kill -- recalled as unchanged. Without it the assertions below could hold for an entry that was never cached.
+      const healthy = preBashHandler(makeBashEvent(cmd, dir))
+      expect(healthy.hookType).toBe('context')
+      if (healthy.hookType === 'context') expect(healthy.context).toContain('is cached and unchanged')
+
+      gitSeam.killed = killed
+      gitSeam.kills = 1
+      const result = preBashHandler(makeBashEvent(cmd, dir))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain(GENERIC_RECALL)
+        expect(result.context).not.toContain('unchanged')
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['status', 'rev-parse'])('serves no recall at all while every recall-time git %s stays killed', async (killed) => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+      gitSeam.killed = killed
+      const result = preBashHandler(makeBashEvent(cmd, dir))
+      expect(result.hookType).toBe('pass')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('serves no recall of an output that was cached while git was killed', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      gitSeam.killed = 'status'
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+      gitSeam.killed = null
+
+      const result = preBashHandler(makeBashEvent(cmd, dir))
+      expect(result.hookType).toBe('pass')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
