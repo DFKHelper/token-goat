@@ -231,6 +231,24 @@ describe('reconcile cursors leave with the project', () => {
     }
   })
 
+  // HAND-DERIVED from the control flow of sweepKnownRoots: it reads worker.blocked_roots on every call (index_prune.ts:296), so a root removed from the list before the sweep is a plain live root, which has no file rows (:365) and keeps its registry row and cursor rows (the orphan pass skips a root with a registry row).
+  it('keeps the registry row and the cursor rows of a root that was excluded and then re-included before the sweep', () => {
+    const project = liveRootWithCursors('excluded')
+    const dir = path.join(root, 'excluded')
+    const undo = excludeInConfig(dir)
+    try {
+      expect(loadPersistedConfig().worker.blocked_roots, 'calibration: the exclusion was not written').toContain(dir)
+      undo()
+      expect(loadPersistedConfig().worker.blocked_roots, 'calibration: the re-inclusion was not written').not.toContain(dir)
+
+      sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+      expect(knownRoots(), 'the registry row of a re-included root was swept as if it were still excluded').toEqual([project])
+      expect(cursorRoots().length, 'the scan progress of a re-included root was swept as if it were still excluded').toBe(2)
+    } finally {
+      undo()
+    }
+  })
+
   it('finishes a refused exclude purge on the next sweep, and keeps the registry row until it does', () => {
     seed(path.join('secretdir', 'creds.ts'), 'export function tokenValue() { return "sk" }\n')
     const project = canonicalizeIndexPath(path.join(root, 'secretdir'))
