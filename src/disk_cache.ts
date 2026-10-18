@@ -43,13 +43,18 @@ export function blobPath(subdir: string, id: string): string | null {
 
 /** True when the blob at `subdir`/`id` exists on disk and its mtime is older than DEFAULT_MAX_AGE_MS. A stat error (missing file, permission issue) fails soft to false so the caller falls through to loadBlob, which handles the error case on its own terms. Shared by web_cache.ts's getWebOutput and bash_output_cache.ts's getBashOutput, which previously duplicated this exact stat-and-compare logic. */
 export function isBlobStale(subdir: string, id: string): boolean {
+  const mtimeMs = blobMtimeMs(subdir, id)
+  return mtimeMs !== null && Date.now() - mtimeMs > DEFAULT_MAX_AGE_MS
+}
+
+/** The mtime (ms) the age rule measures for the blob at `subdir`/`id`, or null when there is no such file or it cannot be stat-ed; the blob ages out DEFAULT_MAX_AGE_MS after this. */
+export function blobMtimeMs(subdir: string, id: string): number | null {
   const p = blobPath(subdir, id)
-  if (p === null) return false
+  if (p === null) return null
   try {
-    const stat = fs.statSync(p)
-    return Date.now() - stat.mtimeMs > DEFAULT_MAX_AGE_MS
+    return fs.statSync(p).mtimeMs
   } catch {
-    return false
+    return null
   }
 }
 
@@ -114,6 +119,36 @@ export function storeBlob(
     p,
   )
   return true
+}
+
+/** What {@link readBlob} found: no file, a file that could not be read or parsed (`code` is the system error code, or `SyntaxError` for text that is not JSON), or the parsed value. */
+export type BlobRead = { readonly status: 'absent' } | { readonly status: 'unreadable'; readonly code: string } | { readonly status: 'ok'; readonly value: unknown }
+
+/** Like {@link loadBlob}, but tells a blob that is not there from one that is there and cannot be read, so a caller can say which. loadBlob keeps its fail-soft null for its other callers. A missing file or an id that escapes the subdir is `absent`. */
+export function readBlob(subdir: string, id: string): BlobRead {
+  const p = blobPath(subdir, id)
+  if (!p) return { status: 'absent' }
+  let text: string
+  try {
+    text = fs.readFileSync(p, 'utf8')
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? 'UNKNOWN'
+    return code === 'ENOENT' ? { status: 'absent' } : { status: 'unreadable', code }
+  }
+  try {
+    return { status: 'ok', value: JSON.parse(text) }
+  } catch {
+    return { status: 'unreadable', code: 'SyntaxError' }
+  }
+}
+
+/** Ids (file names without `.json`) of the blobs in `subdir` whose id starts with `prefix`, without reading any blob. Fail-soft: a missing or unreadable directory yields []. */
+export function listBlobIdsWithPrefix(subdir: string, prefix: string): string[] {
+  try {
+    return fs.readdirSync(blobDir(subdir)).filter((file) => file.endsWith('.json') && file.startsWith(prefix)).map((file) => file.slice(0, -5))
+  } catch {
+    return []
+  }
 }
 
 /** Read and JSON-parse `<home>/<subdir>/<id>.json`. Fail-soft: returns null on any error (missing, corrupt, traversal). The caller validates the parsed shape. */

@@ -26,8 +26,15 @@ import {
   compressText,
   type CompressionResult,
   createHandoff,
-  resolveHandoff,
+  describeContentNamedByHandoff,
+  describeMissingHandoff,
+  describeUnreadableContent,
+  isContentExpired,
+  namedContentNotes,
+  olderCopyNote,
+  resolveHandoffDetailed,
   retrieveText,
+  unreadableRecordNote,
   CONTENT_MAX_INPUT_CHARS,
 } from './content_store.js'
 import { resolveProjectRoot } from './project.js'
@@ -45,7 +52,7 @@ import { normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath } from './spec_path.js'
 import { displaySafeFailureText } from './command_error.js'
 import { echoedValue, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
-import { forClient, mcpFriendlyText } from './mcp_client_text.js'
+import { forClient, mcpFriendlyText, mcpToolListed } from './mcp_client_text.js'
 
 // Upper bounds for the MCP tools' numeric params, matching the `.max(CONTENT_MAX_INPUT_CHARS)` convention `compress_text` already uses. The `run*` handlers apply no upper clamp of their own (`limit`/`top` go straight into a SQL LIMIT, `maxLines` into a `.slice`), so an unbounded value there is mostly a no-op cap rather than an allocation; `context` is the one that genuinely amplifies, since every extra line is emitted per match.
 const MCP_MAX_LIMIT = 1000
@@ -230,6 +237,16 @@ function resolveToolRoot(projectRoot: string | undefined, candidateTargets?: rea
   const resolved = resolveProjectRoot({})
   assertRootAllowed(resolved)
   return resolved
+}
+
+// retrieve_text takes no root, so it looks under the one handoff_create and handoff_resolve default to (git top level first), not the bare cwd; a root outside mcp.allowed_roots names no handoff, and the miss keeps its plain message instead of a refusal.
+function describeContentNamedInToolRoot(id: string): string | null {
+  try {
+    return describeContentNamedByHandoff(id, resolveToolRoot(undefined))
+  } catch (error) {
+    if (error instanceof RootNotAllowedError) return null
+    throw error
+  }
 }
 
 /** Thrown when a caller-supplied `projectRoot` resolves outside every entry in `mcp.allowed_roots`. The MCP SDK turns a handler throw into an error result for the caller, so the refusal still reaches whoever asked, and every tool gets it without each one remembering to ask. */
@@ -1061,7 +1078,7 @@ export async function createMcpServer(): Promise<McpServer> {
     (args) => {
       const text = retrieveText(args.id)
       return text === null
-        ? toCallToolResult({ text: `no token-goat content for id: ${args.id}`, code: 1 })
+        ? toCallToolResult({ text: describeUnreadableContent(args.id) ?? describeContentNamedInToolRoot(args.id) ?? (isContentExpired(args.id) ? `token-goat content ${args.id} expired: it is older than the local cache's age limit.` : `no token-goat content for id: ${args.id}`), code: 1 })
         : toRawCallToolResult({ text, code: 0 })
     },
   )
@@ -1077,11 +1094,13 @@ export async function createMcpServer(): Promise<McpServer> {
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
-    (args) =>
-      toCallToolResult({
-        text: displaySafeJson(createHandoff(args.name, args.text, resolveToolRoot(args.projectRoot))),
-        code: 0,
-      }),
+    (args) => {
+      const created = createHandoff(args.name, args.text, resolveToolRoot(args.projectRoot))
+      const answer = toCallToolResult({ text: displaySafeJson(created), code: 0 })
+      // Further text blocks after the record, the way handoff_resolve adds its notes; the CLI prints these on stderr.
+      const notes = namedContentNotes(created)
+      return notes.length === 0 ? answer : { ...answer, content: [...answer.content, ...notes.map((text) => ({ type: 'text' as const, text }))] }
+    },
   )
 
   server.registerTool(
@@ -1097,15 +1116,20 @@ export async function createMcpServer(): Promise<McpServer> {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     (args) => {
-      const result = resolveHandoff(args.name, {
-        projectRoot: resolveToolRoot(args.projectRoot),
+      const projectRoot = resolveToolRoot(args.projectRoot)
+      const resolved = resolveHandoffDetailed(args.name, {
+        projectRoot,
         ...(args.full === true ? { full: true } : {}),
       })
-      return result === null
-        ? toCallToolResult({ text: `no local handoff named ${echoedValue(args.name)} in this project`, code: 1 })
-        : typeof result === 'string'
-          ? toRawCallToolResult({ text: result, code: 0 })
-          : toCallToolResult({ text: displaySafeJson(compressionPayload(result)), code: 0 })
+      if (resolved === null) return toCallToolResult({ text: describeMissingHandoff(args.name, projectRoot), code: 1 })
+      const { result, olderCopies, unreadable } = resolved
+      const answer = typeof result === 'string'
+        ? toRawCallToolResult({ text: result, code: 0 })
+        : toCallToolResult({ text: displaySafeJson(compressionPayload(result)), code: 0 })
+      // A second text block, so the first stays exactly the handoff; the CLI prints the same note on stderr.
+      const note = olderCopyNote(args.name, olderCopies, (contentId) => (mcpToolListed('retrieve_text') ? `the retrieve_text tool with id ${contentId}` : `content id ${contentId}`))
+      const notes = [note, unreadableRecordNote(args.name, unreadable)].filter((n): n is string => n !== null)
+      return notes.length === 0 ? answer : { ...answer, content: [...answer.content, ...notes.map((text) => ({ type: 'text' as const, text }))] }
     },
   )
 
