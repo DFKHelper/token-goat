@@ -4,7 +4,7 @@
 //
 // `runBatched` is a drop-in for the `spawnSync(node, [BUNDLE, ...args])` shape those tests use and returns the same `{status, stdout, stderr}`. What it does not give you is a fresh process: the server restores cwd, environment and `process.exitCode` and clears the module-cache registry between requests, but a command that mutates state no reset covers would be visible to the next one. Use it for commands that read; keep spawning for anything whose whole point is process startup (hook shims, daemon launches, exit-path behaviour), and see tests/batch_serve_equivalence.test.ts, which runs a sample both ways and compares byte for byte.
 //
-// A request ends on an event, never on a clock: the server's reply settles it, and the server exiting, failing to start, failing on a pipe, or closing its stdout rejects it at once, naming the request, the exit code or signal and the tail of the server's stderr. A server that is alive and never answers is bounded by the per-test timeout alone, so a slow machine cannot fail a correct build here; the server's whole tree is ended by `stopBatchCli`, and by the process-exit and signal hooks of `spawnOwned` from the moment it starts.
+// A request ends on an event, never on a clock: the server's reply settles it, and the server exiting, failing to start, failing on a pipe, closing its stdout, or writing a reply line that is not JSON rejects it at once, naming the request, the exit code or signal and the tail of the server's stderr. A server that is alive and never answers is bounded by the per-test timeout alone, so a slow machine cannot fail a correct build here; the server's whole tree is ended by `stopBatchCli`, and by the process-exit and signal hooks of `spawnOwned` from the moment it starts.
 import { spawnSync } from 'node:child_process'
 import * as crypto from 'node:crypto'
 
@@ -33,6 +33,19 @@ export interface BatchClient {
 
 /** How much of the server's stderr a rejection quotes. It is the end of the stream that says why a server died, so the cut keeps the last characters. */
 const STDERR_TAIL_CHARS = 2000
+
+/** How much of a reply line the server wrote that is not JSON a rejection quotes. It is the start of the line that shows what it was. */
+const BAD_LINE_PREFIX_CHARS = 200
+
+/** The first `max` characters of `text`, ending on a character boundary: a cut between the two halves of a surrogate pair drops the orphaned high half. */
+function firstChars(text: string, max: number): string {
+  const cut = text.slice(0, max)
+  return cut.length < text.length && isHighSurrogate(cut.charCodeAt(cut.length - 1)) ? cut.slice(0, -1) : cut
+}
+
+function isHighSurrogate(unit: number): boolean {
+  return unit >= 0xd800 && unit <= 0xdbff
+}
 
 /** Spawn timeout for {@link runSpawned}. It stays a clock because `spawnSync` blocks this process's event loop, so neither an event nor the per-test timeout can fire while it waits. */
 const SPAWN_SYNC_TIMEOUT_MS = 30000
@@ -81,7 +94,18 @@ export function createBatchClient(launch: (token: string) => OwnedChild): BatchC
         buffered = buffered.slice(nl + 1)
         // Anything not carrying this session's token is stray output from a served command, not a reply. Dropping it rather than parsing it is what keeps a fixture's own text from being mistaken for protocol.
         if (!line.startsWith(`${token} `)) continue
-        const res = JSON.parse(line.slice(token.length + 1)) as { id: number } & RunResult
+        const payload = line.slice(token.length + 1)
+        let res: { id: number } & RunResult
+        try {
+          const parsed: unknown = JSON.parse(payload)
+          if (typeof parsed !== 'object' || parsed === null) throw new TypeError('a reply is an object')
+          res = parsed as { id: number } & RunResult
+        } catch {
+          // The server is alive but its replies can no longer be trusted, so every request in flight is rejected and the tree is ended; the unread rest of the buffer belongs to it.
+          fail(owned, `wrote a reply line that is not JSON (starts ${JSON.stringify(firstChars(payload, BAD_LINE_PREFIX_CHARS))})`, stderrTail, true)
+          buffered = ''
+          return
+        }
         const waiter = pending.get(res.id)
         if (waiter === undefined) continue
         pending.delete(res.id)

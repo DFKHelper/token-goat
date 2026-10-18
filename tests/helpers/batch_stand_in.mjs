@@ -1,4 +1,4 @@
-// A stand-in for `token-goat --batch-serve <token>` whose behaviour each request chooses with its first argument, so a test controls the event (a reply, a death, a process tree, a hang, a forged reply ahead of the real one, a reply in two writes, a clean exit, a long stderr) instead of waiting on a clock. Provenance: FORMAT-DERIVED from the reply framing in tests/helpers/batch-cli.ts (a line `<token> <json>` with id, status, stdout, stderr); this file serves no real command.
+// A stand-in for `token-goat --batch-serve <token>` whose behaviour each request chooses with its first argument, so a test controls the event (a reply, a death, a process tree, a hang, a forged reply ahead of the real one, a reply in two writes, a clean exit, a long stderr, an unreadable reply line) instead of waiting on a clock. Provenance: FORMAT-DERIVED from the reply framing in tests/helpers/batch-cli.ts (a line `<token> <json>` with id, status, stdout, stderr); this file serves no real command.
 import { spawn } from 'node:child_process'
 import process from 'node:process'
 import * as readline from 'node:readline'
@@ -38,6 +38,9 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
   } else if (mode === 'stderr') {
     // The write callback runs once the text is handed to the pipe, so the exit cannot cut it short.
     process.stderr.write(rest[0], () => process.exit(4))
+  } else if (mode === 'garble') {
+    // A line under the session token whose payload is not JSON.
+    process.stdout.write(`${token} ${rest[0]}\n`)
   } else if (mode === 'split') {
     const text = `${token} ${JSON.stringify({ id, status: 0, stdout: rest.join(' '), stderr: '' })}\n`
     const half = Math.floor(text.length / 2)

@@ -129,6 +129,24 @@ describe('batch client request settling', () => {
   })
 })
 
+describe('batch client reply lines it cannot read', () => {
+  it('rejects the request, quoting a bounded prefix of a tokened line that is not JSON, and ends the server', async () => {
+    let kills = 0
+    const client = createBatchClient((token) => {
+      const spawned = spawnOwned(process.execPath, [STAND_IN, token], { stdio: ['pipe', 'pipe', 'pipe'] })
+      return { ...spawned, kill: () => { kills++; spawned.kill() } }
+    })
+    clients.push(client)
+    const payload = `not-json-${'z'.repeat(500)}`
+    const message = await rejection(client.run(['garble', payload]))
+    expect(message).toContain('garble not-json-')
+    expect(message).toContain(JSON.stringify(payload.slice(0, 200)))
+    expect(message).not.toContain(JSON.stringify(payload.slice(0, 201)))
+    // The server is alive and would never answer sensibly again, so only the client ending it stops it; the count is read right after the rejection, which the end of the tree follows synchronously.
+    expect(kills).toBe(1)
+  })
+})
+
 describe('batch client cleanup', () => {
   it('ends the server and every process holding its pipes when the server process emits an error, and rejects the request naming it', async () => {
     let real: OwnedChild | undefined
