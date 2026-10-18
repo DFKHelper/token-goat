@@ -117,6 +117,18 @@ function handoffId(name: string, projectRoot: string): string {
   return handoffIdFromKey(name, handoffRootKey(projectRoot))
 }
 
+// The extended-length spellings of a plain Windows root, in forward-slash and backslash form: a drive path becomes //?/C:/x and a UNC path //?/UNC/server/share/x. The released store hashed the root as path.resolve or canonicalize left it, and neither strips the prefix, so a root handed in with it was keyed with it. Empty off Windows and for a path that is neither.
+function extendedSpellings(plain: string): string[] {
+  if (process.platform !== 'win32') return []
+  const forward = plain.split(path.win32.sep).join('/')
+  let body: string
+  if (/^[a-z]:\//i.test(forward)) body = forward
+  else if (/^\/\/[^/?]/.test(forward)) body = `UNC/${forward.slice(2)}`
+  else return []
+  const extended = `//?/${body}`
+  return [extended, extended.split('/').join(path.win32.sep)]
+}
+
 // Every id an earlier release could have stored this handoff under: it hashed the root exactly as spelled, which was the canonical form when a marker was found (c:/x) and path.resolve's form when none was (C:\x, or c:\x). Only the spellings that differ from the current id are returned.
 function legacyHandoffIds(name: string, projectRoot: string): string[] {
   const bases = new Set<string>([projectRoot])
@@ -135,6 +147,7 @@ function legacyHandoffIds(name: string, projectRoot: string): string[] {
       spellings.add(form.replace(/\//g, path.win32.sep))
     }
   }
+  for (const plain of [...spellings]) for (const extended of extendedSpellings(plain)) spellings.add(extended)
   const current = handoffId(name, projectRoot)
   const ids = new Set<string>()
   for (const spelling of spellings) ids.add(handoffIdFromKey(name, spelling))

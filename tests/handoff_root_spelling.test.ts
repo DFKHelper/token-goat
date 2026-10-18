@@ -322,6 +322,27 @@ describe.skipIf(!isWin)('the extended-length prefix of a Windows path', () => {
 
     expect(resolveHandoff('plan', { projectRoot: roots.link, full: true })).toBe('stored text')
   })
+
+  // FORMAT-DERIVED: origin/main 3913ac9c2, src/content_store.ts normalizeProjectRoot (line 81) is path.resolve(projectRoot ?? cwd) then findProject(candidate)?.root ?? candidate, and handoffId (line 86) hashes that string unchanged; path_containment.ts canonicalize (line 64) keeps the prefix (it becomes //?/C:/x), so a root handed in with the prefix was keyed with it. Record shape as in writeLegacyRecord.
+  it.each([
+    ['the backslash form that path.resolve leaves when no marker is found', (dir: string) => extended(dir)],
+    ['the forward-slash form that canonicalize leaves when a marker is found', (dir: string) => `//?/${forwardSpelling(dir)}`],
+  ])('resolves a record the released store keyed under %s, from the plain and the prefixed root', (_label, spell) => {
+    writeLegacyRecord(spell(projectDir), 'old-notes', 'stored under the prefix', Date.now())
+
+    expect(resolveHandoff('old-notes', { projectRoot: projectDir, full: true })).toBe('stored under the prefix')
+    expect(resolveHandoff('old-notes', { projectRoot: extended(projectDir), full: true })).toBe('stored under the prefix')
+  })
+
+  // FORMAT-DERIVED: same released code as the row above; the UNC extended spelling is //?/UNC/server/share/x (the form withoutLongPathPrefix in src/content_store.ts reads). The directory is reached through the local administrative share, and the row is skipped where that share is not reachable.
+  it('resolves a record the released store keyed under the extended UNC spelling', (ctx) => {
+    const forward = forwardSpelling(projectDir)
+    const unc = `//localhost/${forward.slice(0, 1)}$${forward.slice(2)}`
+    if (!fs.existsSync(unc)) ctx.skip()
+    writeLegacyRecord(`//?/UNC/${unc.slice(2)}`, 'old-notes', 'stored under the UNC prefix', Date.now())
+
+    expect(resolveHandoff('old-notes', { projectRoot: unc, full: true })).toBe('stored under the UNC prefix')
+  })
 })
 
 // Age a blob without waiting: the cache's age rule reads the file's mtime.
