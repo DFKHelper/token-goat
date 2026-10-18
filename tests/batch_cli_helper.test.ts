@@ -53,6 +53,46 @@ describe('batch client request settling', () => {
     expect(second).toContain('hang second')
   })
 
+  it('assembles a reply that arrives in two stdout chunks', async () => {
+    let owned: OwnedChild | undefined
+    const client = createBatchClient((token) => (owned = spawnOwned(process.execPath, [STAND_IN, token], { stdio: ['pipe', 'pipe', 'pipe'] })))
+    clients.push(client)
+    const request = client.run(['split', 'whole', 'reply'])
+    const stdout = owned?.child.stdout
+    if (stdout === null || stdout === undefined) throw new Error('the client did not launch the stand-in')
+    // Both listeners run after the client's own, so a chunk they see has already been through the client. The second half is held until the first has arrived, so the reply cannot reach the client in one chunk.
+    stdout.once('data', () => owned?.child.stdin?.write(`${JSON.stringify({ id: 0, argv: ['release'] })}\n`))
+    const incomplete = new Promise<string>((resolve) => {
+      let seen = ''
+      stdout.on('data', (chunk: string) => {
+        seen += chunk
+        if (seen.includes('\n')) resolve('the whole line arrived and the request did not settle')
+      })
+    })
+    // The client resolves the request while handling the chunk that ends the line, before the second listener resolves `incomplete`, so a correct client wins the race and a client that lost the first half loses it.
+    expect(await Promise.race([request, incomplete])).toEqual({ status: 0, stdout: 'whole reply', stderr: '' })
+  })
+
+  it('rejects the request in flight when the server exits 0, naming the request and code 0', async () => {
+    const message = await rejection(standIn().run(['quit', 'while', 'pending']))
+    expect(message).toContain('quit while pending')
+    expect(message).toContain('code 0')
+  })
+
+  it('quotes "(empty)" as the stderr tail of a server that wrote nothing', async () => {
+    const message = await rejection(standIn().run(['quit', 'silently']))
+    expect(message).toContain('stderr tail: (empty)')
+  })
+
+  it('quotes at most the last 2000 characters of a long stderr, ending in its last bytes', async () => {
+    // 3000 characters of padding then a marker: the tail is the 1993 last padding characters and the marker.
+    const stderr = `${'x'.repeat(3000)}THE-END`
+    const message = await rejection(standIn().run(['stderr', stderr]))
+    const label = 'stderr tail: '
+    expect(message).toContain('code 4')
+    expect(message.slice(message.indexOf(label) + label.length)).toBe(`${'x'.repeat(1993)}THE-END`)
+  })
+
   it('never takes a line without the session token as a reply, and the tokened reply still settles the request', async () => {
     const res = await standIn().run(['stray', 'real', 'reply'])
     expect(res).toEqual({ status: 0, stdout: 'real reply', stderr: '' })
