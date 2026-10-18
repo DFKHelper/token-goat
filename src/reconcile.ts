@@ -288,7 +288,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
 
   for (const file of scanOrder) {
     // Checked before the work rather than after, so the budget bounds what this function does rather than merely reporting that it overran, and the check is a clock read that hoisting out of the loop would remove. Not before the first file: a sweep that may stop having examined nothing saves no resume point, so a machine slow enough to spend the budget before the first stat (or a budget of 0) repeated the same empty sweep every session and never checked the project. One file is the floor, so the cursor advances every sweep and the laps complete; it is a count, not a time, and the budget still bounds everything after it.
-    const overBudget = Date.now() - startedAt >= budgetMs
+    const clockMs = Date.now()
+    const overBudget = clockMs - startedAt >= budgetMs
     if (overBudget && scanned >= MIN_FILES_PER_SWEEP) {
       scanExhausted = true
       break
@@ -336,8 +337,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch. `entry.mtime` is stored in seconds (see `safeMtime` in parser.ts) while `mtimeMs` is milliseconds, so the comparison converts here rather than at the write side, which would require migrating every already-indexed row.
     if (mtimeProvesUnchanged(entry, mtimeMs)) continue
 
-    // Read after the stat and before the hash: an edit that lands after this hash lands after this clock, which is what lets the restamp below use it as the row's index time.
-    const clockSec = Date.now() / 1000
+    // The clock read at the top of this iteration (the budget check's own read, so the sweep makes no extra read per file) precedes the hash: an edit that lands after this hash lands after this clock, which is what lets the restamp below use it as the row's index time.
+    const clockSec = clockMs / 1000
     const diskSha = fingerprintFile(file)
     if (diskSha === null) {
       changed.push(file)
@@ -345,7 +346,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     }
     if (diskSha === entry.sha) {
       if (!mtimeEqualsRow(entry, mtimeMs)) mtimeOnly++
-      // The hash proved the bytes unchanged, so it is recorded once the sweep ends: without that a file indexed inside the tick of its own edit, or one whose mtime moved over identical bytes, is hashed again on every sweep. The stat and the clock above are the ones taken before the hash.
+      // The hash proved the bytes unchanged, so it is recorded once the sweep ends: without that a file indexed inside the tick of its own edit, or one whose mtime moved over identical bytes, is hashed again on every sweep. The stat above and the clock read at the top of the iteration are the ones taken before the hash.
       verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, stamp: { mtimeSec: mtimeMs / 1000, clockSec } })
       continue
     }
@@ -367,7 +368,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     let examined = 0
     for (const [folded, entry] of order) {
       // The scan loop costs one map lookup per row; this one costs a disk stat, so it needs the same clock. Read before the stat so a row that is still on disk, which exits early, cannot let the contents of the index decide whether the bound is consulted. Not before the first row: a pass that may stop having examined nothing saves no resume point, so a machine that spent the budget in the scan (or a budget of 0) never reached a deletion. Deletions already found stay reported, since each was confirmed by its own stat.
-      const overBudget = Date.now() - startedAt >= budgetMs
+      const clockMs = Date.now()
+      const overBudget = clockMs - startedAt >= budgetMs
       if (overBudget && examined >= MIN_FILES_PER_SWEEP) {
         deletionsIncomplete = true
         break
@@ -382,7 +384,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       }
       // A live row git does not list is still compared against its content, as the scan above compares a tracked one: nothing else revisits an untracked file rewritten outside an edit, such as one a formatter or `git stash pop` changed past the post-bash sweep's cap.
       if (st === null || mtimeProvesUnchanged(entry, st.mtimeMs)) continue
-      const clockSec = Date.now() / 1000
+      const clockSec = clockMs / 1000
       const diskSha = fingerprintFile(entry.filePath)
       if (diskSha === entry.sha) {
         if (!mtimeEqualsRow(entry, st.mtimeMs)) mtimeOnly++
