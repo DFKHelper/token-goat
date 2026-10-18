@@ -8,7 +8,7 @@ import Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { BUNDLE, runBundle, tgIsolatedEnv } from './helpers/bundle.js'
-import { stopOwnedChild } from './helpers/stop_owned_child.js'
+import { stopOwnedChild, trackOwnedChild } from './helpers/stop_owned_child.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 /** Mirrors src/constants.ts's defaultDataDir() for a LOCALAPPDATA/XDG_DATA_HOME of `base`, as tests/worker_daemon_e2e.test.ts does. */
@@ -71,6 +71,8 @@ describe('an edit wakes the detached worker (built bundle)', () => {
     delete daemonEnv['TOKEN_GOAT_NO_WORKER_SPAWN']
     // owner: this test; detached only to match how the daemon runs for real, dies when stopOwnedChild ends it through this handle at the end of the test (a daemon also retires when its data directory is deleted).
     const child = spawn(process.execPath, [BUNDLE, '--worker-daemon', '--claim-worker'], { cwd: os.tmpdir(), env: daemonEnv, stdio: 'ignore', windowsHide: true, detached: true })
+    // Tracked before any wait: the per-test timeout rejects the test while the loops below still run and its finally never does, and the backstop is what then ends the daemon (and so the loops, which watch its exit).
+    trackOwnedChild(child)
     const pid = child.pid
     let bodyFinished = false
     try {

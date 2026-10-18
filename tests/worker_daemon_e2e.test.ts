@@ -12,7 +12,7 @@ import { appendDirtyQueuePaths } from '../src/dirty_queue.js'
 import { extractErrorMessage } from '../src/util.js'
 import { BUNDLE, readCoreBundleText, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
 import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
-import { stopOwnedChild } from './helpers/stop_owned_child.js'
+import { stopOwnedChild, trackOwnedChild } from './helpers/stop_owned_child.js'
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
   return sharedRunBundle(args, { cwd, env, timeout: 30000 })
@@ -273,6 +273,8 @@ describe('detached worker daemon (built bundle)', () => {
         stdio: 'ignore',
         windowsHide: true,
       })
+      // Tracked before any wait, so a test the timeout rejects mid-wait still has its daemon ended.
+      trackOwnedChild(child)
       const pid = child.pid
       let bodyFinished = false
       try {
