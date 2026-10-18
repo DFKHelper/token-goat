@@ -239,6 +239,16 @@ function resolveToolRoot(projectRoot: string | undefined, candidateTargets?: rea
   return resolved
 }
 
+// retrieve_text takes no root, so it looks under the one handoff_create and handoff_resolve default to (git top level first), not the bare cwd; a root outside mcp.allowed_roots names no handoff, and the miss keeps its plain message instead of a refusal.
+function describeContentNamedInToolRoot(id: string): string | null {
+  try {
+    return describeContentNamedByHandoff(id, resolveToolRoot(undefined))
+  } catch (error) {
+    if (error instanceof RootNotAllowedError) return null
+    throw error
+  }
+}
+
 /** Thrown when a caller-supplied `projectRoot` resolves outside every entry in `mcp.allowed_roots`. The MCP SDK turns a handler throw into an error result for the caller, so the refusal still reaches whoever asked, and every tool gets it without each one remembering to ask. */
 class RootNotAllowedError extends Error {}
 
@@ -1068,7 +1078,7 @@ export async function createMcpServer(): Promise<McpServer> {
     (args) => {
       const text = retrieveText(args.id)
       return text === null
-        ? toCallToolResult({ text: describeUnreadableContent(args.id) ?? (isContentExpired(args.id) ? `token-goat content ${args.id} expired: it is older than the local cache's age limit.` : (describeContentNamedByHandoff(args.id) ?? `no token-goat content for id: ${args.id}`)), code: 1 })
+        ? toCallToolResult({ text: describeUnreadableContent(args.id) ?? (isContentExpired(args.id) ? `token-goat content ${args.id} expired: it is older than the local cache's age limit.` : (describeContentNamedInToolRoot(args.id) ?? `no token-goat content for id: ${args.id}`)), code: 1 })
         : toRawCallToolResult({ text, code: 0 })
     },
   )

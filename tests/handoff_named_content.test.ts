@@ -10,6 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { invalidateConfigCache } from '../src/config.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { compressText, createHandoff } from '../src/content_store.js'
 import { createMcpServer } from '../src/mcp_server.js'
@@ -361,5 +362,64 @@ describe('the retrieve_text tool says the same', () => {
     expect(named.text).toContain('handoff "refs" named it in the text')
     const unnamed = await retrieveViaMcp('tg_0000000000000000')
     expect(unnamed.text).toBe('no token-goat content for id: tg_0000000000000000')
+  })
+
+  // HAND-DERIVED: handoff_create with no projectRoot keys the handoff under the git top level of the server's cwd (resolveToolRoot), the root handoff_resolve looks under; a package.json in a subdirectory is a project marker of its own, so the cwd-only key is the subdirectory. The retrieve_text tool takes no root, so it must read the one its sibling tools write.
+  it('names the handoff handoff_create keyed under the git top level, from a subdirectory with its own package.json', async () => {
+    const repo = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-named-repo-')))
+    const sub = path.join(repo, 'pkg')
+    fs.mkdirSync(sub)
+    fs.writeFileSync(path.join(sub, 'package.json'), '{}\n')
+    const cwdBefore = process.cwd()
+    try {
+      expect(spawnSync('git', ['init', '-q'], { cwd: repo }).status).toBe(0)
+      process.chdir(sub)
+      const stored = compressText('table of results the handoff points at')
+      const server = await createMcpServer()
+      const client = new Client({ name: 'test-client', version: '0.0.1' })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+      try {
+        const created = await client.callTool({ name: 'handoff_create', arguments: { name: 'refs', text: `see ${stored.id} for the table` } })
+        expect(created.isError).not.toBe(true)
+      } finally {
+        await client.close()
+        await server.close()
+      }
+      setAge(stored.id, 2 * DAY_MS)
+      compressText('a later write that runs the prune')
+      expect(fs.existsSync(blobFile(stored.id))).toBe(false)
+
+      const named = await retrieveViaMcp(stored.id)
+
+      expect(named.text).toContain('handoff "refs" named it in the text')
+    } finally {
+      process.chdir(cwdBefore)
+      fs.rmSync(repo, { recursive: true, force: true })
+    }
+  })
+
+  // HAND-DERIVED: mcp.allowed_roots (TOKEN_GOAT_MCP_ALLOWED_ROOTS, a path-delimited list) pins which roots the tools may serve; handoff_create and handoff_resolve refuse a root outside it, so a handoff of a root outside it is not something retrieve_text may name either. The miss itself still answers with the plain message, not a refusal.
+  it('does not name a handoff of a root outside mcp.allowed_roots, and still answers the miss plainly', async () => {
+    const allowed = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-named-allowed-')))
+    const stored = compressText('table of results the handoff points at')
+    createHandoff('refs', `see ${stored.id} for the table`, process.cwd())
+    setAge(stored.id, 2 * DAY_MS)
+    compressText('a later write that runs the prune')
+    const before = process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
+    try {
+      process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = allowed
+      invalidateConfigCache()
+
+      const refused = await retrieveViaMcp(stored.id)
+
+      expect(refused.isError).toBe(true)
+      expect(refused.text).toBe(`no token-goat content for id: ${stored.id}`)
+    } finally {
+      if (before === undefined) delete process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS']
+      else process.env['TOKEN_GOAT_MCP_ALLOWED_ROOTS'] = before
+      invalidateConfigCache()
+      fs.rmSync(allowed, { recursive: true, force: true })
+    }
   })
 })
