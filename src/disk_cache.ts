@@ -116,6 +116,27 @@ export function storeBlob(
   return true
 }
 
+/** What {@link readBlob} found: no file, a file that could not be read or parsed (`code` is the system error code, or `SyntaxError` for text that is not JSON), or the parsed value. */
+export type BlobRead = { readonly status: 'absent' } | { readonly status: 'unreadable'; readonly code: string } | { readonly status: 'ok'; readonly value: unknown }
+
+/** Like {@link loadBlob}, but tells a blob that is not there from one that is there and cannot be read, so a caller can say which. loadBlob keeps its fail-soft null for its other callers. A missing file or an id that escapes the subdir is `absent`. */
+export function readBlob(subdir: string, id: string): BlobRead {
+  const p = blobPath(subdir, id)
+  if (!p) return { status: 'absent' }
+  let text: string
+  try {
+    text = fs.readFileSync(p, 'utf8')
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? 'UNKNOWN'
+    return code === 'ENOENT' ? { status: 'absent' } : { status: 'unreadable', code }
+  }
+  try {
+    return { status: 'ok', value: JSON.parse(text) }
+  } catch {
+    return { status: 'unreadable', code: 'SyntaxError' }
+  }
+}
+
 /** Ids (file names without `.json`) of the blobs in `subdir` whose id starts with `prefix`, without reading any blob. Fail-soft: a missing or unreadable directory yields []. */
 export function listBlobIdsWithPrefix(subdir: string, prefix: string): string[] {
   try {

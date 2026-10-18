@@ -36,7 +36,7 @@ vi.mock('../src/stats.js', async (importOriginal) => {
 
 const _testConfigPath = tempConfigPath('tg-disk-cache-config-test.toml')
 
-import { storeBlob, loadBlob, pruneBlobs, tokenGoatHome } from '../src/disk_cache.js'
+import { storeBlob, loadBlob, pruneBlobs, readBlob, tokenGoatHome } from '../src/disk_cache.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { redactSecrets, redactSerializedJson } from '../src/secret_redact.js'
 import { recordStat, kindToSource, SOURCE_OTHER } from '../src/stats.js'
@@ -89,6 +89,34 @@ describe('tokenGoatHome', () => {
   it('treats an empty override as unset', () => {
     process.env['TOKEN_GOAT_HOME'] = ''
     expect(tokenGoatHome()).toBe(path.join(os.homedir(), '.token-goat'))
+  })
+})
+
+// HAND-DERIVED: the three outcomes are built directly on disk: no file, a file holding text that is not JSON, and a directory standing where the file should be (a read error that is not ENOENT, no chmod needed); the expected statuses follow from readBlob's contract.
+describe('readBlob tells an absent blob from one that is there and cannot be read', () => {
+  it('reports ok with the parsed value', () => {
+    storeBlob('sub', 'fine', { n: 1 })
+    expect(readBlob('sub', 'fine')).toEqual({ status: 'ok', value: { n: 1 } })
+  })
+
+  it('reports a missing file as absent', () => {
+    expect(readBlob('sub', 'nope')).toEqual({ status: 'absent' })
+  })
+
+  it('reports text that is not JSON as unreadable, with the error name as the code', () => {
+    const dir = path.join(tmpHome, 'sub')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'broken.json'), '{not json', 'utf8')
+    expect(readBlob('sub', 'broken')).toEqual({ status: 'unreadable', code: 'SyntaxError' })
+    expect(loadBlob('sub', 'broken')).toBeNull()
+  })
+
+  it('reports a file that cannot be read as unreadable, with the system code', () => {
+    fs.mkdirSync(path.join(tmpHome, 'sub', 'stuck.json'), { recursive: true })
+    const read = readBlob('sub', 'stuck')
+    expect(read.status).toBe('unreadable')
+    expect(read.status === 'unreadable' ? read.code : '').toMatch(/^E[A-Z]+$/)
+    expect(loadBlob('sub', 'stuck')).toBeNull()
   })
 })
 

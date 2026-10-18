@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import { deflateRawSync } from 'node:zlib'
 import * as path from 'node:path'
 
-import { isBlobStale, listBlobIdsWithPrefix, loadBlob, storeBlob } from './disk_cache.js'
+import { isBlobStale, listBlobIdsWithPrefix, loadBlob, readBlob, storeBlob } from './disk_cache.js'
 import { shortFingerprint } from './fingerprint.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { canonicalize, foldPathForContainment } from './path_containment.js'
@@ -305,10 +305,14 @@ export function resolveHandoff(name: string, opts: { projectRoot?: string; full?
   return resolveHandoffDetailed(name, opts)?.result ?? null
 }
 
-// The one honest distinction the store can draw: a record still on disk but past the age limit expired, and its own createdAt says when it was stored. A record the cache has already pruned leaves nothing behind (no tombstone is kept past the age limit), so it reads as never created.
+// A record on disk that cannot be read is never reported as absent. The one honest distinction the store can otherwise draw: a record still on disk but past the age limit expired, and its own createdAt says when it was stored. A record the cache has already pruned leaves nothing behind (no tombstone is kept past the age limit), so it reads as never created.
 export function describeMissingHandoff(name: string, projectRoot?: string): string {
   const root = normalizeProjectRoot(projectRoot)
   const identity = handoffRootIdentity(root)
+  for (const id of handoffLookupIds(name, root)) {
+    const read = readBlob(CONTENT_SUBDIR, id)
+    if (read.status === 'unreadable') return `handoff ${echoedValue(name)} could not be read (${read.code}): a record for it is on disk, so it may exist`
+  }
   let storedAt: number | null = null
   for (const id of handoffLookupIds(name, root)) {
     if (!isBlobStale(CONTENT_SUBDIR, id)) continue

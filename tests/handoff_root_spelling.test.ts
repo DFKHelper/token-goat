@@ -519,3 +519,28 @@ describe.skipIf(isWin || process.platform === 'darwin')('on a case-sensitive fil
     expect(resolveHandoff('plan', { projectRoot: path.join(projectDir, 'Foo'), full: true })).toBe('in Foo')
   })
 })
+
+// HAND-DERIVED: the stored record is overwritten with text that is not JSON, so it exists but cannot be parsed; the expected message names the error name SyntaxError that JSON.parse raises.
+describe('a handoff record that exists but cannot be read is not reported as missing', () => {
+  it('says it could not be read and names the code, and keeps the plain message for a name never created', () => {
+    const created = createHandoff('plan', 'a plan', projectDir)
+    fs.writeFileSync(path.join(contentDir(), `${created.id}.json`), '{not json', 'utf8')
+
+    expect(resolveHandoff('plan', { projectRoot: projectDir })).toBeNull()
+    const message = describeMissingHandoff('plan', projectDir)
+    expect(message).toContain('handoff "plan" could not be read (SyntaxError)')
+    expect(message).not.toContain('no local handoff')
+    expect(describeMissingHandoff('never-made', projectDir)).toBe('no local handoff named "never-made" in this project')
+  })
+
+  it('says so through the built bundle', () => {
+    expect(runCli(['handoff-create', 'plan', 'a plan'], projectDir).status).toBe(0)
+    const id = fs.readdirSync(contentDir()).find((file) => file.startsWith('tg_handoff_'))?.slice(0, -5) as string
+    fs.writeFileSync(path.join(contentDir(), `${id}.json`), '{not json', 'utf8')
+
+    const resolved = runCli(['handoff-resolve', '--', 'plan'], projectDir)
+    expect(resolved.status).not.toBe(0)
+    expect(resolved.stderr).toContain('handoff "plan" could not be read (SyntaxError)')
+    expect(resolved.stderr).not.toContain('no local handoff')
+  })
+})
