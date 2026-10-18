@@ -122,6 +122,11 @@ function makePostBashEvent(command: string, output: string, cwd?: string): HookE
   })
 }
 
+// Rows in about twenty describes here cache an output or a file read in the session (postBashHandler, recordFileRead) and clear it only in their own beforeEach; under --sequence.shuffle the first row of a describe with no beforeEach (a pre-hook row for a bare `npm test`, say) then ran against the previous describe's cache and saw a recalled output instead of its command rewritten. Clearing after every row, here for the whole file, leaves each row a clean session whichever describe ran before it.
+afterEach(() => {
+  clearModuleCaches()
+})
+
 describe('postBashHandler', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -4367,11 +4372,6 @@ describe('postBashHandler — gh view field-batching advisory (one-time per sess
 
 describe('postBashHandler — failing test-runner advisory', () => {
   beforeEach(() => {
-    clearModuleCaches()
-  })
-
-  // Every row here caches a failing run's output in the session; cleared after, a row that shuffles in next (a bare `npm test` pre-hook row) does not find that output recalled instead of its command rewritten.
-  afterEach(() => {
     clearModuleCaches()
   })
 
