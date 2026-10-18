@@ -1,4 +1,4 @@
-// A handoff must be found again however its project root is spelled, and content a live handoff names must outlive the cache's age rule.
+// What this file proves about where a handoff is stored and read back: a root spelled differently (slashes, drive case, a link, the long-path prefix, a link whose target is gone) finds its own project's records and never another project's; an older copy under a previous spelling is reported; content a handoff names takes part in the normal eviction and age rules with no exemption; a loaded record is validated; an aged-out handoff is told apart from one never created; roots that differ only by a non-ASCII case variant stay two projects.
 
 // CAPTURE: the two ids and their root spellings below are two real stored handoffs read from a user's content store (name r3-wiki-folds, same text, created five hours apart): tg_handoff_b90e697d562f5a99 recorded projectRoot "c:/Projects/claude-agents" and tg_handoff_52172d6e07a8a7aa recorded projectRoot "C:\Projects\claude-agents". The flip came from findProject returning null for a directory holding three nested repositories (REPO_CONTAINER_THRESHOLD in src/project.ts), which switched the root from the canonical form to path.resolve's form. HAND-DERIVED: the Windows rows spell one directory the way each host delivers it (Git Bash and hook payloads: lower-case drive and forward slashes, which is canonicalize's form; PowerShell cwd: upper-case drive and backslashes); the prune rows age files with utimes so no clock is waited on.
 import { spawnSync } from 'node:child_process'
@@ -13,6 +13,7 @@ import { shortFingerprint } from '../src/fingerprint.js'
 import { canonicalize } from '../src/path_containment.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { BUNDLE } from './helpers/bundle.js'
+import { runTeardown } from './helpers/strict_teardown.js'
 
 const BACKSLASH = String.fromCharCode(92)
 const isWin = process.platform === 'win32'
@@ -43,8 +44,7 @@ afterEach(() => {
   }
   _resetDataDirCacheForTesting()
   clearModuleCaches()
-  fs.rmSync(home, { recursive: true, force: true })
-  fs.rmSync(projectDir, { recursive: true, force: true })
+  runTeardown([() => fs.rmSync(home, { recursive: true, force: true }), () => fs.rmSync(projectDir, { recursive: true, force: true })])
 })
 
 // The spelling Git Bash and hook payloads deliver, and the one a PowerShell cwd delivers.
@@ -64,7 +64,7 @@ function legacyId(spelling: string, name: string): string {
   return `tg_handoff_${shortFingerprint(`${spelling}\x00${name}`)}`
 }
 
-// A record exactly as the release before this fix stored it: the id hashes the root as spelled.
+// A record exactly as the release before this fix stored it: the id hashes the root as spelled. FORMAT-DERIVED: shape read off origin/main 3913ac9c2, src/content_store.ts createHandoff (kind, id, name, projectRoot, contentId, text, createdAt; id hashed from the root as spelled).
 function writeLegacyRecord(spelling: string, name: string, text: string, createdAt: number): { file: string; contentId: string } {
   const id = legacyId(spelling, name)
   const contentId = `tg_${shortFingerprint(text)}`
@@ -86,16 +86,19 @@ describe.skipIf(!isWin)('a handoff is found under any spelling of its root', () 
     expect(legacyId(`C:${BACKSLASH}Projects${BACKSLASH}claude-agents`, 'r3-wiki-folds')).toBe('tg_handoff_52172d6e07a8a7aa')
   })
 
+  // HAND-DERIVED: the two spellings are one directory written the way each host delivers it (see the file header); the expected text is the one just stored.
   it('resolves a handoff created under the forward-slash spelling from the backslash spelling', () => {
     createHandoff('notes', 'decided under git bash', forwardSpelling(projectDir))
     expect(resolveHandoff('notes', { projectRoot: backslashSpelling(projectDir), full: true })).toBe('decided under git bash')
   })
 
+  // HAND-DERIVED: the two spellings are one directory written the way each host delivers it (see the file header); the expected text is the one just stored.
   it('resolves a handoff created under the backslash spelling from the forward-slash spelling', () => {
     createHandoff('notes', 'decided under powershell', backslashSpelling(projectDir))
     expect(resolveHandoff('notes', { projectRoot: forwardSpelling(projectDir), full: true })).toBe('decided under powershell')
   })
 
+  // HAND-DERIVED: the two spellings are one directory written the way each host delivers it (see the file header); the expected text is the one just stored.
   it('stores both spellings under one id', () => {
     const a = createHandoff('notes', 'one', forwardSpelling(projectDir))
     const b = createHandoff('notes', 'two', backslashSpelling(projectDir))
@@ -104,11 +107,13 @@ describe.skipIf(!isWin)('a handoff is found under any spelling of its root', () 
     expect(resolveHandoff('notes', { projectRoot: projectDir, full: true })).toBe('two')
   })
 
+  // FORMAT-DERIVED: the record is built the way the released store wrote it (origin/main 3913ac9c2, src/content_store.ts createHandoff: kind, id, name, projectRoot, contentId, text, createdAt; id is tg_handoff_ plus the first 16 hex of sha256 of the root, NUL, the name); which copy wins follows from the createdAt numbers.
   it('resolves a record stored under the legacy forward-slash spelling', () => {
     writeLegacyRecord(forwardSpelling(projectDir), 'old-notes', 'stored by the previous release', Date.now())
     expect(resolveHandoff('old-notes', { projectRoot: backslashSpelling(projectDir), full: true })).toBe('stored by the previous release')
   })
 
+  // FORMAT-DERIVED: the record is built the way the released store wrote it (origin/main 3913ac9c2, src/content_store.ts createHandoff: kind, id, name, projectRoot, contentId, text, createdAt; id is tg_handoff_ plus the first 16 hex of sha256 of the root, NUL, the name); which copy wins follows from the createdAt numbers.
   it('resolves a record stored under the legacy backslash spelling from the forward-slash spelling', () => {
     writeLegacyRecord(backslashSpelling(projectDir), 'old-notes', 'stored after the root flipped', Date.now())
     expect(resolveHandoff('old-notes', { projectRoot: forwardSpelling(projectDir), full: true })).toBe('stored after the root flipped')
@@ -116,6 +121,7 @@ describe.skipIf(!isWin)('a handoff is found under any spelling of its root', () 
 })
 
 describe.skipIf(!isWin)('the same name under two spellings', () => {
+  // FORMAT-DERIVED: the record is built the way the released store wrote it (origin/main 3913ac9c2, src/content_store.ts createHandoff: kind, id, name, projectRoot, contentId, text, createdAt; id is tg_handoff_ plus the first 16 hex of sha256 of the root, NUL, the name); which copy wins follows from the createdAt numbers.
   it('returns the newer stored copy when the current id holds it, and leaves the older record untouched', () => {
     const legacy = writeLegacyRecord(forwardSpelling(projectDir), 'r3-await', 'the old text', Date.now() - 60_000)
     const before = { bytes: fs.readFileSync(legacy.file, 'utf8'), mtimeMs: fs.statSync(legacy.file).mtimeMs }
@@ -127,6 +133,7 @@ describe.skipIf(!isWin)('the same name under two spellings', () => {
     expect(fs.statSync(legacy.file).mtimeMs).toBe(before.mtimeMs)
   })
 
+  // FORMAT-DERIVED: the record is built the way the released store wrote it (origin/main 3913ac9c2, src/content_store.ts createHandoff: kind, id, name, projectRoot, contentId, text, createdAt; id is tg_handoff_ plus the first 16 hex of sha256 of the root, NUL, the name); which copy wins follows from the createdAt numbers.
   it('returns the legacy copy when its stored timestamp is the newer one', () => {
     createHandoff('r3-await', 'the current-id text', forwardSpelling(projectDir))
     const legacy = writeLegacyRecord(forwardSpelling(projectDir), 'r3-await', 'the newer legacy text', Date.now() + 60_000)
@@ -136,12 +143,14 @@ describe.skipIf(!isWin)('the same name under two spellings', () => {
     expect(fs.existsSync(legacy.file)).toBe(true)
   })
 
+  // FORMAT-DERIVED: the record is built the way the released store wrote it (origin/main 3913ac9c2, src/content_store.ts createHandoff: kind, id, name, projectRoot, contentId, text, createdAt; id is tg_handoff_ plus the first 16 hex of sha256 of the root, NUL, the name); which copy wins follows from the createdAt numbers.
   it('reports no older copy when both hold the same text', () => {
     writeLegacyRecord(forwardSpelling(projectDir), 'same', 'identical', Date.now() - 60_000)
     createHandoff('same', 'identical', projectDir)
     expect(resolveHandoffDetailed('same', { projectRoot: projectDir, full: true })?.olderCopies).toEqual([])
   })
 
+  // FORMAT-DERIVED: the record is built the way the released store wrote it (origin/main 3913ac9c2, src/content_store.ts createHandoff: kind, id, name, projectRoot, contentId, text, createdAt; id is tg_handoff_ plus the first 16 hex of sha256 of the root, NUL, the name); which copy wins follows from the createdAt numbers.
   it('prints the winner alone on stdout and the older copy on one stderr line, through the built bundle', () => {
     const legacy = writeLegacyRecord(forwardSpelling(projectDir), 'r3-queue', 'the old queue', Date.now() - 60_000)
     const created = runCli(['handoff-create', 'r3-queue', 'the new queue'], projectDir)
@@ -156,6 +165,7 @@ describe.skipIf(!isWin)('the same name under two spellings', () => {
 })
 
 describe.skipIf(!isWin)('the incident through the built bundle', () => {
+  // HAND-DERIVED: the root first holds a package.json, then three nested repositories, the change the CAPTURE in the file header names; the expected text is what was stored.
   it('still resolves after the project directory starts to look like a container of repositories', () => {
     fs.writeFileSync(path.join(projectDir, 'package.json'), '{}\n')
     const created = runCli(['handoff-create', 'r3-fin-notes', 'written while the root was a project'], projectDir)
@@ -180,7 +190,7 @@ function linkedRoots(): { real: string; sibling: string; link: string } {
 
 type LinkedRoots = ReturnType<typeof linkedRoots>
 
-// A record at the id of root-a's resolved spelling, carrying the projectRoot given, as the previous release would have written one.
+// A record at the id of root-a's resolved spelling, carrying the projectRoot given, as the previous release would have written one. FORMAT-DERIVED: shape read off origin/main 3913ac9c2, src/content_store.ts createHandoff (kind, id, name, projectRoot, contentId, text, createdAt; id hashed from the root as spelled).
 function plantAtResolvedId(roots: LinkedRoots, projectRoot: string, text: string): void {
   const id = legacyId(canonicalize(fs.realpathSync.native(roots.real)), 'plan')
   fs.mkdirSync(contentDir(), { recursive: true })
@@ -199,6 +209,7 @@ describe('a handoff stored under the resolved spelling of a linked root', () => 
     expect(resolveHandoff('plan', { projectRoot: link, full: true })).toBe('written from the real path')
   })
 
+  // FORMAT-DERIVED: the record is built the way the released store wrote it (origin/main 3913ac9c2, src/content_store.ts createHandoff: kind, id, name, projectRoot, contentId, text, createdAt; id is tg_handoff_ plus the first 16 hex of sha256 of the root, NUL, the name); which copy wins follows from the createdAt numbers.
   it('returns the newer copy when the stored copy under the resolved spelling is newer, and notes the older one', () => {
     const { real, link } = linkedRoots()
     createHandoff('plan', 'written from the link', link)
@@ -211,6 +222,7 @@ describe('a handoff stored under the resolved spelling of a linked root', () => 
     expect(fs.existsSync(legacy.file)).toBe(true)
   })
 
+  // FORMAT-DERIVED: the record is built the way the released store wrote it (origin/main 3913ac9c2, src/content_store.ts createHandoff: kind, id, name, projectRoot, contentId, text, createdAt; id is tg_handoff_ plus the first 16 hex of sha256 of the root, NUL, the name); which copy wins follows from the createdAt numbers.
   it('returns the current copy when it is the newer one, and leaves the stored copy under the resolved spelling untouched', () => {
     const { real, link } = linkedRoots()
     createHandoff('plan', 'written from the link', link)
@@ -238,6 +250,7 @@ describe('a handoff stored under the resolved spelling of a linked root', () => 
     expect(resolveHandoff('plan', { projectRoot: roots.link, full: true })).toBe(accepted ? 'stored text' : null)
   })
 
+  // FORMAT-DERIVED: shape read off origin/main 3913ac9c2, src/content_store.ts createHandoff (kind, id, name, projectRoot, contentId, text, createdAt; id hashed from the root as spelled).
   it('does not hand another project record planted at this directory legacy id to it', () => {
     const roots = linkedRoots()
     const other = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-other-'))
@@ -259,6 +272,7 @@ describe('a root that is a link whose target was deleted', () => {
     return link
   }
 
+  // HAND-DERIVED: the root is a link whose target is removed after the handoff is stored; the expected text is what was stored from that same spelling.
   it('still finds a record written from the same spelling before the target went', () => {
     const { real, link } = linkedRoots()
     createHandoff('plan', 'written while the target existed', link)
@@ -267,6 +281,7 @@ describe('a root that is a link whose target was deleted', () => {
     expect(resolveHandoff('plan', { projectRoot: link, full: true })).toBe('written while the target existed')
   })
 
+  // HAND-DERIVED: the root is a link whose target is removed before the handoff is stored; the expected text is what was stored from that same spelling.
   it('still finds a record written from the same spelling after the target went', () => {
     const link = danglingRoot()
     createHandoff('plan', 'written to a dangling link', link)
@@ -274,6 +289,7 @@ describe('a root that is a link whose target was deleted', () => {
     expect(resolveHandoff('plan', { projectRoot: link, full: true })).toBe('written to a dangling link')
   })
 
+  // FORMAT-DERIVED: shape read off origin/main 3913ac9c2, src/content_store.ts createHandoff (kind, id, name, projectRoot, contentId, text, createdAt; id hashed from the root as spelled).
   it('does not hand it another project record, and does not throw', () => {
     const link = danglingRoot()
     const other = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-other-'))
@@ -293,11 +309,13 @@ describe('a root that is a link whose target was deleted', () => {
 describe.skipIf(!isWin)('the extended-length prefix of a Windows path', () => {
   const extended = (dir: string): string => `${BACKSLASH}${BACKSLASH}?${BACKSLASH}${backslashSpelling(dir)}`
 
+  // HAND-DERIVED: the extended-length prefix is another spelling of the same path (withoutLongPathPrefix in src/content_store.ts); the two roots are built from one directory.
   it('keys a root the same with and without the prefix', () => {
     createHandoff('notes', 'made from the plain spelling', projectDir)
     expect(resolveHandoff('notes', { projectRoot: extended(projectDir), full: true })).toBe('made from the plain spelling')
   })
 
+  // FORMAT-DERIVED: shape read off origin/main 3913ac9c2, src/content_store.ts createHandoff (kind, id, name, projectRoot, contentId, text, createdAt; id hashed from the root as spelled).
   it('accepts a record whose projectRoot carries the prefix', () => {
     const roots = linkedRoots()
     plantAtResolvedId(roots, extended(roots.real), 'stored text')
@@ -347,6 +365,7 @@ describe('content a handoff names gets no exemption from the cache rules', () =>
     expect(retrieveText(contentId)).toBe(text)
   })
 
+  // HAND-DERIVED: setMtime ages the file with utimes, so no clock is waited on; the outcome follows from the 24 h age rule and the ids built in the row.
   it('answers retrieve of the handoff contentId from the handoff once the blob is past the age limit', () => {
     const { contentId, text } = createHandoffWithOldestBlob()
     setMtime(contentId, Date.now() - 48 * 3600 * 1000)
@@ -355,6 +374,7 @@ describe('content a handoff names gets no exemption from the cache rules', () =>
     expect(isContentExpired(contentId)).toBe(false)
   })
 
+  // HAND-DERIVED: setMtime ages the file with utimes, so no clock is waited on; the outcome follows from the 24 h age rule and the ids built in the row.
   it('lets an id merely quoted in a handoff text expire on the normal rules', () => {
     const quoted = compressText('content quoted in the handoff text')
     createHandoff('refs', `see ${quoted.id} for the table`, projectDir)
@@ -366,6 +386,7 @@ describe('content a handoff names gets no exemption from the cache rules', () =>
     expect(fs.existsSync(path.join(contentDir(), `${quoted.id}.json`))).toBe(false)
   })
 
+  // HAND-DERIVED: setMtime ages the file with utimes, so no clock is waited on; the outcome follows from the 24 h age rule and the ids built in the row.
   it('says through the built bundle that an aged quoted id expired, and not so for an id never stored', () => {
     const quoted = runCli(['compress-text', 'content a handoff quotes'], projectDir)
     expect(quoted.status, quoted.stderr).toBe(0)
@@ -405,6 +426,7 @@ describe('a stored handoff record is validated when it is loaded', () => {
     expect(resolveHandoff('plan', { projectRoot: projectDir, full: true })).toBeNull()
   })
 
+  // FORMAT-DERIVED: the record is built the way the released store wrote it (origin/main 3913ac9c2, src/content_store.ts createHandoff: kind, id, name, projectRoot, contentId, text, createdAt; id is tg_handoff_ plus the first 16 hex of sha256 of the root, NUL, the name); which copy wins follows from the createdAt numbers.
   it.skipIf(!isWin)('resolves from the current record without a note when a legacy copy carries a createdAt past the Date range', () => {
     createHandoff('plan', 'the current text', projectDir)
     const legacy = writeLegacyRecord(backslashSpelling(projectDir), 'plan', 'an older text', 1e20)
@@ -429,6 +451,7 @@ describe('a handoff that aged out is told apart from one never created', () => {
     expect(describeMissingHandoff('never-made', projectDir)).toBe('no local handoff named "never-made" in this project')
   })
 
+  // HAND-DERIVED: setMtime ages the file with utimes, so no clock is waited on; the outcome follows from the 24 h age rule and the ids built in the row.
   it('says so through the built bundle, and keeps the plain message for a name never created', () => {
     expect(runCli(['handoff-create', 'plan', 'old plan'], projectDir).status).toBe(0)
     const id = fs.readdirSync(contentDir()).find((file) => file.startsWith('tg_handoff_'))?.slice(0, -5) as string
@@ -456,16 +479,19 @@ describe('roots that differ only by a non-ASCII case variant stay two projects',
     else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = savedFold
   })
 
+  // HAND-DERIVED: the premise is asserted on the string itself, not on a table.
   it('premise: toLowerCase merges the two names that the file system keeps apart', () => {
     expect(`wor${kelvin}`.toLowerCase()).toBe('work')
   })
 
+  // HAND-DERIVED: the roots are a name and its U+212A variant, not stored anywhere before the row.
   it('gives the two roots different handoff ids, whether or not the file system can hold both', () => {
     const plain = createHandoff('plan', 'in work', path.join(projectDir, 'work'))
     const variant = createHandoff('plan', 'in the Kelvin root', path.join(projectDir, `wor${kelvin}`))
     expect(variant.id).not.toBe(plain.id)
   })
 
+  // HAND-DERIVED: one handoff is stored under work; the other root holds nothing.
   it('does not resolve a handoff made under one root from the other', (ctx) => {
     fs.mkdirSync(path.join(projectDir, 'work'))
     try {
@@ -482,6 +508,7 @@ describe('roots that differ only by a non-ASCII case variant stay two projects',
 
 // HAND-DERIVED: on a case-sensitive file system Foo and foo are two directories, so they are two projects.
 describe.skipIf(isWin || process.platform === 'darwin')('on a case-sensitive file system, Foo and foo stay two projects (skipped where the file system folds case)', () => {
+  // HAND-DERIVED: one handoff per root, each read back from its own root only.
   it('keeps their handoffs apart', () => {
     fs.mkdirSync(path.join(projectDir, 'Foo'))
     fs.mkdirSync(path.join(projectDir, 'foo'))

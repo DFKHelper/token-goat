@@ -13,6 +13,7 @@ import { shortFingerprint } from '../src/fingerprint.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { canonicalize } from '../src/path_containment.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { runTeardown } from './helpers/strict_teardown.js'
 
 const isWin = process.platform === 'win32'
 
@@ -41,8 +42,7 @@ afterEach(() => {
   }
   _resetDataDirCacheForTesting()
   clearModuleCaches()
-  fs.rmSync(home, { recursive: true, force: true })
-  fs.rmSync(projectDir, { recursive: true, force: true })
+  runTeardown([() => fs.rmSync(home, { recursive: true, force: true }), () => fs.rmSync(projectDir, { recursive: true, force: true })])
 })
 
 async function resolveTool(name: string, root: string): Promise<{ isError: boolean; texts: string[] }> {
@@ -59,7 +59,7 @@ async function resolveTool(name: string, root: string): Promise<{ isError: boole
   }
 }
 
-// A handoff made from the link and a newer one stored the way the previous release stored it, under the id of the link target's spelling; a junction stands in for the symlink on Windows.
+// FORMAT-DERIVED: the stored record has the shape of origin/main 3913ac9c2 src/content_store.ts createHandoff (kind, id, name, projectRoot, contentId, text, createdAt; id hashed from the root as spelled). A handoff made from the link and a newer one stored the way the previous release stored it, under the id of the link target's spelling; a junction stands in for the symlink on Windows.
 function plantTwoCopies(): string {
   const real = path.join(projectDir, 'root-a')
   const link = path.join(projectDir, 'link-root')
@@ -88,6 +88,7 @@ describe('the handoff_resolve tool', () => {
     expect(answer.texts[1]).toMatch(/^note: 1 older copy of handoff "plan" \(stored \d{4}-\d\d-\d\dT[\d:.]+Z\) is kept under a previous project-root spelling; read it with: the retrieve_text tool with id tg_[0-9a-f]{16}$/)
   })
 
+  // HAND-DERIVED: the same planted pair as the row above, with only handoff_resolve listed, so the note cannot name retrieve_text.
   it('names the content id instead of a tool the server does not list', async () => {
     const link = plantTwoCopies()
     process.env['TOKEN_GOAT_MCP_TOOLS'] = 'handoff_resolve'
@@ -97,6 +98,7 @@ describe('the handoff_resolve tool', () => {
     expect(answer.texts[1]).toMatch(/read it with: content id tg_[0-9a-f]{16}$/)
   })
 
+  // HAND-DERIVED: one handoff has no other copy to report.
   it('returns the handoff alone when there is no older copy', async () => {
     createHandoff('plan', 'only copy', projectDir)
 
@@ -105,6 +107,7 @@ describe('the handoff_resolve tool', () => {
     expect(answer.texts).toEqual(['only copy'])
   })
 
+  // HAND-DERIVED: the file is aged 48 h with utimes, past the 24 h age limit; the never-created name was never stored.
   it('says a record past the age limit expired, and keeps the plain message for a name never created', async () => {
     const created = createHandoff('plan', 'old plan', projectDir)
     const aged = new Date(Date.now() - 48 * 3600 * 1000)
