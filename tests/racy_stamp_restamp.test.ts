@@ -148,7 +148,7 @@ describe('the reconcile record of a clean hash', () => {
     indexWith('fresh.ts', STILL_BEING_WRITTEN, STILL_BEING_WRITTEN)
 
     expect(recordingHashes()).toBe(1)
-    expect(row('fresh.ts').indexed_at, 'a file still being written was given a new index time').toBe(STILL_BEING_WRITTEN)
+    expect(row('fresh.ts').indexed_at, 'a file still being written was given an index time that proves its mtime').toBeLessThan(STILL_BEING_WRITTEN + 2)
     expect(recordingHashes(), 'a file still being written was treated as calm; the racy guard is weakened').toBe(1)
   })
 })
@@ -235,5 +235,74 @@ describe('restampVerifiedUnchanged at the tick boundary', () => {
     restampVerifiedUnchanged(dbPath, [{ indexedPath, sha: 'not-the-row-sha', rowMtime: stored.mtime, stamp: { mtimeSec: NOW - 100, clockSec: NOW } }])
 
     expect(row('moved.ts')).toEqual(stored)
+  })
+})
+
+describe('a clock that stepped back after the row was indexed', () => {
+  // The row says it was indexed an hour after the injected clock. A file stamped one second before that clock is racy, and its bytes are unchanged, so a hash proves it clean: the restamp must not leave the later index time in place, or an edit saved inside the same tick reads as proven unchanged on the next sweep. Fixture provenance: HAND-DERIVED, every value computed from the racy rule `mtime + 2 <= indexed_at`.
+  const CLOCK_MS = 1_800_000_000_000
+  const CLOCK_SEC = CLOCK_MS / 1000
+  const SAME_TICK = CLOCK_SEC - 1
+  const EDITED = 'export const value = 2\n'
+
+  /** Indexes `name` with the given index time, then moves its mtime into the tick before the injected clock, so a hash finds the bytes unchanged under a moved mtime. */
+  function indexMovedFile(name: string, indexedAtSec: number): string {
+    const file = indexWith(name, OLD, indexedAtSec)
+    fs.utimesSync(file, SAME_TICK, SAME_TICK)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(CLOCK_MS)
+    return file
+  }
+
+  /** Saves different bytes under the stamp the row now records, as an edit inside one timestamp tick does, then sweeps without writing and returns how many files the sweep found changed. */
+  function changedAfterSameTickEdit(file: string): number {
+    fs.writeFileSync(file, EDITED)
+    fs.utimesSync(file, SAME_TICK, SAME_TICK)
+    return reconcileProject({ cwd: projectDir, dbPath, budgetMs: 0, dryRun: true, queueDir: dataDir }).changed.length
+  }
+
+  it('control: a racy row indexed before the clock sees the same-tick edit', () => {
+    const file = indexMovedFile('control.ts', OLD + 10)
+    expect(recordingHashes(), 'calibration: the moved file is hashed by the first sweep').toBe(1)
+
+    expect(changedAfterSameTickEdit(file), 'the harness missed a same-tick edit even with an index time in the past').toBe(1)
+  })
+
+  it('reconcile: a racy restamp lowers an index time later than the clock', () => {
+    const file = indexMovedFile('swept.ts', CLOCK_SEC + 3600)
+    expect(recordingHashes(), 'calibration: the moved file is hashed by the first sweep').toBe(1)
+
+    expect(row('swept.ts').indexed_at, 'the restamp left an index time later than the clock that judged it').toBe(CLOCK_SEC)
+    expect(changedAfterSameTickEdit(file), 'a same-tick edit was read as proven unchanged').toBe(1)
+  })
+
+  it('worker: a racy restamp lowers an index time later than the clock', async () => {
+    const file = indexMovedFile('drained.ts', CLOCK_SEC + 3600)
+    appendDirtyQueuePaths(dataDir, [resolveIndexPath('drained.ts', projectDir)])
+
+    drainOnce(dataDir)
+    await pendingEmbeddings()
+
+    expect(row('drained.ts').indexed_at, 'the drain left an index time later than the clock that judged it').toBe(CLOCK_SEC)
+    expect(changedAfterSameTickEdit(file), 'a same-tick edit was read as proven unchanged').toBe(1)
+  })
+
+  it('leaves an index time at or before the clock, and a missing one, as it was', () => {
+    indexMovedFile('before.ts', CLOCK_SEC - 5)
+    indexWith('never.ts', OLD, OLD)
+    getDb(dbPath).prepare('UPDATE files SET indexed_at = NULL WHERE path LIKE ?').run('%/never.ts')
+    const pathOf = (name: string): { indexedPath: string; sha: string } => {
+      const found = getDb(dbPath).prepare('SELECT path, sha FROM files WHERE path LIKE ?').get(`%/${name}`) as { path: string; sha: string }
+      return { indexedPath: found.path, sha: found.sha }
+    }
+    const stamp = { mtimeSec: SAME_TICK, clockSec: CLOCK_SEC }
+
+    restampVerifiedUnchanged(dbPath, [
+      { ...pathOf('before.ts'), rowMtime: SAME_TICK, stamp },
+      { ...pathOf('never.ts'), rowMtime: OLD, stamp },
+    ])
+
+    expect(row('before.ts').indexed_at).toBe(CLOCK_SEC - 5)
+    expect(row('never.ts').indexed_at).toBeNull()
   })
 })

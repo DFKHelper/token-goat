@@ -61,16 +61,17 @@ interface VerifiedUnchangedFile {
   readonly stamp: PreHashStamp
 }
 
-/** Record that the bytes behind each file's `sha` carried its `stamp.mtimeSec`, in one transaction. Each file is judged, and its `indexed_at` written, from the clock read before that file's hash, never from a clock read at the end of a sweep: a file saved again after the hash but before such a clock would otherwise look older than the index time it was given and never be hashed again. When the mtime is at least one tick older than that clock, `mtime` and `indexed_at = clockSec` are written together, so the row satisfies the racy-clean rule from the next sweep on. A newer mtime is not stamped with an index time: the file may still be mid-write, so it stays racy and is hashed again until it ages past the tick (only a moved mtime is recorded, as the pre-read probe's equality gate needs). Guarded on the sha, so a row rewritten since keeps its stamp. Best-effort: a database error leaves the rows as they were. */
+/** Record that the bytes behind each file's `sha` carried its `stamp.mtimeSec`, in one transaction. Each file is judged, and its `indexed_at` written, from the clock read before that file's hash, never from a clock read at the end of a sweep: a file saved again after the hash but before such a clock would otherwise look older than the index time it was given and never be hashed again. When the mtime is at least one tick older than that clock, `mtime` and `indexed_at = clockSec` are written together, so the row satisfies the racy-clean rule from the next sweep on. A newer mtime is not stamped with an index time: the file may still be mid-write, so it stays racy and is hashed again until it ages past the tick (only a moved mtime is recorded, as the pre-read probe's equality gate needs), and an `indexed_at` later than that clock, which only a clock that stepped back leaves, is lowered to it: a stamp is never left later than the clock that judged it, or a same-tick edit would read as proven unchanged. Guarded on the sha, so a row rewritten since keeps its stamp. Best-effort: a database error leaves the rows as they were. */
 export function restampVerifiedUnchanged(dbPath: string, files: readonly VerifiedUnchangedFile[]): void {
   try {
     const db = getDb(dbPath)
     const stampBoth = db.prepare('UPDATE files SET mtime = ?, indexed_at = ? WHERE path = ? AND sha = ?')
-    const stampMtime = db.prepare('UPDATE files SET mtime = ? WHERE path = ? AND sha = ?')
+    // A racy file keeps its index time unless the clock that judged it is earlier: a clock that stepped back would otherwise leave the file looking proven against a later stamp. A NULL index time stays NULL (the comparison is not true), and a row already stamped and not later than the clock is not written again.
+    const stampRacy = db.prepare('UPDATE files SET mtime = ?, indexed_at = CASE WHEN indexed_at > ? THEN ? ELSE indexed_at END WHERE path = ? AND sha = ? AND (mtime != ? OR indexed_at > ?)')
     db.transaction(() => {
-      for (const { indexedPath, sha, rowMtime, stamp } of files) {
+      for (const { indexedPath, sha, stamp } of files) {
         if (stamp.mtimeSec + TIMESTAMP_TICK_SEC <= stamp.clockSec) stampBoth.run(stamp.mtimeSec, stamp.clockSec, indexedPath, sha)
-        else if (stamp.mtimeSec !== rowMtime) stampMtime.run(stamp.mtimeSec, indexedPath, sha)
+        else stampRacy.run(stamp.mtimeSec, stamp.clockSec, stamp.clockSec, indexedPath, sha, stamp.mtimeSec, stamp.clockSec)
       }
     })()
   } catch {

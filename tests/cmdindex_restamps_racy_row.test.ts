@@ -3,7 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { cmdIndex } from '../src/cli.js'
 import { closeAllDbs, getDb } from '../src/db.js'
@@ -54,6 +54,28 @@ describe('cmdIndex proves an unchanged file clean and records it', () => {
 
     await cmdIndex(tmp, { walk: true, dbPath })
 
-    expect(indexedAt('writing.ts'), 'a file whose mtime is not a tick old was given an index time').toBe(STILL_BEING_WRITTEN)
+    expect(indexedAt('writing.ts'), 'a file whose mtime is not a tick old was given an index time that proves its mtime').toBeLessThan(STILL_BEING_WRITTEN + 2)
+  })
+})
+
+describe('cmdIndex under a clock that stepped back', () => {
+  // Fixture provenance: HAND-DERIVED, computed from the racy rule `mtime + 2 <= indexed_at`. The row says it was indexed an hour after the injected clock; the file is stamped one second before that clock and its bytes are unchanged.
+  const CLOCK_MS = 1_800_000_000_000
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('lowers an index time later than the clock that judged the file', async () => {
+    const file = path.join(tmp, 'back.ts')
+    await indexRacy('back.ts', OLD)
+    getDb(dbPath).prepare('UPDATE files SET indexed_at = ? WHERE path LIKE ?').run(CLOCK_MS / 1000 + 3600, '%/back.ts')
+    fs.utimesSync(file, CLOCK_MS / 1000 - 1, CLOCK_MS / 1000 - 1)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(CLOCK_MS)
+
+    await cmdIndex(tmp, { walk: true, dbPath })
+
+    expect(indexedAt('back.ts'), 'the run left an index time later than the clock that judged the file').toBe(CLOCK_MS / 1000)
   })
 })

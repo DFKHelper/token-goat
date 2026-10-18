@@ -114,10 +114,10 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
-    'reconcile.ts::UPDATE files SET mtime = ? WHERE path = ? AND sha ',
+    'reconcile.ts::UPDATE files SET mtime = ?, indexed_at = CASE WHEN',
     {
       bucket: 'does-not-touch-the-embed-sha-column',
-      reason: 'restampVerifiedUnchanged records the on-disk mtime of a file whose sha a hash just found unchanged, guarded on that sha. The column list is the mtime alone, so the row\'s embed_sha, parser_sha and sha stay exactly as they were.',
+      reason: 'restampVerifiedUnchanged records the on-disk mtime of a file whose sha a hash just found unchanged, guarded on that sha, and lowers an index time later than the clock that judged it. The column list is mtime and indexed_at, so the row\'s embed_sha, parser_sha and sha stay exactly as they were.',
     },
   ],
   [
