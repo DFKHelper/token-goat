@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { isBlobStale, listBlobIdsWithPrefix, loadBlob, storeBlob } from './disk_cache.js'
 import { shortFingerprint } from './fingerprint.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
-import { canonicalize, foldPath } from './path_containment.js'
+import { canonicalize, foldPathForContainment } from './path_containment.js'
 import { findProject } from './project.js'
 import { redactSecrets } from './secret_redact.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
@@ -88,9 +88,9 @@ function normalizeProjectRoot(projectRoot?: string): string {
   return findProject(candidate)?.root ?? candidate
 }
 
-// What identifies a root across spellings: the canonical form, case-folded where the filesystem folds (the same rule projectHash applies).
+// What identifies a root across spellings: the canonical form, folded A-Z only where the filesystem folds case, because toLowerCase() merges roots NTFS keeps apart (U+212A and k).
 function handoffRootKey(projectRoot: string): string {
-  return foldPath(canonicalize(withoutLongPathPrefix(projectRoot)))
+  return foldPathForContainment(canonicalize(withoutLongPathPrefix(projectRoot)))
 }
 
 // canonicalize leaves a Windows extended-length prefix in place (it becomes //?/C:/x), so one directory would key two ways; the UNC form of the prefix is the extended spelling of a plain //server/share path. Off Windows a backslash is an ordinary file-name character and the string is left alone.
@@ -103,7 +103,7 @@ function withoutLongPathPrefix(p: string): string {
 function handoffRootIdentity(projectRoot: string): string {
   const plain = withoutLongPathPrefix(projectRoot)
   try {
-    return foldPath(canonicalize(fs.realpathSync.native(plain)))
+    return foldPathForContainment(canonicalize(fs.realpathSync.native(plain)))
   } catch {
     return handoffRootKey(plain)
   }

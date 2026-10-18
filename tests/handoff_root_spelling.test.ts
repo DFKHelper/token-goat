@@ -442,3 +442,53 @@ describe('a handoff that aged out is told apart from one never created', () => {
     expect(never.stderr).toContain('no local handoff named "never-made" in this project')
   })
 })
+
+// HAND-DERIVED: U+212A KELVIN SIGN lowercases to ASCII k under toLowerCase() (asserted below), while NTFS keeps work and wor+U+212A as two directories (documented in src/path_containment.ts foldCaseForContainment); the character is built with fromCodePoint, never typed.
+describe('roots that differ only by a non-ASCII case variant stay two projects', () => {
+  const kelvin = String.fromCodePoint(0x212a)
+  let savedFold: string | undefined
+  beforeEach(() => {
+    savedFold = process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+    process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = '1'
+  })
+  afterEach(() => {
+    if (savedFold === undefined) delete process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS']
+    else process.env['TOKEN_GOAT_CASE_INSENSITIVE_FS'] = savedFold
+  })
+
+  it('premise: toLowerCase merges the two names that the file system keeps apart', () => {
+    expect(`wor${kelvin}`.toLowerCase()).toBe('work')
+  })
+
+  it('gives the two roots different handoff ids, whether or not the file system can hold both', () => {
+    const plain = createHandoff('plan', 'in work', path.join(projectDir, 'work'))
+    const variant = createHandoff('plan', 'in the Kelvin root', path.join(projectDir, `wor${kelvin}`))
+    expect(variant.id).not.toBe(plain.id)
+  })
+
+  it('does not resolve a handoff made under one root from the other', (ctx) => {
+    fs.mkdirSync(path.join(projectDir, 'work'))
+    try {
+      fs.mkdirSync(path.join(projectDir, `wor${kelvin}`))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') ctx.skip('this file system folds U+212A onto k, so both directories cannot exist; the id row above covers the key')
+      throw error
+    }
+    createHandoff('plan', 'in work', path.join(projectDir, 'work'))
+    expect(resolveHandoff('plan', { projectRoot: path.join(projectDir, `wor${kelvin}`), full: true })).toBeNull()
+    expect(resolveHandoff('plan', { projectRoot: path.join(projectDir, 'work'), full: true })).toBe('in work')
+  })
+})
+
+// HAND-DERIVED: on a case-sensitive file system Foo and foo are two directories, so they are two projects.
+describe.skipIf(isWin || process.platform === 'darwin')('on a case-sensitive file system, Foo and foo stay two projects (skipped where the file system folds case)', () => {
+  it('keeps their handoffs apart', () => {
+    fs.mkdirSync(path.join(projectDir, 'Foo'))
+    fs.mkdirSync(path.join(projectDir, 'foo'))
+    const upper = createHandoff('plan', 'in Foo', path.join(projectDir, 'Foo'))
+    const lower = createHandoff('plan', 'in foo', path.join(projectDir, 'foo'))
+    expect(lower.id).not.toBe(upper.id)
+    expect(resolveHandoff('plan', { projectRoot: path.join(projectDir, 'foo'), full: true })).toBe('in foo')
+    expect(resolveHandoff('plan', { projectRoot: path.join(projectDir, 'Foo'), full: true })).toBe('in Foo')
+  })
+})
