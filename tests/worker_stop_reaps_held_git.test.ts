@@ -92,9 +92,9 @@ interface Watched {
   same: (commandLine: string) => boolean
 }
 
-/** The watched processes that still run. A signal-0 probe is the cheap first answer and costs no process; one process-table read is taken only while some pid still answers, to tell it from a process that reused the number. A table that cannot be read, or that lists the pid with an empty command line, is no evidence of an exit, so that pid stays listed; a table that read fine and lacks the pid, or lists another command line, is the evidence that it is gone. */
+/** The watched processes that still run. A table that cannot be read, or that lists the pid with an empty command line, is no evidence of an exit, so that pid stays listed; a table that read fine and lacks the pid, or lists another command line, is the evidence that it is gone. Off Windows a signal-0 probe is the cheap first answer and costs no process, so one process-table read is taken only while some pid still answers, to tell it from a process that reused the number. On Windows signal 0 is no evidence of an exit: it reports ESRCH once the exit code is set, while the process is still listed (measured: the worker daemon listed in the process table after process.kill(pid, 0) threw, and the removal of the directory it had used failed with EPERM at that moment and succeeded 4.2 s later), so the table alone decides there. */
 function runningAmong(watched: readonly Watched[]): string[] {
-  const answering = watched.filter(({ pid }) => processAlive(pid))
+  const answering = process.platform === 'win32' ? [...watched] : watched.filter(({ pid }) => processAlive(pid))
   if (answering.length === 0) return []
   let table: ReturnType<typeof listProcesses> | null
   try {
