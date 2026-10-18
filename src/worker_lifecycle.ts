@@ -166,6 +166,7 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
   if (livePid !== null && pidAlive(livePid) && hasFreshWorkerHeartbeat(dir, livePid)) {
     // A live daemon keeps running the bundle it was spawned from, so after an upgrade or a rebuilt dist/token-goat.mjs it runs the pre-upgrade code until stopped; stop it the way `worker stop` does and spawn a fresh one.
     if (workerBundleMatches(dir)) return
+    // The only branch of this hook that spawns (stopWorker's command-line query, then a taskkill): it needs a live daemon on a bundle that no longer matches, so it runs once per upgrade, and every other path has returned above.
     stopWorker(dir, livePid)
     // The pid file naming anyone else now means another hook already replaced the daemon; spawning too would start a second one.
     const nowPid = readPidFile(dir)
