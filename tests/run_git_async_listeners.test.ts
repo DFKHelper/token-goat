@@ -1,4 +1,4 @@
-// Provenance: HAND-DERIVED. The expectation is a count identity (the process listeners and the abort listeners after a batch settles equal the counts before it), not a wire format; the events are the ones spawnOwned hooks in src/process_tree.ts (exit plus OWNER_SIGNALS) and the abort listener runGitAsync adds in src/git_async.ts. Batch sizes: the 200 failed spawns start no process, so they are cheap; the real batches are a few dozen runs of `git --version`, because a leak of even one listener per call shows as an exact count difference after the first call, so hundreds of runs add wall time and no evidence.
+// Provenance: HAND-DERIVED. The expectation is a count identity (the process listeners and the abort listeners after a batch settles equal the counts before it), not a wire format; the events are the ones spawnOwned hooks in src/process_tree.ts (exit plus OWNER_SIGNALS) and the abort listener runGitAsync adds in src/git_async.ts. Batch sizes: a leak of even one listener per call shows as an exact count difference after the first call, so each loop runs three calls (a repeat after the first proves the count does not drift) and more calls add wall time and no evidence; the one batch whose size is the point is the 12 concurrent runs, above the 10 listeners per event that Node warns about, so a leak that only shows once the process holds more than 10 hooks at once still counts.
 import { getEventListeners } from 'node:events'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -30,16 +30,16 @@ describe('runGitAsync leaves the process and abort listeners where it found them
     const ac = new AbortController()
 
     const failed = []
-    for (let i = 0; i < 200; i++) failed.push(await runGitAsync(['--version'], { cwd: MISSING_CWD, signal: ac.signal }))
+    for (let i = 0; i < 3; i++) failed.push(await runGitAsync(['--version'], { cwd: MISSING_CWD, signal: ac.signal }))
     expect(failed.every((r) => r.exitCode === -1), 'every spawn in a missing directory fails').toBe(true)
-    expect(counts(), 'after 200 failed spawns').toEqual(before)
-    expect(abortListeners(ac.signal), 'after 200 failed spawns').toBe(0)
+    expect(counts(), 'after 3 failed spawns').toEqual(before)
+    expect(abortListeners(ac.signal), 'after 3 failed spawns').toBe(0)
 
     let ok = 0
-    for (let i = 0; i < 30; i++) if ((await runGitAsync(['--version'], { signal: ac.signal })).exitCode === 0) ok++
-    expect(ok, 'every sequential run exits 0').toBe(30)
-    expect(counts(), 'after 30 sequential runs').toEqual(before)
-    expect(abortListeners(ac.signal), 'after 30 sequential runs').toBe(0)
+    for (let i = 0; i < 3; i++) if ((await runGitAsync(['--version'], { signal: ac.signal })).exitCode === 0) ok++
+    expect(ok, 'every sequential run exits 0').toBe(3)
+    expect(counts(), 'after 3 sequential runs').toEqual(before)
+    expect(abortListeners(ac.signal), 'after 3 sequential runs').toBe(0)
 
     const concurrent = await Promise.all(Array.from({ length: 12 }, () => runGitAsync(['--version'], { signal: ac.signal })))
     expect(concurrent.every((r) => r.exitCode === 0), 'every concurrent run exits 0').toBe(true)
@@ -47,7 +47,7 @@ describe('runGitAsync leaves the process and abort listeners where it found them
     expect(abortListeners(ac.signal), 'after 12 concurrent runs').toBe(0)
 
     const aborted = []
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 3; i++) {
       const c = new AbortController()
       const pending = runGitAsync(['--version'], { signal: c.signal })
       c.abort()
@@ -55,18 +55,18 @@ describe('runGitAsync leaves the process and abort listeners where it found them
       expect(abortListeners(c.signal), `abort listener after aborted run ${String(i)}`).toBe(0)
     }
     expect(aborted.every((r) => r.exitCode === -1), 'an abort straight after the call always wins over a git that has not yet exited').toBe(true)
-    expect(counts(), 'after 12 aborted runs').toEqual(before)
+    expect(counts(), 'after 3 aborted runs').toEqual(before)
 
     const timedOut = []
-    for (let i = 0; i < 12; i++) timedOut.push(await runGitAsync(['--version'], { timeoutMs: 1, signal: ac.signal }))
-    expect(timedOut.length, 'every timed-out run settled').toBe(12)
-    expect(counts(), 'after 12 timed-out runs').toEqual(before)
-    expect(abortListeners(ac.signal), 'after 12 timed-out runs').toBe(0)
+    for (let i = 0; i < 3; i++) timedOut.push(await runGitAsync(['--version'], { timeoutMs: 1, signal: ac.signal }))
+    expect(timedOut.length, 'every timed-out run settled').toBe(3)
+    expect(counts(), 'after 3 timed-out runs').toEqual(before)
+    expect(abortListeners(ac.signal), 'after 3 timed-out runs').toBe(0)
 
     const pre = new AbortController()
     pre.abort()
-    for (let i = 0; i < 12; i++) expect((await runGitAsync(['--version'], { signal: pre.signal })).exitCode, 'a pre-aborted call never starts').toBe(-1)
-    expect(counts(), 'after 12 pre-aborted calls').toEqual(before)
-    expect(abortListeners(pre.signal), 'after 12 pre-aborted calls').toBe(0)
-  }, 120_000)
+    for (let i = 0; i < 3; i++) expect((await runGitAsync(['--version'], { signal: pre.signal })).exitCode, 'a pre-aborted call never starts').toBe(-1)
+    expect(counts(), 'after 3 pre-aborted calls').toEqual(before)
+    expect(abortListeners(pre.signal), 'after 3 pre-aborted calls').toBe(0)
+  })
 })
