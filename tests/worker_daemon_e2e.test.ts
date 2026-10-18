@@ -44,7 +44,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Poll `check` every 50ms until it returns true. Throws with `label` once `timeoutMs` elapses; that bound is a hang backstop for a daemon that is alive and silent, never a measurement, and nothing in this file asserts on how long a wait took. */
+/** Poll `check` every 50ms until it returns true. Throws with `label` once `timeoutMs` elapses. Only the teardown below uses it, for a pid it did not spawn and so has no exit event for; every wait a row asserts through is `waitForDaemon`, which polls nothing. */
 async function waitFor(label: string, timeoutMs: number, check: () => boolean): Promise<void> {
   const start = Date.now()
   for (;;) {
@@ -68,7 +68,7 @@ async function waitForDaemonRewrites(file: string, rewrites: number, pid: number
   }
   let last = identity()
   let seen = 0
-  await waitForDaemon(`${rewrites} drain heartbeat rewrites`, DAEMON_WAIT_BACKSTOP_MS, pid, () => {
+  await waitForDaemon(`${rewrites} drain heartbeat rewrites`, path.dirname(file), pid, () => {
     const now = identity()
     if (now !== '' && now !== last) {
       last = now
@@ -311,7 +311,7 @@ async function withDrainedDaemon(files: Record<string, string>, lookups: (env: N
     const queueDir = path.join(effectiveDataDir(dataBase), 'queue')
     expect(appendDirtyQueuePaths(effectiveDataDir(dataBase), written)).toBe(true)
     // The wait ends when the queue is gone: a drain renames dirty.txt to dirty.txt.draining, indexes the batch, and only then removes that file, so no queue file left means the batch was committed. Embeddings are off for the suite, so nothing requeues behind it.
-    await waitForDaemon('the running daemon to drain the seeded queue entries', DAEMON_WAIT_BACKSTOP_MS, pid, () => !fs.readdirSync(queueDir).some((name) => name.startsWith('dirty.txt')))
+    await waitForDaemon('the running daemon to drain the seeded queue entries', queueDir, pid, () => !fs.readdirSync(queueDir).some((name) => name.startsWith('dirty.txt')))
     // One lookup per fixture, after the drain: a daemon that drained into a stub, or dropped refs or a lazily loaded adapter's rows, fails right here rather than being waited on.
     lookups(env, repo)
   } catch (error) {
@@ -325,7 +325,7 @@ async function withDrainedDaemon(files: Record<string, string>, lookups: (env: N
 /** Wait until the daemon `pid` has written its drain heartbeat: `runDetachedWorkerDaemon` writes it only after it has moved to its own working directory, so a heartbeat naming `pid` means that move has already happened. */
 async function waitForDaemonHeartbeat(dataBase: string, pid: number): Promise<void> {
   const heartbeat = path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat')
-  await waitForDaemon('the daemon to write its drain heartbeat', DAEMON_WAIT_BACKSTOP_MS, pid, () => {
+  await waitForDaemon('the daemon to write its drain heartbeat', path.dirname(heartbeat), pid, () => {
     try {
       return fs.readFileSync(heartbeat, 'utf8').trim() === String(pid)
     } catch {
@@ -334,12 +334,34 @@ async function waitForDaemonHeartbeat(dataBase: string, pid: number): Promise<vo
   })
 }
 
-/** `waitFor` for a condition only the live daemon `pid` can bring about: the wait also ends, with a failure naming the cause, the moment that process is gone, so a daemon that crashed is reported at once instead of after the whole backstop. */
-async function waitForDaemon(label: string, timeoutMs: number, pid: number, check: () => boolean): Promise<void> {
-  await waitFor(label, timeoutMs, () => {
-    if (check()) return true
-    if (!pidAlive(pid)) throw new Error(`the daemon (pid ${pid}) exited while waiting for: ${label}`)
-    return false
+/** Wait for a condition only the live daemon `pid` can bring about, re-evaluated on every change event in `dir` (the directory the daemon writes into) instead of on a timer: the condition is also checked once right after the watcher exists, so a change that landed first is not missed, and a stalled test process only queues events, it cannot make the condition false. The wait ends with a failure naming the cause when an event finds the process gone. The one timer is the hang backstop for a daemon that is alive and silent; it never ends a wait early, and it names a missing process as the cause when it fires. */
+async function waitForDaemon(label: string, dir: string, pid: number, check: () => boolean): Promise<void> {
+  // The daemon creates this directory itself; creating it first only gives the watcher something to attach to.
+  fs.mkdirSync(dir, { recursive: true })
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    const watcher = fs.watch(dir)
+    const settle = (error?: Error): void => {
+      if (settled) return
+      settled = true
+      watcher.close()
+      clearTimeout(backstop)
+      if (error === undefined) resolve()
+      else reject(error)
+    }
+    const evaluate = (): void => {
+      if (settled) return
+      try {
+        if (check()) settle()
+        else if (!pidAlive(pid)) settle(new Error(`the daemon (pid ${pid}) exited while waiting for: ${label}`))
+      } catch (error) {
+        settle(error instanceof Error ? error : new Error(String(error)))
+      }
+    }
+    const backstop = setTimeout(() => settle(new Error(`timed out after ${DAEMON_WAIT_BACKSTOP_MS}ms waiting for: ${label}${pidAlive(pid) ? '' : ` (the daemon (pid ${pid}) is gone)`}`)), DAEMON_WAIT_BACKSTOP_MS)
+    watcher.on('change', evaluate)
+    watcher.on('error', (error) => settle(error))
+    evaluate()
   })
 }
 
