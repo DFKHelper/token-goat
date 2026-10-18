@@ -208,20 +208,25 @@ describe('stopping a daemon whose child has a child of its own', () => {
 })
 
 describe('stopping a pid-file pid', () => {
-  /** A stand-in recorded for the reaper and the survivors check, with a pid file naming it written last, inside the startup grace stopWorker accepts without a heartbeat. */
-  function standInWithPidFile(body: string, name: string): { daemon: ChildProcess; launcher: string; dir: string; pid: number } {
+  /** A stand-in recorded for the reaper and the survivors check, with no pid file yet: the caller writes it with claimAsWorker once every wait is behind it. */
+  function recordedStandIn(body: string, name: string): { daemon: ChildProcess; launcher: string; dir: string; pid: number } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), name))
     roots.push(dir)
     const { daemon, launcher } = startStandIn(dir, body)
     const pid = daemon.pid as number
     recorded.set(pid, listProcesses().get(pid)?.args.trim() ?? '')
-    fs.writeFileSync(workerPidPath(dir), `${pid}\n`)
     return { daemon, launcher, dir, pid }
   }
 
+  /** What startDetachedWorker does right after the spawn: a pid file inside its startup grace is stopWorker's proof that a stand-in with no heartbeat is the worker, so it is written last, with nothing slow between it and stopWorker. */
+  function claimAsWorker(dir: string, pid: number): void {
+    fs.writeFileSync(workerPidPath(dir), `${pid}\n`)
+  }
+
   it('leaves a live process that is not this install worker alone, and drops the stale pid file', () => {
-    const { dir, pid } = standInWithPidFile(IDLE_LAUNCHER, 'tg-stop-other-')
+    const { dir, pid } = recordedStandIn(IDLE_LAUNCHER, 'tg-stop-other-')
     expect(recorded.get(pid), 'calibration: the stand-in is in the process table with its own command line').toMatch(/launcher\.js/)
+    claimAsWorker(dir, pid)
 
     // The real query reads the stand-in's command line, which is a node script but not this install's launcher: a reused pid looks exactly like this.
     expect(stopWorker(dir), 'a process that is not this install worker was reported stopped').toBe(false)
@@ -242,22 +247,25 @@ describe('stopping a pid-file pid', () => {
   })
 
   it('falls back to a bare kill, not a tree kill, when the command-line lookup fails', async () => {
-    const { daemon, dir } = standInWithPidFile(process.platform === 'win32' ? GRANDCHILD_LAUNCHER : IDLE_LAUNCHER, 'tg-stop-failed-query-')
+    const { daemon, dir, pid } = recordedStandIn(process.platform === 'win32' ? GRANDCHILD_LAUNCHER : IDLE_LAUNCHER, 'tg-stop-failed-query-')
+    // The bare awaits below (ping's first line, the exit) have no bound of their own: a stand-in that never prints or never exits fails by this test's 120_000 cap, which is acceptable as a failure bound and never decides a pass.
     const exited = new Promise<void>((resolve) => daemon.once('exit', () => resolve()))
     // Windows: ping prints once it runs, which is the event that the grandchild (outside the daemon kill-on-close job) exists to record and later look for.
     if (process.platform === 'win32') {
       const printed = new Promise<void>((resolve) => daemon.stdout?.once('data', () => resolve()))
       await printed
       const table = listProcesses()
-      for (const [pid, args] of descendantsOf(daemon.pid as number, table)) recorded.set(pid, args)
+      for (const [childPid, args] of descendantsOf(pid, table)) recorded.set(childPid, args)
+      // Checked before the kill, so a miss fails here instead of leaving ping running for an hour.
+      expect([...recorded.values()].some((args) => GRANDCHILD_PROCESS.test(args)), 'calibration: the grandchild was recorded').toBe(true)
     }
 
+    claimAsWorker(dir, pid)
     expect(stopWorker(dir, undefined, { queryCommandLine: () => ({ status: 'failed' }) }), 'a failed lookup was read as a gone process and nothing was signalled').toBe(true)
 
     await exited
     if (process.platform === 'win32') {
       const ping = [...recorded].find(([, args]) => GRANDCHILD_PROCESS.test(args))
-      expect(ping, 'calibration: the grandchild was recorded').toBeDefined()
       expect(survivors().some((line) => line.startsWith(`${ping?.[0]}: `)), 'the grandchild was ended: the fallback took the tree').toBe(true)
     }
   }, 120_000)
