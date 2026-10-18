@@ -1,4 +1,4 @@
-/** How token-goat starts Windows PowerShell to ask about processes: one place for the executable and its arguments, shared by doctor and the hidden-rule scan. Imports only Node built-ins and shell.ts, which imports only built-ins, so claude_hidden_rules.ts stays off every hook's eager path. */
+/** How token-goat starts Windows PowerShell to ask about processes: one place for the executable and its arguments, shared by doctor's process list (cli_doctor_process.ts), the hidden-rule scan (claude_hidden_rules.ts) and the resident-process command-line query (resident_process.ts). Imports only Node built-ins and shell.ts, which imports only built-ins, so claude_hidden_rules.ts stays off every hook's eager path. */
 
 import { powerShellCommandArgs } from './shell.js'
 import { windowsSystem32Exe } from './windows_system32.js'
