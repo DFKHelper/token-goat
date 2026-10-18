@@ -409,6 +409,24 @@ describe('stopWorker', () => {
       killSpy.mockRestore()
     }
   })
+
+  // A reused pid owned by another user: the kill is denied (EPERM) and the process keeps running, so the stop did not end anything and must say so; one that exited first (ESRCH) is the outcome asked for. HAND-DERIVED: the two codes are the two errors kill(2) documents for a signal that was not delivered.
+  it.each([
+    ['EPERM', false],
+    ['ESRCH', true],
+  ])('reports %s from the kill as ended=%s', (code, ended) => {
+    fs.writeFileSync(workerPidPath(DIR), `${MISMATCHED_WORKER_PID}\n`)
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+      if (signal === 0) return true
+      throw Object.assign(new Error(code), { code })
+    })
+    try {
+      expect(stopWorker(DIR, undefined, { queryCommandLine: () => ({ status: 'failed' }) })).toBe(ended)
+      expect(killSpy.mock.calls.filter(([pid, signal]) => pid === MISMATCHED_WORKER_PID && signal !== 0)).toHaveLength(1)
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
 })
 
 describe('claimWorkerPidFile (TOCTOU race regression)', () => {

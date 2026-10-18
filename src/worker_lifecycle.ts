@@ -212,14 +212,15 @@ function judgeDaemonIdentity(pid: number, opts: StopWorkerOptions): DaemonIdenti
   return isResidentOfInstall(answer.commandLine, opts.entryScript ?? daemonEntryScript(), ['worker']) ? 'worker' : 'other'
 }
 
-/** End process `pid`, alone or with its tree, and refuse this process and its parent on either path. On Windows `process.kill` is TerminateProcess, so no handler in the daemon runs and the git it holds is left running; the tree goes with it through taskkill (resident_process.ts::terminateProcessTree, because process_tree.ts must stay out of the hook bundle), and a taskkill that did not end it falls back to the bare kill. Elsewhere SIGTERM reaches the daemon's own handler, which drains and reaps what it started. Returns false only when the pid was refused; a process that exited first still counts as signalled. */
+/** End process `pid`, alone or with its tree, and refuse this process and its parent on either path. On Windows `process.kill` is TerminateProcess, so no handler in the daemon runs and the git it holds is left running; the tree goes with it through taskkill (resident_process.ts::terminateProcessTree, because process_tree.ts must stay out of the hook bundle), and a taskkill that did not end it falls back to the bare kill. Elsewhere SIGTERM reaches the daemon's own handler, which drains and reaps what it started. Returns false when the pid was refused, and when the kill was denied (EPERM: the number now belongs to another user's process, which this stop did not end); a process that exited first (ESRCH) still counts as ended. */
 function endDaemon(pid: number, scope: 'tree' | 'single'): boolean {
   if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || pid === process.ppid) return false
   if (scope === 'tree' && process.platform === 'win32' && terminateProcessTree(pid, true)) return true
   try {
     process.kill(pid)
-  } catch {
-    // Race: process exited between the check and the kill; the caller reports whatever liveness it observed.
+  } catch (err) {
+    // ESRCH: the process exited between the check and the kill, which is the outcome asked for. EPERM: a reused number now owned by another user, still running, so it was not ended and the caller must not report it as stopped.
+    return (err as NodeJS.ErrnoException).code !== 'EPERM'
   }
   return true
 }

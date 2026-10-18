@@ -84,8 +84,8 @@ export function queryProcessCommandLine(pid: number): CommandLineQuery {
   if (!Number.isInteger(pid) || pid <= 0) return { status: 'gone' }
   const win = process.platform === 'win32'
   const file = win ? windowsPowerShellPath() : 'ps'
-  // The script's 'gone' and 'found:' are spelled out to match WINDOWS_GONE_MARK and WINDOWS_FOUND_MARK above, since the pid is the only value this template may interpolate (the hand-quoted-value guard).
-  const script = `$ErrorActionPreference = 'Stop'; $id = ${pid}; $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $id); if ($null -eq $p) { 'gone' } else { 'found:' + $p.CommandLine }`
+  // The script's 'gone' and 'found:' are spelled out to match WINDOWS_GONE_MARK and WINDOWS_FOUND_MARK above, since the pid is the only value this template may interpolate (the hand-quoted-value guard). Windows PowerShell 5.1 writes a pipe in the console's OEM code page (437 here), where a launcher path with an accented or non-Latin character comes back as 0x82 or '?' and never matches the install's entry script; UTF-8 without a BOM is what the decode below reads.
+  const script = `[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; $ErrorActionPreference = 'Stop'; $id = ${pid}; $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $id); if ($null -eq $p) { 'gone' } else { 'found:' + $p.CommandLine }`
   const args = win ? powerShellCommandArgs(script) : ['-ww', '-o', 'args=', '-p', String(pid)]
   const res = spawnSync(file, args, { encoding: 'utf8', windowsHide: true, timeout: PROCESS_QUERY_TIMEOUT_MS })
   if (res.error !== undefined) return { status: 'failed' }
