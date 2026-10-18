@@ -46,6 +46,23 @@ function foldedPathsUnderRoot(rootPrefix: string, dbPath: string): string[] {
   })
 }
 
+/** Delete the reconcile resume rows (reconcile_cursor, written by reconcile.ts) of every project at or under `rootPrefix`: the scan row keyed by the project root and the deletion-pass row keyed by the root, a NUL and `deletions`. Both name files of a project that is gone from the index, so a surviving row would hand a later project at that path a resume point into a listing it never made. Matched on the project root part of the key by the same fold and prefix rule as the file rows, so a project that merely contains `rootPrefix` keeps its rows. Returns the rows removed. */
+export function purgeReconcileCursors(db: DbHandle, rootPrefix: string): number {
+  const { foldedRootPrefix, foldedPrefix } = foldedBounds(rootPrefix)
+  const nul = String.fromCharCode(0)
+  // hex(root), not root: the driver hands a TEXT value back cut at its first NUL, so a deletion-pass key arrives as the bare project root and a WHERE root = ? built from it would match the scan row instead. The hex form carries every byte, and the delete goes by rowid.
+  const rows = db.prepare('SELECT rowid AS id, hex(root) AS hexRoot FROM reconcile_cursor').all() as Array<{ id: number; hexRoot: string }>
+  let removed = 0
+  for (const { id, hexRoot } of rows) {
+    const root = Buffer.from(hexRoot, 'hex').toString('utf8')
+    const nulAt = root.indexOf(nul)
+    const projectRoot = foldPath(normalizePath(nulAt === -1 ? root : root.slice(0, nulAt)))
+    if (projectRoot !== foldedRootPrefix && !projectRoot.startsWith(foldedPrefix)) continue
+    removed += Number(db.prepare('DELETE FROM reconcile_cursor WHERE rowid = ?').run(id).changes)
+  }
+  return removed
+}
+
 // Scan indexed files under rootPrefix and return the absolute paths whose file no longer exists on disk, WITHOUT deleting anything. Shared by pruneDeletedFiles (which deletes them immediately) and sweepKnownRoots' anomaly-ratio guard, which needs the count of what *would* be deleted before committing to the mutating delete.
 function findDeletablePaths(rootPrefix: string, dbPath: string): string[] {
   const deletable: string[] = []
@@ -102,7 +119,10 @@ export function pruneBlockedRoot(rootPrefix: string, dbPath: string = globalDbPa
   // The caller is a CLI argument run through path.resolve, so on Windows it arrives with backslashes while every stored path is normalized. foldPath only lowercases, so without this the prefix match silently finds nothing and the command reports a clean purge of zero files.
   const normalized = normalizePath(rootPrefix)
   if (isTooShallowToPrune(normalized)) return []
-  return removeFilesBestEffort(getDb(dbPath), foldedPathsUnderRoot(normalized, dbPath))
+  const db = getDb(dbPath)
+  const removed = removeFilesBestEffort(db, foldedPathsUnderRoot(normalized, dbPath))
+  purgeReconcileCursors(db, normalized)
+  return removed
 }
 
 /** The indexed paths {@link pruneBlockedRoot} would remove, without removing them. For a dry run. */
@@ -268,7 +288,10 @@ export function sweepKnownRoots(
       const count = dryRun ? findDeletablePaths(root, dbPath).length : pruneDeletedFiles(root, dbPath)
       prunedRows += count
       if (count > 0) prunedRoots.push(root)
-      if (!dryRun) db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
+      if (!dryRun) {
+        db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
+        purgeReconcileCursors(db, root)
+      }
       continue
     }
 

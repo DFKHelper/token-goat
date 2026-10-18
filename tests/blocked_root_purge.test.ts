@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs, getDb } from '../src/db.js'
-import { findFilesUnderBlockedRoot, pruneBlockedRoot } from '../src/index_prune.js'
+import { findFilesUnderBlockedRoot, pruneBlockedRoot, sweepKnownRoots } from '../src/index_prune.js'
 import { canonicalizeIndexPath, indexFileSync } from '../src/parser.js'
 
 let root: string
@@ -113,5 +113,54 @@ describe('findFilesUnderBlockedRoot', () => {
     seed('keep.ts', 'export function keeper() { return 1 }\n')
 
     expect(findFilesUnderBlockedRoot('c:/', dbPath)).toEqual([])
+  })
+})
+
+// HAND-DERIVED: the key shapes come from reconcile.ts (a scan row keyed by the project root, a deletion-pass row keyed by the root, a NUL character and the word deletions); nothing here is read from a producer's output.
+describe('reconcile cursors leave with the project', () => {
+  const NUL = String.fromCharCode(0)
+  const cursorRoots = (): string[] =>
+    (getDb(dbPath).prepare('SELECT hex(root) AS h FROM reconcile_cursor').all() as Array<{ h: string }>).map((r) => Buffer.from(r.h, 'hex').toString('utf8')).sort()
+  function putCursors(project: string): void {
+    const ins = getDb(dbPath).prepare('INSERT INTO reconcile_cursor (root, last_scanned_path, updated_at) VALUES (?, ?, 0)')
+    ins.run(project, `${project}/a.ts`)
+    ins.run(`${project}${NUL}deletions`, `${project}/b.ts`)
+  }
+
+  it('project exclude purges the scan row and the deletion-pass row, and only that project\'s', () => {
+    seed(path.join('secretdir', 'creds.ts'), 'export function tokenValue() { return "sk" }\n')
+    const secret = canonicalizeIndexPath(path.join(root, 'secretdir'))
+    const sibling = canonicalizeIndexPath(path.join(root, 'secretdir2'))
+    const other = canonicalizeIndexPath(path.join(root, 'other'))
+    putCursors(secret)
+    putCursors(sibling)
+    putCursors(other)
+
+    pruneBlockedRoot(path.join(root, 'secretdir'), dbPath)
+
+    expect(cursorRoots()).toEqual([sibling, `${sibling}${NUL}deletions`, other, `${other}${NUL}deletions`].sort())
+  })
+
+  it('purges the cursor rows of a root that was never indexed too, since the cursor can outlive its files', () => {
+    const gone = canonicalizeIndexPath(path.join(root, 'gone'))
+    putCursors(gone)
+
+    pruneBlockedRoot(path.join(root, 'gone'), dbPath)
+
+    expect(cursorRoots()).toEqual([])
+  })
+
+  it('sweepKnownRoots purges both rows of a root unreachable past its grace, and a dry run keeps them', () => {
+    const gone = canonicalizeIndexPath(path.join(root, 'gone'))
+    const other = canonicalizeIndexPath(path.join(root, 'other'))
+    getDb(dbPath).prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, 0)').run(gone)
+    putCursors(gone)
+    putCursors(other)
+
+    sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000, dryRun: true })
+    expect(cursorRoots().length).toBe(4)
+
+    sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+    expect(cursorRoots()).toEqual([other, `${other}${NUL}deletions`].sort())
   })
 })
