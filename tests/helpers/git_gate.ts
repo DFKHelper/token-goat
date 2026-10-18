@@ -14,6 +14,8 @@ export interface GitGate {
   readonly reached: Promise<void>
   /** Whether a git still holds the gate, read now. Windows: a connection a git made that has not closed (the pipe closes when the git process ends, however it ends; the close arrives on the event loop of the process holding the gate, so a loop that was blocked still shows a git that has ended). POSIX: whether a reader still has the FIFO open, probed by opening its write end without blocking, which fails with ENXIO once every reader has gone; nothing is written, so polling in a loop leaves git nothing to read. False once released or disposed. */
   holding(): boolean
+  /** How many times a git has opened the gate so far, those it let through ({@link openGitGate}'s `passFirst`) and those it held. One git may open it more than once (it reads its configuration in more than one step), so this is the count of reads, not of processes; a test that must pass exactly one git's reads measures them with a gate of its own first. */
+  connections(): number
   /** Lets every git blocked on the gate go, and every git that reaches it later. */
   release(): void
   /** Releases, stops serving and removes what the gate created. Safe to call twice. */
@@ -28,16 +30,24 @@ function environmentFor(target: string): Record<string, string> {
 }
 
 /** Serves the gate as a Windows named pipe: each connection git makes is held open until release, then ended with no data, which git reads as an empty config file. */
-async function windowsGate(): Promise<GitGate> {
+async function windowsGate(passFirst: number): Promise<GitGate> {
   const target = String.raw`\\.\pipe\tg-git-gate-` + crypto.randomBytes(8).toString('hex')
   const held = new Set<net.Socket>()
   let released = false
+  let passed = 0
+  let opened = 0
   let signal!: () => void
   const reached = new Promise<void>((resolve) => {
     signal = resolve
   })
   const server = net.createServer((socket) => {
     socket.on('error', () => {})
+    opened++
+    if (passed < passFirst) {
+      passed++
+      socket.end()
+      return
+    }
     signal()
     if (released) {
       socket.end()
@@ -60,6 +70,7 @@ async function windowsGate(): Promise<GitGate> {
     env: environmentFor(target),
     reached,
     holding: () => held.size > 0,
+    connections: () => opened,
     release,
     async dispose() {
       if (disposed) return
@@ -71,12 +82,14 @@ async function windowsGate(): Promise<GitGate> {
 }
 
 /** Serves the gate as a FIFO: opening it for writing completes only once a reader (git) has it open, which is the `reached` event; closing the writer is the end of file git reads as an empty config file. */
-async function fifoGate(): Promise<GitGate> {
+async function fifoGate(passFirst: number): Promise<GitGate> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-git-gate-'))
   const target = path.join(root, 'gate')
   execFileSync('mkfifo', [target], { stdio: 'ignore' })
   let released = false
   let disposed = false
+  let passed = 0
+  let opened = 0
   let signal!: () => void
   let open!: () => void
   const reached = new Promise<void>((resolve) => {
@@ -93,6 +106,12 @@ async function fifoGate(): Promise<GitGate> {
         writer = await fs.promises.open(target, 'w')
       } catch {
         return
+      }
+      opened++
+      if (passed < passFirst) {
+        passed++
+        await writer.close()
+        continue
       }
       current = writer
       signal()
@@ -119,6 +138,7 @@ async function fifoGate(): Promise<GitGate> {
     env: environmentFor(target),
     reached,
     holding,
+    connections: () => opened,
     release,
     async dispose() {
       if (disposed) return
@@ -138,7 +158,8 @@ async function fifoGate(): Promise<GitGate> {
   }
 }
 
-/** Opens a gate. The caller starts git with {@link GitGate.env} (or sets those variables in its own environment), waits for {@link GitGate.reached}, and calls {@link GitGate.release} when the blocked git may go on; {@link GitGate.dispose} belongs in a `finally`/`afterEach`, since a gate never released leaves its git blocked. */
-export async function openGitGate(): Promise<GitGate> {
-  return process.platform === 'win32' ? windowsGate() : fifoGate()
+/** Opens a gate. The caller starts git with {@link GitGate.env} (or sets those variables in its own environment), waits for {@link GitGate.reached}, and calls {@link GitGate.release} when the blocked git may go on; {@link GitGate.dispose} belongs in a `finally`/`afterEach`, since a gate never released leaves its git blocked. `passFirst` lets that many gits read the gate through as an empty config without signalling `reached` or holding them, so a test can hold the Nth git a process starts (the first N-1 answer normally). */
+export async function openGitGate(options: { readonly passFirst?: number } = {}): Promise<GitGate> {
+  const passFirst = options.passFirst ?? 0
+  return process.platform === 'win32' ? windowsGate(passFirst) : fifoGate(passFirst)
 }
