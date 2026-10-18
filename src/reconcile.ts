@@ -105,6 +105,9 @@ export interface ReconcileResult {
   unscanned: number
   /** Paths that reached the dirty queue (0 when `dryRun`). Fewer than changed + added + removed when the queue refused some: it takes nothing under the OS temp dir, and nothing at all when it cannot be written. */
   enqueued: number
+  /** The wall-clock budget this sweep ran under, in milliseconds: the one passed in, or the default. */
+  budgetMs: number
+  /** Time from the call to its return, including the git listing that comes before the budget starts counting. */
   elapsedMs: number
 }
 
@@ -177,7 +180,7 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
   }
   if (result.budgetExhausted) {
     const unchecked = [...(result.unscanned > 0 ? [`${countNoun(result.unscanned, 'file')} unchecked`] : []), ...(result.deletionsIncomplete ? ['some indexed files not yet checked for deletion'] : [])]
-    lines.push(`Stopped at the ${result.elapsedMs}ms budget with ${unchecked.join(' and ')}, so there may be more drift; what it found is listed above and the next sweep continues where this one stopped. Raise --budget-ms for a complete sweep.`)
+    lines.push(`Stopped at the ${result.budgetMs}ms budget (${result.elapsedMs}ms elapsed) with ${unchecked.join(' and ')}, so there may be more drift; what it found is listed above and the next sweep continues where this one stopped. Raise --budget-ms for a complete sweep.`)
   }
   process.stdout.write(`${lines.join('\n')}\n`)
   return 0
@@ -365,6 +368,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     gitTimedOut: listing.timedOut,
     unscanned: Math.max(0, tracked.length - scanned),
     enqueued,
+    budgetMs,
     elapsedMs: Date.now() - calledAt,
   }
 }
