@@ -121,7 +121,12 @@ export function pruneBlockedRoot(rootPrefix: string, dbPath: string = globalDbPa
   if (isTooShallowToPrune(normalized)) return []
   const db = getDb(dbPath)
   const removed = removeFilesBestEffort(db, foldedPathsUnderRoot(normalized, dbPath))
-  purgeReconcileCursors(db, normalized)
+  // Best-effort, like the row removal above: the config is already saved by the caller, so a refusal here must not turn a completed exclude into a thrown error. A cursor row left behind only names files of a project the index no longer holds.
+  try {
+    purgeReconcileCursors(db, normalized)
+  } catch {
+    // Left in place, see above.
+  }
   return removed
 }
 
@@ -289,8 +294,15 @@ export function sweepKnownRoots(
       prunedRows += count
       if (count > 0) prunedRoots.push(root)
       if (!dryRun) {
-        db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
-        purgeReconcileCursors(db, root)
+        // One transaction, so the known_roots row (the key this branch retries on) and the cursor rows leave together or not at all: a purge that failed after the delete stranded cursor rows no later sweep could find. A refusal (a busy database) rolls both back, and the sweep moves on to the next root; the row is still past its grace, so the next sweep repeats this delete.
+        try {
+          db.transaction(() => {
+            db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
+            purgeReconcileCursors(db, root)
+          })()
+        } catch {
+          // Nothing was deleted, see above.
+        }
       }
       continue
     }

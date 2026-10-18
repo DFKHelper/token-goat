@@ -163,4 +163,46 @@ describe('reconcile cursors leave with the project', () => {
     sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
     expect(cursorRoots()).toEqual([other, `${other}${NUL}deletions`].sort())
   })
+
+  // The refusal is raised by a trigger on the cursor delete rather than by a held lock: a lock refuses the first write of the transaction (the known_roots delete), never the later cursor purge this row is about. A trigger that aborts the delete is the same SqliteError out of the same statement, on an event the row controls.
+  const refuseCursorDeletes = (): void => {
+    getDb(dbPath).exec("CREATE TRIGGER refuse_cursor_delete BEFORE DELETE ON reconcile_cursor BEGIN SELECT RAISE(ABORT, 'database is locked'); END")
+  }
+  const allowCursorDeletes = (): void => {
+    getDb(dbPath).exec('DROP TRIGGER refuse_cursor_delete')
+  }
+  const knownRoots = (): string[] => (getDb(dbPath).prepare('SELECT root FROM known_roots').all() as Array<{ root: string }>).map((r) => r.root)
+
+  it('sweepKnownRoots keeps the known_roots row with its cursor rows when the purge is refused, and finishes once it is not', () => {
+    const gone = canonicalizeIndexPath(path.join(root, 'gone'))
+    const other = canonicalizeIndexPath(path.join(root, 'other'))
+    getDb(dbPath).prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, 0)').run(gone)
+    putCursors(gone)
+    putCursors(other)
+    refuseCursorDeletes()
+
+    expect(() => sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 }), 'a refused cursor purge aborted the sweep').not.toThrow()
+    expect(knownRoots(), 'the known_roots row went while its cursor rows stayed, so no later sweep can find them').toEqual([gone])
+    expect(cursorRoots().length).toBe(4)
+
+    allowCursorDeletes()
+    sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+    expect(knownRoots()).toEqual([])
+    expect(cursorRoots()).toEqual([other, `${other}${NUL}deletions`].sort())
+  })
+
+  it('project exclude still reports what it removed when the cursor purge is refused', () => {
+    const secret = seed(path.join('secretdir', 'creds.ts'), 'export function tokenValue() { return "sk" }\n')
+    putCursors(canonicalizeIndexPath(path.join(root, 'secretdir')))
+    refuseCursorDeletes()
+
+    let removed: string[] = []
+    expect(() => {
+      removed = pruneBlockedRoot(path.join(root, 'secretdir'), dbPath)
+    }, 'a refused cursor purge threw after the config was saved').not.toThrow()
+
+    expect(fs.existsSync(secret)).toBe(true)
+    expect(removed.length).toBe(1)
+    expect(indexedPaths()).toEqual([])
+  })
 })
