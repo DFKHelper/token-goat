@@ -5,7 +5,7 @@ import * as fs from 'node:fs'
 import { closeDb, getDb } from './db.js'
 import Database from './sqlite_driver.js'
 import { extractErrorMessage } from './util.js'
-import { isWorkerRunning, stopWorker } from './worker_lifecycle.js'
+import { isWorkerRunning, stopWorkerDetailed, workerLeftRunningNote } from './worker_lifecycle.js'
 
 export type QuickCheckResult = { ok: true } | { ok: false; detail: string }
 
@@ -39,7 +39,11 @@ export function quarantineMalformedDb(dbPath: string, dataDir: string, now: Date
   try {
     closeDb(dbPath)
     // An open handle pins the file on Windows, and on POSIX a live worker would keep writing to the inode that was just renamed away.
-    if (isWorkerRunning(dataDir)) stopWorker(dataDir)
+    if (isWorkerRunning(dataDir)) {
+      const { leftRunning } = stopWorkerDetailed(dataDir)
+      // The worker the stop was denied still holds the database, so moving it aside would rename a file in use (or let the worker keep writing to the renamed inode); the caller reports the failure like any other that left the file in place.
+      if (leftRunning !== null) return { status: 'failed', error: workerLeftRunningNote(leftRunning) }
+    }
     fs.renameSync(dbPath, quarantinePath)
     for (const suffix of ['-wal', '-shm']) {
       if (fs.existsSync(dbPath + suffix)) fs.renameSync(dbPath + suffix, `${quarantinePath}${suffix}`)
