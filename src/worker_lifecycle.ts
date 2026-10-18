@@ -166,7 +166,7 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
   if (livePid !== null && pidAlive(livePid) && hasFreshWorkerHeartbeat(dir, livePid)) {
     // A live daemon keeps running the bundle it was spawned from, so after an upgrade or a rebuilt dist/token-goat.mjs it runs the pre-upgrade code until stopped; stop it the way `worker stop` does and spawn a fresh one.
     if (workerBundleMatches(dir)) return
-    // The only branch of this hook that spawns (stopWorker's command-line query, then a taskkill): it needs a live daemon on a bundle that no longer matches, so it runs once per upgrade, and every other path has returned above.
+    // The only branch of this hook that runs a process-list query and a taskkill (both inside stopWorker, each bounded by PROCESS_QUERY_TIMEOUT_MS): it needs a live daemon on a bundle that no longer matches, so it runs once per upgrade. It does not return: the spawn below follows it, as it follows a dead or missing daemon, unless the pid file now names a replacement.
     stopWorker(dir, livePid)
     // The pid file naming anyone else now means another hook already replaced the daemon; spawning too would start a second one.
     const nowPid = readPidFile(dir)
@@ -225,7 +225,7 @@ function endDaemon(pid: number, scope: 'tree' | 'single'): boolean {
   return true
 }
 
-/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, it is alive but proves no worker lease (see {@link holdsWorkerLease}), or the lease holder is not this install's worker (a reused pid: left alone, and its pid file dropped as stale). The pid file is removed in the killed, dead and stale cases so the slate is clean afterwards, and left in place in the lease-less case. */
+/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, it is alive but proves no worker lease (no fresh heartbeat naming it, and a pid file older than the startup grace), or the lease holder is not this install's worker (a reused pid: left alone, and its pid file dropped as stale). The pid file is removed in the killed, dead and stale cases so the slate is clean afterwards, and left in place in the lease-less case. */
 export function stopWorker(dir: string = dataDir(), expectedPid?: number, opts: StopWorkerOptions = {}): boolean {
   const pid = readPidFile(dir)
   if (pid === null) return false
@@ -240,7 +240,7 @@ export function stopWorker(dir: string = dataDir(), expectedPid?: number, opts: 
   if (running) {
     // Even a lease can name a reused pid (the daemon crashed inside the heartbeat window, or the pid file is a fresh claim over a dead one), so the command line decides, and only a confirmed worker loses its tree.
     const identity = judgeDaemonIdentity(pid, opts)
-    // A failed query proves nothing either way, so it keeps the behavior from before the tree kill (a bare single-process kill, no /T) rather than reading as "gone" or as "worker".
+    // 'unknown' is the query itself failing (the program missing, ENOENT, as `ps` is on a minimal image; a timeout; or an unexpected exit status), which proves nothing about who owns the pid. This point is reached only for a live pid with a lease proof (a fresh heartbeat naming it, or a pid file younger than the startup grace), so the stop ends that one process, with no tree: failing closed would make `worker stop` do nothing wherever `ps` is missing, and the tree kill is kept for a confirmed worker.
     if (identity === 'worker') signalled = endDaemon(pid, 'tree')
     else if (identity === 'unknown') signalled = endDaemon(pid, 'single')
   }
@@ -403,7 +403,7 @@ function reclaimStalePidFile(dir: string, pid: number): boolean {
   ) {
     return false
   }
-  // Stale, dead, or unreadable: reclaim the slot. Never signal the pid it names from here: this path is reached only when that pid proves no worker lease, which is what a daemon killed without its exit handler leaves behind once the OS reuses its pid, and this runs on a hook path, where nothing may spawn a process-list query. A 2.9.30 daemon whose slot was reclaimed this way never exited on its own and piled up, one per reclaim, so the claim leaves a note for the daemon it installs, which ends the old one once it owns the slot (see retireDisplacedWorker).
+  // Stale, dead, or unreadable: reclaim the slot. Never signal the pid it names from here: this path is reached only when that pid proves no worker lease, which is what a daemon killed without its exit handler leaves behind once the OS reuses its pid, and this claim spawns no process-list query on the hook path it can run on (ensureWorkerAlive reaches it through startDetachedWorker); the one query on that path is stopWorker's, in the upgrade branch above. A 2.9.30 daemon whose slot was reclaimed this way never exited on its own and piled up, one per reclaim, so the claim leaves a note for the daemon it installs, which ends the old one once it owns the slot (see retireDisplacedWorker).
   try {
     // A note no daemon has consumed yet is carried over, so a second claim does not strand the pid the first one named; only pids still alive and written within the startup grace are kept.
     const held = readDisplacedPids(dir).filter((p) => p !== pid && pidAlive(p))
