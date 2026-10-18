@@ -1748,33 +1748,49 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
 
 // Regression (mutation-testing gap): the loop body re-checks shouldStop() immediately after the drain/housekeeping work, BEFORE the setTimeout poll-interval sleep, so a stop request that arrives mid-cycle exits right away instead of waiting out one more full pollIntervalMs sleep for nothing. Without that second check, the loop always sleeps once more before the next `while (!shouldStop())` iteration catches it -- a real, measurable shutdown-latency regression for a caller (e.g. stopWorker's own SIGTERM-driven exit path) that wants the daemon to stop promptly. Uses a deliberately large pollIntervalMs and asserts on wall-clock elapsed time so a wasted sleep is unambiguous rather than lost in test-runner jitter.
 describe('runWorkerLoop prompt-stop (mutation-testing gap)', () => {
-  it('stops immediately after the loop body when told to, without waiting out one more poll interval', async () => {
+  const POLL_MS = 7919
+  // The sleep is the only timer armed with the poll interval, so a timer armed with it is the event "the loop went on to wait out another interval". Timers are fake and never advanced inside the race, so what settles it is the loop's own control flow: it returns, or it arms the sleep. The observer is a plain assignment undone by assignment, never vi.spyOn: a spy installed over the fake clock's setTimeout stays in vitest's spy registry after mockRestore, and a later vi.restoreAllMocks() in this file put the dead clock's wrapper back as global.setTimeout, so every timer armed after it never fired (a shuffled run hung the data-dir and pid-takeover loop tests at the 60 s cap).
+  async function runPromptStopLoop(): Promise<'stopped' | 'slept'> {
     // PROVENANCE: HAND-DERIVED. shouldStop is read once by the loop condition and once after the cycle's work, so answering true from the second read stops the loop exactly at the check under test. 7919 ms is a poll interval no other timer in the loop shares.
-    const POLL_MS = 7919
     let calls = 0
     const shouldStop = (): boolean => {
       calls += 1
       return calls > 1
     }
-    // The sleep is the only timer armed with the poll interval, so a timer armed with it is the event "the loop went on to wait out another interval". Timers are fake and never advanced inside the race, so what settles it is the loop's own control flow: it returns, or it arms the sleep.
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const fakeSetTimeout = global.setTimeout
     let sleepArmed!: () => void
     const armed = new Promise<'slept'>((resolve) => {
       sleepArmed = () => resolve('slept')
     })
-    const fakeSetTimeout = global.setTimeout
-    const timerSpy = vi.spyOn(global, 'setTimeout').mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+    global.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
       if (args[1] === POLL_MS) sleepArmed()
       return fakeSetTimeout(...args)
-    }) as typeof setTimeout)
+    }) as typeof setTimeout
     const loop = runWorkerLoop(DIR, POLL_MS, shouldStop).then(() => 'stopped' as const)
     try {
-      expect(await Promise.race([loop, armed])).toBe('stopped')
+      return await Promise.race([loop, armed])
     } finally {
-      timerSpy.mockRestore()
+      global.setTimeout = fakeSetTimeout
       vi.advanceTimersByTime(POLL_MS)
       await loop
       vi.useRealTimers()
+    }
+  }
+
+  it('stops immediately after the loop body when told to, without waiting out one more poll interval', async () => {
+    expect(await runPromptStopLoop()).toBe('stopped')
+  })
+
+  // Regression: this test's observer used to be a vi.spyOn over the fake clock's setTimeout. Whatever vi.restoreAllMocks() runs next (several describes in this file call it) re-installed the finished clock's wrapper over the real setTimeout, which never fires; the result depended on shuffle order, so the row runs the whole sequence itself and asserts on the function left behind.
+  it('leaves global.setTimeout as it found it, even through a later vi.restoreAllMocks()', async () => {
+    const before = global.setTimeout
+    try {
+      await runPromptStopLoop()
+      vi.restoreAllMocks()
+      expect(global.setTimeout).toBe(before)
+    } finally {
+      global.setTimeout = before
     }
   })
 })
