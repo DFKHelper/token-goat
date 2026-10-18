@@ -85,6 +85,36 @@ describe('batch client request settling', () => {
 })
 
 describe('batch client cleanup', () => {
+  it('ends the server and every process holding its pipes when the server process emits an error, and rejects the request naming it', async () => {
+    let real: OwnedChild | undefined
+    let kills = 0
+    const client = createBatchClient((token) => {
+      const spawned = spawnOwned(process.execPath, [STAND_IN, token], { stdio: ['pipe', 'pipe', 'pipe'] })
+      real = spawned
+      return { ...spawned, kill: () => { kills++; spawned.kill() } }
+    })
+    clients.push(client)
+    try {
+      const pids = JSON.parse((await client.run(['tree'])).stdout) as { server: number; grandchild: number }
+      const proc = real?.child
+      if (proc === undefined) throw new Error('the client did not launch the stand-in')
+      const closed = new Promise<void>((resolve) => proc.once('close', () => resolve()))
+      const request = rejection(client.run(['hang', 'after-error']))
+      // The event a failed signal or send raises on a running child; the test emits it because nothing else here can make Node raise it.
+      proc.emit('error', new Error('send failed'))
+      const message = await request
+      expect(message).toContain('hang after-error')
+      expect(message).toContain('failed (send failed)')
+      // The error does not stop the process, so only the client ending the tree makes the close below arrive.
+      expect(kills).toBeGreaterThan(0)
+      await closed
+      expect(processAlive(pids.server)).toBe(false)
+      expect(processAlive(pids.grandchild)).toBe(false)
+    } finally {
+      real?.kill()
+    }
+  })
+
   it('ends the server and every process holding its pipes while a request is still pending', async () => {
     const client = standIn()
     const pids = JSON.parse((await client.run(['tree'])).stdout) as { server: number; grandchild: number }
