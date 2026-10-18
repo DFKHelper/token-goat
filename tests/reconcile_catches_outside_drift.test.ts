@@ -160,6 +160,15 @@ describe('reconcile', () => {
     expect(r.unscanned, 'the sweep truncated but claimed nothing was left unchecked').toBeGreaterThan(0)
   })
 
+  it('still examines the first file when the budget is already spent, so a slow machine makes progress', () => {
+    // PROVENANCE: HAND-DERIVED. The fixture is mod1.ts..mod6.ts in one git repository and `git ls-files` lists them in name order, so mod1.ts is the first file of a sweep with no resume point (a --dry-run never writes one). A 0ms budget stands in for a machine that spent the whole budget before its first stat, without reading a clock.
+    writeFileSync(join(projectDir, 'mod1.ts'), 'export function mod1(): number {\n  return 999\n}\n')
+    const r = json(['reconcile', '--dry-run', '--budget-ms', '0'])
+    expect(r.budgetExhausted, 'a 0ms budget did not truncate the sweep; this case proves nothing').toBe(true)
+    expect(r.scanned, 'the budget stopped the sweep before it examined any file').toBe(1)
+    expect((r.changed as string[]).map((p) => p.replace(/\\/g, '/').split('/').pop()), 'the first file changed on disk and the sweep did not report it').toEqual(['mod1.ts'])
+  })
+
   it('discloses the truncation in its text output rather than reading as a complete sweep', () => {
     const r = run(['reconcile', '--dry-run', '--budget-ms', '0'])
     expect(r.code).toBe(0)

@@ -17,6 +17,9 @@ import { countNoun, foldPath } from './util.js'
 /** Wall-clock budget for a sweep. Chosen so the session-start hook stays imperceptible even on a cold filesystem cache: this repo's own measurement is that hook cost is dominated by process startup rather than logic, and a sweep that pushed past that would turn a correctness improvement into a latency regression on every single session. */
 export const DEFAULT_RECONCILE_BUDGET_MS = 1500
 
+/** Files a sweep examines before its budget may stop it, so every sweep advances the resume cursor whatever the clock says. */
+const MIN_FILES_PER_SWEEP = 1
+
 export interface ReconcileOptions {
   cwd?: string
   /** Wall-clock budget for examining files, counted from once the tracked list and index rows are in hand. Defaults to {@link DEFAULT_RECONCILE_BUDGET_MS}. */
@@ -209,8 +212,9 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   let lastScanned: string | null = null
 
   for (const file of scanOrder) {
-    // Checked before the work rather than after, so the budget bounds what this function does rather than merely reporting that it overran. The check itself is a clock read, and hoisting it out of the loop would be the optimization that removes the bound. Reaching the budget spends it, so a budget of 0 examines nothing even when the whole scan would fit inside one clock tick.
-    if (Date.now() - startedAt >= budgetMs) {
+    // Checked before the work rather than after, so the budget bounds what this function does rather than merely reporting that it overran, and the check is a clock read that hoisting out of the loop would remove. Not before the first file: a sweep that may stop having examined nothing saves no resume point, so a machine slow enough to spend the budget before the first stat (or a budget of 0) repeated the same empty sweep every session and never checked the project. One file is the floor, so the cursor advances every sweep and the laps complete; it is a count, not a time, and the budget still bounds everything after it.
+    const overBudget = Date.now() - startedAt >= budgetMs
+    if (overBudget && scanned >= MIN_FILES_PER_SWEEP) {
       budgetExhausted = true
       break
     }
@@ -302,7 +306,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     const toEnqueue = [...changed, ...added, ...removed].map((p) => resolveIndexPath(p, cwd))
     // Batched rather than enqueued one at a time: a sweep routinely fans out four figures of paths at session start, and the single-path form appends each one separately. The count is what the queue took, not what it was offered: it refuses every path under the OS temp dir, and a project there reported files enqueued that no worker would ever see.
     enqueued = enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true, ...(opts.queueDir !== undefined ? { dir: opts.queueDir } : {}) })
-    // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any side effect, and persisting a resume point is a side effect. A truncated sweep that scanned at least one file saves where it stopped, so the next sweep resumes there; a sweep with nothing scanned (budget already gone before the first file) leaves whatever cursor already exists untouched rather than clobbering it with nothing. A sweep that completed a full lap clears the cursor, since the next sweep should start a fresh lap from the beginning rather than carry forward an offset a completed lap has made meaningless.
+    // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any side effect, and persisting a resume point is a side effect. A truncated sweep that scanned at least one file saves where it stopped, so the next sweep resumes there; a sweep with nothing scanned (an empty tracked list, since the budget cannot stop a sweep before its first file) leaves whatever cursor already exists untouched rather than clobbering it with nothing. A sweep that completed a full lap clears the cursor, since the next sweep should start a fresh lap from the beginning rather than carry forward an offset a completed lap has made meaningless.
     if (budgetExhausted) {
       if (lastScanned !== null) writeReconcileCursor(dbPath, projectRoot, lastScanned)
     } else if (tracked.length > 0) {

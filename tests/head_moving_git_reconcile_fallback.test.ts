@@ -281,6 +281,9 @@ describe('draining reconcile requests', () => {
     const { repo } = repoWithTwoBranches()
     indexOriginalBranch(repo, true)
     git(repo, 'checkout', '-q', 'feature')
+    // A sweep examines one file before its budget may stop it, so a 0ms budget only runs out on a repository with a second file; this one sorts before lib.ts and takes the whole first sweep.
+    fs.writeFileSync(path.join(repo, 'a_first.ts'), 'export const first = 1\n')
+    git(repo, 'add', 'a_first.ts')
     writeRequests([repo])
     seam.reconcileBudgetMs = 0
 

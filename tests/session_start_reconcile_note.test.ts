@@ -118,6 +118,13 @@ describe('session_start reconciliation', () => {
     expect(context).not.toContain('changed outside this session')
   })
 
+  it('names the drift of the first file even when the budget is already spent', () => {
+    // alpha.ts sorts first in `git ls-files`, and the beforeEach index left no resume point, so it is the file a sweep examines first. A 0ms budget stands in for a machine that spent the whole budget before its first stat, without reading a clock.
+    writeFileSync(join(projectDir, 'alpha.ts'), 'export function alpha(): number {\n  return 4242\n}\n')
+    const context = sessionStartContext({ TOKEN_GOAT_RECONCILE_BUDGET_MS: '0' })
+    expect(context, 'a sweep with no time left examined nothing, so the edited first file went unreported').toContain('changed outside this session')
+  })
+
   it('discloses a budget-exhausted sweep instead of reading as a clean index', () => {
     // The beforeEach index is already up to date; add a brand-new tracked file the index has never seen. A 0ms budget makes reconcileProject break out of its scan loop before it ever reaches this file (see reconcileProject's per-iteration clock check), so `added` comes back empty -- not because the file is unindexed-but-known, but because the sweep never got that far. isReconcileClean() only looks at changed/added/removed, so a note gated on it alone reads this exact case as "nothing to report" even though budgetExhausted is true.
     writeFileSync(join(projectDir, 'zzz_never_indexed.ts'), 'export function neverIndexed(): number {\n  return 7\n}\n')
