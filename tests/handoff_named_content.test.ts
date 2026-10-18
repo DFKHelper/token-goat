@@ -27,7 +27,7 @@ let projectDir: string
 const saved: Record<string, string | undefined> = {}
 
 beforeEach(() => {
-  for (const key of ['TOKEN_GOAT_HOME', 'LOCALAPPDATA', 'XDG_DATA_HOME', 'TOKEN_GOAT_MCP_TOOLS', 'TZ']) saved[key] = process.env[key]
+  for (const key of ['TOKEN_GOAT_HOME', 'LOCALAPPDATA', 'XDG_DATA_HOME', 'TOKEN_GOAT_MCP_TOOLS']) saved[key] = process.env[key]
   home = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-named-'))
   const dataRoot = dataDirForHome(home)
   envRoot = isWin ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
@@ -330,7 +330,7 @@ describe('retrieve says which handoff named an id the cache has dropped', () => 
   })
 
   // HAND-DERIVED: a junction on Windows, a directory symlink elsewhere. CAPTURE: with the built bundle, a handoff made through a link was not found by handoff-resolve from the link's target and the reverse, so the link and its target are two project roots; retrieve uses the same root key.
-  it('treats a link and its target as two projects, as handoff-resolve does', () => {
+  it('treats a Windows junction and its target as two projects, and a POSIX symlink as its resolved target', () => {
     const real = path.join(projectDir, 'real-root')
     const link = path.join(projectDir, 'link-root')
     fs.mkdirSync(real)
