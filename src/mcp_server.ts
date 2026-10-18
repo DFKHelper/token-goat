@@ -27,6 +27,7 @@ import {
   type CompressionResult,
   createHandoff,
   resolveHandoff,
+  isContentExpired,
   retrieveText,
   CONTENT_MAX_INPUT_CHARS,
 } from './content_store.js'
@@ -1061,7 +1062,7 @@ export async function createMcpServer(): Promise<McpServer> {
     (args) => {
       const text = retrieveText(args.id)
       return text === null
-        ? toCallToolResult({ text: `no token-goat content for id: ${args.id}`, code: 1 })
+        ? toCallToolResult({ text: isContentExpired(args.id) ? `token-goat content ${args.id} expired: it is older than the local cache's age limit.` : `no token-goat content for id: ${args.id}`, code: 1 })
         : toRawCallToolResult({ text, code: 0 })
     },
   )

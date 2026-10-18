@@ -18,6 +18,8 @@ export const CONTENT_MAX_BYTES = 32 * 1024 * 1024
 // JSON escaping can expand a 512 KiB string to nearly 3 MiB (for example, every character being a control character). Keep the advertised input limit valid for all legal text while the directory-wide cache limit still bounds use.
 export const CONTENT_MAX_ITEM_BYTES = CONTENT_MAX_INPUT_CHARS * 7
 export const CONTENT_SUBDIR = 'content'
+// A stored contentId is printed in a shell suggestion and handed to `retrieve`, so only the shape the store itself mints is accepted.
+const CONTENT_ID_PATTERN = /^tg_[0-9a-f]{16}$/
 
 interface StoredContent {
   kind: 'content'
@@ -124,40 +126,37 @@ function legacyHandoffIds(name: string, projectRoot: string): string[] {
   return [...ids]
 }
 
-const CONTENT_ID_IN_TEXT = /\btg_[0-9a-f]{16}\b/g
-
-// Content ids that a live (not yet expired) handoff points at, by its contentId field or by quoting the id in its text. The age and count rules of the shared cache would delete such content while the handoff that names it is still resolvable, and `retrieve <id>` then reports an expired cache for an id the handoff still shows.
-function liveHandoffReferences(): Set<string> {
-  const referenced = new Set<string>()
-  for (const id of listBlobIdsWithPrefix(CONTENT_SUBDIR, 'tg_handoff_')) {
-    if (isBlobStale(CONTENT_SUBDIR, id)) continue
-    const entry = loadBlob(CONTENT_SUBDIR, id) as Partial<StoredHandoff> | null
-    if (entry === null || typeof entry !== 'object' || entry.kind !== 'handoff') continue
-    if (typeof entry.contentId === 'string') referenced.add(entry.contentId)
-    if (typeof entry.text === 'string') for (const match of entry.text.matchAll(CONTENT_ID_IN_TEXT)) referenced.add(match[0])
+// A handoff already stores the full text it points at, so an id equal to a live handoff's contentId is answered from that record when the blob itself has been evicted or has aged out. Nothing here exempts a blob from the shared cache's age, count or byte rules.
+function readLiveHandoffText(id: string): string | null {
+  for (const handoff of listBlobIdsWithPrefix(CONTENT_SUBDIR, 'tg_handoff_')) {
+    if (isBlobStale(CONTENT_SUBDIR, handoff)) continue
+    const entry = loadBlob(CONTENT_SUBDIR, handoff) as Partial<StoredHandoff> | null
+    if (entry === null || typeof entry !== 'object' || entry.kind !== 'handoff' || entry.contentId !== id) continue
+    if (typeof entry.text === 'string' && contentId(entry.text) === id) return entry.text
   }
-  return referenced
-}
-
-function contentCacheOptions(): { maxCount: number; maxBytes: number; maxBytesPerItem: number; retain: ReadonlySet<string> } {
-  return { maxCount: CONTENT_MAX_ITEMS, maxBytes: CONTENT_MAX_BYTES, maxBytesPerItem: CONTENT_MAX_ITEM_BYTES, retain: liveHandoffReferences() }
+  return null
 }
 
 function storeContent(text: string): string {
   const id = contentId(text)
   const value: StoredContent = { kind: 'content', id, text, createdAt: Date.now() }
-  const ok = storeBlob(CONTENT_SUBDIR, id, value, contentCacheOptions())
+  const ok = storeBlob(CONTENT_SUBDIR, id, value, {
+    maxCount: CONTENT_MAX_ITEMS,
+    maxBytes: CONTENT_MAX_BYTES,
+    maxBytesPerItem: CONTENT_MAX_ITEM_BYTES,
+  })
   if (!ok) throw new Error('unable to persist compressed content within the local cache bounds')
   return id
 }
 
 function readContent(id: string): string | null {
-  if (!/^tg_[0-9a-f]{16}$/.test(id)) return null
-  if (isBlobStale(CONTENT_SUBDIR, id) && !liveHandoffReferences().has(id)) return null
-  const value = loadBlob(CONTENT_SUBDIR, id)
-  if (value === null || typeof value !== 'object' || value === null) return null
-  const entry = value as Partial<StoredContent>
-  return entry.kind === 'content' && entry.id === id && typeof entry.text === 'string' ? entry.text : null
+  if (!CONTENT_ID_PATTERN.test(id)) return null
+  const stored = isBlobStale(CONTENT_SUBDIR, id) ? null : loadBlob(CONTENT_SUBDIR, id)
+  if (stored !== null && typeof stored === 'object') {
+    const entry = stored as Partial<StoredContent>
+    if (entry.kind === 'content' && entry.id === id && typeof entry.text === 'string') return entry.text
+  }
+  return readLiveHandoffText(id)
 }
 
 export function compressText(text: string): CompressionResult {
@@ -183,6 +182,11 @@ export function compressText(text: string): CompressionResult {
     inlineWins,
     recovery: `token-goat retrieve ${id}`,
   }
+}
+
+/** True when a blob for `id` is still on disk but older than the cache's age limit, which is the one case where "expired" can be told apart from "never stored" (an evicted blob leaves nothing behind). A handoff that still names `id` serves it, so that is not expired. */
+export function isContentExpired(id: string): boolean {
+  return CONTENT_ID_PATTERN.test(id) && isBlobStale(CONTENT_SUBDIR, id) && readLiveHandoffText(id) === null
 }
 
 export function retrieveText(id: string): string | null {
@@ -211,7 +215,11 @@ export function createHandoff(name: string, text: string, projectRoot?: string):
     text: safeText,
     createdAt: Date.now(),
   }
-  const ok = storeBlob(CONTENT_SUBDIR, id, value, contentCacheOptions())
+  const ok = storeBlob(CONTENT_SUBDIR, id, value, {
+    maxCount: CONTENT_MAX_ITEMS,
+    maxBytes: CONTENT_MAX_BYTES,
+    maxBytesPerItem: CONTENT_MAX_ITEM_BYTES,
+  })
   if (!ok) throw new Error('unable to persist handoff within the local cache bounds')
   recordStat('handoff_create')
   return { id, name, contentId: contentIdValue, projectRoot: root, recovery: `token-goat handoff-resolve -- ${quotedArg(name)}` }
@@ -234,9 +242,12 @@ function loadHandoffUnder(id: string, name: string, key: string): FoundHandoff |
     typeof entry.projectRoot !== 'string' ||
     handoffRootKey(entry.projectRoot) !== key ||
     typeof entry.contentId !== 'string' ||
-    typeof entry.text !== 'string'
+    !CONTENT_ID_PATTERN.test(entry.contentId) ||
+    typeof entry.text !== 'string' ||
+    typeof entry.createdAt !== 'number' ||
+    !Number.isFinite(new Date(entry.createdAt).getTime())
   ) return null
-  return { entry: entry as StoredHandoff, createdAt: typeof entry.createdAt === 'number' && Number.isFinite(entry.createdAt) ? entry.createdAt : 0 }
+  return { entry: entry as StoredHandoff, createdAt: entry.createdAt }
 }
 
 export interface ResolvedHandoff {

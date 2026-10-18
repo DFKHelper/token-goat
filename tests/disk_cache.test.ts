@@ -157,32 +157,6 @@ describe('pruneBlobs', () => {
     expect(remaining.sort()).toEqual(['id3.json', 'id4.json'])
   })
 
-  // HAND-DERIVED: five blobs one minute apart, the three oldest aged past the cutoff; counts follow from the arithmetic in each assertion, no clock is waited on.
-  it('keeps a retained blob through the age and count rules while it still takes a slot of the count budget', () => {
-    // Store all five before aging any: each store runs its own prune, which would drop an already-aged file.
-    for (let i = 0; i < 5; i++) storeBlob('sub', `id${i}`, { i }, { maxCount: 1000 })
-    for (let i = 0; i < 5; i++) {
-      const t = new Date(Date.now() - (i < 3 ? 48 * 3600 * 1000 : 0) - (5 - i) * 60_000)
-      fs.utimesSync(path.join(tmpHome, 'sub', `id${i}.json`), t, t)
-    }
-    // id0..id2 are past the 24 h age; id0 is retained, so id1 and id2 go by age. Of the fresh id3 and id4 only one slot is left once the retained id0 takes one of the two, so the older id3 goes by count.
-    const removed = pruneBlobs('sub', 2, 24 * 3600 * 1000, Number.POSITIVE_INFINITY, undefined, new Set(['id0']))
-    expect(removed).toBe(3)
-    expect(fs.readdirSync(path.join(tmpHome, 'sub')).sort()).toEqual(['id0.json', 'id4.json'])
-  })
-
-  it('keeps a retained blob through the byte budget and evicts the others to make room', () => {
-    for (let i = 0; i < 3; i++) {
-      storeBlob('sub', `big${i}`, { pad: 'x'.repeat(1000) }, { maxCount: 1000 })
-      const p = path.join(tmpHome, 'sub', `big${i}.json`)
-      const t = new Date(Date.now() - (3 - i) * 60_000)
-      fs.utimesSync(p, t, t)
-    }
-    // Each blob is a little over 1000 bytes, so a 2500-byte budget holds two; the retained oldest one stays and only the newest other fits beside it.
-    pruneBlobs('sub', 200, 24 * 3600 * 1000, 2500, undefined, new Set(['big0']))
-    expect(fs.readdirSync(path.join(tmpHome, 'sub')).sort()).toEqual(['big0.json', 'big2.json'])
-  })
-
   it('returns 0 for a missing subdir', () => {
     expect(pruneBlobs('never', 10, 1000)).toBe(0)
   })

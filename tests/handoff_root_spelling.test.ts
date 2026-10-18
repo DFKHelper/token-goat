@@ -8,7 +8,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
-import { compressText, createHandoff, resolveHandoff, resolveHandoffDetailed, retrieveText } from '../src/content_store.js'
+import { CONTENT_MAX_BYTES, CONTENT_MAX_ITEMS, compressText, createHandoff, isContentExpired, resolveHandoff, resolveHandoffDetailed, retrieveText } from '../src/content_store.js'
 import { shortFingerprint } from '../src/fingerprint.js'
 import { canonicalize } from '../src/path_containment.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -177,49 +177,112 @@ describe.skipIf(!isWin)('the incident through the built bundle', () => {
   })
 })
 
-function ageBlob(id: string): void {
-  const aged = new Date(Date.now() - 48 * 3600 * 1000)
-  fs.utimesSync(path.join(contentDir(), `${id}.json`), aged, aged)
+// Age a blob without waiting: the cache's age rule reads the file's mtime.
+function setMtime(id: string, when: number): void {
+  const t = new Date(when)
+  fs.utimesSync(path.join(contentDir(), `${id}.json`), t, t)
 }
 
-describe('content a live handoff names', () => {
-  it('survives a prune that removes unreferenced content of the same age, and stays retrievable', () => {
+function contentFiles(): string[] {
+  return fs.readdirSync(contentDir()).filter((file) => file.endsWith('.json'))
+}
+
+// A handoff whose content blob is the oldest thing in the cache while the record that holds the text is the newest, so the normal eviction order takes the blob first and leaves the record.
+function createHandoffWithOldestBlob(): { contentId: string; text: string } {
+  const text = 'the plan, written once and stored in full by the handoff'
+  const handoff = createHandoff('plan', text, projectDir)
+  setMtime(handoff.contentId, Date.now() - 2 * 3600 * 1000)
+  setMtime(handoff.id, Date.now() + 3600 * 1000)
+  return { contentId: handoff.contentId, text }
+}
+
+describe('content a handoff names gets no exemption from the cache rules', () => {
+  // HAND-DERIVED: CONTENT_MAX_ITEMS - 1 fillers plus the handoff's record and blob make one more file than the count budget, so exactly the oldest one (the blob, two hours old) is evicted.
+  it('evicts by the normal order at the count budget and still answers retrieve from the handoff', () => {
+    const { contentId, text } = createHandoffWithOldestBlob()
+    for (let i = 0; i < CONTENT_MAX_ITEMS - 1; i++) compressText(`filler ${i}`)
+
+    expect(contentFiles().length).toBe(CONTENT_MAX_ITEMS)
+    expect(fs.existsSync(path.join(contentDir(), `${contentId}.json`))).toBe(false)
+    expect(retrieveText(contentId)).toBe(text)
+  })
+
+  // HAND-DERIVED: 70 fillers of 480000 characters weigh about 33.6 MB, above the 32 MiB (33554432 byte) budget, so the prune must evict; the two-hour-old blob is first in line.
+  it('evicts by the normal order at the byte budget and still answers retrieve from the handoff', () => {
+    const { contentId, text } = createHandoffWithOldestBlob()
+    for (let i = 0; i < 70; i++) compressText(`${String(i).padStart(4, '0')}${'x'.repeat(480_000)}`)
+
+    const total = contentFiles().reduce((sum, file) => sum + fs.statSync(path.join(contentDir(), file)).size, 0)
+    expect(total).toBeLessThanOrEqual(CONTENT_MAX_BYTES)
+    expect(fs.existsSync(path.join(contentDir(), `${contentId}.json`))).toBe(false)
+    expect(retrieveText(contentId)).toBe(text)
+  })
+
+  it('answers retrieve of the handoff contentId from the handoff once the blob is past the age limit', () => {
+    const { contentId, text } = createHandoffWithOldestBlob()
+    setMtime(contentId, Date.now() - 48 * 3600 * 1000)
+
+    expect(retrieveText(contentId)).toBe(text)
+    expect(isContentExpired(contentId)).toBe(false)
+  })
+
+  it('lets an id merely quoted in a handoff text expire on the normal rules', () => {
     const quoted = compressText('content quoted in the handoff text')
-    const unreferenced = compressText('content nothing points at')
-    const handoff = createHandoff('refs', `see ${quoted.id} for the table`, projectDir)
-    for (const id of [quoted.id, unreferenced.id, handoff.contentId]) ageBlob(id)
+    createHandoff('refs', `see ${quoted.id} for the table`, projectDir)
+    setMtime(quoted.id, Date.now() - 48 * 3600 * 1000)
 
+    expect(retrieveText(quoted.id)).toBeNull()
+    expect(isContentExpired(quoted.id)).toBe(true)
     compressText('a later write that runs the prune')
-
-    expect(fs.existsSync(path.join(contentDir(), `${handoff.contentId}.json`))).toBe(true)
-    expect(fs.existsSync(path.join(contentDir(), `${quoted.id}.json`))).toBe(true)
-    expect(fs.existsSync(path.join(contentDir(), `${unreferenced.id}.json`))).toBe(false)
-    expect(retrieveText(quoted.id)).toBe('content quoted in the handoff text')
-    expect(retrieveText(unreferenced.id)).toBeNull()
-  })
-
-  it('is no longer held once the handoff that names it has expired', () => {
-    const quoted = compressText('content quoted in a handoff that expires')
-    const handoff = createHandoff('refs', `see ${quoted.id}`, projectDir)
-    for (const id of [quoted.id, handoff.contentId, handoff.id]) ageBlob(id)
-
-    compressText('a later write that runs the prune')
-
     expect(fs.existsSync(path.join(contentDir(), `${quoted.id}.json`))).toBe(false)
-    expect(fs.existsSync(path.join(contentDir(), `${handoff.id}.json`))).toBe(false)
   })
 
-  it('survives the same prune when the lost ids were reported by the built bundle', () => {
+  it('says through the built bundle that an aged quoted id expired, and not so for an id never stored', () => {
     const quoted = runCli(['compress-text', 'content a handoff quotes'], projectDir)
     expect(quoted.status, quoted.stderr).toBe(0)
-    const quotedId = /tg_[0-9a-f]{16}/.exec(quoted.stdout)?.[0]
-    expect(quotedId).toBeDefined()
-    const created = runCli(['handoff-create', 'refs', `see ${quotedId}`], projectDir)
-    expect(created.status, created.stderr).toBe(0)
-    ageBlob(quotedId as string)
-    expect(runCli(['compress-text', 'a later write that runs the prune'], projectDir).status).toBe(0)
-    const retrieved = runCli(['retrieve', quotedId as string], projectDir)
-    expect(retrieved.status, retrieved.stderr).toBe(0)
-    expect(retrieved.stdout).toContain('content a handoff quotes')
+    const quotedId = /tg_[0-9a-f]{16}/.exec(quoted.stdout)?.[0] as string
+    expect(runCli(['handoff-create', 'refs', `see ${quotedId}`], projectDir).status).toBe(0)
+    setMtime(quotedId, Date.now() - 48 * 3600 * 1000)
+
+    const expired = runCli(['retrieve', quotedId], projectDir)
+    expect(expired.status).not.toBe(0)
+    expect(expired.stderr).toContain(`${quotedId} expired`)
+    const never = runCli(['retrieve', 'tg_0000000000000000'], projectDir)
+    expect(never.status).not.toBe(0)
+    expect(never.stderr).toContain('no token-goat content for id: tg_0000000000000000')
+    expect(never.stderr).not.toContain('expired:')
+  })
+})
+
+describe('a stored handoff record is validated when it is loaded', () => {
+  function tamper(handoffId: string, change: Record<string, unknown>): void {
+    const file = path.join(contentDir(), `${handoffId}.json`)
+    const record = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>
+    fs.writeFileSync(file, JSON.stringify({ ...record, ...change }))
+  }
+
+  // HAND-DERIVED: each value is outside what createHandoff stores (tg_ plus 16 hex digits; a createdAt that new Date accepts, at most 8.64e15 ms from the epoch).
+  it.each([
+    ['a contentId that is not an id', { contentId: 'tg_ not an id' }],
+    ['a contentId with control characters', { contentId: 'tg_0123456789abcdef\u001b[31m' }],
+    ['a createdAt past the Date range', { createdAt: 1e20 }],
+    ['a createdAt that is a string', { createdAt: '2026-10-18' }],
+    ['a missing createdAt', { createdAt: undefined }],
+  ])('skips a record with %s like a corrupt one', (_label, change) => {
+    const handoff = createHandoff('plan', 'text of the plan', projectDir)
+    expect(resolveHandoff('plan', { projectRoot: projectDir, full: true })).toBe('text of the plan')
+    tamper(handoff.id, change)
+
+    expect(resolveHandoff('plan', { projectRoot: projectDir, full: true })).toBeNull()
+  })
+
+  it.skipIf(!isWin)('resolves from the current record without a note when a legacy copy carries a createdAt past the Date range', () => {
+    createHandoff('plan', 'the current text', projectDir)
+    const legacy = writeLegacyRecord(backslashSpelling(projectDir), 'plan', 'an older text', 1e20)
+
+    const resolved = resolveHandoffDetailed('plan', { projectRoot: projectDir, full: true })
+    expect(resolved?.result).toBe('the current text')
+    expect(resolved?.olderCopies).toEqual([])
+    expect(fs.existsSync(legacy.file)).toBe(true)
   })
 })

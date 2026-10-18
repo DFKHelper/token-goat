@@ -75,7 +75,7 @@ export function storeBlob(
   subdir: string,
   id: string,
   value: unknown,
-  opts: { maxCount?: number; maxAgeMs?: number; maxBytes?: number; maxBytesPerItem?: number; retain?: ReadonlySet<string> } = {},
+  opts: { maxCount?: number; maxAgeMs?: number; maxBytes?: number; maxBytesPerItem?: number } = {},
 ): boolean {
   const p = blobPath(subdir, id)
   if (!p) return false
@@ -112,7 +112,6 @@ export function storeBlob(
     opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS,
     opts.maxBytes ?? defaults.maxBytes,
     p,
-    opts.retain,
   )
   return true
 }
@@ -167,9 +166,8 @@ export function pruneBlobs(
   maxAgeMs: number = DEFAULT_MAX_AGE_MS,
   maxBytes: number = Number.POSITIVE_INFINITY,
   protectedPath?: string,
-  retain?: ReadonlySet<string>,
 ): number {
-  return pruneBlobDir(blobDir(subdir), maxCount, maxAgeMs, maxBytes, protectedPath, retain)
+  return pruneBlobDir(blobDir(subdir), maxCount, maxAgeMs, maxBytes, protectedPath)
 }
 
 /** Same policy as {@link pruneBlobs}, but against an absolute directory rather than a subdir of the current {@link tokenGoatHome}. Lets a sweep reach cache directories under a *second* root (see {@link sweepCacheRoots}) without pretending they live under this process's home. The age cutoff applies to every file in the directory, not only `.json` blobs: a cache dir also accumulates companions and debris that no blob id addresses -- `.txt`/`.gz` payloads written by older versions, `.tmp` files from an interrupted atomic write, `.lock` files whose holder died. None of those were ever removed by anything, so they survived every prune forever. The count and byte budgets still consider only `.json` entries, since those are the addressable blobs the budgets are expressed in. */
@@ -179,7 +177,6 @@ export function pruneBlobDir(
   maxAgeMs: number = DEFAULT_MAX_AGE_MS,
   maxBytes: number = Number.POSITIVE_INFINITY,
   protectedPath?: string,
-  retain?: ReadonlySet<string>,
 ): number {
   let removed = 0
   try {
@@ -188,8 +185,6 @@ export function pruneBlobDir(
     let kept: Array<[string, number, number]> = []
     // The blob just written by this storeBlob() call, if any — never a candidate for eviction in this pass, no matter how the age/count/byte-budget policies below would otherwise treat it.
     let protectedEntry: [string, number, number] | undefined
-    // Blobs the caller names in `retain` (by id, the file name without `.json`): exempt from the age, count and byte eviction below, but still counted against the count and byte budgets so they squeeze the evictable blobs rather than growing the directory unseen.
-    const retained: Array<[string, number, number]> = []
     for (const file of fs.readdirSync(dir)) {
       const full = path.join(dir, file)
       let stat: fs.Stats
@@ -201,10 +196,6 @@ export function pruneBlobDir(
       if (!stat.isFile()) continue
       if (protectedPath !== undefined && full === protectedPath) {
         protectedEntry = [full, stat.mtimeMs, stat.size]
-        continue
-      }
-      if (retain !== undefined && file.endsWith('.json') && retain.has(file.slice(0, -5))) {
-        retained.push([full, stat.mtimeMs, stat.size])
         continue
       }
       if (stat.mtimeMs < cutoff) {
@@ -219,7 +210,7 @@ export function pruneBlobDir(
       }
     }
     // The protected entry still occupies one of the maxCount slots.
-    const countBudget = Math.max(0, maxCount - (protectedEntry ? 1 : 0) - retained.length)
+    const countBudget = protectedEntry ? Math.max(0, maxCount - 1) : maxCount
     if (kept.length > countBudget) {
       kept.sort((a, b) => a[1] - b[1])
       const excess = kept.slice(0, kept.length - countBudget)
@@ -235,7 +226,7 @@ export function pruneBlobDir(
     }
     if (Number.isFinite(maxBytes)) {
       kept.sort((a, b) => a[1] - b[1])
-      let total = kept.reduce((sum, [, , size]) => sum + size, 0) + (protectedEntry ? protectedEntry[2] : 0) + retained.reduce((sum, [, , size]) => sum + size, 0)
+      let total = kept.reduce((sum, [, , size]) => sum + size, 0) + (protectedEntry ? protectedEntry[2] : 0)
       while (total > maxBytes && kept.length > 0) {
         const oldest = kept.shift()
         if (!oldest) break
