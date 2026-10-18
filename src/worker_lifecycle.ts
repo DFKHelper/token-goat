@@ -195,7 +195,7 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
   }
 }
 
-/** Which kind of process a pid file's pid is right now: this install's worker daemon, some other live process, no process, or unknown because the query itself failed. */
+/** Which kind of process a pid file's pid is right now: this install's worker daemon, some other live process, no process, or unknown because the query failed or the system showed no command line for a process that exists. */
 type DaemonIdentity = 'worker' | 'other' | 'gone' | 'unknown'
 
 export interface StopWorkerOptions {
@@ -205,10 +205,11 @@ export interface StopWorkerOptions {
   readonly entryScript?: string
 }
 
-/** A pid file is a claim, not proof: after a crash the number can belong to an unrelated process, so the pid is ended only when its command line is this install's `--worker-daemon` (the check retireDisplacedWorker makes). A failed query is its own answer and is never read as "gone". */
+/** A pid file is a claim, not proof: after a crash the number can belong to an unrelated process, so the pid is ended only when its command line is this install's `--worker-daemon` (the check retireDisplacedWorker makes). A failed query is its own answer and is never read as "gone"; a process that exists but shows an empty command line (Windows hides it from a normal shell when the process is elevated) proves nothing about who it is, so it is never read as another program either. */
 function judgeDaemonIdentity(pid: number, opts: StopWorkerOptions): DaemonIdentity {
   const answer = (opts.queryCommandLine ?? queryProcessCommandLine)(pid)
   if (answer.status !== 'found') return answer.status === 'gone' ? 'gone' : 'unknown'
+  if (answer.commandLine.trim() === '') return 'unknown'
   return isResidentOfInstall(answer.commandLine, opts.entryScript ?? daemonEntryScript(), ['worker']) ? 'worker' : 'other'
 }
 
@@ -257,7 +258,7 @@ export function stopWorkerDetailed(dir: string = dataDir(), expectedPid?: number
   if (running) {
     // Even a lease can name a reused pid (the daemon crashed inside the heartbeat window, or the pid file is a fresh claim over a dead one), so the command line decides, and only a confirmed worker loses its tree.
     const identity = judgeDaemonIdentity(pid, opts)
-    // 'unknown' is the query itself failing (the program missing, ENOENT, as `ps` is on a minimal image; a timeout; or an unexpected exit status), which proves nothing about who owns the pid. This point is reached only for a live pid with a lease proof (a fresh heartbeat naming it, or a pid file younger than the startup grace), so the stop ends that one process, with no tree: failing closed would make `worker stop` do nothing wherever `ps` is missing, and the tree kill is kept for a confirmed worker.
+    // 'unknown' is the query itself failing (the program missing, ENOENT, as `ps` is on a minimal image; a timeout; or an unexpected exit status) or the system showing no command line for the process (an elevated worker asked from a normal shell), which proves nothing about who owns the pid. This point is reached only for a live pid with a lease proof (a fresh heartbeat naming it, or a pid file younger than the startup grace), so the stop ends that one process, with no tree: failing closed would make `worker stop` do nothing wherever `ps` is missing, and the tree kill is kept for a confirmed worker.
     if (identity === 'worker') outcome = endDaemon(pid, 'tree')
     else if (identity === 'unknown') outcome = endDaemon(pid, 'single')
   }
