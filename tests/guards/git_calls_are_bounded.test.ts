@@ -116,9 +116,13 @@ describe('git calls are bounded', () => {
   })
 
   it('an omitted timeout reaches spawnSync as the default, an explicit one wins, GIT_UNBOUNDED sends none', () => {
+    // No git starts: the stub answers with a clean exit, so the 1234 ms limit is read from the options only.
+    const clean = { status: 0, stdout: '', stderr: '', output: ['', '', ''], pid: 0, signal: null }
     const timeoutOf = (opts?: Parameters<typeof runGit>[1]): unknown => {
       vi.mocked(childProcess.spawnSync).mockClear()
+      vi.mocked(childProcess.spawnSync).mockImplementationOnce(() => clean as never)
       runGit(['--version'], opts)
+      expect(vi.mocked(childProcess.spawnSync).mock.results[0]?.value, 'a real git was started').toBe(clean)
       expect(vi.mocked(childProcess.spawnSync).mock.calls, 'runGit must make exactly one spawn').toHaveLength(1)
       const spawnOpts = (vi.mocked(childProcess.spawnSync).mock.calls[0] as unknown[])[2] as Record<string, unknown> | undefined
       return spawnOpts?.['timeout']
