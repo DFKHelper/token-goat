@@ -4,7 +4,8 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFile
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { runTeardown } from './helpers/strict_teardown.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
@@ -52,6 +53,11 @@ function dirtyQueue(): string[] {
 
 beforeAll(() => {
   homeDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-home-'))
+})
+
+// Every spawned CLI has exited by now (spawnSync), so nothing holds the index open and the removal needs no retry. The projects are indexableDir() ones, which the helper removes with its run root.
+afterAll(() => {
+  runTeardown([() => rmSync(homeDir, { recursive: true, force: true })])
 })
 
 beforeEach(() => {
@@ -192,6 +198,13 @@ describe('reconcile in a directory git cannot enumerate', () => {
     expect(indexed.code, 'indexing the non-git fixture failed').toBe(0)
   })
 
+  afterAll(() => {
+    runTeardown([
+      () => rmSync(dir, { recursive: true, force: true }),
+      () => rmSync(home, { recursive: true, force: true }),
+    ])
+  })
+
   it('has a populated index, so the assertions below are testing something', () => {
     // Calibration, and the exact trap this fixture invites: with an empty index there is nothing to mistake for a deletion, and a broken guard would look perfect.
     const r = runHere(['symbol', 'alpha'])
@@ -222,7 +235,7 @@ describe('reconcile in a directory git cannot enumerate', () => {
     expect(r.out, 'the reason nothing was compared must be stated').toMatch(/git listed no files/)
   })
 
-  // It deletes one of the two fixture files and puts it back (bytes and mtime) on every path, because the other cases in this describe need both live and must not depend on this one running last. The empty-enumeration state used to suppress the deletion pass outright, so a file deleted from a non-git root kept its index row forever -- found on this machine as rows for files gone from a scratch directory that `token-goat project prune` also leaves behind, since that command's retroactive cleanup targets system-temp paths.
+  // It deletes one of the two fixture files and puts it back (bytes and mtime) in a `finally`, so a throw from the run or the parse still restores it and a failing case cannot leave the shared fixture short a file, because the other cases in this describe need both live and must not depend on this one running last. The empty-enumeration state used to suppress the deletion pass outright, so a file deleted from a non-git root kept its index row forever -- found on this machine as rows for files gone from a scratch directory that `token-goat project prune` also leaves behind, since that command's retroactive cleanup targets system-temp paths.
   it('reports the file that left disk and leaves the one still on disk alone', () => {
     const bPath = join(dir, 'b.ts')
     const bBytes = readFileSync(bPath)

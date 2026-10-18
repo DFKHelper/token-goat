@@ -7,6 +7,8 @@ import { join } from 'node:path'
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
+import { runTeardown } from '../helpers/strict_teardown.js'
+
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
 let projectDir: string
@@ -62,8 +64,10 @@ beforeAll(() => {
 })
 
 afterAll(() => {
-  rmSync(projectDir, { recursive: true, force: true })
-  rmSync(homeDir, { recursive: true, force: true })
+  runTeardown([
+    () => rmSync(projectDir, { recursive: true, force: true }),
+    () => rmSync(homeDir, { recursive: true, force: true }),
+  ])
 })
 
 beforeEach(() => {

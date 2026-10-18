@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { getDb } from '../src/db.js'
 import { findGlobalDb } from './helpers/find_global_db.js'
+import { runTeardown } from './helpers/strict_teardown.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
@@ -56,13 +57,12 @@ beforeEach(() => {
   expect(cli(['index', '.']).code, 'indexing the fixture failed').toBe(0)
 })
 
-// Remove what beforeEach made, on every path, each removal independent: a failure removing the project dir must not leave the home dir behind (the nested finally still runs it, and the first error still surfaces). No env is changed here: both dirs reach the CLI through the per-spawn env only.
+// Remove what beforeEach made, on every path, each removal independent: a failure removing the project dir does not skip the home dir, and runTeardown throws one error carrying every failure after the last step (a throw from a `finally` would replace the earlier one, not add to it). No env is changed here: both dirs reach the CLI through the per-spawn env only.
 afterEach(() => {
-  try {
-    rmSync(projectDir, { recursive: true, force: true })
-  } finally {
-    rmSync(homeDir, { recursive: true, force: true })
-  }
+  runTeardown([
+    () => rmSync(projectDir, { recursive: true, force: true }),
+    () => rmSync(homeDir, { recursive: true, force: true }),
+  ])
 })
 
 describe('session_start reconciliation', () => {
@@ -106,8 +106,12 @@ describe('session_start reconciliation', () => {
   it('says an upgrade-stale file was indexed by an older version, not changed outside this session', () => {
     expect(sessionStartContext(), 'calibration: the up-to-date index still reports drift').not.toContain('reindexing')
     const db = getDb(findGlobalDb(homeDir) as string)
-    db.prepare("UPDATE files SET parser_sha = '0000000000000000' WHERE path LIKE '%alpha.ts'").run()
-    db.close()
+    try {
+      db.prepare("UPDATE files SET parser_sha = '0000000000000000' WHERE path LIKE '%alpha.ts'").run()
+    } finally {
+      // Closed on every path: a throwing statement must not leave the file open for the afterEach removal to fail on (Windows refuses), which would bury this case's own error.
+      db.close()
+    }
 
     const context = sessionStartContext()
     expect(context).toContain('reindexing 1 file unchanged on disk but indexed by an older version of token-goat')
