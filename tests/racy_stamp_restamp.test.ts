@@ -207,22 +207,20 @@ describe('restampVerifiedUnchanged at the tick boundary', () => {
 
   it('stamps both columns when the mtime is exactly one tick older than now', () => {
     indexWith('edge.ts', OLD, OLD)
-    const stored = row('edge.ts')
     const indexedPath = (getDb(dbPath).prepare('SELECT path FROM files WHERE path LIKE ?').get('%/edge.ts') as { path: string }).path
     const sha = (getDb(dbPath).prepare('SELECT sha FROM files WHERE path = ?').get(indexedPath) as { sha: string }).sha
 
-    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, rowMtime: stored.mtime, stamp: { mtimeSec: NOW - 2, clockSec: NOW } }])
+    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, stamp: { mtimeSec: NOW - 2, clockSec: NOW } }])
 
     expect(row('edge.ts')).toEqual({ mtime: NOW - 2, indexed_at: NOW })
   })
 
   it('records only a moved mtime when the mtime is less than a tick older than now', () => {
     indexWith('young.ts', OLD, OLD)
-    const stored = row('young.ts')
     const indexedPath = (getDb(dbPath).prepare('SELECT path FROM files WHERE path LIKE ?').get('%/young.ts') as { path: string }).path
     const sha = (getDb(dbPath).prepare('SELECT sha FROM files WHERE path = ?').get(indexedPath) as { sha: string }).sha
 
-    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, rowMtime: stored.mtime, stamp: { mtimeSec: NOW - 1.9, clockSec: NOW } }])
+    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, stamp: { mtimeSec: NOW - 1.9, clockSec: NOW } }])
 
     expect(row('young.ts')).toEqual({ mtime: NOW - 1.9, indexed_at: OLD })
   })
@@ -232,7 +230,7 @@ describe('restampVerifiedUnchanged at the tick boundary', () => {
     const stored = row('moved.ts')
     const indexedPath = (getDb(dbPath).prepare('SELECT path FROM files WHERE path LIKE ?').get('%/moved.ts') as { path: string }).path
 
-    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha: 'not-the-row-sha', rowMtime: stored.mtime, stamp: { mtimeSec: NOW - 100, clockSec: NOW } }])
+    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha: 'not-the-row-sha', stamp: { mtimeSec: NOW - 100, clockSec: NOW } }])
 
     expect(row('moved.ts')).toEqual(stored)
   })
@@ -298,8 +296,8 @@ describe('a clock that stepped back after the row was indexed', () => {
     const stamp = { mtimeSec: SAME_TICK, clockSec: CLOCK_SEC }
 
     restampVerifiedUnchanged(dbPath, [
-      { ...pathOf('before.ts'), rowMtime: SAME_TICK, stamp },
-      { ...pathOf('never.ts'), rowMtime: OLD, stamp },
+      { ...pathOf('before.ts'), stamp },
+      { ...pathOf('never.ts'), stamp },
     ])
 
     expect(row('before.ts').indexed_at).toBe(CLOCK_SEC - 5)

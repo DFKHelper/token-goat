@@ -41,8 +41,6 @@ interface VerifiedUnchangedFile {
   readonly indexedPath: string
   /** The sha the hash computed, and the row must still hold for the write to land. */
   readonly sha: string
-  /** The `files.mtime` the row holds now, in seconds. */
-  readonly rowMtime: number
   /** The file's mtime and the clock, both read before the bytes were hashed. */
   readonly stamp: PreHashStamp
 }
@@ -334,7 +332,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     if (diskSha === entry.sha) {
       if (!mtimeEqualsRow(entry, mtimeMs)) mtimeOnly++
       // The hash proved the bytes unchanged, so it is recorded once the sweep ends: without that a file indexed inside the tick of its own edit, or one whose mtime moved over identical bytes, is hashed again on every sweep. The stat above and the clock read at the top of the iteration are the ones taken before the hash.
-      verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, stamp: { mtimeSec: mtimeMs / 1000, clockSec } })
+      verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, stamp: { mtimeSec: mtimeMs / 1000, clockSec } })
       continue
     }
     changed.push(file)
@@ -376,7 +374,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       if (diskSha === entry.sha) {
         if (!mtimeEqualsRow(entry, st.mtimeMs)) mtimeOnly++
         // Same proof, same record as the scan above; `st` and the clock were read before the hash.
-        verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, stamp: { mtimeSec: st.mtimeMs / 1000, clockSec } })
+        verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, stamp: { mtimeSec: st.mtimeMs / 1000, clockSec } })
       } else if (diskSha !== null) changed.push(entry.filePath)
     }
   }
