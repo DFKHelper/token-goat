@@ -285,6 +285,8 @@ export interface ResolvedHandoff {
   result: CompressionResult | string
   // Copies of the same handoff kept under a previous root spelling whose text differs from the one returned, newest first. Reading never deletes or rewrites them.
   olderCopies: Array<{ createdAt: number; contentId: string }>
+  // System error codes (or SyntaxError) of records under this handoff's lookup ids that are on disk but could not be read, so the text returned may not be the latest. Empty when every record read.
+  unreadable: string[]
 }
 
 // Looks the handoff up under the current id and under every legacy id (lookup of both rather than migrate-on-read: a read that wrote would refresh the old record's age and could overwrite a record the user still wants). When several hold the name, the newer stored timestamp wins and the current id wins a tie.
@@ -292,7 +294,13 @@ export function resolveHandoffDetailed(name: string, opts: { projectRoot?: strin
   const root = normalizeProjectRoot(opts.projectRoot)
   const identity = handoffRootIdentity(root)
   const found: FoundHandoff[] = []
+  const unreadable: string[] = []
   for (const id of handoffLookupIds(name, root)) {
+    const read = readBlob(CONTENT_SUBDIR, id)
+    if (read.status === 'unreadable') {
+      unreadable.push(read.code)
+      continue
+    }
     const hit = loadHandoffUnder(id, name, identity)
     if (hit !== null) found.push(hit)
   }
@@ -305,7 +313,7 @@ export function resolveHandoffDetailed(name: string, opts: { projectRoot?: strin
     .filter((hit) => hit !== best && hit.entry.text !== text)
     .sort((a, b) => b.createdAt - a.createdAt)
     .map((hit) => ({ createdAt: hit.createdAt, contentId: hit.entry.contentId }))
-  return { result: opts.full === true ? text : compressText(text), olderCopies }
+  return { result: opts.full === true ? text : compressText(text), olderCopies, unreadable }
 }
 
 export function resolveHandoff(name: string, opts: { projectRoot?: string; full?: boolean } = {}): CompressionResult | string | null {
@@ -329,6 +337,12 @@ export function describeMissingHandoff(name: string, projectRoot?: string): stri
   return storedAt === null
     ? `no local handoff named ${echoedValue(name)} in this project`
     : `handoff ${echoedValue(name)} expired: it was stored ${new Date(storedAt).toISOString()}, which is past the local cache's age limit`
+}
+
+/** The note for a handoff record that is on disk under one of its lookup ids but could not be read, or null when none was. The text shown is then whatever else was readable, which may be older. */
+export function unreadableRecordNote(name: string, unreadable: ResolvedHandoff['unreadable']): string | null {
+  if (unreadable.length === 0) return null
+  return `note: a stored record of handoff ${echoedValue(name)} could not be read (${[...new Set(unreadable)].join(', ')}); the text shown may not be the latest`
 }
 
 /** The note for copies of a handoff kept under a previous root spelling, or null when there are none. `readWith` words how the newest differing copy is read back from its content id, which differs between the CLI and an MCP client. */

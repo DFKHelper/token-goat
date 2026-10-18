@@ -8,7 +8,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
-import { CONTENT_MAX_BYTES, CONTENT_MAX_ITEMS, compressText, createHandoff, describeMissingHandoff, describeUnreadableContent, isContentExpired, resolveHandoff, resolveHandoffDetailed, retrieveText } from '../src/content_store.js'
+import { CONTENT_MAX_BYTES, CONTENT_MAX_ITEMS, compressText, createHandoff, describeMissingHandoff, describeUnreadableContent, isContentExpired, resolveHandoff, resolveHandoffDetailed, retrieveText, unreadableRecordNote } from '../src/content_store.js'
 import { shortFingerprint } from '../src/fingerprint.js'
 import { canonicalize } from '../src/path_containment.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -584,5 +584,43 @@ describe('a content record that exists but cannot be read is not reported as mis
     expect(unreadable.stderr).not.toContain('no token-goat content')
     const never = runCli(['retrieve', `tg_${shortFingerprint('never stored')}`], projectDir)
     expect(never.stderr).toContain('no token-goat content for id')
+  })
+})
+
+// FORMAT-DERIVED: the legacy copy has the shape of origin/main 3913ac9c2 src/content_store.ts createHandoff (kind, id, name, projectRoot, contentId, text, createdAt; id hashed from the root as spelled), written with writeLegacyRecord; the current-id record is the one createHandoff wrote, overwritten with text that is not JSON.
+describe('an unreadable current record with a readable older copy', () => {
+  it('serves the older text and says a stored record could not be read', () => {
+    const { real, link } = linkedRoots()
+    const current = createHandoff('plan', 'the newer text', link)
+    fs.writeFileSync(path.join(contentDir(), `${current.id}.json`), '{not json', 'utf8')
+    writeLegacyRecord(canonicalize(fs.realpathSync.native(real)), 'plan', 'the older text', Date.now() - 60_000)
+
+    const resolved = resolveHandoffDetailed('plan', { projectRoot: link, full: true })
+
+    expect(resolved?.result).toBe('the older text')
+    expect(resolved?.unreadable).toEqual(['SyntaxError'])
+    expect(unreadableRecordNote('plan', resolved?.unreadable ?? [])).toBe('note: a stored record of handoff "plan" could not be read (SyntaxError); the text shown may not be the latest')
+  })
+
+  it('has nothing to report when every record reads', () => {
+    const { real, link } = linkedRoots()
+    createHandoff('plan', 'the newer text', link)
+    writeLegacyRecord(canonicalize(fs.realpathSync.native(real)), 'plan', 'the older text', Date.now() - 60_000)
+
+    expect(resolveHandoffDetailed('plan', { projectRoot: link, full: true })?.unreadable).toEqual([])
+    expect(unreadableRecordNote('plan', [])).toBeNull()
+  })
+
+  it.skipIf(!isWin)('prints the older text on stdout and the note on stderr through the built bundle', () => {
+    expect(runCli(['handoff-create', 'plan', 'the newer text'], projectDir).status).toBe(0)
+    const id = fs.readdirSync(contentDir()).find((file) => file.startsWith('tg_handoff_'))?.slice(0, -5) as string
+    fs.writeFileSync(path.join(contentDir(), `${id}.json`), '{not json', 'utf8')
+    writeLegacyRecord(forwardSpelling(projectDir), 'plan', 'the older text', Date.now() - 60_000)
+
+    const resolved = runCli(['handoff-resolve', '--full', '--', 'plan'], projectDir)
+
+    expect(resolved.status, resolved.stderr).toBe(0)
+    expect(resolved.stdout.trim()).toBe('the older text')
+    expect(resolved.stderr).toContain('note: a stored record of handoff "plan" could not be read (SyntaxError); the text shown may not be the latest')
   })
 })

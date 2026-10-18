@@ -32,6 +32,7 @@ import {
   olderCopyNote,
   resolveHandoffDetailed,
   retrieveText,
+  unreadableRecordNote,
   CONTENT_MAX_INPUT_CHARS,
 } from './content_store.js'
 import { resolveProjectRoot } from './project.js'
@@ -1107,13 +1108,14 @@ export async function createMcpServer(): Promise<McpServer> {
         ...(args.full === true ? { full: true } : {}),
       })
       if (resolved === null) return toCallToolResult({ text: describeMissingHandoff(args.name, projectRoot), code: 1 })
-      const { result, olderCopies } = resolved
+      const { result, olderCopies, unreadable } = resolved
       const answer = typeof result === 'string'
         ? toRawCallToolResult({ text: result, code: 0 })
         : toCallToolResult({ text: displaySafeJson(compressionPayload(result)), code: 0 })
       // A second text block, so the first stays exactly the handoff; the CLI prints the same note on stderr.
       const note = olderCopyNote(args.name, olderCopies, (contentId) => (mcpToolListed('retrieve_text') ? `the retrieve_text tool with id ${contentId}` : `content id ${contentId}`))
-      return note === null ? answer : { ...answer, content: [...answer.content, { type: 'text', text: note }] }
+      const notes = [note, unreadableRecordNote(args.name, unreadable)].filter((n): n is string => n !== null)
+      return notes.length === 0 ? answer : { ...answer, content: [...answer.content, ...notes.map((text) => ({ type: 'text' as const, text }))] }
     },
   )
 

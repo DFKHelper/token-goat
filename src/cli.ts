@@ -82,7 +82,7 @@ import { runBenchCommand } from './cli_bench.js'
 import { expandGlobs } from './cli_diagnostics.js'
 export { expandGlobs }
 import { emitErr } from './emit.js'
-import { compressText, createHandoff, describeMissingHandoff, describeUnreadableContent, isContentExpired, olderCopyNote, resolveHandoffDetailed, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
+import { compressText, createHandoff, describeMissingHandoff, describeUnreadableContent, isContentExpired, olderCopyNote, resolveHandoffDetailed, retrieveText, unreadableRecordNote, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
 import { CliError, clearCliInvocation, formatCommandError, formatFailedResultText, formatParseError, setCliInvocation } from './command_error.js'
 
 // Defined in a leaf so command modules cli.ts imports can render an error the same way without importing cli.ts back; re-exported here for the many modules that already take CliError from cli.js.
@@ -161,10 +161,12 @@ function cmdHandoffCreate(name: string, text: string | undefined, opts: { file?:
 function cmdHandoffResolve(name: string, opts: { full?: boolean }): void {
   const resolved = resolveHandoffDetailed(name, { full: opts.full === true })
   if (resolved === null) throw new CliError(describeMissingHandoff(name))
-  const { result, olderCopies } = resolved
+  const { result, olderCopies, unreadable } = resolved
   // On stderr so stdout stays exactly the handoff; the newest differing older copy is the one worth reading, and its content id is what `retrieve` takes.
   const note = olderCopyNote(name, olderCopies, (contentId) => `token-goat retrieve ${quotedArg(contentId)}`)
   if (note !== null) emitErr(note)
+  const unreadableNote = unreadableRecordNote(name, unreadable)
+  if (unreadableNote !== null) emitErr(unreadableNote)
   out(typeof result === 'string' ? result : formatCompression(result, false, 'payload withheld: inlining it would cost more tokens than the original text; pass --full to get the original text back outright'))
 }
 
