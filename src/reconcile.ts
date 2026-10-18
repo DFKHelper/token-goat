@@ -21,7 +21,7 @@ export const DEFAULT_RECONCILE_BUDGET_MS = 1500
 /** Files, and then index rows, a sweep examines before its budget may stop it, so every sweep advances both resume points whatever the clock says. */
 const MIN_FILES_PER_SWEEP = 1
 
-/** The coarsest timestamp tick this guards against, in seconds: the FAT 2 s and HFS+ 1 s resolutions the bug report named (filesystem timestamp resolutions not verified against filesystem documentation). */
+/** The coarsest timestamp tick the racy-clean gate guards against, in seconds: the FAT 2 s and HFS+ 1 s resolutions the bug report named (filesystem timestamp resolutions not verified against filesystem documentation). */
 const TIMESTAMP_TICK_SEC = 2
 
 /** Does an equal mtime prove the file unchanged since its row was written? Only when that mtime is older than the row's indexed_at by at least one timestamp tick (both seconds): a file edited after indexing but inside the tick its recorded mtime was stamped in gets the same stamp while its bytes differ, so equality alone hides that edit forever, and a stamp truncated down to the tick can sit below indexed_at yet still cover the edit. Git's racy-clean rule, https://git-scm.com/docs/racy-git (read at its "racy-git last updated in 2.43.0" revision): an entry whose mtime is the same as or newer than the index timestamp is verified by content. An ambiguous file, a row with no indexed_at included, falls through to the hash compare, so only those files cost a read. */
@@ -32,6 +32,34 @@ function mtimeProvesUnchanged(entry: FileIndexEntry, diskMtimeMs: number): boole
 /** Is the disk mtime the one the row recorded? A file that passes this but not {@link mtimeProvesUnchanged} is verified by content and, when the bytes match, is not a moved-timestamp file, so it must not be counted as one. */
 function mtimeEqualsRow(entry: FileIndexEntry, diskMtimeMs: number): boolean {
   return entry.mtime !== 0 && diskMtimeMs / 1000 === entry.mtime
+}
+
+interface VerifiedUnchangedFile {
+  /** The `files.path` key of the row, as the index spelled it. */
+  readonly indexedPath: string
+  /** The sha the hash computed, and the row must still hold for the write to land. */
+  readonly sha: string
+  /** The `files.mtime` the row holds now, in seconds. */
+  readonly rowMtime: number
+  /** The file's mtime in seconds, read by a stat taken BEFORE the bytes were hashed, so it is the stamp the hashed bytes carried; a stat after the hash could record the stamp of a later edit against the old bytes. */
+  readonly statMtimeSec: number
+}
+
+/** Record that the bytes behind each file's `sha` carried its `statMtimeSec`, in one transaction under one clock read (a caller on a mocked or budgeted clock reads it once, not once per file). When that mtime is at least one tick older than `nowSec`, `mtime` and `indexed_at = now` are written together, so the row satisfies the racy-clean rule from the next sweep on. A newer mtime is not stamped with an index time: the file may still be mid-write, so it stays racy and is hashed again until it ages past the tick (only a moved mtime is recorded, as the pre-read probe's equality gate needs). Guarded on the sha, so a row rewritten since keeps its stamp. Best-effort: a database error leaves the rows as they were. */
+export function restampVerifiedUnchanged(dbPath: string, files: readonly VerifiedUnchangedFile[], nowSec: number = Date.now() / 1000): void {
+  try {
+    const db = getDb(dbPath)
+    const stampBoth = db.prepare('UPDATE files SET mtime = ?, indexed_at = ? WHERE path = ? AND sha = ?')
+    const stampMtime = db.prepare('UPDATE files SET mtime = ? WHERE path = ? AND sha = ?')
+    db.transaction(() => {
+      for (const file of files) {
+        if (file.statMtimeSec + TIMESTAMP_TICK_SEC <= nowSec) stampBoth.run(file.statMtimeSec, nowSec, file.indexedPath, file.sha)
+        else if (file.statMtimeSec !== file.rowMtime) stampMtime.run(file.statMtimeSec, file.indexedPath, file.sha)
+      }
+    })()
+  } catch {
+    // Best-effort: the next drain or sweep tries again.
+  }
 }
 
 export interface ReconcileOptions {
@@ -225,6 +253,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const added: string[] = []
   // Every tracked path, not only the scanned ones: a sweep the budget cut short has still not seen the rest of the listing, and a row for one of them is tracked, not a deletion candidate.
   const seenOnDisk = new Set<string>(tracked.map((file) => foldPath(normalizePath(file))))
+  // Files whose hash matched their row, with the mtime stat taken before that hash; recorded after both passes so the clock is read once, outside the budget checks.
+  const verifiedClean: VerifiedUnchangedFile[] = []
   let mtimeOnly = 0
   let parserStale = 0
   let embedStale = 0
@@ -290,6 +320,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     }
     if (diskSha === entry.sha) {
       if (!mtimeEqualsRow(entry, mtimeMs)) mtimeOnly++
+      // The hash proved the bytes unchanged, so it is recorded once the sweep ends: without that a file indexed inside the tick of its own edit, or one whose mtime moved over identical bytes, is hashed again on every sweep. The stat above is the one taken before the hash.
+      verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, statMtimeSec: mtimeMs / 1000 })
       continue
     }
     changed.push(file)
@@ -328,11 +360,16 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       const diskSha = fingerprintFile(entry.filePath)
       if (diskSha === entry.sha) {
         if (!mtimeEqualsRow(entry, st.mtimeMs)) mtimeOnly++
+        // Same proof, same record as the scan above; `st` was read before the hash.
+        verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, statMtimeSec: st.mtimeMs / 1000 })
       } else if (diskSha !== null) changed.push(entry.filePath)
     }
   }
 
   const budgetExhausted = scanExhausted || deletionsIncomplete
+
+  // A dry run writes nothing, as it writes no resume point.
+  if (opts.dryRun !== true && verifiedClean.length > 0) restampVerifiedUnchanged(dbPath, verifiedClean)
 
   let enqueued = 0
   if (opts.dryRun !== true) {
