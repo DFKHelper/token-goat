@@ -170,7 +170,7 @@ describe('a change claim whose git status did not finish', () => {
       await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     } finally {
       vi.unstubAllEnvs()
-      fs.rmSync(empty, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
+      fs.rmSync(empty, { recursive: true, force: true })
     }
     expect((await agentResult(sid, CLAIM)).hookType).toBe('pass')
   })
