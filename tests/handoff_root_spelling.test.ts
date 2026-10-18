@@ -566,6 +566,38 @@ describe('a handoff record that exists but cannot be read is not reported as mis
   })
 })
 
+describe('an unreadable handoff record at a legacy id is not reported as missing', () => {
+  // FORMAT-DERIVED: the legacy id is the one origin/main 3913ac9c2 would have stored under (src/content_store.ts handoffId, line 86: tg_handoff_ plus the first 16 hex of sha256 of the root as spelled, NUL, name), here the resolved spelling of a linked root; the unreadable body is HAND-DERIVED (text that is not JSON).
+  it('says it could not be read, naming the code, when only the legacy record is on disk', () => {
+    const { real, link } = linkedRoots()
+    const file = writeLegacyRecord(canonicalize(fs.realpathSync.native(real)), 'plan', 'the older text', Date.now()).file
+    fs.writeFileSync(file, '{not json', 'utf8')
+
+    expect(resolveHandoff('plan', { projectRoot: link })).toBeNull()
+    const message = describeMissingHandoff('plan', link)
+    expect(message).toContain('handoff "plan" could not be read (SyntaxError)')
+    expect(message).not.toContain('no local handoff')
+  })
+
+  // HAND-DERIVED: a file with no bytes cannot be parsed, so it is a record that exists and cannot be read; the check is on the file the store wrote, truncated to zero bytes.
+  it.each([
+    ['current', (): { file: string; root: string } => ({ file: path.join(contentDir(), `${createHandoff('plan', 'a plan', projectDir).id}.json`), root: projectDir })],
+    ['legacy', (): { file: string; root: string } => {
+      const { real, link } = linkedRoots()
+      return { file: writeLegacyRecord(canonicalize(fs.realpathSync.native(real)), 'plan', 'a plan', Date.now()).file, root: link }
+    }],
+  ])('treats a zero-byte %s record as unreadable, not absent', (_kind, place) => {
+    const { file, root } = place()
+    fs.writeFileSync(file, '')
+    expect(fs.statSync(file).size).toBe(0)
+
+    expect(resolveHandoff('plan', { projectRoot: root })).toBeNull()
+    const message = describeMissingHandoff('plan', root)
+    expect(message).toContain('handoff "plan" could not be read (SyntaxError)')
+    expect(message).not.toContain('no local handoff')
+  })
+})
+
 // FORMAT-DERIVED: a content record has the shape of origin/main 3913ac9c2 src/content_store.ts storeContent (kind content, id, text, createdAt), written by compressText; each row then overwrites it with text that is not JSON, or puts a directory where the file was, so it is on disk and cannot be read.
 describe('a content record that exists but cannot be read is not reported as missing or expired', () => {
   function corruptContent(): { id: string; file: string } {
