@@ -8,7 +8,7 @@ import { isIndexedRoot } from './indexed_roots.js'
 import { reconcileProjectWith } from './reconcile.js'
 import { listTrackedFilesAsync } from './repomap.js'
 import { foldPath, runGitAsyncLazy } from './util.js'
-import { appendWorkerErrorLog } from './worker_lifecycle.js'
+import { appendWorkerErrorLog, writeDrainHeartbeat } from './worker_lifecycle.js'
 
 /** What became of one requested project, for the worker's error log. */
 function logOutcome(dir: string, projectDir: string, outcome: string): void {
@@ -50,9 +50,12 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
   const requeue: string[] = []
   const seenRoots = new Set<string>()
   let swept = 0
+  // Forced after each step that made progress, so the heartbeat's age is bounded by one git call's own timeout and not by the sweep's length: stopWorker and reclaimStalePidFile judge a daemon by that age, and a sweep over many slow repositories outran the 60 s window and left a live daemon looking dead. Forced because the throttled write is gated on the wall clock, which a step does not reliably outlast.
+  const progressed = (): void => writeDrainHeartbeat(dir, true)
   for (const projectDir of parseReconcileRequests(raw)) {
     try {
       const top = await runGitAsyncLazy(['rev-parse', '--show-toplevel'], { cwd: projectDir, timeoutMs: 5000 })
+      progressed()
       // A git that ran past its 5 s budget has not said this is no repository; dropping the request there lost the branch switch the hook had handed over, so the project goes back for the next cycle.
       if (top.timedOut === true) {
         requeue.push(projectDir)
@@ -72,7 +75,10 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
         logOutcome(dir, projectDir, `dropped, ${root} was not indexed on purpose`)
         continue
       }
-      const result = reconcileProjectWith({ cwd: root, dbPath, queueDir: dir }, await listTrackedFilesAsync(root))
+      const listing = await listTrackedFilesAsync(root)
+      progressed()
+      const result = reconcileProjectWith({ cwd: root, dbPath, queueDir: dir }, listing)
+      progressed()
       swept++
       // A sweep whose file listing git did not finish found no new files, so the request goes back for the next cycle instead of being spent.
       if (result.budgetExhausted || result.gitTimedOut) requeue.push(root)
