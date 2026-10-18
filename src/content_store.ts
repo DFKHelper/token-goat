@@ -1,10 +1,12 @@
 /** Local, bounded storage for generic compressed text and named handoffs. Content is redacted before compression and persistence, then stored through the shared blob funnel so the existing cache bounds and secret protection remain in force. */
+import * as fs from 'node:fs'
 import { deflateRawSync } from 'node:zlib'
 import * as path from 'node:path'
 
-import { isBlobStale, loadBlob, storeBlob } from './disk_cache.js'
+import { isBlobStale, listBlobIdsWithPrefix, loadBlob, storeBlob } from './disk_cache.js'
 import { shortFingerprint } from './fingerprint.js'
 import { quotedArg } from './hint_suggestion_guard.js'
+import { canonicalize, foldPath } from './path_containment.js'
 import { findProject } from './project.js'
 import { redactSecrets } from './secret_redact.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
@@ -78,30 +80,80 @@ function contentId(text: string): string {
   return `tg_${shortFingerprint(text)}`
 }
 
+// The root's identity is the canonical form the rest of token-goat keys a project by (canonicalize: forward slashes, lower-case drive), not the spelling the caller's cwd happened to arrive in. findProject returns null for a directory it takes for a container of other repos, and the fallback then used path.resolve, whose backslash and upper-case-drive spelling hashed to a different id than the marker-derived root of the same directory.
 function normalizeProjectRoot(projectRoot?: string): string {
-  const candidate = path.resolve(projectRoot ?? process.cwd())
+  const candidate = canonicalize(projectRoot ?? process.cwd())
   return findProject(candidate)?.root ?? candidate
 }
 
+// What identifies a root across spellings: the canonical form, case-folded where the filesystem folds (the same rule projectHash applies).
+function handoffRootKey(projectRoot: string): string {
+  return foldPath(canonicalize(projectRoot))
+}
+
+function handoffIdFromKey(name: string, key: string): string {
+  return `tg_handoff_${shortFingerprint(`${key}\x00${name}`)}`
+}
+
 function handoffId(name: string, projectRoot: string): string {
-  return `tg_handoff_${shortFingerprint(`${projectRoot}\x00${name}`)}`
+  return handoffIdFromKey(name, handoffRootKey(projectRoot))
+}
+
+// Every id an earlier release could have stored this handoff under: it hashed the root exactly as spelled, which was the canonical form when a marker was found (c:/x) and path.resolve's form when none was (C:\x, or c:\x). Only the spellings that differ from the current id are returned.
+function legacyHandoffIds(name: string, projectRoot: string): string[] {
+  const bases = new Set<string>([projectRoot])
+  try {
+    bases.add(canonicalize(fs.realpathSync.native(projectRoot)))
+  } catch {
+    // A root that does not exist has no on-disk spelling to add.
+  }
+  const spellings = new Set<string>()
+  for (const base of bases) {
+    spellings.add(base)
+    if (process.platform !== 'win32') continue
+    const upper = base.replace(/^[a-z]:/, (drive) => drive.toUpperCase())
+    for (const form of [base, upper]) {
+      spellings.add(form)
+      spellings.add(form.replace(/\//g, path.win32.sep))
+    }
+  }
+  const current = handoffId(name, projectRoot)
+  const ids = new Set<string>()
+  for (const spelling of spellings) ids.add(handoffIdFromKey(name, spelling))
+  ids.delete(current)
+  return [...ids]
+}
+
+const CONTENT_ID_IN_TEXT = /\btg_[0-9a-f]{16}\b/g
+
+// Content ids that a live (not yet expired) handoff points at, by its contentId field or by quoting the id in its text. The age and count rules of the shared cache would delete such content while the handoff that names it is still resolvable, and `retrieve <id>` then reports an expired cache for an id the handoff still shows.
+function liveHandoffReferences(): Set<string> {
+  const referenced = new Set<string>()
+  for (const id of listBlobIdsWithPrefix(CONTENT_SUBDIR, 'tg_handoff_')) {
+    if (isBlobStale(CONTENT_SUBDIR, id)) continue
+    const entry = loadBlob(CONTENT_SUBDIR, id) as Partial<StoredHandoff> | null
+    if (entry === null || typeof entry !== 'object' || entry.kind !== 'handoff') continue
+    if (typeof entry.contentId === 'string') referenced.add(entry.contentId)
+    if (typeof entry.text === 'string') for (const match of entry.text.matchAll(CONTENT_ID_IN_TEXT)) referenced.add(match[0])
+  }
+  return referenced
+}
+
+function contentCacheOptions(): { maxCount: number; maxBytes: number; maxBytesPerItem: number; retain: ReadonlySet<string> } {
+  return { maxCount: CONTENT_MAX_ITEMS, maxBytes: CONTENT_MAX_BYTES, maxBytesPerItem: CONTENT_MAX_ITEM_BYTES, retain: liveHandoffReferences() }
 }
 
 function storeContent(text: string): string {
   const id = contentId(text)
   const value: StoredContent = { kind: 'content', id, text, createdAt: Date.now() }
-  const ok = storeBlob(CONTENT_SUBDIR, id, value, {
-    maxCount: CONTENT_MAX_ITEMS,
-    maxBytes: CONTENT_MAX_BYTES,
-    maxBytesPerItem: CONTENT_MAX_ITEM_BYTES,
-  })
+  const ok = storeBlob(CONTENT_SUBDIR, id, value, contentCacheOptions())
   if (!ok) throw new Error('unable to persist compressed content within the local cache bounds')
   return id
 }
 
 function readContent(id: string): string | null {
   if (!/^tg_[0-9a-f]{16}$/.test(id)) return null
-  if (isBlobStale(CONTENT_SUBDIR, id)) return null
+  if (isBlobStale(CONTENT_SUBDIR, id) && !liveHandoffReferences().has(id)) return null
   const value = loadBlob(CONTENT_SUBDIR, id)
   if (value === null || typeof value !== 'object' || value === null) return null
   const entry = value as Partial<StoredContent>
@@ -159,31 +211,61 @@ export function createHandoff(name: string, text: string, projectRoot?: string):
     text: safeText,
     createdAt: Date.now(),
   }
-  const ok = storeBlob(CONTENT_SUBDIR, id, value, {
-    maxCount: CONTENT_MAX_ITEMS,
-    maxBytes: CONTENT_MAX_BYTES,
-    maxBytesPerItem: CONTENT_MAX_ITEM_BYTES,
-  })
+  const ok = storeBlob(CONTENT_SUBDIR, id, value, contentCacheOptions())
   if (!ok) throw new Error('unable to persist handoff within the local cache bounds')
   recordStat('handoff_create')
   return { id, name, contentId: contentIdValue, projectRoot: root, recovery: `token-goat handoff-resolve -- ${quotedArg(name)}` }
 }
 
-export function resolveHandoff(name: string, opts: { projectRoot?: string; full?: boolean } = {}): CompressionResult | string | null {
-  const root = normalizeProjectRoot(opts.projectRoot)
-  const id = handoffId(name, root)
+// A handoff found under one id, with the stored timestamp that decides which of several copies wins.
+interface FoundHandoff {
+  entry: StoredHandoff
+  createdAt: number
+}
+
+function loadHandoffUnder(id: string, name: string, key: string): FoundHandoff | null {
   if (isBlobStale(CONTENT_SUBDIR, id)) return null
   const value = loadBlob(CONTENT_SUBDIR, id)
-  if (value === null || typeof value !== 'object' || value === null) return null
+  if (value === null || typeof value !== 'object') return null
   const entry = value as Partial<StoredHandoff>
   if (
     entry.kind !== 'handoff' ||
-    entry.projectRoot !== root ||
+    entry.name !== name ||
+    typeof entry.projectRoot !== 'string' ||
+    handoffRootKey(entry.projectRoot) !== key ||
     typeof entry.contentId !== 'string' ||
     typeof entry.text !== 'string'
   ) return null
-  const text = entry.text
+  return { entry: entry as StoredHandoff, createdAt: typeof entry.createdAt === 'number' && Number.isFinite(entry.createdAt) ? entry.createdAt : 0 }
+}
+
+export interface ResolvedHandoff {
+  result: CompressionResult | string
+  // Copies of the same handoff kept under a previous root spelling whose text differs from the one returned, newest first. Reading never deletes or rewrites them.
+  olderCopies: Array<{ createdAt: number; contentId: string }>
+}
+
+// Looks the handoff up under the current id and under every legacy id (lookup of both rather than migrate-on-read: a read that wrote would refresh the old record's age and could overwrite a record the user still wants). When several hold the name, the newer stored timestamp wins and the current id wins a tie.
+export function resolveHandoffDetailed(name: string, opts: { projectRoot?: string; full?: boolean } = {}): ResolvedHandoff | null {
+  const root = normalizeProjectRoot(opts.projectRoot)
+  const key = handoffRootKey(root)
+  const found: FoundHandoff[] = []
+  for (const id of [handoffIdFromKey(name, key), ...legacyHandoffIds(name, root)]) {
+    const hit = loadHandoffUnder(id, name, key)
+    if (hit !== null) found.push(hit)
+  }
+  if (found.length === 0) return null
+  let best = found[0]!
+  for (const hit of found) if (hit.createdAt > best.createdAt) best = hit
+  const text = best.entry.text
   recordStat('handoff_resolve')
-  if (opts.full === true) return text
-  return compressText(text)
+  const olderCopies = found
+    .filter((hit) => hit !== best && hit.entry.text !== text)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((hit) => ({ createdAt: hit.createdAt, contentId: hit.entry.contentId }))
+  return { result: opts.full === true ? text : compressText(text), olderCopies }
+}
+
+export function resolveHandoff(name: string, opts: { projectRoot?: string; full?: boolean } = {}): CompressionResult | string | null {
+  return resolveHandoffDetailed(name, opts)?.result ?? null
 }
