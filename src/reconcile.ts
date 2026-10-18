@@ -18,7 +18,7 @@ import { countNoun, foldPath } from './util.js'
 /** Wall-clock budget for a sweep. Chosen so the session-start hook stays imperceptible even on a cold filesystem cache: this repo's own measurement is that hook cost is dominated by process startup rather than logic, and a sweep that pushed past that would turn a correctness improvement into a latency regression on every single session. */
 export const DEFAULT_RECONCILE_BUDGET_MS = 1500
 
-/** Files a sweep examines before its budget may stop it, so every sweep advances the resume cursor whatever the clock says. */
+/** Files, and then index rows, a sweep examines before its budget may stop it, so every sweep advances both resume points whatever the clock says. */
 const MIN_FILES_PER_SWEEP = 1
 
 /** The coarsest timestamp tick this guards against, in seconds: the FAT 2 s and HFS+ 1 s resolutions the bug report named (filesystem timestamp resolutions not verified against filesystem documentation). */
@@ -93,8 +93,10 @@ export interface ReconcileResult {
   parserStale: number
   /** Tracked files (a subset of {@link changed}) enqueued because they still hold embedding chunks but no `embed_sha`: ensureEmbeddingProvenance clears it after a chunker change while keeping the old vectors serving, so content and parse are both current and only this enqueue gets a file nobody edits re-embedded. */
   embedStale: number
-  /** True when the budget stopped the sweep before every tracked file was examined. */
+  /** True when the budget stopped the sweep before every tracked file was examined, or before every indexed row git does not list was checked against disk. */
   budgetExhausted: boolean
+  /** True when the budget stopped the deletion pass before every untracked indexed row was checked; the next sweep resumes after the last row it examined. */
+  deletionsIncomplete: boolean
   /** True when the tracked-file enumeration came back empty against a non-empty index -- the project is not a git repository, git is missing, or git errored. Distinguished from a genuinely emptied project because the two are identical in the numbers and opposite in what they mean. */
   trackedUnavailable: boolean
   /** True when `git ls-files` was killed for running too long, so what the project tracks is unknown rather than empty. The sweep then checks only what the index already holds; a caller that must not act on a listing it never got (install marking the root indexed) reads this. */
@@ -174,7 +176,8 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
     lines.push('This project has an index but git listed no files in it, so new files could not be found. Indexed files that changed or are gone from disk were still detected. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
   }
   if (result.budgetExhausted) {
-    lines.push(`Stopped at the ${result.elapsedMs}ms budget with ${countNoun(result.unscanned, 'file')} unchecked, so there may be more drift; deletions were not computed at all, because an unchecked file is indistinguishable from a deleted one. Raise --budget-ms for a complete sweep.`)
+    const unchecked = [...(result.unscanned > 0 ? [`${countNoun(result.unscanned, 'file')} unchecked`] : []), ...(result.deletionsIncomplete ? ['some indexed files not yet checked for deletion'] : [])]
+    lines.push(`Stopped at the ${result.elapsedMs}ms budget with ${unchecked.join(' and ')}, so there may be more drift; what it found is listed above and the next sweep continues where this one stopped. Raise --budget-ms for a complete sweep.`)
   }
   process.stdout.write(`${lines.join('\n')}\n`)
   return 0
@@ -217,26 +220,27 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
 
   const changed: string[] = []
   const added: string[] = []
-  const seenOnDisk = new Set<string>()
+  // Every tracked path, not only the scanned ones: a sweep the budget cut short has still not seen the rest of the listing, and a row for one of them is tracked, not a deletion candidate.
+  const seenOnDisk = new Set<string>(tracked.map((file) => foldPath(normalizePath(file))))
   let mtimeOnly = 0
   let parserStale = 0
   let embedStale = 0
   let scanned = 0
-  let budgetExhausted = false
+  let scanExhausted = false
+  let deletionsIncomplete = false
   let lastScanned: string | null = null
 
   for (const file of scanOrder) {
     // Checked before the work rather than after, so the budget bounds what this function does rather than merely reporting that it overran, and the check is a clock read that hoisting out of the loop would remove. Not before the first file: a sweep that may stop having examined nothing saves no resume point, so a machine slow enough to spend the budget before the first stat (or a budget of 0) repeated the same empty sweep every session and never checked the project. One file is the floor, so the cursor advances every sweep and the laps complete; it is a count, not a time, and the budget still bounds everything after it.
     const overBudget = Date.now() - startedAt >= budgetMs
     if (overBudget && scanned >= MIN_FILES_PER_SWEEP) {
-      budgetExhausted = true
+      scanExhausted = true
       break
     }
     scanned++
     lastScanned = file
     const normalized = normalizePath(file)
     const folded = foldPath(normalized)
-    seenOnDisk.add(folded)
     const entry = indexed.get(folded)
 
     if (entry === undefined) {
@@ -291,15 +295,25 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   // Reported, not gated on: `listTrackedFiles` returns an empty `files` list for a directory git cannot enumerate -- not a repository, git not installed, git errored -- so `changed`/`added` are computed over nothing and the caller must be told. It used to suppress the deletion pass below as well, from when that pass inferred a deletion from absence from `seenOnDisk` and would therefore have called every live file in a non-git project deleted. The pass now stats each row instead, so absence from a failed enumeration cannot reach `removed` at all, and suppressing it only left deleted files sitting in the index of every non-git root forever.
   const trackedUnavailable = tracked.length === 0 && indexed.size > 0
   const removed: string[] = []
-  if (!budgetExhausted) {
-    for (const [folded, entry] of indexed) {
-      if (seenOnDisk.has(folded)) continue
-      // The loop above costs one map lookup per row; this one costs a disk stat, so it needs the same clock the scan loop has. Read before the stat rather than after it, because a row that is still on disk takes an early exit: a check placed below that exit is reached only on rows that turn out to be deletions, which lets the contents of the index decide whether the bound is consulted at all. A sweep that runs out here reports no deletions and says so, rather than shipping the prefix it happened to reach as though it were the whole answer.
-      if (Date.now() - startedAt >= budgetMs) {
-        budgetExhausted = true
-        removed.length = 0
+  // Sorted so a resume point means the same thing on every sweep: the index map's order is whatever the query returned.
+  const deletionCandidates = [...indexed].filter(([folded]) => !seenOnDisk.has(folded)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  const deletionKey = `${projectRoot}\u0000deletions`
+  const deletionCursor = deletionCandidates.length > 0 ? readReconcileCursor(dbPath, deletionKey) : null
+  let lastExamined: string | null = null
+  if (deletionCandidates.length > 0) {
+    // Resume after the row the last budget-truncated pass finished, wrapping, so repeated truncated sweeps reach every row instead of re-statting the same first few.
+    const resumeAt = deletionCursor === null ? -1 : deletionCandidates.findIndex(([folded]) => folded > deletionCursor)
+    const order = resumeAt > 0 ? [...deletionCandidates.slice(resumeAt), ...deletionCandidates.slice(0, resumeAt)] : deletionCandidates
+    let examined = 0
+    for (const [folded, entry] of order) {
+      // The scan loop costs one map lookup per row; this one costs a disk stat, so it needs the same clock. Read before the stat so a row that is still on disk, which exits early, cannot let the contents of the index decide whether the bound is consulted. Not before the first row: a pass that may stop having examined nothing saves no resume point, so a machine that spent the budget in the scan (or a budget of 0) never reached a deletion. Deletions already found stay reported, since each was confirmed by its own stat.
+      const overBudget = Date.now() - startedAt >= budgetMs
+      if (overBudget && examined >= MIN_FILES_PER_SWEEP) {
+        deletionsIncomplete = true
         break
       }
+      examined++
+      lastExamined = folded
       // The stat is the whole check. `seenOnDisk` is filled from `git ls-files`, so on its own it says "not tracked", which is a different question from "not on disk" for every row the incremental path wrote: `token-goat index` lists tracked files only, but a file reaches the index whenever the agent reads or edits it, gitignored or merely not `git add`ed yet. Measured on this repository's own index, 228 of its 1,628 rows were untracked and all 228 were live on disk -- 201 under `scratch/`, 12 under `.claude/`, 5 under `node_modules/`, the rest loose files nobody had staged. Without this stat each sweep reported all of them as deletions and queued them for removal, the next read put them straight back, and the next sweep removed them again -- churn that never settles, and precisely the live-file removal the paragraph above calls the one mistake that destroys working index rows. Only a missing path (ENOENT/ENOTDIR) or one that is no longer a regular file, such as a directory now standing where the file was, counts as a deletion (indexedFileIsGone, the rule the prune sweeps use); every other failure means "cannot tell", and a row nobody can stat is left exactly as it is. The stat above answers the deletion question for every row in the index now that nothing else bounds this pass -- in a root git cannot enumerate that is 100% of rows, where it used to be only the untracked ones inside a repo (228 of 1,628 here). So a permission-denied path, or an unreachable network or removable drive, would otherwise hand the whole root's index to the removal queue on a single sweep, which is the one outcome this pass must never produce.
       const st = statIndexedFile(entry.filePath)
       if (st === 'gone') {
@@ -315,6 +329,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     }
   }
 
+  const budgetExhausted = scanExhausted || deletionsIncomplete
+
   let enqueued = 0
   if (opts.dryRun !== true) {
     // Resolved here rather than passed raw: `listTrackedFiles` returns paths joined onto the root it was given, so a relative `cwd` (the natural `token-goat reconcile` from inside the project) yields relative paths, and the worker's sha gate keys on the canonical absolute form. An unresolved relative path enqueues a key no reader can match -- the queue would fill and nothing would ever reindex. Paths from the index are already canonical, so resolving them is a no-op.
@@ -322,10 +338,16 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     // Batched rather than enqueued one at a time: a sweep routinely fans out four figures of paths at session start, and the single-path form appends each one separately. The count is what the queue took, not what it was offered: it refuses every path under the OS temp dir, and a project there reported files enqueued that no worker would ever see.
     enqueued = enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true, ...(opts.queueDir !== undefined ? { dir: opts.queueDir } : {}) })
     // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any side effect, and persisting a resume point is a side effect. A truncated sweep that scanned at least one file saves where it stopped, so the next sweep resumes there; a sweep with nothing scanned (an empty tracked list, since the budget cannot stop a sweep before its first file) leaves whatever cursor already exists untouched rather than clobbering it with nothing. A sweep that completed a full lap clears the cursor, since the next sweep should start a fresh lap from the beginning rather than carry forward an offset a completed lap has made meaningless.
-    if (budgetExhausted) {
+    if (scanExhausted) {
       if (lastScanned !== null) writeReconcileCursor(dbPath, projectRoot, lastScanned)
     } else if (tracked.length > 0) {
       clearReconcileCursor(dbPath, projectRoot)
+    }
+    // The deletion pass keeps its own resume point under a second key in the same table (a NUL cannot appear in a path, so it cannot collide with a root): the table shape is unchanged and a build that never reads the key ignores the row.
+    if (deletionsIncomplete) {
+      if (lastExamined !== null) writeReconcileCursor(dbPath, deletionKey, lastExamined)
+    } else if (deletionCursor !== null) {
+      clearReconcileCursor(dbPath, deletionKey)
     }
   }
 
@@ -338,6 +360,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     parserStale,
     embedStale,
     budgetExhausted,
+    deletionsIncomplete,
     trackedUnavailable,
     gitTimedOut: listing.timedOut,
     unscanned: Math.max(0, tracked.length - scanned),
