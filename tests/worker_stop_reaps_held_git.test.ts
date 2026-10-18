@@ -14,17 +14,23 @@ import { BUNDLE, bundleTg, makeBundleProject } from './helpers/bundle.js'
 import { listProcesses } from './helpers/copilot_session_start_tree.js'
 import { findGlobalDb } from './helpers/find_global_db.js'
 import { openGitGate, type GitGate } from './helpers/git_gate.js'
-import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { isWorkerDaemonCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { runTeardown } from './helpers/strict_teardown.js'
 import { indexableDir } from './helpers/temp-config.js'
 import { claimsToBeWorker } from './helpers/worker_identity.js'
 
 /** How many process-table reads the survivors check makes before it calls the processes alive. Each read costs a process listing (tens to hundreds of milliseconds), which is the pause between reads; the count, not a clock, bounds the wait. */
 const SURVIVOR_READS = 10
 
+/** How many process-table reads the calibration makes looking for the held git. The daemon ends a git that runs past its own cap (5 s for the `rev-parse` of a reconcile sweep, src/reconcile_requests.ts) and starts the next one on a later cycle, so the git the gate reported can be over by the time a slow listing (Get-CimInstance on a loaded Windows machine takes seconds) has been read: one read is a race against that cap, and a read that finds no git says only that this one missed. The count bounds the wait; a daemon that holds no git at all fails every read. */
+const GIT_READS = 8
+
 const roots: string[] = []
 const gates: GitGate[] = []
 const recorded = new Map<number, string>()
 const standIns: ChildProcess[] = []
+/** Worker daemons this test started, by pid; each is ended only while its command line is a worker daemon's. */
+const daemons: number[] = []
 
 /** The process table's descendants of `root`, with their command lines. */
 function descendantsOf(root: number, table: ReturnType<typeof listProcesses>): Map<number, string> {
@@ -47,14 +53,40 @@ function survivors(): string[] {
   return [...recorded].filter(([pid, args]) => table.get(pid)?.args.trim() === args).map(([pid, args]) => `${pid}: ${args}`)
 }
 
+/** Every process this test started that still runs: the recorded ones, and the daemons by their own command line. */
+function stillRunning(): string[] {
+  const table = listProcesses()
+  const daemonRows = daemons.filter((pid) => isWorkerDaemonCommandLine(table.get(pid)?.args ?? '')).map((pid) => `${pid}: ${table.get(pid)?.args.trim()}`)
+  return [...survivors(), ...daemonRows]
+}
+
+// Every step runs and every failure is reported together (strict_teardown). The processes go first and are waited for until the process table no longer lists them, so the removal has nothing holding it; a removal that still fails is the failure to report, not one to retry.
 afterEach(async () => {
-  for (const gate of gates.splice(0)) await gate.dispose()
-  // Whatever the test failed to see ended (a daemon, a held git) is ended here by its recorded command line, with its tree, before the directories it holds are removed.
-  for (const [pid, args] of recorded) killIfCommandLine(pid, (commandLine) => commandLine.trim() === args, { tree: true })
-  recorded.clear()
-  // A stand-in the body never got to record is ended through the handle that started it.
-  for (const daemon of standIns.splice(0)) if (daemon.exitCode === null && daemon.signalCode === null) killProcessTree(daemon.pid)
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  const gateFailures: unknown[] = []
+  for (const gate of gates.splice(0)) await gate.dispose().catch((error: unknown) => gateFailures.push(error))
+  // Whatever the test failed to see ended (a daemon, a held git) is ended by its recorded command line, with its tree, before the directories it holds are removed. A stand-in the body never got to record is ended through the handle that started it.
+  const ending = [
+    ...[...recorded].map(([pid, args]) => () => void killIfCommandLine(pid, (commandLine) => commandLine.trim() === args, { tree: true })),
+    ...daemons.map((pid) => () => void killIfCommandLine(pid, isWorkerDaemonCommandLine, { tree: true })),
+    ...standIns.splice(0).map((daemon) => () => {
+      if (daemon.exitCode === null && daemon.signalCode === null) killProcessTree(daemon.pid)
+    }),
+  ]
+  const gone = (): void => {
+    let left: string[] = []
+    for (let read = 0; read < SURVIVOR_READS; read++) {
+      left = stillRunning()
+      if (left.length === 0) return
+    }
+    throw new Error(`still running after the teardown ended them: ${JSON.stringify(left)}`)
+  }
+  try {
+    runTeardown([...ending, gone, ...roots.splice(0).map((root) => () => fs.rmSync(root, { recursive: true, force: true }))])
+  } finally {
+    recorded.clear()
+    daemons.length = 0
+  }
+  if (gateFailures.length > 0) throw new AggregateError(gateFailures, 'disposing the git gate failed')
 })
 
 function git(cwd: string, ...args: string[]): void {
@@ -87,17 +119,24 @@ describe('stopping the built worker daemon', () => {
     expect(started.status, `worker start failed: ${started.stderr}`).toBe(0)
     const daemonPid = readPidFile(dir)
     expect(daemonPid, 'worker start left no pid file').not.toBeNull()
-    // Recorded at once, so the reaper ends the daemon when a later step fails before the gate is reached; it would otherwise retire itself only after hours.
-    recorded.set(daemonPid as number, listProcesses().get(daemonPid as number)?.args.trim() ?? '')
+    // Handed to the reaper at once, so it ends the daemon when a later step fails before the gate is reached; it would otherwise retire itself only after hours. No process listing sits between the start and the event below: it would spend the git's own 5 s cap.
+    daemons.push(daemonPid as number)
 
     // The event: a git of the daemon has opened the gate and is blocked reading it.
     await gate.reached
 
-    const table = listProcesses()
-    recorded.set(daemonPid as number, table.get(daemonPid as number)?.args.trim() ?? '')
-    for (const [pid, args] of descendantsOf(daemonPid as number, table)) recorded.set(pid, args)
+    // Read until the table shows a git under the daemon (see GIT_READS): the table says which process it was, and that it was alive when read.
+    let heldGit = false
+    for (let read = 0; read < GIT_READS && !heldGit; read++) {
+      const table = listProcesses()
+      const daemonArgs = table.get(daemonPid as number)?.args.trim()
+      if (daemonArgs !== undefined) recorded.set(daemonPid as number, daemonArgs)
+      const tree = descendantsOf(daemonPid as number, table)
+      for (const [pid, args] of tree) recorded.set(pid, args)
+      heldGit = [...tree.values()].some((args) => /\bgit\b/i.test(args))
+    }
     expect(recorded.get(daemonPid as number), 'calibration: the daemon is in the process table').toMatch(/--worker-daemon/)
-    expect([...recorded.values()].some((args) => /\bgit\b/i.test(args)), `calibration: a git is held under the daemon, found ${JSON.stringify([...recorded.values()])}`).toBe(true)
+    expect(heldGit, `calibration: a git is held under the daemon in none of ${GIT_READS} process-table reads after the gate reported one, found ${JSON.stringify([...recorded.values()])}`).toBe(true)
 
     // The daemon runs on the bundle, so that launcher is the install's for the identity check; the real command-line query decides.
     expect(stopWorker(dir, undefined, { entryScript: BUNDLE }), 'stopWorker found no running worker to stop').toBe(true)
