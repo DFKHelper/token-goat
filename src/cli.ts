@@ -37,7 +37,7 @@ import { isUnderSystemTemp, resolveProjectRoot } from './project.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
 import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
-import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorker, WorkerAlreadyRunningError } from './worker_lifecycle.js'
+import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorkerDetailed, WorkerAlreadyRunningError, workerLeftRunningNote } from './worker_lifecycle.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
 import { runRead, runPrSlice } from './read_commands.js'
@@ -573,8 +573,8 @@ function cmdWorkerStart(): void {
 }
 
 function cmdWorkerStop(): void {
-  const stopped = stopWorker()
-  out(stopped ? 'Worker stopped.' : 'No running worker.')
+  const { stopped, leftRunning } = stopWorkerDetailed()
+  out(leftRunning !== null ? workerLeftRunningNote(leftRunning) : stopped ? 'Worker stopped.' : 'No running worker.')
 }
 
 function cmdWorkerStatus(): void {

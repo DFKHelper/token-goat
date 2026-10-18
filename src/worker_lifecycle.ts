@@ -212,38 +212,57 @@ function judgeDaemonIdentity(pid: number, opts: StopWorkerOptions): DaemonIdenti
   return isResidentOfInstall(answer.commandLine, opts.entryScript ?? daemonEntryScript(), ['worker']) ? 'worker' : 'other'
 }
 
-/** End process `pid`, alone or with its tree, and refuse this process and its parent on either path. On Windows `process.kill` is TerminateProcess, so no handler in the daemon runs and the git it holds is left running; the tree goes with it through taskkill (resident_process.ts::terminateProcessTree, because process_tree.ts must stay out of the hook bundle), and a taskkill that did not end it falls back to the bare kill. Elsewhere SIGTERM reaches the daemon's own handler, which drains and reaps what it started. Returns false when the pid was refused, and when the kill was denied (EPERM: the number now belongs to another user's process, which this stop did not end); a process that exited first (ESRCH) still counts as ended. */
-function endDaemon(pid: number, scope: 'tree' | 'single'): boolean {
-  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || pid === process.ppid) return false
-  if (scope === 'tree' && process.platform === 'win32' && terminateProcessTree(pid, true)) return true
+/** End process `pid`, alone or with its tree, and refuse this process and its parent on either path. On Windows `process.kill` is TerminateProcess, so no handler in the daemon runs and the git it holds is left running; the tree goes with it through taskkill (resident_process.ts::terminateProcessTree, because process_tree.ts must stay out of the hook bundle), and a taskkill that did not end it falls back to the bare kill. Elsewhere SIGTERM reaches the daemon's own handler, which drains and reaps what it started. Returns 'refused' for this process or its parent, 'denied' when the kill was denied (EPERM: the process is still running and this stop did not end it, an elevated worker or one owned by another user), and 'ended' otherwise; a process that exited first (ESRCH) still counts as ended. */
+function endDaemon(pid: number, scope: 'tree' | 'single'): 'ended' | 'refused' | 'denied' {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || pid === process.ppid) return 'refused'
+  if (scope === 'tree' && process.platform === 'win32' && terminateProcessTree(pid, true)) return 'ended'
   try {
     process.kill(pid)
   } catch (err) {
-    // ESRCH: the process exited between the check and the kill, which is the outcome asked for. EPERM: a reused number now owned by another user, still running, so it was not ended and the caller must not report it as stopped.
-    return (err as NodeJS.ErrnoException).code !== 'EPERM'
+    // ESRCH: the process exited between the check and the kill, which is the outcome asked for. EPERM: still running (an elevated worker, or a reused number owned by another user), so it was not ended and the caller must neither report it as stopped nor unname it.
+    return (err as NodeJS.ErrnoException).code === 'EPERM' ? 'denied' : 'ended'
   }
-  return true
+  return 'ended'
 }
 
-/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, it is alive but proves no worker lease (no fresh heartbeat naming it, and a pid file older than the startup grace), or the lease holder is not this install's worker (a reused pid: left alone, and its pid file dropped as stale). The pid file is removed in the killed, dead and stale cases so the slate is clean afterwards, and left in place in the lease-less case. */
+/** What {@link stopWorkerDetailed} did: whether a live worker was ended, and the pid it could not end (the kill was denied, EPERM) when there was one. */
+export interface StopWorkerResult {
+  readonly stopped: boolean
+  /** The pid of a live process the stop was not permitted to end, whose pid file was therefore kept; null otherwise. */
+  readonly leftRunning: number | null
+}
+
+/** The line `worker stop` prints when the kill was denied: the process is still running and still named by its pid file. */
+export function workerLeftRunningNote(pid: number): string {
+  return `Worker (pid ${pid}) left running: the operating system denied the stop (EPERM), so it is owned by another user or runs elevated. Its pid file was kept so a new worker is not started beside it; stop it from an account with the same rights.`
+}
+
+/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, it is alive but proves no worker lease (no fresh heartbeat naming it, and a pid file older than the startup grace), the lease holder is not this install's worker (a reused pid: left alone, and its pid file dropped as stale), or the kill was denied (EPERM: still running, see {@link stopWorkerDetailed}). The pid file is removed in the killed, dead and stale cases so the slate is clean afterwards, and left in place in the lease-less and the EPERM cases: a live worker the stop could not end must stay named, or the next start spawns a second one beside it. */
 export function stopWorker(dir: string = dataDir(), expectedPid?: number, opts: StopWorkerOptions = {}): boolean {
+  return stopWorkerDetailed(dir, expectedPid, opts).stopped
+}
+
+/** {@link stopWorker} with the EPERM outcome reported, so a caller can say the worker was left running instead of that none was found. */
+export function stopWorkerDetailed(dir: string = dataDir(), expectedPid?: number, opts: StopWorkerOptions = {}): StopWorkerResult {
   const pid = readPidFile(dir)
-  if (pid === null) return false
+  if (pid === null) return { stopped: false, leftRunning: null }
   // If the caller judged a specific pid mismatched/stale earlier and the pid file now names someone else, another hook already raced ahead of us (stopped it and spawned a replacement); do nothing rather than tearing down that replacement's pid file before it can prove itself alive.
-  if (expectedPid !== undefined && pid !== expectedPid) return false
+  if (expectedPid !== undefined && pid !== expectedPid) return { stopped: false, leftRunning: null }
   // A daemon still inside its startup grace has written no heartbeat yet, so it is alive but not "running" by heartbeat alone; stop used to skip the kill and then remove its pid file anyway, which stranded it: running, invisible, and with nothing left naming it. The same two proofs reclaimStalePidFile trusts decide who is ours. A live pid with neither proof (a stale heartbeat, a reused pid) is left alone and so is its pid file: it retires itself once reclaimed, and removing the file here would only strand it.
   const alive = pidAlive(pid)
   // A live pid that proves no lease (no fresh heartbeat naming it, pid file older than the grace) may be an unrelated process that reused the number: neither signalled nor unnamed.
   const running = alive && (hasFreshWorkerHeartbeat(dir, pid) || pidFileIsWithinStartupGrace(dir))
-  if (alive && !running) return false
-  let signalled = false
+  if (alive && !running) return { stopped: false, leftRunning: null }
+  let outcome: ReturnType<typeof endDaemon> | null = null
   if (running) {
     // Even a lease can name a reused pid (the daemon crashed inside the heartbeat window, or the pid file is a fresh claim over a dead one), so the command line decides, and only a confirmed worker loses its tree.
     const identity = judgeDaemonIdentity(pid, opts)
     // 'unknown' is the query itself failing (the program missing, ENOENT, as `ps` is on a minimal image; a timeout; or an unexpected exit status), which proves nothing about who owns the pid. This point is reached only for a live pid with a lease proof (a fresh heartbeat naming it, or a pid file younger than the startup grace), so the stop ends that one process, with no tree: failing closed would make `worker stop` do nothing wherever `ps` is missing, and the tree kill is kept for a confirmed worker.
-    if (identity === 'worker') signalled = endDaemon(pid, 'tree')
-    else if (identity === 'unknown') signalled = endDaemon(pid, 'single')
+    if (identity === 'worker') outcome = endDaemon(pid, 'tree')
+    else if (identity === 'unknown') outcome = endDaemon(pid, 'single')
   }
+  // A denied kill leaves a live worker: its pid file stays, since removing it would let the next start spawn a second worker beside it.
+  if (outcome === 'denied') return { stopped: false, leftRunning: pid }
   // Only remove the pid file when it still names the pid we just killed -- never unconditionally. A concurrent `worker start` can observe the killed pid as dead and reclaim the slot (via claimWorkerPidFile) with a brand-new daemon's pid between our kill above and this cleanup; an unconditional rmSync here would delete that new daemon's pid file out from under it, orphaning it (no pid file left for a later stopWorker to find), which a subsequent `worker start` would then "fix" by spawning a third daemon -- two live daemons draining the same queue. Same guard style as the exit handler in worker.ts::runDetachedWorkerDaemon.
   if (readPidFile(dir) === pid) {
     try {
@@ -252,7 +271,7 @@ export function stopWorker(dir: string = dataDir(), expectedPid?: number, opts: 
       // best-effort cleanup
     }
   }
-  return signalled
+  return { stopped: outcome === 'ended', leftRunning: null }
 }
 
 /** Thrown by {@link startDetachedWorker} when it loses the {@link claimWorkerPidFile} startup race to a daemon that already holds the pid-file slot (a genuine already-running worker, or a concurrent `worker start` invocation that won the race first). */

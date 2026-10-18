@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { drainOnce, makeIndexer, pendingEmbeddings, processDirtyBatch, clearRetryCount, runWorkerLoop } from '../src/worker.js'
 import { getDirtyPathsFor } from '../src/dirty_queue.js'
-import { claimWorkerPidFile, currentDaemonStamp, daemonEntryScript, drainHeartbeatPathFor, ensureWorkerAlive, isWorkerRunning, resolvePollIntervalMs, stopWorker, workerPidPath, workerStampPath } from '../src/worker_lifecycle.js'
+import { claimWorkerPidFile, currentDaemonStamp, daemonEntryScript, drainHeartbeatPathFor, ensureWorkerAlive, isWorkerRunning, resolvePollIntervalMs, stopWorker, stopWorkerDetailed, workerLeftRunningNote, workerPidPath, workerStampPath } from '../src/worker_lifecycle.js'
 import * as parserModule from '../src/parser.js'
 import * as projectModule from '../src/project.js'
 import { recordKnownRoot } from '../src/known_roots.js'
@@ -423,6 +423,25 @@ describe('stopWorker', () => {
     try {
       expect(stopWorker(DIR, undefined, { queryCommandLine: () => ({ status: 'failed' }) })).toBe(ended)
       expect(killSpy.mock.calls.filter(([pid, signal]) => pid === MISMATCHED_WORKER_PID && signal !== 0)).toHaveLength(1)
+      // A denied kill leaves a live worker, so its pid file must survive (else the next start spawns a second worker); a process that exited first leaves nothing to name.
+      expect(fs.existsSync(workerPidPath(DIR))).toBe(!ended)
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
+
+  // HAND-DERIVED: kill(2) documents EPERM as the error for a signal the caller may not send to a process that exists; the result and the note are this module's own.
+  it('names the worker it was not permitted to end, and keeps its pid file', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${MISMATCHED_WORKER_PID}\n`)
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+      if (signal === 0) return true
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+    })
+    try {
+      expect(stopWorkerDetailed(DIR, undefined, { queryCommandLine: () => ({ status: 'failed' }) })).toEqual({ stopped: false, leftRunning: MISMATCHED_WORKER_PID })
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(MISMATCHED_WORKER_PID))
+      expect(workerLeftRunningNote(MISMATCHED_WORKER_PID)).toContain(`pid ${MISMATCHED_WORKER_PID}) left running`)
+      expect(workerLeftRunningNote(MISMATCHED_WORKER_PID)).toContain('EPERM')
     } finally {
       killSpy.mockRestore()
     }
