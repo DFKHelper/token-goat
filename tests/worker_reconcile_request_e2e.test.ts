@@ -31,7 +31,7 @@ const scratch: string[] = []
 afterEach(async () => {
   await pendingEmbeddings()
   closeAllDbs()
-  for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
 function git(cwd: string, ...args: string[]): void {

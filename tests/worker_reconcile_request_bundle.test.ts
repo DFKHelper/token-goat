@@ -38,7 +38,7 @@ afterEach(async () => {
   }
   for (const gate of gates.splice(0)) await gate.dispose()
   closeAllDbs()
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
 function git(cwd: string, ...args: string[]): void {
