@@ -16,14 +16,16 @@ import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 import { indexableDir } from './helpers/temp-config.js'
 import { runTeardown } from './helpers/strict_teardown.js'
 
-const hashed = vi.hoisted(() => ({ calls: 0 }))
+const hashed = vi.hoisted(() => ({ calls: 0, duringHash: undefined as (() => void) | undefined }))
 vi.mock('../src/fingerprint.js', async (importOriginal) => {
   const actual = await importOriginal<typeof FingerprintModule>()
   return {
     ...actual,
     fingerprintFile: (filePath: string) => {
       hashed.calls++
-      return actual.fingerprintFile(filePath)
+      const sha = actual.fingerprintFile(filePath)
+      hashed.duringHash?.()
+      return sha
     },
   }
 })
@@ -84,7 +86,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  runTeardown([() => vi.restoreAllMocks(), () => getDb(dbPath).close(), () => fs.rmSync(dataDir, { recursive: true, force: true })])
+  runTeardown([() => { hashed.duringHash = undefined }, () => vi.useRealTimers(), () => vi.restoreAllMocks(), () => getDb(dbPath).close(), () => fs.rmSync(dataDir, { recursive: true, force: true })])
 })
 
 describe('the worker restamp of a touched file whose bytes did not change', () => {
@@ -151,6 +153,55 @@ describe('the reconcile record of a clean hash', () => {
   })
 })
 
+describe('the clock a clean hash is judged by', () => {
+  // The sweep's hash takes 5 s of the injected clock. The file carries a stamp one second before the clock read ahead of its hash, so by the end-of-sweep clock it looks a full tick old and by the pre-hash clock it does not: a save landing mid-hash at that coarse stamp must not be hidden by an index time taken after the hash.
+  const SWEEP_START_MS = 1_800_000_000_000
+  const HASH_TAKES_MS = 5000
+  const STAMP_SEC = SWEEP_START_MS / 1000 - 1
+
+  /** One recording sweep whose every hash advances the injected clock by 5 s. */
+  function sweepWithSlowHash(): void {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(SWEEP_START_MS)
+    hashed.duringHash = () => vi.setSystemTime(Date.now() + HASH_TAKES_MS)
+    reconcileProject({ cwd: projectDir, dbPath, budgetMs: 0, queueDir: dataDir })
+    hashed.duringHash = undefined
+  }
+
+  it('does not give a racy file an index time read after its hash: a clock that ran during the hash must not make it calm', () => {
+    indexWith('slow.ts', STAMP_SEC, STAMP_SEC)
+
+    sweepWithSlowHash()
+
+    expect(row('slow.ts').indexed_at, 'the index time was read after the hash, so an edit made during the hash reads as older than it').toBe(STAMP_SEC)
+    expect(dryHashes(), 'a file whose stamp was inside the tick of its hash was treated as calm').toBe(1)
+  })
+
+  it('gives a file that is a tick older than the pre-hash clock that clock as its index time, not the later one', () => {
+    const calm = SWEEP_START_MS / 1000 - 2
+    indexWith('calm.ts', calm, calm)
+
+    sweepWithSlowHash()
+
+    expect(row('calm.ts').indexed_at, 'the index time is not the clock read before the hash').toBe(SWEEP_START_MS / 1000)
+  })
+
+  it('holds the worker restamp to the same rule: a drain whose hash ran the clock forward leaves a racy file racy', async () => {
+    indexWith('drained.ts', STAMP_SEC, STAMP_SEC)
+    appendDirtyQueuePaths(dataDir, [resolveIndexPath('drained.ts', projectDir)])
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(SWEEP_START_MS)
+    hashed.duringHash = () => vi.setSystemTime(Date.now() + HASH_TAKES_MS)
+
+    drainOnce(dataDir)
+    await pendingEmbeddings()
+    hashed.duringHash = undefined
+
+    expect(row('drained.ts').indexed_at, 'the worker restamp took its index time after the hash').toBe(STAMP_SEC)
+    expect(dryHashes(), 'a file whose stamp was inside the tick of the drain hash was treated as calm').toBe(1)
+  })
+})
+
 describe('restampVerifiedUnchanged at the tick boundary', () => {
   const NOW = OLD + 1000
 
@@ -160,7 +211,7 @@ describe('restampVerifiedUnchanged at the tick boundary', () => {
     const indexedPath = (getDb(dbPath).prepare('SELECT path FROM files WHERE path LIKE ?').get('%/edge.ts') as { path: string }).path
     const sha = (getDb(dbPath).prepare('SELECT sha FROM files WHERE path = ?').get(indexedPath) as { sha: string }).sha
 
-    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, rowMtime: stored.mtime, statMtimeSec: NOW - 2 }], NOW)
+    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, rowMtime: stored.mtime, stamp: { mtimeSec: NOW - 2, clockSec: NOW } }])
 
     expect(row('edge.ts')).toEqual({ mtime: NOW - 2, indexed_at: NOW })
   })
@@ -171,7 +222,7 @@ describe('restampVerifiedUnchanged at the tick boundary', () => {
     const indexedPath = (getDb(dbPath).prepare('SELECT path FROM files WHERE path LIKE ?').get('%/young.ts') as { path: string }).path
     const sha = (getDb(dbPath).prepare('SELECT sha FROM files WHERE path = ?').get(indexedPath) as { sha: string }).sha
 
-    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, rowMtime: stored.mtime, statMtimeSec: NOW - 1.9 }], NOW)
+    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha, rowMtime: stored.mtime, stamp: { mtimeSec: NOW - 1.9, clockSec: NOW } }])
 
     expect(row('young.ts')).toEqual({ mtime: NOW - 1.9, indexed_at: OLD })
   })
@@ -181,7 +232,7 @@ describe('restampVerifiedUnchanged at the tick boundary', () => {
     const stored = row('moved.ts')
     const indexedPath = (getDb(dbPath).prepare('SELECT path FROM files WHERE path LIKE ?').get('%/moved.ts') as { path: string }).path
 
-    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha: 'not-the-row-sha', rowMtime: stored.mtime, statMtimeSec: NOW - 100 }], NOW)
+    restampVerifiedUnchanged(dbPath, [{ indexedPath, sha: 'not-the-row-sha', rowMtime: stored.mtime, stamp: { mtimeSec: NOW - 100, clockSec: NOW } }])
 
     expect(row('moved.ts')).toEqual(stored)
   })

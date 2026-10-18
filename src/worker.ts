@@ -11,7 +11,7 @@ import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { getFileEntry } from './index_reader.js'
-import { restampVerifiedUnchanged } from './reconcile.js'
+import { readPreHashStamp, restampVerifiedUnchanged, type PreHashStamp } from './reconcile.js'
 import { normalizePath } from './paths.js'
 import { countNoun, foldPath, isUnderBlockedRoot, extractErrorMessage } from './util.js'
 import { configProjectRootFor, loadConfig, withConfigProjectRoot } from './config.js'
@@ -321,11 +321,11 @@ export function embedPolicyResolver(): (absPath: string) => { configRoot: string
 }
 
 /** Build the index callback the drain loop uses by default: parse each changed file and write its symbol/ref rows into the index DB at `dbPath`. A parse or read failure on one file is swallowed so a single bad file never aborts the batch or crashes the drain loop -- but the failure is logged to {@link workerErrorLogPath} and signalled via the {@link INDEX_FAILED} sentinel so `processDirtyBatch` never counts it as a successful index. The file's `files.sha` row is left exactly as it was before this attempt, so if the file is ever touched again the sha-gate below will not match its (still un-indexed) content and a reindex will be retried automatically. */
-export function makeIndexer(dbPath: string): (absPath: string, sha: string, statMtimeSec?: number) => unknown {
+export function makeIndexer(dbPath: string): (absPath: string, sha: string, stamp?: PreHashStamp) => unknown {
   const dir = path.dirname(dbPath)
   // Per indexer, which drainOnce builds once per drain.
   const embedPolicy = embedPolicyResolver()
-  return (absPath, sha, statMtimeSec) => {
+  return (absPath, sha, stamp) => {
     try {
       // Register this file's project root as sweepable before any gate below can skip the file: a drain that finds everything fresh still proves the project has rows worth sweeping. See recordKnownRootThrottled.
       recordKnownRootThrottled(absPath, dir, dbPath)
@@ -354,7 +354,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string, stat
       if (!parseUnchanged) {
         indexFileSync(absPath, dbPath)
       } else if (entry !== null) {
-        if (statMtimeSec !== undefined) restampVerifiedUnchanged(dbPath, [{ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, statMtimeSec }])
+        if (stamp !== undefined) restampVerifiedUnchanged(dbPath, [{ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, stamp }])
       }
       // Embedding freshness is gated INDEPENDENTLY of parse freshness (files.embed_sha, set only after indexFileEmbeddings actually commits -- see its doc comment in parser.ts). If a prior embedding attempt crashed or threw before stamping embed_sha, the parse-sha gate above would otherwise mask that forever: identical content would keep skipping the reparse AND skip re-embedding, leaving chunks permanently stale/missing. Re-check embed_sha against the current sha every time, even when the parse gate above skipped. While embeddings are currently disabled, indexFileEmbeddings stamps embed_sha with disabledEmbedSha(sha) instead of the bare sha (see its doc comment) so this gate can still hold and avoid re-entering indexFileEmbeddings on every drain of an unchanged file -- but a bare-sha match must never satisfy the gate while disabled, or a file that was only ever marker-stamped (never actually embedded) would look "unchanged" the instant embeddings are re-enabled, permanently skipping its real first embed. Optional chaining/fallback here is a defensive test-mock safety net, not a real production path: loadConfig() always returns a fully-populated, schema-validated config object in production. Several existing tests in this file mock loadConfig() with only a partial `{ worker: {...} }` shape (they exercise unrelated gates), so a bare `.indexing.embeddings_enabled` here would throw for those. Default to enabled (true), matching config.ts's own default, so this new gate check is a no-op for tests that never cared about embeddings. embeddingsEnabled and depsAvailable are computed above, before getFileEntry. depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the optional embedding deps were absent (stamped an `unavailable:` marker) from one that was really embedded: the marker stays "fresh" while deps are still missing, but forces a re-embed the moment the model + sqlite-vec become usable. That independence covers files.parser_sha too: it answers which extractor wrote the symbol rows, never whether the stored vectors match this content, so a stale parser stamp must not drag this gate to false (it did, which re-embedded the whole index on every parser bump and made writeParseResult's embedShaToCarry dead for the waste it exists to prevent). spellingStale is the one parse-side condition that does belong here: a case-only rename leaves the content byte-identical, so isEmbedFresh would say fresh, but `chunks` rows are keyed by file_path and would keep the old spelling forever. Read the stamp the reparse above just wrote, not the one `entry` captured before it: writeParseResult clears the carried embed_sha when the reparse moved this file's embedding boundaries (see embeddingBoundariesMoved in parser.ts), and consulting the pre-parse row would defer that re-embed to some later drain -- which for a file nobody edits again is never.
       const embedEntry = parseUnchanged ? entry : getFileEntry(absPath, dbPath)
@@ -405,19 +405,10 @@ function pruneDirtyPath(p: string, remove: (absPath: string) => void, dir: strin
   }
 }
 
-/** The file's mtime in seconds as the index records it (parser.ts safeMtime), or undefined when it cannot be statted. */
-function statMtimeSeconds(absPath: string): number | undefined {
-  try {
-    return fs.statSync(absPath).mtimeMs / 1000
-  } catch {
-    return undefined
-  }
-}
-
 /** Process one batch of dirty paths. For each path: skip if the file no longer exists or cannot be fingerprinted, otherwise re-index it. The default `index` callback parses the file and writes its rows into the global index DB; tests inject their own callback to observe the plumbing in isolation. Returns the number of paths actually (re)indexed -- a path whose callback returns `false` (the default indexer's sha-gate skip for byte-identical content) or `INDEX_FAILED` (the default indexer's sentinel for a swallowed, logged indexing failure -- see makeIndexer) is visited but not counted. Exported for unit tests so the drain logic can be exercised without a thread. */
 export function processDirtyBatch(
   paths: string[],
-  index: (absPath: string, sha: string, statMtimeSec?: number) => unknown = makeIndexer(globalDbPath()),
+  index: (absPath: string, sha: string, stamp?: PreHashStamp) => unknown = makeIndexer(globalDbPath()),
   remove: (absPath: string) => void = makeRemover(globalDbPath()),
   dir: string = dataDir(),
   requeue: (dir: string, absPath: string) => void = requeueDirtyPath,
@@ -443,8 +434,8 @@ export function processDirtyBatch(
       if (pruneDirtyPath(p, remove, dir, requeue)) indexed += 1
       continue
     }
-    // Stat before the hash, so the mtime recorded for a file whose sha matches its row is the one the hashed bytes carried; makeIndexer's restamp relies on that order. A failed stat leaves it undefined and the restamp is skipped.
-    const statMtimeSec = statMtimeSeconds(p)
+    // Stat and clock before the hash, so the mtime recorded for a file whose sha matches its row is the one the hashed bytes carried and its index time is no later than the hash; makeIndexer's restamp relies on that order. A failed stat leaves it undefined and the restamp is skipped.
+    const stamp = readPreHashStamp(p)
     const sha = fingerprintFile(p)
     if (sha === null) {
       // The file exists but couldn't be read right now (lock/permission/race) -- see logTransientReadFailure's doc comment. Log and requeue instead of silently dropping it.
@@ -468,7 +459,7 @@ export function processDirtyBatch(
       // best-effort signal only -- never let project-root discovery abort a real index.
     }
     // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any other return value (including void/undefined from callers that don't bother returning anything) counts as indexed.
-    const result = index(p, sha, statMtimeSec)
+    const result = index(p, sha, stamp)
     if (result === INDEX_FAILED) {
       // Requeue for the same reason the fingerprint branch above does, and it is the same class of failure: makeIndexer's catch covers a SQLITE_BUSY on the index write and a lock inside indexFileSync that the earlier fingerprint read happened to miss, both of which clear on their own. drainOnce has already claimed this batch by renaming the queue file aside and will delete it, so a path not requeued here is gone for good -- its rows then stay stale until something edits the file again, silently, which is worse than being visibly behind. The bounded budget in bumpAndCheckRetry is what keeps a genuinely unindexable file from being retried forever.
       requeue(dir, p)

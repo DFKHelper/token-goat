@@ -34,6 +34,22 @@ function mtimeEqualsRow(entry: FileIndexEntry, diskMtimeMs: number): boolean {
   return entry.mtime !== 0 && diskMtimeMs / 1000 === entry.mtime
 }
 
+/** What a caller reads just before it hashes a file: the file's mtime in seconds, then the clock. The stat comes BEFORE the bytes are hashed, so the mtime is the stamp the hashed bytes carried (a stat after the hash could record the stamp of a later edit against the old bytes); the clock is read no later than the hash, so any edit made after the hash happened after it. */
+export interface PreHashStamp {
+  readonly mtimeSec: number
+  readonly clockSec: number
+}
+
+/** Read the {@link PreHashStamp} for `absPath`, or undefined when it cannot be statted. Call it before the hash, never after. */
+export function readPreHashStamp(absPath: string): PreHashStamp | undefined {
+  try {
+    const mtimeSec = fs.statSync(absPath).mtimeMs / 1000
+    return { mtimeSec, clockSec: Date.now() / 1000 }
+  } catch {
+    return undefined
+  }
+}
+
 interface VerifiedUnchangedFile {
   /** The `files.path` key of the row, as the index spelled it. */
   readonly indexedPath: string
@@ -41,20 +57,20 @@ interface VerifiedUnchangedFile {
   readonly sha: string
   /** The `files.mtime` the row holds now, in seconds. */
   readonly rowMtime: number
-  /** The file's mtime in seconds, read by a stat taken BEFORE the bytes were hashed, so it is the stamp the hashed bytes carried; a stat after the hash could record the stamp of a later edit against the old bytes. */
-  readonly statMtimeSec: number
+  /** The file's mtime and the clock, both read before the bytes were hashed. */
+  readonly stamp: PreHashStamp
 }
 
-/** Record that the bytes behind each file's `sha` carried its `statMtimeSec`, in one transaction under one clock read (a caller on a mocked or budgeted clock reads it once, not once per file). When that mtime is at least one tick older than `nowSec`, `mtime` and `indexed_at = now` are written together, so the row satisfies the racy-clean rule from the next sweep on. A newer mtime is not stamped with an index time: the file may still be mid-write, so it stays racy and is hashed again until it ages past the tick (only a moved mtime is recorded, as the pre-read probe's equality gate needs). Guarded on the sha, so a row rewritten since keeps its stamp. Best-effort: a database error leaves the rows as they were. */
-export function restampVerifiedUnchanged(dbPath: string, files: readonly VerifiedUnchangedFile[], nowSec: number = Date.now() / 1000): void {
+/** Record that the bytes behind each file's `sha` carried its `stamp.mtimeSec`, in one transaction. Each file is judged, and its `indexed_at` written, from the clock read before that file's hash, never from a clock read at the end of a sweep: a file saved again after the hash but before such a clock would otherwise look older than the index time it was given and never be hashed again. When the mtime is at least one tick older than that clock, `mtime` and `indexed_at = clockSec` are written together, so the row satisfies the racy-clean rule from the next sweep on. A newer mtime is not stamped with an index time: the file may still be mid-write, so it stays racy and is hashed again until it ages past the tick (only a moved mtime is recorded, as the pre-read probe's equality gate needs). Guarded on the sha, so a row rewritten since keeps its stamp. Best-effort: a database error leaves the rows as they were. */
+export function restampVerifiedUnchanged(dbPath: string, files: readonly VerifiedUnchangedFile[]): void {
   try {
     const db = getDb(dbPath)
     const stampBoth = db.prepare('UPDATE files SET mtime = ?, indexed_at = ? WHERE path = ? AND sha = ?')
     const stampMtime = db.prepare('UPDATE files SET mtime = ? WHERE path = ? AND sha = ?')
     db.transaction(() => {
-      for (const file of files) {
-        if (file.statMtimeSec + TIMESTAMP_TICK_SEC <= nowSec) stampBoth.run(file.statMtimeSec, nowSec, file.indexedPath, file.sha)
-        else if (file.statMtimeSec !== file.rowMtime) stampMtime.run(file.statMtimeSec, file.indexedPath, file.sha)
+      for (const { indexedPath, sha, rowMtime, stamp } of files) {
+        if (stamp.mtimeSec + TIMESTAMP_TICK_SEC <= stamp.clockSec) stampBoth.run(stamp.mtimeSec, stamp.clockSec, indexedPath, sha)
+        else if (stamp.mtimeSec !== rowMtime) stampMtime.run(stamp.mtimeSec, indexedPath, sha)
       }
     })()
   } catch {
@@ -260,7 +276,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const added: string[] = []
   // Every tracked path, not only the scanned ones: a sweep the budget cut short has still not seen the rest of the listing, and a row for one of them is tracked, not a deletion candidate.
   const seenOnDisk = new Set<string>(tracked.map((file) => foldPath(normalizePath(file))))
-  // Files whose hash matched their row, with the mtime stat taken before that hash; recorded after both passes so the clock is read once, outside the budget checks.
+  // Files whose hash matched their row, with the mtime stat taken before that hash; recorded after both passes, each with the clock read before its own hash.
   const verifiedClean: VerifiedUnchangedFile[] = []
   let mtimeOnly = 0
   let parserStale = 0
@@ -320,6 +336,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch. `entry.mtime` is stored in seconds (see `safeMtime` in parser.ts) while `mtimeMs` is milliseconds, so the comparison converts here rather than at the write side, which would require migrating every already-indexed row.
     if (mtimeProvesUnchanged(entry, mtimeMs)) continue
 
+    // Read after the stat and before the hash: an edit that lands after this hash lands after this clock, which is what lets the restamp below use it as the row's index time.
+    const clockSec = Date.now() / 1000
     const diskSha = fingerprintFile(file)
     if (diskSha === null) {
       changed.push(file)
@@ -327,8 +345,8 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     }
     if (diskSha === entry.sha) {
       if (!mtimeEqualsRow(entry, mtimeMs)) mtimeOnly++
-      // The hash proved the bytes unchanged, so it is recorded once the sweep ends: without that a file indexed inside the tick of its own edit, or one whose mtime moved over identical bytes, is hashed again on every sweep. The stat above is the one taken before the hash.
-      verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, statMtimeSec: mtimeMs / 1000 })
+      // The hash proved the bytes unchanged, so it is recorded once the sweep ends: without that a file indexed inside the tick of its own edit, or one whose mtime moved over identical bytes, is hashed again on every sweep. The stat and the clock above are the ones taken before the hash.
+      verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, stamp: { mtimeSec: mtimeMs / 1000, clockSec } })
       continue
     }
     changed.push(file)
@@ -364,11 +382,12 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       }
       // A live row git does not list is still compared against its content, as the scan above compares a tracked one: nothing else revisits an untracked file rewritten outside an edit, such as one a formatter or `git stash pop` changed past the post-bash sweep's cap.
       if (st === null || mtimeProvesUnchanged(entry, st.mtimeMs)) continue
+      const clockSec = Date.now() / 1000
       const diskSha = fingerprintFile(entry.filePath)
       if (diskSha === entry.sha) {
         if (!mtimeEqualsRow(entry, st.mtimeMs)) mtimeOnly++
-        // Same proof, same record as the scan above; `st` was read before the hash.
-        verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, statMtimeSec: st.mtimeMs / 1000 })
+        // Same proof, same record as the scan above; `st` and the clock were read before the hash.
+        verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, rowMtime: entry.mtime, stamp: { mtimeSec: st.mtimeMs / 1000, clockSec } })
       } else if (diskSha !== null) changed.push(entry.filePath)
     }
   }
