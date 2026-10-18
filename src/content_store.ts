@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { isBlobStale, listBlobIdsWithPrefix, loadBlob, storeBlob } from './disk_cache.js'
 import { shortFingerprint } from './fingerprint.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { canonicalize, foldPath } from './path_containment.js'
 import { findProject } from './project.js'
 import { redactSecrets } from './secret_redact.js'
@@ -247,8 +247,8 @@ interface FoundHandoff {
   createdAt: number
 }
 
-function loadHandoffUnder(id: string, name: string, identity: string): FoundHandoff | null {
-  if (isBlobStale(CONTENT_SUBDIR, id)) return null
+// The record stored under `id` if it is a well-formed handoff of this name and project, whatever its age; the callers decide what age means.
+function readHandoffRecord(id: string, name: string, identity: string): FoundHandoff | null {
   const value = loadBlob(CONTENT_SUBDIR, id)
   if (value === null || typeof value !== 'object') return null
   const entry = value as Partial<StoredHandoff>
@@ -266,6 +266,14 @@ function loadHandoffUnder(id: string, name: string, identity: string): FoundHand
   return { entry: entry as StoredHandoff, createdAt: entry.createdAt }
 }
 
+function loadHandoffUnder(id: string, name: string, identity: string): FoundHandoff | null {
+  return isBlobStale(CONTENT_SUBDIR, id) ? null : readHandoffRecord(id, name, identity)
+}
+
+function handoffLookupIds(name: string, root: string): string[] {
+  return [handoffIdFromKey(name, handoffRootKey(root)), ...legacyHandoffIds(name, root)]
+}
+
 export interface ResolvedHandoff {
   result: CompressionResult | string
   // Copies of the same handoff kept under a previous root spelling whose text differs from the one returned, newest first. Reading never deletes or rewrites them.
@@ -275,10 +283,9 @@ export interface ResolvedHandoff {
 // Looks the handoff up under the current id and under every legacy id (lookup of both rather than migrate-on-read: a read that wrote would refresh the old record's age and could overwrite a record the user still wants). When several hold the name, the newer stored timestamp wins and the current id wins a tie.
 export function resolveHandoffDetailed(name: string, opts: { projectRoot?: string; full?: boolean } = {}): ResolvedHandoff | null {
   const root = normalizeProjectRoot(opts.projectRoot)
-  const key = handoffRootKey(root)
   const identity = handoffRootIdentity(root)
   const found: FoundHandoff[] = []
-  for (const id of [handoffIdFromKey(name, key), ...legacyHandoffIds(name, root)]) {
+  for (const id of handoffLookupIds(name, root)) {
     const hit = loadHandoffUnder(id, name, identity)
     if (hit !== null) found.push(hit)
   }
@@ -296,4 +303,26 @@ export function resolveHandoffDetailed(name: string, opts: { projectRoot?: strin
 
 export function resolveHandoff(name: string, opts: { projectRoot?: string; full?: boolean } = {}): CompressionResult | string | null {
   return resolveHandoffDetailed(name, opts)?.result ?? null
+}
+
+// The one honest distinction the store can draw: a record still on disk but past the age limit expired, and its own createdAt says when it was stored. A record the cache has already pruned leaves nothing behind (no tombstone is kept past the age limit), so it reads as never created.
+export function describeMissingHandoff(name: string, projectRoot?: string): string {
+  const root = normalizeProjectRoot(projectRoot)
+  const identity = handoffRootIdentity(root)
+  let storedAt: number | null = null
+  for (const id of handoffLookupIds(name, root)) {
+    if (!isBlobStale(CONTENT_SUBDIR, id)) continue
+    const hit = readHandoffRecord(id, name, identity)
+    if (hit !== null && (storedAt === null || hit.createdAt > storedAt)) storedAt = hit.createdAt
+  }
+  return storedAt === null
+    ? `no local handoff named ${echoedValue(name)} in this project`
+    : `handoff ${echoedValue(name)} expired: it was stored ${new Date(storedAt).toISOString()}, which is past the local cache's age limit`
+}
+
+/** The note for copies of a handoff kept under a previous root spelling, or null when there are none. `readWith` words how the newest differing copy is read back from its content id, which differs between the CLI and an MCP client. */
+export function olderCopyNote(name: string, olderCopies: ResolvedHandoff['olderCopies'], readWith: (contentId: string) => string): string | null {
+  const older = olderCopies[0]
+  if (older === undefined) return null
+  return `note: ${olderCopies.length} older ${olderCopies.length === 1 ? 'copy' : 'copies'} of handoff ${echoedValue(name)} (stored ${new Date(older.createdAt).toISOString()}) is kept under a previous project-root spelling; read it with: ${readWith(older.contentId)}`
 }

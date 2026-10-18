@@ -8,7 +8,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
-import { CONTENT_MAX_BYTES, CONTENT_MAX_ITEMS, compressText, createHandoff, isContentExpired, resolveHandoff, resolveHandoffDetailed, retrieveText } from '../src/content_store.js'
+import { CONTENT_MAX_BYTES, CONTENT_MAX_ITEMS, compressText, createHandoff, describeMissingHandoff, isContentExpired, resolveHandoff, resolveHandoffDetailed, retrieveText } from '../src/content_store.js'
 import { shortFingerprint } from '../src/fingerprint.js'
 import { canonicalize } from '../src/path_containment.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -112,16 +112,6 @@ describe.skipIf(!isWin)('a handoff is found under any spelling of its root', () 
   it('resolves a record stored under the legacy backslash spelling from the forward-slash spelling', () => {
     writeLegacyRecord(backslashSpelling(projectDir), 'old-notes', 'stored after the root flipped', Date.now())
     expect(resolveHandoff('old-notes', { projectRoot: forwardSpelling(projectDir), full: true })).toBe('stored after the root flipped')
-  })
-
-  it('does not hand a legacy record of another directory to this one', () => {
-    const other = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-other-'))
-    try {
-      writeLegacyRecord(forwardSpelling(other), 'old-notes', 'belongs elsewhere', Date.now())
-      expect(resolveHandoff('old-notes', { projectRoot: projectDir })).toBeNull()
-    } finally {
-      fs.rmSync(other, { recursive: true, force: true })
-    }
   })
 })
 
@@ -261,6 +251,45 @@ describe('a handoff stored under the resolved spelling of a linked root', () => 
   })
 })
 
+describe('a root that is a link whose target was deleted', () => {
+  // The other-project row plants a record at the id this root looks under, carrying another project's root.
+  function danglingRoot(): string {
+    const { real, link } = linkedRoots()
+    fs.rmSync(real, { recursive: true })
+    return link
+  }
+
+  it('still finds a record written from the same spelling before the target went', () => {
+    const { real, link } = linkedRoots()
+    createHandoff('plan', 'written while the target existed', link)
+    fs.rmSync(real, { recursive: true })
+
+    expect(resolveHandoff('plan', { projectRoot: link, full: true })).toBe('written while the target existed')
+  })
+
+  it('still finds a record written from the same spelling after the target went', () => {
+    const link = danglingRoot()
+    createHandoff('plan', 'written to a dangling link', link)
+
+    expect(resolveHandoff('plan', { projectRoot: link, full: true })).toBe('written to a dangling link')
+  })
+
+  it('does not hand it another project record, and does not throw', () => {
+    const link = danglingRoot()
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-other-'))
+    try {
+      const created = createHandoff('plan', 'belongs elsewhere', link)
+      const file = path.join(contentDir(), `${created.id}.json`)
+      fs.writeFileSync(file, JSON.stringify({ ...(JSON.parse(fs.readFileSync(file, 'utf8')) as object), projectRoot: other }))
+
+      expect(() => resolveHandoff('plan', { projectRoot: link, full: true })).not.toThrow()
+      expect(resolveHandoff('plan', { projectRoot: link, full: true })).toBeNull()
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true })
+    }
+  })
+})
+
 describe.skipIf(!isWin)('the extended-length prefix of a Windows path', () => {
   const extended = (dir: string): string => `${BACKSLASH}${BACKSLASH}?${BACKSLASH}${backslashSpelling(dir)}`
 
@@ -384,5 +413,32 @@ describe('a stored handoff record is validated when it is loaded', () => {
     expect(resolved?.result).toBe('the current text')
     expect(resolved?.olderCopies).toEqual([])
     expect(fs.existsSync(legacy.file)).toBe(true)
+  })
+})
+
+describe('a handoff that aged out is told apart from one never created', () => {
+  // HAND-DERIVED: the age rule reads the record file's mtime, which is set two days back; the stored createdAt is what the message must quote.
+  it('says it expired and when, for a record still on disk past the age limit', () => {
+    const created = createHandoff('plan', 'old plan', projectDir)
+    const file = path.join(contentDir(), `${created.id}.json`)
+    const storedAt = (JSON.parse(fs.readFileSync(file, 'utf8')) as { createdAt: number }).createdAt
+    setMtime(created.id, Date.now() - 48 * 3600 * 1000)
+
+    expect(resolveHandoff('plan', { projectRoot: projectDir })).toBeNull()
+    expect(describeMissingHandoff('plan', projectDir)).toContain(`expired: it was stored ${new Date(storedAt).toISOString()}`)
+    expect(describeMissingHandoff('never-made', projectDir)).toBe('no local handoff named "never-made" in this project')
+  })
+
+  it('says so through the built bundle, and keeps the plain message for a name never created', () => {
+    expect(runCli(['handoff-create', 'plan', 'old plan'], projectDir).status).toBe(0)
+    const id = fs.readdirSync(contentDir()).find((file) => file.startsWith('tg_handoff_'))?.slice(0, -5) as string
+    setMtime(id, Date.now() - 48 * 3600 * 1000)
+
+    const expired = runCli(['handoff-resolve', '--', 'plan'], projectDir)
+    expect(expired.status).not.toBe(0)
+    expect(expired.stderr).toContain('handoff "plan" expired: it was stored')
+    const never = runCli(['handoff-resolve', '--', 'never-made'], projectDir)
+    expect(never.status).not.toBe(0)
+    expect(never.stderr).toContain('no local handoff named "never-made" in this project')
   })
 })

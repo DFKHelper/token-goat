@@ -26,8 +26,10 @@ import {
   compressText,
   type CompressionResult,
   createHandoff,
-  resolveHandoff,
+  describeMissingHandoff,
   isContentExpired,
+  olderCopyNote,
+  resolveHandoffDetailed,
   retrieveText,
   CONTENT_MAX_INPUT_CHARS,
 } from './content_store.js'
@@ -46,7 +48,7 @@ import { normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath } from './spec_path.js'
 import { displaySafeFailureText } from './command_error.js'
 import { echoedValue, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
-import { forClient, mcpFriendlyText } from './mcp_client_text.js'
+import { forClient, mcpFriendlyText, mcpToolListed } from './mcp_client_text.js'
 
 // Upper bounds for the MCP tools' numeric params, matching the `.max(CONTENT_MAX_INPUT_CHARS)` convention `compress_text` already uses. The `run*` handlers apply no upper clamp of their own (`limit`/`top` go straight into a SQL LIMIT, `maxLines` into a `.slice`), so an unbounded value there is mostly a no-op cap rather than an allocation; `context` is the one that genuinely amplifies, since every extra line is emitted per match.
 const MCP_MAX_LIMIT = 1000
@@ -1098,15 +1100,19 @@ export async function createMcpServer(): Promise<McpServer> {
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
     (args) => {
-      const result = resolveHandoff(args.name, {
-        projectRoot: resolveToolRoot(args.projectRoot),
+      const projectRoot = resolveToolRoot(args.projectRoot)
+      const resolved = resolveHandoffDetailed(args.name, {
+        projectRoot,
         ...(args.full === true ? { full: true } : {}),
       })
-      return result === null
-        ? toCallToolResult({ text: `no local handoff named ${echoedValue(args.name)} in this project`, code: 1 })
-        : typeof result === 'string'
-          ? toRawCallToolResult({ text: result, code: 0 })
-          : toCallToolResult({ text: displaySafeJson(compressionPayload(result)), code: 0 })
+      if (resolved === null) return toCallToolResult({ text: describeMissingHandoff(args.name, projectRoot), code: 1 })
+      const { result, olderCopies } = resolved
+      const answer = typeof result === 'string'
+        ? toRawCallToolResult({ text: result, code: 0 })
+        : toCallToolResult({ text: displaySafeJson(compressionPayload(result)), code: 0 })
+      // A second text block, so the first stays exactly the handoff; the CLI prints the same note on stderr.
+      const note = olderCopyNote(args.name, olderCopies, (contentId) => (mcpToolListed('retrieve_text') ? `the retrieve_text tool with id ${contentId}` : `content id ${contentId}`))
+      return note === null ? answer : { ...answer, content: [...answer.content, { type: 'text', text: note }] }
     },
   )
 
