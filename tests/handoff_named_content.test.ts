@@ -142,6 +142,30 @@ describe('handoff-create says what becomes of the content ids its text names', (
     expect(created.stderr).not.toContain(longer)
   })
 
+  // HAND-DERIVED: ids are tg_ plus 16 hex digits; a letter, digit or underscore touching either end makes the run a longer word, not an id. The id names no stored content, so a match would print an "already gone" note.
+  it.each([
+    ['a letter before it', 'see xtg_0123456789abcdef here'],
+    ['an underscore-joined word before it', 'see my_tg_0123456789abcdef here'],
+    ['a hex digit after it', 'see tg_0123456789abcdef0 here'],
+    ['an underscore-joined word after it', 'see tg_0123456789abcdef_x here'],
+  ])('prints no note for an id with %s', (_label, text) => {
+    const created = runCli(['handoff-create', 'refs', text])
+
+    expect(created.status, created.stderr).toBe(0)
+    expect(created.stderr).not.toContain('note:')
+  })
+
+  it('prints a note for an id set off by punctuation or whitespace on both sides', () => {
+    const id = 'tg_0123456789abcdef'
+
+    for (const text of [`(${id}).`, `see ${id} here`, `${id}`]) {
+      const created = runCli(['handoff-create', 'refs', text])
+
+      expect(created.status, created.stderr).toBe(0)
+      expect(created.stderr, text).toContain(`names content ${id}, which is already gone`)
+    }
+  })
+
   it('treats an id whose record cannot be read as present, not gone', () => {
     const id = storeViaCli('content with a damaged record')
     fs.writeFileSync(blobFile(id), '{not json', 'utf8')
@@ -270,6 +294,31 @@ describe('retrieve says which handoff named an id the cache has dropped', () => 
     const retrieved = runCli(['retrieve', id])
 
     expect(retrieved.stderr).toContain(OLD_MESSAGE(id))
+  })
+
+  // HAND-DERIVED: the handoff texts hold the id only as part of a longer word, so none of them names it; the id itself was never stored.
+  it.each([
+    ['a letter before it', 'see xtg_0123456789abcdef here'],
+    ['an underscore-joined word before it', 'see my_tg_0123456789abcdef here'],
+    ['a hex digit after it', 'see tg_0123456789abcdef0 here'],
+    ['an underscore-joined word after it', 'see tg_0123456789abcdef_x here'],
+  ])('does not name a handoff whose text holds the id with %s', (_label, text) => {
+    const id = 'tg_0123456789abcdef'
+    expect(runCli(['handoff-create', 'refs', text]).status).toBe(0)
+
+    const retrieved = runCli(['retrieve', id])
+
+    expect(retrieved.stderr).toContain(OLD_MESSAGE(id))
+  })
+
+  it('names a handoff whose text sets the id off by punctuation or whitespace', () => {
+    const id = storeViaCli('table of results the handoff points at')
+    expect(runCli(['handoff-create', 'paren', `(${id}).`]).status).toBe(0)
+    pruneAfterAging(id)
+
+    const retrieved = runCli(['retrieve', id])
+
+    expect(retrieved.stderr).toContain('handoff "paren" named it in the text')
   })
 
   it('keeps the existing expired wording for a blob still on disk past the limit', () => {
