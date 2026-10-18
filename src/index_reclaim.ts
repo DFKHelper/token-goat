@@ -166,7 +166,7 @@ function withoutBusyWait<T>(db: ReturnType<typeof getDb>, body: () => T): T {
 }
 
 /** Format a byte count as MB with one decimal, for human-readable reporting. */
-function mb(bytes: number): string {
+export function mb(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
@@ -209,19 +209,26 @@ export function cmdReclaimIndex(opts: {
       `  derived rows dropped -- run \`token-goat index\` in each project to rebuild them\n`,
     )
   }
+  for (const note of reclaimNotes(result, path.basename(dbPath))) process.stdout.write(`  note: ${note}\n`)
+}
+
+/** The follow-up notes a reclaim run owes its reader, in the wording `reclaim-index` prints and the doctor's auto-reclaim row reuses, so one outcome is never described two ways. */
+export function reclaimNotes(result: ReclaimResult, dbName: string): string[] {
+  const notes: string[] = []
   if (result.vacuumDeferred) {
     // Not a failure of the run: the deletes committed, only the page-reclaim is outstanding. Naming the follow-up command matters, because the on-disk size will not have moved and that otherwise reads as "the command did nothing".
-    process.stdout.write(
-      `  note: VACUUM could not get an exclusive lock and was skipped, so on-disk size may be ` +
+    notes.push(
+      `VACUUM could not get an exclusive lock and was skipped, so on-disk size may be ` +
         `unchanged. The index itself was reclaimed; re-run \`token-goat reclaim-index\` once ` +
-        `nothing else is using the database to release the freed pages\n`,
+        `nothing else is using the database to release the freed pages`,
     )
   }
   if (result.checkpointBusy) {
-    process.stdout.write(
-      `  note: a concurrent reader blocked WAL truncation, so some space is still held in ` +
-        `${path.basename(dbPath)}-wal and the figures above count the main file only. The next ` +
-        `checkpoint releases it\n`,
+    notes.push(
+      `a concurrent reader blocked WAL truncation, so some space is still held in ` +
+        `${dbName}-wal and the figures above count the main file only. The next ` +
+        `checkpoint releases it`,
     )
   }
+  return notes
 }

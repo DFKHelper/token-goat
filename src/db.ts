@@ -829,22 +829,29 @@ export function closeDb(dbPath: string): void {
 
 /** Close every open connection and clear the cache. Registered with {@link registerReset} so tests start from a clean slate, and usable directly for process shutdown. */
 export function closeAllDbs(): void {
+  closeAllDbsCollect()
+}
+
+/** As {@link closeAllDbs}, which discards close errors, but returns them: every handle is still attempted and the cache cleared, so a caller that must not lose a failure (a test fixture's teardown) can report it after the rest of its own cleanup ran. */
+export function closeAllDbsCollect(): unknown[] {
+  const errors: unknown[] = []
   try {
     _emptyIndex?.close()
-  } catch {
-    // Best-effort, like the handles below.
+  } catch (err) {
+    errors.push(err)
   }
   _emptyIndex = undefined
   for (const cache of [_connections, _readOnlyConnections]) {
     for (const conn of cache.values()) {
       try {
         conn.close()
-      } catch {
-        // Best-effort: continue closing the rest even if one handle errors.
+      } catch (err) {
+        errors.push(err)
       }
     }
     cache.clear()
   }
+  return errors
 }
 
 // Per request too: a resident hook server that kept a handle open would pin the file against `--purge` and, on Windows, against deletion, and would keep writing to a database replaced underneath it.

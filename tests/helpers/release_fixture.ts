@@ -1,7 +1,7 @@
-/** Teardown for a test fixture that cached db handles and made temp directories. Every step runs in its own try, so one that throws does not skip the rest, and the failures are reported together as one AggregateError. closeAllDbs swallows close errors, so the close step records nothing; a handle left open shows only as a failed removal (EBUSY or EPERM), and only on Windows, so elsewhere an open handle goes unseen. A failed removal is a defect to find, not to retry. */
+/** Teardown for a test fixture that cached db handles and made temp directories. Every step runs in its own try, so one that throws does not skip the rest, and the failures are reported together as one AggregateError. A handle whose close throws is reported with the rest (closeAllDbsCollect), where closeAllDbs would have swallowed it and left it to show only as a failed removal (EBUSY or EPERM), and only on Windows. A failed removal is a defect to find, not to retry. */
 import { rmSync } from 'node:fs'
 
-import { closeAllDbs } from '../../src/db.js'
+import { closeAllDbsCollect } from '../../src/db.js'
 
 function release(failures: unknown[], dirs: string[]): void {
   const step = (fn: () => void): void => {
@@ -12,7 +12,9 @@ function release(failures: unknown[], dirs: string[]): void {
     }
   }
   // Handles first: a directory cannot be removed while a connection into it is open.
-  step(closeAllDbs)
+  step(() => {
+    failures.push(...closeAllDbsCollect())
+  })
   for (const dir of dirs) if (dir !== '') step(() => rmSync(dir, { recursive: true, force: true }))
 }
 

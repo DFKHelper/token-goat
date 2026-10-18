@@ -3,10 +3,10 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { runDoctorRepair } from '../src/cli_doctor.js'
+import { autoReclaimRow, runDoctorRepair } from '../src/cli_doctor.js'
 import { checkDbExists, oversizeDbMessage } from '../src/cli_doctor_index.js'
 import { getDb } from '../src/db.js'
-import { reclaimIndex, indexSizeBytes } from '../src/index_reclaim.js'
+import { reclaimIndex, indexSizeBytes, reclaimNotes, type ReclaimResult } from '../src/index_reclaim.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
 import { writeRealDb } from './helpers/real-db.js'
@@ -137,5 +137,55 @@ describe('doctor index size threshold and auto-reclaim', () => {
 
     const chunkCount = (db.prepare('SELECT count(*) as c FROM chunks').get() as { c: number }).c
     expect(chunkCount).toBe(0)
+  })
+})
+
+// Provenance: the first row is CAPTURE, the ReclaimResult reclaimIndex returned in C:/tgwt/triage_a/repro3b.mts (a second connection held a read transaction during an embeddings-only reclaim of global.db); the others are HAND-DERIVED sizes in MiB.
+describe('autoReclaimRow', () => {
+  const MIB = 1024 * 1024
+  const result = (over: Partial<ReclaimResult>): ReclaimResult => ({
+    beforeBytes: 10 * MIB,
+    afterBytes: 4 * MIB,
+    beforeDbBytes: 10 * MIB,
+    afterDbBytes: 4 * MIB,
+    dropped: {},
+    rebuilt: false,
+    embeddingsOnly: true,
+    checkpointBusy: false,
+    vacuumDeferred: false,
+    ...over,
+  })
+
+  it('says no space was released for the captured reader-blocked run, where DB+WAL grew', () => {
+    const row = autoReclaimRow(result({ beforeBytes: 1792208, afterBytes: 3559240, beforeDbBytes: 4096, afterDbBytes: 1486848, checkpointBusy: true }))
+    expect(row).toContain('no space was released')
+    expect(row).not.toContain('compacted')
+    expect(row).not.toContain('(reclaimed')
+    expect(row).toContain('blocked WAL truncation')
+  })
+
+  it('reports the freed amount and compacted only when VACUUM ran and the checkpoint was not blocked', () => {
+    const row = autoReclaimRow(result({}))
+    expect(row).toBe('Auto-reclaimed embeddings from global.db (reclaimed 6.0 MB, compacted)')
+  })
+
+  it('does not say compacted when the checkpoint was blocked, even with space freed', () => {
+    const row = autoReclaimRow(result({ checkpointBusy: true }))
+    expect(row).toContain('reclaimed 6.0 MB')
+    expect(row).not.toContain('compacted')
+    expect(row).toContain(reclaimNotes(result({ checkpointBusy: true }), 'global.db')[0])
+  })
+
+  it('does not say compacted when VACUUM was skipped, and names the follow-up', () => {
+    const row = autoReclaimRow(result({ vacuumDeferred: true, afterBytes: 10 * MIB, afterDbBytes: 10 * MIB }))
+    expect(row).toContain('no space was released')
+    expect(row).not.toContain('compacted')
+    expect(row).toContain('VACUUM could not get an exclusive lock')
+    expect(row).toContain('token-goat reclaim-index')
+  })
+
+  it('says no space was released, without compacted, for a clean run that freed nothing', () => {
+    const row = autoReclaimRow(result({ afterBytes: 10 * MIB, afterDbBytes: 10 * MIB }))
+    expect(row).toBe('Auto-reclaimed embeddings from global.db (no space was released)')
   })
 })

@@ -47,7 +47,7 @@ import { checkNativeHooks } from './cli_doctor_native.js'
 import { hasSqliteHeader, isZeroLengthDb, quarantineMalformedDb, quickCheckDb, recreateDb } from './db_integrity.js'
 import { checkDbExists, checkSymbolCount, checkDirtyQueueHealth, checkEmbeddingCoverage, checkParserFreshness } from './cli_doctor_index.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
-import { reclaimIndex, indexSizeBytes } from './index_reclaim.js'
+import { comparableSizes, indexSizeBytes, mb, reclaimIndex, reclaimNotes, type ReclaimResult } from './index_reclaim.js'
 import type { DoctorResult } from './doctor_result.js'
 import { type ProcessInfo, checkMcpProcessHealth, readWindowsProcesses, checkWorkerRunning } from './cli_doctor_process.js'
 import { checkGlobalMcpConfig, checkVscodeUserScopeHooks, checkVscodeClaudeHooks, checkClaudeHookEvents, checkClaudeHooksGone, checkVisualStudio, checkZed, checkCursor, checkStrayClaudeMdBlocks, checkVscodeProjectMcp } from './cli_doctor_platforms.js'
@@ -842,6 +842,14 @@ function repairBlocker(key: string, effectiveCfg: Config, projectInfo: ReturnTyp
   return null
 }
 
+/** The repair row for an automatic embeddings reclaim. The figure is the one `reclaim-index` prints (comparableSizes), so a reader-blocked checkpoint that left the DB+WAL total larger reads as no space released instead of a saving. "compacted" is said only when VACUUM ran and the checkpoint was not blocked, and the VACUUM-skipped and checkpoint-busy notes are the ones `reclaim-index` prints. */
+export function autoReclaimRow(res: ReclaimResult): string {
+  const { freed } = comparableSizes(res)
+  const compacted = !res.vacuumDeferred && !res.checkpointBusy
+  const outcome = freed > 0 ? `reclaimed ${mb(freed)}${compacted ? ', compacted' : ''}` : 'no space was released'
+  return [`Auto-reclaimed embeddings from global.db (${outcome})`, ...reclaimNotes(res, 'global.db').map((n) => `note: ${n}`)].join('; ')
+}
+
 /** Automatically repairs known issues such as restrictive security posture and missing semantic models due to offline rollout. */
 export async function runDoctorRepair(opts?: {
   dataDir?: string | undefined
@@ -956,8 +964,7 @@ export async function runDoctorRepair(opts?: {
       const maxBytes = thresholdMb * 1024 * 1024
       if (sizeBytes > maxBytes) {
         const res = reclaimIndex(dbPath, { embeddingsOnly: true })
-        const savedMb = Math.round((res.beforeBytes - res.afterBytes) / (1024 * 1024))
-        repairs.push(`Auto-reclaimed embeddings and compacted global.db (${savedMb > 0 ? `reclaimed ${savedMb} MB` : 'compacted'})`)
+        repairs.push(autoReclaimRow(res))
       }
     } catch (e) {
       errors.push(`Failed to auto-reclaim embeddings from global.db: ${extractErrorMessage(e)}`)
