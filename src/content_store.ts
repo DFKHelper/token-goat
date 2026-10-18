@@ -202,7 +202,14 @@ export function compressText(text: string): CompressionResult {
 
 /** True when a blob for `id` is still on disk but older than the cache's age limit, which is the one case where "expired" can be told apart from "never stored" (an evicted blob leaves nothing behind). A handoff that still names `id` serves it, so that is not expired. */
 export function isContentExpired(id: string): boolean {
-  return CONTENT_ID_PATTERN.test(id) && isBlobStale(CONTENT_SUBDIR, id) && readLiveHandoffText(id) === null
+  return CONTENT_ID_PATTERN.test(id) && isBlobStale(CONTENT_SUBDIR, id) && readBlob(CONTENT_SUBDIR, id).status !== 'unreadable' && readLiveHandoffText(id) === null
+}
+
+// Set when the record for `id` is on disk but cannot be read or parsed, so a caller never reports it missing or expired; null when it is absent or fine.
+export function describeUnreadableContent(id: string): string | null {
+  if (!CONTENT_ID_PATTERN.test(id)) return null
+  const read = readBlob(CONTENT_SUBDIR, id)
+  return read.status === 'unreadable' ? `content ${id} could not be read (${read.code}): a record for it is on disk, so it may exist` : null
 }
 
 export function retrieveText(id: string): string | null {

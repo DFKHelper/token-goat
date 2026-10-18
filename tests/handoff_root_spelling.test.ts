@@ -8,7 +8,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
-import { CONTENT_MAX_BYTES, CONTENT_MAX_ITEMS, compressText, createHandoff, describeMissingHandoff, isContentExpired, resolveHandoff, resolveHandoffDetailed, retrieveText } from '../src/content_store.js'
+import { CONTENT_MAX_BYTES, CONTENT_MAX_ITEMS, compressText, createHandoff, describeMissingHandoff, describeUnreadableContent, isContentExpired, resolveHandoff, resolveHandoffDetailed, retrieveText } from '../src/content_store.js'
 import { shortFingerprint } from '../src/fingerprint.js'
 import { canonicalize } from '../src/path_containment.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -542,5 +542,47 @@ describe('a handoff record that exists but cannot be read is not reported as mis
     expect(resolved.status).not.toBe(0)
     expect(resolved.stderr).toContain('handoff "plan" could not be read (SyntaxError)')
     expect(resolved.stderr).not.toContain('no local handoff')
+  })
+})
+
+// FORMAT-DERIVED: a content record has the shape of origin/main 3913ac9c2 src/content_store.ts storeContent (kind content, id, text, createdAt), written by compressText; each row then overwrites it with text that is not JSON, or puts a directory where the file was, so it is on disk and cannot be read.
+describe('a content record that exists but cannot be read is not reported as missing or expired', () => {
+  function corruptContent(): { id: string; file: string } {
+    const id = compressText('some text worth keeping').id
+    const file = path.join(contentDir(), `${id}.json`)
+    fs.writeFileSync(file, '{not json', 'utf8')
+    return { id, file }
+  }
+
+  it('says it could not be read, naming the code, and is not called expired even when old', () => {
+    const { id } = corruptContent()
+    setMtime(id, Date.now() - 48 * 3600 * 1000)
+
+    expect(retrieveText(id)).toBeNull()
+    expect(isContentExpired(id)).toBe(false)
+    expect(describeUnreadableContent(id)).toBe(`content ${id} could not be read (SyntaxError): a record for it is on disk, so it may exist`)
+  })
+
+  it('names EISDIR when a directory stands where the record file should be', () => {
+    const { id, file } = corruptContent()
+    fs.rmSync(file)
+    fs.mkdirSync(file)
+
+    expect(describeUnreadableContent(id)).toBe(`content ${id} could not be read (EISDIR): a record for it is on disk, so it may exist`)
+  })
+
+  it('says nothing about an id that was never stored', () => {
+    expect(describeUnreadableContent(`tg_${shortFingerprint('never stored')}`)).toBeNull()
+  })
+
+  it('says so through the built bundle, and keeps the old wording for an id never stored', () => {
+    const { id } = corruptContent()
+
+    const unreadable = runCli(['retrieve', id], projectDir)
+    expect(unreadable.status).not.toBe(0)
+    expect(unreadable.stderr).toContain(`content ${id} could not be read (SyntaxError)`)
+    expect(unreadable.stderr).not.toContain('no token-goat content')
+    const never = runCli(['retrieve', `tg_${shortFingerprint('never stored')}`], projectDir)
+    expect(never.stderr).toContain('no token-goat content for id')
   })
 })

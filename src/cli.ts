@@ -82,7 +82,7 @@ import { runBenchCommand } from './cli_bench.js'
 import { expandGlobs } from './cli_diagnostics.js'
 export { expandGlobs }
 import { emitErr } from './emit.js'
-import { compressText, createHandoff, describeMissingHandoff, isContentExpired, olderCopyNote, resolveHandoffDetailed, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
+import { compressText, createHandoff, describeMissingHandoff, describeUnreadableContent, isContentExpired, olderCopyNote, resolveHandoffDetailed, retrieveText, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
 import { CliError, clearCliInvocation, formatCommandError, formatFailedResultText, formatParseError, setCliInvocation } from './command_error.js'
 
 // Defined in a leaf so command modules cli.ts imports can render an error the same way without importing cli.ts back; re-exported here for the many modules that already take CliError from cli.js.
@@ -142,7 +142,7 @@ function cmdContentCompress(text: string | undefined, opts: { file?: string; pay
 
 function cmdRetrieve(id: string, opts: RecallFilterOpts): void {
   const text = retrieveText(id)
-  if (text === null) throw new CliError(isContentExpired(id) ? `content ${id} expired: it is older than the local cache's age limit.` : `no token-goat content for id: ${id}. The local cache may have expired.`)
+  if (text === null) throw new CliError(describeUnreadableContent(id) ?? (isContentExpired(id) ? `content ${id} expired: it is older than the local cache's age limit.` : `no token-goat content for id: ${id}. The local cache may have expired.`))
   // retrieve is the lossless round-trip for compress-text; other commands print `recovery: token-goat retrieve <id>` promising the original bytes back, so with no narrowing flag it must stay byte-verbatim -- only opt into sibling head/tail elision once the caller explicitly asks for a slice.
   const noNarrowing = opts.head === undefined && opts.tail === undefined && opts.grep === undefined && opts.section === undefined && opts.maxMatches === undefined && opts.lines === undefined && opts.context === undefined
   // Written raw, not through out() or the shared filter: both strip ANSI codes for a non-colour stdout and the filter re-joins CRLF lines with LF, so the "original bytes back" came back altered whenever the stored text had either. No trailing newline is added either, so `retrieve <id> > file` reproduces the file compress-text read.
