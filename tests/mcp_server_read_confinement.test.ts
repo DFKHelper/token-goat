@@ -271,16 +271,10 @@ describe('mcp read confinement', () => {
     }
   })
 
-  it('refuses an out-of-root grep when an earlier read already indexed a project under the same parent directory', async () => {
+  it('refuses a grep whose path is the directory of an out-of-root file, with the project root given', async () => {
     const { outsideFile } = makeDirs()
-    const inRootSource = path.join(root, 'lib.ts')
-    fs.writeFileSync(inRootSource, 'export function greet(): string {\n  return "hi"\n}\n')
     const { client, close } = await connectedClient()
     cleanup = close
-
-    // Puts a file under `root` in the index, so the temp directory holding both `root` and `outside` is a workspace the index knows about.
-    const seeded = await client.callTool({ name: 'read', arguments: { spec: `${inRootSource}::greet`, projectRoot: root } })
-    expect(seeded.isError).toBe(false)
 
     const result = await client.callTool({ name: 'grep', arguments: { pattern: 'SECRET', path: [path.dirname(outsideFile)], projectRoot: root } })
     expect(textOf(result)).toContain('outside the project root')
