@@ -1,10 +1,10 @@
 /** The session_start hook runs the drift sweep and says so only when it found something. This is the wiring that makes reconciliation automatic rather than a command nobody remembers to run, and it sits on the hook path this repo's own measurement says is dominated by startup cost. So there are two failure directions, not one: a hook that never repairs anything, and a hook that narrates on every session start and charges for the line. Both have cases here. The sweep is also the one piece of this hook that touches every tracked file, so "never throws" is a property and not an aspiration: a session_start handler that threw would cost the agent the routing reminder the hook exists to deliver, on every session, to fix a stale symbol lookup. Provenance: CAPTURE. Every expectation is measured from real `token-goat hook session_start` runs against a real indexed project outside the OS temp dir (the dirty queue refuses every path under it, so a project there is told its drift could not be queued), driving the built bundle over the same stdin JSON shape the harness sends. No expected string is transcribed from `hooks_session_start.ts`. */
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { getDb } from '../src/db.js'
 import { findGlobalDb } from './helpers/find_global_db.js'
@@ -56,6 +56,15 @@ beforeEach(() => {
   expect(cli(['index', '.']).code, 'indexing the fixture failed').toBe(0)
 })
 
+// Remove what beforeEach made, on every path, each removal independent: a failure removing the project dir must not leave the home dir behind (the nested finally still runs it, and the first error still surfaces). No env is changed here: both dirs reach the CLI through the per-spawn env only.
+afterEach(() => {
+  try {
+    rmSync(projectDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+})
+
 describe('session_start reconciliation', () => {
   it('delivers the routing reminder and no drift line when the index already matches disk', () => {
     const context = sessionStartContext()
@@ -95,7 +104,6 @@ describe('session_start reconciliation', () => {
 
   // Regression: files queued only because their rows came from an older parser were counted in the same "changed outside this session" line as real edits, so after an upgrade the note claimed 1,484 files had been edited outside the session when none had.
   it('says an upgrade-stale file was indexed by an older version, not changed outside this session', () => {
-    expect(cli(['index', '.']).code, 'bringing the fixture index up to date failed').toBe(0)
     expect(sessionStartContext(), 'calibration: the up-to-date index still reports drift').not.toContain('reindexing')
     const db = getDb(findGlobalDb(homeDir) as string)
     db.prepare("UPDATE files SET parser_sha = '0000000000000000' WHERE path LIKE '%alpha.ts'").run()
@@ -107,8 +115,7 @@ describe('session_start reconciliation', () => {
   })
 
   it('discloses a budget-exhausted sweep instead of reading as a clean index', () => {
-    // Bring the index up to date first, then add a brand-new tracked file the index has never seen. A 0ms budget makes reconcileProject break out of its scan loop before it ever reaches this file (see reconcileProject's per-iteration clock check), so `added` comes back empty -- not because the file is unindexed-but-known, but because the sweep never got that far. isReconcileClean() only looks at changed/added/removed, so a note gated on it alone reads this exact case as "nothing to report" even though budgetExhausted is true.
-    expect(cli(['index', '.']).code, 'bringing the fixture index up to date failed').toBe(0)
+    // The beforeEach index is already up to date; add a brand-new tracked file the index has never seen. A 0ms budget makes reconcileProject break out of its scan loop before it ever reaches this file (see reconcileProject's per-iteration clock check), so `added` comes back empty -- not because the file is unindexed-but-known, but because the sweep never got that far. isReconcileClean() only looks at changed/added/removed, so a note gated on it alone reads this exact case as "nothing to report" even though budgetExhausted is true.
     writeFileSync(join(projectDir, 'zzz_never_indexed.ts'), 'export function neverIndexed(): number {\n  return 7\n}\n')
     const git = (...args: string[]): void => {
       spawnSync('git', args, { cwd: projectDir, encoding: 'utf-8' })
