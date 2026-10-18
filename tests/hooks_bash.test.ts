@@ -4370,6 +4370,11 @@ describe('postBashHandler — failing test-runner advisory', () => {
     clearModuleCaches()
   })
 
+  // Every row here caches a failing run's output in the session; cleared after, a row that shuffles in next (a bare `npm test` pre-hook row) does not find that output recalled instead of its command rewritten.
+  afterEach(() => {
+    clearModuleCaches()
+  })
+
   function testRunEvent(command: string, output: string, exitCode: number | null): HookEvent {
     return {
       eventName: 'post_tool_use',
