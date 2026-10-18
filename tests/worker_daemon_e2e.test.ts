@@ -311,7 +311,13 @@ async function withDrainedDaemon(files: Record<string, string>, lookups: (env: N
     const queueDir = path.join(effectiveDataDir(dataBase), 'queue')
     expect(appendDirtyQueuePaths(effectiveDataDir(dataBase), written)).toBe(true)
     // The wait ends when the queue is gone: a drain renames dirty.txt to dirty.txt.draining, indexes the batch, and only then removes that file, so no queue file left means the batch was committed. Embeddings are off for the suite, so nothing requeues behind it.
-    await waitForDaemon('the running daemon to drain the seeded queue entries', queueDir, pid, () => !fs.readdirSync(queueDir).some((name) => name.startsWith('dirty.txt')))
+    let queued: string[] = ['<queue never listed>']
+    await waitForDaemon('the running daemon to drain the seeded queue entries', queueDir, pid, () => {
+      queued = fs.readdirSync(queueDir).filter((name) => name.startsWith('dirty.txt'))
+      return queued.length === 0
+    })
+    // What the wait ended on, asserted before the lookups spawn: a wait whose condition no longer tests the queue would return with the batch still queued, and the lookups' own start-up time would give the daemon the time to finish it unseen.
+    expect(queued, 'the queue entries the wait ended on').toEqual([])
     // One lookup per fixture, after the drain: a daemon that drained into a stub, or dropped refs or a lazily loaded adapter's rows, fails right here rather than being waited on.
     lookups(env, repo)
   } catch (error) {
@@ -325,13 +331,17 @@ async function withDrainedDaemon(files: Record<string, string>, lookups: (env: N
 /** Wait until the daemon `pid` has written its drain heartbeat: `runDetachedWorkerDaemon` writes it only after it has moved to its own working directory, so a heartbeat naming `pid` means that move has already happened. */
 async function waitForDaemonHeartbeat(dataBase: string, pid: number): Promise<void> {
   const heartbeat = path.join(effectiveDataDir(dataBase), 'queue', 'drain-heartbeat')
+  let observed = '<heartbeat never read>'
   await waitForDaemon('the daemon to write its drain heartbeat', path.dirname(heartbeat), pid, () => {
     try {
-      return fs.readFileSync(heartbeat, 'utf8').trim() === String(pid)
+      observed = fs.readFileSync(heartbeat, 'utf8').trim()
     } catch {
-      return false
+      observed = '<heartbeat unreadable>'
     }
+    return observed === String(pid)
   })
+  // What the wait ended on, asserted: a wait whose condition no longer tests the heartbeat would return before the daemon had written it, and this is where that shows.
+  expect(observed, 'the heartbeat the wait ended on names the daemon').toBe(String(pid))
 }
 
 /** Wait for a condition only the live daemon `pid` can bring about, re-evaluated on every change event in `dir` (the directory the daemon writes into) instead of on a timer: the condition is also checked once right after the watcher exists, so a change that landed first is not missed, and a stalled test process only queues events, it cannot make the condition false. The wait ends with a failure naming the cause when an event finds the process gone. The one timer is the hang backstop for a daemon that is alive and silent; it never ends a wait early, and it names a missing process as the cause when it fires. */
