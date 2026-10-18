@@ -140,8 +140,8 @@ function nameWhatIsLeft(ctx: TestContext, read: () => string[]): void {
   })
 }
 
-// Every step runs and every failure is reported together (strict_teardown). The processes go first and are waited for until the process table no longer lists them, so the removal has nothing holding it; a removal that still fails is the failure to report, not one to retry. The wait is bounded only by the hook timeout.
-afterEach(async () => {
+// Every step runs and every failure is reported together (strict_teardown). The processes go first and are waited for until the process table no longer lists them, so the removal has nothing holding it; a removal that still fails is the failure to report, not one to retry. The wait is bounded only by the hook timeout: the hook's own signal ends it there, so no process listing is started after a timed-out hook.
+afterEach(async (ctx) => {
   const failures: unknown[] = []
   const run = (steps: ReadonlyArray<() => void>): void => {
     try {
@@ -164,7 +164,7 @@ afterEach(async () => {
         if (daemon.exitCode === null && daemon.signalCode === null) killProcessTree(daemon.pid)
       }),
     ])
-    const left = await untilNothingLeft(stillRunning)
+    const left = await untilNothingLeft(stillRunning, ctx.signal)
     if (left.length > 0) failures.push(new Error(`still running after the teardown ended them: ${JSON.stringify(left)}`))
     run(roots.splice(0).map((root) => () => fs.rmSync(root, { recursive: true, force: true })))
   } finally {
