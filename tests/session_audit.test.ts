@@ -423,7 +423,9 @@ describe('bash filter fire-rate and read repeat census', () => {
   })
 
   it('parses VS Code chat session jsonl format safely without errors', async () => {
-    const tempFile = path.join(censusDir, 'vscode_chat.jsonl')
+    // Its own directory: a file added to the shared census corpus changed the file count the audit-session alias row asserts, whenever this row ran first.
+    const ownDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-vscode-'))
+    const tempFile = path.join(ownDir, 'vscode_chat.jsonl')
     const vscodeLines = [
       JSON.stringify({ kind: 1, v: { type: 'user', text: 'hello' } }),
       JSON.stringify({
@@ -437,10 +439,14 @@ describe('bash filter fire-rate and read repeat census', () => {
       }),
       JSON.stringify({ kind: 3, v: { result: 'content' } }),
     ]
-    fs.writeFileSync(tempFile, vscodeLines.join('\n') + '\n')
-    const s = await auditSessionCorpus({ dir: tempFile })
-    expect(s.filesScanned).toBe(1)
-    expect(s.parseFailedLines).toBe(0)
+    try {
+      fs.writeFileSync(tempFile, vscodeLines.join('\n') + '\n')
+      const s = await auditSessionCorpus({ dir: tempFile })
+      expect(s.filesScanned).toBe(1)
+      expect(s.parseFailedLines).toBe(0)
+    } finally {
+      fs.rmSync(ownDir, { recursive: true, force: true })
+    }
   })
 })
 

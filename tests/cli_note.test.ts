@@ -229,35 +229,39 @@ describe('note-add / note-get / note-list', () => {
   it('editing an indexed symbol and reindexing makes its note discoverable via note-list --stale-only', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-note-stale-'))
     const file = path.join(dir, 'target.ts')
+    // Its own data directory: a note left stale in the store the other rows share changed what their note-list rows print, whenever this row ran first. All three variables, because TOKEN_GOAT_HOME alone does not move the index.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-note-stale-home-'))
+    const runIsolated = (args: string[]): Promise<RunResult> => runBatched(args, { env: { ...process.env, TOKEN_GOAT_HOME: home, LOCALAPPDATA: home, XDG_DATA_HOME: home } })
     try {
       fs.writeFileSync(file, 'export function staleTargetFn9k(): number {\n  return 1\n}\n')
 
-      const add = await runCli(['note-add', file, '--symbol', 'staleTargetFn9k', '--content-b64', b64('Why it returns 1.')])
+      const add = await runIsolated(['note-add', file, '--symbol', 'staleTargetFn9k', '--content-b64', b64('Why it returns 1.')])
       expect(add.status, add.stderr).toBe(0)
 
-      const beforeGet = await runCli(['note-get', file, '--symbol', 'staleTargetFn9k', '--json'])
+      const beforeGet = await runIsolated(['note-get', file, '--symbol', 'staleTargetFn9k', '--json'])
       expect(beforeGet.status, beforeGet.stderr).toBe(0)
       expect((JSON.parse(beforeGet.stdout) as { stale: boolean }).stale).toBe(false)
 
-      const beforeList = await runCli(['note-list', '--stale-only'])
+      const beforeList = await runIsolated(['note-list', '--stale-only'])
       expect(beforeList.stdout).not.toContain(normalizePath(file))
 
       // Genuine out-of-band edit to the symbol's body, then a real reindex (the same entry point the worker's dirty-queue drain uses) -- not a synthetic fingerprint mismatch.
       fs.writeFileSync(file, 'export function staleTargetFn9k(): number {\n  return 999\n}\n')
-      const idx = await runCli(['index', dir, '--walk'])
+      const idx = await runIsolated(['index', dir, '--walk'])
       expect(idx.status, idx.stderr).toBe(0)
 
-      const afterGet = await runCli(['note-get', file, '--symbol', 'staleTargetFn9k', '--json'])
+      const afterGet = await runIsolated(['note-get', file, '--symbol', 'staleTargetFn9k', '--json'])
       expect(afterGet.status, afterGet.stderr).toBe(0)
       expect((JSON.parse(afterGet.stdout) as { stale: boolean }).stale).toBe(true)
 
-      const afterList = await runCli(['note-list', '--stale-only'])
+      const afterList = await runIsolated(['note-list', '--stale-only'])
       expect(afterList.status, afterList.stderr).toBe(0)
       expect(afterList.stdout).toContain('[STALE]')
       expect(afterList.stdout).toContain(normalizePath(file))
       expect(afterList.stdout).toContain('staleTargetFn9k')
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
+      fs.rmSync(home, { recursive: true, force: true })
     }
   })
 })
