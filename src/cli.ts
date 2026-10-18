@@ -1325,7 +1325,7 @@ export function buildProgram(): Command {
 
   const worker = program.command('worker').description('background indexer lifecycle')
   worker.command('start').description('start the background indexer').action(guard(cmdWorkerStart))
-  worker.command('stop').description('stop the background indexer').action(guard(cmdWorkerStop))
+  worker.command('stop').description('stop the background indexer; exits 1 and says so when the worker is left running').action(guard(cmdWorkerStop))
   worker.command('status').description('check if the indexer is running').action(guard(cmdWorkerStatus))
 
   const hookServer = program.command('hook-server').description('resident processes that answer hook calls and read-only commands without starting Node for each one')
