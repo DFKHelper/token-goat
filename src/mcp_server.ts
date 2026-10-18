@@ -26,6 +26,7 @@ import {
   compressText,
   type CompressionResult,
   createHandoff,
+  describeContentNamedByHandoff,
   describeMissingHandoff,
   describeUnreadableContent,
   isContentExpired,
@@ -1067,7 +1068,7 @@ export async function createMcpServer(): Promise<McpServer> {
     (args) => {
       const text = retrieveText(args.id)
       return text === null
-        ? toCallToolResult({ text: describeUnreadableContent(args.id) ?? (isContentExpired(args.id) ? `token-goat content ${args.id} expired: it is older than the local cache's age limit.` : `no token-goat content for id: ${args.id}`), code: 1 })
+        ? toCallToolResult({ text: describeUnreadableContent(args.id) ?? (isContentExpired(args.id) ? `token-goat content ${args.id} expired: it is older than the local cache's age limit.` : (describeContentNamedByHandoff(args.id) ?? `no token-goat content for id: ${args.id}`)), code: 1 })
         : toRawCallToolResult({ text, code: 0 })
     },
   )

@@ -159,13 +159,20 @@ function legacyHandoffIds(name: string, projectRoot: string): string[] {
 
 // A handoff already stores the full text it points at, so an id equal to a live handoff's contentId is answered from that record when the blob itself has been evicted or has aged out. Nothing here exempts a blob from the shared cache's age, count or byte rules.
 function readLiveHandoffText(id: string): string | null {
-  for (const handoff of listBlobIdsWithPrefix(CONTENT_SUBDIR, 'tg_handoff_')) {
-    if (isBlobStale(CONTENT_SUBDIR, handoff)) continue
-    const entry = loadBlob(CONTENT_SUBDIR, handoff) as Partial<StoredHandoff> | null
-    if (entry === null || typeof entry !== 'object' || entry.kind !== 'handoff' || entry.contentId !== id) continue
+  for (const entry of liveHandoffEntries()) {
+    if (entry.contentId !== id) continue
     if (typeof entry.text === 'string' && contentId(entry.text) === id) return entry.text
   }
   return null
+}
+
+// Every handoff record of any project that is within the age limit, one file read at a time; the caller checks the fields it uses.
+function* liveHandoffEntries(): Generator<Partial<StoredHandoff>> {
+  for (const handoff of listBlobIdsWithPrefix(CONTENT_SUBDIR, 'tg_handoff_')) {
+    if (isBlobStale(CONTENT_SUBDIR, handoff)) continue
+    const entry = loadBlob(CONTENT_SUBDIR, handoff) as Partial<StoredHandoff> | null
+    if (entry !== null && typeof entry === 'object' && entry.kind === 'handoff') yield entry
+  }
 }
 
 function storeContent(text: string): string {
@@ -293,6 +300,26 @@ export function namedContentNotes(handoff: HandoffResult): string[] {
     notes.push(`note: handoff ${named} names content ${id}, which expires at ${expires} (local time) while this handoff lasts until ${lastsUntil}. A handoff keeps only its own text, so after ${expires} ${id} cannot be retrieved.`)
   }
   return notes
+}
+
+const NAMING_HANDOFFS_SHOWN = 3
+
+// For a content id that retrieve could not find: the handoffs of this project, within their own age limit, whose text names it, or null when none does. A per-miss scan of every live record is acceptable because it runs only after a retrieve has already missed, the substring test comes before a record's root is resolved, and 500 live 4 KB handoffs cost about 50-65 ms in process (measured 2026-10-18), the same order as the scan readContent already makes on that miss.
+export function describeContentNamedByHandoff(id: string, projectRoot?: string): string | null {
+  if (!CONTENT_ID_PATTERN.test(id)) return null
+  const identity = handoffRootIdentity(normalizeProjectRoot(projectRoot))
+  const naming: Array<{ name: string; createdAt: number }> = []
+  for (const entry of liveHandoffEntries()) {
+    if (typeof entry.text !== 'string' || typeof entry.name !== 'string' || typeof entry.projectRoot !== 'string') continue
+    if (!entry.text.includes(id) || !contentIdsNamedIn(entry.text).includes(id)) continue
+    if (handoffRootIdentity(entry.projectRoot) !== identity) continue
+    naming.push({ name: entry.name, createdAt: typeof entry.createdAt === 'number' ? entry.createdAt : 0 })
+  }
+  if (naming.length === 0) return null
+  naming.sort((a, b) => b.createdAt - a.createdAt)
+  const shown = naming.slice(0, NAMING_HANDOFFS_SHOWN).map((hit) => echoedValue(hit.name)).join(', ')
+  const more = naming.length > NAMING_HANDOFFS_SHOWN ? ` and ${naming.length - NAMING_HANDOFFS_SHOWN} more` : ''
+  return `content ${id} expired under the ${CONTENT_LIMIT_HOURS} h content limit: ${naming.length === 1 ? 'handoff' : 'handoffs'} ${shown}${more} named it in the text. A handoff keeps only its own text, so the content is gone.`
 }
 
 // A handoff found under one id, with the stored timestamp that decides which of several copies wins.

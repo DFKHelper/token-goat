@@ -11,7 +11,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
-import { compressText } from '../src/content_store.js'
+import { compressText, createHandoff } from '../src/content_store.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { BUNDLE } from './helpers/bundle.js'
@@ -171,5 +171,128 @@ describe('the handoff_create tool carries the same notes', () => {
     const answer = await createViaMcp('plain', 'a plan that names nothing')
 
     expect(answer.texts).toHaveLength(1)
+  })
+})
+
+// A blob past the age limit is removed by the next write to the content store (storeBlob prunes), so the row ages it and then stores something else.
+function pruneAfterAging(id: string): void {
+  setAge(id, 2 * DAY_MS)
+  expect(runCli(['compress-text', 'a later write that runs the prune']).status).toBe(0)
+  expect(fs.existsSync(blobFile(id))).toBe(false)
+}
+
+const OLD_MESSAGE = (id: string): string => `no token-goat content for id: ${id}. The local cache may have expired.`
+
+describe('retrieve says which handoff named an id the cache has dropped', () => {
+  it('names the handoff, and the content limit, once a prune has removed the blob', () => {
+    const id = storeViaCli('table of results the handoff points at')
+    expect(runCli(['handoff-create', 'refs', `see ${id} for the table`]).status).toBe(0)
+    pruneAfterAging(id)
+
+    const retrieved = runCli(['retrieve', id])
+
+    expect(retrieved.status).not.toBe(0)
+    expect(retrieved.stderr).toContain(`content ${id} expired under the 24 h content limit`)
+    expect(retrieved.stderr).toContain('handoff "refs" named it in the text')
+    expect(retrieved.stderr).not.toContain('may have expired')
+  })
+
+  it('names every handoff that names it, newest first, and counts the ones it does not show', () => {
+    const id = storeViaCli('table of results the handoff points at')
+    // Each spawn finishes before the next starts, so the stored createdAt order is the creation order.
+    for (const name of ['first', 'second', 'third', 'fourth', 'fifth']) expect(runCli(['handoff-create', name, `see ${id} (${name})`]).status).toBe(0)
+    pruneAfterAging(id)
+
+    const retrieved = runCli(['retrieve', id])
+
+    expect(retrieved.stderr).toContain('handoffs "fifth", "fourth", "third" and 2 more named it in the text')
+  })
+
+  it('keeps the old message for an id no handoff names', () => {
+    const id = 'tg_0000000000000000'
+
+    const retrieved = runCli(['retrieve', id])
+
+    expect(retrieved.status).not.toBe(0)
+    expect(retrieved.stderr).toContain(OLD_MESSAGE(id))
+  })
+
+  it('keeps the old message for an id only another project handoff names', () => {
+    const id = storeViaCli('table of results the handoff points at')
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-named-other-'))
+    try {
+      expect(runCli(['handoff-create', 'refs', `see ${id} for the table`], other).status).toBe(0)
+      pruneAfterAging(id)
+
+      const here = runCli(['retrieve', id])
+      expect(here.stderr).toContain(OLD_MESSAGE(id))
+      const there = runCli(['retrieve', id], other)
+      expect(there.stderr).toContain('handoff "refs" named it in the text')
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true })
+    }
+  })
+
+  it('does not count a handoff that is itself past the age limit', () => {
+    const id = storeViaCli('table of results the handoff points at')
+    const created = JSON.parse(runCli(['handoff-create', 'refs', `see ${id} for the table`]).stdout) as { id: string }
+    setAge(created.id, 2 * DAY_MS)
+    pruneAfterAging(id)
+
+    const retrieved = runCli(['retrieve', id])
+
+    expect(retrieved.stderr).toContain(OLD_MESSAGE(id))
+  })
+
+  it('does not read a longer run of hex digits as the id', () => {
+    const id = storeViaCli('table of results the handoff points at')
+    expect(runCli(['handoff-create', 'refs', `see ${id}0 for the table`]).status).toBe(0)
+    pruneAfterAging(id)
+
+    const retrieved = runCli(['retrieve', id])
+
+    expect(retrieved.stderr).toContain(OLD_MESSAGE(id))
+  })
+
+  it('keeps the existing expired wording for a blob still on disk past the limit', () => {
+    const id = storeViaCli('table of results the handoff points at')
+    expect(runCli(['handoff-create', 'refs', `see ${id} for the table`]).status).toBe(0)
+    setAge(id, 2 * DAY_MS)
+
+    const retrieved = runCli(['retrieve', id])
+
+    expect(retrieved.stderr).toContain(`${id} expired`)
+  })
+})
+
+describe('the retrieve_text tool says the same', () => {
+  async function retrieveViaMcp(id: string): Promise<{ isError: boolean; text: string }> {
+    const server = await createMcpServer()
+    const client = new Client({ name: 'test-client', version: '0.0.1' })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+    try {
+      const result = await client.callTool({ name: 'retrieve_text', arguments: { id } })
+      return { isError: result.isError === true, text: (result.content as Array<{ text: string }>)[0]?.text ?? '' }
+    } finally {
+      await client.close()
+      await server.close()
+    }
+  }
+
+  // The tool takes no project root, so it answers for the process's own project; the handoff is created for that same root.
+  it('names the handoff for an id its blob lost, and gives the plain message for an id nobody named', async () => {
+    const stored = compressText('table of results the handoff points at')
+    createHandoff('refs', `see ${stored.id} for the table`, process.cwd())
+    setAge(stored.id, 2 * DAY_MS)
+    compressText('a later write that runs the prune')
+    expect(fs.existsSync(blobFile(stored.id))).toBe(false)
+
+    const named = await retrieveViaMcp(stored.id)
+    expect(named.isError).toBe(true)
+    expect(named.text).toContain(`content ${stored.id} expired under the 24 h content limit`)
+    expect(named.text).toContain('handoff "refs" named it in the text')
+    const unnamed = await retrieveViaMcp('tg_0000000000000000')
+    expect(unnamed.text).toBe('no token-goat content for id: tg_0000000000000000')
   })
 })
