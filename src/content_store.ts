@@ -272,6 +272,17 @@ export function createHandoff(name: string, text: string, projectRoot?: string):
 
 const CONTENT_LIMIT_HOURS = DEFAULT_MAX_AGE_MS / 3_600_000
 
+// How far the content's expiry sits from the handoff's, in the whole seconds both timestamps print at, so the two printed times and the stated gap always agree. Zero and negative gaps are said plainly too: the note is never dropped for a small gap.
+function expiryOffsetPhrase(gapSeconds: number): string {
+  if (gapSeconds === 0) return 'at the same second as this handoff'
+  const abs = Math.abs(gapSeconds)
+  const hours = Math.floor(abs / 3600)
+  const minutes = Math.floor((abs % 3600) / 60)
+  const seconds = abs % 60
+  const parts = [hours > 0 ? `${hours} h` : '', minutes > 0 ? `${minutes} min` : '', seconds > 0 ? `${seconds} s` : '']
+  return `${parts.filter((part) => part !== '').join(' ')} ${gapSeconds > 0 ? 'before' : 'after'} this handoff`
+}
+
 function contentIdsNamedIn(text: string): string[] {
   return [...new Set(text.match(NAMED_CONTENT_ID) ?? [])]
 }
@@ -297,7 +308,8 @@ export function namedContentNotes(handoff: HandoffResult): string[] {
     const blobMtime = isBlobStale(CONTENT_SUBDIR, id) ? null : blobMtimeMs(CONTENT_SUBDIR, id)
     if (blobMtime === null) continue
     const expires = formatLocalTimestamp(new Date(blobMtime + DEFAULT_MAX_AGE_MS))
-    notes.push(`note: handoff ${named} names content ${id}, which expires at ${expires} (local time) while this handoff lasts until ${lastsUntil}. A handoff keeps only its own text, so after ${expires} ${id} cannot be retrieved.`)
+    const offset = expiryOffsetPhrase(Math.floor(handoffMtime / 1000) - Math.floor(blobMtime / 1000))
+    notes.push(`note: handoff ${named} names content ${id}, which expires at ${expires} (local time), ${offset} (this handoff lasts until ${lastsUntil}). A handoff keeps only its own text, so after ${expires} ${id} cannot be retrieved.`)
   }
   return notes
 }

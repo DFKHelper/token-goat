@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { invalidateConfigCache } from '../src/config.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
-import { compressText, createHandoff } from '../src/content_store.js'
+import { compressText, createHandoff, namedContentNotes } from '../src/content_store.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { BUNDLE } from './helpers/bundle.js'
@@ -27,7 +27,7 @@ let projectDir: string
 const saved: Record<string, string | undefined> = {}
 
 beforeEach(() => {
-  for (const key of ['TOKEN_GOAT_HOME', 'LOCALAPPDATA', 'XDG_DATA_HOME', 'TOKEN_GOAT_MCP_TOOLS']) saved[key] = process.env[key]
+  for (const key of ['TOKEN_GOAT_HOME', 'LOCALAPPDATA', 'XDG_DATA_HOME', 'TOKEN_GOAT_MCP_TOOLS', 'TZ']) saved[key] = process.env[key]
   home = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-named-'))
   const dataRoot = dataDirForHome(home)
   envRoot = isWin ? path.dirname(path.dirname(dataRoot)) : path.dirname(dataRoot)
@@ -69,6 +69,14 @@ function setAge(id: string, ageMs: number): number {
 
 function utc(ms: number): string {
   return new Date(ms).toISOString().slice(0, 19)
+}
+
+// The gap a note states, in seconds (negative for after), read back from its words; null when the phrase is absent.
+function statedGapSeconds(text: string, id: string): number | null {
+  const match = new RegExp(`names content ${id}, which expires at [^,]+ [(]local time[)], (?:(\\d+) h)? ?(?:(\\d+) min)? ?(?:(\\d+) s)? ?(before|after) this handoff [(]this handoff lasts until`).exec(text)
+  if (match === null) return null
+  const seconds = Number(match[1] ?? 0) * 3600 + Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0)
+  return match[4] === 'before' ? seconds : -seconds
 }
 
 function storeViaCli(text: string): string {
@@ -113,7 +121,10 @@ describe('handoff-create says what becomes of the content ids its text names', (
     expect(created.status, created.stderr).toBe(0)
     const handoffId = (JSON.parse(created.stdout) as { id: string }).id
     const handoffMtime = fs.statSync(blobFile(handoffId)).mtimeMs
-    expect(created.stderr).toContain(`names content ${id}, which expires at ${utc(blobMtime + DAY_MS)} (local time) while this handoff lasts until ${utc(Math.floor(handoffMtime / 1000) * 1000 + DAY_MS)}`)
+    const lastsUntil = utc(Math.floor(handoffMtime / 1000) * 1000 + DAY_MS)
+    expect(created.stderr).toContain(`names content ${id}, which expires at ${utc(blobMtime + DAY_MS)} (local time), `)
+    expect(created.stderr).toContain(` before this handoff (this handoff lasts until ${lastsUntil}).`)
+    expect(statedGapSeconds(created.stderr, id)).toBe(Math.floor(handoffMtime / 1000) - blobMtime / 1000)
     expect(created.stderr).toContain('A handoff keeps only its own text')
   })
 
@@ -179,7 +190,63 @@ describe('handoff-create says what becomes of the content ids its text names', (
   })
 })
 
+// HAND-DERIVED: the content and the handoff blobs get exact mtimes with utimes (whole seconds, four hours back so the content is live), the handoff is created in-process, and the expected text is the mtime plus the 24 h limit written out in UTC with the process zone pinned to UTC; no clock is waited on.
+describe('the note states how long before the handoff the content expires', () => {
+  function noteFor(gapSeconds: number): { id: string; notes: string[]; contentMtime: number } {
+    process.env['TZ'] = 'UTC'
+    const contentMtime = Math.floor((Date.now() - 4 * 3600 * 1000) / 1000) * 1000
+    const stored = compressText('table of results the handoff points at')
+    fs.utimesSync(blobFile(stored.id), new Date(contentMtime), new Date(contentMtime))
+    const created = createHandoff('refs', `see ${stored.id} for the table`, projectDir)
+    const handoffMtime = contentMtime + gapSeconds * 1000
+    fs.utimesSync(blobFile(created.id), new Date(handoffMtime), new Date(handoffMtime))
+    return { id: stored.id, notes: namedContentNotes(created), contentMtime }
+  }
+
+  it('says 1 s before this handoff, not a pair of times that look equal, for a one second gap', () => {
+    const { id, notes, contentMtime } = noteFor(1)
+
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain(`names content ${id}, which expires at ${utc(contentMtime + DAY_MS)} (local time), 1 s before this handoff (this handoff lasts until ${utc(contentMtime + 1000 + DAY_MS)}).`)
+  })
+
+  it('says every unit of a larger gap', () => {
+    const { id, notes, contentMtime } = noteFor(3725)
+
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain(`names content ${id}, which expires at ${utc(contentMtime + DAY_MS)} (local time), 1 h 2 min 5 s before this handoff (this handoff lasts until ${utc(contentMtime + 3725 * 1000 + DAY_MS)}).`)
+  })
+
+  it('still prints the note when both expire in the same second', () => {
+    const { id, notes, contentMtime } = noteFor(0)
+
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain(`names content ${id}, which expires at ${utc(contentMtime + DAY_MS)} (local time), at the same second as this handoff (this handoff lasts until ${utc(contentMtime + DAY_MS)}).`)
+  })
+
+  it('says after when the content outlasts the handoff', () => {
+    const { id, notes, contentMtime } = noteFor(-90)
+
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain(`names content ${id}, which expires at ${utc(contentMtime + DAY_MS)} (local time), 1 min 30 s after this handoff (this handoff lasts until ${utc(contentMtime - 90 * 1000 + DAY_MS)}).`)
+  })
+})
+
 describe('the handoff_create tool carries the same notes', () => {
+  it('adds a second block stating the gap in the same words for live content', async () => {
+    const stored = compressText('table of results the handoff points at')
+    const blobMtime = setAge(stored.id, 3600 * 1000)
+
+    const answer = await createViaMcp('refs', `see ${stored.id} for the table`)
+
+    expect(answer.texts).toHaveLength(2)
+    const handoffId = (JSON.parse(answer.texts[0] as string) as { id: string }).id
+    const handoffMtime = fs.statSync(blobFile(handoffId)).mtimeMs
+    expect(answer.texts[1]).toContain(`names content ${stored.id}, which expires at ${utc(blobMtime + DAY_MS)} (local time), `)
+    expect(answer.texts[1]).toContain(` before this handoff (this handoff lasts until ${utc(Math.floor(handoffMtime / 1000) * 1000 + DAY_MS)}).`)
+    expect(statedGapSeconds(answer.texts[1] as string, stored.id)).toBe(Math.floor(handoffMtime / 1000) - blobMtime / 1000)
+  })
+
   it('adds a second block saying an aged id is already gone, after the record', async () => {
     const stored = compressText('table of results the handoff points at')
     setAge(stored.id, 2 * DAY_MS)
