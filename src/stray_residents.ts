@@ -28,6 +28,8 @@ export interface RetireReport {
   readonly notTried?: readonly number[]
   /** Why the process list could not be read, when it could not; nothing was ended then. */
   readonly unreadable?: string
+  /** Pids that may be residents of this install but whose command line the system hides (an elevated node process asked from a normal shell): never signalled, and counted neither as ended nor as absent. */
+  readonly unconfirmed?: readonly number[]
 }
 
 /** How long a POSIX process may take to leave after SIGTERM before it is killed: the daemon's own SIGTERM drain is 5 s (worker.ts SIGTERM_DRAIN_TIMEOUT_MS), plus a margin. */
@@ -60,25 +62,39 @@ async function stillAlive(pids: readonly number[], graceMs: number): Promise<num
   return running(alive, false)
 }
 
-/** The pids of this install's resident processes of `opts.kinds` that are running now, other than this process and `opts.skip`; the reason instead when the process list cannot be read. */
-function matchingPids(opts: RetireOptions): number[] | string {
+/** A node process whose list row carries no command line: Windows reports that for a process the caller may not inspect (cli_doctor_process.ts::readWindowsProcesses maps a missing CommandLine to ''), and a daemon of this install is a node process. Other rows with no command line (System, Registry) are no candidates. */
+function hidesItsCommandLine(p: { name: string; commandLine: string }): boolean {
+  return p.commandLine.trim() === '' && /^node(?:\.exe)?$/i.test(p.name)
+}
+
+interface MatchingPids {
+  readonly pids: number[]
+  /** Candidates this process cannot judge: see {@link RetireReport.unconfirmed}. */
+  readonly hidden: number[]
+}
+
+/** The pids of this install's resident processes of `opts.kinds` that are running now, other than this process and `opts.skip`, and apart from them the node processes whose command line is hidden; the reason instead when the process list cannot be read. */
+function matchingPids(opts: RetireOptions): MatchingPids | string {
   const table = readAllProcesses()
   if (!Array.isArray(table)) return (table as { reason: string }).reason
   const entry = daemonEntryScript()
   const skip = new Set([process.pid, ...(opts.skip ?? [])])
   // Deliberately every token-goat resident that runs THIS launcher, whatever its TOKEN_GOAT_HOME: an upgrade replaces the files all of them run from, and on Windows they hold native modules open and block the replacement; they restart on demand.
-  return table.filter((p) => !skip.has(p.processId) && isResidentOfInstall(p.commandLine, entry, opts.kinds)).map((p) => p.processId)
+  const others = table.filter((p) => !skip.has(p.processId))
+  return { pids: others.filter((p) => isResidentOfInstall(p.commandLine, entry, opts.kinds)).map((p) => p.processId), hidden: others.filter(hidesItsCommandLine).map((p) => p.processId) }
 }
 
 /** Ends every running resident process of this install matching `opts.kinds` except this one, with its children. Windows: `taskkill /T /F`. POSIX: SIGTERM, then SIGKILL for whatever is still alive after the grace, chosen from a fresh process list so a pid the OS reused in the meantime is never killed. */
 export async function retireStrayResidents(opts: RetireOptions): Promise<RetireReport> {
   const listed = matchingPids(opts)
   if (typeof listed === 'string') return { retired: [], survivors: [], unreadable: listed }
-  if (listed.length === 0) return { retired: [], survivors: [] }
+  if (listed.pids.length === 0) return { retired: [], survivors: [], unconfirmed: listed.hidden }
   // The first list can be seconds old when the table is large or the machine slow, and the OS may have reused a listed pid since: signal only the pids a second list, taken right before, still shows as ours.
   const confirmed = matchingPids(opts)
   if (typeof confirmed === 'string') return { retired: [], survivors: [], unreadable: confirmed }
-  const found = listed.filter((pid) => confirmed.includes(pid))
+  const found = listed.pids.filter((pid) => confirmed.pids.includes(pid))
+  // Only a pid hidden in the later list stays unconfirmed: one the first list could not judge and the second can is a process that changed. A recheck below that comes back hidden adds its pid here.
+  const unconfirmed = [...confirmed.hidden]
   // Each Windows kill is a taskkill of up to the per-call bound, and the list reached hundreds of daemons in the field: past one such bound in total the rest are reported, not waited on.
   const deadline = Date.now() + (opts.deadlineMs ?? PROCESS_QUERY_TIMEOUT_MS)
   // The second list can be seconds old by the time a later pid's turn comes: a pid the OS reused since is not ours, so its own command line is read again right before its kill.
@@ -93,6 +109,11 @@ export async function retireStrayResidents(opts: RetireOptions): Promise<RetireR
     }
     if (recheck !== null) {
       const latest = recheck(pid)
+      // An empty line is the system hiding it, not a stranger: the pid is neither signalled nor dropped from the report. A null is a pid that is gone or not ours, the reuse this re-read exists for.
+      if (latest !== null && latest.trim() === '') {
+        unconfirmed.push(pid)
+        continue
+      }
       if (latest === null || !isResidentOfInstall(latest, entry, opts.kinds)) continue
     }
     terminateProcessTree(pid, process.platform === 'win32')
@@ -101,11 +122,11 @@ export async function retireStrayResidents(opts: RetireOptions): Promise<RetireR
   let remaining = await stillAlive(signalled, process.platform === 'win32' ? KILL_GRACE_MS : TERM_GRACE_MS)
   if (remaining.length > 0 && process.platform !== 'win32') {
     const again = matchingPids(opts)
-    const mine = typeof again === 'string' ? [] : remaining.filter((pid) => again.includes(pid))
+    const mine = typeof again === 'string' ? [] : remaining.filter((pid) => again.pids.includes(pid))
     for (const pid of mine) terminateProcessTree(pid, true)
     remaining = await stillAlive(remaining, KILL_GRACE_MS)
   }
-  return { retired: signalled.filter((pid) => !remaining.includes(pid)), survivors: [...remaining, ...notTried], notTried }
+  return { retired: signalled.filter((pid) => !remaining.includes(pid)), survivors: [...remaining, ...notTried], notTried, unconfirmed }
 }
 
 /** One line saying what {@link retireStrayResidents} did, or null when it found nothing to say. */
@@ -117,5 +138,7 @@ export function describeRetirement(report: RetireReport): string | null {
   const failed = report.survivors.filter((pid) => !skipped.includes(pid))
   if (failed.length > 0) parts.push(`Could not end pid ${failed.join(', ')}; end ${failed.length === 1 ? 'it' : 'them'} yourself before upgrading.`)
   if (skipped.length > 0) parts.push(`Stopped ending processes at the time limit; pid ${skipped.join(', ')} ${skipped.length === 1 ? 'was' : 'were'} left running, end ${skipped.length === 1 ? 'it' : 'them'} yourself before upgrading.`)
+  const hidden = report.unconfirmed ?? []
+  if (hidden.length > 0) parts.push(`Could not tell whether pid ${hidden.join(', ')} ${hidden.length === 1 ? 'is a' : 'are'} token-goat background process${hidden.length === 1 ? '' : 'es'}: the system hides its command line (an elevated process), so ${hidden.length === 1 ? 'it was' : 'they were'} not ended; end ${hidden.length === 1 ? 'it' : 'them'} yourself before upgrading if ${hidden.length === 1 ? 'it is' : 'they are'} one.`)
   return parts.length === 0 ? null : parts.join(' ')
 }

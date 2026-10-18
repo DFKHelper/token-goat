@@ -389,6 +389,11 @@ export interface DisplacedRetireOptions {
   readonly deadlineMs?: number
 }
 
+/** A holder whose command line the system hides (an elevated process asked from this account) is an unknown, not a stranger: it is not signalled, and this function returns nothing to carry that, so the daemon's own error log names the pid that may still run beside it (the convention of worker.ts and reconcile_requests.ts for a daemon's notes). */
+function noteHiddenHolder(dir: string, holder: number): void {
+  appendWorkerErrorLog(dir, `${new Date().toISOString()} displaced worker pid ${holder}: its command line is hidden by the system (an elevated process), so it was not ended and may still be a worker of this install; end it yourself if it is one\n`)
+}
+
 /** Runs in a daemon that has just found its own pid in the pid file, never on a hook path: ends the daemon whose slot the claim took over, which a 2.9.30 daemon never leaves on its own. The note holds pids that may have been reused, so one is read only while it is younger than the startup grace and names this data dir, and the process is signalled only when it holds no lease and its command line is this install's `--worker-daemon`; any other process is left alone. A legitimate daemon whose heartbeat merely went stale (sleep, long synchronous work) is ended here too, where it would otherwise have exited at its next poll: accepted, since the claim already gave its slot away. */
 export function retireDisplacedWorker(dir: string, opts: DisplacedRetireOptions = {}): void {
   const holders = readDisplacedPids(dir)
@@ -405,9 +410,17 @@ export function retireDisplacedWorker(dir: string, opts: DisplacedRetireOptions 
     if (Date.now() >= deadline) break
     if (holder === process.pid || !pidAlive(holder) || hasFreshWorkerHeartbeat(dir, holder)) continue
     const cmd = readCommandLine(holder)
+    if (cmd !== null && cmd.trim() === '') {
+      noteHiddenHolder(dir, holder)
+      continue
+    }
     if (cmd === null || !isResidentOfInstall(cmd, entry, ['worker'])) continue
     // The query above can take seconds on a cold machine, and the OS may have reused the pid since: signal only what a second read, taken right before, still shows as this install's daemon.
     const latest = readCommandLine(holder)
+    if (latest !== null && latest.trim() === '') {
+      noteHiddenHolder(dir, holder)
+      continue
+    }
     if (latest !== null && isResidentOfInstall(latest, entry, ['worker'])) terminateProcessTree(holder, false)
   }
 }
