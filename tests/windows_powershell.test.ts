@@ -5,7 +5,8 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { powerShellCommandArgs, windowsPowerShellPath } from '../src/windows_powershell.js'
+import { powerShellCommandArgs } from '../src/shell.js'
+import { windowsPowerShellPath } from '../src/windows_powershell.js'
 
 const saved = { SystemRoot: process.env['SystemRoot'], windir: process.env['windir'] }
 

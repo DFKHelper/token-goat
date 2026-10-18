@@ -8,9 +8,7 @@ export function windowsPowerShellPath(): string {
   return windowsSystem32Exe('WindowsPowerShell', 'v1.0', 'powershell.exe')
 }
 
-export { powerShellCommandArgs } from './shell.js'
-
-/** The arguments for a PowerShell script whose printed text this process reads back. Windows PowerShell 5.1 writes a pipe in the console's OEM code page (437 here), where a launcher path with an accented or non-Latin character comes back as 0x82 or '?' and never matches the install it names; the script is prefixed with a UTF-8 (no byte order mark) output encoding so the text arrives whole. Every text-reading query goes through here, and tests/guards/powershell_text_queries_set_utf8_output.test.ts fails a query that does not. */
+/** The arguments for a PowerShell script whose printed text this process reads back. Windows PowerShell 5.1 writes a pipe in the console's OEM code page (437 here), where a launcher path with an accented or non-Latin character comes back as 0x82 or '?' and never matches the install it names; the script is prefixed with a UTF-8 (no byte order mark) output encoding so the text arrives whole. tests/guards/powershell_text_queries_set_utf8_output.test.ts fails a src file that starts PowerShell without importing this helper, or names the bare builder (shell.ts::powerShellCommandArgs) at a site not marked as one whose output is never read; it reads source lines, so a PowerShell started through a name built at run time is not seen. */
 export function powerShellTextQueryArgs(script: string): string[] {
   return powerShellCommandArgs(`[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; ${script}`)
 }
