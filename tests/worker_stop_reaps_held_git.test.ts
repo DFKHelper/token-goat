@@ -20,8 +20,8 @@ import { runTeardown } from './helpers/strict_teardown.js'
 import { indexableDir } from './helpers/temp-config.js'
 import { claimsToBeWorker } from './helpers/worker_identity.js'
 
-/** Bounds only the failing case, where a process outlives worker stop or the pipe never closes; a reap that works ends the wait on the processes going, however long a slow machine takes, and the test's own cap sits above this. */
-const REAP_BACKSTOP_MS = 60_000
+/** Bounds only the failing case, where a process outlives worker stop or the pipe never closes; a reap that works ends the wait on the processes going, however long a slow machine takes, and the 60 s default cap of the test sits above this and the setup before the wait. */
+const REAP_BACKSTOP_MS = 20_000
 /** The outcome the daemon logs when its 5 s cap ended the git it was holding (src/reconcile_requests.ts::drainReconcileRequestsAsync); tests/worker_reconcile_request_bundle.test.ts matches the same text in the bundle's log. */
 const CAP_NOTE = 'git did not answer in time, continuing next cycle'
 
@@ -75,8 +75,7 @@ function descendantsOf(root: number, table: ReturnType<typeof listProcesses>): M
 }
 
 /** What is left of the recorded processes: a pid counts only while it still runs the command line recorded for it, so a reused number or a zombie is not a survivor. */
-function survivors(): string[] {
-  const table = listProcesses()
+function survivors(table: ReturnType<typeof listProcesses> = listProcesses()): string[] {
   return [...recorded].filter(([pid, args]) => table.get(pid)?.args.trim() === args).map(([pid, args]) => `${pid}: ${args}`)
 }
 
@@ -84,17 +83,17 @@ function survivors(): string[] {
 function stillRunning(): string[] {
   const table = listProcesses()
   const daemonRows = daemons.filter((pid) => isWorkerDaemonCommandLine(table.get(pid)?.args ?? '')).map((pid) => `${pid}: ${table.get(pid)?.args.trim()}`)
-  return [...survivors(), ...daemonRows]
+  return [...survivors(table), ...daemonRows]
 }
 
-/** Reads until `read` lists nothing and returns what the last read listed. Each read is a process-table read or a gate probe, and the loop yields to the event loop between reads so the gate's own events (a pipe closing) are heard. With `backstopMs` it also stops once that has passed, so a process that never goes ends in the caller's assertion naming it; without it only the hook or test timeout bounds the wait. */
+/** Reads until `read` lists nothing and returns what the last read listed. Each read is a process-table read or a gate probe, and the loop yields through a timer between reads so the gate's own events (a pipe closing) are heard: measured on Windows, a `setImmediate` yield left a closed pipe unheard across four reads of about 2 s each, and a 25 ms timer heard it at once. With `backstopMs` it also stops once that has passed, so a process that never goes ends in the caller's assertion naming it; without it only the hook or test timeout bounds the wait. */
 async function untilNothingLeft(read: () => string[], backstopMs?: number): Promise<string[]> {
   let expired = false
   const timer = backstopMs === undefined ? undefined : setTimeout(() => { expired = true }, backstopMs)
   try {
     let left = read()
     while (left.length > 0 && !expired) {
-      await new Promise<void>((resolve) => setImmediate(resolve))
+      await new Promise<void>((resolve) => setTimeout(resolve, 25))
       left = read()
     }
     return left
@@ -115,11 +114,14 @@ afterEach(async () => {
   }
   for (const watcher of watchers.splice(0)) watcher.close()
   for (const gate of gates.splice(0)) await gate.dispose().catch((error: unknown) => failures.push(error))
+  // One process-table listing, read by the first step that needs it, answers every pid's command line below: the per-pid query starts a PowerShell for each pid on Windows, about 2 s apiece, and a failed listing fails only the step that read it.
+  let table: ReturnType<typeof listProcesses> | undefined
+  const readCommandLine = (pid: number): string | null => (table ??= listProcesses()).get(pid)?.args ?? null
   try {
     // Whatever the test failed to see ended (a daemon, a held git) is ended by its recorded command line, with its tree, before the directories it holds are removed. A stand-in the body never got to record is ended through the handle that started it.
     run([
-      ...[...recorded].map(([pid, args]) => () => void killIfCommandLine(pid, (commandLine) => commandLine.trim() === args, { tree: true })),
-      ...daemons.map((pid) => () => void killIfCommandLine(pid, isWorkerDaemonCommandLine, { tree: true })),
+      ...[...recorded].map(([pid, args]) => () => void killIfCommandLine(pid, (commandLine) => commandLine.trim() === args, { tree: true, readCommandLine })),
+      ...daemons.map((pid) => () => void killIfCommandLine(pid, isWorkerDaemonCommandLine, { tree: true, readCommandLine })),
       ...standIns.splice(0).map((daemon) => () => {
         if (daemon.exitCode === null && daemon.signalCode === null) killProcessTree(daemon.pid)
       }),
@@ -195,7 +197,7 @@ describe('stopping the built worker daemon', () => {
     expect(left, 'the daemon or the git it held is still running after worker stop').toEqual([])
     // The cap may have ended the git just before the kill landed, in which case an empty table says nothing about stop; the daemon's note, written once its git ends, is the only record of that, so a row that finds it cannot claim the property and skips. A cap that fired in the milliseconds before the daemon was killed may leave no note: that window is bounded by one stopWorker call and is not closed here.
     if (reconcileOutcome(dir) === CAP_NOTE) ctx.skip(`the daemon's 5 s git cap ended its git around the time worker stop ran, so what ended the git cannot be told: ${CAP_NOTE}`)
-  }, 120_000)
+  })
 })
 
 /** A stand-in daemon: the process stopWorker is given, whose child (plain, so libuv puts it in the daemon's kill-on-close job) has a child the job does not hold. The 3601 echoes keep `ping` alive for an hour, so its command line is the only one of the test with that text. The child inherits the daemon's stdout, which the test holds as a pipe: ping's first line says ping is running, and the pipe closes only when the daemon, the cmd.exe and ping have all exited. */
@@ -248,7 +250,7 @@ describe('stopping a daemon whose child has a child of its own', () => {
       }),
     ]).finally(() => clearTimeout(backstop))
     expect(reaped, `the daemon or what it started is still running after worker stop: ${reaped ? '' : JSON.stringify(survivors())}`).toBe(true)
-  }, 120_000)
+  })
 })
 
 describe('stopping a pid-file pid', () => {
@@ -292,7 +294,7 @@ describe('stopping a pid-file pid', () => {
 
   it('falls back to a bare kill, not a tree kill, when the command-line lookup fails', async () => {
     const { daemon, dir, pid } = recordedStandIn(process.platform === 'win32' ? GRANDCHILD_LAUNCHER : IDLE_LAUNCHER, 'tg-stop-failed-query-')
-    // The bare awaits below (ping's first line, the exit) have no bound of their own: a stand-in that never prints or never exits fails by this test's 120_000 cap, which is acceptable as a failure bound and never decides a pass.
+    // The bare awaits below (ping's first line, the exit) have no bound of their own: a stand-in that never prints or never exits fails by the test's default cap, which is acceptable as a failure bound and never decides a pass.
     const exited = new Promise<void>((resolve) => daemon.once('exit', () => resolve()))
     // Windows: ping prints once it runs, which is the event that the grandchild (outside the daemon kill-on-close job) exists to record and later look for.
     if (process.platform === 'win32') {
@@ -312,5 +314,5 @@ describe('stopping a pid-file pid', () => {
       const ping = [...recorded].find(([, args]) => GRANDCHILD_PROCESS.test(args))
       expect(survivors().some((line) => line.startsWith(`${ping?.[0]}: `)), 'the grandchild was ended: the fallback took the tree').toBe(true)
     }
-  }, 120_000)
+  })
 })
