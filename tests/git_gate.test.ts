@@ -1,4 +1,4 @@
-// Provenance: CAPTURE. The behaviours asserted here (a git blocked reading a config include served by a named pipe or a FIFO, released by the serving end closing, answering normally afterwards) were first observed by running git directly on this machine's Windows git and on WSL Ubuntu git; each case then runs the real git through the helper and checks its own answer.
+// Provenance: CAPTURE. The behaviours asserted here (a git blocked reading a config include served by a named pipe or a FIFO, released by the serving end closing, answering normally afterwards, and holding() turning false once the blocked git is killed) were first observed by running git directly on this machine's Windows git and on WSL Ubuntu git; each case then runs the real git through the helper and checks its own answer.
 /** tests/helpers/git_gate.ts blocks a real git on a gate until the test releases it. The hung-git tests rely on it holding a git for as long as the test wants and on releasing it exactly when told, so those properties are checked against a real git here. */
 import { spawn, type ChildProcess } from 'node:child_process'
 import * as path from 'node:path'
@@ -73,6 +73,30 @@ describe('openGitGate', () => {
     await g.reached
     await g.dispose()
     await g.dispose()
+    expect((await run.settled).code).toBe(0)
+  })
+
+  it('reports a git as holding the gate while it is blocked, and not once it was killed or the gate released', async () => {
+    const repo = gitRepoWithCommit()
+    const g = await gate()
+    expect(g.holding(), 'a gate no git has reached reported a holder').toBe(false)
+    const run = revParse(repo, g.env)
+    await g.reached
+    expect(g.holding(), 'a git blocked on the gate was not reported holding').toBe(true)
+    run.child.kill('SIGKILL')
+    await run.settled
+    // Read until the gate stops reporting the killed git: on Windows the close of its pipe reaches this process as an event a turn or two after the git is gone.
+    while (g.holding()) await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(g.holding(), 'a killed git was still reported holding').toBe(false)
+  })
+
+  it('reports no holder once the gate is released', async () => {
+    const repo = gitRepoWithCommit()
+    const g = await gate()
+    const run = revParse(repo, g.env)
+    await g.reached
+    g.release()
+    expect(g.holding(), 'a released gate reported a holder').toBe(false)
     expect((await run.settled).code).toBe(0)
   })
 })

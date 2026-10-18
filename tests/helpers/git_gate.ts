@@ -1,4 +1,4 @@
-// A gate a real git blocks on until the test lets it go, with an event for the moment git reached it. PROVENANCE: CAPTURE. Measured on this machine's Windows git and on WSL Ubuntu git (see tests/git_gate.test.ts): a config include served by a Windows named pipe, or by a POSIX FIFO, leaves `git rev-parse` blocked until the serving end closes, after which git exits 0 with its normal answer. This is not the lock-file of tests/run_git_timeout_reaps_git.test.ts: that one blocks `git pack-refs` only, and neither `rev-parse --show-toplevel` nor `ls-files` (the worker's reconcile commands) waits on any lock file.
+// A gate a real git blocks on until the test lets it go, with an event for the moment git reached it. PROVENANCE: CAPTURE. Measured on this machine's Windows git and on WSL Ubuntu git (see tests/git_gate.test.ts): a config include served by a Windows named pipe, or by a POSIX FIFO, leaves `git rev-parse` blocked until the serving end closes, after which git exits 0 with its normal answer. Also measured, for `holding`: on WSL Ubuntu git 2.43.0 a write to the FIFO succeeds while git holds it and fails with EPIPE after that git was killed with SIGKILL, and on Windows a killed git closes its pipe connection (the row in tests/git_gate.test.ts). This is not the lock-file of tests/run_git_timeout_reaps_git.test.ts: that one blocks `git pack-refs` only, and neither `rev-parse --show-toplevel` nor `ls-files` (the worker's reconcile commands) waits on any lock file.
 import { execFileSync } from 'node:child_process'
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
@@ -12,6 +12,8 @@ export interface GitGate {
   readonly env: Readonly<Record<string, string>>
   /** Resolves once a git has opened the gate and is blocked reading it. It resolves on the event loop of the process holding the gate, so a caller that blocked that loop on the git (a synchronous spawn) never sees it resolve. */
   readonly reached: Promise<void>
+  /** Whether a git still holds the gate, read now. Windows: a connection a git made that has not closed (the pipe closes when the git process ends, however it ends; the close arrives on the event loop of the process holding the gate, so a loop that was blocked still shows a git that has ended). POSIX: whether a write to the FIFO reaches a reader, which fails with EPIPE once every reader has gone; the one newline it writes reads as a blank config line. False once released or disposed. */
+  holding(): boolean
   /** Lets every git blocked on the gate go, and every git that reaches it later. */
   release(): void
   /** Releases, stops serving and removes what the gate created. Safe to call twice. */
@@ -42,6 +44,7 @@ async function windowsGate(): Promise<GitGate> {
       return
     }
     held.add(socket)
+    socket.once('close', () => held.delete(socket))
   })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
@@ -56,6 +59,7 @@ async function windowsGate(): Promise<GitGate> {
   return {
     env: environmentFor(target),
     reached,
+    holding: () => held.size > 0,
     release,
     async dispose() {
       if (disposed) return
@@ -81,6 +85,7 @@ async function fifoGate(): Promise<GitGate> {
   const releasedEvent = new Promise<void>((resolve) => {
     open = resolve
   })
+  let current: FileHandle | null = null
   const serving = (async () => {
     while (!disposed) {
       let writer: FileHandle
@@ -89,11 +94,22 @@ async function fifoGate(): Promise<GitGate> {
       } catch {
         return
       }
+      current = writer
       signal()
       if (!released) await releasedEvent
+      current = null
       await writer.close()
     }
   })()
+  const holding = (): boolean => {
+    if (released || current === null) return false
+    try {
+      fs.writeSync(current.fd, '\n')
+      return true
+    } catch {
+      return false
+    }
+  }
   const release = (): void => {
     released = true
     open()
@@ -101,6 +117,7 @@ async function fifoGate(): Promise<GitGate> {
   return {
     env: environmentFor(target),
     reached,
+    holding,
     release,
     async dispose() {
       if (disposed) return
