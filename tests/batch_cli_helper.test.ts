@@ -96,6 +96,14 @@ describe('batch client request settling', () => {
     expect(message.slice(message.indexOf(label) + label.length)).toBe(`${'x'.repeat(1993)}THE-END`)
   })
 
+  it('cuts a long stderr on a code point boundary, so the tail never starts with half of a surrogate pair', async () => {
+    // The 2000th character from the end is the low half of the emoji, which a plain cut of the last 2000 would keep alone.
+    const stderr = `${'x'.repeat(500)}${String.fromCodePoint(0x1f600)}${'y'.repeat(1999)}`
+    const message = await rejection(standIn().run(['stderr', stderr]))
+    const label = 'stderr tail: '
+    expect(message.slice(message.indexOf(label) + label.length)).toBe('y'.repeat(1999))
+  })
+
   it('never takes a line without the session token as a reply, and the tokened reply still settles the request', async () => {
     const res = await standIn().run(['stray', 'real', 'reply'])
     expect(res).toEqual({ status: 0, stdout: 'real reply', stderr: '' })

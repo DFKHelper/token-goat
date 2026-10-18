@@ -37,6 +37,13 @@ const STDERR_TAIL_CHARS = 2000
 /** How much of a reply line the server wrote that is not JSON a rejection quotes. It is the start of the line that shows what it was. */
 const BAD_LINE_PREFIX_CHARS = 200
 
+/** The last `max` characters of `text`, starting on a character boundary: a cut that lands between the two halves of a surrogate pair drops the orphaned low half, so the result is at most `max` characters and never begins with half of a character. */
+function lastChars(text: string, max: number): string {
+  const cut = text.slice(-max)
+  // A text no longer than `max` comes back whole, and a low surrogate at its start is the stream's own.
+  return cut.length < text.length && isLowSurrogate(cut.charCodeAt(0)) ? cut.slice(1) : cut
+}
+
 /** The first `max` characters of `text`, ending on a character boundary: a cut between the two halves of a surrogate pair drops the orphaned high half. */
 function firstChars(text: string, max: number): string {
   const cut = text.slice(0, max)
@@ -45,6 +52,10 @@ function firstChars(text: string, max: number): string {
 
 function isHighSurrogate(unit: number): boolean {
   return unit >= 0xd800 && unit <= 0xdbff
+}
+
+function isLowSurrogate(unit: number): boolean {
+  return unit >= 0xdc00 && unit <= 0xdfff
 }
 
 /** Spawn timeout for {@link runSpawned}. It stays a clock because `spawnSync` blocks this process's event loop, so neither an event nor the per-test timeout can fire while it waits. */
@@ -79,7 +90,7 @@ export function createBatchClient(launch: (token: string) => OwnedChild): BatchC
     let stderrTail = ''
     proc.stderr?.setEncoding('utf8')
     proc.stderr?.on('data', (chunk: string) => {
-      stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_CHARS)
+      stderrTail = lastChars(stderrTail + chunk, STDERR_TAIL_CHARS)
     })
     // A server that exits before reading a request fails the write with EPIPE; the exit handler below already rejects the request in flight.
     proc.stdin?.on('error', () => undefined)
