@@ -2,7 +2,7 @@
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -12,11 +12,8 @@ import { indexFileSync } from '../src/parser.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { reconcileProject } from '../src/reconcile.js'
 import { drainOnce, pendingEmbeddings } from '../src/worker.js'
-import { findGlobalDb } from './helpers/find_global_db.js'
 import { runTeardown } from './helpers/strict_teardown.js'
 import { indexableDir } from './helpers/temp-config.js'
-
-const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 
 const homes: string[] = []
 
@@ -40,7 +37,7 @@ interface Fixture {
   dataDir: string
 }
 
-/** Two tracked files plus `deleted` files that were indexed and then removed from git and disk, indexed through the built bundle. */
+/** Two tracked files plus `deleted` files that were indexed and then removed from git and disk, indexed in this process into a scratch data dir (the CLI spawn this replaced cost a node start per row and tested nothing the rows assert). */
 function fixture(deleted: string[]): Fixture {
   const homeDir = mkdtempSync(join(tmpdir(), 'tg-delprogress-home-'))
   homes.push(homeDir)
@@ -50,15 +47,13 @@ function fixture(deleted: string[]): Fixture {
   for (const name of deleted) writeFileSync(join(projectDir, `${name}.ts`), body(`${name}Fn`))
   git(projectDir, 'init', '-q')
   git(projectDir, 'add', '-A')
-  const env = { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, XDG_DATA_HOME: homeDir, TOKEN_GOAT_NO_WORKER_SPAWN: '1' }
-  const r = spawnSync(process.execPath, [BUNDLE, 'index', '.'], { cwd: projectDir, encoding: 'utf-8', env })
-  expect(r.status, `index exited ${r.status}: ${r.stderr}`).toBe(0)
-  const dbPath = findGlobalDb(homeDir) as string
+  const dbPath = join(homeDir, 'global.db')
+  for (const name of ['keep1', 'keep2', ...deleted]) indexFileSync(resolveIndexPath(`${name}.ts`, projectDir), dbPath)
   for (const name of deleted) {
     expect(querySymbols({ name: `${name}Fn` }, dbPath), `calibration: ${name}Fn was not indexed`).toHaveLength(1)
-    git(projectDir, 'rm', '-qf', `${name}.ts`)
   }
-  return { projectDir, dbPath, dataDir: dirname(dbPath) }
+  if (deleted.length > 0) git(projectDir, 'rm', '-qf', ...deleted.map((name) => `${name}.ts`))
+  return { projectDir, dbPath, dataDir: homeDir }
 }
 
 /** One zero-budget sweep, then the production drain that prunes what it queued. */
@@ -82,7 +77,7 @@ describe('reconcileProject deletion pass under a spent budget', () => {
     expect(result.removed.map((p) => p.replace(/^.*[\\/]/, '')), 'the deletion pass never stat-ed the deleted row').toEqual(['gone1.ts'])
     expect(stillIndexed(fx, ['gone1']), 'the deleted file still serves its symbols after one sweep').toEqual([])
     expect(querySymbols({ name: 'keepOne' }, fx.dbPath), 'the prune took a live file with it').toHaveLength(1)
-  }, 90_000)
+  })
 
   it('prunes every one of N deleted files within N sweeps', async () => {
     const names = ['gone1', 'gone2', 'gone3']
@@ -95,7 +90,7 @@ describe('reconcileProject deletion pass under a spent budget', () => {
     }
 
     expect(stillIndexed(fx, names), 'a deleted file survived N sweeps').toEqual([])
-  }, 90_000)
+  })
 
   it('moves past a live untracked row that sorts first instead of re-checking it forever', async () => {
     const fx = fixture(['gone1'])
@@ -111,5 +106,5 @@ describe('reconcileProject deletion pass under a spent budget', () => {
 
     expect(stillIndexed(fx, ['gone1']), 'the sweep re-examined the live row first every time and never reached the deleted one').toEqual([])
     expect(querySymbols({ name: 'aLive' }, fx.dbPath), 'the prune took the live untracked row with it').toHaveLength(1)
-  }, 90_000)
+  })
 })
