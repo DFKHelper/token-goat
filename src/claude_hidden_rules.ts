@@ -4,7 +4,7 @@ import { execFile, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { powerShellCommandArgs, windowsPowerShellPath } from './windows_powershell.js'
+import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
 
 export interface HiddenRuleHelpers {
   readonly configDir: () => string
@@ -77,7 +77,7 @@ function procCommandLine(pid: string): string | null | undefined {
 
 /** The command that prints process `pid`'s command line, where /proc cannot be read. */
 function commandLineQuery(pid: string): readonly [string, string[]] {
-  if (process.platform === 'win32') return [windowsPowerShellPath(), powerShellCommandArgs(`(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`)]
+  if (process.platform === 'win32') return [windowsPowerShellPath(), powerShellTextQueryArgs(`(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`)]
   return ['ps', ['-ww', '-o', 'args=', '-p', pid]]
 }
 
