@@ -3,13 +3,13 @@ import * as fs from 'node:fs'
 import { deflateRawSync } from 'node:zlib'
 import * as path from 'node:path'
 
-import { isBlobStale, listBlobIdsWithPrefix, loadBlob, readBlob, storeBlob } from './disk_cache.js'
+import { DEFAULT_MAX_AGE_MS, blobMtimeMs, isBlobStale, listBlobIdsWithPrefix, loadBlob, readBlob, storeBlob } from './disk_cache.js'
 import { shortFingerprint } from './fingerprint.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { canonicalize, foldPathForContainment } from './path_containment.js'
 import { findProject } from './project.js'
 import { redactSecrets } from './secret_redact.js'
-import { recordStat, savedTokensFromBytes } from './stats.js'
+import { formatLocalTimestamp, recordStat, savedTokensFromBytes } from './stats.js'
 import { BYTES_PER_TOKEN } from './token_estimate.js'
 
 export const CONTENT_MAX_INPUT_CHARS = 512 * 1024
@@ -20,6 +20,8 @@ export const CONTENT_MAX_ITEM_BYTES = CONTENT_MAX_INPUT_CHARS * 7
 export const CONTENT_SUBDIR = 'content'
 // A stored contentId is printed in a shell suggestion and handed to `retrieve`, so only the shape the store itself mints is accepted.
 const CONTENT_ID_PATTERN = /^tg_[0-9a-f]{16}$/
+// CONTENT_ID_PATTERN without its anchors, with a boundary on each side so a longer run of id characters is not read as an id inside it; create's notes and retrieve's lookup both scan with this one pattern, so an id one reports is an id the other finds.
+const NAMED_CONTENT_ID = new RegExp(`(?<![A-Za-z0-9_])${CONTENT_ID_PATTERN.source.replace(/^\^|\$$/g, '')}(?![A-Za-z0-9_])`, 'g')
 
 interface StoredContent {
   kind: 'content'
@@ -259,6 +261,38 @@ export function createHandoff(name: string, text: string, projectRoot?: string):
   if (!ok) throw new Error('unable to persist handoff within the local cache bounds')
   recordStat('handoff_create')
   return { id, name, contentId: contentIdValue, projectRoot: root, recovery: `token-goat handoff-resolve -- ${quotedArg(name)}` }
+}
+
+const CONTENT_LIMIT_HOURS = DEFAULT_MAX_AGE_MS / 3_600_000
+
+function contentIdsNamedIn(text: string): string[] {
+  return [...new Set(text.match(NAMED_CONTENT_ID) ?? [])]
+}
+
+// One note per content id the handoff's own text names. A handoff keeps only its own text, so an id it merely names ages out on the content's rule (the blob's mtime plus DEFAULT_MAX_AGE_MS, the clock isBlobStale reads) and nothing here exempts it. An id served only by another live handoff's record is left out: it lasts as long as that record, not on this one's clock.
+export function namedContentNotes(handoff: HandoffResult): string[] {
+  const record = loadBlob(CONTENT_SUBDIR, handoff.id) as Partial<StoredHandoff> | null
+  if (record === null || typeof record !== 'object' || typeof record.text !== 'string') return []
+  const handoffMtime = blobMtimeMs(CONTENT_SUBDIR, handoff.id) ?? Date.now()
+  const lastsUntil = formatLocalTimestamp(new Date(handoffMtime + DEFAULT_MAX_AGE_MS))
+  const named = echoedValue(handoff.name)
+  const notes: string[] = []
+  for (const id of contentIdsNamedIn(record.text)) {
+    const unreadable = describeUnreadableContent(id)
+    if (unreadable !== null) {
+      notes.push(`note: handoff ${named} names ${unreadable}`)
+      continue
+    }
+    if (readContent(id) === null) {
+      notes.push(`note: handoff ${named} names content ${id}, which is already gone: the local cache keeps content for ${CONTENT_LIMIT_HOURS} h. A handoff keeps only its own text, so ${id} cannot be retrieved.`)
+      continue
+    }
+    const blobMtime = isBlobStale(CONTENT_SUBDIR, id) ? null : blobMtimeMs(CONTENT_SUBDIR, id)
+    if (blobMtime === null) continue
+    const expires = formatLocalTimestamp(new Date(blobMtime + DEFAULT_MAX_AGE_MS))
+    notes.push(`note: handoff ${named} names content ${id}, which expires at ${expires} (local time) while this handoff lasts until ${lastsUntil}. A handoff keeps only its own text, so after ${expires} ${id} cannot be retrieved.`)
+  }
+  return notes
 }
 
 // A handoff found under one id, with the stored timestamp that decides which of several copies wins.

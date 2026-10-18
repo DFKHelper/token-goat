@@ -29,6 +29,7 @@ import {
   describeMissingHandoff,
   describeUnreadableContent,
   isContentExpired,
+  namedContentNotes,
   olderCopyNote,
   resolveHandoffDetailed,
   retrieveText,
@@ -1082,11 +1083,13 @@ export async function createMcpServer(): Promise<McpServer> {
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     },
-    (args) =>
-      toCallToolResult({
-        text: displaySafeJson(createHandoff(args.name, args.text, resolveToolRoot(args.projectRoot))),
-        code: 0,
-      }),
+    (args) => {
+      const created = createHandoff(args.name, args.text, resolveToolRoot(args.projectRoot))
+      const answer = toCallToolResult({ text: displaySafeJson(created), code: 0 })
+      // Further text blocks after the record, the way handoff_resolve adds its notes; the CLI prints these on stderr.
+      const notes = namedContentNotes(created)
+      return notes.length === 0 ? answer : { ...answer, content: [...answer.content, ...notes.map((text) => ({ type: 'text' as const, text }))] }
+    },
   )
 
   server.registerTool(

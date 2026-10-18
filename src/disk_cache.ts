@@ -43,13 +43,18 @@ export function blobPath(subdir: string, id: string): string | null {
 
 /** True when the blob at `subdir`/`id` exists on disk and its mtime is older than DEFAULT_MAX_AGE_MS. A stat error (missing file, permission issue) fails soft to false so the caller falls through to loadBlob, which handles the error case on its own terms. Shared by web_cache.ts's getWebOutput and bash_output_cache.ts's getBashOutput, which previously duplicated this exact stat-and-compare logic. */
 export function isBlobStale(subdir: string, id: string): boolean {
+  const mtimeMs = blobMtimeMs(subdir, id)
+  return mtimeMs !== null && Date.now() - mtimeMs > DEFAULT_MAX_AGE_MS
+}
+
+/** The mtime (ms) the age rule measures for the blob at `subdir`/`id`, or null when there is no such file or it cannot be stat-ed; the blob ages out DEFAULT_MAX_AGE_MS after this. */
+export function blobMtimeMs(subdir: string, id: string): number | null {
   const p = blobPath(subdir, id)
-  if (p === null) return false
+  if (p === null) return null
   try {
-    const stat = fs.statSync(p)
-    return Date.now() - stat.mtimeMs > DEFAULT_MAX_AGE_MS
+    return fs.statSync(p).mtimeMs
   } catch {
-    return false
+    return null
   }
 }
 
