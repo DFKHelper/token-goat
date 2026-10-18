@@ -177,6 +177,106 @@ describe.skipIf(!isWin)('the incident through the built bundle', () => {
   })
 })
 
+// Layout under projectDir: root-a is the real directory, root-ab a sibling whose name starts with it, link-root a link to root-a. The previous release hashed the root as the cwd spelled it, so a handoff made from root-a sits at the id of root-a's spelling while a lookup from link-root computes link-root's id first; a junction stands in for the symlink on Windows, where a symlink needs a privilege.
+function linkedRoots(): { real: string; sibling: string; link: string } {
+  const real = path.join(projectDir, 'root-a')
+  const sibling = path.join(projectDir, 'root-ab')
+  const link = path.join(projectDir, 'link-root')
+  fs.mkdirSync(real)
+  fs.mkdirSync(sibling)
+  fs.symlinkSync(real, link, isWin ? 'junction' : 'dir')
+  return { real, sibling, link }
+}
+
+type LinkedRoots = ReturnType<typeof linkedRoots>
+
+// A record at the id of root-a's resolved spelling, carrying the projectRoot given, as the previous release would have written one.
+function plantAtResolvedId(roots: LinkedRoots, projectRoot: string, text: string): void {
+  const id = legacyId(canonicalize(fs.realpathSync.native(roots.real)), 'plan')
+  fs.mkdirSync(contentDir(), { recursive: true })
+  fs.writeFileSync(
+    path.join(contentDir(), `${id}.json`),
+    JSON.stringify({ kind: 'handoff', id, name: 'plan', projectRoot, contentId: `tg_${shortFingerprint(text)}`, text, createdAt: Date.now() }),
+  )
+}
+
+describe('a handoff stored under the resolved spelling of a linked root', () => {
+  // HAND-DERIVED: the stored record is built the way the previous release wrote it (writeLegacyRecord: id hashed from the spelling, projectRoot the same spelling); which copy wins follows from the two createdAt numbers.
+  it('is found from the link, because the key of the record own projectRoot is the key of the link target', () => {
+    const { real, link } = linkedRoots()
+    writeLegacyRecord(canonicalize(fs.realpathSync.native(real)), 'plan', 'written from the real path', Date.now())
+
+    expect(resolveHandoff('plan', { projectRoot: link, full: true })).toBe('written from the real path')
+  })
+
+  it('returns the newer copy when the stored copy under the resolved spelling is newer, and notes the older one', () => {
+    const { real, link } = linkedRoots()
+    createHandoff('plan', 'written from the link', link)
+    const legacy = writeLegacyRecord(canonicalize(fs.realpathSync.native(real)), 'plan', 'written from the real path', Date.now() + 60_000)
+
+    const resolved = resolveHandoffDetailed('plan', { projectRoot: link, full: true })
+
+    expect(resolved?.result).toBe('written from the real path')
+    expect(resolved?.olderCopies.map((copy) => copy.contentId)).toHaveLength(1)
+    expect(fs.existsSync(legacy.file)).toBe(true)
+  })
+
+  it('returns the current copy when it is the newer one, and leaves the stored copy under the resolved spelling untouched', () => {
+    const { real, link } = linkedRoots()
+    createHandoff('plan', 'written from the link', link)
+    const legacy = writeLegacyRecord(canonicalize(fs.realpathSync.native(real)), 'plan', 'written from the real path', 1)
+    const before = fs.readFileSync(legacy.file, 'utf8')
+
+    const resolved = resolveHandoffDetailed('plan', { projectRoot: link, full: true })
+
+    expect(resolved?.result).toBe('written from the link')
+    expect(resolved?.olderCopies.map((copy) => copy.contentId)).toEqual([legacy.contentId])
+    expect(fs.readFileSync(legacy.file, 'utf8')).toBe(before)
+  })
+
+  // HAND-DERIVED: each row plants a record at the id this directory looks under (the resolved spelling of root-a) and varies only the projectRoot the record carries; a record belongs here only if that root names the same directory.
+  it.each([
+    ['a trailing separator', ({ real }: LinkedRoots) => `${real}/`, true],
+    ['a dot segment', ({ real }: LinkedRoots) => `${real}/./`, true],
+    ['the link itself', ({ link }: LinkedRoots) => link, true],
+    ['a sibling that shares a name prefix', ({ sibling }: LinkedRoots) => sibling, false],
+    ['the parent directory', ({ real }: LinkedRoots) => path.dirname(real), false],
+  ])('treats a record whose projectRoot is %s correctly', (_label, carried, accepted) => {
+    const roots = linkedRoots()
+    plantAtResolvedId(roots, carried(roots), 'stored text')
+
+    expect(resolveHandoff('plan', { projectRoot: roots.link, full: true })).toBe(accepted ? 'stored text' : null)
+  })
+
+  it('does not hand another project record planted at this directory legacy id to it', () => {
+    const roots = linkedRoots()
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-handoff-other-'))
+    try {
+      plantAtResolvedId(roots, other, 'belongs elsewhere')
+
+      expect(resolveHandoff('plan', { projectRoot: roots.link, full: true })).toBeNull()
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(!isWin)('the extended-length prefix of a Windows path', () => {
+  const extended = (dir: string): string => `${BACKSLASH}${BACKSLASH}?${BACKSLASH}${backslashSpelling(dir)}`
+
+  it('keys a root the same with and without the prefix', () => {
+    createHandoff('notes', 'made from the plain spelling', projectDir)
+    expect(resolveHandoff('notes', { projectRoot: extended(projectDir), full: true })).toBe('made from the plain spelling')
+  })
+
+  it('accepts a record whose projectRoot carries the prefix', () => {
+    const roots = linkedRoots()
+    plantAtResolvedId(roots, extended(roots.real), 'stored text')
+
+    expect(resolveHandoff('plan', { projectRoot: roots.link, full: true })).toBe('stored text')
+  })
+})
+
 // Age a blob without waiting: the cache's age rule reads the file's mtime.
 function setMtime(id: string, when: number): void {
   const t = new Date(when)

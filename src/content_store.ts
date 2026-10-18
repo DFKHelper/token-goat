@@ -84,13 +84,29 @@ function contentId(text: string): string {
 
 // The root's identity is the canonical form the rest of token-goat keys a project by (canonicalize: forward slashes, lower-case drive), not the spelling the caller's cwd happened to arrive in. findProject returns null for a directory it takes for a container of other repos, and the fallback then used path.resolve, whose backslash and upper-case-drive spelling hashed to a different id than the marker-derived root of the same directory.
 function normalizeProjectRoot(projectRoot?: string): string {
-  const candidate = canonicalize(projectRoot ?? process.cwd())
+  const candidate = canonicalize(withoutLongPathPrefix(projectRoot ?? process.cwd()))
   return findProject(candidate)?.root ?? candidate
 }
 
 // What identifies a root across spellings: the canonical form, case-folded where the filesystem folds (the same rule projectHash applies).
 function handoffRootKey(projectRoot: string): string {
-  return foldPath(canonicalize(projectRoot))
+  return foldPath(canonicalize(withoutLongPathPrefix(projectRoot)))
+}
+
+// canonicalize leaves a Windows extended-length prefix in place (it becomes //?/C:/x), so one directory would key two ways; the UNC form of the prefix is the extended spelling of a plain //server/share path. Off Windows a backslash is an ordinary file-name character and the string is left alone.
+function withoutLongPathPrefix(p: string): string {
+  if (process.platform !== 'win32') return p
+  return p.replace(/^[\\/]{2}\?[\\/]UNC[\\/]/i, '//').replace(/^[\\/]{2}\?[\\/](?=[a-z]:)/i, '')
+}
+
+// What a stored record's projectRoot must equal for the record to belong to this project: the lexical key with every link in the path resolved (a symlink or junction, an 8.3 short name, the on-disk casing), because an id built from the resolved spelling carries a projectRoot whose lexical key is not the as-given one. Whole-path equality, never a prefix test, so a sibling that shares a name prefix is another project. A root that does not exist keeps its lexical key.
+function handoffRootIdentity(projectRoot: string): string {
+  const plain = withoutLongPathPrefix(projectRoot)
+  try {
+    return foldPath(canonicalize(fs.realpathSync.native(plain)))
+  } catch {
+    return handoffRootKey(plain)
+  }
 }
 
 function handoffIdFromKey(name: string, key: string): string {
@@ -231,7 +247,7 @@ interface FoundHandoff {
   createdAt: number
 }
 
-function loadHandoffUnder(id: string, name: string, key: string): FoundHandoff | null {
+function loadHandoffUnder(id: string, name: string, identity: string): FoundHandoff | null {
   if (isBlobStale(CONTENT_SUBDIR, id)) return null
   const value = loadBlob(CONTENT_SUBDIR, id)
   if (value === null || typeof value !== 'object') return null
@@ -240,7 +256,7 @@ function loadHandoffUnder(id: string, name: string, key: string): FoundHandoff |
     entry.kind !== 'handoff' ||
     entry.name !== name ||
     typeof entry.projectRoot !== 'string' ||
-    handoffRootKey(entry.projectRoot) !== key ||
+    handoffRootIdentity(entry.projectRoot) !== identity ||
     typeof entry.contentId !== 'string' ||
     !CONTENT_ID_PATTERN.test(entry.contentId) ||
     typeof entry.text !== 'string' ||
@@ -260,9 +276,10 @@ export interface ResolvedHandoff {
 export function resolveHandoffDetailed(name: string, opts: { projectRoot?: string; full?: boolean } = {}): ResolvedHandoff | null {
   const root = normalizeProjectRoot(opts.projectRoot)
   const key = handoffRootKey(root)
+  const identity = handoffRootIdentity(root)
   const found: FoundHandoff[] = []
   for (const id of [handoffIdFromKey(name, key), ...legacyHandoffIds(name, root)]) {
-    const hit = loadHandoffUnder(id, name, key)
+    const hit = loadHandoffUnder(id, name, identity)
     if (hit !== null) found.push(hit)
   }
   if (found.length === 0) return null
