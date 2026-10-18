@@ -195,7 +195,7 @@ describe('a PowerShell query for process text sets a UTF-8 output encoding', () 
 describe('the scan flags every bypass shape and passes the proper forms', () => {
   const IMPORT_TEXT = "import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'\n"
   const SHAPES: ReadonlyArray<readonly [string, string]> = [
-    ['an aliased bare builder under the helper name (the orchestrator mutant i)', "import { windowsPowerShellPath } from './windows_powershell.js'\nimport { powerShellCommandArgs as powerShellTextQueryArgs } from './shell.js'\nconst r = spawnSync(windowsPowerShellPath(), powerShellTextQueryArgs('x'))\n"],
+    ['an aliased bare builder under the helper name (an import that renames the bare builder to the name of the helper)', "import { windowsPowerShellPath } from './windows_powershell.js'\nimport { powerShellCommandArgs as powerShellTextQueryArgs } from './shell.js'\nconst r = spawnSync(windowsPowerShellPath(), powerShellTextQueryArgs('x'))\n"],
     ['an aliased bare builder under another name', "import { powerShellCommandArgs as psArgs } from './shell.js'\nconst r = spawnSync('powershell.exe', psArgs('x'))\n"],
     ['a file that calls the helper once and the bare builder once', `${IMPORT_TEXT}import { powerShellCommandArgs } from './shell.js'\nspawnSync(windowsPowerShellPath(), powerShellTextQueryArgs('a'))\nspawnSync(windowsPowerShellPath(), powerShellCommandArgs('b'))\n`],
     ['a multi-line template script with another cmdlet', "import { windowsPowerShellPath } from './windows_powershell.js'\nconst script = `\n  Get-Service |\n  Select-Object Name\n`\nspawnSync(windowsPowerShellPath(), ['-Command', script])\n"],
