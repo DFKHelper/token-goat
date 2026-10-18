@@ -1,4 +1,4 @@
-/** An equal mtime proves a file unchanged only when it is strictly older than the row's indexed_at; a file stamped at or after that moment is verified by content (git's racy-clean rule, https://git-scm.com/docs/racy-git). Provenance of every mtime below: HAND-DERIVED. FUTURE (4000000000 s, year 2096) is not older than any indexed_at a real run writes, OLD (1000000000 s, year 2001) is older than all of them, and `utimes` sets them, so no test reads a clock. */
+/** An equal mtime proves a file unchanged only when it is at least 2 s older than the row's indexed_at (TIMESTAMP_TICK_SEC in src/reconcile.ts::mtimeProvesUnchanged); a file stamped within that tick of it, or after it, is verified by content (git's racy-clean rule, https://git-scm.com/docs/racy-git). Provenance of every mtime below: HAND-DERIVED. FUTURE (4000000000 s, year 2096) is not older than any indexed_at a real run writes, OLD (1000000000 s, year 2001) is older than all of them, and `utimes` sets them, so no test reads a clock. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
