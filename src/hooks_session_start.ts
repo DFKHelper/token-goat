@@ -10,7 +10,7 @@ import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { buildDeltaCapsule } from './evidence_cache.js'
 import { ENV_KEYS } from './constants.js'
 import { envBool, envInt } from './env.js'
-import { DEFAULT_RECONCILE_BUDGET_MS, isReconcileClean, reconcileProject } from './reconcile.js'
+import { DEFAULT_RECONCILE_BUDGET_MS, isReconcileClean, reconcileProject, uncheckedClauses } from './reconcile.js'
 import { countNoun, extractErrorMessage } from './util.js'
 import { claimFirstSavingsReceipt, recordStat } from './stats.js'
 import { detectHarness } from './bridges/registry.js'
@@ -37,7 +37,7 @@ function reconcileNote(cwd: string, indexed: boolean): string | null {
     const breakdown = parts.length > 1 ? ` (${parts.join(', ')})` : ''
     // The truncation is disclosed rather than smoothed over: a budget-limited sweep found the drift it had time to find, and a caller reading "3 files drifted" as "3 files drifted in total" would be reading a floor as a total.
     const truncated =
-      (result.budgetExhausted ? ` (sweep stopped at its time budget with ${countNoun(result.unscanned, 'file')} unchecked, so there may be more)` : '') +
+      (result.budgetExhausted ? ` (sweep stopped at its time budget with ${uncheckedClauses(result).join(' and ')}, so there may be more)` : '') +
       (result.gitTimedOut ? ' (git did not answer in time listing the project files, so new files could not be found)' : '')
     const total = result.changed.length + result.added.length + result.removed.length
     if (total === 0) {

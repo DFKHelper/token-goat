@@ -207,11 +207,18 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
     lines.push('This project has an index but git listed no files in it, so new files could not be found. Indexed files that changed or are gone from disk were still detected. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
   }
   if (result.budgetExhausted) {
-    const unchecked = [...(result.unscanned > 0 ? [`${countNoun(result.unscanned, 'file')} unchecked`] : []), ...(result.deletionsIncomplete ? ['some indexed files not yet checked for deletion'] : [])]
-    lines.push(`Stopped at the ${result.budgetMs}ms budget (${result.elapsedMs}ms elapsed) with ${unchecked.join(' and ')}, so there may be more drift; what it found is listed above and the next sweep continues where this one stopped. Raise --budget-ms for a complete sweep.`)
+    lines.push(`Stopped at the ${result.budgetMs}ms budget (${result.elapsedMs}ms elapsed) with ${uncheckedClauses(result).join(' and ')}, so there may be more drift; what it found is listed above and the next sweep continues where this one stopped. Raise --budget-ms for a complete sweep.`)
   }
   process.stdout.write(`${lines.join('\n')}\n`)
   return 0
+}
+
+/** What a budget-stopped sweep left unchecked, worded once for `reconcile` and the session-start note: a sweep that finished its file scan but ran out of time in the deletion pass has 0 files unscanned, and "0 files unchecked" would contradict the deletion half it still owes. */
+export function uncheckedClauses(result: ReconcileResult): string[] {
+  return [
+    ...(result.unscanned > 0 ? [`${countNoun(result.unscanned, 'file')} unchecked`] : []),
+    ...(result.deletionsIncomplete ? ['some indexed files not yet checked for deletion'] : []),
+  ]
 }
 
 /** True when this result found nothing to repair -- the whole point of the common case. */
