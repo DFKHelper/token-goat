@@ -258,7 +258,8 @@ describe('the receipt through the real hook registry', () => {
     last_assistant_message: message,
     ...extra,
   })
-  const agentResult = (sid: string, text: string) => runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look into it.' }, session_id: sid, tool_response: text }))
+  // The event names the directory the roster is read from, so a developer's own .claude/agents under the process cwd never reaches these expectations.
+  const agentResult = (sid: string, text: string) => runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look into it.' }, session_id: sid, tool_response: text, cwd: repo }))
 
   it('a subagent whose last check failed gets a receipt on its report', async () => {
     const sid = newSession()

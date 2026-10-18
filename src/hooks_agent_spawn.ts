@@ -221,7 +221,7 @@ export function preAgentHandler(event: HookEvent): HookOutput {
 
   try {
     // Ahead of the outstanding-spawn registration: a denied call never runs, so registering it would flag its own retry as a near-duplicate.
-    const scopedDeny = buildScopedSpawnDeny(toolInput)
+    const scopedDeny = buildScopedSpawnDeny(toolInput, getCwd(event))
     if (scopedDeny) return scopedDeny
 
     // Check for a near-duplicate BEFORE registering this prompt, so a spawn never flags itself.
@@ -420,10 +420,10 @@ export function parseAgentDefinition(text: string, fallbackName: string): { name
   return { name, restricted: false }
 }
 
-/** Scan the machine-level agent roster (~/.claude/agents, recursively, following symlinked collection directories with a realpath cycle guard) and return the sorted names of every definition that carries a `tools:` allowlist. This is the advisory's existence gate: with no restricted definition on the machine there is nothing actionable to recommend, and an unclearable warning trains the user to ignore every warning the tool emits. Both the home roster and the project's own <cwd>/.claude/agents are scanned: the project roster holds exactly the definitions a spawn in that repo should be reaching for, and scanning it is what makes every name here potentially repository-authored rather than user-authored, which is why parseAgentDefinition constrains the name's shape before it can reach a model-facing advisory. */
-export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
+/** Scan the machine-level agent roster (~/.claude/agents, recursively, following symlinked collection directories with a realpath cycle guard) and return the sorted names of every definition that carries a `tools:` allowlist. This is the advisory's existence gate: with no restricted definition on the machine there is nothing actionable to recommend, and an unclearable warning trains the user to ignore every warning the tool emits. Both the home roster and the project's own <projectDir>/.claude/agents are scanned (projectDir is the cwd the hook payload names, so a resident server's start directory or a payload from another project never picks the roster; process.cwd() only when the payload names none): the project roster holds exactly the definitions a spawn in that repo should be reaching for, and scanning it is what makes every name here potentially repository-authored rather than user-authored, which is why parseAgentDefinition constrains the name's shape before it can reach a model-facing advisory. */
+export function findRestrictedAgentNames(roots?: readonly string[], projectDir: string = process.cwd()): string[] {
   // The project roster is scanned alongside the home one because a repo's own .claude/agents holds exactly the definitions a spawn in that repo should be reaching for, and a home-only default made them invisible to the advisory: this repo carries three such definitions and the advisory named none of them. Duplicate roots are harmless, since the visited set below folds them.
-  const projectAgentsRoot = path.join(process.cwd(), '.claude', 'agents')
+  const projectAgentsRoot = path.join(projectDir, '.claude', 'agents')
   const scanRoots = roots ?? [path.join(claudeConfigDir(), 'agents'), projectAgentsRoot]
   const names = new Set<string>()
   const visited = new Set<string>()
@@ -499,7 +499,7 @@ export function findRestrictedAgentNames(roots?: readonly string[]): string[] {
 }
 
 /** Build the once-per-session unrestricted-spawn advisory, or '' when it does not apply. Trigger: the finished spawn ran as general-purpose, either because `subagent_type` was absent (620 of 3,167 corpus spawn blocks) or because it named general-purpose explicitly; both are definitionally unrestricted with no definition file to resolve, which is the only restriction status observable at the hook without reading a roster file for the spawned type. Gate: at least one tools-restricted agent definition exists in ~/.claude/agents, so the advice is actionable and the hint clearable. Dedupe: once per session via the persisted hints-shown set. Accounting: recorded as a zero-credit `session_hint`. The advisory fires AFTER the spawn it observed and cannot save that spawn: the counterfactual it might improve (the user's next spawn, or their roster) is not a branch this code blocks, so crediting anything would repeat the advisory-credited-the-full-file defect class. The text says so explicitly for the same reason. */
-export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>): string {
+export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown>, projectDir?: string): string {
   try {
     // Gated off entirely on Copilot CLI because the advisory's content is Claude Code's Task schema (subagent_type, ~/.claude/agents rosters). Copilot's own task tool carries agent_type, not subagent_type (captured toolArgs {description, prompt, agent_type, name}, tg-captures C4a), so the absent-field trigger would misclassify every Copilot task spawn as an untyped general-purpose spawn. The channel is not the reason: post_tool_use additionalContext does reach the model on Copilot 1.0.88 (tg-captures C1a). Other bridges are not gated here: their task-tool wire shapes are unverified (loop-ledger BE-06) and their bridges forward additionalContext, so suppressing them would rest on inference. VS Code is gated for the same schema reason, read off its own bundle: runSubagent takes {prompt, description, agentName, model} (RunSubagentTool.getToolData in VS Code 1.137.0's workbench.desktop.main.js), where agentName names a VS Code chat agent, so advice to pass a ~/.claude/agents name as subagent_type names a key the tool does not have.
     const harness = getHarnessName()
@@ -508,7 +508,7 @@ export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown
     const spawnType = typeof rawType === 'string' ? rawType.trim() : ''
     if (spawnType !== '' && spawnType !== 'general-purpose') return ''
     if (wasHintShown(SPAWN_RESTRICT_HINT_KEY)) return ''
-    const names = findRestrictedAgentNames()
+    const names = findRestrictedAgentNames(undefined, projectDir)
     if (names.length === 0) return ''
     markHintShown(SPAWN_RESTRICT_HINT_KEY)
     recordStat('session_hint', 0, 0, undefined, 'agent-spawn-restrict')
@@ -525,14 +525,14 @@ export function buildUnrestrictedSpawnAdvisory(toolInput: Record<string, unknown
 const SCOPED_SPAWN_DENY_KEY = 'agent-scoped-spawn-deny'
 
 /** The pre-tool counterpart of {@link buildUnrestrictedSpawnAdvisory}, behind `hints.agent_scoped_spawn_deny` (off by default). The advisory can only describe a spawn that has already paid for its unrestricted prefix; this refuses the first untyped spawn of a session before it runs and names the restricted definitions, so the retry can pick one. Narrower than the advisory on purpose: only an OMITTED subagent_type triggers it, since an explicit `general-purpose` is a choice the caller made, and a refusal that overrode a choice would just be re-issued. Once per session, so the promise the message makes -- re-issue unchanged and it runs -- is kept by construction. Harness-gated exactly as the advisory is, for the same schema reason. Returns null when it does not fire. */
-function buildScopedSpawnDeny(toolInput: Record<string, unknown>): HookOutput | null {
+function buildScopedSpawnDeny(toolInput: Record<string, unknown>, projectDir?: string): HookOutput | null {
   if (!loadConfig().hints.agent_scoped_spawn_deny) return null
   const harness = getHarnessName()
   if (harness === 'copilot_cli' || harness === 'vscode') return null
   const rawType = toolInput['subagent_type']
   if (typeof rawType === 'string' && rawType.trim() !== '') return null
   if (wasHintShown(SCOPED_SPAWN_DENY_KEY)) return null
-  const names = findRestrictedAgentNames()
+  const names = findRestrictedAgentNames(undefined, projectDir)
   if (names.length === 0) return null
   markHintShown(SCOPED_SPAWN_DENY_KEY)
   // The post-tool advisory would name the same definitions again after the retry runs; the deny has already said it.
@@ -631,7 +631,7 @@ export async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
     // Built before the min_bytes early returns because the advisory is about the SPAWN, not the report: a lane that came back with a two-line answer paid the same unrestricted prefix. On the early-return paths it rides alone as the whole context output; past them it is folded into `notice` below, BEFORE the net-benefit gate prices that notice, so the gate-then-emit-extra accounting trap cannot reappear here.
     const receipt = (await loadAgentReceipt()).takeAgentReceipt(event.sessionId, resultText)
     if (receipt !== null) recordStat('agent_receipt', 0, 0, undefined, 'agent')
-    const spawnAdvisory = [buildUnrestrictedSpawnAdvisory(event.toolInput), receipt ?? ''].filter((part) => part !== '').join('\n')
+    const spawnAdvisory = [buildUnrestrictedSpawnAdvisory(event.toolInput, getCwd(event)), receipt ?? ''].filter((part) => part !== '').join('\n')
     if (!resultText || resultText.length < agentReportCfg.min_bytes) {
       return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     }

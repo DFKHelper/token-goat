@@ -179,7 +179,8 @@ const stopPayload = (sid: string, cwd: string, message: string) => ({
   last_assistant_message: message,
 })
 const newSession = (): string => `s-unfinished-${process.pid}-${sessionCounter++}-${Math.random().toString(36).slice(2)}`
-const agentResult = (sid: string, text: string) => runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look into it.' }, session_id: sid, tool_response: text }))
+// The event names the directory the roster is read from, so a developer's own .claude/agents under the process cwd never reaches these expectations.
+const agentResult = (sid: string, text: string) => runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look into it.' }, session_id: sid, tool_response: text, cwd: repo.replaceAll(path.sep, '/') }))
 
 /** Runs the stop hook over the repo held by `hold`'s filter, waits for the filter to have announced itself, then aborts git: the order is decided by those two events and no clock. Rejects when git ends before the filter started, which is a broken fixture and not a pass. */
 async function stopWhileHeld(sid: string, hold: Hold): Promise<Awaited<ReturnType<typeof runHook>>> {

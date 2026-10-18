@@ -93,10 +93,12 @@ async function callAgentHook(
   toolInput: Record<string, unknown>,
   sid: string,
   toolResponse?: unknown,
+  cwd?: string,
 ) {
   resetSessionState()
   loadSessionState(sid)
   const payload: Record<string, unknown> = { tool_name: 'Agent', tool_input: toolInput, session_id: sid }
+  if (cwd !== undefined) payload['cwd'] = cwd
   if (toolResponse !== undefined) payload['tool_response'] = toolResponse
   const result = await runHook(buildEvent(eventName, payload))
   saveSessionState(sid)
@@ -1179,6 +1181,37 @@ describe('unrestricted-spawn advisory (post_tool_use, gated on a restricted rost
     const sid = `${sessionId}-advisory-gate`
     const result = await callAgentHook('post_tool_use', { prompt: 'p', description: 'd' }, sid, 'short report')
     expect(result.hookType).toBe('pass')
+  })
+
+  // HAND-DERIVED: two temp projects built here, one under the process cwd (this file chdirs into a sandbox) and one named only by the event's cwd; the expectations follow from which directory the event names, not from the matcher.
+  it('reads the roster of the project the event names, not the process cwd', async () => {
+    const eventProject = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-event-proj-')))
+    try {
+      fs.mkdirSync(path.join(process.cwd(), '.claude', 'agents'), { recursive: true })
+      fs.writeFileSync(path.join(process.cwd(), '.claude', 'agents', 'cwd-only.md'), '---\nname: process-cwd-agent\ntools: Read\n---\nb')
+      fs.mkdirSync(path.join(eventProject, '.claude', 'agents'), { recursive: true })
+      fs.writeFileSync(path.join(eventProject, '.claude', 'agents', 'event-only.md'), '---\nname: event-project-agent\ntools: Read\n---\nb')
+      const result = await callAgentHook('post_tool_use', { prompt: 'p', description: 'd' }, `${sessionId}-advisory-event-cwd`, 'short report', eventProject)
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('event-project-agent')
+        expect(result.context).not.toContain('process-cwd-agent')
+      }
+    } finally {
+      fs.rmSync(eventProject, { recursive: true, force: true })
+    }
+  })
+
+  it('stays silent when the event names a project with no roster, even though the process cwd holds a restricted agent', async () => {
+    const emptyProject = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-event-empty-')))
+    try {
+      fs.mkdirSync(path.join(process.cwd(), '.claude', 'agents'), { recursive: true })
+      fs.writeFileSync(path.join(process.cwd(), '.claude', 'agents', 'cwd-only.md'), '---\nname: process-cwd-agent\ntools: Read\n---\nb')
+      const result = await callAgentHook('post_tool_use', { prompt: 'p', description: 'd' }, `${sessionId}-advisory-event-cwd-empty`, 'short report', emptyProject)
+      expect(result.hookType).toBe('pass')
+    } finally {
+      fs.rmSync(emptyProject, { recursive: true, force: true })
+    }
   })
 
   it('rides along with the report-cache notice on the large-prose path instead of being dropped by it', async () => {

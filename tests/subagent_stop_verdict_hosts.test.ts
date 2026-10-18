@@ -121,7 +121,8 @@ const copilotStop = (sid: string, message: string) => ({
   last_assistant_message: message,
 })
 
-const agentResult = (sid: string, text: string) => runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look into it.' }, session_id: sid, tool_response: text }))
+// The event names the directory the roster is read from, so a developer's own .claude/agents under the process cwd never reaches these expectations.
+const agentResult = (sid: string, text: string) => runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look into it.' }, session_id: sid, tool_response: text, cwd: cwdOf() }))
 const waitResult = (sid: string, report: string) =>
   runHook(buildEvent('post_tool_use', { tool_name: 'multi_agent_v1wait_agent', tool_input: { targets: ['thread-a'] }, session_id: sid, tool_response: JSON.stringify({ status: { 'thread-a': { completed: report } }, timed_out: false }) }))
 
