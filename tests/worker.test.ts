@@ -1749,22 +1749,33 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
 // Regression (mutation-testing gap): the loop body re-checks shouldStop() immediately after the drain/housekeeping work, BEFORE the setTimeout poll-interval sleep, so a stop request that arrives mid-cycle exits right away instead of waiting out one more full pollIntervalMs sleep for nothing. Without that second check, the loop always sleeps once more before the next `while (!shouldStop())` iteration catches it -- a real, measurable shutdown-latency regression for a caller (e.g. stopWorker's own SIGTERM-driven exit path) that wants the daemon to stop promptly. Uses a deliberately large pollIntervalMs and asserts on wall-clock elapsed time so a wasted sleep is unambiguous rather than lost in test-runner jitter.
 describe('runWorkerLoop prompt-stop (mutation-testing gap)', () => {
   it('stops immediately after the loop body when told to, without waiting out one more poll interval', async () => {
+    // PROVENANCE: HAND-DERIVED. shouldStop is read once by the loop condition and once after the cycle's work, so answering true from the second read stops the loop exactly at the check under test. 7919 ms is a poll interval no other timer in the loop shares.
+    const POLL_MS = 7919
     let calls = 0
     const shouldStop = (): boolean => {
       calls += 1
       return calls > 1
     }
-    const setTimeoutSpy = vi.spyOn(global, 'setTimeout')
-    let resolved = false
-    // Await the loop's own promise chain (drainOnce + housekeeping are synchronous/microtask work) without ever advancing real or fake time: if the second shouldStop() check is skipped, the loop falls through to `setTimeout(resolve, pollIntervalMs)` and this would never resolve without a 2000ms timer advance -- proving the behavior directly instead of inferring it from a wall-clock bound.
-    void runWorkerLoop(DIR, 2000, shouldStop).then(() => {
-      resolved = true
+    // The sleep is the only timer armed with the poll interval, so a timer armed with it is the event "the loop went on to wait out another interval". Timers are fake and never advanced inside the race, so what settles it is the loop's own control flow: it returns, or it arms the sleep.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let sleepArmed!: () => void
+    const armed = new Promise<'slept'>((resolve) => {
+      sleepArmed = () => resolve('slept')
     })
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(resolved).toBe(true)
-    expect(setTimeoutSpy).not.toHaveBeenCalled()
-    setTimeoutSpy.mockRestore()
+    const fakeSetTimeout = global.setTimeout
+    const timerSpy = vi.spyOn(global, 'setTimeout').mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+      if (args[1] === POLL_MS) sleepArmed()
+      return fakeSetTimeout(...args)
+    }) as typeof setTimeout)
+    const loop = runWorkerLoop(DIR, POLL_MS, shouldStop).then(() => 'stopped' as const)
+    try {
+      expect(await Promise.race([loop, armed])).toBe('stopped')
+    } finally {
+      timerSpy.mockRestore()
+      vi.advanceTimersByTime(POLL_MS)
+      await loop
+      vi.useRealTimers()
+    }
   })
 })
 

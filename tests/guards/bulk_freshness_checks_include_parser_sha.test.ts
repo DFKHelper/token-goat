@@ -52,7 +52,7 @@ interface Classification {
 
 const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
   [
-    'reconcileProject',
+    'reconcileProjectWith',
     {
       bucket: 'gates-a-skip-decision-on-both-freshness-keys',
       reason:
@@ -166,7 +166,7 @@ describe('every bulk-vs-single freshness check on fingerprintFile is classified 
       what: 'top-level functions in src/**/*.ts that call fingerprintFile(',
       items: found,
       floor: 6,
-      mustInclude: ['reconcileProject', 'writeParseResult'],
+      mustInclude: ['reconcileProjectWith', 'writeParseResult'],
     })
   })
 

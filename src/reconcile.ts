@@ -10,7 +10,7 @@ import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from 
 import { indexedPathSpellingIsStale } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { getDisplayRoot } from './project.js'
-import { listTrackedFiles } from './repomap.js'
+import { listTrackedFiles, type TrackedFilesResult } from './repomap.js'
 import { projectScopeClause } from './sql_path.js'
 import { countNoun, foldPath } from './util.js'
 
@@ -171,11 +171,19 @@ export function isReconcileClean(r: ReconcileResult): boolean {
 /** Sweep `cwd`'s tracked files against the index and enqueue whatever drifted. Deletions are enqueued rather than handled separately: the worker's drain reconciles a deletion when the removed path is the one enqueued, so one queue and one drainer cover all three drift kinds instead of a second removal path that could disagree with the first. */
 export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const cwd = opts.cwd ?? process.cwd()
+  const calledAt = Date.now()
+  const result = reconcileProjectWith({ ...opts, cwd }, listTrackedFiles(cwd))
+  // The listing is part of what this call cost, as it was before the sweep took it as an argument.
+  return { ...result, elapsedMs: Date.now() - calledAt }
+}
+
+/** {@link reconcileProject} over a tracked-file listing the caller already has, so the worker can read it without blocking (see repomap.ts::listTrackedFilesAsync) and sweep here. `opts.cwd` names the root the listing was taken from. The result's `elapsedMs` counts from this call, not from the listing. */
+export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFilesResult): ReconcileResult {
+  const cwd = opts.cwd ?? process.cwd()
   const budgetMs = opts.budgetMs ?? DEFAULT_RECONCILE_BUDGET_MS
   const calledAt = Date.now()
   const dbPath = opts.dbPath ?? globalDbPath()
 
-  const listing = listTrackedFiles(cwd)
   const tracked = listing.files
   // Absolutized before scoping: the index stores absolute paths, and `projectScopeClause` builds a prefix-range bound straight from the root it is handed. A relative `cwd` -- what `token-goat reconcile` from inside the project passes -- would produce a relative prefix that matches no stored row, so every tracked file would look unindexed and the sweep would enqueue the entire project as "added" on every run.
   const projectRoot = resolveIndexPath('.', cwd)
