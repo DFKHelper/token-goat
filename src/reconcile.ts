@@ -9,6 +9,7 @@ import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexedPathSpellingIsStale } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
+import type { FileIndexEntry } from './parser_types.js'
 import { getDisplayRoot } from './project.js'
 import { listTrackedFiles } from './repomap.js'
 import { projectScopeClause } from './sql_path.js'
@@ -19,6 +20,19 @@ export const DEFAULT_RECONCILE_BUDGET_MS = 1500
 
 /** Files a sweep examines before its budget may stop it, so every sweep advances the resume cursor whatever the clock says. */
 const MIN_FILES_PER_SWEEP = 1
+
+/** The coarsest timestamp tick this guards against, in seconds: the FAT 2 s and HFS+ 1 s resolutions the bug report named (filesystem timestamp resolutions not verified against filesystem documentation). */
+const TIMESTAMP_TICK_SEC = 2
+
+/** Does an equal mtime prove the file unchanged since its row was written? Only when that mtime is older than the row's indexed_at by at least one timestamp tick (both seconds): a file edited after indexing but inside the tick its recorded mtime was stamped in gets the same stamp while its bytes differ, so equality alone hides that edit forever, and a stamp truncated down to the tick can sit below indexed_at yet still cover the edit. Git's racy-clean rule, https://git-scm.com/docs/racy-git (read at its "racy-git last updated in 2.43.0" revision): an entry whose mtime is the same as or newer than the index timestamp is verified by content. An ambiguous file, a row with no indexed_at included, falls through to the hash compare, so only those files cost a read. */
+function mtimeProvesUnchanged(entry: FileIndexEntry, diskMtimeMs: number): boolean {
+  return mtimeEqualsRow(entry, diskMtimeMs) && entry.mtime + TIMESTAMP_TICK_SEC <= entry.indexedAt
+}
+
+/** Is the disk mtime the one the row recorded? A file that passes this but not {@link mtimeProvesUnchanged} is verified by content and, when the bytes match, is not a moved-timestamp file, so it must not be counted as one. */
+function mtimeEqualsRow(entry: FileIndexEntry, diskMtimeMs: number): boolean {
+  return entry.mtime !== 0 && diskMtimeMs / 1000 === entry.mtime
+}
 
 export interface ReconcileOptions {
   cwd?: string
@@ -260,7 +274,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     }
 
     // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch. `entry.mtime` is stored in seconds (see `safeMtime` in parser.ts) while `mtimeMs` is milliseconds, so the comparison converts here rather than at the write side, which would require migrating every already-indexed row.
-    if (entry.mtime !== 0 && mtimeMs / 1000 === entry.mtime) continue
+    if (mtimeProvesUnchanged(entry, mtimeMs)) continue
 
     const diskSha = fingerprintFile(file)
     if (diskSha === null) {
@@ -268,7 +282,7 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
       continue
     }
     if (diskSha === entry.sha) {
-      mtimeOnly++
+      if (!mtimeEqualsRow(entry, mtimeMs)) mtimeOnly++
       continue
     }
     changed.push(file)
@@ -293,10 +307,11 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
         continue
       }
       // A live row git does not list is still compared against its content, as the scan above compares a tracked one: nothing else revisits an untracked file rewritten outside an edit, such as one a formatter or `git stash pop` changed past the post-bash sweep's cap.
-      if (st === null || (entry.mtime !== 0 && st.mtimeMs / 1000 === entry.mtime)) continue
+      if (st === null || mtimeProvesUnchanged(entry, st.mtimeMs)) continue
       const diskSha = fingerprintFile(entry.filePath)
-      if (diskSha === entry.sha) mtimeOnly++
-      else if (diskSha !== null) changed.push(entry.filePath)
+      if (diskSha === entry.sha) {
+        if (!mtimeEqualsRow(entry, st.mtimeMs)) mtimeOnly++
+      } else if (diskSha !== null) changed.push(entry.filePath)
     }
   }
 
