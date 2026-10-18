@@ -59,9 +59,9 @@ beforeEach(() => {
 // Remove what beforeEach made, on every path, each removal independent: a failure removing the project dir must not leave the home dir behind (the nested finally still runs it, and the first error still surfaces). No env is changed here: both dirs reach the CLI through the per-spawn env only.
 afterEach(() => {
   try {
-    rmSync(projectDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(projectDir, { recursive: true, force: true })
   } finally {
-    rmSync(homeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+    rmSync(homeDir, { recursive: true, force: true })
   }
 })
 
