@@ -304,15 +304,15 @@ export function namedContentNotes(handoff: HandoffResult): string[] {
 
 const NAMING_HANDOFFS_SHOWN = 3
 
-// For a content id that retrieve could not find: the handoffs of this project, within their own age limit, whose text names it, or null when none does. A per-miss scan of every live record is acceptable because it runs only after a retrieve has already missed, the substring test comes before a record's root is resolved, and 500 live 4 KB handoffs cost about 50-65 ms in process (measured 2026-10-18), the same order as the scan readContent already makes on that miss.
+// For a content id that retrieve could not find: the handoffs of this project (the same lexical root key handoff-resolve looks under, so a link and its target are two projects here as there), within their own age limit, whose text names it, or null when none does. A per-miss scan of every live record is acceptable because it runs only after a retrieve has already missed, the substring test comes before a record's root is keyed, and 500 live 4 KB handoffs cost about 50-100 ms in process (measured twice on 2026-10-18 on a busy host), the same order as the scan readContent already makes on that miss.
 export function describeContentNamedByHandoff(id: string, projectRoot?: string): string | null {
   if (!CONTENT_ID_PATTERN.test(id)) return null
-  const identity = handoffRootIdentity(normalizeProjectRoot(projectRoot))
+  const key = handoffRootKey(normalizeProjectRoot(projectRoot))
   const naming: Array<{ name: string; createdAt: number }> = []
   for (const entry of liveHandoffEntries()) {
     if (typeof entry.text !== 'string' || typeof entry.name !== 'string' || typeof entry.projectRoot !== 'string') continue
     if (!entry.text.includes(id) || !contentIdsNamedIn(entry.text).includes(id)) continue
-    if (handoffRootIdentity(entry.projectRoot) !== identity) continue
+    if (handoffRootKey(entry.projectRoot) !== key) continue
     naming.push({ name: entry.name, createdAt: typeof entry.createdAt === 'number' ? entry.createdAt : 0 })
   }
   if (naming.length === 0) return null

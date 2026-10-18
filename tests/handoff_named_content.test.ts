@@ -233,6 +233,24 @@ describe('retrieve says which handoff named an id the cache has dropped', () => 
     }
   })
 
+  // HAND-DERIVED: a junction on Windows, a directory symlink elsewhere. CAPTURE: with the built bundle, a handoff made through a link was not found by handoff-resolve from the link's target and the reverse, so the link and its target are two project roots; retrieve uses the same root key.
+  it('treats a link and its target as two projects, as handoff-resolve does', () => {
+    const real = path.join(projectDir, 'real-root')
+    const link = path.join(projectDir, 'link-root')
+    fs.mkdirSync(real)
+    fs.symlinkSync(real, link, isWin ? 'junction' : 'dir')
+    try {
+      const id = storeViaCli('table of results the handoff points at')
+      expect(runCli(['handoff-create', 'refs', `see ${id} for the table`], link).status).toBe(0)
+      pruneAfterAging(id)
+
+      expect(runCli(['retrieve', id], link).stderr).toContain('handoff "refs" named it in the text')
+      expect(runCli(['retrieve', id], real).stderr).toContain(OLD_MESSAGE(id))
+    } finally {
+      fs.rmdirSync(link)
+    }
+  })
+
   it('does not count a handoff that is itself past the age limit', () => {
     const id = storeViaCli('table of results the handoff points at')
     const created = JSON.parse(runCli(['handoff-create', 'refs', `see ${id} for the table`]).stdout) as { id: string }
