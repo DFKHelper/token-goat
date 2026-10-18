@@ -142,7 +142,7 @@ function cmdContentCompress(text: string | undefined, opts: { file?: string; pay
 
 function cmdRetrieve(id: string, opts: RecallFilterOpts): void {
   const text = retrieveText(id)
-  if (text === null) throw new CliError(describeUnreadableContent(id) ?? (isContentExpired(id) ? `content ${id} expired: it is older than the local cache's age limit.` : (describeContentNamedByHandoff(id) ?? `no token-goat content for id: ${id}. The local cache may have expired.`)))
+  if (text === null) throw new CliError(describeUnreadableContent(id) ?? describeContentNamedByHandoff(id) ?? (isContentExpired(id) ? `content ${id} expired: it is older than the local cache's age limit.` : `no token-goat content for id: ${id}. The local cache may have expired.`))
   // retrieve is the lossless round-trip for compress-text; other commands print `recovery: token-goat retrieve <id>` promising the original bytes back, so with no narrowing flag it must stay byte-verbatim -- only opt into sibling head/tail elision once the caller explicitly asks for a slice.
   const noNarrowing = opts.head === undefined && opts.tail === undefined && opts.grep === undefined && opts.section === undefined && opts.maxMatches === undefined && opts.lines === undefined && opts.context === undefined
   // Written raw, not through out() or the shared filter: both strip ANSI codes for a non-colour stdout and the filter re-joins CRLF lines with LF, so the "original bytes back" came back altered whenever the stored text had either. No trailing newline is added either, so `retrieve <id> > file` reproduces the file compress-text read.

@@ -322,14 +322,29 @@ describe('retrieve says which handoff named an id the cache has dropped', () => 
     expect(retrieved.stderr).toContain('handoff "paren" named it in the text')
   })
 
-  it('keeps the existing expired wording for a blob still on disk past the limit', () => {
+  it('keeps the existing expired wording for a blob still on disk past the limit that no handoff names', () => {
     const id = storeViaCli('table of results the handoff points at')
-    expect(runCli(['handoff-create', 'refs', `see ${id} for the table`]).status).toBe(0)
     setAge(id, 2 * DAY_MS)
 
     const retrieved = runCli(['retrieve', id])
 
-    expect(retrieved.stderr).toContain(`${id} expired`)
+    expect(retrieved.status).not.toBe(0)
+    expect(retrieved.stderr).toContain(`content ${id} expired: it is older than the local cache's age limit.`)
+    expect(retrieved.stderr).not.toContain('named it')
+  })
+
+  it('names the handoff for a blob still on disk past the limit, as it does once the blob is pruned', () => {
+    const id = storeViaCli('table of results the handoff points at')
+    expect(runCli(['handoff-create', 'refs', `see ${id} for the table`]).status).toBe(0)
+    setAge(id, 2 * DAY_MS)
+    expect(fs.existsSync(blobFile(id))).toBe(true)
+
+    const retrieved = runCli(['retrieve', id])
+
+    expect(retrieved.status).not.toBe(0)
+    expect(retrieved.stderr).toContain(`content ${id} expired under the 24 h content limit`)
+    expect(retrieved.stderr).toContain('handoff "refs" named it in the text')
+    expect(retrieved.stderr).not.toContain('may have expired')
   })
 })
 
@@ -362,6 +377,22 @@ describe('the retrieve_text tool says the same', () => {
     expect(named.text).toContain('handoff "refs" named it in the text')
     const unnamed = await retrieveViaMcp('tg_0000000000000000')
     expect(unnamed.text).toBe('no token-goat content for id: tg_0000000000000000')
+  })
+
+  it('names the handoff for a blob still on disk past the limit, and keeps the expired wording when none names it', async () => {
+    const named = compressText('table of results the handoff points at')
+    createHandoff('refs', `see ${named.id} for the table`, process.cwd())
+    const unnamed = compressText('a second table nobody mentions')
+    setAge(named.id, 2 * DAY_MS)
+    setAge(unnamed.id, 2 * DAY_MS)
+    expect(fs.existsSync(blobFile(named.id))).toBe(true)
+
+    const withHandoff = await retrieveViaMcp(named.id)
+    expect(withHandoff.isError).toBe(true)
+    expect(withHandoff.text).toContain(`content ${named.id} expired under the 24 h content limit`)
+    expect(withHandoff.text).toContain('handoff "refs" named it in the text')
+    const without = await retrieveViaMcp(unnamed.id)
+    expect(without.text).toBe(`token-goat content ${unnamed.id} expired: it is older than the local cache's age limit.`)
   })
 
   // HAND-DERIVED: handoff_create with no projectRoot keys the handoff under the git top level of the server's cwd (resolveToolRoot), the root handoff_resolve looks under; a package.json in a subdirectory is a project marker of its own, so the cwd-only key is the subdirectory. The retrieve_text tool takes no root, so it must read the one its sibling tools write.
