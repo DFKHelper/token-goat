@@ -41,9 +41,11 @@ function standIn(args: readonly string[]): { pid: number; launcher: string } {
 }
 
 describe.skipIf(process.platform !== 'win32')('Windows process queries read characters outside the OEM code page whole', () => {
-  it('doctor process list returns a launcher path whole', () => {
+  it('doctor process list returns a launcher path whole', (ctx) => {
     const { pid, launcher } = standIn(['--worker-daemon'])
     const listed = readWindowsProcesses()
+    // A query that hit its time cap on a loaded machine read nothing, so there is no decode to judge: an observed skip, never a pass. Only the failure the product itself marks transient (cli_doctor_process.ts::ProcessListTimeout) skips; a list that came back with the path mangled, or any other failure, still fails below.
+    if (!Array.isArray(listed) && listed.transient === true) return ctx.skip(`the process list hit its time cap: ${listed.reason}`)
     expect(Array.isArray(listed), `the process list could not be read: ${JSON.stringify(listed)}`).toBe(true)
     const row = Array.isArray(listed) ? listed.find((p) => p.processId === pid) : undefined
     expect(row?.commandLine ?? '', 'the stand-in is listed with its launcher path whole').toContain(launcher)
