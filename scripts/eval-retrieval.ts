@@ -278,6 +278,31 @@ function distanceLines(rows: readonly QueryResult[], indent: string, weak: numbe
   return out
 }
 
+/** The first-relevant rank per query id that a baseline file recorded for one arm and split. A file written by `--out` holds an array of report rows; the committed evals/retrieval/baseline.json is the gate's shape, a map of query id to rank, which `toBaseline` writes and which carries no split, so the split is derived from the id the way a run derives it. Any other shape throws rather than comparing against nothing. */
+export function baselineRanks(arm: unknown, split: 'train' | 'test', name: string): Map<string, number | null> {
+  const isRank = (v: unknown): v is number | null => v === null || (typeof v === 'number' && Number.isFinite(v))
+  if (Array.isArray(arm)) {
+    const ranks = new Map<string, number | null>()
+    for (const row of arm as unknown[]) {
+      const r = row as { id?: unknown; split?: unknown; rank?: unknown } | null
+      if (r === null || typeof r !== 'object' || typeof r.id !== 'string' || (r.split !== 'train' && r.split !== 'test') || !isRank(r.rank)) {
+        throw new Error(`eval-retrieval: baseline arm "${name}" has a row that is not a report row (id, split, rank)`)
+      }
+      if (r.split === split) ranks.set(r.id, r.rank)
+    }
+    return ranks
+  }
+  if (arm !== null && typeof arm === 'object') {
+    const ranks = new Map<string, number | null>()
+    for (const [id, rank] of Object.entries(arm)) {
+      if (!isRank(rank)) throw new Error(`eval-retrieval: baseline arm "${name}" maps query "${id}" to something that is not a rank`)
+      if (splitOf(id) === split) ranks.set(id, rank)
+    }
+    return ranks
+  }
+  throw new Error(`eval-retrieval: baseline arm "${name}" is neither a list of report rows nor a map of query id to rank`)
+}
+
 interface Report {
   readonly arms: Record<string, QueryResult[]>
   readonly answer: { id: string; split: string; route: string; routeOk: boolean; fileRecall: number }[]
@@ -374,13 +399,13 @@ function main(): void {
 
   const baselinePath = arg('baseline')
   if (baselinePath !== undefined) {
-    const base = JSON.parse(readFileSync(baselinePath, 'utf8')) as Report
+    const base = JSON.parse(readFileSync(baselinePath, 'utf8')) as { readonly arms: Record<string, unknown> }
     for (const [name, rows] of Object.entries(report.arms)) {
       const old = base.arms[name]
       if (old === undefined) continue
       for (const split of ['train', 'test'] as const) {
         const now = rows.filter((r) => r.split === split && r.kind !== 'absent')
-        const before = new Map(old.filter((r) => r.split === split).map((r) => [r.id, r.rank]))
+        const before = baselineRanks(old, split, name)
         const paired = now.filter((r) => before.has(r.id))
         const d = pairedBootstrapDelta(
           paired.map((r) => reciprocalRank(before.get(r.id) ?? null, K)),

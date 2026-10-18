@@ -1,4 +1,4 @@
-/** Wiring of scripts/eval-retrieval.ts around the binary it drives: it must exclude its own fixtures from the eval home's index before asking anything, refuse to score an arm that retrieved them, and report the weak-match line that home has configured rather than the shipped default. The stand-in binary's `semantic --json` payload is FORMAT-DERIVED from src/read_semantic.ts (`items[].filePath/startLine/endLine/distance`); its `config get --json` line is FORMAT-DERIVED from src/config_commands.ts (`get` spreads `{source}` beside `key`/`value`). The queries, distances and expected lines are HAND-DERIVED from the rows written here. */
+/** Wiring of scripts/eval-retrieval.ts around the binary it drives: it must exclude its own fixtures from the eval home's index before asking anything, refuse to score an arm that retrieved them, and report the weak-match line that home has configured rather than the shipped default. The stand-in binary's `semantic --json` payload is FORMAT-DERIVED from src/read_semantic.ts (`items[].filePath/startLine/endLine/distance`); its `config get --json` line is FORMAT-DERIVED from src/config_commands.ts (`get` spreads `{source}` beside `key`/`value`). The queries, distances and expected lines are HAND-DERIVED from the rows written here. The baseline files are FORMAT-DERIVED from evals/retrieval/gate.ts::toBaseline (arms[name] maps query id to rank), and the committed evals/retrieval/baseline.json is read as CAPTURE. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -6,8 +6,9 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { toBaseline } from '../evals/retrieval/gate.js'
 import { splitOf } from '../evals/retrieval/metrics.js'
-import { fixtureHits, parseConfiguredNumber } from '../scripts/eval-retrieval.js'
+import { baselineRanks, fixtureHits, parseConfiguredNumber } from '../scripts/eval-retrieval.js'
 
 const FAKE_BIN = `import { appendFileSync } from 'node:fs'
 const args = process.argv.slice(2)
@@ -42,9 +43,9 @@ function golden(): string {
   return `${lines.join('\n')}\n`
 }
 
-function runHarness(env: Record<string, string> = {}): { status: number | null; stdout: string; stderr: string; calls: string[][] } {
+function runHarness(env: Record<string, string> = {}, extraArgs: string[] = []): { status: number | null; stdout: string; stderr: string; calls: string[][] } {
   const log = path.join(root, 'calls.jsonl')
-  const r = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/eval-retrieval.ts', '--home', path.join(root, 'home'), '--bin', path.join(root, 'fake-tg.mjs'), '--root', path.join(root, 'proj'), '--arms', 'semantic'], {
+  const r = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/eval-retrieval.ts', '--home', path.join(root, 'home'), '--bin', path.join(root, 'fake-tg.mjs'), '--root', path.join(root, 'proj'), '--arms', 'semantic', ...extraArgs], {
     cwd: process.cwd(),
     encoding: 'utf8',
     timeout: 60_000,
@@ -84,6 +85,65 @@ describe('eval-retrieval harness wiring', () => {
     expect(r.stderr).toContain('evals/retrieval/golden.jsonl')
     expect(r.stdout).not.toContain('weak_distance')
   }, 60_000)
+})
+
+describe('eval-retrieval --baseline', () => {
+  const goldenIds = (): string[] => golden().trim().split('\n').map((l) => (JSON.parse(l) as { id: string }).id)
+  const writeBaseline = (value: unknown): string => {
+    const file = path.join(root, 'baseline.json')
+    fs.writeFileSync(file, JSON.stringify(value))
+    return file
+  }
+
+  it('compares against a baseline in the shape toBaseline writes and prints a delta line for both splits', () => {
+    const rows = goldenIds().map((id) => ({ id, kind: 'doc', rank: 2 }))
+    const file = writeBaseline(toBaseline({ semantic: rows }, 0))
+    const r = runHarness({}, ['--baseline', file])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toMatch(/^delta semantic\s+train\s+MRR@10/m)
+    expect(r.stdout).toMatch(/^delta semantic\s+test\s+MRR@10/m)
+  }, 60_000)
+
+  it('exits 1 naming the arm when a baseline arm is neither a row list nor a rank map', () => {
+    const r = runHarness({}, ['--baseline', writeBaseline({ schema: 1, distractors: 0, arms: { semantic: 'oops' } })])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('baseline arm "semantic" is neither a list of report rows nor a map of query id to rank')
+  }, 60_000)
+})
+
+describe('baselineRanks', () => {
+  const ids = ['id-a', 'id-b', 'id-c', 'id-d', 'id-e', 'id-f']
+
+  it('keeps only the asked split from a list of report rows', () => {
+    const rows = ids.map((id) => ({ id, split: splitOf(id), kind: 'doc', rank: 3 }))
+    for (const split of ['train', 'test'] as const) {
+      expect([...baselineRanks(rows, split, 'a').keys()]).toEqual(ids.filter((id) => splitOf(id) === split))
+    }
+  })
+
+  it('keeps only the asked split from a rank map, deriving the split from the id', () => {
+    const arm = Object.fromEntries(ids.map((id, i) => [id, i % 2 === 0 ? null : i]))
+    for (const split of ['train', 'test'] as const) {
+      const got = baselineRanks(arm, split, 'a')
+      expect([...got.keys()]).toEqual(ids.filter((id) => splitOf(id) === split))
+      for (const [id, rank] of got) expect(rank).toBe(arm[id])
+    }
+  })
+
+  it('reads every arm of the committed baseline.json (CAPTURE: the file as committed)', () => {
+    const base = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'evals', 'retrieval', 'baseline.json'), 'utf8')) as { arms: Record<string, Record<string, number | null>> }
+    for (const [name, arm] of Object.entries(base.arms)) {
+      const n = baselineRanks(arm, 'train', name).size + baselineRanks(arm, 'test', name).size
+      expect(n, name).toBe(Object.keys(arm).length)
+    }
+  })
+
+  it('throws on a row that is not a report row, a non-rank value, and a non-container', () => {
+    expect(() => baselineRanks([{ id: 'x', rank: 1 }], 'train', 'a')).toThrow(/not a report row/)
+    expect(() => baselineRanks({ x: '1' }, 'train', 'a')).toThrow(/not a rank/)
+    expect(() => baselineRanks(7, 'train', 'a')).toThrow(/neither a list of report rows nor a map/)
+    expect(() => baselineRanks(null, 'train', 'a')).toThrow(/neither a list of report rows nor a map/)
+  })
 })
 
 describe('fixtureHits', () => {
