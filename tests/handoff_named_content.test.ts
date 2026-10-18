@@ -71,6 +71,11 @@ function utc(ms: number): string {
   return new Date(ms).toISOString().slice(0, 19)
 }
 
+// The wall-clock text of the host zone at that instant: shift the instant by the zone offset in force then and read the shifted instant as UTC, so it needs no zone setting and no getHours.
+function local(ms: number): string {
+  return utc(ms - new Date(ms).getTimezoneOffset() * 60000)
+}
+
 // The gap a note states, in seconds (negative for after), read back from its words; null when the phrase is absent.
 function statedGapSeconds(text: string, id: string): number | null {
   const match = new RegExp(`names content ${id}, which expires at [^,]+ [(]local time[)], (?:(\\d+) h)? ?(?:(\\d+) min)? ?(?:(\\d+) s)? ?(before|after) this handoff [(]this handoff lasts until`).exec(text)
@@ -190,10 +195,9 @@ describe('handoff-create says what becomes of the content ids its text names', (
   })
 })
 
-// HAND-DERIVED: the content and the handoff blobs get exact mtimes with utimes (whole seconds, four hours back so the content is live), the handoff is created in-process, and the expected text is the mtime plus the 24 h limit written out in UTC with the process zone pinned to UTC; no clock is waited on.
+// HAND-DERIVED: the content and the handoff blobs get exact mtimes with utimes (whole seconds, four hours back so the content is live), the handoff is created in-process, and the expected text is the mtime plus the 24 h limit written out in the host zone by local(), so no zone is pinned and any host zone passes; no clock is waited on.
 describe('the note states how long before the handoff the content expires', () => {
   function noteFor(gapSeconds: number): { id: string; notes: string[]; contentMtime: number } {
-    process.env['TZ'] = 'UTC'
     const contentMtime = Math.floor((Date.now() - 4 * 3600 * 1000) / 1000) * 1000
     const stored = compressText('table of results the handoff points at')
     fs.utimesSync(blobFile(stored.id), new Date(contentMtime), new Date(contentMtime))
@@ -207,28 +211,28 @@ describe('the note states how long before the handoff the content expires', () =
     const { id, notes, contentMtime } = noteFor(1)
 
     expect(notes).toHaveLength(1)
-    expect(notes[0]).toContain(`names content ${id}, which expires at ${utc(contentMtime + DAY_MS)} (local time), 1 s before this handoff (this handoff lasts until ${utc(contentMtime + 1000 + DAY_MS)}).`)
+    expect(notes[0]).toContain(`names content ${id}, which expires at ${local(contentMtime + DAY_MS)} (local time), 1 s before this handoff (this handoff lasts until ${local(contentMtime + 1000 + DAY_MS)}).`)
   })
 
   it('says every unit of a larger gap', () => {
     const { id, notes, contentMtime } = noteFor(3725)
 
     expect(notes).toHaveLength(1)
-    expect(notes[0]).toContain(`names content ${id}, which expires at ${utc(contentMtime + DAY_MS)} (local time), 1 h 2 min 5 s before this handoff (this handoff lasts until ${utc(contentMtime + 3725 * 1000 + DAY_MS)}).`)
+    expect(notes[0]).toContain(`names content ${id}, which expires at ${local(contentMtime + DAY_MS)} (local time), 1 h 2 min 5 s before this handoff (this handoff lasts until ${local(contentMtime + 3725 * 1000 + DAY_MS)}).`)
   })
 
   it('still prints the note when both expire in the same second', () => {
     const { id, notes, contentMtime } = noteFor(0)
 
     expect(notes).toHaveLength(1)
-    expect(notes[0]).toContain(`names content ${id}, which expires at ${utc(contentMtime + DAY_MS)} (local time), at the same second as this handoff (this handoff lasts until ${utc(contentMtime + DAY_MS)}).`)
+    expect(notes[0]).toContain(`names content ${id}, which expires at ${local(contentMtime + DAY_MS)} (local time), at the same second as this handoff (this handoff lasts until ${local(contentMtime + DAY_MS)}).`)
   })
 
   it('says after when the content outlasts the handoff', () => {
     const { id, notes, contentMtime } = noteFor(-90)
 
     expect(notes).toHaveLength(1)
-    expect(notes[0]).toContain(`names content ${id}, which expires at ${utc(contentMtime + DAY_MS)} (local time), 1 min 30 s after this handoff (this handoff lasts until ${utc(contentMtime - 90 * 1000 + DAY_MS)}).`)
+    expect(notes[0]).toContain(`names content ${id}, which expires at ${local(contentMtime + DAY_MS)} (local time), 1 min 30 s after this handoff (this handoff lasts until ${local(contentMtime - 90 * 1000 + DAY_MS)}).`)
   })
 })
 
@@ -242,8 +246,8 @@ describe('the handoff_create tool carries the same notes', () => {
     expect(answer.texts).toHaveLength(2)
     const handoffId = (JSON.parse(answer.texts[0] as string) as { id: string }).id
     const handoffMtime = fs.statSync(blobFile(handoffId)).mtimeMs
-    expect(answer.texts[1]).toContain(`names content ${stored.id}, which expires at ${utc(blobMtime + DAY_MS)} (local time), `)
-    expect(answer.texts[1]).toContain(` before this handoff (this handoff lasts until ${utc(Math.floor(handoffMtime / 1000) * 1000 + DAY_MS)}).`)
+    expect(answer.texts[1]).toContain(`names content ${stored.id}, which expires at ${local(blobMtime + DAY_MS)} (local time), `)
+    expect(answer.texts[1]).toContain(` before this handoff (this handoff lasts until ${local(Math.floor(handoffMtime / 1000) * 1000 + DAY_MS)}).`)
     expect(statedGapSeconds(answer.texts[1] as string, stored.id)).toBe(Math.floor(handoffMtime / 1000) - blobMtime / 1000)
   })
 
@@ -337,9 +341,11 @@ describe('retrieve says which handoff named an id the cache has dropped', () => 
       pruneAfterAging(id)
 
       expect(runCli(['retrieve', id], link).stderr).toContain('handoff "refs" named it in the text')
-      expect(runCli(['retrieve', id], real).stderr).toContain(OLD_MESSAGE(id))
+      // CAPTURE: on Linux (WSL Ubuntu, node v22.23.3, 2026-10-18) a child started in a directory symlink reports its resolved path from process.cwd(), so the link never reaches the CLI as a second spelling and both cwds name the handoff; a Windows junction keeps its own spelling.
+      expect(runCli(['retrieve', id], real).stderr).toContain(isWin ? OLD_MESSAGE(id) : 'handoff "refs" named it in the text')
     } finally {
-      fs.rmdirSync(link)
+      if (isWin) fs.rmdirSync(link)
+      else fs.unlinkSync(link)
     }
   })
 
