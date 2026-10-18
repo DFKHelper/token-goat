@@ -95,13 +95,14 @@ describe('eval-retrieval --baseline', () => {
     return file
   }
 
-  it('compares against a baseline in the shape toBaseline writes and prints a delta line for both splits', () => {
+  it('compares against a baseline in the shape toBaseline writes and prints the paired delta its ranks give for both splits', () => {
     const rows = goldenIds().map((id) => ({ id, kind: 'doc', rank: 2 }))
     const file = writeBaseline(toBaseline({ semantic: rows }, 0))
     const r = runHarness({}, ['--baseline', file])
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout).toMatch(/^delta semantic\s+train\s+MRR@10/m)
-    expect(r.stdout).toMatch(/^delta semantic\s+test\s+MRR@10/m)
+    // HAND-DERIVED: the stand-in ranks the one answerable query of each split first (reciprocal rank 1) and the baseline recorded rank 2 (0.5), so each split's one paired query moves by exactly +0.500.
+    expect(r.stdout).toMatch(/^delta semantic\s+train\s+MRR@10 \+0\.500 \[0\.500, 0\.500\]\s{2}improved$/m)
+    expect(r.stdout).toMatch(/^delta semantic\s+test\s+MRR@10 \+0\.500 \[0\.500, 0\.500\]\s{2}improved$/m)
   }, 60_000)
 
   it('exits 1 naming the arm when a baseline arm is neither a row list nor a rank map', () => {

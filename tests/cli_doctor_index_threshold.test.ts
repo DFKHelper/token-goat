@@ -133,14 +133,16 @@ describe('doctor index size threshold and auto-reclaim', () => {
     invalidateConfigCache()
 
     expect(repairRes.errors).toEqual([])
-    expect(repairRes.repairs.some((r) => r.includes('Auto-reclaimed embeddings'))).toBe(true)
+    const row = repairRes.repairs.find((r) => r.includes('Auto-reclaimed embeddings'))
+    expect(row?.startsWith('Auto-reclaimed embeddings from global.db (')).toBe(true)
+    expect(row).not.toContain('and compacted')
 
     const chunkCount = (db.prepare('SELECT count(*) as c FROM chunks').get() as { c: number }).c
     expect(chunkCount).toBe(0)
   })
 })
 
-// Provenance: the first row is CAPTURE, the ReclaimResult reclaimIndex returned in C:/tgwt/triage_a/repro3b.mts (a second connection held a read transaction during an embeddings-only reclaim of global.db); the others are HAND-DERIVED sizes in MiB.
+// Provenance: the first row is CAPTURE, the ReclaimResult that reclaimIndex(dbPath, { embeddingsOnly: true }) returned on this Windows machine on 2026-10-17 while a second node:sqlite connection held a read transaction on a global.db seeded with one 1.2 MB chunk (beforeBytes 1792208, afterBytes 3559240, beforeDbBytes 4096, afterDbBytes 1486848, checkpointBusy true, vacuumDeferred false); the others are HAND-DERIVED sizes in MiB.
 describe('autoReclaimRow', () => {
   const MIB = 1024 * 1024
   const result = (over: Partial<ReclaimResult>): ReclaimResult => ({

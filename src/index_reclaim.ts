@@ -226,7 +226,7 @@ export function reclaimNotes(result: ReclaimResult, dbName: string): string[] {
   if (result.checkpointBusy) {
     notes.push(
       `a concurrent reader blocked WAL truncation, so some space is still held in ` +
-        `${dbName}-wal and the figures above count the main file only. The next ` +
+        `${dbName}-wal and the freed figure may count the main file only. The next ` +
         `checkpoint releases it`,
     )
   }
