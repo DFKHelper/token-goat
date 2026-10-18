@@ -1,6 +1,8 @@
 /** The batch client in tests/helpers/batch-cli.ts ends a request on an event, never on a clock. A request settles on its reply, and rejects at once when the server exits, cannot start, or closes its stdout, naming the request, the exit code or signal and the tail of the server's stderr. Every row here controls the event itself through a stand-in server (tests/helpers/batch_stand_in.mjs) whose behaviour each request picks, so no row waits for a deadline and none depends on how fast the machine is: a server that never answers is bounded by the per-test timeout alone. Provenance: HAND-DERIVED. The expectations come from the contract above, not from the client's own message builder. */
+import { ChildProcess } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
+import { PassThrough } from 'node:stream'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -60,6 +62,7 @@ describe('batch client request settling', () => {
     const request = client.run(['split', 'whole', 'reply'])
     const stdout = owned?.child.stdout
     if (stdout === null || stdout === undefined) throw new Error('the client did not launch the stand-in')
+    owned?.child.stdin?.on('error', () => undefined)
     // Both listeners run after the client's own, so a chunk they see has already been through the client. The second half is held until the first has arrived, so the reply cannot reach the client in one chunk.
     stdout.once('data', () => owned?.child.stdin?.write(`${JSON.stringify({ id: 0, argv: ['release'] })}\n`))
     const incomplete = new Promise<string>((resolve) => {
@@ -121,7 +124,7 @@ describe('batch client request settling', () => {
     // The test closes the read side itself, which is the event; the stand-in is still running and would never answer anyway.
     owned?.child.stdout?.destroy()
     const message = await rejection(request)
-    expect(message).toContain('after closing its stdout')
+    expect(message).toContain('stdout closed first')
     expect(message).toContain('hang no-reply-possible')
     // The stand-in ignores the end of its input, so only the client ending the tree lets this resolve.
     await client.stop()
@@ -144,6 +147,31 @@ describe('batch client reply lines it cannot read', () => {
     expect(message).not.toContain(JSON.stringify(payload.slice(0, 201)))
     // The server is alive and would never answer sensibly again, so only the client ending it stops it; the count is read right after the rejection, which the end of the tree follows synchronously.
     expect(kills).toBe(1)
+  })
+})
+
+describe('batch client exit reporting', () => {
+  it('names the exit code of a server whose stdout closed before its exit was reported, without claiming it closed the stdout itself', async () => {
+    // The order is the test's to choose here: a real server dying usually closes its stdout first, but the OS decides, so a row on a real one could not pin it.
+    const proc = new ChildProcess()
+    proc.stdin = new PassThrough()
+    const stdout = new PassThrough()
+    proc.stdout = stdout
+    proc.stderr = new PassThrough()
+    const client = createBatchClient(() => ({ child: proc, kill: () => undefined, release: () => undefined }))
+    clients.push(client)
+    const request = rejection(client.run(['quit', 'in', 'order']))
+    // The client's own close listener ran before this one, so the close has been handled when this resolves.
+    await new Promise<void>((resolve) => {
+      stdout.once('close', () => resolve())
+      stdout.destroy()
+    })
+    proc.emit('exit', 0, null)
+    const message = await request
+    proc.emit('close', 0, null)
+    expect(message).toContain('exited (code 0, signal null')
+    expect(message).toContain('quit in order')
+    expect(message).not.toContain('after closing its stdout')
   })
 })
 

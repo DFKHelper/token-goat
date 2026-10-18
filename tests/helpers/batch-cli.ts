@@ -114,7 +114,7 @@ export function createBatchClient(launch: (token: string) => OwnedChild): BatchC
     })
     let stdoutClosed = false
     // The exit is what rejects, because it carries the code and signal. A reply written just before the exit can still be unread when `exit` fires; the in-flight requests are the ones with no reply yet, which is what a dead server leaves.
-    proc.on('exit', (code, signal) => fail(owned, `exited${stdoutClosed ? ' after closing its stdout' : ''} (code ${String(code)}, signal ${String(signal)})`, stderrTail, false))
+    proc.on('exit', (code, signal) => fail(owned, `exited (code ${String(code)}, signal ${String(signal)}${stdoutClosed ? ', stdout closed first' : ''})`, stderrTail, false))
     // Spawn failure (no such executable) and a failed signal or send arrive here and never as an exit.
     proc.on('error', (err) => fail(owned, `failed (${err.message})`, stderrTail, true))
     // A server that closed its stdout can never answer again, so it is ended and its exit then rejects the requests. Its own pipe closing as it dies is the same event, and ending a process that is already exiting cannot change the code it chose.
