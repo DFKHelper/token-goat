@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { appendReconcileRequest } from '../src/dirty_queue.js'
 import { killProcessTree } from '../src/process_tree.js'
 import { queryProcessCommandLine } from '../src/resident_process.js'
-import { readPidFile, stopWorker, workerPidPath } from '../src/worker_lifecycle.js'
+import { readPidFile, stopWorker, workerErrorLogPath, workerPidPath } from '../src/worker_lifecycle.js'
 import { BUNDLE, bundleTg, makeBundleProject } from './helpers/bundle.js'
 import { listProcesses } from './helpers/copilot_session_start_tree.js'
 import { findGlobalDb } from './helpers/find_global_db.js'
@@ -22,6 +22,8 @@ import { claimsToBeWorker } from './helpers/worker_identity.js'
 
 /** Bounds only the failing case, where a process outlives worker stop or the pipe never closes; a reap that works ends the wait on the processes going, however long a slow machine takes, and the test's own cap sits above this. */
 const REAP_BACKSTOP_MS = 60_000
+/** The outcome the daemon logs when its 5 s cap ended the git it was holding (src/reconcile_requests.ts::drainReconcileRequestsAsync); tests/worker_reconcile_request_bundle.test.ts matches the same text in the bundle's log. */
+const CAP_NOTE = 'git did not answer in time, continuing next cycle'
 
 const roots: string[] = []
 const gates: GitGate[] = []
@@ -29,6 +31,33 @@ const recorded = new Map<number, string>()
 const standIns: ChildProcess[] = []
 /** Worker daemons this test started, by pid; each is ended only while its command line is a worker daemon's. */
 const daemons: number[] = []
+/** Directory watchers this test opened; each is closed in afterEach whatever the body reached. */
+const watchers: fs.FSWatcher[] = []
+
+/** The daemon's own account of what became of the reconcile request, from the line src/reconcile_requests.ts::logOutcome appends to worker-errors.log (CAPTURE: the built bundle's daemon wrote it): the text after "reconcile request for <dir>: ", or null while the daemon has logged none. */
+function reconcileOutcome(dir: string): string | null {
+  let log = ''
+  try {
+    log = fs.readFileSync(workerErrorLogPath(dir), 'utf8')
+  } catch {
+    // Not written yet.
+  }
+  return /reconcile request for .*?: (.*)$/m.exec(log)?.[1]?.trim() ?? null
+}
+
+/** Resolves with the daemon's first outcome line for the request, heard as the log changes: the daemon writes one for every way its git can end, so this waits on that event and on no clock. The existing hook timeout is the only bound, for a daemon that never answers. */
+function untilReconcileOutcome(dir: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const check = (): void => {
+      const outcome = reconcileOutcome(dir)
+      if (outcome !== null) resolve(outcome)
+    }
+    const watcher = fs.watch(dir, check)
+    watchers.push(watcher)
+    watcher.on('error', reject)
+    check()
+  })
+}
 
 /** The process table's descendants of `root`, with their command lines. */
 function descendantsOf(root: number, table: ReturnType<typeof listProcesses>): Map<number, string> {
@@ -84,6 +113,7 @@ afterEach(async () => {
       failures.push(error)
     }
   }
+  for (const watcher of watchers.splice(0)) watcher.close()
   for (const gate of gates.splice(0)) await gate.dispose().catch((error: unknown) => failures.push(error))
   try {
     // Whatever the test failed to see ended (a daemon, a held git) is ended by its recorded command line, with its tree, before the directories it holds are removed. A stand-in the body never got to record is ended through the handle that started it.
@@ -110,7 +140,7 @@ function git(cwd: string, ...args: string[]): void {
 }
 
 describe('stopping the built worker daemon', () => {
-  it('ends the git the daemon holds, not only the daemon', async () => {
+  it('ends the git the daemon holds, not only the daemon', async (ctx) => {
     const { root, env: base } = makeBundleProject('tg-stop-reaps-git-')
     // Outside the OS temp directory, which the worker does not enqueue files from (see tests/helpers/temp-config.ts::indexableDir); the home and data directories stay under the temp root.
     const project = indexableDir()
@@ -147,8 +177,13 @@ describe('stopping the built worker daemon', () => {
     expect(appendReconcileRequest(dir, project)).toBe(true)
     // The event: a git of the daemon has opened the gate and is blocked reading it; nothing else carries the gate, so it is the daemon's own git.
     await gate.reached
-    // Read in the same turn as the event and with only the kill between, so the 5 s cap on that git has nothing slow to outrun; a git the cap ended first fails here, and a gate released early (a mutant that disposes it right after the event) does too.
-    expect(gate.holding(), 'calibration: a git of the daemon still holds the gate when worker stop runs').toBe(true)
+    // Read in the same turn as the event and with only the kill between. The daemon's own 5 s cap (src/reconcile_requests.ts) runs from its git's spawn and may have ended that git first on a slow or loaded machine; that is the machine's, not a defect of stop, so the daemon's own account decides, from the log it writes once its git ends and on no clock: its cap note skips this row with the reason, and anything else (a gate released early, a mutant that disposes it right after the event) leaves the git not held and fails the assertion below.
+    const held = gate.holding()
+    if (!held) {
+      const outcome = await untilReconcileOutcome(dir)
+      if (outcome === CAP_NOTE) ctx.skip(`the daemon's 5 s git cap ended its git before worker stop ran, so stop has nothing to reap here: ${outcome}`)
+    }
+    expect(held, 'calibration: a git of the daemon still holds the gate when worker stop runs').toBe(true)
 
     // The daemon runs on the bundle, so that launcher is the install's; the identity check judges the line the real query returned.
     expect(stopWorker(dir, undefined, { entryScript: BUNDLE, queryCommandLine: () => query }), 'stopWorker found no running worker to stop').toBe(true)
@@ -158,6 +193,8 @@ describe('stopping the built worker daemon', () => {
     // Read until nothing is left, not once: on POSIX the daemon answers SIGTERM by finishing its in-flight work and then exiting through its exit hook, which ends the git it owns, so the processes go a moment after stopWorker returns. Each pass reads the process table for the daemon and probes the gate for the git, and the loop waits on those two ending, not on a clock or a count. Windows: the held git is the daemon's direct child, so libuv's kill-on-close job ends it with the daemon whatever the taskkill does; this row cannot tell a tree kill from a single kill there, and the grandchild test below is the one that can.
     const left = await untilNothingLeft(() => [...survivors(), ...(gate.holding() ? ['a git still holds the gate'] : [])], REAP_BACKSTOP_MS)
     expect(left, 'the daemon or the git it held is still running after worker stop').toEqual([])
+    // The cap may have ended the git just before the kill landed, in which case an empty table says nothing about stop; the daemon's note, written once its git ends, is the only record of that, so a row that finds it cannot claim the property and skips. A cap that fired in the milliseconds before the daemon was killed may leave no note: that window is bounded by one stopWorker call and is not closed here.
+    if (reconcileOutcome(dir) === CAP_NOTE) ctx.skip(`the daemon's 5 s git cap ended its git around the time worker stop ran, so what ended the git cannot be told: ${CAP_NOTE}`)
   }, 120_000)
 })
 
