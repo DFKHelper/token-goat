@@ -63,6 +63,36 @@ export function purgeReconcileCursors(db: DbHandle, rootPrefix: string): number 
   return removed
 }
 
+/** Delete the reconcile resume rows of every project that has no `known_roots` row and whose directory is no longer there: the rows a purge that was refused, or a project that left before its root was ever recorded, strands, since no per-root branch of {@link sweepKnownRoots} can reach a root with no row. A project whose directory still stands keeps its rows even without a registry row (its scan would otherwise restart from the top on every pass), and a directory that cannot be statted for any reason other than being absent keeps them too. Bounded by the rows present: one read of the table and one stat per distinct project root. Returns the rows removed. */
+export function purgeOrphanedReconcileCursors(db: DbHandle): number {
+  const nul = String.fromCharCode(0)
+  const known = new Set((db.prepare('SELECT root FROM known_roots').all() as Array<{ root: string }>).map((r) => foldPath(normalizePath(r.root))))
+  // hex(root) and a delete by rowid, for the reason purgeReconcileCursors gives.
+  const rows = db.prepare('SELECT rowid AS id, hex(root) AS hexRoot FROM reconcile_cursor').all() as Array<{ id: number; hexRoot: string }>
+  const verdict = new Map<string, boolean>()
+  let removed = 0
+  for (const { id, hexRoot } of rows) {
+    const key = Buffer.from(hexRoot, 'hex').toString('utf8')
+    const nulAt = key.indexOf(nul)
+    const projectRoot = nulAt === -1 ? key : key.slice(0, nulAt)
+    const folded = foldPath(normalizePath(projectRoot))
+    if (known.has(folded)) continue
+    let orphan = verdict.get(folded)
+    if (orphan === undefined) {
+      try {
+        const stat = fs.statSync(projectRoot, { throwIfNoEntry: false })
+        orphan = stat === undefined || !stat.isDirectory()
+      } catch {
+        orphan = false
+      }
+      verdict.set(folded, orphan)
+    }
+    if (!orphan) continue
+    removed += Number(db.prepare('DELETE FROM reconcile_cursor WHERE rowid = ?').run(id).changes)
+  }
+  return removed
+}
+
 // Scan indexed files under rootPrefix and return the absolute paths whose file no longer exists on disk, WITHOUT deleting anything. Shared by pruneDeletedFiles (which deletes them immediately) and sweepKnownRoots' anomaly-ratio guard, which needs the count of what *would* be deleted before committing to the mutating delete.
 function findDeletablePaths(rootPrefix: string, dbPath: string): string[] {
   const deletable: string[] = []
@@ -121,7 +151,7 @@ export function pruneBlockedRoot(rootPrefix: string, dbPath: string = globalDbPa
   if (isTooShallowToPrune(normalized)) return []
   const db = getDb(dbPath)
   const removed = removeFilesBestEffort(db, foldedPathsUnderRoot(normalized, dbPath))
-  // Best-effort, like the row removal above: the config is already saved by the caller, so a refusal here must not turn a completed exclude into a thrown error. A cursor row left behind only names files of a project the index no longer holds.
+  // Best-effort, like the row removal above: the config is already saved by the caller, so a refusal here must not turn a completed exclude into a thrown error. A cursor row left behind only names files of a project the index no longer holds, and sweepKnownRoots collects it once the project directory is gone.
   try {
     purgeReconcileCursors(db, normalized)
   } catch {
@@ -323,6 +353,15 @@ export function sweepKnownRoots(
 
     prunedRows += dryRun ? deletable.length : removeDeletedFilesBestEffort(db, deletable).length
     prunedRoots.push(root)
+  }
+
+  // Unscoped for the reason the chunk pass below is: a cursor row with no known_roots row belongs to no root the loop above visited. Best-effort, like the per-root purge, and left out of a dry run since the result carries no count for it.
+  if (!dryRun) {
+    try {
+      purgeOrphanedReconcileCursors(db)
+    } catch {
+      // Left for the next sweep.
+    }
   }
 
   // Unscoped, like pruneSystemTempFiles: an orphaned chunk has no file row, so it belongs to no known root and no per-root branch above could ever reach it. Runs last so any file row the loop just deleted has already released its chunks through removeFileFromIndex's transaction, leaving only genuinely half-applied leftovers for this pass to clear.

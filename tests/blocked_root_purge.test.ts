@@ -153,6 +153,8 @@ describe('reconcile cursors leave with the project', () => {
   it('sweepKnownRoots purges both rows of a root unreachable past its grace, and a dry run keeps them', () => {
     const gone = canonicalizeIndexPath(path.join(root, 'gone'))
     const other = canonicalizeIndexPath(path.join(root, 'other'))
+    // A live project: a cursor row with no known_roots row and no directory is an orphan the sweep collects (see orphan_reconcile_cursors.test.ts).
+    fs.mkdirSync(path.join(root, 'other'))
     getDb(dbPath).prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, 0)').run(gone)
     putCursors(gone)
     putCursors(other)
@@ -176,6 +178,8 @@ describe('reconcile cursors leave with the project', () => {
   it('sweepKnownRoots keeps the known_roots row with its cursor rows when the purge is refused, and finishes once it is not', () => {
     const gone = canonicalizeIndexPath(path.join(root, 'gone'))
     const other = canonicalizeIndexPath(path.join(root, 'other'))
+    // A live project: a cursor row with no known_roots row and no directory is an orphan the sweep collects (see orphan_reconcile_cursors.test.ts).
+    fs.mkdirSync(path.join(root, 'other'))
     getDb(dbPath).prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, 0)').run(gone)
     putCursors(gone)
     putCursors(other)
