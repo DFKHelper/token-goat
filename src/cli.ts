@@ -574,7 +574,9 @@ function cmdWorkerStart(): void {
 
 function cmdWorkerStop(): void {
   const { stopped, leftRunning } = stopWorkerDetailed()
-  out(leftRunning !== null ? workerLeftRunningNote(leftRunning) : stopped ? 'Worker stopped.' : 'No running worker.')
+  // A stop that left the worker running did not stop it: the CliError makes `guard` print the note on stderr and exit 1.
+  if (leftRunning !== null) throw new CliError(workerLeftRunningNote(leftRunning))
+  out(stopped ? 'Worker stopped.' : 'No running worker.')
 }
 
 function cmdWorkerStatus(): void {
