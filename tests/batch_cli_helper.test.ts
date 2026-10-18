@@ -53,6 +53,11 @@ describe('batch client request settling', () => {
     expect(second).toContain('hang second')
   })
 
+  it('never takes a line without the session token as a reply, and the tokened reply still settles the request', async () => {
+    const res = await standIn().run(['stray', 'real', 'reply'])
+    expect(res).toEqual({ status: 0, stdout: 'real reply', stderr: '' })
+  })
+
   it('starts a fresh server for the request after one that died', async () => {
     const client = standIn()
     await rejection(client.run(['die', 'once']))
