@@ -19,6 +19,7 @@ import { appendDirtyQueuePaths } from '../src/dirty_queue.js'
 import { closeDb } from '../src/db.js'
 import { resolveIdleExitMs, runWorkerLoop } from '../src/worker.js'
 import { stopWorker, workerPidPath } from '../src/worker_lifecycle.js'
+import { claimsToBeWorker } from './helpers/worker_identity.js'
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -80,7 +81,7 @@ describe('stopWorker never strands a daemon', () => {
     // The shape startDetachedWorker leaves right after a spawn: the pid file just written, no queue/drain-heartbeat yet.
     fs.writeFileSync(workerPidPath(dir), `${pid}\n`)
 
-    expect(stopWorker(dir)).toBe(true)
+    expect(stopWorker(dir, undefined, claimsToBeWorker())).toBe(true)
 
     await waitFor('the daemon inside its grace to be killed', 10000, () => !alive(pid))
     expect(fs.existsSync(workerPidPath(dir))).toBe(false)

@@ -73,16 +73,36 @@ export function isResidentOfInstall(cmd: string, entryScript: string, kinds: rea
   return kinds.includes(kind[1] === undefined ? 'hook-server' : 'worker')
 }
 
-/** The command line of process `pid`, or null when it cannot be read (gone, not ours, or the query failed). */
-export function readProcessCommandLine(pid: number): string | null {
-  if (!Number.isInteger(pid) || pid <= 0) return null
+/** What asking the system for one process's command line found: the line (empty when the process exists but the system would not show it), that no such process exists, or that the question itself failed. A reader that folds the last two into one null is the bug class that let a failed query pass as a dead process. */
+export type CommandLineQuery = { readonly status: 'found'; readonly commandLine: string } | { readonly status: 'gone' } | { readonly status: 'failed' }
+
+const WINDOWS_GONE_MARK = 'gone'
+const WINDOWS_FOUND_MARK = 'found:'
+
+/** Looks up the command line of process `pid`, telling a process that does not exist from a query that did not work. Windows: the CIM row is absent for a gone process and an error stops the script (non-zero exit). POSIX: `ps -p` exits 1 with no output and no error text for a pid that does not exist, and anything else non-zero, or a spawn error, is a failure. */
+export function queryProcessCommandLine(pid: number): CommandLineQuery {
+  if (!Number.isInteger(pid) || pid <= 0) return { status: 'gone' }
   const win = process.platform === 'win32'
   const file = win ? windowsPowerShellPath() : 'ps'
-  const args = win ? powerShellCommandArgs(`(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine`) : ['-ww', '-o', 'args=', '-p', String(pid)]
+  // The script's 'gone' and 'found:' are spelled out to match WINDOWS_GONE_MARK and WINDOWS_FOUND_MARK above, since the pid is the only value this template may interpolate (the hand-quoted-value guard).
+  const script = `$ErrorActionPreference = 'Stop'; $id = ${pid}; $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $id); if ($null -eq $p) { 'gone' } else { 'found:' + $p.CommandLine }`
+  const args = win ? powerShellCommandArgs(script) : ['-ww', '-o', 'args=', '-p', String(pid)]
   const res = spawnSync(file, args, { encoding: 'utf8', windowsHide: true, timeout: PROCESS_QUERY_TIMEOUT_MS })
-  if (res.error !== undefined || res.status !== 0) return null
-  const line = res.stdout.trim()
-  return line === '' ? null : line
+  if (res.error !== undefined) return { status: 'failed' }
+  const out = res.stdout.trim()
+  if (win) {
+    if (res.status !== 0) return { status: 'failed' }
+    if (out === WINDOWS_GONE_MARK) return { status: 'gone' }
+    return out.startsWith(WINDOWS_FOUND_MARK) ? { status: 'found', commandLine: out.slice(WINDOWS_FOUND_MARK.length).trim() } : { status: 'failed' }
+  }
+  if (res.status === 0) return { status: 'found', commandLine: out }
+  return res.status === 1 && out === '' && res.stderr.trim() === '' ? { status: 'gone' } : { status: 'failed' }
+}
+
+/** The command line of process `pid`, or null when it cannot be read (gone, not ours, or the query failed); a caller that must tell those apart uses {@link queryProcessCommandLine}. */
+export function readProcessCommandLine(pid: number): string | null {
+  const found = queryProcessCommandLine(pid)
+  return found.status === 'found' && found.commandLine !== '' ? found.commandLine : null
 }
 
 /** Whether /proc lists processes here, which makes {@link zombiePids} a file read instead of a `ps` run. */

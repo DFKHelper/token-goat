@@ -10,12 +10,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { appendReconcileRequest } from '../src/dirty_queue.js'
 import { killProcessTree } from '../src/process_tree.js'
 import { readPidFile, stopWorker, workerPidPath } from '../src/worker_lifecycle.js'
-import { bundleTg, makeBundleProject } from './helpers/bundle.js'
+import { BUNDLE, bundleTg, makeBundleProject } from './helpers/bundle.js'
 import { listProcesses } from './helpers/copilot_session_start_tree.js'
 import { findGlobalDb } from './helpers/find_global_db.js'
 import { openGitGate, type GitGate } from './helpers/git_gate.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { indexableDir } from './helpers/temp-config.js'
+import { claimsToBeWorker } from './helpers/worker_identity.js'
 
 /** How many process-table reads the survivors check makes before it calls the processes alive. Each read costs a process listing (tens to hundreds of milliseconds), which is the pause between reads; the count, not a clock, bounds the wait. */
 const SURVIVOR_READS = 10
@@ -98,7 +99,8 @@ describe('stopping the built worker daemon', () => {
     expect(recorded.get(daemonPid as number), 'calibration: the daemon is in the process table').toMatch(/--worker-daemon/)
     expect([...recorded.values()].some((args) => /\bgit\b/i.test(args)), `calibration: a git is held under the daemon, found ${JSON.stringify([...recorded.values()])}`).toBe(true)
 
-    expect(stopWorker(dir), 'stopWorker found no running worker to stop').toBe(true)
+    // The daemon runs on the bundle, so that launcher is the install's for the identity check; the real command-line query decides.
+    expect(stopWorker(dir, undefined, { entryScript: BUNDLE }), 'stopWorker found no running worker to stop').toBe(true)
 
     // Polled, not awaited: the daemon is detached with its stdio ignored, so the test holds no handle, pipe or file whose closing says it has exited (the gate's connection ends only with the git), and stopWorker removes the pid file itself. The count bounds the wait, never a clock.
     let left: string[] = []
@@ -114,7 +116,21 @@ describe('stopping the built worker daemon', () => {
 const GRANDCHILD_ARGS = 'ping -n 3601 127.0.0.1'
 /** ping's own command line (the process the job does not hold), not the cmd.exe line that carries the same text; ping prints its arguments with the spacing it was started with. */
 const GRANDCHILD_PROCESS = /^ping\s+-n 3601 127\.0\.0\.1\s*$/i
-const STAND_IN_DAEMON = `require('node:child_process').spawn('cmd.exe', ['/d', '/c', '${GRANDCHILD_ARGS}'], { stdio: 'inherit', windowsHide: true }); setInterval(() => undefined, 1 << 30)`
+const GRANDCHILD_LAUNCHER = `require('node:child_process').spawn('cmd.exe', ['/d', '/c', '${GRANDCHILD_ARGS}'], { stdio: 'inherit', windowsHide: true }); setInterval(() => undefined, 1 << 30)`
+/** A stand-in that only idles. */
+const IDLE_LAUNCHER = 'setInterval(() => undefined, 1 << 30)'
+
+/** Starts `node <launcher> --worker-daemon` from a launcher file holding `body`, the command line a worker has, so the identity check reads a real process table row; the launcher is the entry script to hand stopWorker. Reaped through its handle in afterEach, and by recorded command line once the body records it. */
+function startStandIn(dir: string, body: string): { daemon: ChildProcess; launcher: string } {
+  const launcher = path.join(dir, 'launcher.js')
+  fs.writeFileSync(launcher, body)
+  const daemon = spawn(process.execPath, [launcher, '--worker-daemon'], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+  standIns.push(daemon)
+  expect(daemon.pid, 'spawning the stand-in daemon produced no pid').toBeDefined()
+  daemon.stdout?.resume()
+  return { daemon, launcher }
+}
+
 /** Bounds only the failing case, where the grandchild outlives worker stop and the pipe never closes; a reap that works ends the wait on the pipe closing, however long a slow machine takes, and the test's own cap sits above this. */
 const REAP_BACKSTOP_MS = 60_000
 
@@ -123,9 +139,7 @@ describe('stopping a daemon whose child has a child of its own', () => {
   it.skipIf(process.platform !== 'win32')('ends the grandchild the daemon kill-on-close job does not hold', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-stop-tree-'))
     roots.push(dir)
-    const daemon = spawn(process.execPath, ['-e', STAND_IN_DAEMON], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
-    standIns.push(daemon)
-    expect(daemon.pid, 'spawning the stand-in daemon produced no pid').toBeDefined()
+    const { daemon, launcher } = startStandIn(dir, GRANDCHILD_LAUNCHER)
     const daemonPid = daemon.pid as number
     // The two events, both listened for before either can happen: ping printed its first line, and the daemon is gone with its stdout pipe closed (a ChildProcess 'close' waits for the last holder of the pipe, ping included).
     const pingRunning = new Promise<void>((resolve) => daemon.stdout?.on('data', () => resolve()))
@@ -141,7 +155,7 @@ describe('stopping a daemon whose child has a child of its own', () => {
 
     // What startDetachedWorker does right after the spawn: a pid file inside its startup grace is stopWorker's proof that the pid is the worker. Written here, after every wait above, so a slow machine cannot age it past the grace before stopWorker reads it.
     fs.writeFileSync(workerPidPath(dir), `${daemonPid}\n`)
-    expect(stopWorker(dir), 'stopWorker found no running worker to stop').toBe(true)
+    expect(stopWorker(dir, undefined, { entryScript: launcher }), 'stopWorker found no running worker to stop').toBe(true)
 
     let backstop: NodeJS.Timeout | undefined
     const reaped = await Promise.race([
@@ -151,5 +165,61 @@ describe('stopping a daemon whose child has a child of its own', () => {
       }),
     ]).finally(() => clearTimeout(backstop))
     expect(reaped, `the daemon or what it started is still running after worker stop: ${reaped ? '' : JSON.stringify(survivors())}`).toBe(true)
+  }, 120_000)
+})
+
+describe('stopping a pid-file pid', () => {
+  /** A stand-in recorded for the reaper and the survivors check, with a pid file naming it written last, inside the startup grace stopWorker accepts without a heartbeat. */
+  function standInWithPidFile(body: string, name: string): { daemon: ChildProcess; launcher: string; dir: string; pid: number } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), name))
+    roots.push(dir)
+    const { daemon, launcher } = startStandIn(dir, body)
+    const pid = daemon.pid as number
+    recorded.set(pid, listProcesses().get(pid)?.args.trim() ?? '')
+    fs.writeFileSync(workerPidPath(dir), `${pid}\n`)
+    return { daemon, launcher, dir, pid }
+  }
+
+  it('leaves a live process that is not this install worker alone, and drops the stale pid file', () => {
+    const { dir, pid } = standInWithPidFile(IDLE_LAUNCHER, 'tg-stop-other-')
+    expect(recorded.get(pid), 'calibration: the stand-in is in the process table with its own command line').toMatch(/launcher\.js/)
+
+    // The real query reads the stand-in's command line, which is a node script but not this install's launcher: a reused pid looks exactly like this.
+    expect(stopWorker(dir), 'a process that is not this install worker was reported stopped').toBe(false)
+
+    expect(survivors(), 'the unrelated process was ended').toHaveLength(1)
+    expect(fs.existsSync(workerPidPath(dir)), 'the stale pid file was left naming an unrelated process').toBe(false)
+  })
+
+  it('never signals this process, even when the lookup says it is the worker', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-stop-self-'))
+    roots.push(dir)
+    fs.writeFileSync(workerPidPath(dir), `${process.pid}\n`)
+
+    // The lookup is injected to confirm a worker, so only the refusal of the caller's own pid stands between this test runner and the kill.
+    expect(stopWorker(dir, undefined, claimsToBeWorker()), 'stopWorker reported it stopped its own process').toBe(false)
+
+    expect(fs.existsSync(workerPidPath(dir)), 'the pid file naming this process was left as a live lease').toBe(false)
+  })
+
+  it('falls back to a bare kill, not a tree kill, when the command-line lookup fails', async () => {
+    const { daemon, dir } = standInWithPidFile(process.platform === 'win32' ? GRANDCHILD_LAUNCHER : IDLE_LAUNCHER, 'tg-stop-failed-query-')
+    const exited = new Promise<void>((resolve) => daemon.once('exit', () => resolve()))
+    // Windows: ping prints once it runs, which is the event that the grandchild (outside the daemon kill-on-close job) exists to record and later look for.
+    if (process.platform === 'win32') {
+      const printed = new Promise<void>((resolve) => daemon.stdout?.once('data', () => resolve()))
+      await printed
+      const table = listProcesses()
+      for (const [pid, args] of descendantsOf(daemon.pid as number, table)) recorded.set(pid, args)
+    }
+
+    expect(stopWorker(dir, undefined, { queryCommandLine: () => ({ status: 'failed' }) }), 'a failed lookup was read as a gone process and nothing was signalled').toBe(true)
+
+    await exited
+    if (process.platform === 'win32') {
+      const ping = [...recorded].find(([, args]) => GRANDCHILD_PROCESS.test(args))
+      expect(ping, 'calibration: the grandchild was recorded').toBeDefined()
+      expect(survivors().some((line) => line.startsWith(`${ping?.[0]}: `)), 'the grandchild was ended: the fallback took the tree').toBe(true)
+    }
   }, 120_000)
 })

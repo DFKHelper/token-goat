@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 import { parsePsProcessList } from '../src/cli_doctor_process.js'
 import { normalizePath } from '../src/paths.js'
-import { isResidentOfInstall, isTokenGoatResidentProcess, readProcessCommandLine, residentKindOf, statIsZombie, terminateProcessTree, zombiesInPsRows } from '../src/resident_process.js'
+import { isResidentOfInstall, isTokenGoatResidentProcess, queryProcessCommandLine, readProcessCommandLine, residentKindOf, statIsZombie, terminateProcessTree, zombiesInPsRows } from '../src/resident_process.js'
 
 const ENTRY = process.platform === 'win32' ? 'C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\token-goat\\dist\\token-goat.mjs' : '/usr/lib/node_modules/token-goat/dist/token-goat.mjs'
 const NODE = process.platform === 'win32' ? '"C:\\Program Files\\nodejs\\node.exe"' : '/usr/bin/node'
@@ -81,6 +81,17 @@ describe('readProcessCommandLine', () => {
     expect((own ?? '').toLowerCase()).toContain('node')
     expect(readProcessCommandLine(0)).toBeNull()
     expect(readProcessCommandLine(-5)).toBeNull()
+  })
+})
+
+describe('queryProcessCommandLine', () => {
+  // Provenance: HAND-DERIVED. This process is alive and its pid is known to the system; 2147483646 is above any pid either platform assigns, so no process holds it.
+  it('tells a live process from one that does not exist, instead of folding both into null', () => {
+    const own = queryProcessCommandLine(process.pid)
+    expect(own.status).toBe('found')
+    expect(own.status === 'found' ? own.commandLine.toLowerCase() : '').toContain('node')
+    expect(queryProcessCommandLine(2147483646)).toEqual({ status: 'gone' })
+    expect(queryProcessCommandLine(0)).toEqual({ status: 'gone' })
   })
 })
 

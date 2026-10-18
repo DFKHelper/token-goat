@@ -10,7 +10,7 @@ import { dataDir } from './constants.js'
 import { withEnvProxyEnabled } from './env_proxy.js'
 import { displaySafeText } from './paths.js'
 import { applyIndexingPriorityTo } from './process_priority.js'
-import { isResidentOfInstall, PROCESS_QUERY_TIMEOUT_MS, readProcessCommandLine, terminateProcessTree } from './resident_process.js'
+import { type CommandLineQuery, isResidentOfInstall, PROCESS_QUERY_TIMEOUT_MS, queryProcessCommandLine, readProcessCommandLine, terminateProcessTree } from './resident_process.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage, withFileLock } from './util.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
@@ -194,19 +194,37 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
   }
 }
 
-/** End a daemon this module holds a lease proof for. On Windows `process.kill` is TerminateProcess, so no handler in the daemon runs and the git it holds is left running; the tree goes with it through taskkill (resident_process.ts::terminateProcessTree, which refuses this process and its parent, because process_tree.ts must stay out of the hook bundle), and a taskkill that did not end it falls back to the bare kill the pid proof allows. Elsewhere SIGTERM reaches the daemon's own handler, which drains and reaps what it started. */
-function endDaemon(pid: number): void {
-  // The caller's lease proof (a live pid with a fresh heartbeat or inside the startup grace, or a child just spawned) is the live-pid evidence a tree kill needs.
-  if (process.platform === 'win32' && terminateProcessTree(pid, true)) return
+/** Which kind of process a pid file's pid is right now: this install's worker daemon, some other live process, no process, or unknown because the query itself failed. */
+type DaemonIdentity = 'worker' | 'other' | 'gone' | 'unknown'
+
+export interface StopWorkerOptions {
+  /** Looks up one pid's command line, telling a gone process from a failed query; defaults to resident_process.ts::queryProcessCommandLine. */
+  readonly queryCommandLine?: (pid: number) => CommandLineQuery
+  /** The launcher a worker of this install runs on; defaults to {@link daemonEntryScript}. */
+  readonly entryScript?: string
+}
+
+/** A pid file is a claim, not proof: after a crash the number can belong to an unrelated process, so the pid is ended only when its command line is this install's `--worker-daemon` (the check retireDisplacedWorker makes). A failed query is its own answer and is never read as "gone". */
+function judgeDaemonIdentity(pid: number, opts: StopWorkerOptions): DaemonIdentity {
+  const answer = (opts.queryCommandLine ?? queryProcessCommandLine)(pid)
+  if (answer.status !== 'found') return answer.status === 'gone' ? 'gone' : 'unknown'
+  return isResidentOfInstall(answer.commandLine, opts.entryScript ?? daemonEntryScript(), ['worker']) ? 'worker' : 'other'
+}
+
+/** End process `pid`, alone or with its tree, and refuse this process and its parent on either path. On Windows `process.kill` is TerminateProcess, so no handler in the daemon runs and the git it holds is left running; the tree goes with it through taskkill (resident_process.ts::terminateProcessTree, because process_tree.ts must stay out of the hook bundle), and a taskkill that did not end it falls back to the bare kill. Elsewhere SIGTERM reaches the daemon's own handler, which drains and reaps what it started. Returns false only when the pid was refused; a process that exited first still counts as signalled. */
+function endDaemon(pid: number, scope: 'tree' | 'single'): boolean {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || pid === process.ppid) return false
+  if (scope === 'tree' && process.platform === 'win32' && terminateProcessTree(pid, true)) return true
   try {
     process.kill(pid)
   } catch {
     // Race: process exited between the check and the kill; the caller reports whatever liveness it observed.
   }
+  return true
 }
 
-/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, or it is alive but proves no worker lease (see {@link holdsWorkerLease}). The pid file is removed in the killed and dead cases so the slate is clean afterwards, and left in place in the last. */
-export function stopWorker(dir: string = dataDir(), expectedPid?: number): boolean {
+/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, it is alive but proves no worker lease (see {@link holdsWorkerLease}), or the lease holder is not this install's worker (a reused pid: left alone, and its pid file dropped as stale). The pid file is removed in the killed, dead and stale cases so the slate is clean afterwards, and left in place in the lease-less case. */
+export function stopWorker(dir: string = dataDir(), expectedPid?: number, opts: StopWorkerOptions = {}): boolean {
   const pid = readPidFile(dir)
   if (pid === null) return false
   // If the caller judged a specific pid mismatched/stale earlier and the pid file now names someone else, another hook already raced ahead of us (stopped it and spawned a replacement); do nothing rather than tearing down that replacement's pid file before it can prove itself alive.
@@ -216,8 +234,13 @@ export function stopWorker(dir: string = dataDir(), expectedPid?: number): boole
   // A live pid that proves no lease (no fresh heartbeat naming it, pid file older than the grace) may be an unrelated process that reused the number: neither signalled nor unnamed.
   const running = alive && (hasFreshWorkerHeartbeat(dir, pid) || pidFileIsWithinStartupGrace(dir))
   if (alive && !running) return false
+  let signalled = false
   if (running) {
-    endDaemon(pid)
+    // Even a lease can name a reused pid (the daemon crashed inside the heartbeat window, or the pid file is a fresh claim over a dead one), so the command line decides, and only a confirmed worker loses its tree.
+    const identity = judgeDaemonIdentity(pid, opts)
+    // A failed query proves nothing either way, so it keeps the behavior from before the tree kill (a bare single-process kill, no /T) rather than reading as "gone" or as "worker".
+    if (identity === 'worker') signalled = endDaemon(pid, 'tree')
+    else if (identity === 'unknown') signalled = endDaemon(pid, 'single')
   }
   // Only remove the pid file when it still names the pid we just killed -- never unconditionally. A concurrent `worker start` can observe the killed pid as dead and reclaim the slot (via claimWorkerPidFile) with a brand-new daemon's pid between our kill above and this cleanup; an unconditional rmSync here would delete that new daemon's pid file out from under it, orphaning it (no pid file left for a later stopWorker to find), which a subsequent `worker start` would then "fix" by spawning a third daemon -- two live daemons draining the same queue. Same guard style as the exit handler in worker.ts::runDetachedWorkerDaemon.
   if (readPidFile(dir) === pid) {
@@ -227,7 +250,7 @@ export function stopWorker(dir: string = dataDir(), expectedPid?: number): boole
       // best-effort cleanup
     }
   }
-  return running
+  return signalled
 }
 
 /** Thrown by {@link startDetachedWorker} when it loses the {@link claimWorkerPidFile} startup race to a daemon that already holds the pid-file slot (a genuine already-running worker, or a concurrent `worker start` invocation that won the race first). */
@@ -264,7 +287,8 @@ export function dataDirWriteRefusal(dir: string): unknown {
 
 /** Kill a daemon {@link startDetachedWorker} spawned but cannot keep, and drop the parent's reference to it so the calling process can exit. */
 function discardSpawnedWorker(child: ChildProcess, pid: number): void {
-  endDaemon(pid)
+  // This process just started the child, so the number is its own and nothing it could hold needs a tree kill yet.
+  endDaemon(pid, 'single')
   // owner: none, the daemon was killed just above; dies when that kill lands, and the unref only lets the caller exit.
   child.unref()
 }

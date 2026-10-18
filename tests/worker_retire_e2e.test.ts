@@ -164,7 +164,8 @@ describe('the built daemon retires on its own', () => {
       // What startDetachedWorker does right after the spawn. The child has not booted, so it has written no heartbeat: the same state a CPU-starved daemon is in when `worker stop` arrives.
       fs.writeFileSync(workerPidPath(dir), `${pid}\n`)
 
-      stopWorker(dir)
+      // The daemon runs on the bundle, not on the launcher this test process would resolve from source, so the identity check is told which launcher is the install's.
+      stopWorker(dir, undefined, { entryScript: BUNDLE })
 
       await waitFor('the daemon stopped inside its startup grace to die', 15000, () => !alive(pid))
     },
