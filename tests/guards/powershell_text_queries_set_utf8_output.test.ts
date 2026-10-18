@@ -77,9 +77,11 @@ interface Call {
   readonly text: string
   readonly first: number
   readonly last: number
+  /** The parenthesis did not close within CALL_LIMIT characters of a file that goes on past them, so `text` stops short of the call's real end and a PowerShell word after the cut was never seen. */
+  readonly unscannable: boolean
 }
 
-/** Every spawn or exec call in `lines` with its full argument text across lines, found by balancing parentheses outside string literals, and the zero-based first and last line it spans. A call whose parenthesis never closes within CALL_LIMIT characters runs to that limit. */
+/** Every spawn or exec call in `lines` with its full argument text across lines, found by balancing parentheses outside string literals, and the zero-based first and last line it spans. A call whose parenthesis does not close within CALL_LIMIT characters runs to that limit and is marked unscannable; the limit is not raised, a call that long fails the scan. */
 function spawnCalls(lines: readonly string[]): Call[] {
   const code = lines.join('\n')
   const calls: Call[] = []
@@ -88,6 +90,7 @@ function spawnCalls(lines: readonly string[]): Call[] {
     let depth = 0
     let quote = ''
     let end = Math.min(code.length, match.index + CALL_LIMIT)
+    let closed = false
     for (let at = match.index + match[0].length - 1; at < end; at++) {
       const char = code[at] ?? ''
       if (quote !== '') {
@@ -97,10 +100,11 @@ function spawnCalls(lines: readonly string[]): Call[] {
       else if (char === '(') depth++
       else if (char === ')' && --depth === 0) {
         end = at + 1
+        closed = true
         break
       }
     }
-    calls.push({ text: code.slice(match.index, end), first: lineAt(match.index), last: lineAt(end) })
+    calls.push({ text: code.slice(match.index, end), first: lineAt(match.index), last: lineAt(end), unscannable: !closed && match.index + CALL_LIMIT < code.length })
   }
   return calls
 }
@@ -128,11 +132,16 @@ function powerShellSites(source: string): Site[] {
   return sites
 }
 
-/** What is wrong with `source` whatever the file: a spawn or exec call that names PowerShell and neither builds its arguments with powerShellTextQueryArgs in the call nor carries an exemption on any line it spans or the line above, and a star re-export of shell.ts, which hands out the bare builder under no name the line scan can see. */
+/** What is wrong with `source` whatever the file: a spawn or exec call that names PowerShell and neither builds its arguments with powerShellTextQueryArgs in the call nor carries an exemption on any line it spans or the line above, and a spawn call too long to scan (reported by line, never passed), and a star re-export of shell.ts, which hands out the bare builder under no name the line scan can see. */
 function shapeViolations(source: string): string[] {
   const lines = source.split(/\r?\n/)
   const found: string[] = []
   for (const call of spawnCalls(codeLines(source))) {
+    // An exemption cannot cover a call that was not read to its end: what it would exempt is unknown.
+    if (call.unscannable) {
+      found.push(`line ${call.first + 1}: a spawn call whose arguments run past ${CALL_LIMIT} characters cannot be scanned: ${lines[call.first]?.trim() ?? ''}`)
+      continue
+    }
     if (!callNamesPowerShell(call) || /\bpowerShellTextQueryArgs\(/.test(call.text)) continue
     const marked = Array.from({ length: call.last - call.first + 1 }, (_, offset) => call.first + offset).some((index) => isExempt(lines, index))
     if (!marked) found.push(`a spawn that names PowerShell without powerShellTextQueryArgs: ${lines[call.first]?.trim() ?? ''}`)
@@ -234,5 +243,36 @@ describe('the scan flags every bypass shape and passes the proper forms', () => 
 
   it('rejects an exemption with no reason', () => {
     expect(violations("import { powerShellCommandArgs } from './shell.js' // tg-powershell-output-unread:\nspawnSync('pwsh', powerShellCommandArgs('x'))\n")).not.toEqual([])
+  })
+})
+
+// HAND-DERIVED: a call is cut at CALL_LIMIT characters, so a string literal of that many characters inside a call's arguments pushes everything after it past the cut; no wire format is involved.
+describe('a spawn call too long to scan is reported, not passed', () => {
+  const literal = (length: number): string => `'${'a'.repeat(length)}'`
+
+  it('reports a call whose arguments run past the scan window with a powershell word after the cut, naming its line', () => {
+    const source = `const first = 1\nspawnSync('cmd', ['/c', ${literal(CALL_LIMIT)}, 'powershell -Command x'])\n`
+
+    const found = shapeViolations(source)
+
+    expect(found).toHaveLength(1)
+    expect(found[0]).toContain('line 2')
+    expect(found[0]).toContain('cannot be scanned')
+  })
+
+  it('fails the whole-file check for such a call too', () => {
+    expect(violations(`spawnSync('cmd', ['/c', ${literal(CALL_LIMIT)}, 'powershell -Command x'])\n`)).not.toEqual([])
+  })
+
+  it('gives an exemption comment no force over a call that cannot be scanned', () => {
+    expect(shapeViolations(`spawnSync('cmd', ['/c', ${literal(CALL_LIMIT)}]) // tg-powershell-output-unread: runs the user's own command\n`)).not.toEqual([])
+  })
+
+  it('passes a long call that closes inside the window', () => {
+    expect(shapeViolations(`spawnSync('cmd', ['/c', ${literal(CALL_LIMIT - 200)}])\n`)).toEqual([])
+  })
+
+  it('passes a call left open at the end of a file shorter than the window, which was read to the end', () => {
+    expect(shapeViolations("spawnSync('cmd', [\n")).toEqual([])
   })
 })
