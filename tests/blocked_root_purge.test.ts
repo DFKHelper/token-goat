@@ -223,9 +223,9 @@ describe('reconcile cursors leave with the project', () => {
     const project = liveRootWithCursors('excluded')
     const undo = excludeInConfig(path.join(root, 'excluded'))
     try {
-      for (let pass = 0; pass < 3; pass++) sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
-      expect(cursorRoots(), `the cursor rows of ${project} survived three sweeps`).toEqual([])
-      expect(knownRoots(), 'the registry row of an excluded root survived three sweeps').toEqual([])
+      sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+      expect(cursorRoots(), `the cursor rows of ${project} survived one sweep`).toEqual([])
+      expect(knownRoots(), 'the registry row of an excluded root survived one sweep').toEqual([])
     } finally {
       undo()
     }
