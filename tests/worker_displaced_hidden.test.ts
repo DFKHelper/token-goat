@@ -9,11 +9,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ResidentProcessModule from '../src/resident_process.js'
 
-const spies = vi.hoisted(() => ({ terminate: vi.fn() }))
+const spies = vi.hoisted(() => ({ terminate: vi.fn(), query: vi.fn() }))
 
 vi.mock('../src/resident_process.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ResidentProcessModule>()
-  return { ...actual, isResidentOfInstall: (cmd: string) => cmd.includes('--worker-daemon'), terminateProcessTree: spies.terminate }
+  return { ...actual, isResidentOfInstall: (cmd: string) => cmd.includes('--worker-daemon'), terminateProcessTree: spies.terminate, queryProcessCommandLine: spies.query }
 })
 
 const { displacedWorkerPath, retireDisplacedWorker, workerErrorLogPath } = await import('../src/worker_lifecycle.js')
@@ -40,6 +40,7 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-displaced-hidden-'))
   fs.mkdirSync(path.join(dir, 'queue'), { recursive: true })
   spies.terminate.mockClear()
+  spies.query.mockReset()
 })
 
 afterEach(() => {
@@ -81,5 +82,54 @@ describe('retireDisplacedWorker over a holder whose command line is hidden', () 
 
     expect(spies.terminate).not.toHaveBeenCalled()
     expect(errorLog()).toBe('')
+  }, 60_000)
+})
+
+// FORMAT-DERIVED from src/resident_process.ts::queryProcessCommandLine, whose result type CommandLineQuery has the three shapes used here; 'failed' is what it returns for a spawn error, a non-zero Windows exit, an output without the found mark, or a POSIX exit other than the empty exit 1.
+describe('retireDisplacedWorker over a holder whose command line query failed', () => {
+  it('signals nobody and names the holder in the error log', () => {
+    const holder = startHolder()
+    noteFor(holder)
+
+    retireDisplacedWorker(dir, { queryCommandLine: () => ({ status: 'failed' }) })
+
+    expect(spies.terminate).not.toHaveBeenCalled()
+    const log = errorLog()
+    expect(log).toContain(`pid ${holder}`)
+    expect(log).toContain('could not be read')
+    expect(log).toContain('not ended')
+  }, 60_000)
+
+  it('names the holder when the second query, taken right before the kill, is the one that fails', () => {
+    const holder = startHolder()
+    noteFor(holder)
+    const answers: ResidentProcessModule.CommandLineQuery[] = [{ status: 'found', commandLine: 'node launcher.mjs --worker-daemon' }, { status: 'failed' }]
+
+    retireDisplacedWorker(dir, { queryCommandLine: () => answers.shift() ?? { status: 'gone' } })
+
+    expect(spies.terminate).not.toHaveBeenCalled()
+    expect(errorLog()).toContain(`pid ${holder}`)
+  }, 60_000)
+
+  it('says nothing for a holder the query says is gone', () => {
+    const holder = startHolder()
+    noteFor(holder)
+
+    retireDisplacedWorker(dir, { queryCommandLine: () => ({ status: 'gone' }) })
+
+    expect(spies.terminate).not.toHaveBeenCalled()
+    expect(errorLog()).toBe('')
+  }, 60_000)
+
+  it('names the holder when the real default query fails', () => {
+    const holder = startHolder()
+    noteFor(holder)
+    spies.query.mockReturnValue({ status: 'failed' })
+
+    retireDisplacedWorker(dir)
+
+    expect(spies.query).toHaveBeenCalledWith(holder)
+    expect(spies.terminate).not.toHaveBeenCalled()
+    expect(errorLog()).toContain(`pid ${holder}`)
   }, 60_000)
 })

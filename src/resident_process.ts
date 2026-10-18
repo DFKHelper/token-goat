@@ -99,6 +99,14 @@ export function queryProcessCommandLine(pid: number): CommandLineQuery {
   return res.status === 1 && out === '' && res.stderr.trim() === '' ? { status: 'gone' } : { status: 'failed' }
 }
 
+/** Stands a reader that folds gone and failed into one null in for {@link queryProcessCommandLine}: null reads as gone, so a caller handed such a reader (a test seam) never sees a failure. */
+export function lineReaderAsQuery(read: (pid: number) => string | null): (pid: number) => CommandLineQuery {
+  return (pid) => {
+    const line = read(pid)
+    return line === null ? { status: 'gone' } : { status: 'found', commandLine: line }
+  }
+}
+
 /** The command line of process `pid`, or null when it cannot be read (gone, not ours, or the query failed); a caller that must tell those apart uses {@link queryProcessCommandLine}. */
 export function readProcessCommandLine(pid: number): string | null {
   const found = queryProcessCommandLine(pid)

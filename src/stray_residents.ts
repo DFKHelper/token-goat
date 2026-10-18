@@ -2,7 +2,7 @@
 
 import { readAllProcesses } from './cli_doctor_process.js'
 import { displaySafeText } from './paths.js'
-import { isResidentOfInstall, PROCESS_QUERY_TIMEOUT_MS, readProcessCommandLine, terminateProcessTree, zombiePids, type ResidentKind } from './resident_process.js'
+import { type CommandLineQuery, isResidentOfInstall, lineReaderAsQuery, PROCESS_QUERY_TIMEOUT_MS, queryProcessCommandLine, terminateProcessTree, zombiePids, type ResidentKind } from './resident_process.js'
 import { daemonEntryScript, pidAlive } from './worker_lifecycle.js'
 
 /** What `upgrade` (and `doctor --fix`, through performUpgrade) ends: both resident kinds, since both hold the replaced files open. */
@@ -17,6 +17,8 @@ export interface RetireOptions {
   readonly deadlineMs?: number
   /** Reads one pid's command line, just before that pid is signalled; a pid whose line no longer matches is left alone. Defaults to the real query on Windows, where a kill list can run for seconds and the OS may reuse a pid meanwhile, and to none elsewhere, where a signal follows the second list at once. */
   readonly readCommandLine?: (pid: number) => string | null
+  /** The same read as a three-way answer, which tells a pid that is gone from a query that failed (the failed one is reported as unconfirmed, never ended); takes precedence over `readCommandLine`, whose null always reads as gone. */
+  readonly queryCommandLine?: (pid: number) => CommandLineQuery
 }
 
 export interface RetireReport {
@@ -28,7 +30,7 @@ export interface RetireReport {
   readonly notTried?: readonly number[]
   /** Why the process list could not be read, when it could not; nothing was ended then. */
   readonly unreadable?: string
-  /** Pids that may be residents of this install but whose command line the system hides (an elevated node process asked from a normal shell): never signalled, and counted neither as ended nor as absent. */
+  /** Pids that may be residents of this install but whose command line the system hides (an elevated node process asked from a normal shell), or whose re-read just before its kill failed: never signalled, and counted neither as ended nor as absent. */
   readonly unconfirmed?: readonly number[]
 }
 
@@ -93,12 +95,12 @@ export async function retireStrayResidents(opts: RetireOptions): Promise<RetireR
   const confirmed = matchingPids(opts)
   if (typeof confirmed === 'string') return { retired: [], survivors: [], unreadable: confirmed }
   const found = listed.pids.filter((pid) => confirmed.pids.includes(pid))
-  // Only a pid hidden in the later list stays unconfirmed: one the first list could not judge and the second can is a process that changed. A recheck below that comes back hidden adds its pid here.
+  // Only a pid hidden in the later list stays unconfirmed: one the first list could not judge and the second can is a process that changed. A recheck below that comes back hidden or fails adds its pid here.
   const unconfirmed = [...confirmed.hidden]
   // Each Windows kill is a taskkill of up to the per-call bound, and the list reached hundreds of daemons in the field: past one such bound in total the rest are reported, not waited on.
   const deadline = Date.now() + (opts.deadlineMs ?? PROCESS_QUERY_TIMEOUT_MS)
   // The second list can be seconds old by the time a later pid's turn comes: a pid the OS reused since is not ours, so its own command line is read again right before its kill.
-  const recheck = opts.readCommandLine ?? (process.platform === 'win32' ? readProcessCommandLine : null)
+  const recheck = opts.queryCommandLine ?? (opts.readCommandLine !== undefined ? lineReaderAsQuery(opts.readCommandLine) : process.platform === 'win32' ? queryProcessCommandLine : null)
   const entry = daemonEntryScript()
   const signalled: number[] = []
   const notTried: number[] = []
@@ -109,12 +111,13 @@ export async function retireStrayResidents(opts: RetireOptions): Promise<RetireR
     }
     if (recheck !== null) {
       const latest = recheck(pid)
-      // An empty line is the system hiding it, not a stranger: the pid is neither signalled nor dropped from the report. A null is a pid that is gone or not ours, the reuse this re-read exists for.
-      if (latest !== null && latest.trim() === '') {
+      // A failed query and an empty line (the system hiding it) are no evidence, not a stranger: the pid is neither signalled nor dropped from the report. Only a pid that is gone, or whose line is another program's (the reuse this re-read exists for), is skipped silently.
+      if (latest.status === 'gone') continue
+      if (latest.status === 'failed' || latest.commandLine.trim() === '') {
         unconfirmed.push(pid)
         continue
       }
-      if (latest === null || !isResidentOfInstall(latest, entry, opts.kinds)) continue
+      if (!isResidentOfInstall(latest.commandLine, entry, opts.kinds)) continue
     }
     terminateProcessTree(pid, process.platform === 'win32')
     signalled.push(pid)
@@ -139,6 +142,6 @@ export function describeRetirement(report: RetireReport): string | null {
   if (failed.length > 0) parts.push(`Could not end pid ${failed.join(', ')}; end ${failed.length === 1 ? 'it' : 'them'} yourself before upgrading.`)
   if (skipped.length > 0) parts.push(`Stopped ending processes at the time limit; pid ${skipped.join(', ')} ${skipped.length === 1 ? 'was' : 'were'} left running, end ${skipped.length === 1 ? 'it' : 'them'} yourself before upgrading.`)
   const hidden = report.unconfirmed ?? []
-  if (hidden.length > 0) parts.push(`Could not tell whether pid ${hidden.join(', ')} ${hidden.length === 1 ? 'is a' : 'are'} token-goat background process${hidden.length === 1 ? '' : 'es'}: the system hides its command line (an elevated process), so ${hidden.length === 1 ? 'it was' : 'they were'} not ended; end ${hidden.length === 1 ? 'it' : 'them'} yourself before upgrading if ${hidden.length === 1 ? 'it is' : 'they are'} one.`)
+  if (hidden.length > 0) parts.push(`Could not tell whether pid ${hidden.join(', ')} ${hidden.length === 1 ? 'is a' : 'are'} token-goat background process${hidden.length === 1 ? '' : 'es'}: the system hides its command line (an elevated process) or reading it failed, so ${hidden.length === 1 ? 'it was' : 'they were'} not ended; end ${hidden.length === 1 ? 'it' : 'them'} yourself before upgrading if ${hidden.length === 1 ? 'it is' : 'they are'} one.`)
   return parts.length === 0 ? null : parts.join(' ')
 }

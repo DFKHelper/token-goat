@@ -5,10 +5,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as DoctorProcessModule from '../src/cli_doctor_process.js'
 import type * as ResidentProcessModule from '../src/resident_process.js'
 
-const spies = vi.hoisted(() => ({ terminate: vi.fn(() => true), table: vi.fn() }))
+const spies = vi.hoisted(() => ({ terminate: vi.fn(() => true), table: vi.fn(), query: vi.fn() }))
 
 vi.mock('../src/cli_doctor_process.js', async (importOriginal) => ({ ...(await importOriginal<typeof DoctorProcessModule>()), readAllProcesses: spies.table }))
-vi.mock('../src/resident_process.js', async (importOriginal) => ({ ...(await importOriginal<typeof ResidentProcessModule>()), terminateProcessTree: spies.terminate }))
+vi.mock('../src/resident_process.js', async (importOriginal) => ({ ...(await importOriginal<typeof ResidentProcessModule>()), terminateProcessTree: spies.terminate, queryProcessCommandLine: spies.query }))
 
 const { daemonEntryScript } = await import('../src/worker_lifecycle.js')
 const { describeRetirement, retireStrayResidents } = await import('../src/stray_residents.js')
@@ -27,6 +27,7 @@ const killed = (): number[] => spies.terminate.mock.calls.map((call) => (call as
 beforeEach(() => {
   spies.terminate.mockClear()
   spies.table.mockReset()
+  spies.query.mockReset()
 })
 
 describe('retireStrayResidents over a process whose command line is hidden', () => {
@@ -67,7 +68,7 @@ describe('retireStrayResidents over a process whose command line is hidden', () 
     expect(describeRetirement(report)).toContain(`pid ${LISTED}`)
   })
 
-  it('stays silent for an operating-system row with no command line, and for a pid whose line cannot be read at all', async () => {
+  it('stays silent for an operating-system row with no command line, and for a pid that is gone', async () => {
     spies.table.mockReturnValue([systemRow(SYSTEM), listedWorker(LISTED)])
 
     const report = await retireStrayResidents({ kinds: ['worker'], deadlineMs: 1e12, readCommandLine: () => null })
@@ -75,5 +76,44 @@ describe('retireStrayResidents over a process whose command line is hidden', () 
     expect(spies.terminate).not.toHaveBeenCalled()
     expect(report.unconfirmed ?? []).toEqual([])
     expect(describeRetirement(report)).toBeNull()
+  })
+})
+
+// FORMAT-DERIVED from src/resident_process.ts::queryProcessCommandLine, whose result type CommandLineQuery has the three shapes used here; 'failed' is what it returns for a spawn error, a non-zero Windows exit, an output without the found mark, or a POSIX exit other than the empty exit 1, and 'gone' for no such pid.
+describe('retireStrayResidents over a pid whose command line query failed', () => {
+  it('reports the pid as unconfirmed, signals nobody, and says so in the note', async () => {
+    spies.table.mockReturnValue([listedWorker(LISTED)])
+
+    const report = await retireStrayResidents({ kinds: ['worker'], deadlineMs: 1e12, queryCommandLine: () => ({ status: 'failed' }) })
+
+    expect(spies.terminate).not.toHaveBeenCalled()
+    expect(report.retired).toEqual([])
+    expect(report.unconfirmed).toEqual([LISTED])
+    const note = describeRetirement(report)
+    expect(note).toContain(`pid ${LISTED}`)
+    expect(note).toContain('reading it failed')
+    expect(note).toContain('not ended')
+  })
+
+  it('stays silent for a pid the query says is gone', async () => {
+    spies.table.mockReturnValue([listedWorker(LISTED)])
+
+    const report = await retireStrayResidents({ kinds: ['worker'], deadlineMs: 1e12, queryCommandLine: () => ({ status: 'gone' }) })
+
+    expect(spies.terminate).not.toHaveBeenCalled()
+    expect(report.unconfirmed ?? []).toEqual([])
+    expect(describeRetirement(report)).toBeNull()
+  })
+
+  // The call below passes no seam, so it reaches the production default, whose recheck runs on Windows only (a signal follows the second list at once elsewhere).
+  it.runIf(process.platform === 'win32')('reports the pid as unconfirmed when the real default query fails', async () => {
+    spies.table.mockReturnValue([listedWorker(LISTED)])
+    spies.query.mockReturnValue({ status: 'failed' })
+
+    const report = await retireStrayResidents({ kinds: ['worker'], deadlineMs: 1e12 })
+
+    expect(spies.query).toHaveBeenCalledWith(LISTED)
+    expect(spies.terminate).not.toHaveBeenCalled()
+    expect(report.unconfirmed).toEqual([LISTED])
   })
 })
