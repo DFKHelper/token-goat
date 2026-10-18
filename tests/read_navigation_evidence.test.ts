@@ -132,6 +132,30 @@ describe('getReadNavigationEvidence freshness', () => {
     expect(enqueued.paths).toHaveLength(1)
   })
 
+  // HAND-DERIVED from `mtime + TIMESTAMP_TICK_SEC <= indexed_at` with TIMESTAMP_TICK_SEC = 2 (src/fingerprint.ts): one second after the mtime is inside the 2 s tick, so the row is racy and the bytes are hashed.
+  it('hashes a row indexed one second after its mtime, which is inside the tick', () => {
+    const file = writeModule('one_second.ts', 5)
+    fs.utimesSync(file, WHOLE_SECOND, WHOLE_SECOND)
+    drain(file)
+    indexedAfterMtime(file, 1)
+    fingerprintCalls.count = 0
+    expect(getReadNavigationEvidence(file, dbPath)?.isStale).toBe(false)
+    expect(fingerprintCalls.count, 'a row indexed 1 s after its mtime was trusted on the mtime alone').toBe(1)
+    expect(enqueued.paths).toHaveLength(1)
+  })
+
+  // HAND-DERIVED from the same rule: two seconds after the mtime is exactly the tick, and `<=` makes the boundary proof enough, so no hash is read and nothing is queued.
+  it('trusts a row indexed exactly one tick (2 s) after its mtime without hashing', () => {
+    const file = writeModule('two_seconds.ts', 5)
+    fs.utimesSync(file, WHOLE_SECOND, WHOLE_SECOND)
+    drain(file)
+    indexedAfterMtime(file, 2)
+    fingerprintCalls.count = 0
+    expect(getReadNavigationEvidence(file, dbPath)?.isStale).toBe(false)
+    expect(fingerprintCalls.count, 'a row indexed exactly one tick after its mtime was hashed').toBe(0)
+    expect(enqueued.paths).toEqual([])
+  })
+
   it('is stale, and queues nothing, when the bytes changed', () => {
     const file = writeModule('edited.ts', 5)
     drain(file)
