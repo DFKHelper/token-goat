@@ -262,12 +262,23 @@ describe('mcp read confinement', () => {
       { name: 'section', arguments: { spec: `${outsideFile}::Heading`, projectRoot: root } },
       { name: 'skeleton', arguments: { file: outsideFile, projectRoot: root } },
       { name: 'outline', arguments: { file: outsideFile, projectRoot: root } },
-      { name: 'grep', arguments: { pattern: 'SECRET', path: [outside] } },
+      // The grep names its root like the three calls above. Left out, the root is inferred from the directory ABOVE `outside` (the shared temp parent), and that parent counts as a workspace once an earlier row has indexed a file under it in the same isolated index -- so the refusal depended on which rows ran first.
+      { name: 'grep', arguments: { pattern: 'SECRET', path: [outside], projectRoot: root } },
     ]) {
       const result = await client.callTool(call)
       expect(textOf(result)).toContain('outside the project root')
       expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
     }
+  })
+
+  it('refuses a grep whose path is the directory of an out-of-root file, with the project root given', async () => {
+    const { outsideFile } = makeDirs()
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'SECRET', path: [path.dirname(outsideFile)], projectRoot: root } })
+    expect(textOf(result)).toContain('outside the project root')
+    expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
   })
 
   it('refuses an out-of-root absolute spec for brief', async () => {

@@ -13,7 +13,7 @@ vi.mock('vitest', async (importOriginal) => ({
   },
 }))
 
-const { stopOwnedChild } = await import('./helpers/stop_owned_child.js')
+const { stopOwnedChild, trackOwnedChild } = await import('./helpers/stop_owned_child.js')
 
 const children: ChildProcess[] = []
 
@@ -95,5 +95,35 @@ describe('stopOwnedChild when a kill fails with EPERM', () => {
     expect(() => hooks[0]!(), 'with the handle healthy again the backstop ends the child quietly').not.toThrow()
     await exited(child)
     expect(child.signalCode ?? child.exitCode, 'the backstop ended the child').not.toBeNull()
+  })
+})
+
+describe('trackOwnedChild, called at spawn before any wait', () => {
+  it('registers a backstop that ends a child nothing ever stops, as when vitest times the test out mid-wait', async () => {
+    const { child } = await spawnedSleeper()
+    trackOwnedChild(child)
+    expect(hooks, 'tracking registered one backstop, with no stop call').toHaveLength(1)
+    expect(child.exitCode === null && child.signalCode === null, 'the child is still running before the backstop').toBe(true)
+    hooks[0]!()
+    await exited(child)
+    expect(child.signalCode ?? child.exitCode, 'the backstop ended the child').not.toBeNull()
+  })
+
+  it('registers once when the child is tracked and then stopped', async () => {
+    const { child } = await spawnedSleeper()
+    trackOwnedChild(child)
+    trackOwnedChild(child)
+    await stopOwnedChild(child, { graceful: true })
+    expect(hooks).toHaveLength(1)
+  })
+
+  it('listens for error from the moment of the call and leaves a child whose spawn failed alone', async () => {
+    // HAND-DERIVED: spawning a program that does not exist emits 'error' (ENOENT) on a later turn and leaves pid undefined, so the child has no process to end.
+    const child = spawn('tg-no-such-program-for-the-track-test', [], { stdio: 'ignore', windowsHide: true })
+    trackOwnedChild(child)
+    expect(child.listenerCount('error'), 'an error listener is attached at the call').toBeGreaterThan(0)
+    await new Promise<void>((resolve) => child.once('error', () => resolve()))
+    expect(child.pid, 'the spawn failed').toBeUndefined()
+    expect(() => hooks[0]!(), 'the backstop has nothing to end and does not throw').not.toThrow()
   })
 })
