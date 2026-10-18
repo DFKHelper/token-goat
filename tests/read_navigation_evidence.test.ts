@@ -55,8 +55,7 @@ function drain(file: string): void {
   drainOnce(DIR)
 }
 
-// HAND-DERIVED from the racy rule `mtime + 2 <= indexed_at` (src/fingerprint.ts::mtimeProvesUnchanged): an equal mtime proves a file unchanged only when the row was indexed a tick after that mtime. A file drained within a tick of being written is racy, so the rows below say which side of the rule they are on instead of reading a clock.
-// A whole-second stamp, so utimes can put back exactly the mtime the row recorded (a stamp with sub-millisecond digits does not survive the round trip).
+// HAND-DERIVED from the racy rule `mtime + 2 <= indexed_at` (src/fingerprint.ts::mtimeProvesUnchanged): an equal mtime proves a file unchanged only when the row was indexed a tick after that mtime. A file drained within a tick of being written is racy, so the rows below say which side of the rule they are on instead of reading a clock. A whole-second stamp, so utimes can put back exactly the mtime the row recorded (a stamp with sub-millisecond digits does not survive the round trip).
 const WHOLE_SECOND = 1_700_000_000
 
 /** Set the index time of `file`'s row to `offsetSec` seconds after the mtime the row recorded. */
