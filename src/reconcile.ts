@@ -17,7 +17,7 @@ import { countNoun, foldPath } from './util.js'
 /** Wall-clock budget for a sweep. Chosen so the session-start hook stays imperceptible even on a cold filesystem cache: this repo's own measurement is that hook cost is dominated by process startup rather than logic, and a sweep that pushed past that would turn a correctness improvement into a latency regression on every single session. */
 export const DEFAULT_RECONCILE_BUDGET_MS = 1500
 
-/** Files, and then index rows, a sweep examines before its budget may stop it, so every sweep advances both resume points whatever the clock says. */
+/** Files, and then index rows, a sweep examines before its budget may stop it, so every sweep advances both resume points whatever the clock says. Trade-off: a sweep already past its budget before its first file or row still examines that one (one hash per pass, so the budget can be overrun by that much), because a pass that examined nothing saves no cursor in reconcileProject and the next sweep would repeat it forever; the budget is not raised to cover it. */
 const MIN_FILES_PER_SWEEP = 1
 
 /** What a caller reads just before it hashes a file: the file's mtime in seconds, then the clock. The stat comes BEFORE the bytes are hashed, so the mtime is the stamp the hashed bytes carried (a stat after the hash could record the stamp of a later edit against the old bytes); the clock is read no later than the hash, so any edit made after the hash happened after it. */
