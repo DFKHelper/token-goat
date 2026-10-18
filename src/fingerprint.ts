@@ -51,3 +51,22 @@ export function fileIsAbsent(filePath: string): boolean {
     return false
   }
 }
+
+/** The two columns of a `files` row the rule reads, in seconds. */
+export interface RowStamp {
+  readonly mtime: number
+  readonly indexedAt: number
+}
+
+/** The coarsest timestamp tick the racy-clean gate guards against, in seconds: the FAT 2 s and HFS+ 1 s resolutions the bug report named (filesystem timestamp resolutions not verified against filesystem documentation). */
+export const TIMESTAMP_TICK_SEC = 2
+
+/** Does an equal mtime prove the file unchanged since its row was written? Only when that mtime is older than the row's indexed_at by at least one timestamp tick (both seconds): a file edited after indexing but inside the tick its recorded mtime was stamped in gets the same stamp while its bytes differ, so equality alone hides that edit forever, and a stamp truncated down to the tick can sit below indexed_at yet still cover the edit. Git's racy-clean rule (Documentation/technical/racy-git.txt, byte-identical at tags v2.43.0 and v2.47.0, https://github.com/git/git/blob/v2.43.0/Documentation/technical/racy-git.txt; the rendered page https://git-scm.com/docs/racy-git showed "last updated in 2.43.0" when read): an entry whose st_mtime is the same as or newer than the index file's timestamp is compared by content. Git stops at same-or-newer; the extra tick of margin here is this code's own, for the truncated stamp described above. An ambiguous file, a row with no indexed_at included, falls through to the hash compare, so only those files cost a read. */
+export function mtimeProvesUnchanged(entry: RowStamp, diskMtimeMs: number): boolean {
+  return mtimeEqualsRow(entry, diskMtimeMs) && entry.mtime + TIMESTAMP_TICK_SEC <= entry.indexedAt
+}
+
+/** Is the disk mtime the one the row recorded? A file that passes this but not {@link mtimeProvesUnchanged} is verified by content and, when the bytes match, is not a moved-timestamp file, so it must not be counted as one. */
+export function mtimeEqualsRow(entry: RowStamp, diskMtimeMs: number): boolean {
+  return entry.mtime !== 0 && diskMtimeMs / 1000 === entry.mtime
+}
