@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { beforeAll, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { getDb } from '../src/db.js'
 import { findGlobalDb } from './helpers/find_global_db.js'
@@ -38,7 +38,8 @@ function sessionStartContext(extraEnv: Record<string, string> = {}): string {
   return parsed.hookSpecificOutput?.additionalContext ?? ''
 }
 
-beforeAll(() => {
+// A fresh indexed project per case, so no case reads what another left in the index or on disk: the cases shared one fixture and each depended on the state its predecessor produced, which fails as soon as the order changes (`--sequence.shuffle`).
+beforeEach(() => {
   projectDir = indexableDir()
   homeDir = mkdtempSync(join(tmpdir(), 'tg-ss-recon-home-'))
 
@@ -73,7 +74,9 @@ describe('session_start reconciliation', () => {
   })
 
   it('goes quiet again once the drift has been reconciled', () => {
-    // The previous case queued the file; draining it and reindexing must return the hook to silence. A note that never clears is a permanent tax and stops meaning anything.
+    // Queue real drift first, then reindex: reindexing must return the hook to silence. A note that never clears is a permanent tax and stops meaning anything.
+    writeFileSync(join(projectDir, 'alpha.ts'), 'export function alpha(): number {\n  return 4242\n}\n')
+    expect(sessionStartContext(), 'calibration: the edit produced no drift line, so the silence below proves nothing').toContain('changed outside this session')
     expect(cli(['index', '.']).code).toBe(0)
     const context = sessionStartContext()
     expect(context, 'the drift note persisted after the index was brought up to date').not.toContain('changed outside this session')

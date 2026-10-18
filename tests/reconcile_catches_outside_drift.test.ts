@@ -222,11 +222,19 @@ describe('reconcile in a directory git cannot enumerate', () => {
     expect(r.out, 'the reason nothing was compared must be stated').toMatch(/git listed no files/)
   })
 
-  // Runs last: it deletes one of the two fixture files, and every case above needs both of them live. The empty-enumeration state used to suppress the deletion pass outright, so a file deleted from a non-git root kept its index row forever -- found on this machine as rows for files gone from a scratch directory that `token-goat project prune` also leaves behind, since that command's retroactive cleanup targets system-temp paths.
+  // It deletes one of the two fixture files and puts it back (bytes and mtime) on every path, because the other cases in this describe need both live and must not depend on this one running last. The empty-enumeration state used to suppress the deletion pass outright, so a file deleted from a non-git root kept its index row forever -- found on this machine as rows for files gone from a scratch directory that `token-goat project prune` also leaves behind, since that command's retroactive cleanup targets system-temp paths.
   it('reports the file that left disk and leaves the one still on disk alone', () => {
-    rmSync(join(dir, 'b.ts'))
-    const r = runHere(['reconcile', '--dry-run', '--json'])
-    const parsed = JSON.parse(r.out) as { removed: string[]; trackedUnavailable: boolean }
+    const bPath = join(dir, 'b.ts')
+    const bBytes = readFileSync(bPath)
+    const bStat = statSync(bPath)
+    rmSync(bPath)
+    let parsed: { removed: string[]; trackedUnavailable: boolean }
+    try {
+      parsed = JSON.parse(runHere(['reconcile', '--dry-run', '--json']).out) as { removed: string[]; trackedUnavailable: boolean }
+    } finally {
+      writeFileSync(bPath, bBytes)
+      utimesSync(bPath, bStat.atime, bStat.mtime)
+    }
     expect(parsed.trackedUnavailable, 'the fixture must still be the failed-enumeration case, or this proves nothing').toBe(true)
     // CAPTURE: `removed` carries the path as the index stored it, which for a `--walk` index of `.` is the bare `b.ts` rather than an absolute path -- it is resolved against cwd only on the way into the dirty queue. Reduced to basenames the same way every other case in this file does.
     const removed = parsed.removed.map((p) => p.replace(/\\/g, '/').split('/').pop())
