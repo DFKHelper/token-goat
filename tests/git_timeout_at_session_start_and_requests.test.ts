@@ -80,7 +80,15 @@ describe('session start when git does not finish listing the files', () => {
 })
 
 describe('a reconcile request whose sweep git could not list', () => {
-  const requested = (): string[] => parseReconcileRequests(fs.readFileSync(reconcileRequestPathFor(_testDataDir), 'utf8'))
+  // An absent file is an empty list, so a dropped request fails the assertion that expects it back instead of throwing ENOENT; any other read error still throws.
+  const requested = (): string[] => {
+    try {
+      return parseReconcileRequests(fs.readFileSync(reconcileRequestPathFor(_testDataDir), 'utf8'))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
+  }
 
   it('goes back for the next cycle when ls-files is killed', async () => {
     git.answer = (args) => (args[0] === 'ls-files' ? KILLED : ok(`${projectDir}\n`))

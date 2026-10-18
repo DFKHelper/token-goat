@@ -86,6 +86,8 @@ describe('stopping the built worker daemon', () => {
     expect(started.status, `worker start failed: ${started.stderr}`).toBe(0)
     const daemonPid = readPidFile(dir)
     expect(daemonPid, 'worker start left no pid file').not.toBeNull()
+    // Recorded at once, so the reaper ends the daemon when a later step fails before the gate is reached; it would otherwise retire itself only after hours.
+    recorded.set(daemonPid as number, listProcesses().get(daemonPid as number)?.args.trim() ?? '')
 
     // The event: a git of the daemon has opened the gate and is blocked reading it.
     await gate.reached
@@ -98,6 +100,7 @@ describe('stopping the built worker daemon', () => {
 
     expect(stopWorker(dir), 'stopWorker found no running worker to stop').toBe(true)
 
+    // Polled, not awaited: the daemon is detached with its stdio ignored, so the test holds no handle, pipe or file whose closing says it has exited (the gate's connection ends only with the git), and stopWorker removes the pid file itself. The count bounds the wait, never a clock.
     let left: string[] = []
     for (let read = 0; read < SURVIVOR_READS; read++) {
       left = survivors()
@@ -107,43 +110,46 @@ describe('stopping the built worker daemon', () => {
   }, 120_000)
 })
 
-/** A stand-in daemon: the process stopWorker is given, whose child (plain, so libuv puts it in the daemon's kill-on-close job) has a child the job does not hold. The 3601 echoes keep `ping` alive for an hour, so its command line is the only one of the test with that text. */
+/** A stand-in daemon: the process stopWorker is given, whose child (plain, so libuv puts it in the daemon's kill-on-close job) has a child the job does not hold. The 3601 echoes keep `ping` alive for an hour, so its command line is the only one of the test with that text. The child inherits the daemon's stdout, which the test holds as a pipe: ping's first line says ping is running, and the pipe closes only when the daemon, the cmd.exe and ping have all exited. */
 const GRANDCHILD_ARGS = 'ping -n 3601 127.0.0.1'
 /** ping's own command line (the process the job does not hold), not the cmd.exe line that carries the same text; ping prints its arguments with the spacing it was started with. */
 const GRANDCHILD_PROCESS = /^ping\s+-n 3601 127\.0\.0\.1\s*$/i
-const STAND_IN_DAEMON = `require('node:child_process').spawn('cmd.exe', ['/d', '/c', '${GRANDCHILD_ARGS} >nul'], { stdio: 'ignore', windowsHide: true }); setInterval(() => undefined, 1 << 30)`
+const STAND_IN_DAEMON = `require('node:child_process').spawn('cmd.exe', ['/d', '/c', '${GRANDCHILD_ARGS}'], { stdio: 'inherit', windowsHide: true }); setInterval(() => undefined, 1 << 30)`
+/** Bounds only the failing case, where the grandchild outlives worker stop and the pipe never closes; a reap that works ends the wait on the pipe closing, however long a slow machine takes, and the test's own cap sits above this. */
+const REAP_BACKSTOP_MS = 60_000
 
 describe('stopping a daemon whose child has a child of its own', () => {
   // Windows only: process.kill(pid) is SIGTERM elsewhere, which the real daemon answers by exiting through its exit hook, and a stand-in with no handler would leave its child behind there for a reason that is the stand-in's.
-  it.skipIf(process.platform !== 'win32')('ends the grandchild the daemon kill-on-close job does not hold', () => {
+  it.skipIf(process.platform !== 'win32')('ends the grandchild the daemon kill-on-close job does not hold', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-stop-tree-'))
     roots.push(dir)
-    const daemon = spawn(process.execPath, ['-e', STAND_IN_DAEMON], { stdio: 'ignore', windowsHide: true })
+    const daemon = spawn(process.execPath, ['-e', STAND_IN_DAEMON], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
     standIns.push(daemon)
     expect(daemon.pid, 'spawning the stand-in daemon produced no pid').toBeDefined()
     const daemonPid = daemon.pid as number
-    recorded.set(daemonPid, '')
-    // What startDetachedWorker does right after the spawn: a pid file inside its startup grace is stopWorker's proof that the pid is the worker.
-    fs.writeFileSync(workerPidPath(dir), `${daemonPid}\n`)
+    // The two events, both listened for before either can happen: ping printed its first line, and the daemon is gone with its stdout pipe closed (a ChildProcess 'close' waits for the last holder of the pipe, ping included).
+    const pingRunning = new Promise<void>((resolve) => daemon.stdout?.on('data', () => resolve()))
+    const everyHolderGone = new Promise<void>((resolve) => daemon.once('close', () => resolve()))
 
-    // The grandchild starts after the child does and nothing announces it, so the process table is read until it shows; the count bounds the wait.
-    let table = listProcesses()
-    let found = descendantsOf(daemonPid, table)
-    for (let read = 1; read < SURVIVOR_READS * 3 && ![...found.values()].some((args) => GRANDCHILD_PROCESS.test(args)); read++) {
-      table = listProcesses()
-      found = descendantsOf(daemonPid, table)
-    }
+    const first = await Promise.race([pingRunning.then(() => 'ping printed'), everyHolderGone.then(() => 'daemon gone')])
+    expect(first, 'calibration: the stand-in daemon exited before ping printed its first line').toBe('ping printed')
+    const table = listProcesses()
+    const found = descendantsOf(daemonPid, table)
     for (const [pid, args] of found) recorded.set(pid, args)
     recorded.set(daemonPid, table.get(daemonPid)?.args.trim() ?? '')
     expect([...found.values()].some((args) => GRANDCHILD_PROCESS.test(args)), `calibration: ${GRANDCHILD_ARGS} runs under the daemon, found ${JSON.stringify([...found.values()])}`).toBe(true)
 
+    // What startDetachedWorker does right after the spawn: a pid file inside its startup grace is stopWorker's proof that the pid is the worker. Written here, after every wait above, so a slow machine cannot age it past the grace before stopWorker reads it.
+    fs.writeFileSync(workerPidPath(dir), `${daemonPid}\n`)
     expect(stopWorker(dir), 'stopWorker found no running worker to stop').toBe(true)
 
-    let left: string[] = []
-    for (let read = 0; read < SURVIVOR_READS; read++) {
-      left = survivors()
-      if (left.length === 0) break
-    }
-    expect(left, 'the daemon or what it started is still running after worker stop').toEqual([])
+    let backstop: NodeJS.Timeout | undefined
+    const reaped = await Promise.race([
+      everyHolderGone.then(() => true),
+      new Promise<boolean>((resolve) => {
+        backstop = setTimeout(() => resolve(false), REAP_BACKSTOP_MS)
+      }),
+    ]).finally(() => clearTimeout(backstop))
+    expect(reaped, `the daemon or what it started is still running after worker stop: ${reaped ? '' : JSON.stringify(survivors())}`).toBe(true)
   }, 120_000)
 })
