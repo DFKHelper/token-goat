@@ -525,6 +525,31 @@ describe('roots that differ only by a non-ASCII case variant stay two projects',
     expect(resolveHandoff('plan', { projectRoot: path.join(projectDir, `wor${kelvin}`), full: true })).toBeNull()
     expect(resolveHandoff('plan', { projectRoot: path.join(projectDir, 'work'), full: true })).toBe('in work')
   })
+
+  // HAND-DERIVED: stands in for a planted or stale record the identity check exists to reject: work's own record, written by the store under work's lookup id, then rewritten so its projectRoot names the Kelvin sibling; only the record's own root can make it belong to work.
+  it('rejects a record under work lookup id whose projectRoot names the Kelvin sibling', (ctx) => {
+    const work = path.join(projectDir, 'work')
+    const sibling = path.join(projectDir, `wor${kelvin}`)
+    fs.mkdirSync(work)
+    try {
+      fs.mkdirSync(sibling)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') ctx.skip('this file system folds U+212A onto k, so both directories cannot exist; the id row above covers the key')
+      throw error
+    }
+    const entries = fs.readdirSync(projectDir)
+    if (!entries.includes('work') || !entries.includes(`wor${kelvin}`)) ctx.skip('this file system did not keep work and wor + U+212A as two directory entries, so the identity check cannot be told apart from a fold')
+    const handoff = createHandoff('plan', 'planted text', work)
+    const file = path.join(contentDir(), `${handoff.id}.json`)
+    const record = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>
+    expect(record['projectRoot'], 'the store keyed the record under work before the rewrite').toBe(canonicalize(work))
+    fs.writeFileSync(file, JSON.stringify({ ...record, projectRoot: canonicalize(sibling) }))
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).projectRoot, 'the planted record names the Kelvin sibling').toBe(canonicalize(sibling))
+
+    const resolved = resolveHandoff('plan', { projectRoot: work, full: true })
+    expect(resolved, 'work must not resolve a record whose projectRoot is the Kelvin sibling').toBeNull()
+    expect(resolved).not.toBe('planted text')
+  })
 })
 
 // HAND-DERIVED: on a case-sensitive file system Foo and foo are two directories, so they are two projects.
