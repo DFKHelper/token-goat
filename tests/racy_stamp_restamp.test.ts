@@ -59,17 +59,18 @@ function row(name: string): { mtime: number; indexed_at: number } {
   return getDb(dbPath).prepare('SELECT mtime, indexed_at FROM files WHERE path LIKE ?').get(`%/${name}`) as { mtime: number; indexed_at: number }
 }
 
+// Both sweeps run at a 0 ms budget so no clock decides the outcome: each test indexes one file, and the progress guarantee examines one file per sweep, so that file is always the one examined. The rows that assert a hash count of 0 follow a calibration row that asserts 1, so a file that went unexamined cannot pass them.
 /** One sweep that writes nothing, returning how many files it hashed. */
 function dryHashes(): number {
   hashed.calls = 0
-  reconcileProject({ cwd: projectDir, dbPath, budgetMs: 30_000, dryRun: true, queueDir: dataDir })
+  reconcileProject({ cwd: projectDir, dbPath, budgetMs: 0, dryRun: true, queueDir: dataDir })
   return hashed.calls
 }
 
 /** One sweep that may record what it proves, returning how many files it hashed. */
 function recordingHashes(): number {
   hashed.calls = 0
-  reconcileProject({ cwd: projectDir, dbPath, budgetMs: 30_000, queueDir: dataDir })
+  reconcileProject({ cwd: projectDir, dbPath, budgetMs: 0, queueDir: dataDir })
   return hashed.calls
 }
 

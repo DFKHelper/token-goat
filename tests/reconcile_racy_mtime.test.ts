@@ -57,9 +57,12 @@ function stampIndexedAt(name: string, indexedAtSec: number): void {
   getDb(dbPath).prepare('UPDATE files SET indexed_at = ? WHERE path LIKE ?').run(indexedAtSec, `%/${name}`)
 }
 
-function sweep(): ReturnType<typeof reconcileProject> {
+/** One dry sweep at a 0 ms budget, so no clock decides the outcome: the progress guarantee examines exactly one file, which is `target`. A tracked target is the first path `git ls-files` lists (the seed file is named to sort last), checked here because a row that asserts a file was not hashed would pass without ever examining it; an untracked target is the only row the deletion pass has, and that pass examines its first row whatever the budget. */
+function sweep(target: string): ReturnType<typeof reconcileProject> {
+  const listed = (spawnSync('git', ['ls-files'], { cwd: projectDir, encoding: 'utf-8' }).stdout ?? '').split('\n').filter((line) => line !== '')
+  if (listed.includes(target)) expect(listed[0], 'the target is not first in the scan order, so a 0 ms sweep would never examine it').toBe(target)
   hashed.calls = 0
-  return reconcileProject({ cwd: projectDir, dbPath, budgetMs: 30_000, dryRun: true })
+  return reconcileProject({ cwd: projectDir, dbPath, budgetMs: 0, dryRun: true })
 }
 
 beforeEach(() => {
@@ -68,7 +71,7 @@ beforeEach(() => {
   git('init')
   git('config', 'user.email', 't@example.com')
   git('config', 'user.name', 'T')
-  fs.writeFileSync(path.join(projectDir, 'seed.ts'), 'export const seed = 0\n')
+  fs.writeFileSync(path.join(projectDir, 'zz_seed.ts'), 'export const seed = 0\n')
   git('add', '-A')
   git('commit', '-m', 'init')
 })
@@ -90,7 +93,7 @@ describe('reconcileProject racy-clean mtime gate', () => {
     git('add', '-A')
     rewriteKeepingMtime('racy.ts', AFTER, FUTURE)
 
-    const result = sweep()
+    const result = sweep('racy.ts')
 
     expect(result.changed.map((p) => path.basename(p))).toContain('racy.ts')
   })
@@ -99,7 +102,7 @@ describe('reconcileProject racy-clean mtime gate', () => {
     indexWith('calm.ts', BEFORE, OLD)
     git('add', '-A')
 
-    const result = sweep()
+    const result = sweep('calm.ts')
 
     expect(result.changed.map((p) => path.basename(p))).not.toContain('calm.ts')
     expect(hashed.calls, 'an unambiguous file was hashed; the cheap gate no longer skips it').toBe(0)
@@ -109,7 +112,7 @@ describe('reconcileProject racy-clean mtime gate', () => {
     indexWith('same.ts', BEFORE, FUTURE)
     git('add', '-A')
 
-    const result = sweep()
+    const result = sweep('same.ts')
 
     expect(result.changed.map((p) => path.basename(p))).not.toContain('same.ts')
     expect(result.mtimeOnly).toBe(0)
@@ -122,7 +125,7 @@ describe('reconcileProject racy-clean mtime gate', () => {
     stampIndexedAt('tick.ts', OLD + 1)
     rewriteKeepingMtime('tick.ts', AFTER, OLD)
 
-    const result = sweep()
+    const result = sweep('tick.ts')
 
     expect(result.changed.map((p) => path.basename(p))).toContain('tick.ts')
   })
@@ -132,7 +135,7 @@ describe('reconcileProject racy-clean mtime gate', () => {
     git('add', '-A')
     stampIndexedAt('edge.ts', OLD + 2)
 
-    const result = sweep()
+    const result = sweep('edge.ts')
 
     expect(result.changed.map((p) => path.basename(p))).not.toContain('edge.ts')
     expect(hashed.calls, 'a file a full tick older than its index time was hashed').toBe(0)
@@ -142,7 +145,7 @@ describe('reconcileProject racy-clean mtime gate', () => {
     indexWith('loose.ts', BEFORE, FUTURE)
     rewriteKeepingMtime('loose.ts', AFTER, FUTURE)
 
-    const result = sweep()
+    const result = sweep('loose.ts')
 
     expect(result.changed.map((p) => path.basename(p))).toContain('loose.ts')
   })
@@ -150,7 +153,7 @@ describe('reconcileProject racy-clean mtime gate', () => {
   it('does not hash an untracked indexed file whose mtime is unchanged and older than the index time', () => {
     indexWith('loose.ts', BEFORE, OLD)
 
-    const result = sweep()
+    const result = sweep('loose.ts')
 
     expect(result.changed.map((p) => path.basename(p))).not.toContain('loose.ts')
     expect(hashed.calls, 'an unambiguous untracked file was hashed').toBe(0)
