@@ -262,12 +262,29 @@ describe('mcp read confinement', () => {
       { name: 'section', arguments: { spec: `${outsideFile}::Heading`, projectRoot: root } },
       { name: 'skeleton', arguments: { file: outsideFile, projectRoot: root } },
       { name: 'outline', arguments: { file: outsideFile, projectRoot: root } },
-      { name: 'grep', arguments: { pattern: 'SECRET', path: [outside] } },
+      // The grep names its root like the three calls above. Left out, the root is inferred from the directory ABOVE `outside` (the shared temp parent), and that parent counts as a workspace once an earlier row has indexed a file under it in the same isolated index -- so the refusal depended on which rows ran first.
+      { name: 'grep', arguments: { pattern: 'SECRET', path: [outside], projectRoot: root } },
     ]) {
       const result = await client.callTool(call)
       expect(textOf(result)).toContain('outside the project root')
       expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
     }
+  })
+
+  it('refuses an out-of-root grep when an earlier read already indexed a project under the same parent directory', async () => {
+    const { outsideFile } = makeDirs()
+    const inRootSource = path.join(root, 'lib.ts')
+    fs.writeFileSync(inRootSource, 'export function greet(): string {\n  return "hi"\n}\n')
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    // Puts a file under `root` in the index, so the temp directory holding both `root` and `outside` is a workspace the index knows about.
+    const seeded = await client.callTool({ name: 'read', arguments: { spec: `${inRootSource}::greet`, projectRoot: root } })
+    expect(seeded.isError).toBe(false)
+
+    const result = await client.callTool({ name: 'grep', arguments: { pattern: 'SECRET', path: [path.dirname(outsideFile)], projectRoot: root } })
+    expect(textOf(result)).toContain('outside the project root')
+    expect(textOf(result)).not.toContain('SECRET-MARKER-DO-NOT-LEAK')
   })
 
   it('refuses an out-of-root absolute spec for brief', async () => {

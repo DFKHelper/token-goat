@@ -1,4 +1,5 @@
 import { tempConfigPath } from './helpers/temp-config.js'
+import * as fs from 'node:fs'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import sharp from 'sharp'
 
@@ -10,7 +11,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 
 import { postBrowserImageHandler } from '../src/hooks_browser_image.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
+import { defaultConfig, invalidateConfigCache, loadConfig, saveConfig } from '../src/config.js'
 import { lastTabContextMatches } from '../src/session.js'
 import { summarize } from '../src/stats.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -49,8 +50,15 @@ beforeAll(async () => {
   flatScreenshotBytes = flatScreenshot.length
 })
 
-beforeEach(() => {
+// Rows below save a config (vision_tier, image_shrink.enabled=false) to this file and nothing else removes it, so under a shuffled order every later row started from the earlier row's saved settings. Each row owns its starting state: no file means the defaults.
+function resetRowState(): void {
+  fs.rmSync(_testConfigPath, { force: true })
+  invalidateConfigCache()
   clearModuleCaches()
+}
+
+beforeEach(() => {
+  resetRowState()
 })
 
 afterEach(() => {
@@ -81,6 +89,18 @@ function imageEvent(dataB64: string, toolName = 'mcp__claude-in-chrome__computer
 }
 
 describe('postBrowserImageHandler', () => {
+  it('starts a row from the default config after an earlier row saved a disabling one (order-independent: the saving and the reset happen inside this row)', () => {
+    const disabled = defaultConfig()
+    disabled.image_shrink.enabled = false
+    saveConfig(disabled)
+    invalidateConfigCache()
+    expect(loadConfig().image_shrink.enabled).toBe(false)
+
+    resetRowState()
+
+    expect(loadConfig().image_shrink.enabled).toBe(defaultConfig().image_shrink.enabled)
+  })
+
   it('shrinks an oversized inline screenshot and rewrites the output with a smaller data URL', async () => {
     const result = await postBrowserImageHandler(imageEvent(largeJpegB64))
     expect(result.hookType).toBe('rewriteOutput')
