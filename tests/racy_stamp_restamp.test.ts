@@ -1,4 +1,4 @@
-/** A hash that proves a file unchanged is recorded, so the racy-clean gate stops hashing it on every sweep. Fixture provenance: HAND-DERIVED. Every mtime, index time and "now" below is computed from the racy rule `mtime + 2 <= indexed_at` (reconcile.ts::mtimeProvesUnchanged, https://git-scm.com/docs/racy-git read at its "racy-git last updated in 2.43.0" revision); no wire format is involved. */
+/** A hash that proves a file unchanged is recorded, so the racy-clean gate stops hashing it on every sweep. Fixture provenance: HAND-DERIVED. Every mtime, index time and "now" below is computed from the racy rule `mtime + 2 <= indexed_at` (reconcile.ts::mtimeProvesUnchanged, the margin is this code's own; git's rule, Documentation/technical/racy-git.txt at tag v2.43.0, stops at same-or-newer); no wire format is involved. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
