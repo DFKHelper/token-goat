@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { powerShellCommandArgs } from '../src/shell.js'
-import { windowsPowerShellPath } from '../src/windows_powershell.js'
+import { powerShellTextQueryArgs, windowsPowerShellPath } from '../src/windows_powershell.js'
 
 const saved = { SystemRoot: process.env['SystemRoot'], windir: process.env['windir'] }
 
@@ -21,6 +21,13 @@ describe('powerShellCommandArgs', () => {
   // FORMAT-DERIVED: the flags both former copies passed, read off src/cli_doctor_process.ts and src/claude_hidden_rules.ts at 44fdbaa9.
   it('runs the command without a profile and without waiting on input', () => {
     expect(powerShellCommandArgs('Get-Date')).toEqual(['-NoProfile', '-NonInteractive', '-Command', 'Get-Date'])
+  })
+})
+
+describe('powerShellTextQueryArgs', () => {
+  // FORMAT-DERIVED: the prefix is the line src/windows_powershell.ts::powerShellTextQueryArgs builds at f5040bd46 (`[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false;`); Console.OutputEncoding is "the encoding the console uses to write output" (https://learn.microsoft.com/en-us/dotnet/api/system.console.outputencoding, read 2026-10-18), and the 5.1 failure it prevents is captured in tests/resident_process.test.ts. Runs on every platform because the args are built, not executed.
+  it('puts a UTF-8 (no byte order mark) output encoding before the script, after the bare flags', () => {
+    expect(powerShellTextQueryArgs('Get-Date')).toEqual(['-NoProfile', '-NonInteractive', '-Command', '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; Get-Date'])
   })
 })
 
