@@ -256,6 +256,30 @@ describe('reconcile cursors leave with the project', () => {
     }
   })
 
+  // The refusal here is on the file rows, not the cursor rows: the trigger aborts the delete from files, which removeFilesBestEffort swallows per file, so pruneBlockedRoot returns with the file rows still indexed. Its own cursor purge is a separate statement and still lands.
+  it('keeps the registry row of an excluded root while file rows remain under it, and drops it once they are gone', () => {
+    seed(path.join('secretdir', 'creds.ts'), 'export function tokenValue() { return "sk" }\n')
+    const project = canonicalizeIndexPath(path.join(root, 'secretdir'))
+    getDb(dbPath).prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, NULL)').run(project)
+    putCursors(project)
+    const undo = excludeInConfig(path.join(root, 'secretdir'))
+    try {
+      getDb(dbPath).exec("CREATE TRIGGER refuse_file_delete BEFORE DELETE ON files BEGIN SELECT RAISE(ABORT, 'database is locked'); END")
+
+      sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+      expect(indexedPaths().length, 'calibration: the refused delete left the file row indexed').toBe(1)
+      expect(knownRoots(), 'the registry row went while file rows remained under the excluded root, so nothing retries the purge').toEqual([project])
+      expect(cursorRoots(), 'calibration: pruneBlockedRoot purges the cursor rows itself, so none are left for the transaction').toEqual([])
+
+      getDb(dbPath).exec('DROP TRIGGER refuse_file_delete')
+      sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+      expect(indexedPaths(), 'the retry did not remove the file rows').toEqual([])
+      expect(knownRoots(), 'the registry row survived the sweep that removed the last file row').toEqual([])
+    } finally {
+      undo()
+    }
+  })
+
   it('leaves a live root that is not excluded, and a dry run, alone', () => {
     liveRootWithCursors('kept')
     const dry = liveRootWithCursors('excluded')
