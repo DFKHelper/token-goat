@@ -1,5 +1,6 @@
 import * as fs from 'node:fs'
 
+import { loadConfig } from './config.js'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { deleteFileEmbeddings } from './embeddings.js'
@@ -8,7 +9,7 @@ import { isTooShallowToPrune } from './known_roots.js'
 import { deleteFileRows } from './parser.js'
 import { isUnderSystemTemp } from './project.js'
 import { pathEqClause } from './sql_path.js'
-import { foldPath, normalizePath } from './util.js'
+import { foldPath, isUnderBlockedRoot, normalizePath } from './util.js'
 
 type DbHandle = ReturnType<typeof getDb>
 
@@ -292,6 +293,7 @@ export function sweepKnownRoots(
   const now = opts?.now ?? Date.now()
   const graceMs = opts?.missingGraceMs ?? KNOWN_ROOT_MISSING_GRACE_MS
   const dryRun = opts?.dryRun === true
+  const blockedRoots = loadConfig().worker.blocked_roots
   const roots = db.prepare('SELECT root, first_missing_ms FROM known_roots').all() as Array<{
     root: string
     first_missing_ms: number | null
@@ -339,6 +341,24 @@ export function sweepKnownRoots(
 
     if (firstMissingMs !== null && !dryRun) {
       db.prepare('UPDATE known_roots SET first_missing_ms = NULL WHERE root = ?').run(root)
+    }
+
+    // A live root that is excluded needs neither a registry row nor a resume point. `project exclude` purges its rows once and swallows a refusal (pruneBlockedRoot), after which nothing below reaches them: the count check skips a root with no file rows, and the orphan pass skips a root that has a registry row. So the purge is retried here, and the registry row leaves in the same transaction as the cursor rows, once no file row is left either, so a refusal keeps the row this branch retries on. No clock is involved: the exclusion is the fact that ends the root's tracking.
+    if (isUnderBlockedRoot(root, blockedRoots)) {
+      const leftover = dryRun ? findFilesUnderBlockedRoot(root, dbPath).length : pruneBlockedRoot(root, dbPath).length
+      prunedRows += leftover
+      if (leftover > 0) prunedRoots.push(root)
+      if (!dryRun && findFilesUnderBlockedRoot(root, dbPath).length === 0) {
+        try {
+          db.transaction(() => {
+            db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
+            purgeReconcileCursors(db, root)
+          })()
+        } catch {
+          // Nothing was deleted, see above.
+        }
+      }
+      continue
     }
 
     const total = countFilesUnderRoot(root, dbPath)

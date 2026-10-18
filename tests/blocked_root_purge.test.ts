@@ -5,6 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { invalidateConfigCache, loadPersistedConfig, saveConfig } from '../src/config.js'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { findFilesUnderBlockedRoot, pruneBlockedRoot, sweepKnownRoots } from '../src/index_prune.js'
 import { canonicalizeIndexPath, indexFileSync } from '../src/parser.js'
@@ -193,6 +194,83 @@ describe('reconcile cursors leave with the project', () => {
     sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
     expect(knownRoots()).toEqual([])
     expect(cursorRoots()).toEqual([other, `${other}${NUL}deletions`].sort())
+  })
+
+  // A live root listed in worker.blocked_roots, with a known_roots row and cursor rows but no file rows: the state project exclude leaves when its cursor purge was refused. HAND-DERIVED from the control flow of sweepKnownRoots; no producer output is involved.
+  function excludeInConfig(dir: string): () => void {
+    const cfg = loadPersistedConfig()
+    const before = cfg.worker.blocked_roots
+    cfg.worker.blocked_roots = [...before, dir]
+    saveConfig(cfg)
+    invalidateConfigCache()
+    return () => {
+      const restored = loadPersistedConfig()
+      restored.worker.blocked_roots = before
+      saveConfig(restored)
+      invalidateConfigCache()
+    }
+  }
+  function liveRootWithCursors(name: string): string {
+    const dir = path.join(root, name)
+    fs.mkdirSync(dir)
+    const project = canonicalizeIndexPath(dir)
+    getDb(dbPath).prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, NULL)').run(project)
+    putCursors(project)
+    return project
+  }
+
+  it('sweepKnownRoots clears the cursor rows and the registry row of a live excluded root, with no clock', () => {
+    const project = liveRootWithCursors('excluded')
+    const undo = excludeInConfig(path.join(root, 'excluded'))
+    try {
+      for (let pass = 0; pass < 3; pass++) sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+      expect(cursorRoots(), `the cursor rows of ${project} survived three sweeps`).toEqual([])
+      expect(knownRoots(), 'the registry row of an excluded root survived three sweeps').toEqual([])
+    } finally {
+      undo()
+    }
+  })
+
+  it('finishes a refused exclude purge on the next sweep, and keeps the registry row until it does', () => {
+    seed(path.join('secretdir', 'creds.ts'), 'export function tokenValue() { return "sk" }\n')
+    const project = canonicalizeIndexPath(path.join(root, 'secretdir'))
+    getDb(dbPath).prepare('INSERT INTO known_roots (root, last_seen_ms, first_missing_ms) VALUES (?, 0, NULL)').run(project)
+    putCursors(project)
+    const undo = excludeInConfig(path.join(root, 'secretdir'))
+    try {
+      refuseCursorDeletes()
+      pruneBlockedRoot(path.join(root, 'secretdir'), dbPath)
+      expect(cursorRoots().length, 'calibration: the refused purge left both cursor rows').toBe(2)
+      expect(indexedPaths(), 'calibration: the file rows went before the refusal').toEqual([])
+
+      sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+      expect(cursorRoots().length, 'a sweep that was refused again dropped the cursor rows anyway').toBe(2)
+      expect(knownRoots(), 'the registry row went while its cursor rows stayed, so no later sweep can retry').toEqual([project])
+
+      allowCursorDeletes()
+      sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+      expect(cursorRoots(), 'the retry did not collect the cursor rows the refused purge left').toEqual([])
+      expect(knownRoots()).toEqual([])
+    } finally {
+      undo()
+    }
+  })
+
+  it('leaves a live root that is not excluded, and a dry run, alone', () => {
+    liveRootWithCursors('kept')
+    const dry = liveRootWithCursors('excluded')
+    const undo = excludeInConfig(path.join(root, 'excluded'))
+    try {
+      sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000, dryRun: true })
+      expect(cursorRoots().length, 'a dry run wrote').toBe(4)
+      expect(knownRoots().length).toBe(2)
+
+      sweepKnownRoots(dbPath, { now: 2000, missingGraceMs: 1000 })
+      expect(knownRoots().map((r) => path.basename(r)), `${dry} left, and the live project that is not excluded stays`).toEqual(['kept'])
+      expect(cursorRoots().length, 'the live project that is not excluded lost its scan progress').toBe(2)
+    } finally {
+      undo()
+    }
   })
 
   it('project exclude still reports what it removed when the cursor purge is refused', () => {
