@@ -194,6 +194,17 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
   }
 }
 
+/** End a daemon this module holds a lease proof for. On Windows `process.kill` is TerminateProcess, so no handler in the daemon runs and the git it holds is left running; the tree goes with it through taskkill (resident_process.ts::terminateProcessTree, which refuses this process and its parent, because process_tree.ts must stay out of the hook bundle), and a taskkill that did not end it falls back to the bare kill the pid proof allows. Elsewhere SIGTERM reaches the daemon's own handler, which drains and reaps what it started. */
+function endDaemon(pid: number): void {
+  // The caller's lease proof (a live pid with a fresh heartbeat or inside the startup grace, or a child just spawned) is the live-pid evidence a tree kill needs.
+  if (process.platform === 'win32' && terminateProcessTree(pid, true)) return
+  try {
+    process.kill(pid)
+  } catch {
+    // Race: process exited between the check and the kill; the caller reports whatever liveness it observed.
+  }
+}
+
 /** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, or it is alive but proves no worker lease (see {@link holdsWorkerLease}). The pid file is removed in the killed and dead cases so the slate is clean afterwards, and left in place in the last. */
 export function stopWorker(dir: string = dataDir(), expectedPid?: number): boolean {
   const pid = readPidFile(dir)
@@ -206,11 +217,7 @@ export function stopWorker(dir: string = dataDir(), expectedPid?: number): boole
   const running = alive && (hasFreshWorkerHeartbeat(dir, pid) || pidFileIsWithinStartupGrace(dir))
   if (alive && !running) return false
   if (running) {
-    try {
-      process.kill(pid)
-    } catch {
-      // Race: process exited between the check and the kill. Fall through to pid-file cleanup; report whatever liveness we observed.
-    }
+    endDaemon(pid)
   }
   // Only remove the pid file when it still names the pid we just killed -- never unconditionally. A concurrent `worker start` can observe the killed pid as dead and reclaim the slot (via claimWorkerPidFile) with a brand-new daemon's pid between our kill above and this cleanup; an unconditional rmSync here would delete that new daemon's pid file out from under it, orphaning it (no pid file left for a later stopWorker to find), which a subsequent `worker start` would then "fix" by spawning a third daemon -- two live daemons draining the same queue. Same guard style as the exit handler in worker.ts::runDetachedWorkerDaemon.
   if (readPidFile(dir) === pid) {
@@ -257,11 +264,7 @@ export function dataDirWriteRefusal(dir: string): unknown {
 
 /** Kill a daemon {@link startDetachedWorker} spawned but cannot keep, and drop the parent's reference to it so the calling process can exit. */
 function discardSpawnedWorker(child: ChildProcess, pid: number): void {
-  try {
-    process.kill(pid)
-  } catch {
-    // already gone
-  }
+  endDaemon(pid)
   // owner: none, the daemon was killed just above; dies when that kill lands, and the unref only lets the caller exit.
   child.unref()
 }
