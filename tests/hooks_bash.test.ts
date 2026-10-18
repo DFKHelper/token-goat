@@ -9,11 +9,11 @@ import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 import type * as UtilModule from '../src/util.js'
-import { KILLED_GIT, SECOND_HEAD, STATUS_A_MODIFIED, cannedFingerprintAnswer, cannedGit } from './helpers/canned_git.js'
+import { KILLED_GIT, SECOND_HEAD, STATUS_A_MODIFIED, cannedFingerprintAnswer, cannedGit, cannedNoRepository, cannedSkillListing } from './helpers/canned_git.js'
 import type { CannedGit } from './helpers/canned_git.js'
 
-// Seam over the git calls that fingerprint a repository (src/bash_output_cache.ts::gitStateFingerprintSync): `killed` names the git subcommand (`status`, `rev-parse`) reported as killed at its time bound for the next `kills` calls (every call when unset), and `canned` answers the fingerprint calls from a known repository state (tests/helpers/canned_git.ts) so no row waits on a real git finishing inside a bound. Every other git call runs for real under its default bound. Both are test-only and reset by the scoped-git describes below.
-const gitSeam = vi.hoisted(() => ({ killed: null as string | null, kills: Infinity, canned: null as CannedGit | null }))
+// Seam over the git calls that fingerprint a repository (src/bash_output_cache.ts::gitStateFingerprintSync): `killed` names the git subcommand (`status`, `rev-parse`) reported as killed at its time bound for the next `kills` calls (every call when unset), and `canned` answers the fingerprint calls from a known repository state (tests/helpers/canned_git.ts) so no row waits on a real git finishing inside a bound. `skillListing` answers the three file listings of the nested-skill scan that a host-session row runs before the hook approves a rewrite (asHostSession). Every other git call runs for real under its default bound. All three are test-only; the rows that set one reset it.
+const gitSeam = vi.hoisted(() => ({ killed: null as string | null, kills: Infinity, canned: null as CannedGit | null, skillListing: false }))
 
 function cannedRepo(): CannedGit {
   if (gitSeam.canned === null) throw new Error('the canned git state is not installed')
@@ -30,7 +30,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
         return KILLED_GIT
       }
       const answer = gitSeam.canned === null ? null : cannedFingerprintAnswer(gitSeam.canned, opts?.cwd, args)
-      return answer ?? actual.runGit(args, opts)
+      return answer ?? (gitSeam.skillListing ? cannedSkillListing(args) : null) ?? actual.runGit(args, opts)
     },
   }
 })
@@ -314,13 +314,21 @@ describe('postBashHandler', () => {
 
   it('caches output for cd-prefixed tsc command and fires recall on repeat', async () => {
     const bigOutput = 'src/auth.ts(12,5): error TS2345: ...\n'.repeat(50)
-    // Post side: store the output
-    await postBashHandler(makePostBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit', bigOutput))
-    // Pre side: second run should get a recall hint
-    const result = preBashHandler(makeBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('bash-output')
+    // A build command is cached with the git fingerprint of the event's directory (the process's, here), and a git killed at its bound reads as an unknown state that is never recalled; the row asserts the recall, so the fingerprint calls are answered from a known repository state.
+    gitSeam.canned = cannedGit()
+    try {
+      // Post side: store the output
+      await postBashHandler(makePostBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit', bigOutput))
+      // Pre side: second run should get a recall hint
+      const result = preBashHandler(makeBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit'))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('bash-output')
+      }
+      // The seam is live: the store and the recall each fingerprinted from the canned state, not from a real git.
+      expect(cannedRepo().served).toBeGreaterThanOrEqual(4)
+    } finally {
+      gitSeam.canned = null
     }
   })
 
@@ -2616,10 +2624,13 @@ describe('preBashHandler — rg indented def patterns', () => {
 async function asHostSession<T>(run: () => T): Promise<T> {
   const prev = process.env['CLAUDE_CODE_ENTRYPOINT']
   process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
+  // The check lists the checkout's files with git under a 15 s bound before it clears a rewrite; these rows assert the rewrite, not git's speed.
+  gitSeam.skillListing = true
   try {
     await loadHiddenRuleCheck()
     return run()
   } finally {
+    gitSeam.skillListing = false
     resetPermissionSourceCache()
     if (prev === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
     else process.env['CLAUDE_CODE_ENTRYPOINT'] = prev
@@ -2976,6 +2987,8 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
   it('does not recall a cached pip freeze once requirements.txt changes since it was cached', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'tg-m44-'))
     writeFileSync(join(tmpDir, 'requirements.txt'), 'requests==2.0.0\n')
+    // A build command also fingerprints the directory's git state, and a git killed at its bound reads as an unknown state that is never recalled; the row asserts the lockfile fingerprint, so git answers as it does outside a repository (the temp directory is in none).
+    gitSeam.canned = cannedNoRepository()
     try {
       const cmd = 'pip freeze'
       const largeOutput = 'requests==2.0.0\n'.repeat(100)
@@ -2996,7 +3009,10 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
       if (staleResult.hookType === 'context') {
         expect(staleResult.context).not.toContain('is cached')
       }
+      // The seam is live: the store and each recall asked git for the state, and the canned answer served them.
+      expect(cannedRepo().served).toBeGreaterThanOrEqual(3)
     } finally {
+      gitSeam.canned = null
       rmSync(tmpDir, { recursive: true, force: true })
     }
   })
