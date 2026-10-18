@@ -387,6 +387,28 @@ describe('stopWorker', () => {
       killSpy.mockRestore()
     }
   })
+
+  // The parent is the process that launched this one, so a pid file naming it (a reused number, a hand-edited file) must never lead to a signal even when the lease proofs pass and the identity answer says to end it. process.kill is a spy: a stop that did signal the parent is caught by the assertion, and the runner is not hurt by the failure it reports. HAND-DERIVED: the pid is process.ppid and the two answers are the two branches of judgeDaemonIdentity.
+  it.each([
+    ['a confirmed worker (the tree scope)', { status: 'found', commandLine: workerCommandLine(STAND_IN_LAUNCHER) } as ResidentProcess.CommandLineQuery],
+    ['a failed identity query (the single scope)', { status: 'failed' } as ResidentProcess.CommandLineQuery],
+  ])('never signals the parent process when the pid file names it and the identity says %s', (_label, answer) => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.ppid}\n`)
+    const asked: number[] = []
+    const queryCommandLine = (pid: number): ResidentProcess.CommandLineQuery => {
+      asked.push(pid)
+      return answer
+    }
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    try {
+      expect(stopWorker(DIR, undefined, { entryScript: STAND_IN_LAUNCHER, queryCommandLine })).toBe(false)
+      // The stop got as far as ending the pid: the lease proof passed and the identity was judged, so the refusal is endDaemon's and not an earlier return.
+      expect(asked).toEqual([process.ppid])
+      expect(killSpy.mock.calls.filter(([pid, signal]) => pid === process.ppid && signal !== 0)).toEqual([])
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
 })
 
 describe('claimWorkerPidFile (TOCTOU race regression)', () => {
