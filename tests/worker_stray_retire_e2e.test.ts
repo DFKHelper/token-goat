@@ -10,8 +10,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { readAllProcesses } from '../src/cli_doctor_process.js'
 import { commandLineOf, isResidentOfInstall, queryProcessCommandLine } from '../src/resident_process.js'
-import { ROOT, tgIsolatedEnv } from './helpers/bundle.js'
+import { ROOT } from './helpers/bundle.js'
 import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
+import { OWNER_TIED_DECOY_SOURCE, ownedDecoyEnv } from './helpers/owner_tied_decoy.js'
+import { STRAY_TEST_TIMEOUT_MS, strayWorkerEnv } from './helpers/worker_stray_env.js'
 
 /** Mirrors constants.ts's defaultDataDir() platform join; see worker_daemon_e2e.test.ts for why it cannot be imported. */
 function effectiveDataDir(base: string): string {
@@ -44,8 +46,8 @@ const FAKE_NPM = [
   '',
 ].join('\n')
 
-/** A process that runs `script` as a long-lived node and holds a flag-bearing argv, so only the launcher path tells it from a daemon. */
-const IDLE_SCRIPT = 'setInterval(() => {}, 1000)\n'
+/** A process that runs `script` as a long-lived node and holds a flag-bearing argv, so only the launcher path tells it from a daemon. It leaves when this process does. */
+const IDLE_SCRIPT = `${OWNER_TIED_DECOY_SOURCE}\n`
 
 let work: string
 let launcher: string
@@ -81,9 +83,7 @@ beforeEach(async () => {
   const npmCli = path.join(work, 'npm-cli.js')
   fs.writeFileSync(npmCli, FAKE_NPM)
   const isolated = (base: string): NodeJS.ProcessEnv => {
-    const e = tgIsolatedEnv(base, { TG_WORKER_POLL_MS: '600000', npm_execpath: npmCli, NPM_CONFIG_REGISTRY: registryUrl, TOKEN_GOAT_EMBEDDINGS_ENABLED: '0' })
-    delete e['TOKEN_GOAT_NO_WORKER_SPAWN']
-    return e
+    return strayWorkerEnv(base, { npm_execpath: npmCli, NPM_CONFIG_REGISTRY: registryUrl })
   }
   env = isolated(dataBase)
   envB = isolated(dataBaseB)
@@ -170,7 +170,7 @@ function pidFile(): string {
 }
 
 function startDecoy(script: string, extraArgs: string[]): ChildProcess {
-  const child = spawn(process.execPath, [script, ...extraArgs], { stdio: 'ignore', windowsHide: true })
+  const child = spawn(process.execPath, [script, ...extraArgs], { stdio: 'ignore', windowsHide: true, env: ownedDecoyEnv() })
   children.push(child)
   return child
 }
@@ -207,7 +207,7 @@ describe('stray resident processes on the built bundle', () => {
       expect(alive(unrelated.pid!), 'an unrelated node process must survive').toBe(true)
       expect(alive(flagged.pid!), 'a node process running another script must survive').toBe(true)
     },
-    180000,
+    STRAY_TEST_TIMEOUT_MS,
   )
 
   it(
@@ -229,7 +229,7 @@ describe('stray resident processes on the built bundle', () => {
       await waitFor('the home B daemon to be gone', 30000, () => !alive(inB))
       expect(alive(otherInstall), 'a worker that runs another launcher must survive').toBe(true)
     },
-    180000,
+    STRAY_TEST_TIMEOUT_MS,
   )
 
   it(

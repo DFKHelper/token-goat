@@ -1,12 +1,12 @@
 /** Real shipped SessionStart -> dirty queue -> default detached worker -> SQLite. */
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 
 import Database from '../../src/sqlite_driver.js'
 import { commandLineOf, queryProcessCommandLine } from '../../src/resident_process.js'
-import { alive, aliveAs, assertOwedDeliveredOnce, BUNDLE, cleanupTrees, DEFERRED_DRIFT_NOTICE, expectDriftNotice, fixtureWatchdog, indexTreeFixture, ownedPids, ownedRoots, runInstalledStartup, runOwedToolCall, runTreeShim, startBegan, treeFixture } from '../helpers/copilot_session_start_tree.js'
+import { alive, aliveAs, assertOwedDeliveredOnce, BUNDLE, cleanupTrees, DEFERRED_DRIFT_NOTICE, expectDriftNotice, fixtureWatchdog, indexTreeFixture, ownedPids, ownedRoots, runInstalledStartup, runOwedToolCall, runTreeShim, startBegan, startupWorkerFixtureParent, treeFixture } from '../helpers/copilot_session_start_tree.js'
 
 afterEach(() => {
   const workers: number[] = []
@@ -72,10 +72,8 @@ it.runIf(process.platform === 'win32').for([
   'keeps the default index worker alive after the $surface startup tree exits ($listing listing)',
   { timeout: 0 },
   async ({ surface, listing }, ctx) => {
-    // OS-temp projects are intentionally never queued. This owned ignored tree has its own Git root and data directory, outside that exclusion.
-    const parent = join(process.cwd(), 'artifacts', 'session-start-worker-fixtures')
-    mkdirSync(parent, { recursive: true })
-    const fixture = treeFixture(parent)
+    // OS-temp projects are intentionally never queued. This tree is under the run root in the repo's .tmp/, outside that exclusion, with its own Git root and data directory.
+    const fixture = treeFixture(startupWorkerFixtureParent())
     const dir = join(fixture.root, 'home', 'dfk-helper', 'token-goat')
     const pidPath = join(dir, 'worker.pid')
     fixture.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '1'

@@ -16,6 +16,7 @@ import { buildNative } from './native_bin.js'
 import { startWatchdog, type Watchdog } from './stall_proof_watchdog.js'
 import { killIfCommandLine } from './kill_if_command_line.js'
 import { commandLineOf, queryProcessCommandLine } from '../../src/resident_process.js'
+import { indexableDir } from './temp-config.js'
 
 export const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 /** The budget the tree fixtures give a start, through the test-only seam: the shorter budget production used before it became 10 s, so a case that waits for a hung helper to be cut off ends in seconds, not in the production budget. */
@@ -63,6 +64,11 @@ export function buildWindowsBoundary(root: string): string {
   ], { encoding: 'utf8', windowsHide: true, timeout: 60_000 })
   expect(compiled.status, compiled.error?.message ?? compiled.stderr).toBe(0)
   return destination
+}
+
+/** The parent of the fixtures that need a project the dirty queue accepts, which the OS temp dir is not. It is inside the run root under the repo's .tmp/, so a worker these fixtures start is ended by the globalSetup teardown, or by the next run's sweep when the run was killed (tests/setup/build-bundle.ts::killDaemonsUnder). */
+export function startupWorkerFixtureParent(): string {
+  return indexableDir()
 }
 
 export function treeFixture(parent: string = tmpdir()): { root: string; project: string; env: NodeJS.ProcessEnv; shim: string } {

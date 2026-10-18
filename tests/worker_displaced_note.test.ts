@@ -1,6 +1,6 @@
 /** The note a pid-file claim leaves for the daemon it installs (worker_lifecycle.ts::retireDisplacedWorker) names a pid the OS may have reused, so it must not outlive its claim, must not cross data dirs, must be dropped by a fresh claim, and must not lose a pid to a second claim. The real claimWorkerPidFile and retireDisplacedWorker run against a real data directory and real live node processes; only the command-line matcher is replaced (a decoy's launcher is not this install's), by a rule that accepts the `--worker-daemon` flag a decoy carries, and terminateProcessTree is wrapped to record its calls and still call through. Fixtures are HAND-DERIVED: the note line format `<pid> <epoch ms> <data dir>` is the one worker_lifecycle.ts::readDisplacedPids documents, and a pid file aged past WORKER_STARTUP_GRACE_MS with a heartbeat naming another pid is what hasFreshWorkerHeartbeat and pidFileIsWithinStartupGrace read as "no lease". */
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -8,6 +8,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ResidentProcessModule from '../src/resident_process.js'
+import { spawnOwnedDecoy } from './helpers/owner_tied_decoy.js'
 
 const spies = vi.hoisted(() => ({ terminate: vi.fn() }))
 
@@ -24,7 +25,7 @@ let elsewhere: string
 const decoys: ChildProcess[] = []
 
 function startDecoy(): number {
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '--', '--worker-daemon'], { stdio: 'ignore', windowsHide: true })
+  const child = spawnOwnedDecoy(['--worker-daemon'])
   decoys.push(child)
   return child.pid!
 }

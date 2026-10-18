@@ -9,6 +9,7 @@ import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
 import { installGitNoFsmonitor } from '../helpers/git-no-fsmonitor.js'
 import { scrubClaudeSessionEnv, scrubCopilotEnv } from '../helpers/harness-env.js'
 import { scrubTokenGoatUserEnv } from '../helpers/token-goat-env.js'
+import { TEST_WORKER_IDLE_EXIT_MS } from './resident-backstop.js'
 
 // Test workers run at low priority so test execution never monopolizes CPU or overloads the system.
 try {
@@ -128,6 +129,10 @@ if (!process.env['TOKEN_GOAT_EMBEDDINGS_ENABLED']) {
 // Pin the two env vars that used to live only in the local pre-push hook (.lefthook-scripts/run-test.sh / wsl-test.sh), so a green local pre-push and a green CI run mean the same thing. Same "a test that sets its own value wins" pattern as TOKEN_GOAT_HOME/TOKEN_GOAT_EMBEDDINGS_ENABLED above: these are only defaults, applied before the test module graph imports anything that reads them.
 if (!process.env['TOKEN_GOAT_NO_WORKER_SPAWN']) {
   process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '1'
+}
+// A worker daemon a test starts has to leave on its own when the run is killed before any afterEach runs, and every spawn here inherits this environment (tgIsolatedEnv and the per-file builders spread process.env). A test that sets its own value wins, as for the variables above.
+if (!process.env['TG_WORKER_IDLE_EXIT_MS']) {
+  process.env['TG_WORKER_IDLE_EXIT_MS'] = String(TEST_WORKER_IDLE_EXIT_MS)
 }
 // Every install test runs with its cwd inside this repository, and install queues the project it runs in for a first index (src/install_index.ts). Unpinned, each of those tests would sweep this whole repository onto the dirty queue of its sandboxed data dir: slow, and a side effect none of them is about. tests/install_index.test.ts deletes this to exercise the shipped default.
 if (!process.env['TOKEN_GOAT_INSTALL_INDEX']) {

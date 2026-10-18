@@ -7,6 +7,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { spawnOwnedDecoy } from './helpers/owner_tied_decoy.js'
+
 const spies = vi.hoisted(() => ({ names: ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'] as const, fns: new Map<string, ReturnType<typeof vi.fn>>() }))
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -20,11 +22,10 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...wrapped, default: wrapped }
 })
 
-const { spawn } = await vi.importActual<typeof ChildProcessModule>('node:child_process')
 const { claimWorkerPidFile, readDisplacedPids, readPidFile, retireDisplacedWorker, workerPidPath } = await import('../src/worker_lifecycle.js')
 
 let dir: string
-let decoy: ReturnType<typeof spawn> | null = null
+let decoy: ChildProcessModule.ChildProcess | null = null
 
 function processesStarted(): string[] {
   return [...spies.fns].filter(([, fn]) => fn.mock.calls.length > 0).map(([name]) => name)
@@ -33,7 +34,7 @@ function processesStarted(): string[] {
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-claim-'))
   fs.mkdirSync(path.join(dir, 'queue'), { recursive: true })
-  decoy = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '--', '--worker-daemon'], { stdio: 'ignore', windowsHide: true })
+  decoy = spawnOwnedDecoy(['--worker-daemon'])
   for (const fn of spies.fns.values()) fn.mockClear()
 })
 

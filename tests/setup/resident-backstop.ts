@@ -1,0 +1,2 @@
+// How long a worker daemon that a test started may sit with an empty queue before it leaves on its own (src/worker.ts::runWorkerLoop counts the idle period from the loop's start or its last drained batch). It is what ends a daemon when the test run is killed before any afterEach runs. It exceeds every per-test timeout in the suite, which the runner enforces whatever the machine's speed, so no test that still needs the daemon can see it leave; tests/guards/test_started_residents_have_a_backstop.test.ts holds that comparison.
+export const TEST_WORKER_IDLE_EXIT_MS = 1_200_000

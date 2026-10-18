@@ -12,6 +12,7 @@ import { BUNDLE, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } f
 import { isWorkerDaemonCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { indexableDir } from './helpers/temp-config.js'
 import { stopWorker, WORKER_STARTUP_GRACE_MS, workerPidPath } from '../src/worker_lifecycle.js'
+import { TEST_WORKER_IDLE_EXIT_MS } from './setup/resident-backstop.js'
 
 /** Dirty paths queued behind a running daemon: enough that one drain cycle takes longer than the startup grace. */
 const MID_DRAIN_FILES = 12000
@@ -196,9 +197,8 @@ describe('the built daemon retires on its own', () => {
       // Its exit handler removes the pid file it owned, so the next ensureWorkerAlive sees no daemon.
       expect(fs.existsSync(workerPidPath(dir)), 'a retired daemon left its pid file behind').toBe(false)
 
-      // The commands after the retirement run without the short idle period, so the daemon they start is still there to be seen.
-      const laterEnv = { ...env }
-      delete laterEnv['TG_WORKER_IDLE_EXIT_MS']
+      // The commands after the retirement run with the run's idle period instead of the short one, so the daemon they start is still there to be seen and still leaves on its own if the run is killed first.
+      const laterEnv = { ...env, TG_WORKER_IDLE_EXIT_MS: String(TEST_WORKER_IDLE_EXIT_MS) }
       const target = path.join(repo, 'idle_respawn_sample.ts')
       fs.writeFileSync(target, 'export const idleRespawn = 1\n')
       const oldFrom = path.join(repo, 'old.txt')

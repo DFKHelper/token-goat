@@ -70,7 +70,7 @@ const STALE_RUN_ROOT_MS = 6 * 60 * 60 * 1000
 
 // A detached `--worker-daemon` started by a test lives in a data dir under a run root, and on Windows it holds global.db there, so the rmSync below leaves the folder behind and the daemon runs on. Each daemon names itself in queue/drain-heartbeat; stop exactly the pids named by a heartbeat that is still being refreshed (a stale one may name a pid that something else has since reused) and nothing else.
 const DAEMON_HEARTBEAT_FRESH_MS = 60_000
-const DAEMON_SEARCH_DEPTH = 6
+export const DAEMON_SEARCH_DEPTH = 6
 
 function heartbeatFiles(dir: string, depth: number, found: string[]): void {
   if (depth > DAEMON_SEARCH_DEPTH) return
