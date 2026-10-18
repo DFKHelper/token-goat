@@ -90,6 +90,21 @@ describe('openGitGate', () => {
     expect(g.holding(), 'a killed git was still reported holding').toBe(false)
   })
 
+  // HAND-DERIVED: a FIFO reader (cat) sees exactly the bytes written to the FIFO, so empty output after many polls means the probe wrote none; the Windows gate is a named pipe cat cannot open.
+  it.skipIf(process.platform === 'win32')('polls the holder without writing anything for the blocked reader to read', async () => {
+    const g = await gate()
+    const reader = spawn('cat', [g.env.GIT_CONFIG_VALUE_0 ?? ''], { stdio: ['ignore', 'pipe', 'ignore'] })
+    children.push(reader)
+    let output = ''
+    reader.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8') })
+    const ended = new Promise<void>((resolve) => reader.once('close', () => resolve()))
+    await g.reached
+    for (let polls = 0; polls < 200; polls++) expect(g.holding(), 'a blocked reader was not reported holding').toBe(true)
+    g.release()
+    await ended
+    expect(output, 'polling the gate wrote bytes the reader received').toBe('')
+  })
+
   it('reports no holder once the gate is released', async () => {
     const repo = gitRepoWithCommit()
     const g = await gate()

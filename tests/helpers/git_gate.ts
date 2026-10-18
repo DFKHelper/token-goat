@@ -12,7 +12,7 @@ export interface GitGate {
   readonly env: Readonly<Record<string, string>>
   /** Resolves once a git has opened the gate and is blocked reading it. It resolves on the event loop of the process holding the gate, so a caller that blocked that loop on the git (a synchronous spawn) never sees it resolve. */
   readonly reached: Promise<void>
-  /** Whether a git still holds the gate, read now. Windows: a connection a git made that has not closed (the pipe closes when the git process ends, however it ends; the close arrives on the event loop of the process holding the gate, so a loop that was blocked still shows a git that has ended). POSIX: whether a write to the FIFO reaches a reader, which fails with EPIPE once every reader has gone; the one newline it writes reads as a blank config line. False once released or disposed. */
+  /** Whether a git still holds the gate, read now. Windows: a connection a git made that has not closed (the pipe closes when the git process ends, however it ends; the close arrives on the event loop of the process holding the gate, so a loop that was blocked still shows a git that has ended). POSIX: whether a reader still has the FIFO open, probed by opening its write end without blocking, which fails with ENXIO once every reader has gone; nothing is written, so polling in a loop leaves git nothing to read. False once released or disposed. */
   holding(): boolean
   /** Lets every git blocked on the gate go, and every git that reaches it later. */
   release(): void
@@ -103,8 +103,9 @@ async function fifoGate(): Promise<GitGate> {
   })()
   const holding = (): boolean => {
     if (released || current === null) return false
+    // Opening the write end without blocking fails with ENXIO once no reader has the FIFO open, and writes nothing, so a poll loop adds no bytes for git to read.
     try {
-      fs.writeSync(current.fd, '\n')
+      fs.closeSync(fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK))
       return true
     } catch {
       return false
