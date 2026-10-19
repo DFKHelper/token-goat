@@ -18,6 +18,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 import Database from '../src/sqlite_driver.js'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { RESIDENT_TAIL_MAX_BYTES } from '../src/resident_context.js'
 import { getGlobalDb, recordStat } from '../src/stats.js'
 
 const STATS_WRITE_FAILURE_LOG_MIN_INTERVAL_MS = 60 * 1000
@@ -108,5 +109,61 @@ describe('recordStat when the write to global.db itself fails', () => {
       blocker.exec('ROLLBACK')
       blocker.close()
     }
+  })
+})
+
+describe('the write-failure log stays within the window readStatsWriteFailures reads', () => {
+  // Provenance: HAND-DERIVED. Fill lines are written here, one per record, in the shape recordStatWriteFailure appends; sizes are computed from RESIDENT_TAIL_MAX_BYTES, not read off stats.ts's trim logic.
+  function fillLine(n: number): string {
+    return `2026-01-01T00:00:00.000Z recordStat write failed for kind=fill${n}: busy`
+  }
+
+  function seedLog(dir: string, bytes: number): void {
+    const lines: string[] = []
+    let size = 0
+    for (let n = 0; size < bytes; n++) {
+      const line = fillLine(n)
+      lines.push(line)
+      size += Buffer.byteLength(line) + 1
+    }
+    fs.writeFileSync(statsLogPath(dir), lines.join('\n') + '\n')
+  }
+
+  function failOnce(kind: string): void {
+    const dbPath = path.join(_testDataDir, 'global.db')
+    getGlobalDb()
+    const blocker = new Database(dbPath)
+    blocker.pragma('busy_timeout = 0')
+    blocker.exec('BEGIN EXCLUSIVE')
+    try {
+      recordStat(kind, 0, 0, undefined, 'lost')
+    } finally {
+      blocker.exec('ROLLBACK')
+      blocker.close()
+    }
+  }
+
+  it('shrinks a log over the bound to at most the bound after one more failure, keeping the newest line', () => {
+    seedLog(_testDataDir, RESIDENT_TAIL_MAX_BYTES + 4096)
+    expect(fs.statSync(statsLogPath(_testDataDir)).size).toBeGreaterThan(RESIDENT_TAIL_MAX_BYTES)
+
+    failOnce('newest_kind')
+
+    expect(fs.statSync(statsLogPath(_testDataDir)).size).toBeLessThanOrEqual(RESIDENT_TAIL_MAX_BYTES)
+    const lines = readLogLines(_testDataDir)
+    expect(lines[lines.length - 1]).toContain('newest_kind')
+    for (const line of lines) expect(line, 'a trim must cut on a line boundary').toMatch(/^\d{4}-\d{2}-\d{2}T\S+ recordStat write failed for kind=\S+: /)
+  })
+
+  it('appends without rewriting a log that is still inside the bound', () => {
+    seedLog(_testDataDir, 1024)
+    const before = readLogLines(_testDataDir)
+
+    failOnce('appended_kind')
+
+    const after = readLogLines(_testDataDir)
+    expect(after.slice(0, before.length)).toEqual(before)
+    expect(after).toHaveLength(before.length + 1)
+    expect(after[after.length - 1]).toContain('appended_kind')
   })
 })

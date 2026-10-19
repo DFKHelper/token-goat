@@ -11,7 +11,7 @@ import type { ContentClass } from './token_estimate.js'
 import { creditDivisor } from './token_estimate.js'
 import { registerReset } from './reset.js'
 import { getHarnessName } from './bridges/registry.js'
-import { countNoun, ensureDirSync, extractErrorMessage } from './util.js'
+import { atomicWriteText, countNoun, ensureDirSync, extractErrorMessage } from './util.js'
 import { displaySafeText } from './paths.js'
 import { RESIDENT_TAIL_MAX_BYTES } from './resident_context.js'
 
@@ -800,7 +800,36 @@ function recordStatWriteFailure(kind: string, err: unknown, dir: string = dataDi
     ensureDirSync(dir)
     fs.writeFileSync(markerPath, '')
     const line = `${new Date().toISOString()} recordStat write failed for kind=${kind}: ${extractErrorMessage(err)}`
-    fs.appendFileSync(statsWriteFailureLogPath(dir), displaySafeText(line.replace(/[\n\r]+$/, '')) + '\n')
+    const logPath = statsWriteFailureLogPath(dir)
+    const entry = displaySafeText(line.replace(/[\n\r]+$/, '')) + '\n'
+    const entryBytes = Buffer.byteLength(entry)
+    let size = 0
+    try {
+      size = fs.statSync(logPath).size
+    } catch {
+      // No log yet: a plain append creates it.
+    }
+    if (size + entryBytes <= RESIDENT_TAIL_MAX_BYTES) {
+      fs.appendFileSync(logPath, entry)
+      return
+    }
+    // Past the window readStatsWriteFailures reads: rewrite the log to its newest whole lines plus this entry, so it never grows without bound and the newest record survives.
+    const start = Math.max(0, size - Math.max(0, RESIDENT_TAIL_MAX_BYTES - entryBytes))
+    const buf = Buffer.alloc(size - start)
+    const fd = fs.openSync(logPath, 'r')
+    let read: number
+    try {
+      read = fs.readSync(fd, buf, 0, buf.length, start)
+    } finally {
+      fs.closeSync(fd)
+    }
+    let tail = buf.subarray(0, read)
+    // A window that starts mid-file starts mid-line: drop that fragment so every kept line is whole.
+    if (start > 0) {
+      const firstBreak = tail.indexOf(0x0a)
+      tail = firstBreak === -1 ? tail.subarray(tail.length) : tail.subarray(firstBreak + 1)
+    }
+    atomicWriteText(logPath, tail.toString('utf8') + entry)
   } catch {
     // Best-effort out-of-band sink -- if even this fails, there is nowhere else for it to go.
   }
