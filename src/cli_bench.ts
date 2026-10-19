@@ -55,6 +55,10 @@ export interface BenchCaseResult {
 /** The whole run. */
 export interface BenchReport {
   readonly cases: readonly BenchCaseResult[]
+  /** Cases the run scored. */
+  readonly scored: number
+  /** Cases the corpus holds. `scored < total` names a case that went unscored. */
+  readonly total: number
   readonly originalBytes: number
   readonly deliveredBytes: number
   /** PRIMARY metric: byte-weighted savings across the corpus. 0 when nothing compressed. */
@@ -151,6 +155,13 @@ export function loadCorpus(dir: string): BenchCase[] {
     throw new Error(`bench corpus not found: ${echoedValue(dir)}`)
   }
   const cases: BenchCase[] = []
+  // An orphan output file is refused here, not skipped: skipping it would score a shorter corpus with no sign that anything was lost.
+  for (const entry of entries.sort()) {
+    if (!entry.endsWith('.txt')) continue
+    const id = entry.slice(0, -'.txt'.length)
+    const metaPath = path.join(dir, `${id}.json`)
+    if (!fs.existsSync(metaPath)) throw new Error(`bench case ${id}: missing metadata file ${metaPath}`)
+  }
   for (const entry of entries.sort()) {
     if (!entry.endsWith('.json')) continue
     const id = entry.slice(0, -'.json'.length)
@@ -187,6 +198,35 @@ export function runCase(c: BenchCase, control: ControlKind = 'none'): BenchCaseR
   }
 }
 
+const MAX_SEED = 0xffffffff
+
+/** mulberry32: a small seeded PRNG, so a shuffle is a pure function of its seed rather than of the clock or Math.random. */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** Case order for a run. Without a seed the corpus keeps its loaded order; with one, a Fisher-Yates shuffle driven by the seed, so the same seed always yields the same order. */
+export function orderCases(cases: readonly BenchCase[], seed: number | undefined): BenchCase[] {
+  const ordered = [...cases]
+  if (seed === undefined) return ordered
+  if (seed > MAX_SEED) throw new Error(`--seed must be at most ${MAX_SEED}, got: ${echoedValue(String(seed))}`)
+  const next = mulberry32(seed)
+  for (let i = ordered.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1))
+    const held = ordered[i]!
+    ordered[i] = ordered[j]!
+    ordered[j] = held
+  }
+  return ordered
+}
+
 /** Score a whole corpus. */
 export function runCorpus(cases: readonly BenchCase[], control: ControlKind = 'none'): BenchReport {
   const results = cases.map((c) => runCase(c, control))
@@ -197,6 +237,8 @@ export function runCorpus(cases: readonly BenchCase[], control: ControlKind = 'n
   const mustKeepTotal = sum((r) => r.mustKeepTotal)
   return {
     cases: results,
+    scored: results.length,
+    total: cases.length,
     originalBytes,
     deliveredBytes,
     ratioPercent: originalBytes > 0 ? (100 * Math.max(0, originalBytes - deliveredBytes)) / originalBytes : 0,
@@ -231,6 +273,7 @@ function renderTable(report: BenchReport, floorPercent: number): string {
     `${'TOTAL'.padEnd(idWidth)}  ${''.padEnd(filterWidth)}  ${String(report.originalBytes).padStart(9)}  ${String(report.deliveredBytes).padStart(9)}  ${pct(report.ratioPercent).padStart(7)}  ${report.kept}/${report.mustKeepTotal}`,
   )
   lines.push('')
+  lines.push(`scored ${report.scored} of ${report.total} cases`)
   // The floor is measured, not assumed: a score reported without it silently claims its own floor is zero, and every delta then carries that unstated offset. Headroom is stated for the same reason -- a small delta against a small remaining range is not the same as a small change.
   lines.push(`ratio    ${pct(report.ratioPercent)} saved  (PRIMARY -- must improve; measured floor ${pct(floorPercent)}, headroom ${pct(100 - report.ratioPercent)})`)
   lines.push(`fidelity ${report.kept}/${report.mustKeepTotal} kept   (GUARD -- must not regress; any miss exits 1)`)
@@ -274,10 +317,10 @@ function renderValidation(cases: readonly BenchCase[]): { text: string; code: nu
   return { text: lines.join('\n'), code: failed.length === 0 ? 0 : 1 }
 }
 
-const TSV_HEADER = 'timestamp\tcommit\tcases\toriginal_bytes\tdelivered_bytes\tratio_percent\tfidelity_kept\tfidelity_total\tcovered_filters\n'
+const TSV_HEADER = 'timestamp\tcommit\tcases\toriginal_bytes\tdelivered_bytes\tratio_percent\tfidelity_kept\tfidelity_total\tcovered_filters\tseed\n'
 
 /** Append one row keyed by the commit it measured, so a series of runs is a readable history rather than a number that only exists on whichever tree is currently checked out. */
-function appendTsv(file: string, report: BenchReport, commit: string): void {
+function appendTsv(file: string, report: BenchReport, commit: string, seed: number | undefined): void {
   const row = [
     new Date().toISOString(),
     commit,
@@ -288,10 +331,16 @@ function appendTsv(file: string, report: BenchReport, commit: string): void {
     report.kept,
     report.mustKeepTotal,
     report.coveredFilters,
+    seed === undefined ? '' : seed,
   ].join('\t')
   const dir = path.dirname(path.resolve(file))
   fs.mkdirSync(dir, { recursive: true })
-  const header = fs.existsSync(file) ? '' : TSV_HEADER
+  // A file written under an older column layout would take this row one column off its header, so the row is refused rather than appended.
+  const firstLine = fs.existsSync(file) ? (fs.readFileSync(file, 'utf8').split('\n', 1)[0] ?? '') : ''
+  if (firstLine !== '' && firstLine !== TSV_HEADER.trimEnd()) {
+    throw new Error(`bench TSV ${echoedValue(file)} has a different header from this run's columns; point --tsv at a new file`)
+  }
+  const header = firstLine === '' ? TSV_HEADER : ''
   fs.appendFileSync(file, header + row + '\n', 'utf8')
 }
 
@@ -317,14 +366,16 @@ export interface BenchCommandOptions {
   readonly json?: boolean
   readonly tsv?: string
   readonly validate?: boolean
+  /** Reorders the cases before scoring; the seed is recorded in the TSV row. */
+  readonly seed?: number
 }
 
 /** Run `token-goat bench`. Exit 1 on a dropped must-keep line, so an iteration loop can revert on the exit code alone without parsing anything. */
 export function runBenchCommand(opts: BenchCommandOptions): { text: string; code: number } {
-  const cases = loadCorpus(opts.corpus)
+  const cases = orderCases(loadCorpus(opts.corpus), opts.seed)
   if (opts.validate === true) return renderValidation(cases)
   const report = runCorpus(cases)
-  if (opts.tsv !== undefined) appendTsv(opts.tsv, report, currentCommit())
+  if (opts.tsv !== undefined) appendTsv(opts.tsv, report, currentCommit(), opts.seed)
   const code = report.fidelityIntact ? 0 : 1
   // Scoring the corpus with a no-op filter costs one extra in-memory pass and turns the floor from an assumption into a measurement.
   const floorPercent = runCorpus(cases, 'identity').ratioPercent

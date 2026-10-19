@@ -122,6 +122,15 @@ describe('the fidelity guard discriminates', () => {
     expect(runCorpus(cases).appliedCases).toBeGreaterThan(0)
   })
 
+  // HAND-DERIVED: a real scratch directory holding one valid pair and one stray output file with no metadata beside it.
+  it('refuses an orphan output file and names its id, rather than scoring a shorter corpus', () => {
+    const dir = corpus({
+      a: { meta: { provenance: 'HAND-DERIVED', command: 'git log', mustKeep: ['commit'] }, output: GIT_LOG },
+    })
+    fs.writeFileSync(path.join(dir, 'stray.txt'), GIT_LOG, 'utf8')
+    expect(() => loadCorpus(dir)).toThrow(/bench case stray: missing metadata file/)
+  })
+
   it('reports the real corpus as intact, so a failure means a real drop', () => {
     const report = runCorpus(loadCorpus(REPO_CORPUS))
     expect(report.fidelityIntact).toBe(true)
@@ -173,11 +182,34 @@ describe('bench command', () => {
     const tsv = path.join(dir, 'nested', 'bench.tsv')
     runBenchCommand({ corpus: REPO_CORPUS, tsv })
     runBenchCommand({ corpus: REPO_CORPUS, tsv })
-    const lines = fs.readFileSync(tsv, 'utf8').trimEnd().split('\n')
+    // Not trimEnd(): an empty trailing seed cell is a real field, and trimming would strip its tab.
+    const lines = fs.readFileSync(tsv, 'utf8').split('\n').slice(0, -1)
     expect(lines).toHaveLength(3)
     expect(lines[0]).toContain('ratio_percent')
     expect(lines.filter((l) => l.startsWith('timestamp'))).toHaveLength(1)
-    for (const row of lines.slice(1)) expect(row.split('\t')).toHaveLength(9)
+    for (const row of lines.slice(1)) expect(row.split('\t')).toHaveLength(10)
+  })
+
+  it('records the seed as the last TSV column, and leaves it empty when no seed was given', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-bench-tsv-seed-'))
+    tempDirs.add(dir)
+    const tsv = path.join(dir, 'bench.tsv')
+    runBenchCommand({ corpus: REPO_CORPUS, tsv, seed: 7 })
+    runBenchCommand({ corpus: REPO_CORPUS, tsv })
+    const [header, seeded, unseeded] = fs.readFileSync(tsv, 'utf8').split('\n').slice(0, -1)
+    expect(header!.endsWith('\tseed')).toBe(true)
+    expect(seeded!.split('\t').at(-1)).toBe('7')
+    expect(unseeded!.split('\t').at(-1)).toBe('')
+  })
+
+  it('refuses to append to a TSV written under an older column layout, rather than misaligning its columns', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-bench-tsv-old-'))
+    tempDirs.add(dir)
+    const tsv = path.join(dir, 'old.tsv')
+    const olderHeader = 'timestamp\tcommit\tcases\toriginal_bytes\tdelivered_bytes\tratio_percent\tfidelity_kept\tfidelity_total\tcovered_filters\n'
+    fs.writeFileSync(tsv, olderHeader, 'utf8')
+    expect(() => runBenchCommand({ corpus: REPO_CORPUS, tsv })).toThrow(/different header/)
+    expect(fs.readFileSync(tsv, 'utf8')).toBe(olderHeader)
   })
 
   it('emits JSON carrying both metrics and the measured floor', () => {
@@ -212,5 +244,35 @@ describe('bench command', () => {
 
   it('reports a corpus directory that does not exist rather than scoring zero cases', () => {
     expect(() => runBenchCommand({ corpus: path.join(os.tmpdir(), 'tg-bench-absent-dir') })).toThrow(/corpus not found/)
+  })
+
+  it('prints scored N of M, with N equal to the cases the corpus holds on disk', () => {
+    const onDisk = fs.readdirSync(REPO_CORPUS).filter((f) => f.endsWith('.json')).length
+    const { text } = runBenchCommand({ corpus: REPO_CORPUS })
+    expect(text).toContain(`scored ${onDisk} of ${onDisk} cases`)
+  })
+
+  // HAND-DERIVED: eight identical cases, so only the order can differ between runs.
+  it('scores the cases in a seeded order that repeats for the same seed, and keeps the loaded order without one', () => {
+    const cases: Record<string, { meta: unknown; output: string }> = {}
+    for (let i = 0; i < 8; i++) {
+      cases[`case${i}`] = { meta: { provenance: 'HAND-DERIVED', command: 'git log', mustKeep: [] }, output: GIT_LOG }
+    }
+    const dir = corpus(cases)
+    const order = (seed?: number): string[] => {
+      const report = JSON.parse(runBenchCommand({ corpus: dir, json: true, ...(seed !== undefined ? { seed } : {}) }).text) as {
+        cases: { id: string }[]
+      }
+      return report.cases.map((c) => c.id)
+    }
+    const loaded = order()
+    expect(loaded).toEqual(Object.keys(cases).sort())
+    expect(order(7)).toEqual(order(7))
+    expect(order(7)).not.toEqual(loaded)
+    expect(order()).toEqual(loaded)
+  })
+
+  it('refuses a seed past the 32-bit range rather than aliasing it onto a smaller seed', () => {
+    expect(() => runBenchCommand({ corpus: REPO_CORPUS, seed: 0xffffffff + 1 })).toThrow(/--seed must be at most 4294967295/)
   })
 })

@@ -1,6 +1,6 @@
 import type { Command } from 'commander'
 import * as path from 'path'
-import { runExit } from './cli_dispatch.js'
+import { requireNonNegativeInt, runExit } from './cli_dispatch.js'
 import type { runBenchCommand } from './cli_bench.js'
 
 type GuardFn = (fn: (...a: never[]) => void | Promise<void>) => (...args: unknown[]) => Promise<void>
@@ -22,14 +22,19 @@ export function registerContentCommands(program: Command, guard: GuardFn, handle
     .option('--corpus <dir>', 'corpus directory (default: tests/fixtures/bench, relative to the working directory)')
     .option('--tsv <path>', 'append one result row, keyed by the current commit, creating the file and its header if absent')
     .option('--validate', 'score the corpus with control filters instead: proves the ratio has a floor and the fidelity guard can actually fail')
+    .option(
+      '--seed <n>',
+      'score the cases in a seeded shuffled order (same seed, same order); the seed is recorded in the --tsv row',
+    )
     .option('-j, --json', 'output as JSON')
-    .action((opts: { corpus?: string; tsv?: string; validate?: boolean; json?: boolean }) =>
+    .action((opts: { corpus?: string; tsv?: string; validate?: boolean; seed?: string; json?: boolean }) =>
       // A report graded by its exit code, not an error message: it goes to stdout whether or not a check failed, the way doctor's does.
       runExit(() => {
         const { text, code } = handlers.runBenchCommand({
           corpus: opts.corpus ?? path.join('tests', 'fixtures', 'bench'),
           ...(opts.tsv !== undefined ? { tsv: opts.tsv } : {}),
           ...(opts.validate === true ? { validate: true } : {}),
+          ...(opts.seed !== undefined ? { seed: requireNonNegativeInt('--seed', opts.seed) } : {}),
           ...(opts.json === true ? { json: true } : {}),
         })
         handlers.out(text)
