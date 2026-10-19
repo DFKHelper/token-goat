@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -31,6 +31,29 @@ import { getMonitoringRecallHint, isDevServerCommand, isTestRunnerCommand } from
 import { clearModuleCaches } from '../src/reset.js'
 import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from '../src/disk_cache.js'
 import { likeSearchForTesting } from '../src/recall_index.js'
+import type * as UtilModule from '../src/util.js'
+import { KILLED_GIT, STATUS_A_MODIFIED, cannedFingerprintAnswer, cannedGit, cannedNoRepository } from './helpers/canned_git.js'
+import type { CannedGit } from './helpers/canned_git.js'
+
+// Seam over the git calls that fingerprint a repository (src/bash_output_cache.ts::gitStateFingerprintSync): while `canned` holds a state, those two calls are answered from it (tests/helpers/canned_git.ts), so a row about what the cache does with a known repository state never waits on a real git finishing inside GIT_STATE_TIMEOUT_MS, which a killed git reads as 'unknown' and so as stale. `killed` answers every other git call as killed at its bound, so a canned row that still reached for a real git would fail at once instead of only on a loaded machine. With both unset every call runs for real.
+const seam = vi.hoisted(() => ({ canned: null as CannedGit | null, killed: false }))
+
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  return {
+    ...actual,
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => (seam.canned === null ? null : cannedFingerprintAnswer(seam.canned, opts?.cwd, args)) ?? (seam.killed ? KILLED_GIT : actual.runGit(args, opts)),
+  }
+})
+
+// Provenance: FORMAT-DERIVED, the `?? b.txt` plus NUL entry that tests/helpers/canned_git.ts records as captured from `git status --porcelain -z --untracked-files=all` (git 2.53.0.windows.1), with the path of the file the row creates.
+const STATUS_NEW_UNTRACKED = '?? new-file.txt\0'
+
+function installCanned(state: CannedGit): CannedGit {
+  seam.canned = state
+  seam.killed = true
+  return state
+}
 
 beforeEach(() => {
   clearModuleCaches()
@@ -38,6 +61,8 @@ beforeEach(() => {
 
 afterEach(() => {
   clearModuleCaches()
+  seam.canned = null
+  seam.killed = false
 })
 
 describe('isGitMutableCommand', () => {
@@ -404,12 +429,14 @@ describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
   })
 
   it('detects a stale dep-list entry once the lockfile content changes', async () => {
+    const git = installCanned(cannedNoRepository())
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-lock-'))
     try {
       fs.writeFileSync(path.join(tmpDir, 'requirements.txt'), 'requests==2.0.0\n')
       const id = await storeBashOutput('pip freeze', 'requests==2.0.0\n', 0, tmpDir)
       const entry = getBashOutput(id)
       expect(entry?.fingerprints?.lockfile).toBeDefined()
+      expect(git.served).toBeGreaterThan(0)
       expect(isBashEntryStale(entry!, 'pip freeze', tmpDir)).toBe(false)
 
       fs.writeFileSync(path.join(tmpDir, 'requirements.txt'), 'requests==3.0.0\n')
@@ -423,12 +450,14 @@ describe('computeBashFingerprints / isBashEntryStale (M44 regression)', () => {
   it.each(['npm audit', 'npm outdated'])(
     'detects a stale `%s` entry once package-lock.json changes',
     async (cmd) => {
+      const git = installCanned(cannedNoRepository())
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-fp-npmaudit-'))
       try {
         fs.writeFileSync(path.join(tmpDir, 'package-lock.json'), '{"lockfileVersion": 1}\n')
         const id = await storeBashOutput(cmd, 'no issues found', 0, tmpDir)
         const entry = getBashOutput(id)
         expect(entry?.fingerprints?.lockfile).toBeDefined()
+        expect(git.served).toBeGreaterThan(0)
         expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(false)
 
         fs.writeFileSync(path.join(tmpDir, 'package-lock.json'), '{"lockfileVersion": 2}\n')
@@ -467,15 +496,18 @@ function initGitRepoWithFile(prefix: string): string {
 
 describe('gitStateFingerprintSync — uncommitted working-tree changes (M45 regression)', () => {
   it('flags a cached git-diff entry as stale once a tracked file is edited without staging', async () => {
+    const git = installCanned(cannedGit())
     const tmpDir = initGitRepoWithFile('tg-fp-gitwt-')
     try {
       const id = await storeBashOutput('git diff', '', 0, tmpDir)
       const entry = getBashOutput(id)
       expect(entry?.fingerprints?.git).toBeDefined()
+      expect(git.served).toBeGreaterThan(0)
       expect(isBashEntryStale(entry!, 'git diff', tmpDir)).toBe(false)
 
       // Edit a tracked file WITHOUT staging or committing -- HEAD sha and .git/index mtime are both untouched by this, so a fingerprint based only on those two never changes and the stale check misses the edit.
       fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'two\n')
+      git.status = STATUS_A_MODIFIED
 
       expect(isBashEntryStale(entry!, 'git diff', tmpDir)).toBe(true)
     } finally {
@@ -484,13 +516,16 @@ describe('gitStateFingerprintSync — uncommitted working-tree changes (M45 regr
   })
 
   it('flags a cached git-status entry as stale once a new untracked file appears', async () => {
+    const git = installCanned(cannedGit())
     const tmpDir = initGitRepoWithFile('tg-fp-gitwt-untracked-')
     try {
       const id = await storeBashOutput('git status', 'clean', 0, tmpDir)
       const entry = getBashOutput(id)
+      expect(git.served).toBeGreaterThan(0)
       expect(isBashEntryStale(entry!, 'git status', tmpDir)).toBe(false)
 
       fs.writeFileSync(path.join(tmpDir, 'new-file.txt'), 'new\n')
+      git.status = STATUS_NEW_UNTRACKED
 
       expect(isBashEntryStale(entry!, 'git status', tmpDir)).toBe(true)
     } finally {
@@ -527,14 +562,17 @@ describe('computeBashFingerprints coverage for common monitored commands (M46 re
   it.each(['pytest', 'vitest run', 'jest', 'go test ./...', 'eslint src', 'ruff check', 'npm run build', 'git push origin main', 'tsc', 'npx tsc', 'make', 'cargo build', 'dotnet build', 'mvn package', 'vite build', 'npm test', 'yarn test', 'yarn run test', 'pnpm test'])(
     'computes a git fingerprint for %s and flags it stale once a tracked file is edited',
     async (cmd) => {
+      const git = installCanned(cannedGit())
       const tmpDir = initGitRepoWithFile('tg-fp-cov-')
       try {
         const id = await storeBashOutput(cmd, 'output', 0, tmpDir)
         const entry = getBashOutput(id)
         expect(entry?.fingerprints?.git).toBeDefined()
+        expect(git.served).toBeGreaterThan(0)
         expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(false)
 
         fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'two\n')
+        git.status = STATUS_A_MODIFIED
 
         expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(true)
       } finally {
@@ -680,14 +718,17 @@ describe('a monitored dev-server run goes stale once the code changes (BE-17)', 
     '  npx vite',
   ])('%s is monitored and carries a git fingerprint that moves when a tracked file is edited', async (cmd) => {
     expect(getMonitoringRecallHint(cmd)).not.toBeNull()
+    const git = installCanned(cannedGit())
     const tmpDir = initGitRepoWithFile('tg-fp-devserver-')
     try {
       const id = await storeBashOutput(cmd, 'ready in 312 ms', 0, tmpDir)
       const entry = getBashOutput(id)
       expect(entry?.fingerprints?.git).toBeDefined()
+      expect(git.served).toBeGreaterThan(0)
       expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(false)
 
       fs.writeFileSync(path.join(tmpDir, 'a.txt'), 'two\n')
+      git.status = STATUS_A_MODIFIED
 
       expect(isBashEntryStale(entry!, cmd, tmpDir)).toBe(true)
     } finally {
