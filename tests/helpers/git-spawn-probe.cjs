@@ -8,6 +8,9 @@ const path = require('node:path')
 const out = process.env.GIT_SPAWN_PROBE_OUT
 const cwdOut = process.env.GIT_SPAWN_PROBE_CWD_OUT
 const failCatFile = process.env.GIT_SPAWN_PROBE_FAIL_CATFILE === '1'
+// With GIT_SPAWN_PROBE_NO_REPO=1 the two calls that fingerprint a directory (rev-parse --show-toplevel HEAD, status --porcelain -z --untracked-files=all) are answered as git answers outside any repository, exit 128 with the message below (CAPTURE: git 2.53.0.windows.1 in a directory with no repository above it, as in tests/helpers/canned_git.ts), so a bundle process never waits on a real git inside its time bound.
+const noRepo = process.env.GIT_SPAWN_PROBE_NO_REPO === '1'
+const NOT_A_REPOSITORY = 'fatal: not a git repository (or any of the parent directories): .git' + String.fromCharCode(10)
 const realSpawnSync = cp.spawnSync
 const realSpawn = cp.spawn
 
@@ -23,6 +26,9 @@ function recordGit(cmd, args, options) {
 
 cp.spawnSync = function (cmd, args, ...rest) {
   const sub = recordGit(cmd, args, rest[0])
+  if (noRepo && sub !== null && (sub.join(' ') === 'rev-parse --show-toplevel HEAD' || sub.join(' ') === 'status --porcelain -z --untracked-files=all')) {
+    return { status: 128, signal: null, pid: 0, output: [null, '', NOT_A_REPOSITORY], stdout: '', stderr: NOT_A_REPOSITORY }
+  }
   if (failCatFile && sub !== null && sub[0] === 'cat-file') {
     return { status: 129, signal: null, pid: 0, output: [null, '', 'injected failure'], stdout: '', stderr: 'injected failure' }
   }

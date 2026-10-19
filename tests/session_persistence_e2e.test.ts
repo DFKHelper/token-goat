@@ -5,6 +5,8 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { fileURLToPath } from 'node:url'
+
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { BUNDLE } from './helpers/bundle.js'
@@ -12,12 +14,16 @@ import { BUNDLE } from './helpers/bundle.js'
 let tgHome: string
 let repo: string
 let dataBase: string
+let gitLog: string
+
+// The hook processes run under this preload with GIT_SPAWN_PROBE_NO_REPO set, so the two git calls that fingerprint a directory are answered as git answers outside a repository, which `repo` is, instead of by a real git that can outlive its 5 s bound and read as 'unknown', and so as stale, on a loaded machine. Each call is logged to GIT_SPAWN_PROBE_OUT, which the recall test reads to show the seam was reached.
+const probe = fileURLToPath(new URL('./helpers/git-spawn-probe.cjs', import.meta.url)).replaceAll(String.fromCharCode(92), '/')
 
 /** Run the built bundle in a fresh process with the shared isolated home. */
 function runHook(event: string, payload: unknown): { stdout: string; stderr: string; status: number | null } {
   const res = spawnSync(process.execPath, [BUNDLE, 'hook', event], {
     cwd: repo,
-    env: { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase },
+    env: { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase, NODE_OPTIONS: `--require "${probe}"`, GIT_SPAWN_PROBE_NO_REPO: '1', GIT_SPAWN_PROBE_OUT: gitLog },
     input: JSON.stringify(payload),
     encoding: 'utf8',
   })
@@ -36,6 +42,7 @@ function runCli(args: string[]): { stdout: string; stderr: string; status: numbe
 beforeAll(() => {
   tgHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-persist-home-'))
   repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-persist-repo-'))
+  gitLog = path.join(tgHome, 'git-calls.log')
   fs.writeFileSync(path.join(repo, 'tsconfig.json'), '{\n  "compilerOptions": { "strict": true }\n}\n')
 
   // TOKEN_GOAT_HOME isolates cross-process session state (disk_cache.ts's tokenGoatHome()), but config.toml lives under a separate path resolved by src/constants.ts's dataDir(), which on Windows honors LOCALAPPDATA instead -- without also isolating that, these spawned processes would read (and this suite would depend on) whatever the real machine's config.toml happens to contain. Pin LOCALAPPDATA/XDG_DATA_HOME to an isolated dir too, and seed protect_recent_reads = 0 there: these tests assert an immediate re-read still hard-denies, the exact scenario hints.protect_recent_reads's default (4) is designed to exempt (see tests/hooks_read.test.ts for that field's own dedicated coverage).
@@ -93,6 +100,7 @@ describe('bash-output recall survives the process boundary', () => {
     })
     expect(post.status).toBe(0)
     expect(fs.existsSync(path.join(tgHome, 'bash_outputs'))).toBe(true)
+    expect(fs.readFileSync(gitLog, 'utf8')).toContain('["rev-parse","--show-toplevel","HEAD"]')
 
     // Process 2: pre_tool_use for the same build command emits a recall hint naming the cached id — only possible if the session index persisted.
     const pre = runHook('pre_tool_use', {
