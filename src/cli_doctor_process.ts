@@ -5,7 +5,7 @@ import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import type { DoctorResult } from './doctor_result.js'
 import { displaySafeText } from './paths.js'
 import { isTokenGoatResidentProcess } from './resident_process.js'
-import { powerShellCommandArgs, windowsPowerShellPath } from './windows_powershell.js'
+import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
 
 export interface ProcessInfo {
@@ -82,7 +82,7 @@ export function checkMcpProcessHealth(processes: readonly ProcessInfo[] | Proces
 
 function runProcessListCommand(): string {
   const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'
-  const result = spawnSync(windowsPowerShellPath(), powerShellCommandArgs(command), {
+  const result = spawnSync(windowsPowerShellPath(), powerShellTextQueryArgs(command), {
     encoding: 'utf8',
     timeout: PROCESS_LIST_TIMEOUT_MS,
     maxBuffer: 10 * 1024 * 1024,

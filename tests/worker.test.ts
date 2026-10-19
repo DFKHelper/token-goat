@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { drainOnce, makeIndexer, pendingEmbeddings, processDirtyBatch, clearRetryCount, runWorkerLoop } from '../src/worker.js'
 import { getDirtyPathsFor } from '../src/dirty_queue.js'
-import { claimWorkerPidFile, currentDaemonStamp, drainHeartbeatPathFor, ensureWorkerAlive, isWorkerRunning, resolvePollIntervalMs, stopWorker, workerPidPath, workerStampPath } from '../src/worker_lifecycle.js'
+import { claimWorkerPidFile, currentDaemonStamp, daemonEntryScript, drainHeartbeatPathFor, ensureWorkerAlive, isWorkerRunning, resolvePollIntervalMs, stopWorker, stopWorkerDetailed, workerLeftRunningNote, workerPidPath, workerStampPath } from '../src/worker_lifecycle.js'
 import * as parserModule from '../src/parser.js'
 import * as projectModule from '../src/project.js'
 import { recordKnownRoot } from '../src/known_roots.js'
@@ -21,6 +21,15 @@ import { foldPath } from '../src/util.js'
 import { pathEqClause } from '../src/sql_path.js'
 import { tokenGoatHome } from '../src/disk_cache.js'
 import type * as Fingerprint from '../src/fingerprint.js'
+import type * as ResidentProcess from '../src/resident_process.js'
+import { claimsToBeWorker, STAND_IN_LAUNCHER, workerCommandLine } from './helpers/worker_identity.js'
+
+// The identity lookup stopWorker makes before it ends a pid-file pid; a test whose stand-in is a bare pid number sets it to report a confirmed worker, the rest take the real query.
+const identity = vi.hoisted(() => ({ query: null as ((pid: number) => ResidentProcess.CommandLineQuery) | null }))
+vi.mock('../src/resident_process.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ResidentProcess>()
+  return { ...actual, queryProcessCommandLine: (pid: number) => (identity.query ?? actual.queryProcessCommandLine)(pid) }
+})
 
 vi.mock('../src/config.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), loadConfig: vi.fn() }))
 
@@ -41,6 +50,10 @@ function makeUnreadable(filePath: string): void {
 process.env['TOKEN_GOAT_NO_WORKER_SPAWN'] = '0'
 
 let DIR: string
+
+/** A pid no process holds: with process.kill mocked it reads as alive, and it is neither this process nor its parent, which no stop path may signal. */
+const MISMATCHED_WORKER_PID = 313131
+const confirmedWorker = (): ResidentProcess.CommandLineQuery => ({ status: 'found', commandLine: workerCommandLine(daemonEntryScript()) })
 
 function queueFile(dir: string): string {
   return path.join(dir, 'queue', 'dirty.txt')
@@ -87,6 +100,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  identity.query = null
   // The retry-count DB helpers (bumpRetryCount/clearRetryCount in worker.ts) open a connection to `${DIR}/global.db` as a side effect of any transient-read-failure requeue or successful read, even for tests that inject a fake in-memory index callback and never otherwise touch the DB. Close it before removing DIR, or the still-open WAL handle makes rmSync fail with EPERM on Windows -- same pattern as the explicit closeDb(projectDb) calls elsewhere in this file, just applied unconditionally here since any test may now trigger it indirectly.
   closeDb(path.join(DIR, 'global.db'))
   fs.rmSync(DIR, { recursive: true, force: true })
@@ -188,8 +202,9 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
 
   // Regression: a running daemon was never compared against the bundle on disk, so an `npm install -g .` upgrade (or a rebuilt dist/token-goat.mjs) left the already-running worker executing the pre-upgrade code forever -- nothing else ever re-checks it, and the fix a user just installed silently never reaches the daemon until a reboot or a manual kill.
   it('restarts a live worker whose stamp names this same entry script with a different mtime', () => {
-    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
-    writeWorkerHeartbeat(DIR)
+    fs.writeFileSync(workerPidPath(DIR), `${MISMATCHED_WORKER_PID}\n`)
+    writeWorkerHeartbeat(DIR, MISMATCHED_WORKER_PID)
+    identity.query = confirmedWorker
     // Same entry path as currentDaemonStamp() would resolve, but a different mtime: simulates a rebuilt/upgraded install.
     const [entry, size, mtime] = currentDaemonStamp().split('|')
     fs.writeFileSync(workerStampPath(DIR), `${entry}|${size}|${Number(mtime) + 1}`)
@@ -197,9 +212,9 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
     try {
       ensureWorkerAlive(DIR)
       // The mismatched daemon was stopped via the same graceful mechanism `worker stop` uses...
-      expect(killSpy).toHaveBeenCalledWith(process.pid)
+      expect(killSpy).toHaveBeenCalledWith(MISMATCHED_WORKER_PID)
       // ...and a fresh daemon claimed the slot, stamped with the bundle actually on disk now.
-      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe(String(process.pid))
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe(String(MISMATCHED_WORKER_PID))
       expect(fs.readFileSync(workerStampPath(DIR), 'utf8').trim()).toBe(currentDaemonStamp())
     } finally {
       killSpy.mockRestore()
@@ -253,14 +268,15 @@ describe('ensureWorkerAlive (auto-heal regression)', () => {
   })
 
   it('restarts a live worker with no stamp file at all (pre-upgrade pid-file format)', () => {
-    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
-    writeWorkerHeartbeat(DIR)
+    fs.writeFileSync(workerPidPath(DIR), `${MISMATCHED_WORKER_PID}\n`)
+    writeWorkerHeartbeat(DIR, MISMATCHED_WORKER_PID)
+    identity.query = confirmedWorker
     // No workerStampPath(DIR) write at all -- the exact shape of a pid file left by a daemon that predates this stamping mechanism.
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
     try {
       ensureWorkerAlive(DIR)
-      expect(killSpy).toHaveBeenCalledWith(process.pid)
-      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe(String(process.pid))
+      expect(killSpy).toHaveBeenCalledWith(MISMATCHED_WORKER_PID)
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).not.toBe(String(MISMATCHED_WORKER_PID))
     } finally {
       killSpy.mockRestore()
       stopWorker(DIR)
@@ -335,21 +351,21 @@ describe('stopWorker', () => {
 
   // Regression (double-daemon race): stopWorker used to delete the pid file unconditionally after killing the pid it read, with no re-check. Race: between stopWorker's kill and its rmSync, a concurrent `worker start` can observe the just-killed pid as dead, reclaim the pid-file slot via claimWorkerPidFile, and write a NEW daemon's pid into that same file -- which the still-running stopWorker call then deletes anyway, orphaning the new daemon (no pid file left for a later `worker stop` to find it by). A subsequent `worker start` would then "fix" the missing pid file by spawning a THIRD daemon, leaving two live daemons draining one queue. Simulate the race directly: after stopWorker's kill would have fired (this test's own live pid stands in for "the process stopWorker just killed"), have a concurrent claim overwrite the pid file with a different pid before stopWorker reaches its cleanup step -- proven here by writing the pid file back to a different value between the kill and the cleanup that the exit-handler-style guard must check.
   it('does not delete a pid file that a concurrent worker start already reclaimed for a new daemon', () => {
-    fs.writeFileSync(workerPidPath(DIR), `${process.pid}\n`)
-    writeWorkerHeartbeat(DIR)
+    fs.writeFileSync(workerPidPath(DIR), `${MISMATCHED_WORKER_PID}\n`)
+    writeWorkerHeartbeat(DIR, MISMATCHED_WORKER_PID)
 
     // Stand in for the race window: monkey-patch fs.rmSync so that, at the exact moment stopWorker is about to remove the pid file, we simulate a concurrent claimWorkerPidFile call having already reclaimed the slot for a brand-new daemon pid. If stopWorker's guard re-reads the pid file immediately before deleting (rather than deleting unconditionally), it must see the new pid and skip the delete entirely.
     const originalWrite = fs.writeFileSync
     let reclaimed = false
     const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
-      if (!reclaimed && pid === process.pid && (signal === undefined || signal === 'SIGTERM')) {
+      if (!reclaimed && pid === MISMATCHED_WORKER_PID && (signal === undefined || signal === 'SIGTERM')) {
         reclaimed = true
         originalWrite(workerPidPath(DIR), '424242\n')
       }
       return true
     })
 
-    const alive = stopWorker(DIR)
+    const alive = stopWorker(DIR, undefined, claimsToBeWorker(STAND_IN_LAUNCHER))
 
     expect(alive).toBe(true)
     // The reclaimed pid file must survive stopWorker's cleanup untouched.
@@ -367,6 +383,65 @@ describe('stopWorker', () => {
       expect(result).toBe(false)
       expect(killSpy).not.toHaveBeenCalled()
       expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe('424242')
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
+
+  // The parent is the process that launched this one, so a pid file naming it (a reused number, a hand-edited file) must never lead to a signal even when the lease proofs pass and the identity answer says to end it. process.kill is a spy: a stop that did signal the parent is caught by the assertion, and the runner is not hurt by the failure it reports. HAND-DERIVED: the pid is process.ppid and the two answers are the two branches of judgeDaemonIdentity.
+  it.each([
+    ['a confirmed worker (the tree scope)', { status: 'found', commandLine: workerCommandLine(STAND_IN_LAUNCHER) } as ResidentProcess.CommandLineQuery],
+    ['a failed identity query (the single scope)', { status: 'failed' } as ResidentProcess.CommandLineQuery],
+  ])('never signals the parent process when the pid file names it and the identity says %s', (_label, answer) => {
+    fs.writeFileSync(workerPidPath(DIR), `${process.ppid}\n`)
+    const asked: number[] = []
+    const queryCommandLine = (pid: number): ResidentProcess.CommandLineQuery => {
+      asked.push(pid)
+      return answer
+    }
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+    try {
+      expect(stopWorker(DIR, undefined, { entryScript: STAND_IN_LAUNCHER, queryCommandLine })).toBe(false)
+      // The stop got as far as ending the pid: the lease proof passed and the identity was judged, so the refusal is endDaemon's and not an earlier return.
+      expect(asked).toEqual([process.ppid])
+      expect(killSpy.mock.calls.filter(([pid, signal]) => pid === process.ppid && signal !== 0)).toEqual([])
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
+
+  // A reused pid owned by another user: the kill is denied (EPERM) and the process keeps running, so the stop did not end anything and must say so; one that exited first (ESRCH) is the outcome asked for. HAND-DERIVED: the two codes are the two errors kill(2) documents for a signal that was not delivered.
+  it.each([
+    ['EPERM', false],
+    ['ESRCH', true],
+  ])('reports %s from the kill as ended=%s', (code, ended) => {
+    fs.writeFileSync(workerPidPath(DIR), `${MISMATCHED_WORKER_PID}\n`)
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+      if (signal === 0) return true
+      throw Object.assign(new Error(code), { code })
+    })
+    try {
+      expect(stopWorker(DIR, undefined, { queryCommandLine: () => ({ status: 'failed' }) })).toBe(ended)
+      expect(killSpy.mock.calls.filter(([pid, signal]) => pid === MISMATCHED_WORKER_PID && signal !== 0)).toHaveLength(1)
+      // A denied kill leaves a live worker, so its pid file must survive (else the next start spawns a second worker); a process that exited first leaves nothing to name.
+      expect(fs.existsSync(workerPidPath(DIR))).toBe(!ended)
+    } finally {
+      killSpy.mockRestore()
+    }
+  })
+
+  // HAND-DERIVED: kill(2) documents EPERM as the error for a signal the caller may not send to a process that exists; the result and the note are this module's own.
+  it('names the worker it was not permitted to end, and keeps its pid file', () => {
+    fs.writeFileSync(workerPidPath(DIR), `${MISMATCHED_WORKER_PID}\n`)
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid: number, signal?: string | number) => {
+      if (signal === 0) return true
+      throw Object.assign(new Error('EPERM'), { code: 'EPERM' })
+    })
+    try {
+      expect(stopWorkerDetailed(DIR, undefined, { queryCommandLine: () => ({ status: 'failed' }) })).toEqual({ stopped: false, leftRunning: MISMATCHED_WORKER_PID })
+      expect(fs.readFileSync(workerPidPath(DIR), 'utf8').trim()).toBe(String(MISMATCHED_WORKER_PID))
+      expect(workerLeftRunningNote(MISMATCHED_WORKER_PID)).toContain(`pid ${MISMATCHED_WORKER_PID}) left running`)
+      expect(workerLeftRunningNote(MISMATCHED_WORKER_PID)).toContain('EPERM')
     } finally {
       killSpy.mockRestore()
     }
@@ -1748,23 +1823,50 @@ describe('makeIndexer embed-freshness gate (regression)', () => {
 
 // Regression (mutation-testing gap): the loop body re-checks shouldStop() immediately after the drain/housekeeping work, BEFORE the setTimeout poll-interval sleep, so a stop request that arrives mid-cycle exits right away instead of waiting out one more full pollIntervalMs sleep for nothing. Without that second check, the loop always sleeps once more before the next `while (!shouldStop())` iteration catches it -- a real, measurable shutdown-latency regression for a caller (e.g. stopWorker's own SIGTERM-driven exit path) that wants the daemon to stop promptly. Uses a deliberately large pollIntervalMs and asserts on wall-clock elapsed time so a wasted sleep is unambiguous rather than lost in test-runner jitter.
 describe('runWorkerLoop prompt-stop (mutation-testing gap)', () => {
-  it('stops immediately after the loop body when told to, without waiting out one more poll interval', async () => {
+  const POLL_MS = 7919
+  // The sleep is the only timer armed with the poll interval, so a timer armed with it is the event "the loop went on to wait out another interval". Timers are fake and never advanced inside the race, so what settles it is the loop's own control flow: it returns, or it arms the sleep. The observer is a plain assignment undone by assignment, never vi.spyOn: a spy installed over the fake clock's setTimeout stays in vitest's spy registry after mockRestore, and a later vi.restoreAllMocks() in this file put the dead clock's wrapper back as global.setTimeout, so every timer armed after it never fired (a shuffled run hung the data-dir and pid-takeover loop tests at the 60 s cap).
+  async function runPromptStopLoop(): Promise<'stopped' | 'slept'> {
+    // PROVENANCE: HAND-DERIVED. shouldStop is read once by the loop condition and once after the cycle's work, so answering true from the second read stops the loop exactly at the check under test. 7919 ms is a poll interval no other timer in the loop shares.
     let calls = 0
     const shouldStop = (): boolean => {
       calls += 1
       return calls > 1
     }
-    const setTimeoutSpy = vi.spyOn(global, 'setTimeout')
-    let resolved = false
-    // Await the loop's own promise chain (drainOnce + housekeeping are synchronous/microtask work) without ever advancing real or fake time: if the second shouldStop() check is skipped, the loop falls through to `setTimeout(resolve, pollIntervalMs)` and this would never resolve without a 2000ms timer advance -- proving the behavior directly instead of inferring it from a wall-clock bound.
-    void runWorkerLoop(DIR, 2000, shouldStop).then(() => {
-      resolved = true
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const fakeSetTimeout = global.setTimeout
+    let sleepArmed!: () => void
+    const armed = new Promise<'slept'>((resolve) => {
+      sleepArmed = () => resolve('slept')
     })
-    await Promise.resolve()
-    await Promise.resolve()
-    expect(resolved).toBe(true)
-    expect(setTimeoutSpy).not.toHaveBeenCalled()
-    setTimeoutSpy.mockRestore()
+    global.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      if (args[1] === POLL_MS) sleepArmed()
+      return fakeSetTimeout(...args)
+    }) as typeof setTimeout
+    const loop = runWorkerLoop(DIR, POLL_MS, shouldStop).then(() => 'stopped' as const)
+    try {
+      return await Promise.race([loop, armed])
+    } finally {
+      global.setTimeout = fakeSetTimeout
+      vi.advanceTimersByTime(POLL_MS)
+      await loop
+      vi.useRealTimers()
+    }
+  }
+
+  it('stops immediately after the loop body when told to, without waiting out one more poll interval', async () => {
+    expect(await runPromptStopLoop()).toBe('stopped')
+  })
+
+  // Regression: this test's observer used to be a vi.spyOn over the fake clock's setTimeout. Whatever vi.restoreAllMocks() runs next (several describes in this file call it) re-installed the finished clock's wrapper over the real setTimeout, which never fires; the result depended on shuffle order, so the row runs the whole sequence itself and asserts on the function left behind.
+  it('leaves global.setTimeout as it found it, even through a later vi.restoreAllMocks()', async () => {
+    const before = global.setTimeout
+    try {
+      await runPromptStopLoop()
+      vi.restoreAllMocks()
+      expect(global.setTimeout).toBe(before)
+    } finally {
+      global.setTimeout = before
+    }
   })
 })
 

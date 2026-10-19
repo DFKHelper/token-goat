@@ -1,13 +1,14 @@
-/** The worker's side of a reconcile request: a hook that knew files changed but could not learn which (a branch switch whose changed-file list git failed to produce in time) leaves the project in `queue/reconcile.txt`, and the drain sweeps it here, off the hook's time budget. Kept apart from worker.ts, which only calls {@link drainReconcileRequests}. */
+/** The worker's side of a reconcile request: a hook that knew files changed but could not learn which (a branch switch whose changed-file list git failed to produce in time) leaves the project in `queue/reconcile.txt`, and the drain sweeps it here, off the hook's time budget. Kept apart from worker.ts, whose loop awaits {@link drainReconcileRequestsAsync}. */
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { appendReconcileRequest, parseReconcileRequests, reconcileRequestPathFor } from './dirty_queue.js'
 import { isIndexedRoot } from './indexed_roots.js'
-import { reconcileProject } from './reconcile.js'
-import { foldPath, runGit } from './util.js'
-import { appendWorkerErrorLog } from './worker_lifecycle.js'
+import { reconcileProjectWith } from './reconcile.js'
+import { listTrackedFilesAsync } from './repomap.js'
+import { foldPath, runGitAsyncLazy } from './util.js'
+import { appendWorkerErrorLog, writeDrainHeartbeat } from './worker_lifecycle.js'
 
 /** What became of one requested project, for the worker's error log. */
 function logOutcome(dir: string, projectDir: string, outcome: string): void {
@@ -29,8 +30,8 @@ function claimReconcileRequests(dir: string): string | null {
   }
 }
 
-/** Sweep every project named in the reconcile-request file under `dir` against the index in `dir`'s global.db, enqueueing the files that drifted for the next drain cycle. Only a project indexed on purpose is swept (see indexed_roots.ts), the rule session start applies; a request whose directory git cannot place in a repository any more, or whose project was not indexed on purpose, is dropped with a line in the worker error log. A sweep that ran out of its budget puts its project back so the next cycle resumes at the saved cursor. Returns how many projects were swept. Never throws. */
-export function drainReconcileRequests(dir: string): number {
+/** Sweep every project named in the reconcile-request file under `dir` against the index in `dir`'s global.db, enqueueing the files that drifted for the next drain cycle. Only a project indexed on purpose is swept (see indexed_roots.ts), the rule session start applies; a request whose directory git cannot place in a repository any more, or whose project was not indexed on purpose, is dropped with a line in the worker error log. A sweep that ran out of its budget puts its project back so the next cycle resumes at the saved cursor. Git runs without blocking the event loop, so a repository whose git hangs delays this sweep without freezing the event loop: signal handlers and timers keep running. Returns how many projects were swept. Never throws. */
+export async function drainReconcileRequestsAsync(dir: string): Promise<number> {
   let claimed: string | null
   try {
     claimed = claimReconcileRequests(dir)
@@ -49,9 +50,12 @@ export function drainReconcileRequests(dir: string): number {
   const requeue: string[] = []
   const seenRoots = new Set<string>()
   let swept = 0
+  // Forced after each step that made progress, so the heartbeat's age is bounded by one git call's own timeout and not by the sweep's length: stopWorker and reclaimStalePidFile judge a daemon by that age, and a sweep over many slow repositories outran the 60 s window and left a live daemon looking dead. Forced because the throttled write is gated on the wall clock, which a step does not reliably outlast.
+  const progressed = (): void => writeDrainHeartbeat(dir, true)
   for (const projectDir of parseReconcileRequests(raw)) {
     try {
-      const top = runGit(['rev-parse', '--show-toplevel'], { cwd: projectDir, timeoutMs: 5000 })
+      const top = await runGitAsyncLazy(['rev-parse', '--show-toplevel'], { cwd: projectDir, timeoutMs: 5000 })
+      progressed()
       // A git that ran past its 5 s budget has not said this is no repository; dropping the request there lost the branch switch the hook had handed over, so the project goes back for the next cycle.
       if (top.timedOut === true) {
         requeue.push(projectDir)
@@ -71,7 +75,10 @@ export function drainReconcileRequests(dir: string): number {
         logOutcome(dir, projectDir, `dropped, ${root} was not indexed on purpose`)
         continue
       }
-      const result = reconcileProject({ cwd: root, dbPath, queueDir: dir })
+      const listing = await listTrackedFilesAsync(root)
+      progressed()
+      const result = reconcileProjectWith({ cwd: root, dbPath, queueDir: dir }, listing)
+      progressed()
       swept++
       // A sweep whose file listing git did not finish found no new files, so the request goes back for the next cycle instead of being spent.
       if (result.budgetExhausted || result.gitTimedOut) requeue.push(root)

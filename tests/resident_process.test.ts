@@ -1,10 +1,16 @@
 /** Matching rules for token-goat's resident processes: a stray is recognised by its command line and its launcher script, never by a process name. Fixtures: the daemon argv is FORMAT-DERIVED from src/worker_lifecycle.ts::startDetachedWorker (`[daemonEntryScript(), '--worker-daemon']`) and the hook server's from src/hook_client.ts::startServer (`[launcher, 'hook-server', 'run', '--slot', n]`); the quoted Windows interpreter path is the shape src/cli_doctor_process.ts documents for a real Windows command line; the ps rows are FORMAT-DERIVED from procps `ps -o pid=,ppid=,args=` (right-aligned pid and ppid, then the command line, no header). The must-not-match command lines are HAND-DERIVED from each shape a process list can show that merely contains the launcher path and the flag (a grep, a `sh -c` wrapper, a script argument, a path with the launcher as its tail, a longer flag), computed from the matching rule and not from the matcher; the two /proc/PID/stat lines and the ps row for a zombie are CAPTURE, taken on WSL Ubuntu (procps-ng 4.0.4) from `sh -c 'sleep 0 & exec sleep 4'` (the unreaped `sleep 0`) and from `cat` reading its own stat. */
 
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import { parsePsProcessList } from '../src/cli_doctor_process.js'
 import { normalizePath } from '../src/paths.js'
-import { isResidentOfInstall, isTokenGoatResidentProcess, readProcessCommandLine, residentKindOf, statIsZombie, terminateProcessTree, zombiesInPsRows } from '../src/resident_process.js'
+import { isResidentOfInstall, isTokenGoatResidentProcess, queryProcessCommandLine, readProcessCommandLine, residentKindOf, statIsZombie, terminateProcessTree, zombiesInPsRows } from '../src/resident_process.js'
 
 const ENTRY = process.platform === 'win32' ? 'C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\token-goat\\dist\\token-goat.mjs' : '/usr/lib/node_modules/token-goat/dist/token-goat.mjs'
 const NODE = process.platform === 'win32' ? '"C:\\Program Files\\nodejs\\node.exe"' : '/usr/bin/node'
@@ -81,6 +87,37 @@ describe('readProcessCommandLine', () => {
     expect((own ?? '').toLowerCase()).toContain('node')
     expect(readProcessCommandLine(0)).toBeNull()
     expect(readProcessCommandLine(-5)).toBeNull()
+  })
+})
+
+describe('queryProcessCommandLine', () => {
+  // Provenance: HAND-DERIVED. This process is alive and its pid is known to the system; 2147483646 is above any pid either platform assigns, so no process holds it.
+  it('tells a live process from one that does not exist, instead of folding both into null', () => {
+    const own = queryProcessCommandLine(process.pid)
+    expect(own.status).toBe('found')
+    expect(own.status === 'found' ? own.commandLine.toLowerCase() : '').toContain('node')
+    expect(queryProcessCommandLine(2147483646)).toEqual({ status: 'gone' })
+    expect(queryProcessCommandLine(0)).toEqual({ status: 'gone' })
+  })
+
+  // Provenance: CAPTURE of the failure, HAND-DERIVED launcher. The code points are U+00E9 and U+4E2D, which OEM code page 437 cannot hold (é is 0x82 there, 中 has no byte and becomes 0x3F); the unfixed query on Windows PowerShell 5.1.26100 (powershell.exe, console code page 437) returned the bytes 82 3f for them and a line that did not contain the launcher, and the same script with a UTF-8 OutputEncoding returned c3 a9 e4 b8 ad (run 2026-10-18 as: powershell.exe -NoProfile -NonInteractive -Command "$ErrorActionPreference = 'Stop'; $id = <pid of a node launcher under that path>; $p = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $id); 'found:' + $p.CommandLine", with and without the prefix [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false; then the stdout bytes after the launcher directory's name prefix were hexed). The child ends when its stdin closes, and its temp dir is removed after it exits.
+  it.skipIf(process.platform !== 'win32')('returns a launcher path with characters outside the OEM code page whole', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `tg-oem-${String.fromCodePoint(0xe9, 0x4e2d)}-`))
+    const launcher = path.join(dir, 'launcher.js')
+    fs.writeFileSync(launcher, 'process.stdin.on("end", () => process.exit(0)); process.stdin.resume()\n')
+    const child = spawn(process.execPath, [launcher, '--worker-daemon'], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
+    child.stdin.on('error', () => undefined)
+    try {
+      const answer = queryProcessCommandLine(child.pid ?? 0)
+      expect(answer.status).toBe('found')
+      expect(answer.status === 'found' ? answer.commandLine : '').toContain(launcher)
+    } finally {
+      const exited = once(child, 'exit')
+      child.stdin.end()
+      child.kill()
+      await exited
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

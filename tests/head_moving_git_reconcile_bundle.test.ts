@@ -8,6 +8,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 
 import { reconcileRequestPathFor } from '../src/dirty_queue.js'
 import { querySymbols } from '../src/index_reader.js'
+import { drainReconcileRequestsAsync } from '../src/reconcile_requests.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { drainOnce, pendingEmbeddings } from '../src/worker.js'
@@ -102,7 +103,10 @@ describe('a head-moving git command whose diff fails, through the built bundle',
 
       clearModuleCaches()
       // Drained the way the daemon's loop does: a sweep that spent its budget, or whose git answer came late on a loaded machine, puts the project back for the next cycle, so cycle until the request is swept, then once more for what the sweep queued.
-      for (let cycle = 0; cycle < 10 && fs.existsSync(request); cycle++) drainOnce(dir)
+      for (let cycle = 0; cycle < 10 && fs.existsSync(request); cycle++) {
+        drainOnce(dir)
+        await drainReconcileRequestsAsync(dir)
+      }
       expect(fs.existsSync(request), 'the request was never swept').toBe(false)
       drainOnce(dir)
       drainOnce(dir)

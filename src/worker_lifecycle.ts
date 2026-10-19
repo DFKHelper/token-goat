@@ -10,7 +10,7 @@ import { dataDir } from './constants.js'
 import { withEnvProxyEnabled } from './env_proxy.js'
 import { displaySafeText } from './paths.js'
 import { applyIndexingPriorityTo } from './process_priority.js'
-import { isResidentOfInstall, PROCESS_QUERY_TIMEOUT_MS, readProcessCommandLine, terminateProcessTree } from './resident_process.js'
+import { type CommandLineQuery, isResidentOfInstall, lineReaderAsQuery, PROCESS_QUERY_TIMEOUT_MS, queryProcessCommandLine, terminateProcessTree } from './resident_process.js'
 import { atomicWriteText, ensureDirSync, extractErrorMessage, withFileLock } from './util.js'
 
 /** Options shared by the in-thread and detached worker entry points. */
@@ -166,6 +166,7 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
   if (livePid !== null && pidAlive(livePid) && hasFreshWorkerHeartbeat(dir, livePid)) {
     // A live daemon keeps running the bundle it was spawned from, so after an upgrade or a rebuilt dist/token-goat.mjs it runs the pre-upgrade code until stopped; stop it the way `worker stop` does and spawn a fresh one.
     if (workerBundleMatches(dir)) return
+    // The only branch of this hook that runs a process-list query and a taskkill (both inside stopWorker, each bounded by PROCESS_QUERY_TIMEOUT_MS): it needs a live daemon on a bundle that no longer matches, so it runs once per upgrade. It does not return: the spawn below follows it, as it follows a dead or missing daemon, unless the pid file now names a replacement.
     stopWorker(dir, livePid)
     // The pid file naming anyone else now means another hook already replaced the daemon; spawning too would start a second one.
     const nowPid = readPidFile(dir)
@@ -194,24 +195,75 @@ export function ensureWorkerAlive(dir: string = dataDir()): void {
   }
 }
 
-/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, or it is alive but proves no worker lease (see {@link holdsWorkerLease}). The pid file is removed in the killed and dead cases so the slate is clean afterwards, and left in place in the last. */
-export function stopWorker(dir: string = dataDir(), expectedPid?: number): boolean {
+/** Which kind of process a pid file's pid is right now: this install's worker daemon, some other live process, no process, or unknown because the query failed or the system showed no command line for a process that exists. */
+type DaemonIdentity = 'worker' | 'other' | 'gone' | 'unknown'
+
+export interface StopWorkerOptions {
+  /** Looks up one pid's command line, telling a gone process from a failed query; defaults to resident_process.ts::queryProcessCommandLine. */
+  readonly queryCommandLine?: (pid: number) => CommandLineQuery
+  /** The launcher a worker of this install runs on; defaults to {@link daemonEntryScript}. */
+  readonly entryScript?: string
+}
+
+/** A pid file is a claim, not proof: after a crash the number can belong to an unrelated process, so the pid is ended only when its command line is this install's `--worker-daemon` (the check retireDisplacedWorker makes). A failed query is its own answer and is never read as "gone"; a process that exists but shows an empty command line (Windows hides it from a normal shell when the process is elevated) proves nothing about who it is, so it is never read as another program either. */
+function judgeDaemonIdentity(pid: number, opts: StopWorkerOptions): DaemonIdentity {
+  const answer = (opts.queryCommandLine ?? queryProcessCommandLine)(pid)
+  if (answer.status !== 'found') return answer.status === 'gone' ? 'gone' : 'unknown'
+  if (answer.commandLine.trim() === '') return 'unknown'
+  return isResidentOfInstall(answer.commandLine, opts.entryScript ?? daemonEntryScript(), ['worker']) ? 'worker' : 'other'
+}
+
+/** End process `pid`, alone or with its tree, and refuse this process and its parent on either path. On Windows `process.kill` is TerminateProcess, so no handler in the daemon runs and the git it holds is left running; the tree goes with it through taskkill (resident_process.ts::terminateProcessTree, because process_tree.ts must stay out of the hook bundle), and a taskkill that did not end it falls back to the bare kill. Elsewhere SIGTERM reaches the daemon's own handler, which drains and reaps what it started. Returns 'refused' for this process or its parent, 'denied' when the kill was denied (EPERM: the process is still running and this stop did not end it, an elevated worker or one owned by another user), and 'ended' otherwise; a process that exited first (ESRCH) still counts as ended. */
+function endDaemon(pid: number, scope: 'tree' | 'single'): 'ended' | 'refused' | 'denied' {
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid || pid === process.ppid) return 'refused'
+  if (scope === 'tree' && process.platform === 'win32' && terminateProcessTree(pid, true)) return 'ended'
+  try {
+    process.kill(pid)
+  } catch (err) {
+    // ESRCH: the process exited between the check and the kill, which is the outcome asked for. EPERM: still running (an elevated worker, or a reused number owned by another user), so it was not ended and the caller must neither report it as stopped nor unname it.
+    return (err as NodeJS.ErrnoException).code === 'EPERM' ? 'denied' : 'ended'
+  }
+  return 'ended'
+}
+
+/** What {@link stopWorkerDetailed} did: whether a live worker was ended, and the pid it could not end (the kill was denied, EPERM) when there was one. */
+export interface StopWorkerResult {
+  readonly stopped: boolean
+  /** The pid of a live process the stop was not permitted to end, whose pid file was therefore kept; null otherwise. */
+  readonly leftRunning: number | null
+}
+
+/** The line `worker stop` prints when the kill was denied: the process is still running and still named by its pid file. */
+export function workerLeftRunningNote(pid: number): string {
+  return `Worker (pid ${pid}) left running: the operating system denied the stop (EPERM), so it is owned by another user or runs elevated. Its pid file was kept so a new worker is not started beside it; stop it from an account with the same rights.`
+}
+
+/** Kill the detached worker for this project, if one is running. Returns true when a live worker was found and signalled; false when no pid file existed, the recorded pid was already dead, it is alive but proves no worker lease (no fresh heartbeat naming it, and a pid file older than the startup grace), the lease holder is not this install's worker (a reused pid: left alone, and its pid file dropped as stale), or the kill was denied (EPERM: still running, see {@link stopWorkerDetailed}). The pid file is removed in the killed, dead and stale cases so the slate is clean afterwards, and left in place in the lease-less and the EPERM cases: a live worker the stop could not end must stay named, or the next start spawns a second one beside it. */
+export function stopWorker(dir: string = dataDir(), expectedPid?: number, opts: StopWorkerOptions = {}): boolean {
+  return stopWorkerDetailed(dir, expectedPid, opts).stopped
+}
+
+/** {@link stopWorker} with the EPERM outcome reported, so a caller can say the worker was left running instead of that none was found. */
+export function stopWorkerDetailed(dir: string = dataDir(), expectedPid?: number, opts: StopWorkerOptions = {}): StopWorkerResult {
   const pid = readPidFile(dir)
-  if (pid === null) return false
+  if (pid === null) return { stopped: false, leftRunning: null }
   // If the caller judged a specific pid mismatched/stale earlier and the pid file now names someone else, another hook already raced ahead of us (stopped it and spawned a replacement); do nothing rather than tearing down that replacement's pid file before it can prove itself alive.
-  if (expectedPid !== undefined && pid !== expectedPid) return false
+  if (expectedPid !== undefined && pid !== expectedPid) return { stopped: false, leftRunning: null }
   // A daemon still inside its startup grace has written no heartbeat yet, so it is alive but not "running" by heartbeat alone; stop used to skip the kill and then remove its pid file anyway, which stranded it: running, invisible, and with nothing left naming it. The same two proofs reclaimStalePidFile trusts decide who is ours. A live pid with neither proof (a stale heartbeat, a reused pid) is left alone and so is its pid file: it retires itself once reclaimed, and removing the file here would only strand it.
   const alive = pidAlive(pid)
   // A live pid that proves no lease (no fresh heartbeat naming it, pid file older than the grace) may be an unrelated process that reused the number: neither signalled nor unnamed.
   const running = alive && (hasFreshWorkerHeartbeat(dir, pid) || pidFileIsWithinStartupGrace(dir))
-  if (alive && !running) return false
+  if (alive && !running) return { stopped: false, leftRunning: null }
+  let outcome: ReturnType<typeof endDaemon> | null = null
   if (running) {
-    try {
-      process.kill(pid)
-    } catch {
-      // Race: process exited between the check and the kill. Fall through to pid-file cleanup; report whatever liveness we observed.
-    }
+    // Even a lease can name a reused pid (the daemon crashed inside the heartbeat window, or the pid file is a fresh claim over a dead one), so the command line decides, and only a confirmed worker loses its tree.
+    const identity = judgeDaemonIdentity(pid, opts)
+    // 'unknown' is the query itself failing (the program missing, ENOENT, as `ps` is on a minimal image; a timeout; or an unexpected exit status) or the system showing no command line for the process (an elevated worker asked from a normal shell), which proves nothing about who owns the pid. This point is reached only for a live pid with a lease proof (a fresh heartbeat naming it, or a pid file younger than the startup grace), so the stop ends that one process, with no tree: failing closed would make `worker stop` do nothing wherever `ps` is missing, and the tree kill is kept for a confirmed worker.
+    if (identity === 'worker') outcome = endDaemon(pid, 'tree')
+    else if (identity === 'unknown') outcome = endDaemon(pid, 'single')
   }
+  // A denied kill leaves a live worker: its pid file stays, since removing it would let the next start spawn a second worker beside it.
+  if (outcome === 'denied') return { stopped: false, leftRunning: pid }
   // Only remove the pid file when it still names the pid we just killed -- never unconditionally. A concurrent `worker start` can observe the killed pid as dead and reclaim the slot (via claimWorkerPidFile) with a brand-new daemon's pid between our kill above and this cleanup; an unconditional rmSync here would delete that new daemon's pid file out from under it, orphaning it (no pid file left for a later stopWorker to find), which a subsequent `worker start` would then "fix" by spawning a third daemon -- two live daemons draining the same queue. Same guard style as the exit handler in worker.ts::runDetachedWorkerDaemon.
   if (readPidFile(dir) === pid) {
     try {
@@ -220,7 +272,7 @@ export function stopWorker(dir: string = dataDir(), expectedPid?: number): boole
       // best-effort cleanup
     }
   }
-  return running
+  return { stopped: outcome === 'ended', leftRunning: null }
 }
 
 /** Thrown by {@link startDetachedWorker} when it loses the {@link claimWorkerPidFile} startup race to a daemon that already holds the pid-file slot (a genuine already-running worker, or a concurrent `worker start` invocation that won the race first). */
@@ -257,11 +309,8 @@ export function dataDirWriteRefusal(dir: string): unknown {
 
 /** Kill a daemon {@link startDetachedWorker} spawned but cannot keep, and drop the parent's reference to it so the calling process can exit. */
 function discardSpawnedWorker(child: ChildProcess, pid: number): void {
-  try {
-    process.kill(pid)
-  } catch {
-    // already gone
-  }
+  // This process just started the child, so the number is its own and nothing it could hold needs a tree kill yet.
+  endDaemon(pid, 'single')
   // owner: none, the daemon was killed just above; dies when that kill lands, and the unref only lets the caller exit.
   child.unref()
 }
@@ -334,10 +383,18 @@ function removeDisplacedNote(dir: string): void {
 }
 
 export interface DisplacedRetireOptions {
-  /** Reads one pid's command line; defaults to the real query. */
+  /** Reads one pid's command line; null reads as gone. Defaults to the real query. */
   readonly readCommandLine?: (pid: number) => string | null
+  /** The same read as a three-way answer, which tells a pid that is gone from a query that failed (the failed one is logged and not ended); takes precedence over `readCommandLine`. */
+  readonly queryCommandLine?: (pid: number) => CommandLineQuery
   /** Total time the holder loop may take; defaults to the one-query bound, resident_process.ts::PROCESS_QUERY_TIMEOUT_MS. */
   readonly deadlineMs?: number
+}
+
+/** A holder whose command line the system hides (an elevated process asked from this account), or whose query failed, is an unknown, not a stranger: it is not signalled, and this function returns nothing to carry that, so the daemon's own error log names the pid that may still run beside it (the convention of worker.ts and reconcile_requests.ts for a daemon's notes). */
+function noteUnconfirmedHolder(dir: string, holder: number, why: 'hidden' | 'failed'): void {
+  const reason = why === 'hidden' ? 'its command line is hidden by the system (an elevated process)' : 'its command line could not be read'
+  appendWorkerErrorLog(dir, `${new Date().toISOString()} displaced worker pid ${holder}: ${reason}, so it was not ended and may still be a worker of this install; end it yourself if it is one\n`)
 }
 
 /** Runs in a daemon that has just found its own pid in the pid file, never on a hook path: ends the daemon whose slot the claim took over, which a 2.9.30 daemon never leaves on its own. The note holds pids that may have been reused, so one is read only while it is younger than the startup grace and names this data dir, and the process is signalled only when it holds no lease and its command line is this install's `--worker-daemon`; any other process is left alone. A legitimate daemon whose heartbeat merely went stale (sleep, long synchronous work) is ended here too, where it would otherwise have exited at its next poll: accepted, since the claim already gave its slot away. */
@@ -349,16 +406,26 @@ export function retireDisplacedWorker(dir: string, opts: DisplacedRetireOptions 
     return
   }
   const entry = daemonEntryScript()
-  const readCommandLine = opts.readCommandLine ?? readProcessCommandLine
+  const query = opts.queryCommandLine ?? (opts.readCommandLine !== undefined ? lineReaderAsQuery(opts.readCommandLine) : queryProcessCommandLine)
+  // The holder's command line, or null when there is nothing to judge: gone, or no evidence (hidden or a failed query), which is logged and is never taken for a stranger.
+  const lineOf = (holder: number): string | null => {
+    const answer = query(holder)
+    if (answer.status === 'gone') return null
+    if (answer.status === 'failed' || answer.commandLine.trim() === '') {
+      noteUnconfirmedHolder(dir, holder, answer.status === 'failed' ? 'failed' : 'hidden')
+      return null
+    }
+    return answer.commandLine
+  }
   // Each holder costs up to two synchronous queries on this daemon's event loop, and a note can name several: past one query bound in total the rest are left for the next upgrade.
   const deadline = Date.now() + (opts.deadlineMs ?? PROCESS_QUERY_TIMEOUT_MS)
   for (const holder of holders) {
     if (Date.now() >= deadline) break
     if (holder === process.pid || !pidAlive(holder) || hasFreshWorkerHeartbeat(dir, holder)) continue
-    const cmd = readCommandLine(holder)
+    const cmd = lineOf(holder)
     if (cmd === null || !isResidentOfInstall(cmd, entry, ['worker'])) continue
     // The query above can take seconds on a cold machine, and the OS may have reused the pid since: signal only what a second read, taken right before, still shows as this install's daemon.
-    const latest = readCommandLine(holder)
+    const latest = lineOf(holder)
     if (latest !== null && isResidentOfInstall(latest, entry, ['worker'])) terminateProcessTree(holder, false)
   }
 }
@@ -374,7 +441,7 @@ function reclaimStalePidFile(dir: string, pid: number): boolean {
   ) {
     return false
   }
-  // Stale, dead, or unreadable: reclaim the slot. Never signal the pid it names from here: this path is reached only when that pid proves no worker lease, which is what a daemon killed without its exit handler leaves behind once the OS reuses its pid, and this runs on a hook path, where nothing may spawn a process-list query. A 2.9.30 daemon whose slot was reclaimed this way never exited on its own and piled up, one per reclaim, so the claim leaves a note for the daemon it installs, which ends the old one once it owns the slot (see retireDisplacedWorker).
+  // Stale, dead, or unreadable: reclaim the slot. Never signal the pid it names from here: this path is reached only when that pid proves no worker lease, which is what a daemon killed without its exit handler leaves behind once the OS reuses its pid, and this claim spawns no process-list query on the hook path it can run on (ensureWorkerAlive reaches it through startDetachedWorker); the one query on that path is stopWorker's, in the upgrade branch above. A 2.9.30 daemon whose slot was reclaimed this way never exited on its own and piled up, one per reclaim, so the claim leaves a note for the daemon it installs, which ends the old one once it owns the slot (see retireDisplacedWorker).
   try {
     // A note no daemon has consumed yet is carried over, so a second claim does not strand the pid the first one named; only pids still alive and written within the startup grace are kept.
     const held = readDisplacedPids(dir).filter((p) => p !== pid && pidAlive(p))

@@ -1,4 +1,4 @@
-// Provenance: HAND-DERIVED. A killed git is `{ exitCode: -1, timedOut: true }` (src/types.ts::GitResult, the Node 24.12 ETIMEDOUT CAPTURE documented at src/util.ts::runGit); `rev-parse --show-toplevel` prints the top-level path and exits 0. Which caller reads which field is the contract under test. The git boundary is replaced by a function this file controls, because a real git cannot be made slow on an event on every platform; the real-git side of the timeout is tests/run_git_default_timeout.test.ts.
+// Provenance: HAND-DERIVED. A killed git is `{ exitCode: -1, timedOut: true }` (src/types.ts::GitResult, the Node 24.12 ETIMEDOUT CAPTURE documented at src/util.ts::runGit); `rev-parse --show-toplevel` prints the top-level path and exits 0. Which caller reads which field is the contract under test. The git boundary (runGit for session start, runGitAsyncLazy for the worker's drain) is replaced by a function this file controls, because a real git cannot be made slow on an event on every platform; the real-git side of the timeout is tests/run_git_default_timeout.test.ts.
 /** A killed `git ls-files` is unknown, never "nothing drifted": session start must not stay silent over it, and a reconcile request whose sweep could not list the files must not be spent. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -13,7 +13,7 @@ import { tempConfigPath } from './helpers/temp-config.js'
 const git = vi.hoisted(() => ({ answer: (_args: readonly string[]): unknown => undefined as unknown }))
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof util>()
-  return { ...actual, runGit: (args: string[]) => git.answer(args) }
+  return { ...actual, runGit: (args: string[]) => git.answer(args), runGitAsyncLazy: async (args: string[]) => git.answer(args) }
 })
 
 vi.mock('../src/constants.js', async (importOriginal) => {
@@ -36,7 +36,7 @@ import { appendReconcileRequest, parseReconcileRequests, reconcileRequestPathFor
 import type { HookEvent } from '../src/hook_registry.js'
 import { sessionStartHandler } from '../src/hooks_session_start.js'
 import { recordIndexedRoot } from '../src/indexed_roots.js'
-import { drainReconcileRequests } from '../src/reconcile_requests.js'
+import { drainReconcileRequestsAsync } from '../src/reconcile_requests.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 const KILLED: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, timedOut: true }
@@ -80,32 +80,40 @@ describe('session start when git does not finish listing the files', () => {
 })
 
 describe('a reconcile request whose sweep git could not list', () => {
-  const requested = (): string[] => parseReconcileRequests(fs.readFileSync(reconcileRequestPathFor(_testDataDir), 'utf8'))
+  // An absent file is an empty list, so a dropped request fails the assertion that expects it back instead of throwing ENOENT; any other read error still throws.
+  const requested = (): string[] => {
+    try {
+      return parseReconcileRequests(fs.readFileSync(reconcileRequestPathFor(_testDataDir), 'utf8'))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
+  }
 
-  it('goes back for the next cycle when ls-files is killed', () => {
+  it('goes back for the next cycle when ls-files is killed', async () => {
     git.answer = (args) => (args[0] === 'ls-files' ? KILLED : ok(`${projectDir}\n`))
     appendReconcileRequest(_testDataDir, projectDir)
-    expect(drainReconcileRequests(_testDataDir)).toBe(1)
+    expect(await drainReconcileRequestsAsync(_testDataDir)).toBe(1)
     expect(requested()).toEqual([projectDir])
   })
 
-  it('goes back for the next cycle when rev-parse is killed, and is dropped when git names no repository', () => {
+  it('goes back for the next cycle when rev-parse is killed, and is dropped when git names no repository', async () => {
     git.answer = (args) => (args[0] === 'rev-parse' ? KILLED : ok(''))
     appendReconcileRequest(_testDataDir, projectDir)
-    expect(drainReconcileRequests(_testDataDir)).toBe(0)
+    expect(await drainReconcileRequestsAsync(_testDataDir)).toBe(0)
     expect(requested()).toEqual([projectDir])
 
     fs.rmSync(reconcileRequestPathFor(_testDataDir), { force: true })
     git.answer = () => REFUSED
     appendReconcileRequest(_testDataDir, projectDir)
-    expect(drainReconcileRequests(_testDataDir)).toBe(0)
+    expect(await drainReconcileRequestsAsync(_testDataDir)).toBe(0)
     expect(fs.existsSync(reconcileRequestPathFor(_testDataDir))).toBe(false)
   })
 
-  it('is spent when git ran and listed nothing', () => {
+  it('is spent when git ran and listed nothing', async () => {
     git.answer = (args) => (args[0] === 'ls-files' ? ok('') : ok(`${projectDir}\n`))
     appendReconcileRequest(_testDataDir, projectDir)
-    expect(drainReconcileRequests(_testDataDir)).toBe(1)
+    expect(await drainReconcileRequestsAsync(_testDataDir)).toBe(1)
     expect(fs.existsSync(reconcileRequestPathFor(_testDataDir))).toBe(false)
   })
 })

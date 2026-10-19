@@ -30,7 +30,7 @@ import { modelDownloadHeld } from './embed_preflight.js'
 import { failedAtOf } from './model_download_gate.js'
 import { appendDirtyQueueFile, appendDirtyQueuePaths, dirtyQueuePathFor, parseDirtyQueueLines } from './dirty_queue.js'
 import { createQueueWaker, noteOwnQueueWrite } from './queue_waker.js'
-import { drainReconcileRequests } from './reconcile_requests.js'
+import { drainReconcileRequestsAsync } from './reconcile_requests.js'
 import { appendWorkerErrorLog, claimCurrentWorker, readPidFile, resolvePollIntervalMs, retireDisplacedWorker, WORKER_STARTUP_GRACE_MS, workerErrorLogPath, workerPidPath, writeDrainHeartbeat } from './worker_lifecycle.js'
 
 // Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness window doesn't need finer-grained sweeping than hourly, and a full directory scan on every 2s poll tick would be wasteful.
@@ -481,7 +481,7 @@ function sleepSyncMs(ms: number): void {
   }
 }
 
-/** Run one drain cycle for `dir`: atomically claim the dirty queue, process it. Atomically renames the live queue to a .draining file so that concurrent appendDirtyPath calls either land before the rename (and travel with it) or recreate a fresh queue after it (picked up on the next poll). This is the Python original's rename-to-claim pattern, preventing lost updates. Recovers from crashes by absorbing an abandoned .draining file at startup. On Windows, rename can fail with EPERM if the file is open for append; the loop retries 5 times with 50ms sleeps before deferring (returning 0). Each stage's claimed/recovered file is only cleared (rm'd or quarantined) AFTER its batch has been durably processed by {@link processDirtyBatch} -- never before. If the process dies partway through a batch (SIGTERM, a crash, or this daemon being killed as a duplicate after losing the worker_lifecycle.ts::claimWorkerPidFile startup race), the .draining file is still on disk for the next startup's crash recovery to pick back up, instead of having already been deleted while the paths it named were never indexed. Returns the number of paths processed. When no `index` callback is injected, files are indexed into `dir`'s `global.db` (the real shipping path); in production `dir` is the data dir, so this is {@link globalDbPath}. */
+/** Run one drain cycle for `dir`: atomically claim the dirty queue, process it. Atomically renames the live queue to a .draining file so that concurrent appendDirtyPath calls either land before the rename (and travel with it) or recreate a fresh queue after it (picked up on the next poll). This is the Python original's rename-to-claim pattern, preventing lost updates. Recovers from crashes by absorbing an abandoned .draining file at startup. On Windows, rename can fail with EPERM if the file is open for append; the loop retries 5 times with 50ms sleeps before deferring (returning 0). Each stage's claimed/recovered file is only cleared (rm'd or quarantined) AFTER its batch has been durably processed by {@link processDirtyBatch} -- never before. If the process dies partway through a batch (SIGTERM, a crash, or this daemon being killed as a duplicate after losing the worker_lifecycle.ts::claimWorkerPidFile startup race), the .draining file is still on disk for the next startup's crash recovery to pick back up, instead of having already been deleted while the paths it named were never indexed. Returns the number of paths processed; the count no longer includes reconcile sweeps, which {@link runWorkerLoop} awaits after each cycle (see reconcile_requests.ts::drainReconcileRequestsAsync) because they run git without blocking. When no `index` callback is injected, files are indexed into `dir`'s `global.db` (the real shipping path); in production `dir` is the data dir, so this is {@link globalDbPath}. */
 export function drainOnce(
   dir: string,
   index?: (absPath: string, sha: string) => unknown,
@@ -616,9 +616,6 @@ export function drainOnce(
       // A sidecar left behind is recovered by the next cycle's stage (a), which costs one duplicate unchanged-sha skip per path.
     }
   }
-
-  // (b2) Projects a hook asked to have swept because it could not list the files a branch switch changed (see reconcile_requests.ts). After the dirty queue so the sweep's own enqueues wait for the next cycle, as the deferred requeues above do. Counts as work so an idle daemon does not retire in the middle of a catch-up.
-  processed += drainReconcileRequests(dir)
 
   // (c) Opportunistic prune sweep for renamed/deleted files that never enqueued via the Edit hook path (git mv, git checkout, git clean). Runs after all normal dirty-queue work above, on a low cadence (see PRUNE_EVERY_N_DRAINS' doc comment), so it never delays draining the queue itself and a slow sweep on a huge repo only pushes out the NEXT sweep's schedule, not this cycle's already-completed dirty-queue work.
   const cycle = (drainCycleCounts.get(dir) ?? 0) + 1
@@ -808,6 +805,12 @@ export async function runWorkerLoop(
       processed = drainOnce(dir)
     } catch {
       // A bad batch must not kill the daemon; skip and retry next cycle.
+    }
+    // Projects a hook asked to have swept because it could not list the files a branch switch changed (see reconcile_requests.ts). After the dirty queue so the sweep's own enqueues wait for the next cycle, as the deferred requeues in drainOnce do. Awaited here rather than run inside drainOnce, which is synchronous: the sweep's git must not block the event loop. Counts as work so an idle daemon does not retire in the middle of a catch-up.
+    try {
+      processed += await drainReconcileRequestsAsync(dir)
+    } catch {
+      // The sweep never throws; a request it left claimed is swept again next cycle.
     }
     if (processed > 0) {
       lastActiveMs = Date.now()

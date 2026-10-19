@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as FsModule from 'node:fs'
 import type * as InstallIndexModule from '../src/install_index.js'
+import type * as ResidentProcess from '../src/resident_process.js'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -10,10 +11,15 @@ import { checkDbExists } from '../src/cli_doctor_index.js'
 import { _resetDataDirCacheForTesting, globalDbPath } from '../src/constants.js'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { quickCheckDb } from '../src/db_integrity.js'
+import { daemonEntryScript, workerLeftRunningNote, workerPidPath } from '../src/worker_lifecycle.js'
+import { DENIED_WORKER_PID, plantDeniedWorker } from './helpers/denied_worker.js'
 import { clearUpdateCheck, seedUpdateCheck } from './helpers/update-check.js'
+import { workerCommandLine } from './helpers/worker_identity.js'
 
 const queueMock = vi.hoisted(() => ({ override: undefined as undefined | (() => unknown) }))
 const renameMock = vi.hoisted(() => ({ failFor: undefined as undefined | string }))
+// The identity lookup stopWorker makes before it ends a pid-file pid: the planted pid is not a real process, so the lookup reports the command line a worker daemon has. The line is set per test, after the modules are loaded, because building it needs worker_lifecycle.ts, which imports this module.
+const identity = vi.hoisted(() => ({ commandLine: '' }))
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof FsModule>()
@@ -22,6 +28,11 @@ vi.mock('node:fs', async (importOriginal) => {
     actual.renameSync(from, to)
   }
   return { ...actual, renameSync, default: { ...actual, renameSync } }
+})
+
+vi.mock('../src/resident_process.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof ResidentProcess>()
+  return { ...actual, queryProcessCommandLine: () => ({ status: 'found', commandLine: identity.commandLine }) }
 })
 
 vi.mock('../src/install_index.js', async (importOriginal) => {
@@ -111,6 +122,22 @@ describe('doctor with a global.db whose header is intact but whose pages are mal
     expect(result.errors.join('\n')).toContain('token-goat index')
     expect(result.repairs.some((r) => /Queued|Moved the malformed/.test(r))).toBe(false)
     expect(fs.readFileSync(dbFile).equals(corrupted)).toBe(true)
+  })
+
+  // HAND-DERIVED: kill(2) documents EPERM as the error for a signal the caller may not send to a process that exists; the worker is planted by tests/helpers/denied_worker.ts.
+  it('--repair leaves the file in place and says the worker is left running when the stop is denied', async () => {
+    identity.commandLine = workerCommandLine(daemonEntryScript())
+    const undo = plantDeniedWorker(path.dirname(dbFile))
+    try {
+      const result = await runDoctorRepair({ dataDir: path.dirname(dbFile), rootDir: root })
+      expect(result.errors.join('\n'), 'the repair did not say the denied worker kept running').toContain(workerLeftRunningNote(DENIED_WORKER_PID))
+      expect(result.repairs.some((r) => /Moved the malformed/.test(r)), 'the repair claimed to move a database a live worker holds').toBe(false)
+      expect(fs.readFileSync(dbFile).equals(corrupted), 'the database was moved or changed under a live worker').toBe(true)
+      expect(fs.readdirSync(path.dirname(dbFile)).filter((f) => f.endsWith('.malformed'))).toEqual([])
+      expect(fs.existsSync(workerPidPath(path.dirname(dbFile))), 'the pid file of a worker left running was removed').toBe(true)
+    } finally {
+      undo()
+    }
   })
 
   // CAPTURE: round 12 dogfood of the built bundle on an isolated home: plain `doctor` on a 0-byte global.db turned it into a valid 303,104-byte database, because SQLite opens a zero-length file as an empty one. There is nothing in it to recover, so the repair must not move it aside as malformed.

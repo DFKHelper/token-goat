@@ -375,11 +375,14 @@ export async function performUpgrade(onSyncHooks?: () => Promise<void>, npm: Npm
   if (!npm) return { ok: false, message: `npm was not found next to this Node.js, so token-goat could not upgrade itself. Run ${fencedCommand(MANUAL_INSTALL)} yourself.` }
   let stoppedPid: number[] = []
   try {
-    const { stopWorker, readPidFile } = await import('./worker_lifecycle.js')
+    const { stopWorkerDetailed, workerLeftRunningNote, readPidFile } = await import('./worker_lifecycle.js')
     const { queryServers } = await import('./hook_client.js')
     await queryServers('stop')
     const tracked = readPidFile(dataDir())
-    if (stopWorker() && tracked !== null) stoppedPid = [tracked]
+    const { stopped, leftRunning } = stopWorkerDetailed()
+    if (stopped && tracked !== null) stoppedPid = [tracked]
+    // The install is what was asked for and the denied worker was already beyond this account's reach, so the upgrade goes on and says what it leaves behind.
+    if (leftRunning !== null) console.error(`${workerLeftRunningNote(leftRunning)} The upgrade continues; that worker keeps running the previous version until it is stopped.`)
   } catch {
     // Nothing running, or unreadable state: the install below reports any lock it actually hits.
   }

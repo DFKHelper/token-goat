@@ -38,7 +38,7 @@ import { isUnderSystemTemp, resolveProjectRoot } from './project.js'
 import { runParallelSearch } from './search/search_cli.js'
 import { ALL_CHANNELS, type SearchChannel } from './search/types.js'
 import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
-import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorker, WorkerAlreadyRunningError } from './worker_lifecycle.js'
+import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorkerDetailed, WorkerAlreadyRunningError, workerLeftRunningNote } from './worker_lifecycle.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
 import { runRead, runPrSlice } from './read_commands.js'
@@ -587,7 +587,9 @@ function cmdWorkerStart(): void {
 }
 
 function cmdWorkerStop(): void {
-  const stopped = stopWorker()
+  const { stopped, leftRunning } = stopWorkerDetailed()
+  // A stop that left the worker running did not stop it: the CliError makes `guard` print the note on stderr and exit 1.
+  if (leftRunning !== null) throw new CliError(workerLeftRunningNote(leftRunning))
   out(stopped ? 'Worker stopped.' : 'No running worker.')
 }
 
@@ -1337,7 +1339,7 @@ export function buildProgram(): Command {
 
   const worker = program.command('worker').description('background indexer lifecycle')
   worker.command('start').description('start the background indexer').action(guard(cmdWorkerStart))
-  worker.command('stop').description('stop the background indexer').action(guard(cmdWorkerStop))
+  worker.command('stop').description('stop the background indexer; exits 1 and says so when the worker is left running').action(guard(cmdWorkerStop))
   worker.command('status').description('check if the indexer is running').action(guard(cmdWorkerStatus))
 
   const hookServer = program.command('hook-server').description('resident processes that answer hook calls and read-only commands without starting Node for each one')

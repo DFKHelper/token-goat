@@ -1,4 +1,4 @@
-/** A branch switch rewrites files without going through any edit tool, so the Bash post hook asks git which files changed and enqueues them. When git cannot answer in the hook's budget (a spawn failure or timeout under load, or a reflog that no longer reaches back), the hook used to enqueue nothing and log nothing, and the index stayed on the old branch. It now records a reconcile request that the worker sweeps off the hook's time budget, only for a project indexed on purpose. These tests drive the production path: the real hook handler, the real request file, and `drainOnce` with no injected index callback. PROVENANCE: HAND-DERIVED for the symbol names (computed from the files each test writes). CAPTURE for the git failure: in a repository that has switched branches, deleting `.git/logs` makes `git diff --name-only HEAD@{1} HEAD` exit 128 ("unknown revision"), observed by hand against git on this machine; no seam stands in for it. The one seam is `runGit` returning exit -1 for the reflog read (what a 5 s timeout returns), because a real timeout cannot be produced on demand. */
+/** A branch switch rewrites files without going through any edit tool, so the Bash post hook asks git which files changed and enqueues them. When git cannot answer in the hook's budget (a spawn failure or timeout under load, or a reflog that no longer reaches back), the hook used to enqueue nothing and log nothing, and the index stayed on the old branch. It now records a reconcile request that the worker sweeps off the hook's time budget, only for a project indexed on purpose. These tests drive the production path: the real hook handler, the real request file, and the worker's own cycle (`drainOnce`, then the awaited reconcile drain, in the order runWorkerLoop calls them) with no injected index callback. PROVENANCE: HAND-DERIVED for the symbol names (computed from the files each test writes). CAPTURE for the git failure: in a repository that has switched branches, deleting `.git/logs` makes `git diff --name-only HEAD@{1} HEAD` exit 128 ("unknown revision"), observed by hand against git on this machine; no seam stands in for it. The one seam is `runGit` returning exit -1 for the reflog read (what a 5 s timeout returns), because a real timeout cannot be produced on demand. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -19,6 +19,7 @@ import { querySymbols } from '../src/index_reader.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { foldPath } from '../src/util.js'
+import { drainReconcileRequestsAsync } from '../src/reconcile_requests.js'
 import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 import { workerErrorLogPath } from '../src/worker_lifecycle.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -26,7 +27,7 @@ import { indexableDir } from './helpers/temp-config.js'
 
 const seam = vi.hoisted(() => ({ failReflog: false, timeOutDiff: false, gitMissing: false, timeOutTopLevelReads: 0, reconcileBudgetMs: null as number | null }))
 
-// The product gives each of its git reads 5 s and fails closed past it, which a loaded machine reaches (a spawn takes 2.5 s or more) and which these tests are not about: every real git call here runs with this much longer budget so the answers come back, and the timeout itself is injected below as the answer runGit gives for one (exit -1 with timedOut, CAPTURE: Node 24.12 spawnSync reports ETIMEDOUT). The hook's reads run through runGitAsync and the worker's reconcile through runGit, so both runners answer from this one seam. Hoisted with the mocks that use it, which run before any later top-level statement.
+// The product gives each of its git reads 5 s and fails closed past it, which a loaded machine reaches (a spawn takes 2.5 s or more) and which these tests are not about: every real git call here runs with this much longer budget so the answers come back, and the timeout itself is injected below as the answer runGit gives for one (exit -1 with timedOut, CAPTURE: Node 24.12 spawnSync reports ETIMEDOUT). The hook's reads and the worker's reconcile both run through runGitAsync (the worker's through util.ts::runGitAsyncLazy, which loads the mocked module), and runGit still serves the sync callers, so every runner answers from this one seam. Hoisted with the mocks that use it, which run before any later top-level statement.
 const answers = vi.hoisted(() => {
   const UNHURRIED_MS = 120_000
   const injected = (args: string[]): GitResult | null => {
@@ -62,7 +63,7 @@ vi.mock('../src/git_async.js', async (importOriginal) => {
 
 vi.mock('../src/reconcile.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ReconcileModule>()
-  return { ...actual, reconcileProject: (o: Parameters<typeof actual.reconcileProject>[0]) => actual.reconcileProject(seam.reconcileBudgetMs === null ? o : { ...o, budgetMs: seam.reconcileBudgetMs }) }
+  return { ...actual, reconcileProjectWith: (o: Parameters<typeof actual.reconcileProjectWith>[0], listing: Parameters<typeof actual.reconcileProjectWith>[1]) => actual.reconcileProjectWith(seam.reconcileBudgetMs === null ? o : { ...o, budgetMs: seam.reconcileBudgetMs }, listing) }
 })
 
 function git(cwd: string, ...args: string[]): string {
@@ -122,14 +123,20 @@ function requestFile(): string {
   }
 }
 
+/** One cycle of the daemon's loop in its order: the dirty queue, then the reconcile requests. Returns how many reconcile sweeps ran. */
+async function workerCycle(): Promise<number> {
+  drainOnce(dataDir())
+  return drainReconcileRequestsAsync(dataDir())
+}
+
 /** Drain the way the daemon's loop does: cycles until the request is swept (a sweep that spends its time budget on a loaded machine puts its project back), then two more so what the sweep queued is indexed. */
 async function drainTwice(): Promise<void> {
   for (let cycle = 0; cycle < 10; cycle++) {
-    drainOnce(dataDir())
+    await workerCycle()
     if (requestFile() === '') break
   }
-  drainOnce(dataDir())
-  drainOnce(dataDir())
+  await workerCycle()
+  await workerCycle()
   await pendingEmbeddings()
 }
 
@@ -245,16 +252,16 @@ describe('draining reconcile requests', () => {
     writeRequests([repo, repo, repo.toUpperCase(), sub])
     expect(parseReconcileRequests(requestFile()), 'case variants of one directory are one request on a case-insensitive filesystem').toHaveLength(process.platform === 'linux' ? 3 : 2)
 
-    drainOnce(dataDir())
+    await workerCycle()
 
     expect(workerLog().match(/: swept /g) ?? [], 'the repo and its subdirectory resolve to one top-level and one sweep').toHaveLength(1)
   })
 
-  it('drops a request whose directory is not a repository any more, and says so', () => {
+  it('drops a request whose directory is not a repository any more, and says so', async () => {
     const gone = path.join(indexableDir(), 'removed-checkout')
     writeRequests([gone])
 
-    expect(drainOnce(dataDir())).toBe(0)
+    expect(await workerCycle()).toBe(0)
 
     expect(workerLog()).toMatch(/dropped, git names no repository there/)
     expect(requestFile()).toBe('')
@@ -267,7 +274,7 @@ describe('draining reconcile requests', () => {
     writeRequests([repo])
     seam.timeOutTopLevelReads = 1
 
-    drainOnce(dataDir())
+    await workerCycle()
 
     expect(workerLog()).toMatch(/git did not answer in time, continuing next cycle/)
     expect(workerLog(), 'a slow git is not a directory that stopped being a repository').not.toMatch(/dropped/)
@@ -287,7 +294,7 @@ describe('draining reconcile requests', () => {
     writeRequests([repo])
     seam.reconcileBudgetMs = 0
 
-    drainOnce(dataDir())
+    await workerCycle()
 
     expect(workerLog()).toMatch(/budget spent, continuing next cycle/)
     // git spells the top-level with forward slashes, so compare resolved paths.
