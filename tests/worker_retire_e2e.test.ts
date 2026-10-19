@@ -30,12 +30,19 @@ function alive(pid: number): boolean {
   }
 }
 
-async function waitFor(label: string, timeoutMs: number, check: () => boolean): Promise<void> {
-  const start = Date.now()
+/** Resolves once `check` holds. It has no deadline of its own, so a slow machine only makes it take longer: the wait ends on the event, on `abandon` naming that the event can no longer come (the process waited on has died), or on `signal`, which the test's own timeout aborts. */
+async function waitFor(label: string, signal: AbortSignal, check: () => boolean, abandon?: () => string | null): Promise<void> {
   while (!check()) {
-    if (Date.now() - start > timeoutMs) throw new Error(`timed out after ${timeoutMs}ms waiting for: ${label}`)
+    const reason = abandon?.() ?? null
+    if (reason !== null) throw new Error(`${reason} while waiting for: ${label}`)
+    if (signal.aborted) throw new Error(`the test ended while waiting for: ${label}`)
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
+}
+
+/** Names a daemon that has exited, for a wait that needs it running. */
+function exitedNote(pid: number): () => string | null {
+  return () => (alive(pid) ? null : `the daemon (pid ${pid}) exited`)
 }
 
 function heartbeatNames(dataBase: string, pid: number): boolean {
@@ -82,26 +89,26 @@ function startWorker(env: NodeJS.ProcessEnv, cwd: string): number {
 describe('the built daemon retires on its own', () => {
   it(
     'exits after its pid file is deleted, without a stop',
-    async () => {
+    async (ctx) => {
       const dataBase = mkIsolated('tg-retire-e2e-pidfile-')
       const repo = mkIsolated('tg-retire-e2e-repo-')
       const env = tgIsolatedEnv(dataBase, { TG_WORKER_POLL_MS: '200' })
       const dir = effectiveDataDir(dataBase)
       const pid = startWorker(env, repo)
-      await waitFor('the daemon to write its drain heartbeat', 15000, () => heartbeatNames(dataBase, pid))
+      await waitFor('the daemon to write its drain heartbeat', ctx.signal, () => heartbeatNames(dataBase, pid), exitedNote(pid))
       expect(fs.readFileSync(workerPidPath(dir), 'utf8').trim()).toBe(String(pid))
 
       // What a `rm -rf` of the data home does on Windows to a daemon holding global.db: the pid file goes, the folder stays.
       fs.rmSync(workerPidPath(dir))
 
-      await waitFor('the daemon to retire after its pid file went missing', 30000, () => !alive(pid))
+      await waitFor('the daemon to retire after its pid file went missing', ctx.signal, () => !alive(pid))
     },
     60000,
   )
 
   it(
     'exits after the idle period, and the next enqueue starts a fresh one',
-    async () => {
+    async (ctx) => {
       const dataBase = mkIsolated('tg-retire-e2e-idle-')
       const repo = indexableDir()
       // Real spawn is the point: the suite pins TOKEN_GOAT_NO_WORKER_SPAWN=1 in this process and it would ride along into the CLI and turn ensureWorkerAlive into a no-op.
@@ -109,9 +116,9 @@ describe('the built daemon retires on its own', () => {
       delete env['TOKEN_GOAT_NO_WORKER_SPAWN']
       const dir = effectiveDataDir(dataBase)
       const pid = startWorker(env, repo)
-      await waitFor('the daemon to write its drain heartbeat', 15000, () => heartbeatNames(dataBase, pid))
+      await waitFor('the daemon to write its drain heartbeat', ctx.signal, () => heartbeatNames(dataBase, pid), exitedNote(pid))
 
-      await waitFor('the idle daemon to exit', 30000, () => !alive(pid))
+      await waitFor('the idle daemon to exit', ctx.signal, () => !alive(pid))
       // Its exit handler removes the pid file it owned, so the next ensureWorkerAlive sees no daemon.
       expect(fs.existsSync(workerPidPath(dir)), 'a retired daemon left its pid file behind').toBe(false)
 
@@ -128,7 +135,7 @@ describe('the built daemon retires on its own', () => {
       expect(replaced.status, `replace failed: ${replaced.stderr.slice(0, 400)}`).toBe(0)
 
       let fresh: number | undefined
-      await waitFor('an enqueue to start a fresh daemon', 20000, () => {
+      await waitFor('an enqueue to start a fresh daemon', ctx.signal, () => {
         try {
           const pidNow = parseInt(fs.readFileSync(path.join(dir, 'queue', 'drain-heartbeat'), 'utf8').trim(), 10)
           if (Number.isFinite(pidNow) && pidNow !== pid) {
@@ -148,7 +155,7 @@ describe('the built daemon retires on its own', () => {
 
   it(
     'is killed by a stop that lands before its first heartbeat, instead of being left running with no pid file',
-    async () => {
+    async (ctx) => {
       const dataBase = mkIsolated('tg-retire-e2e-race-')
       const dir = effectiveDataDir(dataBase)
       fs.mkdirSync(dir, { recursive: true })
@@ -167,7 +174,7 @@ describe('the built daemon retires on its own', () => {
       // The daemon runs on the bundle, not on the launcher this test process would resolve from source, so the identity check is told which launcher is the install's.
       stopWorker(dir, undefined, { entryScript: BUNDLE })
 
-      await waitFor('the daemon stopped inside its startup grace to die', 15000, () => !alive(pid))
+      await waitFor('the daemon stopped inside its startup grace to die', ctx.signal, () => !alive(pid))
     },
     45000,
   )
