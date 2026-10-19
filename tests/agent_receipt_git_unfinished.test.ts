@@ -1,10 +1,10 @@
-// When `git status` does not finish, the subagent receipt says so instead of reading as a clean result. Provenance: the SubagentStop payload keys (session_id, cwd, agent_id, agent_type, stop_hook_active, last_assistant_message) are FORMAT-DERIVED from https://code.claude.com/docs/en/hooks (SubagentStop), the same source tests/agent_receipt.test.ts cites; the Agent tool result is a plain string there too. The git that never finishes is real git held by an event: a clean filter (gitattributes `filter=<name>` with `filter.<name>.clean`, git's documented way to run a command on a file's content, https://git-scm.com/docs/gitattributes) that blocks until a release file exists, run by `git status` on a tracked file whose content changed at the same size (CAPTURE: Git for Windows 2.53 here, a status over such a file ran the filter and was cut off with it at a 4 s timeout; a longer file was reported modified without running it, which is why the content is rewritten at the same length). Real runGitAsync, real registry: the only substitution is the bound, removed, so no machine speed can change the outcome. A case that must finish runs git with no time limit; the held case waits for the hold process to announce itself (an fs.watch event on its started log), then aborts the run through the product's own tree kill, and the seam reports that ended run as the timed-out answer a bound would have given (HAND-DERIVED: a killed git is `{ exitCode: -1, timedOut: true }` in src/types.ts::GitResult, while an abort reports neither).
-import { spawn, spawnSync } from 'node:child_process'
+// When `git status` does not finish, the subagent receipt says so instead of reading as a clean result. Provenance: the SubagentStop payload keys (session_id, cwd, agent_id, agent_type, stop_hook_active, last_assistant_message) are FORMAT-DERIVED from https://code.claude.com/docs/en/hooks (SubagentStop), the same source tests/agent_receipt.test.ts cites; the Agent tool result is a plain string there too. Every git status answer is canned at the runGitAsyncLazy seam, so no row waits on a real git finishing inside any bound: the bound each call asked for is recorded, then the canned answer is returned. A git that did not finish is the killed answer `{ exitCode: -1, timedOut: true }` (HAND-DERIVED: src/types.ts::GitResult). The other answers are CAPTURE, Git for Windows 2.53.0 here: `git status --porcelain` printed nothing and exited 0 in a fresh `git init` directory, printed `?? new.txt` and a newline once new.txt existed there, and printed `fatal: not a git repository (or any of the parent directories): .git` on stderr and exited 128 in a directory with no repository above it. Two rows keep the real runner and say why where they stand.
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { runHook as RunHookFn } from '../src/hook_registry.js'
 import type * as UtilModule from '../src/util.js'
@@ -12,13 +12,13 @@ import type { GitResult, RunGitAsyncOptions } from '../src/types.js'
 import type { subagentStopHandler as SubagentStopHandlerFn } from '../src/agent_receipt.js'
 import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
-import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
+import { KILLED_GIT, NOT_A_REPOSITORY } from './helpers/canned_git.js'
 import { GIT_STATUS_TIMEOUT_MS, receiptLines } from '../src/agent_receipt.js'
 import type { VerificationState } from '../src/verification_state.js'
 
-const bound = vi.hoisted(() => ({ statusCalls: 0, timeouts: [] as unknown[], passThrough: false, abort: undefined as AbortController | undefined, answer: undefined as GitResult | undefined }))
+const bound = vi.hoisted(() => ({ statusCalls: 0, timeouts: [] as unknown[], passThrough: false, answer: undefined as GitResult | Promise<GitResult> | undefined, onStatus: undefined as (() => void) | undefined, unanswered: [] as string[] }))
 
-// Every git status the receipt or the stop warning asks for is counted, sync or async. Async git runs with no time limit (GIT_UNBOUNDED), so a slow git is never read as a killed one; a run the test aborts is reported as the timed-out answer. The bound each status call asked for is recorded before it is replaced, and `passThrough` sends a call to the real runner untouched, and `answer` stands in for a result the real runner cannot be made to give.
+// Every git status the receipt or the stop warning asks for is counted, sync or async. The bound each async status call asked for is recorded before it is answered, `answer` stands in for the result (a promise holds the call open until the test settles it), `onStatus` tells the test a status call has arrived, and `passThrough` sends a call to the real runner untouched. A call nothing answered is recorded in `unanswered`, which afterEach requires to be empty.
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
@@ -34,12 +34,12 @@ vi.mock('../src/util.js', async (importOriginal) => {
       if (args.includes('status')) {
         bound.statusCalls += 1
         bound.timeouts.push(opts.timeoutMs)
+        bound.onStatus?.()
       }
       if (bound.answer !== undefined) return bound.answer
       if (bound.passThrough) return actual.runGitAsyncLazy(args, opts)
-      const abort = bound.abort
-      const result = await actual.runGitAsyncLazy(args, { ...opts, timeoutMs: actual.GIT_UNBOUNDED, ...(abort ? { signal: abort.signal } : {}) })
-      return abort?.signal.aborted === true ? { ...result, timedOut: true as const } : result
+      bound.unanswered.push(args.join(' '))
+      return { stdout: '', stderr: 'no canned answer for this call', exitCode: 1 }
     },
   }
 })
@@ -51,90 +51,28 @@ let subagentStopHandler: typeof SubagentStopHandlerFn
 const CLAIM = 'I fixed the parser bug.'
 const NOTE = "git status did not finish, so this report's change claim was not checked."
 
-/** One test's hold process files. Each test has its own, so a hold process that starts after its test ended still reads its own release file and exits, and never writes into the next test's log. */
-interface Hold {
-  readonly started: string
-  readonly release: string
-}
+// CAPTURE: `git status --porcelain` in a fresh `git init` directory printed nothing and exited 0.
+const CLEAN_TREE: GitResult = { stdout: '', stderr: '', exitCode: 0 }
+// CAPTURE: the same command printed `?? new.txt` and a newline once an untracked new.txt existed.
+const UNTRACKED_FILE: GitResult = { stdout: '?? new.txt\n', stderr: '', exitCode: 0 }
 
-let toolDir = ''
-let holdScript = ''
 let repo = ''
-let holdCounter = 0
-let holds: Hold[] = []
-// Every directory watch holdStarted opened, closed by afterEach so one that never saw its hold announce itself (a test that failed or timed out first) does not outlive its test.
-let watchers: fs.FSWatcher[] = []
-
-// HAND-DERIVED: the held process is the node run of the hold script, whose path is on its command line (spelled with either slash on Windows).
-const isHoldCommandLine = (commandLine: string): boolean => commandLine.replaceAll('\\', '/').toLowerCase().includes(holdScript.toLowerCase())
-
-beforeAll(() => {
-  toolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-hold-')).replaceAll(path.sep, '/')
-  holdScript = `${toolDir}/hold.cjs`
-  // argv[2] is the started log and argv[3] the release file. The held process ends when the release file exists (afterEach writes it), when its kill is asked for, or after two minutes.
-  fs.writeFileSync(holdScript, [
-    "const fs = require('node:fs')",
-    'const [started, release] = process.argv.slice(2)',
-    "fs.appendFileSync(started, process.pid + require('node:os').EOL)",
-    'const wait = new Int32Array(new SharedArrayBuffer(4))',
-    'const deadline = Date.now() + 120000',
-    'while (!fs.existsSync(release) && Date.now() < deadline) Atomics.wait(wait, 0, 0, 50)',
-    'process.exit(0)',
-    '',
-  ].join('\n'))
-})
-
-afterAll(() => {
-  fs.rmSync(toolDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
-})
 
 function git(cwd: string, ...args: string[]): void {
   const result = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' })
   if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`)
 }
 
-/** A new set of hold files for one test, ended and swept by afterEach. */
-function newHold(): Hold {
-  const dir = `${toolDir}/h${holdCounter++}`
-  fs.mkdirSync(dir)
-  const hold = { started: `${dir}/started.log`, release: `${dir}/release` }
-  holds.push(hold)
-  return hold
-}
-
-const announcedPids = (hold: Hold): number[] =>
-  fs.existsSync(hold.started) ? fs.readFileSync(hold.started, 'utf8').split('\n').filter((line) => line.trim() !== '').map(Number) : []
-
-/** Resolves once the hold process of `hold` has written its pid line, from a directory watch event and one check made after the watch is in place, so neither order of events is missed. */
-function holdStarted(hold: Hold): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const check = (): boolean => announcedPids(hold).length > 0
-    const watcher = fs.watch(path.dirname(hold.started), () => {
-      if (check()) {
-        watcher.close()
-        resolve()
-      }
-    })
-    watchers.push(watcher)
-    watcher.once('error', reject)
-    if (check()) {
-      watcher.close()
-      resolve()
-    }
+/** A status call the test holds open until it hands `release` the answer, so the call is pending for as long as the test needs. `entered` resolves once the status call has arrived at the seam. */
+function heldGit(): { entered: Promise<void>; release: (answer: GitResult) => void } {
+  let release!: (answer: GitResult) => void
+  bound.answer = new Promise<GitResult>((resolve) => {
+    release = resolve
   })
-}
-
-/** A repository whose one tracked file `git status` can only judge by running the hold filter: same length, new content. */
-function repoHeldByFilter(hold: Hold): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-unfinished-'))
-  git(dir, 'init', '-q')
-  fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n')
-  git(dir, 'add', 'a.txt')
-  git(dir, 'commit', '-q', '-m', 'first')
-  fs.writeFileSync(path.join(dir, '.git', 'info', 'attributes'), '* filter=hold\n')
-  git(dir, 'config', 'filter.hold.clean', `'${process.execPath.replaceAll(path.sep, '/')}' '${holdScript}' '${hold.started}' '${hold.release}'`)
-  fs.writeFileSync(path.join(dir, 'a.txt'), 'two\n')
-  return dir
+  const entered = new Promise<void>((resolve) => {
+    bound.onStatus = resolve
+  })
+  return { entered, release }
 }
 
 beforeEach(async () => {
@@ -145,21 +83,17 @@ beforeEach(async () => {
   bound.statusCalls = 0
   bound.timeouts = []
   bound.passThrough = false
-  bound.abort = undefined
   bound.answer = undefined
-  holds = []
-  watchers = []
+  bound.onStatus = undefined
+  bound.unanswered = []
 })
 
 afterEach(() => {
   try {
-    // The release lets a held process that outlived its git end by itself; the pids it announced are ended too, but only while their command line is still the hold script, since a freed number may name another process by now.
-    for (const hold of holds) fs.writeFileSync(hold.release, '')
-    killAllIfCommandLine(holds.flatMap(announcedPids), isHoldCommandLine)
+    expect(bound.unanswered, 'a git call that reached the seam with no canned answer').toEqual([])
   } finally {
-    for (const watcher of watchers) watcher.close()
-    bound.abort = undefined
     bound.answer = undefined
+    bound.onStatus = undefined
     bound.passThrough = false
     vi.restoreAllMocks()
     vi.unstubAllEnvs()
@@ -182,28 +116,15 @@ const newSession = (): string => `s-unfinished-${process.pid}-${sessionCounter++
 // The event names the directory the roster is read from, so a developer's own .claude/agents under the process cwd never reaches these expectations.
 const agentResult = (sid: string, text: string) => runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: { prompt: 'Look into it.' }, session_id: sid, tool_response: text, cwd: repo.replaceAll(path.sep, '/') }))
 
-/** Runs the stop hook over the repo held by `hold`'s filter, waits for the filter to have announced itself, then aborts git: the order is decided by those two events and no clock. Rejects when git ends before the filter started, which is a broken fixture and not a pass. */
-async function stopWhileHeld(sid: string, hold: Hold): Promise<Awaited<ReturnType<typeof runHook>>> {
-  const abort = new AbortController()
-  bound.abort = abort
-  const stopped = runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
-  const endedFirst = stopped.then(() => {
-    throw new Error('git ended before the hold filter started')
-  })
-  await Promise.race([holdStarted(hold), endedFirst])
-  abort.abort()
-  return stopped
-}
-
 const state = (overrides: Partial<VerificationState> = {}): VerificationState => ({ runs: [], failingUnresolved: false, editedFiles: [], editedAnyFile: false, editedSinceLastPass: [], ...overrides })
 
 describe('a change claim whose git status did not finish', () => {
   it('gets one plain line through the real registry, not a clean result', async () => {
     const sid = newSession()
-    const hold = newHold()
-    repo = repoHeldByFilter(hold)
-    await stopWhileHeld(sid, hold)
-    expect(announcedPids(hold)).toHaveLength(1)
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-unfinished-'))
+    bound.answer = KILLED_GIT
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(bound.statusCalls).toBe(1)
     const delivered = JSON.stringify(await agentResult(sid, CLAIM))
     expect(delivered).toContain(NOTE)
     expect(delivered).not.toContain('recorded no edit')
@@ -211,19 +132,18 @@ describe('a change claim whose git status did not finish', () => {
 
   it('is not said for a report that claims nothing, which needs no git at all', async () => {
     const sid = newSession()
-    const hold = newHold()
-    repo = repoHeldByFilter(hold)
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-unfinished-'))
+    bound.answer = KILLED_GIT
     const message = 'The handler adds a header to each request.'
     await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, message)))
     expect((await agentResult(sid, message)).hookType).toBe('pass')
-    expect(fs.existsSync(hold.started)).toBe(false)
     expect(bound.statusCalls).toBe(0)
   })
 
   it('is not said when git finishes: a clean tree still gets the clean-tree flag', async () => {
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-unfinished-'))
-    git(repo, 'init', '-q')
+    bound.answer = CLEAN_TREE
     await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     const delivered = JSON.stringify(await agentResult(sid, CLAIM))
     expect(delivered).toContain('recorded no edit')
@@ -233,40 +153,26 @@ describe('a change claim whose git status did not finish', () => {
   it('is not said for a git that fails for another reason: a directory that is not a repository', async () => {
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-norepo-'))
+    bound.answer = NOT_A_REPOSITORY
     await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect((await agentResult(sid, CLAIM)).hookType).toBe('pass')
   })
 
+  // The real runner, kept on purpose: with PATH empty the spawn is refused at once, so no slow git can change the outcome, and the answer it gives for a missing git is the subject.
   it('is not said when git is missing from PATH', async () => {
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-nogit-'))
     git(repo, 'init', '-q')
-    const empty = path.join(toolDir, 'empty')
-    fs.mkdirSync(empty, { recursive: true })
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-emptypath-'))
+    bound.passThrough = true
     vi.stubEnv('PATH', empty)
     try {
       await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     } finally {
       vi.unstubAllEnvs()
+      fs.rmSync(empty, { recursive: true, force: true })
     }
     expect((await agentResult(sid, CLAIM)).hookType).toBe('pass')
-  })
-
-  it('a hold process that starts after its test ended writes only to its own files and ends by itself', async () => {
-    const earlier = newHold()
-    const later = newHold()
-    fs.writeFileSync(earlier.release, '')
-    const late = spawn(process.execPath, [holdScript, earlier.started, earlier.release], { stdio: 'ignore' })
-    try {
-      await new Promise<void>((resolve, reject) => {
-        late.once('error', reject)
-        late.once('exit', () => resolve())
-      })
-      expect(announcedPids(earlier)).toEqual([late.pid])
-      expect(fs.existsSync(later.started)).toBe(false)
-    } finally {
-      if (late.exitCode === null && late.signalCode === null) late.kill()
-    }
   })
 
   it('sits beside the other lines instead of replacing them', () => {
@@ -294,7 +200,7 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
   it('a clean tree is asked once, and the receipt flag and the hallucination warning agree', async () => {
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-once-'))
-    git(repo, 'init', '-q')
+    bound.answer = CLEAN_TREE
     await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect(bound.statusCalls).toBe(1)
     expect(bound.timeouts).toEqual([GIT_STATUS_TIMEOUT_MS])
@@ -304,9 +210,9 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
 
   it('a git that did not finish is asked once, and the receipt line and the stderr note agree', async () => {
     const sid = newSession()
-    const hold = newHold()
-    repo = repoHeldByFilter(hold)
-    await stopWhileHeld(sid, hold)
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-once-'))
+    bound.answer = KILLED_GIT
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect(bound.statusCalls).toBe(1)
     expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not finish`])
     expect(JSON.stringify(await agentResult(sid, CLAIM))).toContain(NOTE)
@@ -314,10 +220,8 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
 
   it('the stop warning asked alone leaves the event loop free while git is held, and asks within the hint bound', async () => {
     const sid = newSession()
-    const hold = newHold()
-    repo = repoHeldByFilter(hold)
-    const abort = new AbortController()
-    bound.abort = abort
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-held-'))
+    const held = heldGit()
     let settled = false
     const stopped = Promise.resolve(subagentStopHandler(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))).then(() => {
       settled = true
@@ -325,16 +229,18 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     const endedFirst = stopped.then(() => {
       throw new Error('the stop handler finished while git was still to be held')
     })
-    // The announcement is an fs.watch event: it can only be delivered to a loop the handler left free, and the handler cannot have finished while git is held.
-    await Promise.race([holdStarted(hold), endedFirst])
+    // The status call arrives at the seam and stays pending; the handler cannot have finished while it does, and the turn of the event loop that follows could only run because the handler left the loop free.
+    await Promise.race([held.entered, endedFirst])
+    await new Promise<void>((resolve) => setImmediate(resolve))
     expect(settled).toBe(false)
-    abort.abort()
+    held.release(KILLED_GIT)
     await stopped
     expect(bound.statusCalls).toBe(1)
     expect(bound.timeouts).toEqual([HINT_MS])
     expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not finish`])
   })
 
+  // The real runner, kept on purpose: either outcome of a git under the hint bound is accepted below (finished is clean, cut off is unchecked), so a slow git cannot fail the row, and what it pins is that the real runner, not a canned answer, handles the bound the stop warning hands it.
   it('the stop warning asked alone runs the real runner under the hint bound', async () => {
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-real-'))
@@ -353,7 +259,7 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-copilot-once-'))
-    git(repo, 'init', '-q')
+    bound.answer = CLEAN_TREE
     const out = await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect(bound.statusCalls).toBe(1)
     expect(bound.timeouts).toEqual([HINT_MS])
@@ -364,7 +270,7 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
   it('a user-set hint bound is what the stop warning hands the runner', async () => {
     vi.stubEnv('TOKEN_GOAT_GIT_HINT_MAX_MS', '777')
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-userbound-'))
-    git(repo, 'init', '-q')
+    bound.answer = CLEAN_TREE
     await subagentStopHandler(buildEvent('subagent_stop', stopPayload(newSession(), repo, CLAIM)))
     expect(bound.timeouts).toEqual([777])
   })
@@ -373,9 +279,9 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
   it('on Copilot CLI a timeout under the hint bound is not the rewrite\'s answer: it asks again under its own', async () => {
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli')
     const sid = newSession()
-    const hold = newHold()
-    repo = repoHeldByFilter(hold)
-    const out = await stopWhileHeld(sid, hold)
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-copilot-held-'))
+    bound.answer = KILLED_GIT
+    const out = await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect(bound.statusCalls).toBe(2)
     expect(bound.timeouts).toEqual([HINT_MS, GIT_STATUS_TIMEOUT_MS])
     expect(JSON.stringify(out)).toContain(NOTE)
@@ -388,8 +294,7 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
     if (harness !== undefined) vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', harness)
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-dirty-'))
-    git(repo, 'init', '-q')
-    fs.writeFileSync(path.join(repo, 'new.txt'), 'x\n')
+    bound.answer = UNTRACKED_FILE
     const out = await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
     expect(bound.statusCalls).toBe(1)
     expect(warnings).toEqual([])

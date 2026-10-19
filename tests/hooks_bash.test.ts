@@ -8,6 +8,32 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { expectHookType } from './helpers/hook-output.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
+import type * as UtilModule from '../src/util.js'
+import { KILLED_GIT, SECOND_HEAD, STATUS_A_MODIFIED, cannedFingerprintAnswer, cannedGit, cannedNoRepository, cannedSkillListing } from './helpers/canned_git.js'
+import type { CannedGit } from './helpers/canned_git.js'
+
+// Seam over the git calls that fingerprint a repository (src/bash_output_cache.ts::gitStateFingerprintSync): `killed` names the git subcommand (`status`, `rev-parse`) reported as killed at its time bound for the next `kills` calls (every call when unset), and `canned` answers the fingerprint calls from a known repository state (tests/helpers/canned_git.ts) so no row waits on a real git finishing inside a bound. `skillListing` answers the three file listings of the nested-skill scan that a host-session row runs before the hook approves a rewrite (asHostSession). Every other git call runs for real under its default bound. All three are test-only; the rows that set one reset it.
+const gitSeam = vi.hoisted(() => ({ killed: null as string | null, kills: Infinity, canned: null as CannedGit | null, skillListing: false }))
+
+function cannedRepo(): CannedGit {
+  if (gitSeam.canned === null) throw new Error('the canned git state is not installed')
+  return gitSeam.canned
+}
+
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  return {
+    ...actual,
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
+      if (args[0] === gitSeam.killed && gitSeam.kills > 0) {
+        gitSeam.kills -= 1
+        return KILLED_GIT
+      }
+      const answer = gitSeam.canned === null ? null : cannedFingerprintAnswer(gitSeam.canned, opts?.cwd, args)
+      return answer ?? (gitSeam.skillListing ? cannedSkillListing(args) : null) ?? actual.runGit(args, opts)
+    },
+  }
+})
 
 // vi.mock is hoisted — this redirects configPath() to a per-test-file temp file so the bash_compress.cache_min_bytes / timeout_seconds wiring tests near the bottom of this file can set a non-default config value deterministically. Mirrors tests/config.test.ts and tests/disk_cache.test.ts. dataDir() is also redirected to an isolated temp dir so the git-mutation staleness-enqueue tests below (which exercise the real queue/dirty.txt write path via enqueueDirtyPathSafe) never touch the real local dirty queue -- mirrors tests/hooks_edit.test.ts's isolation pattern.
 vi.mock('../src/constants.js', async (importOriginal) => {
@@ -95,6 +121,11 @@ function makePostBashEvent(command: string, output: string, cwd?: string): HookE
     },
   })
 }
+
+// Rows in about twenty describes here cache an output or a file read in the session (postBashHandler, recordFileRead) and clear it only in their own beforeEach; under --sequence.shuffle the first row of a describe with no beforeEach (a pre-hook row for a bare `npm test`, say) then ran against the previous describe's cache and saw a recalled output instead of its command rewritten. Clearing after every row, here for the whole file, leaves each row a clean session whichever describe ran before it.
+afterEach(() => {
+  clearModuleCaches()
+})
 
 describe('postBashHandler', () => {
   beforeEach(() => {
@@ -288,13 +319,21 @@ describe('postBashHandler', () => {
 
   it('caches output for cd-prefixed tsc command and fires recall on repeat', async () => {
     const bigOutput = 'src/auth.ts(12,5): error TS2345: ...\n'.repeat(50)
-    // Post side: store the output
-    await postBashHandler(makePostBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit', bigOutput))
-    // Pre side: second run should get a recall hint
-    const result = preBashHandler(makeBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit'))
-    expect(result.hookType).toBe('context')
-    if (result.hookType === 'context') {
-      expect(result.context).toContain('bash-output')
+    // A build command is cached with the git fingerprint of the event's directory (the process's, here), and a git killed at its bound reads as an unknown state that is never recalled; the row asserts the recall, so the fingerprint calls are answered from a known repository state.
+    gitSeam.canned = cannedGit()
+    try {
+      // Post side: store the output
+      await postBashHandler(makePostBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit', bigOutput))
+      // Pre side: second run should get a recall hint
+      const result = preBashHandler(makeBashEvent('cd C:/Projects/wellsent && npx tsc --noEmit'))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain('bash-output')
+      }
+      // The seam is live: the store and the recall each fingerprinted from the canned state, not from a real git.
+      expect(cannedRepo().served).toBeGreaterThanOrEqual(4)
+    } finally {
+      gitSeam.canned = null
     }
   })
 
@@ -2590,10 +2629,13 @@ describe('preBashHandler — rg indented def patterns', () => {
 async function asHostSession<T>(run: () => T): Promise<T> {
   const prev = process.env['CLAUDE_CODE_ENTRYPOINT']
   process.env['CLAUDE_CODE_ENTRYPOINT'] = 'claude-vscode'
+  // The check lists the checkout's files with git under a 15 s bound before it clears a rewrite; these rows assert the rewrite, not git's speed.
+  gitSeam.skillListing = true
   try {
     await loadHiddenRuleCheck()
     return run()
   } finally {
+    gitSeam.skillListing = false
     resetPermissionSourceCache()
     if (prev === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
     else process.env['CLAUDE_CODE_ENTRYPOINT'] = prev
@@ -2950,6 +2992,8 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
   it('does not recall a cached pip freeze once requirements.txt changes since it was cached', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'tg-m44-'))
     writeFileSync(join(tmpDir, 'requirements.txt'), 'requests==2.0.0\n')
+    // A build command also fingerprints the directory's git state, and a git killed at its bound reads as an unknown state that is never recalled; the row asserts the lockfile fingerprint, so git answers as it does outside a repository (the temp directory is in none).
+    gitSeam.canned = cannedNoRepository()
     try {
       const cmd = 'pip freeze'
       const largeOutput = 'requests==2.0.0\n'.repeat(100)
@@ -2970,7 +3014,10 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
       if (staleResult.hookType === 'context') {
         expect(staleResult.context).not.toContain('is cached')
       }
+      // The seam is live: the store and each recall asked git for the state, and the canned answer served them.
+      expect(cannedRepo().served).toBeGreaterThanOrEqual(3)
     } finally {
+      gitSeam.canned = null
       rmSync(tmpDir, { recursive: true, force: true })
     }
   })
@@ -2979,6 +3026,16 @@ describe('preBashHandler — stale cache recall by fingerprint (M44 regression)'
 describe('preBashHandler/postBashHandler — scoped git status/diff --stat recall (Bug D regression)', () => {
   beforeEach(() => {
     clearModuleCaches()
+    // The recall rows below assert the fingerprint comparison, not git's speed: a git killed at its 5 s bound reads as an unknown state and is never claimed unchanged (the timed-out rows pin that), so the fingerprint calls are answered from a known repository state and no loaded machine can kill them.
+    gitSeam.killed = null
+    gitSeam.kills = Infinity
+    gitSeam.canned = cannedGit()
+  })
+
+  afterEach(() => {
+    gitSeam.killed = null
+    gitSeam.kills = Infinity
+    gitSeam.canned = null
   })
 
   it('recalls a cached scoped `git status --porcelain -- <path>` on an identical rerun with no intervening edit', async () => {
@@ -3000,6 +3057,8 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
         expect(secondResult.context).toContain('is cached and unchanged')
         expect(secondResult.context).toContain('token-goat bash-output')
       }
+      // The seam is live: both fingerprint calls of the store and of the recall were answered from the canned state, not by a real git (a changed fingerprint argv would leave this at 0).
+      expect(cannedRepo().served).toBeGreaterThanOrEqual(4)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -3039,6 +3098,7 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
 
       // Edit the scoped path without staging or committing -- this is exactly what a real edit-tool write followed by postEditHandler's dirty-queue append looks like from git's perspective: the file's content changes, HEAD stays put. `git status --porcelain` reflects it immediately, which is what the fingerprint is keyed on.
       writeFileSync(join(dir, 'a.txt'), 'two\n')
+      cannedRepo().status = STATUS_A_MODIFIED
 
       const staleResult = preBashHandler(makeBashEvent(cmd, dir))
       if (staleResult.hookType === 'context') {
@@ -3061,9 +3121,7 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
       const freshResult = preBashHandler(makeBashEvent(cmd, dir))
       expect(freshResult.hookType).toBe('context')
 
-      writeFileSync(join(dir, 'b.txt'), 'new\n')
-      execFileSync('git', ['-c', 'core.hooksPath=/dev/null', 'add', '.'], { cwd: dir, stdio: 'ignore' })
-      execFileSync('git', ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'second'], { cwd: dir, stdio: 'ignore' })
+      cannedRepo().head = SECOND_HEAD
 
       const staleResult = preBashHandler(makeBashEvent(cmd, dir))
       if (staleResult.hookType === 'context') {
@@ -3088,6 +3146,75 @@ describe('preBashHandler/postBashHandler — scoped git status/diff --stat recal
       if (result.hookType === 'context') {
         expect(result.context).not.toContain('is cached and unchanged')
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('preBashHandler/postBashHandler — scoped git recall while git is killed at its time bound', () => {
+  beforeEach(() => {
+    clearModuleCaches()
+    gitSeam.killed = null
+    gitSeam.kills = Infinity
+    gitSeam.canned = cannedGit()
+  })
+
+  afterEach(() => {
+    gitSeam.killed = null
+    gitSeam.kills = Infinity
+    gitSeam.canned = null
+  })
+
+  const cmd = 'git status --porcelain -- a.txt'
+  const output = (' M a.txt\n').repeat(80)
+  const GENERIC_RECALL = 'Output from a prior `git status --porcelain -- a.txt` run is cached. Use `token-goat bash-output '
+
+  // The pre hook fingerprints the repository twice for one call: once in the scoped-git recall branch, once more in the generic recall branch that follows it. A git killed at its bound for only the first of the two leaves the scoped branch with an unknown state (stale) and the generic branch with a healthy one, which serves the generic hint -- the text a full-suite run once received where this file expected "is cached and unchanged". The output is cached either way; only the claim that the repository is unchanged is withheld.
+  it.each(['status', 'rev-parse'])('serves the generic recall hint, not "unchanged", when only the first recall-time git %s is killed', async (killed) => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+
+      // Control: same entry, same repository, no kill -- recalled as unchanged. Without it the assertions below could hold for an entry that was never cached.
+      const healthy = preBashHandler(makeBashEvent(cmd, dir))
+      expect(healthy.hookType).toBe('context')
+      if (healthy.hookType === 'context') expect(healthy.context).toContain('is cached and unchanged')
+
+      gitSeam.killed = killed
+      gitSeam.kills = 1
+      const result = preBashHandler(makeBashEvent(cmd, dir))
+      expect(result.hookType).toBe('context')
+      if (result.hookType === 'context') {
+        expect(result.context).toContain(GENERIC_RECALL)
+        expect(result.context).not.toContain('unchanged')
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['status', 'rev-parse'])('serves no recall at all while every recall-time git %s stays killed', async (killed) => {
+    const dir = gitRepoWithCommit()
+    try {
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+      gitSeam.killed = killed
+      const result = preBashHandler(makeBashEvent(cmd, dir))
+      expect(result.hookType).toBe('pass')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('serves no recall of an output that was cached while git was killed', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      gitSeam.killed = 'status'
+      await postBashHandler(makePostBashEvent(cmd, output, dir))
+      gitSeam.killed = null
+
+      const result = preBashHandler(makeBashEvent(cmd, dir))
+      expect(result.hookType).toBe('pass')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
