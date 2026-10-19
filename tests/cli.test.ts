@@ -43,11 +43,17 @@ describe('token-goat CLI', () => {
     expect(r.stdout).toContain('stats')
   }, 30000)
 
-  it('stats --json outputs valid JSON', async () => {
+  // HAND-DERIVED: the null totals and the reason string come from GLOBAL_DB_MISSING_REASON in src/stats.ts, which applies when global.db does not exist yet, as in a fresh isolated home.
+  it('stats --json in a fresh home publishes null totals with the reason', async () => {
     const r = await run(['stats', '--json'])
     expect(r.status).toBe(0)
     const output = JSON.parse(r.stdout)
-    expect(typeof output.total_events).toBe('number')
+    expect(output.total_events).toBeNull()
+    expect(output.total_bytes_saved).toBeNull()
+    expect(output.total_tokens_saved).toBeNull()
+    expect(output.db_missing).toBe(true)
+    expect(typeof output.totals_unknown_reason).toBe('string')
+    expect(output.totals_unknown_reason.length).toBeGreaterThan(0)
   }, 30000)
 
   it('context-stats --help exits 0', async () => {
