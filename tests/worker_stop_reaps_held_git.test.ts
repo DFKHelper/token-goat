@@ -269,15 +269,18 @@ describe('stopping a daemon whose child has a child of its own', () => {
     const found = descendantsOf(daemonPid, table)
     for (const [pid, args] of found) recorded.set(pid, args)
     recorded.set(daemonPid, table.get(daemonPid)?.args.trim() ?? '')
-    expect([...found.values()].some((args) => GRANDCHILD_PROCESS.test(args)), `calibration: ${GRANDCHILD_ARGS} runs under the daemon, found ${JSON.stringify([...found.values()])}`).toBe(true)
+    const grandchildPid = [...found].find(([, args]) => GRANDCHILD_PROCESS.test(args))?.[0]
+    expect(grandchildPid, `calibration: ${GRANDCHILD_ARGS} runs under the daemon, found ${JSON.stringify([...found.values()])}`).toBeDefined()
+    const daemonExited = new Promise<void>((resolve) => daemon.once('exit', () => resolve()))
 
     // What startDetachedWorker does right after the spawn: a pid file inside its startup grace is stopWorker's proof that the pid is the worker. Written here, after every wait above, so a slow machine cannot age it past the grace before stopWorker reads it.
     fs.writeFileSync(workerPidPath(dir), `${daemonPid}\n`)
     expect(stopWorker(dir, undefined, { entryScript: launcher }), 'stopWorker found no running worker to stop').toBe(true)
 
-    // The pipe closes only when the daemon, the cmd.exe and ping have all exited, so this wait is the assertion: a bare kill leaves ping holding it. No clock decides it; the test's own cap fails a daemon or ping that never goes, and the failure lists what still runs.
+    // The wait is the daemon's own exit, an event of the stop; ping gets one look right after it, by signal 0 (exit status set at termination, so it does not lag the way the process table does), and a bare kill that leaves ping running fails there naming it. Nothing waits for ping to go: the stop's taskkill /T has ended it by the time the stop returns, or it was not a tree kill.
     nameWhatIsLeft(ctx, survivors)
-    await everyHolderGone
+    await daemonExited
+    expect(processAlive(grandchildPid as number), `the grandchild ${GRANDCHILD_ARGS} (pid ${grandchildPid}) is still running after the stop ended the daemon`).toBe(false)
   })
 })
 
