@@ -2,6 +2,7 @@
 
 import { getHintStatsSummary, getHintStatsTotals, getHintSpendTotals } from './hint_stats_read.js'
 import { resetHintStats, markCategoryEffective, markCategoryIneffective, isSuppressionCategory, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
+import { readStatsWriteFailures, statsWriteFailuresLine } from './stats.js'
 import { pad, countNoun } from './util.js'
 import { displaySafeJson, displaySafeText } from './paths.js'
 import { echoedValue } from './hint_suggestion_guard.js'
@@ -66,8 +67,8 @@ function printSummary(rows: readonly CategoryEfficacy[]): void {
         pad(String(row.actedOn), 10) +
         pad(efficacyCell(row), 12) +
         pad(suppressedCell(row), 17) +
-        pad(String(row.manualEffective), 9) +
-        pad(String(row.manualIneffective), 9) +
+        pad(row.manualEffective === null ? 'unknown' : String(row.manualEffective), 9) +
+        pad(row.manualIneffective === null ? 'unknown' : String(row.manualIneffective), 9) +
         formatSpentCell(row) +
         '\n',
     )
@@ -132,7 +133,14 @@ export function runHintStatsCommand(opts: HintStatsCommandOptions = {}): void {
   if (session === undefined && noEmissions) {
     process.stdout.write('No hint emissions recorded yet — the zeros below are absence of data, not measured ineffectiveness.\n')
   }
+  // The ledger behind the numbers below is best-effort: a write that failed is logged out of band and appears in no count, so say so beside the table it explains.
+  const writeFailures = readStatsWriteFailures()
+  if (writeFailures !== null) process.stdout.write(`${statsWriteFailuresLine(writeFailures)}\n`)
   printSummary(rows)
+  const marksUnknownReason = rows.find((r) => r.manualMarksUnknownReason !== null)?.manualMarksUnknownReason
+  if (marksUnknownReason !== undefined && marksUnknownReason !== null) {
+    process.stdout.write(`\nmanual votes: unknown (${displaySafeText(marksUnknownReason)}); the manual+ and manual- cells above are not zeros.\n`)
+  }
   // The polarity split is documented in hint_stats.ts, which says it is disclosed "here and in the CLI output". It was not: the table printed both scales in one column with nothing to separate them, and a reader comparing them straight across drew the opposite of the truth.
   if (rows.some((r) => isSuppressionCategory(r.category) && r.emitted > 0)) {
     process.stdout.write(

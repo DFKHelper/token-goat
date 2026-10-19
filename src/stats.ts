@@ -49,6 +49,19 @@ export interface StatsSummary {
   /** Totals split by the `tg_version` that wrote each row, so a headline `total_tokens_saved` spanning rows priced under different pricing-formula eras (a divisor change, a new kind, a fixed baseline) is never presented as a single commensurable number without disclosure. Rows written before the `tg_version` column existed, or by a build where it failed to record, are bucketed under {@link PRICING_VERSION_UNRECORDED} rather than attributed to the version running now -- exactly the same reasoning `HARNESS_UNRECORDED` already applies to `by_harness`. `hasMixedPricingEras` reduces this to the one boolean callers actually need: whether the sum above is safe to show unqualified. */
   by_pricing_version: Record<string, StatsBucket>
   window_days: number
+  /** Why the three headline totals above cannot be trusted, or null when every source behind them was read. Set when `stats_daily_rollup` exists but cannot be read (the totals then omit every rolled-up day, so they are a smaller number than the truth rather than a measurement) and when `global.db` does not exist. The totals above still hold the numbers that were read; a renderer prints `unknown (<reason>)` and `stats --json` publishes `null` in their place, so a failed read never looks like a measured zero. */
+  totals_unknown_reason: string | null
+  /** True when `global.db` does not exist, so nothing has been recorded or the data directory is not the one that was written to. Distinguishes that from a readable database holding no rows, which is a genuine zero. */
+  db_missing: boolean
+  /** The out-of-band record of `recordStat` writes that never reached `global.db` (see {@link recordStatWriteFailure}), or null when the log is absent. A gap in the numbers above is explained by this, and nothing else says so. */
+  write_failures: StatsWriteFailures | null
+}
+
+/** What stats-write-failed.log holds: how many failures were logged (throttled, so a floor, not a total), when the latest was logged and its reason. `count` is null when the log exists but could not be read. */
+export interface StatsWriteFailures {
+  count: number | null
+  latest_at: string | null
+  latest_reason: string
 }
 
 /** Bucket for stat rows that predate the `harness` column. Deliberately not a harness name: it marks the absence of a measurement, and any renderer showing it must not let it read as one. */
@@ -577,9 +590,13 @@ export function getGlobalDb(homeDir?: string): SqliteDatabase {
   return db
 }
 
+function globalDbExists(homeDir?: string): boolean {
+  return fs.existsSync(path.join(homeDir ? dataDirForHome(homeDir) : dataDir(), 'global.db'))
+}
+
 /** {@link getGlobalDb} for a report that only reads: when global.db does not exist yet it answers from an empty in-memory database with the same tables instead of creating the file, so `doctor`, `stats` and the other read commands on a fresh data dir report "no data" and leave nothing behind. Writers keep using getGlobalDb. */
 export function readGlobalDb(homeDir?: string): SqliteDatabase {
-  if (fs.existsSync(path.join(homeDir ? dataDirForHome(homeDir) : dataDir(), 'global.db'))) return getGlobalDb(homeDir)
+  if (globalDbExists(homeDir)) return getGlobalDb(homeDir)
   const d = new Database(':memory:')
   d.exec(GLOBAL_SCHEMA_SQL)
   return d
@@ -688,7 +705,9 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
 // Distinguishes "genuinely no stats ever recorded" from "stats exist but every one falls outside the requested --window-days" -- same empty-vs-filtered-store distinction already made for dead/types (--exclude-tests, --grep) so a caller sees a bare "no stats" as a filter artifact rather than a broken telemetry pipeline. Only queried once summarize() already found zero rows in-window, so the common (non-empty) path pays nothing extra.
 /** The line a stats report prints when no event falls in its window: "No stats recorded yet." when none was ever recorded, else how many were recorded outside the last `windowDays` days. */
 export function noStatsMessage(windowDays: number, homeDir?: string): string {
-  if (windowDays <= 0) return 'No stats recorded yet.'
+  const failures = readStatsWriteFailures(homeDir)
+  const withFailures = (message: string): string => (failures === null ? message : `${message}\n${statsWriteFailuresLine(failures)}`)
+  if (windowDays <= 0) return withFailures('No stats recorded yet.')
   const db = readGlobalDb(homeDir)
   let total = (db.prepare('SELECT COUNT(*) as c FROM stats').get() as { c: number }).c
   // Events rollupAndPruneStats already aggregated-and-deleted still happened -- omitting them here would silently shrink this count every time the rollup runs, which is exactly the kind of drift a self-measurement surface must not show.
@@ -700,11 +719,12 @@ export function noStatsMessage(windowDays: number, homeDir?: string): string {
       const rolledUp = (db.prepare('SELECT COALESCE(SUM(events), 0) as c FROM stats_daily_rollup').get() as { c: number }).c
       total += rolledUp
     }
-  } catch {
-    // Rollup table absent or unreadable: fall back to the raw-only count above.
+  } catch (err) {
+    // A rollup table that exists and cannot be read hides how many events were recorded, so neither "none" nor a raw-only count is true.
+    return withFailures(`Stats are unknown: stats_daily_rollup could not be read (${extractErrorMessage(err)}), so days already rolled up are not counted.`)
   }
-  if (total === 0) return 'No stats recorded yet.'
-  return `No stats in the last ${countNoun(windowDays, 'day')} (${total} recorded outside this window; use --window-days 0 for all time).`
+  if (total === 0) return withFailures('No stats recorded yet.')
+  return withFailures(`No stats in the last ${countNoun(windowDays, 'day')} (${total} recorded outside this window; use --window-days 0 for all time).`)
 }
 
 /** Minimum time between {@link recordStatWriteFailure} log lines, so a genuinely down global.db -- every recordStat call on every hook of every tool call failing -- produces one line per window instead of one per call. One marker for the whole data dir rather than per-kind or per-project (contrast index_prune.ts's recordKnownRootThrottled, which is deliberately per-directory): the database itself is what failed, and every recordStat call anywhere shares that one fate, so there is nothing to key the window on but the failure itself. */
@@ -716,6 +736,30 @@ function statsWriteFailureMarkerPath(dir: string): string {
 
 function statsWriteFailureLogPath(dir: string): string {
   return path.join(dir, 'stats-write-failed.log')
+}
+
+/** Reads stats-write-failed.log back: null when there is none (no write has failed), else the logged count and the latest line's time and reason. An unreadable log is reported as such rather than as no failures. */
+export function readStatsWriteFailures(homeDir?: string): StatsWriteFailures | null {
+  const logPath = statsWriteFailureLogPath(homeDir ? dataDirForHome(homeDir) : dataDir())
+  let raw: string
+  try {
+    raw = fs.readFileSync(logPath, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    return { count: null, latest_at: null, latest_reason: `stats-write-failed.log exists but could not be read: ${extractErrorMessage(err)}` }
+  }
+  const lines = raw.split('\n').filter((l) => l.length > 0)
+  const last = lines[lines.length - 1]
+  if (last === undefined) return null
+  const parsed = /^(\S+) recordStat write failed for kind=\S+: (.*)$/.exec(last)
+  return { count: lines.length, latest_at: parsed?.[1] ?? null, latest_reason: parsed?.[2] ?? last }
+}
+
+/** The one line every stats surface prints when {@link readStatsWriteFailures} found a log, so a gap in the numbers is explained where it is seen. */
+export function statsWriteFailuresLine(failures: StatsWriteFailures): string {
+  const head = failures.count === null ? 'Stats writes failed (count unknown)' : `Stats writes failed: ${failures.count} logged`
+  const when = failures.latest_at === null ? '' : `, latest ${failures.latest_at}`
+  return displaySafeText(`${head}${when}: ${failures.latest_reason}`)
 }
 
 /** Out-of-band record of a {@link recordStat} write that never reached `global.db`, mirroring worker.ts's `worker-errors.log` pattern (a plain appended file, one line per event) rather than inventing a new mechanism -- but into its own file, not that one, since worker-errors.log is the worker daemon's own log and this failure can happen from any process that calls recordStat. Writing the failure back into `global.db` itself would be circular: that database is what just refused the write. Records the kind and the error, not the lost bytes/tokens/detail payload -- the diagnostic value here is "the stats database is refusing writes", not a reconstruction of the row that was lost. Throttled by {@link STATS_WRITE_FAILURE_LOG_MIN_INTERVAL_MS} so an actual outage does not turn this file into its own unbounded-growth incident. Best-effort: never throws, matching recordStat's own contract that it must never block or slow the hook path. */
@@ -927,6 +971,8 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   let totalBytes = 0
   let totalTokens = 0
 
+  const dbMissing = testDb === undefined && !globalDbExists(homeDir)
+  let totalsUnknownReason: string | null = dbMissing ? 'global.db does not exist yet, so no stats have been recorded in this data directory' : null
   const db = testDb ?? readGlobalDb(homeDir)
   // Selected only when the column is actually there: an injected `testDb` may carry a table this module never migrated, and naming a missing column would throw out of summarize() entirely rather than degrading to "harness not recorded".
   const hasHarness = statsHasHarnessColumn(db)
@@ -1046,8 +1092,9 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
         addBucket(byPricingVersion[pricingVersion]!, r.events, bytesSaved, tokensSaved)
       }
     }
-  } catch {
-    // The rollup table is an optimization, not a correctness requirement for a database that predates it -- a query failure here degrades to "rows pruned before rollup existed are simply gone from long-window reports", never an error out of summarize().
+  } catch (err) {
+    // summarize() still must not throw, but a rollup that exists and cannot be read means every day already rolled up is missing from the totals: they are then a smaller number than the truth, so they are reported as unknown with the reason instead of as a measurement.
+    totalsUnknownReason = `stats_daily_rollup could not be read (${extractErrorMessage(err)}), so days already rolled up are not counted`
   }
 
   const bySourceDict: Record<string, StatsBucket> = {}
@@ -1100,6 +1147,9 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
       .map(([command, bucket]) => ({ ...bucket, command }))
       .filter((r) => r.events > 0),
     window_days: windowDays,
+    totals_unknown_reason: totalsUnknownReason,
+    db_missing: dbMissing,
+    write_failures: readStatsWriteFailures(homeDir),
   }
 }
 

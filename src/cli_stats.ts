@@ -161,10 +161,15 @@ function renderMethodology(json = false): void {
 
 /** The object `stats --json` prints. Spelled out field by field rather than emitting the summary directly, because the JSON shape is a published surface that `src/vscode_savings.ts` and any script a user has written both parse: a field renamed inside StatsSummary must not silently rename itself on the wire. The cost of that choice is that this is a whitelist, so a new summary field ships dead here unless it is added -- which is exactly what happened to `counts`, caught only by running the built binary rather than by any of the 11,000 tests. The guard in tests/stats_json_payload_covers_summary.test.ts now fails on the next omission instead. */
 export function statsJsonPayload(summary: StatsSummary): Record<string, unknown> {
+  // A total that omits a source that could not be read is published as null with the reason beside it, never as the smaller number: a script that reads `total_tokens_saved` must be able to tell "unknown" from a measured zero. vscode_savings.ts already treats a non-number there as no data.
+  const unknown = summary.totals_unknown_reason !== null
   return {
-    total_events: summary.total_events,
-    total_bytes_saved: summary.total_bytes_saved,
-    total_tokens_saved: summary.total_tokens_saved,
+    total_events: unknown ? null : summary.total_events,
+    total_bytes_saved: unknown ? null : summary.total_bytes_saved,
+    total_tokens_saved: unknown ? null : summary.total_tokens_saved,
+    totals_unknown_reason: summary.totals_unknown_reason,
+    db_missing: summary.db_missing,
+    write_failures: summary.write_failures,
     by_kind: summary.by_kind,
     by_day: summary.by_day,
     by_project: summary.by_project,

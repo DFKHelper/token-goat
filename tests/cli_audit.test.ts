@@ -46,6 +46,8 @@ describe('buildFeedbackCardFromClaude', () => {
     const mockReport: WasteReport = {
       transcriptPath: '/fake/path.jsonl',
       totalTokens: 5000,
+      transcriptLines: 4,
+      unparseableLines: 0,
       tokensByTool: [],
       tokensByFile: [],
       topCalls: [],
@@ -73,6 +75,8 @@ describe('buildFeedbackCardFromClaude', () => {
     const mockReport: WasteReport = {
       transcriptPath: '/fake/path.jsonl',
       totalTokens: 1000,
+      transcriptLines: 4,
+      unparseableLines: 0,
       tokensByTool: [],
       tokensByFile: [],
       topCalls: [],

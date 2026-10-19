@@ -66,6 +66,10 @@ export interface ParsedTranscript {
   assistantTurns: number[]
   /** Harness-injected context counted off the same pass. These lines carry no `message`, so the tool-call parser below skips them entirely -- which is exactly why this class of cost went unreported until now. See resident_context.ts. */
   resident: ResidentContextStats
+  /** Non-blank lines the file held. */
+  transcriptLines: number
+  /** Of those, the lines that failed JSON.parse (a truncated write, a corrupt tail) and so contributed nothing to the calls above. */
+  unparseableLines: number
 }
 
 export function safeStringify(value: unknown): string {
@@ -154,14 +158,19 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
   const assistantTurns: number[] = []
   const resident = createResidentContextStats()
   let seq = 0
+  let transcriptLines = 0
+  let unparseableLines = 0
 
   for (const line of readFileLines(transcriptPath)) {
     const trimmed = line.trim()
     if (trimmed === '') continue
+    transcriptLines += 1
     let obj: unknown
     try {
       obj = JSON.parse(trimmed)
     } catch {
+      // Counted, not dropped: the report prints how many lines it could not read, so a total over a partly read transcript is never presented as the whole.
+      unparseableLines += 1
       continue
     }
     if (obj === null || typeof obj !== 'object') continue
@@ -214,7 +223,7 @@ export function parseTranscript(transcriptPath: string): ParsedTranscript {
     if (role === 'assistant' && sawTextBlock) assistantTurns.push(turnTextTokens)
   }
 
-  return { calls, resultTextById, assistantTurns, resident }
+  return { calls, resultTextById, assistantTurns, resident, transcriptLines, unparseableLines }
 }
 
 // ---- cost attribution -----------------------------------------------------
@@ -372,7 +381,12 @@ export function assistantOutputCost(assistantTurns: number[]): AssistantOutputCo
 
 export interface WasteReport {
   transcriptPath: string
-  totalTokens: number
+  /** Null (unknown) when the transcript held lines and none of them parsed, so the total is not a measurement. When only some lines failed it is a lower bound: see {@link unparseableLines}. */
+  totalTokens: number | null
+  /** Non-blank lines in the transcript. */
+  transcriptLines: number
+  /** Lines that failed JSON.parse and are in none of the figures below. 0 for a fully parseable (or genuinely empty) transcript. */
+  unparseableLines: number
   tokensByTool: TokensByKey[]
   tokensByFile: TokensByKey[]
   topCalls: Array<{ seq: number; name: string; summary: string; tokens: number }>
@@ -390,7 +404,9 @@ export async function buildWasteReport(transcriptPath: string, opts: { topN?: nu
 
   return {
     transcriptPath,
-    totalTokens: costs.reduce((n, c) => n + c.tokens, 0),
+    totalTokens: parsed.transcriptLines > 0 && parsed.unparseableLines === parsed.transcriptLines ? null : costs.reduce((n, c) => n + c.tokens, 0),
+    transcriptLines: parsed.transcriptLines,
+    unparseableLines: parsed.unparseableLines,
     tokensByTool: tokensByTool(costs),
     tokensByFile: tokensByFile(costs),
     topCalls: topExpensiveCalls(costs, topN).map((c) => ({ seq: c.seq, name: c.name, summary: c.summary, tokens: c.tokens })),

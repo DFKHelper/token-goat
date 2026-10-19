@@ -147,7 +147,12 @@ function printReport(report: WasteReport): void {
 
   w('\n# token-goat waste\n')
   w(`Transcript: ${report.transcriptPath}\n`)
-  w(`Total tokens: ${report.totalTokens}\n`)
+  const skipped = `${report.unparseableLines} of ${countNoun(report.transcriptLines, 'transcript line')} could not be parsed`
+  if (report.totalTokens === null) {
+    w(`Total tokens: unknown (${skipped}; every figure below is empty because nothing was read)\n`)
+  } else {
+    w(`Total tokens: ${report.totalTokens}${report.unparseableLines > 0 ? ` (lower bound: ${skipped})` : ''}\n`)
+  }
 
   w('\n## Tokens by tool\n')
   if (report.tokensByTool.length === 0) {

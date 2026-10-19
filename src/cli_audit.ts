@@ -57,7 +57,7 @@ export function buildFeedbackCardFromClaude(report: WasteReport): MaintainerFeed
   }
 
   return {
-    taskSummary: `Engineering session in project (${report.totalTokens.toLocaleString()} tokens recorded across tool invocations).`,
+    taskSummary: `Engineering session in project (${report.totalTokens === null ? 'unknown number of' : report.totalTokens.toLocaleString()} tokens recorded across tool invocations).`,
     preAuditFindings: preAudit,
     auditExecutionFindings: [],
     recommendedFix: fixes,

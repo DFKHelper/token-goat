@@ -4,7 +4,7 @@ import { renderStats as richRenderStats } from './render/stats_renderer.js'
 import { fmtBytes } from './render/ansi.js'
 import { displaySafeText } from './paths.js'
 import type { StatsData } from './render/types.js'
-import { PRICING_VERSION_UNRECORDED, SOURCE_HINT, hasMixedPricingEras, noStatsMessage, summarize, type StatsSummary } from './stats.js'
+import { PRICING_VERSION_UNRECORDED, SOURCE_HINT, hasMixedPricingEras, noStatsMessage, statsWriteFailuresLine, summarize, type StatsSummary } from './stats.js'
 import { countNoun } from './util.js'
 import { VERSION } from './version.js'
 
@@ -19,12 +19,18 @@ function staleAnswersLine(summary: StatsSummary): string[] {
   return [`Stale answers:  ${changed + deleted} (${changed} changed on disk, ${deleted} deleted)`]
 }
 
+/** True when the report must not show the summary's totals as numbers: they omit a source that could not be read (see StatsSummary.totals_unknown_reason). An absent database is not this case, because the empty-store message already says it. */
+function _totalsUnknown(summary: StatsSummary): boolean {
+  return summary.totals_unknown_reason !== null && !summary.db_missing
+}
+
 function _totalsLines(summary: StatsSummary): string[] {
+  const unknown = _totalsUnknown(summary)
   return [
     '# token-goat stats',
-    `Total events:   ${summary.total_events}`,
-    `Bytes saved:    ${fmtBytes(summary.total_bytes_saved)}`,
-    `Tokens saved:   ${summary.total_tokens_saved}`,
+    `Total events:   ${unknown ? `unknown (${summary.totals_unknown_reason})` : summary.total_events}`,
+    `Bytes saved:    ${unknown ? 'unknown (see Total events)' : fmtBytes(summary.total_bytes_saved)}`,
+    `Tokens saved:   ${unknown ? 'unknown (see Total events)' : summary.total_tokens_saved}`,
     // Disclosure, not a correction: `total_tokens_saved` above sums rows written under whichever pricing formula was live when each was recorded, and `tg_version` cannot be read back into "which formula" for a row from before this disclosure existed (PRICING_VERSION_UNRECORDED is the overwhelming majority of all-time rows). Excluding those rows from the headline would discard nearly the whole figure rather than fix it, so the honest move is to keep the sum and say plainly that it spans more than one era, not to quietly present a mixed total as single-formula.
     ...(hasMixedPricingEras(summary)
       ? [
@@ -40,6 +46,8 @@ function _totalsLines(summary: StatsSummary): string[] {
     // Omitted when nothing was served stale, like the line above. Counts answers, not tokens, so it stays out of the totals.
     ...staleAnswersLine(summary),
     `Window:         ${summary.window_days} days`,
+    // A gap in the numbers above is explained here and nowhere else: recordStat is best-effort and never tells its caller a write was lost.
+    ...(summary.write_failures !== null ? [statsWriteFailuresLine(summary.write_failures)] : []),
   ]
 }
 
@@ -49,6 +57,11 @@ export function _useRichStats(): boolean {
   if (process.stdout.isTTY === true) return true
   const forceColor = process.env['FORCE_COLOR']
   return forceColor !== undefined && forceColor !== '0'
+}
+
+/** The rich renderer has no slot for the write-failure note, so it follows the drawn report as one plain line. */
+function _printWriteFailures(summary: StatsSummary): void {
+  if (summary.write_failures !== null) console.log(statsWriteFailuresLine(summary.write_failures))
 }
 
 function _renderShortTotals(summary: StatsSummary): void {
@@ -200,13 +213,13 @@ export function renderShortStats(opts?: { windowDays?: number; homeDir?: string;
   const windowDays = opts?.windowDays ?? 30
   const summary = summarize(windowDays, undefined, opts?.homeDir)
 
-  if (summary.total_events === 0) {
+  if (summary.total_events === 0 && !_totalsUnknown(summary)) {
     console.log(noStatsMessage(windowDays, opts?.homeDir))
     return
   }
 
-  // `force` (wired from `--short`) bypasses only the TTY/CI half of the gate -- an agent caller invoking through a pipe has no isTTY signal to spoof, so this is the only way it can reach the richer KPI view without reverse-engineering _useRichStats. NO_COLOR still wins even when forced: an explicit no-color preference should never be overridden.
-  const useTty = process.env['NO_COLOR'] ? false : opts?.force === true ? true : _useRichStats()
+  // `force` (wired from `--short`) bypasses only the TTY/CI half of the gate -- an agent caller invoking through a pipe has no isTTY signal to spoof, so this is the only way it can reach the richer KPI view without reverse-engineering _useRichStats. NO_COLOR still wins even when forced: an explicit no-color preference should never be overridden. The rich renderer draws the totals as numbers, so a summary whose totals are unknown takes the text path, which can say so.
+  const useTty = _totalsUnknown(summary) ? false : process.env['NO_COLOR'] ? false : opts?.force === true ? true : _useRichStats()
   if (!useTty) {
     _renderShortTotals(summary)
     return
@@ -214,18 +227,19 @@ export function renderShortStats(opts?: { windowDays?: number; homeDir?: string;
 
   const statsData = _buildStatsData(summary, windowDays)
   process.stdout.write(richRenderStats(statsData, { short: true }) + '\n')
+  _printWriteFailures(summary)
 }
 
 export function renderStats(opts?: { windowDays?: number; homeDir?: string }): void {
   const windowDays = opts?.windowDays ?? 30
   const summary = summarize(windowDays, undefined, opts?.homeDir)
 
-  if (summary.total_events === 0) {
+  if (summary.total_events === 0 && !_totalsUnknown(summary)) {
     console.log(noStatsMessage(windowDays, opts?.homeDir))
     return
   }
 
-  const useTty = _useRichStats()
+  const useTty = _totalsUnknown(summary) ? false : _useRichStats()
   if (!useTty) {
     _plainTextStats(summary)
     return
@@ -233,4 +247,5 @@ export function renderStats(opts?: { windowDays?: number; homeDir?: string }): v
 
   const statsData = _buildStatsData(summary, windowDays)
   process.stdout.write(richRenderStats(statsData) + '\n')
+  _printWriteFailures(summary)
 }

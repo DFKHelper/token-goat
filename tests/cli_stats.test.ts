@@ -16,6 +16,9 @@ vi.mock('../src/stats.js', () => ({
     by_command: {},
     by_source: { hook: { events: 3, tokens_saved: 42, bytes_saved: 100 } },
     window_days: _windowDays ?? 30,
+    totals_unknown_reason: null,
+    db_missing: false,
+    write_failures: null,
   }),
 }))
 

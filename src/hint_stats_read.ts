@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { getDb } from './db.js'
 import { globalDbPath } from './constants.js'
 import { loadConfig } from './config.js'
+import { extractErrorMessage } from './util.js'
 import { summarize, SOURCE_HINT } from './stats.js'
 import { HINT_CATEGORIES, categoryStats, shouldSuppress, type CategoryEfficacy, type HintCategory, type HintStatsTotals } from './hint_stats.js'
 
@@ -12,15 +13,18 @@ function hasLedger(): boolean {
   return fs.existsSync(globalDbPath())
 }
 
-function manualMarks(category: HintCategory): { effective: number; ineffective: number } {
+type ManualMarks = { effective: number | null; ineffective: number | null; unknownReason: string | null }
+
+/** A category nobody voted on is a genuine 0 0; a table that cannot be read is unknown, so the two never print alike. */
+function manualMarks(category: HintCategory): ManualMarks {
   try {
     const db = getDb(globalDbPath())
     const row = db.prepare(`SELECT effective_count, ineffective_count FROM hint_manual_marks WHERE category = ?`).get(category) as
       | { effective_count: number; ineffective_count: number }
       | undefined
-    return { effective: row?.effective_count ?? 0, ineffective: row?.ineffective_count ?? 0 }
-  } catch {
-    return { effective: 0, ineffective: 0 }
+    return { effective: row?.effective_count ?? 0, ineffective: row?.ineffective_count ?? 0, unknownReason: null }
+  } catch (err) {
+    return { effective: null, ineffective: null, unknownReason: `hint_manual_marks could not be read (${extractErrorMessage(err)})` }
   }
 }
 
@@ -30,7 +34,7 @@ export function getHintStatsSummary(sessionId?: string): CategoryEfficacy[] {
   const probeThresholds = loadConfig().hints.backoff_thresholds.filter((t) => t > 0)
   return HINT_CATEGORIES.map((category) => {
     const { emitted, actedOn, pending, unobservable, detected, bytesEmitted, legacyEmissions } = ledger ? categoryStats(category, sessionId) : NO_EMISSIONS
-    const marks = ledger ? manualMarks(category) : { effective: 0, ineffective: 0 }
+    const marks: ManualMarks = ledger ? manualMarks(category) : { effective: 0, ineffective: 0, unknownReason: null }
     const suppressed = ledger && shouldSuppress(category, '')
     return {
       category,
@@ -44,6 +48,7 @@ export function getHintStatsSummary(sessionId?: string): CategoryEfficacy[] {
       suppressionPermanent: suppressed && probeThresholds.length === 0,
       manualEffective: marks.effective,
       manualIneffective: marks.ineffective,
+      manualMarksUnknownReason: marks.unknownReason,
       bytesEmitted,
       legacyEmissions: legacyEmissions ?? 0,
     }

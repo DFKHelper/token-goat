@@ -371,8 +371,11 @@ export interface CategoryEfficacy {
   suppressed: boolean
   /** True only when this category is suppressed *and* `hints.backoff_thresholds` is empty, so no probe occasion will ever let it through again and the suppression can only be lifted by a manual `token-goat hint-stats --reset`. False when the category is not suppressed, and also when it is suppressed but probes are configured, where suppression is a self-healing throttle rather than an off switch. Those two states are operationally opposite and used to render identically; see the config comment on `backoff_thresholds` for why `[]` is a supported value. */
   suppressionPermanent: boolean
-  manualEffective: number
-  manualIneffective: number
+  /** Manual "effective" votes, or null when `hint_manual_marks` could not be read: unknown, never a zero that looks like nobody voted. {@link manualMarksUnknownReason} says why. */
+  manualEffective: number | null
+  manualIneffective: number | null
+  /** Why the two manual vote counts above are null, or null when they were read. */
+  manualMarksUnknownReason: string | null
   /** Sum of bytes_emitted across this category's tracked (non-legacy) emissions -- `null` when none of its emissions carry a spend figure (either zero emissions, or every one predates spend tracking; see `legacyEmissions`), never a fake 0. */
   bytesEmitted: number | null
   /** Count of this category's emissions with no bytes_emitted figure recorded -- pre-migration rows (see hint_emissions.bytes_emitted's schema comment in db.ts) plus any emission a caller logged without one. */
