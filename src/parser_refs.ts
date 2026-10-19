@@ -648,6 +648,22 @@ function rubyIdentifierRole(node: TsNode): 'declare' | 'skip' | 'use' {
   return 'use'
 }
 
+/** Local name -> imported name for every aliased specifier (`import { store as snapshotStore }`) of a TS/JS file's top-level import statements. Imports are top-level only, so the walk never descends into function bodies; a plain `import { store }` has no alias and adds nothing. */
+function tsJsImportAliases(root: TsNode): Map<string, string> {
+  const aliases = new Map<string, string>()
+  const collect = (node: TsNode): void => {
+    if (node.type === 'import_specifier') {
+      const imported = node.childForFieldName('name')
+      const local = node.childForFieldName('alias')
+      if (imported !== null && local !== null && imported.type === 'identifier' && imported.text !== local.text) aliases.set(local.text, imported.text)
+      return
+    }
+    for (const child of node.namedChildren) collect(child)
+  }
+  for (const child of root.namedChildren) if (child.type === 'import_statement') collect(child)
+  return aliases
+}
+
 /** Walk a tree-sitter tree collecting call-site and value-position references. Maintains a stack of enclosing scope names (functions / methods / classes) so each reference records its innermost enclosing symbol in `context` -- the data `refs --callers` groups on. References are deduplicated per (name, line) and single-character / builtin callees are dropped to keep the index focused. */
 export function extractRefs(root: TsNode, filePath: string, language: Language): RefEntry[] {
   const out: RefEntry[] = []
@@ -659,8 +675,16 @@ export function extractRefs(root: TsNode, filePath: string, language: Language):
       : (REF_NOISE_BY_LANG.get(language) ?? EMPTY_STRING_SET)
   const stack: string[] = []
   const rubyScopes: RubyScope[] = []
+  // Local name -> imported name for `import { store as snapshotStore }`: a use of the local name is a reference to the exported symbol, which a row recorded under the local name alone never reaches.
+  const importAliases = language === 'typescript' || language === 'javascript' ? tsJsImportAliases(root) : new Map<string, string>()
 
   const record = (name: string, node: TsNode): void => {
+    recordName(name, node)
+    const imported = importAliases.get(name)
+    if (imported !== undefined) recordName(imported, node)
+  }
+
+  const recordName = (name: string, node: TsNode): void => {
     if (name.length <= 1 || noise.has(name)) return
     const line = node.startPosition.row + 1
     const context = stack.length > 0 ? (stack[stack.length - 1] ?? '') : ''

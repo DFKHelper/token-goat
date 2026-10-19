@@ -314,7 +314,7 @@ function refMatchesDefinition(
     return null
   }
 
-  const node = findIdentifierNearPosition(ts, sourceFile, line0, position, symbolName)
+  const node = findIdentifierNearPosition(ts, sourceFile, line0, position, symbolName) ?? findAliasedIdentifierNearPosition(ts, sourceFile, line0, position, symbolName)
   if (node === null) return null
 
   // In `return { widget, other }` the identifier `widget` is both a property name and a use of the value, and getSymbolAtLocation hands back the PROPERTY symbol, which matches no definition and so drops the ref. Measured: `refs m.ts::widget` answered "No references found" for a file that plainly references it, while the byte-identical JavaScript answered correctly -- only .ts paths route through this checker (isTsPath in read_commands.ts), so the two languages disagreed about the same construct. getShorthandAssignmentValueSymbol is the TypeScript API's own answer to exactly this question.
@@ -340,6 +340,28 @@ function refMatchesDefinition(
     }
   }
   return false
+}
+
+/** The leftmost identifier at or after `position` on the line that is a local name `name` was imported under (`import { name as local }`), or null when the file aliases no such import or none of its local names sit there. `extractRefs` records a use of the alias under the imported name, so the identifier on that line is the alias and not `name` itself; resolving it follows the import to the definition, where a property of the same spelling resolves to something else and drops the row. */
+function findAliasedIdentifierNearPosition(
+  ts: typeof TsModule,
+  sourceFile: TsModule.SourceFile,
+  line0: number,
+  position: number,
+  name: string,
+): TsModule.Identifier | null {
+  let best: TsModule.Identifier | null = null
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue
+    const bindings = statement.importClause?.namedBindings
+    if (bindings === undefined || !ts.isNamedImports(bindings)) continue
+    for (const element of bindings.elements) {
+      if (element.propertyName === undefined || element.propertyName.text !== name) continue
+      const found = findIdentifierNearPosition(ts, sourceFile, line0, position, element.name.text)
+      if (found !== null && (best === null || found.getStart(sourceFile) < best.getStart(sourceFile))) best = found
+    }
+  }
+  return best
 }
 
 /** Finds the identifier matching `name` closest to (at or after) `position` on source line `line0` (0-based). `refs`' recorded (line, col) is the START of the enclosing expression the extractor matched (e.g. for `foo.run()` it is `foo`'s column, not `run`'s -- see `extractRefs`/`calleeName` in `parser.ts`, whose `record(name, node)` passes the whole call-expression node, not the callee identifier), so this can't require the position to land exactly inside the target identifier's span. Instead it scans every identifier on that line and picks the leftmost one whose text matches `name` and whose start is at or after `position` -- correct as long as `extractRefs`'s own per-(name, line) dedup holds (it does: see the `seen` set in `extractRefs`), since then there is at most one real occurrence of `name` at/after the recorded column on that line. */

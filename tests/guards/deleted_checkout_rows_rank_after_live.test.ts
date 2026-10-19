@@ -84,9 +84,10 @@ describe('symbol NAME with a deleted checkout still in the index', () => {
   })
 })
 
-describe('refs file::symbol with call sites in a deleted checkout', () => {
+// A `file::symbol` spec stays in the project owning the file, so a sibling checkout's rows are reached only by the bare name, which stays machine-wide.
+describe('refs NAME with call sites in a deleted checkout', () => {
   it('--callers tags the dead file and lists the live one first', () => {
-    const { status, stdout } = run(['refs', 'src/lib.ts::twin', '--callers'])
+    const { status, stdout } = run(['refs', 'twin', '--callers'])
     expect(status).toBe(0)
     const fileHeaders = stdout.split('\n').filter((l) => /use\.ts:/.test(l) && !l.startsWith(' '))
     expect(fileHeaders, stdout).toHaveLength(2)
@@ -97,7 +98,7 @@ describe('refs file::symbol with call sites in a deleted checkout', () => {
   })
 
   it('the per-reference listing tags the dead row the same way', () => {
-    const { stdout } = run(['refs', 'src/lib.ts::twin'])
+    const { stdout } = run(['refs', 'twin'])
     const rows = stdout.split('\n').filter((l) => l.includes('use.ts:'))
     expect(rows, stdout).toHaveLength(2)
     expect(rows[0]).not.toContain(DELETED_MARKER)
@@ -106,14 +107,14 @@ describe('refs file::symbol with call sites in a deleted checkout', () => {
   })
 
   it('--top tags the dead file in its ranked summary', () => {
-    const { stdout } = run(['refs', 'src/lib.ts::twin', '--top', '5'])
+    const { stdout } = run(['refs', 'twin', '--top', '5'])
     const dead = stdout.split('\n').find((l) => l.includes('proj-wt'))
     expect(dead, stdout).toBeDefined()
     expect(dead).toContain(DELETED_MARKER)
   })
 
   it('--json marks only the dead reference deleted', () => {
-    const { stdout } = run(['refs', 'src/lib.ts::twin', '--json'])
+    const { stdout } = run(['refs', 'twin', '--json'])
     const items = (JSON.parse(stdout) as { items: { filePath: string; deleted?: boolean }[] }).items
     const dead = items.filter((i) => i.filePath.includes('proj-wt'))
     const live = items.filter((i) => !i.filePath.includes('proj-wt'))
@@ -124,8 +125,20 @@ describe('refs file::symbol with call sites in a deleted checkout', () => {
   })
 
   it('does not tell the caller a deleted file merely changed and will be current on a repeat', () => {
-    const { stderr } = run(['refs', 'src/lib.ts::twin', '--callers'])
+    const { stderr } = run(['refs', 'twin', '--callers'])
     expect(stderr).not.toContain('changed on disk')
     expect(stderr).toContain('no longer on disk')
+  })
+})
+
+describe('refs file::symbol with call sites in a deleted checkout', () => {
+  it('lists only the live project, with no dead row and no deleted note', () => {
+    const { status, stdout, stderr } = run(['refs', 'src/lib.ts::twin', '--callers'])
+    expect(status).toBe(0)
+    const fileHeaders = stdout.split('\n').filter((l) => /use\.ts:/.test(l) && !l.startsWith(' '))
+    expect(fileHeaders, stdout).toHaveLength(1)
+    expect(stdout).not.toContain('proj-wt')
+    expect(stdout).not.toContain(DELETED_MARKER)
+    expect(stderr).not.toContain('no longer on disk')
   })
 })

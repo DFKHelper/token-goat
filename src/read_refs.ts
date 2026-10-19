@@ -12,7 +12,7 @@ import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
 import { DELETED_TAG, emitGuarded, fileIsGone, findSpecSeparator, guardJsonRows, guardText, healStaleIndex, healStaleResultFiles, recordReadStat, sinkGoneRows, truncationFooter, truncationNotice, warnIfFilesStale, type TruncationTotal } from './read_commands.js'
-import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, formatAmbiguity, parseReadSpec, resolveProjectConfinement, resolveQualifiedSpec, resolveQualifiedSpecDef } from './read_spec.js'
+import { confinedProjectRoot, confinementRefusal, parseCrossFileMultiSpec, formatAmbiguity, parseReadSpec, resolveProjectConfinement, resolveQualifiedSpec, resolveQualifiedSpecDef, specScopeRoot } from './read_spec.js'
 import { unknownSymbolSuggestion } from './read_suggest.js'
 import { isRefIndexedFile, refBlindLanguageNotice, refBlindKindNotice, refBlindKindPartialNote, REF_BLIND_DEF_PROBE_LIMIT } from './ref_blindness.js'
 import { typedRefsForDef } from './graph_traversal.js'
@@ -106,9 +106,11 @@ function parseMultiRefsSpec(spec: string): { file: string | undefined; symbols: 
   return { file, symbols }
 }
 
-/** The root every `refs` query is scoped to. `refs` searches the whole index by symbol NAME, so unlike the file-spec commands it cannot be gated by one path: leaving `rootDir` unset returns reference sites -- path, line and surrounding source context -- from every project on the machine. Falling back to the confining root scopes the search the same way `symbol`'s bare-name path already does. */
-function refsRootDir(opts: { projectRoot?: string }): string | undefined {
-  return opts.projectRoot ?? confinedProjectRoot() ?? undefined
+/** The root every `refs` query is scoped to. A bare name is searched by symbol NAME alone, so leaving `rootDir` unset returns reference sites -- path, line and surrounding source context -- from every project on the machine; it falls back to the confining root, the way `symbol`'s bare-name path does. A `file::symbol` spec names the file that defines the symbol, so it scopes to the project that owns that file (specScopeRoot, as `callers`, `impact`, `call-chain` and `brief` do): the same name in a sibling project is a different symbol. A root the caller supplied (the MCP tools' workspace) is already the scope and wins. This scopes by root and never by file, so {@link collectRefs}'s defining-file hint stays out of the query. */
+function refsRootDir(opts: { projectRoot?: string }, defFile?: string, symbol?: string): string | undefined {
+  if (opts.projectRoot !== undefined) return opts.projectRoot
+  if (defFile !== undefined && symbol !== undefined && symbol !== '') return specScopeRoot(`${defFile}::${symbol}`, resolveProjectRoot({ project: process.cwd() })).root
+  return confinedProjectRoot() ?? undefined
 }
 
 /** Every file named by a `refs` spec: the cross-file form's per-pair files, or the single file of a `file::symbol` spec. A bare symbol name contributes none, and is confined by {@link refsRootDir} instead. */
@@ -151,7 +153,7 @@ function collectRefs(requestedName: string, defFile: string | undefined, opts: R
   if (opts.excludeTests === true || opts.grep !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
   else if (opts.limit !== undefined) queryOpts.limit = opts.limit
   else if (opts.top !== undefined) queryOpts.limit = UNBOUNDED_QUERY_LIMIT
-  const rootDir = refsRootDir(opts)
+  const rootDir = refsRootDir(opts, defFile, requestedName)
   if (rootDir !== undefined) queryOpts.rootDir = rootDir
 
   // The spec's defining file is the one file this command names up front, so it heals before the query the way `read`/`symbol` heal theirs: a call added to it out of band has no row yet, and no row can lead the query to it afterwards.
@@ -370,7 +372,7 @@ function runRefsSingle(opts: RefsOptions): number {
       return 1
     }
     // Distinguish "not indexed at all" from "indexed, genuinely zero references" -- the latter keeps today's message byte-identical (see unknownSymbolSuggestion's own doc comment for why this matters). Resolved here rather than hoisted to the top of the function since it's only ever paid once the query already came back empty.
-    const rootDir = opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
+    const rootDir = (symbol !== undefined ? queryOpts.rootDir : undefined) ?? opts.projectRoot ?? resolveProjectRoot({ project: process.cwd() })
     // Fetched as rows rather than as a bare existence count, because the defining file's LANGUAGE decides whether an empty result is an answer at all: parser.ts's REF_LANGUAGES walks call sites for nine tree-sitter languages only, and for a file outside that set the refs table is empty by construction. Capped rather than unbounded -- this only needs to know whether every definition of the name sits in a ref-blind language, and a name with more definitions than this cap in a single project is not a case where one more row changes that verdict.
     const defRows = querySymbols({ name: symName, rootDir, limit: REF_BLIND_DEF_PROBE_LIMIT })
     if (defRows.length === 0) {

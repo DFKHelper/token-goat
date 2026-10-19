@@ -7480,7 +7480,7 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
       const code = runRefs({ spec: 'src/a.ts::run,src/b.ts::run' })
       expect(code).toBe(0)
     })
-    expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string; filePath?: string }))).toEqual([{ name: 'run' }, { name: 'run' }])
+    expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string; filePath?: string }))).toEqual([{ name: 'run', rootDir: expect.any(String) }, { name: 'run', rootDir: expect.any(String) }])
     // Same-name collision would otherwise silently overwrite one block with the other.
     expect(stdout).toContain('src/a.ts::run:')
     expect(stdout).toContain('src/b.ts::run:')
@@ -7502,7 +7502,7 @@ describe('runRefs — cross-file multi-spec (a.ts::x,b.ts::y)', () => {
       const code = runRefs({ spec: 'src/a.ts::x,src/b.ts::y,z' })
       expect(code).toBe(0)
     })
-    expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string; filePath?: string }))).toEqual([{ name: 'x' }, { name: 'y' }, { name: 'z' }])
+    expect(mockQueryRefs.mock.calls.map((c) => (c[0] as { name: string; filePath?: string }))).toEqual([{ name: 'x', rootDir: expect.any(String) }, { name: 'y', rootDir: expect.any(String) }, { name: 'z', rootDir: expect.any(String) }])
     const symbolCalls = mockQuerySymbols.mock.calls as [{ name: string; filePath?: string }][]
     const zSymbolCall = symbolCalls.find((c) => c[0].name === 'z')?.[0]
     // The load-bearing assertion: `z` (a bare segment) must resolve against src/b.ts (the file to its left), not src/a.ts -- proving the spec actually crossed a file boundary. A spec like `a.ts::x,y` has only one `::` segment and never reaches this cross-file path at all. The hint arrives as the absolute path the index stores, the same resolution the single-symbol form applies.
@@ -8315,7 +8315,7 @@ describe('runRefs --callers is codebase-wide, not scoped to the symbol\'s defini
       expect(code).toBe(0)
     })
 
-    expect(mockQueryRefs).toHaveBeenCalledWith({ name: 'helperFn' })
+    expect(mockQueryRefs).toHaveBeenCalledWith({ name: 'helperFn', rootDir: expect.any(String) })
     // src/b.ts is a DIFFERENT file from the one named in the spec -- this reference must still surface.
     expect(stdout).toContain('src/b.ts:20: helperFn()')
   })
