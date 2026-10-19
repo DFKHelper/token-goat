@@ -180,6 +180,8 @@ describe('openGitGate', () => {
     }
     const first = slowReader()
     await first.attached
+    // The reader printing that it attached does not mean the gate booked its read: the gate books it when its own open of the FIFO completes, an event that can run after the reader's output reaches this process. Looking before then sees a count of 0, which is no double count either.
+    await g.counted(1)
     for (let turn = 0; turn < 2000; turn++) {
       expect(g.connections(), 'a reader that had not yet left was counted again').toBe(1)
       await new Promise<void>((resolve) => setImmediate(resolve))

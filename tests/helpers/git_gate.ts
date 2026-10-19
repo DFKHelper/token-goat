@@ -16,6 +16,8 @@ export interface GitGate {
   holding(): boolean
   /** How many times a git has opened the gate so far, those it let through ({@link openGitGate}'s `passFirst`) and those it held. One git may open it more than once (it reads its configuration in more than one step), so this is the count of reads, not of processes; a test that must pass exactly one git's reads measures them with a gate of its own first. */
   connections(): number
+  /** Resolves once the gate has counted at least `reads` reads, at once if it already has. A reader that opened the gate does not imply the count: the reader's open can complete, and the reader report it, before the event that books the read has run in the process holding the gate, so a test that looks at {@link connections} right after its reader said it attached waits on this first. */
+  counted(reads: number): Promise<void>
   /** Lets every git blocked on the gate go, and every git that reaches it later. */
   release(): void
   /** Releases, stops serving and removes what the gate created. Safe to call twice. */
@@ -24,6 +26,22 @@ export interface GitGate {
 
 /** Keys the gate sets. A caller restoring the environment names these. */
 export const GIT_GATE_ENV_KEYS = ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'] as const
+
+/** The reads a gate has counted, and the callers waiting for the count to reach a number. */
+function readCounter(): { readonly count: () => number; readonly book: () => number; readonly counted: (reads: number) => Promise<void> } {
+  let count = 0
+  let waiting: { readonly reads: number; readonly resolve: () => void }[] = []
+  return {
+    count: () => count,
+    book: () => {
+      count++
+      for (const waiter of waiting) if (count >= waiter.reads) waiter.resolve()
+      waiting = waiting.filter((waiter) => count < waiter.reads)
+      return count
+    },
+    counted: (reads) => (count >= reads ? Promise.resolve() : new Promise<void>((resolve) => { waiting.push({ reads, resolve }) })),
+  }
+}
 
 function environmentFor(target: string): Record<string, string> {
   return { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'include.path', GIT_CONFIG_VALUE_0: target }
@@ -35,14 +53,14 @@ async function windowsGate(passFirst: number): Promise<GitGate> {
   const held = new Set<net.Socket>()
   let released = false
   let passed = 0
-  let opened = 0
+  const reads = readCounter()
   let signal!: (read: number) => void
   const reached = new Promise<number>((resolve) => {
     signal = resolve
   })
   const server = net.createServer((socket) => {
     socket.on('error', () => {})
-    opened++
+    const opened = reads.book()
     if (passed < passFirst) {
       passed++
       socket.end()
@@ -70,7 +88,8 @@ async function windowsGate(passFirst: number): Promise<GitGate> {
     env: environmentFor(target),
     reached,
     holding: () => held.size > 0,
-    connections: () => opened,
+    connections: reads.count,
+    counted: reads.counted,
     release,
     async dispose() {
       if (disposed) return
@@ -91,7 +110,7 @@ async function fifoGate(passFirst: number): Promise<GitGate> {
   let released = false
   let disposed = false
   let passed = 0
-  let opened = 0
+  const reads = readCounter()
   let signal!: (read: number) => void
   let open!: () => void
   const reached = new Promise<number>((resolve) => {
@@ -109,7 +128,7 @@ async function fifoGate(passFirst: number): Promise<GitGate> {
       } catch {
         return
       }
-      opened++
+      const opened = reads.book()
       if (passed < passFirst) {
         passed++
       } else {
@@ -149,7 +168,8 @@ async function fifoGate(passFirst: number): Promise<GitGate> {
     env: environmentFor(target),
     reached,
     holding,
-    connections: () => opened,
+    connections: reads.count,
+    counted: reads.counted,
     release,
     async dispose() {
       if (disposed) return
