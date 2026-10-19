@@ -79,7 +79,28 @@ export type CommandLineQuery = { readonly status: 'found'; readonly commandLine:
 const WINDOWS_GONE_MARK = 'gone'
 const WINDOWS_FOUND_MARK = 'found:'
 
-/** Looks up the command line of process `pid`, telling a process that does not exist from a query that did not work. Windows: the CIM row is absent for a gone process and an error stops the script (non-zero exit). POSIX: `ps -p` exits 1 with no output and no error text for a pid that does not exist, and anything else non-zero, or a spawn error, is a failure. */
+/** What one `ps -ww -o args= -p PID` run left behind: its exit status (null when it was killed or never started), trimmed stdout and raw stderr. */
+export type PsRun = { readonly status: number | null; readonly stdout: string; readonly stderr: string }
+
+/** Whether the kernel itself reports no process `pid`: `process.kill(pid, 0)` sends no signal and throws ESRCH only when there is no such process, while EPERM means the process exists and is not ours (Node's process.kill documents signal 0 as the existence test; kill(2) names ESRCH and EPERM). Any other throw, as a pid Node refuses, is not evidence of absence. */
+export function processAbsentInKernel(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ESRCH'
+  }
+}
+
+/** Reads one POSIX `ps -p` run. Exit 0 is the command line. Exit 1 with nothing on stdout or stderr is the pid not existing, which Linux procps and the macOS ps (adv_cmds-237 ps.c: nkept == 0 reaches exit(1) after printheader, which prints nothing when every column header is empty) both do. macOS also exits 1 for a pid above its 99999 ceiling, but with "ps: process id too large: N" on stderr (adv_cmds-237 ps.c addelem_pid, then exit(1) on optfatal), which a bare stderr test reads as a failed query; there only the kernel's ESRCH, asked through `absentInKernel`, counts as proof of absence. Every other outcome stays failed, so a query that told us nothing is never taken for a dead process. */
+export function classifyPosixPsRun(run: PsRun, platform: NodeJS.Platform, absentInKernel: () => boolean): CommandLineQuery {
+  if (run.status === 0) return { status: 'found', commandLine: run.stdout }
+  if (run.status !== 1 || run.stdout !== '') return { status: 'failed' }
+  if (run.stderr.trim() === '') return { status: 'gone' }
+  return platform === 'darwin' && absentInKernel() ? { status: 'gone' } : { status: 'failed' }
+}
+
+/** Looks up the command line of process `pid`, telling a process that does not exist from a query that did not work. Windows: the CIM row is absent for a gone process and an error stops the script (non-zero exit). POSIX: `ps -p` exits 1 with no output and no error text for a pid that does not exist, and anything else non-zero, or a spawn error, is a failure; macOS also exits 1 but names a pid above its 99999 ceiling on stderr, which {@link classifyPosixPsRun} settles by asking the kernel. */
 export function queryProcessCommandLine(pid: number): CommandLineQuery {
   if (!Number.isInteger(pid) || pid <= 0) return { status: 'gone' }
   const win = process.platform === 'win32'
@@ -95,8 +116,7 @@ export function queryProcessCommandLine(pid: number): CommandLineQuery {
     if (out === WINDOWS_GONE_MARK) return { status: 'gone' }
     return out.startsWith(WINDOWS_FOUND_MARK) ? { status: 'found', commandLine: out.slice(WINDOWS_FOUND_MARK.length).trim() } : { status: 'failed' }
   }
-  if (res.status === 0) return { status: 'found', commandLine: out }
-  return res.status === 1 && out === '' && res.stderr.trim() === '' ? { status: 'gone' } : { status: 'failed' }
+  return classifyPosixPsRun({ status: res.status, stdout: out, stderr: res.stderr }, process.platform, () => processAbsentInKernel(pid))
 }
 
 /** Stands a reader that folds gone and failed into one null in for {@link queryProcessCommandLine}: null reads as gone, so a caller handed such a reader (a test seam) never sees a failure. */
