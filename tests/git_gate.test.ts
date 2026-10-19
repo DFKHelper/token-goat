@@ -166,6 +166,37 @@ describe('openGitGate', () => {
     expect(output, 'polling the gate wrote bytes the reader received').toBe('')
   })
 
+  // CAPTURE: one `git rev-parse --show-toplevel` counted 1 read on an idle WSL Ubuntu and 1 to 158 reads under 24 busy shells on 8 CPUs, because a FIFO writer's open completes while a reader that has not yet read its end of file still has the FIFO open, so the gate reopened it and counted that same reader again (and, past its passFirst, held it). The reader here opens the gate and keeps it open without reading until the row says so, which is that slow reader made certain instead of left to the scheduler. The turns waited are a count of event loop turns, not a time: with the bug the gate counts again within a few of them.
+  it.skipIf(process.platform === 'win32')('counts a reader that is slow to leave once, and the next reader as the next read', async () => {
+    const g = await gate(1)
+    const script = 'exec 3<"$1"; echo attached; read -r _; cat <&3 >/dev/null'
+    const slowReader = (): { readonly attached: Promise<void>; readonly finish: () => void; readonly ended: Promise<void> } => {
+      const child = spawn('sh', ['-c', script, 'sh', g.env.GIT_CONFIG_VALUE_0 ?? ''], { stdio: ['pipe', 'pipe', 'ignore'] })
+      children.push(child)
+      child.stdin?.on('error', () => undefined)
+      const attached = new Promise<void>((resolve) => child.stdout?.once('data', () => resolve()))
+      const ended = new Promise<void>((resolve) => child.once('close', () => resolve()))
+      return { attached, finish: () => child.stdin?.end('go\n'), ended }
+    }
+    const first = slowReader()
+    await first.attached
+    for (let turn = 0; turn < 2000; turn++) {
+      expect(g.connections(), 'a reader that had not yet left was counted again').toBe(1)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+    expect(g.holding(), 'the read that was to pass was held').toBe(false)
+    first.finish()
+    await first.ended
+    const second = slowReader()
+    expect(await g.reached, 'the read after the passed one was not the second read').toBe(2)
+    expect(g.holding(), 'the second reader was not held').toBe(true)
+    await second.attached
+    g.release()
+    second.finish()
+    await second.ended
+    expect(g.connections(), 'the two readers were not counted as two reads').toBe(2)
+  })
+
   it('reports no holder once the gate is released', async () => {
     const repo = gitRepoWithCommit()
     const g = await gate()

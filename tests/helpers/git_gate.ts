@@ -81,11 +81,13 @@ async function windowsGate(passFirst: number): Promise<GitGate> {
   }
 }
 
-/** Serves the gate as a FIFO: opening it for writing completes only once a reader (git) has it open, which is the `reached` event; closing the writer is the end of file git reads as an empty config file. */
+/** Serves the gate as a FIFO: opening it for writing completes only once a reader (git) has it open, which is the `reached` event; closing the writer is the end of file git reads as an empty config file. CAPTURE: reopening the same FIFO right after the close counted the reader that had not yet read its end of file as a new read, because a FIFO writer's open completes while any reader still has it open; one `git rev-parse --show-toplevel` counted 1 read on an idle WSL Ubuntu (100 of 100 runs) and 1 to 158 reads under 24 busy shells on 8 CPUs (60 runs: 44 times 1, then 2, 3, 6, 11, 14, 15, 17, 26, 46, 101, 158). Each read is therefore served on its own FIFO: before the writer is closed the next, unopened FIFO is renamed over the gate path, so a reader that is slow to leave stays on the FIFO it opened and the next open of the path can only be a new read. */
 async function fifoGate(passFirst: number): Promise<GitGate> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-git-gate-'))
   const target = path.join(root, 'gate')
+  const spare = path.join(root, 'next')
   execFileSync('mkfifo', [target], { stdio: 'ignore' })
+  execFileSync('mkfifo', [spare], { stdio: 'ignore' })
   let released = false
   let disposed = false
   let passed = 0
@@ -110,14 +112,23 @@ async function fifoGate(passFirst: number): Promise<GitGate> {
       opened++
       if (passed < passFirst) {
         passed++
-        await writer.close()
-        continue
+      } else {
+        current = writer
+        signal(opened)
+        if (!released) await releasedEvent
+        current = null
       }
-      current = writer
-      signal(opened)
-      if (!released) await releasedEvent
-      current = null
+      // The gate path now names a FIFO nobody has opened, so the reader this writer served cannot be counted a second time while it finishes reading its end of file.
+      if (!disposed) {
+        try {
+          fs.renameSync(spare, target)
+        } catch {
+          await writer.close()
+          return
+        }
+      }
       await writer.close()
+      if (!disposed) execFileSync('mkfifo', [spare], { stdio: 'ignore' })
     }
   })()
   const holding = (): boolean => {
