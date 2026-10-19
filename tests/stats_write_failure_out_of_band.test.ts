@@ -19,7 +19,7 @@ import Database from '../src/sqlite_driver.js'
 import { closeAllDbs, getDb } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { RESIDENT_TAIL_MAX_BYTES } from '../src/resident_context.js'
-import { getGlobalDb, recordStat } from '../src/stats.js'
+import { getGlobalDb, readStatsWriteFailures, recordStat, statsWriteFailuresLine } from '../src/stats.js'
 
 const STATS_WRITE_FAILURE_LOG_MIN_INTERVAL_MS = 60 * 1000
 
@@ -153,6 +153,50 @@ describe('the write-failure log stays within the window readStatsWriteFailures r
     const lines = readLogLines(_testDataDir)
     expect(lines[lines.length - 1]).toContain('newest_kind')
     for (const line of lines) expect(line, 'a trim must cut on a line boundary').toMatch(/^\d{4}-\d{2}-\d{2}T\S+ recordStat write failed for kind=\S+: /)
+  })
+
+  // The rewrite leaves a log under the bound, so the reader's own window no longer shows that lines were dropped: the count and its "at least" label must survive the rewrite, or a trimmed log prints as an exact total.
+  it('a log rewritten to fit the bound still reads as a floor, and says "at least"', () => {
+    seedLog(_testDataDir, RESIDENT_TAIL_MAX_BYTES + 4096)
+
+    failOnce('newest_kind')
+
+    const failures = readStatsWriteFailures()
+    expect(failures?.count_is_lower_bound).toBe(true)
+    expect(statsWriteFailuresLine(failures!)).toContain('at least ')
+    expect(failures?.latest_reason).toBe(readLogLines(_testDataDir).pop()?.replace(/^\S+ recordStat write failed for kind=\S+: /, ''))
+  })
+
+  it('a rewrite keeps exactly one dropped-lines marker, even over an older one inside the kept tail, and the marker is not counted as a failure', () => {
+    // An earlier rewrite's marker sits mid-file here, well inside the newest window, so the next rewrite would keep it unless it drops it.
+    const marker = '2026-01-01T00:00:00.000Z recordStat write failed for kind=stats_log_trimmed: earlier lines were dropped'
+    const half = Array.from({ length: 5000 }, (_, n) => fillLine(n))
+    const body = [...half, marker, ...half, ...Array.from({ length: 5000 }, (_, n) => fillLine(n))]
+    fs.writeFileSync(statsLogPath(_testDataDir), body.join('\n') + '\n')
+    expect(fs.statSync(statsLogPath(_testDataDir)).size).toBeGreaterThan(RESIDENT_TAIL_MAX_BYTES)
+
+    failOnce('second_kind')
+
+    const lines = readLogLines(_testDataDir)
+    expect(lines.filter((l) => l.includes('kind=stats_log_trimmed'))).toHaveLength(1)
+    expect(lines[0]).toContain('kind=stats_log_trimmed')
+    expect(lines[lines.length - 1]).toContain('second_kind')
+    expect(fs.statSync(statsLogPath(_testDataDir)).size).toBeLessThanOrEqual(RESIDENT_TAIL_MAX_BYTES)
+    const failures = readStatsWriteFailures()
+    expect(failures?.count).toBe(lines.length - 1)
+    expect(failures?.count_is_lower_bound).toBe(true)
+  })
+
+  it('a log that was never trimmed is an exact count, with no "at least"', () => {
+    seedLog(_testDataDir, 1024)
+    const seeded = readLogLines(_testDataDir).length
+
+    failOnce('appended_kind')
+
+    const failures = readStatsWriteFailures()
+    expect(failures?.count).toBe(seeded + 1)
+    expect(failures?.count_is_lower_bound).toBe(false)
+    expect(statsWriteFailuresLine(failures!)).not.toContain('at least')
   })
 
   it('appends without rewriting a log that is still inside the bound', () => {

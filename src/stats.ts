@@ -769,14 +769,22 @@ export function readStatsWriteFailures(homeDir?: string): StatsWriteFailures | n
   } finally {
     if (fd !== null) fs.closeSync(fd)
   }
-  const lines = raw.split('\n').filter((l) => l.length > 0)
+  const allLines = raw.split('\n').filter((l) => l.length > 0)
   // A window that starts mid-file starts mid-line; the leading fragment is neither a whole record nor countable.
-  if (tailOnly) lines.shift()
+  if (tailOnly) allLines.shift()
+  // The marker a rewrite leaves is not a failure: it is the proof lines were dropped, so it turns the count into a floor and stays out of it.
+  const lines = allLines.filter((l) => !STATS_LOG_TRIMMED_LINE.test(l))
+  const trimmed = tailOnly || lines.length !== allLines.length
   const last = lines[lines.length - 1]
-  if (last === undefined) return tailOnly ? { count: null, count_is_lower_bound: false, latest_at: null, latest_reason: 'stats-write-failed.log is larger than the read window and holds no complete line in its tail' } : null
+  if (last === undefined) return trimmed ? { count: null, count_is_lower_bound: false, latest_at: null, latest_reason: 'stats-write-failed.log was cut down to fit its size bound and holds no complete failure line' } : null
   const parsed = /^(\S+) recordStat write failed for kind=\S+: (.*)$/.exec(last)
-  return { count: lines.length, count_is_lower_bound: tailOnly, latest_at: parsed?.[1] ?? null, latest_reason: parsed?.[2] ?? last }
+  return { count: lines.length, count_is_lower_bound: trimmed, latest_at: parsed?.[1] ?? null, latest_reason: parsed?.[2] ?? last }
 }
+
+/** The kind of the first line a rewrite of stats-write-failed.log leaves, shaped like a record so every reader of the file that splits it into dated lines still parses it. */
+const STATS_LOG_TRIMMED_KIND = 'stats_log_trimmed'
+
+const STATS_LOG_TRIMMED_LINE = new RegExp(`^\\S+ recordStat write failed for kind=${STATS_LOG_TRIMMED_KIND}: `)
 
 /** The one line every stats surface prints when {@link readStatsWriteFailures} found a log, so a gap in the numbers is explained where it is seen. */
 export function statsWriteFailuresLine(failures: StatsWriteFailures): string {
@@ -813,8 +821,9 @@ function recordStatWriteFailure(kind: string, err: unknown, dir: string = dataDi
       fs.appendFileSync(logPath, entry)
       return
     }
-    // Past the window readStatsWriteFailures reads: rewrite the log to its newest whole lines plus this entry, so it never grows without bound and the newest record survives.
-    const start = Math.max(0, size - Math.max(0, RESIDENT_TAIL_MAX_BYTES - entryBytes))
+    // Past the window readStatsWriteFailures reads: rewrite the log to a dropped-lines marker, its newest whole lines and this entry, so it never grows without bound, the newest record survives, and the reader still knows its count is a floor.
+    const marker = `${new Date().toISOString()} recordStat write failed for kind=${STATS_LOG_TRIMMED_KIND}: earlier lines were dropped to keep this log under ${RESIDENT_TAIL_MAX_BYTES} bytes\n`
+    const start = Math.max(0, size - Math.max(0, RESIDENT_TAIL_MAX_BYTES - entryBytes - Buffer.byteLength(marker)))
     const buf = Buffer.alloc(size - start)
     const fd = fs.openSync(logPath, 'r')
     let read: number
@@ -829,7 +838,9 @@ function recordStatWriteFailure(kind: string, err: unknown, dir: string = dataDi
       const firstBreak = tail.indexOf(0x0a)
       tail = firstBreak === -1 ? tail.subarray(tail.length) : tail.subarray(firstBreak + 1)
     }
-    atomicWriteText(logPath, tail.toString('utf8') + entry)
+    // A marker an earlier rewrite left inside the kept tail is dropped, so the file never carries two.
+    const kept = tail.toString('utf8').split('\n').filter((l) => l.length > 0 && !STATS_LOG_TRIMMED_LINE.test(l))
+    atomicWriteText(logPath, marker + kept.map((l) => `${l}\n`).join('') + entry)
   } catch {
     // Best-effort out-of-band sink -- if even this fails, there is nowhere else for it to go.
   }
