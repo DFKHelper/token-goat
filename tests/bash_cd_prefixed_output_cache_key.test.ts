@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
@@ -17,6 +17,22 @@ import { clearModuleCaches } from '../src/reset.js'
 import { getSessionBashOutputs, getSessionBashReruns } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
 import type { HookOutput } from '../src/types.js'
+import type * as UtilModule from '../src/util.js'
+import { KILLED_GIT, cannedFingerprintAnswer, cannedNoRepository } from './helpers/canned_git.js'
+import type { CannedGit } from './helpers/canned_git.js'
+
+// Seam over the two git calls that fingerprint a directory (src/bash_output_cache.ts::gitStateFingerprintSync), answered as git answers outside any repository, which is where these rows run (a fresh directory under the temp dir). A real git that outlives GIT_STATE_TIMEOUT_MS reads as 'unknown' and so as stale (isBashEntryStale), so on a loaded machine a build stored by the post hook was no longer offered by the pre hook, whatever the cd prefix keyed. Every other git call is answered as killed, so a row that still reached for a real git would fail at once instead of only under load.
+const seam = vi.hoisted(() => ({ canned: null as CannedGit | null }))
+
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  return {
+    ...actual,
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => (seam.canned === null ? actual.runGit(args, opts) : (cannedFingerprintAnswer(seam.canned, opts?.cwd, args) ?? KILLED_GIT)),
+  }
+})
+
+let git: CannedGit
 
 // HAND-DERIVED: rustc's `error[E0425]` diagnostic shape, 30 lines so the body clears the 512-byte recall floor; pkgA's build fails and pkgB's builds clean.
 const FAILING = Array.from({ length: 30 }, (_, i) => `error[E0425]: cannot find value \`limit${i}\` in this scope`).join('\n')
@@ -24,7 +40,13 @@ const CLEAN = Array.from({ length: 30 }, (_, i) => `   Compiling writer-part${i}
 
 const dirs: string[] = []
 
+beforeEach(() => {
+  git = cannedNoRepository()
+  seam.canned = git
+})
+
 afterEach(() => {
+  seam.canned = null
   vi.unstubAllEnvs()
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
 })
@@ -105,6 +127,7 @@ describe('a cached Bash result is keyed on the directory the command ran in', ()
     await post(sid, root, 'cd pkgA && cargo build', FAILING)
     const idA = onlyCachedId(sid)
     expect(getBashOutput(idA)?.output).toBe(FAILING)
+    expect(git.served).toBeGreaterThan(0)
 
     expect(await pre(sid, root, 'cd pkgB && cargo build')).not.toContain(idA)
     // Positive controls: the build in pkgA is still recalled, whether a cd prefix or the event's own cwd puts the shell there, so a fix that answered the assertion above by dropping recall for cd-prefixed commands fails here.
@@ -144,6 +167,7 @@ describe('a cached Bash result is keyed on the directory the command ran in', ()
     await pre(sid, root, `cd pkgA && ${piped}`, build)
     await post(sid, pkgA, `cd pkgA && ${piped}`, FAILING, build)
     const idA = onlyCachedId(sid)
+    expect(git.served).toBeGreaterThan(0)
 
     // The shell stayed in pkgA, so the same build there is the same command in the same directory, and the same build from the root is not.
     expect(await pre(sid, pkgA, piped, { toolUseId: 'toolu_cd_key_2' })).toContain('bash-output ' + idA)
@@ -267,6 +291,7 @@ describe('a cd to a home-relative directory is keyed where the shell lands', () 
     const sid = newSession()
     await post(sid, pkgA, 'cargo build', FAILING)
     const idA = onlyCachedId(sid)
+    expect(git.served).toBeGreaterThan(0)
     expect(await pre(sid, pkgB, 'cd ~/pkgA && cargo build')).toContain('bash-output ' + idA)
     // Positive control: the same prefix with the home directory elsewhere names another directory, so the recall above is the expansion and not a key that ignores the prefix.
     homeAt(pkgB)
