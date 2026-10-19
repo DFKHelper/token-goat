@@ -41,6 +41,26 @@ function reconcileOutcome(dir: string): string | null {
   return /reconcile request for .*?: (.*)$/m.exec(log)?.[1]?.trim() ?? null
 }
 
+/** The arguments of the git started last, from the trace2 event file git appends to when GIT_TRACE2_EVENT names it, or null while no git has written one: git writes its start event, argv included, before it reads any configuration, so a git blocked on the gate has already written it. CAPTURE: git 2.53.0.windows.1 run against tests/helpers/git_gate.ts wrote {"event":"start",...,"argv":["git","ls-files"]} to the file before the gate was released, and the gate counted the same reads with the trace on and off (2 for rev-parse --show-toplevel, 4 for ls-files). */
+function lastStartedGitArgv(file: string): string[] | null {
+  let text: string
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+  let argv: string[] | null = null
+  for (const line of text.split('\n')) {
+    try {
+      const event = JSON.parse(line) as { event?: string; argv?: string[] }
+      if (event.event === 'start' && Array.isArray(event.argv)) argv = event.argv
+    } catch {
+      // A blank line or one still being written is no event.
+    }
+  }
+  return argv
+}
+
 /** How many times the daemon's first git of a reconcile request, `rev-parse --show-toplevel` (src/reconcile_requests.ts::drainReconcileRequestsAsync), opens the gate: measured by running that invocation (src/util.ts::gitInvocation, the same flags and executable the daemon starts) against a gate that lets every read through. A git reads its configuration in more than one step, so the gate counts reads, not processes, and the number depends on this machine's git; passing exactly this many reads lets that git answer and holds the first read of the next one. */
 async function gateReadsOfFirstGit(cwd: string): Promise<number> {
   const counting = await openGitGate({ passFirst: Number.MAX_SAFE_INTEGER })
@@ -212,7 +232,8 @@ describe('stopping the built worker daemon', () => {
     // The gate rides in the environment `worker start` hands the daemon, so every git the daemon starts reads it. The launching CLI starts no git of its own on this path; one would block on the gate for the whole 60 s of the run.
     const gate = await openGitGate({ passFirst: firstGitReads })
     gates.push(gate)
-    const started = bundleTg(project, { ...env, ...gate.env }, ['worker', 'start'])
+    const traceFile = path.join(root, 'git-trace2.json')
+    const started = bundleTg(project, { ...env, ...gate.env, GIT_TRACE2_EVENT: traceFile }, ['worker', 'start'])
     expect(started.status, `worker start failed: ${started.stderr}`).toBe(0)
     const daemonPid = readPidFile(dir)
     expect(daemonPid, 'worker start left no pid file').not.toBeNull()
@@ -230,6 +251,9 @@ describe('stopping the built worker daemon', () => {
     expect(appendReconcileRequest(dir, project)).toBe(true)
     // The event: the daemon's second git has opened the gate and is blocked reading it; nothing else carries the gate, so it is the daemon's own git. The ordinal names which git was held: the first firstGitReads reads are the rev-parse's, so the held read is the one after them, the sweep's ls-files; a held rev-parse (its 5 s cap would end it before the stop) reports an earlier read.
     expect(await gate.reached, "the gate held a read of the sweep's rev-parse, not the ls-files after it").toBe(firstGitReads + 1)
+    // The ordinal alone cannot tell the held git: a rev-parse the daemon ended at its 5 s cap is retried (src/reconcile_requests.ts requeues it), and the retry's first read past the gate's allowance takes the ordinal ls-files has. The held git names itself by its argv.
+    const heldArgv = lastStartedGitArgv(traceFile) ?? []
+    expect(heldArgv.includes('ls-files') && !heldArgv.includes('rev-parse'), `the gate held '${heldArgv.join(' ')}' (read ${firstGitReads + 1}), not the sweep's ls-files`).toBe(true)
     // Read in the same turn as the event and with only the kill between, so the git is alive and held at the instant stop runs; the table that is empty afterwards then says stop ended it. A gate released early or disposed right after the event (a mutant) leaves the git not held and fails here, with the daemon's own account of its request as the reason.
     expect(gate.holding(), `calibration: the daemon's held git still holds the gate when worker stop runs (the daemon logged: ${reconcileOutcome(dir) ?? 'nothing yet'})`).toBe(true)
 
