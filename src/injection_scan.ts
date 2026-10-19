@@ -7,8 +7,8 @@ interface InjectionPattern {
 
 // Precise, low-false-positive phrasing only -- these are patterns that show up in real prompt-injection payloads (imperative override language directed at an AI), not ordinary prose. Case-insensitive; `\b` word boundaries keep e.g. "you are now a manager" the literal common phrase from matching "system prompt" substrings.
 const INJECTION_PATTERNS: readonly InjectionPattern[] = [
-  { name: 'ignore-previous-instructions', re: /ignore\s+(all\s+|the\s+)?(prior|previous|above)\s+(instructions|directions)/i },
-  { name: 'disregard-previous-instructions', re: /disregard\s+(all\s+|the\s+)?(prior|previous|above)\s+instructions/i },
+  { name: 'ignore-previous-instructions', re: /ignore\s+(all\s+)?(the\s+)?(prior|previous|above)\s+(instructions|directions)/i },
+  { name: 'disregard-previous-instructions', re: /disregard\s+(all\s+)?(the\s+)?(prior|previous|above)\s+(instructions|directions)/i },
   { name: 'new-instructions', re: /\bnew\s+instructions\s*:/i },
   { name: 'you-are-now', re: /\byou\s+are\s+now\s+(a|an|the)\b/i },
   { name: 'forget-instructions', re: /\bforget\s+(your\s+)?(instructions|system\s+prompt)\b/i },
