@@ -201,8 +201,9 @@ export function aliveAs(pid: number, commandLine: string | null, seam: LivenessS
 }
 
 export function readOwnedPid(path: string): number {
-  const pid = Number(readFileSync(path, 'utf8'))
-  expect(Number.isInteger(pid) && pid > 0).toBe(true)
+  const text = readFileSync(path, 'utf8')
+  const pid = Number(text)
+  expect(Number.isInteger(pid) && pid > 0, `pid file ${path} held ${JSON.stringify(text)}`).toBe(true)
   ownedPids.push(pid)
   return pid
 }
