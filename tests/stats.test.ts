@@ -622,7 +622,8 @@ describe('stats', () => {
     })
 
     it('prints "No stats recorded yet" when empty', () => {
-      const customHome = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-home-short-empty-'))
+      const { customHome, dbPath } = makeStatsHome('tg-home-short-empty-')
+      openStatsDb(dbPath).close()
       let output = ''
       const originalLog = console.log
       console.log = (msg: string) => {

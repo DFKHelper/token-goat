@@ -19,7 +19,8 @@ import Database from '../src/sqlite_driver.js'
 import { runStats } from '../src/cli_stats.js'
 import { closeAllDbs } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { getGlobalDb, recordStat } from '../src/stats.js'
+import { RESIDENT_TAIL_MAX_BYTES } from '../src/resident_context.js'
+import { getGlobalDb, readStatsWriteFailures, recordStat } from '../src/stats.js'
 
 function captureOutput(fn: () => void): string {
   const chunks: string[] = []
@@ -153,6 +154,47 @@ describe('stats after recordStat writes failed', () => {
   })
 })
 
+/** FORMAT-DERIVED from src/stats.ts::recordStatWriteFailure: `<ISO time> recordStat write failed for kind=<kind>: <message>`, one line per logged failure; fixed-width numbering keeps every line the same length so the window arithmetic is exact. */
+function bigFailureLog(lineCount: number): { logPath: string; lineBytes: number } {
+  const lines = Array.from({ length: lineCount }, (_, i) => `2026-10-19T00:00:00.000Z recordStat write failed for kind=read_replacement: busy ${String(i).padStart(6, '0')}`)
+  const logPath = path.join(_testDataDir, 'stats-write-failed.log')
+  fs.writeFileSync(logPath, lines.join('\n') + '\n')
+  return { logPath, lineBytes: lines[0]!.length + 1 }
+}
+
+describe('stats when stats-write-failed.log outgrew the read window', () => {
+  it('reads only the newest part and says the count is a lower bound', () => {
+    const lineCount = 14000
+    const { lineBytes } = bigFailureLog(lineCount)
+    expect(lineCount * lineBytes, 'the fixture must exceed the window').toBeGreaterThan(RESIDENT_TAIL_MAX_BYTES)
+    expect(RESIDENT_TAIL_MAX_BYTES % lineBytes, 'the window must start mid-line so the fragment is dropped').not.toBe(0)
+
+    const failures = readStatsWriteFailures()
+    expect(failures?.count_is_lower_bound).toBe(true)
+    expect(failures?.count, 'only whole lines inside the window are counted, never the head of the file').toBe(Math.floor(RESIDENT_TAIL_MAX_BYTES / lineBytes))
+    expect(failures?.latest_reason).toBe('busy 013999')
+
+    const text = captureOutput(() => runStats({ windowDays: 0 }))
+    expect(text).toMatch(/Stats writes failed: at least \d+ logged \(newest part of the log only\), latest 2026-10-19T00:00:00\.000Z: busy 013999/)
+    expect((statsJson(0)['write_failures'] as { count_is_lower_bound: boolean }).count_is_lower_bound).toBe(true)
+  })
+
+  it('control: a log inside the window is counted whole and is not a lower bound', () => {
+    bigFailureLog(50)
+
+    const failures = readStatsWriteFailures()
+    expect(failures?.count).toBe(50)
+    expect(failures?.count_is_lower_bound).toBe(false)
+    expect(captureOutput(() => runStats({ windowDays: 0 }))).toMatch(/Stats writes failed: 50 logged, latest/)
+  })
+
+  it('control: an empty log file is no failures, not a failure to read', () => {
+    fs.writeFileSync(path.join(_testDataDir, 'stats-write-failed.log'), '')
+
+    expect(readStatsWriteFailures()).toBeNull()
+  })
+})
+
 describe('stats --json with no global.db', () => {
   it('says the database is missing instead of printing measured-looking zeros', () => {
     expect(fs.existsSync(path.join(_testDataDir, 'global.db'))).toBe(false)
@@ -165,7 +207,19 @@ describe('stats --json with no global.db', () => {
     expect(fs.existsSync(path.join(_testDataDir, 'global.db')), 'a read must not create the database').toBe(false)
   })
 
-  it('keeps the text answer for a fresh install', () => {
-    expect(captureOutput(() => runStats({ windowDays: 30 }))).toContain('No stats recorded yet.')
+  it('prints a text answer that names the missing database, not the empty-ledger answer', () => {
+    for (const windowDays of [30, 0]) {
+      const text = captureOutput(() => runStats({ windowDays }))
+      expect(text).toContain(`No stats database at ${path.join(_testDataDir, 'global.db')} (unknown: `)
+      expect(text, 'a missing database must not read as an empty ledger').not.toContain('No stats recorded yet.')
+    }
+    expect(fs.existsSync(path.join(_testDataDir, 'global.db')), 'a read must not create the database').toBe(false)
+  })
+
+  it('control: an existing but empty database keeps the empty-ledger answer, with no database named', () => {
+    getGlobalDb()
+    const text = captureOutput(() => runStats({ windowDays: 30 }))
+    expect(text).toContain('No stats recorded yet.')
+    expect(text).not.toContain('No stats database at')
   })
 })

@@ -13,6 +13,7 @@ import { registerReset } from './reset.js'
 import { getHarnessName } from './bridges/registry.js'
 import { countNoun, ensureDirSync, extractErrorMessage } from './util.js'
 import { displaySafeText } from './paths.js'
+import { RESIDENT_TAIL_MAX_BYTES } from './resident_context.js'
 
 interface StatsBucket {
   events: number
@@ -60,6 +61,8 @@ export interface StatsSummary {
 /** What stats-write-failed.log holds: how many failures were logged (throttled, so a floor, not a total), when the latest was logged and its reason. `count` is null when the log exists but could not be read. */
 export interface StatsWriteFailures {
   count: number | null
+  /** True when the log was larger than the read window, so `count` covers only its tail and the real number is higher. */
+  count_is_lower_bound: boolean
   latest_at: string | null
   latest_reason: string
 }
@@ -590,9 +593,15 @@ export function getGlobalDb(homeDir?: string): SqliteDatabase {
   return db
 }
 
-function globalDbExists(homeDir?: string): boolean {
-  return fs.existsSync(path.join(homeDir ? dataDirForHome(homeDir) : dataDir(), 'global.db'))
+function globalDbPathFor(homeDir?: string): string {
+  return path.join(homeDir ? dataDirForHome(homeDir) : dataDir(), 'global.db')
 }
+
+function globalDbExists(homeDir?: string): boolean {
+  return fs.existsSync(globalDbPathFor(homeDir))
+}
+
+const GLOBAL_DB_MISSING_REASON = 'global.db does not exist yet, so no stats have been recorded in this data directory'
 
 /** {@link getGlobalDb} for a report that only reads: when global.db does not exist yet it answers from an empty in-memory database with the same tables instead of creating the file, so `doctor`, `stats` and the other read commands on a fresh data dir report "no data" and leave nothing behind. Writers keep using getGlobalDb. */
 export function readGlobalDb(homeDir?: string): SqliteDatabase {
@@ -707,6 +716,8 @@ function maybeRunStatsMaintenance(db: SqliteDatabase): void {
 export function noStatsMessage(windowDays: number, homeDir?: string): string {
   const failures = readStatsWriteFailures(homeDir)
   const withFailures = (message: string): string => (failures === null ? message : `${message}\n${statsWriteFailuresLine(failures)}`)
+  // A data directory with no global.db is not the same answer as an empty ledger: nothing could have been read, so the report says so and names the file.
+  if (!globalDbExists(homeDir)) return withFailures(displaySafeText(`No stats database at ${globalDbPathFor(homeDir)} (unknown: ${GLOBAL_DB_MISSING_REASON}).`))
   if (windowDays <= 0) return withFailures('No stats recorded yet.')
   const db = readGlobalDb(homeDir)
   let total = (db.prepare('SELECT COUNT(*) as c FROM stats').get() as { c: number }).c
@@ -742,22 +753,37 @@ function statsWriteFailureLogPath(dir: string): string {
 export function readStatsWriteFailures(homeDir?: string): StatsWriteFailures | null {
   const logPath = statsWriteFailureLogPath(homeDir ? dataDirForHome(homeDir) : dataDir())
   let raw: string
+  let tailOnly: boolean
+  let fd: number | null = null
   try {
-    raw = fs.readFileSync(logPath, 'utf8')
+    fd = fs.openSync(logPath, 'r')
+    const size = fs.fstatSync(fd).size
+    const start = Math.max(0, size - RESIDENT_TAIL_MAX_BYTES)
+    tailOnly = start > 0
+    const buf = Buffer.allocUnsafe(size - start)
+    const read = fs.readSync(fd, buf, 0, buf.length, start)
+    raw = buf.subarray(0, read).toString('utf8')
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
-    return { count: null, latest_at: null, latest_reason: `stats-write-failed.log exists but could not be read: ${extractErrorMessage(err)}` }
+    return { count: null, count_is_lower_bound: false, latest_at: null, latest_reason: `stats-write-failed.log exists but could not be read: ${extractErrorMessage(err)}` }
+  } finally {
+    if (fd !== null) fs.closeSync(fd)
   }
   const lines = raw.split('\n').filter((l) => l.length > 0)
+  // A window that starts mid-file starts mid-line; the leading fragment is neither a whole record nor countable.
+  if (tailOnly) lines.shift()
   const last = lines[lines.length - 1]
-  if (last === undefined) return null
+  if (last === undefined) return tailOnly ? { count: null, count_is_lower_bound: false, latest_at: null, latest_reason: 'stats-write-failed.log is larger than the read window and holds no complete line in its tail' } : null
   const parsed = /^(\S+) recordStat write failed for kind=\S+: (.*)$/.exec(last)
-  return { count: lines.length, latest_at: parsed?.[1] ?? null, latest_reason: parsed?.[2] ?? last }
+  return { count: lines.length, count_is_lower_bound: tailOnly, latest_at: parsed?.[1] ?? null, latest_reason: parsed?.[2] ?? last }
 }
 
 /** The one line every stats surface prints when {@link readStatsWriteFailures} found a log, so a gap in the numbers is explained where it is seen. */
 export function statsWriteFailuresLine(failures: StatsWriteFailures): string {
-  const head = failures.count === null ? 'Stats writes failed (count unknown)' : `Stats writes failed: ${failures.count} logged`
+  const head =
+    failures.count === null
+      ? 'Stats writes failed (count unknown)'
+      : `Stats writes failed: ${failures.count_is_lower_bound ? 'at least ' : ''}${failures.count} logged${failures.count_is_lower_bound ? ' (newest part of the log only)' : ''}`
   const when = failures.latest_at === null ? '' : `, latest ${failures.latest_at}`
   return displaySafeText(`${head}${when}: ${failures.latest_reason}`)
 }
@@ -972,7 +998,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
   let totalTokens = 0
 
   const dbMissing = testDb === undefined && !globalDbExists(homeDir)
-  let totalsUnknownReason: string | null = dbMissing ? 'global.db does not exist yet, so no stats have been recorded in this data directory' : null
+  let totalsUnknownReason: string | null = dbMissing ? GLOBAL_DB_MISSING_REASON : null
   const db = testDb ?? readGlobalDb(homeDir)
   // Selected only when the column is actually there: an injected `testDb` may carry a table this module never migrated, and naming a missing column would throw out of summarize() entirely rather than degrading to "harness not recorded".
   const hasHarness = statsHasHarnessColumn(db)

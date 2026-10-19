@@ -762,7 +762,8 @@ describe('cmdSessionSummary', () => {
 describe('cmdCost', () => {
   it('exits cleanly (delegates to runStats)', () => {
     cmdCost({})
-    expect(capturedOutput()).toContain('No stats recorded yet.')
+    // The isolated data directory has no global.db, so the report names the missing database instead of claiming an empty ledger.
+    expect(capturedOutput()).toContain('No stats database at')
   })
 
   it('with --session reports no session data when empty', () => {
