@@ -5,6 +5,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, relative } from 'node:path'
 
 import { callStreakAfterFailure } from './call_streak.js'
+import { loadConfig } from './config.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type * as EditNearMiss from './edit_near_miss.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
@@ -14,7 +15,7 @@ import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { contextOutput, getCwd, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
 import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
-import { ensureDirSync } from './util.js'
+import { ensureDirSync, isWithinQuietHours } from './util.js'
 import { sessionSidecarPath } from './session_store.js'
 import { takeBashStartCwd } from './session.js'
 import { diagnoseSqlFailure } from './session_store_schema.js'
@@ -112,7 +113,8 @@ export const REPEAT_NOTICE_EXEMPT: ReadonlySet<string> = new Set([
 export function repeatFailureNotice(toolName: string | undefined): string {
   // A tool name is not our text: an MCP server chooses the names it advertises, and this notice is delivered in token-goat's own voice, so a server naming a tool after our own marker would otherwise speak through us.
   const tool = toolName === undefined || toolName === '' ? 'This tool' : displaySafeText(toolName)
-  return `[token-goat] ${tool} just failed with the same error as an earlier call this session. Retrying it unchanged will fail the same way -- change the arguments, the tool, or the approach.`
+  const pointer = toolName === 'Bash' ? ' To read only the failing lines of a shell command, run it through `token-goat failures` (test runs) or `token-goat logfold` (other logs).' : ''
+  return `[token-goat] ${tool} just failed with the same error as an earlier call this session. Retrying it unchanged will fail the same way -- change the arguments, the tool, or the approach.${pointer}`
 }
 
 /** The near-miss finder (edit_near_miss.ts, with the secret-name list under it), loaded by {@link postToolUseFailureWithExtras} only for a failed edit tool call so the hook entry does not parse it on every tool call. Until it is loaded {@link diagnoseEditFailure} skips the near-miss rung and gives the older advice, so a caller that wants the near-miss answer awaits {@link loadNearMiss} first. */
@@ -248,6 +250,12 @@ function editAdviceOutput(event: HookEvent, text: string): HookOutput {
   return nearMissLib?.isNearMissAdvice(text) === true ? applyHintTracking(event, out, uncorrelatedHint('edit_near_miss')) : out
 }
 
+/** The repeat notice as a tracked hint, silent during hints.quiet_hours: the rule quietContextOutput (hooks_read.ts) applies to every advisory. The ledger already holds the signature, so a quiet repeat is not announced again once the window closes. */
+function repeatAdviceOutput(event: HookEvent, toolName: string | undefined): HookOutput {
+  if (isWithinQuietHours(loadConfig().hints.quiet_hours)) return passOutput()
+  return applyHintTracking(event, contextOutput(repeatFailureNotice(toolName)), uncorrelatedHint('repeat_failure'))
+}
+
 /** Reasons a failed Bash command opens no recovery pair, beyond {@link REPEAT_NOTICE_EXEMPT}: a syntax error or a blocked sleep is fixed by rewriting the command, so the fix is a different C rather than something run in between. */
 const RECOVERY_SKIPPED: ReadonlySet<string> = new Set(['shell_syntax_error', 'sleep_blocked'])
 
@@ -375,7 +383,7 @@ function adviseOnFailure(event: HookEvent, slot: AdviceSlot, now: number): HookO
       return contextOutput(sqlDiagnostic)
     }
 
-    return contextOutput(repeatFailureNotice(toolName))
+    return repeatAdviceOutput(event, toolName)
   } catch {
     return passOutput()
   }

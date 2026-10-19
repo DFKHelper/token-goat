@@ -41,6 +41,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Passes an advisory circuit-breaker tip naming the already-fenced token-goat command LED_COMMAND_RE extracted from the prior denial; interpolates no unadjudicated values.',
   'hooks_tool_failure.ts::adviseOnFailure':
     'Names the tool that failed twice, and an MCP server chooses the names it advertises. Escaped in repeatFailureNotice.',
+  'hooks_tool_failure.ts::repeatAdviceOutput':
+    'Wraps the repeat notice repeatFailureNotice built. Interpolates nothing of its own: the tool name is escaped in repeatFailureNotice, and the Bash pointer appended there is a fixed string with no value from the payload.',
   'hooks_tool_failure.ts::postToolUseFailureHandler':
     'Returns what adviseOnFailure produced without the recovery and path-miss lines, which postToolUseFailureWithExtras adds. Interpolates nothing of its own.',
   'hooks_tool_failure.ts::postToolUseFailureWithExtras':

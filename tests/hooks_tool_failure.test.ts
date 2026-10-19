@@ -1,7 +1,7 @@
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../src/stats.js', async (importOriginal) => {
   const original = await importOriginal<Record<string, unknown>>()
@@ -19,6 +19,8 @@ import {
   repeatFailureNotice,
   REPEAT_NOTICE_EXEMPT,
 } from '../src/hooks_tool_failure.js'
+import { getHintStatsSummary } from '../src/hint_stats_read.js'
+import { clearModuleCaches } from '../src/reset.js'
 import { sessionSidecarPath } from '../src/session_store.js'
 import { recordStat } from '../src/stats.js'
 import { EXPECTED_REASONS } from '../src/tool_error_class.js'
@@ -382,5 +384,44 @@ describe('postToolUseFailureHandler on captured Claude Code payloads', () => {
 
   it('exempts only reasons the classifier can return as expected', () => {
     expect([...REPEAT_NOTICE_EXEMPT].filter((r) => !EXPECTED_REASONS.includes(r))).toEqual([])
+  })
+})
+
+describe('repeat notice as a tracked hint', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.useRealTimers()
+    clearModuleCaches()
+  })
+
+  it('counts the repeat notice under its own repeat_failure category in hint-stats', () => {
+    expect(getHintStatsSummary().map((c) => c.category)).toContain('repeat_failure')
+    const session = uniqueSession()
+    const kinds = [1, 2].map(() => postToolUseFailureHandler(payloadEvent(session, CAPTURED_BASH_FAILURE)).hookType)
+    expect(kinds).toEqual(['pass', 'context'])
+    // An uncorrelated hint is logged as unobservable (no correlator to score it by), the same accounting edit_near_miss gets.
+    expect(getHintStatsSummary(session).find((c) => c.category === 'repeat_failure')?.unobservable).toBe(1)
+  })
+
+  it('points a Bash repeat at token-goat failures and logfold, and a non-Bash repeat at neither', () => {
+    const session = uniqueSession()
+    postToolUseFailureHandler(payloadEvent(session, CAPTURED_BASH_FAILURE))
+    const out = postToolUseFailureHandler(payloadEvent(session, CAPTURED_BASH_FAILURE))
+    expect(out.hookType === 'context' && out.context).toContain('token-goat failures')
+    expect(out.hookType === 'context' && out.context).toContain('token-goat logfold')
+    expect(repeatFailureNotice('Read')).not.toContain('token-goat logfold')
+  })
+
+  it('stays silent on a repeat during quiet hours and records no emission, then speaks outside them', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 0, 1, 12, 0))
+    vi.stubEnv('TOKEN_GOAT_QUIET_HOURS', '10:00-14:00')
+    clearModuleCaches()
+    const quietSession = uniqueSession()
+    const quietKinds = [1, 2].map(() => postToolUseFailureHandler(payloadEvent(quietSession, CAPTURED_BASH_FAILURE)).hookType)
+    expect(quietKinds).toEqual(['pass', 'pass'])
+    expect(getHintStatsSummary(quietSession).find((c) => c.category === 'repeat_failure')?.unobservable ?? 0).toBe(0)
+    vi.setSystemTime(new Date(2026, 0, 1, 20, 0))
+    expect(repeatTwice(CAPTURED_BASH_FAILURE)).toEqual(['pass', 'context'])
   })
 })

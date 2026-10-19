@@ -1940,7 +1940,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       manualEffective: number
       manualIneffective: number
     }>
-    expect(rows.length).toBe(12)
+    expect(rows.length).toBe(13)
     expect(rows.every((row) => row.emitted === 0 && row.suppressed === false)).toBe(true)
     expect(rows.map((row) => row.category).sort()).toEqual([
       'bash_recall',
@@ -1954,6 +1954,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
       'read_reread_dedup',
       'read_structural_nav',
       'recovery_pair',
+      'repeat_failure',
       'search_brake',
     ])
 

@@ -342,6 +342,7 @@ glob_dedup_hint       0 ~1          -            0         n/a         no       
 recovery_pair        0 ~2          -            0         n/a         no               0        0        90
 edit_near_miss       0 ~1          -            0         n/a         no               0        0        120
 path_miss            0 ~2          -            0         n/a         no               0        0        150
+repeat_failure       0 ~1          -            0         n/a         no               0        0        90
 
 TOTAL   saved-bytes=48200 (all-time, every hint kind)   spent-bytes=7020 (hint_emissions ledger only)
 ```

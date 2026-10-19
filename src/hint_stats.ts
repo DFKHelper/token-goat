@@ -30,6 +30,8 @@ export const HINT_CATEGORIES = [
   'path_miss',
   'edit_callers_tests',
   'duplicate_function',
+  // hooks_tool_failure.ts: a failed call whose exact error this session already advised on. Logged with no correlator, so it counts as spend and emissions but never a verdict.
+  'repeat_failure',
 ] as const
 
 export type HintCategory = (typeof HINT_CATEGORIES)[number]
