@@ -165,6 +165,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 
 | Module | Role |
 |--------|------|
+| [`src/bridges/aider_install.ts`](src/bridges/aider_install.ts) | Harness bridge integration and hook configuration for aider_install |
 | [`src/bridges/antigravity_hooks.ts`](src/bridges/antigravity_hooks.ts) | Wire-format shaping for the Antigravity CLI (agy 1.2.11). |
 | [`src/bridges/antigravity_install.ts`](src/bridges/antigravity_install.ts) | Antigravity CLI (`agy`) hook integration. |
 | [`src/bridges/claudecode.ts`](src/bridges/claudecode.ts) | Claude Code hook script template and install config |

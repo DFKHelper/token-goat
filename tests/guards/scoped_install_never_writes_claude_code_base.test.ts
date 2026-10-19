@@ -36,6 +36,9 @@ const HARNESS_SCOPE_FLAGS = [
   'visualstudio',
   'zed',
   'cursor',
+  'jetbrains',
+  'neovim',
+  'aider',
 ] as const
 
 /** Extracts the brace-balanced body of the first `if (opts.<flag> === true) {` block found at or after `fromIndex`. Returns null if no such branch exists in this slice. */

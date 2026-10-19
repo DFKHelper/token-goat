@@ -367,7 +367,7 @@ Three commands. Hooks register and start working immediately: no terminal popups
 
 > **WSL performance tip:** Keep active repositories on WSL's native ext4 filesystem (`~/projects/...`) rather than Windows mounts (`/mnt/c/...`) to avoid 9P cross-OS filesystem translation overhead during initial indexing.
 
-Per-harness setup for Codex, Gemini, Qwen, Kimi, opencode, OpenClaw, pi, Copilot, Grok, Antigravity and Cline/Windsurf/Cursor, the companion CLI tools worth installing alongside it, upgrading, and the full list of what lands on your machine: **[Install guide](docs/install.md)**.
+Per-harness setup for Codex, Gemini, Qwen, Kimi, opencode, OpenClaw, pi, Copilot, Grok, Antigravity, Aider, and Cline/Windsurf/Cursor, the companion CLI tools worth installing alongside it, upgrading, and the full list of what lands on your machine: **[Install guide](docs/install.md)**.
 
 ## CLI
 
@@ -422,6 +422,8 @@ A handoff keeps its own text for 24 hours, the same age limit the content cache 
 **Zed**: `token-goat install --zed` registers token-goat as an MCP context server in Zed's `settings.json` (user scope only — Zed has no project-local equivalent). Zed's first-party agent has no hooks API at all, so this is MCP tools only, the same limits as Visual Studio above: no read dedup, hints, image shrink, or output folding. Enable the token-goat server under Zed's Agent panel tools list after installing; new MCP servers start disabled. `token-goat uninstall --zed` removes the entry and its generated shim script. See [Zed users](docs/install.md#zed-users).
 
 **Cursor**: `token-goat install --cursor` registers token-goat as an MCP server in `~/.cursor/mcp.json` (`-p`/`--project` for `<project>/.cursor/mcp.json`). This never touches `~/.cursor/hooks.json`: Cursor already imports Claude Code's hooks from `~/.claude/settings.json` by default, so a plain `token-goat install` for Claude Code already gets hooks running in Cursor too, with no separate Cursor hooks file to maintain or risk clobbering. `token-goat uninstall --cursor` removes only the MCP entry. See [Cursor users](docs/install.md#cursor-users).
+
+**Aider**: `token-goat install --aider` adds token-goat guidance and surgical-read instructions into Aider's coding conventions file (`CONVENTIONS.md` with `-p`/`--project`, or `~/.aider.conventions.md` by default). Aider automatically loads conventions files into model context on startup. `token-goat uninstall --aider` removes only token-goat's delimited block. See [Aider users](docs/install.md#aider-users).
 
 **JetBrains** (WebStorm, IntelliJ, PyCharm, Rider, PhpStorm): no integration today — no hooks, no MCP, no terminal filter. See [JetBrains IDEs users](docs/install.md#jetbrains-ides-webstorm-intellij-pycharm-rider-phpstorm-users) for why and what a Copilot-for-JetBrains user might already get for free.
 

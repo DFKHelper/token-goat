@@ -287,6 +287,20 @@ The `--grok` flag patches Claude Code and additionally writes a standalone hook 
 
 To remove: `token-goat uninstall --grok`.
 
+### Aider users
+
+Aider ([aider-chat](https://aider.chat)) is an AI pair programming tool in your terminal that reads repository files and applies edits directly. Aider automatically reads conventions files (`CONVENTIONS.md` in repository root, or `~/.aider.conventions.md` in your user home directory) and includes them in the model's context.
+
+```
+token-goat install --aider
+```
+
+This writes an atomic, delimited routing block into Aider's coding conventions file (`~/.aider.conventions.md` in user scope by default, or `CONVENTIONS.md` in project root with `-p`/`--project`). The block instructs the model to use token-goat's narrow surgical-read commands (`read`, `symbol`, `section`, `refs`) instead of reading whole files into context, saving tokens when pairing with local Ollama models, Claude, or OpenAI.
+
+Token-goat also includes a built-in terminal-output compression filter for `aider` when it runs on your PATH, stripping spinner noise and banners.
+
+To remove: `token-goat uninstall --aider` (add `-p`/`--project` for the project-level conventions file).
+
 ### Cline, Windsurf, Cursor, and other AI tool CLIs
 
 No separate install step needed. Token-goat compresses the terminal output of these tools automatically as soon as they appear on your PATH. Run `token-goat doctor` to confirm they are detected — the "Third-party AI tools" section will show `detected — bash output compression active`.
@@ -515,6 +529,12 @@ Three things follow, and they are worth knowing before you decide. It never leav
 |------|------|
 | `~/.grok/hooks/token-goat.json` | Hook config (`{ hooks }`) registering `PreToolUse`, `PostToolUse`, `PreCompact`, `UserPromptSubmit`, and `SubagentStop` with an empty (match-everything) matcher, each pointing at the shim script below. Existing files elsewhere in the hooks directory are untouched; global scope only (Grok's project-scoped `.grok/hooks/` requires a separate manual `/hooks-trust` grant). |
 | `~/.grok/hooks/token-goat-shim.cjs` | The shim `token-goat.json`'s hook commands invoke. Translates `PreToolUse`'s deny shape only (`{"decision":"block",...}` → Grok's documented `{"decision":"deny",...}`, plus exit code 2); every other event's response is forwarded unmodified. Regenerated on every `install --grok` run. The `.cjs` extension keeps Node from loading it as an ES module when a package.json above it says `"type": "module"`. A small `token-goat-shim.js` beside it hands off to the `.cjs` file, for sessions started before the rename that still run the old path. |
+
+**With `--aider`** (Aider coding conventions; user scope by default, `-p`/`--project` for repository `CONVENTIONS.md`)
+
+| Path | What |
+|------|------|
+| `~/.aider.conventions.md` (`CONVENTIONS.md` in repository root with `-p`) | Delimited coding conventions block (`<!-- token-goat-aider-begin -->` … `<!-- token-goat-aider-end -->`) instructing LLMs to prioritize token-goat's surgical-read commands (`read`, `symbol`, `section`, `refs`) over full-file dumps. Everything outside the markers is preserved. Uninstall removes only the delimited block, leaving unrelated conventions intact. |
 
 **With `--vscode`** (VS Code MCP configuration; **project scope by default** — the only integration that inverts the usual default, because VS Code pins a user-scope hook to the first folder of a multi-root workspace — with `--user` for the old every-project install)
 

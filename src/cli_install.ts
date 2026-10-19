@@ -22,6 +22,7 @@ import { installZed, isZedInstalled, uninstallZed } from './bridges/zed_install.
 import { installVisualStudio, isVisualStudioInstalled, uninstallVisualStudio, visualStudioDuplicateNote, visualStudioMcpStatus, visualStudioOtherScopeHasManagedServer } from './bridges/visualstudio_install.js'
 import { installJetbrains, isJetbrainsInstalled, uninstallJetbrains } from './bridges/jetbrains_install.js'
 import { installNeovim, isNeovimInstalled, uninstallNeovim } from './bridges/neovim_install.js'
+import { installAider, isAiderInstalled, uninstallAider } from './bridges/aider_install.js'
 import { detectEcosystems } from './bridges/detect_ecosystems.js'
 import { VSCODE_CLAUDE_HOOKS_RESTORED_NOTE, VSCODE_CLAUDE_HOOKS_TURNED_OFF_NOTE, VSCODE_DOUBLE_FIRE_NOTE, VSCODE_PROJECT_SCOPE_COVERAGE_NOTE, VSCODE_USER_SCOPE_MIGRATED_NOTE, VSCODE_USER_SCOPE_MULTIROOT_NOTE } from './cli_doctor_platforms.js'
 import { isWorkerRunning } from './worker_lifecycle.js'
@@ -81,6 +82,7 @@ function wantsClaudeCodeBase(opts: {
   cursor?: boolean
   jetbrains?: boolean
   neovim?: boolean
+  aider?: boolean
   detect?: boolean
   hermes?: boolean
 }): boolean {
@@ -104,6 +106,7 @@ function wantsClaudeCodeBase(opts: {
     opts.cursor,
     opts.jetbrains,
     opts.neovim,
+    opts.aider,
   ].some((v) => v === true)
   return !otherHarnessRequested || opts.hermes === true
 }
@@ -130,6 +133,7 @@ export async function cmdInstall(opts: {
   cursor?: boolean
   jetbrains?: boolean
   neovim?: boolean
+  aider?: boolean
   detect?: boolean
   auto?: boolean
   all?: boolean
@@ -174,6 +178,7 @@ export async function cmdInstall(opts: {
         if (item.id === 'copilot') opts.copilot = true
         if (item.id === 'jetbrains') opts.jetbrains = true
         if (item.id === 'neovim') opts.neovim = true
+        if (item.id === 'aider') opts.aider = true
         if (item.id === 'cursor') opts.cursor = true
         if (item.id === 'codex') opts.codex = true
         if (item.id === 'zed') opts.zed = true
@@ -189,6 +194,7 @@ export async function cmdInstall(opts: {
       opts.copilot === true ||
       opts.jetbrains === true ||
       opts.neovim === true ||
+      opts.aider === true ||
       opts.cursor === true ||
       opts.codex === true ||
       opts.zed === true ||
@@ -207,6 +213,7 @@ export async function cmdInstall(opts: {
     opts.copilot = true
     opts.jetbrains = true
     opts.neovim = true
+    opts.aider = true
     opts.cursor = true
     opts.codex = true
     opts.zed = true
@@ -437,6 +444,16 @@ export async function cmdInstall(opts: {
     if (nvimResult.scope === 'project') out(projectHooksCommitNote([nvimResult.configPath]))
   }
 
+  if (opts.aider === true) {
+    const aiderResult = installAider({ project: opts.project === true })
+    out(
+      aiderResult.alreadyInstalled
+        ? `Aider coding conventions (${aiderResult.scope} scope) already installed → ${displaySafePath(aiderResult.conventionsPath)}`
+        : `Installed token-goat Aider coding conventions (${aiderResult.scope} scope) → ${displaySafePath(aiderResult.conventionsPath)}`,
+    )
+    if (aiderResult.scope === 'project') out(projectHooksCommitNote([aiderResult.conventionsPath]))
+  }
+
   // Visual Studio reads the solution's .mcp.json and .vscode/mcp.json both, so project-scope installs for the two hosts overlap there. --vscode is project scope unless --user says otherwise, so it reaches this overlap without -p now; --visualstudio still needs -p.
   if (((opts.vscode === true && opts.user !== true) || (opts.visualstudio === true && opts.project === true))) {
     const duplicateNote = visualStudioDuplicateNote()
@@ -534,6 +551,7 @@ export async function cmdUninstall(opts: {
   cursor?: boolean
   jetbrains?: boolean
   neovim?: boolean
+  aider?: boolean
   all?: boolean
   claudecode?: boolean
   local?: boolean
@@ -558,6 +576,7 @@ export async function cmdUninstall(opts: {
     opts.cursor = true
     opts.jetbrains = true
     opts.neovim = true
+    opts.aider = true
     opts.claudecode = true
   }
   const scope: HookScope = opts.project === true ? 'project' : 'user'
@@ -600,6 +619,7 @@ export async function cmdUninstall(opts: {
     { flag: opts.cursor === true, run: () => uninstallCursor({ project: opts.project === true }), label: 'Cursor MCP integration' },
     { flag: opts.jetbrains === true, run: () => uninstallJetbrains({ project: opts.project === true }), label: 'JetBrains MCP integration' },
     { flag: opts.neovim === true, run: () => uninstallNeovim({ project: opts.project === true }), label: 'Neovim Lua integration' },
+    { flag: opts.aider === true, run: () => uninstallAider({ project: opts.project === true }), label: 'Aider coding conventions' },
   ]
   for (const removal of removals) {
     if (!removal.flag) continue
@@ -660,6 +680,7 @@ export function leftoverIntegrations(opts: {
   cursor?: boolean
   jetbrains?: boolean
   neovim?: boolean
+  aider?: boolean
 }): LeftoverIntegration[] {
   const candidates: Array<{ skipped: boolean; present: () => boolean; flag: string; label: string }> = [
     { skipped: opts.codex !== true, present: isCodexInstalled, flag: '--codex', label: 'Codex CLI integration' },
@@ -701,6 +722,12 @@ export function leftoverIntegrations(opts: {
       present: () => isNeovimInstalled() || isNeovimInstalled({ project: true }),
       flag: '--neovim',
       label: 'Neovim Lua integration',
+    },
+    {
+      skipped: opts.aider !== true,
+      present: () => isAiderInstalled() || isAiderInstalled({ project: true }),
+      flag: '--aider',
+      label: 'Aider coding conventions',
     },
   ]
   const found: LeftoverIntegration[] = []

@@ -20,6 +20,7 @@ const EXPECTED: Readonly<Record<string, ScopeDefault>> = {
   VisualStudio: 'user-default',
   Jetbrains: 'user-default',
   Neovim: 'user-default',
+  Aider: 'user-default',
   Cursor: 'user-default',
   CopilotCli: 'user-default',
   Pi: 'user-default',

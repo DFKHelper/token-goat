@@ -182,6 +182,20 @@ export function detectEcosystems(options: DetectOptions = {}): DetectedEcosystem
     reasons: geminiReasons,
   });
 
+  // 12. Aider
+  const aiderReasons: string[] = [];
+  if (exists(path.join(projectRoot, '.aider.conf.yml'))) aiderReasons.push('Workspace contains .aider.conf.yml');
+  if (exists(path.join(projectRoot, '.aider.conventions.md'))) aiderReasons.push('Workspace contains .aider.conventions.md');
+  if (exists(path.join(projectRoot, 'CONVENTIONS.md'))) aiderReasons.push('Workspace contains CONVENTIONS.md');
+  if (resolveOnPath('aider')) aiderReasons.push('aider binary found on PATH');
+  items.push({
+    id: 'aider',
+    name: 'Aider',
+    flag: '--aider',
+    detected: aiderReasons.length > 0,
+    reasons: aiderReasons,
+  });
+
   const detectedFlags = items.filter((item) => item.detected).map((item) => item.flag);
 
   return {

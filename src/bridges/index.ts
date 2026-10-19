@@ -81,3 +81,14 @@ export {
   visualStudioUserMcpPath,
 } from './visualstudio_install.js'
 export type { VisualStudioInstallResult, VisualStudioScopeOptions } from './visualstudio_install.js'
+export {
+  AIDER_CONVENTIONS_BEGIN,
+  AIDER_CONVENTIONS_END,
+  aiderProjectConventionsPath,
+  aiderUserConventionsPath,
+  buildAiderGuidanceBlock,
+  installAider,
+  isAiderInstalled,
+  uninstallAider,
+} from './aider_install.js'
+export type { AiderInstallResult, AiderScopeOptions } from './aider_install.js'
