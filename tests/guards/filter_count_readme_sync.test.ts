@@ -15,6 +15,11 @@ const README = fs.readFileSync(path.join(HERE, '..', '..', 'README.md'), 'utf8')
 /** How far below the real count a "NNN+" floor may sit. Large enough that retiring a filter does not fail the build on the same commit, small enough that a year of additions cannot hide inside it. */
 const MAX_SLACK = 15
 
+/** Appended to every failure: the GitHub repo description carries the same figure, and no test can read it, so the message is the only place that reminds the author. */
+const GITHUB_DESCRIPTION_NOTE =
+  'The GitHub repo description carries the same "NNN+ filter & interception rules" figure and must be updated with ' +
+  '`gh repo edit DFKHelper/token-goat --description "..."` in the same change.'
+
 function extract(re: RegExp, what: string): number {
   const m = re.exec(README)
   if (!m || m[1] === undefined) {
@@ -57,12 +62,13 @@ describe('filter count / README sync', () => {
   it.each(CLAIMS)('the advertised $what count is neither an overstatement nor stale', ({ what, advertised, real, source }) => {
     const readmeCount = advertised()
     const realCount = real()
+    const githubNote = what === 'filter & interception rules' ? GITHUB_DESCRIPTION_NOTE : ''
 
     expect(
       readmeCount,
       `README.md advertises "${readmeCount}+" ${what}, but the real count is ${realCount} per ` +
       `${source}. The "NNN+" claim is a floor and must never exceed reality: lower it, or add the ` +
-      'filters the claim already promises.'
+      'filters the claim already promises. ' + githubNote
     ).toBeLessThanOrEqual(realCount)
 
     expect(
@@ -70,7 +76,7 @@ describe('filter count / README sync', () => {
       `README.md advertises "${readmeCount}+" ${what} while the real count is ${realCount}, ` +
       `${realCount - readmeCount} more than claimed. A floor that low is true and useless, which ` +
       'is exactly why nobody notices it drifting. Raise the README number to within ' +
-      `${MAX_SLACK} of ${realCount}.`
+      `${MAX_SLACK} of ${realCount}. ` + githubNote
     ).toBeGreaterThanOrEqual(realCount - MAX_SLACK)
   })
 })

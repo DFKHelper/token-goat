@@ -11,7 +11,7 @@ permalink: /
 
 ***Give the model what it needs, not everything you have.***
 
-**85%** smaller reads · **49%** of first-read bytes withheld · **97.4%** image compression · **leaner prompt cache** · **205+** filter & interception rules · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard · **3.7 GB** never reached the model · **1.1 Gt** tokens saved
+**85%** smaller reads · **49%** of first-read bytes withheld · **97.4%** image compression · **leaner prompt cache** · **255+** filter & interception rules · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard · **3.7 GB** never reached the model · **1.1 Gt** tokens saved
 
 **Saves AI turns, context and tokens, and improves its focus. Fully automated, always online.**
 

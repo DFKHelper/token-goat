@@ -2,17 +2,25 @@
 
 import { describe, expect, it } from 'vitest'
 
+import { FAILURE_EXTRACTORS } from '../src/failures.js'
 import { FILTERS } from '../src/filters.js'
 import {
+  AGENT_SPAWN_HOOK_COUNT,
   BASH_INTERCEPTOR_COUNT,
   BASH_OUTPUT_FILTER_COUNT,
   BUILD_RECALL_PATTERN_COUNT,
+  COUNTED_GROUPS,
   FAILURE_RUNNER_COUNT,
   FILE_TYPE_HANDLER_COUNT,
+  GLOB_HOOK_COUNT,
+  GREP_HOOK_COUNT,
+  IMAGE_HOOK_COUNT,
   MONITORING_PATTERN_COUNT,
   PATH_PATTERN_COUNT,
   READ_HOOK_CONDITION_COUNT,
   TOTAL_FILTER_COUNT,
+  WEB_FETCH_HOOK_COUNT,
+  WEB_SEARCH_HOOK_COUNT,
 } from '../src/filter_counts.js'
 import {
   BUILD_COMMAND_PATTERNS,
@@ -42,10 +50,36 @@ describe('filter_counts.ts', () => {
         BUILD_RECALL_PATTERN_COUNT +
         MONITORING_PATTERN_COUNT +
         PATH_PATTERN_COUNT +
+        FAILURE_RUNNER_COUNT +
         FILE_TYPE_HANDLER_COUNT +
         BASH_INTERCEPTOR_COUNT +
         READ_HOOK_CONDITION_COUNT +
-        FAILURE_RUNNER_COUNT
+        GREP_HOOK_COUNT +
+        GLOB_HOOK_COUNT +
+        WEB_FETCH_HOOK_COUNT +
+        WEB_SEARCH_HOOK_COUNT +
+        AGENT_SPAWN_HOOK_COUNT +
+        IMAGE_HOOK_COUNT
     )
+  })
+
+  it('FAILURE_RUNNER_COUNT is the size of the table extractFailures dispatches through', () => {
+    expect(FAILURE_RUNNER_COUNT).toBe(FAILURE_EXTRACTORS.size)
+    expect([...FAILURE_EXTRACTORS.keys()].sort()).toEqual(['cargo', 'go', 'jest', 'pytest', 'vitest'])
+  })
+
+  it('every hand-listed count is the length of its entry list, and no list is missing from COUNTED_GROUPS', () => {
+    const lengths = new Map(COUNTED_GROUPS.map((g) => [g.constant, g.entries.length]))
+    expect(lengths).toEqual(new Map([
+      ['FILE_TYPE_HANDLER_COUNT', FILE_TYPE_HANDLER_COUNT],
+      ['BASH_INTERCEPTOR_COUNT', BASH_INTERCEPTOR_COUNT],
+      ['READ_HOOK_CONDITION_COUNT', READ_HOOK_CONDITION_COUNT],
+      ['GREP_HOOK_COUNT', GREP_HOOK_COUNT],
+      ['GLOB_HOOK_COUNT', GLOB_HOOK_COUNT],
+      ['WEB_FETCH_HOOK_COUNT', WEB_FETCH_HOOK_COUNT],
+      ['WEB_SEARCH_HOOK_COUNT', WEB_SEARCH_HOOK_COUNT],
+      ['AGENT_SPAWN_HOOK_COUNT', AGENT_SPAWN_HOOK_COUNT],
+      ['IMAGE_HOOK_COUNT', IMAGE_HOOK_COUNT],
+    ]))
   })
 })

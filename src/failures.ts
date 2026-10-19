@@ -386,28 +386,22 @@ function extractGeneric(lines: string[]): FailureResult {
 
 // ───────────────────────────────────────────────────────────────────────────── Public API ─────────────────────────────────────────────────────────────────────────────
 
+/** Runner name to its failure extractor: the one table extractFailures dispatches through and src/filter_counts.ts counts, so a runner added here is counted without a second edit. A Map, not an object, so a caller-supplied runner named like an Object.prototype member cannot match. extractGeneric is the fallback for any other runner and is deliberately not in the table. */
+export const FAILURE_EXTRACTORS: ReadonlyMap<string, (lines: string[]) => FailureResult> = new Map([
+  ['pytest', extractPytest],
+  ['vitest', extractVitest],
+  ['jest', extractJest],
+  ['go', extractGo],
+  ['cargo', extractCargo],
+]);
+
 /** Parse test runner output and return only the failing blocks. */
 export function extractFailures(text: string, options?: { runner?: string }): FailureResult {
   const cleaned = stripAnsiEscapes(text);
   const lines = cleaned.split('\n');
   const detected = options?.runner ?? detectRunner(cleaned);
-
-  if (detected === 'pytest') {
-    return extractPytest(lines);
-  }
-  if (detected === 'vitest') {
-    return extractVitest(lines);
-  }
-  if (detected === 'jest') {
-    return extractJest(lines);
-  }
-  if (detected === 'go') {
-    return extractGo(lines);
-  }
-  if (detected === 'cargo') {
-    return extractCargo(lines);
-  }
-  return extractGeneric(lines);
+  const extract = FAILURE_EXTRACTORS.get(detected) ?? extractGeneric;
+  return extract(lines);
 }
 
 /** Format failures as human-readable text. */
