@@ -5,10 +5,13 @@ interface InjectionPattern {
   readonly re: RegExp
 }
 
+// What must NOT follow "ignore/disregard ... instructions" for it to read as an order to the model: a preposition or a relative-clause subject, which turn the phrase into a description of some other instructions ("the previous directions to the airport", "the above instructions in the legacy README", "the previous instructions I gave"). Anything else, including no punctuation at all, stays flagged, since scraped text often loses its punctuation. A negative lookahead over fixed words with no nested quantifier, so the scan stays linear; a line break counts as a boundary.
+const OVERRIDE_TAIL = String.raw`(?![^\S\r\n]+(?:i|we|he|she|they|that|which|who|whom|in|of|to|from|about|for|on|at|with|by|under|inside|within|regarding)\b)`
+
 // Precise, low-false-positive phrasing only -- these are patterns that show up in real prompt-injection payloads (imperative override language directed at an AI), not ordinary prose. Case-insensitive; `\b` word boundaries keep e.g. "you are now a manager" the literal common phrase from matching "system prompt" substrings.
 const INJECTION_PATTERNS: readonly InjectionPattern[] = [
-  { name: 'ignore-previous-instructions', re: /ignore\s+(all\s+)?(the\s+)?(prior|previous|above)\s+(instructions|directions)/i },
-  { name: 'disregard-previous-instructions', re: /disregard\s+(all\s+)?(the\s+)?(prior|previous|above)\s+(instructions|directions)/i },
+  { name: 'ignore-previous-instructions', re: new RegExp(String.raw`ignore\s+(all\s+)?(the\s+)?(prior|previous|above)\s+(instructions|directions)${OVERRIDE_TAIL}`, 'i') },
+  { name: 'disregard-previous-instructions', re: new RegExp(String.raw`disregard\s+(all\s+)?(the\s+)?(prior|previous|above)\s+(instructions|directions)${OVERRIDE_TAIL}`, 'i') },
   { name: 'new-instructions', re: /\bnew\s+instructions\s*:/i },
   { name: 'you-are-now', re: /\byou\s+are\s+now\s+(a|an|the)\b/i },
   { name: 'forget-instructions', re: /\bforget\s+(your\s+)?(instructions|system\s+prompt)\b/i },
