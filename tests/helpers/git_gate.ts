@@ -10,8 +10,8 @@ import * as path from 'node:path'
 export interface GitGate {
   /** Environment variables that make every git started with them read the gate as a config include, and so block on it until {@link release}. */
   readonly env: Readonly<Record<string, string>>
-  /** Resolves once a git has opened the gate and is blocked reading it. It resolves on the event loop of the process holding the gate, so a caller that blocked that loop on the git (a synchronous spawn) never sees it resolve. */
-  readonly reached: Promise<void>
+  /** Resolves, with the 1-based ordinal of that read among all the reads the gate has seen (those {@link openGitGate}'s `passFirst` let through count), once a git has opened the gate and is blocked reading it; a test that expects the Nth read to be the held one asserts the ordinal, and a gate that held an earlier read names it instead of leaving the test waiting. It resolves on the event loop of the process holding the gate, so a caller that blocked that loop on the git (a synchronous spawn) never sees it resolve. */
+  readonly reached: Promise<number>
   /** Whether a git still holds the gate, read now. Windows: a connection a git made that has not closed (the pipe closes when the git process ends, however it ends; the close arrives on the event loop of the process holding the gate, so a loop that was blocked still shows a git that has ended). POSIX: whether a reader still has the FIFO open, probed by opening its write end without blocking, which fails with ENXIO once every reader has gone; nothing is written, so polling in a loop leaves git nothing to read. False once released or disposed. */
   holding(): boolean
   /** How many times a git has opened the gate so far, those it let through ({@link openGitGate}'s `passFirst`) and those it held. One git may open it more than once (it reads its configuration in more than one step), so this is the count of reads, not of processes; a test that must pass exactly one git's reads measures them with a gate of its own first. */
@@ -36,8 +36,8 @@ async function windowsGate(passFirst: number): Promise<GitGate> {
   let released = false
   let passed = 0
   let opened = 0
-  let signal!: () => void
-  const reached = new Promise<void>((resolve) => {
+  let signal!: (read: number) => void
+  const reached = new Promise<number>((resolve) => {
     signal = resolve
   })
   const server = net.createServer((socket) => {
@@ -48,7 +48,7 @@ async function windowsGate(passFirst: number): Promise<GitGate> {
       socket.end()
       return
     }
-    signal()
+    signal(opened)
     if (released) {
       socket.end()
       return
@@ -90,9 +90,9 @@ async function fifoGate(passFirst: number): Promise<GitGate> {
   let disposed = false
   let passed = 0
   let opened = 0
-  let signal!: () => void
+  let signal!: (read: number) => void
   let open!: () => void
-  const reached = new Promise<void>((resolve) => {
+  const reached = new Promise<number>((resolve) => {
     signal = resolve
   })
   const releasedEvent = new Promise<void>((resolve) => {
@@ -114,7 +114,7 @@ async function fifoGate(passFirst: number): Promise<GitGate> {
         continue
       }
       current = writer
-      signal()
+      signal(opened)
       if (!released) await releasedEvent
       current = null
       await writer.close()

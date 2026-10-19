@@ -45,6 +45,13 @@ function revParse(cwd: string, env: Readonly<Record<string, string>>): Run {
   return { child, settled, hasExited: () => exited }
 }
 
+/** The git's result, asserted to have come without the gate holding it: the git ends or the gate holds it, whichever comes first, so a gate that held a read it was to pass names that read, instead of leaving the row waiting on a git it holds. */
+async function endedUnheld(run: Run, g: GitGate, what: string): Promise<{ code: number | null; stdout: string }> {
+  const outcome = await Promise.race([run.settled.then((result) => ({ result })), g.reached.then((read) => ({ read }))])
+  expect('read' in outcome ? `held at read ${outcome.read}` : 'ended', what).toBe('ended')
+  return run.settled
+}
+
 describe('openGitGate', () => {
   it('holds a real git until released, then lets it answer as it would without the gate', async () => {
     const repo = gitRepoWithCommit()
@@ -119,21 +126,21 @@ describe('openGitGate', () => {
     const repo = gitRepoWithCommit()
     const counting = await gate(Number.MAX_SAFE_INTEGER)
     expect(counting.connections(), 'a gate nothing read reported reads').toBe(0)
-    expect((await revParse(repo, counting.env).settled).code).toBe(0)
+    expect((await endedUnheld(revParse(repo, counting.env), counting, 'a gate that was to let every read through held the first git')).code).toBe(0)
     // A git may read its configuration more than once, so the count is of reads: whatever one rev-parse makes here, git's own business.
     const reads = counting.connections()
     expect(reads, 'a git that was let through left no read on the gate').toBeGreaterThan(0)
-    expect((await revParse(repo, counting.env).settled).code).toBe(0)
+    expect((await endedUnheld(revParse(repo, counting.env), counting, 'a gate that was to let every read through held the second git')).code).toBe(0)
     expect(counting.connections(), 'the same git made a different number of reads the second time').toBe(reads * 2)
     expect(counting.holding(), 'a gate that let every read through held a git').toBe(false)
 
     const g = await gate(reads)
-    const passed = await revParse(repo, g.env).settled
+    const passed = await endedUnheld(revParse(repo, g.env), g, `the git whose ${reads} reads were to be passed was held`)
     expect(passed.code, 'the git whose reads were passed was not let through').toBe(0)
     expect(g.holding(), 'the git whose reads were passed was held').toBe(false)
     expect(g.connections(), 'the passed git did not make the measured reads').toBe(reads)
     const run = revParse(repo, g.env)
-    await g.reached
+    expect(await g.reached, 'the gate held a read other than the first read after the ones it was to pass').toBe(reads + 1)
     expect(g.holding(), 'the git after the passed one was not held').toBe(true)
     expect(run.hasExited(), 'the held git finished before the release').toBe(false)
     g.release()

@@ -47,10 +47,13 @@ async function gateReadsOfFirstGit(cwd: string): Promise<number> {
   try {
     const child = spawn(gitExecutable(), gitInvocation(['rev-parse', '--show-toplevel']), { cwd, env: { ...process.env, ...counting.env }, stdio: 'ignore', windowsHide: true })
     standIns.push(child)
-    await new Promise<void>((resolve, reject) => {
+    const ended = new Promise<'ended'>((resolve, reject) => {
       child.once('error', reject)
-      child.once('close', () => resolve())
+      child.once('close', () => resolve('ended'))
     })
+    // A counting gate holds no git; one that did names its read here instead of leaving the git blocked until the test's timeout.
+    const outcome = await Promise.race([ended, counting.reached.then((read) => `held at read ${read}` as const)])
+    expect(outcome, 'calibration: the counting gate held a read it was to pass').toBe('ended')
     return counting.connections()
   } finally {
     await counting.dispose()
@@ -216,7 +219,8 @@ describe('stopping the built worker daemon', () => {
     // The request is appended to a running daemon, which sweeps it on its next cycle: its second git is the one that opens the gate.
     expect(appendReconcileRequest(dir, project)).toBe(true)
     // The event: the daemon's second git has opened the gate and is blocked reading it; nothing else carries the gate, so it is the daemon's own git.
-    await gate.reached
+    // The ordinal names which git was held: the first firstGitReads reads are the rev-parse's, so the held read is the one after them, the sweep's ls-files; a held rev-parse (its 5 s cap would end it before the stop) reports an earlier read.
+    expect(await gate.reached, "the gate held a read of the sweep's rev-parse, not the ls-files after it").toBe(firstGitReads + 1)
     // Read in the same turn as the event and with only the kill between, so the git is alive and held at the instant stop runs; the table that is empty afterwards then says stop ended it. A gate released early or disposed right after the event (a mutant) leaves the git not held and fails here, with the daemon's own account of its request as the reason.
     expect(gate.holding(), `calibration: the daemon's held git still holds the gate when worker stop runs (the daemon logged: ${reconcileOutcome(dir) ?? 'nothing yet'})`).toBe(true)
 
