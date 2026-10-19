@@ -237,6 +237,18 @@ describe('a repeated identical deny, through the real relay', () => {
     expect(again).toMatchObject({ hookType: 'deny', message: expect.stringContaining('Repeat refusal of this exact call') })
   })
 
+  it('trips the circuit breaker on a third identical deny when an alternate command is suggested', () => {
+    const session = uniq('session')
+    const message = 'Run `token-goat read "foo.ts::bar"` to read surgically. This file is large.'
+    const deny = { hookType: 'deny' as const, message }
+    const event = makeHookEvent({ toolName: 'Read', sessionId: session, toolInput: { file_path: 'foo.ts' } })
+    expect(sharpenRepeatedDeny(event, deny)).toBe(deny)
+    const second = sharpenRepeatedDeny(event, deny)
+    expect(second).toMatchObject({ hookType: 'deny', message: expect.stringContaining('Repeat refusal of this exact call') })
+    const third = sharpenRepeatedDeny(event, deny)
+    expect(third).toMatchObject({ hookType: 'context', context: expect.stringContaining('Circuit breaker: repeated call allowed') })
+  })
+
   it('never cuts a deny that is itself the delivered content', () => {
     const event = makeHookEvent({ toolName: 'Skill', sessionId: uniq('deliver') })
     const out = { hookType: 'deny' as const, message: '[tg] Skill `x` is large; its heading tree (8 headings) is inlined below instead of the full body.\n\n## A' }

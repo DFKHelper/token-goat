@@ -37,6 +37,8 @@ const ADJUDICATED: Readonly<Record<string, string>> = {
     'Names the image it shrank, and a repository names its images. The basename is escaped once where it is computed, which also covers the stats label it feeds. The OCR text beside it was already fenced separately.',
   'hooks_stop.ts::stopHandler':
     'Names the source files the session edited, which a repository names, and the last verification command, which the model typed. Each file name goes through nameSubject and the command through quotedArg, both display-safe, so neither can carry a marker or a backtick.',
+  'hint_target.ts::sharpenRepeatedDeny':
+    'Passes an advisory circuit-breaker tip naming the already-fenced token-goat command LED_COMMAND_RE extracted from the prior denial; interpolates no unadjudicated values.',
   'hooks_tool_failure.ts::adviseOnFailure':
     'Names the tool that failed twice, and an MCP server chooses the names it advertises. Escaped in repeatFailureNotice.',
   'hooks_tool_failure.ts::postToolUseFailureHandler':

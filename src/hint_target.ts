@@ -13,6 +13,7 @@ import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
+import { contextOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 
 /** What a suggested command slices out of a file: a markdown/TOML/INI section, a code symbol, a config key, or a SQL CREATE block. */
@@ -325,5 +326,13 @@ export function sharpenRepeatedDeny(event: HookEvent, output: HookOutput): HookO
   }
   const command = LED_COMMAND_RE.exec(output.message)?.[1]
   const lead = command === undefined ? '' : 'Run `' + command + '` instead. '
+  const againKey = key + ':again'
+  if (!wasHintShown(againKey)) {
+    markHintShown(againKey)
+    return { hookType: 'deny', message: '[tg] ' + lead + 'Repeat refusal of this exact call; the earlier refusal this session has the full reason.' }
+  }
+  if (command !== undefined) {
+    return contextOutput('[tg] Circuit breaker: repeated call allowed to prevent agent deadlock. Tip: Run `' + command + '` next time for token savings.')
+  }
   return { hookType: 'deny', message: '[tg] ' + lead + 'Repeat refusal of this exact call; the earlier refusal this session has the full reason.' }
 }

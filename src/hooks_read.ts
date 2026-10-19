@@ -505,6 +505,19 @@ function recordActualRead(event: HookEvent, filePath: string): void {
 function firstReadSymbolOutput(decision: ReadPolicyDecision, policyContext: ReadPolicyContext, hints: HintsConfig, recordRead: boolean): HookOutput | null {
   const { event, normalizedPath, fileSize } = policyContext
   if (decision.action === 'deny') {
+    const firstReadDenyKey = 'first-read-symbol-deny:' + getCompactedAt() + ':' + foldPath(normalizedPath)
+    if (wasHintShown(firstReadDenyKey)) {
+      if (recordRead) {
+        recordActualRead(event, normalizedPath)
+        recordActualSlice(event, normalizedPath)
+      }
+      return quietContextOutput(
+        '[tg] First-read symbol circuit breaker: whole-file read allowed after previous denial. ' +
+        decision.message,
+        [policyContext.shownPath],
+      )
+    }
+    markHintShown(firstReadDenyKey)
     const denyCredit = counterfactualCredit(fileSize)
     recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'first-read-symbol-deny')
     return denyOutput(decision.message)

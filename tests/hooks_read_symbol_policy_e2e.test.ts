@@ -88,6 +88,22 @@ describe('first-read symbol policy on a really indexed file', () => {
     expect(out.message).toContain('::alphaEntry0')
   })
 
+  it('allows a retried whole-file read through the circuit breaker in the same session', () => {
+    setPolicy('deny')
+    const filePath = writeLargeModule()
+    indexFileSync(filePath, globalDbPath())
+
+    const sid = `policy-breaker-${process.pid}-${Date.now()}`
+    const first = firstRead(filePath, sid)
+    expect(first.hookType).toBe('deny')
+
+    const retry = firstRead(filePath, sid)
+    expect(retry.hookType).toBe('context')
+    if (retry.hookType === 'context') {
+      expect(retry.context).toContain('First-read symbol circuit breaker: whole-file read allowed')
+    }
+  })
+
   it('warns on a whole-file first read under policy warn', () => {
     setPolicy('warn')
     const filePath = writeLargeModule()
