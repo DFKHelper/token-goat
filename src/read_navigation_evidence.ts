@@ -2,7 +2,7 @@
 
 import * as fs from 'node:fs'
 import { withProbeIndex } from './db.js'
-import { fingerprintFile } from './fingerprint.js'
+import { fingerprintFile, mtimeProvesUnchanged } from './fingerprint.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { hostPathOfIndexKey } from './paths.js'
 import { fileRowByIndexKey, filePathSpellingsClause } from './sql_path.js'
@@ -37,11 +37,11 @@ interface NavigationRow {
 const PROBE_ROWS = 60
 const KEPT_PER_KIND = 8
 
-/** Is the indexed copy of `onDisk` out of date? files.mtime is seconds (parser.ts safeMtime) and stat.mtimeMs milliseconds, so the unit is converted here, as reconcile.ts does. An unchanged mtime is fresh; a moved one is only a suspicion, settled by the content fingerprint the read commands' staleWarning compares, because a checkout rewrites mtimes over unchanged bytes. When the bytes match, the path goes on the dirty queue: the worker re-stamps the row's mtime, so the next read pays one stat rather than a hash of the whole file, and the hook itself writes nothing to the database. */
-function indexedCopyIsStale(filePath: string, row: { mtime?: number | null; sha?: string | null }): boolean {
+/** Is the indexed copy of `onDisk` out of date? files.mtime is seconds (parser.ts safeMtime) and stat.mtimeMs milliseconds, so the unit is converted here, as reconcile.ts does. An unchanged mtime is fresh only when the row was indexed at least a tick after it (mtimeProvesUnchanged, the racy-clean rule the reconcile sweep uses): a file edited inside the tick of indexing keeps the mtime it was indexed under. A racy or moved mtime is only a suspicion, settled by the content fingerprint the read commands' staleWarning compares, because a checkout rewrites mtimes over unchanged bytes. When the bytes match, the path goes on the dirty queue: the worker re-stamps the row's mtime, so the next read pays one stat rather than a hash of the whole file, and the hook itself writes nothing to the database. */
+function indexedCopyIsStale(filePath: string, row: { mtime?: number | null; sha?: string | null; indexed_at?: number | null }): boolean {
   try {
     const onDisk = hostPathOfIndexKey(filePath)
-    if (fs.statSync(onDisk).mtimeMs / 1000 === row.mtime) return false
+    if (mtimeProvesUnchanged({ mtime: row.mtime ?? 0, indexedAt: row.indexed_at ?? 0 }, fs.statSync(onDisk).mtimeMs)) return false
     if (!row.sha || fingerprintFile(onDisk) !== row.sha) return true
     enqueueDirtyPathSafe(onDisk)
     return false
@@ -54,7 +54,7 @@ function indexedCopyIsStale(filePath: string, row: { mtime?: number | null; sha?
 /** Fast, fail-open navigation probe for pre-read tool interception. Uses a non-blocking read-only connection without schema migrations or lock contention. Returns null if the file is not indexed or has no symbols/headings. */
 export function getReadNavigationEvidence(filePath: string, dbPath?: string): NavigationEvidence | null {
   return withProbeIndex((db) => {
-    const fileRow = fileRowByIndexKey<{ path: string; mtime?: number | null; sha?: string | null }>(db, filePath, 'path, mtime, sha')
+    const fileRow = fileRowByIndexKey<{ path: string; mtime?: number | null; sha?: string | null; indexed_at?: number | null }>(db, filePath, 'path, mtime, sha, indexed_at')
     if (!fileRow) return null
     const isStale = indexedCopyIsStale(filePath, fileRow)
 

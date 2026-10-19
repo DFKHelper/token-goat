@@ -4,17 +4,34 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 
+import { closeAllDbs } from '../src/db.js'
 import { dirtyQueuePathFor } from '../src/dirty_queue.js'
 import { indexedFileIsGone } from '../src/fingerprint.js'
 import { querySymbols } from '../src/index_reader.js'
 import { normalizePath } from '../src/paths.js'
 import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 import { findGlobalDb } from './helpers/find_global_db.js'
+import { runTeardown } from './helpers/strict_teardown.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
+
+/** Homes the running case made, removed by the afterEach below. */
+const homes: string[] = []
+
+function newHome(prefix: string): string {
+  const home = mkdtempSync(join(tmpdir(), prefix))
+  homes.push(home)
+  return home
+}
+
+// Closes the connections drainOnce and querySymbols opened in this process first, then removes every home on every path, each removal independent. The CLI children have exited (spawnSync), so nothing else holds an index open and the removal needs no retry. The projects are indexableDir() ones, which the helper removes with its run root.
+afterEach(() => {
+  const doomed = homes.splice(0)
+  runTeardown([closeAllDbs, ...doomed.map((home) => () => rmSync(home, { recursive: true, force: true }))])
+})
 
 function isolatedEnv(homeDir: string): NodeJS.ProcessEnv {
   return { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, XDG_DATA_HOME: homeDir }
@@ -55,6 +72,10 @@ describe('indexedFileIsGone', () => {
   writeFileSync(join(dir, 'plain.ts'), 'export const x = 1\n')
   mkdirSync(join(dir, 'folder.ts'))
 
+  afterAll(() => {
+    runTeardown([() => rmSync(dir, { recursive: true, force: true })])
+  })
+
   it('is false for a regular file', () => {
     expect(indexedFileIsGone(join(dir, 'plain.ts'))).toBe(false)
   })
@@ -71,7 +92,7 @@ describe('indexedFileIsGone', () => {
 
 describe('an indexed file replaced by a directory', () => {
   it('is reported removed by reconcile and pruned by the production drain', async () => {
-    const homeDir = mkdtempSync(join(tmpdir(), 'tg-dirrepl-home-'))
+    const homeDir = newHome('tg-dirrepl-home-')
     const { projectDir, dbPath } = projectWithFileReplacedByDirectory(homeDir)
     git(projectDir, 'add', '-A')
 
@@ -88,7 +109,7 @@ describe('an indexed file replaced by a directory', () => {
   }, 60_000)
 
   it('is pruned by the drain on first sight, not logged as a transient read failure', async () => {
-    const homeDir = mkdtempSync(join(tmpdir(), 'tg-dirrepl-drain-'))
+    const homeDir = newHome('tg-dirrepl-drain-')
     const { replaced, dbPath } = projectWithFileReplacedByDirectory(homeDir)
     const dataDir = dirname(dbPath)
     const queue = dirtyQueuePathFor(dataDir)

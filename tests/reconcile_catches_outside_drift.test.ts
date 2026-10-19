@@ -4,7 +4,8 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFile
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { runTeardown } from './helpers/strict_teardown.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
@@ -52,6 +53,11 @@ function dirtyQueue(): string[] {
 
 beforeAll(() => {
   homeDir = mkdtempSync(join(tmpdir(), 'tg-reconcile-home-'))
+})
+
+// Every spawned CLI has exited by now (spawnSync), so nothing holds the index open and the removal needs no retry. The projects are indexableDir() ones, which the helper removes with its run root.
+afterAll(() => {
+  runTeardown([() => rmSync(homeDir, { recursive: true, force: true })])
 })
 
 beforeEach(() => {
@@ -154,6 +160,15 @@ describe('reconcile', () => {
     expect(r.unscanned, 'the sweep truncated but claimed nothing was left unchecked').toBeGreaterThan(0)
   })
 
+  it('still examines the first file when the budget is already spent, so a slow machine makes progress', () => {
+    // PROVENANCE: HAND-DERIVED. The fixture is mod1.ts..mod6.ts in one git repository and `git ls-files` lists them in name order, so mod1.ts is the first file of a sweep with no resume point (a --dry-run never writes one). A 0ms budget stands in for a machine that spent the whole budget before its first stat, without reading a clock.
+    writeFileSync(join(projectDir, 'mod1.ts'), 'export function mod1(): number {\n  return 999\n}\n')
+    const r = json(['reconcile', '--dry-run', '--budget-ms', '0'])
+    expect(r.budgetExhausted, 'a 0ms budget did not truncate the sweep; this case proves nothing').toBe(true)
+    expect(r.scanned, 'the budget stopped the sweep before it examined any file').toBe(1)
+    expect((r.changed as string[]).map((p) => p.replace(/\\/g, '/').split('/').pop()), 'the first file changed on disk and the sweep did not report it').toEqual(['mod1.ts'])
+  })
+
   it('discloses the truncation in its text output rather than reading as a complete sweep', () => {
     const r = run(['reconcile', '--dry-run', '--budget-ms', '0'])
     expect(r.code).toBe(0)
@@ -192,6 +207,13 @@ describe('reconcile in a directory git cannot enumerate', () => {
     expect(indexed.code, 'indexing the non-git fixture failed').toBe(0)
   })
 
+  afterAll(() => {
+    runTeardown([
+      () => rmSync(dir, { recursive: true, force: true }),
+      () => rmSync(home, { recursive: true, force: true }),
+    ])
+  })
+
   it('has a populated index, so the assertions below are testing something', () => {
     // Calibration, and the exact trap this fixture invites: with an empty index there is nothing to mistake for a deletion, and a broken guard would look perfect.
     const r = runHere(['symbol', 'alpha'])
@@ -222,11 +244,19 @@ describe('reconcile in a directory git cannot enumerate', () => {
     expect(r.out, 'the reason nothing was compared must be stated').toMatch(/git listed no files/)
   })
 
-  // Runs last: it deletes one of the two fixture files, and every case above needs both of them live. The empty-enumeration state used to suppress the deletion pass outright, so a file deleted from a non-git root kept its index row forever -- found on this machine as rows for files gone from a scratch directory that `token-goat project prune` also leaves behind, since that command's retroactive cleanup targets system-temp paths.
+  // It deletes one of the two fixture files and puts it back (bytes and mtime) in a `finally`, so a throw from the run or the parse still restores it and a failing case cannot leave the shared fixture short a file, because the other cases in this describe need both live and must not depend on this one running last. The empty-enumeration state used to suppress the deletion pass outright, so a file deleted from a non-git root kept its index row forever -- found on this machine as rows for files gone from a scratch directory that `token-goat project prune` also leaves behind, since that command's retroactive cleanup targets system-temp paths.
   it('reports the file that left disk and leaves the one still on disk alone', () => {
-    rmSync(join(dir, 'b.ts'))
-    const r = runHere(['reconcile', '--dry-run', '--json'])
-    const parsed = JSON.parse(r.out) as { removed: string[]; trackedUnavailable: boolean }
+    const bPath = join(dir, 'b.ts')
+    const bBytes = readFileSync(bPath)
+    const bStat = statSync(bPath)
+    rmSync(bPath)
+    let parsed: { removed: string[]; trackedUnavailable: boolean }
+    try {
+      parsed = JSON.parse(runHere(['reconcile', '--dry-run', '--json']).out) as { removed: string[]; trackedUnavailable: boolean }
+    } finally {
+      writeFileSync(bPath, bBytes)
+      utimesSync(bPath, bStat.atime, bStat.mtime)
+    }
     expect(parsed.trackedUnavailable, 'the fixture must still be the failed-enumeration case, or this proves nothing').toBe(true)
     // CAPTURE: `removed` carries the path as the index stored it, which for a `--walk` index of `.` is the bare `b.ts` rather than an absolute path -- it is resolved against cwd only on the way into the dirty queue. Reduced to basenames the same way every other case in this file does.
     const removed = parsed.removed.map((p) => p.replace(/\\/g, '/').split('/').pop())

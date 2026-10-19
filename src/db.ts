@@ -118,15 +118,7 @@ CREATE TABLE IF NOT EXISTS known_roots (
   first_missing_ms REAL
 );
 
--- Resume point for a budget-truncated reconcile sweep (reconcile.ts), one row per project root. A
--- project too large to finish a sweep inside DEFAULT_RECONCILE_BUDGET_MS would otherwise scan the
--- same deterministic (git ls-files) prefix every session forever, leaving every file after the
--- budget cutoff permanently unchecked. last_scanned_path is the last tracked file the sweep
--- finished examining before its budget ran out; the next sweep rotates its scan order to resume
--- right after that file, wrapping back to the start, so repeated truncated sweeps eventually cover
--- the whole project. Cleared (row deleted) the moment a sweep completes a full lap without running
--- out of budget. Purely additive (no SCHEMA_VERSION bump needed): a missing row just means "start
--- from the beginning", the same as a fresh database.
+-- Resume points for a budget-truncated reconcile sweep (reconcile.ts), up to two rows per project root. The row keyed by the root itself is the scan's: a project too large to finish a sweep inside DEFAULT_RECONCILE_BUDGET_MS would otherwise scan the same deterministic (git ls-files) prefix every session forever, leaving every file after the budget cutoff permanently unchecked. Its last_scanned_path is the last tracked file the sweep finished examining before its budget ran out; the next sweep rotates its scan order to resume right after that file, wrapping back to the start. The row keyed by the root, a NUL character and the word deletions is the deletion pass's: its last_scanned_path is the last indexed row, in sorted folded-path order, whose file the pass statted before the budget ran out, and the next pass resumes after it, wrapping. Either row is cleared (row deleted) the moment its pass completes a full lap without running out of budget, and both are purged when the project leaves the index (index_prune.ts purgeReconcileCursors: project exclude and a known root that stayed unreachable past its grace). Purely additive (no SCHEMA_VERSION bump needed): a missing row just means "start from the beginning", the same as a fresh database.
 CREATE TABLE IF NOT EXISTS reconcile_cursor (
   root TEXT PRIMARY KEY,
   last_scanned_path TEXT NOT NULL,

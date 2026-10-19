@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
-import { fingerprintFile, statIndexedFile } from './fingerprint.js'
+import { fingerprintFile, mtimeEqualsRow, mtimeProvesUnchanged, statIndexedFile, TIMESTAMP_TICK_SEC } from './fingerprint.js'
 import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexedPathSpellingIsStale } from './parser.js'
@@ -16,6 +16,52 @@ import { countNoun, foldPath } from './util.js'
 
 /** Wall-clock budget for a sweep. Chosen so the session-start hook stays imperceptible even on a cold filesystem cache: this repo's own measurement is that hook cost is dominated by process startup rather than logic, and a sweep that pushed past that would turn a correctness improvement into a latency regression on every single session. */
 export const DEFAULT_RECONCILE_BUDGET_MS = 1500
+
+/** Files, and then index rows, a sweep examines before its budget may stop it, so every sweep advances both resume points whatever the clock says. Trade-off: a sweep already past its budget before its first file or row still examines that one (one hash per pass, so the budget can be overrun by that much), because a pass that examined nothing saves no cursor in reconcileProject and the next sweep would repeat it forever; the budget is not raised to cover it. */
+const MIN_FILES_PER_SWEEP = 1
+
+/** What a caller reads just before it hashes a file: the file's mtime in seconds, then the clock. The stat comes BEFORE the bytes are hashed, so the mtime is the stamp the hashed bytes carried (a stat after the hash could record the stamp of a later edit against the old bytes); the clock is read no later than the hash, so any edit made after the hash happened after it. */
+export interface PreHashStamp {
+  readonly mtimeSec: number
+  readonly clockSec: number
+}
+
+/** Read the {@link PreHashStamp} for `absPath`, or undefined when it cannot be statted. Call it before the hash, never after. */
+export function readPreHashStamp(absPath: string): PreHashStamp | undefined {
+  try {
+    const mtimeSec = fs.statSync(absPath).mtimeMs / 1000
+    return { mtimeSec, clockSec: Date.now() / 1000 }
+  } catch {
+    return undefined
+  }
+}
+
+interface VerifiedUnchangedFile {
+  /** The `files.path` key of the row, as the index spelled it. */
+  readonly indexedPath: string
+  /** The sha the hash computed, and the row must still hold for the write to land. */
+  readonly sha: string
+  /** The file's mtime and the clock, both read before the bytes were hashed. */
+  readonly stamp: PreHashStamp
+}
+
+/** Record that the bytes behind each file's `sha` carried its `stamp.mtimeSec`, in one transaction. Each file is judged, and its `indexed_at` written, from the clock read before that file's hash, never from a clock read at the end of a sweep: a file saved again after the hash but before such a clock would otherwise look older than the index time it was given and never be hashed again. When the mtime is at least one tick older than that clock, `mtime` and `indexed_at = clockSec` are written together, so the row satisfies the racy-clean rule from the next sweep on. A newer mtime is not stamped with an index time: the file may still be mid-write, so it stays racy and is hashed again until it ages past the tick (only a moved mtime is recorded, as the pre-read probe's equality gate needs), and an `indexed_at` later than that clock, which only a clock that stepped back leaves, is lowered to it: a stamp is never left later than the clock that judged it, or a same-tick edit would read as proven unchanged. Guarded on the sha, so a row rewritten since keeps its stamp. Best-effort: a database error leaves the rows as they were. */
+export function restampVerifiedUnchanged(dbPath: string, files: readonly VerifiedUnchangedFile[]): void {
+  try {
+    const db = getDb(dbPath)
+    const stampBoth = db.prepare('UPDATE files SET mtime = ?, indexed_at = ? WHERE path = ? AND sha = ?')
+    // A racy file keeps its index time unless the clock that judged it is earlier: a clock that stepped back would otherwise leave the file looking proven against a later stamp. A NULL index time stays NULL (the comparison is not true), and a row already stamped and not later than the clock is not written again.
+    const stampRacy = db.prepare('UPDATE files SET mtime = ?, indexed_at = CASE WHEN indexed_at > ? THEN ? ELSE indexed_at END WHERE path = ? AND sha = ? AND (mtime != ? OR indexed_at > ?)')
+    db.transaction(() => {
+      for (const { indexedPath, sha, stamp } of files) {
+        if (stamp.mtimeSec + TIMESTAMP_TICK_SEC <= stamp.clockSec) stampBoth.run(stamp.mtimeSec, stamp.clockSec, indexedPath, sha)
+        else stampRacy.run(stamp.mtimeSec, stamp.clockSec, stamp.clockSec, indexedPath, sha, stamp.mtimeSec, stamp.clockSec)
+      }
+    })()
+  } catch {
+    // Best-effort: the next drain or sweep tries again.
+  }
+}
 
 export interface ReconcileOptions {
   cwd?: string
@@ -76,8 +122,10 @@ export interface ReconcileResult {
   parserStale: number
   /** Tracked files (a subset of {@link changed}) enqueued because they still hold embedding chunks but no `embed_sha`: ensureEmbeddingProvenance clears it after a chunker change while keeping the old vectors serving, so content and parse are both current and only this enqueue gets a file nobody edits re-embedded. */
   embedStale: number
-  /** True when the budget stopped the sweep before every tracked file was examined. */
+  /** True when the budget stopped the sweep before every tracked file was examined, or before every indexed row git does not list was checked against disk. */
   budgetExhausted: boolean
+  /** True when the budget stopped the deletion pass before every untracked indexed row was checked; the next sweep resumes after the last row it examined. */
+  deletionsIncomplete: boolean
   /** True when the tracked-file enumeration came back empty against a non-empty index -- the project is not a git repository, git is missing, or git errored. Distinguished from a genuinely emptied project because the two are identical in the numbers and opposite in what they mean. */
   trackedUnavailable: boolean
   /** True when `git ls-files` was killed for running too long, so what the project tracks is unknown rather than empty. The sweep then checks only what the index already holds; a caller that must not act on a listing it never got (install marking the root indexed) reads this. */
@@ -86,6 +134,9 @@ export interface ReconcileResult {
   unscanned: number
   /** Paths that reached the dirty queue (0 when `dryRun`). Fewer than changed + added + removed when the queue refused some: it takes nothing under the OS temp dir, and nothing at all when it cannot be written. */
   enqueued: number
+  /** The wall-clock budget this sweep ran under, in milliseconds: the one passed in, or the default. */
+  budgetMs: number
+  /** Time from the call to its return, including the git listing that comes before the budget starts counting. */
   elapsedMs: number
 }
 
@@ -157,10 +208,18 @@ export function runReconcile(opts: RunReconcileOptions = {}): number {
     lines.push('This project has an index but git listed no files in it, so new files could not be found. Indexed files that changed or are gone from disk were still detected. Run token-goat inside the repository, or reindex with --walk if this directory is deliberately not under git.')
   }
   if (result.budgetExhausted) {
-    lines.push(`Stopped at the ${result.elapsedMs}ms budget with ${countNoun(result.unscanned, 'file')} unchecked, so there may be more drift; deletions were not computed at all, because an unchecked file is indistinguishable from a deleted one. Raise --budget-ms for a complete sweep.`)
+    lines.push(`Stopped at the ${result.budgetMs}ms budget (${result.elapsedMs}ms elapsed) with ${uncheckedClauses(result).join(' and ')}, so there may be more drift; what it found is listed above and the next sweep continues where this one stopped. Raise --budget-ms for a complete sweep.`)
   }
   process.stdout.write(`${lines.join('\n')}\n`)
   return 0
+}
+
+/** What a budget-stopped sweep left unchecked, worded once for `reconcile` and the session-start note: a sweep that finished its file scan but ran out of time in the deletion pass has 0 files unscanned, and "0 files unchecked" would contradict the deletion half it still owes. */
+export function uncheckedClauses(result: ReconcileResult): string[] {
+  return [
+    ...(result.unscanned > 0 ? [`${countNoun(result.unscanned, 'file')} unchecked`] : []),
+    ...(result.deletionsIncomplete ? ['some indexed files not yet checked for deletion'] : []),
+  ]
 }
 
 /** True when this result found nothing to repair -- the whole point of the common case. */
@@ -200,25 +259,30 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
 
   const changed: string[] = []
   const added: string[] = []
-  const seenOnDisk = new Set<string>()
+  // Every tracked path, not only the scanned ones: a sweep the budget cut short has still not seen the rest of the listing, and a row for one of them is tracked, not a deletion candidate.
+  const seenOnDisk = new Set<string>(tracked.map((file) => foldPath(normalizePath(file))))
+  // Files whose hash matched their row, with the mtime stat taken before that hash; recorded after both passes, each with the clock read before its own hash.
+  const verifiedClean: VerifiedUnchangedFile[] = []
   let mtimeOnly = 0
   let parserStale = 0
   let embedStale = 0
   let scanned = 0
-  let budgetExhausted = false
+  let scanExhausted = false
+  let deletionsIncomplete = false
   let lastScanned: string | null = null
 
   for (const file of scanOrder) {
-    // Checked before the work rather than after, so the budget bounds what this function does rather than merely reporting that it overran. The check itself is a clock read, and hoisting it out of the loop would be the optimization that removes the bound. Reaching the budget spends it, so a budget of 0 examines nothing even when the whole scan would fit inside one clock tick.
-    if (Date.now() - startedAt >= budgetMs) {
-      budgetExhausted = true
+    // Checked before the work rather than after, so the budget bounds what this function does rather than merely reporting that it overran, and the check is a clock read that hoisting out of the loop would remove. Not before the first file: a sweep that may stop having examined nothing saves no resume point, so a machine slow enough to spend the budget before the first stat (or a budget of 0) repeated the same empty sweep every session and never checked the project. One file is the floor, so the cursor advances every sweep and the laps complete; it is a count, not a time, and the budget still bounds everything after it.
+    const clockMs = Date.now()
+    const overBudget = clockMs - startedAt >= budgetMs
+    if (overBudget && scanned >= MIN_FILES_PER_SWEEP) {
+      scanExhausted = true
       break
     }
     scanned++
     lastScanned = file
     const normalized = normalizePath(file)
     const folded = foldPath(normalized)
-    seenOnDisk.add(folded)
     const entry = indexed.get(folded)
 
     if (entry === undefined) {
@@ -256,15 +320,19 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     }
 
     // The cheap gate. An unchanged mtime means an unchanged file for every writer that does not deliberately forge timestamps, so the overwhelming majority of files cost one stat and nothing else. A moved mtime is only a *suspicion* of change -- confirmed by content below, never assumed -- because `git checkout` rewrites mtimes wholesale and treating that as drift would enqueue the entire repository on every branch switch. `entry.mtime` is stored in seconds (see `safeMtime` in parser.ts) while `mtimeMs` is milliseconds, so the comparison converts here rather than at the write side, which would require migrating every already-indexed row.
-    if (entry.mtime !== 0 && mtimeMs / 1000 === entry.mtime) continue
+    if (mtimeProvesUnchanged(entry, mtimeMs)) continue
 
+    // The clock read at the top of this iteration (the budget check's own read, so the sweep makes no extra read per file) precedes the hash: an edit that lands after this hash lands after this clock, which is what lets the restamp below use it as the row's index time.
+    const clockSec = clockMs / 1000
     const diskSha = fingerprintFile(file)
     if (diskSha === null) {
       changed.push(file)
       continue
     }
     if (diskSha === entry.sha) {
-      mtimeOnly++
+      if (!mtimeEqualsRow(entry, mtimeMs)) mtimeOnly++
+      // The hash proved the bytes unchanged, so it is recorded once the sweep ends: without that a file indexed inside the tick of its own edit, or one whose mtime moved over identical bytes, is hashed again on every sweep. The stat above and the clock read at the top of the iteration are the ones taken before the hash.
+      verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, stamp: { mtimeSec: mtimeMs / 1000, clockSec } })
       continue
     }
     changed.push(file)
@@ -273,15 +341,26 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   // Reported, not gated on: `listTrackedFiles` returns an empty `files` list for a directory git cannot enumerate -- not a repository, git not installed, git errored -- so `changed`/`added` are computed over nothing and the caller must be told. It used to suppress the deletion pass below as well, from when that pass inferred a deletion from absence from `seenOnDisk` and would therefore have called every live file in a non-git project deleted. The pass now stats each row instead, so absence from a failed enumeration cannot reach `removed` at all, and suppressing it only left deleted files sitting in the index of every non-git root forever.
   const trackedUnavailable = tracked.length === 0 && indexed.size > 0
   const removed: string[] = []
-  if (!budgetExhausted) {
-    for (const [folded, entry] of indexed) {
-      if (seenOnDisk.has(folded)) continue
-      // The loop above costs one map lookup per row; this one costs a disk stat, so it needs the same clock the scan loop has. Read before the stat rather than after it, because a row that is still on disk takes an early exit: a check placed below that exit is reached only on rows that turn out to be deletions, which lets the contents of the index decide whether the bound is consulted at all. A sweep that runs out here reports no deletions and says so, rather than shipping the prefix it happened to reach as though it were the whole answer.
-      if (Date.now() - startedAt >= budgetMs) {
-        budgetExhausted = true
-        removed.length = 0
+  // Sorted so a resume point means the same thing on every sweep: the index map's order is whatever the query returned.
+  const deletionCandidates = [...indexed].filter(([folded]) => !seenOnDisk.has(folded)).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+  const deletionKey = `${projectRoot}\u0000deletions`
+  const deletionCursor = deletionCandidates.length > 0 ? readReconcileCursor(dbPath, deletionKey) : null
+  let lastExamined: string | null = null
+  if (deletionCandidates.length > 0) {
+    // Resume after the row the last budget-truncated pass finished, wrapping, so repeated truncated sweeps reach every row instead of re-statting the same first few.
+    const resumeAt = deletionCursor === null ? -1 : deletionCandidates.findIndex(([folded]) => folded > deletionCursor)
+    const order = resumeAt > 0 ? [...deletionCandidates.slice(resumeAt), ...deletionCandidates.slice(0, resumeAt)] : deletionCandidates
+    let examined = 0
+    for (const [folded, entry] of order) {
+      // The scan loop costs one map lookup per row; this one costs a disk stat, so it needs the same clock. Read before the stat so a row that is still on disk, which exits early, cannot let the contents of the index decide whether the bound is consulted. Not before the first row: a pass that may stop having examined nothing saves no resume point, so a machine that spent the budget in the scan (or a budget of 0) never reached a deletion. Deletions already found stay reported, since each was confirmed by its own stat.
+      const clockMs = Date.now()
+      const overBudget = clockMs - startedAt >= budgetMs
+      if (overBudget && examined >= MIN_FILES_PER_SWEEP) {
+        deletionsIncomplete = true
         break
       }
+      examined++
+      lastExamined = folded
       // The stat is the whole check. `seenOnDisk` is filled from `git ls-files`, so on its own it says "not tracked", which is a different question from "not on disk" for every row the incremental path wrote: `token-goat index` lists tracked files only, but a file reaches the index whenever the agent reads or edits it, gitignored or merely not `git add`ed yet. Measured on this repository's own index, 228 of its 1,628 rows were untracked and all 228 were live on disk -- 201 under `scratch/`, 12 under `.claude/`, 5 under `node_modules/`, the rest loose files nobody had staged. Without this stat each sweep reported all of them as deletions and queued them for removal, the next read put them straight back, and the next sweep removed them again -- churn that never settles, and precisely the live-file removal the paragraph above calls the one mistake that destroys working index rows. Only a missing path (ENOENT/ENOTDIR) or one that is no longer a regular file, such as a directory now standing where the file was, counts as a deletion (indexedFileIsGone, the rule the prune sweeps use); every other failure means "cannot tell", and a row nobody can stat is left exactly as it is. The stat above answers the deletion question for every row in the index now that nothing else bounds this pass -- in a root git cannot enumerate that is 100% of rows, where it used to be only the untracked ones inside a repo (228 of 1,628 here). So a permission-denied path, or an unreachable network or removable drive, would otherwise hand the whole root's index to the removal queue on a single sweep, which is the one outcome this pass must never produce.
       const st = statIndexedFile(entry.filePath)
       if (st === 'gone') {
@@ -289,12 +368,21 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
         continue
       }
       // A live row git does not list is still compared against its content, as the scan above compares a tracked one: nothing else revisits an untracked file rewritten outside an edit, such as one a formatter or `git stash pop` changed past the post-bash sweep's cap.
-      if (st === null || (entry.mtime !== 0 && st.mtimeMs / 1000 === entry.mtime)) continue
+      if (st === null || mtimeProvesUnchanged(entry, st.mtimeMs)) continue
+      const clockSec = clockMs / 1000
       const diskSha = fingerprintFile(entry.filePath)
-      if (diskSha === entry.sha) mtimeOnly++
-      else if (diskSha !== null) changed.push(entry.filePath)
+      if (diskSha === entry.sha) {
+        if (!mtimeEqualsRow(entry, st.mtimeMs)) mtimeOnly++
+        // Same proof, same record as the scan above; `st` and the clock were read before the hash.
+        verifiedClean.push({ indexedPath: entry.filePath, sha: entry.sha, stamp: { mtimeSec: st.mtimeMs / 1000, clockSec } })
+      } else if (diskSha !== null) changed.push(entry.filePath)
     }
   }
+
+  const budgetExhausted = scanExhausted || deletionsIncomplete
+
+  // A dry run writes nothing, as it writes no resume point.
+  if (opts.dryRun !== true && verifiedClean.length > 0) restampVerifiedUnchanged(dbPath, verifiedClean)
 
   let enqueued = 0
   if (opts.dryRun !== true) {
@@ -302,11 +390,17 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     const toEnqueue = [...changed, ...added, ...removed].map((p) => resolveIndexPath(p, cwd))
     // Batched rather than enqueued one at a time: a sweep routinely fans out four figures of paths at session start, and the single-path form appends each one separately. The count is what the queue took, not what it was offered: it refuses every path under the OS temp dir, and a project there reported files enqueued that no worker would ever see.
     enqueued = enqueueDirtyPathsSafe(toEnqueue, { alreadyResolved: true, ...(opts.queueDir !== undefined ? { dir: opts.queueDir } : {}) })
-    // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any side effect, and persisting a resume point is a side effect. A truncated sweep that scanned at least one file saves where it stopped, so the next sweep resumes there; a sweep with nothing scanned (budget already gone before the first file) leaves whatever cursor already exists untouched rather than clobbering it with nothing. A sweep that completed a full lap clears the cursor, since the next sweep should start a fresh lap from the beginning rather than carry forward an offset a completed lap has made meaningless.
-    if (budgetExhausted) {
+    // Cursor upkeep, gated the same as enqueueing above: `--dry-run` reports drift without any side effect, and persisting a resume point is a side effect. A truncated sweep that scanned at least one file saves where it stopped, so the next sweep resumes there; a sweep with nothing scanned (an empty tracked list, since the budget cannot stop a sweep before its first file) leaves whatever cursor already exists untouched rather than clobbering it with nothing. A sweep that completed a full lap clears the cursor, since the next sweep should start a fresh lap from the beginning rather than carry forward an offset a completed lap has made meaningless.
+    if (scanExhausted) {
       if (lastScanned !== null) writeReconcileCursor(dbPath, projectRoot, lastScanned)
     } else if (tracked.length > 0) {
       clearReconcileCursor(dbPath, projectRoot)
+    }
+    // The deletion pass keeps its own resume point under a second key in the same table (a NUL cannot appear in a path, so it cannot collide with a root): the table shape is unchanged and a build that never reads the key ignores the row.
+    if (deletionsIncomplete) {
+      if (lastExamined !== null) writeReconcileCursor(dbPath, deletionKey, lastExamined)
+    } else if (deletionCursor !== null) {
+      clearReconcileCursor(dbPath, deletionKey)
     }
   }
 
@@ -319,10 +413,12 @@ export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
     parserStale,
     embedStale,
     budgetExhausted,
+    deletionsIncomplete,
     trackedUnavailable,
     gitTimedOut: listing.timedOut,
     unscanned: Math.max(0, tracked.length - scanned),
     enqueued,
+    budgetMs,
     elapsedMs: Date.now() - calledAt,
   }
 }

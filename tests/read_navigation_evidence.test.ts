@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as Fingerprint from '../src/fingerprint.js'
-import { closeDb } from '../src/db.js'
+import { closeDb, getDb } from '../src/db.js'
 import { normalizePath } from '../src/paths.js'
 import { drainOnce } from '../src/worker.js'
 
@@ -55,6 +55,14 @@ function drain(file: string): void {
   drainOnce(DIR)
 }
 
+// HAND-DERIVED from the racy rule `mtime + 2 <= indexed_at` (src/fingerprint.ts::mtimeProvesUnchanged): an equal mtime proves a file unchanged only when the row was indexed a tick after that mtime. A file drained within a tick of being written is racy, so the rows below say which side of the rule they are on instead of reading a clock. A whole-second stamp, so utimes can put back exactly the mtime the row recorded (a stamp with sub-millisecond digits does not survive the round trip).
+const WHOLE_SECOND = 1_700_000_000
+
+/** Set the index time of `file`'s row to `offsetSec` seconds after the mtime the row recorded. */
+function indexedAfterMtime(file: string, offsetSec: number): void {
+  getDb(dbPath).prepare('UPDATE files SET indexed_at = mtime + ? WHERE path LIKE ?').run(offsetSec, `%/${path.basename(file)}`)
+}
+
 // HAND-DERIVED: a module of `count` one-line functions named by their index.
 function writeModule(name: string, count: number): string {
   const file = path.join(DIR, name)
@@ -95,9 +103,56 @@ describe('getReadNavigationEvidence freshness', () => {
   it('is fresh and queues nothing when the mtime has not moved', () => {
     const file = writeModule('fresh.ts', 5)
     drain(file)
+    indexedAfterMtime(file, 10)
     fingerprintCalls.count = 0
     expect(getReadNavigationEvidence(file, dbPath)?.isStale).toBe(false)
     expect(fingerprintCalls.count).toBe(0)
+    expect(enqueued.paths).toEqual([])
+  })
+
+  it('is stale when the bytes changed inside the tick of indexing and the mtime did not move', () => {
+    const file = writeModule('racy.ts', 5)
+    fs.utimesSync(file, WHOLE_SECOND, WHOLE_SECOND)
+    drain(file)
+    indexedAfterMtime(file, 0)
+    fs.appendFileSync(file, 'export const added = 1\n')
+    fs.utimesSync(file, WHOLE_SECOND, WHOLE_SECOND)
+    expect(fs.statSync(file).mtimeMs / 1000, 'calibration: the edit left the mtime where the row recorded it').toBe(WHOLE_SECOND)
+    expect(getReadNavigationEvidence(file, dbPath)?.isStale, 'an equal mtime inside the indexing tick was read as an unchanged file').toBe(true)
+  })
+
+  it('hashes a racy row, finds the bytes unchanged, and queues the path', () => {
+    const file = writeModule('racy_same.ts', 5)
+    fs.utimesSync(file, WHOLE_SECOND, WHOLE_SECOND)
+    drain(file)
+    indexedAfterMtime(file, 0)
+    fingerprintCalls.count = 0
+    expect(getReadNavigationEvidence(file, dbPath)?.isStale).toBe(false)
+    expect(fingerprintCalls.count, 'a racy row was trusted on its mtime alone').toBe(1)
+    expect(enqueued.paths).toHaveLength(1)
+  })
+
+  // HAND-DERIVED from `mtime + TIMESTAMP_TICK_SEC <= indexed_at` with TIMESTAMP_TICK_SEC = 2 (src/fingerprint.ts): one second after the mtime is inside the 2 s tick, so the row is racy and the bytes are hashed.
+  it('hashes a row indexed one second after its mtime, which is inside the tick', () => {
+    const file = writeModule('one_second.ts', 5)
+    fs.utimesSync(file, WHOLE_SECOND, WHOLE_SECOND)
+    drain(file)
+    indexedAfterMtime(file, 1)
+    fingerprintCalls.count = 0
+    expect(getReadNavigationEvidence(file, dbPath)?.isStale).toBe(false)
+    expect(fingerprintCalls.count, 'a row indexed 1 s after its mtime was trusted on the mtime alone').toBe(1)
+    expect(enqueued.paths).toHaveLength(1)
+  })
+
+  // HAND-DERIVED from the same rule: two seconds after the mtime is exactly the tick, and `<=` makes the boundary proof enough, so no hash is read and nothing is queued.
+  it('trusts a row indexed exactly one tick (2 s) after its mtime without hashing', () => {
+    const file = writeModule('two_seconds.ts', 5)
+    fs.utimesSync(file, WHOLE_SECOND, WHOLE_SECOND)
+    drain(file)
+    indexedAfterMtime(file, 2)
+    fingerprintCalls.count = 0
+    expect(getReadNavigationEvidence(file, dbPath)?.isStale).toBe(false)
+    expect(fingerprintCalls.count, 'a row indexed exactly one tick after its mtime was hashed').toBe(0)
     expect(enqueued.paths).toEqual([])
   })
 
@@ -114,7 +169,8 @@ describe('getReadNavigationEvidence freshness', () => {
   it('is fresh over unchanged bytes, queues the path once, and stops hashing after the worker re-stamps it', () => {
     const file = writeModule('touched.ts', 5)
     drain(file)
-    const later = new Date(Date.now() + 60_000)
+    // An hour behind the clock: older than a tick on any machine, so the worker's re-stamp below can calm the row.
+    const later = new Date(Date.now() - 3_600_000)
     fs.utimesSync(file, later, later)
 
     fingerprintCalls.count = 0

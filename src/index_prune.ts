@@ -1,5 +1,6 @@
 import * as fs from 'node:fs'
 
+import { loadConfig } from './config.js'
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
 import { deleteFileEmbeddings } from './embeddings.js'
@@ -8,7 +9,7 @@ import { isTooShallowToPrune } from './known_roots.js'
 import { deleteFileRows } from './parser.js'
 import { isUnderSystemTemp } from './project.js'
 import { pathEqClause } from './sql_path.js'
-import { foldPath, normalizePath } from './util.js'
+import { foldPath, isUnderBlockedRoot, normalizePath } from './util.js'
 
 type DbHandle = ReturnType<typeof getDb>
 
@@ -44,6 +45,53 @@ function foldedPathsUnderRoot(rootPrefix: string, dbPath: string): string[] {
     const foldedP = foldPath(normalizePath(p))
     return foldedP === foldedRootPrefix || foldedP.startsWith(foldedPrefix)
   })
+}
+
+/** Delete the reconcile resume rows (reconcile_cursor, written by reconcile.ts) of every project at or under `rootPrefix`: the scan row keyed by the project root and the deletion-pass row keyed by the root, a NUL and `deletions`. Both name files of a project that is gone from the index, so a surviving row would hand a later project at that path a resume point into a listing it never made. Matched on the project root part of the key by the same fold and prefix rule as the file rows, so a project that merely contains `rootPrefix` keeps its rows. Returns the rows removed. */
+export function purgeReconcileCursors(db: DbHandle, rootPrefix: string): number {
+  const { foldedRootPrefix, foldedPrefix } = foldedBounds(rootPrefix)
+  const nul = String.fromCharCode(0)
+  // hex(root), not root: the driver hands a TEXT value back cut at its first NUL, so a deletion-pass key arrives as the bare project root and a WHERE root = ? built from it would match the scan row instead. The hex form carries every byte, and the delete goes by rowid.
+  const rows = db.prepare('SELECT rowid AS id, hex(root) AS hexRoot FROM reconcile_cursor').all() as Array<{ id: number; hexRoot: string }>
+  let removed = 0
+  for (const { id, hexRoot } of rows) {
+    const root = Buffer.from(hexRoot, 'hex').toString('utf8')
+    const nulAt = root.indexOf(nul)
+    const projectRoot = foldPath(normalizePath(nulAt === -1 ? root : root.slice(0, nulAt)))
+    if (projectRoot !== foldedRootPrefix && !projectRoot.startsWith(foldedPrefix)) continue
+    removed += Number(db.prepare('DELETE FROM reconcile_cursor WHERE rowid = ?').run(id).changes)
+  }
+  return removed
+}
+
+/** Delete the reconcile resume rows of every project that has no `known_roots` row and whose directory is no longer there: the rows a purge that was refused, or a project that left before its root was ever recorded, strands, since no per-root branch of {@link sweepKnownRoots} can reach a root with no row. A project whose directory still stands keeps its rows even without a registry row (its scan would otherwise restart from the top on every pass), and a directory that cannot be statted for any reason other than being absent keeps them too. Bounded by the rows present: one read of the table and one stat per distinct project root. Returns the rows removed. */
+export function purgeOrphanedReconcileCursors(db: DbHandle): number {
+  const nul = String.fromCharCode(0)
+  const known = new Set((db.prepare('SELECT root FROM known_roots').all() as Array<{ root: string }>).map((r) => foldPath(normalizePath(r.root))))
+  // hex(root) and a delete by rowid, for the reason purgeReconcileCursors gives.
+  const rows = db.prepare('SELECT rowid AS id, hex(root) AS hexRoot FROM reconcile_cursor').all() as Array<{ id: number; hexRoot: string }>
+  const verdict = new Map<string, boolean>()
+  let removed = 0
+  for (const { id, hexRoot } of rows) {
+    const key = Buffer.from(hexRoot, 'hex').toString('utf8')
+    const nulAt = key.indexOf(nul)
+    const projectRoot = nulAt === -1 ? key : key.slice(0, nulAt)
+    const folded = foldPath(normalizePath(projectRoot))
+    if (known.has(folded)) continue
+    let orphan = verdict.get(folded)
+    if (orphan === undefined) {
+      try {
+        const stat = fs.statSync(projectRoot, { throwIfNoEntry: false })
+        orphan = stat === undefined || !stat.isDirectory()
+      } catch {
+        orphan = false
+      }
+      verdict.set(folded, orphan)
+    }
+    if (!orphan) continue
+    removed += Number(db.prepare('DELETE FROM reconcile_cursor WHERE rowid = ?').run(id).changes)
+  }
+  return removed
 }
 
 // Scan indexed files under rootPrefix and return the absolute paths whose file no longer exists on disk, WITHOUT deleting anything. Shared by pruneDeletedFiles (which deletes them immediately) and sweepKnownRoots' anomaly-ratio guard, which needs the count of what *would* be deleted before committing to the mutating delete.
@@ -102,7 +150,15 @@ export function pruneBlockedRoot(rootPrefix: string, dbPath: string = globalDbPa
   // The caller is a CLI argument run through path.resolve, so on Windows it arrives with backslashes while every stored path is normalized. foldPath only lowercases, so without this the prefix match silently finds nothing and the command reports a clean purge of zero files.
   const normalized = normalizePath(rootPrefix)
   if (isTooShallowToPrune(normalized)) return []
-  return removeFilesBestEffort(getDb(dbPath), foldedPathsUnderRoot(normalized, dbPath))
+  const db = getDb(dbPath)
+  const removed = removeFilesBestEffort(db, foldedPathsUnderRoot(normalized, dbPath))
+  // Best-effort, like the row removal above: the config is already saved by the caller, so a refusal here must not turn a completed exclude into a thrown error. A cursor row left behind only names files of a project the index no longer holds, and sweepKnownRoots collects it once the project directory is gone.
+  try {
+    purgeReconcileCursors(db, normalized)
+  } catch {
+    // Left in place, see above.
+  }
+  return removed
 }
 
 /** The indexed paths {@link pruneBlockedRoot} would remove, without removing them. For a dry run. */
@@ -237,6 +293,7 @@ export function sweepKnownRoots(
   const now = opts?.now ?? Date.now()
   const graceMs = opts?.missingGraceMs ?? KNOWN_ROOT_MISSING_GRACE_MS
   const dryRun = opts?.dryRun === true
+  const blockedRoots = loadConfig().worker.blocked_roots
   const roots = db.prepare('SELECT root, first_missing_ms FROM known_roots').all() as Array<{
     root: string
     first_missing_ms: number | null
@@ -268,12 +325,40 @@ export function sweepKnownRoots(
       const count = dryRun ? findDeletablePaths(root, dbPath).length : pruneDeletedFiles(root, dbPath)
       prunedRows += count
       if (count > 0) prunedRoots.push(root)
-      if (!dryRun) db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
+      if (!dryRun) {
+        // One transaction, so the known_roots row (the key this branch retries on) and the cursor rows leave together or not at all: a purge that failed after the delete stranded cursor rows no later sweep could find. A refusal (a busy database) rolls both back, and the sweep moves on to the next root; the row is still past its grace, so the next sweep repeats this delete.
+        try {
+          db.transaction(() => {
+            db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
+            purgeReconcileCursors(db, root)
+          })()
+        } catch {
+          // Nothing was deleted, see above.
+        }
+      }
       continue
     }
 
     if (firstMissingMs !== null && !dryRun) {
       db.prepare('UPDATE known_roots SET first_missing_ms = NULL WHERE root = ?').run(root)
+    }
+
+    // A live root that is excluded needs neither a registry row nor a resume point. `project exclude` purges its rows once and swallows a refusal (pruneBlockedRoot), after which nothing below reaches them: the count check skips a root with no file rows, and the orphan pass skips a root that has a registry row. So the purge is retried here, and the registry row leaves in the same transaction as the cursor rows, once no file row is left either, so a refusal keeps the row this branch retries on. No clock is involved: the exclusion is the fact that ends the root's tracking.
+    if (isUnderBlockedRoot(root, blockedRoots)) {
+      const leftover = dryRun ? findFilesUnderBlockedRoot(root, dbPath).length : pruneBlockedRoot(root, dbPath).length
+      prunedRows += leftover
+      if (leftover > 0) prunedRoots.push(root)
+      if (!dryRun && findFilesUnderBlockedRoot(root, dbPath).length === 0) {
+        try {
+          db.transaction(() => {
+            db.prepare('DELETE FROM known_roots WHERE root = ?').run(root)
+            purgeReconcileCursors(db, root)
+          })()
+        } catch {
+          // Nothing was deleted, see above.
+        }
+      }
+      continue
     }
 
     const total = countFilesUnderRoot(root, dbPath)
@@ -288,6 +373,15 @@ export function sweepKnownRoots(
 
     prunedRows += dryRun ? deletable.length : removeDeletedFilesBestEffort(db, deletable).length
     prunedRoots.push(root)
+  }
+
+  // Unscoped for the reason the chunk pass below is: a cursor row with no known_roots row belongs to no root the loop above visited. Best-effort, like the per-root purge, and left out of a dry run since the result carries no count for it.
+  if (!dryRun) {
+    try {
+      purgeOrphanedReconcileCursors(db)
+    } catch {
+      // Left for the next sweep.
+    }
   }
 
   // Unscoped, like pruneSystemTempFiles: an orphaned chunk has no file row, so it belongs to no known root and no per-root branch above could ever reach it. Runs last so any file row the loop just deleted has already released its chunks through removeFileFromIndex's transaction, leaving only genuinely half-applied leftovers for this pass to clear.
