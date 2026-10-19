@@ -1,4 +1,4 @@
-/** Aggregated filter/rule counts for all hook types. Dynamic counts are computed from the live source arrays and update automatically when entries are added to those arrays. Hand-listed counts are the length of an entry list in this file, one entry per decision category, each carrying an anchor that tests/guards/filter_count_entries_anchor.test.ts requires to still exist in the named source file. */
+/** Aggregated filter/rule counts for all hook types. Dynamic counts are computed from the live source arrays and update automatically when entries are added to those arrays. Hand-listed counts are the length of an entry list in this file, one entry per decision category, each carrying an anchor that tests/guards/filter_count_entries_anchor.test.ts requires to still be used in the named source file: a call, a registration or a config read on the decision path, never the declaration of a helper that stays exported after its last caller is gone. */
 
 import { FAILURE_EXTRACTORS } from './failures.js'
 import { FILTERS } from './filters.js'
@@ -11,7 +11,7 @@ import {
   GENERATED_EXT_COUNT,
 } from './hints/lang_patterns.js'
 
-/** One counted decision category: its name, the repo-relative source file that implements it, and a literal that must appear in that file's code (outside full-line comments) for the category to still exist. */
+/** One counted decision category: its name, the repo-relative source file that implements it, and a literal that must appear in that file's code as a use (outside full-line comments, imports, export lists and the declaration of the name it starts with) for the category to still exist. */
 export interface CountedEntry {
   readonly name: string
   readonly file: string
@@ -182,7 +182,7 @@ const AGENT_SPAWN_HOOK_ENTRIES = inFile('src/hooks_agent_spawn.ts', [
 ])
 
 const IMAGE_HOOK_ENTRIES = [
-  ...inFile('src/image_shrink.ts', [['Read-tool image shrink', 'preReadImageHandler(']]),
+  ...inFile('src/image_shrink.ts', [['Read-tool image shrink', 'loadingHiddenRuleCheck(preReadImageHandler)']]),
   ...inFile('src/hooks_browser_image.ts', [
     ['browser/MCP screenshot image shrink', 'shrinkImageBlock('],
     ['browser tab-context dedup', 'dedupTabContext('],
