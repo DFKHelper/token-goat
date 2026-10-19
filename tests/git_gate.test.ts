@@ -1,12 +1,15 @@
 // Provenance: CAPTURE. The behaviours asserted here (a git blocked reading a config include served by a named pipe or a FIFO, released by the serving end closing, answering normally afterwards, and holding() turning false once the blocked git is killed) were first observed by running git directly on this machine's Windows git and on WSL Ubuntu git; each case then runs the real git through the helper and checks its own answer.
 /** tests/helpers/git_gate.ts blocks a real git on a gate until the test releases it. The hung-git tests rely on it holding a git for as long as the test wants and on releasing it exactly when told, so those properties are checked against a real git here. */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import * as path from 'node:path'
+import { promisify } from 'node:util'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { killProcessTree } from '../src/process_tree.js'
 import { openGitGate, type GitGate } from './helpers/git_gate.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
+import { processAlive } from './helpers/process_alive.js'
 
 interface Run {
   readonly child: ChildProcess
@@ -43,6 +46,30 @@ function revParse(cwd: string, env: Readonly<Record<string, string>>): Run {
     })
   })
   return { child, settled, hasExited: () => exited }
+}
+
+const execFileAsync = promisify(execFile)
+
+/** The pids of everything below *root* in the process table, read through PowerShell on Windows and ps elsewhere; a table that cannot be read fails the row, because an empty list would pass the check that nothing of the tree survives. */
+async function descendantsOf(root: number): Promise<number[]> {
+  const listing = process.platform === 'win32'
+    ? await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }'], { windowsHide: true })
+    : await execFileAsync('ps', ['-A', '-o', 'pid=,ppid='])
+  const children = new Map<number, number[]>()
+  for (const line of listing.stdout.split(/\r?\n/)) {
+    const [pid, ppid] = line.trim().split(/\s+/).map(Number)
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue
+    children.set(ppid as number, [...(children.get(ppid as number) ?? []), pid as number])
+  }
+  expect(children.size, 'the process table listed no process').toBeGreaterThan(0)
+  const found: number[] = []
+  for (const queue = [root]; queue.length > 0;) {
+    for (const child of children.get(queue.shift() as number) ?? []) {
+      found.push(child)
+      queue.push(child)
+    }
+  }
+  return found
 }
 
 /** The git's result, asserted to have come without the gate holding it: the git ends or the gate holds it, whichever comes first, so a gate that held a read it was to pass names that read, instead of leaving the row waiting on a git it holds. */
@@ -83,16 +110,33 @@ describe('openGitGate', () => {
     expect((await run.settled).code).toBe(0)
   })
 
-  it('reports a git as holding the gate while it is blocked, and not once it was killed or the gate released', async () => {
+  // CAPTURE: on Windows, with Git for Windows' cmd directory first on PATH, the git spawned is cmd/git.exe, which starts mingw64/bin/git.exe and waits for it; that second process holds the gate. Killing only the spawned one ended the wrapper ('exit' fired) and left the holder blocked with the inherited stdout open, so neither the child's 'close' nor the gate's connection close ever came. The row ends the whole tree, as src/process_tree.ts does for the product's gits, and asserts that nothing of the tree still runs before it waits on either close.
+  it('reports a git as holding the gate while it is blocked, and not once it was killed or the gate released', async (ctx) => {
+    let step = 'making the repository and the gate'
+    ctx.onTestFailed(({ task }) => {
+      const error = task.result?.errors?.[0]
+      if (error !== undefined) error.message = `${error.message}\nlast step begun: ${step}`
+    })
     const repo = gitRepoWithCommit()
     const g = await gate()
+    step = 'asking a gate no git has reached'
     expect(g.holding(), 'a gate no git has reached reported a holder').toBe(false)
     const run = revParse(repo, g.env)
+    step = 'waiting for the git to reach the gate'
     await g.reached
     expect(g.holding(), 'a git blocked on the gate was not reported holding').toBe(true)
-    run.child.kill('SIGKILL')
+    const root = run.child.pid
+    expect(root, 'the git was not started').toBeDefined()
+    step = 'reading the process table below the blocked git'
+    const tree = [root as number, ...(await descendantsOf(root as number))]
+    step = 'ending the tree of the blocked git'
+    const ended = killProcessTree(run.child.pid)
+    expect(ended.ok, `the tree of the blocked git was not ended: ${ended.note ?? 'no note'}`).toBe(true)
+    expect(tree.filter(processAlive), 'processes of the blocked git still ran after its tree was ended').toEqual([])
+    step = 'waiting for the killed git to close its output'
     await run.settled
     // Read until the gate stops reporting the killed git: on Windows the close of its pipe reaches this process as an event a turn or two after the git is gone.
+    step = 'waiting for the gate to see the killed git leave'
     while (g.holding()) await new Promise<void>((resolve) => setImmediate(resolve))
     expect(g.holding(), 'a killed git was still reported holding').toBe(false)
   })
