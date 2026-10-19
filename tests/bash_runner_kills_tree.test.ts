@@ -9,7 +9,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { run, runRaw } from '../src/bash_runner.js'
 import { BUNDLE, tgIsolatedEnv } from './helpers/bundle.js'
-import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { killIfCommandLine, type KillOptions } from './helpers/kill_if_command_line.js'
+import { spawnOwnedDecoy } from './helpers/owner_tied_decoy.js'
 import { processAlive } from './helpers/process_alive.js'
 
 // Every tree kill goes through spawnSync (ps on POSIX, taskkill on Windows), so counting those calls is a clock-free, immediate signal that the runner ended the tree itself rather than leaving it to the grandchild's own directory check.
@@ -92,6 +93,17 @@ let pending: Promise<number> | undefined
 let grandchildPid: number | undefined
 const hosts: ChildProcess[] = []
 
+/** Ends the grandchild this test recorded. A command line that reads back empty (Windows hides some) says nothing about whose process it is, so the pid the grandchild wrote to gc.pid in this test's own directory stands in for it while that directory exists (the grandchild leaves within one poll of the directory's deletion); a line that reads back and is not the grandchild's is still a stranger, and an unreadable pid that gc.pid does not name throws instead of being killed. */
+function endGrandchild(opts: KillOptions = {}): void {
+  if (grandchildPid === undefined) return
+  const recorded = grandchildPid
+  const named = (): number | undefined => {
+    const file = dir === undefined ? undefined : path.join(dir, 'gc.pid')
+    return file !== undefined && fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : undefined
+  }
+  killIfCommandLine(recorded, (cmd) => cmd.includes('grandchild.cjs'), { ...opts, tied: (pid) => pid === recorded && named() === pid })
+}
+
 afterEach(async () => {
   // A test that failed before the timeout fired still has a run waiting on its fake timer: fire it so the runner ends its own tree.
   if (vi.isFakeTimers()) vi.advanceTimersByTime(RUNNER_TIMEOUT_SECONDS * 1000)
@@ -103,7 +115,7 @@ afterEach(async () => {
   // A grandchild whose command line could not be read is reported after the rest of the cleanup has run.
   let unreadable: unknown
   try {
-    if (grandchildPid !== undefined) killIfCommandLine(grandchildPid, (cmd) => cmd.includes('grandchild.cjs'))
+    endGrandchild()
   } catch (err) {
     unreadable = err
   }
@@ -269,5 +281,39 @@ describe('the exit and signal hooks come off with the child', () => {
     expect(await started).toBe(124)
     pending = undefined
     expect(events.map((e) => process.listenerCount(e))).toEqual(before)
+  })
+})
+
+// The unreadable-line path of the cleanup above: a stand-in plays the grandchild, and the command line read is replaced by a failed one, as Windows gives for a process it hides. HAND-DERIVED from the rule in endGrandchild, not from the runner's output.
+describe('the grandchild cleanup when its command line reads back empty', () => {
+  const unreadable: KillOptions = { readCommandLine: () => null }
+
+  it('ends the recorded grandchild that gc.pid in the test directory names', async () => {
+    const stand = spawnOwnedDecoy(['--grandchild-stand-in'])
+    try {
+      const gone = new Promise<void>((resolve) => stand.once('exit', () => resolve()))
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-runner-tree-'))
+      fs.writeFileSync(path.join(dir, 'gc.pid'), String(stand.pid))
+      grandchildPid = stand.pid
+      expect(() => endGrandchild(unreadable)).not.toThrow()
+      await gone
+    } finally {
+      grandchildPid = undefined
+      if (stand.exitCode === null && stand.signalCode === null) stand.kill('SIGKILL')
+    }
+  })
+
+  it('leaves an unreadable pid alone, and throws, when gc.pid names another process', () => {
+    const stand = spawnOwnedDecoy(['--grandchild-stand-in'])
+    try {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-runner-tree-'))
+      fs.writeFileSync(path.join(dir, 'gc.pid'), String(process.pid))
+      grandchildPid = stand.pid
+      expect(() => endGrandchild(unreadable)).toThrow()
+      expect(stand.exitCode === null && stand.signalCode === null, 'a pid gc.pid does not name was signalled').toBe(true)
+    } finally {
+      grandchildPid = undefined
+      if (stand.exitCode === null && stand.signalCode === null) stand.kill('SIGKILL')
+    }
   })
 })
