@@ -125,6 +125,15 @@ async function untilNothingLeft(read: () => string[], signal?: AbortSignal): Pro
   return left
 }
 
+/** Resolves once every handle has exited, an event of the handle that started the process (no process-table listing), or once `signal` aborts. */
+async function untilExited(handles: readonly ChildProcess[], signal?: AbortSignal): Promise<void> {
+  await Promise.all(handles.map((child) => new Promise<void>((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null || signal?.aborted === true) return resolve()
+    child.once('exit', () => resolve())
+    signal?.addEventListener('abort', () => resolve(), { once: true })
+  })))
+}
+
 /** A timeout names no process, so the test's abort (its timeout or a cancellation) takes one reading of what `read` lists, before the teardown ends anything, and a test that then failed gets it appended to its error message. A reading that throws is reported as such, never as an empty list. */
 function nameWhatIsLeft(ctx: TestContext, read: () => string[]): void {
   let seen: string | undefined
@@ -153,6 +162,7 @@ afterEach(async (ctx) => {
   }
   for (const gate of gates.splice(0)) await gate.dispose().catch((error: unknown) => failures.push(error))
   // One process-table listing, read by the first step that needs it, answers every pid's command line below: the per-pid query starts a PowerShell for each pid on Windows, about 2 s apiece, and a failed listing fails only the step that read it.
+  const ending = standIns.splice(0)
   let table: ReturnType<typeof listProcesses> | undefined
   const readCommandLine = (pid: number): string | null => (table ??= listProcesses()).get(pid)?.args ?? null
   try {
@@ -160,10 +170,11 @@ afterEach(async (ctx) => {
     run([
       ...[...recorded].filter(([pid]) => processAlive(pid)).map(([pid, args]) => () => void killIfCommandLine(pid, (commandLine) => commandLine.trim() === args, { tree: true, readCommandLine })),
       ...daemons.filter(processAlive).map((pid) => () => void killIfCommandLine(pid, isWorkerDaemonCommandLine, { tree: true, readCommandLine })),
-      ...standIns.splice(0).map((daemon) => () => {
+      ...ending.map((daemon) => () => {
         if (daemon.exitCode === null && daemon.signalCode === null) killProcessTree(daemon.pid)
       }),
     ])
+    await untilExited(ending, ctx.signal)
     const left = await untilNothingLeft(stillRunning, ctx.signal)
     if (left.length > 0) failures.push(new Error(`still running after the teardown ended them: ${JSON.stringify(left)}`))
     run(roots.splice(0).map((root) => () => fs.rmSync(root, { recursive: true, force: true })))
@@ -214,7 +225,6 @@ describe('stopping the built worker daemon', () => {
     const daemonLine = query.status === 'found' ? query.commandLine.trim() : ''
     expect(daemonLine, 'calibration: the daemon runs the worker-daemon command line').toMatch(/--worker-daemon/)
     recorded.set(daemonPid as number, daemonLine)
-    expect(survivors(), 'calibration: the process table lists the daemon under the line the query returned').toHaveLength(1)
 
     // The request is appended to a running daemon, which sweeps it on its next cycle: its second git is the one that opens the gate.
     expect(appendReconcileRequest(dir, project)).toBe(true)
@@ -228,8 +238,8 @@ describe('stopping the built worker daemon', () => {
     // stopWorker removes the pid file, and a daemon whose pid file stays absent retires itself after its startup grace (src/worker.ts::runWorkerLoop), which would end it and its git with no help from stop; written back, so only the signal can end the daemon here.
     fs.writeFileSync(workerPidPath(dir), `${daemonPid}\n`)
 
-    // Read until nothing is left, not once: on POSIX the daemon answers SIGTERM by finishing its in-flight work and then exiting through its exit hook, which ends the git it owns, so the processes go a moment after stopWorker returns. Each pass probes the daemon's pid (a process-table read only while it still answers) and the gate for the git, and the loop waits on those two ending, not on a clock or a count; only the test's own cap and its abort end a wait that never finishes. Windows: the held git is the daemon's direct child, so libuv's kill-on-close job ends it with the daemon whatever the taskkill does; this row cannot tell a tree kill from a single kill there, and the grandchild test below is the one that can.
-    const leftNow = (): string[] => [...survivors(), ...(gate.holding() ? ['a git still holds the gate'] : [])]
+    // Read until nothing is left, not once: on POSIX the daemon answers SIGTERM by finishing its in-flight work and then exiting through its exit hook, which ends the git it owns, so the processes go a moment after stopWorker returns. Each pass probes the daemon's pid by signal 0 (the exit status, which is set once the stop has ended it; no process-table listing, which takes seconds on Windows and is left to the teardown that must know the process is gone before it removes a directory) and the gate for the git, and the loop waits on those two ending, not on a clock or a count; only the test's own cap and its abort end a wait that never finishes. Windows: the held git is the daemon's direct child, so libuv's kill-on-close job ends it with the daemon whatever the taskkill does; this row cannot tell a tree kill from a single kill there, and the grandchild test below is the one that can.
+    const leftNow = (): string[] => [...(processAlive(daemonPid as number) ? [`${daemonPid}: a worker daemon`] : []), ...(gate.holding() ? ['a git still holds the gate'] : [])]
     nameWhatIsLeft(ctx, leftNow)
     const left = await untilNothingLeft(leftNow, ctx.signal)
     expect(left,'the daemon or the git it held is still running after worker stop').toEqual([])
@@ -303,15 +313,20 @@ describe('stopping a pid-file pid', () => {
     fs.writeFileSync(workerPidPath(dir), `${pid}\n`)
   }
 
-  it('leaves a live process that is not this install worker alone, and drops the stale pid file', () => {
-    const { dir, pid } = recordedStandIn(IDLE_LAUNCHER, 'tg-stop-other-')
-    expect(recorded.get(pid), 'calibration: the stand-in is in the process table with its own command line').toMatch(/launcher\.js/)
+  it('leaves a live process that is not this install worker alone, and drops the stale pid file', async () => {
+    // Not recorded: the process-table listing that records a command line takes seconds, and this row needs none. The stand-in is its own handle, ended and awaited by the teardown through that handle.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-stop-other-'))
+    roots.push(dir)
+    const { daemon } = startStandIn(dir, IDLE_LAUNCHER)
+    const pid = daemon.pid as number
     claimAsWorker(dir, pid)
 
-    // The real query reads the stand-in's command line, which is a node script but not this install's launcher: a reused pid looks exactly like this.
-    expect(stopWorker(dir), 'a process that is not this install worker was reported stopped').toBe(false)
+    // The real query reads the stand-in's command line, which is a node script but not this install's launcher: a reused pid looks exactly like this. The answer is kept so the row can check that the query saw the stand-in.
+    let lookup: ReturnType<typeof queryProcessCommandLine> | undefined
+    expect(stopWorker(dir, undefined, { queryCommandLine: (asked) => (lookup = queryProcessCommandLine(asked)) }), 'a process that is not this install worker was reported stopped').toBe(false)
 
-    expect(survivors(), 'the unrelated process was ended').toHaveLength(1)
+    expect(lookup?.status === 'found' ? lookup.commandLine : lookup?.status, "calibration: the real query read the stand-in's own command line").toMatch(/launcher[.]js/)
+    expect(processAlive(pid), 'the unrelated process was ended').toBe(true)
     expect(fs.existsSync(workerPidPath(dir)), 'the stale pid file was left naming an unrelated process').toBe(false)
   })
 
