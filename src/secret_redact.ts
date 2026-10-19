@@ -204,7 +204,7 @@ export function redactSecrets(text: string, config: Config = loadConfig(), opts:
   let count = 0
   let out = text
   // With keepLineCount a match spanning lines (a PEM private-key block, a custom pattern) leaves one placeholder per line it covered and keeps each line break, so a caller that numbers lines (`bash-output --file -n`, `--lines A-B`) stays aligned with the original text after it; the default collapses the match to one placeholder.
-  const placeholder = (tag: string, match: string): string => (opts.keepLineCount === true ? match.split(/(\r?\n)/).map((part, i) => (i % 2 === 1 ? part : tag)).join('') : tag)
+  const placeholder = (tag: string, match: string): string => (opts.keepLineCount === true ? match.split(ANY_LINE_BREAK).map((part, i) => (i % 2 === 1 ? part : tag)).join('') : tag)
   for (const [kind, pattern] of SECRET_PATTERNS) {
     out = out.replace(pattern, (match) => {
       count++
