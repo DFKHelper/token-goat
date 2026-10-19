@@ -18,7 +18,7 @@ const _testConfigPath = tempConfigPath('tg-hooks-compact-config-test.toml')
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { preCompactHandler } from '../src/hooks_compact.js'
-import { buildManifest } from '../src/manifest.js'
+import { buildManifest, buildRecoveryManifest } from '../src/manifest.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordFileEdit, recordFileRead, recordSymbolRead, recordWebFetch, recordBashOutput, recordBashRerun, exportSessionState, importSessionState, markCompacted } from '../src/session.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
@@ -785,5 +785,35 @@ describe('pre-compact manifest routing per harness', () => {
     expect(pending).toContain('Files read: 2')
     expect(pending).not.toContain('Files read: 1')
     expect(pending).toContain('EARLIER-UNRELATED-HINT')
+  })
+
+  it('queues a recovery manifest without SAFE_TO_DISCARD and with declarative preamble on codex/copilot', async () => {
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'copilot_cli'
+    const { peekPendingContext } = await import('../src/pending_context.js')
+    const { MANIFEST_RECOVERY_PREAMBLE } = await import('../src/manifest.js')
+    const sessionId = 'recovery-no-safe-to-discard'
+
+    const rerunId = await storeBashOutput('git status', 'clean', 0)
+    recordBashOutput('git-status-hash', rerunId, 10)
+    recordBashRerun('git-status-hash')
+
+    const file = makeTmpFile('content')
+    recordFileRead(file)
+    recordFileEdit(file)
+
+    // Standard buildManifest includes SAFE_TO_DISCARD
+    expect(buildManifest(sessionId)).toContain('SAFE_TO_DISCARD')
+    expect(buildRecoveryManifest(sessionId)).not.toContain('SAFE_TO_DISCARD')
+
+    preCompactHandler({ ...compactEvent, sessionId })
+    const pending = peekPendingContext(sessionId) ?? ''
+
+    // Recovery manifest queued for tool output must omit SAFE_TO_DISCARD to avoid LLM prompt-injection alarms
+    expect(pending.startsWith(MANIFEST_RECOVERY_PREAMBLE)).toBe(true)
+    expect(pending).not.toContain('SAFE_TO_DISCARD')
+    expect(pending).not.toContain('use it to re-establish')
+    expect(pending).toContain('[token-goat: session context restored from ledger after compaction')
+    expect(pending).toContain('## Session context')
+    expect(pending).toContain('### Edited files')
   })
 })

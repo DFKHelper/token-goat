@@ -125,6 +125,7 @@ function buildManifestParts(
   sessionId?: string,
   cwd?: string,
   transcriptPath?: string,
+  options?: { forRecovery?: boolean },
 ): { text: string; printed: string[] } {
   // Read once and shared by both selections below. Each sibling scan is a directory listing plus a JSON parse per blob, and the two sections have no reason to disagree about which subagents ran.
   const siblings = sessionId !== undefined ? listSiblingSessionStates(sessionId) : []
@@ -141,6 +142,7 @@ function buildManifestParts(
   }
   const notes = projectNotesFor(cwd)
   const webRows = renderWebFetchRows(webFetches)
+  const forRecovery = options?.forRecovery === true
   const sections: FitSection[] = [
     { header: ['## Session context', `Files read: ${readFiles.length}`, `Files edited: ${editedFiles.length}`], priority: 0 },
     ...fileSection('### Edited files', editedFiles, (entry) => `- ${displaySafePath(entry.path)}`, 1),
@@ -148,7 +150,7 @@ function buildManifestParts(
     ...fileSection('### Surgically read files (symbol/section reads, never read whole)', symbolOnlyFiles, renderSymbolReadRow, 3),
     ...fileSection('### Read files', readFiles, renderReadRow, 4),
     ...(webRows.length === 0 ? [] : [{ header: ['', '### Web URLs fetched'], rows: webRows, priority: 5, maxRows: MAX_ROWS }]),
-    ...buildSafeToDiscardSection(files),
+    ...(forRecovery ? [] : buildSafeToDiscardSection(files)),
     ...buildMemEpochSection(),
   ]
 
@@ -172,6 +174,11 @@ function buildManifestParts(
 /** The compaction manifest for `sessionId`, as text -- {@link buildManifestParts} without the survival sample its other caller needs. */
 export function buildManifest(sessionId?: string, cwd?: string, transcriptPath?: string): string {
   return buildManifestParts(sessionId, cwd, transcriptPath).text
+}
+
+/** The recovery manifest for `sessionId`, as text -- omits summarizer-targeted SAFE_TO_DISCARD sections to avoid triggering model prompt-injection defenses during tool execution. */
+export function buildRecoveryManifest(sessionId?: string, cwd?: string, transcriptPath?: string): string {
+  return buildManifestParts(sessionId, cwd, transcriptPath, { forRecovery: true }).text
 }
 
 /** Whether `cwd` or an ancestor holds a `.git` entry (a directory, or the file a linked worktree or submodule has), the marker git itself walks up for. An exported GIT_DIR names a repository independent of the directory, so it counts as inside. Looks only at the filesystem, so the answer does not depend on how long a process takes to start. */
@@ -348,9 +355,9 @@ export function buildMemEpochSection(timeoutMs: number = MEM_EPOCH_TIMEOUT_MS): 
 export const MANIFEST_PREAMBLE =
   'When summarizing this session, keep the file paths and symbol names below exactly as written -- they are the handles the next turn needs to resume work. Do not paraphrase them into prose.'
 
-/** Framing in front of the manifest when it arrives *after* the compaction rather than before it. {@link MANIFEST_PREAMBLE} instructs whoever writes the summary, which only works on a harness whose pre-compact hook feeds that writer. Where the event fires and the response is discarded -- see PRE_COMPACT_CONTEXT_DROPPED in harness_channels.ts -- the same text has to reach the model on the next tool call instead, by which point the summary is already written and nothing can be preserved that was not. So it stops being instructions and becomes recovery: here is what the session touched, in case the summary lost it. Addressing it to a summarizer that has already finished would ask for something impossible and read as a stale instruction. */
+/** Framing in front of the manifest when it arrives *after* the compaction rather than before it. {@link MANIFEST_PREAMBLE} instructs whoever writes the summary, which only works on a harness whose pre-compact hook feeds that writer. Where the event fires and the response is discarded -- see PRE_COMPACT_CONTEXT_DROPPED in harness_channels.ts -- the same text has to reach the model on the next tool call instead, by which point the summary is already written and nothing can be preserved that was not. It uses neutral declarative companion metadata rather than imperative instructions ("use it to...") so interactive models do not misinterpret it as indirect prompt injection inside tool outputs. */
 export const MANIFEST_RECOVERY_PREAMBLE =
-  "The conversation was just compacted. Below is what this session touched, recovered from token-goat's own ledger rather than from the summary -- use it to re-establish paths and symbol names the summary may have dropped."
+  '[token-goat: session context restored from ledger after compaction -- touched paths and symbols prior to summary]'
 
 /** Opening token a summary uses to declare it exceeded its budget on purpose. One constant for both voices: {@link summaryBudgetDirective} asks for it and {@link postCompactHandler} counts it. Two literals would let the emitter drift from the detector, and that failure is silent -- every escalation would read as an ordinary overrun. */
 export const BUDGET_ESCALATION_MARKER = 'TG-BUDGET-ESCALATION:'

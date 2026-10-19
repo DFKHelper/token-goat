@@ -13,7 +13,7 @@ import type { HookOutput } from './types.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { loadConfig } from './config.js'
 import { normalizePath } from './paths.js'
-import { BUDGET_ESCALATION_MARKER, MANIFEST_PREAMBLE, MANIFEST_RECOVERY_PREAMBLE, buildManifest, manifestPrintedPaths, summaryBudgetDirective } from './manifest.js'
+import { BUDGET_ESCALATION_MARKER, MANIFEST_PREAMBLE, MANIFEST_RECOVERY_PREAMBLE, buildManifest, buildRecoveryManifest, manifestPrintedPaths, summaryBudgetDirective } from './manifest.js'
 import { dropsPreCompactContext } from './harness_channels.js'
 import { MAX_PENDING_CONTEXT_BYTES, replacePendingContextBlock } from './pending_context.js'
 import { recordCompactDroppedPaths } from './compact_dropped.js'
@@ -36,12 +36,13 @@ export function preCompactHandler(event: HookEvent): HookOutput {
   const cfg = loadConfig().compact_assist
   let out: HookOutput = passOutput()
   if (cfg.enabled) {
-    const manifest = buildManifest(event.sessionId, getCwd(event), getTranscriptPath(event))
     if (!dropsPreCompactContext()) {
+      const manifest = buildManifest(event.sessionId, getCwd(event), getTranscriptPath(event))
       out = contextOutput(`${MANIFEST_PREAMBLE}${summaryBudgetDirective(cfg.summary_budget_chars)}\n\n${manifest}`)
     } else if (event.sessionId) {
+      const recoveryManifest = buildRecoveryManifest(event.sessionId, getCwd(event), getTranscriptPath(event))
       // Trimmed here rather than left to the queue's own cap, which keeps the tail: the adaptive char bonus can push a manifest past MAX_PENDING_CONTEXT_BYTES, and a tail-keeping trim would drop the preamble saying what the block is while keeping the least important rows.
-      replacePendingContextBlock(sessionStateKey(event), `${MANIFEST_RECOVERY_PREAMBLE}\n\n${manifest.slice(0, MAX_PENDING_CONTEXT_BYTES - MANIFEST_RECOVERY_PREAMBLE.length - 2)}`, MANIFEST_RECOVERY_PREAMBLE)
+      replacePendingContextBlock(sessionStateKey(event), `${MANIFEST_RECOVERY_PREAMBLE}\n\n${recoveryManifest.slice(0, MAX_PENDING_CONTEXT_BYTES - MANIFEST_RECOVERY_PREAMBLE.length - 2)}`, MANIFEST_RECOVERY_PREAMBLE)
     }
   }
   const now = Date.now()
