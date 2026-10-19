@@ -280,7 +280,7 @@ describe('stopping a daemon whose child has a child of its own', () => {
     fs.writeFileSync(workerPidPath(dir), `${daemonPid}\n`)
     expect(stopWorker(dir, undefined, { entryScript: launcher }), 'stopWorker found no running worker to stop').toBe(true)
 
-    // The wait is the daemon's own exit, an event of the stop; ping gets one look right after it, by signal 0 (exit status set at termination, so it does not lag the way the process table does), and a bare kill that leaves ping running fails there naming it. Nothing waits for ping to go: the stop's taskkill /T has ended it by the time the stop returns, or it was not a tree kill.
+    // The wait is the daemon's own exit, an event of the stop; ping gets one look right after it, by signal 0, and a bare kill that leaves ping running fails there naming it. Nothing waits for ping to go. The stop waits for taskkill /T /F (src/resident_process.ts::terminateProcessTree, a spawnSync), whose contract is that the OS accepted the request; Microsoft documents TerminateProcess as asynchronous (learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess, read this run), so the look reads what signal 0 reports first, the exit status (libuv 1.51.0 src/win/process.c uv__kill, read this run: GetExitCodeProcess before the handle's signal), and 80 runs on Windows 11 with Node 24.12.0 of a daemon, its cmd.exe and its ping killed that way read all three dead on the first look after taskkill returned and after the daemon's exit.
     nameWhatIsLeft(ctx, survivors)
     await daemonExited
     expect(processAlive(grandchildPid as number), `the grandchild ${GRANDCHILD_ARGS} (pid ${grandchildPid}) is still running after the stop ended the daemon`).toBe(false)
