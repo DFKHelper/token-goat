@@ -72,6 +72,15 @@ async function descendantsOf(root: number): Promise<number[]> {
   return found
 }
 
+/** Resolves once no pid of *pids* names a running process after the tree of *child* was killed. A SIGKILL is delivered, not completed, when the call returns: on Linux a process it was sent to is still running for a moment, more of it under load, so a check made at once names a process that is already dying. The child is waited on through its 'exit' event, which also reaps it; any other member is read until it is gone, and *named* is told which ones are still running, so a member that never leaves is named by the failure of the row that waits. */
+async function untilGone(child: ChildProcess, pids: readonly number[], named: (running: readonly number[]) => void): Promise<void> {
+  if (child.exitCode === null && child.signalCode === null) await new Promise<void>((resolve) => child.once('exit', () => resolve()))
+  for (let running = pids.filter(processAlive); running.length > 0; running = pids.filter(processAlive)) {
+    named(running)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+}
+
 /** The git's result, asserted to have come without the gate holding it: the git ends or the gate holds it, whichever comes first, so a gate that held a read it was to pass names that read, instead of leaving the row waiting on a git it holds. */
 async function endedUnheld(run: Run, g: GitGate, what: string): Promise<{ code: number | null; stdout: string }> {
   const outcome = await Promise.race([run.settled.then((result) => ({ result })), g.reached.then((read) => ({ read }))])
@@ -110,7 +119,7 @@ describe('openGitGate', () => {
     expect((await run.settled).code).toBe(0)
   })
 
-  // CAPTURE: on Windows, with Git for Windows' cmd directory first on PATH, the git spawned is cmd/git.exe, which starts mingw64/bin/git.exe and waits for it; that second process holds the gate. Killing only the spawned one ended the wrapper ('exit' fired) and left the holder blocked with the inherited stdout open, so neither the child's 'close' nor the gate's connection close ever came. The row ends the whole tree, as src/process_tree.ts does for the product's gits, and asserts that nothing of the tree still runs before it waits on either close.
+  // CAPTURE: on Windows, with Git for Windows' cmd directory first on PATH, the git spawned is cmd/git.exe, which starts mingw64/bin/git.exe and waits for it; that second process holds the gate. Killing only the spawned one ended the wrapper ('exit' fired) and left the holder blocked with the inherited stdout open, so neither the child's 'close' nor the gate's connection close ever came. The row ends the whole tree, as src/process_tree.ts does for the product's gits, and waits for every process of the tree to leave before it waits on either close, naming the ones that do not. CAPTURE: on Linux under CPU load (24 busy shells on 8 CPUs, WSL Ubuntu, 12 of 15 runs) a check made as killProcessTree returned failed with `processes of the blocked git still ran after its tree was ended: expected [ 1738 ] to deeply equal []`, because a SIGKILLed process is still running until the kernel finishes ending it.
   it('reports a git as holding the gate while it is blocked, and not once it was killed or the gate released', async (ctx) => {
     let step = 'making the repository and the gate'
     ctx.onTestFailed(({ task }) => {
@@ -132,7 +141,8 @@ describe('openGitGate', () => {
     step = 'ending the tree of the blocked git'
     const ended = killProcessTree(run.child.pid)
     expect(ended.ok, `the tree of the blocked git was not ended: ${ended.note ?? 'no note'}`).toBe(true)
-    expect(tree.filter(processAlive), 'processes of the blocked git still ran after its tree was ended').toEqual([])
+    step = 'waiting for the processes of the ended tree to leave'
+    await untilGone(run.child, tree, (running) => { step = `waiting for pids ${running.join(', ')} of the ended tree to leave` })
     step = 'waiting for the killed git to close its output'
     await run.settled
     // Read until the gate stops reporting the killed git: on Windows the close of its pipe reaches this process as an event a turn or two after the git is gone.
