@@ -588,6 +588,10 @@ describe('begun stamp', () => {
     const savedHome = process.env['TOKEN_GOAT_HOME']
     const savedProfile = process.env[HOME_VAR]
     const mismatches: string[] = []
+    // One tg-hook process answers every payload and home: it takes each case's own environment, so the shim's file for each is read here and the client's answers come back from a single spawn rather than one per combination.
+    const cases: object[] = []
+    const expectedFiles: Array<string | null> = []
+    const labels: string[] = []
     try {
       let n = 0
       for (const payload of payloads) {
@@ -605,8 +609,9 @@ describe('begun stamp', () => {
           const expected = written.length === 0 ? null : path.join(dir, written[0] as string)
           const env: Record<string, string> = { [HOME_VAR]: userHome }
           if (tgHome !== undefined) env['TOKEN_GOAT_HOME'] = tgHome
-          const [actual] = runVectors([{ op: 'beginStamp', payload, env }]) as Array<string | null>
-          if ((actual === null ? null : path.normalize(actual)) !== (expected === null ? null : path.normalize(expected))) mismatches.push(`${JSON.stringify(payload)} home=${String(tgHome)}: shim wrote ${String(expected)}, tg-hook names ${String(actual)}`)
+          cases.push({ op: 'beginStamp', payload, env })
+          expectedFiles.push(expected)
+          labels.push(`${JSON.stringify(payload)} home=${String(tgHome)}`)
         }
       }
     } finally {
@@ -615,6 +620,12 @@ describe('begun stamp', () => {
       if (savedProfile === undefined) delete process.env[HOME_VAR]
       else process.env[HOME_VAR] = savedProfile
     }
+    const actuals = runVectors(cases) as Array<string | null>
+    actuals.forEach((actual, i) => {
+      const expected = expectedFiles[i] as string | null
+      if ((actual === null ? null : path.normalize(actual)) !== (expected === null ? null : path.normalize(expected))) mismatches.push(`${labels[i] as string}: shim wrote ${String(expected)}, tg-hook names ${String(actual)}`)
+    })
+    expect(cases).toHaveLength(payloads.length * 4)
     expect(mismatches).toEqual([])
   })
 })
