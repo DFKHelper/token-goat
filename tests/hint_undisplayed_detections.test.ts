@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { beforeEach, afterEach, describe, expect, it } from 'vitest'
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 
 import { logHintEmission, logSuppressedDetection, resetHintStats, shouldSuppress } from '../src/hint_stats.js'
 import { getHintStatsSummary } from '../src/hint_stats_read.js'
@@ -20,6 +20,20 @@ import { globalDbPath, configPath } from '../src/constants.js'
 import { defaultConfig, saveConfig } from '../src/config.js'
 import { clearModuleCaches } from '../src/reset.js'
 import type { HookEvent } from '../src/hook_registry.js'
+import type * as UtilModule from '../src/util.js'
+import { KILLED_GIT, cannedFingerprintAnswer, cannedNoRepository } from './helpers/canned_git.js'
+import type { CannedGit } from './helpers/canned_git.js'
+
+// Seam over the two git calls that fingerprint a directory (src/bash_output_cache.ts::gitStateFingerprintSync): while `canned` holds a state they are answered as git answers outside any repository, which is where the recall rows run (a fresh directory under the temp dir), and every other git call is answered as killed. A real git that outlives GIT_STATE_TIMEOUT_MS reads as 'unknown', and so as stale, which dropped the stored run before the recall gate under test was reached. With `canned` unset every call runs for real.
+const seam = vi.hoisted(() => ({ canned: null as CannedGit | null }))
+
+vi.mock('../src/util.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof UtilModule>()
+  return {
+    ...actual,
+    runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => (seam.canned === null ? actual.runGit(args, opts) : (cannedFingerprintAnswer(seam.canned, opts?.cwd, args) ?? KILLED_GIT)),
+  }
+})
 
 const RETENTION_DAYS = STATS_RETENTION_DAYS
 
@@ -68,6 +82,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  seam.canned = null
   resetHintStats()
   clearModuleCaches()
 })
@@ -206,9 +221,12 @@ describe('the range-read hint records the files its priced gate declined on', ()
 /** The same decision, at the other net-benefit gates. `detected` has always promised to count a hint "declined by a hint's own net-benefit gate", but only the bash range-read gate above ever wrote such a row: every other site called meetsSavingsFloor and returned `pass` on failure, which is byte-identical to the hook not recognizing the input at all. On one real ledger that left edit_reread_suggest -- 5140 shown hints, more than any other category -- with zero recorded refusals, so its decline rate was not low, it was unmeasured. Every case here is paired with a control, because the way this change fails is by recording an absence as a refusal: a file too short to hint on, or a command with nothing cached, never reached a price comparison and must stay out of the column. PROVENANCE: HAND-DERIVED. The file sizes are computed against the two shipped defaults -- hints.min_session_hint_savings_bytes (512) and post_read_code_compress.min_lines (200) -- rather than read off any producer's output, which is sound here because what is under test is a threshold comparison rather than a wire format. */
 describe('the other net-benefit gates record their declines too', () => {
   let dir: string
+  let git: CannedGit
 
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-decline-'))
+    git = cannedNoRepository()
+    seam.canned = git
   })
 
   afterEach(() => {
@@ -293,6 +311,7 @@ describe('the other net-benefit gates record their declines too', () => {
     // Between hints.bash_dedup_min_bytes (200) and the 512-byte floor: big enough for the dedup branch to take an interest, too small for the recall to pay for the context it would cost.
     const id = storeBashOutputSync(cmd, 'x'.repeat(300), 0, dir)
     recordBashOutput(bashRecallKey(cmd, dir), id, 300)
+    expect(git.served).toBeGreaterThan(0)
 
     const session = nonce()
     // Not `pass` like the gates above: a declined recall falls through to the generic compress path, so the refusal is hidden behind an unrelated success rather than behind silence.
@@ -310,6 +329,7 @@ describe('the other net-benefit gates record their declines too', () => {
     const cmd = 'npm test'
     const id = storeBashOutputSync(cmd, 'x'.repeat(4000), 0, dir)
     recordBashOutput(bashRecallKey(cmd, dir), id, 4000)
+    expect(git.served).toBeGreaterThan(0)
 
     const session = nonce()
     expect(preBashHandler(preBashEvent(session, cmd, dir)).hookType).toBe('context')
