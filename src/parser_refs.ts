@@ -648,19 +648,47 @@ function rubyIdentifierRole(node: TsNode): 'declare' | 'skip' | 'use' {
   return 'use'
 }
 
-/** Local name -> imported name for every aliased specifier (`import { store as snapshotStore }`) of a TS/JS file's top-level import statements. Imports are top-level only, so the walk never descends into function bodies; a plain `import { store }` has no alias and adds nothing. */
-function tsJsImportAliases(root: TsNode): Map<string, string> {
+/** Python scopes whose imports are local to them, so the file-level alias map never descends into a function or class body. */
+const PYTHON_IMPORT_BARRIERS = new Set(['function_definition', 'class_definition', 'decorated_definition', 'lambda'])
+
+/** Local name -> imported name for every aliased import of a file: TS/JS `import { store as snapshotStore }` (top-level statements), Python `from m import store as s` (outside function and class bodies) and Rust `use m::store as s` (also inside a `{ }` list). Python `import m as n` needs nothing: `n.store()` already records `store`. A use of the local name is a reference to the imported symbol, which a row recorded under the local name alone never reaches. */
+function importAliases(root: TsNode, language: Language): Map<string, string> {
   const aliases = new Map<string, string>()
-  const collect = (node: TsNode): void => {
+  const add = (imported: TsNode | null, local: TsNode | null): void => {
+    if (imported === null || local === null) return
+    const name = lastSegment(imported.text)
+    if (name !== local.text) aliases.set(local.text, name)
+  }
+  const collectTsJs = (node: TsNode): void => {
     if (node.type === 'import_specifier') {
       const imported = node.childForFieldName('name')
-      const local = node.childForFieldName('alias')
-      if (imported !== null && local !== null && imported.type === 'identifier' && imported.text !== local.text) aliases.set(local.text, imported.text)
+      add(imported !== null && imported.type === 'identifier' ? imported : null, node.childForFieldName('alias'))
       return
     }
-    for (const child of node.namedChildren) collect(child)
+    for (const child of node.namedChildren) collectTsJs(child)
   }
-  for (const child of root.namedChildren) if (child.type === 'import_statement') collect(child)
+  const collectRust = (node: TsNode): void => {
+    if (node.type === 'use_as_clause') {
+      add(node.childForFieldName('path'), node.childForFieldName('alias'))
+      return
+    }
+    for (const child of node.namedChildren) collectRust(child)
+  }
+  const collectPython = (node: TsNode): void => {
+    if (PYTHON_IMPORT_BARRIERS.has(node.type)) return
+    if (node.type === 'import_from_statement') {
+      for (const child of node.namedChildren) {
+        if (child.type === 'aliased_import') add(child.childForFieldName('name'), child.childForFieldName('alias'))
+      }
+      return
+    }
+    for (const child of node.namedChildren) collectPython(child)
+  }
+  for (const child of root.namedChildren) {
+    if ((language === 'typescript' || language === 'javascript') && child.type === 'import_statement') collectTsJs(child)
+    else if (language === 'rust' && child.type === 'use_declaration') collectRust(child)
+    else if (language === 'python') collectPython(child)
+  }
   return aliases
 }
 
@@ -675,12 +703,12 @@ export function extractRefs(root: TsNode, filePath: string, language: Language):
       : (REF_NOISE_BY_LANG.get(language) ?? EMPTY_STRING_SET)
   const stack: string[] = []
   const rubyScopes: RubyScope[] = []
-  // Local name -> imported name for `import { store as snapshotStore }`: a use of the local name is a reference to the exported symbol, which a row recorded under the local name alone never reaches.
-  const importAliases = language === 'typescript' || language === 'javascript' ? tsJsImportAliases(root) : new Map<string, string>()
+  // Local name -> imported name, so a use of the local alias also records the symbol it imports.
+  const aliases = importAliases(root, language)
 
   const record = (name: string, node: TsNode): void => {
     recordName(name, node)
-    const imported = importAliases.get(name)
+    const imported = aliases.get(name)
     if (imported !== undefined) recordName(imported, node)
   }
 

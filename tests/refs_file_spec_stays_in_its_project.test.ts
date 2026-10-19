@@ -117,3 +117,42 @@ describe('refs through an import alias', () => {
     expect(out).not.toContain('loadAll')
   })
 })
+
+describe('refs through an import alias in Python and Rust', () => {
+  beforeEach(() => {
+    seed(rootA, 'pysnaps.py', 'def pysnap(value):\n    return value\n')
+    seed(rootA, 'py_from_consumer.py', 'from pysnaps import pysnap as snapshot_pysnap\n\n\ndef save_all():\n    return snapshot_pysnap(1)\n')
+    seed(rootA, 'py_module_consumer.py', 'import pysnaps as ps\n\n\ndef load_all():\n    return ps.pysnap(2)\n')
+    seed(rootA, 'rssnaps.rs', 'pub fn rssnap(value: i32) -> i32 {\n    value\n}\n')
+    seed(rootA, 'rs_consumer.rs', 'use crate::rssnaps::rssnap as snapshot_rssnap;\n\npub fn save_all() -> i32 {\n    snapshot_rssnap(1)\n}\n')
+    seed(rootA, 'rs_group_consumer.rs', 'use crate::rssnaps::{rssnap as grouped_rssnap, other};\n\npub fn load_all() -> i32 {\n    grouped_rssnap(2)\n}\n')
+  })
+
+  it('Python: a call under a from-import alias is listed', () => {
+    const { code, out } = refs('pysnaps.py::pysnap', { callers: true })
+    expect(code, out).toBe(0)
+    expect(out).toContain('py_from_consumer.py')
+    expect(out).toContain('save_all')
+  })
+
+  it('Python: a call through a module alias is listed', () => {
+    const { code, out } = refs('pysnaps.py::pysnap', { callers: true })
+    expect(code, out).toBe(0)
+    expect(out).toContain('py_module_consumer.py')
+    expect(out).toContain('load_all')
+  })
+
+  it('Rust: a call under a use-as alias is listed', () => {
+    const { code, out } = refs('rssnaps.rs::rssnap', { callers: true })
+    expect(code, out).toBe(0)
+    expect(out).toContain('rs_consumer.rs')
+    expect(out).toContain('save_all')
+  })
+
+  it('Rust: a call under an alias inside a use list is listed', () => {
+    const { code, out } = refs('rssnaps.rs::rssnap', { callers: true })
+    expect(code, out).toBe(0)
+    expect(out).toContain('rs_group_consumer.rs')
+    expect(out).toContain('load_all')
+  })
+})
