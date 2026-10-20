@@ -1,15 +1,38 @@
 /** The bypassPermissions check for Claude Code rule sources no settings file shows (src/claude_hidden_rules.ts): a host that answers prompts itself, a command-line flag that adds or relays rules, a skill, command, agent or plugin that removes a tool by pattern, and a PermissionRequest hook outside the settings files. Facts are FORMAT-DERIVED from claude.exe 2.1.x: hooks get CLAUDE_PID and CLAUDE_CODE_ENTRYPOINT (`cli`, `sdk-cli` under -p, a host's own value otherwise), and gitignored nested skills directories are skipped ("[skills] Skipped gitignored skills dir"). */
 import { spawn, type ChildProcess } from 'node:child_process'
+import type * as ChildProcessModule from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { commandLineRuleSource, frontmatterAddsRule, hiddenRuleSource, primeProcessReason, resetHiddenRuleCache, stamp, type HiddenRuleHelpers, type HiddenRuleQuery } from '../src/claude_hidden_rules.js'
 import { selfAndAncestors } from '../src/rewrite_permission.js'
 import { runGit } from '../src/util.js'
 import { startWatchdog } from './helpers/stall_proof_watchdog.js'
+
+// The seam for the command-line read: on Windows the read is a PowerShell query that takes seconds and is given up on after 15 s, so a row that is not about that query takes the line from here. `real` sends the query to PowerShell, as the shipping path does.
+const reader = vi.hoisted(() => ({ real: false, lines: new Map<number, string>() }))
+vi.mock('node:child_process', async (importOriginal) => {
+  const real = await importOriginal<typeof ChildProcessModule>()
+  const spawnSync = (...args: unknown[]): unknown => {
+    const [file, argv] = args as [string, string[] | undefined]
+    const pid = reader.real ? undefined : /ProcessId=(\d+)/.exec(String(argv?.[3] ?? ''))?.[1]
+    if (pid === undefined || !/powershell\.exe$/i.test(String(file))) return (real.spawnSync as (...a: unknown[]) => unknown)(...args)
+    // A pid the query finds nothing for prints nothing and exits 0, as Get-CimInstance does for a process that is gone.
+    return { pid: 0, status: 0, signal: null, output: [], stdout: `${reader.lines.get(Number(pid)) ?? ''}\r\n`, stderr: '', error: undefined }
+  }
+  // The asynchronous read (primeProcessReason) asks the same query through execFile and gets the same stand-in answer.
+  const execFile = (...args: unknown[]): unknown => {
+    const [file, argv, , callback] = args as [string, string[] | undefined, unknown, ((err: Error | null, stdout: string, stderr: string) => void) | undefined]
+    const pid = reader.real ? undefined : /ProcessId=(\d+)/.exec(String(argv?.[3] ?? ''))?.[1]
+    if (pid === undefined || !/powershell\.exe$/i.test(String(file)) || callback === undefined) return (real.execFile as (...a: unknown[]) => unknown)(...args)
+    queueMicrotask(() => callback(null, `${reader.lines.get(Number(pid)) ?? ''}\r\n`, ''))
+    return undefined
+  }
+  return { ...real, spawnSync, execFile, default: { ...real, spawnSync, execFile } }
+})
 
 let root: string
 const idle: ChildProcess[] = []
@@ -17,10 +40,16 @@ const idle: ChildProcess[] = []
 /** Resolves when the fake has printed its ready line, which every fake script does only after its own setup (process.title included) is done; rejects if it exits first. */
 const ready = new Map<ChildProcess, Promise<void>>()
 
+/** The command line Windows reports for a process started with `argv`: CreateProcess takes one string, which libuv builds by quoting each argument that holds a blank or a quote (quotes inside escaped with a backslash). FORMAT-DERIVED from libuv's quote_cmd_arg in src/win/process.c, whose result Win32_Process.CommandLine reports; the parity row below holds it to what PowerShell prints for the same fakes. */
+function windowsCommandLine(argv: readonly string[]): string {
+  return argv.map((a) => (/[\s"]/.test(a) || a === '' ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ')
+}
+
 /** A long-lived process whose command line stands in for claude's. */
 function spawnFake(script: string, args: string[]): ChildProcess {
   const child = spawn(process.execPath, [path.join(root, script), ...args], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
   idle.push(child)
+  if (child.pid !== undefined) reader.lines.set(child.pid, windowsCommandLine([process.execPath, path.join(root, script), ...args]))
   const signal = new Promise<void>((resolve, reject) => {
     // The listener stays attached after the ready line, so the pipe is always drained.
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -73,6 +102,7 @@ afterAll(() => {
 
 beforeEach(() => {
   resetHiddenRuleCache()
+  reader.real = false
 })
 
 interface Box {
@@ -230,6 +260,7 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
     fs.writeFileSync(path.join(root, 'retitle.js'), "process.title = 'claude'\nprocess.stdout.write('ready\\n')\nsetInterval(() => {}, 1 << 30)\n")
     const child = spawnFake('retitle.js', ['--disallowedTools', 'Bash(curl *)'])
     await whenReady(String(child.pid))
+    reader.real = true
     const reason = lineRules(box('cl-retitled'), { CLAUDE_PID: String(child.pid) })
     expect(reason).not.toBeNull()
     if (process.platform === 'linux') expect(reason).toBe('claude command line unreadable')
@@ -257,10 +288,25 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
     fs.writeFileSync(path.join(root, 'retitle2.js'), "process.title = 'claude'\nprocess.stdout.write('ready\\n')\nsetInterval(() => {}, 1 << 30)\n")
     const child = spawnFake('retitle2.js', ['--model', 'x'])
     await whenReady(String(child.pid))
+    reader.real = true
     const reason = lineRules(box('cl-retitled-harmless'), { CLAUDE_PID: String(child.pid) })
     if (process.platform === 'win32') expect(reason).toBeNull()
     else expect(reason).toBe('claude command line unreadable')
   }, 30_000)
+
+  // On Windows the other rows read the fakes' lines from the stand-in above; this is the one row that holds the stand-in to the real query, so a stand-in that drifts from what PowerShell prints fails here by assertion. The real query is bounded by the product's own 15 s give-up, which no row can outwait: a loaded machine can fail this one row, never the rest.
+  it.runIf(process.platform === 'win32')('the stand-in reads each fake as PowerShell does', () => {
+    const verdicts = (real: boolean): (string | null)[] => {
+      reader.real = real
+      return [plainPid, disallowPid, settingsPid].map((pid) => {
+        resetHiddenRuleCache()
+        return lineRules(box(`parity-${String(real)}`), { CLAUDE_PID: pid })
+      })
+    }
+    const standIn = verdicts(false)
+    expect(standIn).toEqual([null, 'claude started with --disallowedtools', 'claude started with --settings'])
+    expect(verdicts(true)).toEqual(standIn)
+  })
 })
 
 describe('hiddenRuleSource: rule files', () => {
@@ -670,6 +716,8 @@ describe('primeProcessReason', () => {
       child.once('exit', resolve)
       child.kill()
     })
+    // The stand-in answers for a process that is gone as the query does: with nothing.
+    reader.lines.delete(Number(pid))
     expect(hiddenRuleSource(b.project, b.project, env, b.helpers)).toBeNull()
     resetHiddenRuleCache()
     expect(hiddenRuleSource(b.project, b.project, env, b.helpers)).toBe('claude command line unreadable')
