@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { KIMI_HOOK_SCRIPT } from '../src/bridges/kimi.js'
 
+import { writeBackdated } from './helpers/backdated_write.js'
 import { BUNDLE, ROOT } from './helpers/bundle.js'
 
 const tempDirs: string[] = []
@@ -81,7 +82,7 @@ describe('Kimi wire format: deny', () => {
     const sessionId = 'kimi-wire-deny'
     const filePath = path.join(cwd, 'large.bin')
     // >50KB non-source file, denied outright on the second read -- the same fixture tests/hook_event_harness_matrix.test.ts uses for its deny-shape cases, run with the repository as the working directory for the same reason it does.
-    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    writeBackdated(filePath, 'x'.repeat(60 * 1024))
     const payload = { tool_name: 'Read', tool_input: { path: filePath }, session_id: sessionId }
     const env = kimiEnv(cwd)
 

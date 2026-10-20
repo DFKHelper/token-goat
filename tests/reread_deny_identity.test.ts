@@ -28,6 +28,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllEnvs()
   invalidateConfigCache()
   clearModuleCaches()
@@ -156,10 +157,56 @@ describe('reread_deny_identity', () => {
   it('reads an improve-state file that changed through, and still refuses an unchanged re-read', () => {
     // HAND-DERIVED: an orchestrator state file another process rewrites between reads.
     const file = write('.improve-state-run.json', '{"step":1}\n')
+    backdate(file)
     pre(file)
     expect(pre(file).hookType).toBe('deny')
     fs.writeFileSync(file, '{"step":2,"more":true}\n')
     expect(pre(file).hookType).not.toBe('deny')
+  })
+
+  // HAND-DERIVED: the stat fallback compares the file system's mtime with Date.now() at the read. Measured on Windows (node 24.12.0, 3000 writes each followed by a Date.now() read): the stamp ran from 7 ms ahead to 10 ms behind that read, so an mtime within a tick of the read orders nothing. Date is frozen here so the read time is exact and the skew is the one number under test.
+  describe('mtime next to the read time', () => {
+    const readAt = (): number => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      const t = Date.now()
+      vi.setSystemTime(t)
+      return t
+    }
+    const stamp = (file: string, at: number): void => {
+      fs.utimesSync(file, new Date(at), new Date(at))
+    }
+
+    it('reads a same-size rewrite through when the file system stamped it before the read', () => {
+      const t = readAt()
+      const file = write('.improve-state-lag.json', '{"step":1}\n')
+      stamp(file, t - 3_600_000)
+      pre(file)
+      fs.writeFileSync(file, '{"step":2}\n')
+      // The write came after the read, but the file system's clock was 5 ms behind Date.now(), so the stamp sits before the read.
+      stamp(file, t - 5)
+      expect(pre(file).hookType).not.toBe('deny')
+    })
+
+    it('reads a file through when the file system stamped it after the read that found it unchanged', () => {
+      const t = readAt()
+      const file = write('.improve-state-lead.json', '{"step":1}\n')
+      stamp(file, t + 5)
+      pre(file)
+      expect(pre(file).hookType).not.toBe('deny')
+    })
+
+    it('refuses a re-read only once the stamp is a whole tick older than the read', () => {
+      const t = readAt()
+      const older = write('.improve-state-older.json', '{"step":1}\n')
+      // HAND-DERIVED: TIMESTAMP_TICK_SEC is 2 (src/fingerprint.ts), so 2000 ms before the read proves nothing was written since and 1999 ms does not.
+      stamp(older, t - 2_000)
+      pre(older)
+      expect(pre(older).hookType).toBe('deny')
+      const nearer = write('.improve-state-nearer.json', '{"step":1}\n')
+      stamp(nearer, t - 1_999)
+      pre(nearer)
+      expect(pre(nearer).hookType).not.toBe('deny')
+    })
   })
 
   it('reads a markdown file empty at its first read and filled since through', () => {

@@ -8,6 +8,7 @@ import { displaySafePath, hostPathOfIndexKey } from './paths.js'
 import { fencedCommand, leadWithCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import { hintTarget, sliceCommand, sliceForPath } from './hint_target.js'
 import { countNoun, decodeSource, statSize, toKB } from './util.js'
+import { TIMESTAMP_TICK_SEC } from './fingerprint.js'
 import { load as snapshotLoad } from './snapshots.js'
 import { BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
 
@@ -530,7 +531,7 @@ export interface RereadIdentity {
   readonly basis: 'snapshot' | 'stat' | 'none'
 }
 
-/** Decide whether `normalized` still holds what this session last read, for the measurement the whole-file re-read denies book. Those denies say "already read this session" from a read count alone, never from the content, so a deny on a file that changed since the read the model holds refuses the one read that would have been current. The snapshot postReadHandler keeps of the last read is the proof when there is one: byte equality with disk. A missing or truncated snapshot falls back to the size captured at the last read and the file's mtime against the last whole-file read: a size that moved, or a write after that read, is a change; neither is identical as far as a stat can tell. `prior` is the session entry as it stood before this read was recorded, so its size and times describe the last read the session recorded. That includes a read an earlier deny refused (recordActualRead books it all the same), so after one deny the stat fallback measures against that refusal, not the delivery the model holds; the snapshot, written only when a read is delivered, has no such blind spot. */
+/** Decide whether `normalized` still holds what this session last read, for the measurement the whole-file re-read denies book. Those denies say "already read this session" from a read count alone, never from the content, so a deny on a file that changed since the read the model holds refuses the one read that would have been current. The snapshot postReadHandler keeps of the last read is the proof when there is one: byte equality with disk. A missing or truncated snapshot falls back to the size captured at the last read and the file's mtime against the last whole-file read: a size that moved, or an mtime inside one timestamp tick of that read (or later), is a change; neither is identical as far as a stat can tell. The file system stamps mtime from its own clock, which on Windows disagrees with Date.now() by milliseconds in either direction (3000 writes: the stamp ran 7 ms ahead to 10 ms behind a Date.now() read right after the write), so an mtime close to the read time orders nothing: a file written just before the read can look newer than it, and a same-size rewrite just after it can look older; such an entry is unproven, as in mtimeProvesUnchanged (src/fingerprint.ts). `prior` is the session entry as it stood before this read was recorded, so its size and times describe the last read the session recorded. That includes a read an earlier deny refused (recordActualRead books it all the same), so after one deny the stat fallback measures against that refusal, not the delivery the model holds; the snapshot, written only when a read is delivered, has no such blind spot. */
 export function rereadIdentity(
   sessionId: string,
   normalized: string,
@@ -554,7 +555,7 @@ export function rereadIdentity(
   if (prior === undefined) return { identity: 'unknown', basis: 'none' }
   // A file empty at the last read and holding bytes now has changed; empty then and now withholds nothing.
   if (prior.sizeBytes <= 0) return current.size > 0 ? { identity: 'changed', basis: 'stat' } : { identity: 'unknown', basis: 'none' }
-  // Floor mtime: Windows mtimeMs is fractional and Date.now() is floored, so a sub-ms lead is no write; any later edit still lands in a later whole ms.
-  const changed = current.size !== prior.sizeBytes || Math.floor(current.mtimeMs) > (prior.lastFullReadAt ?? prior.lastReadAt)
+  // Racy mtime: the stamp comes from the file system's clock, the read time from Date.now(), so only an mtime at least one tick older than the read proves nothing was written since; a closer one is read through, never refused. This also covers a fractional mtimeMs against a floored Date.now().
+  const changed = current.size !== prior.sizeBytes || current.mtimeMs + TIMESTAMP_TICK_SEC * 1000 > (prior.lastFullReadAt ?? prior.lastReadAt)
   return { identity: changed ? 'changed' : 'identical', basis: 'stat' }
 }

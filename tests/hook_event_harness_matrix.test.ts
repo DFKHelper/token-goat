@@ -17,6 +17,7 @@ import type { HarnessName } from '../src/bridges/types.js'
 import { VSCODE_HOOK_FILE_EVENT_KEYS } from '../src/bridges/vscode_install.js'
 import { HOOK_EVENTS, type HookEventName } from '../src/types.js'
 
+import { writeBackdated } from './helpers/backdated_write.js'
 import { BUNDLE, ROOT } from './helpers/bundle.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -376,7 +377,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
       const sessionId = `matrix-deny-${harness}`
       const filePath = path.join(dataBase, `${sessionId}-large.bin`)
       // >50KB non-source file denies unconditionally on the 2nd read (see the real unit test this mirrors: "denies re-read of a large file (>50KB) that was already read this session" in tests/hooks_read.test.ts).
-      fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+      writeBackdated(filePath, 'x'.repeat(60 * 1024))
       const env = tgEnv(harness)
       const payload = toolPayload(harness, sessionId, filePath)
       const first = run(['hook', 'pre_tool_use'], env, JSON.stringify(payload))
@@ -395,7 +396,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     const cwd = mkIsolated('tg-hookmatrix-codexshim-')
     const sessionId = 'matrix-deny-codex-shim'
     const filePath = path.join(cwd, 'large.bin')
-    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    writeBackdated(filePath, 'x'.repeat(60 * 1024))
     const payload = { tool_name: 'Read', tool_input: { file_path: filePath }, session_id: sessionId }
     const env = tgEnv('codex')
     const first = runShim(CODEX_HOOK_SCRIPT, cwd, 'pre_tool_use', [BUNDLE], payload, env)
@@ -412,7 +413,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     const cwd = mkIsolated('tg-hookmatrix-copilotshim-')
     const sessionId = 'matrix-deny-copilot-shim'
     const filePath = path.join(cwd, 'large.bin')
-    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    writeBackdated(filePath, 'x'.repeat(60 * 1024))
     const payload = { sessionId, cwd, toolName: 'view', toolArgs: { path: filePath } }
     // The shim's own inner spawnSync call always sets TOKEN_GOAT_HARNESS_OVERRIDE:'copilot_cli' itself (Object.assign({}, process.env, {...})), so this env only needs to supply the isolated data/home dirs the shim process inherits into that inner call.
     const env = tgEnv('copilot_cli')
@@ -430,7 +431,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
   it('vscode: the real bundle denies a re-read through hookSpecificOutput.permissionDecision "deny", with no top-level decision/modifiedArgs/modifiedResult', () => {
     const sessionId = 'matrix-deny-vscode'
     const filePath = path.join(dataBase, `${sessionId}-large.bin`)
-    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    writeBackdated(filePath, 'x'.repeat(60 * 1024))
     const env = tgEnv('vscode')
     const payload = toolPayload('vscode', sessionId, filePath)
     const first = run(['hook', 'pre_tool_use'], env, JSON.stringify(payload))
@@ -450,7 +451,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
   it('antigravity: the real bundle denies a re-read of a view_file call through a top-level {decision:"deny", reason}, never "block"', () => {
     const sessionId = 'matrix-deny-antigravity'
     const filePath = path.join(dataBase, `${sessionId}-large.bin`)
-    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    writeBackdated(filePath, 'x'.repeat(60 * 1024))
     const env = tgEnv('antigravity')
     const payload = toolPayload('antigravity', sessionId, filePath)
     const first = run(['hook', 'pre_tool_use'], env, JSON.stringify(payload))
@@ -467,7 +468,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
     const cwd = mkIsolated('tg-hookmatrix-vscodeshim-')
     const sessionId = 'matrix-deny-vscode-shim'
     const filePath = path.join(cwd, 'large.bin')
-    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    writeBackdated(filePath, 'x'.repeat(60 * 1024))
     const payload = toolPayload('vscode', sessionId, filePath)
     // VS Code sets no token-goat override; the shim must tell the payload apart on its own.
     const env = tgEnv('vscode')
@@ -487,7 +488,7 @@ describe('hook-event x harness bundle matrix (pre_tool_use deny wire shape)', ()
   it('copilot_cli: the same shim still answers a Copilot CLI payload with the top-level Copilot shape when no override is set', () => {
     const cwd = mkIsolated('tg-hookmatrix-copilotshim-nooverride-')
     const filePath = path.join(cwd, 'large.bin')
-    fs.writeFileSync(filePath, 'x'.repeat(60 * 1024))
+    writeBackdated(filePath, 'x'.repeat(60 * 1024))
     const payload = { sessionId: 'matrix-deny-copilot-nooverride', cwd, toolName: 'view', toolArgs: { path: filePath } }
     const env = tgEnv('copilot_cli')
     delete env['TOKEN_GOAT_HARNESS_OVERRIDE']

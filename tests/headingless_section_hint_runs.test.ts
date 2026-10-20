@@ -14,6 +14,7 @@ import { preReadHandler } from '../src/hooks_read.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import { recordFileRead } from '../src/session.js'
 import { normalizePath } from '../src/paths.js'
+import { writeBackdated } from './helpers/backdated_write.js'
 import { BUNDLE } from './helpers/bundle.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
@@ -69,7 +70,7 @@ describe('the section hint for a file with no headings', () => {
   it('a second read of the markdown file is denied with the same runnable command', () => {
     seq += 1
     const p = path.join(dir, `reread-${seq}.md`)
-    fs.writeFileSync(p, headinglessNotes())
+    writeBackdated(p, headinglessNotes())
     const cfg = defaultConfig()
     cfg.hints.protect_recent_reads = 0
     saveConfig(cfg)
