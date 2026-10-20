@@ -12,22 +12,34 @@ import { selfAndAncestors } from '../src/rewrite_permission.js'
 import { runGit } from '../src/util.js'
 import { startWatchdog } from './helpers/stall_proof_watchdog.js'
 
-// The seam for the command-line read: on Windows the read is a PowerShell query that takes seconds and is given up on after 15 s, so a row that is not about that query takes the line from here. `real` sends the query to PowerShell, as the shipping path does.
-const reader = vi.hoisted(() => ({ real: false, lines: new Map<number, string>() }))
+// The seam for the command-line read: on Windows the read is a PowerShell query that takes seconds and that the product gives up on after 15 s (that give-up is pinned in claude_hidden_rules_process_cache.test.ts), so a row that is not about the query takes the line from here. `real` sends the query to PowerShell with the product's own file and arguments but without its give-up bound, so the answer comes whenever PowerShell finishes and no wall-clock limit decides the row; `realCalls` keeps the options the product passed and the ones the real function was called with.
+const reader = vi.hoisted(() => ({ real: false, lines: new Map<number, string>(), realCalls: [] as { received: Record<string, unknown>; sent: Record<string, unknown> }[] }))
 vi.mock('node:child_process', async (importOriginal) => {
   const real = await importOriginal<typeof ChildProcessModule>()
+  const queried = (file: unknown, argv: unknown): string | undefined => (/powershell\.exe$/i.test(String(file)) ? /ProcessId=(\d+)/.exec(String((argv as string[] | undefined)?.[3] ?? ''))?.[1] : undefined)
+  // Calls the real function with the options minus the bound, and keeps what that function was handed.
+  const forward = (fn: unknown, args: unknown[]): unknown => {
+    const received = (args[2] ?? {}) as Record<string, unknown>
+    const entry = { received, sent: {} as Record<string, unknown> }
+    reader.realCalls.push(entry)
+    const options = Object.fromEntries(Object.entries(received).filter(([key]) => key !== 'timeout'))
+    const call = [args[0], args[1], options, ...args.slice(3)]
+    entry.sent = call[2] as Record<string, unknown>
+    return (fn as (...a: unknown[]) => unknown)(...call)
+  }
   const spawnSync = (...args: unknown[]): unknown => {
-    const [file, argv] = args as [string, string[] | undefined]
-    const pid = reader.real ? undefined : /ProcessId=(\d+)/.exec(String(argv?.[3] ?? ''))?.[1]
-    if (pid === undefined || !/powershell\.exe$/i.test(String(file))) return (real.spawnSync as (...a: unknown[]) => unknown)(...args)
+    const pid = queried(args[0], args[1])
+    if (pid === undefined) return (real.spawnSync as (...a: unknown[]) => unknown)(...args)
+    if (reader.real) return forward(real.spawnSync, args)
     // A pid the query finds nothing for prints nothing and exits 0, as Get-CimInstance does for a process that is gone.
     return { pid: 0, status: 0, signal: null, output: [], stdout: `${reader.lines.get(Number(pid)) ?? ''}\r\n`, stderr: '', error: undefined }
   }
   // The asynchronous read (primeProcessReason) asks the same query through execFile and gets the same stand-in answer.
   const execFile = (...args: unknown[]): unknown => {
-    const [file, argv, , callback] = args as [string, string[] | undefined, unknown, ((err: Error | null, stdout: string, stderr: string) => void) | undefined]
-    const pid = reader.real ? undefined : /ProcessId=(\d+)/.exec(String(argv?.[3] ?? ''))?.[1]
-    if (pid === undefined || !/powershell\.exe$/i.test(String(file)) || callback === undefined) return (real.execFile as (...a: unknown[]) => unknown)(...args)
+    const pid = queried(args[0], args[1])
+    const callback = args[3] as ((err: Error | null, stdout: string, stderr: string) => void) | undefined
+    if (pid === undefined || callback === undefined) return (real.execFile as (...a: unknown[]) => unknown)(...args)
+    if (reader.real) return forward(real.execFile, args)
     queueMicrotask(() => callback(null, `${reader.lines.get(Number(pid)) ?? ''}\r\n`, ''))
     return undefined
   }
@@ -103,6 +115,7 @@ afterAll(() => {
 beforeEach(() => {
   resetHiddenRuleCache()
   reader.real = false
+  reader.realCalls.length = 0
 })
 
 interface Box {
@@ -294,7 +307,7 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
     else expect(reason).toBe('claude command line unreadable')
   }, 30_000)
 
-  // On Windows the other rows read the fakes' lines from the stand-in above; this is the one row that holds the stand-in to the real query, so a stand-in that drifts from what PowerShell prints fails here by assertion. The real query is bounded by the product's own 15 s give-up, which no row can outwait: a loaded machine can fail this one row, never the rest.
+  // On Windows the other rows read the fakes' lines from the stand-in above; this is the row that holds the stand-in to the real query, so a stand-in that drifts from what PowerShell prints fails here by assertion. The real query runs without the product's give-up bound (the options the product passed carry one, the ones that went on do not), so it answers whenever PowerShell finishes.
   it.runIf(process.platform === 'win32')('the stand-in reads each fake as PowerShell does', () => {
     const verdicts = (real: boolean): (string | null)[] => {
       reader.real = real
@@ -306,6 +319,11 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
     const standIn = verdicts(false)
     expect(standIn).toEqual([null, 'claude started with --disallowedtools', 'claude started with --settings'])
     expect(verdicts(true)).toEqual(standIn)
+    expect(reader.realCalls.length, 'the real query ran once per fake').toBe(3)
+    for (const { received, sent } of reader.realCalls) {
+      expect(received['timeout'], 'the product still bounds its own query').toEqual(expect.any(Number))
+      expect(sent, 'the options the real spawnSync was called with').not.toHaveProperty('timeout')
+    }
   })
 })
 
