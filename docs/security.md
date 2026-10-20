@@ -88,10 +88,24 @@ Two honest limits. It is a pattern matcher, not a classifier: a credential in a 
 
 In practice: if you're reading files from untrusted sources or fetching unknown URLs during a session, pay attention to any actions the AI takes immediately after. Unusual follow-on behavior — opening files it wasn't asked about, writing to unexpected locations — is a sign that something in the read content may have tried to redirect it.
 
-**Windows Defender (optional, Windows only).** Real-time scanning slows indexing. To exclude the data folder, open PowerShell as administrator:
+**Windows Defender (optional, Windows only).** Real-time scanning slows indexing, adds latency to hook invocations, and can cause transient file-sharing locks (`EPERM`) during SQLite checkpoints. To exclude token-goat processes and data/wrapper folders, open PowerShell as administrator:
 
 ```powershell
-Add-MpPreference -ExclusionPath "$env:LOCALAPPDATA\dfk-helper\token-goat"
+# Exclude CLI and hook binaries/processes
+Add-MpPreference -ExclusionProcess @('token-goat.exe', 'token-goat', 'tg.exe', 'tg', 'tg-hook.exe')
+
+# Exclude data directories and global npm wrapper path
+Add-MpPreference -ExclusionPath @(
+  "$env:LOCALAPPDATA\dfk-helper\token-goat",
+  "$env:USERPROFILE\.token-goat",
+  "$env:APPDATA\npm"
+)
+```
+
+Verify active exclusions:
+```powershell
+(Get-MpPreference).ExclusionProcess
+(Get-MpPreference).ExclusionPath
 ```
 
 `0x800106ba` means the prompt is not elevated; reopen as administrator. On enterprise-managed Windows (domain-joined / Intune), Defender exclusions may be locked by Group Policy. The command will fail; that is expected and harmless.

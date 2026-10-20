@@ -414,6 +414,30 @@ MATLAB, OpenEdge ABL and Salesforce metadata share their file extensions with ot
 
 ## Troubleshooting
 
+### Windows Defender / Real-Time Antivirus Scanning
+
+On Windows, real-time scanning can add latency to hook invocations (`tg-hook.exe`, `token-goat.cmd`) and cause intermittent `EPERM` sharing lock errors during SQLite index transactions.
+
+To configure exclusions, open PowerShell as administrator:
+
+```powershell
+# Exclude CLI and hook binaries/processes
+Add-MpPreference -ExclusionProcess @('token-goat.exe', 'token-goat', 'tg.exe', 'tg', 'tg-hook.exe')
+
+# Exclude data directories and global npm wrapper path
+Add-MpPreference -ExclusionPath @(
+  "$env:LOCALAPPDATA\dfk-helper\token-goat",
+  "$env:USERPROFILE\.token-goat",
+  "$env:APPDATA\npm"
+)
+```
+
+Verify active exclusions:
+```powershell
+(Get-MpPreference).ExclusionProcess
+(Get-MpPreference).ExclusionPath
+```
+
 ### tree-sitter unavailable
 
 `token-goat doctor` warns when the optional `tree-sitter` package does not load. Without it, TypeScript, JavaScript, Python, Go, Rust, Ruby, Java, C and C++ files are read by a rougher scan that finds fewer symbols and no references, and the skeleton fold is off. Every other language indexes as usual. The doctor line says which of three causes applies:

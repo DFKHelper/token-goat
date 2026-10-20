@@ -9,6 +9,13 @@ import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
 import { scrubClaudeSessionEnv } from '../helpers/harness-env.js'
 import { scrubTokenGoatUserEnv } from '../helpers/token-goat-env.js'
 
+// Test workers run at low priority so test execution never monopolizes CPU or overloads the system.
+try {
+  os.setPriority(os.constants.priority.PRIORITY_LOW)
+} catch {
+  // best-effort
+}
+
 // Unique per TEST FILE, not per worker process. setupFiles runs once per test file, but `pool: 'forks'` REUSES a fork across many files, so keying these dirs on process.pid alone handed consecutive files in the same fork one shared global.db. That is cross-file state leakage, not contention: which files land in which fork varies run to run, so different files failed each run and every one passed in isolation. Reproduced deterministically by running `db.test.ts` then `cli_note.test.ts` in a single fork -- the notes db.test.ts left behind made cli_note's `not.toContain('[STALE]')` fail. A per-file suffix restores the isolation this file's docblock already claimed.
 const workerScope = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 

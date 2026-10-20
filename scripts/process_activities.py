@@ -13,13 +13,16 @@ import json
 import sys
 from pathlib import Path
 
-from extract_entities import extract_entities, load_document
+if __package__:
+    from .extract_entities import DocumentChunk, extract_entities, load_document
+else:
+    from extract_entities import DocumentChunk, extract_entities, load_document
 
 
 def extract_pdf_to_json(pdf_path: str | Path, json_out_path: str | Path | None = None) -> list[dict]:
     """Loads any document (PDF, Office, Code, Text) and dumps normalized chunks to JSON."""
     chunks = load_document(pdf_path)
-    pages = [{"page": idx, "unit": c.unit, "text": c.text, "metadata": c.metadata} for idx, c in enumerate(chunks, start=1)]
+    pages = [{"page": idx, **c.to_dict()} for idx, c in enumerate(chunks, start=1)]
 
     if json_out_path:
         Path(json_out_path).write_text(
@@ -30,24 +33,29 @@ def extract_pdf_to_json(pdf_path: str | Path, json_out_path: str | Path | None =
     return pages
 
 
-def extract_activities(pages: list[dict]) -> list[dict]:
+def extract_activities(pages: list[dict], *, dedup: bool = False) -> list[dict]:
     """Extracts numbered activities (IDs 1-250) across pages or chunks."""
-    from extract_entities import DocumentChunk
     chunks = [
         DocumentChunk(
             source=p.get("source", "doc"),
             unit=p.get("unit") or f"Page {p.get('page', idx)}",
             text=p.get("text", ""),
             metadata=p.get("metadata", {}),
+            line_start=p.get("line_start"),
+            line_end=p.get("line_end"),
+            continuous=p.get("continuous", False),
+            exact_lines=p.get("exact_lines", True),
         )
         for idx, p in enumerate(pages, start=1)
     ]
-    raw_entities = extract_entities(chunks, entity_type="activities", id_range=(1, 250))
+    raw_entities = extract_entities(chunks, entity_type="activities", id_range=(1, 250), dedup=dedup)
     return [
         {
             "page": ent.get("unit"),
             "id": int(ent["id"]),
             "content": ent["content"],
+            "line_start": ent["line_start"],
+            "line_end": ent["line_end"],
         }
         for ent in raw_entities
     ]
@@ -59,6 +67,7 @@ def main() -> None:
     parser.add_argument("input", nargs="?", default="demo/fixtures/token-goat-eval.pdf", help="Input document path")
     parser.add_argument("output", nargs="?", default="pdf_extracted.json", help="Output JSON path")
     parser.add_argument("--inspect", action="store_true", help="Print sample extracted activities")
+    parser.add_argument("--dedup", action="store_true", help="Remove duplicate (id, content) pairs")
 
     args = parser.parse_args()
 
@@ -67,7 +76,7 @@ def main() -> None:
         sys.exit(1)
 
     pages = extract_pdf_to_json(args.input, args.output)
-    activities = extract_activities(pages)
+    activities = extract_activities(pages, dedup=args.dedup)
 
     print(f"Successfully processed '{args.input}':")
     print(f"  - Units/Pages extracted: {len(pages)}")

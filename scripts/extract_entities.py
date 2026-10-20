@@ -12,13 +12,20 @@ syntax issues, nested quote collisions, or read-hook bypass denials.
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import re
 import sys
+import unicodedata
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
+
+if __package__:
+    from .entity_document import CHUNK_CHARS, DocumentChunk, MarkupMasker, iter_csv, iter_json, iter_jsonl, iter_markdown, iter_text
+    from .entity_output import write_entities
+else:
+    from entity_document import CHUNK_CHARS, DocumentChunk, MarkupMasker, iter_csv, iter_json, iter_jsonl, iter_markdown, iter_text
+    from entity_output import write_entities
 
 # Optional 3rd party format loaders
 try:
@@ -40,22 +47,6 @@ try:
     import xlrd
 except ImportError:
     xlrd = None
-
-
-class DocumentChunk:
-    def __init__(self, source: str, unit: str, text: str, metadata: Optional[Dict[str, Any]] = None):
-        self.source = source
-        self.unit = unit
-        self.text = text
-        self.metadata = metadata or {}
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "source": self.source,
-            "unit": self.unit,
-            "text": self.text,
-            "metadata": self.metadata,
-        }
 
 
 def _load_pdf(path: Path) -> List[DocumentChunk]:
@@ -112,17 +103,6 @@ def _load_xlsx(path: Path) -> List[DocumentChunk]:
     return chunks
 
 
-def _load_csv(path: Path) -> List[DocumentChunk]:
-    lines: List[str] = []
-    with path.open("r", encoding="utf-8", errors="replace") as f:
-        reader = csv.reader(f)
-        for row in reader:
-            row_txt = " | ".join(c.strip() for c in row if c.strip())
-            if row_txt:
-                lines.append(row_txt)
-    return [DocumentChunk(source=str(path), unit="CSV", text="\n".join(lines))]
-
-
 def _load_xls(path: Path) -> List[DocumentChunk]:
     chunks: List[DocumentChunk] = []
     if xlrd is not None:
@@ -157,133 +137,74 @@ def _load_xls(path: Path) -> List[DocumentChunk]:
     return [DocumentChunk(source=str(path), unit="Raw Sheet", text=content)]
 
 
-def _load_code_or_style(path: Path) -> List[DocumentChunk]:
-    content = path.read_text(encoding="utf-8", errors="replace")
-    lines = content.splitlines()
-    chunks: List[DocumentChunk] = []
-
-    CHUNK_SIZE = 100
-    for i in range(0, len(lines), CHUNK_SIZE):
-        batch = lines[i : i + CHUNK_SIZE]
-        start_line = i + 1
-        end_line = min(i + CHUNK_SIZE, len(lines))
-        unit_label = f"Lines {start_line}-{end_line}"
-        chunks.append(
-            DocumentChunk(
-                source=str(path),
-                unit=unit_label,
-                text="\n".join(batch),
-                metadata={"start_line": start_line, "end_line": end_line},
-            )
-        )
-    return chunks
-
-
-def _extract_comments(text: str) -> str:
-    """Extracts comments and docstrings from source code or stylesheets."""
-    comments: List[str] = []
-    # Block comments /* ... */ (CSS, JS, TS, C, Java, etc.)
-    for block in re.finditer(r"/\*([\s\S]*?)\*/", text):
-        comments.append(block.group(1))
-    # Line comments // (JS, TS, C, Java, Go, Rust, etc.)
-    for line in re.finditer(r"//\s*(.*)", text):
-        comments.append(line.group(1))
-    # Python / Shell / YAML / TOML comments #
-    for line in re.finditer(r"#\s*(.*)", text):
-        comments.append(line.group(1))
-    # HTML / XML comments <!-- ... -->
-    for block in re.finditer(r"<!--([\s\S]*?)-->", text):
-        comments.append(block.group(1))
-    # Python docstrings """ ... """ or ''' ... '''
-    for doc in re.finditer(r'"""([\s\S]*?)"""|\'\'\'([\s\S]*?)\'\'\'', text):
-        comments.append(doc.group(1) or doc.group(2) or "")
-    return "\n".join(comments)
+def _extract_comments(text: str, state: Optional[List[str]] = None) -> str:
+    """Mask non-comment characters without moving any source locations."""
+    masked = ["\n" if char == "\n" else " " for char in text]
+    pattern = r'/\*([\s\S]*?)(?:\*/|\Z)|//([^\n]*)|#([^\n]*)|<!--([\s\S]*?)(?:-->|\Z)|"""([\s\S]*?)(?:"""|\Z)|\'\'\'([\s\S]*?)(?:\'\'\'|\Z)'
+    state = state if state is not None else []
+    offset = 0
+    if state:
+        closing = state[0]
+        prefix = state[1] if len(state) > 1 else ""
+        end = (prefix + text).find(closing)
+        if end == -1:
+            state[:] = [closing, _closing_prefix(prefix + text, closing)]
+            return text
+        end = max(0, end - len(prefix))
+        masked[:end] = text[:end]
+        offset = len(closing) - len(prefix) if (prefix + text).startswith(closing) else end + len(closing)
+        state.clear()
+    for match in re.finditer(pattern, text[offset:]):
+        for group in range(1, 7):
+            if match.group(group) is not None:
+                start, end = match.span(group)
+                start, end = start + offset, end + offset
+                masked[start:end] = text[start:end]
+                closing = {1: "*/", 2: "\n", 3: "\n", 4: "-->", 5: '"""', 6: "'''"}
+                if end == len(text):
+                    state[:] = [closing[group], _closing_prefix(text[start:end], closing[group])]
+                break
+    return "".join(masked)
 
 
-def _load_json(path: Path) -> List[DocumentChunk]:
-    content = path.read_text(encoding="utf-8", errors="replace")
-    chunks: List[DocumentChunk] = []
-    try:
-        data = json.loads(content)
-        if isinstance(data, list):
-            for idx, item in enumerate(data, start=1):
-                if isinstance(item, dict):
-                    unit = item.get("unit") or f"Page {item.get('page')}" if "page" in item else f"Item {idx}"
-                    text = item.get("text") or item.get("content") or json.dumps(item)
-                    meta = {k: v for k, v in item.items() if k not in ("text", "content")}
-                    chunks.append(DocumentChunk(source=str(path), unit=str(unit), text=str(text), metadata=meta))
-                else:
-                    chunks.append(DocumentChunk(source=str(path), unit=f"Item {idx}", text=str(item)))
-        elif isinstance(data, dict):
-            # Check if dict wraps pages or sections
-            if "pages" in data and isinstance(data["pages"], list):
-                for idx, p in enumerate(data["pages"], start=1):
-                    unit = p.get("unit") or f"Page {p.get('page', idx)}" if isinstance(p, dict) else f"Page {idx}"
-                    text = p.get("text", "") if isinstance(p, dict) else str(p)
-                    chunks.append(DocumentChunk(source=str(path), unit=str(unit), text=str(text)))
-            else:
-                chunks.append(DocumentChunk(source=str(path), unit="Root", text=json.dumps(data, indent=2)))
-    except json.JSONDecodeError:
-        # Fallback to JSONL
-        for idx, line in enumerate(content.splitlines(), start=1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-                if isinstance(item, dict):
-                    unit = item.get("unit") or f"Page {item.get('page')}" if "page" in item else f"Line {idx}"
-                    text = item.get("text") or item.get("content") or line
-                    chunks.append(DocumentChunk(source=str(path), unit=str(unit), text=str(text)))
-                else:
-                    chunks.append(DocumentChunk(source=str(path), unit=f"Line {idx}", text=str(item)))
-            except Exception:
-                chunks.append(DocumentChunk(source=str(path), unit=f"Line {idx}", text=line))
-    return chunks
-
-
-def _load_text(path: Path) -> List[DocumentChunk]:
-    content = path.read_text(encoding="utf-8", errors="replace")
-    # Split on form feed or markdown double-horizontal rules if present, else return document
-    if "\x0c" in content:
-        pages = content.split("\x0c")
-        return [DocumentChunk(source=str(path), unit=f"Page {i}", text=p) for i, p in enumerate(pages, start=1) if p.strip()]
-    return [DocumentChunk(source=str(path), unit="Text", text=content)]
+def _closing_prefix(text: str, closing: str) -> str:
+    for size in range(len(closing) - 1, 0, -1):
+        if text.endswith(closing[:size]):
+            return closing[:size]
+    return ""
 
 
 def load_document(source_path: str | Path) -> List[DocumentChunk]:
     """Loads and normalizes any supported file format into DocumentChunk objects."""
+    return list(iter_document(source_path))
+
+
+def iter_document(source_path: str | Path) -> Iterator[DocumentChunk]:
+    """Stream line-based inputs; keep load_document's list API for existing callers."""
     p = Path(source_path)
     if not p.exists():
         raise FileNotFoundError(f"Input file not found: {source_path}")
 
     ext = p.suffix.lower()
     if ext == ".pdf":
-        return _load_pdf(p)
+        yield from _load_pdf(p)
     elif ext in (".docx", ".doc"):
-        return _load_docx(p)
+        yield from _load_docx(p)
     elif ext in (".xlsx", ".xlsm"):
-        return _load_xlsx(p)
+        yield from _load_xlsx(p)
     elif ext == ".xls":
-        return _load_xls(p)
+        yield from _load_xls(p)
     elif ext in (".csv", ".tsv"):
-        return _load_csv(p)
-    elif ext in (".json", ".jsonl"):
-        return _load_json(p)
-    elif ext in (
-        ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-        ".py", ".pyw",
-        ".css", ".scss", ".sass", ".less",
-        ".go", ".rs", ".java", ".cs", ".c", ".cpp", ".cc", ".h", ".hpp",
-        ".sh", ".bash", ".ps1", ".psm1",
-        ".yaml", ".yml", ".toml", ".xml", ".sql",
-    ):
-        return _load_code_or_style(p)
-    elif ext in (".txt", ".md", ".markdown", ".rst", ".html", ".htm"):
-        return _load_text(p)
+        yield from iter_csv(p)
+    elif ext == ".jsonl":
+        yield from iter_jsonl(p)
+    elif ext == ".json":
+        yield from iter_json(p)
+    elif ext in (".md", ".markdown", ".mdx"):
+        yield from iter_markdown(p)
     else:
-        # Generic text attempt
-        return _load_text(p)
+        # Source, stylesheets, RST, AsciiDoc, configs and unknown text formats.
+        yield from iter_text(p)
 
 
 ENTITY_PRESETS = {
@@ -295,69 +216,161 @@ ENTITY_PRESETS = {
 
 
 def extract_entities(
-    chunks: List[DocumentChunk],
+    chunks: Iterable[DocumentChunk],
     entity_type: str = "activities",
     custom_pattern: Optional[str] = None,
     id_range: Optional[Tuple[int, int]] = (1, 250),
     keyword_filter: Optional[str] = None,
     comments_only: bool = False,
+    dedup: bool = False,
 ) -> List[Dict[str, Any]]:
     """Extracts entities from chunks using regex rules with validation and filtering."""
+    return list(iter_entities(
+        chunks, entity_type, custom_pattern, id_range, keyword_filter, comments_only, dedup,
+    ))
+
+
+def _normalize_content(text: str) -> str:
+    text = "".join(
+        char for char in text
+        if char.isspace() or unicodedata.category(char) not in ("Cc", "Cf")
+    )
+    return " ".join(text.split())
+
+
+def _iter_matches(
+    chunks: Iterable[DocumentChunk], regex: re.Pattern, comments_only: bool,
+    *, custom_pattern: bool = False,
+) -> Iterator[Tuple[DocumentChunk, re.Match]]:
+    pending = None
+    comment_state: List[str] = []
+    markup_masker = MarkupMasker()
+    for chunk in chunks:
+        if pending and (pending.source != chunk.source or pending.metadata.get("heading_line") != chunk.metadata.get("heading_line")):
+            comment_state.clear()
+            markup_masker = MarkupMasker()
+        if comments_only and pending and len(comment_state) > 1:
+            closing, prefix = comment_state
+            if prefix and (prefix + chunk.text).startswith(closing):
+                pending.text = pending.text[:-len(prefix)] + " " * len(prefix)
+        text = _extract_comments(chunk.text, comment_state) if comments_only else chunk.text
+        extension = Path(chunk.source).suffix.lower()
+        if not comments_only and extension in (".md", ".markdown", ".mdx"):
+            text = re.sub(r"(?m)^([ \t]*\|[^\n]*)", lambda m: re.sub(r"(?<!\\)\|", " ", m[0]), text)
+        if not comments_only and extension in (".yaml", ".yml", ".toml"):
+            text = re.sub(
+                r'''(?m)^([ \t]*[\w.-]+[ \t]*[:=][ \t]*)(["']?)([^\n]*?)\2[ \t]*$''',
+                lambda m: " " * len(m[1] + m[2]) + m[3] + " " * (len(m[0]) - len(m[1] + m[2] + m[3])),
+                text,
+            )
+        line_map = None
+        if not comments_only and extension in (".xml", ".html", ".htm", ".mdx"):
+            text, line_map = markup_masker.mask(text, chunk.line_start)
+        current = DocumentChunk(
+            chunk.source, chunk.unit, text, chunk.metadata,
+            line_start=chunk.line_start, line_end=chunk.line_end,
+            continuous=chunk.continuous, exact_lines=chunk.exact_lines,
+            line_map=line_map,
+        )
+        if pending:
+            if (pending.source == current.source
+                    and pending.metadata.get("heading") == current.metadata.get("heading")
+                    and pending.metadata.get("heading_line") == current.metadata.get("heading_line")
+                    and pending.metadata.get("page") == current.metadata.get("page")):
+                current.text = pending.text + current.text
+                current.line_start = pending.line_start
+                if current.line_map is not None and pending.line_map is not None:
+                    current.line_map = pending.line_map + current.line_map[1:]
+            else:
+                for match in regex.finditer(pending.text):
+                    yield pending, match
+            pending = None
+        matches = list(regex.finditer(current.text))
+        if current.continuous:
+            if custom_pattern and not matches and len(current.text) > CHUNK_CHARS:
+                raise ValueError("Custom pattern has no match within the 65,536-character streaming prefix; use smaller document units")
+            cut = matches[-1].start() if matches else (
+                0 if custom_pattern else max(current.text.rfind("\n") + 1, len(current.text) - CHUNK_CHARS)
+            )
+            for match in matches[:-1]:
+                yield current, match
+            start, _ = current.location(cut, cut)
+            pending = DocumentChunk(
+                current.source, current.unit, current.text[cut:], current.metadata,
+                line_start=start, line_end=current.line_end,
+                line_map=current.line_map[current.text.count("\n", 0, cut):] if current.line_map is not None else None,
+            )
+        else:
+            for match in matches:
+                yield current, match
+            comment_state.clear()
+            markup_masker = MarkupMasker()
+    if pending:
+        for match in regex.finditer(pending.text):
+            yield pending, match
+
+
+def iter_entities(
+    chunks: Iterable[DocumentChunk],
+    entity_type: str = "activities",
+    custom_pattern: Optional[str] = None,
+    id_range: Optional[Tuple[int, int]] = (1, 250),
+    keyword_filter: Optional[str] = None,
+    comments_only: bool = False,
+    dedup: bool = False,
+) -> Iterator[Dict[str, Any]]:
+    """Yield normalized entities, retaining only an unfinished entity between batches."""
     pattern_str = custom_pattern or ENTITY_PRESETS.get(entity_type.lower(), ENTITY_PRESETS["activities"])
     regex = re.compile(pattern_str, re.DOTALL | re.IGNORECASE if entity_type == "requirements" else re.DOTALL)
-
-    results: List[Dict[str, Any]] = []
-
-    for chunk in chunks:
-        txt = chunk.text
-        if comments_only:
-            txt = _extract_comments(txt)
-            if not txt.strip():
-                continue
-
-        if keyword_filter and keyword_filter.lower() not in txt.lower():
+    seen = set()
+    for chunk, match in _iter_matches(chunks, regex, comments_only, custom_pattern=custom_pattern is not None):
+        if keyword_filter and keyword_filter.lower() not in chunk.text.lower():
             continue
-
-        for match in regex.finditer(txt):
-            raw_id = match.group(1).strip()
-            content = match.group(2).strip()
-
-            # If id_range is specified, enforce numeric constraints
-            if id_range is not None:
-                numeric_match = re.search(r"\d+", raw_id)
-                if numeric_match:
-                    num_val = int(numeric_match.group(0))
-                    if not (id_range[0] <= num_val <= id_range[1]):
-                        continue
-                else:
+        raw_id = match.group(1).strip()
+        content = _normalize_content(match.group(2))
+        if id_range is not None:
+            numeric_match = re.search(r"\d+", raw_id)
+            if numeric_match:
+                num_val = int(numeric_match.group(0))
+                if not (id_range[0] <= num_val <= id_range[1]):
                     continue
-
-            parsed_id: Any = int(raw_id) if raw_id.isdigit() else raw_id
-            results.append({
-                "source": chunk.source,
-                "unit": chunk.unit,
-                "id": parsed_id,
-                "content": content,
-                "metadata": chunk.metadata,
-            })
-
-    return results
+            else:
+                continue
+        parsed_id: Any = int(raw_id) if raw_id.isdigit() else raw_id
+        key = (parsed_id, content)
+        if dedup and key in seen:
+            continue
+        if dedup:
+            seen.add(key)
+        end = match.start(2) + len(match.group(2).rstrip()) - 1
+        line_start, line_end = chunk.location(match.start(1), max(match.start(1), end))
+        unit, metadata = chunk.unit, chunk.metadata
+        if unit.startswith("Lines ") and line_start is not None:
+            unit = f"Lines {line_start}-{line_end}"
+            metadata = {**metadata, "start_line": line_start, "end_line": line_end}
+        yield {
+            "source": chunk.source, "unit": unit,
+            "id": parsed_id, "content": content, "metadata": metadata,
+            "line_start": line_start, "line_end": line_end,
+        }
 
 
 def main() -> None:
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     parser = argparse.ArgumentParser(description="Universal Document & Entity Extractor")
     parser.add_argument("input", help="Path to input document (PDF, DOCX, XLSX, CSV, JSON, TXT, MD)")
-    parser.add_argument("--out", "-o", help="Path to write extracted output JSON", default=None)
+    parser.add_argument("--out", "-o", help="Output file (.jsonl and .csv select their native format)", default=None)
     parser.add_argument(
         "--type", "-t",
         choices=["activities", "tasks", "requirements", "steps"],
         default="activities",
         help="Entity extraction preset (default: activities)",
     )
-    parser.add_argument("--pattern", "-p", help="Custom regex pattern for entity extraction", default=None)
+    parser.add_argument("--pattern", "-p", help="Custom regex (unmatched streaming prefix limited to 65,536 characters)", default=None)
     parser.add_argument("--range", "-r", help="ID range floor-ceiling, e.g. 1-250", default="1-250")
     parser.add_argument("--filter", "-f", help="Case-insensitive keyword filter for units", default=None)
-    parser.add_argument("--format", choices=["summary", "json"], default="summary", help="Console output format when --out is not provided (default: summary)")
+    parser.add_argument("--format", choices=["summary", "json", "jsonl", "csv"], default="summary", help="Output format (default: summary; --out defaults to JSON)")
+    parser.add_argument("--dedup", action="store_true", help="Keep the first occurrence of each normalized (id, content) pair")
     parser.add_argument("--comments-only", "-c", action="store_true", help="Extract entities exclusively from code/stylesheet comments")
     parser.add_argument("--dump-chunks", action="store_true", help="Dump normalized document chunks to output JSON")
 
@@ -369,47 +382,62 @@ def main() -> None:
         if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
             id_range = (int(parts[0]), int(parts[1]))
 
-    try:
-        chunks = load_document(args.input)
-    except Exception as e:
-        print(f"Error loading document '{args.input}': {e}", file=sys.stderr)
-        sys.exit(1)
-
-    entities = extract_entities(
-        chunks=chunks,
-        entity_type=args.type,
-        custom_pattern=args.pattern,
-        id_range=id_range,
-        keyword_filter=args.filter,
-        comments_only=args.comments_only,
-    )
-
     summary = {
         "source": str(args.input),
-        "total_units": len(chunks),
-        "total_entities": len(entities),
+        "total_units": 0,
+        "total_entities": 0,
         "entity_type": args.type,
     }
+    dumped_chunks = [] if args.dump_chunks else None
 
+    def counted_chunks():
+        for chunk in iter_document(args.input):
+            summary["total_units"] += 1
+            if dumped_chunks is not None:
+                dumped_chunks.append(chunk.to_dict())
+            yield chunk
+
+    def counted_entities():
+        for entity in iter_entities(
+            counted_chunks(), args.type, args.pattern, id_range, args.filter,
+            args.comments_only, args.dedup,
+        ):
+            summary["total_entities"] += 1
+            yield entity
+
+    output_format = args.format
     if args.out:
-        out_payload: Dict[str, Any] = {
-            "summary": summary,
-            "entities": entities,
-        }
-        if args.dump_chunks:
-            out_payload["chunks"] = [c.to_dict() for c in chunks]
-
-        Path(args.out).write_text(json.dumps(out_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"Extracted {len(entities)} {args.type} from {len(chunks)} units in '{args.input}'.")
-        print(f"Saved to '{args.out}'.")
-    elif args.format == "json":
-        print(json.dumps(entities, ensure_ascii=False, indent=2))
-    else:
-        print(f"Summary: {json.dumps(summary, indent=2)}")
-        print(f"Sample Entities ({min(5, len(entities))} of {len(entities)}):")
-        for ent in entities[:5]:
-            preview = ent["content"][:80].replace("\n", " ")
-            print(f"  [{ent['unit']}] {ent['id']}: {preview}...")
+        suffix = Path(args.out).suffix.lower()
+        output_format = {".jsonl": "jsonl", ".csv": "csv"}.get(suffix, args.format)
+        if output_format == "summary":
+            output_format = "json"
+    if args.dump_chunks and (not args.out or output_format != "json"):
+        parser.error("--dump-chunks requires --out with JSON format")
+    if args.out and Path(args.out).resolve() == Path(args.input).resolve():
+        parser.error("--out must not overwrite the input document")
+    try:
+        if args.out:
+            out_path = Path(args.out)
+            if out_path.exists() and out_path.samefile(args.input):
+                parser.error("--out must not overwrite the input document")
+            with out_path.open("w", encoding="utf-8", newline="") as stream:
+                write_entities(counted_entities(), stream, output_format, summary=summary, chunks=dumped_chunks)
+            print(f"Extracted {summary['total_entities']} {args.type} from {summary['total_units']} units in '{args.input}'.")
+            print(f"Saved to '{args.out}'.")
+        elif output_format != "summary":
+            write_entities(counted_entities(), sys.stdout, output_format)
+        else:
+            sample = []
+            for entity in counted_entities():
+                if len(sample) < 5:
+                    sample.append(entity)
+            print(f"Summary: {json.dumps(summary, indent=2)}")
+            print(f"Sample Entities ({len(sample)} of {summary['total_entities']}):")
+            for entity in sample:
+                print(f"  [{entity['unit']}] {entity['id']}: {entity['content'][:80]}...")
+    except (OSError, ValueError, ImportError) as error:
+        print(f"Error extracting '{args.input}': {error}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

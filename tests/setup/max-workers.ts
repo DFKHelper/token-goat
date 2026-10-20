@@ -8,17 +8,20 @@
 //
 // So the base is unchanged and is the floor as well as the default: a machine only goes above it when it is unambiguously larger than the one that failed at six, which means both plenty of cores and plenty of memory, since the documented failure was heap and heap does not scale with core count. Below that bar nothing changes at all -- every CI runner keeps its current value.
 export const WORKER_CEILING = 12
+export const WORKER_CEILING_WIN32 = 4
 export const ROOMY_CPUS = 16
 export const ROOMY_MEMORY_GB = 32
 
 // The ceiling rather than something like `cpus - 2` because the bar is already above the ceiling: at the smallest machine that clears it, `cpus - 2` is 14, so a per-core term could never bind and would only read as if it did. 12 is the largest arm measured green here, not an extrapolation.
+// On Windows, process spawning carries high OS overhead and each worker spawns subprocesses, creating process storms and V8 heap exhaustion if scaled to 12. Capped at WORKER_CEILING_WIN32 (4).
 export function resolveMaxWorkers(platform: string, cpus: number, memoryGb: number): number {
   const envVal = process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
   if (envVal !== undefined && envVal !== '') {
     const parsed = parseInt(envVal, 10)
     if (!Number.isNaN(parsed) && parsed > 0) return parsed
   }
-  const base = platform === 'win32' ? 4 : 6
+  if (platform === 'win32') return WORKER_CEILING_WIN32
+  const base = 6
   if (cpus < ROOMY_CPUS || memoryGb < ROOMY_MEMORY_GB) return base
   return WORKER_CEILING
 }
