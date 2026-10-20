@@ -27,6 +27,8 @@ const roots: string[] = []
 const gates: GitGate[] = []
 const recorded = new Map<number, string>()
 const standIns: ChildProcess[] = []
+/** Pids whose exit a stand-in's stdout pipe proves: the stand-in itself and the descendants it handed that pipe to. The pipe's `close` event (an event of the handle that started them, no process-table listing) fires only once every holder is gone, so the teardown waits on it instead of listing the process table again. */
+const pipeHeld = new Set<number>()
 /** Worker daemons this test started, by pid; each is ended only while its command line is a worker daemon's. */
 const daemons: number[] = []
 
@@ -96,14 +98,14 @@ function descendantsOf(root: number, table: ReturnType<typeof listProcesses>): M
 }
 
 /** What is left of the recorded processes: a pid counts only while it still runs the command line recorded for it, so a reused number or a zombie is not a survivor. */
-function survivors(): string[] {
-  return runningAmong([...recorded].map(([pid, args]) => ({ pid, label: args, same: (commandLine) => commandLine === args })))
+function survivors(skip: ReadonlySet<number> = new Set()): string[] {
+  return runningAmong([...recorded].filter(([pid]) => !skip.has(pid)).map(([pid, args]) => ({ pid, label: args, same: (commandLine) => commandLine === args })))
 }
 
 /** Every process this test started that still runs: the recorded ones, and the daemons by their own command line. */
-function stillRunning(): string[] {
+function stillRunning(skip: ReadonlySet<number> = new Set()): string[] {
   const daemonRows = daemons.map((pid) => ({ pid, label: 'a worker daemon', same: isWorkerDaemonCommandLine }))
-  return [...survivors(), ...runningAmong(daemonRows)]
+  return [...survivors(skip), ...runningAmong(daemonRows)]
 }
 
 /** A process to look for: its pid, the text to list it under, and whether a command line read now is still the one it was recorded with. */
@@ -154,6 +156,20 @@ async function untilExited(handles: readonly ChildProcess[], signal?: AbortSigna
   })))
 }
 
+/** Resolves once every handle's stdio has closed, an event of the handle that started the process: it fires after the process exited and every process it handed its pipes to has too. Resolves at once for a handle already closed (its stdout destroyed) and when `signal` aborts. */
+async function untilClosed(handles: readonly ChildProcess[], signal?: AbortSignal): Promise<void> {
+  await Promise.all(handles.map((child) => new Promise<void>((resolve) => {
+    if (child.stdout === null || child.stdout.destroyed || signal?.aborted === true) return resolve()
+    child.once('close', () => resolve())
+    signal?.addEventListener('abort', () => resolve(), { once: true })
+  })))
+}
+
+/** The pids of `pids` that a tree kill of another pid in `pids` does not already reach, by the parent links of `table`: a descendant's own kill is a second process spawn for a process the first one ended, and the hook is a run of such synchronous spawns. */
+function withoutCoveredDescendants(pids: readonly number[], table: ReturnType<typeof listProcesses>): number[] {
+  return pids.filter((pid) => !pids.some((other) => other !== pid && descendantsOf(other, table).has(pid)))
+}
+
 /** A timeout names no process, so the test's abort (its timeout or a cancellation) takes one reading of what `read` lists, before the teardown ends anything, and a test that then failed gets it appended to its error message. A reading that throws is reported as such, never as an empty list. */
 function nameWhatIsLeft(ctx: TestContext, read: () => string[]): void {
   let seen: string | undefined
@@ -187,19 +203,33 @@ afterEach(async (ctx) => {
   const readCommandLine = (pid: number): string | null => (table ??= listProcesses()).get(pid)?.args ?? null
   try {
     // Whatever the test failed to see ended (a daemon, a held git) is ended by its recorded command line, with its tree, before the directories it holds are removed. A stand-in the body never got to record is ended through the handle that started it.
+    const aliveRecorded = [...recorded].filter(([pid]) => processAlive(pid))
+    // A recorded descendant of another recorded process is reached by that process's tree kill, so it needs no spawn of its own. A table that cannot be read leaves every pid to its own kill, as before.
+    let killRoots: ReadonlySet<number> = new Set(aliveRecorded.map(([pid]) => pid))
+    if (aliveRecorded.length > 1) {
+      try {
+        killRoots = new Set(withoutCoveredDescendants([...killRoots], (table ??= listProcesses())))
+      } catch {
+        table = undefined
+      }
+    }
     run([
-      ...[...recorded].filter(([pid]) => processAlive(pid)).map(([pid, args]) => () => void killIfCommandLine(pid, (commandLine) => commandLine.trim() === args, { tree: true, readCommandLine })),
+      ...aliveRecorded.filter(([pid]) => killRoots.has(pid)).map(([pid, args]) => () => void killIfCommandLine(pid, (commandLine) => commandLine.trim() === args, { tree: true, readCommandLine })),
       ...daemons.filter(processAlive).map((pid) => () => void killIfCommandLine(pid, isWorkerDaemonCommandLine, { tree: true, readCommandLine })),
       ...ending.map((daemon) => () => {
         if (daemon.exitCode === null && daemon.signalCode === null) killProcessTree(daemon.pid)
       }),
     ])
     await untilExited(ending, ctx.signal)
-    const left = await untilNothingLeft(stillRunning, ctx.signal)
+    // What the stand-ins' pipes hold is proven gone by their close event, not by listing the process table again. A close that never comes (the signal aborted: the hook ran out of time) falls back to the full check below, so the failure still names what is running.
+    await untilClosed(ending, ctx.signal)
+    const skip: ReadonlySet<number> = ctx.signal.aborted ? new Set() : pipeHeld
+    const left = await untilNothingLeft(() => stillRunning(skip), ctx.signal)
     if (left.length > 0) failures.push(new Error(`still running after the teardown ended them: ${JSON.stringify(left)}`))
     run(roots.splice(0).map((root) => () => fs.rmSync(root, { recursive: true, force: true })))
   } finally {
     recorded.clear()
+    pipeHeld.clear()
     daemons.length = 0
   }
   if (failures.length > 0) throw new AggregateError(failures, `${failures.length} teardown step(s) failed`)
@@ -304,8 +334,12 @@ describe('stopping a daemon whose child has a child of its own', () => {
     expect(first, 'calibration: the stand-in daemon exited before ping printed its first line').toBe('ping printed')
     const table = listProcesses()
     const found = descendantsOf(daemonPid, table)
-    for (const [pid, args] of found) recorded.set(pid, args)
+    for (const [pid, args] of found) {
+      recorded.set(pid, args)
+      pipeHeld.add(pid)
+    }
     recorded.set(daemonPid, table.get(daemonPid)?.args.trim() ?? '')
+    pipeHeld.add(daemonPid)
     const grandchildPid = [...found].find(([, args]) => GRANDCHILD_PROCESS.test(args))?.[0]
     expect(grandchildPid, `calibration: ${GRANDCHILD_ARGS} runs under the daemon, found ${JSON.stringify([...found.values()])}`).toBeDefined()
     const daemonExited = new Promise<void>((resolve) => daemon.once('exit', () => resolve()))
@@ -329,6 +363,7 @@ describe('stopping a pid-file pid', () => {
     const { daemon, launcher } = startStandIn(dir, body)
     const pid = daemon.pid as number
     recorded.set(pid, listProcesses().get(pid)?.args.trim() ?? '')
+    pipeHeld.add(pid)
     return { daemon, launcher, dir, pid }
   }
 
@@ -374,7 +409,10 @@ describe('stopping a pid-file pid', () => {
       const printed = new Promise<void>((resolve) => daemon.stdout?.once('data', () => resolve()))
       await printed
       const table = listProcesses()
-      for (const [childPid, args] of descendantsOf(pid, table)) recorded.set(childPid, args)
+      for (const [childPid, args] of descendantsOf(pid, table)) {
+        recorded.set(childPid, args)
+        pipeHeld.add(childPid)
+      }
       // Checked before the kill, so a miss fails here instead of leaving ping running for an hour.
       expect([...recorded.values()].some((args) => GRANDCHILD_PROCESS.test(args)), 'calibration: the grandchild was recorded').toBe(true)
     }
@@ -387,5 +425,26 @@ describe('stopping a pid-file pid', () => {
       const ping = [...recorded].find(([, args]) => GRANDCHILD_PROCESS.test(args))
       expect(survivors().some((line) => line.startsWith(`${ping?.[0]}: `)), 'the grandchild was ended: the fallback took the tree').toBe(true)
     }
+  })
+})
+
+describe('withoutCoveredDescendants', () => {
+  // Provenance: HAND-DERIVED. The tables are written from the parent links below, independently of descendantsOf.
+  const table = new Map([
+    [10, { ppid: 1, args: 'cmd.exe /d /c ping' }],
+    [11, { ppid: 10, args: 'ping -n 3601 127.0.0.1' }],
+    [20, { ppid: 1, args: 'node other.js' }],
+  ])
+
+  it('drops a pid that a tree kill of another listed pid already reaches', () => {
+    expect(withoutCoveredDescendants([10, 11], table)).toEqual([10])
+  })
+
+  it('keeps unrelated pids, each needing its own kill', () => {
+    expect(withoutCoveredDescendants([11, 20], table)).toEqual([11, 20])
+  })
+
+  it('keeps a pid that the table does not list', () => {
+    expect(withoutCoveredDescendants([10, 99], table)).toEqual([10, 99])
   })
 })
