@@ -3,8 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import * as fingerprintModule from '../src/fingerprint.js'
 import { relayInProcess } from '../src/relay.js'
 import { RANGE_FINGERPRINT_MAX_BYTES } from '../src/session.js'
 import { stripRangeIdentities } from './helpers/legacy_range_state.js'
@@ -159,5 +160,41 @@ describe('a repeated ranged Read of a session persisted without any range identi
     expect(await rangedRead(sid, file, 60, 20)).toContain('Lines 60..79 of this file were already read this session')
     rewriteKeepingSizeAndMtime(file, 65)
     expect(await rangedRead(sid, file, 60, 20)).toBeNull()
+  })
+})
+
+// Fixture provenance: HAND-DERIVED. The file is 120 short lines (about 3 KB, far under RANGE_FINGERPRINT_MAX_BYTES) and the counts are what the checks in one pre_tool_use call are entitled to: one read of the bytes, however many of the content check, the repeated-range check and the range record look at them.
+describe('the pre_tool_use hook on a ranged re-read of a small file', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** The pre_tool_use answer for a ranged Read and how many times that one call read the whole file to hash it. */
+  async function preWithHashCount(sid: string, file: string, offset: number, limit: number): Promise<{ reason: string | null; hashes: number }> {
+    const spy = vi.spyOn(fingerprintModule, 'fingerprintFile')
+    spy.mockClear()
+    const reason = denyReason(await relayInProcess('pre_tool_use', base(sid, 'PreToolUse', file, offset, limit)))
+    return { reason, hashes: spy.mock.calls.length }
+  }
+
+  it('hashes the file once when the unchanged re-read is refused', async () => {
+    const sid = newSessionId()
+    const file = makeFile('server.log')
+    stampWholeSecondMtime(file)
+    expect(await rangedRead(sid, file, 10, 21)).toBeNull()
+    const { reason, hashes } = await preWithHashCount(sid, file, 10, 21)
+    expect(reason).toContain('Lines 10..30 of this file were already read this session')
+    expect(hashes).toBe(1)
+  })
+
+  it('hashes the file once when a same-size rewrite lets the re-read through and the new window is recorded', async () => {
+    const sid = newSessionId()
+    const file = makeFile('server.log')
+    stampWholeSecondMtime(file)
+    expect(await rangedRead(sid, file, 10, 21)).toBeNull()
+    rewriteKeepingSizeAndMtime(file, 12)
+    const { reason, hashes } = await preWithHashCount(sid, file, 10, 21)
+    expect(reason).toBeNull()
+    expect(hashes).toBe(1)
   })
 })

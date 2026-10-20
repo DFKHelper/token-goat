@@ -18,7 +18,7 @@ import { displaySafePath, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHA
 import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun, isSequentialPagingChain } from './util.js'
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
-import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged } from './session.js'
+import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
 import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
@@ -538,11 +538,11 @@ function firstReadSymbolOutput(decision: ReadPolicyDecision, policyContext: Read
   return null
 }
 
-export function recordActualSlice(event: HookEvent, filePath: string): void {
+export function recordActualSlice(event: HookEvent, filePath: string, hashNow?: CurrentFileHash): void {
   const window = readRequestedSliceWindow(event)
   const span = requestedSliceSpan(window)
   if (window.isExplicitSlice && span !== undefined) {
-    recordFileLineRange(filePath, span.start, span.end)
+    recordFileLineRange(filePath, span.start, span.end, hashNow)
     recordRecentReadRange(foldPath(normalizePath(filePath)), [span.start, span.end])
   }
 }
@@ -627,13 +627,15 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const shown = displaySafePath(normalized)
   // The index key the session, snapshots and hints are keyed on is not always a path this host can open: on WSL a drive-letter key (a path typed as `C:\x`, or one recorded by an earlier version) names its mount. Every stat and read below goes through `onDisk`.
   const onDisk = hostPathOfIndexKey(normalized)
+  // One read of the file's bytes serves every hash check and the range record in this hook call; the next call makes its own.
+  const hashNow = onceCurrentFileHash(normalized)
   const rangeWindow = readRequestedSliceWindow(event)
   const rangeSpan = rangeWindow.isExplicitSlice ? requestedSliceSpan(rangeWindow) : undefined
   const rangeKey = foldPath(normalized)
   let rangeIdentity: { size: number; mtimeMs: number } | undefined
   if (event.toolName !== 'Grep' && rangeSpan !== undefined && loadConfig().hints.reread_deny) {
     // Identity changes invalidate the lock before any early-return hint or containing-range check.
-    rangeIdentity = dropFileLineRangesIfChanged(normalized)
+    rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
     clearReadRangeIfChanged(rangeKey, rangeIdentity)
     if (getReadRangeDenials(rangeKey).length > 0) {
       lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
@@ -1172,7 +1174,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             // No recorded identity (a session saved before ranges carried one) is unknown, and unknown is read through: the reset below lets this read proceed and the post hook records an identity with a hash for the next one.
             if (recordedIdentity !== undefined && currentIdentity !== undefined && recordedIdentity.size === currentIdentity.size && recordedIdentity.mtimeMs === currentIdentity.mtimeMs) {
               // An equal stat is not proof: a same-size rewrite that kept or restored the mtime matches it too. Only the hash taken when the ranges were recorded denies; a file without one (too large to hash) is unknown, and an unknown file is read through, the extra read being the cost.
-              if (rangeContentVerdict(normalized) === 'same') return denyRangeReread()
+              if (rangeContentVerdict(normalized, hashNow) === 'same') return denyRangeReread()
             }
             resetFileLineRanges(normalized)
           } else {
@@ -1282,7 +1284,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // A ranged Read whose window touches no line served before, with no whole-file read behind it, hands over lines the model has never seen: the already-read note would be false.
     const windowIsNew = isUnseenWindow(pagingWindow, activeRanges, fullReads)
     if (windowIsNew) {
-      recordActualSlice(event, normalized)
+      recordActualSlice(event, normalized, hashNow)
       if (pagingNote === '') return passOutput()
       if (!isWithinQuietHours(config.hints.quiet_hours)) {
         recordStat('session_hint', 0, 0)
@@ -1294,7 +1296,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (!isWithinQuietHours(config.hints.quiet_hours)) {
         recordStat('session_hint', 0, 0)
       }
-      recordActualSlice(event, normalized)
+      recordActualSlice(event, normalized, hashNow)
       const sectionCommand = _isDocFile(normalized) ? 'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'SectionName' }).name) : ''
       const rereadNote = 'Note: ' + readSubject(normalized, sectionCommand + pagingNote) + ' was already read this session (' + reads + ' ' + plural + ').'
       return quietContextOutput(
@@ -1330,7 +1332,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     if (gateSize < LARGE_FILE_BYTES) {
       recordActualRead(event, normalized)
-      recordActualSlice(event, normalized)
+      recordActualSlice(event, normalized, hashNow)
       return passOutput()
     }
 
@@ -1345,7 +1347,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       return denyOutput((hint + ' ' + sentenceStart(readSubject(normalized, hint + advice)) + ' is very large (' + kb + 'KB). ').trimStart() + advice)
     }
     recordActualRead(event, normalized)
-    recordActualSlice(event, normalized)
+    recordActualSlice(event, normalized, hashNow)
     if (!meetsSavingsFloor(size)) {
       // Refused on price, not absence: the file is real, it sits under the deny threshold, and a surgical hint was already composed above, so the only thing that stopped it reaching the caller was the floor. `read_structural_nav` is the category classifyReadHint assigns the text this would have emitted -- it carries none of the "already read" phrasing that routes to read_reread_dedup -- so the declined rows key to the same population as the shown ones.
       logSuppressedDetection('read_structural_nav', event.sessionId, normalized)
@@ -1431,7 +1433,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
 
     if (shouldNudge) {
       recordActualRead(event, normalized)
-      recordActualSlice(event, normalized)
+      recordActualSlice(event, normalized, hashNow)
       recordStat('session_hint', 0, 0)
       const isTestFile = /\.(tests|test)\.(ps1|[jt]sx?|py)$/i.test(basename)
       const nudge = isXmlNudge
@@ -1448,7 +1450,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   }
 
   recordActualRead(event, normalized)
-  recordActualSlice(event, normalized)
+  recordActualSlice(event, normalized, hashNow)
   return passOutput()
 }
 

@@ -20,6 +20,23 @@ export interface FileRangeIdentity {
 /** Largest file hashed for {@link FileRangeIdentity.fp}: the hash is taken once per set of recorded ranges and again by each check, on the hook path, so it is bounded; a larger file carries stat only and its equal-stat re-read is read through, never denied. */
 export const RANGE_FINGERPRINT_MAX_BYTES = 2 * 1024 * 1024
 
+/** The SHA-256 of a file's bytes on disk right now, or null when they cannot be read. */
+export type CurrentFileHash = () => string | null
+
+/** A {@link CurrentFileHash} that reads the file once and answers every later call from that read. Made fresh by each hook decision and passed down as a parameter, never kept between calls: a later call must hash the bytes that are on disk then, or a rewrite made in between would be judged by an old hash. */
+export function onceCurrentFileHash(filePath: string): CurrentFileHash {
+  const onDisk = hostPathOfIndexKey(normalizePath(filePath))
+  let read = false
+  let hash: string | null = null
+  return () => {
+    if (!read) {
+      hash = fingerprintFile(onDisk)
+      read = true
+    }
+    return hash
+  }
+}
+
 /** Tracks reads/edits of a single file within the session. Mirrors the load-bearing fields of `session.py::FileEntry` used by the re-read dedup hint: read count, last-read timestamp, whether the file was edited (which invalidates any cached read window), and its size at last read. */
 export interface FileEntry {
   /** Normalized absolute path, case-preserved -- also the literal `_files` map key for this entry's first-seen casing. See {@link resolveFilesKey} for how a later read of the same physical file under different casing (case-insensitive filesystems) still resolves to this same entry. */
@@ -669,19 +686,19 @@ function statIdentity(absPath: string): { size: number; mtimeMs: number } | unde
 }
 
 /** Record that inclusive line range [start, end] of `filePath` was served via a sed line-range read this session. Deduplicates identical ranges and caps retained ranges per file. Also stamps the file's current identity (size + mtimeMs) onto its session entry, so a later repeated read of the same range can be denied even when no content snapshot exists to diff against (see `rangeFileIdentity`). */
-export function recordFileLineRange(filePath: string, start: number, end: number): void {
+export function recordFileLineRange(filePath: string, start: number, end: number, hashNow?: CurrentFileHash): void {
   const normalized = normalizePath(filePath)
   const key = foldPath(normalized)
   const entryKey = resolveFilesKey(normalized)
   const entry = _files.get(entryKey)
   // The ranges on record were served while the file had the identity stamped beside them. Re-stamping it for this range without dropping them would let the repeated-range deny in hooks_read.ts vouch for text the model was never shown, since every later read of any other window also refreshes the snapshot it diffs against.
-  const identity = dropFileLineRangesIfChanged(normalized)
+  const identity = dropFileLineRangesIfChanged(normalized, false, hashNow)
   // Ranges with no identity beside them (a session saved before identities existed) cannot be proven against any hash, so they go and this range starts a set that can.
   if (identity !== undefined && getFileLineRangeIdentity(normalized) === undefined && (_fileLineRanges.get(key)?.length ?? 0) > 0) resetFileLineRanges(normalized)
   const ranges = _fileLineRanges.get(key) ?? []
   // The hash is taken when a set of ranges starts and kept while they stand: it must describe the bytes the first range was served from, so a set already on record never takes a newer one.
   const priorFp = (_fileLineRangeIdentities.get(key) ?? entry?.rangeFileIdentity)?.fp
-  const fp = priorFp ?? (ranges.length === 0 && identity !== undefined ? boundedFingerprint(normalized, identity.size) : undefined)
+  const fp = priorFp ?? (ranges.length === 0 && identity !== undefined ? boundedFingerprint(normalized, identity.size, hashNow) : undefined)
   if (!ranges.some(([s, e]) => s === start && e === end)) {
     ranges.push([start, end])
     if (ranges.length > MAX_RANGES_PER_FILE) ranges.splice(0, ranges.length - MAX_RANGES_PER_FILE)
@@ -693,9 +710,9 @@ export function recordFileLineRange(filePath: string, start: number, end: number
 }
 
 /** SHA-256 of the file's bytes, or undefined when it is larger than {@link RANGE_FINGERPRINT_MAX_BYTES} or cannot be read. */
-function boundedFingerprint(normalized: string, size: number): string | undefined {
+function boundedFingerprint(normalized: string, size: number, hashNow?: CurrentFileHash): string | undefined {
   if (size > RANGE_FINGERPRINT_MAX_BYTES) return undefined
-  return fingerprintFile(hostPathOfIndexKey(normalized)) ?? undefined
+  return (hashNow ?? onceCurrentFileHash(normalized))() ?? undefined
 }
 
 /** The identity recorded when `filePath`'s line ranges were last recorded: the one beside the ranges, else the one on its session entry; undefined when none was ever recorded. */
@@ -705,19 +722,19 @@ export function getFileLineRangeIdentity(filePath: string): FileRangeIdentity | 
 }
 
 /** Do the bytes on disk match the ones the recorded ranges of `filePath` were served from? 'same' and 'changed' are proven by the hash taken when the ranges were first recorded; 'unproven' means no hash was taken (a file past {@link RANGE_FINGERPRINT_MAX_BYTES}, or a session recorded before the hash existed) or the file cannot be read now, so a stat that still matches the record is all there is and proves nothing about a same-size rewrite. */
-export function rangeContentVerdict(filePath: string): 'same' | 'changed' | 'unproven' {
+export function rangeContentVerdict(filePath: string, hashNow?: CurrentFileHash): 'same' | 'changed' | 'unproven' {
   const normalized = normalizePath(filePath)
   const recorded = getFileLineRangeIdentity(normalized)
   if (recorded?.fp === undefined) return 'unproven'
   const current = statIdentity(normalized)
   if (current === undefined || current.size > RANGE_FINGERPRINT_MAX_BYTES) return 'unproven'
-  const now = fingerprintFile(hostPathOfIndexKey(normalized))
+  const now = (hashNow ?? onceCurrentFileHash(normalized))()
   if (now === null) return 'unproven'
   return now === recorded.fp ? 'same' : 'changed'
 }
 
 /** Drop `filePath`'s recorded line ranges when the file no longer has the size and mtime it had when they were recorded, or holds different bytes than the hash taken then (see {@link rangeContentVerdict}), and return its current identity (undefined when it cannot be stat'd). The Bash pre hook calls this before it measures a `sed -n`/`head` read against those ranges, as {@link recordFileLineRange} does before it adds one: measured first, a re-read of lines changed outside the session was told to recall them from earlier output. With `requireProof`, ranges the bytes cannot vouch for go too -- no hash on record (a file past {@link RANGE_FINGERPRINT_MAX_BYTES}, or a session recorded before the hash existed) or no identity on record at all -- for a caller that answers "you already read this" from them: a matching stat is not proof, and unknown is read through. A caller that only counts ranges (paging) leaves it off and keeps them. */
-export function dropFileLineRangesIfChanged(filePath: string, requireProof = false): { size: number; mtimeMs: number } | undefined {
+export function dropFileLineRangesIfChanged(filePath: string, requireProof = false, hashNow?: CurrentFileHash): { size: number; mtimeMs: number } | undefined {
   const normalized = normalizePath(filePath)
   const identity = statIdentity(normalized)
   const prior = _fileLineRangeIdentities.get(foldPath(normalized)) ?? _files.get(resolveFilesKey(normalized))?.rangeFileIdentity
@@ -730,7 +747,7 @@ export function dropFileLineRangesIfChanged(filePath: string, requireProof = fal
     resetFileLineRanges(normalized)
     return identity
   }
-  const verdict = rangeContentVerdict(normalized)
+  const verdict = rangeContentVerdict(normalized, hashNow)
   if (verdict === 'changed' || (requireProof && verdict === 'unproven')) resetFileLineRanges(normalized)
   return identity
 }

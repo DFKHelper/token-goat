@@ -158,17 +158,10 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
-    'boundedFingerprint',
+    'onceCurrentFileHash',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
-      reason: 'session.ts hashes the one file a line range was just recorded for; no index row, no parser_sha, no skip sweep.',
-    },
-  ],
-  [
-    'rangeContentVerdict',
-    {
-      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
-      reason: 'session.ts compares the one file named by a ranged re-read against the hash taken when its ranges were recorded; session state, not the index.',
+      reason: 'session.ts hashes the one file a ranged Read names, once per hook call, for the range record and the ranged re-read check; session state, no index row, no parser_sha, no skip sweep.',
     },
   ],
 ])
