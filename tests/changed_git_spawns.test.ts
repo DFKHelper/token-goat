@@ -84,7 +84,7 @@ function envFor(name: string, extra: Record<string, string> = {}): { env: NodeJS
     log,
     env: {
       ...process.env,
-      NODE_OPTIONS: `--require "${probe}"`,
+      NODE_OPTIONS: [process.env['NODE_OPTIONS'], `--require "${probe}"`].filter(Boolean).join(' '),
       TOKEN_GOAT_HOME: home,
       XDG_DATA_HOME: path.join(home, 'xdg'),
       LOCALAPPDATA: path.join(home, 'lad'),
