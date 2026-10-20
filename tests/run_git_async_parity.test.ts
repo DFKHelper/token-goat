@@ -25,11 +25,12 @@ const ORPHANER = [
   "spawn(process.execPath, [process.env.TG_HOLDER], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] }).unref()",
 ].join('\n')
 
-/** Writes 201 MiB, one more than the 200 MiB cap, and ends. It also ends when the stdout pipe breaks. */
+/** Reports its pid and working directory to the test's server, then writes 201 MiB, one more than the 200 MiB cap. It ends when that socket closes or cannot open, never on its own: a process that exits resets its connection, and Windows then drops what the server had not yet read, which is the report. */
 const FLOOD_ONCE = [
+  "const net = require('node:net')",
   'const chunk = Buffer.alloc(1 << 20, 97)',
   'let left = 201',
-  "process.stdout.on('error', () => process.exit(0))",
+  "process.stdout.on('error', () => undefined)",
   'function pump() {',
   '  while (left > 0) {',
   '    left--',
@@ -39,7 +40,9 @@ const FLOOD_ONCE = [
   '    }',
   '  }',
   '}',
-  'pump()',
+  "const s = net.connect(Number(process.env.TG_HOLD_PORT), '127.0.0.1', () => s.write(JSON.stringify({ pid: process.pid, cwd: process.cwd() }), () => pump()))",
+  "s.on('error', () => process.exit(0))",
+  "s.on('close', () => process.exit(0))",
 ].join('\n')
 
 /** Writes the file named by TG_MARKER, the proof that a diff driver ran. */
@@ -53,6 +56,7 @@ let server: net.Server
 let sockets: net.Socket[] = []
 let socketsClosed: Promise<void>[] = []
 let announcements = 0
+let reports: string[] = []
 let waiters: Array<{ count: number; resolve: () => void }> = []
 let controller: AbortController
 let pending: Promise<unknown>[] = []
@@ -86,13 +90,15 @@ beforeEach(async () => {
   setEnv('TG_DRIVER', path.join(dir, 'driver.cjs'))
   controller = new AbortController()
   announcements = 0
+  reports = []
   waiters = []
   server = net.createServer((socket) => {
     sockets.push(socket)
     socketsClosed.push(new Promise((resolve) => socket.once('close', () => resolve())))
     // Windows reports a killed peer as a reset before the close.
     socket.on('error', () => undefined)
-    socket.once('data', () => {
+    socket.once('data', (data) => {
+      reports.push(String(data))
       announcements++
       for (const w of waiters.filter((x) => announcements >= x.count)) w.resolve()
       waiters = waiters.filter((x) => announcements < x.count)
@@ -221,12 +227,16 @@ describe('runGit and runGitAsync agree', () => {
   })
 
   it('on a maxBuffer overflow: exit -1, no timedOut, ENOBUFS in stderr, nothing in stdout', async () => {
-    // runGit takes no buffer option and runGitAsync takes none either, so the smallest input that overflows is 201 MiB. The async side of this shape is asserted by run_git_async_reaps_tree.test.ts (the 200 MiB flood), with these same four expectations; streaming it again here would double the cost.
-    const sync = runGit(['-c', 'alias.flood=!node "$TG_FLOOD"', 'flood'], { cwd: repo })
+    // runGit takes no buffer option and runGitAsync takes none either, so the smallest input that overflows is 201 MiB. The async side of this shape is asserted by run_git_async_reaps_tree.test.ts (the 200 MiB flood), with these same four expectations; streaming it again here would double the cost. No cwd: spawnSync kills git when the buffer overflows but cannot wait for the shell and node that git started, and a process that is still ending holds its working directory, so one started inside `dir` makes the removal of `dir` in afterEach fail with EPERM.
+    const sync = runGit(['-c', 'alias.flood=!node "$TG_FLOOD"', 'flood'])
     expect(sync.exitCode, 'runGit exit').toBe(-1)
     expect(sync.timedOut, 'an overflow is not a timeout').toBeUndefined()
     expect(sync.stderr, 'runGit message').toMatch(/ENOBUFS/)
     expect(sync.stdout, 'nothing partial is returned').toBe('')
+    await announced(1)
+    const flood = JSON.parse(reports[0] as string) as { cwd: string }
+    const rel = path.relative(dir, flood.cwd)
+    expect(rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)), `the flood ran in ${flood.cwd}, inside the directory afterEach removes`).toBe(false)
   })
 
   it('on a diff: the repository\'s external diff driver never runs, and the built-in diff is returned', async () => {
