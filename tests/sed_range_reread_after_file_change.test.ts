@@ -111,6 +111,7 @@ describe.each(['app.ts', 'server.log'])('a sed re-read of %s', (name) => {
     expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
   })
 
+  // Fixture provenance: HAND-DERIVED. The file is makeLargeFile's 120 short lines plus 24,000 filler lines of `export const fillerN = ` and 80 x's (about 107 bytes each, so about 2.5 MB by that line template, computed apart from the code); the expect on its size against RANGE_FINGERPRINT_MAX_BYTES (2 MiB = 2097152) checks that figure on every run.
   it('is not told it overlaps when the file is too large to carry a content hash, since a matching stat proves nothing', async () => {
     const sid = newSessionId()
     const file = makeLargeFile(name)
@@ -118,6 +119,7 @@ describe.each(['app.ts', 'server.log'])('a sed re-read of %s', (name) => {
     expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
   })
 
+  // Fixture provenance: FORMAT-DERIVED for the saved state (stripRangeIdentities removes exactly what coerce() in src/session_store.ts at 0880537c4^ left out for a session saved before identities existed); the windows, the rewrite and the expected answers are HAND-DERIVED.
   it('is not told it overlaps ranges a session saved before identities existed holds, and is once that read recorded one', async () => {
     const sid = newSessionId()
     const file = makeFile(name)
@@ -148,6 +150,7 @@ describe.each(['app.ts', 'notes.txt'])('a head re-read of %s', (name) => {
     expect(await headRead(sid, file, 20)).not.toMatch(ALREADY_READ)
   })
 
+  // Fixture provenance: HAND-DERIVED. The file is makeLargeFile's 120 short lines plus 24,000 filler lines of `export const fillerN = ` and 80 x's (about 107 bytes each, so about 2.5 MB by that line template, computed apart from the code); the expect on its size against RANGE_FINGERPRINT_MAX_BYTES (2 MiB = 2097152) checks that figure on every run.
   it('is not told it overlaps when the file is too large to carry a content hash, since a matching stat proves nothing', async () => {
     const sid = newSessionId()
     const file = makeLargeFile(name)

@@ -502,14 +502,14 @@ function recordActualRead(event: HookEvent, filePath: string): void {
 }
 
 /** Turns the first-read policy's decision into hook output, booking the same stats at both call sites. A deny withholds a whole-file read, so it books the counterfactual credit the large-file deny books for the same withheld read. A warn on a file under LARGE_FILE_BYTES lets the read proceed and leaves the pending large-file hint for hint-stats; a bigger file returns null so the large-file gate below advises on it. */
-function firstReadSymbolOutput(decision: ReadPolicyDecision, policyContext: ReadPolicyContext, hints: HintsConfig, recordRead: boolean): HookOutput | null {
+function firstReadSymbolOutput(decision: ReadPolicyDecision, policyContext: ReadPolicyContext, hints: HintsConfig, recordRead: boolean, hashNow?: CurrentFileHash): HookOutput | null {
   const { event, normalizedPath, fileSize } = policyContext
   if (decision.action === 'deny') {
     const firstReadDenyKey = 'first-read-symbol-deny:' + getCompactedAt() + ':' + foldPath(normalizedPath)
     if (wasHintShown(firstReadDenyKey)) {
       if (recordRead) {
         recordActualRead(event, normalizedPath)
-        recordActualSlice(event, normalizedPath)
+        recordActualSlice(event, normalizedPath, hashNow)
       }
       return quietContextOutput(
         '[tg] First-read symbol circuit breaker: whole-file read allowed after previous denial. ' +
@@ -525,7 +525,7 @@ function firstReadSymbolOutput(decision: ReadPolicyDecision, policyContext: Read
   if (decision.action === 'warn' && fileSize < LARGE_FILE_BYTES) {
     if (recordRead) {
       recordActualRead(event, normalizedPath)
-      recordActualSlice(event, normalizedPath)
+      recordActualSlice(event, normalizedPath, hashNow)
     }
     if (hints.log_large_file_hint_outcomes) {
       recordLargeFileHintPending(normalizedPath, fileSize)
@@ -1320,7 +1320,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   ) {
     const hints = loadConfig().hints
     const policyContext = buildReadPolicyContext({ event, normalizedPath: normalized, shownPath: shown, fileSize: size, hints })
-    const policyOutput = firstReadSymbolOutput(evaluateFirstReadSymbolPolicy(policyContext), policyContext, hints, true)
+    const policyOutput = firstReadSymbolOutput(evaluateFirstReadSymbolPolicy(policyContext), policyContext, hints, true, hashNow)
     if (policyOutput !== null) return policyOutput
   }
 

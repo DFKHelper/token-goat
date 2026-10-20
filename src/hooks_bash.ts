@@ -6,7 +6,7 @@ import { leadWithCommand, docSectionHint, fileSubject, nameSubject, quotedArg, q
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
-import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, dropFileLineRangesIfChanged, getFileLineRanges, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
+import { getBashOutputId, getCurlDownloadPath, clearCurlDownload, dropFileLineRangesIfChanged, getFileLineRanges, onceCurrentFileHash, recordBashStartCwd, recordFileLineRange, wasHintShown, markHintShown, wasCliReadThisSession, wasFileReadThisSession } from './session.js'
 import { resolveIndexPath, displaySafePath, hostPathOfTypedPath, isFileAtIndexKey } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
@@ -380,8 +380,10 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths. Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
       hintPaths.push(hintPath)
       const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
+      // One hash of the file serves the drop below and every range recorded for it, so a `sed -n 'A,Bp;C,Dp'` reads the bytes once per hook call, not once per range.
+      const hashNow = onceCurrentFileHash(sedDedupKey)
       // Ranges served before the file changed on disk describe text that is no longer there, so they go before anything is measured against them, as the Read path drops them, and so do ranges no content hash vouches for (a file past 2 MiB, a legacy session), since a matching stat alone must not answer "you already read this".
-      dropFileLineRangesIfChanged(sedDedupKey, true)
+      dropFileLineRangesIfChanged(sedDedupKey, true, hashNow)
       // A range from line 1 to the last line is `cat` spelled another way, and gets `cat`'s answer: pricing it against a surgical read of the same lines finds no saving, since that read is the whole file too, so `awk 'NR>=1 && NR<=324'` over a 324-line, 54KB skill passed with no word while `cat` of it was refused. Checked before the range is recorded, so a refusal does not count the lines as served.
       const whole = singleLineRangeRead === null ? null : wholeFileRange(filePath, hintPath, hintCwd, ranges, tool)
       if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey), whole.start, whole.end) === null) {
@@ -396,7 +398,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       const onDisk = isFileAtIndexKey(sedDedupKey)
       for (const [start, end] of ranges) {
         const priorOverlap = findRangeOverlap(getFileLineRanges(sedDedupKey), start, end)
-        if (onDisk) recordFileLineRange(sedDedupKey, start, end)
+        if (onDisk) recordFileLineRange(sedDedupKey, start, end, hashNow)
         if (priorOverlap !== null) {
           overlapHints.push(sedOverlapHint(hintPath, priorOverlap, start, end))
         } else {

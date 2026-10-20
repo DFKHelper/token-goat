@@ -107,6 +107,7 @@ describe.each(['app.ts', 'server.log'])('a repeated ranged Read of %s after an o
     expect(await rangedRead(sid, file, 10, 21)).toBeNull()
   })
 
+  // Fixture provenance: HAND-DERIVED. The file is the 120 short lines plus 24,000 filler lines of `export const fillerN = ` and 80 x's (about 107 bytes each, so about 2.5 MB by that line template, computed apart from the code); the expect on its size against RANGE_FINGERPRINT_MAX_BYTES (2 MiB = 2097152) checks that figure on every run.
   it('is let through when the file is too large to carry a content hash, since a matching stat proves nothing', async () => {
     const sid = newSessionId()
     const file = join(project, name)
@@ -147,7 +148,7 @@ describe.each(['app.ts', 'server.log'])('a repeated ranged Read of %s after an o
   })
 })
 
-// A session persisted before ranges carried an identity holds ranges and nothing else to vouch for them. The log extension has no snapshot, so the identity is the only proof the check has. See stripRangeIdentities for where the shape comes from.
+// A session persisted before ranges carried an identity holds ranges and nothing else to vouch for them. The log extension has no snapshot, so the identity is the only proof the check has. See stripRangeIdentities for where the shape comes from. Fixture provenance: FORMAT-DERIVED for the saved state (stripRangeIdentities removes exactly what coerce() in src/session_store.ts at 0880537c4^ left out for a session saved before identities existed); the windows, the rewrite and the expected answers are HAND-DERIVED.
 describe('a repeated ranged Read of a session persisted without any range identity', () => {
   it('is let through, since a range nothing vouches for may describe text that is gone', async () => {
     const sid = newSessionId()
