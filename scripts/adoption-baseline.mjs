@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Weekly adoption numbers for token-goat: npm downloads, GitHub stars and GitHub forks, one row per ISO week (Monday to Sunday, UTC). The whole series is rebuilt from the public APIs on every run, so nothing is stored between runs and nothing is committed back: `.github/workflows/adoption.yml` prints the table to the job summary once a week. Usage: `node scripts/adoption-baseline.mjs [--json] [--since YYYY-MM-DD]`. It needs a GitHub token in GH_TOKEN or GITHUB_TOKEN, because GitHub will not list stargazers without one; any token works, including the one Actions hands every job. */
+/** Weekly adoption numbers for token-goat: npm downloads, GitHub stars and GitHub forks, one row per ISO week (Monday to Sunday, UTC). The whole series is rebuilt from the public APIs on every run, so nothing is stored between runs and nothing is committed back: `.github/workflows/adoption.yml` prints the table to the job summary once a week. Usage: `node scripts/adoption-baseline.mjs [--json] [--since YYYY-MM-DD]`. It needs no token: GitHub answers the star history and the forks list without one. The job still sends its own token (GH_TOKEN or GITHUB_TOKEN) when it has one, for GitHub's higher rate limit. */
 import { isMainModule } from './is-main-module.mjs'
 
 export const PACKAGE = 'token-goat'
@@ -9,10 +9,14 @@ const DAY_MS = 86_400_000
 const DAY_RE = /^(\d{4})-(\d{2})-(\d{2})$/
 /** npm's range endpoint serves at most 18 months per request and clamps a longer one without saying so, zero-filling the days it dropped; a year per request stays well inside that. */
 export const NPM_RANGE_DAYS = 365
-/** GitHub's page-size maximum for the stargazers and forks lists. */
+/** GitHub's page-size maximum for the forks list. */
 const PER_PAGE = 100
-/** A runaway stop for the page loop: 40,000 entries, far past this repository. */
+/** A runaway stop for the forks page loop: 40,000 entries, far past this repository. */
 const MAX_PAGES = 400
+/** The star history serves 30 weeks per page and 100 pages at most (docs.github.com/en/rest/activity/starring, "Get repository star history", read 2026-10-20). */
+const HISTORY_PER_PAGE = 30
+const HISTORY_MAX_PAGES = 100
+const DAYS_PER_WEEK = 7
 
 /** Milliseconds at 00:00 UTC of a `YYYY-MM-DD` day, rejecting anything that is not a real calendar day. */
 export function dayMs(day) {
@@ -45,15 +49,19 @@ export function rangeChunks(start, end, maxDays = NPM_RANGE_DAYS) {
   return chunks
 }
 
-/** Every `starred_at` in a stargazers page. The field only exists when the request asked for `application/vnd.github.star+json`; a page without it would otherwise count as nobody ever starring, so it is refused instead. */
-export function starTimes(page) {
-  return page.map((entry) => {
-    if (typeof entry?.starred_at !== 'string') throw new Error('a stargazer has no starred_at: the request must send Accept: application/vnd.github.star+json')
-    return entry.starred_at
+/** One timestamp per star in a star-history page: each `days[i]` of an entry is the stars created on the UTC day `week + i*86400` seconds, `week` being a Sunday at 00:00. An entry that is not `{ week, total, days }` with an integer week, seven non-negative integer days and a total equal to their sum is refused by name, so a changed response shape never reads as no stars. */
+export function starHistoryTimes(page) {
+  return page.flatMap((entry, index) => {
+    const days = entry?.days
+    const bad = (why) => new Error(`star history entry ${index} ${JSON.stringify(entry)?.slice(0, 200)} is ${why}`)
+    if (!Number.isInteger(entry?.week)) throw bad('missing an integer week')
+    if (!Array.isArray(days) || days.length !== DAYS_PER_WEEK || !days.every((n) => Number.isInteger(n) && n >= 0)) throw bad(`missing ${DAYS_PER_WEEK} non-negative integer days`)
+    if (!Number.isInteger(entry.total) || entry.total !== days.reduce((sum, n) => sum + n, 0)) throw bad('missing a total equal to the sum of its days')
+    return days.flatMap((count, i) => Array.from({ length: count }, () => new Date(entry.week * 1000 + i * DAY_MS).toISOString()))
   })
 }
 
-/** Every `created_at` in a forks page, refused when absent for the same reason as `starTimes`. */
+/** Every `created_at` in a forks page, refused when absent so that a changed response shape never reads as no forks. */
 export function forkTimes(page) {
   return page.map((entry) => {
     if (typeof entry?.created_at !== 'string') throw new Error('a fork has no created_at')
@@ -93,7 +101,7 @@ export function weeklySeries({ downloads, starredAt, forkedAt, start, end }) {
 const number = (n) => n.toLocaleString('en-US')
 
 /** The series as a Markdown table, newest week first, with the one caveat a reader needs about the star and fork columns. */
-export function formatMarkdown({ rows, start, end }) {
+export function formatMarkdown({ rows, start, end, repoStars }) {
   const newest = rows.at(-1)
   const lines = [
     `## ${PACKAGE} adoption by week`,
@@ -114,9 +122,9 @@ export function formatMarkdown({ rows, start, end }) {
   const total = rows.reduce((sum, row) => sum + row.downloads, 0)
   lines.push(
     '',
-    `At the end of ${end}: ${number(total)} downloads in all, ${number(newest?.stars ?? 0)} stars, ${number(newest?.forks ?? 0)} forks.`,
+    `At the end of ${end}: ${number(total)} downloads in all, ${number(newest?.stars ?? 0)} stars in GitHub's star history, ${number(newest?.forks ?? 0)} forks.${Number.isInteger(repoStars) ? ` GitHub reports ${number(repoStars)} stars for the repository now.` : ''}`,
     '',
-    'A dash means npm had counted no downloads yet. Stars and forks count the ones that still exist: GitHub lists current stargazers and forks with the date each was made, so an unstar or a deleted fork drops out of every week, not only the week it happened. npm counts every download, including CI installs and mirrors, so read the downloads column as a trend rather than as a number of people.',
+    'A dash means npm had counted no downloads yet. Stars are the stars added per day as the GitHub star history reports them, and GitHub does not guarantee that its day boundaries are UTC, so a star made near midnight can land a day off. The closing line also gives the current star count of the repository, which GitHub measures separately. Forks count the ones that still exist: GitHub lists current forks with the date each was made, so a deleted fork drops out of every week, not only the week it happened. npm counts every download, including CI installs and mirrors, so read the downloads column as a trend rather than as a number of people.',
   )
   return `${lines.join('\n')}\n`
 }
@@ -159,17 +167,18 @@ async function getJson(url, headers, fetchImpl) {
   return res.json()
 }
 
-async function githubList(listPath, params, extract, headers, fetchImpl) {
+/** Every entry of a paged GitHub list, page 1 onward until a page comes back short. `spec` is `{ listPath, params, extract, perPage, maxPages, overflow }`; a full last allowed page throws `overflow` instead of returning a truncated list. */
+async function githubList({ listPath, params, extract, perPage, maxPages, overflow }, headers, fetchImpl) {
   const out = []
-  for (let page = 1; page <= MAX_PAGES; page++) {
+  for (let page = 1; page <= maxPages; page++) {
     const url = new URL(`https://api.github.com/${listPath}`)
-    for (const [key, value] of Object.entries({ ...params, per_page: PER_PAGE, page })) url.searchParams.set(key, String(value))
+    for (const [key, value] of Object.entries({ ...params, per_page: perPage, page })) url.searchParams.set(key, String(value))
     const batch = await getJson(url.href, headers, fetchImpl)
     if (!Array.isArray(batch)) throw new Error(`${listPath} did not return a list`)
     out.push(...extract(batch))
-    if (batch.length < PER_PAGE) return out
+    if (batch.length < perPage) return out
   }
-  throw new Error(`${listPath} ran past ${MAX_PAGES} pages`)
+  throw new Error(overflow)
 }
 
 /** Fetch everything and build the series. `since` defaults to the day the repository was created. `end` is the last day npm has counted, read from its own last-day endpoint: the range endpoint zero-fills the day or two it has not counted yet, and those zeros would read as a collapse in the newest week. */
@@ -193,9 +202,12 @@ export async function collect({ since, env = process.env, fetchImpl = fetch } = 
     if (!Array.isArray(body.downloads)) throw new Error(`npm range ${chunk.start}:${chunk.end} has no downloads list`)
     downloads.push(...body.downloads)
   }
-  const starredAt = await githubList(`repos/${REPO}/stargazers`, {}, starTimes, { ...github, Accept: 'application/vnd.github.star+json' }, fetchImpl)
-  const forkedAt = await githubList(`repos/${REPO}/forks`, { sort: 'oldest' }, forkTimes, github, fetchImpl)
-  return { start, end, rows: weeklySeries({ downloads, starredAt, forkedAt, start, end }) }
+  if (!Number.isInteger(repo.stargazers_count)) throw new Error(`${REPO} has no integer stargazers_count`)
+  const historyPath = `repos/${REPO}/stargazers/history`
+  const starredAt = await githubList({ listPath: historyPath, params: {}, extract: starHistoryTimes, perPage: HISTORY_PER_PAGE, maxPages: HISTORY_MAX_PAGES, overflow: `${historyPath} is longer than GitHub serves: page ${HISTORY_MAX_PAGES} of ${HISTORY_PER_PAGE} weeks is full, so the star history cannot be counted whole` }, github, fetchImpl)
+  const forksPath = `repos/${REPO}/forks`
+  const forkedAt = await githubList({ listPath: forksPath, params: { sort: 'oldest' }, extract: forkTimes, perPage: PER_PAGE, maxPages: MAX_PAGES, overflow: `${forksPath} ran past ${MAX_PAGES} pages` }, github, fetchImpl)
+  return { start, end, repoStars: repo.stargazers_count, rows: weeklySeries({ downloads, starredAt, forkedAt, start, end }) }
 }
 
 async function main(argv) {

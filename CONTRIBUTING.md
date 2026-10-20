@@ -66,7 +66,7 @@ The same trick applies to any tool that takes URL-style paths on the command lin
 
 ## Adoption numbers
 
-`npm run adoption` prints npm downloads, GitHub stars and GitHub forks for each week since the repository was created, newest week first. It rebuilds the table from the public npm and GitHub APIs on every run and stores nothing. GitHub does not list stargazers without a token, so set `GH_TOKEN` (`GH_TOKEN=$(gh auth token) npm run adoption` works locally). `--json` prints the rows as data and `--since YYYY-MM-DD` starts later. The scheduled `adoption.yml` workflow puts the same table in its job summary every Monday. The script lives in the repository and does not ship in the npm package.
+`npm run adoption` prints npm downloads, GitHub stars and GitHub forks for each week since the repository was created, newest week first. It rebuilds the table from the public npm and GitHub APIs on every run and stores nothing. It needs no token, because GitHub answers the star history and the forks list without one; set `GH_TOKEN` (`GH_TOKEN=$(gh auth token) npm run adoption` works locally) for GitHub's higher rate limit. `--json` prints the rows as data and `--since YYYY-MM-DD` starts later. The scheduled `adoption.yml` workflow puts the same table in its job summary every Monday. The script lives in the repository and does not ship in the npm package.
 
 ## Session mining for improvements
 
