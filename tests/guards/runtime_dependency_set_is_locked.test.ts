@@ -18,6 +18,11 @@ interface Lock {
   readonly packages?: Record<string, LockEntry & { readonly dependencies?: Record<string, string>; readonly optionalDependencies?: Record<string, string> }>
 }
 
+interface ProductionOpts {
+  readonly optionalOnly?: boolean
+  readonly requiredOnly?: boolean
+}
+
 const marker = 'node_modules/'
 
 /** The package a lockfile key names, unnested: `node_modules/a/node_modules/b` is `b`. */
@@ -26,8 +31,12 @@ function nameOf(lockPath: string): string {
 }
 
 /** Package names in the production tree, deduplicated -- the same package nested under two parents is one name. Two producers decide this, not one. The lockfile's `dev`/`optional` flags are the obvious source, but npm collapses a package declared in BOTH `optionalDependencies` and `devDependencies` down to a bare `dev: true`, which reads as "never reaches a user" for a package a consumer's `npm install` really does fetch. The manifest's own declarations are the second producer and they win: a name the root block declares is production whatever the flags say. */
-function productionPackageNames(opts: { readonly optionalOnly?: boolean; readonly requiredOnly?: boolean } = {}): string[] {
-  const lock = JSON.parse(readFileSync(lockPath, 'utf8')) as Lock
+function productionPackageNames(opts: ProductionOpts = {}): string[] {
+  return productionNamesOf(JSON.parse(readFileSync(lockPath, 'utf8')) as Lock, opts)
+}
+
+/** The classifier behind `productionPackageNames`, taking the lock as a value so a test can feed it a hand-built one. Only `dev: true` is dev-only: `devOptional` is npm's flag for a package reached from a dev chain AND an optional chain, and optional dependencies install by default and under `--omit=dev`, so such a package does reach a user, as an optional one. */
+function productionNamesOf(lock: Lock, opts: ProductionOpts): string[] {
   const root = lock.packages?.[''] ?? {}
   const declaredRequired = new Set(Object.keys(root.dependencies ?? {}))
   const declaredOptional = new Set(Object.keys(root.optionalDependencies ?? {}))
@@ -37,8 +46,8 @@ function productionPackageNames(opts: { readonly optionalOnly?: boolean; readonl
     if (path === '') continue
     const name = nameOf(path)
     const declared = declaredRequired.has(name) || declaredOptional.has(name)
-    if (!declared && (entry.dev === true || entry.devOptional === true)) continue
-    const optional = declaredOptional.has(name) || (!declaredRequired.has(name) && entry.optional === true)
+    if (!declared && entry.dev === true) continue
+    const optional = declaredOptional.has(name) || (!declaredRequired.has(name) && (entry.optional === true || entry.devOptional === true))
     if (opts.optionalOnly === true && !optional) continue
     if (opts.requiredOnly === true && optional) continue
     names.add(name)
@@ -157,6 +166,21 @@ describe('the set of packages that can run in a user process', () => {
     const resolved = new Set(productionPackageNames())
     const stale = REVIEWED_PRODUCTION_PACKAGES.filter((n) => !resolved.has(n))
     expect(stale, 'reviewed names no longer in the tree; drop them so the list keeps meaning what it says').toEqual([])
+  })
+
+  it('counts a devOptional package as production and a dev-only one as not', () => {
+    // HAND-DERIVED: an in-memory lock built from npm's documented flags (devOptional = reached from a dev chain and an optional chain), not read from package-lock.json.
+    const lock: Lock = {
+      packages: {
+        '': { dependencies: { declared: '1.0.0' } },
+        'node_modules/declared': { version: '1.0.0' },
+        'node_modules/both-chains': { devOptional: true, version: '1.0.0' },
+        'node_modules/dev-only': { dev: true, version: '1.0.0' },
+      },
+    }
+    expect(productionNamesOf(lock, {})).toEqual(['both-chains', 'declared'])
+    // Without dev dependencies the dev chain is gone and only the optional chain is left, so it is optional there, not always loaded.
+    expect(productionNamesOf(lock, { requiredOnly: true })).toEqual(['declared'])
   })
 
   it('keeps SECURITY.md truthful about that surface', () => {
