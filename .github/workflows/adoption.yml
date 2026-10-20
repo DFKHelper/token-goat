@@ -27,7 +27,7 @@ jobs:
           node-version: '22'
 
       # The script uses Node built-ins only, so there is no npm ci. GitHub will not list
-      # stargazers without a token; the job's own read-only token is enough.
+      # stargazers without a token; the job sends its own token as GH_TOKEN.
       - name: Write the table to the job summary
         env:
           GH_TOKEN: ${{ github.token }}

@@ -15,13 +15,20 @@ const stars = fixture<Array<{ starred_at: string }>>('stars.json')
 const forks = fixture<Array<{ created_at: string }>>('forks.json')
 const REPO_META = { created_at: '2026-05-16T00:31:24Z' }
 
-type Served = { status?: number; body: unknown }
+type Served = { status?: number; body: unknown; responseHeaders?: Record<string, string> }
 function fakeFetch(route: (url: URL) => Served) {
   const calls: Array<{ url: string; headers: Record<string, string> }> = []
   const fetchImpl = (url: string, init?: { headers?: Record<string, string> }) => {
     calls.push({ url, headers: init?.headers ?? {} })
-    const { status = 200, body } = route(new URL(url))
-    return Promise.resolve({ ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) })
+    const { status = 200, body, responseHeaders = {} } = route(new URL(url))
+    const sent = new Map(Object.entries(responseHeaders).map(([name, value]) => [name.toLowerCase(), value]))
+    return Promise.resolve({
+      ok: status >= 200 && status < 300,
+      status,
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(typeof body === 'string' ? body : JSON.stringify(body)),
+      headers: { get: (name: string) => sent.get(name.toLowerCase()) ?? null },
+    })
   }
   return { calls, fetchImpl }
 }
@@ -143,5 +150,30 @@ describe('collect', () => {
   it('names GH_TOKEN when GitHub refuses the stargazer list without a token', async () => {
     const { fetchImpl } = fakeFetch((url) => (url.pathname.endsWith('/stargazers') ? { status: 401, body: { message: 'Requires authentication' } } : capturedApis(url)))
     await expect(collect({ env: {}, fetchImpl })).rejects.toThrow(/HTTP 401 \(GitHub needs a token for this: set GH_TOKEN/)
+  })
+
+  // The three rows below are FORMAT-DERIVED (the reset epoch 1792000000 is HAND-DERIVED: 2026-10-14T17:46:40Z computed by Date, not by the script) from GitHub's REST docs (read 2026-10-20): https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api says a primary rate limit answers 403 or 429 with x-ratelimit-remaining 0 and x-ratelimit-reset in UTC epoch seconds, and that "Resource not accessible by integration" is the error for a GitHub App token with insufficient permissions, with the permissions needed in X-Accepted-GitHub-Permissions; https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api lists the x-ratelimit-* headers.
+  const refuseStargazers = (served: Served) => fakeFetch((url) => (url.pathname.endsWith('/stargazers') ? served : capturedApis(url)))
+
+  it('gives the server message and no rate-limit claim for a 403 that carries no rate-limit evidence', async () => {
+    const { fetchImpl } = refuseStargazers({ status: 403, body: { message: 'Resource not accessible by integration' }, responseHeaders: { 'x-accepted-github-permissions': 'metadata=read' } })
+    const error = await collect({ env: { GH_TOKEN: 'ghs_secret_token' }, fetchImpl }).catch((e: Error) => e)
+    expect(error).toBeInstanceOf(Error)
+    const text = (error as Error).message
+    expect(text).toContain('HTTP 403')
+    expect(text).toContain('Resource not accessible by integration')
+    expect(text).toContain('x-accepted-github-permissions: metadata=read')
+    expect(text).not.toContain('rate limited')
+    expect(text).not.toContain('ghs_secret_token')
+  })
+
+  it('says rate limited and names the reset time when the remaining count is 0', async () => {
+    const { fetchImpl } = refuseStargazers({ status: 403, body: { message: 'API rate limit exceeded for user ID 1.' }, responseHeaders: { 'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '1792000000' } })
+    await expect(collect({ env: { GH_TOKEN: 'tok' }, fetchImpl })).rejects.toThrow(/HTTP 403 \(rate limited\) \(resets at 2026-10-14T17:46:40\.000Z\); message: API rate limit exceeded.*x-ratelimit-reset: 1792000000/)
+  })
+
+  it('reads a body that is not JSON and puts its start in the error', async () => {
+    const { fetchImpl } = refuseStargazers({ status: 403, body: '<html>Forbidden by the proxy</html>' })
+    await expect(collect({ env: {}, fetchImpl })).rejects.toThrow(/HTTP 403; message: <html>Forbidden by the proxy<\/html>/)
   })
 })

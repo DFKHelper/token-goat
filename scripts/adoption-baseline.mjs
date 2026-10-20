@@ -61,9 +61,7 @@ export function forkTimes(page) {
   })
 }
 
-/**
- * One row per ISO week from the week holding `start` to the week holding `end`, both days inclusive. `downloads` is npm's `[{ day, downloads }]`; days outside `start..end` are ignored, which is what keeps npm's zero-filled not-yet-counted days out. `days` is how many days of the week fall inside the window, and `partial` marks a week with fewer than seven. `stars` and `forks` are running totals at the end of each row's last counted day.
- */
+/** One row per ISO week from the week holding `start` to the week holding `end`, both days inclusive. `downloads` is npm's `[{ day, downloads }]`; days outside `start..end` are ignored, which is what keeps npm's zero-filled not-yet-counted days out. `days` is how many days of the week fall inside the window, and `partial` marks a week with fewer than seven. `stars` and `forks` are running totals at the end of each row's last counted day. */
 export function weeklySeries({ downloads, starredAt, forkedAt, start, end }) {
   const first = dayMs(start)
   const last = dayMs(end)
@@ -123,12 +121,39 @@ export function formatMarkdown({ rows, start, end }) {
   return `${lines.join('\n')}\n`
 }
 
+const MESSAGE_CHARS = 300
+const DETAIL_HEADERS = ['x-ratelimit-remaining', 'x-ratelimit-reset', 'retry-after', 'x-accepted-github-permissions']
+
+/** What a refused response says: GitHub's `message` (or the start of a body that is not JSON) and the rate-limit and permission headers it sent. A body that cannot be read or parsed leaves `message` empty. */
+async function refusalDetail(res) {
+  const text = await res.text().catch(() => '')
+  let message = text
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed.message === 'string') message = parsed.message
+  } catch {
+    // Not JSON: the start of the raw text is the message.
+  }
+  message = message.replace(/\s+/g, ' ').trim().slice(0, MESSAGE_CHARS)
+  const headers = {}
+  for (const name of DETAIL_HEADERS) {
+    const value = res.headers?.get(name)
+    if (value !== null && value !== undefined && value !== '') headers[name] = String(value)
+  }
+  return { message, headers }
+}
+
 async function getJson(url, headers, fetchImpl) {
   const res = await fetchImpl(url, { headers })
   if (!res.ok) {
-    // GitHub answers the stargazer list with 401 when no token is sent (checked 2026-09-29), and 403 or 429 once the anonymous limit is spent.
-    const hint = res.status === 401 ? ' (GitHub needs a token for this: set GH_TOKEN, for example to the output of `gh auth token`)' : res.status === 403 || res.status === 429 ? ' (rate limited: set GH_TOKEN to raise the GitHub limit)' : ''
-    throw new Error(`GET ${url} returned HTTP ${res.status}${hint}`)
+    const { message, headers: seen } = await refusalDetail(res)
+    // GitHub answers the stargazer list with 401 when no token is sent (checked 2026-09-29); a 403 or 429 is called rate limited only when x-ratelimit-remaining is 0, retry-after is present or the message names a rate limit, as GitHub's troubleshooting page describes.
+    const limited = (res.status === 403 || res.status === 429) && (seen['x-ratelimit-remaining']?.trim() === '0' || 'retry-after' in seen || /rate limit/i.test(message))
+    const hint = res.status === 401 ? ' (GitHub needs a token for this: set GH_TOKEN, for example to the output of `gh auth token`)' : limited ? ` (rate limited${headers.Authorization ? '' : ': set GH_TOKEN to raise the GitHub limit'})` : ''
+    const resetDate = new Date(Number(seen['x-ratelimit-reset']) * 1000)
+    const resetAt = limited && 'x-ratelimit-reset' in seen && !Number.isNaN(resetDate.getTime()) ? ` (resets at ${resetDate.toISOString()})` : ''
+    const facts = [...(message ? [`message: ${message}`] : []), ...Object.entries(seen).map(([name, value]) => `${name}: ${value}`)]
+    throw new Error(`GET ${url} returned HTTP ${res.status}${hint}${resetAt}${facts.length ? `; ${facts.join('; ')}` : ''}`)
   }
   return res.json()
 }
