@@ -50,13 +50,12 @@ describe('applyIndexingPriority', () => {
     const before = os.getPriority()
     try {
       expect(applyIndexingPriority(), 'setPriority was refused on this host').toBe(true)
+      const after = os.getPriority()
+      expect(after, 'a call must never raise the process above where it started').toBeGreaterThanOrEqual(before)
       expect(
-        os.getPriority(),
-        'the call returned true but the class did not move, so the lever is a no-op here',
-      ).toBe(os.constants.priority.PRIORITY_BELOW_NORMAL)
-      expect(os.getPriority(), 'lower priority is numerically greater on Node’s inverted scale').toBeGreaterThan(
-        os.constants.priority.PRIORITY_NORMAL,
-      )
+        after,
+        'the call returned true but the class is above the configured one, so the lever is a no-op here',
+      ).toBeGreaterThanOrEqual(os.constants.priority.PRIORITY_BELOW_NORMAL)
     } finally {
       try {
         os.setPriority(0, before)
@@ -74,6 +73,8 @@ describe('applyIndexingPriority', () => {
       return {
         ...actual,
         default: actual,
+        // A refusal is only reachable when a demotion is attempted, so pin the start at normal instead of the worker's own LOW.
+        getPriority: () => actual.constants.priority.PRIORITY_NORMAL,
         setPriority: () => {
           const err = new Error('operation not permitted') as NodeJS.ErrnoException
           err.code = 'EPERM'
@@ -87,6 +88,64 @@ describe('applyIndexingPriority', () => {
     } finally {
       vi.doUnmock('node:os')
       vi.resetModules()
+    }
+  })
+
+  // HAND-DERIVED from os.constants.priority (PRIORITY_NORMAL 0, PRIORITY_BELOW_NORMAL 10, PRIORITY_LOW 19; larger is lower): the configured class is 10, so a process at 0 is demoted and a process at 19 already runs lower and must be left alone. On POSIX raising 19 -> 10 is refused with EPERM, which is what failed on Linux and macOS when the test workers themselves started at LOW.
+  async function loadWithPriority(current: number) {
+    const setPriority = vi.fn()
+    const getPriority = vi.fn(() => current)
+    vi.resetModules()
+    vi.doMock('node:os', async (importOriginal) => {
+      const actual = await importOriginal<typeof os>()
+      return { ...actual, default: actual, getPriority, setPriority }
+    })
+    const mod = await import('../src/process_priority.js')
+    return { mod, setPriority }
+  }
+
+  const cleanup = () => {
+    vi.doUnmock('node:os')
+    vi.resetModules()
+  }
+
+  it('demotes a process running at normal to the configured class', async () => {
+    const { mod, setPriority } = await loadWithPriority(os.constants.priority.PRIORITY_NORMAL)
+    try {
+      expect(mod.applyIndexingPriority()).toBe(true)
+      expect(setPriority).toHaveBeenCalledWith(0, os.constants.priority.PRIORITY_BELOW_NORMAL)
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('does not raise a process already running lower than the configured class', async () => {
+    const { mod, setPriority } = await loadWithPriority(os.constants.priority.PRIORITY_LOW)
+    try {
+      expect(mod.applyIndexingPriority()).toBe(true)
+      expect(setPriority, 'setPriority on a LOW process would raise it').not.toHaveBeenCalled()
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('applyIndexingPriorityTo demotes another pid running at normal', async () => {
+    const { mod, setPriority } = await loadWithPriority(os.constants.priority.PRIORITY_NORMAL)
+    try {
+      expect(mod.applyIndexingPriorityTo(424242)).toBe(true)
+      expect(setPriority).toHaveBeenCalledWith(424242, os.constants.priority.PRIORITY_BELOW_NORMAL)
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('applyIndexingPriorityTo does not raise another pid already running lower', async () => {
+    const { mod, setPriority } = await loadWithPriority(os.constants.priority.PRIORITY_LOW)
+    try {
+      expect(mod.applyIndexingPriorityTo(424242)).toBe(true)
+      expect(setPriority, 'setPriority on a LOW pid would raise it').not.toHaveBeenCalled()
+    } finally {
+      cleanup()
     }
   })
 })

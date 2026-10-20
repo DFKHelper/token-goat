@@ -14,7 +14,9 @@ vi.mock('node:os', async (importOriginal) => {
   const setPriority = (_pid: number, priority: number): void => {
     events.list.push(`setPriority:${priority}`)
   }
-  return { ...actual, default: { ...actual, setPriority }, setPriority }
+  // The start is pinned at normal: the module never raises a process already below the wanted class, and the test worker itself starts at LOW.
+  const getPriority = (): number => actual.constants.priority.PRIORITY_NORMAL
+  return { ...actual, default: { ...actual, getPriority, setPriority }, getPriority, setPriority }
 })
 
 vi.mock('node:child_process', async (importOriginal) => {

@@ -29,9 +29,18 @@ export function applyIndexingPriority(): boolean {
 export function applyIndexingPriorityTo(pid: number): boolean {
   try {
     const priority = resolveWorkerPriority(loadConfig().worker.priority)
-    os.setPriority(pid, priority)
+    if (!alreadyAtOrBelow(pid, priority)) os.setPriority(pid, priority)
     lowerOtherThreads(pid, priority)
     return true
+  } catch {
+    return false
+  }
+}
+
+/** Whether the target already runs at or below the wanted class (numerically >= it, on Node's inverted scale), so asking for the wanted class would RAISE it. Raising is refused with EPERM for an unprivileged POSIX process and silently accepted on Windows; either way a background indexer must only ever be demoted, so the caller leaves such a target alone and counts the goal as met. A lookup that throws is an unknown, not a yes: the caller attempts the set and reports whatever happens. */
+function alreadyAtOrBelow(pid: number, priority: number): boolean {
+  try {
+    return os.getPriority(pid) >= priority
   } catch {
     return false
   }
@@ -48,7 +57,8 @@ function lowerOtherThreads(pid: number, priority: number): void {
   }
   for (const thread of threads) {
     try {
-      os.setPriority(Number(thread), priority)
+      const id = Number(thread)
+      if (!alreadyAtOrBelow(id, priority)) os.setPriority(id, priority)
     } catch {
       // ended meanwhile, or refused
     }
