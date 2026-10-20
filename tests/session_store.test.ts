@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -775,6 +776,22 @@ describe('rangeFileIdentity persistence', () => {
     expect(entry?.rangeFileIdentity).toBeDefined()
     expect(typeof entry?.rangeFileIdentity?.size).toBe('number')
     expect(typeof entry?.rangeFileIdentity?.mtimeMs).toBe('number')
+  })
+
+  it('preserves the content hash of the recorded bytes in both identity stores across a save -> load round-trip', () => {
+    const filePath = path.join(tmpHome, 'range_fp.ts')
+    const content = 'export const x = 1\n'
+    fs.writeFileSync(filePath, content)
+    importSessionState(empty())
+    recordFileRead(filePath)
+    recordFileLineRange(filePath, 10, 30)
+    saveSessionState('sid-range-fp')
+
+    // HAND-DERIVED: SHA-256 of the file's bytes, computed here with node:crypto rather than the code's own fingerprint helper.
+    const expected = createHash('sha256').update(content).digest('hex')
+    const disk = readSessionStateFile('sid-range-fp')
+    expect(disk?.files.find((f) => f.path.endsWith('range_fp.ts'))?.rangeFileIdentity?.fp).toBe(expected)
+    expect(disk?.fileLineRangeIdentities?.find(([p]) => p.endsWith('range_fp.ts'))?.[1].fp).toBe(expected)
   })
 })
 

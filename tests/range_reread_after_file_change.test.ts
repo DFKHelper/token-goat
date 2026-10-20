@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { relayInProcess } from '../src/relay.js'
+import { RANGE_FINGERPRINT_MAX_BYTES } from '../src/session.js'
+import { rewriteKeepingSizeAndMtime, stampWholeSecondMtime } from './helpers/same_stat_rewrite.js'
 
 // Short lines on purpose: a window stays under IDENTICAL_READ_MIN_BODY_BYTES (512), so the byte-for-byte served-output proof never answers and every refusal here comes from the line-range check this file is about.
 const LINE_COUNT = 120
@@ -90,6 +92,26 @@ describe.each(['app.ts', 'server.log'])('a repeated ranged Read of %s after an o
     editOutsideSession(file, 12)
     // Overlaps the recorded 10..30 without covering line 12, so it is the only part of the edited file the model sees.
     expect(await rangedRead(sid, file, 15, 11)).toBeNull()
+    expect(await rangedRead(sid, file, 10, 21)).toBeNull()
+  })
+
+  it('is let through when a same-size rewrite restored the recorded mtime', async () => {
+    const sid = newSessionId()
+    const file = makeFile(name)
+    stampWholeSecondMtime(file)
+    expect(await rangedRead(sid, file, 10, 21)).toBeNull()
+    rewriteKeepingSizeAndMtime(file, 12)
+    // Size and mtime match what was recorded, and line 12 inside 10..30 is not what the model was served: only the bytes can say so.
+    expect(await rangedRead(sid, file, 10, 21)).toBeNull()
+  })
+
+  it('is let through when the file is too large to carry a content hash, since a matching stat proves nothing', async () => {
+    const sid = newSessionId()
+    const file = join(project, name)
+    // Past RANGE_FINGERPRINT_MAX_BYTES (2 MiB), so no hash is taken when the range is recorded and only the stat could vouch for it.
+    writeFileSync(file, [...ORIGINAL, ...Array.from({ length: 24_000 }, (_, i) => `export const filler${i} = ${'x'.repeat(80)}`)].join('\n'))
+    expect(statSync(file).size).toBeGreaterThan(RANGE_FINGERPRINT_MAX_BYTES)
+    expect(await rangedRead(sid, file, 10, 21)).toBeNull()
     expect(await rangedRead(sid, file, 10, 21)).toBeNull()
   })
 

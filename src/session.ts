@@ -6,9 +6,19 @@ import * as fs from 'node:fs'
 import { hostPathOfIndexKey, normalizePath } from './paths.js'
 import { registerReset } from './reset.js'
 import { foldPath } from './util.js'
-import { shortFingerprint } from './fingerprint.js'
+import { fingerprintFile, shortFingerprint } from './fingerprint.js'
 import { redactSecrets } from './secret_redact.js'
 import { clearAllReadRangeEvasion, clearReadRangeEvasion, exportReadRangeEvasion, importReadRangeEvasion, type RangeEvasionEntries } from './read_range_evasion.js'
+
+/** What a file looked like when a line range of it was recorded: its size and mtimeMs, and, for a file small enough to hash, the SHA-256 of its bytes. Stat alone cannot tell a same-size rewrite that kept or restored the mtime (a coarse-stamp file system inside one tick, `touch -r`, `cp -p`) from no change, so only `fp` proves the bytes the model was served are still on disk. */
+export interface FileRangeIdentity {
+  readonly size: number
+  readonly mtimeMs: number
+  readonly fp?: string
+}
+
+/** Largest file hashed for {@link FileRangeIdentity.fp}: the hash is taken once per set of recorded ranges and again by each check, on the hook path, so it is bounded; a larger file carries stat only and its equal-stat re-read is read through, never denied. */
+export const RANGE_FINGERPRINT_MAX_BYTES = 2 * 1024 * 1024
 
 /** Tracks reads/edits of a single file within the session. Mirrors the load-bearing fields of `session.py::FileEntry` used by the re-read dedup hint: read count, last-read timestamp, whether the file was edited (which invalidates any cached read window), and its size at last read. */
 export interface FileEntry {
@@ -33,7 +43,7 @@ export interface FileEntry {
   /** Symbol/section/range tokens this file was read *surgically* by this session (via `token-goat read|section "file::symbol"` and friends), as opposed to a whole-file Read. Non-empty means the file was engaged with narrowly, which compact.ts's `computeAdaptiveBudget` rewards with a manifest-budget bonus. Populated by {@link recordSymbolRead}; never touched by {@link recordFileRead} (whole-file Read tracking is unchanged). */
   readonly symbols_read?: string[]
   /** Cheap file identity (size + mtimeMs) captured by statSync at the moment the most recent line range was recorded via {@link recordFileLineRange}. Lets the repeated-range deny in hooks_read.ts tell whether disk has moved since without a snapshot or a hash: if a later statSync of the same file no longer matches, an external edit landed between the two reads and the recorded ranges must not keep denying. */
-  readonly rangeFileIdentity?: { readonly size: number; readonly mtimeMs: number }
+  readonly rangeFileIdentity?: FileRangeIdentity
   /** The lifetime `readCount`/`fullReadCount` this entry carried when its first read after the compaction stamped at `at` landed, so {@link epochReadCounts} can tell the reads still in context from the ones that compaction dropped. Set by {@link recordFileRead}; absent on an entry first read in the current epoch, whose counts are already epoch counts. */
   readonly epochBase?: EpochBase
 }
@@ -109,7 +119,7 @@ let _fileServedOutputsAtLoad = new Map<string, string[]>()
 // Folded keys whose ranges this process dropped through resetFileLineRanges. A reset followed by a fresh range for the same file in the same hook call leaves the key present, which `_fileLineRangesAtLoad` alone reads as a plain append, so session_store.ts's union put the dropped ranges straight back from disk.
 let _fileLineRangesReset = new Set<string>()
 // Folded path -> the file's identity (size + mtimeMs) when a range of it was last recorded, kept beside `_fileLineRanges` whether or not the file has a session entry. `FileEntry.rangeFileIdentity` is stamped only on an existing entry, and a file read only through `sed -n`/`head` has none, so nothing could tell that its ranges had outlived a change made on disk outside the session.
-let _fileLineRangeIdentities = new Map<string, { size: number; mtimeMs: number }>()
+let _fileLineRangeIdentities = new Map<string, FileRangeIdentity>()
 
 // Unix-ms of the most recent context compaction (0 = never compacted this session). After Claude Code compacts, the model's context no longer holds any file content it read earlier, so every read whose `lastReadAt` predates this stamp must be treated as NOT read -- see `wasFileReadThisSession`. Stored as a monotonically increasing scalar rather than resetting each entry's `readCount` to 0 because session_store.ts's `mergeFileEntry` reconciles `readCount` as "freshest disk count + this process's own increments since load", so an in-memory reset to 0 contributes a 0 delta and the disk value is handed straight back -- the reset would be silently resurrected across concurrent hook processes. A max-merged scalar has no such resurrection path.
 let _compactedAt = 0
@@ -667,21 +677,49 @@ export function recordFileLineRange(filePath: string, start: number, end: number
   // The ranges on record were served while the file had the identity stamped beside them. Re-stamping it for this range without dropping them would let the repeated-range deny in hooks_read.ts vouch for text the model was never shown, since every later read of any other window also refreshes the snapshot it diffs against.
   const identity = dropFileLineRangesIfChanged(normalized)
   const ranges = _fileLineRanges.get(key) ?? []
+  // The hash is taken when a set of ranges starts and kept while they stand: it must describe the bytes the first range was served from, so a set already on record never takes a newer one.
+  const priorFp = (_fileLineRangeIdentities.get(key) ?? entry?.rangeFileIdentity)?.fp
+  const fp = priorFp ?? (ranges.length === 0 && identity !== undefined ? boundedFingerprint(normalized, identity.size) : undefined)
   if (!ranges.some(([s, e]) => s === start && e === end)) {
     ranges.push([start, end])
     if (ranges.length > MAX_RANGES_PER_FILE) ranges.splice(0, ranges.length - MAX_RANGES_PER_FILE)
     _fileLineRanges.set(key, ranges)
   }
-  if (identity) _fileLineRangeIdentities.set(key, identity)
-  if (entry && identity) _files.set(entryKey, { ...entry, rangeFileIdentity: identity })
+  const stamped: FileRangeIdentity | undefined = identity === undefined ? undefined : (fp === undefined ? identity : { ...identity, fp })
+  if (stamped) _fileLineRangeIdentities.set(key, stamped)
+  if (entry && stamped) _files.set(entryKey, { ...entry, rangeFileIdentity: stamped })
 }
 
-/** Drop `filePath`'s recorded line ranges when the file no longer has the size and mtime it had when they were recorded, and return its current identity (undefined when it cannot be stat'd). The Bash pre hook calls this before it measures a `sed -n`/`head` read against those ranges, as {@link recordFileLineRange} does before it adds one: measured first, a re-read of lines changed outside the session was told to recall them from earlier output. */
+/** SHA-256 of the file's bytes, or undefined when it is larger than {@link RANGE_FINGERPRINT_MAX_BYTES} or cannot be read. */
+function boundedFingerprint(normalized: string, size: number): string | undefined {
+  if (size > RANGE_FINGERPRINT_MAX_BYTES) return undefined
+  return fingerprintFile(hostPathOfIndexKey(normalized)) ?? undefined
+}
+
+/** The identity recorded when `filePath`'s line ranges were last recorded: the one beside the ranges, else the one on its session entry; undefined when none was ever recorded. */
+export function getFileLineRangeIdentity(filePath: string): FileRangeIdentity | undefined {
+  const normalized = normalizePath(filePath)
+  return _fileLineRangeIdentities.get(foldPath(normalized)) ?? _files.get(resolveFilesKey(normalized))?.rangeFileIdentity
+}
+
+/** Do the bytes on disk match the ones the recorded ranges of `filePath` were served from? 'same' and 'changed' are proven by the hash taken when the ranges were first recorded; 'unproven' means no hash was taken (a file past {@link RANGE_FINGERPRINT_MAX_BYTES}, or a session recorded before the hash existed) or the file cannot be read now, so a stat that still matches the record is all there is and proves nothing about a same-size rewrite. */
+export function rangeContentVerdict(filePath: string): 'same' | 'changed' | 'unproven' {
+  const normalized = normalizePath(filePath)
+  const recorded = getFileLineRangeIdentity(normalized)
+  if (recorded?.fp === undefined) return 'unproven'
+  const current = statIdentity(normalized)
+  if (current === undefined || current.size > RANGE_FINGERPRINT_MAX_BYTES) return 'unproven'
+  const now = fingerprintFile(hostPathOfIndexKey(normalized))
+  if (now === null) return 'unproven'
+  return now === recorded.fp ? 'same' : 'changed'
+}
+
+/** Drop `filePath`'s recorded line ranges when the file no longer has the size and mtime it had when they were recorded, or holds different bytes than the hash taken then (see {@link rangeContentVerdict}), and return its current identity (undefined when it cannot be stat'd). The Bash pre hook calls this before it measures a `sed -n`/`head` read against those ranges, as {@link recordFileLineRange} does before it adds one: measured first, a re-read of lines changed outside the session was told to recall them from earlier output. */
 export function dropFileLineRangesIfChanged(filePath: string): { size: number; mtimeMs: number } | undefined {
   const normalized = normalizePath(filePath)
   const identity = statIdentity(normalized)
   const prior = _fileLineRangeIdentities.get(foldPath(normalized)) ?? _files.get(resolveFilesKey(normalized))?.rangeFileIdentity
-  if (prior !== undefined && identity !== undefined && (prior.size !== identity.size || prior.mtimeMs !== identity.mtimeMs)) resetFileLineRanges(normalized)
+  if (prior !== undefined && identity !== undefined && (prior.size !== identity.size || prior.mtimeMs !== identity.mtimeMs || rangeContentVerdict(normalized) === 'changed')) resetFileLineRanges(normalized)
   return identity
 }
 
@@ -794,7 +832,7 @@ export interface SerializedSession {
   fileLineRanges?: Array<[string, Array<[number, number]>]>
   readRangeEvasion?: RangeEvasionEntries
   /** path -> the file's size and mtime when a range of it was last recorded. See `_fileLineRangeIdentities`. Optional: sessions written before this field existed simply have none. */
-  fileLineRangeIdentities?: Array<[string, { size: number; mtimeMs: number }]>
+  fileLineRangeIdentities?: Array<[string, FileRangeIdentity]>
   /** path -> bash-output ids whose body this session was shown as a read of that file, oldest first. Optional: sessions written before this field existed simply have none. */
   fileServedOutputs?: Array<[string, string[]]>
   cliReads?: string[]

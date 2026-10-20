@@ -157,6 +157,20 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
         'not a parser-freshness gate.',
     },
   ],
+  [
+    'boundedFingerprint',
+    {
+      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
+      reason: 'session.ts hashes the one file a line range was just recorded for; no index row, no parser_sha, no skip sweep.',
+    },
+  ],
+  [
+    'rangeContentVerdict',
+    {
+      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
+      reason: 'session.ts compares the one file named by a ranged re-read against the hash taken when its ranges were recorded; session state, not the index.',
+    },
+  ],
 ])
 
 describe('every bulk-vs-single freshness check on fingerprintFile is classified for parser_sha (freshness-gate defect class)', () => {

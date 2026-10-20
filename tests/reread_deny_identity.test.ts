@@ -187,7 +187,7 @@ describe('reread_deny_identity', () => {
       expect(pre(file).hookType).not.toBe('deny')
     })
 
-    it('reads a file through when the file system stamped it after the read that found it unchanged', () => {
+    it('reads a file through when its mtime is later than the read, never taking a future stamp for unchanged (passes without the skew margin too)', () => {
       const t = readAt()
       const file = write('.improve-state-lead.json', '{"step":1}\n')
       stamp(file, t + 5)

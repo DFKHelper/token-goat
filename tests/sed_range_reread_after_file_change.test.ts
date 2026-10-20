@@ -6,6 +6,7 @@ import { basename, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { relayInProcess } from '../src/relay.js'
+import { rewriteKeepingSizeAndMtime, stampWholeSecondMtime } from './helpers/same_stat_rewrite.js'
 
 const LINE_COUNT = 120
 const ORIGINAL = Array.from({ length: LINE_COUNT }, (_, i) => `export const v${i + 1} = ${i + 1}`)
@@ -88,6 +89,15 @@ describe.each(['app.ts', 'server.log'])('a sed re-read of %s', (name) => {
     const file = makeFile(name)
     expect(await rangedRead(sid, file, 1, 20)).toBeNull()
     editOutsideSession(file, 5)
+    expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
+  })
+
+  it('is not told it overlaps lines a same-size rewrite changed while keeping the recorded mtime', async () => {
+    const sid = newSessionId()
+    const file = makeFile(name)
+    stampWholeSecondMtime(file)
+    expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
+    rewriteKeepingSizeAndMtime(file, 5)
     expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
   })
 

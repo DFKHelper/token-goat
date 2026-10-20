@@ -18,7 +18,7 @@ import { displaySafePath, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHA
 import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun, isSequentialPagingChain } from './util.js'
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
-import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged } from './session.js'
+import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged } from './session.js'
 import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
@@ -1160,8 +1160,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             return denyRangeReread()
           }
           if (snapDiff.kind === 'none') {
-            // No snapshot exists to diff against -- postReadHandler only snapshots doc/artifact/diffable-source files up to 256KB, so a large file or an unsnapshotted extension (.html, .csv, .log, ...) always lands here. Fall back to a cheap file identity (size + mtimeMs) captured when the range was recorded: if disk still matches, nothing observable changed, so deny as before; if it moved, an edit happened between the two reads and the ranges must not keep denying; if no identity was ever recorded (legacy session state predating this field), deny as the pre-range-identity code did.
-            const recordedIdentity = getSessionFileEntry(normalized)?.rangeFileIdentity
+            // No snapshot exists to diff against -- postReadHandler only snapshots doc/artifact/diffable-source files up to 256KB, so a large file or an unsnapshotted extension (.html, .csv, .log, ...) always lands here. Fall back to the file identity (size + mtimeMs + a hash of files up to 2 MiB) captured when the range was recorded: if the stat moved, an edit happened between the two reads and the ranges must not keep denying; if it matches, only the hash can say the bytes are the same, so a file without one is read through and its ranges dropped; if no identity was ever recorded (legacy session state predating this field), deny as the pre-range-identity code did.
+            const recordedIdentity = getFileLineRangeIdentity(normalized)
             let currentIdentity: { size: number; mtimeMs: number } | undefined
             try {
               const st = fs.statSync(onDisk)
@@ -1169,8 +1169,12 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             } catch {
               currentIdentity = undefined
             }
-            if (recordedIdentity === undefined || (currentIdentity !== undefined && recordedIdentity.size === currentIdentity.size && recordedIdentity.mtimeMs === currentIdentity.mtimeMs)) {
+            if (recordedIdentity === undefined) {
               return denyRangeReread()
+            }
+            if (currentIdentity !== undefined && recordedIdentity.size === currentIdentity.size && recordedIdentity.mtimeMs === currentIdentity.mtimeMs) {
+              // An equal stat is not proof: a same-size rewrite that kept or restored the mtime matches it too. Only the hash taken when the ranges were recorded denies; a file without one (too large to hash) is unknown, and an unknown file is read through, the extra read being the cost.
+              if (rangeContentVerdict(normalized) === 'same') return denyRangeReread()
             }
             resetFileLineRanges(normalized)
           } else {

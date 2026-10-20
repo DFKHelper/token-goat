@@ -8,7 +8,7 @@ import { ensureDirSync, atomicWriteText, foldPath, sanitizeIdForFilename, withFi
 import { normalizePath } from './paths.js'
 import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSerializedJson } from './secret_redact.js'
-import { MAX_SEEN_IMAGE_HASHES, MAX_VERIFICATION_RUNS, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, markCompacted, mergeEpochBase, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type SerializedSession, type VerificationRun } from './session.js'
+import { MAX_SEEN_IMAGE_HASHES, MAX_VERIFICATION_RUNS, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, markCompacted, mergeEpochBase, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type FileRangeIdentity, type SerializedSession, type VerificationRun } from './session.js'
 import { coerceReadRangeEvasion, mergeReadRangeEvasion } from './read_range_evasion.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
@@ -113,7 +113,8 @@ function asFileEntry(raw: unknown): FileEntry | null {
     typeof (rangeIdentity as Record<string, unknown>)['size'] === 'number' &&
     typeof (rangeIdentity as Record<string, unknown>)['mtimeMs'] === 'number'
   ) {
-    entry = { ...entry, rangeFileIdentity: { size: (rangeIdentity as Record<string, unknown>)['size'] as number, mtimeMs: (rangeIdentity as Record<string, unknown>)['mtimeMs'] as number } }
+    const fp = (rangeIdentity as Record<string, unknown>)['fp']
+    entry = { ...entry, rangeFileIdentity: { size: (rangeIdentity as Record<string, unknown>)['size'] as number, mtimeMs: (rangeIdentity as Record<string, unknown>)['mtimeMs'] as number, ...(typeof fp === 'string' ? { fp } : {}) } }
   }
   // Preserve the epoch snapshot so the manifest and the re-read denies still count only the reads since the last compaction after a save -> load round-trip; dropped, every later process would fall back to lifetime counts.
   const epochBase = o['epochBase']
@@ -140,13 +141,13 @@ function asPyFileEntry(dictKey: string, raw: unknown): FileEntry | null {
 }
 
 /** Coerce an untrusted value into the persisted per-file range identities (size + mtimeMs), dropping anything malformed. Never throws. */
-function asRangeIdentities(raw: unknown): Array<[string, { size: number; mtimeMs: number }]> {
+function asRangeIdentities(raw: unknown): Array<[string, FileRangeIdentity]> {
   if (!Array.isArray(raw)) return []
-  const out: Array<[string, { size: number; mtimeMs: number }]> = []
+  const out: Array<[string, FileRangeIdentity]> = []
   for (const pair of raw) {
     if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string') continue
     const id = pair[1] as Record<string, unknown> | null
-    if (id !== null && typeof id === 'object' && typeof id['size'] === 'number' && typeof id['mtimeMs'] === 'number') out.push([pair[0], { size: id['size'], mtimeMs: id['mtimeMs'] }])
+    if (id !== null && typeof id === 'object' && typeof id['size'] === 'number' && typeof id['mtimeMs'] === 'number') out.push([pair[0], { size: id['size'], mtimeMs: id['mtimeMs'], ...(typeof id['fp'] === 'string' ? { fp: id['fp'] } : {}) }])
   }
   return out
 }
