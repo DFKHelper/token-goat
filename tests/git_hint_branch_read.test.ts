@@ -114,12 +114,27 @@ describe('readBranchWithoutSpawn agrees with git', () => {
   })
 
   it('reads a submodule, whose .git file points into the superproject modules directory', () => {
-    const lib = newRepo('lib')
     const superproject = newRepo('super')
-    git(superproject, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'vendor')
     const sub = path.join(superproject, 'vendor')
+    const modules = path.join(superproject, '.git', 'modules', 'vendor')
+    // The layout `git submodule add` leaves, built with two git calls where that command starts 18 git processes (17 s on Windows, counted with GIT_TRACE2_EVENT): git itself creates the repository inside the superproject's modules directory, then the two files git writes for a submodule are put in the form it writes them. CAPTURE from `git submodule add` of a local repository (git 2.53.0.windows.1): the submodule's .git file reads `gitdir: ../.git/modules/vendor`, and modules/vendor/config holds `worktree = ../../../vendor` under [core].
+    fs.mkdirSync(path.dirname(modules), { recursive: true })
+    const trace = path.join(root, 'trace2.json')
+    process.env['GIT_TRACE2_EVENT'] = trace
+    try {
+      git(superproject, 'init', '-q', '-b', 'inside', `--separate-git-dir=${modules}`, sub)
+      git(sub, 'commit', '-q', '--allow-empty', '-m', 'first')
+    } finally {
+      delete process.env['GIT_TRACE2_EVENT']
+    }
+    const started = fs.readFileSync(trace, 'utf8').split('\n').filter((line) => line.includes('"event":"start"')).length
+    // Two git calls start two processes, and git may add its detached `maintenance` after the commit; a `git submodule add` starts 18.
+    expect(started, 'git processes started to build the submodule layout').toBeLessThanOrEqual(4)
+    // Removed first because git marks the file hidden on Windows, where opening a hidden file for writing is refused.
+    fs.rmSync(path.join(sub, '.git'))
+    fs.writeFileSync(path.join(sub, '.git'), 'gitdir: ../.git/modules/vendor\n')
+    fs.appendFileSync(path.join(modules, 'config'), '[core]\n\tworktree = ../../../vendor\n')
     expect(fs.statSync(path.join(sub, '.git')).isFile(), 'precondition: a submodule has a .git file').toBe(true)
-    git(sub, 'checkout', '-q', '-b', 'inside')
     expect(readBranchWithoutSpawn(sub)).toBe(gitsAnswer(sub))
     expect(readBranchWithoutSpawn(sub)).toBe('inside')
     expect(readBranchWithoutSpawn(superproject)).toBe('main')
