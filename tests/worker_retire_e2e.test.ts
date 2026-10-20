@@ -62,9 +62,13 @@ function mkIsolated(prefix: string): string {
 }
 
 /** Only pids this file started: a daemon that retired is already gone, and one that did not is killed so a failing run never leaves it behind. */
+function reapStarted(readCommandLine?: (pid: number) => string | null): void {
+  killAllIfCommandLine(startedPids.splice(0), isWorkerDaemonCommandLine, readCommandLine === undefined ? {} : { readCommandLine })
+}
+
 afterEach(() => {
   try {
-    killAllIfCommandLine(startedPids.splice(0), isWorkerDaemonCommandLine)
+    reapStarted()
   } finally {
     for (const d of tempDirs.splice(0)) {
       try {
@@ -75,6 +79,12 @@ afterEach(() => {
     }
   }
 })
+
+/** The test saw `pid` exit, so its number is free for the OS to give to any other process, and the cleanup above must neither read nor signal whatever holds it now. A stranger whose command line the query cannot read makes killIfCommandLine throw, because it cannot be told from a daemon that is still running. */
+function observedGone(pid: number): void {
+  const at = startedPids.indexOf(pid)
+  if (at !== -1) startedPids.splice(at, 1)
+}
 
 function startWorker(env: NodeJS.ProcessEnv, cwd: string): number {
   const start = runBundle(['worker', 'start'], env, cwd)
@@ -102,6 +112,8 @@ describe('the built daemon retires on its own', () => {
       fs.rmSync(workerPidPath(dir))
 
       await waitFor('the daemon to retire after its pid file went missing', ctx.signal, () => !alive(pid))
+      observedGone(pid)
+      expect(startedPids, 'a pid seen to exit is not examined again').not.toContain(pid)
     },
     60000,
   )
@@ -119,6 +131,8 @@ describe('the built daemon retires on its own', () => {
       await waitFor('the daemon to write its drain heartbeat', ctx.signal, () => heartbeatNames(dataBase, pid), exitedNote(pid))
 
       await waitFor('the idle daemon to exit', ctx.signal, () => !alive(pid))
+      observedGone(pid)
+      expect(startedPids, 'a pid seen to exit is not examined again').not.toContain(pid)
       // Its exit handler removes the pid file it owned, so the next ensureWorkerAlive sees no daemon.
       expect(fs.existsSync(workerPidPath(dir)), 'a retired daemon left its pid file behind').toBe(false)
 
@@ -175,7 +189,35 @@ describe('the built daemon retires on its own', () => {
       stopWorker(dir, undefined, { entryScript: BUNDLE })
 
       await waitFor('the daemon stopped inside its startup grace to die', ctx.signal, () => !alive(pid))
+      observedGone(pid)
+      expect(startedPids, 'a pid seen to exit is not examined again').not.toContain(pid)
     },
     45000,
   )
+})
+
+describe('the cleanup of the pids this file started', () => {
+  it('does not read or signal a pid it saw exit, whose number another process may hold by now', () => {
+    // The stand-in is a live process holding the number, as a stranger does after the daemon's exit; its command line is unreadable, which makes killIfCommandLine throw for any pid still listed.
+    const stranger = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30)'], { stdio: 'ignore', windowsHide: true })
+    try {
+      const pid = stranger.pid as number
+      const reads: number[] = []
+      const unreadable = (p: number): null => {
+        reads.push(p)
+        return null
+      }
+      startedPids.push(pid)
+      expect(() => reapStarted(unreadable), 'control: a listed pid that is alive and unreadable stops the cleanup').toThrow(/could not be read/)
+      expect(reads).toStrictEqual([pid])
+
+      reads.length = 0
+      startedPids.push(pid)
+      observedGone(pid)
+      reapStarted(unreadable)
+      expect(reads, 'a pid seen to exit was read anyway').toStrictEqual([])
+    } finally {
+      stranger.kill('SIGKILL')
+    }
+  })
 })
