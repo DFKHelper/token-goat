@@ -52,9 +52,14 @@ const idle: ChildProcess[] = []
 /** Resolves when the fake has printed its ready line, which every fake script does only after its own setup (process.title included) is done; rejects if it exits first. */
 const ready = new Map<ChildProcess, Promise<void>>()
 
-/** The command line Windows reports for a process started with `argv`: CreateProcess takes one string, which libuv builds by quoting each argument that holds a blank or a quote (quotes inside escaped with a backslash). FORMAT-DERIVED from libuv's quote_cmd_arg in src/win/process.c, whose result Win32_Process.CommandLine reports; the parity row below holds it to what PowerShell prints for the same fakes. */
+/** The command line Windows reports for a process started with `argv`, quoted as libuv v1.51.0 src/win/process.c quote_cmd_arg does: an empty argument becomes `""`, one holding a space, tab or quote is wrapped, each backslash run before a quote or the argument's end is doubled, and each quote is escaped. FORMAT-DERIVED from that function, whose result Win32_Process.CommandLine reports; the parity row below holds it to what PowerShell prints for the same fakes. */
 function windowsCommandLine(argv: readonly string[]): string {
-  return argv.map((a) => (/[\s"]/.test(a) || a === '' ? `"${a.replace(/"/g, '\\"')}"` : a)).join(' ')
+  return argv.map((a) => {
+    if (a === '') return '""'
+    if (!/[ \t"]/.test(a)) return a
+    const body = a.replace(/(\\*)("|$)/g, (_match: string, run: string, end: string) => run + run + (end === '"' ? '\\"' : ''))
+    return `"${body}"`
+  }).join(' ')
 }
 
 /** A long-lived process whose command line stands in for claude's. */
@@ -182,6 +187,24 @@ function link(target: string, at: string, type: 'dir' | 'junction' = 'dir'): boo
 }
 
 const PATTERN_SKILL = '---\nname: s\ndisallowed-tools: Bash(curl *)\n---\n'
+
+describe('windowsCommandLine: quoting as libuv quote_cmd_arg does', () => {
+  it('matches every pair in its comment table, the empty argument, and a newline with no blank or quote', () => {
+    // FORMAT-DERIVED from the input/output comment table in libuv v1.51.0 src/win/process.c quote_cmd_arg, plus its empty-argument and no-quote branches.
+    const pairs: ReadonlyArray<readonly [string, string]> = [
+      ['hello"world', '"hello\\"world"'],
+      ['hello""world', '"hello\\"\\"world"'],
+      ['hello\\world', 'hello\\world'],
+      ['hello\\\\world', 'hello\\\\world'],
+      ['hello\\"world', '"hello\\\\\\"world"'],
+      ['hello\\\\"world', '"hello\\\\\\\\\\"world"'],
+      ['hello world\\', '"hello world\\\\"'],
+      ['', '""'],
+      ['a\nb', 'a\nb'],
+    ]
+    for (const [input, expected] of pairs) expect(windowsCommandLine([input])).toBe(expected)
+  })
+})
 
 describe('frontmatterAddsRule', () => {
   it('a disallowed-tools entry with a pattern adds a rule, in either spelling and list form', () => {
