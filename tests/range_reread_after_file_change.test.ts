@@ -117,6 +117,26 @@ describe.each(['app.ts', 'server.log'])('a repeated ranged Read of %s after an o
     expect(await rangedRead(sid, file, 10, 21)).toBeNull()
   })
 
+  // Fixture provenance: HAND-DERIVED. The sequence is read, change, read through, read again with nothing changed since: the second re-read must be refused, because the range recorded by the read-through describes the bytes now on disk.
+  it('is refused on the next unchanged re-read after a size-changing edit let one through', async () => {
+    const sid = newSessionId()
+    const file = makeFile(name)
+    expect(await rangedRead(sid, file, 1, 20)).toBeNull()
+    editOutsideSession(file, 5)
+    expect(await rangedRead(sid, file, 1, 20)).toBeNull()
+    expect(await rangedRead(sid, file, 1, 20)).toContain('Lines 1..20 of this file were already read this session')
+  })
+
+  it('is refused on the next unchanged re-read after a same-size rewrite let one through', async () => {
+    const sid = newSessionId()
+    const file = makeFile(name)
+    stampWholeSecondMtime(file)
+    expect(await rangedRead(sid, file, 10, 21)).toBeNull()
+    rewriteKeepingSizeAndMtime(file, 12)
+    expect(await rangedRead(sid, file, 10, 21)).toBeNull()
+    expect(await rangedRead(sid, file, 10, 21)).toContain('Lines 10..30 of this file were already read this session')
+  })
+
   it('is still refused when nothing changed (control)', async () => {
     const sid = newSessionId()
     const file = makeFile(name)

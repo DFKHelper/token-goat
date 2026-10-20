@@ -114,7 +114,7 @@ function asFileEntry(raw: unknown): FileEntry | null {
     typeof (rangeIdentity as Record<string, unknown>)['mtimeMs'] === 'number'
   ) {
     const fp = (rangeIdentity as Record<string, unknown>)['fp']
-    entry = { ...entry, rangeFileIdentity: { size: (rangeIdentity as Record<string, unknown>)['size'] as number, mtimeMs: (rangeIdentity as Record<string, unknown>)['mtimeMs'] as number, ...(typeof fp === 'string' ? { fp } : {}) } }
+    entry = { ...entry, rangeFileIdentity: { size: (rangeIdentity as Record<string, unknown>)['size'] as number, mtimeMs: (rangeIdentity as Record<string, unknown>)['mtimeMs'] as number, ...(typeof fp === 'string' && RANGE_FP_SHAPE.test(fp) ? { fp } : {}) } }
   }
   // Preserve the epoch snapshot so the manifest and the re-read denies still count only the reads since the last compaction after a save -> load round-trip; dropped, every later process would fall back to lifetime counts.
   const epochBase = o['epochBase']
@@ -140,6 +140,9 @@ function asPyFileEntry(dictKey: string, raw: unknown): FileEntry | null {
   return { path: p, readCount, lastReadAt: lastReadTs * 1000, wasEdited, sizeBytes }
 }
 
+/** The shape of the SHA-256 hex digest the session writes as a range identity's `fp` (64 lowercase hex characters). A persisted `fp` of any other shape is left out on load, so its ranges count as unproven and are read through. */
+const RANGE_FP_SHAPE = /^[0-9a-f]{64}$/
+
 /** Coerce an untrusted value into the persisted per-file range identities (size + mtimeMs), dropping anything malformed. Never throws. */
 function asRangeIdentities(raw: unknown): Array<[string, FileRangeIdentity]> {
   if (!Array.isArray(raw)) return []
@@ -147,7 +150,7 @@ function asRangeIdentities(raw: unknown): Array<[string, FileRangeIdentity]> {
   for (const pair of raw) {
     if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== 'string') continue
     const id = pair[1] as Record<string, unknown> | null
-    if (id !== null && typeof id === 'object' && typeof id['size'] === 'number' && typeof id['mtimeMs'] === 'number') out.push([pair[0], { size: id['size'], mtimeMs: id['mtimeMs'], ...(typeof id['fp'] === 'string' ? { fp: id['fp'] } : {}) }])
+    if (id !== null && typeof id === 'object' && typeof id['size'] === 'number' && typeof id['mtimeMs'] === 'number') out.push([pair[0], { size: id['size'], mtimeMs: id['mtimeMs'], ...(typeof id['fp'] === 'string' && RANGE_FP_SHAPE.test(id['fp']) ? { fp: id['fp'] } : {}) }])
   }
   return out
 }

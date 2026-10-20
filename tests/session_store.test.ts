@@ -793,6 +793,56 @@ describe('rangeFileIdentity persistence', () => {
     expect(disk?.files.find((f) => f.path.endsWith('range_fp.ts'))?.rangeFileIdentity?.fp).toBe(expected)
     expect(disk?.fileLineRangeIdentities?.find(([p]) => p.endsWith('range_fp.ts'))?.[1].fp).toBe(expected)
   })
+
+  // HAND-DERIVED: the expected digests are computed with node:crypto from the two byte strings written here, not with the code's fingerprint helper. recordFileLineRange itself drops the ranges of a file that changed (no hook call before it), and the range it then records must carry the hash of the new bytes in both identity stores.
+  it('stamps the hash of the bytes now on disk when recording a range drops the ranges of a changed file', () => {
+    const filePath = path.join(tmpHome, 'range_rehash.ts')
+    const before = 'export const x = 1\n'
+    const after = 'export const x = 2222\n'
+    fs.writeFileSync(filePath, before)
+    importSessionState(empty())
+    recordFileRead(filePath)
+    recordFileLineRange(filePath, 10, 30)
+    fs.writeFileSync(filePath, after)
+    recordFileLineRange(filePath, 40, 50)
+
+    const expected = createHash('sha256').update(after).digest('hex')
+    const got = exportSessionState()
+    expect(got.files.find((f) => f.path.endsWith('range_rehash.ts'))?.rangeFileIdentity?.fp).toBe(expected)
+    expect(got.fileLineRangeIdentities?.find(([p]) => p.endsWith('range_rehash.ts'))?.[1].fp).toBe(expected)
+  })
+
+  // HAND-DERIVED: a SHA-256 hex digest is 64 characters of [0-9a-f] (FIPS 180-4 gives 256 bits, two hex digits per byte); the cases are a wrong length, an upper-case spelling and a non-hex character of the right length, none of which the session ever writes.
+  it.each([
+    ['too short', 'abc123'],
+    ['upper case', 'A'.repeat(64)],
+    ['not hex', 'g'.repeat(64)],
+  ])('comes back without a content hash that is %s, in both identity stores', (_label, bad) => {
+    const filePath = path.join(tmpHome, 'range_bad_fp.ts')
+    fs.writeFileSync(filePath, 'export const x = 1\n')
+    importSessionState(empty())
+    recordFileRead(filePath)
+    recordFileLineRange(filePath, 10, 30)
+    saveSessionState('sid-range-bad-fp')
+
+    const onDisk = JSON.parse(fs.readFileSync(sessionFile('sid-range-bad-fp'), 'utf8')) as SerializedSession
+    const tampered = {
+      ...onDisk,
+      files: onDisk.files.map((f) => (f.rangeFileIdentity === undefined ? f : { ...f, rangeFileIdentity: { ...f.rangeFileIdentity, fp: bad } })),
+      fileLineRangeIdentities: (onDisk.fileLineRangeIdentities ?? []).map(([p, id]) => [p, { ...id, fp: bad }]),
+    }
+    fs.writeFileSync(sessionFile('sid-range-bad-fp'), JSON.stringify(tampered))
+
+    importSessionState(empty())
+    loadSessionState('sid-range-bad-fp')
+    const got = exportSessionState()
+    const entryIdentity = got.files.find((f) => f.path.endsWith('range_bad_fp.ts'))?.rangeFileIdentity
+    const rangeIdentity = got.fileLineRangeIdentities?.find(([p]) => p.endsWith('range_bad_fp.ts'))?.[1]
+    expect(entryIdentity).toBeDefined()
+    expect(rangeIdentity).toBeDefined()
+    expect(entryIdentity?.fp).toBeUndefined()
+    expect(rangeIdentity?.fp).toBeUndefined()
+  })
 })
 
 // Bug: recordFileEdit clears a file's line-range history in memory (an edit moves the numbers those ranges are matched on), but mergeLineRanges did a plain per-file union against whatever was already on disk, so the very next save resurrected the cleared entries straight off the disk copy written before the edit -- the clearing never actually persisted. Simulates two writer processes through the real save path: the first process records ranges/served output for two files and saves; the second process loads that disk state (as a fresh process would), edits one of the two files, and saves again. The edited file's ranges must be gone from disk while the other file's, which no process touched after the first save, must survive untouched. The served-output ids are matched on the served bytes rather than on line position, so they are deliberately NOT cleared by an edit and must survive on both files -- asserted here so a re-introduced delete cannot pass this merge test.

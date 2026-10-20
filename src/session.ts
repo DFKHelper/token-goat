@@ -697,7 +697,7 @@ export function recordFileLineRange(filePath: string, start: number, end: number
   if (identity !== undefined && getFileLineRangeIdentity(normalized) === undefined && (_fileLineRanges.get(key)?.length ?? 0) > 0) resetFileLineRanges(normalized)
   const ranges = _fileLineRanges.get(key) ?? []
   // The hash is taken when a set of ranges starts and kept while they stand: it must describe the bytes the first range was served from, so a set already on record never takes a newer one.
-  const priorFp = (_fileLineRangeIdentities.get(key) ?? entry?.rangeFileIdentity)?.fp
+  const priorFp = getFileLineRangeIdentity(normalized)?.fp
   const fp = priorFp ?? (ranges.length === 0 && identity !== undefined ? boundedFingerprint(normalized, identity.size, hashNow) : undefined)
   if (!ranges.some(([s, e]) => s === start && e === end)) {
     ranges.push([start, end])
@@ -759,10 +759,18 @@ export function getFileLineRanges(filePath: string): ReadonlyArray<readonly [num
 
 /** Drop every recorded line range for `filePath` without marking it edited (unlike {@link recordFileEdit}, which does both): a change discovered on disk that the session itself never made -- an edit outside this session, or a Read/Write by another process -- still invalidates the ranges the exact-overlap dedup trusts, but it must not falsely mark the file as edited by this session for the compaction manifest and resume logic that read `wasEdited`. */
 export function resetFileLineRanges(filePath: string): void {
-  const key = foldPath(normalizePath(filePath))
+  const normalized = normalizePath(filePath)
+  const key = foldPath(normalized)
   clearReadRangeEvasion(key)
   _fileLineRanges.delete(key)
   _fileLineRangeIdentities.delete(key)
+  // The identity stamped on the session entry marks the ranges just dropped, and its hash describes bytes they were served from; left in place, the next range recorded would inherit that hash for a file that has changed since.
+  const entryKey = resolveFilesKey(normalized)
+  const entry = _files.get(entryKey)
+  if (entry?.rangeFileIdentity !== undefined) {
+    const { rangeFileIdentity: _dropped, ...rest } = entry
+    _files.set(entryKey, rest)
+  }
   _fileLineRangesReset.add(key)
 }
 
