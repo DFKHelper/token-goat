@@ -30,6 +30,7 @@ import { guardThenFence } from './fence_cap.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
+import { expandGlobs } from './cli_diagnostics.js'
 import {
   isGhAvailable,
   isGhAuthenticated,
@@ -1098,10 +1099,27 @@ export function runGrep(opts: GrepOptions): number {
   //
   // Only a RELATIVE entry is anchored. An absolute one has no base to be ambiguous about, and rewriting it would change nothing but its spelling -- `normalizePath` lower-cases the drive letter, which two tests caught immediately by comparing reported paths byte for byte. An absolute entry that points outside the root is the gate's business, not this function's, and the gate refuses it before the search ever starts.
   const anchorSearchPath = (p: string): string => (opts.projectRoot === undefined || path.isAbsolute(p) ? p : path.resolve(opts.projectRoot, p))
-  const searchPaths =
+  const rawPaths =
     opts.path === undefined
       ? [opts.projectRoot ?? process.cwd()]
-      : (Array.isArray(opts.path) ? opts.path : [opts.path]).map(anchorSearchPath)
+      : Array.isArray(opts.path)
+        ? opts.path
+        : [opts.path]
+  const rootDir = opts.projectRoot ?? process.cwd()
+  const searchPaths: string[] = []
+  for (const raw of rawPaths) {
+    if (raw.includes('*') || raw.includes('?') || raw.includes('{')) {
+      // Under MCP confinement, globs are not allowed to expand to paths outside the root
+      const globbed = expandGlobs(rootDir, [raw])
+      if (globbed.length > 0) {
+        for (const g of globbed) {
+          searchPaths.push(anchorSearchPath(g))
+        }
+        continue
+      }
+    }
+    searchPaths.push(anchorSearchPath(raw))
+  }
   const maxLines = opts.maxLines ?? GREP_MAX_LINES
   const contextLines = opts.context ?? 0
 

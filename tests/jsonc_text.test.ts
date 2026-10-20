@@ -51,6 +51,35 @@ describe('parseJsonOrJsonc', () => {
   it('returns strict JSON unchanged', () => {
     expect(parseJsonOrJsonc('{"a":[1,{"b":null}]}')).toEqual({ a: [1, { b: null }] })
   })
+
+  it('resiliently parses JSON wrapped in tool overflow preview preambles', () => {
+    const wrapped = `Output too large to read at once (52.5 KB). Saved to: C:\\TEMP\\output.txt
+Preview (first 500 chars):
+{
+  "total": 42,
+  "items": ["apple", "banana"]
+}`
+    expect(parseJsonOrJsonc(wrapped)).toEqual({
+      total: 42,
+      items: ['apple', 'banana'],
+    })
+
+    const wrappedArray = `Header text here
+[
+  {"id": 1},
+  {"id": 2}
+]`
+    expect(parseJsonOrJsonc(wrappedArray)).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it('correctly parses JSONC when leading comments contain braces', () => {
+    const jsoncWithCommentBraces = `/* Note: { important: true } configuration below */
+{
+  // Another comment: [1, 2, 3]
+  "status": "ok"
+}`
+    expect(parseJsonOrJsonc(jsoncWithCommentBraces)).toEqual({ status: 'ok' })
+  })
 })
 
 describe('JSON read commands accept JSONC through the built bundle', () => {

@@ -184,4 +184,50 @@ describe('runDiff (real git repo + real index, no injected callbacks)', () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it('supports comma-separated multi-symbol specs (e.g. file::symA,symB)', () => {
+    const root = makeRepo()
+    try {
+      const file = join(root, 'multi.ts')
+      writeFileSync(
+        file,
+        [
+          'export function fnA(): number { return 1 }',
+          'export function fnB(): number { return 2 }',
+          'export function fnC(): number { return 3 }',
+        ].join('\n') + '\n',
+      )
+      git(['add', 'multi.ts'], root)
+      git(['commit', '-m', 'init'], root)
+
+      indexFileSync(normalizePath(file))
+
+      writeFileSync(
+        file,
+        [
+          'export function fnA(): number { return 100 }',
+          'export function fnB(): number { return 200 }',
+          'export function fnC(): number { return 3 }',
+        ].join('\n') + '\n',
+      )
+
+      const { stdout, stderr } = capture(() => {
+        expect(runDiff({ spec: `${file}::fnA,fnB`, projectRoot: root })).toBe(0)
+      })
+      expect(stderr).toBe('')
+      expect(stdout).toContain('100')
+      expect(stdout).toContain('200')
+      expect(stdout).not.toContain('fnC')
+
+      const jsonRun = capture(() => {
+        expect(runDiff({ spec: `${file}::fnA,fnB`, projectRoot: root, json: true })).toBe(0)
+      })
+      const parsed = JSON.parse(jsonRun.stdout) as { items: Array<{ symbol: string }> }
+      expect(parsed.items).toHaveLength(2)
+      expect(parsed.items[0]?.symbol).toBe('fnA')
+      expect(parsed.items[1]?.symbol).toBe('fnB')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

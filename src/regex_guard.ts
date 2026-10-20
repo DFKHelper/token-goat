@@ -481,9 +481,22 @@ export function compileGuardedRegex(pattern: string, flags = ''): GuardedRegex {
   if (pattern.length > MAX_PATTERN_LENGTH) {
     return { ok: false, reason: `is longer than ${MAX_PATTERN_LENGTH} characters, which is past what can be checked for a stall` }
   }
+
+  // Normalize PCRE/Python/ripgrep inline flags (e.g. `(?i)`, `(?m)`, `(?s)`) at start of pattern, which fail in JavaScript's RegExp constructor.
+  let cleanPattern = pattern
+  let activeFlags = flags
+  const inlineFlagsMatch = cleanPattern.match(/^\(\?([imsuy]+)\)/)
+  if (inlineFlagsMatch !== null) {
+    const inline = inlineFlagsMatch[1]!
+    cleanPattern = cleanPattern.slice(inlineFlagsMatch[0]!.length)
+    for (const ch of inline) {
+      if (!activeFlags.includes(ch)) activeFlags += ch
+    }
+  }
+
   let re: RegExp
   try {
-    re = new RegExp(pattern, flags)
+    re = new RegExp(cleanPattern, activeFlags)
   } catch (e) {
     return { ok: false, reason: e instanceof Error ? e.message : 'is not a valid regular expression' }
   }

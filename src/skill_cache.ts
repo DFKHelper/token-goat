@@ -2,6 +2,7 @@
 
 import * as fs from 'fs/promises'
 import { resolve } from 'path'
+import { copilotSkillPath } from './copilot_skill_path.js'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { dataDir } from './constants.js'
 import { shortFingerprint } from './fingerprint.js'
@@ -825,8 +826,13 @@ export async function getSkillFilePath(skillName: string): Promise<string | null
       }
     }
 
-    // Cache miss: fall back to the on-disk skill install at ~/.claude/skills/<name>/SKILL.md, so skill-compact/skill-body resolve for any installed skill even when it was never loaded via the Skill hook this session.
-    return await installedSkillPath(name)
+    // Cache miss: fall back to the on-disk skill install at ~/.claude/skills/<name>/SKILL.md,
+    // or Copilot CLI's project/personal skill roots (e.g. ~/.copilot/skills/<name>/SKILL.md),
+    // so skill-compact/skill-body/skill-section resolve for any installed skill even when it was never loaded via the Skill hook this session.
+    const claudePath = await installedSkillPath(name)
+    if (claudePath) return claudePath
+
+    return await copilotSkillPath(name, process.cwd())
   } catch {
     return null
   }

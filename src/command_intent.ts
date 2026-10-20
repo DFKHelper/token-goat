@@ -3,6 +3,14 @@
 /** Wrong names grouped by the intent behind them, each mapped to the commands that actually serve it. Kept deliberately small: a guess list long enough to need maintenance is one that will drift out of sync with the real commands, and a wrong hint is worse than none. */
 const INTENT_SUGGESTIONS: ReadonlyArray<readonly [readonly string[], string]> = [
   [
+    ['health', 'check', 'status'],
+    '`doctor` to inspect index and database health, `stats` for token and read savings, or `commands` to list available operations',
+  ],
+  [
+    ['rg'],
+    '`grep <pattern>` for literal text, `find <text>` to locate symbols or files, `search <query>` to try every channel at once, or `semantic "<description>"` for concept search',
+  ],
+  [
     ['lookup', 'query'],
     "`search <query>` to try every channel at once, `grep <pattern>` for literal text, `semantic \"<description>\"` to search by concept, or `symbol <name>` to find a definition by name",
   ],

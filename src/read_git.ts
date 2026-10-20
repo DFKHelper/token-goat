@@ -10,7 +10,7 @@ import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { emitGuarded, guardJsonRows, guardText, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
 import type { GitResult } from './types.js'
-import { resolveProjectConfinement, resolveSymbolSpecOrEmitError } from './read_spec.js'
+import { parseColonLineRange, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement, resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { trimBlankLines } from './read_suggest.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
@@ -508,6 +508,115 @@ export function runDiff(opts: DiffOptions): number {
     emitUnsafeRef(opts.ref)
     return 1
   }
+
+  // Cross-file or comma-separated multi-symbol support: `file::a,b,c` or `file1::a,file2::b`
+  const crossFile = parseCrossFileMultiSpec(opts.spec)
+  if (crossFile !== null) {
+    if (opts.json === true) {
+      const items: unknown[] = []
+      let exitCode = 0
+      for (const pair of crossFile) {
+        const match = resolveSymbolSpecOrEmitError('diff', `${pair.file}::${pair.symbol}`, opts.projectRoot)
+        if (match === null) {
+          exitCode = 1
+          continue
+        }
+        const cwd = opts.projectRoot ?? process.cwd()
+        const diffArgs =
+          opts.ref !== undefined
+            ? ['diff', opts.ref, '--unified=0', '--', match.filePath]
+            : ['diff', '--unified=0', '--', match.filePath]
+        let diffResult
+        try {
+          diffResult = runGit(diffArgs, { cwd })
+        } catch {
+          exitCode = 1
+          continue
+        }
+        if (diffResult.exitCode !== 0) {
+          exitCode = diffResult.exitCode
+          continue
+        }
+        const { hunks } = splitDiffHunks(diffResult.stdout)
+        const diffFileScoped = isVirtualIndexedPath(match.filePath)
+        const overlapping = diffFileScoped ? hunks : hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
+        const capped = guardJsonRows(overlapping.map((h) => ({ start: h.start, end: h.end, text: h.text })))
+        items.push({
+          symbol: match.name,
+          file: match.filePath,
+          lineStart: match.lineStart,
+          lineEnd: match.lineEnd,
+          hunks: capped.items,
+          truncated: capped.truncated,
+          totalCount: capped.totalCount,
+        })
+      }
+      emit(displaySafeJson({ items, truncated: false, totalCount: items.length }))
+      return exitCode
+    }
+    let exitCode = 0
+    for (const pair of crossFile) {
+      const code = runDiff({ ...opts, spec: `${pair.file}::${pair.symbol}` })
+      if (code !== 0) exitCode = code
+    }
+    return exitCode
+  }
+
+  const { file, symbol } = parseReadSpec(opts.spec)
+  if (symbol !== undefined && symbol.includes(',') && parseColonLineRange(symbol) === null) {
+    const symbols = symbol.split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+    if (symbols.length > 1) {
+      if (opts.json === true) {
+        const items: unknown[] = []
+        let exitCode = 0
+        for (const sym of symbols) {
+          const match = resolveSymbolSpecOrEmitError('diff', `${file}::${sym}`, opts.projectRoot)
+          if (match === null) {
+            exitCode = 1
+            continue
+          }
+          const cwd = opts.projectRoot ?? process.cwd()
+          const diffArgs =
+            opts.ref !== undefined
+              ? ['diff', opts.ref, '--unified=0', '--', match.filePath]
+              : ['diff', '--unified=0', '--', match.filePath]
+          let diffResult
+          try {
+            diffResult = runGit(diffArgs, { cwd })
+          } catch {
+            exitCode = 1
+            continue
+          }
+          if (diffResult.exitCode !== 0) {
+            exitCode = diffResult.exitCode
+            continue
+          }
+          const { hunks } = splitDiffHunks(diffResult.stdout)
+          const diffFileScoped = isVirtualIndexedPath(match.filePath)
+          const overlapping = diffFileScoped ? hunks : hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
+          const capped = guardJsonRows(overlapping.map((h) => ({ start: h.start, end: h.end, text: h.text })))
+          items.push({
+            symbol: match.name,
+            file: match.filePath,
+            lineStart: match.lineStart,
+            lineEnd: match.lineEnd,
+            hunks: capped.items,
+            truncated: capped.truncated,
+            totalCount: capped.totalCount,
+          })
+        }
+        emit(displaySafeJson({ items, truncated: false, totalCount: items.length }))
+        return exitCode
+      }
+      let exitCode = 0
+      for (const sym of symbols) {
+        const code = runDiff({ ...opts, spec: `${file}::${sym}` })
+        if (code !== 0) exitCode = code
+      }
+      return exitCode
+    }
+  }
+
   const match = resolveSymbolSpecOrEmitError('diff', opts.spec, opts.projectRoot)
   if (match === null) return 1
   const cwd = opts.projectRoot ?? process.cwd()

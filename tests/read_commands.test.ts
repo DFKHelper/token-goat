@@ -3880,6 +3880,13 @@ describe('read_commands', () => {
       expect(stdout).toContain('hello world')
     })
 
+    it('supports inline flags like (?i) in pattern', () => {
+      const f = path.join(tempDir, 'case.txt')
+      fs.writeFileSync(f, 'Hello World')
+      const { stdout } = capture(() => { runGrep({ pattern: '(?i)hello', path: f }) })
+      expect(stdout).toContain('Hello World')
+    })
+
     it('returns 1 when no matches', () => {
       const f = path.join(tempDir, 'no-match.txt')
       fs.writeFileSync(f, 'nothing here')
@@ -4004,6 +4011,22 @@ describe('read_commands', () => {
       const { stdout } = capture(() => { runGrep({ pattern: 'match', path: f, json: true }) })
       const parsed = JSON.parse(stdout) as { items: Array<Record<string, unknown>> }
       expect(parsed.items[0]).not.toHaveProperty('context')
+    })
+
+    it('expands glob patterns in path (e.g. "dir/*.txt")', () => {
+      const sub = path.join(tempDir, 'globtest')
+      fs.mkdirSync(sub, { recursive: true })
+      fs.writeFileSync(path.join(sub, 'alpha_1.txt'), 'find_in_glob alpha')
+      fs.writeFileSync(path.join(sub, 'alpha_2.txt'), 'find_in_glob beta')
+      fs.writeFileSync(path.join(sub, 'ignored.log'), 'find_in_glob gamma')
+
+      const { stdout } = capture(() => {
+        const code = runGrep({ pattern: 'find_in_glob', path: path.join(sub, 'alpha_*.txt') })
+        expect(code).toBe(0)
+      })
+      expect(stdout).toContain('alpha_1.txt')
+      expect(stdout).toContain('alpha_2.txt')
+      expect(stdout).not.toContain('ignored.log')
     })
 
     // Confinement-vs-unconfined behavior split (see src/read_commands.ts's searchDir comment): under confinement (activePins non-null), a recursive grep resolves each symlink entry once and then traverses the REALPATH only, so the link cannot be repointed out from under the walk. Plain CLI grep -- never wrapped in withPinnedReads, so activePins stays null -- must keep its long-standing behavior of following the symlink pathname exactly as before.

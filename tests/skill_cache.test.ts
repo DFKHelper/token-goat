@@ -1014,6 +1014,29 @@ describe('getSkillFilePath / installedSkillPath disk fallback', () => {
   it('installedSkillPath rejects an unsafe (traversal) name', async () => {
     expect(await installedSkillPath('../etc')).toBeNull()
   })
+
+  it('getSkillFilePath falls back to copilotSkillPath when Claude Code paths miss', async () => {
+    const copilotSkillDir = path.resolve(__dirname, '.temp-copilot-skill-dir')
+    try {
+      await fs.rm(copilotSkillDir, { recursive: true, force: true })
+    } catch {
+      // ignore
+    }
+    await fs.mkdir(path.join(copilotSkillDir, '.github', 'skills', 'copilot-custom'), { recursive: true })
+    const skillPath = path.join(copilotSkillDir, '.github', 'skills', 'copilot-custom', 'SKILL.md')
+    await fs.writeFile(skillPath, '# Copilot Custom Skill')
+
+    const prevCwd = process.cwd()
+    try {
+      process.chdir(copilotSkillDir)
+      const resolved = await getSkillFilePath('copilot-custom')
+      expect(resolved).not.toBeNull()
+      expect(resolved).toBe(skillPath)
+    } finally {
+      process.chdir(prevCwd)
+      await fs.rm(copilotSkillDir, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('installedSkillPath — plugin-scoped `plugin:skill` resolution (regression)', () => {
