@@ -7,12 +7,28 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type * as Preflight from '../src/embed_preflight.js'
+import type * as Reconcile from '../src/reconcile_requests.js'
 
 // While held, a drained file dispatches no embed call (the worker returns before embedFileSerialized), so the only thing that can keep the loop out of its idle exit is the drained batch itself.
 const embedHold = vi.hoisted(() => ({ held: false }))
 vi.mock('../src/embed_preflight.js', async (importOriginal) => {
   const actual = await importOriginal<typeof Preflight>()
   return { ...actual, modelDownloadHeld: (now?: number) => embedHold.held || actual.modelDownloadHeld(now) }
+})
+
+// The loop awaits this once per cycle, after that cycle's drain: counting its calls lets a test wait for whole cycles instead of for time.
+const cycles = vi.hoisted(() => ({ count: 0, waiters: [] as Array<{ at: number; resolve: () => void }> }))
+vi.mock('../src/reconcile_requests.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof Reconcile>()
+  return {
+    ...actual,
+    drainReconcileRequestsAsync: (dir: string) => {
+      cycles.count++
+      for (const w of cycles.waiters) if (cycles.count >= w.at) w.resolve()
+      cycles.waiters = cycles.waiters.filter((w) => cycles.count < w.at)
+      return actual.drainReconcileRequestsAsync(dir)
+    },
+  }
 })
 
 import { appendDirtyQueuePaths } from '../src/dirty_queue.js'
@@ -193,19 +209,28 @@ describe('the daemon loop retires on its own', () => {
     const source = path.join(dir, 'busy_sample.ts')
     fs.writeFileSync(source, 'export const busySample = 1\n')
     let stop = false
+    // The loop reads Date.now for its idle clock, so the test owns that clock: it moves only when this test moves it, and a stall of the machine cannot pass the idle period between two appends. Real time decides nothing here; the test waits on whole cycles.
+    let clockMs = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => clockMs)
     const loop = runWorkerLoop(dir, 5, () => stop, { pidFileGraceMs: 60_000, idleExitMs: 400 })
-    // Fresh work every 80 ms for well over the idle period: each drained batch resets it. Changing the file keeps the sha gate from skipping it as unchanged. An embed in flight is a second, independent reason the loop counts as busy, so this guards the behaviour (work keeps the daemon alive), not the drained-batch line alone.
-    const started = Date.now()
-    let n = 0
-    let outcome: 'stopped' | 'running' = 'running'
-    while (Date.now() - started < 1500 && outcome === 'running') {
-      fs.writeFileSync(source, `export const busySample = ${++n}\n`)
-      appendDirtyQueuePaths(dir, [source])
-      outcome = await outcomeWithin(loop, 80)
+    let outcome: 'cycled' | 'left' = 'cycled'
+    try {
+      // Fresh work every 80 ms of loop clock for four idle periods: each drained batch resets it, so a loop that did not count the drain as busy has left by the sixth step. Changing the file keeps the sha gate from skipping it as unchanged. An embed in flight is a second, independent reason the loop counts as busy, so this guards the behaviour (work keeps the daemon alive), not the drained-batch line alone.
+      for (let n = 1; n <= 20 && outcome === 'cycled'; n++) {
+        fs.writeFileSync(source, `export const busySample = ${n}\n`)
+        appendDirtyQueuePaths(dir, [source])
+        // The first cycle that starts after the append drains it and marks the loop busy before it reaches the call that ends the second one.
+        const at = cycles.count + 2
+        const twoCycles = new Promise<void>((resolve) => cycles.waiters.push({ at, resolve }))
+        outcome = await Promise.race([twoCycles.then(() => 'cycled' as const), loop.then(() => 'left' as const)])
+        clockMs += 80
+      }
+    } finally {
+      stop = true
+      clock.mockRestore()
+      cycles.waiters = []
     }
-    expect(outcome, 'a daemon that kept draining work left as if it were idle').toBe('running')
-
-    stop = true
+    expect(outcome, 'a daemon that kept draining work left as if it were idle').toBe('cycled')
     await loop
   })
 })
