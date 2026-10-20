@@ -638,26 +638,42 @@ describe('the two destination lookups one bookmark entry makes', () => {
 })
 
 describe('the bounds on the answers a command may return', () => {
-  // --max-matches and --context are command-line integers, and the per-page budget bounds ONE page's text rather than the product of the two. Every per-page check passes while the retained answer grows without limit.
+  // --max-matches and --context are command-line integers, and the per-page budget bounds ONE page's text rather than the product of the two. Every per-page check passes while the retained answer grows without limit. locatePdfPages keeps at most one match per page, so the match cap is only reachable past MAX_LOCATE_MATCHES pages; the context cap is only reachable on a page wider than it. The two needs are met by two fixtures instead of one document that is both: a thousand tiny pages for the first and a few wide ones for the second, so neither parses the product of the two.
   const MANY_PAGES = MAX_LOCATE_MATCHES + 50
-  // 1,000 operators of 70 characters: ~71 KB of text per page, far past MAX_LOCATE_CONTEXT_CHARS and far under the page budget, so an uncapped --context returns the whole page and a capped one cannot. Rebuilt per call: pdfjs TRANSFERS the backing ArrayBuffer into its worker port, so a second getDocument over the same view fails with DataCloneError on a detached buffer.
-  const WIDE = pdfBomb({ ops: 300, charsPerOp: 70, pages: MANY_PAGES })
+  const WIDE_PAGES = 3
+  // One four-character operator per page: each page matches 'AAAA' exactly once and costs next to nothing to parse.
+  const TINY = pdfBomb({ ops: 1, charsPerOp: 4, pages: MANY_PAGES })
+  // 300 operators of 70 characters: ~21 KB of text per page, far past twice MAX_LOCATE_CONTEXT_CHARS (the widest honest centred snippet) and far under the page budget, so an uncapped --context returns the whole page and a capped one cannot. Rebuilt per call: pdfjs TRANSFERS the backing ArrayBuffer into its worker port, so a second getDocument over the same view fails with DataCloneError on a detached buffer.
+  const WIDE = pdfBomb({ ops: 300, charsPerOp: 70, pages: WIDE_PAGES })
+  const tiny = (): Uint8Array => new Uint8Array(TINY)
   const wide = (): Uint8Array => new Uint8Array(WIDE)
 
-  it('has a fixture that really is wider than both caps, or neither assertion below means anything', async () => {
+  it('has fixtures that really are past both caps, or neither assertion below means anything', async () => {
+    const many = await extractPdfText(tiny(), '1')
+    expect(many.pageCount).toBe(MANY_PAGES)
+    expect(many.pageCount).toBeGreaterThan(MAX_LOCATE_MATCHES)
+    expect(many.text).toContain('AAAA')
     const { pageCount, text } = await extractPdfText(wide(), '1')
-    expect(pageCount).toBe(MANY_PAGES)
+    expect(pageCount).toBe(WIDE_PAGES)
     expect(text.length).toBeGreaterThan(MAX_LOCATE_CONTEXT_CHARS * 4)
-  }, 120_000)
+  })
 
-  it('caps how many matches and how much context pdf-locate will hold, whatever the flags ask for', async () => {
-    const result = await locatePdfPages(wide(), 'AAAA', { maxMatches: 10_000_000, context: 10_000_000 })
+  it('caps how many matches pdf-locate will hold, whatever the flags ask for', async () => {
+    const result = await locatePdfPages(tiny(), 'AAAA', { maxMatches: 10_000_000, context: 10_000_000 })
     expect(result.matches).toHaveLength(MAX_LOCATE_MATCHES)
+    expect(result.truncated).toBe(true)
+  })
+
+  it('caps how much context pdf-locate will hold per match, whatever the flags ask for', async () => {
+    const result = await locatePdfPages(wide(), 'AAAA', { maxMatches: 10_000_000, context: 10_000_000 })
+    expect(result.matches).toHaveLength(WIDE_PAGES)
     // locateSnippet centres the window, so the widest honest snippet is about twice the setting.
     for (const match of result.matches) {
       expect(match.snippet.length).toBeLessThanOrEqual(MAX_LOCATE_CONTEXT_CHARS + 8)
+      // The match opens the page, so the centred window keeps only its trailing half (about 2,000 characters): still a real window of the page, not an empty clamp.
+      expect(match.snippet.length).toBeGreaterThan(MAX_LOCATE_CONTEXT_CHARS / 4)
     }
-  }, 180_000)
+  })
 
   it('sizes the snippet by the setting and not by how much the pattern chose to match', async () => {
     // --context caps what is added AROUND the match; the match itself was copied whole. A greedy pattern is one match covering the entire page, so the flag said 80 characters and the answer held a page each -- with a thousand of them retained, that is the byte budget times a thousand, past every per-page bound that had just passed.
