@@ -612,6 +612,10 @@ it('the owner ends on its deadline: each way it does, and the failures that are 
     { status: 1, stderr: 'hook helper timed out', ended: true, why: 'the work deadline passed' },
     { status: 1, stderr: 'startup job creation failed: access denied', ended: false, why: 'a failure that is not the deadline' },
     { status: 0, stderr: '', ended: false, why: 'the owner acknowledged' },
+    { status: 0, stderr: 'hook helper timed out', ended: false, why: 'only exit 1 carries the work-deadline text; an acknowledged owner is not a deadline' },
+    { status: 2, stderr: 'insufficient time for process-tree cleanup', ended: false, why: 'the owner returns only 0 or 1 besides its deadline thread, so exit 2 is not the owner at all' },
+    { status: 1, stderr: 'startup input must be an object', ended: false, why: 'exit 1 without either deadline phrase' },
+    { status: 124, stderr: 'hook helper timed out', ended: true, why: 'the thread code wins whatever text came before it' },
     { status: null, stderr: '', ended: false, why: 'killed by the harness backstop' },
   ]
   for (const { status, stderr, ended, why } of cases) expect(ownerEndedOnDeadline({ status, stderr }), `status ${String(status)}: ${why}`).toBe(ended)
