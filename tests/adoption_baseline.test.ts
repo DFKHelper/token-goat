@@ -172,6 +172,24 @@ describe('collect', () => {
     await expect(collect({ env: { GH_TOKEN: 'tok' }, fetchImpl })).rejects.toThrow(/HTTP 403 \(rate limited\) \(resets at 2026-10-14T17:46:40\.000Z\); message: API rate limit exceeded.*x-ratelimit-reset: 1792000000/)
   })
 
+  // The 401 rows: https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api (read 2026-10-20) does not document a 401 body, so the unauthenticated message is the one CAPTURE'd from api.github.com on 2026-10-20 (HTTP 401, message "Requires authentication") and the rejected-token message is HAND-DERIVED, not read from GitHub.
+  it('tells the caller to set a token only when none was sent', async () => {
+    const { fetchImpl } = refuseStargazers({ status: 401, body: { message: 'Requires authentication' } })
+    const error = await collect({ env: {}, fetchImpl }).catch((e: Error) => e)
+    expect((error as Error).message).toContain('set GH_TOKEN')
+    expect((error as Error).message).toContain('message: Requires authentication')
+  })
+
+  it('says the token was rejected, and does not ask for one, when a token was sent', async () => {
+    const { fetchImpl } = refuseStargazers({ status: 401, body: { message: 'Token refused (hand-derived)' } })
+    const error = await collect({ env: { GH_TOKEN: 'ghs_secret_token' }, fetchImpl }).catch((e: Error) => e)
+    const text = (error as Error).message
+    expect(text).toContain('HTTP 401 (the token was rejected)')
+    expect(text).toContain('message: Token refused (hand-derived)')
+    expect(text).not.toContain('set GH_TOKEN')
+    expect(text).not.toContain('ghs_secret_token')
+  })
+
   it('reads a body that is not JSON and puts its start in the error', async () => {
     const { fetchImpl } = refuseStargazers({ status: 403, body: '<html>Forbidden by the proxy</html>' })
     await expect(collect({ env: {}, fetchImpl })).rejects.toThrow(/HTTP 403; message: <html>Forbidden by the proxy<\/html>/)

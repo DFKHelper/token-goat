@@ -147,9 +147,10 @@ async function getJson(url, headers, fetchImpl) {
   const res = await fetchImpl(url, { headers })
   if (!res.ok) {
     const { message, headers: seen } = await refusalDetail(res)
-    // GitHub answers the stargazer list with 401 when no token is sent (checked 2026-09-29); a 403 or 429 is called rate limited only when x-ratelimit-remaining is 0, retry-after is present or the message names a rate limit, as GitHub's troubleshooting page describes.
+    // GitHub answers the stargazer list with 401 when no token is sent (checked 2026-09-29), so the set-a-token hint is given only when no Authorization header went out; a 401 after one means the token was rejected. A 403 or 429 is called rate limited only when x-ratelimit-remaining is 0, retry-after is present or the message names a rate limit, as GitHub's troubleshooting page describes.
     const limited = (res.status === 403 || res.status === 429) && (seen['x-ratelimit-remaining']?.trim() === '0' || 'retry-after' in seen || /rate limit/i.test(message))
-    const hint = res.status === 401 ? ' (GitHub needs a token for this: set GH_TOKEN, for example to the output of `gh auth token`)' : limited ? ` (rate limited${headers.Authorization ? '' : ': set GH_TOKEN to raise the GitHub limit'})` : ''
+    const unauthorized = res.status === 401 ? (headers.Authorization ? ' (the token was rejected)' : ' (GitHub needs a token for this: set GH_TOKEN, for example to the output of `gh auth token`)') : ''
+    const hint = unauthorized || (limited ? ` (rate limited${headers.Authorization ? '' : ': set GH_TOKEN to raise the GitHub limit'})` : '')
     const resetDate = new Date(Number(seen['x-ratelimit-reset']) * 1000)
     const resetAt = limited && 'x-ratelimit-reset' in seen && !Number.isNaN(resetDate.getTime()) ? ` (resets at ${resetDate.toISOString()})` : ''
     const facts = [...(message ? [`message: ${message}`] : []), ...Object.entries(seen).map(([name, value]) => `${name}: ${value}`)]
