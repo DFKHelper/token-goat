@@ -9,7 +9,7 @@ import { expect } from 'vitest'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { nativeHookCommandLine } from '../../src/native_hook.js'
 import { endpointFor, readServerKey } from '../../src/hook_ipc.js'
-import { SESSION_START_TEST_BUDGET_ENV } from '../../src/bridges/shim_common.js'
+import { SESSION_START_OWNER_DEADLINE_EXIT, SESSION_START_TEST_BUDGET_ENV } from '../../src/bridges/shim_common.js'
 import { startBudgetAtShimStart } from './shim_deadline.js'
 import { slotStatus } from './hook_server_probe.js'
 import { buildNative } from './native_bin.js'
@@ -164,6 +164,12 @@ export async function assertOwedDeliveredOnce(fixture: ReturnType<typeof treeFix
 
 /** What a start that machine load pushed past its own deadline prints on stderr instead of the refusal a row provokes. */
 export const DEADLINE_FAIL_OPEN = /overall deadline exceeded|insufficient time for process-tree cleanup|timed out/
+
+/** Whether a direct run of the native startup owner ended on its own deadline with nothing acknowledged: exit 1 naming the cleanup reserve or the work deadline, or the deadline thread's exit code with no text (native/tg-hook/src/startup_owner.rs::execute, FORMAT-DERIVED), which stops the owner wherever it is, even with the acknowledgement half written. */
+export function ownerEndedOnDeadline(result: { status: number | null; stderr: string }): boolean {
+  if (result.status === SESSION_START_OWNER_DEADLINE_EXIT) return true
+  return result.status === 1 && /insufficient time for process-tree cleanup|hook helper timed out/.test(result.stderr)
+}
 
 /** The two outcomes of a row whose premise (the helper reached its interesting step) load can pre-empt, both asserted and the branch recorded with ctx.annotate. Returns true when the premise files exist (strong branch: the caller runs its full assertions). Otherwise the weak branch is asserted here and false is returned: exactly `{}` on stdout, a deadline fail-open on stderr, every owned pid dead, and the owed path delivering once if the start began. */
 export async function premiseBranch(

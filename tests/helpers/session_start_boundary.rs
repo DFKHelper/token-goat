@@ -4,6 +4,11 @@ use std::process::{Command, Stdio};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Stand-in for the startup owner at its emergency stop: it reads the payload to the end, then ends with the code the real owner's deadline thread uses.
+    if args[0] == "--session-start-owner-v1" {
+        let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+        std::process::exit(124);
+    }
     if args[0] == "hold" {
         std::fs::write(&args[1], std::process::id().to_string()).unwrap();
         loop {

@@ -88,6 +88,9 @@ export const SHIM_SESSION_START_TIMEOUT_MS = 10_000
 /** Test-only seam: the name of the env var that replaces the SessionStart budget in the shim and in the native startup owner (native/tg-hook/src/startup_entry.rs::budget_ms). */
 export const SESSION_START_TEST_BUDGET_ENV = 'TG_TEST_SESSION_START_BUDGET_MS'
 
+/** The exit code the native startup owner's deadline thread ends the process with (native/tg-hook/src/startup_owner.rs::execute): it writes nothing first, so the code is all a supervising shim has to tell that stop from a crash. */
+export const SESSION_START_OWNER_DEADLINE_EXIT = 124
+
 /** The seam's accepted range in ms; the lower bound is the cleanup reserve, so the smallest budget leaves no time to start the handler. */
 export const SESSION_START_TEST_BUDGET_MIN_MS = 1_000
 export const SESSION_START_TEST_BUDGET_MAX_MS = 600_000

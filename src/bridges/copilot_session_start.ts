@@ -1,4 +1,4 @@
-import { SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MAX_MS, SESSION_START_TEST_BUDGET_MIN_MS, SHIM_SESSION_START_TIMEOUT_MS } from './shim_common.js'
+import { SESSION_START_OWNER_DEADLINE_EXIT, SESSION_START_TEST_BUDGET_ENV, SESSION_START_TEST_BUDGET_MAX_MS, SESSION_START_TEST_BUDGET_MIN_MS, SHIM_SESSION_START_TIMEOUT_MS } from './shim_common.js'
 
 /** Standalone helpers embedded into the generated shared Copilot/VS Code shim. */
 export const COPILOT_SESSION_START_HELPERS = `
@@ -402,6 +402,8 @@ function superviseWindowsSessionStart({ args, env, payload, deadline }) {
     root.once('close', code => {
       if (settled) return
       const diagnostic = Buffer.concat(diagnostics).toString('utf8').trim()
+      // The owner's deadline thread ends it without a word at the same instant this shim's own timer fires, so which of the two messages the host sees must not depend on which wins.
+      if (code ===${SESSION_START_OWNER_DEADLINE_EXIT}) { finish('native startup owner overall deadline exceeded (exit ' + code + ')'); return }
       if (code !== 0) { finish('native startup owner failed: ' + (diagnostic || 'exit ' + code)); return }
       let ack
       try { ack = JSON.parse(Buffer.concat(output).toString('utf8')) } catch {

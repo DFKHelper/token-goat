@@ -10,9 +10,10 @@ import { afterEach, expect, it } from 'vitest'
 
 import { COPILOT_SESSION_START_HELPERS } from '../../src/bridges/copilot_session_start.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
+import { SESSION_START_OWNER_DEADLINE_EXIT } from '../../src/bridges/shim_common.js'
 import { startBudgetAtShimStart } from '../helpers/shim_deadline.js'
 import { buildLegacyStartupOwner } from '../helpers/legacy_startup_owner.js'
-import { alive, startBegan, assertInstalledResidentBypass, assertOwedDeliveredOnce, assertTreeDead, BUNDLE, buildWindowsBoundary, cleanupTrees, contextText, fileAppears, fixtureWatchdog, indexTreeFixture, installStartupOwner, ownedPids, readOwnedPid, runInstalledStartup, runTreeShim, premiseBranch, DEADLINE_FAIL_OPEN, HANG_BACKSTOP_MS, treeFixture } from '../helpers/copilot_session_start_tree.js'
+import { alive, startBegan, assertInstalledResidentBypass, assertOwedDeliveredOnce, assertTreeDead, BUNDLE, buildWindowsBoundary, cleanupTrees, contextText, fileAppears, fixtureWatchdog, indexTreeFixture, installStartupOwner, ownedPids, readOwnedPid, runInstalledStartup, runTreeShim, premiseBranch, DEADLINE_FAIL_OPEN, HANG_BACKSTOP_MS, ownerEndedOnDeadline, treeFixture } from '../helpers/copilot_session_start_tree.js'
 
 // Cleanup is synchronous process-table work, so no fixed hook wall-clock bound applies: a loaded machine makes it slow, never wrong.
 afterEach(cleanupTrees, 0)
@@ -208,9 +209,9 @@ it.runIf(process.platform === 'win32')('rejects breakaway from the strict job wi
   const result = spawnSync(installStartupOwner(fixture.root), [
     '--session-start-owner-v1', String(Date.now() + 3000), boundary, 'direct-breakaway', descendant, attempted,
   ], { input: '{}', env: fixture.env, encoding: 'utf8', windowsHide: true, timeout: HANG_BACKSTOP_MS })
-  // The spawn timeout is the hang backstop, not a measurement: the owner bounds itself at 3000 ms. The owner refuses a deadline with 1000 ms or less left, and the 3000 ms budget it was given can run out under the helper; machine load turns either into a fail-open exit 1 with no acknowledgement, which is the premise missing, not the containment broken.
-  if (result.status === 1 && /insufficient time for process-tree cleanup|hook helper timed out/.test(result.stderr)) {
-    expect(result.stdout).toBe('')
+  // The spawn timeout is the hang backstop, not a measurement: the owner bounds itself at 3000 ms. The owner refuses a deadline with 1000 ms or less left, ends its work 1000 ms short of it, and has a deadline thread that stops it outright (exit 124, no text) wherever it is; machine load turns any of them into a fail-open with no acknowledgement, which is the premise missing, not the containment broken.
+  if (ownerEndedOnDeadline(result)) {
+    if (result.status === 1) expect(result.stdout).toBe('')
     await ctx.annotate('branch: weak (the owner failed open on its own deadline)')
     if (existsSync(attempted) && readFileSync(attempted, 'utf8').startsWith('created:')) {
       const created = Number(readFileSync(attempted, 'utf8').slice('created:'.length))
@@ -585,4 +586,40 @@ it('a deadline that is already past never starts the helper, prints {}, and owes
   assertTreeDead(fixture)
   await ctx.annotate(`branch: payload read before the deferred deadline=${String(startBegan(fixture, 'owned-tree'))}`)
   await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'owned-tree')
+})
+
+// FORMAT-DERIVED: the stand-in ends with the code of the deadline thread in native/tg-hook/src/startup_owner.rs::execute, which writes nothing before it ends the process, so the shim has an exit code and no text to go on.
+it.runIf(process.platform === 'win32')('a native owner stopped at its deadline is reported to the host as a deadline, not as a bare exit code', async () => {
+  const fixture = treeFixture()
+  const entry = join(fixture.root, 'entry.cjs')
+  const entered = join(fixture.root, 'entry.started')
+  writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, 'yes')`)
+  copyFileSync(buildWindowsBoundary(fixture.root), installStartupOwner(fixture.root))
+  const result = await runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }).done
+  expect(result.stdout).toBe('{}')
+  expect(result.stderr).toContain('native startup owner overall deadline exceeded')
+  expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
+  expect(existsSync(entered), 'the stand-in owner never starts the helper').toBe(false)
+  assertTreeDead(fixture)
+}, 0)
+
+// HAND-DERIVED from the ways startup_owner.rs::execute ends on its deadline; the first case is the exit a full, loaded run produced (exit 124 from the owner, no text).
+it('the owner ends on its deadline: each way it does, and the failures that are not that', () => {
+  const cases: { status: number | null; stderr: string; ended: boolean; why: string }[] = [
+    { status: 124, stderr: '', ended: true, why: 'the deadline thread stops the owner without a word' },
+    { status: 124, stderr: 'half an acknowledgement was written', ended: true, why: 'the thread stops it wherever it is' },
+    { status: 1, stderr: 'insufficient time for process-tree cleanup', ended: true, why: 'the reserve was already spent at start' },
+    { status: 1, stderr: 'hook helper timed out', ended: true, why: 'the work deadline passed' },
+    { status: 1, stderr: 'startup job creation failed: access denied', ended: false, why: 'a failure that is not the deadline' },
+    { status: 0, stderr: '', ended: false, why: 'the owner acknowledged' },
+    { status: null, stderr: '', ended: false, why: 'killed by the harness backstop' },
+  ]
+  for (const { status, stderr, ended, why } of cases) expect(ownerEndedOnDeadline({ status, stderr }), `status ${String(status)}: ${why}`).toBe(ended)
+})
+
+// FORMAT-DERIVED: the native source names the code in both of its emergency exits; the shim's constant must equal it.
+it('the shim reads the exit code of both emergency exits in the native owner', () => {
+  const source = readFileSync(join(process.cwd(), 'native', 'tg-hook', 'src', 'startup_owner.rs'), 'utf8')
+  expect(source).toContain(`GetCurrentProcess(), ${String(SESSION_START_OWNER_DEADLINE_EXIT)})`)
+  expect(source).toContain(`ExitProcess(${String(SESSION_START_OWNER_DEADLINE_EXIT)})`)
 })
