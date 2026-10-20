@@ -6,7 +6,7 @@ import * as fs from 'node:fs'
 import { hostPathOfIndexKey, normalizePath } from './paths.js'
 import { registerReset } from './reset.js'
 import { foldPath } from './util.js'
-import { fingerprintFile, shortFingerprint } from './fingerprint.js'
+import { fingerprintContent, fingerprintFile, shortFingerprint } from './fingerprint.js'
 import { redactSecrets } from './secret_redact.js'
 import { clearAllReadRangeEvasion, clearReadRangeEvasion, exportReadRangeEvasion, importReadRangeEvasion, type RangeEvasionEntries } from './read_range_evasion.js'
 
@@ -23,18 +23,28 @@ export const RANGE_FINGERPRINT_MAX_BYTES = 2 * 1024 * 1024
 /** The SHA-256 of a file's bytes on disk right now, or null when they cannot be read. */
 export type CurrentFileHash = () => string | null
 
-/** A {@link CurrentFileHash} that reads the file once and answers every later call from that read. Made fresh by each hook decision and passed down as a parameter, never kept between calls: a later call must hash the bytes that are on disk then, or a rewrite made in between would be judged by an old hash. */
-export function onceCurrentFileHash(filePath: string): CurrentFileHash {
+/** A {@link CurrentFileHash} that can take the bytes of a read the hook call made anyway, so hashing them does not read the file a second time. */
+export type OnceFileHash = CurrentFileHash & { adopt: (bytes: Buffer) => void }
+
+/** A {@link CurrentFileHash} that reads the file once and answers every later call from that read, or from bytes the caller already read and hands over with `adopt`. Made fresh by each hook decision and passed down as a parameter, never kept between calls: a later call must hash the bytes that are on disk then, or a rewrite made in between would be judged by an old hash. */
+export function onceCurrentFileHash(filePath: string): OnceFileHash {
   const onDisk = hostPathOfIndexKey(normalizePath(filePath))
   let read = false
   let hash: string | null = null
-  return () => {
+  let adopted: Buffer | undefined
+  const current = (() => {
     if (!read) {
-      hash = fingerprintFile(onDisk)
+      hash = adopted !== undefined ? fingerprintContent(adopted) : fingerprintFile(onDisk)
+      adopted = undefined
       read = true
     }
     return hash
+  }) as OnceFileHash
+  // Ignored once the hash is taken: it already describes the bytes of an earlier read.
+  current.adopt = (bytes) => {
+    if (!read) adopted = bytes
   }
+  return current
 }
 
 /** Tracks reads/edits of a single file within the session. Mirrors the load-bearing fields of `session.py::FileEntry` used by the re-read dedup hint: read count, last-read timestamp, whether the file was edited (which invalidates any cached read window), and its size at last read. */

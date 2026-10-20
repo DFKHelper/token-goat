@@ -1376,7 +1376,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // Guarded the same way every other full-content fs.readFileSync in this file is (see SLICE_ESTIMATE_SCAN_CAP_BYTES's other call sites above) -- without this, a multi-GB .csv/.txt/.log/.html file (isKnownFileType is unconditional on size) would be read into a JS string in full on every single call, even a cheap bounded offset/limit request whose small ftEffectiveLength was always going to pass every handler's length-gate below without ever touching content.
     if (!BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       try {
-        ftContent = fs.readFileSync(onDisk, 'utf8')
+        const ftBytes = fs.readFileSync(onDisk)
+        // The range record below hashes these same bytes instead of reading the file again.
+        hashNow.adopt(ftBytes)
+        ftContent = ftBytes.toString('utf8')
       } catch {
         // best-effort — empty content will pass through
       }

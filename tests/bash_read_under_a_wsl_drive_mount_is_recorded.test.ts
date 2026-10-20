@@ -29,7 +29,9 @@ vi.mock('node:fs', async (importOriginal) => {
     return null
   }
   const statSync = ((p: fs.PathLike, ...rest: unknown[]) => (actual.statSync as (...args: unknown[]) => unknown)(onHost(String(p)) ?? p, ...rest)) as typeof actual.statSync
-  return { ...actual, statSync, default: { ...actual, statSync } }
+  // A repeated range is denied only when a SHA-256 of the file's bytes vouches for it, so the mount has to serve reads as well as stats, as a real one does.
+  const readFileSync = ((p: fs.PathOrFileDescriptor, ...rest: unknown[]) => (actual.readFileSync as (...args: unknown[]) => unknown)(typeof p === 'string' ? (onHost(p) ?? p) : p, ...rest)) as typeof actual.readFileSync
+  return { ...actual, statSync, readFileSync, default: { ...actual, statSync, readFileSync } }
 })
 
 const LINES = Array.from({ length: 300 }, (_, i) => `export const value${i} = ${i} * 2`)

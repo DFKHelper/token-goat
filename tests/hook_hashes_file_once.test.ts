@@ -154,3 +154,36 @@ describe('a multi-range sed command in the Bash pre hook', () => {
     expect(hashes).toBe(1)
   })
 })
+
+describe('a ranged Read of a CSV the universal file-type handler reads', () => {
+  /** 50 KB of short rows: past the size where the handler reads the file, under the sizes where it blocks. */
+  function makeCsv(name: string): string {
+    const file = join(project, name)
+    writeFileSync(file, 'a,b\n' + Array.from({ length: 4000 }, (_, i) => `r${String(i).padStart(5, '0')},${i}`).join('\n') + '\n')
+    stampWholeSecondMtime(file)
+    return file
+  }
+
+  it('records its window from the bytes the handler read, without reading the file again to hash it', async () => {
+    const sid = newSessionId()
+    const file = makeCsv('data.csv')
+    const { answer, hashes } = await countingHashes(() => relayInProcess('pre_tool_use', readEnvelope(sid, 'PreToolUse', file, 1, 50)))
+    expect(denyReason(answer)).toBeNull()
+    expect(hashes).toBe(0)
+  })
+
+  it('denies the same window again while the file is untouched, so the hash it was recorded with is the file\'s own', async () => {
+    const sid = newSessionId()
+    const file = makeCsv('data.csv')
+    await relayInProcess('pre_tool_use', readEnvelope(sid, 'PreToolUse', file, 1, 50))
+    expect(denyReason(await relayInProcess('pre_tool_use', readEnvelope(sid, 'PreToolUse', file, 1, 50)))).not.toBeNull()
+  })
+
+  it('lets the window through again after a same-size rewrite that put the mtime back', async () => {
+    const sid = newSessionId()
+    const file = makeCsv('data.csv')
+    await relayInProcess('pre_tool_use', readEnvelope(sid, 'PreToolUse', file, 1, 50))
+    rewriteKeepingSizeAndMtime(file, 5)
+    expect(denyReason(await relayInProcess('pre_tool_use', readEnvelope(sid, 'PreToolUse', file, 1, 50)))).toBeNull()
+  })
+})
