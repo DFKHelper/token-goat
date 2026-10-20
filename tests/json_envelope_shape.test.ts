@@ -13,7 +13,7 @@ import { runOutline, runSkeleton } from '../src/read_outline.js'
 import { runSemantic } from '../src/read_semantic.js'
 import { runRefs } from '../src/read_refs.js'
 import { runTypes, runCallers, runDead, runTestFor, runCallChain, runDeps } from '../src/graph_commands.js'
-import { indexSrcTree, WHOLE_SRC_INDEX_TIMEOUT_MS } from './helpers/index-src-tree.js'
+import { indexSrcFiles } from './helpers/index-src-files.js'
 import { captureStdout } from './helpers/capture-stdout.js'
 
 /** Commands whose `--json` payload is a row list and MUST carry the shared envelope. */
@@ -81,11 +81,13 @@ function expectEnvelope(raw: string, label: string): unknown[] {
   return obj.items as unknown[]
 }
 
-// Same precondition (and same reason) as tests/graph_commands.test.ts: these cases query the ambient global.db, which is an isolated per-run temp DB under tests/setup/isolate-home.ts, so it is empty until something seeds it. Seed the repo's own src tree plus one test file, so `test-for` has a referencing test file to find rather than depending on ambient index state. The walk, and the per-hook timeout it needs, live in tests/helpers/index-src-tree.ts, shared with graph_commands.test.ts.
+// Same precondition (and same reason) as tests/graph_commands.test.ts: these cases query the ambient global.db, which is an isolated per-run temp DB under tests/setup/isolate-home.ts, so it is empty until something seeds it. Seed only what the cases read: graph_inspection.ts (where runTypes is defined, for the `symbol` case), graph_commands.ts (the outline/skeleton/deps/test-for subject and a caller of querySymbols) and index_reader.ts (querySymbols and queryRefs), plus one test file so `test-for` has a referencing test file to find. The list is short and fixed so the hook's cost does not follow the size of src.
+const SEED_FILES = ['src/graph_commands.ts', 'src/graph_inspection.ts', 'src/index_reader.ts'] as const
+
 beforeAll(() => {
-  indexSrcTree()
+  indexSrcFiles(SEED_FILES)
   indexFileSync(normalizePath(resolve('tests', 'graph_commands.test.ts')))
-}, WHOLE_SRC_INDEX_TIMEOUT_MS)
+})
 
 describe('--json envelope shape', () => {
   it('symbol emits the envelope with row-level fields intact', () => {

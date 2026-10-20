@@ -42,7 +42,7 @@ import {
   CORE_SYMBOL_KINDS as CORE_SYMBOL_KINDS_FOR_TEST,
 } from '../src/graph_commands.js'
 import type { SymbolEntry } from '../src/parser_types.js'
-import { indexSrcTree, WHOLE_SRC_INDEX_TIMEOUT_MS } from './helpers/index-src-tree.js'
+import { indexSrcFiles } from './helpers/index-src-files.js'
 
 /** Run `fn` with `process.stderr.write` captured, returning whatever it wrote. Restores the original write function afterward regardless of whether `fn` throws. Shared helper for the `--top <= 0` rejection tests below (mirrors the inline pattern already used throughout this file, e.g. the `runTypes limit validation` suite). */
 function captureStderr(fn: () => void): string {
@@ -97,10 +97,17 @@ function toRel(root: string, abs: string): string {
   return relative(normalizePath(root), normalizePath(abs)).replace(/\\/g, '/')
 }
 
-// Establish the precondition this suite's header assumes: the token-goat repo's own src tree indexed into the ambient global.db. Without it a fresh checkout (CI) has an empty index and the runTypes/runCallers/runImpact integration cases below find nothing and exit 1; seeding here makes them deterministic on any machine instead of depending on pre-existing ambient index state. The walk, and the per-hook timeout it needs, live in tests/helpers/index-src-tree.ts because json_envelope_shape.test.ts needs exactly the same seed.
+// Establish the precondition this suite's header assumes: files of the token-goat repo's own src tree indexed into the ambient global.db. Without it a fresh checkout (CI) has an empty index and the runTypes/runCallers/runImpact integration cases below find nothing and exit 1; seeding here makes them deterministic on any machine instead of depending on pre-existing ambient index state. Only the files those cases read are indexed: cli.ts (the runScope line and the callers of runRead), parser_types.ts (SymbolEntry), graph_commands.ts and read_commands.ts (the other callers of those symbols). The list is short and fixed so the hook's cost does not follow the size of src.
+const SEED_FILES = [
+  'src/cli.ts',
+  'src/graph_commands.ts',
+  'src/parser_types.ts',
+  'src/read_commands.ts',
+] as const
+
 beforeAll(() => {
-  indexSrcTree()
-}, WHOLE_SRC_INDEX_TIMEOUT_MS)
+  indexSrcFiles(SEED_FILES)
+})
 
 // ---- enclosingSymbol --------------------------------------------------------
 

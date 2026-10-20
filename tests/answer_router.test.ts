@@ -22,7 +22,7 @@ import {
   runAnswer,
 } from '../src/answer_router.js'
 import { captureStdout } from './helpers/capture-stdout.js'
-import { indexSrcTree, WHOLE_SRC_INDEX_TIMEOUT_MS } from './helpers/index-src-tree.js'
+import { indexSrcFiles } from './helpers/index-src-files.js'
 
 /** Verbatim CAPTURE lines; see the provenance block above for the transcript and extraction command. */
 const QUESTIONS = {
@@ -227,10 +227,26 @@ describe('classify (pure, no index)', () => {
   })
 })
 
+// Every src file a case below names or resolves to, plus the same-named neighbours the cases tell apart: bridges/openclaw_install.ts is the wrong answer `Check config exports` once gave, and bridges/ and languages/ registry.ts are the two files `registry` must be reported ambiguous between. The list is short and fixed so the hook's cost does not follow the size of src.
+const SEED_FILES = [
+  'src/answer_router.ts',
+  'src/bridges/openclaw_install.ts',
+  'src/bridges/registry.ts',
+  'src/config.ts',
+  'src/delivery_cap.ts',
+  'src/hooks_bash_post.ts',
+  'src/image_shrink.ts',
+  'src/languages/registry.ts',
+  'src/path_containment.ts',
+  'src/paths.ts',
+  'src/read_commands.ts',
+  'src/read_section.ts',
+] as const
+
 describe('runAnswer against the real index', () => {
   beforeAll(() => {
-    indexSrcTree()
-  }, WHOLE_SRC_INDEX_TIMEOUT_MS)
+    indexSrcFiles(SEED_FILES)
+  })
 
   it('resolves a bare symbol subject and answers who-calls via the callers command', () => {
     const r = captureErr(() => runAnswer({ question: 'who calls foldPath' }))
