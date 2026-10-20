@@ -34,16 +34,32 @@ describe('suggestForUnknownCommand', () => {
     expect(suggestForUnknownCommand('   ')).toBeNull()
   })
 
-  // The module promises it never shadows a real command. `search` was an intent key until it became a registered command, and only the bundle case below noticed, by asserting commander rejected it.
-  it('has no hint for any registered command name', () => {
+  // The module promises it never shadows a real command. `search` was an intent key until it became a registered command, and only the bundle case below noticed, by asserting commander rejected it. Scope: the hint keys on the first bare argv word (attemptedCommandName), so it can only ever name a top-level word. A name registered solely beneath a parent (`worker status`, `hook-server status`) is a different word and may carry a hint at the top level. Every top-level name and alias must stay hint-free.
+  it('has no hint for any registered top-level command name or alias', () => {
     const names: string[] = []
-    const walk = (entry: CommandManifestEntry): void => {
-      names.push(entry.name)
-      for (const sub of entry.subcommands) walk(sub)
+    const collect = (entry: CommandManifestEntry): void => {
+      names.push(entry.name, ...entry.aliases)
     }
-    for (const entry of buildCommandManifest(buildProgram())) walk(entry)
-    expect(names.length).toBeGreaterThan(100)
+    for (const entry of buildCommandManifest(buildProgram())) collect(entry)
+    expect(names.length).toBeGreaterThan(30)
     expect(names.filter((name) => suggestForUnknownCommand(name) !== null)).toEqual([])
+  })
+
+  // HAND-DERIVED: `status` is registered only under `worker` and `hook-server` (src/cli.ts), so at the top level it is an unknown word and points at the health/stats/commands group; `health` and `check` share that group.
+  it('points health, check and an unregistered top-level status at doctor, stats and commands', () => {
+    for (const name of ['health', 'check', 'status', 'Status']) {
+      const hint = suggestForUnknownCommand(name)
+      expect(hint, name).toContain('`doctor`')
+      expect(hint, name).toContain('`stats`')
+      expect(hint, name).toContain('`commands`')
+    }
+  })
+
+  it('keeps status a registered subcommand while it carries a top-level hint', () => {
+    const top = buildCommandManifest(buildProgram())
+    expect(top.map((entry) => entry.name)).not.toContain('status')
+    const parents = top.filter((entry) => entry.subcommands.some((sub) => sub.name === 'status')).map((entry) => entry.name)
+    expect(parents).toEqual(['worker', 'hook-server'])
   })
 })
 
@@ -78,6 +94,14 @@ describe('unknown-command hint through the built bundle', () => {
     expect(r.stderr).toContain("unknown command 'symbl'")
     expect(r.stderr).toContain('Did you mean symbol?')
     expect(r.stderr).not.toContain('Looking for that?')
+  })
+
+  it('hints an unknown top-level status through the real error path', () => {
+    const r = runBundle(['status'])
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain("unknown command 'status'")
+    expect(r.stderr).toContain('Looking for that?')
+    expect(r.stderr).toContain('`doctor`')
   })
 
   // Guard: the hint must not leak onto commands that exist. A regression that emitted it for every failure -- or every invocation -- would still pass the two cases above.
