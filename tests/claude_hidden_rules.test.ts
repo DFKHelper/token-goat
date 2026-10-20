@@ -277,6 +277,7 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
     const reason = lineRules(box('cl-retitled'), { CLAUDE_PID: String(child.pid) })
     expect(reason).not.toBeNull()
     if (process.platform === 'linux') expect(reason).toBe('claude command line unreadable')
+    if (process.platform === 'win32') expect(reader.realCalls.length, 'the real query read the retitled process').toBeGreaterThan(0)
   }, 30_000)
 
   // FORMAT-DERIVED from `claude --help` 2.1.294: "--setting-sources <sources>  Comma-separated list of setting sources to load (user, project, local)". A list that leaves one out drops a settings file from what Claude Code reads, so a deny rule this hook does read may not be one it enforces the same way; only the full list, in either spelling, is harmless.
@@ -305,6 +306,7 @@ describe('commandLineRuleSource: the claude command line outside bypassPermissio
     const reason = lineRules(box('cl-retitled-harmless'), { CLAUDE_PID: String(child.pid) })
     if (process.platform === 'win32') expect(reason).toBeNull()
     else expect(reason).toBe('claude command line unreadable')
+    if (process.platform === 'win32') expect(reader.realCalls.length, 'the real query read the retitled process').toBeGreaterThan(0)
   }, 30_000)
 
   // On Windows the other rows read the fakes' lines from the stand-in above; this is the row that holds the stand-in to the real query, so a stand-in that drifts from what PowerShell prints fails here by assertion. The real query runs without the product's give-up bound (the options the product passed carry one, the ones that went on do not), so it answers whenever PowerShell finishes.
