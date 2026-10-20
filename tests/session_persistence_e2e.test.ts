@@ -19,11 +19,17 @@ let gitLog: string
 // The hook processes run under this preload with GIT_SPAWN_PROBE_NO_REPO set, so the two git calls that fingerprint a directory are answered as git answers outside a repository, which `repo` is, instead of by a real git that can outlive its 5 s bound and read as 'unknown', and so as stale, on a loaded machine. Each call is logged to GIT_SPAWN_PROBE_OUT, which the recall test reads to show the seam was reached.
 const probe = fileURLToPath(new URL('./helpers/git-spawn-probe.cjs', import.meta.url)).replaceAll(String.fromCharCode(92), '/')
 
+/** The environment of a hook process. Its NODE_OPTIONS keeps what this run inherited: tests/setup/isolate-home.ts puts the permission-source filter there, and a hook process without it reads the machine policy through reg.exe, which on a loaded Windows machine ends as a timeout and turns a deny into a pass. */
+function hookEnv(): NodeJS.ProcessEnv {
+  const nodeOptions = [process.env['NODE_OPTIONS'], `--require "${probe}"`].filter(Boolean).join(' ')
+  return { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase, NODE_OPTIONS: nodeOptions, GIT_SPAWN_PROBE_NO_REPO: '1', GIT_SPAWN_PROBE_OUT: gitLog }
+}
+
 /** Run the built bundle in a fresh process with the shared isolated home. */
 function runHook(event: string, payload: unknown): { stdout: string; stderr: string; status: number | null } {
   const res = spawnSync(process.execPath, [BUNDLE, 'hook', event], {
     cwd: repo,
-    env: { ...process.env, TOKEN_GOAT_HOME: tgHome, LOCALAPPDATA: dataBase, XDG_DATA_HOME: dataBase, NODE_OPTIONS: `--require "${probe}"`, GIT_SPAWN_PROBE_NO_REPO: '1', GIT_SPAWN_PROBE_OUT: gitLog },
+    env: hookEnv(),
     input: JSON.stringify(payload),
     encoding: 'utf8',
   })
@@ -62,6 +68,16 @@ afterAll(() => {
       // best-effort
     }
   }
+})
+
+describe('a hook process runs under the suite\'s shared preloads', () => {
+  it('has the permission-source filter installed beside the git probe, so no reg.exe policy read can time out', () => {
+    // A node process given the hook environment reports whether the filter's global is installed. The filter is what makes src/rewrite_permission.ts skip every registry source.
+    const res = spawnSync(process.execPath, ['-e', "process.stdout.write(typeof globalThis[Symbol.for('token-goat.permission-source-filter')])"], { cwd: repo, env: hookEnv(), encoding: 'utf8' })
+    expect(res.stdout, res.stderr).toBe('function')
+    expect(hookEnv().NODE_OPTIONS).toContain(process.env['NODE_OPTIONS'] ?? '')
+    expect(hookEnv().NODE_OPTIONS).toContain(probe)
+  })
 })
 
 describe('re-read dedup survives the process boundary', () => {
