@@ -380,8 +380,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       // Dedup on the resolved/normalized path (relative-to-absolute, cwd-anchored, drive-letter-cased) — a relative and an absolute reference to the same file must collide under one key, matching how the CLI surgical-read dedup above already resolves paths. Multi-range `sed -n 'A,Bp;C,Dp'` commands are checked and recorded per-range (not as one combined min-max span) so a gap between ranges that was already read separately doesn't get misreported as newly-overlapping, and so each range's own history is tracked.
       hintPaths.push(hintPath)
       const sedDedupKey = resolveIndexPath(hintPath, preHookCwd ?? process.cwd())
-      // Ranges served before the file changed on disk describe text that is no longer there, so they go before anything is measured against them, as the Read path drops them.
-      dropFileLineRangesIfChanged(sedDedupKey)
+      // Ranges served before the file changed on disk describe text that is no longer there, so they go before anything is measured against them, as the Read path drops them, and so do ranges no content hash vouches for (a file past 2 MiB, a legacy session), since a matching stat alone must not answer "you already read this".
+      dropFileLineRangesIfChanged(sedDedupKey, true)
       // A range from line 1 to the last line is `cat` spelled another way, and gets `cat`'s answer: pricing it against a surgical read of the same lines finds no saving, since that read is the whole file too, so `awk 'NR>=1 && NR<=324'` over a 324-line, 54KB skill passed with no word while `cat` of it was refused. Checked before the range is recorded, so a refusal does not count the lines as served.
       const whole = singleLineRangeRead === null ? null : wholeFileRange(filePath, hintPath, hintCwd, ranges, tool)
       if (whole !== null && findRangeOverlap(getFileLineRanges(sedDedupKey), whole.start, whole.end) === null) {

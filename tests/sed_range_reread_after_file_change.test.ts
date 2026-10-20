@@ -6,6 +6,8 @@ import { basename, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { relayInProcess } from '../src/relay.js'
+import { RANGE_FINGERPRINT_MAX_BYTES } from '../src/session.js'
+import { stripRangeIdentities } from './helpers/legacy_range_state.js'
 import { rewriteKeepingSizeAndMtime, stampWholeSecondMtime } from './helpers/same_stat_rewrite.js'
 
 const LINE_COUNT = 120
@@ -69,6 +71,14 @@ function editOutsideSession(file: string, lineNo: number): void {
   utimesSync(file, after, after)
 }
 
+/** A file past RANGE_FINGERPRINT_MAX_BYTES (2 MiB), so no hash is taken when a range of it is recorded and only the stat could vouch for the range. */
+function makeLargeFile(name: string): string {
+  const file = join(project, name)
+  writeFileSync(file, [...ORIGINAL, ...Array.from({ length: 24_000 }, (_, i) => `export const filler${i} = ${'x'.repeat(80)}`)].join('\n'))
+  expect(statSync(file).size).toBeGreaterThan(RANGE_FINGERPRINT_MAX_BYTES)
+  return file
+}
+
 function makeFile(name: string): string {
   const file = join(project, name)
   writeFileSync(file, ORIGINAL.join('\n'))
@@ -101,6 +111,25 @@ describe.each(['app.ts', 'server.log'])('a sed re-read of %s', (name) => {
     expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
   })
 
+  it('is not told it overlaps when the file is too large to carry a content hash, since a matching stat proves nothing', async () => {
+    const sid = newSessionId()
+    const file = makeLargeFile(name)
+    expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
+    expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
+  })
+
+  it('is not told it overlaps ranges a session saved before identities existed holds, and is once that read recorded one', async () => {
+    const sid = newSessionId()
+    const file = makeFile(name)
+    stampWholeSecondMtime(file)
+    expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
+    stripRangeIdentities(sid)
+    expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
+    expect(await sedRead(sid, file, 1, 20)).toMatch(/already read lines 1-20 of/i)
+    rewriteKeepingSizeAndMtime(file, 5)
+    expect(await sedRead(sid, file, 1, 20)).not.toMatch(ALREADY_READ)
+  })
+
   it('is still told it overlaps when nothing changed (control)', async () => {
     const sid = newSessionId()
     const file = makeFile(name)
@@ -116,6 +145,13 @@ describe.each(['app.ts', 'notes.txt'])('a head re-read of %s', (name) => {
     const file = makeFile(name)
     expect(await headRead(sid, file, 20)).not.toMatch(ALREADY_READ)
     editOutsideSession(file, 5)
+    expect(await headRead(sid, file, 20)).not.toMatch(ALREADY_READ)
+  })
+
+  it('is not told it overlaps when the file is too large to carry a content hash, since a matching stat proves nothing', async () => {
+    const sid = newSessionId()
+    const file = makeLargeFile(name)
+    expect(await headRead(sid, file, 20)).not.toMatch(ALREADY_READ)
     expect(await headRead(sid, file, 20)).not.toMatch(ALREADY_READ)
   })
 

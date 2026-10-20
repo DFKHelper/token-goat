@@ -676,6 +676,8 @@ export function recordFileLineRange(filePath: string, start: number, end: number
   const entry = _files.get(entryKey)
   // The ranges on record were served while the file had the identity stamped beside them. Re-stamping it for this range without dropping them would let the repeated-range deny in hooks_read.ts vouch for text the model was never shown, since every later read of any other window also refreshes the snapshot it diffs against.
   const identity = dropFileLineRangesIfChanged(normalized)
+  // Ranges with no identity beside them (a session saved before identities existed) cannot be proven against any hash, so they go and this range starts a set that can.
+  if (identity !== undefined && getFileLineRangeIdentity(normalized) === undefined && (_fileLineRanges.get(key)?.length ?? 0) > 0) resetFileLineRanges(normalized)
   const ranges = _fileLineRanges.get(key) ?? []
   // The hash is taken when a set of ranges starts and kept while they stand: it must describe the bytes the first range was served from, so a set already on record never takes a newer one.
   const priorFp = (_fileLineRangeIdentities.get(key) ?? entry?.rangeFileIdentity)?.fp
@@ -714,12 +716,22 @@ export function rangeContentVerdict(filePath: string): 'same' | 'changed' | 'unp
   return now === recorded.fp ? 'same' : 'changed'
 }
 
-/** Drop `filePath`'s recorded line ranges when the file no longer has the size and mtime it had when they were recorded, or holds different bytes than the hash taken then (see {@link rangeContentVerdict}), and return its current identity (undefined when it cannot be stat'd). The Bash pre hook calls this before it measures a `sed -n`/`head` read against those ranges, as {@link recordFileLineRange} does before it adds one: measured first, a re-read of lines changed outside the session was told to recall them from earlier output. */
-export function dropFileLineRangesIfChanged(filePath: string): { size: number; mtimeMs: number } | undefined {
+/** Drop `filePath`'s recorded line ranges when the file no longer has the size and mtime it had when they were recorded, or holds different bytes than the hash taken then (see {@link rangeContentVerdict}), and return its current identity (undefined when it cannot be stat'd). The Bash pre hook calls this before it measures a `sed -n`/`head` read against those ranges, as {@link recordFileLineRange} does before it adds one: measured first, a re-read of lines changed outside the session was told to recall them from earlier output. With `requireProof`, ranges the bytes cannot vouch for go too -- no hash on record (a file past {@link RANGE_FINGERPRINT_MAX_BYTES}, or a session recorded before the hash existed) or no identity on record at all -- for a caller that answers "you already read this" from them: a matching stat is not proof, and unknown is read through. A caller that only counts ranges (paging) leaves it off and keeps them. */
+export function dropFileLineRangesIfChanged(filePath: string, requireProof = false): { size: number; mtimeMs: number } | undefined {
   const normalized = normalizePath(filePath)
   const identity = statIdentity(normalized)
   const prior = _fileLineRangeIdentities.get(foldPath(normalized)) ?? _files.get(resolveFilesKey(normalized))?.rangeFileIdentity
-  if (prior !== undefined && identity !== undefined && (prior.size !== identity.size || prior.mtimeMs !== identity.mtimeMs || rangeContentVerdict(normalized) === 'changed')) resetFileLineRanges(normalized)
+  if (identity === undefined) return identity
+  if (prior === undefined) {
+    if (requireProof && getFileLineRanges(normalized).length > 0) resetFileLineRanges(normalized)
+    return identity
+  }
+  if (prior.size !== identity.size || prior.mtimeMs !== identity.mtimeMs) {
+    resetFileLineRanges(normalized)
+    return identity
+  }
+  const verdict = rangeContentVerdict(normalized)
+  if (verdict === 'changed' || (requireProof && verdict === 'unproven')) resetFileLineRanges(normalized)
   return identity
 }
 

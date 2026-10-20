@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { relayInProcess } from '../src/relay.js'
 import { RANGE_FINGERPRINT_MAX_BYTES } from '../src/session.js'
+import { stripRangeIdentities } from './helpers/legacy_range_state.js'
 import { rewriteKeepingSizeAndMtime, stampWholeSecondMtime } from './helpers/same_stat_rewrite.js'
 
 // Short lines on purpose: a window stays under IDENTICAL_READ_MIN_BODY_BYTES (512), so the byte-for-byte served-output proof never answers and every refusal here comes from the line-range check this file is about.
@@ -122,5 +123,41 @@ describe.each(['app.ts', 'server.log'])('a repeated ranged Read of %s after an o
     expect(await rangedRead(sid, file, 60, 20)).toBeNull()
     const reason = await rangedRead(sid, file, 1, 20)
     expect(reason).toContain('Lines 1..20 of this file were already read this session')
+  })
+})
+
+// A session persisted before ranges carried an identity holds ranges and nothing else to vouch for them. The log extension has no snapshot, so the identity is the only proof the check has. See stripRangeIdentities for where the shape comes from.
+describe('a repeated ranged Read of a session persisted without any range identity', () => {
+  it('is let through, since a range nothing vouches for may describe text that is gone', async () => {
+    const sid = newSessionId()
+    const file = makeFile('server.log')
+    expect(await rangedRead(sid, file, 1, 20)).toBeNull()
+    stripRangeIdentities(sid)
+    editOutsideSession(file, 5)
+    expect(await rangedRead(sid, file, 1, 20)).toBeNull()
+  })
+
+  it('records the identity on that read so the next unchanged re-read is refused and a changed one is not', async () => {
+    const sid = newSessionId()
+    const file = makeFile('server.log')
+    stampWholeSecondMtime(file)
+    expect(await rangedRead(sid, file, 1, 20)).toBeNull()
+    stripRangeIdentities(sid)
+    expect(await rangedRead(sid, file, 1, 20)).toBeNull()
+    expect(await rangedRead(sid, file, 1, 20)).toContain('Lines 1..20 of this file were already read this session')
+    rewriteKeepingSizeAndMtime(file, 5)
+    expect(await rangedRead(sid, file, 1, 20)).toBeNull()
+  })
+
+  it('records a provable identity when the first read after the load is a different window', async () => {
+    const sid = newSessionId()
+    const file = makeFile('server.log')
+    stampWholeSecondMtime(file)
+    expect(await rangedRead(sid, file, 1, 20)).toBeNull()
+    stripRangeIdentities(sid)
+    expect(await rangedRead(sid, file, 60, 20)).toBeNull()
+    expect(await rangedRead(sid, file, 60, 20)).toContain('Lines 60..79 of this file were already read this session')
+    rewriteKeepingSizeAndMtime(file, 65)
+    expect(await rangedRead(sid, file, 60, 20)).toBeNull()
   })
 })

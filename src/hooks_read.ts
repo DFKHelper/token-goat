@@ -1169,10 +1169,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             } catch {
               currentIdentity = undefined
             }
-            if (recordedIdentity === undefined) {
-              return denyRangeReread()
-            }
-            if (currentIdentity !== undefined && recordedIdentity.size === currentIdentity.size && recordedIdentity.mtimeMs === currentIdentity.mtimeMs) {
+            // No recorded identity (a session saved before ranges carried one) is unknown, and unknown is read through: the reset below lets this read proceed and the post hook records an identity with a hash for the next one.
+            if (recordedIdentity !== undefined && currentIdentity !== undefined && recordedIdentity.size === currentIdentity.size && recordedIdentity.mtimeMs === currentIdentity.mtimeMs) {
               // An equal stat is not proof: a same-size rewrite that kept or restored the mtime matches it too. Only the hash taken when the ranges were recorded denies; a file without one (too large to hash) is unknown, and an unknown file is read through, the extra read being the cost.
               if (rangeContentVerdict(normalized) === 'same') return denyRangeReread()
             }
