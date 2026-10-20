@@ -188,10 +188,28 @@ export async function premiseBranch(
   return false
 }
 
+/** The state letter the OS reports for `pid` (R, S, D, Z, ...), or null where the platform has no such state or it cannot be read. Linux reads /proc; macOS asks `ps`. */
+function processState(pid: number): string | null {
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${String(pid)}/stat`, 'utf8')
+      // The command name sits in parentheses and may itself hold spaces or parentheses, so the state is the first field after the last close.
+      return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) || null
+    } catch { return null }
+  }
+  if (process.platform === 'darwin') {
+    const listing = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true })
+    return listing.status === 0 ? listing.stdout.trim().slice(0, 1) || null : null
+  }
+  return null
+}
+
+/** Whether `pid` names a process that has not exited. A killed process whose parent has not waited for it yet is a zombie: kill(pid, 0) answers yes for it, though it runs nothing and holds nothing, and a parent blocked in a synchronous wait (the cleanup loop) or on its way out (the shim handing its child to init) leaves it that way for a while. An unreadable state counts as alive. */
 export function alive(pid: number): boolean {
-  try { process.kill(pid, 0); return true } catch (error) {
+  try { process.kill(pid, 0) } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
+  return processState(pid) !== 'Z'
 }
 
 /** The process table aliveAs and killAndVerify consult; each member defaults to the real probe, and a test supplies fakes. */

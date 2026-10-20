@@ -6,7 +6,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { alive, cleanupTrees, ownedPids, ownedRoots } from '../helpers/copilot_session_start_tree.js'
+import { alive, cleanupTrees, fileAppears, ownedPids, ownedRoots } from '../helpers/copilot_session_start_tree.js'
 
 const spawners: ChildProcess[] = []
 afterEach(() => { for (const child of spawners.splice(0)) child.kill('SIGKILL') }, 0)
@@ -124,4 +124,30 @@ describe('the SIGTERM-ignoring fixture ends without the test cleanup running', (
     await exited
     expect(fixture.exitCode, 'the fixture ended itself').toBe(0)
   })
+})
+
+// HAND-DERIVED: POSIX process-state semantics. A killed process stays a zombie until its parent waits for it, and kill(pid, 0) answers yes for a zombie. The holder is a direct child of this test that SIGKILLs its own child, watches `ps` until that child is a zombie, announces its pid, then blocks without running its event loop, so the zombie persists for as long as the row looks at it. Windows has no such state.
+it.skipIf(process.platform === 'win32')('does not count a killed, unreaped process as alive', async () => {
+  const folder = lifeline()
+  const readyFile = join(folder, 'zombie.pid')
+  const holder = join(folder, 'holder.cjs')
+  writeFileSync(holder, [
+    'const { spawn, spawnSync } = require("node:child_process")',
+    'const fs = require("node:fs")',
+    'const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" })',
+    'child.kill("SIGKILL")',
+    'for (;;) { const r = spawnSync("ps", ["-o", "stat=", "-p", String(child.pid)], { encoding: "utf8" }); if (r.stdout.trim().startsWith("Z")) break }',
+    `fs.writeFileSync(${JSON.stringify(readyFile)}, String(child.pid))`,
+    'const owner = Number(process.argv[2])',
+    'for (;;) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250); try { process.kill(owner, 0) } catch (e) { if (e.code === "ESRCH") process.exit(0) } }',
+  ].join('\n'))
+  // owner: this test; the holder exits within a quarter second of this process being gone, and afterEach kills it through its handle sooner.
+  const parent = spawn(process.execPath, [holder, String(process.pid)], { stdio: 'ignore', windowsHide: true })
+  spawners.push(parent)
+  const closed = new Promise<never>((_resolve, reject) => { parent.once('close', () => { reject(new Error('the holder ended before its child was a zombie')) }) })
+  const watching = fileAppears(readyFile)
+  try { await Promise.race([watching.appeared, closed]) } finally { watching.stop() }
+  const pid = Number(readFileSync(readyFile, 'utf8'))
+  expect(() => { process.kill(pid, 0) }, 'the raw probe still sees the zombie').not.toThrow()
+  expect(alive(pid)).toBe(false)
 })
