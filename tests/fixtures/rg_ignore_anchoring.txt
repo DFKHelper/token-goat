@@ -1,0 +1,12 @@
+anchored-in-scope	.ignore
+anchored-in-scope	a.ts
+anchored-in-scope	deep/gen.ts
+anchored-in-parent	a.ts
+anchored-in-parent	deep/gen.ts
+unanchored-in-scope	.ignore
+unanchored-in-scope	a.ts
+mid-slash-in-scope	.ignore
+mid-slash-in-scope	a.ts
+mid-slash-in-scope	gen.ts
+negation-in-scope	.ignore
+negation-in-scope	a.ts

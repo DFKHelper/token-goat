@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { invalidateConfigCache } from '../src/config.js'
 import { globalDbPath } from '../src/constants.js'
 import { inlineSymbolGrepHandler } from '../src/hooks_grep.js'
-import { SCOPE_MAX_BYTES, SCOPE_MAX_FILES, readScopeDir } from '../src/inline_grep_scan.js'
+import { MAX_IGNORE_FILE_BYTES, MAX_RULES, SCOPE_MAX_BYTES, SCOPE_MAX_FILES, readScopeDir } from '../src/inline_grep_scan.js'
 import { inlineSymbolAnswer, INLINE_SYMBOL_MAX_BYTES } from '../src/inline_symbol_answer.js'
 import { indexFileSync } from '../src/parser.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -247,9 +247,96 @@ describe('a directory-scoped Grep and the .ignore and .rgignore files ripgrep re
     expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
   })
 
-  it('counts a file a later ! rule re-includes', async () => {
-    const dir = ignoreProject({ ...COPIES, '.ignore': 'dup*.py\n!dupb.py\n' })
-    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+  it('counts a file a later ! rule re-includes, so a second matching line passes the Grep through', async () => {
+    const mention = '# def unique_loader is documented in mod.py\n'
+    const all = (ignore: string): string => project({ 'mod.py': MODULE, 'dupa.py': MODULE, 'dupb.py': mention, '.ignore': ignore }, ['mod.py', 'dupb.py', '.ignore'])
+    const plain = all('dup*.py\n')
+    expect((await inlineSymbolGrepHandler(grep(plain, LOADER, plain))).hookType).toBe('deny')
+    const dir = all('dup*.py\n!dupb.py\n')
+    const out = await inlineSymbolGrepHandler(grep(dir, LOADER, dir))
+    expect(out.hookType, 'dupb.py is re-included, so a second line matches the pattern').toBe('pass')
+    const read = readScopeDir(dir, dir)
+    expect('files' in read && read.files.map((f) => path.basename(f.abs)).sort()).toEqual(['.ignore', 'dupb.py', 'mod.py'])
+  })
+
+  it('matches an ignore rule case-sensitively, as ripgrep does, even when git is told to ignore case', async () => {
+    const dir = project({ 'mod.py': MODULE, 'foo.py': '# def unique_loader is documented in mod.py\n', '.ignore': 'Foo.py\n' })
+    execFileSync('git', ['config', 'core.ignorecase', 'true'], { cwd: dir, stdio: 'ignore' })
+    const out = await inlineSymbolGrepHandler(grep(dir, LOADER, dir))
+    expect(out.hookType, 'foo.py is not dropped by the rule Foo.py, so a second line matches the pattern').toBe('pass')
+  })
+
+  // CAPTURE: tests/fixtures/rg_ignore_anchoring.txt is the output of `rg --files --hidden --glob !.git` (ripgrep 15.1.0) run in sub/ of each tree below; PROVENANCE.tsv has the row. FORMAT-DERIVED: git-doc gitignore.html (git 2.53.0.windows.1, read this run) says a pattern with a separator at the beginning or middle "is relative to the directory level of the particular .gitignore file itself", which is the syntax ripgrep documents for .ignore.
+  describe('with the Grep scoped to a subdirectory', () => {
+    const BASE = { 'gen.ts': 'x\n', 'a.ts': 'x\n', 'sub/gen.ts': 'x\n', 'sub/a.ts': 'x\n', 'sub/deep/gen.ts': 'x\n' }
+    const TREES: Record<string, Record<string, string>> = {
+      'anchored-in-scope': { 'sub/.ignore': '/gen.ts\n' },
+      'anchored-in-parent': { '.ignore': '/sub/gen.ts\n' },
+      'unanchored-in-scope': { 'sub/.ignore': 'gen.ts\n' },
+      'mid-slash-in-scope': { 'sub/.ignore': 'deep/gen.ts\n' },
+      'negation-in-scope': { 'sub/.ignore': '*.ts\n!a.ts\n' },
+    }
+    const captured = new Map<string, string[]>()
+    for (const row of fs.readFileSync(path.join(import.meta.dirname, 'fixtures', 'rg_ignore_anchoring.txt'), 'utf8').split('\n').filter((l) => l !== '')) {
+      const [name = '', file = ''] = row.split('\t')
+      captured.set(name, [...(captured.get(name) ?? []), file])
+    }
+
+    it('captured a row for every tree', () => {
+      expect([...captured.keys()].sort()).toEqual(Object.keys(TREES).sort())
+    })
+
+    for (const name of Object.keys(TREES).filter((n) => n !== 'anchored-in-parent')) {
+      it('lists the files ripgrep searches for ' + name, () => {
+        const dir = project({ ...BASE, ...TREES[name] })
+        const read = readScopeDir(path.join(dir, 'sub'), dir)
+        const got = 'files' in read ? read.files.map((f) => path.relative(path.join(dir, 'sub'), f.abs).split(path.sep).join('/')).sort() : read
+        expect(got, name).toEqual([...(captured.get(name) ?? [])].sort())
+      })
+    }
+
+    it('passes through when a parent holds the rule, which ripgrep applies and this model does not read', async () => {
+      const dir = project({ ...BASE, ...TREES['anchored-in-parent'] })
+      expect(captured.get('anchored-in-parent')).not.toContain('gen.ts')
+      expect(readScopeDir(path.join(dir, 'sub'), dir)).toEqual({ passReason: 'an ignore file lies above the scope' })
+      expect((await inlineSymbolGrepHandler(grep(dir, LOADER, path.join(dir, 'sub')))).hookType).toBe('pass')
+    })
+  })
+
+  describe('the rule caps', () => {
+    const withRules = (count: number): string => ignoreRulesProject(['dup*.py', ...Array.from({ length: count - 1 }, (_, i) => `zz${i}.none`)].join('\n') + '\n')
+    const ignoreRulesProject = (rules: string): string => ignoreProject({ ...COPIES, '.ignore': rules })
+
+    it('honours the rules at the rule cap, so the dropped copies leave one declaration', async () => {
+      const dir = withRules(MAX_RULES)
+      expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('deny')
+    })
+
+    it('passes through one rule over the cap, since the rules cannot be applied whole', async () => {
+      const dir = withRules(MAX_RULES + 1)
+      expect(readScopeDir(dir, dir)).toEqual({ passReason: 'an ignore file could not be read whole' })
+      expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+    })
+
+    const padded = (bytes: number): string => {
+      const rule = 'dup*.py\n'
+      return rule + '#'.repeat(bytes - rule.length - 1) + '\n'
+    }
+
+    it('honours an ignore file of exactly the byte cap', async () => {
+      const text = padded(MAX_IGNORE_FILE_BYTES)
+      expect(Buffer.byteLength(text)).toBe(MAX_IGNORE_FILE_BYTES)
+      const dir = ignoreProject({ ...COPIES, '.ignore': text })
+      expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('deny')
+    })
+
+    it('passes through an ignore file one byte over the byte cap', async () => {
+      const text = padded(MAX_IGNORE_FILE_BYTES + 1)
+      expect(Buffer.byteLength(text)).toBe(MAX_IGNORE_FILE_BYTES + 1)
+      const dir = ignoreProject({ ...COPIES, '.ignore': text })
+      expect(readScopeDir(dir, dir)).toEqual({ passReason: 'an ignore file could not be read whole' })
+      expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+    })
   })
 
   it('passes through when an ignore file in a subdirectory re-includes a file git ignores and does not list', async () => {
