@@ -1,7 +1,8 @@
 /** Golden retrieval eval: runs the real `search`, `semantic` and `answer` commands over the labelled queries in evals/retrieval and reports hit@k, MRR@10 and bytes per correct hit, each with a bootstrap interval, separately for the train and test splits. Usage: npx tsx scripts/eval-retrieval.ts --home <dir> [--bin token-goat] [--root .] [--reindex] [--out report.json] [--baseline old.json] [--arms fused,semantic,...] [--distractors N] [--limit N] `--home` is required and every child runs with HOME, USERPROFILE, TOKEN_GOAT_HOME, LOCALAPPDATA, APPDATA and XDG_DATA_HOME pointed inside it, because `answer` and the search commands write to the savings ledger and an eval run must never land in the user's real one. `--reindex` builds that home's index first. `--baseline` takes an earlier report and prints the paired per-query delta for each arm, which is how a change is judged: keep it only when both splits improve past the interval. Queries of kind `absent` have no answer in the repo. They are left out of every hit-rate line and scored instead on whether each arm abstains: `search` by returning nothing, `semantic` by flagging its closest match as weak. For `semantic` the report also fits the weak-match line on the train split and scores it on the test split beside the line the eval home has configured, read back with `config get` rather than assumed to be the default. `--distractors N` swaps the repo for a scratch project under `<home>/corpus` holding only the files the golden set labels plus N seeded distractor files (placeholder stubs, near-duplicate names, boilerplate; see evals/retrieval/distractors.ts), so `--distractors 0` is the control and any N is the same labelled files drowned in noise; the `answer` arm is skipped there because its expectations are repo-wide. Every run excludes evals/retrieval from that home's index and refuses to score a hit inside it, because the golden file holds every query's own text. */
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
-import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { resolveOnPath } from '../src/process_util.js'
 import { summarizeDistances } from '../src/semantic_distances.js'
 import type { DistanceRow } from '../evals/retrieval/calibration.js'
 import { DISTRACTOR_SEED, generateDistractors } from '../evals/retrieval/distractors.js'
@@ -201,13 +202,28 @@ export function assertRan(r: Pick<SpawnSyncReturns<string>, 'error' | 'signal' |
   if (r.status === null) throw new Error(`${cmd} ended with no exit code; the run stops rather than score it`)
 }
 
-/** Runs one command. A nonzero exit throws unless `allowFail` is set, which `answer` needs because a refusal is a graded outcome there, printed to stderr with exit 1, and the arms need because `semantic` exits 1 when nothing matched. A `.mjs` bundle runs under this Node directly. Any other name on Windows is an npm `.cmd` shim, which only a shell can start, and Node deprecates handing an argument array to a shell (DEP0190), so the shell gets one quoted command line instead. */
+/** The program and leading arguments that start `bin` without a shell. A `.mjs` bundle runs under this Node. On Windows a bare name is looked up on PATH, and an npm `.cmd` shim is read for the `.mjs` it launches (the `%dp0%\...mjs` word npm writes into it), because a shell would be the process a timeout kills while the real child lived on. A shim that names no existing `.mjs` is refused; a `.exe` or any non-Windows binary runs directly. */
+export function resolveBin(bin: string, platform: NodeJS.Platform = process.platform, find: (name: string) => string | null = resolveOnPath): { command: string; prefix: string[] } {
+  if (bin.endsWith('.mjs')) return { command: process.execPath, prefix: [bin] }
+  if (platform !== 'win32') return { command: bin, prefix: [] }
+  const refuse = (why: string): Error => new Error(`eval-retrieval: --bin ${JSON.stringify(bin)} ${why}; pass the .mjs bundle (dist/token-goat.mjs) or an npm shim that launches one, because the eval never starts a shell`)
+  const named = /[\\/]/.test(bin) ? bin : find(bin)
+  const found = named === null ? undefined : [named, `${named}.cmd`].find((c) => existsSync(c) && statSync(c).isFile())
+  if (found === undefined) throw refuse('was not found')
+  if (/\.(exe|com)$/i.test(found)) return { command: found, prefix: [] }
+  if (found.endsWith('.mjs')) return { command: process.execPath, prefix: [found] }
+  const shim = /%dp0%[\\/]+([^"\r\n]+?\.mjs)"/i.exec(readFileSync(found, 'utf8'))
+  const bundle = shim === null ? null : path.resolve(path.dirname(found), shim[1] ?? '')
+  if (bundle === null || !existsSync(bundle)) throw refuse(`resolves to ${found}, which names no existing .mjs bundle`)
+  return { command: process.execPath, prefix: [bundle] }
+}
+
+/** Runs one command. A nonzero exit throws unless `allowFail` is set, which `answer` needs because a refusal is a graded outcome there, printed to stderr with exit 1, and the arms need because `semantic` exits 1 when nothing matched. The command is resolved once, up front, by `resolveBin`, and never runs through a shell: a timeout kills only the process it started, so a shell in between would leave the real child running after the run stopped. */
 function runner(bin: string, cwd: string, env: NodeJS.ProcessEnv): (args: string[], allowFail?: boolean) => Run {
   const opts = { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, windowsHide: true, timeout: QUERY_TIMEOUT_MS } as const
+  const launch = resolveBin(bin)
   const start = (args: string[]): SpawnSyncReturns<string> => {
-    if (bin.endsWith('.mjs')) return spawnSync(process.execPath, [bin, ...args], opts)
-    if (process.platform === 'win32') return spawnSync([bin, ...args].map(cmdQuote).join(' '), { ...opts, shell: true })
-    return spawnSync(bin, args, opts)
+    return spawnSync(launch.command, [...launch.prefix, ...args], opts)
   }
   return (args, allowFail = false) => {
     const t0 = performance.now()
@@ -248,8 +264,6 @@ function askArm(exec: ReturnType<typeof runner>, arm: Arm, query: string): { par
   return { parsed, text }
 }
 
-/** Quote one word for cmd.exe. A query is plain words, so double quotes are enough once any inside it are dropped. */
-const cmdQuote = (s: string): string => `"${s.replaceAll('"', '')}"`
 
 interface QueryResult {
   readonly id: string

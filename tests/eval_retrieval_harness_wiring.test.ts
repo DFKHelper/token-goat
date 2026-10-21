@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { toBaseline } from '../evals/retrieval/gate.js'
 import { splitOf } from '../evals/retrieval/metrics.js'
-import { assertRan, baselineRanks, fixtureHits, pairWithBaseline, parseConfiguredNumber } from '../scripts/eval-retrieval.js'
+import { assertRan, baselineRanks, fixtureHits, pairWithBaseline, parseConfiguredNumber, resolveBin } from '../scripts/eval-retrieval.js'
 
 const FAKE_BIN = `import { appendFileSync } from 'node:fs'
 const args = process.argv.slice(2)
@@ -96,6 +96,48 @@ describe('eval-retrieval crash', () => {
     expect(r.stderr).toContain('exited 2')
     expect(r.stderr).toContain('stand-in crashed on purpose')
     expect(r.stdout).not.toContain('weak_distance')
+  }, 60_000)
+})
+
+describe('resolveBin', () => {
+  // FORMAT-DERIVED: the launch line of an npm global .cmd shim as npm writes it, copied from the shim of the installed token-goat package (%dp0% is the shim's directory).
+  const shimText = (rel: string): string => `@ECHO off\r\nSETLOCAL\r\nCALL :find_dp0\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\${rel}" %*\r\n`
+  const none = (): string | null => null
+
+  it('runs a .mjs bundle under this Node and a non-Windows binary directly', () => {
+    expect(resolveBin('x/dist/token-goat.mjs', 'win32', none)).toEqual({ command: process.execPath, prefix: ['x/dist/token-goat.mjs'] })
+    expect(resolveBin('token-goat', 'linux', none)).toEqual({ command: 'token-goat', prefix: [] })
+  })
+
+  it('resolves a .cmd shim, given by path or found on PATH, to the .mjs it launches, never to a shell', () => {
+    fs.mkdirSync(path.join(root, 'shim', 'node_modules', 'pkg', 'dist'), { recursive: true })
+    const bundle = path.join(root, 'shim', 'node_modules', 'pkg', 'dist', 'tg.mjs')
+    fs.writeFileSync(bundle, '')
+    const shim = path.join(root, 'shim', 'tg.cmd')
+    fs.writeFileSync(shim, shimText('node_modules\\pkg\\dist\\tg.mjs'))
+    const want = { command: process.execPath, prefix: [bundle] }
+    expect(resolveBin(shim, 'win32', none)).toEqual(want)
+    expect(resolveBin(path.join(root, 'shim', 'tg'), 'win32', none)).toEqual(want)
+    expect(resolveBin('tg', 'win32', (name) => (name === 'tg' ? shim : null))).toEqual(want)
+  })
+
+  it('refuses a shim whose .mjs is missing, a shim naming no .mjs, and a name that is not there', () => {
+    const missing = path.join(root, 'missing.cmd')
+    fs.writeFileSync(missing, shimText('nowhere\\tg.mjs'))
+    expect(() => resolveBin(missing, 'win32', none)).toThrow(/which names no existing \.mjs bundle.*never starts a shell/)
+    const plain = path.join(root, 'plain.cmd')
+    fs.writeFileSync(plain, '@ECHO off\r\ntoken-goat.exe %*\r\n')
+    expect(() => resolveBin(plain, 'win32', none)).toThrow(/names no existing \.mjs bundle/)
+    expect(() => resolveBin('ghost', 'win32', none)).toThrow(/--bin "ghost" was not found/)
+  })
+
+  it.skipIf(process.platform !== 'win32')('drives the harness through a real .cmd shim with no shell between the eval and the stand-in', () => {
+    const shim = path.join(root, 'shim.cmd')
+    fs.writeFileSync(shim, shimText('fake-tg.mjs'))
+    const log = path.join(root, 'calls.jsonl')
+    const r = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/eval-retrieval.ts', '--home', path.join(root, 'home'), '--bin', shim, '--root', path.join(root, 'proj'), '--arms', 'semantic'], { cwd: process.cwd(), encoding: 'utf8', timeout: 60_000, env: { ...process.env, FAKE_TG_LOG: log } })
+    expect(r.status, r.stderr).toBe(0)
+    expect(fs.readFileSync(log, 'utf8')).toContain('"semantic"')
   }, 60_000)
 })
 
