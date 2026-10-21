@@ -172,7 +172,7 @@ describe('resolveBin', () => {
 
 describe('runOwned', () => {
   // HAND-DERIVED stand-ins: each connects back to the test's TCP server so the test learns of the process's death from the socket closing, an event, never from elapsed time. The echo answers a ping, which only a live process can do.
-  const probeJs = (hold: string): string => `import net from 'node:net'\n${hold}\nconst s = net.connect(Number(process.env.PROBE_PORT), '127.0.0.1')\ns.on('error', () => {})\ns.on('data', () => s.write('alive'))\nsetInterval(() => {}, 1000)\n`
+  const probeJs = (hold: string): string => `import net from 'node:net'\n${hold}\nconst s = net.connect(Number(process.env.PROBE_PORT), '127.0.0.1')\ns.on('error', () => {})\ns.on('data', () => s.write('alive'))\ns.on('close', () => process.exit(0))\nsetInterval(() => {}, 1000)\n`
   let server: net.Server
   let sockets: net.Socket[]
   let port: number
@@ -203,10 +203,10 @@ describe('runOwned', () => {
       sock.write('ping')
     })
 
-  const start = (script: string, ctl: AbortController, timeoutMs = 60_000): ReturnType<typeof runOwned> => {
+  const start = (script: string, ctl: AbortController, timeoutMs = 60_000, maxBytes = 1_000_000): ReturnType<typeof runOwned> => {
     const file = path.join(root, `standin-${Math.random().toString(36).slice(2)}.mjs`)
     fs.writeFileSync(file, script)
-    return runOwned(process.execPath, [file], { cwd: root, env: { ...process.env, PROBE_PORT: String(port) }, timeoutMs, maxBytes: 1_000_000, signal: ctl.signal })
+    return runOwned(process.execPath, [file], { cwd: root, env: { ...process.env, PROBE_PORT: String(port) }, timeoutMs, maxBytes, signal: ctl.signal })
   }
 
   it('ends a detached grandchild together with the child when the run is stopped', async () => {
@@ -225,6 +225,51 @@ describe('runOwned', () => {
       ctl.abort()
       await run
     }
+  }, 60_000)
+
+  it('ends a survivor that holds the pipe after the root exited, and resolves instead of waiting for the pipe', async () => {
+    // The survivor connects only once its stdin pipe, whose other end the root holds, reaches end of file, which happens when the root exits (a pid probe is no use on Windows, where a parent's handle keeps an exited process answering); it is detached because libuv ends a Windows child that is not when its parent exits; so the stop below always meets an exited root, and the survivor dies when the test's socket closes.
+    const gc = path.join(root, 'survivor.mjs')
+    fs.writeFileSync(gc, `import net from 'node:net'\nprocess.stdin.on('data', () => {})\nprocess.stdin.on('end', () => {\n  const s = net.connect(Number(process.env.PROBE_PORT), '127.0.0.1')\n  s.on('error', () => {})\n  s.on('data', () => s.write('alive'))\n  s.on('close', () => process.exit(0))\n})\nsetInterval(() => {}, 1000)\n`)
+    const parent = `import { spawn } from 'node:child_process'\nconst c = spawn(process.execPath, [${JSON.stringify(gc)}], { detached: true, windowsHide: true, stdio: ['pipe', 'inherit', 'inherit'], env: process.env })\nc.unref()\nc.stdin.unref()\n`
+    const ctl = new AbortController()
+    const run = start(parent, ctl)
+    let result: Awaited<typeof run> | undefined
+    void run.then((r) => {
+      result = r
+    })
+    const survivor = await connected
+    // The round trip also lets the run observe the root's exit, which was queued before the survivor even connected.
+    expect(await alive(survivor), 'the survivor must be running before the stop').toBe(true)
+    ctl.abort()
+    // One event-loop turn: the stop ends the survivors and resolves synchronously, so a run that is still pending after it is waiting on the pipe.
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(result?.error?.code, 'a stop after the root exited must resolve the run with the abort').toBe('ABORT_ERR')
+    expect(await alive(survivor), 'the survivor holding the pipe must be gone').toBe(false)
+  }, 60_000)
+
+  it('stops a run whose output passes the limit with ENOBUFS and keeps no more than the limit', async () => {
+    const ctl = new AbortController()
+    const r = await start("process.stdout.write('x'.repeat(5000), () => process.exit(0))\n", ctl, 60_000, 1000)
+    expect(r.error?.code).toBe('ENOBUFS')
+    expect(r.stdout.length).toBeLessThanOrEqual(1000)
+  }, 60_000)
+
+  it('stops an overflowing child that would otherwise keep running', async () => {
+    const ctl = new AbortController()
+    const run = start(probeJs("process.stdout.write('x'.repeat(5000))"), ctl, 60_000, 1000)
+    const child = await connected
+    const r = await run
+    expect(r.error?.code).toBe('ENOBUFS')
+    expect(await alive(child), 'an overflowing child must be gone').toBe(false)
+  }, 60_000)
+
+  it('runs without any deadline when none is given', async () => {
+    const file = path.join(root, 'quick.mjs')
+    fs.writeFileSync(file, "process.stdout.write('done')\n")
+    const r = await runOwned(process.execPath, [file], { cwd: root, env: process.env, maxBytes: 1000 })
+    expect(r).toMatchObject({ stdout: 'done', status: 0 })
+    expect(r.error).toBeUndefined()
   }, 60_000)
 
   it('ends a child that ignores SIGTERM instead of staying blocked on it', async () => {
@@ -257,7 +302,7 @@ describe('assertRan', () => {
   // HAND-DERIVED from the spawnSync return shape in the Node child_process docs: a timeout sets error (code ETIMEDOUT) with a null status and a signal, a kill sets only signal, a clean run sets status.
   const timedOut = Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' })
 
-  it('names the command and the timeout when spawnSync reports ETIMEDOUT', () => {
+  it('names the command and the timeout when the run reports ETIMEDOUT', () => {
     expect(() => assertRan({ error: timedOut, signal: 'SIGTERM', status: null }, ['semantic', 'q'])).toThrow(/token-goat semantic q timed out after 60000 ms/)
   })
 
@@ -291,7 +336,7 @@ describe('pairWithBaseline', () => {
 })
 
 describe('eval-retrieval --baseline', () => {
-  const goldenIds =(): string[] => golden().trim().split('\n').map((l) => (JSON.parse(l) as { id: string }).id)
+  const goldenIds = (): string[] => golden().trim().split('\n').map((l) => (JSON.parse(l) as { id: string }).id)
   const writeBaseline = (value: unknown): string => {
     const file = path.join(root, 'baseline.json')
     fs.writeFileSync(file, JSON.stringify(value))

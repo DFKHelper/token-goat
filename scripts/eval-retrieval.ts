@@ -241,12 +241,12 @@ export function resolveBin(bin: string, platform: NodeJS.Platform = process.plat
 }
 
 /** Runs one command. A nonzero exit throws unless `allowFail` is set, which `answer` needs because a refusal is a graded outcome there, printed to stderr with exit 1, and the arms need because `semantic` exits 1 when nothing matched. The command is resolved once, up front, by `resolveBin`, and never runs through a shell: a timeout kills only the process it started, so a shell in between would leave the real child running after the run stopped. */
-function runner(bin: string, cwd: string, env: NodeJS.ProcessEnv): (args: string[], allowFail?: boolean) => Promise<Run> {
-  const opts = { cwd, env, timeoutMs: QUERY_TIMEOUT_MS, maxBytes: 256 * 1024 * 1024 }
+function runner(bin: string, cwd: string, env: NodeJS.ProcessEnv): (args: string[], allowFail?: boolean, limit?: 'query' | 'none') => Promise<Run> {
+  const opts = { cwd, env, maxBytes: 256 * 1024 * 1024 }
   const launch = resolveBin(bin)
-  return async (args, allowFail = false) => {
+  return async (args, allowFail = false, limit = 'query') => {
     const t0 = performance.now()
-    const r = await runOwned(launch.command, [...launch.prefix, ...args], opts)
+    const r = await runOwned(launch.command, [...launch.prefix, ...args], limit === 'none' ? opts : { ...opts, timeoutMs: QUERY_TIMEOUT_MS })
     const ms = performance.now() - t0
     assertRan(r, args)
     if (r.status !== 0 && !allowFail) throw new Error(`token-goat ${args.join(' ')} exited ${r.status}: ${r.stderr.slice(0, 500)}`)
@@ -392,7 +392,8 @@ async function main(): Promise<void> {
 
   // Before the reindex so `index .` never reads the fixtures, and on every run so rows the worker indexed earlier are removed too.
   if (distractors === null) await exec(['project', 'exclude', path.join(root, FIXTURE_DIR)])
-  if (process.argv.includes('--reindex')) await exec(['index', '.', '--embed'])
+  // A full index with embeddings outlasts one query's limit, so it gets no deadline (QUERY_TIMEOUT_MS is not raised and no longer limit is added); abort, overflow and the tree kill still own it.
+  if (process.argv.includes('--reindex')) await exec(['index', '.', '--embed'], false, 'none')
 
   const labels = new Map<string, RelevantSpan[]>(golden.map((g) => [g.id, g.relevant.flatMap((l) => resolveLabel(l, readFileSync(path.join(root, l.file), 'utf8')))]))
 
