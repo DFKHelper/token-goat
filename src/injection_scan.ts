@@ -51,10 +51,11 @@ function neutralizeFenceMarkers(text: string, tag: string): string {
   )
 }
 
-/** Characters that take no space or reorder text: the Unicode format class (zero-width marks, bidi overrides and isolates, the byte-order mark, soft hyphen), every Default_Ignorable_Code_Point (the combining grapheme joiner, the variation selectors, the Hangul fillers, the Mongolian free variation selectors) and the tag block U+E0000-E007F, which can spell a whole hidden sentence an editor does not draw. */
-const INVISIBLE_CODE_POINTS = String.raw`\p{Cf}\p{Default_Ignorable_Code_Point}\u{E0000}-\u{E007F}`
+/** Characters that take no space or reorder text: the Unicode format class (zero-width marks, bidi overrides and isolates, the byte-order mark, soft hyphen), every Default_Ignorable_Code_Point (the combining grapheme joiner, the variation selectors, the Hangul fillers, the Mongolian free variation selectors) the tag block U+E0000-E007F, which can spell a whole hidden sentence an editor does not draw, and the control characters other than tab, line feed and carriage return (NUL and the rest of Cc, which most renderers draw as nothing). */
+const INVISIBLE_CODE_POINTS = String.raw`\p{Cf}\p{Default_Ignorable_Code_Point}\u{E0000}-\u{E007F}\u{0}-\u{8}\u{B}\u{C}\u{E}-\u{1F}\u{7F}-\u{9F}`
 const INVISIBLE = `[${INVISIBLE_CODE_POINTS}]`
-const GAP_CODE_POINTS = String.raw`\s${INVISIBLE_CODE_POINTS}`
+// The braille blank draws as an empty cell, so it reads as a space but is neither whitespace nor default-ignorable.
+const GAP_CODE_POINTS = String.raw`\s${INVISIBLE_CODE_POINTS}\u{2800}`
 
 /** Whitespace or an invisible character, as ONE class. Written as the alternation `(?:\s|INVISIBLE)` the two branches both match U+FEFF (whitespace to `\s`, a format character to `\p{Cf}`), so under `*` a run of them split between the branches in exponentially many ways and an input that failed to match took exponential time. One class gives every character one way to match. */
 const GAP = `[${GAP_CODE_POINTS}]`
