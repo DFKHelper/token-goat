@@ -5,6 +5,8 @@ import * as path from 'node:path'
 import type { Config } from '../src/config.js'
 import { checkEmbeddingModel, runDoctorAndExit, runDoctorRepair } from '../src/cli_doctor.js'
 import * as embedModel from '../src/embed_model.js'
+import * as embedRuntime from '../src/embed_runtime.js'
+import * as cliUpgrade from '../src/cli_upgrade.js'
 import * as configModule from '../src/config.js'
 import { recordCreatedConfig, takeCreatedConfig } from '../src/bridges/created_configs.js'
 import { claudeHookScriptPath, installHooks } from '../src/install.js'
@@ -32,7 +34,11 @@ describe('doctor auto-repair and embedding model checks', () => {
   beforeEach(() => {
     delete process.env['TOKEN_GOAT_MODEL_CACHE_DIR']
     vi.restoreAllMocks()
-    userHome = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-home-'))
+    // A repair that reaches the network or an install without its own stub fails here by name. Unstubbed, step 7 ran a real `npm install -g token-goat@latest` in a tree with no .git (the dev-checkout test below read it as a published install) and stalled a WSL run with the network cut for 300 s.
+    vi.spyOn(embedModel, 'ensureModelFiles').mockRejectedValue(new Error('unexpected model download: this test did not stub ensureModelFiles'))
+    vi.spyOn(embedRuntime, 'ensureWasmBinary').mockRejectedValue(new Error('unexpected WebAssembly binary download: this test did not stub ensureWasmBinary'))
+    vi.spyOn(cliUpgrade, 'performUpgrade').mockResolvedValue({ ok: false, message: 'unexpected upgrade: this test did not stub performUpgrade' })
+    userHome =fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-home-'))
     projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), '.tg-doctor-repair-root-'))
     vi.stubEnv('HOME', userHome)
     vi.stubEnv('USERPROFILE', userHome)
