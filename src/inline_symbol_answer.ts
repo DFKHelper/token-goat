@@ -211,6 +211,8 @@ export async function inlineSymbolAnswer(args: InlineAnswerArgs): Promise<Inline
   if (!('inline' in decision)) return decision
   const answered = rows.find((r) => r.name === decision.symbol && r.filePath === decision.file)
   if (answered === undefined) return { name: 'pattern_mismatch' }
+  // The deny names the file and symbol inside code spans in token-goat's own voice; a backtick, a control or format character or a line separator in either would end the span early or hide text, so such an answer is not inlined and the Grep runs as the agent wrote it.
+  if (/[`\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(decision.file + decision.symbol)) return { name: 'untouchable_path' }
   const checked = await checkPatternOverScope({ pattern: args.pattern, bare: declared === null, kind, scope, root, answered, args })
   if ('name' in checked) return checked
   // Redaction and the fence's escapes can lengthen the text, so the cap is judged on what the deny will carry.

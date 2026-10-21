@@ -39,26 +39,30 @@ export interface FenceSpan {
 }
 
 /** Escape any occurrence of the fence's opening or closing tag inside untrusted text. Unescaped, an attacker whose content contains the closing marker could prematurely close the fence and make trailing attacker text appear -- to the model -- as if it sits outside the untrusted boundary, undermining the fence its caller exists to provide. Matching has to be as loose as the reading is. An exact, case-sensitive split escaped only the one spelling `</untrusted-web-content>`, while `</UNTRUSTED-WEB-CONTENT>`, `</Untrusted-Web-Content>` and `</untrusted-web-content >` all passed through untouched and still read as that same closing tag -- tag names are case-insensitive and trailing whitespace inside a tag is ordinary, so the strict form was the only one an attacker had no reason to use. The pattern below therefore ignores case, allows whitespace around the name and the slash, and allows the junk attributes an end tag may carry. It also allows a slash immediately BEFORE the closing bracket: `</untrusted-tool-output/>` is a malformed end tag that HTML parsing still reads as one, and leaving it unescaped handed an attacker a spelling that closed the fence. After the tag name, anything up to the next `>` is consumed, guarded by a lookahead that the next character is a real tag-name terminator (whitespace, `/`, or `>`). Bounding the trailing junk to "introduced by whitespace, or a single slash right before the bracket" was too narrow: an HTML tokenizer reads `</untrusted-web-content/foo>` and `</untrusted-web-content/ foo>` as end tags for this tag too -- a `/` after the tag name enters the self-closing-start-tag state, and a following non-`>` character is reconsumed as an attribute rather than ending the tag -- so those spellings closed the fence and slipped through unescaped, the same hole as `</...\/>` above one step further along. The terminator lookahead is what keeps this from also matching a genuinely different, longer tag name (`<untrusted-web-contentX>`), which shares only a prefix. A replacer function, not a replacement string: `$&` and friends are substitution sequences in a string replacement, and the matched text here is attacker-controlled. Every gap in the pattern, and every position between two letters of the name, also takes the invisible characters (the default-ignorable set), because the body keeps U+200C, U+200D and U+FE0F and a closing tag spelled with one of them would otherwise read as the real one. */
-export function fenceMarkerPattern(tag: string): RegExp {
-  return new RegExp(`<${GAP}*(?:/${GAP}*)?${spaced(tag)}(?=[${GAP_CODE_POINTS}/>])[^>]*>`, 'giu')
+export function fenceMarkerPattern(tag: string, headOnly = false): RegExp {
+  // `headOnly` stops the pattern after the tag name's terminator; the caller then finds the closing bracket with indexOf, because `[^>]*>` retried at every `<` is quadratic on a long run of unclosed openers.
+  return new RegExp(`<${GAP}*(?:/${GAP}*)?${spaced(tag)}(?=[${GAP_CODE_POINTS}/>])${headOnly ? '' : '[^>]*>'}`, 'giu')
 }
 
 function neutralizeFenceMarkers(text: string, tag: string): string {
-  const marker = fenceMarkerPattern(tag)
+  const marker = fenceMarkerPattern(tag, true)
   // Markers first, so a forgery that hides behind an invisible character is still escaped as a marker; then the invisible characters, so a closing tag split by one is plain text before the tag match runs.
   return neutralizeSpokenMarkers(
-    neutralizeSpokenMarkers(escapeHiddenCharacters(neutralizeSpokenMarkers(text)), marker, TAG_ESCAPES),
+    neutralizeSpokenMarkers(escapeHiddenCharacters(neutralizeSpokenMarkers(text)), marker, TAG_ESCAPES, '>'),
   )
 }
 
-/** Look-alikes of the letters and the hyphen in the marker and tag names, from Unicode confusables.txt (UTS #39 data, version 18.0.0, dated 2026-08-06, read this run from https://www.unicode.org/Public/security/latest/confusables.txt): each entry is four hex digits of the look-alike then the character it stands for. Only single code points that map to one letter of `token-goat`, `tg` or a fence tag name, or to the hyphen, are listed; the fullwidth forms, the accented letters and the other compatibility forms fold through NFKD instead. */
-const CONFUSABLES = new Map(
-  'fe63- 2010- 2011- 2012- 2013- fe58- 2043- 2212- 0251a 03b1a 0430a 0391A 0410A 042cb 0392B 0412B 1d04c 03f2c 0441c 03f9C 0421C 0501d 0435e 04bde 0395E 0415E 0284f 03dcF 0261g 1d83g 050cG 04bbh 04bah 0397H 041dH 026ai 0269i 03b9i 0456i 039aK 041aK 0399l 0406l 04cfl 04c0l 039cM 03faM 041cM 039dN 1d0fo 1d11o 03bfo 03c3o 03edo 043eo 039fO 041eO 03c1p 03f1p 03f8p 0440p 03a1P 0420P 1d26r 0433r 0455s 0405S 03a4T 0422T 1d1cu 028bu 03c5u 026fw 1d21w 0461w 0448w 051dw 051cW 0445x 03a7X 0425X'
-    .split(' ')
-    .map((e): [number, string] => [parseInt(e.slice(0, 4), 16), e.slice(4)]),
-)
+/** Look-alikes of every character the markers and fence tags are spelled with (the letters of `token-goat`, `tg` and each tag name in both cases, and `-[]<>/:`), derived mechanically from Unicode confusables.txt by scripts/derive-confusables.mjs (UTS #39 data, version 18.0.0, dated 2026-08-06, https://www.unicode.org/Public/security/latest/confusables.txt) and pinned by tests/fixtures/confusables_targets.txt: each entry is the character a look-alike stands for followed by the decimal distance of its code point from the previous entry's (the first from 0), and a look-alike that NFKD already folds to its target is left out. Never edit by hand. */
+export const CONFUSABLE_ENTRIES = "i161x54p39i51f78b5g9f5l4R16s23p2l1R140a5g16i8i1w5f21u7<55>1:13-7:33A153B1E3H2l2K1M2N1O2P2T3X3a10i8o6p2o2u2F23o17p4c1p6C1M1S11l1A10B2E3K5M2H1O1P2C1T1X3b7a4r3e2o9p2c1x4w3s13i1w11h89h1e2l3l15d50G11W16w1U48S2O6w12h15n8n4u1g4i1f2o1:4l55:3l18l10o2l70o32l26o4o89o3-19o1l28o4:14:1O188l10o1F8b2T11:81o15:195l97o2o128o128:29o99O58o70o128o28o100o28O100o28s29o1o70o28o206o128c308o25o35l10c16h95S4S64o2o12o177U68O208:145:50D13R1T1i3A5E2W7M4H4G5h2b13R3W2S1S5L4C1P3K4d1G12B1>63<5U20P33d2b3L56x151H59x1R10b40F5A17D25D12M6B7X118x1<68X5l10l15K5M1:22/73-24x22o125:35:6o572o59o16o346x2-7o143c1S58O2X54c15o11o2u11w5r5g93f282-371-1-1-1<38>1/7-2/1:22l182l1e29l50l95-83/3l14U7:12T110U31E60i116p1a6l131l261l1/110X2<507>1-39/53T14x338x1w182/22x55B595r3H9l4i1K1M4N2O4o1P3p1C1c1T1X6-14-1w2/9/1P7p1L1E105l17l5O5X9<9/413O260/44/155T68o53/139/1T7218/58B22161P1d1D1T1G2K1C3F3M2N1L1S1R1H4W3X1A3E2l2O1U1:9T14B76l24S7E85i124s234l80:8F15f1u6l15X5B1w70l4l50l158l399-32e181f3o8r10r1u6u4a18i17r12w2w33s6c5o20471o1o1o1o1o1o1o1:643l1-39l53l1o91o1o1o1O36l1l24l51/45o46l49:371f35d13-6B241E4F1l3X6O2P3S1T1A9B1C1F3O6M5T1X3H27B50C1l7O6M2T4X2b5l4X2<11O215C17L6S5o12c17s11R108O14U12o28u12l24N5O3K2C3F10L1X1l1023o6:457X286O4M10l29X68l35x29l56X2o11:763l69:59l62o100l29:65l67:117o200l210l119o133:238l7l124:107w94w4w1:297F106L1E3E8L4O3U3T4s5F1i1o5o15u1O8W6C3X3W3C3N460l387:408l1O6l1r19512S189O19<3l631l327b12T84L12l18R13S5>5A1U2l23964O18l1l1039:8c44b211W5F7R3L20<12>1/3T313l4l145l52l52l104l104l52l52l52l52l52l52i44A4B1E3H2l2K1M2N1O2P2T3X3a4i8o6p2o2u2p10A2B1E3H2l2K1M2N1O2P2T3X3a4i8o6p2o2u2p10A2B1E3H2l2K1M2N1O2P2T3X3a4i8o6p2o2u2p10A2B1E3H2l2K1M2N1O2P2T3X3a4i8o6p2o2u2p10A2B1E3H2l2K1M2N1O2P2T3X3a4i8o6p2o2u2p10F2O4l1O9l1O9l1O9l1O9l1a1891A16w19E4O447l1O431l1495l1082l255o36l92o4C2248T28O1160l1"
 
-const MARK = /\p{Mn}/gu
+const CONFUSABLES = new Map<number, string>()
+let confusableCode = 0
+for (const m of CONFUSABLE_ENTRIES.matchAll(/(\D)(\d+)/g)) {
+  confusableCode += Number(m[2])
+  CONFUSABLES.set(confusableCode, m[1] ?? '')
+}
+
+const MARK = /[\p{Mn}\p{Me}\p{Mc}]/gu
 const NON_ASCII = /[^\p{ASCII}]/u
 // What a code point that reads as one of these characters becomes when it sits inside a match: the marker's opening bracket, and the angle brackets of a fence tag.
 const BRACKET_ESCAPES: ReadonlyMap<string, string> = new Map([['[', '&#91;']])
@@ -91,31 +95,76 @@ function spaced(word: string): string {
 export const SPOKEN_MARKER = new RegExp(String.raw`\[${GAP}*(?:${spaced('token-goat')}\b|${spaced('tg')}${GAP}*\])`, 'giu')
 
 /** Escape anything inside the fence that wears token-goat's own `[token-goat...]` marker prefix. Closing the tag early is not the only way out of the fence. The fence's own preamble opens with `[token-goat:`, and every hook that shrinks something signs its work with a marker in the same shape, so that prefix is a live authority signal in the model's context -- and third-party bytes can print it. Text that does so is not escaping the fence, it is speaking from inside it in the voice of the thing that built it, which is the more useful attack: the fence stays intact and correctly labelled while the model reads a line inside it as token-goat's own. Measured 2026-09-04, twelve trials per condition against a headless model, on a build log whose last lines impersonate a token-goat truncation notice and ask for a canary line back. Unfenced, the model complied 11 times. Fenced as we shipped it that morning, 6 -- the fence halves the attack and no more, because it never contradicts the impersonation, it only surrounds it. With the prefix escaped as below, 1. The same probe found that a *genuine* marker sitting beside an ordinary injection lends it nothing (0 of 12 either way), so proximity was never the problem and this is narrowly aimed at the thing that was: forgery of the prefix itself. The escape is `&#91;` for the opening bracket alone, matching how the tag neutraliser above defuses a forged tag: enough that the line no longer reads as our marker, little enough that a human reading the output still sees what the bytes said. Nothing token-goat writes is ever legitimately inside a fence -- markers and pointers are appended outside the closing tag -- so this cannot escape our own text, and an escaped marker showing up in fenced output means either a real forgery or a bug that folded our voice inside the fence. Both want to be visible. A replacer function, not a replacement string, for the same reason as above: `$&` and friends are substitution sequences in a string replacement, and the matched text is attacker-controlled. */
-export function neutralizeSpokenMarkers(text: string, marker: RegExp = SPOKEN_MARKER, escapes: ReadonlyMap<string, string> = BRACKET_ESCAPES): string {
+export function neutralizeSpokenMarkers(text: string, marker: RegExp = SPOKEN_MARKER, escapes: ReadonlyMap<string, string> = BRACKET_ESCAPES, closer?: string): string {
   // Both voices token-goat speaks in: the `[token-goat: ...]` marker hooks sign rewrites with, and the `[tg]` prefix denyOutput puts on every deny. The deny prefix is the more dangerous of the two, since a deny is the one message shaped as an instruction the model is meant to obey, and it is matched only with its closing bracket so that ordinary bracketed words like `[tgz]` are left alone. Matching reads a folded copy (look-alikes, fullwidth forms and combining marks reduced to the plain spelling, from the table above and NFKD) while the rewrite touches only the original characters inside each match, found through an index map built in the same single pass, so a spoofed marker is escaped and every byte outside a match is untouched. `marker` must be global and never match empty. Text with no non-ASCII character needs no fold.
   const fold = (ch: string): string => CONFUSABLES.get(ch.codePointAt(0) ?? 0) ?? ch.normalize('NFKD').replace(MARK, '')
   const escapeSpan = (span: string): string => [...span].map((c) => escapes.get(fold(c)) ?? c).join('')
-  if (!NON_ASCII.test(text)) return text.replace(marker, escapeSpan)
-  let folded = ''
-  const from: number[] = []
-  const to: number[] = []
-  for (let i = 0; i < text.length; ) {
-    const ch = String.fromCodePoint(text.codePointAt(i) ?? 0)
-    const f = fold(ch)
-    for (let k = 0; k < f.length; k++) {
-      from.push(i)
-      to.push(i + ch.length)
+  // The folded copy is built from runs: an ASCII run is copied whole with no per-character work, and each non-ASCII code point is folded and recorded as its own segment (folded start, original start, original length, or -1 for an ASCII run). A folded offset maps back to an original one by binary search over the segments.
+  const pieces: string[] = []
+  const segFolded: number[] = []
+  const segOriginal: number[] = []
+  const segLength: number[] = []
+  let folded = 0
+  let original = 0
+  const nonAscii = new RegExp(NON_ASCII.source, 'gu')
+  for (let m = nonAscii.exec(text); m !== null; m = nonAscii.exec(text)) {
+    if (m.index > original) {
+      pieces.push(text.slice(original, m.index))
+      segFolded.push(folded)
+      segOriginal.push(original)
+      segLength.push(-1)
+      folded += m.index - original
     }
-    folded += f
-    i += ch.length
+    const f = fold(m[0])
+    pieces.push(f)
+    segFolded.push(folded)
+    segOriginal.push(m.index)
+    segLength.push(m[0].length)
+    folded += f.length
+    original = m.index + m[0].length
   }
+  if (original < text.length) {
+    pieces.push(text.slice(original))
+    segFolded.push(folded)
+    segOriginal.push(original)
+    segLength.push(-1)
+  }
+  const foldedText = pieces.join('')
+  const segmentOf = (at: number): number => {
+    let lo = 0
+    let hi = segFolded.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1
+      if ((segFolded[mid] ?? 0) <= at) lo = mid
+      else hi = mid - 1
+    }
+    return lo
+  }
+  const startOf = (at: number): number => {
+    const s = segmentOf(at)
+    return (segLength[s] ?? 0) < 0 ? (segOriginal[s] ?? 0) + at - (segFolded[s] ?? 0) : (segOriginal[s] ?? 0)
+  }
+  const endOf = (at: number): number => {
+    const s = segmentOf(at)
+    return (segLength[s] ?? 0) < 0 ? (segOriginal[s] ?? 0) + at - (segFolded[s] ?? 0) + 1 : (segOriginal[s] ?? 0) + (segLength[s] ?? 0)
+  }
+  // A private copy, so `lastIndex` never leaks between callers through the shared exported pattern.
+  const re = new RegExp(marker.source, marker.flags)
   let out = ''
   let last = 0
-  for (const m of folded.matchAll(marker)) {
-    const start = Math.max(from[m.index] ?? last, last)
-    const end = to[m.index + m[0].length - 1] ?? start
+  for (let m = re.exec(foldedText); m !== null; m = re.exec(foldedText)) {
+    let stop = m.index + m[0].length
+    if (closer !== undefined) {
+      // The head matched; the tag runs to the first closer after it. With no closer left, no later head can close either, so the scan ends here instead of retrying every later head against the same tail.
+      const close = foldedText.indexOf(closer, stop)
+      if (close === -1) break
+      stop = close + 1
+    }
+    const start = Math.max(startOf(m.index), last)
+    const end = endOf(stop - 1)
     out += text.slice(last, start) + escapeSpan(text.slice(start, end))
     last = end
+    re.lastIndex = stop
   }
   return out + text.slice(last)
 }

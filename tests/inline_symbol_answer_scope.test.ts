@@ -257,3 +257,19 @@ describe('a directory-scoped Grep and the .ignore and .rgignore files ripgrep re
     expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
   })
 })
+
+// HAND-DERIVED: a backtick ends a markdown code span, and U+2028 (a line separator) and U+202E (a right-to-left override) are legal in NTFS and POSIX file names yet read as a line break or reorder what follows; the deny prints the file name inside a code span in token-goat's own voice, so an answer for such a name must pass the Grep through.
+describe('a file name that cannot sit inside the deny code span', () => {
+  it('still inlines an ordinary file name, so the refusals below are not a general failure', async () => {
+    const dir = project({ 'plain.py': MODULE })
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('deny')
+  })
+
+  for (const [label, name] of [['a backtick', 'we`ird.py'], ['a line separator', 'li' + String.fromCodePoint(0x2028) + 'ne.py'], ['a right-to-left override', 'rt' + String.fromCodePoint(0x202e) + 'l.py']] as const) {
+    it('passes the Grep through for a name holding ' + label, async () => {
+      const dir = project({ [name]: MODULE })
+      expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+      expect(await inlineSymbolAnswer({ enabled: true, pattern: LOADER, grepPath: dir, cwd: dir, event: grep(dir, LOADER, dir), isBarred: () => false })).toEqual({ name: 'untouchable_path' })
+    })
+  }
+})

@@ -43,6 +43,7 @@ describe('the patterns that read untrusted bytes cannot backtrack catastrophical
   for (const tag of [UNTRUSTED_WEB_TAG, UNTRUSTED_FILE_TAG, UNTRUSTED_OCR_TAG, UNTRUSTED_TOOL_TAG, UNTRUSTED_GITHUB_TAG, UNTRUSTED_HTML_TAG]) {
     it('has none in the ' + tag + ' tag match', () => {
       expect(ambiguousParts(fenceMarkerPattern(tag))).toEqual([])
+      expect(ambiguousParts(fenceMarkerPattern(tag, true))).toEqual([])
     })
   }
 
