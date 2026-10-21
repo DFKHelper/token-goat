@@ -9,7 +9,8 @@ import { resolveProjectRoot } from './project.js'
 import { runGitAsyncLazy, safeSlice } from './util.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { listSkills, getSkillFilePath, extractChecklistSection } from './skill_cache.js'
-import { renderWebFetchRows } from './manifest.js'
+import { closeCutFence, renderWebFetchRows } from './manifest.js'
+import { fenceFileText, injectionFencingEnabled } from './untrusted_fence.js'
 import { readCompactDroppedPaths } from './compact_dropped.js'
 
 export const MAX_RESUME_TOKENS = 2000
@@ -54,7 +55,7 @@ async function buildSkillsSection(sessionId: string): Promise<string[]> {
         checklist.length > SKILL_MAX_CHARS_EACH ? checklist.slice(0, SKILL_MAX_CHARS_EACH).trimEnd() + '…' : checklist
       // Both halves are repository-controlled -- a checked-in skill file names itself and writes its own DoD -- and this packet is emitted in token-goat's own voice. The name is one token, so it takes the full displaySafeText; the checklist is a multi-line block whose markdown is the point of reproducing it, so it takes the marker half only.
       skillLines.push(`**${displaySafeText(skill.name)}**:`)
-      skillLines.push(neutralizeSpokenMarkers(trimmed))
+      skillLines.push(injectionFencingEnabled() ? fenceFileText(trimmed) : neutralizeSpokenMarkers(trimmed))
     } else {
       skillLines.push(`**${displaySafeText(skill.name)}** — \`token-goat skill-body ${quotedArg(displaySafeText(skill.name))} --section DoD\``)
     }
@@ -158,5 +159,5 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
 
   const text = lines.join('\n')
   if (text.length <= MAX_RESUME_CHARS) return text
-  return safeSlice(text, MAX_RESUME_CHARS) + '\n... (truncated to cap)\n'
+  return closeCutFence(safeSlice(text, MAX_RESUME_CHARS)) + '\n... (truncated to cap)\n'
 }
