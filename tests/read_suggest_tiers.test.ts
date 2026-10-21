@@ -1,7 +1,7 @@
 /** A did-you-mean list ranked only by length closeness let a name that merely contains the query, or a typo candidate that shares nothing with it but length, outrank a name that begins with what the agent typed. Fixture provenance: HAND-DERIVED. Every expected order below is computed from the tiers by hand (query itself, begins with the query, shares its first character, the rest) and from length differences counted on the strings, independently of rankSimilarNames. */
 import { describe, expect, it } from 'vitest'
 
-import { rankSimilarNames } from '../src/read_suggest.js'
+import { formatNoMatchesHelp, rankSimilarNames } from '../src/read_suggest.js'
 
 describe('rankSimilarNames tiers', () => {
   it('puts a name that begins with the query ahead of one that only contains it', () => {
@@ -16,5 +16,23 @@ describe('rankSimilarNames tiers', () => {
 
   it('keeps length closeness inside a tier', () => {
     expect(rankSimilarNames(['renderAllTheThings', 'renderAll'], 'render')).toEqual(['renderAll', 'renderAllTheThings'])
+  })
+
+  it('formatNoMatchesHelp provides targeted recovery suggestions', () => {
+    const grepSuggestions = formatNoMatchesHelp({
+      kind: 'grep',
+      pattern: 'MySymbol',
+      targetPath: 'src/file.ts',
+      hasUpper: true,
+      isCaseSensitive: true,
+    })
+    expect(grepSuggestions).toContain('Try case-insensitive search: re-run with inline flag `(?i)` or case-insensitive matching')
+    expect(grepSuggestions).toContain('Try inspecting file outline: token-goat outline "src/file.ts"')
+
+    const symbolSuggestions = formatNoMatchesHelp({
+      kind: 'symbol',
+      targetPath: 'src/file.ts',
+    })
+    expect(symbolSuggestions).toContain('Try: token-goat outline "src/file.ts"')
   })
 })

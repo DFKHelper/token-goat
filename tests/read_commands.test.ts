@@ -3887,11 +3887,16 @@ describe('read_commands', () => {
       expect(stdout).toContain('Hello World')
     })
 
-    it('returns 1 when no matches', () => {
+    it('returns 1 when no matches and provides recovery suggestions', () => {
       const f = path.join(tempDir, 'no-match.txt')
       fs.writeFileSync(f, 'nothing here')
-      const code = runGrep({ pattern: 'ZZZNOMATCH', path: f })
-      expect(code).toBe(1)
+      const { stderr } = capture(() => {
+        const code = runGrep({ pattern: 'ZZZNOMATCH', path: f })
+        expect(code).toBe(1)
+      })
+      expect(stderr).toContain('No matches for "ZZZNOMATCH"')
+      expect(stderr).toContain('Try case-insensitive search')
+      expect(stderr).toContain('token-goat outline')
     })
 
     it('returns 1 when path does not exist', () => {

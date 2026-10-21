@@ -530,11 +530,13 @@ export function runDiff(opts: DiffOptions): number {
         try {
           diffResult = runGit(diffArgs, { cwd })
         } catch {
+          emitErr(formatCommandError(`Could not run git diff for ${echoedValue(match.filePath)}`))
           exitCode = 1
           continue
         }
         if (diffResult.exitCode !== 0) {
-          exitCode = diffResult.exitCode
+          emitErr(formatGitFailure('diff', diffResult.stderr))
+          exitCode = 1
           continue
         }
         const { hunks } = splitDiffHunks(diffResult.stdout)

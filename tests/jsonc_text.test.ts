@@ -64,7 +64,7 @@ Preview (first 500 chars):
       items: ['apple', 'banana'],
     })
 
-    const wrappedArray = `Header text here
+    const wrappedArray = `Output too large to read at once. Preview:
 [
   {"id": 1},
   {"id": 2}

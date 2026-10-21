@@ -79,7 +79,8 @@ import {
   hasRealDocstring,
   symbolExtractorGap,
 } from './read_meta.js'
-import { formatCommandError } from './command_error.js'
+import { CliError, formatCommandError } from './command_error.js'
+import { formatNoMatchesHelp } from './read_suggest.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { couldNotReadError } from './could_not_read.js'
 import { forClient, mcpToolListed } from './mcp_client_text.js'
@@ -1077,6 +1078,8 @@ export interface GrepOptions {
   recursive?: boolean
   context?: number
   symbol?: boolean
+  /** When true, `path` entries are treated as literal pre-expanded file/directory paths and glob characters (*, ?, {) are not expanded again. Set by MCP grep when glob expansion has already been performed before confinement gating. */
+  pathsAreLiteral?: boolean
 }
 
 interface GrepHit {
@@ -1108,7 +1111,7 @@ export function runGrep(opts: GrepOptions): number {
   const rootDir = opts.projectRoot ?? process.cwd()
   const searchPaths: string[] = []
   for (const raw of rawPaths) {
-    if (raw.includes('*') || raw.includes('?') || raw.includes('{')) {
+    if (opts.pathsAreLiteral !== true && (raw.includes('*') || raw.includes('?') || raw.includes('{'))) {
       // Under MCP confinement, globs are not allowed to expand to paths outside the root
       const globbed = expandGlobs(rootDir, [raw])
       if (globbed.length > 0) {
@@ -1260,7 +1263,18 @@ export function runGrep(opts: GrepOptions): number {
   }
 
   if (hits.length === 0) {
-    emitErr(formatCommandError(`No matches for ${echoedValue(opts.pattern)}`))
+    const singleTargetFile = searchPaths.length === 1 && fileExists(searchPaths[0] as string) ? (searchPaths[0] as string) : undefined
+    const isCaseSensitive = !opts.pattern.startsWith('(?i)')
+    const hasUpper = /[A-Z]/.test(opts.pattern)
+    const suggestions = formatNoMatchesHelp({
+      kind: 'grep',
+      pattern: opts.pattern,
+      targetPath: singleTargetFile,
+      hasUpper,
+      isCaseSensitive,
+    })
+    const messages = [`No matches for ${echoedValue(opts.pattern)}`, ...suggestions]
+    emitErr(formatCommandError(new CliError(messages)))
     return 1
   }
 

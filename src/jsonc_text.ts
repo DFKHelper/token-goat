@@ -51,6 +51,9 @@ export function stripBom(text: string): string {
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
 }
 
+/** Recognizes tool output overflow/preview preambles (e.g. Copilot CLI "Output too large to read at once... Preview (first 500 chars):"). */
+const TOOL_PREAMBLE_RE = /(?:output too large|preview \(first|\bpreview:|\bcontent preview:)/i
+
 /** Extracts embedded JSON/JSONC when tool outputs wrap content in text preambles (e.g. Copilot CLI "Output too large to read at once... Preview (first 500 chars):"). */
 function extractEmbeddedJson(text: string): string | null {
   const firstBrace = text.indexOf('{')
@@ -64,6 +67,12 @@ function extractEmbeddedJson(text: string): string | null {
     startIdx = firstBracket
   }
   if (startIdx <= 0) return null
+
+  // Ensure the preamble looks like tool output or preview text, not arbitrary broken source or commented files
+  const preamble = text.slice(0, startIdx)
+  if (!TOOL_PREAMBLE_RE.test(preamble) && !preamble.includes('---') && !preamble.includes('===')) {
+    return null
+  }
 
   const candidate = text.slice(startIdx).trim()
   if ((candidate.startsWith('{') && candidate.endsWith('}')) || (candidate.startsWith('[') && candidate.endsWith(']'))) {

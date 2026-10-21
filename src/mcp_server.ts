@@ -50,6 +50,7 @@ import { extractErrorMessage, foldCaseForContainment } from './util.js'
 import { statThroughHandle } from './handle_stat.js'
 import { normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath } from './spec_path.js'
+import { expandGlobs } from './cli_diagnostics.js'
 import { displaySafeFailureText } from './command_error.js'
 import { echoedValue, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { forClient, mcpFriendlyText, mcpToolListed } from './mcp_client_text.js'
@@ -411,7 +412,7 @@ function refusalText(file: string, resolvedRoot: string, reason: ContainmentReas
   return `refused: ${echoedValue(file)} is outside the project root ${echoedValue(resolvedRoot)}. ${rootScope} ${escapeHatch}${omittedNote}`
 }
 
-function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true, projectRootWasOmitted = false): ConfinementResult {
+function confineTargets(targets: readonly string[], resolvedRoot: string, splitCommas = true, projectRootWasOmitted = false, parseSpecs = true): ConfinementResult {
   // The allowlist is NOT checked here any more -- it moved to assertRootAllowed, called from resolveToolRoot, so it applies to every tool and is independent of this setting. See its doc comment for what that early return used to void.
   if (!loadConfig(resolvedRoot).mcp.confine_reads_to_project_root) return { ok: true, targets, pins: NO_PINS }
   const allowedRoots = loadConfig().mcp.allowed_roots
@@ -420,7 +421,8 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
   for (const raw of targets) {
     const parts = splitCommas ? raw.split(',') : [raw]
     for (const part of parts) {
-      for (const file of specFileCandidates(part)) {
+      const filesToCheck = parseSpecs ? specFileCandidates(part) : [part]
+      for (const file of filesToCheck) {
         if (file === '') continue
         let check = checkWithinProjectRoot(file, resolvedRoot)
         if (!check.inside) {
@@ -983,8 +985,25 @@ export async function createMcpServer(): Promise<McpServer> {
       const { pattern, path: searchPath, maxLines, json, recursive, context, projectRoot } = args
       const projectRootWasOmitted = projectRoot === undefined
       const root = resolveToolRoot(projectRoot, searchPath)
-      // grep's `path` elements are whole files/directories, never `file::symbol` specs, so each is checked verbatim -- no comma splitting, since a comma can be a legitimate filename character. An omitted `path` still runs the gate (against the resolved root itself, which trivially passes): short-circuiting to `null` here used to skip confinement entirely, and runGrep then defaulted to `process.cwd()`, so omitting `path` searched the server process's own cwd unconfined. The same root is passed on as GrepOptions.projectRoot so the default search scope IS the gated root -- see the invariant on resolveToolRoot.
-      const gate = confineTargets(searchPath === undefined ? [root] : searchPath, root, false, projectRootWasOmitted)
+      // Expand globs within the resolved root before confinement, so every expanded file/directory is checked against the root boundary and pinned.
+      let targetsToCheck: string[]
+      if (searchPath === undefined) {
+        targetsToCheck = [root]
+      } else {
+        targetsToCheck = []
+        for (const raw of searchPath) {
+          if (raw.includes('*') || raw.includes('?') || raw.includes('{')) {
+            const hits = expandGlobs(root, [raw])
+            if (hits.length > 0) {
+              for (const hit of hits) targetsToCheck.push(hit)
+              continue
+            }
+          }
+          targetsToCheck.push(raw)
+        }
+      }
+      // grep's `path` elements are whole files/directories, never `file::symbol` specs, so each is checked verbatim -- no comma splitting, and no specFileCandidates symbol parsing (parseSpecs = false) so paths like 'leak::data.txt' are evaluated in full.
+      const gate = confineTargets(targetsToCheck, root, false, projectRootWasOmitted, false)
       if (!gate.ok) return gate.refusal
       const confinedPath = searchPath === undefined ? undefined : [...gate.targets]
       return withConfinedRead(gate.pins, () =>
@@ -997,6 +1016,7 @@ export async function createMcpServer(): Promise<McpServer> {
             ...(recursive === false ? { recursive: false } : {}),
             ...(context !== undefined ? { context } : {}),
             projectRoot: root,
+            pathsAreLiteral: true,
           }),
         ),
       )

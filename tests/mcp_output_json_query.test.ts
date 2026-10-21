@@ -163,6 +163,231 @@ describe('Atlassian MCP compression pack', () => {
     expect(compressed.length).toBeLessThan(raw.length * 0.5)
   })
 
+  it('flattens Jira and Confluence ADF into readable text and removes response boilerplate', () => {
+    const fixture = {
+      issues: [{
+        key: 'PROJ-ADF',
+        renderedFields: { description: 'duplicate representation' },
+        changelog: { histories: [{ id: 'history' }] },
+        watches: { watchCount: 2 },
+        votes: { votes: 1 },
+        schema: { description: 'string' },
+        editmeta: { fields: { summary: {} } },
+        operations: [{ id: 'edit' }],
+        transitions: [{ id: '1' }],
+        names: { customfield_1: 'Large field map' },
+        version: { name: 'old' },
+        versions: [{ name: 'old' }],
+        fields: {
+          description: {
+            type: 'doc',
+            version: 1,
+            content: [
+              { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Summary' }] },
+              { type: 'paragraph', content: [{ type: 'text', text: 'Readable issue description.' }] },
+              { type: 'bulletList', content: [{ type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Important detail' }] }] }] },
+              { type: 'codeBlock', content: [{ type: 'text', text: 'npm test' }] },
+            ],
+          },
+          body: {
+            storage: { value: '<ac:structured-macro ac:name="details"><ac:rich-text-body><p>Stored page text</p></ac:rich-text-body></ac:structured-macro>' },
+            view: { value: '<div data-macro-id="large"><p>Rendered page text</p></div>' },
+            _links: { webui: '/wiki/pages/123' },
+          },
+          components: [{ id: 'component-1', name: 'Payments' }],
+        },
+      }],
+    }
+    const raw = JSON.stringify(fixture)
+    const compressed = compressAtlassianMcpResult('mcp__atlassian_mcp_jira_search', raw)
+
+    expect(compressed).not.toBeNull()
+    if (compressed === null) return
+    expect(compressed).toContain('## Summary')
+    expect(compressed).toContain('Readable issue description.')
+    expect(compressed).toContain('- Important detail')
+    expect(compressed).toContain('npm test')
+    expect(compressed).toContain('Stored page text')
+    expect(compressed).toContain('Rendered page text')
+    for (const key of ['renderedFields', 'watches', 'votes', 'schema', 'editmeta', 'operations', 'names', '_links', 'structured-macro', 'data-macro-id']) {
+      expect(compressed).not.toContain(key)
+    }
+    // Preserves semantic data like changelog, transitions, version, versions
+    expect(compressed).toContain('changelog')
+    expect(compressed).toContain('transitions')
+    expect(compressed).toContain('version')
+  })
+
+  it('formats ADF table, blockquote, panel, mention, cards, and unknown node fallbacks cleanly', () => {
+    const adfFixture = {
+      issues: [{
+        key: 'PROJ-TABLE',
+        fields: {
+          description: {
+            type: 'doc',
+            content: [
+              {
+                type: 'table',
+                content: [
+                  {
+                    type: 'tableRow',
+                    content: [
+                      { type: 'tableHeader', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Header 1' }] }] },
+                      { type: 'tableHeader', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Header 2' }] }] },
+                    ],
+                  },
+                  {
+                    type: 'tableRow',
+                    content: [
+                      { type: 'tableCell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Cell A' }] }] },
+                      { type: 'tableCell', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Cell B' }] }] },
+                    ],
+                  },
+                ],
+              },
+              {
+                type: 'blockquote',
+                content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Quote line 1\nQuote line 2' }] }],
+              },
+              {
+                type: 'panel',
+                attrs: { panelType: 'info' },
+                content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Panel info note' }] }],
+              },
+              {
+                type: 'paragraph',
+                content: [
+                  { type: 'text', text: 'Assigned to ' },
+                  { type: 'mention', attrs: { id: 'usr-123', text: '@alice' } },
+                  { type: 'text', text: ' see link ' },
+                  { type: 'inlineCard', attrs: { url: 'https://example.com/item' } },
+                ],
+              },
+              {
+                type: 'customExtensionNode',
+                attrs: { text: 'Custom fallback text' },
+              },
+            ],
+          },
+        },
+      }],
+    }
+    const raw = JSON.stringify(adfFixture)
+    const compressed = compressAtlassianMcpResult('mcp__atlassian_mcp_jira_search', raw)
+    expect(compressed).not.toBeNull()
+    if (compressed === null) return
+    expect(compressed).toContain('| Header 1 | Header 2 |')
+    expect(compressed).toContain('| Cell A | Cell B |')
+    expect(compressed).toContain('> Quote line 1')
+    expect(compressed).toContain('> Quote line 2')
+    expect(compressed).toContain('[INFO] Panel info note')
+    expect(compressed).toContain('@alice')
+    expect(compressed).toContain('https://example.com/item')
+    expect(compressed).toContain('Custom fallback text')
+    expect(compressed).not.toContain('"type":"doc"')
+    expect(compressed).not.toContain('"attrs"')
+  })
+
+  it('renders ADF date, status, emoji, and link marks properly', () => {
+    const fixture = {
+      issue: {
+        fields: {
+          description: {
+            type: 'doc',
+            content: [
+              {
+                type: 'paragraph',
+                content: [
+                  { type: 'text', text: 'Deadline: ' },
+                  { type: 'date', attrs: { timestamp: '1776211200000' } },
+                  { type: 'text', text: ' Status: ' },
+                  { type: 'status', attrs: { text: 'IN PROGRESS' } },
+                  { type: 'text', text: ' ' },
+                  { type: 'emoji', attrs: { shortName: ':rocket:' } },
+                  { type: 'text', text: ' Link: ' },
+                  { type: 'text', text: 'Runbook', marks: [{ type: 'link', attrs: { href: 'https://example.com/runbook' } }] },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    }
+    const compressed = compressAtlassianMcpResult('mcp__atlassian_mcp_jira_search', JSON.stringify(fixture))
+    expect(compressed).not.toBeNull()
+    if (compressed === null) return
+    expect(compressed).toContain('Deadline: 2026-04-15')
+    expect(compressed).toContain('Status: [IN PROGRESS]')
+    expect(compressed).toContain(':rocket:')
+    expect(compressed).toContain('[Runbook](https://example.com/runbook)')
+  })
+
+  it('preserves Confluence internal page links, CDATA link labels, and URLs with apostrophes', () => {
+    const fixture = {
+      results: [
+        {
+          body: {
+            storage: {
+              value: '<ac:link><ri:page ri:content-title="Team\'s Guide" /><ac:plain-text-link-body><![CDATA[Read the Team\'s Guide]]></ac:plain-text-link-body></ac:link> <a href="https://example.com/O\'Reilly">O\'Reilly</a> <ri:attachment ri:filename="Bob\'s architecture.png" />',
+            },
+          },
+        },
+      ],
+    }
+    const compressed = compressAtlassianMcpResult('mcp__atlassian_mcp_confluence_search', JSON.stringify(fixture))
+    expect(compressed).not.toBeNull()
+    if (compressed === null) return
+    expect(compressed).toContain("[Team's Guide]")
+    expect(compressed).toContain("Read the Team's Guide")
+    expect(compressed).toContain("[O'Reilly](https://example.com/O'Reilly)")
+    expect(compressed).toContain("[Bob's architecture.png]")
+  })
+
+  it('preserves ADF taskList and taskItem completion state and CDATA angle brackets in Confluence HTML', () => {
+    const taskFixture = {
+      description: {
+        type: 'doc',
+        content: [
+          {
+            type: 'taskList',
+            content: [
+              {
+                type: 'taskItem',
+                attrs: { state: 'TODO' },
+                content: [{ type: 'text', text: 'Deploy production' }],
+              },
+              {
+                type: 'taskItem',
+                attrs: { state: 'DONE' },
+                content: [{ type: 'text', text: 'Verify smoke test' }],
+              },
+            ],
+          },
+        ],
+      },
+    }
+    const compressedTask = compressAtlassianMcpResult('mcp__atlassian_mcp_jira_search', JSON.stringify(taskFixture))
+    expect(compressedTask).not.toBeNull()
+    if (compressedTask !== null) {
+      expect(compressedTask).toContain('- [ ] Deploy production')
+      expect(compressedTask).toContain('- [x] Verify smoke test')
+    }
+
+    const confluenceFixture = {
+      body: {
+        storage: {
+          value: '<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[Map<K,V> reference; text.replace(/foo/g, "$&"); price = $$; if (a < b && c > d) run();]]></ac:plain-text-body></ac:structured-macro><ri:page ri:space-key="OPS" ri:content-title="Production Runbook" />',
+        },
+      },
+    }
+    const compressedConf = compressAtlassianMcpResult('mcp__atlassian_mcp_confluence_search', JSON.stringify(confluenceFixture))
+    expect(compressedConf).not.toBeNull()
+    if (compressedConf !== null) {
+      expect(compressedConf).toContain('Map<K,V> reference; text.replace(/foo/g, \\"$&\\"); price = $$; if (a < b && c > d) run();')
+      expect(compressedConf).toContain('[Production Runbook]')
+    }
+  })
+
   it('is invoked via compressMcpResultWithPacks', () => {
     const fixture = jiraSearchFixture(5)
     const raw = JSON.stringify(fixture)

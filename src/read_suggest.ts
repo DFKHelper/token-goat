@@ -230,16 +230,68 @@ export function formatCrossFileLead(command: string, name: string, excludeFilePa
     seen.add(spec)
     specs.push(spec)
   }
-  if (specs.length === 0) return ''
-  const firstSpec = specs[0]
-  const lines = [`${echoedValue(name)} is defined in ${firstSpec !== undefined ? displaySafeText(firstSpec.split('::')[0] ?? '') : ''}`]
-  for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
-    lines.push(`  - token-goat ${command} ${quotedArg(spec)}`)
+  if (specs.length > 0) {
+    const firstSpec = specs[0]
+    const lines = [`${echoedValue(name)} is defined in ${firstSpec !== undefined ? displaySafeText(firstSpec.split('::')[0] ?? '') : ''}`]
+    for (const spec of specs.slice(0, DIDYOUMEAN_LIMIT)) {
+      lines.push(`  - token-goat ${command} ${quotedArg(spec)}`)
+    }
+    if (specs.length > DIDYOUMEAN_LIMIT) {
+      lines.push(`  (${specs.length - DIDYOUMEAN_LIMIT} more not shown)`)
+    }
+    return lines.join('\n')
   }
-  if (specs.length > DIDYOUMEAN_LIMIT) {
-    lines.push(`  (${specs.length - DIDYOUMEAN_LIMIT} more not shown)`)
+
+  // Exact match failed across files: search project-wide near symbols (fuzzy/casing/typo)
+  const near = nearSymbolNames(name, rootDir)
+  if (!near.skipped && near.candidates.length > 0) {
+    const cappedCandidates = near.candidates.slice(0, 50)
+    const nearSites = liveRows(() => symbolNameFiles(rootDir, cappedCandidates))
+    const fuzzySpecs: string[] = []
+    const fuzzySeen = new Set<string>()
+    for (const s of nearSites) {
+      if (foldPath(s.filePath) === foldPath(excludeResolved)) continue
+      const spec = `${toDisplayPath(rootDir, s.filePath)}::${s.name}`
+      if (fuzzySeen.has(spec)) continue
+      fuzzySeen.add(spec)
+      fuzzySpecs.push(spec)
+    }
+    if (fuzzySpecs.length > 0) {
+      const lines = [`Did you mean:`]
+      for (const spec of fuzzySpecs.slice(0, DIDYOUMEAN_LIMIT)) {
+        lines.push(`  - token-goat ${command} ${quotedArg(spec)}`)
+      }
+      if (fuzzySpecs.length > DIDYOUMEAN_LIMIT) {
+        lines.push(`  (${fuzzySpecs.length - DIDYOUMEAN_LIMIT} more not shown)`)
+      }
+      return lines.join('\n')
+    }
   }
-  return lines.join('\n')
+
+  return ''
+}
+
+export function formatNoMatchesHelp(options: {
+  kind: 'grep' | 'symbol'
+  pattern?: string | undefined
+  targetPath?: string | undefined
+  hasUpper?: boolean | undefined
+  isCaseSensitive?: boolean | undefined
+}): string[] {
+  const suggestions: string[] = []
+  if (options.kind === 'grep') {
+    if (options.isCaseSensitive && options.hasUpper) {
+      suggestions.push('Try case-insensitive search: re-run with inline flag `(?i)` or case-insensitive matching')
+    }
+    if (options.targetPath !== undefined && options.targetPath.length > 0) {
+      suggestions.push(`Try inspecting file outline: token-goat outline ${quotedArg(options.targetPath)}`)
+    }
+  } else if (options.kind === 'symbol') {
+    if (options.targetPath !== undefined && options.targetPath.length > 0) {
+      suggestions.push(`Try: token-goat outline ${quotedArg(options.targetPath)}`)
+    }
+  }
+  return suggestions
 }
 
 export function trimBlankLines(lines: string[]): string[] {

@@ -481,6 +481,25 @@ describe('mcp_server', () => {
     expect(block.text).toContain('needle-line')
   })
 
+  it('handles pre-expanded globs without re-expanding or failing on bracket/glob characters in path', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-grep-glob-'))
+    const fixture1 = path.join(tempDir, 'file[1].txt')
+    fs.writeFileSync(fixture1, 'needle in bracket file\n')
+
+    const { client, close } = await connectedClient()
+    cleanup = close
+
+    const result = await client.callTool({
+      name: 'grep',
+      arguments: { pattern: 'needle', path: ['*.txt'], projectRoot: tempDir },
+    })
+
+    expect(result.isError).toBe(false)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const block = (result.content as any[])[0]
+    expect(block.text).toContain('needle in bracket file')
+  })
+
   it('calls the imports tool against a real fixture file and matches runImports()\'s own captured output', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-server-imports-'))
     const fixture = path.join(tempDir, 'fixture.ts')

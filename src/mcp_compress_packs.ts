@@ -60,7 +60,7 @@ export function compressGithubMcpResult(toolName: string, resultText: string): s
 /** Matches Atlassian tool names: Jira and Confluence tools. Covers both mcp__ prefix and un-prefixed names like: - mcp__atlassian_mcp_jira_search, mcp__atlassian_mcp_confluence_get_page_children - mcp__jira__search, mcp__confluence__get_page, etc. */
 const ATLASSIAN_TOOL_RE = /(?:jira|confluence|atlassian)/i
 
-/** Redundant boilerplate keys in Jira and Confluence JSON responses that add massive byte overhead without providing actionable context to the model: - avatarUrls: 4 avatar resolutions (16x16, 24x24, 32x32, 48x48) per user, status, priority, and issue type - iconUrl / iconUrls / avatarUrl: redundant icon links - self: REST API endpoint URLs repeated on every entity, user, project, status, transition, version - expand: schema expansion flag strings - schema / operations / editmeta: Jira form metadata and UI actions - names: dictionary mapping field IDs to human names embedded in search responses - _links / _expandable / extensions: Confluence HAL hypermedia boilerplate - timeZone: repeated user metadata */
+/** Redundant boilerplate keys in Jira and Confluence JSON responses that add massive byte overhead without providing actionable context to the model: - avatarUrls: 4 avatar resolutions (16x16, 24x24, 32x32, 48x48) per user, status, priority, and issue type - iconUrl / iconUrls / avatarUrl: redundant icon links - self: REST API endpoint URLs repeated on every entity, user, project, status, transition, version - expand: schema expansion flag strings - schema / operations / editmeta: Jira form metadata and UI actions - names: dictionary mapping field IDs to human names embedded in search responses - _links / _expandable / extensions: Confluence HAL hypermedia boilerplate - timeZone: repeated user metadata - accountType / active / self: user metadata noise - votes / watches: metadata counters when redundant */
 const ATLASSIAN_STRIP_EXACT_KEYS: ReadonlySet<string> = new Set([
   'avatarUrls',
   'avatarUrl',
@@ -76,10 +76,255 @@ const ATLASSIAN_STRIP_EXACT_KEYS: ReadonlySet<string> = new Set([
   '_expandable',
   'extensions',
   'timeZone',
+  'accountType',
+  'avatarId',
+  'votes',
+  'watches',
+  'renderedFields',
 ])
 
 function atlassianShouldStrip(key: string): boolean {
   return ATLASSIAN_STRIP_EXACT_KEYS.has(key)
+}
+
+function adfText(value: unknown, depth = 0): string | null {
+  if (depth > 30) {
+    if (value === null || value === undefined) return null
+    if (typeof value === 'string') return value
+    if (typeof value === 'object') {
+      const obj = value as Record<string, unknown>
+      if (typeof obj['text'] === 'string') return obj['text']
+      try {
+        return JSON.stringify(value)
+      } catch {
+        return '[nested content]'
+      }
+    }
+    return String(value)
+  }
+  if (Array.isArray(value)) {
+    const parts = value.map((v) => adfText(v, depth + 1)).filter((part): part is string => part !== null)
+    return parts.length > 0 ? parts.join('') : null
+  }
+  if (value === null || typeof value !== 'object') return null
+  const node = value as Record<string, unknown>
+  if (typeof node['type'] !== 'string') return null
+
+  // Special-case text and line breaks immediately
+  if (node['type'] === 'text') {
+    const text = typeof node['text'] === 'string' ? node['text'] : ''
+    const marks = Array.isArray(node['marks']) ? node['marks'] : []
+    const linkMark = marks.find((m): m is Record<string, unknown> => m !== null && typeof m === 'object' && m['type'] === 'link')
+    const href = (linkMark?.['attrs'] as Record<string, unknown> | undefined)?.['href']
+    if (typeof href === 'string' && href.length > 0 && text.length > 0) {
+      return `[${text}](${href})`
+    }
+    return text
+  }
+  if (node['type'] === 'hardBreak') return '\n'
+
+  const attrs = node['attrs'] as Record<string, unknown> | undefined
+
+  switch (node['type']) {
+    case 'doc':
+    case 'listItem':
+      return adfText(node['content'], depth + 1) ?? ''
+    case 'paragraph': {
+      const children = adfText(node['content'], depth + 1) ?? ''
+      return children ? `${children}\n\n` : ''
+    }
+    case 'heading': {
+      const level = typeof attrs?.['level'] === 'number'
+        ? Math.max(1, Math.min(6, attrs['level'] as number))
+        : 2
+      const children = adfText(node['content'], depth + 1) ?? ''
+      return `${'#'.repeat(level)} ${children}\n\n`
+    }
+    case 'bulletList':
+    case 'orderedList': {
+      const items = Array.isArray(node['content']) ? node['content'] : []
+      return items.map((item, index) => {
+        const itemText = adfText(item, depth + 1)?.trim() ?? ''
+        const prefix = node['type'] === 'orderedList' ? `${index + 1}. ` : '- '
+        return itemText ? `${prefix}${itemText}\n` : ''
+      }).join('')
+    }
+    case 'codeBlock': {
+      const children = adfText(node['content'], depth + 1) ?? ''
+      return `\`\`\`\n${children}\n\`\`\`\n\n`
+    }
+    case 'blockquote': {
+      const children = adfText(node['content'], depth + 1) ?? ''
+      if (!children.trim()) return ''
+      return children
+        .trim()
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n') + '\n\n'
+    }
+    case 'panel': {
+      const panelType = typeof attrs?.['panelType'] === 'string' ? `[${attrs['panelType'].toUpperCase()}] ` : ''
+      const children = adfText(node['content'], depth + 1) ?? ''
+      return children.trim() ? `${panelType}${children.trim()}\n\n` : ''
+    }
+    case 'table': {
+      const rows = Array.isArray(node['content']) ? node['content'] : []
+      const renderedRows = rows
+        .map((r) => adfText(r, depth + 1)?.trim())
+        .filter((r): r is string => Boolean(r))
+      return renderedRows.length > 0 ? `${renderedRows.join('\n')}\n\n` : ''
+    }
+    case 'tableRow': {
+      const cells = Array.isArray(node['content']) ? node['content'] : []
+      const renderedCells = cells
+        .map((c) => adfText(c, depth + 1)?.trim().replace(/\r?\n+/g, ' ') ?? '')
+      return `| ${renderedCells.join(' | ')} |`
+    }
+    case 'tableHeader':
+    case 'tableCell':
+      return adfText(node['content'], depth + 1) ?? ''
+    case 'taskList': {
+      const items = Array.isArray(node['content']) ? node['content'] : []
+      return items.map((item) => {
+        const rendered = adfText(item, depth + 1)?.trim() ?? ''
+        return rendered ? `${rendered}\n` : ''
+      }).join('')
+    }
+    case 'taskItem': {
+      const state = typeof attrs?.['state'] === 'string' ? attrs['state'].toUpperCase() : 'TODO'
+      const check = state === 'DONE' || state === 'COMPLETED' ? '[x]' : '[ ]'
+      const children = adfText(node['content'], depth + 1)?.trim() ?? ''
+      return children ? `- ${check} ${children}` : ''
+    }
+    case 'mention': {
+      if (typeof attrs?.['text'] === 'string') return attrs['text']
+      if (typeof attrs?.['id'] === 'string') return `@${attrs['id']}`
+      return ''
+    }
+    case 'date': {
+      if (typeof attrs?.['timestamp'] === 'string' || typeof attrs?.['timestamp'] === 'number') {
+        const raw = attrs['timestamp']
+        const num = typeof raw === 'number' ? raw : Number(raw)
+        if (!Number.isNaN(num)) {
+          const d = new Date(num)
+          if (!Number.isNaN(d.getTime())) {
+            return d.toISOString().split('T')[0] ?? String(raw)
+          }
+        }
+        return String(raw)
+      }
+      return ''
+    }
+    case 'status': {
+      if (typeof attrs?.['text'] === 'string') return `[${attrs['text']}]`
+      return ''
+    }
+    case 'emoji': {
+      if (typeof attrs?.['shortName'] === 'string') return attrs['shortName']
+      if (typeof attrs?.['text'] === 'string') return attrs['text']
+      return ''
+    }
+    case 'inlineCard':
+    case 'blockCard': {
+      if (typeof attrs?.['url'] === 'string') return attrs['url']
+      if (typeof attrs?.['text'] === 'string') return attrs['text']
+      return ''
+    }
+    default: {
+      // Fallback for unknown node types: never drop unknown nodes that contain nested content, text, or attrs
+      if (typeof node['text'] === 'string' && node['text'].length > 0) return node['text']
+      if (node['content'] !== undefined) {
+        const renderedContent = adfText(node['content'], depth + 1)
+        if (renderedContent !== null && renderedContent.length > 0) return renderedContent
+      }
+      if (typeof attrs?.['text'] === 'string' && attrs['text'].length > 0) return attrs['text']
+      if (typeof attrs?.['url'] === 'string' && attrs['url'].length > 0) return attrs['url']
+      if (typeof attrs?.['title'] === 'string' && attrs['title'].length > 0) return attrs['title']
+      if (typeof attrs?.['label'] === 'string' && attrs['label'].length > 0) return attrs['label']
+      if (typeof attrs?.['id'] === 'string' && attrs['id'].length > 0) return `@${attrs['id']}`
+      if (typeof attrs?.['timestamp'] === 'string' || typeof attrs?.['timestamp'] === 'number') {
+        return String(attrs['timestamp'])
+      }
+      if (attrs !== undefined && Object.keys(attrs).length > 0) {
+        try {
+          return JSON.stringify(attrs)
+        } catch {
+          // ignore stringify errors
+        }
+      }
+      return null
+    }
+  }
+}
+
+function stripConfluenceHtml(value: string): string {
+  // Protect CDATA payloads with placeholders so literal <, >, & inside CDATA are preserved
+  const cdataPlaceholders: string[] = []
+  let text = value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, (_match, cdata) => {
+    const idx = cdataPlaceholders.length
+    cdataPlaceholders.push(cdata)
+    return `___TG_CDATA_${idx}___`
+  })
+
+  // Strip script and style tags
+  text = text.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '')
+
+  // Preserve Confluence resource/page/attachment references with prioritized attribute extraction
+  text = text.replace(/<ri:[a-z0-9_-]+\b([^>]*)\/?>/gi, (_match, attrsStr: string) => {
+    const extractAttr = (name: string): string | undefined => {
+      const re = new RegExp(`\\bri:${name}=(?:"([^"]*)"|'([^']*)')`, 'i')
+      const m = re.exec(attrsStr)
+      return m ? (m[1] ?? m[2]) : undefined
+    }
+    const val = extractAttr('content-title') ?? extractAttr('filename') ?? extractAttr('value') ?? extractAttr('username') ?? extractAttr('space-key')
+    return val !== undefined && val.length > 0 ? ` [${val}] ` : ' '
+  })
+
+  // Preserve anchor links: <a href="url">text</a> -> [text](url)
+  text = text.replace(/<a\b[^>]*\bhref=(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a>/gi, (_match, d, s, linkText) => {
+    const href = d ?? s ?? ''
+    const cleanText = linkText.replace(/<[^>]+>/g, '').trim()
+    return cleanText.length > 0 ? ` [${cleanText}](${href}) ` : ` ${href} `
+  })
+
+  // Strip remaining HTML tags
+  text = text.replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+
+  // Restore protected CDATA payloads verbatim via callback to avoid $& / $$ token replacement corruption
+  for (let i = 0; i < cdataPlaceholders.length; i++) {
+    const payload = cdataPlaceholders[i] ?? ''
+    text = text.replace(`___TG_CDATA_${i}___`, () => payload)
+  }
+
+  return text
+}
+
+function simplifyAtlassian(value: unknown, parentKey?: string): unknown {
+  const text = adfText(value)
+  if (text !== null) return text.trim()
+  if (Array.isArray(value)) return value.map((item) => simplifyAtlassian(item, parentKey))
+  if (value === null || typeof value !== 'object') {
+    if (typeof value === 'string' && parentKey === 'storage.value') return stripConfluenceHtml(value)
+    if (typeof value === 'string' && parentKey === 'view.value') return stripConfluenceHtml(value)
+    return value
+  }
+  const out: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const context = (parentKey === 'storage' || parentKey === 'view') && key === 'value'
+      ? `${parentKey}.value`
+      : key
+    out[key] = simplifyAtlassian(child, context)
+  }
+  return out
 }
 
 /** Compress an Atlassian (Jira / Confluence) MCP tool result. Returns `null` when toolName is not an Atlassian-server tool, resultText is not JSON, or the stripped result does not clear the savings bar -- in every such case the caller falls through to the generic pass unchanged. */
@@ -91,7 +336,7 @@ export function compressAtlassianMcpResult(toolName: string, resultText: string)
   } catch {
     return null
   }
-  const stripped = deepStrip(parsed, atlassianShouldStrip)
+  const stripped = deepStrip(simplifyAtlassian(parsed), atlassianShouldStrip)
   return finishWithGenericPass(resultText, stripped)
 }
 

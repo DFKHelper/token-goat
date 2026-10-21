@@ -94,6 +94,22 @@ describe('cross-file leads are checked against disk', () => {
   it('still leads to a live file', () => {
     expect(formatCrossFileLead('read', 'liveHelperName', 'src/b.ts', root)).toBe(`"liveHelperName" is defined in src/live.ts\n  - token-goat read "src/live.ts::liveHelperName"`)
   })
+
+  it('suggests near/fuzzy symbols across files when exact match is missing', () => {
+    // liveHelperName exists in src/live.ts. Querying liveHelperNam (typo) from src/b.ts should offer fuzzy suggestion
+    expect(formatCrossFileLead('read', 'liveHelperNam', 'src/b.ts', root)).toBe(`Did you mean:\n  - token-goat read "src/live.ts::liveHelperName"`)
+  })
+
+  it('caps fuzzy candidates before querying symbolNameFiles to stay well under SQLite parameter limits', () => {
+    // Generate over 100 dummy files each with a similar symbol name
+    for (let i = 0; i < 70; i++) {
+      const p = write(`src/dummy_${i}.ts`, fn(`fuzzyLeadItem_${i}`))
+      indexFileSync(p)
+    }
+    // Querying a typo matching fuzzyLeadItem_ should not crash or throw SQLite parameter limit error
+    const lead = formatCrossFileLead('read', 'fuzzyLeadItem_x', 'src/b.ts', root)
+    expect(lead).toContain('Did you mean:')
+  })
 })
 
 describe('bare-name spec suggestions are checked against disk', () => {
