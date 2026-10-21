@@ -254,6 +254,11 @@ function relativeTo(base: string, abs: string): string {
   return rel === '' || rel.startsWith('..') || path.isAbsolute(rel) ? abs : rel.replace(/\\/g, '/')
 }
 
+/** `text` as a code span, or bare when it holds a backtick, which would close the span early and let the rest of a file name read as the sentence. */
+function codeSpan(text: string): string {
+  return text.includes('`') ? text : '`' + text + '`'
+}
+
 /** The deny for an inlined answer. The fence and the redaction are the ones the other delivering denies use; the wording matches delivering_deny.ts's DELIVERS_CONTENT_RE, and the command stays in the text so the agent can rerun the Grep-free path. */
 export function inlineAnswerDeny(answer: { readonly inline: string; readonly file: string; readonly symbol: string; readonly matches?: readonly string[] }): HookOutput {
   const file = displaySafePath(answer.file)
@@ -262,9 +267,9 @@ export function inlineAnswerDeny(answer: { readonly inline: string; readonly fil
   const bytes = delivered.bodyBytes
   const body = fenceUntrustedFileContent(delivered.body)
   const command = 'token-goat read ' + quotedArg(file + '::' + symbol)
-  const origin = delivered.count === 0 ? ', exactly as `' + command + '` prints it. Run that command for the same text again, or Grep again to search the file anyway.' : ', as `' + command + '` prints it except that [REDACTED] placeholders replace ' + countNoun(delivered.count, 'secret-looking value') + '. Run that command to read the symbol again, or Grep again to search the file anyway.'
+  const origin = delivered.count === 0 ? ', exactly as ' + codeSpan(command) + ' prints it. Run that command for the same text again, or Grep again to search the file anyway.' : ', as ' + codeSpan(command) + ' prints it except that [REDACTED] placeholders replace ' + countNoun(delivered.count, 'secret-looking value') + '. Run that command to read the symbol again, or Grep again to search the file anyway.'
   const listed = delivered.listing === null || answer.matches === undefined ? '' : '\nThe ' + countNoun(answer.matches.length, 'matching line') + ' the Grep would have printed, as path:line:text:\n' + fenceUntrustedFileContent(delivered.listing) + '\nThe symbol body:'
-  return denyOutput('Grep not run: its pattern names the one symbol `' + symbol + '` in `' + file + '`, whose symbol body (' + bytes + ' bytes) is inlined below' + origin + listed + '\n' + body)
+  return denyOutput('Grep not run: its pattern names the one symbol ' + codeSpan(symbol) + ' in ' + codeSpan(file) + ', whose symbol body (' + bytes + ' bytes) is inlined below' + origin + listed + '\n' + body)
 }
 
 /** The Grep's `path` for the answer: a string with no glob character, null when it gave none (Claude Code then searches its working directory), or undefined when the value is something the answer cannot scope (a non-string, a glob). */

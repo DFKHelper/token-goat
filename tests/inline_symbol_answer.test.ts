@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { INLINE_SYMBOL_MAX_BYTES, decideInline, declaredNameOf, isPlainGrep, type InlineBody, type InlineInput, type Staleness } from '../src/inline_symbol_answer.js'
+import { INLINE_SYMBOL_MAX_BYTES, decideInline, declaredNameOf, inlineAnswerDeny, isPlainGrep, type InlineBody, type InlineInput, type Staleness } from '../src/inline_symbol_answer.js'
 
 // HAND-DERIVED: every row is computed from the decision's stated rules (one candidate by name inside the scope, fresh index, agreeing body, under the cap), independently of the implementation's branches.
 
@@ -157,5 +157,22 @@ describe('isPlainGrep', () => {
     [{ 'some-future-flag': 'x' }],
   ])('%j is not plain', (extra) => {
     expect(isPlainGrep({ ...base, ...extra })).toBe(false)
+  })
+})
+
+describe('inlineAnswerDeny', () => {
+  // HAND-DERIVED: a backtick is the one character that ends a markdown code span, so a file name holding one must not sit between the deny's own backticks. Every backtick the deny writes is a span delimiter or part of the name, and the name is written without delimiters around it.
+  it('does not wrap a file name holding a backtick in a code span', () => {
+    const file = 'src/a`b.py'
+    const out = inlineAnswerDeny({ inline: 'def load(): pass', file, symbol: 'load' })
+    const message = out.hookType === 'deny' ? out.message : ''
+    expect(message).toContain(' in ' + file + ', whose')
+    expect(message).not.toContain('`' + file + '`')
+    expect(message).not.toContain('`token-goat read "' + file)
+  })
+
+  it('still wraps an ordinary file name in a code span', () => {
+    const out = inlineAnswerDeny({ inline: 'def load(): pass', file: 'src/a.py', symbol: 'load' })
+    expect(out.hookType === 'deny' ? out.message : '').toContain('names the one symbol `load` in `src/a.py`, whose')
   })
 })
