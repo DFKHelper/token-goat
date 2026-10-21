@@ -617,7 +617,7 @@ function cmdStats(opts: { json?: boolean; windowDays?: string; homeDir?: string;
   runStats(statsOpts)
 }
 
-async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean; probe?: string }): Promise<void> {
+async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boolean; fix?: boolean; probe?: string; fast?: boolean }): Promise<void> {
   if (opts.probe !== undefined) {
     // Loaded on demand: a probe spawns a whole harness, and nothing else in doctor needs this module.
     const { IDE_HOSTS_WITHOUT_PROBE, NO_HEADLESS_PROBE_EXIT_CODE, PROBE_COMMANDS, formatProbeReport, isProbeHarness, noHeadlessProbeMessage, probeVerdict, runProbe } = await import('./doctor_probe.js')
@@ -638,7 +638,10 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
     if (verdict === 'inconclusive') process.exitCode = 2
     return
   }
-  const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string; repair?: boolean } = {}
+  const doctorOpts: { dataDir?: string; configPath?: string; context?: boolean; rootDir?: string; repair?: boolean; fast?: boolean } = {}
+  if (opts.fast === true) {
+    doctorOpts.fast = true
+  }
   if (opts.context === true) {
     doctorOpts.context = true
   }
@@ -662,7 +665,8 @@ async function cmdDoctor(opts: { context?: boolean; json?: boolean; repair?: boo
   }
   if (opts.json === true) {
     // --json bypasses printDoctorResults' prose entirely (no `[WARN]`-prefixed lines) and emits the same DoctorResult[] runDoctorChecks() computes, one entry per check with its ok/warn/fail status -- matching cmdCommands'/cmdBridgesStatus' plain JSON.stringify convention (no envelope) rather than inventing a new shape.
-    const results = await runDoctorChecks(doctorOpts.dataDir, doctorOpts.configPath, doctorOpts.rootDir)
+    const processes = doctorOpts.fast === true ? [] : undefined
+    const results = await runDoctorChecks(doctorOpts.dataDir, doctorOpts.configPath, doctorOpts.rootDir, processes)
     out(displaySafeJson(results, 0))
     if (results.some((r) => r.status === 'fail')) {
       throw new CliError('doctor checks failed')
@@ -1365,6 +1369,7 @@ export function buildProgram(): Command {
   program
     .command('doctor')
     .description('diagnose token-goat health')
+    .option('--fast', 'skip slow host process scanning for quick health check')
     .option('--context', 'include context footprint analysis')
     .option('--json', 'emit check results as JSON instead of text')
     .option('--repair', 'automatically repair fixable issues (permissive settings, missing semantics models)')

@@ -1820,6 +1820,13 @@ describe('cli_doctor', () => {
     })
   })
 
+  describe('runDoctorAndExit --fast option', () => {
+    it('accepts fast: true and passes empty process list to skip host scanning', async () => {
+      const code = await runDoctorAndExit({ dataDir: tempDir, fast: true })
+      expect(code).toBe(0)
+    })
+  })
+
   describe('runDoctorAndExit --context error propagation', () => {
     it('propagates a runContextStats rejection instead of an unhandled promise rejection', async () => {
       const contextStats = await import('../src/cli_context_stats.js')

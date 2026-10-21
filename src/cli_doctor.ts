@@ -1154,6 +1154,7 @@ export async function runDoctorAndExit(opts?: string | {
   configPath?: string
   context?: boolean
   rootDir?: string
+  fast?: boolean
   /** See `runDoctor`: supply a list to skip the Windows process gather. */
   processes?: ProcessInfo[]
   repair?: boolean
@@ -1192,7 +1193,8 @@ export async function runDoctorAndExit(opts?: string | {
     repairErrors = errors
   }
 
-  const results = await runDoctorChecks(options.dataDir, options.configPath, options.rootDir, options.processes)
+  const processes = options.processes ?? (options.fast === true ? [] : undefined)
+  const results = await runDoctorChecks(options.dataDir, options.configPath, options.rootDir, processes)
   printDoctorResults(results)
 
   if (options.context === true) {

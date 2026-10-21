@@ -301,7 +301,12 @@ async function maybeElideServedGenericOutput(
   if (originalBytes < cacheMinBytes) return null
 
   // Excludes a prior run of this SAME command: an identical rerun of, say, `npm test` is the finding, not redundancy -- collapsing it away deletes the one piece of information a rerun carries, that the result did not change. bash_identical_read_collapse.test.ts pins exactly this for maybeCollapseIdenticalRead's own file-read case; a same-command rerun reaching this generic path must not quietly reintroduce the same collapse through a different door. A stretch shared with a DIFFERENT command's earlier output carries no such signal, so it is still fair game.
-  const priorIds = getFileServedOutputs(GENERIC_SERVED_OUTPUT_KEY).filter((id) => getBashOutput(id)?.command !== cmd)
+  const allOutputs = getFileServedOutputs(GENERIC_SERVED_OUTPUT_KEY)
+  if (allOutputs.some((id) => getBashOutput(id)?.command === cmd)) {
+    if (!persisted) recordFileServedOutput(GENERIC_SERVED_OUTPUT_KEY, await storeBashOutput(cmd, output, exitCode ?? 0, runDir))
+    return null
+  }
+  const priorIds = allOutputs.filter((id) => getBashOutput(id)?.command !== cmd)
   let rewrittenText: string | null = null
   if (priorIds.length > 0) {
     const elided = elideServedShellLines(cmd, output, priorIds, true)

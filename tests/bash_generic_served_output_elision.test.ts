@@ -152,6 +152,18 @@ describe('postBashHandler: generic served-output elision (shipped default, confi
     const out = await postBashHandler(postEvent('some-report-tool --stage recall-src', rerun, 0, session))
     expect(out.hookType).not.toBe('rewriteOutput')
   })
+
+  it('delivers full un-elided output when an overlapping command is rerun, preventing withholding loops', async () => {
+    await postBashHandler(postEvent('some-report-tool --stage build', block(1, 40)))
+    const second = block(20, 60)
+    // First run of deploy: overlapping lines 20-40 are elided
+    const out1 = await postBashHandler(postEvent('some-report-tool --stage deploy', second))
+    expect(out1.hookType).toBe('rewriteOutput')
+
+    // Second run (rerun) of the exact same deploy command: delivered full and un-elided
+    const out2 = await postBashHandler(postEvent('some-report-tool --stage deploy', second))
+    expect(out2.hookType).not.toBe('rewriteOutput')
+  })
 })
 
 describe('postBashHandler: generic served-output elision — config off', () => {
