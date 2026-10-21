@@ -5,12 +5,12 @@ import * as net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { toBaseline } from '../evals/retrieval/gate.js'
 import { splitOf } from '../evals/retrieval/metrics.js'
 import { assertRan, baselineRanks, findOnPath, fixtureHits, pairWithBaseline, parseConfiguredNumber, resolveBin, shimBundlePath } from '../scripts/eval-retrieval.js'
-import { runOwned } from '../scripts/eval-run-owned.js'
+import { endSurvivors, runOwned, selectSurvivors, SURVIVOR_QUERY_TIMEOUT_MS, type ProcRow, type SurvivorIo } from '../scripts/eval-run-owned.js'
 
 const FAKE_BIN = `import { appendFileSync } from 'node:fs'
 const args = process.argv.slice(2)
@@ -255,13 +255,26 @@ describe('runOwned', () => {
     expect(r.stdout.length).toBeLessThanOrEqual(1000)
   }, 60_000)
 
-  it('stops an overflowing child that would otherwise keep running', async () => {
+  it('stops an overflowing child at the overflow instead of waiting for it to exit', async () => {
+    // The stand-in flushes 5000 bytes, tells the test over the socket, and exits only on release, so the run can end before release only by ending the child itself; no step waits on time.
+    const script = `import net from 'node:net'\nconst s = net.connect(Number(process.env.PROBE_PORT), '127.0.0.1')\ns.on('error', () => {})\ns.on('connect', () => process.stdout.write('x'.repeat(5000), () => s.write('flushed')))\ns.on('data', (d) => {\n  if (String(d).includes('release')) process.exit(0)\n  s.write('alive')\n})\ns.on('close', () => process.exit(0))\nsetInterval(() => {}, 1000)\n`
     const ctl = new AbortController()
-    const run = start(probeJs("process.stdout.write('x'.repeat(5000))"), ctl, 60_000, 1000)
-    const child = await connected
+    const run = start(script, ctl, 60_000, 1000)
+    const sock = await connected
+    await new Promise<void>((resolve) => {
+      const on = (d: Buffer): void => {
+        if (!String(d).includes('flushed')) return
+        sock.off('data', on)
+        resolve()
+      }
+      sock.on('data', on)
+      sock.once('close', () => resolve())
+    })
+    const endedEarly = !(await alive(sock))
+    if (!endedEarly) sock.write('release')
     const r = await run
-    expect(r.error?.code).toBe('ENOBUFS')
-    expect(await alive(child), 'an overflowing child must be gone').toBe(false)
+    expect(r.error?.code, 'an output overflow must stop the run with ENOBUFS').toBe('ENOBUFS')
+    expect(endedEarly, 'the overflowing child must be ended without needing release').toBe(true)
   }, 60_000)
 
   it('runs without any deadline when none is given', async () => {
@@ -296,6 +309,64 @@ describe('runOwned', () => {
     expect(done).toMatchObject({ stdout: 'hi', stderr: 'lo', status: 3 })
     expect(done.error).toBeUndefined()
   }, 60_000)
+})
+
+describe('survivors of an exited root', () => {
+  // HAND-DERIVED: a process table written out by hand for the rule under test, creation times in epoch milliseconds; no wire format is claimed.
+  const row = (pid: number, ppid: number, createdMs: number): ProcRow => ({ pid, ppid, createdMs })
+
+  it('takes the first generation inside the root window and descendants created no earlier than their parent', () => {
+    const rows = [row(200, 100, 1000), row(300, 200, 1200), row(400, 300, 1300), row(210, 100, 5000), row(220, 100, 50)]
+    expect(selectSurvivors(rows, 100, 900, 2000).sort()).toEqual([200, 300, 400])
+  })
+
+  it('never takes a descendant that is older than the parent it names, which is a recycled pid', () => {
+    const rows = [row(200, 100, 1000), row(300, 200, 500), row(310, 200, 1500)]
+    expect(selectSurvivors(rows, 100, 900, 2000).sort(), 'pid 300 predates pid 200, so it only reuses the number').toEqual([200, 310])
+  })
+
+  const killsOf = (platform: NodeJS.Platform, query: SurvivorIo['query'], throwOnProbe = false): { calls: Array<[number, NodeJS.Signals | 0]>; io: SurvivorIo } => {
+    const calls: Array<[number, NodeJS.Signals | 0]> = []
+    const kill = (pid: number, signal: NodeJS.Signals | 0): void => {
+      calls.push([pid, signal])
+      if (throwOnProbe && signal === 0) throw Object.assign(new Error('no such process'), { code: 'ESRCH' })
+    }
+    return { calls, io: { platform, query, kill } }
+  }
+  const noQuery: SurvivorIo['query'] = () => ({ status: 0, stdout: '', error: undefined })
+
+  it('probes the process group on POSIX and sends SIGKILL only to a group that still exists', () => {
+    const live = killsOf('linux', noQuery)
+    endSurvivors(4321, 0, 1, live.io)
+    expect(live.calls).toEqual([[-4321, 0], [-4321, 'SIGKILL']])
+    const gone = killsOf('linux', noQuery, true)
+    endSurvivors(4321, 0, 1, gone.io)
+    expect(gone.calls, 'a group that failed the probe must not be sent SIGKILL').toEqual([[-4321, 0]])
+  })
+
+  it('kills only the survivors the listed table selects on Windows', () => {
+    const table = JSON.stringify([{ p: 200, pp: 100, c: 1000 }, { p: 300, pp: 200, c: 500 }, { p: 400, pp: 999, c: 1000 }])
+    const k = killsOf('win32', () => ({ status: 0, stdout: table, error: undefined }))
+    endSurvivors(100, 900, 2000, k.io)
+    expect(k.calls).toEqual([[200, 'SIGKILL']])
+  })
+
+  it('reports a timed-out table query with the bounded timeout and kills nothing', () => {
+    let seen: number | undefined
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const k = killsOf('win32', (_file, _args, options) => {
+        seen = options.timeout
+        return { status: null, stdout: '', error: Object.assign(new Error('spawnSync powershell.exe ETIMEDOUT'), { code: 'ETIMEDOUT' }) }
+      })
+      endSurvivors(100, 900, 2000, k.io)
+      expect(seen, 'the query must carry the survivor query bound').toBe(SURVIVOR_QUERY_TIMEOUT_MS)
+      expect(k.calls, 'a query that timed out selects nobody').toEqual([])
+      expect(stderr.mock.calls.map((c) => String(c[0])).join(''), 'the failure must be named, not swallowed').toMatch(/could not list the survivors of pid 100: .*ETIMEDOUT/)
+    } finally {
+      stderr.mockRestore()
+    }
+  })
 })
 
 describe('assertRan', () => {
