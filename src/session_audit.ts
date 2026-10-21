@@ -380,7 +380,7 @@ const READ_FULL_SERVE_MIN_BYTES = 10240
 
 /** Per-kind classifiers for every Read-deny message template hooks_read.ts's `denyOutput(` call sites can produce, derived by reading (never editing) hooks_read.ts and hints/file_type_handler.ts. Tested in array order, first match wins -- entries are ordered specific-literal-first so a message that could satisfy two templates (e.g. the .improve-state and generic session-artifact re-read denials both end in the same `sessionArtifactRecall` sentence) resolves to its own narrower kind rather than the generic one further down. This table exists because READ_DIVERT_MARKER_RE above is deliberately narrow (by its own doc comment) and was never meant to distinguish kinds -- it only flags "this looks like one of ours". A live corpus query saw divertedByMarker at 422 against a deny population believed to be roughly 1512: most denies never had a kind at all before this table existed. When adding a kind, do not take a branch's own recorded `*_deny` stat name as evidence that it is already classified. Several branches share a stat name with a sibling while emitting wording no template for that name matches, and the census then drops them silently -- it gets shorter, never empty, so there is no error to notice. Both `range_reread_deny` and `sequential_paging_deny` below were found that way, each having ridden an existing stat name (`read_served_deny`, `read_count_deny`) and matched nothing here since the branch was written. A wording is covered only when a regex in this table matches the string the branch actually prints. */
 /** `tool` is the tool whose result can legitimately carry this wording, and matching is refused for any other. Without it the table matches a *document about* a deny as a deny: a Read of this repo's own fixture file, or of a measurement script quoting the text, classified as a real event. Measured over the user's session corpus, that accounted for 16 of 693 skill_ matches -- and for three of the five skill_ kinds it was every single match, so their true count was zero while the census reported activity. It also produced a non-zero `retried` rate on a Skill kind, which is structurally impossible: only a Read result carries the path that outcome matches on. The gate cannot separate a Read deny from a Read of a file quoting one -- both are Read results -- so that residual stays. Measured the same way over the same corpus, 19 of 1,595 Read-kind matches (1.2%) have the wording more than 400 bytes into the body, which is the signal that it is embedded text rather than the whole result. Result size is NOT a usable second signal here, because markdown_heading_tree_deny inlines a heading tree and is legitimately large. */
-const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }> = [
+const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' | 'Grep' }> = [
   // hint_target.ts's sharpenRepeatedDeny replaces a verbatim repeat of any deny with this one line, so the kind the first copy had is not recoverable from the second.
   { kind: 'repeat_refusal_deny', re: /Repeat refusal of this exact call/, tool: 'Read' },
   { kind: 'skill_repeat_refusal_deny', re: /Repeat refusal of this exact call/, tool: 'Skill' },
@@ -423,6 +423,8 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }
   { kind: 'skill_compact_slice_inlined_deny', re: /compact slice \(\d+ bytes\) is inlined below instead of the full body/, tool: 'Skill' },
   { kind: 'skill_heading_tree_truncated_deny', re: /heading tree shows \d+ of \d+ headings below instead of the full body/, tool: 'Skill' },
   { kind: 'skill_heading_tree_complete_deny', re: /heading tree \(\d+ headings\) is inlined below instead of the full body/, tool: 'Skill' },
+  // hooks_grep.ts's inlineSymbolGrepHandler: the Grep deny that carries one symbol's body (hints.inline_symbol_body). The Grep's path, when it is a file, keys the follow-up checks.
+  { kind: 'inline_symbol_body_deny', re: /symbol body \(\d+ bytes\) is inlined below/, tool: 'Grep' },
 ]
 
 /** Every kind DENY_TEMPLATES can classify, exported so the suite can assert its fixture set covers all of them. Without that assertion a kind added to the array without a fixture is never exercised by any test: it can be born stale, match nothing the code emits, and drop its events from the census silently, which is the exact failure the fixtures exist to prevent. */
@@ -787,6 +789,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
                 readCallById.set(block['id'], { wasSeenBefore: priorEpoch !== undefined, hasRange: input['offset'] !== undefined || input['limit'] !== undefined, afterCompaction: priorEpoch !== undefined && compactEpoch > priorEpoch })
                 readPathById.set(block['id'], readNorm)
                 readPathEpoch.set(readNorm, compactEpoch)
+              } else if (name === 'Grep' && typeof input['path'] === 'string') {
+                readPathById.set(block['id'], normalizeReadPath(input['path']))
               } else if (name === 'Edit' && typeof input['file_path'] === 'string') {
                 editNorm = normalizeReadPath(input['file_path'])
                 editPathById.set(block['id'], editNorm)
@@ -852,7 +856,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             editErrorById.set(id, true)
           }
           // Deny-outcome census: orthogonal to the Read-only divert/full-serve split below -- a deny template match opens a new pending row that watches the calls following it in this same file. Each template names the tool whose result can carry its wording and matches only that tool, so a Read of a file which merely quotes a deny is not counted as one. Skill denies from hooks_skill.ts have no path, so readPathById.get(id) misses and path/basename fall back to '', which safely never matches the path-keyed isReadSamePath/isEditSamePath/isSurgicalSamePath checks further down -- and with the tool gate in place those three outcomes are now unreachable for a Skill row rather than reachable only by contamination.
-          if (name === 'Read' || name === 'Skill') {
+          if (name === 'Read' || name === 'Skill' || name === 'Grep') {
             const denyTemplate = DENY_TEMPLATES.find((t) => t.tool === name && t.re.test(text))
             if (denyTemplate !== undefined) {
               const path = readPathById.get(id) ?? ''

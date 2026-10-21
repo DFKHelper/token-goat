@@ -733,6 +733,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.elide_served_lines = validatedBool(hi_raw['elide_served_lines'], hi.elide_served_lines)
   hi.subagent_markdown_first_read_deny = validatedBool(hi_raw['subagent_markdown_first_read_deny'], hi.subagent_markdown_first_read_deny)
   hi.agent_scoped_spawn_deny = validatedBool(hi_raw['agent_scoped_spawn_deny'], hi.agent_scoped_spawn_deny)
+  hi.inline_symbol_body = validatedBool(hi_raw['inline_symbol_body'], hi.inline_symbol_body)
   hi.backoff_thresholds = validatedIntList(hi_raw['backoff_thresholds'], hi.backoff_thresholds)
   hi.git_hint_max_ms = validatedInt(hi_raw['git_hint_max_ms'], hi.git_hint_max_ms, ...boundsOf('hints.git_hint_max_ms'))
   hi.min_session_hint_savings_bytes = validatedInt(hi_raw['min_session_hint_savings_bytes'], hi.min_session_hint_savings_bytes, ...boundsOf('hints.min_session_hint_savings_bytes'))
@@ -768,6 +769,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   hi.elide_served_lines = envBool('TOKEN_GOAT_ELIDE_SERVED_LINES', hi.elide_served_lines)
   hi.subagent_markdown_first_read_deny = envBool('TOKEN_GOAT_SUBAGENT_MARKDOWN_FIRST_READ_DENY', hi.subagent_markdown_first_read_deny)
   hi.agent_scoped_spawn_deny = envBool('TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY', hi.agent_scoped_spawn_deny)
+  hi.inline_symbol_body = envBool('TOKEN_GOAT_INLINE_SYMBOL_BODY', hi.inline_symbol_body)
   hi.log_large_file_hint_outcomes = envBool('TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES', hi.log_large_file_hint_outcomes)
   hi.json_sidecar = envBool('TOKEN_GOAT_HINT_JSON_SIDECAR', hi.json_sidecar)
   hi.large_read_redirect_bytes = envInt('TOKEN_GOAT_LARGE_READ_BYTES', hi.large_read_redirect_bytes, ...boundsOf('hints.large_read_redirect_bytes'))
@@ -997,6 +999,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'hints.elide_served_lines': ['TOKEN_GOAT_ELIDE_SERVED_LINES'],
   'hints.subagent_markdown_first_read_deny': ['TOKEN_GOAT_SUBAGENT_MARKDOWN_FIRST_READ_DENY'],
   'hints.agent_scoped_spawn_deny': ['TOKEN_GOAT_AGENT_SCOPED_SPAWN_DENY'],
+  'hints.inline_symbol_body': ['TOKEN_GOAT_INLINE_SYMBOL_BODY'],
   'hints.log_large_file_hint_outcomes': ['TOKEN_GOAT_LOG_LARGE_FILE_HINT_OUTCOMES'],
   'hints.cross_session_read_dedup': ['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP'],
   'hints.cross_session_read_dedup_ttl_secs': ['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS'],
@@ -1169,6 +1172,7 @@ export function saveConfig(config: Config, explicitKeys: readonly string[] = [])
       elide_served_lines: config.hints.elide_served_lines,
       subagent_markdown_first_read_deny: config.hints.subagent_markdown_first_read_deny,
       agent_scoped_spawn_deny: config.hints.agent_scoped_spawn_deny,
+      inline_symbol_body: config.hints.inline_symbol_body,
       backoff_thresholds: config.hints.backoff_thresholds,
       git_hint_max_ms: config.hints.git_hint_max_ms,
       min_session_hint_savings_bytes: config.hints.min_session_hint_savings_bytes,

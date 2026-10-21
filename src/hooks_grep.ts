@@ -8,13 +8,15 @@ import { leadWithCommand, docNavigation, docSectionHint, quotedArg } from './hin
 import { hintTarget } from './hint_target.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
-import { recordGrepQuery, getGrepMatchCount } from './session.js'
+import { recordGrepQuery, getGrepMatchCount, markHintShown, wasHintShown } from './session.js'
 import { isRewriteWorthwhile, resolveMinNetSavingsBytes } from './tool_filters/index.js'
 import { redactSecrets } from './secret_redact.js'
 import { displaySafePath } from './paths.js'
 import { recordStat } from './stats.js'
 import { detectLanguage } from './parser_types.js'
 import { languageHasFlag } from './language_specs.js'
+import { loadConfig } from './config.js'
+import { declaredNameOf, inlineAnswerDeny, inlineAnswerKey, inlineSymbolAnswer } from './inline_symbol_answer.js'
 
 /** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating a numeric string. Mirrors hooks_read_slice.ts's readIntToolInput. */
 function grepIntInput(toolInput: Record<string, unknown>, key: string): number | undefined {
@@ -202,6 +204,33 @@ function preGrepHandler(event: HookEvent): HookOutput {
   }
 }
 
+/** pre_tool_use handler that, with hints.inline_symbol_body on, answers a single-file declaration Grep (`def foo`, `class Foo`) with the one symbol it names, inlined in a deny. Registered ahead of preGrepHandler so the ordinary hint is the fallback for every case it declines. A file's symbol is answered once per session: the repeat gets the ordinary hint, so the agent is never refused twice for the same Grep. */
+async function inlineSymbolGrepHandler(event: HookEvent): Promise<HookOutput> {
+  try {
+    if (getToolName(event) !== 'Grep' || !loadConfig().hints.inline_symbol_body) return passOutput()
+    const toolInput = getToolInput(event)
+    const structSearch = extractGrepStructuralSearch(toolInput)
+    if (structSearch === null || !structSearch.isSource) return passOutput()
+    const cwd = getCwd(event) ?? process.cwd()
+    if (readHintCrossesRule(detectHarness(), cwd, [structSearch.filePath])) return passOutput()
+    const pattern = String(toolInput['pattern'] ?? '')
+    const name = declaredNameOf(pattern)
+    if (name === null) return passOutput()
+    // The ordinary hint's own pick must be this name, so the two paths never disagree about the target.
+    const target = hintTarget(structSearch.filePath, 'symbol', { cwd, event, pattern })
+    if (!target.real || target.name !== name) return passOutput()
+    const decision = await inlineSymbolAnswer({ enabled: true, pattern, grepPath: structSearch.filePath, cwd, event })
+    if (!('inline' in decision)) return passOutput()
+    const key = inlineAnswerKey(decision.file, decision.symbol)
+    if (wasHintShown(key)) return passOutput()
+    markHintShown(key)
+    recordStat('inline_symbol_body_deny', 0, 0)
+    return inlineAnswerDeny(decision)
+  } catch {
+    return passOutput()
+  }
+}
+
 /** Combines the dedup-count recorder (unconditional side effect, always passes) with the content-mode path-folding rewrite above: the fold's rewrite wins when it fires, otherwise this falls back to whatever the dedup handler returned (always `pass`). */
 function postGrepHandler(event: HookEvent): HookOutput {
   const dedupResult = dedupPostHandler(event)
@@ -210,8 +239,9 @@ function postGrepHandler(event: HookEvent): HookOutput {
   return dedupResult
 }
 
-export { postGrepHandler, preGrepHandler, preGrepDedupHandler }
+export { inlineSymbolGrepHandler, postGrepHandler, preGrepHandler, preGrepDedupHandler }
 
 // Registered after hooks_read.ts's preReadHandler (see relay.ts import order) so a correctness-relevant deny there (node_modules, oversized file) always takes priority over this purely advisory recall hint.
+registerHook('pre_tool_use', inlineSymbolGrepHandler, { toolName: 'Grep' })
 registerHook('pre_tool_use', preGrepHandler, { toolName: 'Grep' })
 registerHook('post_tool_use', postGrepHandler, { toolName: 'Grep' })

@@ -124,6 +124,14 @@ describe('a token-goat deny that delivers the content', () => {
     expect(classifyToolError(tool, 'PreToolUse:' + tool + ' hook error: ' + message)).toEqual({ kind: 'expected', reason: 'tg_content_delivered' })
   })
 
+  it('Grep: the inlined symbol body deny is a delivery, with the byte count the source prints', () => {
+    // FORMAT-DERIVED: the wording is read out of src/inline_symbol_answer.ts's inlineAnswerDeny (asserted below); the count is substituted for the source's `' + bytes + '`.
+    expect(fs.readFileSync(fileURLToPath(new URL('../src/inline_symbol_answer.ts', import.meta.url)), 'utf8')).toContain("whose symbol body (' + bytes + ' bytes) is inlined below")
+    const message = '[tg] Grep not run: its pattern names the one symbol `load` in `a.ts`, whose symbol body (42 bytes) is inlined below, exactly as `token-goat read "a.ts::load"` prints it.'
+    expect(classifyToolError('Grep', message, { denialKind: 'permission-rule' })).toEqual({ kind: 'expected', reason: 'tg_content_delivered' })
+    expect(classifyToolError('Grep', 'PreToolUse:Grep hook error: ' + message)).toEqual({ kind: 'expected', reason: 'tg_content_delivered' })
+  })
+
   it('only a deny qualifies: a failed command whose output quotes the phrase is not a delivery', () => {
     // CAPTURE: an is_error Bash result from transcript C--Projects-token-goat/ff860b98-0171-4c77-84c5-2331bc647d0b.jsonl (Claude Code 2.1.280) that printed session_audit.ts's own deny templates; cut to the matching line.
     const text = "Exit code 1\n# 1 line (~15 tok)\n  { kind: 'compact_sidecar_served', re: /Serving the extractive compact sidecar in place of the full file/, tool: 'Read' },"

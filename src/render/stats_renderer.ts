@@ -525,6 +525,7 @@ const _KIND_GROUPS: KindGroup[] = [
       'edit_after_fold',
       'subagent_markdown_first_read_deny',
       'agent_scoped_spawn_deny',
+      'inline_symbol_body_deny',
       'grep_dedup_hint',
       'glob_dedup_hint',
       'diff_hint',

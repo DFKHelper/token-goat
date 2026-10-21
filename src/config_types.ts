@@ -124,6 +124,8 @@ export interface HintsConfig {
   subagent_markdown_first_read_deny: boolean
   /** Deny, once per session, a Claude Code Agent spawn that omits subagent_type while tools-restricted agent definitions exist, naming them so the retry can pick one. Off by default: an untyped spawn inherits every tool and MCP schema into its lane's prefix, but whether a redirected spawn fits the narrower agent is a judgement the deny cannot make. */
   agent_scoped_spawn_deny: boolean
+  /** Answer a single-file structural Grep (`def foo`, `class Foo`) with the one symbol's body in the deny, instead of a hint naming the read command. Fires only when the pattern names one symbol that the file's fresh index holds exactly once and the body is under a byte cap (inline_symbol_answer.ts). Off by default: a deny the agent did not expect is only worth it once session-audit shows the inlined answers are followed and not retried. */
+  inline_symbol_body: boolean
   // Ascending suppressed-occasion counts at which hint_stats.ts's applyHintTracking lets a suppressed hint category through as a genuine "probe" emission, so fresh acted-on signal can lift its upper bound back over hint_stats.suppress_threshold_pct -- see that module's "Probe recovery" doc-comment section. `[]` means no probes: suppression is permanent until a manual `token-goat hint-stats --reset`.
   backoff_thresholds: number[]
   git_hint_max_ms: number
