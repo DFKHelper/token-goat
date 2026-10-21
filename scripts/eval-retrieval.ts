@@ -187,9 +187,23 @@ interface Run {
   readonly ms: number
 }
 
+/** The longest one command may run before the eval stops. A hung query fails the run; it is never retried and never scored as a miss. */
+const QUERY_TIMEOUT_MS = 60_000
+
+/** Throws when a command did not run to an exit code: it could not start, it hit QUERY_TIMEOUT_MS (`error.code` ETIMEDOUT) or it was killed by a signal. Even `allowFail` accepts only an exit code, because a null status is no outcome to grade. */
+export function assertRan(r: Pick<SpawnSyncReturns<string>, 'error' | 'signal' | 'status'>, args: string[]): void {
+  const cmd = `token-goat ${args.join(' ')}`
+  if (r.error !== undefined) {
+    const code = (r.error as NodeJS.ErrnoException).code
+    throw new Error(code === 'ETIMEDOUT' ? `${cmd} timed out after ${QUERY_TIMEOUT_MS} ms; the run stops rather than score a hung query` : `${cmd} could not run: ${r.error.message}`)
+  }
+  if (r.signal !== null) throw new Error(`${cmd} was killed by ${r.signal}; the run stops rather than score a killed query`)
+  if (r.status === null) throw new Error(`${cmd} ended with no exit code; the run stops rather than score it`)
+}
+
 /** Runs one command. A nonzero exit throws unless `allowFail` is set, which `answer` needs because a refusal is a graded outcome there, printed to stderr with exit 1, and the arms need because `semantic` exits 1 when nothing matched. A `.mjs` bundle runs under this Node directly. Any other name on Windows is an npm `.cmd` shim, which only a shell can start, and Node deprecates handing an argument array to a shell (DEP0190), so the shell gets one quoted command line instead. */
 function runner(bin: string, cwd: string, env: NodeJS.ProcessEnv): (args: string[], allowFail?: boolean) => Run {
-  const opts = { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, windowsHide: true } as const
+  const opts = { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, windowsHide: true, timeout: QUERY_TIMEOUT_MS } as const
   const start = (args: string[]): SpawnSyncReturns<string> => {
     if (bin.endsWith('.mjs')) return spawnSync(process.execPath, [bin, ...args], opts)
     if (process.platform === 'win32') return spawnSync([bin, ...args].map(cmdQuote).join(' '), { ...opts, shell: true })
@@ -199,10 +213,23 @@ function runner(bin: string, cwd: string, env: NodeJS.ProcessEnv): (args: string
     const t0 = performance.now()
     const r = start(args)
     const ms = performance.now() - t0
-    if (r.error !== undefined) throw r.error
+    assertRan(r, args)
     if (r.status !== 0 && !allowFail) throw new Error(`token-goat ${args.join(' ')} exited ${r.status}: ${r.stderr.slice(0, 500)}`)
     return { stdout: r.stdout, stderr: r.stderr, status: r.status, ms }
   }
+}
+
+/** The current rows that have a baseline rank, for one arm and split. A baseline that lacks a current answerable query, or ranks a query this run did not ask, is not the same query set, and a delta over the overlap alone would hide the gap; this throws naming the ids instead. `all` is every current row of the split, absent ones included, since a report written by `--out` holds those. */
+export function pairWithBaseline<T extends { readonly id: string }>(name: string, split: string, now: readonly T[], all: readonly { readonly id: string }[], before: ReadonlyMap<string, unknown>): T[] {
+  const paired = now.filter((r) => before.has(r.id))
+  const unranked = now.filter((r) => !before.has(r.id)).map((r) => r.id)
+  const have = new Set(all.map((r) => r.id))
+  const unasked = [...before.keys()].filter((id) => !have.has(id))
+  if (unranked.length > 0 || unasked.length > 0) {
+    const parts = [unranked.length > 0 ? `${unranked.length} queries of this run are missing from the baseline (${unranked.slice(0, 10).join(', ')})` : '', unasked.length > 0 ? `${unasked.length} baseline queries were not asked this run (${unasked.slice(0, 10).join(', ')})` : '']
+    throw new Error(`eval-retrieval: baseline arm "${name}" split ${split} does not pair with this run: ${parts.filter(Boolean).join('; ')}`)
+  }
+  return paired
 }
 
 /** Runs one query through an arm, JSON then text. Exit 1 is accepted only when the JSON parses to no hits, which is how `semantic` reports an empty result; any other failure, or JSON that does not parse, is a crash and stops the run rather than scoring as a miss. */
@@ -406,7 +433,7 @@ function main(): void {
       for (const split of ['train', 'test'] as const) {
         const now = rows.filter((r) => r.split === split && r.kind !== 'absent')
         const before = baselineRanks(old, split, name)
-        const paired = now.filter((r) => before.has(r.id))
+        const paired = pairWithBaseline(name, split, now, rows.filter((r) => r.split === split), before)
         const d = pairedBootstrapDelta(
           paired.map((r) => reciprocalRank(before.get(r.id) ?? null, K)),
           paired.map((r) => reciprocalRank(r.rank, K)),

@@ -8,12 +8,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { toBaseline } from '../evals/retrieval/gate.js'
 import { splitOf } from '../evals/retrieval/metrics.js'
-import { baselineRanks, fixtureHits, parseConfiguredNumber } from '../scripts/eval-retrieval.js'
+import { assertRan, baselineRanks, fixtureHits, pairWithBaseline, parseConfiguredNumber } from '../scripts/eval-retrieval.js'
 
 const FAKE_BIN = `import { appendFileSync } from 'node:fs'
 const args = process.argv.slice(2)
 appendFileSync(process.env.FAKE_TG_LOG, JSON.stringify(args) + '\\n')
 if (args[0] === 'config') { process.stdout.write(JSON.stringify({ key: args[2], value: 0.6, source: 'global' }) + '\\n'); process.exit(0) }
+if (args[0] === 'semantic' && process.env.FAKE_TG_CRASH === '1') { process.stderr.write('stand-in crashed on purpose\\n'); process.exit(2) }
 if (args[0] === 'semantic') {
   const q = args[args.length - 1]
   const file = process.env.FAKE_TG_FIXTURE_HIT === '1' ? 'evals/retrieval/golden.jsonl' : 'doc.md'
@@ -87,8 +88,56 @@ describe('eval-retrieval harness wiring', () => {
   }, 60_000)
 })
 
+describe('eval-retrieval crash', () => {
+  it('stops with a nonzero exit naming the command and its stderr when an arm exits 2, and prints no scores (HAND-DERIVED: the stand-in exits 2 on purpose)', () => {
+    const r = runHarness({ FAKE_TG_CRASH: '1' })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('token-goat semantic')
+    expect(r.stderr).toContain('exited 2')
+    expect(r.stderr).toContain('stand-in crashed on purpose')
+    expect(r.stdout).not.toContain('weak_distance')
+  }, 60_000)
+})
+
+describe('assertRan', () => {
+  // HAND-DERIVED from the spawnSync return shape in the Node child_process docs: a timeout sets error (code ETIMEDOUT) with a null status and a signal, a kill sets only signal, a clean run sets status.
+  const timedOut = Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' })
+
+  it('names the command and the timeout when spawnSync reports ETIMEDOUT', () => {
+    expect(() => assertRan({ error: timedOut, signal: 'SIGTERM', status: null }, ['semantic', 'q'])).toThrow(/token-goat semantic q timed out after 60000 ms/)
+  })
+
+  it('names the signal when the child was killed, even though allowFail would take any exit code', () => {
+    expect(() => assertRan({ error: undefined, signal: 'SIGKILL', status: null }, ['answer', 'q'])).toThrow(/token-goat answer q was killed by SIGKILL/)
+  })
+
+  it('refuses a null status with no signal and a start failure, and lets any numeric exit code through', () => {
+    expect(() => assertRan({ error: undefined, signal: null, status: null }, ['x'])).toThrow(/ended with no exit code/)
+    expect(() => assertRan({ error: Object.assign(new Error('spawnSync nope ENOENT'), { code: 'ENOENT' }), signal: null, status: null }, ['x'])).toThrow(/could not run: spawnSync nope ENOENT/)
+    for (const status of [0, 1, 2]) expect(() => assertRan({ error: undefined, signal: null, status }, ['x'])).not.toThrow()
+  })
+})
+
+describe('pairWithBaseline', () => {
+  const row = (id: string): { id: string } => ({ id })
+
+  it('returns the current rows when both sides ask the same queries, accepting baseline ids that are absent-kind rows of the current split', () => {
+    const now = [row('a'), row('b')]
+    expect(pairWithBaseline('semantic', 'train', now, [...now, row('gap')], new Map([['a', 1], ['b', null], ['gap', null]]))).toEqual(now)
+  })
+
+  it('throws naming each current query the baseline lacks', () => {
+    const all = [row('a'), row('b'), row('c')]
+    expect(() => pairWithBaseline('semantic', 'test', all, all, new Map([['a', 1]]))).toThrow(/arm "semantic" split test does not pair.*2 queries of this run are missing from the baseline \(b, c\)/)
+  })
+
+  it('throws naming each baseline query this run did not ask', () => {
+    expect(() => pairWithBaseline('semantic', 'train', [row('a')], [row('a')], new Map([['a', 1], ['old1', 2], ['old2', null]]))).toThrow(/2 baseline queries were not asked this run \(old1, old2\)/)
+  })
+})
+
 describe('eval-retrieval --baseline', () => {
-  const goldenIds = (): string[] => golden().trim().split('\n').map((l) => (JSON.parse(l) as { id: string }).id)
+  const goldenIds =(): string[] => golden().trim().split('\n').map((l) => (JSON.parse(l) as { id: string }).id)
   const writeBaseline = (value: unknown): string => {
     const file = path.join(root, 'baseline.json')
     fs.writeFileSync(file, JSON.stringify(value))
@@ -103,6 +152,18 @@ describe('eval-retrieval --baseline', () => {
     // HAND-DERIVED: the stand-in ranks the one answerable query of each split first (reciprocal rank 1) and the baseline recorded rank 2 (0.5), so each split's one paired query moves by exactly +0.500.
     expect(r.stdout).toMatch(/^delta semantic\s+train\s+MRR@10 \+0\.500 \[0\.500, 0\.500\]\s{2}improved$/m)
     expect(r.stdout).toMatch(/^delta semantic\s+test\s+MRR@10 \+0\.500 \[0\.500, 0\.500\]\s{2}improved$/m)
+  }, 60_000)
+
+  it('exits nonzero naming the id when the baseline lacks an answerable query, and when it ranks one the run never asked', () => {
+    const answerable = golden().trim().split('\n').map((l) => JSON.parse(l) as { id: string; kind: string }).filter((g) => g.kind !== 'absent').map((g) => g.id)
+    const allRows = goldenIds().map((id) => ({ id, kind: 'doc', rank: 2 }))
+    const dropped = answerable[0]
+    const lacking = runHarness({}, ['--baseline', writeBaseline(toBaseline({ semantic: allRows.filter((x) => x.id !== dropped) }, 0))])
+    expect(lacking.status).not.toBe(0)
+    expect(lacking.stderr).toContain(`missing from the baseline (${dropped})`)
+    const extra = runHarness({}, ['--baseline', writeBaseline(toBaseline({ semantic: [...allRows, { id: 'zz-never-asked', kind: 'doc', rank: 1 }] }, 0))])
+    expect(extra.status).not.toBe(0)
+    expect(extra.stderr).toContain('baseline queries were not asked this run (zz-never-asked)')
   }, 60_000)
 
   it('exits 1 naming the arm when a baseline arm is neither a row list nor a rank map', () => {
