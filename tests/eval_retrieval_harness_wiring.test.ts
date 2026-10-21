@@ -228,10 +228,10 @@ describe('runOwned', () => {
   }, 60_000)
 
   it('ends a survivor that holds the pipe after the root exited, and resolves instead of waiting for the pipe', async () => {
-    // The survivor connects only once its stdin pipe, whose other end the root holds, reaches end of file, which happens when the root exits (a pid probe is no use on Windows, where a parent's handle keeps an exited process answering); it is detached because libuv ends a Windows child that is not when its parent exits; so the stop below always meets an exited root, and the survivor dies when the test's socket closes.
+    // The survivor connects only once its stdin pipe, whose other end the root holds, reaches end of file, which happens when the root exits (a pid probe is no use on Windows, where a parent's handle keeps an exited process answering); it is detached only on Windows, because libuv ends a Windows child that is not when its parent exits, while on POSIX detached means setsid, which would put the survivor outside the root's process group that the stop signals; so the stop below always meets an exited root, and the survivor dies when the test's socket closes.
     const gc = path.join(root, 'survivor.mjs')
     fs.writeFileSync(gc, `import net from 'node:net'\nprocess.stdin.on('data', () => {})\nprocess.stdin.on('end', () => {\n  const s = net.connect(Number(process.env.PROBE_PORT), '127.0.0.1')\n  s.on('error', () => {})\n  s.on('data', () => s.write('alive'))\n  s.on('close', () => process.exit(0))\n})\nsetInterval(() => {}, 1000)\n`)
-    const parent = `import { spawn } from 'node:child_process'\nconst c = spawn(process.execPath, [${JSON.stringify(gc)}], { detached: true, windowsHide: true, stdio: ['pipe', 'inherit', 'inherit'], env: process.env })\nc.unref()\nc.stdin.unref()\n`
+    const parent = `import { spawn } from 'node:child_process'\nconst c = spawn(process.execPath, [${JSON.stringify(gc)}], { detached: process.platform === 'win32', windowsHide: true, stdio: ['pipe', 'inherit', 'inherit'], env: process.env })\nc.unref()\nc.stdin.unref()\n`
     const ctl = new AbortController()
     const run = start(parent, ctl)
     let result: Awaited<typeof run> | undefined
