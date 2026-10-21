@@ -61,6 +61,14 @@ describe('decideInline', () => {
     expect(await decideInline(input({ readBody: () => wide }))).toEqual({ name: 'over_cap' })
   })
 
+  // HAND-DERIVED: a tag-block character is 4 bytes in UTF-8 and the fence spells it out as `\u{e0072}`, 9 bytes, so 2,990 of them are 11,960 bytes raw (under the 12,000 cap) and 26,910 bytes in the fenced body.
+  it('names over_cap when the fence inflates a body that is under the cap raw', async () => {
+    const hidden = String.fromCodePoint(0xe0072).repeat(2990)
+    const sneaky = { text: 'def load():\n    # ' + hidden, agreesWithIndex: true }
+    expect(Buffer.byteLength(sneaky.text, 'utf8')).toBeLessThanOrEqual(INLINE_SYMBOL_MAX_BYTES)
+    expect(await decideInline(input({ readBody: () => sneaky }))).toEqual({ name: 'over_cap' })
+  })
+
   it('names body_mismatch when the disk lines disagree with the index range, and unreadable_body when there is none', async () => {
     expect(await decideInline(input({ readBody: () => ({ text: BODY.text, agreesWithIndex: false }) }))).toEqual({ name: 'body_mismatch' })
     expect(await decideInline(input({ readBody: () => null }))).toEqual({ name: 'unreadable_body' })

@@ -73,7 +73,7 @@ export async function decideInline(input: InlineInput): Promise<InlineDecision> 
   if (body === null) return { name: 'unreadable_body' }
   if (!body.agreesWithIndex) return { name: 'body_mismatch' }
   const cap = Math.min(input.capBytes ?? INLINE_SYMBOL_MAX_BYTES, INLINE_SYMBOL_MAX_BYTES)
-  if (Buffer.byteLength(body.text, 'utf8') > cap) return { name: 'over_cap' }
+  if (fencedBytes(body.text) > cap) return { name: 'over_cap' }
   return { inline: body.text, file: only.file, symbol: only.name }
 }
 
@@ -145,12 +145,20 @@ export interface InlineAnswerArgs {
   readonly isBarred: (absPath: string) => boolean
 }
 
-/** The text a deny delivers, redacted: the optional match listing and the body, each redacted on its own, with the bytes actually delivered. */
-function deliveredText(answer: { readonly inline: string; readonly matches?: readonly string[] }): { listing: string | null; body: string; count: number; bodyBytes: number; totalBytes: number } {
+/** The bytes of the fence's own fixed lines (notice and tags), which the cap has never counted. */
+const FENCE_FIXED_BYTES = Buffer.byteLength(fenceUntrustedFileContent(''), 'utf8')
+
+/** The bytes `text` takes once the fence has neutralized it, without the fence's fixed lines. The fence spells a hidden character out as `\uXXXX` or `\u{XXXXX}`, up to 9 bytes for a 4-byte tag character, so the cap has to be judged on this and not on the bytes read. */
+function fencedBytes(text: string): number {
+  return Buffer.byteLength(fenceUntrustedFileContent(text), 'utf8') - FENCE_FIXED_BYTES
+}
+
+/** The text a deny delivers, redacted: the optional match listing and the body, each redacted on its own. `bodyBytes` is the redacted body as read, for the size the deny names; `cappedBytes` is what the cap is judged on, both parts as the fence will write them. */
+function deliveredText(answer: { readonly inline: string; readonly matches?: readonly string[] }): { listing: string | null; body: string; count: number; bodyBytes: number; cappedBytes: number } {
   const body = redactSecrets(answer.inline)
   const listing = answer.matches === undefined ? null : redactSecrets(answer.matches.join('\n'))
   const bodyBytes = Buffer.byteLength(body.text, 'utf8')
-  return { listing: listing === null ? null : listing.text, body: body.text, count: body.count + (listing === null ? 0 : listing.count), bodyBytes, totalBytes: bodyBytes + (listing === null ? 0 : Buffer.byteLength(listing.text, 'utf8')) }
+  return { listing: listing === null ? null : listing.text, body: body.text, count: body.count + (listing === null ? 0 : listing.count), bodyBytes, cappedBytes: fencedBytes(body.text) + (listing === null ? 0 : fencedBytes(listing.text)) }
 }
 
 /** What a Grep scoped to a file or a directory searches, with a way to name each file. */
@@ -200,9 +208,9 @@ export async function inlineSymbolAnswer(args: InlineAnswerArgs): Promise<Inline
   if (answered === undefined) return { name: 'pattern_mismatch' }
   const checked = await checkPatternOverScope({ pattern: args.pattern, bare: declared === null, kind, scope, root, answered, args })
   if ('name' in checked) return checked
-  // Redaction can lengthen the text, so the cap is judged on what the deny will carry.
+  // Redaction and the fence's escapes can lengthen the text, so the cap is judged on what the deny will carry.
   const withMatches = checked.matches === null ? decision : { ...decision, matches: checked.matches }
-  if (deliveredText(withMatches).totalBytes > INLINE_SYMBOL_MAX_BYTES) return { name: 'over_cap' }
+  if (deliveredText(withMatches).cappedBytes > INLINE_SYMBOL_MAX_BYTES) return { name: 'over_cap' }
   return withMatches
 }
 

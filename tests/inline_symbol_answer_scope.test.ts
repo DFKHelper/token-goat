@@ -200,6 +200,14 @@ describe('a bare-name Grep', () => {
     expect((await inlineSymbolGrepHandler(grep(dir, BARE, dir))).hookType).toBe('pass')
   })
 
+  it('passes through when hidden characters in a matching line grow past the delivery cap once the fence spells them out', async () => {
+    // HAND-DERIVED: 1,400 tag-block characters are 5,600 bytes of UTF-8, so the listing and the body stay under INLINE_SYMBOL_MAX_BYTES (12,000) as read; the fence spells each one out as the 9 bytes `\u{e0072}`, 12,600 bytes for the listing alone.
+    const line = 'x = unique_loader("' + String.fromCodePoint(0xe0072).repeat(1400) + '")\n'
+    const dir = project({ 'mod.py': MODULE, 'use.py': line })
+    expect(Buffer.byteLength(line, 'utf8')).toBeLessThan(INLINE_SYMBOL_MAX_BYTES / 2)
+    expect((await inlineSymbolGrepHandler(grep(dir, BARE, dir))).hookType).toBe('pass')
+  })
+
   it('passes through a name that two files declare, and a name the index does not hold', async () => {
     const dir = project({ 'mod.py': MODULE, 'copy.py': MODULE })
     expect((await inlineSymbolGrepHandler(grep(dir, BARE, dir))).hookType).toBe('pass')

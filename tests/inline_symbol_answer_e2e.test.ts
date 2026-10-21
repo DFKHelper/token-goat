@@ -346,6 +346,16 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     expect((await inlineSymbolGrepHandler(grep(crlf.dir, crlf.file, pattern))).hookType).toBe('pass')
   })
 
+  it('a symbol whose hidden characters grow past the cap once the fence spells them out is named, not inlined', async () => {
+    setOn(true)
+    // HAND-DERIVED: 2,970 tag-block characters are 11,880 bytes of UTF-8, so the read output (a 25-byte header and 36 bytes of code around them) stays under INLINE_SYMBOL_MAX_BYTES (12,000), and the fence spells each one out as the 9 bytes `\u{e0072}`, 26,730 bytes delivered.
+    const source = ['def hidden_one():', '    # ' + String.fromCodePoint(0xe0072).repeat(2970), '    return 1', ''].join('\n')
+    const { dir, file } = scratchProject(source)
+    const event = grep(dir, file, String.raw`def hidden_one\b`)
+    expect(await inlineSymbolAnswer({ enabled: true, pattern: String.raw`def hidden_one\b`, grepPath: file, cwd: dir, event, isBarred: () => false })).toEqual({ name: 'over_cap' })
+    expect((await inlineSymbolGrepHandler(event)).hookType).toBe('pass')
+  })
+
   it('a symbol over the 12,000-byte cap is named, not inlined', async () => {
     setOn(true)
     // HAND-DERIVED: 900 lines of 18 bytes each is 16,200 bytes of body, over INLINE_SYMBOL_MAX_BYTES (12,000).
