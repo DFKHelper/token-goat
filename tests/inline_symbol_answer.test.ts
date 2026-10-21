@@ -119,6 +119,12 @@ describe('declaredNameOf', () => {
   it.each([['class Foo'], ['def load'], ['^def load'], ['export function loadConfig'], ['Foo.*'], ['class Foo.*'], [String.raw`def foo\s`]])('%j can match a longer identifier, so it names no symbol', (pattern) => {
     expect(declaredNameOf(pattern)).toBeNull()
   })
+
+  // HAND-DERIVED: 'def ' is 4 characters and the open paren is 1, so a name of 251 letters makes a 256-character pattern and 252 makes 257; only the longer one is refused.
+  it('answers a 256-character declaration pattern and refuses a 257-character one', () => {
+    expect(declaredNameOf('def ' + 'a'.repeat(251) + '(')).toBe('a'.repeat(251))
+    expect(declaredNameOf('def ' + 'a'.repeat(252) + '(')).toBeNull()
+  })
 })
 
 describe('isPlainGrep', () => {

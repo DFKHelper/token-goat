@@ -81,10 +81,13 @@ export async function decideInline(input: InlineInput): Promise<InlineDecision> 
 
 /** Words a declaration pattern leads with, across the languages hooks_grep.ts's STRUCTURAL_SOURCE_PATTERN_RE recognises. */
 const DECLARATION_WORDS = new Set(['def', 'class', 'function', 'async', 'export', 'default', 'const', 'let', 'var', 'interface', 'type', 'enum', 'func', 'fn', 'struct', 'impl', 'pub', 'trait', 'object', 'val', 'fun'])
+const DECLARED_PATTERN_MAX_CHARS = 256
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
 
 /** The one name a declaration pattern asks for (`^class Foo\b`, `def foo\(`, `class Foo:`), or null when the pattern asks for anything else: an alternation, a wildcard, a qualified name, a bare identifier with no declaration word. Whitespace classes and a leading anchor are noise around the name. The name must also END in a terminator (word boundary, open paren, colon, `<` or end anchor): a regex is a substring match, so `class Foo` alone also matches `class FooBar` and every other longer identifier. Every other regex character is a pattern the agent wrote to match more than one thing. */
 export function declaredNameOf(pattern: string): string | null {
+  // No declaration an agent writes is this long, and the terminator strip below is quadratic on a long run of parens.
+  if (pattern.length > DECLARED_PATTERN_MAX_CHARS) return null
   const unanchored = pattern.trim().replace(/^\^/, '').replace(/\\s[*+]?/g, ' ')
   const bounded = unanchored.replace(/(?:\\b|\\\(|\(|:|\$|<)+$/, '')
   if (bounded === unanchored) return null
