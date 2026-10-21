@@ -31,6 +31,7 @@ import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_gua
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
 import { expandGlobs } from './cli_diagnostics.js'
+import { extractSignature } from './read_signature.js'
 import {
   isGhAvailable,
   isGhAuthenticated,
@@ -565,6 +566,36 @@ export function truncationNotice(shown: number, limit: number, total: () => Trun
     : `showing ${shown} of at least ${count} ${plural}; rerun with ${flag} ${count} and a narrower filter to see more`
 }
 
+// ---- peek (line context) ----------------------------------------------------
+
+export interface PeekOptions {
+  spec: string
+  context?: number
+  json?: boolean
+  projectRoot?: string
+}
+
+/** Handle `token-goat peek <file:line> [-C, --context <n>]`. */
+export function runPeek(opts: PeekOptions): { text: string; code: number } {
+  const parsed = parseColonLineSpec(opts.spec)
+  if (parsed === null) {
+    return {
+      text:
+        `Invalid peek spec: ${echoedValue(opts.spec)}.\n` +
+        `Expected format: <file>:<line> or <file>:<start>-<end> (e.g. src/index.ts:42 or src/index.ts:42-50)`,
+      code: 1,
+    }
+  }
+  const ctx = opts.context ?? 5
+  const start = Math.max(1, parsed.start - ctx)
+  const end = parsed.end + ctx
+  return runLineRange({ file: parsed.file, start, end }, {
+    spec: `${parsed.file}@${start}-${end}`,
+    ...(opts.json === true ? { json: true } : {}),
+    ...(opts.projectRoot !== undefined ? { projectRoot: opts.projectRoot } : {}),
+  })
+}
+
 // ---- read (symbol body) -----------------------------------------------------
 
 export interface ReadOptions {
@@ -575,6 +606,8 @@ export interface ReadOptions {
   forceRefresh?: boolean
   /** Add per-symbol reference count and doc-coverage flag, same as `skeleton`/`outline`'s `--stats`. */
   stats?: boolean
+  /** Only output the declaration signature, omitting implementation body. */
+  sig?: boolean
   /** Project root to scope symbol resolution to. Defaults to `process.cwd()`; same field name as {@link SemanticOptions.projectRoot}. Callers whose cwd is not the workspace root (e.g. an MCP server launched from an opaque directory) should pass the actual workspace root explicitly -- otherwise a bare/partial file spec can resolve against the wrong project, or an ambiguous symbol name can match a same-named definition in an unrelated project. */
   projectRoot?: string
   /** Internal only -- set by {@link runReadMulti} on each per-symbol recursive `runRead` call so the single-symbol path skips its own `recordReadStat`. Without this, N symbols from the same file would each record a stat against the full file size, inflating the recorded token-savings by a factor of N for what is really one read. `runReadMulti` records the stat itself, once, for the whole multi-symbol call. Not a CLI/MCP-facing option. */
@@ -690,11 +723,13 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
 
   if (opts.json === true) {
     recordStaleServed('read', indexFreshness(match.filePath))
+    const resolved = resolveBody(match)
+    const bodyText = opts.sig === true ? extractSignature(resolved, match.kind) : resolved
     // Serialize the resolved body, not the raw row. `symbols.body` is stored empty for symbols an extractor emits without text and for any symbol over parser.ts's MAX_SYMBOL_BODY_CHARS (deliberately elided so it can be re-derived here rather than stored truncated). Emitting the row verbatim would hand a JSON consumer `"body": ""` for those, which is the one output shape with no honest signal that the text is available elsewhere -- the text form below already resolves it.
     const text = displaySafeJson(
       {
         ...match,
-        body: resolveBody(match),
+        body: bodyText,
         // The text branch below prepends staleWarning's DELETED line; without this the JSON form would be the one surface that still passes a deleted file's body off as a live read.
         ...(fileIsGone(match.filePath) ? { deleted: true } : {}),
         ...(refCounts !== undefined ? { refCount: refCounts.get(match.name) ?? 0 } : {}),
@@ -704,13 +739,16 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   }
 
   const doc = docCommentLines(match)
-  const body = [...doc, resolveBody(match)].join('\n')
+  const resolved = resolveBody(match)
+  const renderedBody = opts.sig === true ? extractSignature(resolved, match.kind) : resolved
+  const body = [...doc, renderedBody].join('\n')
 
-  const bodyLen = match.lineEnd - match.lineStart + 1
+  const bodyLen = opts.sig === true ? renderedBody.split('\n').length : match.lineEnd - match.lineStart + 1
   const statsStr = formatStatsSuffix(refCounts, match)
   const docLabel = doc.length > 0 ? ` + ${doc.length}-line doc comment` : ''
+  const sigLabel = opts.sig === true ? ' (signature)' : ''
   const lines: string[] = [
-    `# ${countNoun(bodyLen, 'line')}${docLabel} (~${Math.ceil(body.length / 4)} tok)${statsStr}`,
+    `# ${countNoun(bodyLen, 'line')}${docLabel}${sigLabel} (~${Math.ceil(body.length / 4)} tok)${statsStr}`,
     body,
   ]
   const warning = staleWarning(match.filePath, 'read')

@@ -85,6 +85,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'impact', reason: ANALYSIS_REASON },
   { command: 'dead', reason: ANALYSIS_REASON },
   { command: 'deps', reason: ANALYSIS_REASON },
+  { command: 'importers', reason: ANALYSIS_REASON },
   { command: 'types', reason: ANALYSIS_REASON },
   { command: 'scope', reason: ANALYSIS_REASON },
   { command: 'similar', reason: ANALYSIS_REASON },
@@ -96,7 +97,6 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'blame', reason: ANALYSIS_REASON },
   { command: 'ask', reason: ANALYSIS_REASON },
   { command: 'pack', reason: ANALYSIS_REASON },
-  { command: 'tokens', reason: ANALYSIS_REASON },
   { command: 'budget', reason: ANALYSIS_REASON },
   { command: 'failures', reason: ANALYSIS_REASON },
   { command: 'todo', reason: ANALYSIS_REASON },
@@ -173,6 +173,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'diff', reason: NAV_REASON },
   { command: 'log', reason: NAV_REASON },
   { command: 'history', reason: NAV_REASON },
+  { command: 'peek', reason: NAV_REASON },
   { command: 'compact-doc', reason: NAV_REASON },
 
   // `affected` answers a question about a change set rather than about a file's contents: it is reached for when narrowing a test run, never instead of reading something. Naming it in the gate would spend bytes on every session start to advertise a command no read can be routed to.

@@ -41,7 +41,7 @@ import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
 import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorkerDetailed, WorkerAlreadyRunningError, workerLeftRunningNote } from './worker_lifecycle.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
-import { runRead, runPrSlice } from './read_commands.js'
+import { runRead, runPeek, runPrSlice } from './read_commands.js'
 import { runSymbol } from './read_symbol.js'
 import { namedSpecsMergeable, readSpecsMergeable } from './read_spec.js'
 import { runBrief } from './read_brief.js'
@@ -887,7 +887,7 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
 const READ_ONLY_INDEX_COMMANDS: ReadonlySet<string> = new Set([
   'symbol', 'read', 'brief', 'section', 'semantic', 'search', 'skeleton', 'outline', 'refs', 'answer', 'ask', 'map',
   'exports', 'imports', 'find', 'locate', 'callers', 'call-chain', 'impact', 'dead', 'deps', 'types', 'scope',
-  'similar', 'context-for', 'test-for',
+  'similar', 'context-for', 'test-for', 'importers', 'peek',
 ])
 
 /** Commander's own `helpInformation` for the top-level program, captured before `buildProgram` shadows it with the compact grouped index. `help --full` calls this to emit the long per-command listing the compact index replaces; without it the long form is unreachable, since the override is an own property that hides the prototype method for every later caller. */
@@ -971,7 +971,8 @@ export function buildProgram(): Command {
     .option('--exclude-tests', 'hide symbols defined in a test file (opt-in; default output is unchanged)')
     .option('--exclude-vendored', 'hide symbols defined under a dependency or build directory the indexer skips (node_modules, dist, site-packages, ...) (opt-in; default output is unchanged)')
     .option('--stats', 'add per-result reference count and doc-coverage flag (project-wide count per NAME, not per definition site -- same-named symbols across files share a count)')
-    .action((name: string | undefined, more: string[], opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean; excludeVendored?: boolean; stats?: boolean }) => {
+    .option('--sig, --signature', 'only output the declaration signature, omitting implementation body')
+    .action((name: string | undefined, more: string[], opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean; excludeVendored?: boolean; stats?: boolean; sig?: boolean }) => {
       let projectRoot: string | undefined
       if (opts.project === true) {
         projectRoot = resolveProjectRoot({ project: process.cwd() })
@@ -995,6 +996,7 @@ export function buildProgram(): Command {
               ...(opts.excludeTests === true ? { excludeTests: true } : {}),
               ...(opts.excludeVendored === true ? { excludeVendored: true } : {}),
               ...(opts.stats === true ? { stats: true } : {}),
+              ...(opts.sig === true ? { sig: true } : {}),
             }),
           // `symbol` searches one name; there is no comma form that would search several.
           { noun: 'spec', mergeable: false },
@@ -1010,7 +1012,8 @@ export function buildProgram(): Command {
     .option('-j, --json', 'output as JSON')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
-    .action((spec: string, more: string[], opts: { json?: boolean; forceRefresh?: boolean; stats?: boolean }) =>
+    .option('--sig, --signature', 'only output the declaration signature, omitting implementation body')
+    .action((spec: string, more: string[], opts: { json?: boolean; forceRefresh?: boolean; stats?: boolean; sig?: boolean }) =>
       runExitText(() =>
         noteExtraFileArgs(
           'read',
@@ -1022,10 +1025,26 @@ export function buildProgram(): Command {
               ...(opts.json === true ? { json: true } : {}),
               ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
               ...(opts.stats === true ? { stats: true } : {}),
+              ...(opts.sig === true ? { sig: true } : {}),
             }),
           // Whether the comma form the note names would actually run depends on the specs themselves, not on the command: `read` merges `::` specs and nothing else.
           { noun: 'spec', mergeable: readSpecsMergeable([spec, ...more]) },
         ),
+      ),
+    )
+
+  program
+    .command('peek <spec>')
+    .description('context window around a file:line location (default 5 lines context, e.g. src/index.ts:42)')
+    .option('-C, --context <n>', 'lines of context before and after (default: 5)')
+    .option('-j, --json', 'output as JSON')
+    .action((spec: string, opts: { context?: string; json?: boolean }) =>
+      runExitText(() =>
+        runPeek({
+          spec,
+          ...(opts.context !== undefined ? { context: requireNonNegativeInt('-C/--context', opts.context) } : {}),
+          ...(opts.json === true ? { json: true } : {}),
+        }),
       ),
     )
 

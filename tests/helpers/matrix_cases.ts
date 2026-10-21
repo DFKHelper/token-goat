@@ -315,6 +315,24 @@ export const cases: Record<string, () => void | Promise<void>> = {
       expect(ranged.stderr).toContain('Note: ran as `token-goat read "src/mod.ts@5-6"`')
     }
   },
+  peek: () => {
+    // Shows line context centered on the target line with default context of 5.
+    const r = run(['peek', 'src/mod.ts:5'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('return 2')
+
+    // Accepts -C flag to adjust context lines
+    const rContext = run(['peek', 'src/mod.ts:5', '-C', '1'])
+    expect(rContext.status, rContext.stderr).toBe(0)
+    expect(rContext.stdout).toContain('return 2')
+
+    // JSON format output
+    const rJson = run(['peek', 'src/mod.ts:5', '--json'])
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const parsed = JSON.parse(rJson.stdout) as { file: string; start: number; end: number; lines: string[] }
+    expect(parsed.file).toBe('src/mod.ts')
+    expect(parsed.lines.length).toBeGreaterThan(0)
+  },
   section: () => {
     expectRead(['section', 'README.md::Install'], 'npm install')
     // --grep filters the body rather than being ignored. Provenance: HAND-DERIVED, README.md is written in the fixture setup above (the Install body is one line, "Run npm install to set up the project.").
@@ -2423,6 +2441,18 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const importers = run(['deps', 'src/mod.ts', '--importers', '--json'])
     expect(importers.status, importers.stderr).toBe(0)
     const imp = JSON.parse(importers.stdout) as { file: string; importedBy: string[] }
+    expect(imp.file).toBe('src/mod.ts')
+    expect(imp.importedBy).toContain('app.ts')
+  },
+  importers: () => {
+    // Top-level alias for `deps <file> --importers`.
+    const r = run(['importers', 'src/mod.ts'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('app.ts')
+
+    const rJson = run(['importers', 'src/mod.ts', '--json'])
+    expect(rJson.status, rJson.stderr).toBe(0)
+    const imp = JSON.parse(rJson.stdout) as { file: string; importedBy: string[] }
     expect(imp.file).toBe('src/mod.ts')
     expect(imp.importedBy).toContain('app.ts')
   },

@@ -1,5 +1,6 @@
 /** The `symbol` command: every indexed definition of a name, or of each name `--grep` matches, printed with a short body preview. A bare name searches every indexed project unless `--project` scopes it or `indexing.cross_project_symbols = false` confines it to the project it is run from. Each hit is tagged when its file is gone from disk or could not be reindexed, and a name with no match gets the nearest indexed names instead. */
 
+import { extractSignature } from './read_signature.js'
 import { isIgnoredIndexPath } from './baseline.js'
 import { querySymbols, queryRefCounts, countSymbols, distinctSymbolKinds, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { CORE_SYMBOL_KINDS } from './graph_traversal.js'
@@ -47,6 +48,8 @@ export interface SymbolOptions {
   excludeVendored?: boolean
   /** `--stats`: add a per-result reference count and doc-coverage flag, same shape as read/skeleton/outline's `--stats`. Opt-in; omitted or false leaves output byte-identical to today, and the extra `queryRefCounts` round trip is only paid when this is set. `symbol` is the one command in the family where this matters most for disambiguation -- it can return several same-named candidates across files -- but that is also where its known limitation bites hardest: `queryRefCounts` keys by symbol NAME (project-wide), not by definition site, so several same-named symbols in different files (e.g. under `--grep`) all show the identical count rather than a per-file one. Documented, not fixed, here for the same reason it is not fixed in read/skeleton/outline. */
   stats?: boolean
+  /** Only output the declaration signature, omitting implementation body. */
+  sig?: boolean
 }
 
 // A destructuring re-bind of an imported name: `const { x } = require('m')`, or the `await import()` form. The parser records one of these as a symbol named `x`, which is true as far as scope goes and wrong as an answer to "where is x defined" -- the definition is in the module being imported from, and this line is a use of it. Matched on the body rather than on `kind` because the kind these land in is `variable`, which is also what a genuine `export const HINT_CATEGORIES = [...]` is: demoting by kind would sink real definitions to fix a shape this regex identifies exactly. Linear-time by construction -- `[^}]*` is bounded by the following `\}` and no quantifier nests inside another.
@@ -291,6 +294,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     // `filePath` rewritten to the same root-relative spelling the human blocks below render (toDisplayPath(symbolDisplayRoot, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, matching outline/skeleton/refs --json.
     const items = capped.items.map((s) => ({
       ...s,
+      ...(opts.sig === true ? { body: extractSignature(resolveBody(s), s.kind) } : {}),
       filePath: toDisplayPath(symbolDisplayRoot, s.filePath),
       // Only present when true, so a result set of live files stays byte-identical to what this command has always emitted and only the genuinely-gone rows grow a field.
       ...(fileIsGone(s.filePath) ? { deleted: true } : {}),
@@ -315,10 +319,12 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const docLabel = doc.length > 0 ? ` + ${doc.length}-line doc comment` : ''
     const header = `# ${displaySafeText(sym.name)} (${sym.kind}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath)), sym.lineStart, sym.lineEnd)}${docLabel}${statsStr}${goneTag}${staleTag}`
     const body = resolveBody(sym)
-    const bodyLines = body.split(/\r?\n/)
-    const preview = [...doc, ...bodyLines.slice(0, SYMBOL_PREVIEW_LINES)].join('\n')
+    const previewContent = opts.sig === true ? extractSignature(body, sym.kind) : body
+    const bodyLines = previewContent.split(/\r?\n/)
+    const previewLines = opts.sig === true ? bodyLines : bodyLines.slice(0, SYMBOL_PREVIEW_LINES)
+    const preview = [...doc, ...previewLines].join('\n')
     // The header states the symbol's real line span, so a five-line preview of a forty-line function looked like the whole thing was five lines long -- a silent cap of exactly the kind truncationFooter below exists to prevent. Say what was cut and how to get the rest.
-    const dropped = bodyLines.length - SYMBOL_PREVIEW_LINES
+    const dropped = opts.sig === true ? 0 : bodyLines.length - SYMBOL_PREVIEW_LINES
     const elided =
       dropped > 0
         ? forClient(`\n  ...(${countNoun(dropped, 'more line')}; full body: ${fencedCommand('token-goat read ' + quotedArg(`${displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath))}::${displaySafeText(sym.name)}`))})`)

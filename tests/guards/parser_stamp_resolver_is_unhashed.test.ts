@@ -25,8 +25,8 @@ function srcTypeScriptFiles(): readonly string[] {
     }
   }
   walk(SRC)
-  // Moved 524 -> 529 when src/unbounded_walk.ts (find2), src/process_tree.ts (orph4), src/resident_process.ts and src/stray_residents.ts (s1), and src/bash_backslash_repair.ts (BS) were added (measured: 529 modules). Moved 529 -> 530 when src/git_hint.ts (gitasync 1b: the spawn-free branch read and the timed-out dirty probe) was added (measured: 530 modules). Moved 530 -> 531 when src/git_async.ts (gitasync 4b: runGitAsync, loaded lazily by the hooks) was added (measured: 531 modules). Moved 531 -> 532 when src/bridges/aider_install.ts was added (measured: 532 modules).
-  return pinnedPopulation({ what: 'TypeScript modules under src/', items: found.sort(), floor: 414, ceiling: 532, mustIncludeExact: ['src/parser_types.ts'] })
+  // Moved 524 -> 529 when src/unbounded_walk.ts (find2), src/process_tree.ts (orph4), src/resident_process.ts and src/stray_residents.ts (s1), and src/bash_backslash_repair.ts (BS) were added (measured: 529 modules). Moved 529 -> 530 when src/git_hint.ts (gitasync 1b: the spawn-free branch read and the timed-out dirty probe) was added (measured: 530 modules). Moved 530 -> 531 when src/git_async.ts (gitasync 4b: runGitAsync, loaded lazily by the hooks) was added (measured: 531 modules). Moved 531 -> 532 when src/bridges/aider_install.ts was added (measured: 532 modules). Moved 532 -> 533 when src/read_signature.ts was added (measured: 533 modules).
+  return pinnedPopulation({ what: 'TypeScript modules under src/', items: found.sort(), floor: 414, ceiling: 533, mustIncludeExact: ['src/parser_types.ts'] })
 }
 
 function srcFilesDefining(pattern: RegExp): string[] {

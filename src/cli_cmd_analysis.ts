@@ -232,6 +232,15 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
     )
 
   program
+    .command('importers <file>')
+    .description('list the git-tracked project files that import this file (shorthand for deps <file> --importers)')
+    .option('-j, --json', 'output as JSON')
+    .option('--grep <pattern>', 'only show importers matching this regex')
+    .action((file: string, opts: { json?: boolean; grep?: string }) =>
+      runExit(() => runDeps({ file, importers: true, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })),
+    )
+
+  program
     .command('types [file]')
     .description('type-like declarations (type, interface, enum, struct, trait, and Python type classes)')
     .option('-j, --json', 'output as JSON')
