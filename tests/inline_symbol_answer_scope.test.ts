@@ -224,3 +224,36 @@ describe('a bare-name Grep', () => {
     for (const extra of [{ '-i': true }, { '-A': 2 }, { glob: '*.py' }, { head_limit: 1 }, { multiline: true }]) expect((await inlineSymbolGrepHandler(grep(dir, BARE, dir, extra))).hookType).toBe('pass')
   })
 })
+
+// FORMAT-DERIVED: ripgrep's ignore files, from `rg --help` (ripgrep 15.1.0, read this run): `.rgignore` and `.ignore` rules apply after `.gitignore`, and a scratch run of rg on a repo showed `*.log` in `.ignore` drops b.log, `!keep.log` re-includes keep.log and a name in `.rgignore` drops that file.
+describe('a directory-scoped Grep and the .ignore and .rgignore files ripgrep reads', () => {
+  const COPIES = { 'mod.py': MODULE, 'dupa.py': MODULE, 'dupb.py': MODULE }
+  // Only mod.py and the ignore files are indexed: a copy that stays in the listing is an unindexed file, which passes the Grep through, so a copy the rules drop is the difference between a deny and a pass.
+  const ignoreProject = (files: Record<string, string>): string => project(files, Object.keys(files).filter((name) => name === 'mod.py' || name.endsWith('ignore')))
+
+  it('counts a second declaration until .ignore drops it', async () => {
+    const dir = ignoreProject({ ...COPIES, '.ignore': 'dup*.py\n' })
+    const out = await inlineSymbolGrepHandler(grep(dir, LOADER, dir))
+    expect(out.hookType).toBe('deny')
+    if (out.hookType === 'deny') expect(out.message).toContain('mod.py:1:def unique_loader(path):')
+    fs.writeFileSync(path.join(dir, '.ignore'), '', 'utf8')
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+  })
+
+  it('counts a second declaration until .rgignore drops it', async () => {
+    const dir = ignoreProject({ 'mod.py': MODULE, 'dupa.py': MODULE, '.rgignore': 'dupa.py\n' })
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('deny')
+    fs.writeFileSync(path.join(dir, '.rgignore'), '', 'utf8')
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+  })
+
+  it('counts a file a later ! rule re-includes', async () => {
+    const dir = ignoreProject({ ...COPIES, '.ignore': 'dup*.py\n!dupb.py\n' })
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+  })
+
+  it('passes through when an ignore file in a subdirectory re-includes a file git ignores and does not list', async () => {
+    const dir = ignoreProject({ 'mod.py': MODULE, '.gitignore': 'sub/keep.py\n', 'sub/keep.py': MODULE, 'sub/.ignore': '!keep.py\n' })
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+  })
+})

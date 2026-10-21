@@ -84,7 +84,11 @@ export function readScopeDir(dir: string, root: string): ScopeRead {
   if (ignored.exitCode !== 1) return { passReason: 'the scope is ignored or not in a git work tree' }
   const listed = runGit(['ls-files', '-z', '-co', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
   if (listed.exitCode !== 0) return { passReason: 'git could not list the scope' }
-  const entries = [...new Set(listed.stdout.split('\0').filter((e) => e !== ''))]
+  const everything = [...new Set(listed.stdout.split('\0').filter((e) => e !== ''))]
+  // The `.ignore` and `.rgignore` rules ripgrep applies after git's own: a file they drop is not searched, so it must not count as a possible match.
+  const rgDropped = ripgrepIgnoredFiles(dir, everything, SCOPE_GIT_TIMEOUT_MS)
+  if ('passReason' in rgDropped) return { passReason: rgDropped.passReason }
+  const entries = everything.filter((e) => !rgDropped.dropped.has(e))
   if (entries.length === 0) return { passReason: 'the scope lists no files' }
   if (entries.length > SCOPE_MAX_FILES) return { passReason: 'the scope holds more than ' + SCOPE_MAX_FILES + ' files' }
   const files: ScopeFile[] = []
@@ -112,4 +116,68 @@ export function matchScopeLines(re: RegExp, files: readonly ScopeFile[]): ScopeM
     })
   }
   return out
+}
+
+/** Ignore files ripgrep reads besides `.gitignore`, lowest precedence first: `rg --help` (ripgrep 15.1.0, read this run) says the `.rgignore` and `.ignore` rules are applied after `.gitignore`, and a scratch run showed both drop a file and a `!` line in `.ignore` re-include a file `.gitignore` drops. */
+const IGNORE_FILE_NAMES = ['.ignore', '.rgignore'] as const
+
+/** The most rule lines read, and bytes of one file: each rule becomes one git argument, and Windows truncates a long command line. */
+const MAX_RULES = 128
+const MAX_IGNORE_FILE_BYTES = 16 * 1024
+
+/** The most parent directories searched for an ignore file the scope does not own. */
+const MAX_PARENT_HOPS = 64
+
+type IgnoredFiles = { readonly dropped: ReadonlySet<string> } | { readonly passReason: string }
+
+function isIgnoreFileName(name: string): boolean {
+  return (IGNORE_FILE_NAMES as readonly string[]).includes(name)
+}
+
+/** True when a parent directory of `dir` holds an ignore file, whose rules reach into the scope and are not modelled. */
+function parentHasIgnoreFile(dir: string): boolean {
+  let current = dir
+  for (let hop = 0; hop < MAX_PARENT_HOPS; hop++) {
+    const parent = path.dirname(current)
+    if (parent === current) return false
+    if (IGNORE_FILE_NAMES.some((name) => fs.existsSync(path.join(parent, name)))) return true
+    current = parent
+  }
+  return true
+}
+
+/** The rule lines of `dir`'s own `.ignore` then `.rgignore` (the later file wins, as in ripgrep), or null when one cannot be read whole. Blank lines and `#` comments are not rules; a CR and unescaped trailing spaces are not part of one. */
+function readRules(dir: string): string[] | null {
+  const rules: string[] = []
+  for (const name of IGNORE_FILE_NAMES) {
+    const file = path.join(dir, name)
+    if (!fs.existsSync(file)) continue
+    try {
+      const stat = fs.statSync(file)
+      if (!stat.isFile() || stat.size > MAX_IGNORE_FILE_BYTES) return null
+      for (const raw of fs.readFileSync(file, 'utf8').split('\n')) {
+        const line = raw.replace(/\r$/, '').replace(/(?<!\\)\s+$/, '')
+        if (line !== '' && !line.startsWith('#')) rules.push(line)
+      }
+    } catch {
+      return null
+    }
+  }
+  return rules.length > MAX_RULES ? null : rules
+}
+
+/** The entries of `listed` (git's list for `dir`, relative to it) that ripgrep's `.ignore` and `.rgignore` rules drop, or why the scope cannot be judged. Only the scope's own ignore files are modelled, with git's pattern syntax, which is the one ripgrep documents for them; an ignore file in a parent or a subdirectory, one that cannot be read whole, and a `!` rule in a scope that also holds git-ignored files (which the rule could re-include, and git's list leaves out) all pass the Grep through. */
+function ripgrepIgnoredFiles(dir: string, listed: readonly string[], timeoutMs: number): IgnoredFiles {
+  if (parentHasIgnoreFile(dir)) return { passReason: 'an ignore file lies above the scope' }
+  if (listed.some((entry) => isIgnoreFileName(path.posix.basename(entry)) && entry.includes('/'))) return { passReason: 'an ignore file lies below the scope' }
+  const rules = readRules(dir)
+  if (rules === null) return { passReason: 'an ignore file could not be read whole' }
+  if (rules.length === 0) return { dropped: new Set() }
+  if (rules.some((rule) => rule.startsWith('!'))) {
+    const hidden = runGit(['ls-files', '-z', '-o', '-i', '--directory', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs })
+    if (hidden.exitCode !== 0 || hidden.stdout !== '') return { passReason: 'a negated ignore rule could re-include a git-ignored file' }
+  }
+  const dropped = runGit(['ls-files', '-z', '-co', '-i', ...rules.map((rule) => '--exclude=' + rule), '--', '.'], { cwd: dir, timeoutMs })
+  if (dropped.exitCode !== 0) return { passReason: 'git could not apply the ignore rules' }
+  return { dropped: new Set(dropped.stdout.split('\0').filter((e) => e !== '')) }
 }
