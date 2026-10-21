@@ -87,7 +87,7 @@ describe('a directory-scoped declaration Grep', () => {
   })
 
   it('passes through when the directory holds a file the index has never seen, and answers once that file is gone', async () => {
-    const dir = project({ 'mod.py': MODULE, 'stray.xyz': 'def unique_loader\n' }, ['mod.py'])
+    const dir = project({ 'mod.py': MODULE, 'stray.xyz': 'x = 1\n' }, ['mod.py'])
     expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
     fs.rmSync(path.join(dir, 'stray.xyz'))
     expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('deny')
