@@ -73,6 +73,8 @@ export async function decideInline(input: InlineInput): Promise<InlineDecision> 
   if (body === null) return { name: 'unreadable_body' }
   if (!body.agreesWithIndex) return { name: 'body_mismatch' }
   const cap = Math.min(input.capBytes ?? INLINE_SYMBOL_MAX_BYTES, INLINE_SYMBOL_MAX_BYTES)
+  // The fence never shortens text, so a raw body past the cap is over it; judging that first keeps the fence's scan off an unbounded body.
+  if (Buffer.byteLength(body.text, 'utf8') > cap) return { name: 'over_cap' }
   if (fencedBytes(body.text) > cap) return { name: 'over_cap' }
   return { inline: body.text, file: only.file, symbol: only.name }
 }
