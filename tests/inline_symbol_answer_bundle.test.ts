@@ -41,7 +41,7 @@ describe('built bundle: inline symbol body in the Grep deny', () => {
   it('with the config on, blocks the Grep with the exact text read prints, fenced', () => {
     const printed = bundleTg(project, env, ['read', file + '::bundle_unique_loader'])
     expect(printed.status, printed.stderr).toBe(0)
-    const run = hook({ TOKEN_GOAT_INLINE_SYMBOL_BODY: '1' }, 'def bundle_unique_loader', 'inline-bundle-on')
+    const run = hook({ TOKEN_GOAT_INLINE_SYMBOL_BODY: '1' }, 'def bundle_unique_loader(', 'inline-bundle-on')
     expect(run.status, run.stderr).toBe(0)
     const reply = JSON.parse(run.stdout) as { decision?: string; reason?: string }
     expect(reply.decision).toBe('block')
@@ -52,7 +52,7 @@ describe('built bundle: inline symbol body in the Grep deny', () => {
   })
 
   it('with the config off, does not block', () => {
-    const run = hook({ TOKEN_GOAT_INLINE_SYMBOL_BODY: '0' }, 'def bundle_unique_loader', 'inline-bundle-off')
+    const run = hook({ TOKEN_GOAT_INLINE_SYMBOL_BODY: '0' }, 'def bundle_unique_loader(', 'inline-bundle-off')
     expect(run.status, run.stderr).toBe(0)
     expect(run.stdout).not.toContain('is inlined below')
     expect(run.stdout).not.toContain('"decision":"block"')

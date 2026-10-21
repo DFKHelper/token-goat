@@ -16,7 +16,7 @@ import { recordStat } from './stats.js'
 import { detectLanguage } from './parser_types.js'
 import { languageHasFlag } from './language_specs.js'
 import { loadConfig } from './config.js'
-import { declaredNameOf, inlineAnswerDeny, inlineAnswerKey, inlineSymbolAnswer } from './inline_symbol_answer.js'
+import { declaredNameOf, inlineAnswerDeny, inlineAnswerKey, inlineSymbolAnswer, isPlainGrep } from './inline_symbol_answer.js'
 
 /** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating a numeric string. Mirrors hooks_read_slice.ts's readIntToolInput. */
 function grepIntInput(toolInput: Record<string, unknown>, key: string): number | undefined {
@@ -204,11 +204,12 @@ function preGrepHandler(event: HookEvent): HookOutput {
   }
 }
 
-/** pre_tool_use handler that, with hints.inline_symbol_body on, answers a single-file declaration Grep (`def foo`, `class Foo`) with the one symbol it names, inlined in a deny. Registered ahead of preGrepHandler so the ordinary hint is the fallback for every case it declines. A file's symbol is answered once per session: the repeat gets the ordinary hint, so the agent is never refused twice for the same Grep. */
+/** pre_tool_use handler that, with hints.inline_symbol_body on, answers a plain single-file declaration Grep (`def foo(`, `class Foo:`; no -i, context, head_limit, glob, type or non-content output_mode) with the one symbol it names, inlined in a deny. Registered ahead of preGrepHandler so the ordinary hint is the fallback for every case it declines. A file's symbol is answered once per session: the repeat gets the ordinary hint, so the agent is never refused twice for the same Grep. */
 async function inlineSymbolGrepHandler(event: HookEvent): Promise<HookOutput> {
   try {
     if (getToolName(event) !== 'Grep' || !loadConfig().hints.inline_symbol_body) return passOutput()
     const toolInput = getToolInput(event)
+    if (!isPlainGrep(toolInput)) return passOutput()
     const structSearch = extractGrepStructuralSearch(toolInput)
     if (structSearch === null || !structSearch.isSource) return passOutput()
     const cwd = getCwd(event) ?? process.cwd()

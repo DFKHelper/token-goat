@@ -14,7 +14,7 @@ import { denyOutput } from './hooks_common.js'
 export const INLINE_SYMBOL_MAX_BYTES = 12_000
 
 /** Why an answer was not inlined; the caller falls back to the command-naming hint for every one of these. */
-export type NameReason = 'disabled' | 'no_declaration_pattern' | 'none' | 'ambiguous' | 'stale' | 'staleness_unknown' | 'unreadable_body' | 'body_mismatch' | 'over_cap'
+export type NameReason = 'disabled' | 'no_declaration_pattern' | 'none' | 'ambiguous' | 'stale' | 'staleness_unknown' | 'unreadable_body' | 'untouchable_path' | 'body_mismatch' | 'over_cap'
 
 export type Staleness = 'fresh' | 'stale' | 'unknown'
 
@@ -75,14 +75,27 @@ export async function decideInline(input: InlineInput): Promise<InlineDecision> 
 const DECLARATION_WORDS = new Set(['def', 'class', 'function', 'async', 'export', 'default', 'const', 'let', 'var', 'interface', 'type', 'enum', 'func', 'fn', 'struct', 'impl', 'pub', 'trait', 'object', 'val', 'fun'])
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
 
-/** The one name a declaration pattern asks for (`def foo`, `^class Foo\b`, `export function load\(`), or null when the pattern asks for anything else: an alternation, a wildcard, a qualified name, a bare identifier with no declaration word. Whitespace classes and a trailing open paren, word boundary, colon or end anchor are noise around the name; every other regex character is a pattern the agent wrote to match more than one thing. */
+/** The one name a declaration pattern asks for (`^class Foo\b`, `def foo\(`, `class Foo:`), or null when the pattern asks for anything else: an alternation, a wildcard, a qualified name, a bare identifier with no declaration word. Whitespace classes and a leading anchor are noise around the name. The name must also END in a terminator (word boundary, open paren, colon, `<` or end anchor): a regex is a substring match, so `class Foo` alone also matches `class FooBar` and every other longer identifier. Every other regex character is a pattern the agent wrote to match more than one thing. */
 export function declaredNameOf(pattern: string): string | null {
-  const spaced = pattern.trim().replace(/^\^/, '').replace(/\\s[*+]?/g, ' ').replace(/(?:\\b|\\\(|\(|:|\$)+$/, '').trim()
+  const unanchored = pattern.trim().replace(/^\^/, '').replace(/\\s[*+]?/g, ' ')
+  const bounded = unanchored.replace(/(?:\\b|\\\(|\(|:|\$|<)+$/, '')
+  if (bounded === unanchored) return null
+  const spaced = bounded.trim()
   const words = spaced.split(/ +/)
   const name = words[words.length - 1] ?? ''
   const lead = words.slice(0, -1)
   if (lead.length === 0 || !IDENTIFIER_RE.test(name) || DECLARATION_WORDS.has(name.toLowerCase())) return null
   return lead.every((w) => DECLARATION_WORDS.has(w.toLowerCase())) ? name : null
+}
+
+/** Grep tool_input keys that leave the answer a plain content search of one pattern in one path. Key names are Claude Code's GrepInput (@anthropic-ai/claude-code 2.1.306, sdk-tools.d.ts): pattern, path, glob, output_mode, -B, -A, -C, context, -n, -i, -o, type, head_limit, offset, multiline. `-n` only toggles line numbers, so it is harmless here. */
+const PLAIN_GREP_KEYS = new Set(['pattern', 'path', 'output_mode', '-n'])
+
+/** True when the Grep is a plain content search: `output_mode` absent or `content`, and every other key outside {@link PLAIN_GREP_KEYS} (`-i`, `-o`, `-A`, `-B`, `-C`, `context`, `multiline`, `head_limit`, `offset`, `glob`, `type`, or one a later Claude Code adds) absent, null or false. A modifier changes what the Grep would have returned, so the body is no longer the answer to it; an allowlist keeps an unknown key from slipping through. */
+export function isPlainGrep(toolInput: Readonly<Record<string, unknown>>): boolean {
+  const mode = toolInput['output_mode']
+  if (mode !== undefined && mode !== null && mode !== 'content') return false
+  return Object.entries(toolInput).every(([key, value]) => PLAIN_GREP_KEYS.has(key) || value === undefined || value === null || value === false)
 }
 
 /** Session-hint key: a file's symbol is answered once, so repeating the same Grep gets the ordinary hint rather than the same refusal forever. */
@@ -116,7 +129,7 @@ export async function inlineSymbolAnswer(args: { enabled: boolean; pattern: stri
   const symbol = declaredNameOf(args.pattern)
   if (symbol === null) return { name: 'no_declaration_pattern' }
   const file = inlineIndexKey(args.grepPath, args.cwd, args.event)
-  if (file === null) return { name: 'unreadable_body' }
+  if (file === null) return { name: 'untouchable_path' }
   const rows = querySymbols({ name: symbol, filePath: file, limit: 20 }).filter((r) => r.kind !== 'heading' && !r.name.includes('.'))
   const evidence = getReadNavigationEvidence(file)
   const staleness: Record<string, Staleness> = evidence === null ? {} : { [file]: evidence.isStale ? 'stale' : 'fresh' }
