@@ -510,7 +510,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/indexed_roots.ts`](src/indexed_roots.ts) | Which projects were indexed on purpose: by `token-goat index`, or by the first index `install` queues. |
 | [`src/indexed_source.ts`](src/indexed_source.ts) | Resolves the document a stored symbol line range actually addresses. |
 | [`src/injection_scan.ts`](src/injection_scan.ts) | Lexical scan for prompt-injection attack patterns in untrusted fetched content. |
-| [`src/inline_grep_scan.ts`](src/inline_grep_scan.ts) | The lines of a file as ripgrep tests a pattern against them, for the inlined Grep answer. |
+| [`src/inline_grep_scan.ts`](src/inline_grep_scan.ts) | The lines of a file as ripgrep tests a pattern against them, and the bounded set of files a directory-scoped Grep could search, for the inlined Grep answer. |
 | [`src/inline_symbol_answer.ts`](src/inline_symbol_answer.ts) | Answers a single-file structural Grep with the one symbol it names, instead of a hint that names the command which would fetch it. |
 | [`src/install_index.ts`](src/install_index.ts) | First index of the project `install` runs in. |
 | [`src/jsonc_text.ts`](src/jsonc_text.ts) | JSONC (JSON with line and block comments and trailing commas) support shared by the MCP bridge writers and the JSON read commands. |

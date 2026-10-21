@@ -16,7 +16,6 @@ import { recordStat } from './stats.js'
 import { detectLanguage } from './parser_types.js'
 import { languageHasFlag } from './language_specs.js'
 import { loadConfig } from './config.js'
-import { declaredNameOf, inlineAnswerDeny, inlineAnswerKey, inlineSymbolAnswer, isPlainGrep } from './inline_symbol_answer.js'
 
 /** Reads a numeric Grep tool-input param (`-A`/`-B`/`-C`/`context`/`head_limit`/`offset`), tolerating a numeric string. Mirrors hooks_read_slice.ts's readIntToolInput. */
 function grepIntInput(toolInput: Record<string, unknown>, key: string): number | undefined {
@@ -208,19 +207,24 @@ function preGrepHandler(event: HookEvent): HookOutput {
 async function inlineSymbolGrepHandler(event: HookEvent): Promise<HookOutput> {
   try {
     if (getToolName(event) !== 'Grep' || !loadConfig().hints.inline_symbol_body) return passOutput()
+    // Loaded on demand: the answer code is only reached with the opt-in setting on, so it stays out of the hook's eager chunk set.
+    const { declaredNameOf, inlineAnswerDeny, inlineAnswerKey, inlineGrepPath, inlineSymbolAnswer, isPlainGrep } = await import('./inline_symbol_answer.js')
     const toolInput = getToolInput(event)
     if (!isPlainGrep(toolInput)) return passOutput()
-    const structSearch = extractGrepStructuralSearch(toolInput)
-    if (structSearch === null || !structSearch.isSource) return passOutput()
+    const grepPath = inlineGrepPath(toolInput)
+    if (grepPath === undefined) return passOutput()
     const cwd = getCwd(event) ?? process.cwd()
-    if (readHintCrossesRule(detectHarness(), cwd, [structSearch.filePath])) return passOutput()
+    const harness = detectHarness()
+    if (readHintCrossesRule(harness, cwd, [grepPath ?? cwd])) return passOutput()
     const pattern = String(toolInput['pattern'] ?? '')
+    const structSearch = grepPath === null ? null : extractGrepStructuralSearch(toolInput)
     const name = declaredNameOf(pattern)
-    if (name === null) return passOutput()
-    // The ordinary hint's own pick must be this name, so the two paths never disagree about the target.
-    const target = hintTarget(structSearch.filePath, 'symbol', { cwd, event, pattern })
-    if (!target.real || target.name !== name) return passOutput()
-    const decision = await inlineSymbolAnswer({ enabled: true, pattern, grepPath: structSearch.filePath, cwd, event })
+    if (structSearch !== null && structSearch.isSource && name !== null) {
+      // The ordinary hint's own pick must be this name, so the two paths never disagree about the target.
+      const target = hintTarget(structSearch.filePath, 'symbol', { cwd, event, pattern })
+      if (!target.real || target.name !== name) return passOutput()
+    }
+    const decision = await inlineSymbolAnswer({ enabled: true, pattern, grepPath, cwd, event, isBarred: (abs) => readHintCrossesRule(harness, cwd, [abs]) })
     if (!('inline' in decision)) return passOutput()
     const key = inlineAnswerKey(decision.file, decision.symbol)
     if (wasHintShown(key)) return passOutput()

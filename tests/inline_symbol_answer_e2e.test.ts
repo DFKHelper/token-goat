@@ -144,16 +144,16 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
   it('the answer itself names stale for a file edited after indexing, whatever the hint layer in front of it decided', async () => {
     const { dir, file } = scratchProject()
     const event = grep(dir, file, LOADER)
-    expect(await inlineSymbolAnswer({ enabled: true, pattern: LOADER, grepPath: file, cwd: dir, event })).toMatchObject({ inline: expect.stringContaining('return open(path).read()') })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern: LOADER, grepPath: file, cwd: dir, event, isBarred: () => false })).toMatchObject({ inline: expect.stringContaining('return open(path).read()') })
     fs.writeFileSync(file, '# a new first line\n' + SOURCE, 'utf8')
-    expect(await inlineSymbolAnswer({ enabled: true, pattern: LOADER, grepPath: file, cwd: dir, event })).toEqual({ name: 'stale' })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern: LOADER, grepPath: file, cwd: dir, event, isBarred: () => false })).toEqual({ name: 'stale' })
   })
 
-  it('a pattern that is not one declaration is not inlined', async () => {
+  it('a pattern that is not one declaration or a bare name is not inlined', async () => {
     setOn(true)
     const { dir, file } = scratchProject()
     expect((await inlineSymbolGrepHandler(grep(dir, file, 'def unique_loader|def twice'))).hookType).toBe('pass')
-    expect((await inlineSymbolGrepHandler(grep(dir, file, 'unique_loader'))).hookType).toBe('pass')
+    expect((await inlineSymbolGrepHandler(grep(dir, file, 'unique_loader.*'))).hookType).toBe('pass')
   })
 
   it('a file that was never indexed is not inlined', async () => {
@@ -207,10 +207,10 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     indexFileSync(outside, globalDbPath())
     const pattern = String.raw`function foo\b`
     const event = grep(project, '../outside.ts', pattern)
-    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: '../outside.ts', cwd: project, event })).toEqual({ name: 'outside_project' })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: '../outside.ts', cwd: project, event, isBarred: () => false })).toEqual({ name: 'outside_project' })
     const out = await inlineSymbolGrepHandler(event)
     expect(out.hookType).toBe('pass')
-    const control = await inlineSymbolAnswer({ enabled: true, pattern, grepPath: outside, cwd: dir, event })
+    const control = await inlineSymbolAnswer({ enabled: true, pattern, grepPath: outside, cwd: dir, event, isBarred: () => false })
     expect(control).toMatchObject({ inline: expect.stringContaining('outside secret body') })
   })
 
@@ -228,7 +228,7 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     fs.symlinkSync(away, path.join(project, 'lnk'), 'junction')
     const pattern = String.raw`function foo\b`
     const via = path.join(project, 'lnk', 'linked.ts')
-    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: via, cwd: project, event: grep(project, via, pattern) })).toEqual({ name: 'outside_project' })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: via, cwd: project, event: grep(project, via, pattern), isBarred: () => false })).toEqual({ name: 'outside_project' })
   })
 
   // HAND-DERIVED: `$` is not a word character, so `function foo\b` also matches the line `function foo$bar() {}`; the index holds foo once.
@@ -241,7 +241,7 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     fs.writeFileSync(file, source, 'utf8')
     indexFileSync(file, globalDbPath())
     const pattern = String.raw`function foo\b`
-    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: file, cwd: dir, event: grep(dir, file, pattern) })).toEqual({ name: 'pattern_mismatch' })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: file, cwd: dir, event: grep(dir, file, pattern), isBarred: () => false })).toEqual({ name: 'pattern_mismatch' })
     expect((await inlineSymbolGrepHandler(grep(dir, file, pattern))).hookType).toBe('pass')
   })
 
@@ -254,19 +254,19 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     fs.writeFileSync(file, 'function foo() {\n  return 1\n}\n', 'utf8')
     indexFileSync(file, globalDbPath())
     const pattern = String.raw`class foo\b`
-    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: file, cwd: dir, event: grep(dir, file, pattern) })).toEqual({ name: 'pattern_mismatch' })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: file, cwd: dir, event: grep(dir, file, pattern), isBarred: () => false })).toEqual({ name: 'pattern_mismatch' })
     expect((await inlineSymbolGrepHandler(grep(dir, file, pattern))).hookType).toBe('pass')
   })
 
   it('a pattern that does not compile as a regex is refused as pattern_mismatch', async () => {
     const { dir, file } = scratchProject()
-    expect(await inlineSymbolAnswer({ enabled: true, pattern: 'def unique_loader(', grepPath: file, cwd: dir, event: grep(dir, file, 'def unique_loader(') })).toEqual({ name: 'pattern_mismatch' })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern: 'def unique_loader(', grepPath: file, cwd: dir, event: grep(dir, file, 'def unique_loader('), isBarred: () => false })).toEqual({ name: 'pattern_mismatch' })
   })
 
   it('names untouchable_path, not an unreadable body, for a Grep path the hook may not touch', async () => {
     const { dir, file } = scratchProject()
     const event = grep(dir, file, LOADER)
-    expect(await inlineSymbolAnswer({ enabled: true, pattern: LOADER, grepPath: file + '::unique_loader', cwd: dir, event })).toEqual({ name: 'untouchable_path' })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern: LOADER, grepPath: file + '::unique_loader', cwd: dir, event, isBarred: () => false })).toEqual({ name: 'untouchable_path' })
   })
 
   it('a body holding the fence-close marker stays inside one fence', async () => {
@@ -342,7 +342,7 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     const lf = scratchRuby(source)
     expect((await inlineSymbolGrepHandler(grep(lf.dir, lf.file, pattern))).hookType).toBe('deny')
     const crlf = scratchRuby(source.replace(/\n/g, '\r\n'))
-    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: crlf.file, cwd: crlf.dir, event: grep(crlf.dir, crlf.file, pattern) })).toEqual({ name: 'pattern_mismatch' })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: crlf.file, cwd: crlf.dir, event: grep(crlf.dir, crlf.file, pattern), isBarred: () => false })).toEqual({ name: 'pattern_mismatch' })
     expect((await inlineSymbolGrepHandler(grep(crlf.dir, crlf.file, pattern))).hookType).toBe('pass')
   })
 
@@ -352,7 +352,7 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     const source = ['def big_one():', ...Array.from({ length: 900 }, (_, i) => `    x${String(i).padStart(4, '0')} = 1  # `), ''].join('\n')
     const { dir, file } = scratchProject(source)
     const event = grep(dir, file, String.raw`def big_one\b`)
-    expect(await inlineSymbolAnswer({ enabled: true, pattern: String.raw`def big_one\b`, grepPath: file, cwd: dir, event })).toEqual({ name: 'over_cap' })
+    expect(await inlineSymbolAnswer({ enabled: true, pattern: String.raw`def big_one\b`, grepPath: file, cwd: dir, event, isBarred: () => false })).toEqual({ name: 'over_cap' })
     expect((await inlineSymbolGrepHandler(event)).hookType).toBe('pass')
     const hint = preGrepHandler(event)
     expect(hint.hookType).toBe('context')
