@@ -1,8 +1,9 @@
 /** Golden retrieval eval: runs the real `search`, `semantic` and `answer` commands over the labelled queries in evals/retrieval and reports hit@k, MRR@10 and bytes per correct hit, each with a bootstrap interval, separately for the train and test splits. Usage: npx tsx scripts/eval-retrieval.ts --home <dir> [--bin token-goat] [--root .] [--reindex] [--out report.json] [--baseline old.json] [--arms fused,semantic,...] [--distractors N] [--limit N] `--home` is required and every child runs with HOME, USERPROFILE, TOKEN_GOAT_HOME, LOCALAPPDATA, APPDATA and XDG_DATA_HOME pointed inside it, because `answer` and the search commands write to the savings ledger and an eval run must never land in the user's real one. `--reindex` builds that home's index first. `--baseline` takes an earlier report and prints the paired per-query delta for each arm, which is how a change is judged: keep it only when both splits improve past the interval. Queries of kind `absent` have no answer in the repo. They are left out of every hit-rate line and scored instead on whether each arm abstains: `search` by returning nothing, `semantic` by flagging its closest match as weak. For `semantic` the report also fits the weak-match line on the train split and scores it on the test split beside the line the eval home has configured, read back with `config get` rather than assumed to be the default. `--distractors N` swaps the repo for a scratch project under `<home>/corpus` holding only the files the golden set labels plus N seeded distractor files (placeholder stubs, near-duplicate names, boilerplate; see evals/retrieval/distractors.ts), so `--distractors 0` is the control and any N is the same labelled files drowned in noise; the `answer` arm is skipped there because its expectations are repo-wide. Every run excludes evals/retrieval from that home's index and refuses to score a hit inside it, because the golden file holds every query's own text. */
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { resolveOnPath } from '../src/process_util.js'
+import { runOwned, type OwnedRun } from './eval-run-owned.js'
 import { summarizeDistances } from '../src/semantic_distances.js'
 import type { DistanceRow } from '../evals/retrieval/calibration.js'
 import { DISTRACTOR_SEED, generateDistractors } from '../evals/retrieval/distractors.js'
@@ -192,18 +193,39 @@ interface Run {
 const QUERY_TIMEOUT_MS = 60_000
 
 /** Throws when a command did not run to an exit code: it could not start, it hit QUERY_TIMEOUT_MS (`error.code` ETIMEDOUT) or it was killed by a signal. Even `allowFail` accepts only an exit code, because a null status is no outcome to grade. */
-export function assertRan(r: Pick<SpawnSyncReturns<string>, 'error' | 'signal' | 'status'>, args: string[]): void {
+export function assertRan(r: Pick<OwnedRun, 'error' | 'signal' | 'status'>, args: string[]): void {
   const cmd = `token-goat ${args.join(' ')}`
   if (r.error !== undefined) {
-    const code = (r.error as NodeJS.ErrnoException).code
+    const code = r.error.code
     throw new Error(code === 'ETIMEDOUT' ? `${cmd} timed out after ${QUERY_TIMEOUT_MS} ms; the run stops rather than score a hung query` : `${cmd} could not run: ${r.error.message}`)
   }
   if (r.signal !== null) throw new Error(`${cmd} was killed by ${r.signal}; the run stops rather than score a killed query`)
   if (r.status === null) throw new Error(`${cmd} ended with no exit code; the run stops rather than score it`)
 }
 
+/** The bundle a shim launches: `rel` is the path word in the shim, resolved against the shim's directory with the path rules of `platform`, so a Windows shim resolves the same on any host that runs this. */
+export function shimBundlePath(shimFile: string, rel: string, platform: NodeJS.Platform): string {
+  const p = platform === 'win32' ? path.win32 : path.posix
+  return p.resolve(p.dirname(shimFile), rel)
+}
+
+/** Looks `name` up on PATH. `resolveOnPath` appends every PATHEXT extension to the whole name, so a name that already carries one (`token-goat.cmd`, `node.exe`) is never found by it; such a name is looked up as written, in each PATH directory except the current one. */
+export function findOnPath(name: string): string | null {
+  const hit = resolveOnPath(name)
+  if (hit !== null) return hit
+  const ext = path.win32.extname(name).toLowerCase()
+  if (ext === '' || !(process.env['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD').toLowerCase().split(';').includes(ext)) return null
+  for (const rawDir of (process.env['PATH'] ?? '').split(path.delimiter)) {
+    const dir = rawDir.trim().replace(/^"|"$/g, '')
+    if (dir === '' || dir === '.') continue
+    const candidate = path.join(dir, name)
+    if (existsSync(candidate) && statSync(candidate).isFile()) return candidate
+  }
+  return null
+}
+
 /** The program and leading arguments that start `bin` without a shell. A `.mjs` bundle runs under this Node. On Windows a bare name is looked up on PATH, and an npm `.cmd` shim is read for the `.mjs` it launches (the `%dp0%\...mjs` word npm writes into it), because a shell would be the process a timeout kills while the real child lived on. A shim that names no existing `.mjs` is refused; a `.exe` or any non-Windows binary runs directly. */
-export function resolveBin(bin: string, platform: NodeJS.Platform = process.platform, find: (name: string) => string | null = resolveOnPath): { command: string; prefix: string[] } {
+export function resolveBin(bin: string, platform: NodeJS.Platform = process.platform, find: (name: string) => string | null = findOnPath): { command: string; prefix: string[] } {
   if (bin.endsWith('.mjs')) return { command: process.execPath, prefix: [bin] }
   if (platform !== 'win32') return { command: bin, prefix: [] }
   const refuse = (why: string): Error => new Error(`eval-retrieval: --bin ${JSON.stringify(bin)} ${why}; pass the .mjs bundle (dist/token-goat.mjs) or an npm shim that launches one, because the eval never starts a shell`)
@@ -213,21 +235,18 @@ export function resolveBin(bin: string, platform: NodeJS.Platform = process.plat
   if (/\.(exe|com)$/i.test(found)) return { command: found, prefix: [] }
   if (found.endsWith('.mjs')) return { command: process.execPath, prefix: [found] }
   const shim = /%dp0%[\\/]+([^"\r\n]+?\.mjs)"/i.exec(readFileSync(found, 'utf8'))
-  const bundle = shim === null ? null : path.resolve(path.dirname(found), shim[1] ?? '')
+  const bundle = shim === null ? null : shimBundlePath(found, shim[1] ?? '', platform)
   if (bundle === null || !existsSync(bundle)) throw refuse(`resolves to ${found}, which names no existing .mjs bundle`)
   return { command: process.execPath, prefix: [bundle] }
 }
 
 /** Runs one command. A nonzero exit throws unless `allowFail` is set, which `answer` needs because a refusal is a graded outcome there, printed to stderr with exit 1, and the arms need because `semantic` exits 1 when nothing matched. The command is resolved once, up front, by `resolveBin`, and never runs through a shell: a timeout kills only the process it started, so a shell in between would leave the real child running after the run stopped. */
-function runner(bin: string, cwd: string, env: NodeJS.ProcessEnv): (args: string[], allowFail?: boolean) => Run {
-  const opts = { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, windowsHide: true, timeout: QUERY_TIMEOUT_MS } as const
+function runner(bin: string, cwd: string, env: NodeJS.ProcessEnv): (args: string[], allowFail?: boolean) => Promise<Run> {
+  const opts = { cwd, env, timeoutMs: QUERY_TIMEOUT_MS, maxBytes: 256 * 1024 * 1024 }
   const launch = resolveBin(bin)
-  const start = (args: string[]): SpawnSyncReturns<string> => {
-    return spawnSync(launch.command, [...launch.prefix, ...args], opts)
-  }
-  return (args, allowFail = false) => {
+  return async (args, allowFail = false) => {
     const t0 = performance.now()
-    const r = start(args)
+    const r = await runOwned(launch.command, [...launch.prefix, ...args], opts)
     const ms = performance.now() - t0
     assertRan(r, args)
     if (r.status !== 0 && !allowFail) throw new Error(`token-goat ${args.join(' ')} exited ${r.status}: ${r.stderr.slice(0, 500)}`)
@@ -249,8 +268,8 @@ export function pairWithBaseline<T extends { readonly id: string }>(name: string
 }
 
 /** Runs one query through an arm, JSON then text. Exit 1 is accepted only when the JSON parses to no hits, which is how `semantic` reports an empty result; any other failure, or JSON that does not parse, is a crash and stops the run rather than scoring as a miss. */
-function askArm(exec: ReturnType<typeof runner>, arm: Arm, query: string): { parsed: Parsed; text: Run } {
-  const j = exec(arm.json(query), true)
+async function askArm(exec: ReturnType<typeof runner>, arm: Arm, query: string): Promise<{ parsed: Parsed; text: Run }> {
+  const j = await exec(arm.json(query), true)
   let parsed: Parsed | undefined
   try {
     parsed = arm.parse(j.stdout)
@@ -259,7 +278,7 @@ function askArm(exec: ReturnType<typeof runner>, arm: Arm, query: string): { par
   }
   const fail = (r: Run): boolean => r.status !== 0 && !(r.status === 1 && parsed?.hits.length === 0)
   if (parsed === undefined || fail(j)) throw new Error(`token-goat ${arm.json(query).join(' ')} exited ${j.status}: ${j.stderr.slice(0, 500)}`)
-  const text = exec(arm.text(query), true)
+  const text = await exec(arm.text(query), true)
   if (fail(text)) throw new Error(`token-goat ${arm.text(query).join(' ')} exited ${text.status}: ${text.stderr.slice(0, 500)}`)
   return { parsed, text }
 }
@@ -349,7 +368,7 @@ interface Report {
   readonly answer: { id: string; split: string; route: string; routeOk: boolean; fileRecall: number }[]
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const home = arg('home')
   if (home === undefined) {
     process.stderr.write('eval-retrieval: --home <dir> is required; the commands write to the savings ledger and must not touch your real one.\n')
@@ -372,8 +391,8 @@ function main(): void {
   const arms = ARMS.filter((a) => armFilter === undefined || armFilter.includes(a.name))
 
   // Before the reindex so `index .` never reads the fixtures, and on every run so rows the worker indexed earlier are removed too.
-  if (distractors === null) exec(['project', 'exclude', path.join(root, FIXTURE_DIR)])
-  if (process.argv.includes('--reindex')) exec(['index', '.', '--embed'])
+  if (distractors === null) await exec(['project', 'exclude', path.join(root, FIXTURE_DIR)])
+  if (process.argv.includes('--reindex')) await exec(['index', '.', '--embed'])
 
   const labels = new Map<string, RelevantSpan[]>(golden.map((g) => [g.id, g.relevant.flatMap((l) => resolveLabel(l, readFileSync(path.join(root, l.file), 'utf8')))]))
 
@@ -382,7 +401,7 @@ function main(): void {
     const rows: QueryResult[] = []
     for (const g of golden) {
       const rel = labels.get(g.id) ?? []
-      const { parsed, text: t } = askArm(exec, arm, g.query)
+      const { parsed, text: t } = await askArm(exec, arm, g.query)
       const hits = parsed.hits
       rows.push({
         id: g.id,
@@ -410,7 +429,7 @@ function main(): void {
 
   if (distractors === null && (armFilter === undefined || armFilter.includes('answer'))) {
     for (const a of readJsonl<AnswerQuery>(path.join(repoRoot, FIXTURE_DIR, 'answer.jsonl'))) {
-      const r = exec(['answer', a.question], true)
+      const r = await exec(['answer', a.question], true)
       const got = parseAnswer(r.stdout, r.stderr)
       const found = a.expectFiles.filter((f) => got.files.some((p) => answerFileMatches(f, p, root))).length
       report.answer.push({ id: a.id, split: splitOf(a.id), route: got.route, routeOk: got.route === a.route, fileRecall: a.expectFiles.length === 0 ? 1 : found / a.expectFiles.length })
@@ -430,7 +449,7 @@ function main(): void {
       if (s.n > 0) out.push(`${''.padEnd(16)} ${kind.padEnd(10)} n=${String(s.n).padStart(2)}  hit@10 ${pct(s.hit10)}  MRR@10 ${num(s.mrr10)}`)
     }
     out.push(...qualityLines(all.map((r) => ({ ...r, absent: r.kind === 'absent' })), indent))
-    if (name === 'semantic') out.push(...distanceLines(all, indent, parseConfiguredNumber(exec(['config', 'get', 'semantic.weak_distance', '--json']).stdout, 'semantic.weak_distance')))
+    if (name === 'semantic') out.push(...distanceLines(all, indent, parseConfiguredNumber((await exec(['config', 'get', 'semantic.weak_distance', '--json'])).stdout, 'semantic.weak_distance')))
   }
   for (const split of ['train', 'test']) {
     const rows = report.answer.filter((r) => r.split === split)
@@ -462,4 +481,9 @@ function main(): void {
   if (outPath !== undefined) writeFileSync(outPath, `${JSON.stringify(report, null, 2)}\n`)
 }
 
-if (isMainModule(import.meta.url)) main()
+if (isMainModule(import.meta.url)) {
+  main().catch((e: unknown) => {
+    process.stderr.write(`${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`)
+    process.exit(1)
+  })
+}

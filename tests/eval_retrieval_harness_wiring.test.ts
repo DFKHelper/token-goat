@@ -1,6 +1,7 @@
 /** Wiring of scripts/eval-retrieval.ts around the binary it drives: it must exclude its own fixtures from the eval home's index before asking anything, refuse to score an arm that retrieved them, and report the weak-match line that home has configured rather than the shipped default. The stand-in binary's `semantic --json` payload is FORMAT-DERIVED from src/read_semantic.ts (`items[].filePath/startLine/endLine/distance`); its `config get --json` line is FORMAT-DERIVED from src/config_commands.ts (`get` spreads `{source}` beside `key`/`value`). The queries, distances and expected lines are HAND-DERIVED from the rows written here. The baseline files are FORMAT-DERIVED from evals/retrieval/gate.ts::toBaseline (arms[name] maps query id to rank), and the committed evals/retrieval/baseline.json is read as CAPTURE. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
+import * as net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
@@ -8,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { toBaseline } from '../evals/retrieval/gate.js'
 import { splitOf } from '../evals/retrieval/metrics.js'
-import { assertRan, baselineRanks, fixtureHits, pairWithBaseline, parseConfiguredNumber, resolveBin } from '../scripts/eval-retrieval.js'
+import { assertRan, baselineRanks, findOnPath, fixtureHits, pairWithBaseline, parseConfiguredNumber, resolveBin, shimBundlePath } from '../scripts/eval-retrieval.js'
+import { runOwned } from '../scripts/eval-run-owned.js'
 
 const FAKE_BIN = `import { appendFileSync } from 'node:fs'
 const args = process.argv.slice(2)
@@ -109,7 +111,34 @@ describe('resolveBin', () => {
     expect(resolveBin('token-goat', 'linux', none)).toEqual({ command: 'token-goat', prefix: [] })
   })
 
-  it('resolves a .cmd shim, given by path or found on PATH, to the .mjs it launches, never to a shell', () => {
+  it('resolves a Windows shim path word against the shim directory with Windows rules on any host', () => {
+    expect(shimBundlePath('C:\\npm\\tg.cmd', 'node_modules\\pkg\\dist\\tg.mjs', 'win32')).toBe('C:\\npm\\node_modules\\pkg\\dist\\tg.mjs')
+    expect(shimBundlePath('C:\\npm\\tg.cmd', '..\\x\\tg.mjs', 'win32')).toBe('C:\\x\\tg.mjs')
+    expect(shimBundlePath('/opt/npm/tg', 'lib/tg.mjs', 'linux')).toBe('/opt/npm/lib/tg.mjs')
+  })
+
+  it('finds a name that already carries a PATHEXT extension as written, through the real resolveOnPath fallback', () => {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(root, 'bin-')))
+    fs.writeFileSync(path.join(dir, 'tool.exe'), '')
+    fs.writeFileSync(path.join(dir, 'plain.cmd'), '@ECHO off\r\ntool.exe %*\r\n')
+    const saved = { PATH: process.env['PATH'], PATHEXT: process.env['PATHEXT'] }
+    process.env['PATH'] = dir
+    process.env['PATHEXT'] = '.COM;.EXE;.BAT;.CMD;.exe;.cmd'
+    try {
+      expect(findOnPath('tool.exe')).toBe(path.join(dir, 'tool.exe'))
+      expect(resolveBin('tool.exe', 'win32')).toEqual({ command: path.join(dir, 'tool.exe'), prefix: [] })
+      expect(() => resolveBin('plain.cmd', 'win32')).toThrow(/resolves to .*plain\.cmd, which names no existing \.mjs bundle/)
+      expect(findOnPath('ghost.exe')).toBeNull()
+      expect(findOnPath('tool.txt')).toBeNull()
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  })
+
+  it.skipIf(process.platform !== 'win32')('resolves a .cmd shim, given by path or found on PATH, to the .mjs it launches, never to a shell', () => {
     fs.mkdirSync(path.join(root, 'shim', 'node_modules', 'pkg', 'dist'), { recursive: true })
     const bundle = path.join(root, 'shim', 'node_modules', 'pkg', 'dist', 'tg.mjs')
     fs.writeFileSync(bundle, '')
@@ -138,6 +167,89 @@ describe('resolveBin', () => {
     const r = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/eval-retrieval.ts', '--home', path.join(root, 'home'), '--bin', shim, '--root', path.join(root, 'proj'), '--arms', 'semantic'], { cwd: process.cwd(), encoding: 'utf8', timeout: 60_000, env: { ...process.env, FAKE_TG_LOG: log } })
     expect(r.status, r.stderr).toBe(0)
     expect(fs.readFileSync(log, 'utf8')).toContain('"semantic"')
+  }, 60_000)
+})
+
+describe('runOwned', () => {
+  // HAND-DERIVED stand-ins: each connects back to the test's TCP server so the test learns of the process's death from the socket closing, an event, never from elapsed time. The echo answers a ping, which only a live process can do.
+  const probeJs = (hold: string): string => `import net from 'node:net'\n${hold}\nconst s = net.connect(Number(process.env.PROBE_PORT), '127.0.0.1')\ns.on('error', () => {})\ns.on('data', () => s.write('alive'))\nsetInterval(() => {}, 1000)\n`
+  let server: net.Server
+  let sockets: net.Socket[]
+  let port: number
+  let connected: Promise<net.Socket>
+
+  beforeEach(async () => {
+    sockets = []
+    server = net.createServer()
+    connected = new Promise((resolve) => server.once('connection', resolve))
+    server.on('connection', (s) => {
+      s.on('error', () => {})
+      sockets.push(s)
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    port = (server.address() as net.AddressInfo).port
+  })
+
+  afterEach(async () => {
+    for (const s of sockets) s.destroy()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  })
+
+  const alive = (sock: net.Socket): Promise<boolean> =>
+    new Promise((resolve) => {
+      if (sock.destroyed) return resolve(false)
+      sock.once('data', () => resolve(true))
+      sock.once('close', () => resolve(false))
+      sock.write('ping')
+    })
+
+  const start = (script: string, ctl: AbortController, timeoutMs = 60_000): ReturnType<typeof runOwned> => {
+    const file = path.join(root, `standin-${Math.random().toString(36).slice(2)}.mjs`)
+    fs.writeFileSync(file, script)
+    return runOwned(process.execPath, [file], { cwd: root, env: { ...process.env, PROBE_PORT: String(port) }, timeoutMs, maxBytes: 1_000_000, signal: ctl.signal })
+  }
+
+  it('ends a detached grandchild together with the child when the run is stopped', async () => {
+    const gc = path.join(root, 'grandchild.mjs')
+    fs.writeFileSync(gc, probeJs(''))
+    const parent = `import { spawn } from 'node:child_process'\nspawn(process.execPath, [${JSON.stringify(gc)}], { detached: true, stdio: 'ignore', env: process.env }).unref()\nsetInterval(() => {}, 1000)\n`
+    const ctl = new AbortController()
+    const run = start(parent, ctl)
+    try {
+      const grandchild = await connected
+      ctl.abort()
+      const r = await run
+      expect(r.error?.code).toBe('ABORT_ERR')
+      expect(await alive(grandchild), 'the grandchild must be gone once the run has ended').toBe(false)
+    } finally {
+      ctl.abort()
+      await run
+    }
+  }, 60_000)
+
+  it('ends a child that ignores SIGTERM instead of staying blocked on it', async () => {
+    const ctl = new AbortController()
+    const run = start(probeJs("process.on('SIGTERM', () => {})"), ctl)
+    try {
+      const child = await connected
+      ctl.abort()
+      const r = await run
+      expect(r.error?.code).toBe('ABORT_ERR')
+      expect(await alive(child), 'a child that ignores SIGTERM must still be gone').toBe(false)
+    } finally {
+      ctl.abort()
+      await run
+    }
+  }, 60_000)
+
+  it('reports the deadline as ETIMEDOUT through assertRan, and returns output and exit code of a run that ends by itself', async () => {
+    const ctl = new AbortController()
+    const hung = await start('setInterval(() => {}, 1000)\n', ctl, 200)
+    expect(hung.error?.code).toBe('ETIMEDOUT')
+    expect(() => assertRan(hung, ['semantic', 'q'])).toThrow(/token-goat semantic q timed out after 60000 ms/)
+    const done = await start("process.stdout.write('hi')\nprocess.stderr.write('lo')\nprocess.exit(3)\n", ctl)
+    expect(done).toMatchObject({ stdout: 'hi', stderr: 'lo', status: 3 })
+    expect(done.error).toBeUndefined()
   }, 60_000)
 })
 
