@@ -115,10 +115,15 @@ describe('declaredNameOf', () => {
 
 describe('isPlainGrep', () => {
   // FORMAT-DERIVED: key names from Claude Code's GrepInput, @anthropic-ai/claude-code 2.1.306 sdk-tools.d.ts (pattern, path, glob, output_mode, -B, -A, -C, context, -n, -i, -o, type, head_limit, offset, multiline).
-  const base = { pattern: String.raw`def a\b`, path: 'a.py' }
+  const base = { pattern: String.raw`def a\b`, path: 'a.py', output_mode: 'content' }
 
-  it.each([[{}], [{ output_mode: 'content' }], [{ output_mode: 'content', '-n': true, '-i': false, multiline: false }]])('%j is a plain content search', (extra) => {
+  it.each([[{ output_mode: 'content' }], [{ output_mode: 'content', '-n': true, '-i': false, multiline: false }]])('%j is a plain content search', (extra) => {
     expect(isPlainGrep({ ...base, ...extra })).toBe(true)
+  })
+
+  // FORMAT-DERIVED: the same schema documents output_mode's default as "files_with_matches", so a Grep that omits it asks for a file list, which a body does not answer.
+  it('a Grep with no output_mode is not plain', () => {
+    expect(isPlainGrep({ pattern: base.pattern, path: base.path })).toBe(false)
   })
 
   it.each([

@@ -3,6 +3,8 @@ import { quotedArg } from './hint_suggestion_guard.js'
 import { querySymbols } from './index_reader.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
 import { displaySafePath, resolveIndexPath } from './paths.js'
+import { isInsideRoot } from './path_containment.js'
+import { resolveProjectRoot } from './project.js'
 import { getReadNavigationEvidence } from './read_navigation_evidence.js'
 import { redactSecrets } from './secret_redact.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
@@ -14,7 +16,7 @@ import { denyOutput } from './hooks_common.js'
 export const INLINE_SYMBOL_MAX_BYTES = 12_000
 
 /** Why an answer was not inlined; the caller falls back to the command-naming hint for every one of these. */
-export type NameReason = 'disabled' | 'no_declaration_pattern' | 'none' | 'ambiguous' | 'stale' | 'staleness_unknown' | 'unreadable_body' | 'untouchable_path' | 'body_mismatch' | 'over_cap'
+export type NameReason = 'disabled' | 'no_declaration_pattern' | 'none' | 'ambiguous' | 'stale' | 'staleness_unknown' | 'unreadable_body' | 'untouchable_path' | 'outside_project' | 'pattern_mismatch' | 'body_mismatch' | 'over_cap'
 
 export type Staleness = 'fresh' | 'stale' | 'unknown'
 
@@ -91,10 +93,9 @@ export function declaredNameOf(pattern: string): string | null {
 /** Grep tool_input keys that leave the answer a plain content search of one pattern in one path. Key names are Claude Code's GrepInput (@anthropic-ai/claude-code 2.1.306, sdk-tools.d.ts): pattern, path, glob, output_mode, -B, -A, -C, context, -n, -i, -o, type, head_limit, offset, multiline. `-n` only toggles line numbers, so it is harmless here. */
 const PLAIN_GREP_KEYS = new Set(['pattern', 'path', 'output_mode', '-n'])
 
-/** True when the Grep is a plain content search: `output_mode` absent or `content`, and every other key outside {@link PLAIN_GREP_KEYS} (`-i`, `-o`, `-A`, `-B`, `-C`, `context`, `multiline`, `head_limit`, `offset`, `glob`, `type`, or one a later Claude Code adds) absent, null or false. A modifier changes what the Grep would have returned, so the body is no longer the answer to it; an allowlist keeps an unknown key from slipping through. */
+/** True when the Grep is a plain content search: `output_mode` exactly `content` (Claude Code defaults an absent one to files_with_matches, which a body would replace), and every other key outside {@link PLAIN_GREP_KEYS} (`-i`, `-o`, `-A`, `-B`, `-C`, `context`, `multiline`, `head_limit`, `offset`, `glob`, `type`, or one a later Claude Code adds) absent, null or false. A modifier changes what the Grep would have returned, so the body is no longer the answer to it; an allowlist keeps an unknown key from slipping through. */
 export function isPlainGrep(toolInput: Readonly<Record<string, unknown>>): boolean {
-  const mode = toolInput['output_mode']
-  if (mode !== undefined && mode !== null && mode !== 'content') return false
+  if (toolInput['output_mode'] !== 'content') return false
   return Object.entries(toolInput).every(([key, value]) => PLAIN_GREP_KEYS.has(key) || value === undefined || value === null || value === false)
 }
 
@@ -130,10 +131,12 @@ export async function inlineSymbolAnswer(args: { enabled: boolean; pattern: stri
   if (symbol === null) return { name: 'no_declaration_pattern' }
   const file = inlineIndexKey(args.grepPath, args.cwd, args.event)
   if (file === null) return { name: 'untouchable_path' }
+  // Before any read: the harness has not approved this Grep yet, so a path that real-resolves outside the project, or cannot be resolved, delivers nothing.
+  if (!isInsideRoot(file, resolveProjectRoot({ project: args.cwd }))) return { name: 'outside_project' }
   const rows = querySymbols({ name: symbol, filePath: file, limit: 20 }).filter((r) => r.kind !== 'heading' && !r.name.includes('.'))
   const evidence = getReadNavigationEvidence(file)
   const staleness: Record<string, Staleness> = evidence === null ? {} : { [file]: evidence.isStale ? 'stale' : 'fresh' }
-  return await decideInline({
+  const decision = await decideInline({
     enabled: true,
     symbol,
     scope: file,
@@ -144,6 +147,25 @@ export async function inlineSymbolAnswer(args: { enabled: boolean; pattern: stri
       return row === undefined ? null : await readIndexedBody(row, args.grepPath, args.cwd)
     },
   })
+  if (!('inline' in decision)) return decision
+  const answered = rows.find((r) => r.name === decision.symbol)
+  return answered !== undefined && (await patternMatchesOnlyRow(args.pattern, answered)) ? decision : { name: 'pattern_mismatch' }
+}
+
+/** True when the Grep's own pattern, run over the file's lines, matches exactly one line and that line lies inside the row's range: an index name that is unique does not make the regex's matches unique (`function foo\b` also matches `function foo$bar`), and a pattern may match nothing the row declares (`class foo\b` against a function). A pattern the regex guard refuses (it does not compile, or could stall), or a file the grep would not see as these lines, is false. For the narrow patterns declaredNameOf accepts, JS and ripgrep agree on `\b`, `\(`, `\s`, `^` and `$`. */
+async function patternMatchesOnlyRow(pattern: string, row: SymbolEntry): Promise<boolean> {
+  const [{ readFileText }, { indexedSourceText, isVirtualIndexedPath }, { compileGuardedRegex }] = await Promise.all([import('./read_commands.js'), import('./indexed_source.js'), import('./regex_guard.js')])
+  const compiled = compileGuardedRegex(pattern)
+  if (!compiled.ok) return false
+  const re = compiled.re
+  const source = isVirtualIndexedPath(row.filePath) ? null : readFileText(row.filePath)
+  if (source === null) return false
+  const hits: number[] = []
+  indexedSourceText(row.filePath, source).split(/\r?\n/).forEach((line, i) => {
+    if (re.test(line)) hits.push(i + 1)
+  })
+  const only = hits[0]
+  return hits.length === 1 && only !== undefined && only >= row.lineStart && only <= row.lineEnd
 }
 
 /** The deny for an inlined answer. The fence and the redaction are the ones the other delivering denies use; the wording matches delivering_deny.ts's DELIVERS_CONTENT_RE, and the command stays in the text so the agent can rerun the Grep-free path. */

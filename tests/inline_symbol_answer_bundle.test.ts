@@ -12,7 +12,7 @@ const SOURCE = 'def bundle_unique_loader(path):\n    """Load one thing."""\n    
 
 // FORMAT-DERIVED: the Claude Code PreToolUse payload keys (hook_event_name, session_id, cwd, tool_name, tool_input) and the {decision:'block', reason} reply, as src/hook_registry.ts reads and writes them.
 function grepPayload(project: string, file: string, pattern: string, sessionId: string): string {
-  return JSON.stringify({ hook_event_name: 'PreToolUse', session_id: sessionId, cwd: project, tool_name: 'Grep', tool_input: { pattern, path: file } })
+  return JSON.stringify({ hook_event_name: 'PreToolUse', session_id: sessionId, cwd: project, tool_name: 'Grep', tool_input: { pattern, path: file, output_mode: 'content' } })
 }
 
 let root: string
@@ -41,7 +41,7 @@ describe('built bundle: inline symbol body in the Grep deny', () => {
   it('with the config on, blocks the Grep with the exact text read prints, fenced', () => {
     const printed = bundleTg(project, env, ['read', file + '::bundle_unique_loader'])
     expect(printed.status, printed.stderr).toBe(0)
-    const run = hook({ TOKEN_GOAT_INLINE_SYMBOL_BODY: '1' }, 'def bundle_unique_loader(', 'inline-bundle-on')
+    const run = hook({ TOKEN_GOAT_INLINE_SYMBOL_BODY: '1' }, String.raw`def bundle_unique_loader\b`, 'inline-bundle-on')
     expect(run.status, run.stderr).toBe(0)
     const reply = JSON.parse(run.stdout) as { decision?: string; reason?: string }
     expect(reply.decision).toBe('block')
@@ -52,7 +52,7 @@ describe('built bundle: inline symbol body in the Grep deny', () => {
   })
 
   it('with the config off, does not block', () => {
-    const run = hook({ TOKEN_GOAT_INLINE_SYMBOL_BODY: '0' }, 'def bundle_unique_loader(', 'inline-bundle-off')
+    const run = hook({ TOKEN_GOAT_INLINE_SYMBOL_BODY: '0' }, String.raw`def bundle_unique_loader\b`, 'inline-bundle-off')
     expect(run.status, run.stderr).toBe(0)
     expect(run.stdout).not.toContain('is inlined below')
     expect(run.stdout).not.toContain('"decision":"block"')

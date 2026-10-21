@@ -53,7 +53,7 @@ function setOn(on: boolean): void {
 
 let sessionCounter = 0
 function grep(dir: string, file: string, pattern: string, sessionId = `inline-${process.pid}-${++sessionCounter}`, extra: Record<string, unknown> = {}) {
-  return makeHookEvent({ toolName: 'Grep', toolInput: { pattern, path: file, ...extra }, sessionId, raw: { cwd: dir } })
+  return makeHookEvent({ toolName: 'Grep', toolInput: { pattern, path: file, output_mode: 'content', ...extra }, sessionId, raw: { cwd: dir } })
 }
 
 /** The text between the deny's single fence markers. */
@@ -160,7 +160,7 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     const { dir, file } = scratchProject()
     expect((await inlineSymbolGrepHandler(grep(dir, file, 'def unique_loader'))).hookType).toBe('pass')
     expect((await inlineSymbolGrepHandler(grep(dir, file, 'def unique_loader.*'))).hookType).toBe('pass')
-    expect((await inlineSymbolGrepHandler(grep(dir, file, 'def unique_loader('))).hookType).toBe('deny')
+    expect((await inlineSymbolGrepHandler(grep(dir, file, String.raw`def unique_loader\(`))).hookType).toBe('deny')
   })
 
   // FORMAT-DERIVED: modifier key names from Claude Code's GrepInput, @anthropic-ai/claude-code 2.1.306 sdk-tools.d.ts.
@@ -179,10 +179,79 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     expect((await inlineSymbolGrepHandler(grep(dir, file, LOADER, undefined, extra))).hookType).toBe('pass')
   })
 
-  it('a Grep with output_mode content is still inlined', async () => {
+  it('a Grep with no output_mode asks for a file list and is not inlined', async () => {
     setOn(true)
     const { dir, file } = scratchProject()
-    expect((await inlineSymbolGrepHandler(grep(dir, file, LOADER, undefined, { output_mode: 'content' }))).hookType).toBe('deny')
+    const event = makeHookEvent({ toolName: 'Grep', toolInput: { pattern: LOADER, path: file }, sessionId: 'inline-no-mode-' + process.pid, raw: { cwd: dir } })
+    expect((await inlineSymbolGrepHandler(event)).hookType).toBe('pass')
+  })
+
+  // HAND-DERIVED: the reporter's inputs. `../outside.ts` leaves the project root, so nothing of it may be read before the harness approves the Grep.
+  it('a path that goes out of the project with .. is refused as outside_project and delivers nothing', async () => {
+    setOn(true)
+    const { dir } = scratchProject()
+    const project = path.join(dir, 'project')
+    fs.mkdirSync(project)
+    fs.writeFileSync(path.join(project, 'marker.txt'), 'x', 'utf8')
+    const outside = path.join(dir, 'outside.ts')
+    fs.writeFileSync(outside, 'function foo() { return "outside secret body" }\n', 'utf8')
+    indexFileSync(outside, globalDbPath())
+    const pattern = String.raw`function foo\b`
+    const event = grep(project, '../outside.ts', pattern)
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: '../outside.ts', cwd: project, event })).toEqual({ name: 'outside_project' })
+    const out = await inlineSymbolGrepHandler(event)
+    expect(out.hookType).toBe('pass')
+    const control = await inlineSymbolAnswer({ enabled: true, pattern, grepPath: outside, cwd: dir, event })
+    expect(control).toMatchObject({ inline: expect.stringContaining('outside secret body') })
+  })
+
+  // HAND-DERIVED: a junction (a symlink on POSIX) inside the project that points outside it still names an outside file once its links are followed.
+  it('a path through a link that leads out of the project is refused as outside_project', async () => {
+    setOn(true)
+    const { dir } = scratchProject()
+    const project = path.join(dir, 'project')
+    const away = path.join(dir, 'away')
+    fs.mkdirSync(project)
+    fs.mkdirSync(away)
+    const target = path.join(away, 'linked.ts')
+    fs.writeFileSync(target, 'function foo() { return "linked body" }\n', 'utf8')
+    indexFileSync(target, globalDbPath())
+    fs.symlinkSync(away, path.join(project, 'lnk'), 'junction')
+    const pattern = String.raw`function foo\b`
+    const via = path.join(project, 'lnk', 'linked.ts')
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: via, cwd: project, event: grep(project, via, pattern) })).toEqual({ name: 'outside_project' })
+  })
+
+  // HAND-DERIVED: `$` is not a word character, so `function foo\b` also matches the line `function foo$bar() {}`; the index holds foo once.
+  it('a pattern that also matches a longer name is refused as pattern_mismatch', async () => {
+    setOn(true)
+    const source = ['function foo() {', '  return 1', '}', 'function foo$bar() {', '  return 2', '}', ''].join('\n')
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-inline-answer-'))
+    tmpDirs.push(dir)
+    const file = path.join(dir, 'two.ts')
+    fs.writeFileSync(file, source, 'utf8')
+    indexFileSync(file, globalDbPath())
+    const pattern = String.raw`function foo\b`
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: file, cwd: dir, event: grep(dir, file, pattern) })).toEqual({ name: 'pattern_mismatch' })
+    expect((await inlineSymbolGrepHandler(grep(dir, file, pattern))).hookType).toBe('pass')
+  })
+
+  // HAND-DERIVED: the file declares only a function named foo, so `class foo\b` has zero regex matches although the index holds a symbol named foo.
+  it('a pattern that matches no line of the symbol is refused as pattern_mismatch', async () => {
+    setOn(true)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-inline-answer-'))
+    tmpDirs.push(dir)
+    const file = path.join(dir, 'one.ts')
+    fs.writeFileSync(file, 'function foo() {\n  return 1\n}\n', 'utf8')
+    indexFileSync(file, globalDbPath())
+    const pattern = String.raw`class foo\b`
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: file, cwd: dir, event: grep(dir, file, pattern) })).toEqual({ name: 'pattern_mismatch' })
+    expect((await inlineSymbolGrepHandler(grep(dir, file, pattern))).hookType).toBe('pass')
+  })
+
+  it('a pattern that does not compile as a regex is refused as pattern_mismatch', async () => {
+    const { dir, file } = scratchProject()
+    expect(await inlineSymbolAnswer({ enabled: true, pattern: 'def unique_loader(', grepPath: file, cwd: dir, event: grep(dir, file, 'def unique_loader(') })).toEqual({ name: 'pattern_mismatch' })
   })
 
   it('names untouchable_path, not an unreadable body, for a Grep path the hook may not touch', async () => {
