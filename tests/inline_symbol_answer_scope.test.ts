@@ -266,16 +266,58 @@ describe('a directory-scoped Grep and the .ignore and .rgignore files ripgrep re
     expect(out.hookType, 'foo.py is not dropped by the rule Foo.py, so a second line matches the pattern').toBe('pass')
   })
 
-  // CAPTURE: tests/fixtures/rg_ignore_anchoring.txt is the output of `rg --files --hidden --glob !.git` (ripgrep 15.1.0) run in sub/ of each tree below; PROVENANCE.tsv has the row. FORMAT-DERIVED: git-doc gitignore.html (git 2.53.0.windows.1, read this run) says a pattern with a separator at the beginning or middle "is relative to the directory level of the particular .gitignore file itself", which is the syntax ripgrep documents for .ignore.
+  it('matches a .gitignore rule case-sensitively too, so foo.py stays in the model under the rule Foo.py', async () => {
+    const dir = project({ 'mod.py': MODULE, 'foo.py': '# def unique_loader is documented in mod.py\n', '.gitignore': 'Foo.py\n' })
+    execFileSync('git', ['config', 'core.ignorecase', 'true'], { cwd: dir, stdio: 'ignore' })
+    const read = readScopeDir(dir, dir)
+    expect('files' in read && read.files.map((f) => path.basename(f.abs)).sort(), 'foo.py is searched by ripgrep, which matches .gitignore case-sensitively').toEqual(['.gitignore', 'foo.py', 'mod.py'])
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+  })
+
+  describe('trailing whitespace in a rule', () => {
+    const rulesOf = (rule: string): string => ignoreProject({ ...COPIES, '.ignore': rule + '\n' })
+    const verdict = async (rule: string): Promise<string> => {
+      const dir = rulesOf(rule)
+      return (await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType
+    }
+
+    it('drops the copies when the rule ends in plain spaces, which git strips', async () => {
+      expect(await verdict('dup*.py   '), 'trailing spaces are not part of the rule').toBe('deny')
+    })
+
+    it('keeps a trailing tab as part of the rule, so it drops nothing', async () => {
+      expect(await verdict('dup*.py\t'), 'a tab is part of the rule').toBe('pass')
+    })
+
+    it('keeps a trailing no-break space as part of the rule, so it drops nothing', async () => {
+      expect(await verdict('dup*.py' + String.fromCharCode(0xa0)), 'a no-break space is part of the rule').toBe('pass')
+    })
+
+    it('keeps a space a backslash escapes, so the rule names a file ending in a space', async () => {
+      expect(await verdict('dup*.py\\ '), 'the escaped space is part of the rule').toBe('pass')
+    })
+
+    it('finishes an ignore file of a 16 KB run of spaces and still applies its rule', async () => {
+      const rule = 'dup*.py' + ' '.repeat(MAX_IGNORE_FILE_BYTES - 'dup*.py'.length - 1)
+      expect(Buffer.byteLength(rule + '\n')).toBe(MAX_IGNORE_FILE_BYTES)
+      expect(await verdict(rule)).toBe('deny')
+    })
+  })
+
+  // CAPTURE: tests/fixtures/rg_ignore_anchoring.txt is the output of `rg --files --hidden --glob !.git` (ripgrep 15.1.0) run in sub/ (the root for the root- trees) of each tree below; PROVENANCE.tsv has the row. FORMAT-DERIVED: git-doc gitignore.html (git 2.53.0.windows.1, read this run) says a pattern with a separator at the beginning or middle "is relative to the directory level of the particular .gitignore file itself", which is the syntax ripgrep documents for .ignore.
   describe('with the Grep scoped to a subdirectory', () => {
-    const BASE = { 'gen.ts': 'x\n', 'a.ts': 'x\n', 'sub/gen.ts': 'x\n', 'sub/a.ts': 'x\n', 'sub/deep/gen.ts': 'x\n' }
+    const BASE = { 'gen.ts': 'x\n', 'a.ts': 'x\n', 'sub/gen.ts': 'x\n', 'sub/a.ts': 'x\n', 'sub/deep/gen.ts': 'x\n', 'dup.py': 'x\n', 'sub/dup.py': 'x\n', 'x/a.py': 'x\n', 'sub/x/a.py': 'x\n' }
     const TREES: Record<string, Record<string, string>> = {
       'anchored-in-scope': { 'sub/.ignore': '/gen.ts\n' },
       'anchored-in-parent': { '.ignore': '/sub/gen.ts\n' },
       'unanchored-in-scope': { 'sub/.ignore': 'gen.ts\n' },
       'mid-slash-in-scope': { 'sub/.ignore': 'deep/gen.ts\n' },
       'negation-in-scope': { 'sub/.ignore': '*.ts\n!a.ts\n' },
+      'root-anchored-file': { '.ignore': '/dup.py\n' },
+      'root-anchored-dir': { '.ignore': '/x/\n' },
+      'root-negated-anchor': { '.ignore': 'dup.py\n!/dup.py\n' },
     }
+    const scopeOf = (dir: string, name: string): string => (name.startsWith('root-') ? dir : path.join(dir, 'sub'))
     const captured = new Map<string, string[]>()
     for (const row of fs.readFileSync(path.join(import.meta.dirname, 'fixtures', 'rg_ignore_anchoring.txt'), 'utf8').split('\n').filter((l) => l !== '')) {
       const [name = '', file = ''] = row.split('\t')
@@ -289,8 +331,8 @@ describe('a directory-scoped Grep and the .ignore and .rgignore files ripgrep re
     for (const name of Object.keys(TREES).filter((n) => n !== 'anchored-in-parent')) {
       it('lists the files ripgrep searches for ' + name, () => {
         const dir = project({ ...BASE, ...TREES[name] })
-        const read = readScopeDir(path.join(dir, 'sub'), dir)
-        const got = 'files' in read ? read.files.map((f) => path.relative(path.join(dir, 'sub'), f.abs).split(path.sep).join('/')).sort() : read
+        const read = readScopeDir(scopeOf(dir, name), dir)
+        const got = 'files' in read ? read.files.map((f) => path.relative(scopeOf(dir, name), f.abs).split(path.sep).join('/')).sort() : read
         expect(got, name).toEqual([...(captured.get(name) ?? [])].sort())
       })
     }

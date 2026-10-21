@@ -80,9 +80,9 @@ export function readScopeSingleFile(abs: string, base: string): ScopeRead {
 export function readScopeDir(dir: string, root: string): ScopeRead {
   if (process.env['RIPGREP_CONFIG_PATH'] !== undefined) return { passReason: 'ripgrep reads a config file' }
   // Exit 1 is "not ignored"; 0 means the scope is inside an ignored directory, where ripgrep may search files git does not list; 128 means no work tree.
-  const ignored = runGit(['check-ignore', '-q', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
+  const ignored = runGit(['-c', 'core.ignorecase=false', 'check-ignore', '-q', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
   if (ignored.exitCode !== 1) return { passReason: 'the scope is ignored or not in a git work tree' }
-  const listed = runGit(['ls-files', '-z', '-co', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
+  const listed = runGit(['-c', 'core.ignorecase=false', 'ls-files', '-z', '-co', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
   if (listed.exitCode !== 0) return { passReason: 'git could not list the scope' }
   const everything = [...new Set(listed.stdout.split('\0').filter((e) => e !== ''))]
   // The `.ignore` and `.rgignore` rules ripgrep applies after git's own: a file they drop is not searched, so it must not count as a possible match.
@@ -146,6 +146,13 @@ function parentHasIgnoreFile(dir: string): boolean {
   return true
 }
 
+/** `line` without its trailing U+0020 spaces, keeping a space a backslash escapes (`foo\ `); a tab or a no-break space is part of the rule, as in git. A backward scan, so a long run of spaces costs one pass. */
+function withoutTrailingSpaces(line: string): string {
+  let end = line.length
+  while (end > 0 && line[end - 1] === ' ' && line[end - 2] !== '\\') end--
+  return line.slice(0, end)
+}
+
 /** The rule lines of `dir`'s own `.ignore` then `.rgignore` (the later file wins, as in ripgrep), or null when one cannot be read whole. Blank lines and `#` comments are not rules; a CR and unescaped trailing spaces are not part of one. */
 function readRules(dir: string): string[] | null {
   const rules: string[] = []
@@ -156,7 +163,7 @@ function readRules(dir: string): string[] | null {
       const stat = fs.statSync(file)
       if (!stat.isFile() || stat.size > MAX_IGNORE_FILE_BYTES) return null
       for (const raw of fs.readFileSync(file, 'utf8').split('\n')) {
-        const line = raw.replace(/\r$/, '').replace(/(?<!\\)\s+$/, '')
+        const line = withoutTrailingSpaces(raw.replace(/\r$/, ''))
         if (line !== '' && !line.startsWith('#')) rules.push(line)
       }
     } catch {
@@ -174,7 +181,7 @@ function ripgrepIgnoredFiles(dir: string, listed: readonly string[], timeoutMs: 
   if (rules === null) return { passReason: 'an ignore file could not be read whole' }
   if (rules.length === 0) return { dropped: new Set() }
   if (rules.some((rule) => rule.startsWith('!'))) {
-    const hidden = runGit(['ls-files', '-z', '-o', '-i', '--directory', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs })
+    const hidden = runGit(['-c', 'core.ignorecase=false', 'ls-files', '-z', '-o', '-i', '--directory', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs })
     if (hidden.exitCode !== 0 || hidden.stdout !== '') return { passReason: 'a negated ignore rule could re-include a git-ignored file' }
   }
   // A command-line `--exclude` anchors at the work-tree root, but ripgrep anchors a `/x` or `a/b` rule at the directory holding the ignore file, so an anchored rule is rewritten to start at the scope's path from the root (`rev-parse --show-prefix`).
@@ -188,7 +195,8 @@ function ripgrepIgnoredFiles(dir: string, listed: readonly string[], timeoutMs: 
     const negated = rule.startsWith('!')
     const body = negated ? rule.slice(1) : rule
     if (!body.replace(/\/+$/, '').includes('/')) return rule
-    return (negated ? '!' : '') + prefix + body.replace(/^\//, '')
+    // The leading slash keeps the rule anchored at the root when the prefix is empty, where dropping it would match at any depth.
+    return (negated ? '!' : '') + '/' + prefix + body.replace(/^\//, '')
   }
   // core.ignorecase is true by default on Windows and macOS and would make git match case-insensitively, where ripgrep's ignore rules are case-sensitive.
   const dropped = runGit(['-c', 'core.ignorecase=false', 'ls-files', '-z', '-co', '-i', ...rules.map((rule) => '--exclude=' + anchored(rule)), '--', '.'], { cwd: dir, timeoutMs })
