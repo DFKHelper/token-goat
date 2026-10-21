@@ -42,7 +42,6 @@ const REVIEWED_OVERRIDABLE: readonly string[] = [
   'hints.git_hint_max_ms',
   'hints.glob_dedup_min_matches',
   'hints.grep_dedup_min_matches',
-  'hints.inline_symbol_body',
   'hints.json_sidecar',
   'hints.large_read_redirect_bytes',
   'hints.log_large_file_hint_outcomes',

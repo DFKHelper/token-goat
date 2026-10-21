@@ -33,6 +33,7 @@ describe('stripLockedProjectKeys', () => {
       'hints.fold_code_bodies',
       'hints.fold_comment_blocks',
       'hints.fold_prose_paragraphs',
+      'hints.inline_symbol_body',
       'hints.outline_large_documents',
       'hints.skeleton_large_sources',
       'hooks.native',
@@ -104,7 +105,7 @@ describe('stripLockedProjectKeys', () => {
       image_shrink: { max_image_pixels: 0 },
       indexing: { cross_project_symbols: true, skip_dirs: ['src'], skip_files: ['auth.ts'], skip_minified: false, large_file_skip_kb: 1, large_file_symbol_only_kb: 1, max_chunks_per_file: 1, max_db_size_mb: 1500, auto_reclaim_embeddings: true },
       worker: { blocked_roots: [] },
-      hints: { first_read_symbol_bytes: 1, first_read_symbol_policy: 'off', fold_code_bodies: true, fold_comment_blocks: true, fold_prose_paragraphs: true, outline_large_documents: true, skeleton_large_sources: true },
+      hints: { first_read_symbol_bytes: 1, first_read_symbol_policy: 'off', fold_code_bodies: true, fold_comment_blocks: true, fold_prose_paragraphs: true, inline_symbol_body: true, outline_large_documents: true, skeleton_large_sources: true },
       // 1 is the attack value, not an arbitrary one: a one-character summary budget is what a hostile repository would set to have the summarizer discard the session at every compaction boundary.
       compact_assist: { summary_budget_chars: 1 },
       // 0.05 is the floor's own minimum, which is the attack value here: it admits only a near-exact vector match, so the repository's code stops matching in `semantic` while keyword search answers on as though nothing were withheld. 1.2 is the attack value for the weak line: it is the largest the key accepts, so every poor hit would read as a confident one and the low-confidence warning would never fire.
@@ -149,6 +150,13 @@ describe('loadConfig with a per-project override on disk', () => {
 
     expect(loadConfig(root).injection.enabled).toBe(true)
     expect(lastProjectConfigLockedKeys()).toEqual(['injection'])
+  })
+
+  it('ignores a project file that tries to turn the inlined Grep answer on', () => {
+    fs.writeFileSync(path.join(root, '.token-goat.toml'), '[hints]\ninline_symbol_body = true\n')
+
+    expect(loadConfig(root).hints.inline_symbol_body).toBe(false)
+    expect(lastProjectConfigLockedKeys()).toEqual(['hints.inline_symbol_body'])
   })
 
   it('ignores a project file that tries to widen symbol confinement', () => {

@@ -56,6 +56,8 @@ export const PROJECT_LOCKED_KEYS: readonly string[] = [
   'indexing.auto_reclaim_embeddings',
   // Which executable every harness runs on every tool call. `install` writes that choice into user-scope harness configs that every project on the machine then runs, so a checked-in `.token-goat.toml` must not be the layer that makes it. The user's global config and TOKEN_GOAT_NATIVE_HOOKS still set it freely.
   'hooks.native',
+  // A refusal replaces the Grep's output with a symbol body, so a checked-in `.token-goat.toml` turning this on would let a repository choose to have its reviewer's searches answered by a refusal. The user's global config and TOKEN_GOAT_INLINE_SYMBOL_BODY still set it freely.
+  'hints.inline_symbol_body',
 ]
 
 let _lastProjectConfigLockedKeys: string[] = []

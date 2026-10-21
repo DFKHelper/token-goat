@@ -46,6 +46,15 @@ function scratchProject(source = SOURCE): { dir: string; file: string } {
   return { dir, file }
 }
 
+function scratchRuby(source: string): { dir: string; file: string } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-inline-answer-'))
+  tmpDirs.push(dir)
+  const file = path.join(dir, 'holder.rb')
+  fs.writeFileSync(file, source, 'utf8')
+  indexFileSync(file, globalDbPath())
+  return { dir, file }
+}
+
 function setOn(on: boolean): void {
   vi.stubEnv('TOKEN_GOAT_INLINE_SYMBOL_BODY', on ? '1' : '0')
   invalidateConfigCache()
@@ -296,6 +305,45 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     expect(out.hookType).toBe('deny')
     if (out.hookType !== 'deny') return
     expect(Buffer.from(fencedBody(out.message), 'utf8').equals(Buffer.from(printed.text, 'utf8'))).toBe(true)
+  })
+
+  it('says the text is exactly what read prints, and counts its bytes, when nothing was redacted', async () => {
+    setOn(true)
+    const { dir, file } = scratchProject()
+    const out = await inlineSymbolGrepHandler(grep(dir, file, LOADER))
+    expect(out.hookType).toBe('deny')
+    if (out.hookType !== 'deny') return
+    expect(out.message).toContain('exactly as `token-goat read ')
+    expect(out.message).not.toContain('replaced by [REDACTED]')
+    expect(out.message).toContain(`symbol body (${Buffer.byteLength(fencedBody(out.message), 'utf8')} bytes) is inlined below`)
+  })
+
+  it('says so when redaction changed the text, and counts the redacted bytes it delivers', async () => {
+    setOn(true)
+    // HAND-DERIVED: a GitHub-token-shaped literal assembled at run time (tests/secret_redact.test.ts shows the same shape is redacted); the placeholder is shorter than the 40-character token, so a count taken before redaction differs from the delivered size.
+    const secret = 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8'
+    const { dir, file } = scratchProject(['def holds_secret():', `    return "${secret}"`, ''].join('\n'))
+    const out = await inlineSymbolGrepHandler(grep(dir, file, String.raw`def holds_secret\b`))
+    expect(out.hookType).toBe('deny')
+    if (out.hookType !== 'deny') return
+    expect(out.message).not.toContain('exactly as')
+    expect(out.message).toContain('[REDACTED] placeholders replace 1 secret-looking value')
+    const delivered = Buffer.byteLength(fencedBody(out.message), 'utf8')
+    expect(out.message).toContain(`symbol body (${delivered} bytes) is inlined below`)
+    const printed = runRead({ spec: file + '::holds_secret', projectRoot: dir, suppressStat: true })
+    expect(delivered).not.toBe(Buffer.byteLength(printed.text, 'utf8'))
+  })
+
+  // CAPTURE: ripgrep 15.1.0 (`rg --help` on --crlf, and a run): `rg -n 'foo$'` over the file "foo bar\r\nfoo\r\n" printed nothing and exited 1; with --crlf the pattern `foo bar$` matched line 1. Claude Code's Grep passes no --crlf (its argument list is in @anthropic-ai/claude-code 2.1.306's claude.exe: --hidden, --glob !.git..., --max-columns 500, --json, -n).
+  it('a $-anchored pattern is answered on an LF file and passed through on the same file in CRLF, as ripgrep does', async () => {
+    setOn(true)
+    const source = ['class Holder', '  def run', '    1', '  end', 'end', ''].join('\n')
+    const pattern = 'class Holder$'
+    const lf = scratchRuby(source)
+    expect((await inlineSymbolGrepHandler(grep(lf.dir, lf.file, pattern))).hookType).toBe('deny')
+    const crlf = scratchRuby(source.replace(/\n/g, '\r\n'))
+    expect(await inlineSymbolAnswer({ enabled: true, pattern, grepPath: crlf.file, cwd: crlf.dir, event: grep(crlf.dir, crlf.file, pattern) })).toEqual({ name: 'pattern_mismatch' })
+    expect((await inlineSymbolGrepHandler(grep(crlf.dir, crlf.file, pattern))).hookType).toBe('pass')
   })
 
   it('a symbol over the 12,000-byte cap is named, not inlined', async () => {

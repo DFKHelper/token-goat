@@ -1,5 +1,7 @@
 /** Answers a single-file structural Grep with the one symbol it names, instead of a hint that names the command which would fetch it. The agent's next turn is then not spent running `token-goat read`. A wrong body costs more than a pointer, so every link must be certain: the pattern is nothing but a declaration word and one name, the file's fresh index holds that name exactly once, the body read back from disk is the one the index describes, and it fits under a byte cap. Anything short of that returns the reason and the caller keeps today's hint. Off by default (hints.inline_symbol_body). */
+import * as fs from 'node:fs'
 import { quotedArg } from './hint_suggestion_guard.js'
+import { ripgrepLines } from './inline_grep_scan.js'
 import { querySymbols } from './index_reader.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
 import { displaySafePath, resolveIndexPath } from './paths.js'
@@ -11,6 +13,7 @@ import { commandPathIsTouchable } from './vscode_path_gate.js'
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { denyOutput } from './hooks_common.js'
+import { countNoun } from './util.js'
 
 /** The most a deny will inline. Smaller than hooks_skill.ts's COMPACT_INLINE_MAX_BYTES (24_000) because a wrong body here costs a turn the pointer would not have; {@link decideInline} clamps any caller-supplied cap to it, so nothing can raise it. */
 export const INLINE_SYMBOL_MAX_BYTES = 12_000
@@ -152,16 +155,21 @@ export async function inlineSymbolAnswer(args: { enabled: boolean; pattern: stri
   return answered !== undefined && (await patternMatchesOnlyRow(args.pattern, answered)) ? decision : { name: 'pattern_mismatch' }
 }
 
-/** True when the Grep's own pattern, run over the file's lines, matches exactly one line and that line lies inside the row's range: an index name that is unique does not make the regex's matches unique (`function foo\b` also matches `function foo$bar`), and a pattern may match nothing the row declares (`class foo\b` against a function). A pattern the regex guard refuses (it does not compile, or could stall), or a file the grep would not see as these lines, is false. For the narrow patterns declaredNameOf accepts, JS and ripgrep agree on `\b`, `\(`, `\s`, `^` and `$`. */
+/** True when the Grep's own pattern, run over the file's lines, matches exactly one line and that line lies inside the row's range: an index name that is unique does not make the regex's matches unique (`function foo\b` also matches `function foo$bar`), and a pattern may match nothing the row declares (`class foo\b` against a function). A pattern the regex guard refuses (it does not compile, or could stall), or a file the grep would not see as these lines (see {@link ripgrepLines}), is false. The lines are tested as ripgrep tests them, a trailing `\r` kept, so a `$`-anchored pattern does not match a CRLF line in either. For the narrow patterns declaredNameOf accepts, JS and ripgrep agree on `\b`, `\(`, `\s` and `^`. */
 async function patternMatchesOnlyRow(pattern: string, row: SymbolEntry): Promise<boolean> {
-  const [{ readFileText }, { indexedSourceText, isVirtualIndexedPath }, { compileGuardedRegex }] = await Promise.all([import('./read_commands.js'), import('./indexed_source.js'), import('./regex_guard.js')])
+  const [{ isVirtualIndexedPath }, { compileGuardedRegex }] = await Promise.all([import('./indexed_source.js'), import('./regex_guard.js')])
   const compiled = compileGuardedRegex(pattern)
-  if (!compiled.ok) return false
+  if (!compiled.ok || isVirtualIndexedPath(row.filePath)) return false
   const re = compiled.re
-  const source = isVirtualIndexedPath(row.filePath) ? null : readFileText(row.filePath)
-  if (source === null) return false
+  let lines: string[] | null
+  try {
+    lines = ripgrepLines(fs.readFileSync(row.filePath))
+  } catch {
+    return false
+  }
+  if (lines === null) return false
   const hits: number[] = []
-  indexedSourceText(row.filePath, source).split(/\r?\n/).forEach((line, i) => {
+  lines.forEach((line, i) => {
     if (re.test(line)) hits.push(i + 1)
   })
   const only = hits[0]
@@ -172,9 +180,10 @@ async function patternMatchesOnlyRow(pattern: string, row: SymbolEntry): Promise
 export function inlineAnswerDeny(answer: { readonly inline: string; readonly file: string; readonly symbol: string }): HookOutput {
   const file = displaySafePath(answer.file)
   const symbol = displaySafePath(answer.symbol)
-  const bytes = Buffer.byteLength(answer.inline, 'utf8')
-  const body = fenceUntrustedFileContent(redactSecrets(answer.inline).text)
-  return denyOutput(
-    'Grep not run: its pattern names the one symbol `' + symbol + '` in `' + file + '`, whose symbol body (' + bytes + ' bytes) is inlined below, exactly as `token-goat read ' + quotedArg(file + '::' + symbol) + '` prints it. Run that command for the same text again, or Grep again to search the file anyway.\n' + body,
-  )
+  const redacted = redactSecrets(answer.inline)
+  const bytes = Buffer.byteLength(redacted.text, 'utf8')
+  const body = fenceUntrustedFileContent(redacted.text)
+  const command = 'token-goat read ' + quotedArg(file + '::' + symbol)
+  const origin = redacted.count === 0 ? ', exactly as `' + command + '` prints it. Run that command for the same text again, or Grep again to search the file anyway.' : ', as `' + command + '` prints it except that [REDACTED] placeholders replace ' + countNoun(redacted.count, 'secret-looking value') + '. Run that command to read the symbol again, or Grep again to search the file anyway.'
+  return denyOutput('Grep not run: its pattern names the one symbol `' + symbol + '` in `' + file + '`, whose symbol body (' + bytes + ' bytes) is inlined below' + origin + '\n' + body)
 }
