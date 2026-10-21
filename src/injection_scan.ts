@@ -42,15 +42,36 @@ export interface FenceSpan {
 function neutralizeFenceMarkers(text: string, tag: string): string {
   const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const marker = new RegExp(`<\\s*/?\\s*${escapedTag}(?=[\\s/>])[^>]*>`, 'gi')
+  // Markers first, so a forgery that hides behind an invisible character is still escaped as a marker; then the invisible characters, so a closing tag split by one is plain text before the tag match runs.
   return neutralizeSpokenMarkers(
-    text.replace(marker, (m) => m.replace(/</g, '&lt;').replace(/>/g, '&gt;')),
+    escapeHiddenCharacters(neutralizeSpokenMarkers(text)).replace(marker, (m) => m.replace(/</g, '&lt;').replace(/>/g, '&gt;')),
   )
 }
+
+/** Characters that take no space or reorder text: the Unicode format class (zero-width marks, bidi overrides and isolates, the byte-order mark, soft hyphen) and the tag block U+E0000-E007F, which can spell a whole hidden sentence an editor does not draw. */
+const INVISIBLE = String.raw`[\p{Cf}\u{E0000}-\u{E007F}]`
+
+/** Escape the invisible characters in a fenced body as `\uXXXX` (`\u{XXXXX}` past the BMP), the form displaySafeText uses, so a reader sees that something was there and a hidden sentence is spelled out. U+200C and U+200D stay: they are part of ordinary emoji sequences and several scripts, and a marker hidden with them is still caught by {@link neutralizeSpokenMarkers}. */
+function escapeHiddenCharacters(text: string): string {
+  return text.replace(new RegExp(INVISIBLE, 'gu'), (ch) => {
+    const code = ch.codePointAt(0) ?? 0
+    if (code === 0x200c || code === 0x200d) return ch
+    const hex = code.toString(16).padStart(4, '0')
+    return code > 0xffff ? '\\u{' + hex + '}' : '\\u' + hex
+  })
+}
+
+/** A word with an optional run of invisible characters between any two of its letters, so a zero-width, bidi or tag character cannot split a marker's name past the match. */
+function spaced(word: string): string {
+  return [...word].join(INVISIBLE + '*')
+}
+
+const SPOKEN_MARKER = new RegExp(String.raw`\[(?:\s|${INVISIBLE})*(?:${spaced('token-goat')}\b|${spaced('tg')}(?:\s|${INVISIBLE})*\])`, 'giu')
 
 /** Escape anything inside the fence that wears token-goat's own `[token-goat...]` marker prefix. Closing the tag early is not the only way out of the fence. The fence's own preamble opens with `[token-goat:`, and every hook that shrinks something signs its work with a marker in the same shape, so that prefix is a live authority signal in the model's context -- and third-party bytes can print it. Text that does so is not escaping the fence, it is speaking from inside it in the voice of the thing that built it, which is the more useful attack: the fence stays intact and correctly labelled while the model reads a line inside it as token-goat's own. Measured 2026-09-04, twelve trials per condition against a headless model, on a build log whose last lines impersonate a token-goat truncation notice and ask for a canary line back. Unfenced, the model complied 11 times. Fenced as we shipped it that morning, 6 -- the fence halves the attack and no more, because it never contradicts the impersonation, it only surrounds it. With the prefix escaped as below, 1. The same probe found that a *genuine* marker sitting beside an ordinary injection lends it nothing (0 of 12 either way), so proximity was never the problem and this is narrowly aimed at the thing that was: forgery of the prefix itself. The escape is `&#91;` for the opening bracket alone, matching how the tag neutraliser above defuses a forged tag: enough that the line no longer reads as our marker, little enough that a human reading the output still sees what the bytes said. Nothing token-goat writes is ever legitimately inside a fence -- markers and pointers are appended outside the closing tag -- so this cannot escape our own text, and an escaped marker showing up in fenced output means either a real forgery or a bug that folded our voice inside the fence. Both want to be visible. A replacer function, not a replacement string, for the same reason as above: `$&` and friends are substitution sequences in a string replacement, and the matched text is attacker-controlled. */
 export function neutralizeSpokenMarkers(text: string): string {
   // Both voices token-goat speaks in: the `[token-goat: ...]` marker hooks sign rewrites with, and the `[tg]` prefix denyOutput puts on every deny. The deny prefix is the more dangerous of the two, since a deny is the one message shaped as an instruction the model is meant to obey, and it is matched only with its closing bracket so that ordinary bracketed words like `[tgz]` are left alone.
-  return text.replace(/\[\s*(?:token-goat\b|tg\s*\])/gi, (m) => m.replace('[', '&#91;'))
+  return text.replace(SPOKEN_MARKER, (m) => m.replace('[', '&#91;'))
 }
 
 /** One of {@link INJECTION_PATTERNS}' names, the only words the flagged notice below puts between its parentheses. */
