@@ -38,10 +38,9 @@ export interface FenceSpan {
   readonly own?: boolean
 }
 
-/** Escape any occurrence of the fence's opening or closing tag inside untrusted text. Unescaped, an attacker whose content contains the closing marker could prematurely close the fence and make trailing attacker text appear -- to the model -- as if it sits outside the untrusted boundary, undermining the fence its caller exists to provide. Matching has to be as loose as the reading is. An exact, case-sensitive split escaped only the one spelling `</untrusted-web-content>`, while `</UNTRUSTED-WEB-CONTENT>`, `</Untrusted-Web-Content>` and `</untrusted-web-content >` all passed through untouched and still read as that same closing tag -- tag names are case-insensitive and trailing whitespace inside a tag is ordinary, so the strict form was the only one an attacker had no reason to use. The pattern below therefore ignores case, allows whitespace around the name and the slash, and allows the junk attributes an end tag may carry. It also allows a slash immediately BEFORE the closing bracket: `</untrusted-tool-output/>` is a malformed end tag that HTML parsing still reads as one, and leaving it unescaped handed an attacker a spelling that closed the fence. After the tag name, anything up to the next `>` is consumed, guarded by a lookahead that the next character is a real tag-name terminator (whitespace, `/`, or `>`). Bounding the trailing junk to "introduced by whitespace, or a single slash right before the bracket" was too narrow: an HTML tokenizer reads `</untrusted-web-content/foo>` and `</untrusted-web-content/ foo>` as end tags for this tag too -- a `/` after the tag name enters the self-closing-start-tag state, and a following non-`>` character is reconsumed as an attribute rather than ending the tag -- so those spellings closed the fence and slipped through unescaped, the same hole as `</...\/>` above one step further along. The terminator lookahead is what keeps this from also matching a genuinely different, longer tag name (`<untrusted-web-contentX>`), which shares only a prefix. A replacer function, not a replacement string: `$&` and friends are substitution sequences in a string replacement, and the matched text here is attacker-controlled. */
+/** Escape any occurrence of the fence's opening or closing tag inside untrusted text. Unescaped, an attacker whose content contains the closing marker could prematurely close the fence and make trailing attacker text appear -- to the model -- as if it sits outside the untrusted boundary, undermining the fence its caller exists to provide. Matching has to be as loose as the reading is. An exact, case-sensitive split escaped only the one spelling `</untrusted-web-content>`, while `</UNTRUSTED-WEB-CONTENT>`, `</Untrusted-Web-Content>` and `</untrusted-web-content >` all passed through untouched and still read as that same closing tag -- tag names are case-insensitive and trailing whitespace inside a tag is ordinary, so the strict form was the only one an attacker had no reason to use. The pattern below therefore ignores case, allows whitespace around the name and the slash, and allows the junk attributes an end tag may carry. It also allows a slash immediately BEFORE the closing bracket: `</untrusted-tool-output/>` is a malformed end tag that HTML parsing still reads as one, and leaving it unescaped handed an attacker a spelling that closed the fence. After the tag name, anything up to the next `>` is consumed, guarded by a lookahead that the next character is a real tag-name terminator (whitespace, `/`, or `>`). Bounding the trailing junk to "introduced by whitespace, or a single slash right before the bracket" was too narrow: an HTML tokenizer reads `</untrusted-web-content/foo>` and `</untrusted-web-content/ foo>` as end tags for this tag too -- a `/` after the tag name enters the self-closing-start-tag state, and a following non-`>` character is reconsumed as an attribute rather than ending the tag -- so those spellings closed the fence and slipped through unescaped, the same hole as `</...\/>` above one step further along. The terminator lookahead is what keeps this from also matching a genuinely different, longer tag name (`<untrusted-web-contentX>`), which shares only a prefix. A replacer function, not a replacement string: `$&` and friends are substitution sequences in a string replacement, and the matched text here is attacker-controlled. Every gap in the pattern, and every position between two letters of the name, also takes the invisible characters (the default-ignorable set), because the body keeps U+200C, U+200D and U+FE0F and a closing tag spelled with one of them would otherwise read as the real one. */
 export function fenceMarkerPattern(tag: string): RegExp {
-  const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`<\\s*(?:/\\s*)?${escapedTag}(?=[\\s/>])[^>]*>`, 'gi')
+  return new RegExp(`<${GAP}*(?:/${GAP}*)?${spaced(tag)}(?=[${GAP_CODE_POINTS}/>])[^>]*>`, 'giu')
 }
 
 function neutralizeFenceMarkers(text: string, tag: string): string {
@@ -52,18 +51,19 @@ function neutralizeFenceMarkers(text: string, tag: string): string {
   )
 }
 
-/** Characters that take no space or reorder text: the Unicode format class (zero-width marks, bidi overrides and isolates, the byte-order mark, soft hyphen) and the tag block U+E0000-E007F, which can spell a whole hidden sentence an editor does not draw. */
-const INVISIBLE_CODE_POINTS = String.raw`\p{Cf}\u{E0000}-\u{E007F}`
+/** Characters that take no space or reorder text: the Unicode format class (zero-width marks, bidi overrides and isolates, the byte-order mark, soft hyphen), every Default_Ignorable_Code_Point (the combining grapheme joiner, the variation selectors, the Hangul fillers, the Mongolian free variation selectors) and the tag block U+E0000-E007F, which can spell a whole hidden sentence an editor does not draw. */
+const INVISIBLE_CODE_POINTS = String.raw`\p{Cf}\p{Default_Ignorable_Code_Point}\u{E0000}-\u{E007F}`
 const INVISIBLE = `[${INVISIBLE_CODE_POINTS}]`
+const GAP_CODE_POINTS = String.raw`\s${INVISIBLE_CODE_POINTS}`
 
 /** Whitespace or an invisible character, as ONE class. Written as the alternation `(?:\s|INVISIBLE)` the two branches both match U+FEFF (whitespace to `\s`, a format character to `\p{Cf}`), so under `*` a run of them split between the branches in exponentially many ways and an input that failed to match took exponential time. One class gives every character one way to match. */
-const GAP = `[\\s${INVISIBLE_CODE_POINTS}]`
+const GAP = `[${GAP_CODE_POINTS}]`
 
-/** Escape the invisible characters in a fenced body as `\uXXXX` (`\u{XXXXX}` past the BMP), the form displaySafeText uses, so a reader sees that something was there and a hidden sentence is spelled out. U+200C and U+200D stay: they are part of ordinary emoji sequences and several scripts, and a marker hidden with them is still caught by {@link neutralizeSpokenMarkers}. */
+/** Escape the invisible characters in a fenced body as `\uXXXX` (`\u{XXXXX}` past the BMP), the form displaySafeText uses, so a reader sees that something was there and a hidden sentence is spelled out. U+200C, U+200D and U+FE0F stay: they are part of ordinary emoji sequences and several scripts, so the MATCHING side (the marker and the tag pattern) skips every one of these characters instead, and a forgery spelled with a kept one is still escaped. The rest of the default-ignorable set is escaped as well, though matching already sees through it: it is a channel for hidden data (variation selectors can carry a byte each), and spelling it out costs a reader of the fenced body only a visible `\uXXXX` where an invisible character sat. */
 function escapeHiddenCharacters(text: string): string {
   return text.replace(new RegExp(INVISIBLE, 'gu'), (ch) => {
     const code = ch.codePointAt(0) ?? 0
-    if (code === 0x200c || code === 0x200d) return ch
+    if (code === 0x200c || code === 0x200d || code === 0xfe0f) return ch
     const hex = code.toString(16).padStart(4, '0')
     return code > 0xffff ? '\\u{' + hex + '}' : '\\u' + hex
   })
@@ -71,7 +71,7 @@ function escapeHiddenCharacters(text: string): string {
 
 /** A word with an optional run of invisible characters between any two of its letters, so a zero-width, bidi or tag character cannot split a marker's name past the match. */
 function spaced(word: string): string {
-  return [...word].join(INVISIBLE + '*')
+  return [...word].map((c) => c.replace(/[.*+?^${}()|[\]\\]/, '\\$&')).join(INVISIBLE + '*')
 }
 
 export const SPOKEN_MARKER = new RegExp(String.raw`\[${GAP}*(?:${spaced('token-goat')}\b|${spaced('tg')}${GAP}*\])`, 'giu')
