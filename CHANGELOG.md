@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.32] - 2026-10-20
+
 ### Added
 
 - **`token-goat install --aider` and `uninstall --aider` manage Aider's coding conventions.** The installer writes a delimited block that points Aider (and the local models it often drives) at the surgical-read commands instead of whole-file dumps. By default the block goes into `~/.aider.conventions.md`; with `-p`/`--project` it goes into `CONVENTIONS.md` in the project root. `uninstall --aider` removes only that block. See the Aider section of [docs/install.md](docs/install.md).
