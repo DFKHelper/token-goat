@@ -4385,6 +4385,28 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(fresh.hookType).not.toBe('deny')
     })
 
+    it('trips the circuit breaker after repeated locked line-range reads to prevent agent deadlocks', () => {
+      const p = path.join(os.tmpdir(), `tg-range-breaker-${process.pid}.log`)
+      fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n'))
+      tmpFiles.push(p)
+      const slice = (start: number, end: number): HookEvent => copilotViewEvent(p, 'test', start, end)
+      expect(preReadHandler(slice(10, 50)).hookType).not.toBe('deny')
+      postReadHandler(postCopilotViewEvent(p, 'test', 10, 50))
+      expect(preReadHandler(slice(20, 30)).hookType).toBe('deny')
+      const l1 = preReadHandler(slice(70, 80))
+      expect(l1.hookType).toBe('deny')
+      if (l1.hookType === 'deny') expect(l1.message).toContain('Line-range reads of this file are locked')
+      const l2 = preReadHandler(slice(70, 80))
+      expect(l2.hookType).toBe('deny')
+      if (l2.hookType === 'deny') expect(l2.message).toContain('Line-range reads of this file are locked')
+      const b1 = preReadHandler(slice(70, 80))
+      expect(b1.hookType).toBe('context')
+      if (b1.hookType === 'context') expect(b1.context).toContain('Line-range read circuit breaker')
+      const b2 = preReadHandler(slice(70, 80))
+      expect(b2.hookType).toBe('context')
+      if (b2.hookType === 'context') expect(b2.context).toContain('Line-range read circuit breaker')
+    })
+
     it('caps isProtectedRecentRead so files read 4+ times cannot loop indefinitely in small sessions', () => {
       const p = path.join(os.tmpdir(), `tg-cap-test-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
       fs.writeFileSync(p, 'export const val = 42;\n')

@@ -60,6 +60,11 @@ export function getReadRangeDenials(key: string): ReadonlyArray<ReadRange> {
   return states.get(key)?.denied.map((v) => v.span) ?? []
 }
 
+/** Generation counter for this key's range lock, incremented on reset. */
+export function getReadRangeResetAt(key: string): number {
+  return states.get(key)?.resetAt ?? 0
+}
+
 /** Called before returning a range deny, never relying on post_tool_use for refused reads. */
 export function lockReadRange(key: string, span: ReadRange, identity?: Identity): void {
   const state = stateFor(key)

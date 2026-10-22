@@ -19,7 +19,7 @@ import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNT
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
-import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordRecentReadRange } from './read_range_evasion.js'
+import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getReadRangeResetAt, getRecentReadRanges, lockReadRange, rangeLockMessage, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -638,8 +638,39 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
     clearReadRangeIfChanged(rangeKey, rangeIdentity)
     if (getReadRangeDenials(rangeKey).length > 0) {
-      lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
-      return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
+      const resetAt = getReadRangeResetAt(rangeKey)
+      const rangeBreakerKey = 'range-lock-breaker:' + getCompactedAt() + ':' + rangeKey + ':' + resetAt
+      if (wasHintShown(rangeBreakerKey)) {
+        recordActualRead(event, normalized)
+        recordActualSlice(event, normalized, hashNow)
+        return quietContextOutput(
+          '[tg] Line-range read circuit breaker: read allowed after repeated denials. ' +
+          'Run `token-goat read ' + quotedArg(shown + '@' + rangeSpan.start + '-' + rangeSpan.end) + '` for this window, ' +
+          'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time.',
+          [shown],
+        )
+      }
+      const deny1Key = 'range-lock-deny-1:' + getCompactedAt() + ':' + rangeKey + ':' + resetAt
+      const deny2Key = 'range-lock-deny-2:' + getCompactedAt() + ':' + rangeKey + ':' + resetAt
+      if (!wasHintShown(deny1Key)) {
+        markHintShown(deny1Key)
+        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
+      }
+      if (!wasHintShown(deny2Key)) {
+        markHintShown(deny2Key)
+        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
+      }
+      markHintShown(rangeBreakerKey)
+      recordActualRead(event, normalized)
+      recordActualSlice(event, normalized, hashNow)
+      return quietContextOutput(
+        '[tg] Line-range read circuit breaker: read allowed after repeated denials. ' +
+        'Run `token-goat read ' + quotedArg(shown + '@' + rangeSpan.start + '-' + rangeSpan.end) + '` for this window, ' +
+        'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time.',
+        [shown],
+      )
     }
   }
 

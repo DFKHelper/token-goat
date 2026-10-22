@@ -3,7 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  clearAllReadRangeEvasion, coerceReadRangeEvasion, evaluateRangeEvasion, exportReadRangeEvasion, getReadRangeDenials, importReadRangeEvasion, lockReadRange,
+  clearAllReadRangeEvasion, coerceReadRangeEvasion, evaluateRangeEvasion, exportReadRangeEvasion, getReadRangeDenials, getReadRangeResetAt, importReadRangeEvasion, lockReadRange,
   getRecentReadRanges, recordRecentReadRange,
   type ReadRange,
 } from '../src/read_range_evasion.js'
@@ -75,6 +75,18 @@ describe('range-denial lifecycle', () => {
     expect(getReadRangeDenials(key)).toEqual([[20, 30]])
     resetFileLineRanges('file')
     expect(getReadRangeDenials(key)).toEqual([])
+  })
+
+  it('tracks resetAt generations across clearReadRangeEvasion and clearAllReadRangeEvasion', () => {
+    const key = foldPath(normalizePath('tracked-file'))
+    expect(getReadRangeResetAt(key)).toBe(0)
+    lockReadRange(key, [10, 20])
+    expect(getReadRangeResetAt(key)).toBe(0)
+    resetFileLineRanges('tracked-file')
+    const resetTime = getReadRangeResetAt(key)
+    expect(resetTime).toBeGreaterThan(0)
+    clearAllReadRangeEvasion()
+    expect(getReadRangeResetAt(key)).toBe(0)
   })
 
   // HAND-DERIVED: lines 10..30 read, the file changes on disk, 15..25 is read (it finds the change), then 10..30 again. Windows are computed by hand; 10..30 holds an edit the model was never shown, so it must not count as a high-overlap retry of 15..25.

@@ -6,6 +6,7 @@
 import * as fs from 'node:fs'
 import { isImagePath } from './asset_extensions.js'
 import { couldNotReadError } from './could_not_read.js'
+import { echoedValue } from './hint_suggestion_guard.js'
 import {
   applyExifOrientation,
   encodeJpeg,
@@ -86,7 +87,7 @@ export async function sliceImage(filePath: string, opts: ImageSliceOptions = {})
   }
 
   if (!canShrinkFormat(probe.format)) {
-    throw new Error(`Cannot slice image format "${probe.format ?? 'unknown'}": decoder unavailable`)
+    throw new Error(`Cannot slice image format ${echoedValue(probe.format ?? 'unknown')}: decoder unavailable`)
   }
 
   const decoded = decodeImageRgba(rawBytes, probe.format, probe.orientation)

@@ -128,6 +128,8 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'sqlite-schema', reason: FORMAT_EXTRACT_REASON },
   { command: 'sqlite-query', reason: FORMAT_EXTRACT_REASON },
   { command: 'fetch-image', reason: FORMAT_EXTRACT_REASON },
+  { command: 'image-slice', reason: FORMAT_EXTRACT_REASON },
+  { command: 'image-diff', reason: FORMAT_EXTRACT_REASON },
   { command: 'screenshot', reason: FORMAT_EXTRACT_REASON },
 
   // Document extractors, moved out of the always-on gate in 2.9.31
