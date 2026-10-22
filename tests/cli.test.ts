@@ -937,6 +937,21 @@ describe('token-goat CLI', () => {
         fs.rmSync(tmp, { force: true })
       }
     })
+
+    it('replace findClosestLineWindow handles CRLF file with LF search string accurately', async () => {
+      const tmp = path.join(os.tmpdir(), `tg-rpl-closest-crlf-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'one\r\ntwo\r\nthree\r\nfour\r\nfive\r\n', 'utf8')
+      const oldB64 = Buffer.from('two\nthree\nSIX', 'utf8').toString('base64')
+      const newB64 = Buffer.from('replacement', 'utf8').toString('base64')
+      try {
+        const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('old string not found')
+        expect(r.stderr).toContain('closest match at line 2')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
   })
 
   describe('insert-section', () => {

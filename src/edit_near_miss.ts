@@ -39,8 +39,12 @@ const FOLDS: ReadonlyArray<readonly [RegExp, string]> = [
   [/[‐‑‒–—―−]/g, '-'],
 ]
 
+function normalizeLineEnding(line: string): string {
+  return line.replace(/\r$/, '')
+}
+
 function foldPunctuation(line: string): string {
-  let out = line.normalize('NFKC')
+  let out = normalizeLineEnding(line).normalize('NFKC')
   for (const [pattern, replacement] of FOLDS) out = out.replace(pattern, replacement)
   return out
 }
@@ -70,7 +74,8 @@ function splitLines(text: string): FileLine[] {
   while (start <= text.length) {
     const nl = text.indexOf('\n', start)
     const end = nl === -1 ? text.length : nl
-    lines.push({ text: text.slice(start, end), start, end })
+    const sliceEnd = end > start && text.charCodeAt(end - 1) === 13 ? end - 1 : end
+    lines.push({ text: text.slice(start, sliceEnd), start, end })
     if (nl === -1) break
     start = nl + 1
   }
@@ -97,7 +102,7 @@ function matchesAt(fileLines: readonly string[], oldLines: readonly string[], at
 export function findNearMiss(fileText: string, oldString: string): NearMiss | null {
   if (oldString === '' || fileText.includes(oldString)) return null
   const lines = splitLines(fileText)
-  const rawOld = oldString.split('\n')
+  const rawOld = oldString.split(/\r?\n/)
   // A trailing newline in `old_string` names a whole last line, which the line-wise compare already treats as a full line.
   if (rawOld.length > 1 && rawOld[rawOld.length - 1] === '') rawOld.pop()
   if (rawOld.length > lines.length || rawOld.length > MAX_OLD_LINES || oldString.length > MAX_OLD_CHARS) return null

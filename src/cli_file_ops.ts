@@ -382,6 +382,7 @@ function diagnoseNearMiss(targetText: string, oldText: string): string | undefin
     if (oldText.includes('\n') && !oldText.includes('\r\n') && targetText.includes('\r\n')) {
       return `a near-match exists that differs only by line endings — --old-from/--old-b64 uses LF but the file uses CRLF at that location; check the exact content`
     }
+    return `a near-match exists that differs only by line endings (CRLF vs LF); check the exact content`
   }
   return undefined
 }
@@ -501,8 +502,10 @@ function writeReplacedBuffer(file: string, replacedBuf: Buffer, preWriteStat: fs
 const MAX_CLOSEST_MATCH_COMPARISONS = 2_000_000
 
 function findClosestLineWindow(targetText: string, oldText: string): { lineStart: number; region: string } | undefined {
-  const targetLines = targetText.split('\n')
-  const oldLines = oldText.split('\n')
+  const normTarget = targetText.replace(/\r\n/g, '\n')
+  const normOld = oldText.replace(/\r\n/g, '\n')
+  const targetLines = normTarget.split('\n')
+  const oldLines = normOld.split('\n')
   const windowSize = oldLines.length
   if (windowSize === 0 || windowSize > targetLines.length) return undefined
   if ((targetLines.length - windowSize + 1) * windowSize > MAX_CLOSEST_MATCH_COMPARISONS) return undefined

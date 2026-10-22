@@ -81,6 +81,22 @@ describe('findNearMiss', () => {
     expect(findNearMiss('foo bar\n', 'foo  ')).toBeNull()
     expect(findNearMiss('foo \n', 'foo  ')?.rung).toBe('trailing-whitespace')
   })
+
+  it('matches across CRLF file and LF old_string seamlessly', () => {
+    const file = 'function test() {\r\n  return 42;\r\n}\r\n'
+    // Exact match when line endings are normalized is handled before findNearMiss in diagnoseEditFailure,
+    // but if it differs by indentation or whitespace too, it must still match with CRLF
+    const hit = findNearMiss(file, '    return 42;')
+    expect(hit?.rung).toBe('indentation')
+    expect(hit?.hits[0]?.startLine).toBe(2)
+  })
+
+  it('matches across LF file and CRLF old_string seamlessly', () => {
+    const file = 'function test() {\n  return 42;\n}\n'
+    const hit = findNearMiss(file, '    return 42;\r\n')
+    expect(hit?.rung).toBe('indentation')
+    expect(hit?.hits[0]?.startLine).toBe(2)
+  })
 })
 
 describe('diagnoseEditFailure on a near miss', () => {
