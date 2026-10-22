@@ -1,4 +1,4 @@
-/** Metamorphic check on the symbol and heading channels of `search`: symbol FTS tries every term (AND) and only widens to any term (OR) when that finds nothing, so a query that already needs the OR widening must keep its result order when one more term is appended that no indexed row contains. Search ranking has no oracle, so this pins a relation rather than today's output. Driven through the real path: indexFileSync fills the isolated global index and executeParallelSearch runs each channel as the CLI does. Provenance: HAND-DERIVED. Each fixture row holds "alpha" or "beta" and never both, so the AND attempt of an "alpha beta" query is empty by construction, which the control asserts against the FTS table instead of assuming; the term counts differ per row so no two rows share a bm25 score, which the control also asserts, because src orders by bm25 alone with no tiebreak and a tie would make the order depend on SQLite's plan. */
+/** Metamorphic check on the symbol and heading channels of `search`: symbol FTS tries every term (AND) and only widens to any term (OR) when that finds nothing, so a query that already needs the OR widening must keep its result order when one more term is appended that no indexed row contains. Search ranking has no oracle, so this pins a relation rather than today's output. Driven through the real path: indexFileSync fills the isolated global index and executeParallelSearch runs each channel as the CLI does. Provenance: HAND-DERIVED. Each fixture row holds "alpha" or "beta" and never both, so the AND attempt of an "alpha beta" query is empty by construction, which the control asserts against the FTS table instead of assuming; the term counts differ per row so no two rows share a bm25 score, which the control also asserts so the order checks do not lean on the tiebreak; a second project of four headings that tie on bm25 by construction (tests/search_tiebreak.test.ts holds the per-key cases) covers the property when the tiebreak does decide the order. */
 
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -14,15 +14,22 @@ import { executeParallelSearch } from '../src/search/parallel_search.js'
 
 // One project indexed once: the isolated global db outlives each test, so a per-test project would leave rows for the unscoped control queries to see in whatever order the tests run.
 let dir = ''
+let tieDir = ''
 
 beforeAll(() => {
   dir = project()
+  tieDir = tiedProject()
 })
 
 afterAll(() => {
   closeAllDbs()
   fs.rmSync(dir, { recursive: true, force: true })
+  fs.rmSync(tieDir, { recursive: true, force: true })
 })
+
+// Four headings that share one bm25 score for "sprocket gadget" (two tokens in the name, two in the body, each term in two rows), indexed in an order the tiebreak has to undo: shorter name first gives Gadget kit, Gadget pack, Sprocket kit, Sprocket pack.
+const TIED_DOC = '## Sprocket kit\n\nz\n\n## Gadget kit\n\nz\n\n## Sprocket pack\n\nz\n\n## Gadget pack\n\nz\n'
+const TIED_ORDER = ['heading:Gadget kit', 'heading:Gadget pack', 'heading:Sprocket kit', 'heading:Sprocket pack']
 
 const CODE = [
   "export function alpha_one(): string {\n  return 'alpha'\n}\n",
@@ -70,6 +77,13 @@ function project(): string {
   return root
 }
 
+function tiedProject(): string {
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-search-meta-tie-')))
+  fs.writeFileSync(path.join(root, 'tied.md'), TIED_DOC)
+  indexFileSync(path.join(root, 'tied.md'), globalDbPath())
+  return root
+}
+
 function ftsCount(match: string): number {
   const row = getReadDb(globalDbPath()).prepare('SELECT count(*) AS n FROM symbols_fts WHERE symbols_fts MATCH ?').get(match) as { n: number }
   return row.n
@@ -80,8 +94,8 @@ function bm25Scores(match: string): number[] {
   return rows.map((r) => r.score)
 }
 
-async function channelOrder(query: string, channel: 'symbol' | 'heading'): Promise<string[]> {
-  const summary = await executeParallelSearch({ query, limit: LIMIT, projectRoot: dir, channels: [channel] })
+async function channelOrder(query: string, channel: 'symbol' | 'heading', root: string = dir): Promise<string[]> {
+  const summary = await executeParallelSearch({ query, limit: LIMIT, projectRoot: root, channels: [channel] })
   return summary.results.map((r) => `${r.kind}:${r.name}`)
 }
 
@@ -101,6 +115,24 @@ describe('search symbol and heading channels, metamorphic', () => {
         const order = await channelOrder(query, channel)
         expect(order.length, `${channel} channel of "${query}" must return hits through the fallback`).toBeGreaterThan(1)
       }
+    }
+  })
+
+  describe('with rows tied on bm25', () => {
+    const tieQuery = 'sprocket gadget'
+
+    it('start from rows that really tie and need the OR fallback (control)', () => {
+      expect(ftsCount(sanitizeFtsQuery(tieQuery, 'AND')), 'AND path must find nothing').toBe(0)
+      const scores = bm25Scores(sanitizeFtsQuery(tieQuery, 'OR'))
+      expect(scores).toHaveLength(4)
+      expect(new Set(scores).size, 'the four rows must share one bm25 score').toBe(1)
+    })
+
+    for (const zero of ZERO_MATCH_TERMS) {
+      it(`orders tied rows by the tiebreak, with or without "${zero}" appended`, async () => {
+        expect(await channelOrder(tieQuery, 'heading', tieDir)).toEqual(TIED_ORDER)
+        expect(await channelOrder(`${tieQuery} ${zero}`, 'heading', tieDir)).toEqual(TIED_ORDER)
+      })
     }
   })
 

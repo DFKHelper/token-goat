@@ -19,17 +19,22 @@ interface SymbolRow {
   readonly parent: string | null
 }
 
-function runKindFtsQuery(dbPath: string, match: string, limit: number, rootDir: string | undefined, kind: SymbolKindFilter): SymbolEntry[] {
+// Equal bm25 scores are ordered for the person reading them: a name that is a query term, then the shorter (closer) name, then the shallower file, and file path, line and row id last so the order is total. Terms arrive as one JSON array parameter so the term count never meets SQLite's variable limit.
+const TIE_ORDER =
+  'bm25(symbols_fts), CASE WHEN lower(s.name) IN (SELECT value FROM json_each(?)) THEN 0 ELSE 1 END, length(s.name), ' +
+  "length(s.file_path) - length(replace(s.file_path, '/', '')), s.file_path, s.line_start, s.id"
+
+function runKindFtsQuery(dbPath: string, match: string, queryTerms: string[], limit: number, rootDir: string | undefined, kind: SymbolKindFilter): SymbolEntry[] {
   const scope = rootDir !== undefined ? ownProjectScope('s.file_path', rootDir) : undefined
   const kindClause = 'equals' in kind ? 's.kind = ?' : 's.kind != ?'
   // FTS5's MATCH operator and bm25() must name the FTS table directly: a table alias resolves as a bare column reference.
   const sql =
     `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent ` +
     `FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid ` +
-    `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} AND ${kindClause} ORDER BY bm25(symbols_fts) LIMIT ?`
+    `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} AND ${kindClause} ORDER BY ${TIE_ORDER} LIMIT ?`
   const params: (string | number)[] = [match]
   if (scope !== undefined) params.push(...scope.params)
-  params.push('equals' in kind ? kind.equals : kind.notEquals, limit)
+  params.push('equals' in kind ? kind.equals : kind.notEquals, JSON.stringify(queryTerms), limit)
   const rows = getReadDb(dbPath).prepare(sql).all(...params) as SymbolRow[]
   return rows.map((row) => ({
     filePath: row.file_path,
@@ -47,12 +52,13 @@ function runKindFtsQuery(dbPath: string, match: string, limit: number, rootDir: 
 export function searchSymbolsFtsByKind(query: string, limit: number, dbPath: string, rootDir: string | undefined, kind: SymbolKindFilter): SymbolEntry[] {
   const andMatch = sanitizeFtsQuery(query, 'AND')
   if (andMatch === '') return []
+  const terms = query.split(/\s+/).filter((t) => t.length > 0).map((t) => t.toLowerCase())
   try {
-    const andResults = runKindFtsQuery(dbPath, andMatch, limit, rootDir, kind)
+    const andResults = runKindFtsQuery(dbPath, andMatch, terms, limit, rootDir, kind)
     if (andResults.length > 0) return andResults
     const orMatch = sanitizeFtsQuery(query, 'OR')
     if (orMatch === andMatch) return andResults
-    return runKindFtsQuery(dbPath, orMatch, limit, rootDir, kind)
+    return runKindFtsQuery(dbPath, orMatch, terms, limit, rootDir, kind)
   } catch {
     return []
   }
