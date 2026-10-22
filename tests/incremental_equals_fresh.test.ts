@@ -63,7 +63,8 @@ function render(stem: string, spec: Spec): string {
   }
 }
 
-const TMP_BASE = fs.realpathSync(os.tmpdir())
+// realpathSync.native so the base is the OS's own spelling; the Windows runner reports an 8.3 short name (RUNNER~1) otherwise.
+const TMP_BASE = fs.realpathSync.native(os.tmpdir())
 let ROOT: string
 let PROJ: string
 let DATA: string
@@ -126,13 +127,32 @@ function onlyIn(a: string[], b: string[]): string[] {
   return extra
 }
 
-/** Rows in the vec0 table, or -1 where sqlite-vec is not loadable and the table does not exist. */
+/** Rows in the vec0 table; the chunk-row assertion earlier in the run has already failed by name where sqlite-vec is absent. */
 function vectorCount(dbPath: string): number {
-  try {
-    return getDb(dbPath).prepare('SELECT COUNT(*) FROM chunk_vectors').pluck().get() as number
-  } catch {
-    return -1
+  return getDb(dbPath).prepare('SELECT COUNT(*) FROM chunk_vectors').pluck().get() as number
+}
+
+type EditKind = 'create' | 'modify' | 'rename' | 'delete'
+
+/** The edit kinds of one run: one of each guaranteed, the rest drawn 20/45/15/20 with deletes capped so the tree never shrinks below its floor, then shuffled. Pure in the rng, so a seed replays and every seed covers all four kinds. */
+function editSchedule(rng: () => number, edits: number): EditKind[] {
+  const out: EditKind[] = ['create', 'modify', 'rename', 'delete']
+  let deletes = 1
+  while (out.length < edits) {
+    const roll = rng()
+    if (roll < 0.2) out.push('create')
+    else if (roll < 0.65) out.push('modify')
+    else if (roll < 0.8) out.push('rename')
+    else if (deletes < 8) {
+      deletes += 1
+      out.push('delete')
+    } else out.push('modify')
   }
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    ;[out[i], out[j]] = [out[j] as EditKind, out[i] as EditKind]
+  }
+  return out
 }
 
 /** Everything a second drain must leave alone, ids included. */
@@ -151,6 +171,17 @@ interface Plan {
   renames: [string, string][]
   batches: { edits: string[]; queued: string[] }[]
 }
+
+describe('the edit schedule', () => {
+  it('gives seeds 1 to 40 thirty edits each, covering create, modify, rename and delete', () => {
+    for (let seed = 1; seed <= 40; seed++) {
+      const s = editSchedule(makeRng(seed), EDITS)
+      expect(s, `seed ${seed}`).toHaveLength(EDITS)
+      expect([...new Set(s)].sort(), `seed ${seed}`).toEqual(['create', 'delete', 'modify', 'rename'])
+      expect(s.filter((k) => k === 'delete').length, `seed ${seed}`).toBeLessThanOrEqual(8)
+    }
+  })
+})
 
 describe('an incremental drain equals a fresh index', () => {
   it('leaves the rows a fresh cmdIndex of the final tree writes, and a second drain changes nothing', async () => {
@@ -213,6 +244,7 @@ describe('an incremental drain equals a fresh index', () => {
     expect(await drain(), msg('the initial drain indexed nothing')).toBeGreaterThan(0)
 
     // Thirty edits in drained batches of one to four.
+    const schedule = editSchedule(rng, EDITS)
     let done = 0
     let drainedEdits = 0
     while (done < EDITS) {
@@ -220,13 +252,13 @@ describe('an incremental drain equals a fresh index', () => {
       const edits: string[] = []
       for (let i = 0; i < size; i++) {
         const lives = [...plan.live.keys()].sort()
-        const roll = rng()
-        if (roll < 0.2 || lives.length < 8) {
+        const kind = schedule[done + i] as EditKind
+        if (kind === 'create') {
           const rel = pick(freeRels())
           write(rel, newSpec(stemOf(rel), extOf(rel)))
           enqueue(rel)
           edits.push(`create ${rel}`)
-        } else if (roll < 0.65) {
+        } else if (kind === 'modify') {
           const rel = pick(lives)
           const spec = plan.live.get(rel) as Spec
           const how = Math.floor(rng() * 4)
@@ -238,7 +270,7 @@ describe('an incremental drain equals a fresh index', () => {
           write(rel, next)
           enqueue(rel)
           edits.push(`modify ${rel}`)
-        } else if (roll < 0.8) {
+        } else if (kind === 'rename') {
           const rel = pick(lives)
           const sameExt = freeRels().filter((r) => extOf(r) === extOf(rel))
           const to = pick(sameExt)
@@ -267,7 +299,7 @@ describe('an incremental drain equals a fresh index', () => {
     }
     expect(drainedEdits, msg('the sequence did not run the planned number of edits')).toBe(EDITS)
     const kinds = new Set(plan.batches.flatMap((b) => b.edits.map((e) => e.split(' ')[0])))
-    expect([...kinds].sort(), msg('the seeded sequence did not exercise every edit kind; widen EDITS or the weights')).toEqual(['create', 'delete', 'modify', 'rename'])
+    expect([...kinds].sort(), msg('the executed sequence did not exercise every edit kind though editSchedule guarantees each')).toEqual(['create', 'delete', 'modify', 'rename'])
     for (const [from, to] of plan.renames) {
       const batch = plan.batches.find((b) => b.edits.some((e) => e === `rename ${from} -> ${to}`))
       expect(batch?.queued, msg(`rename ${from} -> ${to} did not enqueue both paths`)).toEqual(expect.arrayContaining([from, to]))
@@ -280,7 +312,7 @@ describe('an incremental drain equals a fresh index', () => {
     for (const rel of live) {
       const names = new Set(getDb(path.join(DATA, 'global.db')).prepare('SELECT name FROM symbols WHERE file_path = ?').pluck().all(abs(rel)) as string[])
       for (const u of (plan.live.get(rel) as Spec).units) {
-        expect([...names].some((n) => n === u.name || n.includes(u.name)), msg(`${rel}: unit ${u.name} has no symbol row after the drains`)).toBe(true)
+        expect(names.has(u.name),msg(`${rel}: unit ${u.name} has no symbol row after the drains`)).toBe(true)
       }
     }
 
@@ -293,7 +325,7 @@ describe('an incremental drain equals a fresh index', () => {
     for (const [table, sql] of Object.entries(TABLES)) {
       const inc = tuples(incrementalDb, sql)
       const fresh = tuples(FRESH_DB, sql)
-      expect(fresh.length, msg(`the fresh index wrote no ${table} rows, so equality below would prove nothing`)).toBeGreaterThan(0)
+      expect(fresh.length, msg(`the fresh index wrote no ${table} rows (for chunks: sqlite-vec or onnxruntime is probably missing on this machine), so equality below would prove nothing`)).toBeGreaterThan(0)
       const diff = { onlyIncremental: onlyIn(inc, fresh).slice(0, 8), onlyFresh: onlyIn(fresh, inc).slice(0, 8) }
       expect(diff, msg(`${table} rows differ between the incremental drains and a fresh index`)).toEqual({ onlyIncremental: [], onlyFresh: [] })
     }
@@ -301,7 +333,7 @@ describe('an incremental drain equals a fresh index', () => {
     expect(markdownRows.length, msg('no markdown heading rows, so the sections half of the comparison is empty')).toBeGreaterThan(0)
     const chunkCount = getDb(incrementalDb).prepare('SELECT COUNT(*) FROM chunks').pluck().get() as number
     const vectors = vectorCount(incrementalDb)
-    if (vectors >= 0) expect(vectors, msg('chunk_vectors rows do not match chunks rows after the drains')).toBe(chunkCount)
+    expect(vectors, msg('chunk_vectors rows do not match chunks rows after the drains')).toBe(chunkCount)
 
     // A second drain, even with every path re-queued, changes nothing: not a row, not an id.
     const before = fullSnapshot(incrementalDb)
