@@ -84,6 +84,9 @@ export function readScopeDir(dir: string, root: string): ScopeRead {
   if (ignored.exitCode !== 1) return { passReason: 'the scope is ignored or not in a git work tree' }
   const listed = runGit(['-c', 'core.ignorecase=false', 'ls-files', '-z', '-co', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
   if (listed.exitCode !== 0) return { passReason: 'git could not list the scope' }
+  // A tracked file that .gitignore also matches is listed by `-c`, but ripgrep applies .gitignore to it and does not search it, so the scope cannot be listed from git (rg 15.1.0, captured in tests/fixtures/rg_ignore_anchoring.txt).
+  const trackedIgnored = runGit(['-c', 'core.ignorecase=false', 'ls-files', '-z', '-c', '-i', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
+  if (trackedIgnored.exitCode !== 0 || trackedIgnored.stdout !== '') return { passReason: 'a tracked file is also ignored' }
   const everything = [...new Set(listed.stdout.split('\0').filter((e) => e !== ''))]
   // The `.ignore` and `.rgignore` rules ripgrep applies after git's own: a file they drop is not searched, so it must not count as a possible match.
   const rgDropped = ripgrepIgnoredFiles(dir, everything, SCOPE_GIT_TIMEOUT_MS)

@@ -325,7 +325,18 @@ describe('a directory-scoped Grep and the .ignore and .rgignore files ripgrep re
     }
 
     it('captured a row for every tree', () => {
-      expect([...captured.keys()].sort()).toEqual(Object.keys(TREES).sort())
+      expect([...captured.keys()].sort()).toEqual([...Object.keys(TREES), 'tracked-and-ignored'].sort())
+    })
+
+    it('passes through when a tracked file is also matched by .gitignore, which ripgrep does not search', async () => {
+      const dir = project({ ...BASE, 'mod.py': MODULE })
+      execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' })
+      execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'init'], { cwd: dir, stdio: 'ignore' })
+      expect(captured.get('tracked-and-ignored'), 'ripgrep skips the tracked dup.py').not.toContain('dup.py')
+      expect('passReason' in readScopeDir(dir, dir), 'before the rule, nothing is ignored').toBe(false)
+      fs.writeFileSync(path.join(dir, '.gitignore'), 'dup.py\n', 'utf8')
+      expect(readScopeDir(dir, dir), 'dup.py is tracked and ignored').toEqual({ passReason: 'a tracked file is also ignored' })
+      expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
     })
 
     for (const name of Object.keys(TREES).filter((n) => n !== 'anchored-in-parent')) {

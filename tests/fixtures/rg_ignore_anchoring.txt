@@ -47,3 +47,11 @@ root-negated-anchor	sub/deep/gen.ts
 root-negated-anchor	sub/gen.ts
 root-negated-anchor	sub/x/a.py
 root-negated-anchor	x/a.py
+tracked-and-ignored	.gitignore
+tracked-and-ignored	a.ts
+tracked-and-ignored	gen.ts
+tracked-and-ignored	sub/a.ts
+tracked-and-ignored	sub/deep/gen.ts
+tracked-and-ignored	sub/gen.ts
+tracked-and-ignored	sub/x/a.py
+tracked-and-ignored	x/a.py
