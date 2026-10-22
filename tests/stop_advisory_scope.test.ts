@@ -52,7 +52,7 @@ describe('edits the advisory is about', () => {
     expect(stopHandler(stopEvent(sid)).hookType).toBe('pass')
   })
 
-  it('an edit outside the session project root needs no check, whatever its language', () => {
+  it('an edit under the OS temp dir but outside the session project root needs no check, whatever its language', () => {
     const sid = newSession()
     const project = path.join(base, 'proj')
     const elsewhere = path.join(base, 'other')
@@ -172,6 +172,8 @@ describe('script checks', () => {
     'python scripts/check_related_skills.py',
     'python scripts/anything.py --self-test',
     'cd repo && python scripts/validate_x.py',
+    'python scripts/check_x.py scripts/check_x.py',
+    'python scripts/check_x.py scripts/ tests/test_a.py::test_b',
   ])('counts %j', (command) => {
     expect(isVerificationCommand(command)).toBe(true)
     expect(mayBeVerificationCommand(command)).toBe(true)
@@ -196,6 +198,9 @@ describe('script checks', () => {
     'python scripts/anything.py --self-test --list',
     'python scripts/check_x.py help',
     'python3 tools/run_tests.py -k parser',
+    'python scripts/check_x.py --self-test=0',
+    'python scripts/check_x.py report.json',
+    'python scripts/check_x.py out/result.txt',
   ])('does not count %j', (command) => {
     expect(isVerificationCommand(command)).toBe(false)
   })
