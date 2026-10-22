@@ -31,9 +31,13 @@ export interface ColdGapUsage {
   cacheWrite1h: number
 }
 
-/** Price weights of the audit's billed-equivalent model: base input 1, so a cache write is 1.25 and a cache read 0.1. Passed in so this module never imports session_audit.ts. */
+/** Cache-write price of the 1-hour tier in base-input units (Anthropic prompt-caching docs, https://platform.claude.com/docs/en/build-with-claude/prompt-caching, read 2026-10-22: "1-hour cache writes cost 2x base input tokens"). */
+export const COLD_WRITE_MULTIPLIER_1H = 2
+
+/** Price weights in base-input units: a 5-minute-tier cache write 1.25 (docs: "5-minute cache writes cost 25 percent more than base input tokens"), a 1-hour-tier write 2, a cache read 0.1. The 5-minute and read weights are the audit's own constants, passed in so this module never imports session_audit.ts. */
 export interface ColdGapWeights {
   cacheWrite: number
+  cacheWrite1h: number
   cacheRead: number
 }
 
@@ -42,9 +46,9 @@ export interface ColdGapToolRow {
   /** Tool name, `Bash:<class>` for a Bash call, or {@link COLD_NO_TOOL_BUCKET}. */
   tool: string
   coldRewrites: number
-  /** Billed-equivalent tokens of the whole cold requests (input + 1.25 x cache-write + 0.1 x cache-read; output is not priced by the audit's model). */
+  /** Billed-equivalent tokens of the whole cold requests (input + tier-priced cache-write + 0.1 x cache-read; output is not priced by the audit's model). */
   billedEquivTokens: number
-  /** What the re-write cost over reading the same tokens from cache: cache-write tokens x (1.25 - 0.1). The upper bound a warm cache would have saved. */
+  /** What the re-write cost over reading the same tokens from cache: cache-write tokens x (their tier's write weight - 0.1). The upper bound a warm cache would have saved. */
   rewriteBilledEquivTokens: number
   /** billedEquivTokens over the whole kind's billed-equivalent tokens. */
   billedShare: number
@@ -85,6 +89,8 @@ export interface ColdGapCensus {
 interface UsageSum {
   input: number
   cacheWrite: number
+  /** The part of cacheWrite priced at the 1-hour tier rate; the rest is priced at the 5-minute rate. */
+  cacheWrite1h: number
   cacheRead: number
 }
 
@@ -112,13 +118,14 @@ interface AccState {
   sessions: SessionAcc[]
 }
 
-const zeroSum = (): UsageSum => ({ input: 0, cacheWrite: 0, cacheRead: 0 })
+const zeroSum = (): UsageSum => ({ input: 0, cacheWrite: 0, cacheWrite1h: 0, cacheRead: 0 })
 
 const emptyKind = (): KindAcc => ({ sessions: 0, requests: 0, total: zeroSum(), cold: 0, coldTotal: zeroSum(), byTool: {} })
 
 function addSum(into: UsageSum, u: ColdGapUsage): void {
   into.input += u.input
   into.cacheWrite += u.cacheWrite
+  into.cacheWrite1h += Math.min(u.cacheWrite1h, u.cacheWrite)
   into.cacheRead += u.cacheRead
 }
 
@@ -263,8 +270,9 @@ export function newColdGapAccumulator(): ColdGapAccumulator {
       }
     },
     finish(weights) {
-      const billed = (s: UsageSum): number => s.input + weights.cacheWrite * s.cacheWrite + weights.cacheRead * s.cacheRead
-      const rewrite = (s: UsageSum): number => (weights.cacheWrite - weights.cacheRead) * s.cacheWrite
+      const writeCost = (s: UsageSum): number => weights.cacheWrite * (s.cacheWrite - s.cacheWrite1h) + weights.cacheWrite1h * s.cacheWrite1h
+      const billed = (s: UsageSum): number => s.input + writeCost(s) + weights.cacheRead * s.cacheRead
+      const rewrite = (s: UsageSum): number => writeCost(s) - weights.cacheRead * s.cacheWrite
       const share = (part: number, whole: number): number => (whole === 0 ? 0 : part / whole)
       const rollup = (k: KindAcc): ColdGapKindRollup => {
         const total = billed(k.total)
@@ -305,6 +313,7 @@ export function newColdGapAccumulator(): ColdGapAccumulator {
 function addUsageSums(into: UsageSum, from: UsageSum): void {
   into.input += from.input
   into.cacheWrite += from.cacheWrite
+  into.cacheWrite1h += from.cacheWrite1h
   into.cacheRead += from.cacheRead
 }
 
@@ -327,7 +336,7 @@ const TOOL_ROWS_SHOWN = 12
 export function formatColdGap(c: ColdGapCensus): string[] {
   const lines: string[] = []
   lines.push('## Cold cache re-writes (gap since the previous request outlived the cache TTL, then the prefix was written again)')
-  lines.push(`TTL 5 min for 5-minute-tier writes, 1 h for 1-hour-tier writes; a re-write writes >=${fmt(COLD_MIN_CACHE_WRITE_TOKENS)} cache tokens and reads <${pct(COLD_MAX_READ_SHARE)} of (read + write). Billed-equivalent = input + 1.25 x cache-write + 0.1 x cache-read (output not priced). Attributed to the tool call the session waited on.`)
+  lines.push(`TTL 5 min for 5-minute-tier writes, 1 h for 1-hour-tier writes; a re-write writes >=${fmt(COLD_MIN_CACHE_WRITE_TOKENS)} cache tokens and reads <${pct(COLD_MAX_READ_SHARE)} of (read + write). Billed-equivalent = input + cache-write (1.25 x for the 5-minute tier, 2 x for the 1-hour tier) + 0.1 x cache-read (output not priced). Attributed to the tool call the session waited on.`)
   for (const [label, k] of [['Main sessions', c.main], ['Subagents', c.subagent]] as const) {
     lines.push(`${label}: ${fmt(k.sessions)} transcripts, ${fmt(k.requests)} requests, cold re-writes ${fmt(k.coldRewrites)}, billed-equiv ${fmt(k.coldBilledEquivTokens)} of ${fmt(k.billedEquivTokens)} (${pct(k.coldBilledShare)}), avoidable write premium ${fmt(k.coldRewriteBilledEquivTokens)}`)
     for (const t of k.byTool.slice(0, TOOL_ROWS_SHOWN)) {

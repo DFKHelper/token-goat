@@ -56,7 +56,7 @@ const WARM = transcript([
   { id: 'w2', lines: [at(5, 20)], usage: usage(10, 20000, 0, '5m') },
 ])
 
-// 1h tier: a 30 minute gap is warm; a 61.5 minute gap after an Agent call is cold.
+// 1h tier: a 30 minute gap is warm; a 61.5 minute gap (over 3600 s) after an Agent call is cold, and its cache write is priced at 2x base input (Anthropic prompt-caching docs, https://platform.claude.com/docs/en/build-with-claude/prompt-caching, read 2026-10-22), so 10 + 2 x 20000 = 40010.
 const ONE_HOUR = transcript([
   { id: 'h1', lines: [at(0)], usage: usage(10, 5000, 0, '1h') },
   { id: 'h2', lines: [at(30)], usage: usage(10, 20000, 0, '1h'), tool: { name: 'Agent', input: { prompt: SECRET } } },
@@ -103,8 +103,8 @@ describe('cold gap accounting', () => {
 
   it('does not count a 30 minute gap in a 1h-tier session, and counts a 61.5 minute one under the tool awaited', () => {
     const row = summary.coldGap.sessions.find((s) => s.session === 'main-1h')
-    expect(row).toMatchObject({ kind: 'main', requests: 3, coldRewrites: 1, coldBilledEquivTokens: 25010 })
-    expect(summary.coldGap.main.byTool.find((t) => t.tool === 'Agent')).toMatchObject({ coldRewrites: 1, billedEquivTokens: 25010 })
+    expect(row).toMatchObject({ kind: 'main', requests: 3, coldRewrites: 1, coldBilledEquivTokens: 40010, billedEquivTokens: 90030 })
+    expect(summary.coldGap.main.byTool.find((t) => t.tool === 'Agent')).toMatchObject({ coldRewrites: 1, billedEquivTokens: 40010, rewriteBilledEquivTokens: 38000 })
   })
 
   it('counts a gap with no preceding tool call under the explicit (none) bucket', () => {
@@ -123,9 +123,9 @@ describe('cold gap accounting', () => {
 
   it('keeps main sessions and subagents apart', () => {
     const main = summary.coldGap.main
-    expect(main).toMatchObject({ sessions: 3, requests: 7, coldRewrites: 2, coldBilledEquivTokens: 62520, billedEquivTokens: 131320 })
-    expect(main.byTool.map((t) => t.tool)).toEqual(['(none)', 'Agent'])
-    expect(summary.coldGap.sessions.map((s) => s.session)).toEqual(['agent-cold', 'main-none', 'main-1h'])
+    expect(main).toMatchObject({ sessions: 3, requests: 7, coldRewrites: 2, coldBilledEquivTokens: 77520, billedEquivTokens: 165070, coldRewriteBilledEquivTokens: 72500 })
+    expect(main.byTool.map((t) => t.tool)).toEqual(['Agent', '(none)'])
+    expect(summary.coldGap.sessions.map((s) => s.session)).toEqual(['agent-cold', 'main-1h', 'main-none'])
     expect(summary.coldGap.sessions[0]).toMatchObject({ kind: 'subagent', coldRewrites: 2 })
   })
 

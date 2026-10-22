@@ -7,7 +7,7 @@ import { claudeConfigDir } from './claude_config_dir.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 import * as readline from 'node:readline'
 
-import { type ColdGapAccumulator, type ColdGapCensus, type ColdGapFile, coldGapToolLabel, emptyColdGapCensus, newColdGapAccumulator } from './cold_gap.js'
+import { COLD_WRITE_MULTIPLIER_1H, type ColdGapAccumulator, type ColdGapCensus, type ColdGapFile, coldGapToolLabel, emptyColdGapCensus, newColdGapAccumulator } from './cold_gap.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
 import type { ToolErrorAccumulator, ToolErrorCensus } from './tool_error_census.js'
 
@@ -1290,7 +1290,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
   summary.editErrorBaseline.rate = summary.editErrorBaseline.totalEdits === 0 ? 0 : summary.editErrorBaseline.totalErrors / summary.editErrorBaseline.totalEdits
   summary.calibration = computeCalibration(summary.estimated, summary.measured)
   summary.toolErrors = toolErrorAcc.finish()
-  summary.coldGap = coldGapAcc.finish({ cacheWrite: CACHE_WRITE_MULTIPLIER, cacheRead: CACHE_READ_MULTIPLIER })
+  summary.coldGap = coldGapAcc.finish({ cacheWrite: CACHE_WRITE_MULTIPLIER, cacheWrite1h: COLD_WRITE_MULTIPLIER_1H, cacheRead: CACHE_READ_MULTIPLIER })
   summary.runtimeMs = Date.now() - started
   return summary
 }
