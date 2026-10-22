@@ -52,7 +52,9 @@ function runKindFtsQuery(dbPath: string, match: string, queryTerms: string[], li
 /** The words a query's MATCH expression searches for, folded the way the database folds a name: sanitizeFtsQuery's own terms (so this cannot drift from the split MATCH uses), each cut at the characters the unicode61 tokenizer treats as separators. */
 function exactNameTerms(query: string): string[] {
   const words = sanitizeFtsQuery(query, 'OR').split(' OR ').filter((w) => w !== '').map((w) => w.slice(1, -1).replaceAll('""', '"'))
-  return words.flatMap((w) => w.match(/[\p{L}\p{N}\p{Co}]+/gu) ?? []).map(foldCase)
+  // The whole word (and the word without wrapping punctuation) stays a term beside its tokens, so `foo_bar` and `$el` still equal a name spelled that way.
+  const trimmed = (w: string): string => w.replace(/^[^\p{L}\p{N}_$]+|[^\p{L}\p{N}_$]+$/gu, '')
+  return words.flatMap((w) => [w, trimmed(w), ...(w.match(/[\p{L}\p{N}\p{Co}]+/gu) ?? [])]).filter((t) => t !== '').map(foldCase)
 }
 
 /** Same matching as index_reader.ts::searchSymbolsFts (every term first, any term when that finds nothing), restricted to one side of `kind`, but not the same ordering: this adds a tiebreak for equal bm25 scores (see TIE_ORDER), while index_reader.ts keeps `ORDER BY bm25` alone because editing it moves EMBED_FINGERPRINT and would make every user re-embed their index. Degrades to empty when FTS5 is missing or the MATCH expression is invalid. */

@@ -84,6 +84,27 @@ describe('symbol and heading channel tiebreaks', () => {
     })
   }
 
+
+  // gz is the shorter name and comes first in the file, so only the exact-name key can put the whole-word name first; each pair has the same token count and the same hits per term.
+  it('puts a snake_case name first for its own query', () => {
+    const root = project({ 'a.ts': 'export function gz() {\n  foo_bar(foo_bar)\n}\nexport function foo_bar() {\n  return 1\n}\n' })
+    expectAllTied(root, 'foo_bar', 2, "s.kind != 'heading'")
+    expect(found(root, 'foo_bar', CODE).map((h) => h.name)).toEqual(['foo_bar', 'gz'])
+  })
+
+  it('puts a $-prefixed name first for its own query', () => {
+    const root = project({ 'a.ts': 'export function gz() {\n  $el($el)\n}\nexport function $el() {\n  return 1\n}\n' })
+    expectAllTied(root, '$el', 2, "s.kind != 'heading'")
+    expect(found(root, '$el', CODE).map((h) => h.name)).toEqual(['$el', 'gz'])
+  })
+
+  // Markdown headings can hold a hyphen; "foo bar" has the same tokens and length as "foo-bar", so the earlier path would win without the key.
+  it('puts a hyphenated heading first for its own query', () => {
+    const root = project({ 'z.md': '## foo-bar\n', 'a.md': '## foo bar\n' })
+    expectAllTied(root, 'foo-bar', 2)
+    expect(found(root, 'foo-bar').map((h) => `${h.file}:${h.name}`)).toEqual(['z.md:foo-bar', 'a.md:foo bar'])
+  })
+
   // The names are École and gz: gz is the shorter name, so only the exact-name key can put École first.
   it('folds non-ASCII case the same way on the query and the name', () => {
     const root = project({ 'a.ts': TWO_CODE_ROWS.replaceAll('gizmo', 'École') })
