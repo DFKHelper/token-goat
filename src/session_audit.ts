@@ -406,8 +406,7 @@ const DENY_TEMPLATES: Array<{ kind: string; re: RegExp; tool: 'Read' | 'Skill' }
   { kind: 'doc_unchanged_deny', re: /is unchanged since last read\. (?:Use|Run) `token-goat (?:section|read|skeleton|json-query|yaml-query)/, tool: 'Read' },
   { kind: 'doc_diff_deny', re: /Content changed since last read of [\s\S]*?(?:Use|Run) `token-goat (?:section|read|skeleton|json-query|yaml-query)/, tool: 'Read' },
   { kind: 'read_served_deny', re: /was already served in this session, byte for byte/, tool: 'Read' },
-  // Its own kind rather than folded into read_served_deny above, whose stat name this branch shares: the wording is disjoint (a span, not a byte-for-byte whole serve) and so is the follow-up it invites, since the model still needs part of that span and has to choose a narrower call rather than recall the whole result.
-  // `were` since the range deny's grammar was fixed; `was` in transcripts written before it.
+  // Its own kind rather than folded into read_served_deny above, whose stat name this branch shares: the wording is disjoint (a span, not a byte-for-byte whole serve) and so is the follow-up it invites, since the model still needs part of that span and has to choose a narrower call rather than recall the whole result. `were` since the range deny's grammar was fixed; `was` in transcripts written before it.
   { kind: 'range_reread_deny', re: /Lines \d+\.\.\d+ of [\s\S]*?(?:was|were) already read this session/, tool: 'Read' },
   { kind: 'markdown_already_read_deny', re: /Markdown file already read this session\./, tool: 'Read' },
   { kind: 'read_count_deny', re: /(?:Read|Tried to read) this file \d+ times already/, tool: 'Read' },
