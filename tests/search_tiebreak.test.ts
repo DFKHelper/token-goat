@@ -76,6 +76,21 @@ describe('symbol and heading channel tiebreaks', () => {
     expect(found(root, 'gizmo').map((h) => `${h.file}:${h.line}`)).toEqual(['a.md:1', 'a.md:5', 'b.md:1', 'b.md:5'])
   })
 
+  for (const [label, query] of [['a trailing comma', 'gizmo,'], ['double quotes', '"gizmo"'], ['parentheses', '(gizmo)']] as const) {
+    it(`still puts the exact name first when the query term carries ${label}`, () => {
+      const root = project({ 'a.ts': TWO_CODE_ROWS })
+      expectAllTied(root, 'gizmo', 2, "s.kind != 'heading'")
+      expect(found(root, query, CODE).map((h) => h.name)).toEqual(['gizmo', 'gz'])
+    })
+  }
+
+  // The names are École and gz: gz is the shorter name, so only the exact-name key can put École first.
+  it('folds non-ASCII case the same way on the query and the name', () => {
+    const root = project({ 'a.ts': TWO_CODE_ROWS.replaceAll('gizmo', 'École') })
+    expectAllTied(root, 'école', 2, "s.kind != 'heading'")
+    expect(found(root, 'école', CODE).map((h) => h.name)).toEqual(['École', 'gz'])
+  })
+
   it('matches a name case-insensitively and through the any-term fallback', () => {
     const root = project({ 'a.ts': TWO_CODE_ROWS.replace('function gizmo', 'function GIZMO') })
     expect(found(root, 'gizmo nothingmatchesthis', CODE).map((h) => h.name)).toEqual(['GIZMO', 'gz'])
