@@ -1,5 +1,6 @@
 /** Plain-text rendering of the summary session_audit.ts builds, for `token-goat session-audit`. The `--json` form prints that same summary without passing through here. */
 
+import { formatColdGap } from './cold_gap.js'
 import { displaySafeText } from './paths.js'
 import { BASH_SMALL_RESULT_MAX_BYTES, type EstimatedCategory, type SessionAuditSummary } from './session_audit.js'
 
@@ -29,6 +30,8 @@ export function formatSessionAudit(s: SessionAuditSummary): string {
   lines.push(`Input, cache-read:  ${fmt(m.cacheReadTokens)}`)
   const totalInput = m.inputTokens + m.cacheCreationTokens + m.cacheReadTokens
   lines.push(`Cache-read share of input: ${pct(m.cacheReadTokens, totalInput)}`)
+  lines.push('')
+  lines.push(...formatColdGap(s.coldGap))
   lines.push('')
   lines.push('## Estimated content attribution (chars/3 heuristic; NOT billed units)')
   const e = s.estimated

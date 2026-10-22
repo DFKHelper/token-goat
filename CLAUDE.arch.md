@@ -437,6 +437,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/cli_upgrade.ts`](src/cli_upgrade.ts) | Upgrade command for token-goat. |
 | [`src/cli_waste.ts`](src/cli_waste.ts) | CLI handler for `token-goat waste`. |
 | [`src/codex_rules.ts`](src/codex_rules.ts) | Codex's half of rewrite_permission.ts: whether a Codex shell rewrite may ship, read off the prefix rules in every Codex rules layer. |
+| [`src/cold_gap.ts`](src/cold_gap.ts) | Cold-cache re-write accounting behind `session-audit`. |
 | [`src/command_error.ts`](src/command_error.ts) | The one stderr rendering of a command failure (`token-goat: <message>`) and the error class command handlers throw to reach it. |
 | [`src/command_intent.ts`](src/command_intent.ts) | Intent-based suggestions for command names that don't exist. |
 | [`src/config_commands.ts`](src/config_commands.ts) | D3 commands: config, project, compact-doc, fetch-image, history. |

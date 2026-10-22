@@ -7,6 +7,7 @@ import { claudeConfigDir } from './claude_config_dir.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 import * as readline from 'node:readline'
 
+import { type ColdGapAccumulator, type ColdGapCensus, type ColdGapFile, coldGapToolLabel, emptyColdGapCensus, newColdGapAccumulator } from './cold_gap.js'
 import { estimateTokensFromLength } from './overflow_guard.js'
 import type { ToolErrorAccumulator, ToolErrorCensus } from './tool_error_census.js'
 
@@ -176,6 +177,8 @@ export interface SessionAuditSummary {
   windowDays: number
   /** Failed tool calls by tool and by model, classified by tool_error_class.ts. */
   toolErrors: ToolErrorCensus
+  /** Cold cache re-writes by tool and command class, main sessions and subagents apart (see cold_gap.ts). */
+  coldGap: ColdGapCensus
 }
 
 /** One deny's measured real-world outcome, tested in this fixed order so the six buckets partition every deny exactly once: a later re-read after a compaction boundary is correct by design and must never fall through to 'retried'; a shell command (sed/grep/cat/...) that reads the denied file's basename is 'shell_read' -- a real substitute the agent found on its own, not an escape from the census -- and is tested after 'substituted' so a `node <path>/token-goat.mjs` invocation (also a shell command) is never miscounted as a plain shell read; and a transcript that ends too soon to observe 3 calls is 'unresolved' rather than the misleadingly final-sounding 'abandoned'. */
@@ -632,11 +635,12 @@ interface LaneObservation {
   agentType: string
 }
 
-async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>, attachmentMap: Map<string, AttachmentKindRollup>, hookMap: Map<string, HookOutputRollup>, laneObservations: LaneObservation[], bashHeadMap: Map<string, BashHeadRollup>, denyRows: DenyRawRow[], toolErrorAcc: ToolErrorAccumulator): Promise<void> {
+async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: Map<string, ToolRollup>, attachmentMap: Map<string, AttachmentKindRollup>, hookMap: Map<string, HookOutputRollup>, laneObservations: LaneObservation[], bashHeadMap: Map<string, BashHeadRollup>, denyRows: DenyRawRow[], toolErrorAcc: ToolErrorAccumulator, coldGapAcc: ColdGapAccumulator): Promise<void> {
   const isLane = filePath.split(/[\\/]/).includes('subagents')
   let laneFirstPrefix: number | null = null
   let laneBriefBytes = -1
   const toolNameById = new Map<string, string>()
+  const coldFile: ColdGapFile = coldGapAcc.beginFile(path.basename(filePath, path.extname(filePath)), isLane ? 'subagent' : 'main')
   // Tool-error census: tool_use id -> the issuing line's model, and for Bash the full command, which classifyToolError needs to tell an empty grep from any other exit 1.
   const modelById = new Map<string, string>()
   const bashCommandById = new Map<string, string>()
@@ -738,6 +742,9 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
       const message = (obj['message'] !== null && typeof obj['message'] === 'object' && !Array.isArray(obj['message']) ? obj['message'] : undefined) as TranscriptMessage | undefined
       if (type === 'assistant' && message !== undefined) {
         const usage = message.usage !== null && typeof message.usage === 'object' ? message.usage : undefined
+        const coldLane = obj['isSidechain'] === true ? 1 : 0
+        const coldMs = typeof obj['timestamp'] === 'string' && Number.isFinite(Date.parse(obj['timestamp'])) ? Date.parse(obj['timestamp']) : null
+        if (typeof message.id === 'string' && usageSeenIds.has(message.id)) coldFile.line(coldLane, message.id, coldMs)
         if (usage !== undefined && typeof message.id === 'string' && !usageSeenIds.has(message.id)) {
           usageSeenIds.add(message.id)
           const num = (k: string): number => (typeof usage[k] === 'number' ? (usage[k] as number) : 0)
@@ -759,6 +766,9 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
           }
           if (isLane && laneFirstPrefix === null) laneFirstPrefix = input + cacheWrite + cacheRead
           perCall.push({ inputTotal: input + cacheWrite + cacheRead, cacheRead, output })
+          const cacheSplit = usage['cache_creation'] !== null && typeof usage['cache_creation'] === 'object' ? (usage['cache_creation'] as Record<string, unknown>) : {}
+          const tier = (k: string): number => (typeof cacheSplit[k] === 'number' ? (cacheSplit[k] as number) : 0)
+          coldFile.request(coldLane, message.id, coldMs, { input, cacheWrite, cacheRead, cacheWrite5m: tier('ephemeral_5m_input_tokens'), cacheWrite1h: tier('ephemeral_1h_input_tokens') })
           const callLane = obj['isSidechain'] === true ? 1 : 0
           laneCalls[callLane] = laneCalls[callLane]! + 1
         }
@@ -778,6 +788,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
               if (model !== undefined) modelById.set(block['id'], model)
               toolErrorAcc.countCall(name, model)
               const input = (block['input'] !== null && typeof block['input'] === 'object' ? block['input'] : {}) as Record<string, unknown>
+              if (typeof message.id === 'string') coldFile.toolUse(coldLane, message.id, coldGapToolLabel(name, name === 'Bash' && typeof input['command'] === 'string' ? commandHead(input['command']) : undefined))
               let readNorm: string | undefined
               let editNorm: string | undefined
               if (name === 'Bash' && typeof input['command'] === 'string') {
@@ -1063,6 +1074,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
     }
     laneObservations.push({ firstPrefixTokens: laneFirstPrefix, calls: usageSeenIds.size, briefBytes: Math.max(0, laneBriefBytes), agentType })
   }
+  coldFile.end()
   const callCount = perCall.length
   for (let i = 0; i < callCount; i++) {
     const call = perCall[i]!
@@ -1149,11 +1161,12 @@ function aggregateDenyOutcomes(rows: DenyRawRow[]): DenyOutcomeKindRollup[] {
 // ---- entry point -------------------------------------------------------------
 
 /** Snapshots every accumulator auditOneFile writes to and returns the function that rolls them back (the append-only arrays are truncated, the rest restored from a deep copy). */
-export function checkpointAudit(summary: SessionAuditSummary, maps: Map<string, object>[], arrays: unknown[][], toolErrorAcc: ToolErrorAccumulator): () => void {
+export function checkpointAudit(summary: SessionAuditSummary, maps: Map<string, object>[], arrays: unknown[][], toolErrorAcc: ToolErrorAccumulator, coldGapAcc?: ColdGapAccumulator): () => void {
   const savedSummary = structuredClone(summary)
   const savedMaps = maps.map((m) => structuredClone([...m]))
   const lengths = arrays.map((a) => a.length)
   const restoreErrors = toolErrorAcc.checkpoint()
+  const restoreColdGap = coldGapAcc?.checkpoint()
   return () => {
     Object.assign(summary, savedSummary)
     maps.forEach((m, i) => {
@@ -1164,6 +1177,7 @@ export function checkpointAudit(summary: SessionAuditSummary, maps: Map<string, 
       a.length = lengths[i]!
     })
     restoreErrors()
+    restoreColdGap?.()
   }
 }
 
@@ -1219,7 +1233,9 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
     omissionMarkers: { fires: 0, linesOmitted: 0 },
     windowDays,
     toolErrors: { byTool: [], byModel: [], unknownPrefixes: [] },
+    coldGap: emptyColdGapCensus(),
   }
+  const coldGapAcc = newColdGapAccumulator()
   // Loaded here rather than at the top: the classifier behind it pulls in the Bash command parser, which the CLI's eager startup set otherwise never needs.
   const toolErrorAcc = (await import('./tool_error_census.js')).newToolErrorAccumulator()
   const toolMap = new Map<string, ToolRollup>()
@@ -1230,9 +1246,9 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
   const denyRows: DenyRawRow[] = []
   for (const file of files) {
     // A file that throws partway has already added its earlier lines to every accumulator; put them all back so an unreadable file contributes nothing.
-    const restore = checkpointAudit(summary, [toolMap, attachmentMap, hookMap, bashHeadMap], [laneObservations, denyRows], toolErrorAcc)
+    const restore = checkpointAudit(summary, [toolMap, attachmentMap, hookMap, bashHeadMap], [laneObservations, denyRows], toolErrorAcc, coldGapAcc)
     try {
-      await auditOneFile(file, summary, toolMap, attachmentMap, hookMap, laneObservations, bashHeadMap, denyRows, toolErrorAcc)
+      await auditOneFile(file, summary, toolMap, attachmentMap, hookMap, laneObservations, bashHeadMap, denyRows, toolErrorAcc, coldGapAcc)
       summary.filesScanned += 1
     } catch {
       restore()
@@ -1274,6 +1290,7 @@ export async function auditSessionCorpus(opts: SessionAuditOptions = {}): Promis
   summary.editErrorBaseline.rate = summary.editErrorBaseline.totalEdits === 0 ? 0 : summary.editErrorBaseline.totalErrors / summary.editErrorBaseline.totalEdits
   summary.calibration = computeCalibration(summary.estimated, summary.measured)
   summary.toolErrors = toolErrorAcc.finish()
+  summary.coldGap = coldGapAcc.finish({ cacheWrite: CACHE_WRITE_MULTIPLIER, cacheRead: CACHE_READ_MULTIPLIER })
   summary.runtimeMs = Date.now() - started
   return summary
 }
