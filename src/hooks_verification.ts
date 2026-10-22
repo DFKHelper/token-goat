@@ -5,8 +5,8 @@ import type { HookOutput } from './types.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
 import { getToolInput, getToolName, passOutput } from './hooks_common.js'
 
-/** Every test, lint, typecheck and build command verification_state.ts accepts carries one of these words, so a command without one can skip the load. A superset on purpose: tests/hooks_stop.test.ts pins that it never misses a command isVerificationCommand accepts. */
-const VERIFICATION_WORD = /test|jest|lint|check|build|compile|verify|tsc|ruff|clippy|mypy|pyright|\bvet\b/i
+/** Every test, lint, typecheck and build command verification_state.ts accepts carries one of these words (a script check by its file name or `--self-test`, a hook-backed commit or push by its subcommand), so a command without one can skip the load. A superset on purpose: tests/hooks_stop.test.ts pins that it never misses a command isVerificationCommand accepts. */
+const VERIFICATION_WORD = /test|jest|lint|check|build|compile|verify|tsc|ruff|clippy|mypy|pyright|\bvet\b|validat|\bpush\b|\bcommit\b/i
 
 /** True when `command` might be a verification command; a cheap test for the hot path, never a verdict. */
 export function mayBeVerificationCommand(command: string): boolean {

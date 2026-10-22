@@ -9,11 +9,11 @@ import type { HookEvent } from './hook_registry.js'
 import { sessionStateKey } from './hook_registry.js'
 import { echoedCommand, nameSubject } from './hint_suggestion_guard.js'
 import { dropsStopContext } from './harness_channels.js'
-import { contextOutput, passOutput } from './hooks_common.js'
+import { contextOutput, getCwd, passOutput } from './hooks_common.js'
 import { sessionSidecarPath } from './session_store.js'
 import type { HookOutput } from './types.js'
 import { ensureDirSync, isWithinQuietHours } from './util.js'
-import { evaluateVerification, type VerificationState } from './verification_state.js'
+import { evaluateVerification, verificationScopeFor, type VerificationState } from './verification_state.js'
 
 // Not `.json`: sessionSidecarPath refuses any other file ending in `.json`, because every reader that lists the sessions directory takes one to be a session.
 const ADVISED_SUFFIX = '.stop-advised'
@@ -49,7 +49,7 @@ export function stopHandler(event: HookEvent): HookOutput {
     const config = loadConfig().hints
     if (!config.stop_verification_advisory || isWithinQuietHours(config.quiet_hours) || dropsStopContext()) return passOutput()
     const key = sessionStateKey(event)
-    const state = evaluateVerification(key)
+    const state = evaluateVerification(key, verificationScopeFor(getCwd(event)))
     const text = stopAdvisoryText(state)
     const target = sessionSidecarPath(key, ADVISED_SUFFIX)
     // A verified state remembers the empty signature: the same edit-then-no-check state recurring after a passing check is a new picture and must be said again.
