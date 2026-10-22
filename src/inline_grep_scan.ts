@@ -193,7 +193,7 @@ function parentHasIgnoreFile(dir: string): boolean {
   return true
 }
 
-/** `line` without its trailing U+0020 spaces, keeping a space a backslash escapes (`foo\ `); a tab or a no-break space is part of the rule, as in git. A backward scan, so a long run of spaces costs one pass. */
+/** `line` without its trailing U+0020 spaces, keeping a space a backslash precedes (`foo\ `). This follows ripgrep, not git, because it models `.ignore` and `.rgignore`: ripgrep 15.1.0's crates/ignore/src/gitignore.rs (read this run) leaves a line that ends in a backslash and a space untrimmed whatever precedes the backslash, so `foo\\ ` keeps its space there, where git's trim_trailing_spaces (dir.c, git 2.53.0) would pair the backslashes and strip it; stripping it here would drop files ripgrep still searches. Known gap, on the safe side and unverified: ripgrep trims any other line with `trim_right`, which by Rust's definition (not read this run) also removes a tab or a no-break space where this keeps them, so a rule can drop fewer files than ripgrep does. A backward scan, so a long run of spaces costs one pass. */
 function withoutTrailingSpaces(line: string): string {
   let end = line.length
   while (end > 0 && line[end - 1] === ' ' && line[end - 2] !== '\\') end--
