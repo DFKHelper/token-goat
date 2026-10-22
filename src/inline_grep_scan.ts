@@ -30,7 +30,7 @@ export const SCOPE_MAX_BYTES = 2_000_000
 const SCOPE_GIT_TIMEOUT_MS = 5_000
 /** The most entries read out of one git listing before the answer passes: the listing is split and held in memory, and a scope near the SCOPE_MAX_FILES allowance never lists more than a few times that once ignore rules drop their share. */
 export const SCOPE_MAX_LISTED = 5_000
-/** Config every scope git call runs under. core.ignorecase=false: it is true by default on Windows and macOS and would make git match case-insensitively, where ripgrep's ignore rules are case-sensitive. */
+/** Config every scope git call runs under. These calls run in a directory the model chose before the harness approved the Grep, so the repo-local config is untrusted: git 2.53.0.windows.1 (docs: raw.githubusercontent.com/git/git/v2.53.0/Documentation/config/core.adoc, read this run) was probed with a canary command on every command-running key (core.fsmonitor, pager, editor, sshCommand, gitProxy, alternateRefsCommand, askPass, hooksPath hooks, filter and textconv drivers, diff.external, credential.helper, an included file), and `ls-files` and `check-ignore` ran only core.fsmonitor, which runGit already blanks, so nothing more is overridden here. core.ignorecase=false: it is true by default on Windows and macOS and would make git match case-insensitively, where ripgrep's ignore rules are case-sensitive. */
 const SCOPE_GIT_CONFIG = ['-c', 'core.ignorecase=false']
 
 /** Seams for a test to count git calls and move the clock; production passes none and gets the real runGit and Date.now. */

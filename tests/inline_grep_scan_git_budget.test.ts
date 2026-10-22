@@ -83,6 +83,20 @@ describe('the git calls of one scope decision share one deadline', () => {
   })
 })
 
+// CAPTURE: git 2.53.0.windows.1, a scratch repo with a canary command (`echo x >> marker`) in each command-running config key: `git ls-files -z -co --exclude-standard`, `check-ignore -q`, `rev-parse --show-prefix` ran only the core.fsmonitor canary, and not even that under `-c core.fsmonitor=`. The row keeps that one in force on the real default path.
+describe('a repo-local config key that runs a command', () => {
+  it('does not run during a scope read, while the same canary does run under a bare git', () => {
+    const dir = project({ 'mod.py': 'def unique_loader(path):\n    return 1\n' })
+    const marker = path.join(dir, '..', 'fsmonitor-' + path.basename(dir) + '.marker').replace(/\\/g, '/')
+    execFileSync('git', ['config', '--local', 'core.fsmonitor', 'echo x >> ' + marker], { cwd: dir })
+    execFileSync('git', ['-c', 'maintenance.auto=false', 'ls-files', '-z', '-co', '--exclude-standard', '--', '.'], { cwd: dir, stdio: 'ignore' })
+    expect(fs.existsSync(marker), 'the canary can fire, so its absence below means something').toBe(true)
+    fs.rmSync(marker)
+    readScopeDir(dir, dir)
+    expect(fs.existsSync(marker)).toBe(false)
+  })
+})
+
 describe('a git listing past the entry cap', () => {
   /** A fake git whose `ls-files -co` lists `n` entries and which says every other check is clean. */
   function listing(n: number): { calls: Call[]; deps: { git: (a: string[], o: RunGitOptions) => GitResult; now: () => number } } {
