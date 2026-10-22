@@ -6,8 +6,8 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { bashCommandClass, coldGapToolLabel } from '../src/cold_gap.js'
-import { auditSessionCorpus, type SessionAuditSummary } from '../src/session_audit.js'
+import { bashCommandClass, bashCommandClassOf, coldGapToolLabel } from '../src/cold_gap.js'
+import { auditSessionCorpus, commandHead, type SessionAuditSummary } from '../src/session_audit.js'
 import { formatSessionAudit } from '../src/session_audit_report.js'
 
 const BASE_MS = Date.UTC(2026, 9, 1, 10, 0, 0)
@@ -27,11 +27,15 @@ function usage(input: number, cc: number, cr: number, tier: Tier): Record<string
 
 interface Req {
   id: string
-  /** Timestamp of each assistant line of the request (a streamed request has one line per content block). */
-  lines: string[]
+  /** Timestamp of each assistant line of the request (a streamed request has one line per content block); null omits the key. */
+  lines: Array<string | null>
   usage: Record<string, unknown>
   /** Tool the request issues on its last line, or none for a text-only request. */
   tool?: { name: string; input: Record<string, unknown> }
+  /** Further tool_use blocks on the same last line, after `tool`. */
+  moreTools?: Array<{ name: string; input: Record<string, unknown> }>
+  /** The tool_result carries is_error. */
+  isError?: boolean
   sidechain?: boolean
 }
 
@@ -40,10 +44,11 @@ function transcript(reqs: Req[]): string {
   reqs.forEach((r) => {
     r.lines.forEach((ts, j) => {
       const last = j === r.lines.length - 1
-      const content = last && r.tool !== undefined ? [{ type: 'tool_use', id: `tu_${r.id}`, name: r.tool.name, input: r.tool.input }] : [{ type: 'text', text: 'ok' }]
-      out.push(JSON.stringify({ type: 'assistant', timestamp: ts, ...(r.sidechain === true ? { isSidechain: true } : {}), message: { id: r.id, role: 'assistant', usage: r.usage, content } }))
+      const uses = r.tool === undefined ? [] : [r.tool, ...(r.moreTools ?? [])]
+      const content = last && uses.length > 0 ? uses.map((u, k) => ({ type: 'tool_use', id: `tu_${r.id}_${k}`, name: u.name, input: u.input })) : [{ type: 'text', text: 'ok' }]
+      out.push(JSON.stringify({ type: 'assistant', ...(ts === null ? {} : { timestamp: ts }), ...(r.sidechain === true ? { isSidechain: true } : {}), message: { id: r.id, role: 'assistant', usage: r.usage, content } }))
     })
-    if (r.tool !== undefined) out.push(JSON.stringify({ type: 'user', timestamp: r.lines[r.lines.length - 1], message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tu_${r.id}`, content: 'done' }] } }))
+    if (r.tool !== undefined) out.push(JSON.stringify({ type: 'user', timestamp: r.lines[r.lines.length - 1], message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tu_${r.id}_0`, content: 'done', ...(r.isError === true ? { is_error: true } : {}) }] } }))
   })
   return out.join('\n') + '\n'
 }
@@ -69,12 +74,12 @@ const NO_TOOL = transcript([
   { id: 'n2', lines: [at(10)], usage: usage(10, 30000, 0, '5m') },
 ])
 
-// Subagent: a 10 minute gap after a test-runner Bash call re-writes (counted, Bash:test); a 10 minute gap whose request still reads almost everything from cache is not; a 20 minute gap after a request with no tool call re-writes under (none).
+// Subagent: a 10 minute gap after a test-runner Bash call re-writes (counted, Bash:test); a 10 minute gap whose request writes only 8k on top of a 200k warm read (under half of the 31k the previous request had cached) is not; a 20 minute gap after a request with no tool call that writes 120k of the 208k the previous request had cached re-writes under (none).
 const LANE = transcript([
   { id: 's1', lines: [at(0), at(0, 10)], usage: usage(10, 5000, 0, '5m'), sidechain: true, tool: { name: 'Bash', input: { command: `vitest run src ${SECRET}` } } },
   { id: 's2', lines: [at(10)], usage: usage(10, 30000, 1000, '5m'), sidechain: true, tool: { name: 'Read', input: { file_path: SECRET } } },
   { id: 's3', lines: [at(20)], usage: usage(10, 8000, 200000, '5m'), sidechain: true },
-  { id: 's4', lines: [at(40)], usage: usage(10, 25000, 0, '5m'), sidechain: true },
+  { id: 's4', lines: [at(40)], usage: usage(10, 120000, 0, '5m'), sidechain: true },
   { id: 's5', lines: [at(41)], usage: usage(10, 500, 25000, '5m'), sidechain: true },
 ])
 
@@ -115,10 +120,10 @@ describe('cold gap accounting', () => {
 
   it('counts a cold re-write after a 5m-tier gap under the awaited tool and Bash command class, and skips a cache-read-dominated request', () => {
     const lane = summary.coldGap.subagent
-    expect(lane).toMatchObject({ sessions: 1, requests: 5, coldRewrites: 2, coldBilledEquivTokens: 68870, billedEquivTokens: 108275, coldRewriteBilledEquivTokens: 63250 })
-    expect(lane.coldBilledShare).toBeCloseTo(68870 / 108275, 10)
-    expect(lane.byTool.map((t) => [t.tool, t.coldRewrites, t.billedEquivTokens])).toEqual([['Bash:test', 1, 37610], ['(none)', 1, 31260]])
-    expect(lane.byTool[0]!.billedShare).toBeCloseTo(37610 / 108275, 10)
+    expect(lane).toMatchObject({ sessions: 1, requests: 5, coldRewrites: 2, coldBilledEquivTokens: 187620, billedEquivTokens: 227025, coldRewriteBilledEquivTokens: 172500 })
+    expect(lane.coldBilledShare).toBeCloseTo(187620 / 227025, 10)
+    expect(lane.byTool.map((t) => [t.tool, t.coldRewrites, t.billedEquivTokens])).toEqual([['(none)', 1, 150010], ['Bash:test', 1, 37610]])
+    expect(lane.byTool[1]!.billedShare).toBeCloseTo(37610 / 227025, 10)
   })
 
   it('keeps main sessions and subagents apart', () => {
@@ -129,12 +134,12 @@ describe('cold gap accounting', () => {
     expect(summary.coldGap.sessions[0]).toMatchObject({ kind: 'subagent', coldRewrites: 2 })
   })
 
-  it('classes a Bash command by its first word only', () => {
+  it('classes a head by its first word only', () => {
     const rows: Array<[string, string]> = [['vitest', 'test'], ['tsc', 'build'], ['git', 'git'], ['npm', 'runner'], ['sleep', 'wait'], ['until', 'shell-loop'], ['for', 'shell-loop'], ['bash', 'shell-wrapper'], ['rm', 'file-ops'], ['curl', 'network'], ['grep', 'search-read'], ['zzz', 'other'], ['', 'other']]
     for (const [head, cls] of rows) expect(bashCommandClass(head)).toBe(cls)
-    expect(coldGapToolLabel('Bash', 'vitest')).toBe('Bash:test')
-    expect(coldGapToolLabel('Bash', undefined)).toBe('Bash:other')
-    expect(coldGapToolLabel('Read', 'vitest')).toBe('Read')
+    expect(coldGapToolLabel('Bash', 'vitest run', commandHead)).toBe('Bash:test')
+    expect(coldGapToolLabel('Bash', undefined, commandHead)).toBe('Bash:other')
+    expect(coldGapToolLabel('Read', 'vitest', commandHead)).toBe('Read')
   })
 
   it('renders a text section and never carries command or prompt text', () => {
@@ -144,5 +149,128 @@ describe('cold gap accounting', () => {
     expect(text).toContain('Subagents: 1 transcripts, 5 requests, cold re-writes 2')
     expect(text).not.toContain(SECRET)
     expect(JSON.stringify(summary)).not.toContain(SECRET)
+  })
+})
+
+// HAND-DERIVED: invented command strings in the shapes shell users type (env prefix, absolute path, quoted exe, bash -lc, env, chains, cd prefix, timeout, nohup, polling loop); the expected class of each is read off which program the line actually runs, independently of the classifier.
+const RAW_COMMANDS: Array<[string, string]> = [
+  ['FOO=1 vitest', 'test'],
+  ['/usr/bin/sleep 5', 'wait'],
+  ['  "C:/x/node.exe" a', 'runner'],
+  ['bash -lc "sleep 600"', 'wait'],
+  ['env X=1 vitest', 'test'],
+  ['echo x; sleep 600', 'wait'],
+  ['cd a && npm test', 'runner'],
+  ['timeout 30 vitest run', 'test'],
+  ['nohup sleep 9 &', 'wait'],
+  ["sh -c 'ls && sleep 5'", 'wait'],
+  ['until x; do sleep 1; done', 'shell-loop'],
+  ['git status', 'git'],
+  [`curl ${SECRET}`, 'network'],
+]
+
+describe('cold gap edge cases', () => {
+  async function audit(files: Record<string, string>): Promise<SessionAuditSummary> {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cold-gap-edge-'))
+    try {
+      fs.mkdirSync(path.join(d, 'proj', 'sess-uuid', 'subagents'), { recursive: true })
+      for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(d, 'proj', name), text)
+      return await auditSessionCorpus({ dir: d })
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true })
+    }
+  }
+
+  it('judges the gap against the tier the PREVIOUS request wrote: 5m then 1h after 30 minutes is cold, 1h then 5m is not', async () => {
+    const s = await audit({
+      'five-then-hour.jsonl': transcript([
+        { id: 'a1', lines: [at(0)], usage: usage(10, 5000, 0, '5m'), tool: { name: 'Bash', input: { command: 'vitest' } } },
+        { id: 'a2', lines: [at(30)], usage: usage(10, 20000, 0, '1h') },
+      ]),
+      'hour-then-five.jsonl': transcript([
+        { id: 'b1', lines: [at(0)], usage: usage(10, 5000, 0, '1h') },
+        { id: 'b2', lines: [at(30)], usage: usage(10, 20000, 0, '5m') },
+      ]),
+    })
+    expect(s.coldGap.sessions.map((r) => [r.session, r.coldRewrites])).toEqual([['five-then-hour', 1]])
+    expect(s.coldGap.main.byTool.map((t) => t.tool)).toEqual(['Bash:test'])
+  })
+
+  it('counts a re-write that still reads a warm shared prefix (15k read, 40k written, 27% read share) and skips a warm request with a small write after a long gap', async () => {
+    const s = await audit({
+      'shared-prefix.jsonl': transcript([
+        { id: 'c1', lines: [at(0)], usage: usage(10, 55000, 0, '5m') },
+        { id: 'c2', lines: [at(10)], usage: usage(10, 40000, 15000, '5m') },
+      ]),
+      'warm-small.jsonl': transcript([
+        { id: 'd1', lines: [at(0)], usage: usage(10, 100000, 0, '5m') },
+        { id: 'd2', lines: [at(20)], usage: usage(10, 3000, 100000, '5m') },
+      ]),
+    })
+    expect(s.coldGap.sessions.map((r) => [r.session, r.coldRewrites])).toEqual([['shared-prefix', 1]])
+    expect(s.coldGap.main).toMatchObject({ coldRewrites: 1, coldBilledEquivTokens: Math.round(10 + 1.25 * 40000 + 0.1 * 15000) })
+  })
+
+  it('never counts a negative gap (out-of-order timestamps), a missing timestamp or an unparsable one', async () => {
+    const s = await audit({
+      'out-of-order.jsonl': transcript([
+        { id: 'e1', lines: [at(30)], usage: usage(10, 5000, 0, '5m') },
+        { id: 'e2', lines: [at(0)], usage: usage(10, 20000, 0, '5m') },
+      ]),
+      'no-timestamp.jsonl': transcript([
+        { id: 'f1', lines: [at(0)], usage: usage(10, 5000, 0, '5m') },
+        { id: 'f2', lines: [null], usage: usage(10, 20000, 0, '5m') },
+        { id: 'f3', lines: [at(60)], usage: usage(10, 20000, 0, '5m') },
+      ]),
+      'bad-timestamp.jsonl': transcript([
+        { id: 'g1', lines: [at(0)], usage: usage(10, 5000, 0, '5m') },
+        { id: 'g2', lines: ['not-a-date'], usage: usage(10, 20000, 0, '5m') },
+        { id: 'g3', lines: [at(60)], usage: usage(10, 20000, 0, '5m') },
+      ]),
+    })
+    expect(s.coldGap.main).toMatchObject({ sessions: 3, requests: 8, coldRewrites: 0 })
+    expect(s.coldGap.sessions).toEqual([])
+  })
+
+  it('attributes a request with several tool_use blocks to the last one', async () => {
+    const s = await audit({
+      'multi.jsonl': transcript([
+        { id: 'm1', lines: [at(0)], usage: usage(10, 5000, 0, '5m'), tool: { name: 'Read', input: { file_path: 'x' } }, moreTools: [{ name: 'Bash', input: { command: 'sleep 600' } }] },
+        { id: 'm2', lines: [at(10)], usage: usage(10, 20000, 0, '5m') },
+      ]),
+    })
+    expect(s.coldGap.main.byTool.map((t) => [t.tool, t.coldRewrites])).toEqual([['Bash:wait', 1]])
+  })
+
+  it('still attributes the gap to a tool whose tool_result is an error', async () => {
+    const s = await audit({
+      'err.jsonl': transcript([
+        { id: 'x1', lines: [at(0)], usage: usage(10, 5000, 0, '5m'), tool: { name: 'Bash', input: { command: 'vitest run' } }, isError: true },
+        { id: 'x2', lines: [at(10)], usage: usage(10, 20000, 0, '5m') },
+      ]),
+    })
+    expect(s.coldGap.main.byTool.map((t) => [t.tool, t.coldRewrites])).toEqual([['Bash:test', 1]])
+  })
+
+  it('classes raw command strings through commandHead, looking through wrappers and chains', () => {
+    for (const [raw, cls] of RAW_COMMANDS) expect(bashCommandClassOf(raw, commandHead), raw).toBe(cls)
+    expect(bashCommandClassOf('timeout 5', commandHead)).toBe('wait')
+    expect(bashCommandClassOf('', commandHead)).toBe('other')
+  })
+
+  it('labels each raw command by its class end to end and keeps the command text out of the report', async () => {
+    const reqs: Req[] = RAW_COMMANDS.map(([raw], k) => ({ id: `r${k}`, lines: [at(10 * k)], usage: usage(10, 20000, 0, '5m'), sidechain: true, tool: { name: 'Bash', input: { command: raw } } }))
+    reqs.push({ id: 'rend', lines: [at(10 * RAW_COMMANDS.length)], usage: usage(10, 20000, 0, '5m'), sidechain: true })
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cold-gap-raw-'))
+    try {
+      fs.mkdirSync(path.join(d, 'proj', 'sess-uuid', 'subagents'), { recursive: true })
+      fs.writeFileSync(path.join(d, 'proj', 'sess-uuid', 'subagents', 'agent-raw.jsonl'), transcript(reqs))
+      const sum = await auditSessionCorpus({ dir: d })
+      const counts = Object.fromEntries(sum.coldGap.subagent.byTool.map((t) => [t.tool, t.coldRewrites]))
+      expect(counts).toEqual({ 'Bash:test': 3, 'Bash:wait': 5, 'Bash:runner': 2, 'Bash:shell-loop': 1, 'Bash:git': 1, 'Bash:network': 1 })
+      expect(JSON.stringify(sum.coldGap)).not.toContain(SECRET)
+    } finally {
+      fs.rmSync(d, { recursive: true, force: true })
+    }
   })
 })

@@ -476,7 +476,7 @@ const BASH_FILTER_MARKER_RE = /\[token-goat[:\]]/
 export const BASH_SMALL_RESULT_MAX_BYTES = 1024
 
 /** First binary name of a Bash command: strips leading parens, env assignments and a cd prefix, then basenames the first token, drops a trailing .exe and lowercases. Aggregation key only; the full command line is never stored or emitted. */
-function commandHead(raw: string): string {
+export function commandHead(raw: string): string {
   let s = raw.trim()
   for (let guard = 0; guard < 20; guard++) {
     const stripped = s.replace(/^[(\s]+/, '')
@@ -788,7 +788,7 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
               if (model !== undefined) modelById.set(block['id'], model)
               toolErrorAcc.countCall(name, model)
               const input = (block['input'] !== null && typeof block['input'] === 'object' ? block['input'] : {}) as Record<string, unknown>
-              if (typeof message.id === 'string') coldFile.toolUse(coldLane, message.id, coldGapToolLabel(name, name === 'Bash' && typeof input['command'] === 'string' ? commandHead(input['command']) : undefined))
+              if (typeof message.id === 'string') coldFile.toolUse(coldLane, message.id, coldGapToolLabel(name, name === 'Bash' && typeof input['command'] === 'string' ? input['command'] : undefined, commandHead))
               let readNorm: string | undefined
               let editNorm: string | undefined
               if (name === 'Bash' && typeof input['command'] === 'string') {

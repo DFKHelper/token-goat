@@ -9,11 +9,11 @@ export const COLD_TTL_MS_5M = 5 * 60 * 1000
 /** Cache TTL of the 1-hour tier. */
 export const COLD_TTL_MS_1H = 60 * 60 * 1000
 
-/** A request writing fewer cache tokens than this is not a prefix re-write, whatever its read share (the API will not cache a shorter prefix at all). */
+/** A request writing fewer cache tokens than this is not a prefix re-write, whatever else it reads (the API will not cache a shorter prefix at all). */
 export const COLD_MIN_CACHE_WRITE_TOKENS = 1024
 
-/** A request is a re-write only when cache reads cover less than this share of (reads + writes): a warm request that merely appends a few new turns reads nearly everything. */
-export const COLD_MAX_READ_SHARE = 0.2
+/** A request is a re-write only when it writes at least this share of what the previous request had cached (read + written): a warm request appends a few turns, a cold one writes most of the prefix again even when a shared system-prompt prefix is still read. */
+export const COLD_MIN_REWRITE_SHARE_OF_PREV = 0.5
 
 /** Attribution bucket for a gap whose previous request issued no tool call (the session was waiting on the user or on a notification, not on a tool). */
 export const COLD_NO_TOOL_BUCKET = '(none)'
@@ -157,10 +157,111 @@ export function bashCommandClass(head: string): string {
   return 'other'
 }
 
-/** The tool bucket a tool_use falls in: its name, or `Bash:<class>` for Bash. `bashHead` is the command's first word, undefined for a non-Bash call or a Bash call that carried no command string. */
-export function coldGapToolLabel(name: string, bashHead: string | undefined): string {
+/** Segment classes from most to least significant: a chain is classed by its highest-ranked segment, so a wait or a polling loop is never hidden behind `cd` or `echo`. */
+const CLASS_RANK = ['shell-loop', 'wait', 'test', 'build', 'runner', 'git', 'network', 'file-ops', 'shell-wrapper', 'other', 'search-read']
+
+const WRAPPER_DEPTH = 3
+
+/** Splits on `;`, `&&`, `||` and newlines outside quotes. */
+function splitSegments(raw: string): string[] {
+  const out: string[] = []
+  let cur = ''
+  let quote = ''
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw.charAt(i)
+    if (quote !== '') {
+      cur += c
+      if (c === '\\' && quote === '"' && i + 1 < raw.length) cur += raw.charAt(++i)
+      else if (c === quote) quote = ''
+      continue
+    }
+    if (c === '"' || c === "'") quote = c
+    if (c === ';' || c === '\n' || (c === '&' && raw.charAt(i + 1) === '&') || (c === '|' && raw.charAt(i + 1) === '|')) {
+      out.push(cur)
+      cur = ''
+      if (c === '&' || c === '|') i++
+      continue
+    }
+    cur += c
+  }
+  out.push(cur)
+  return out.map((x) => x.trim()).filter((x) => x !== '')
+}
+
+const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s*/
+
+/** The first word of `s` (a quoted word is taken whole, quotes dropped) and the text after it. */
+function takeWord(s: string): [string, string] {
+  const t = s.trimStart()
+  const q = t.charAt(0)
+  if (q === '"' || q === "'") {
+    const end = t.indexOf(q, 1)
+    if (end > 0) return [t.slice(1, end), t.slice(end + 1)]
+  }
+  let i = 0
+  while (i < t.length && !/\s/.test(t.charAt(i))) i++
+  return [t.slice(0, i), t.slice(i)]
+}
+
+/** Drops leading options (words starting with a dash) and, when `assigns`, VAR=value words. */
+function skipOptions(s: string, assigns: boolean): string {
+  let rest = s.trimStart()
+  for (let guard = 0; guard < 20; guard++) {
+    if (assigns && ENV_ASSIGN.test(rest)) rest = rest.replace(ENV_ASSIGN, '')
+    else if (rest.startsWith('-')) rest = takeWord(rest)[1].trimStart()
+    else break
+  }
+  return rest
+}
+
+const STRIPPED_QUOTES = new Set(['"', "'"])
+
+/** The command a wrapper (`bash -c`, `sh -c`, `env`, `timeout N`, `nohup`, `time`) runs, or null when `seg` is not a wrapper around one. */
+function unwrap(seg: string): string | null {
+  let s = seg.replace(/^[(\s]+/, '')
+  for (let guard = 0; guard < 20 && ENV_ASSIGN.test(s); guard++) s = s.replace(ENV_ASSIGN, '')
+  const [first, after] = takeWord(s)
+  const word = first.split(/[\\/]/).pop()!.replace(/\.exe$/i, '').toLowerCase()
+  if (word === 'bash' || word === 'sh' || word === 'zsh') {
+    let rest = after.trimStart()
+    for (let guard = 0; guard < 10 && rest.startsWith('-'); guard++) {
+      const [flag, next] = takeWord(rest)
+      rest = next.trimStart()
+      if (/^-[A-Za-z]+$/.test(flag) && flag.includes('c')) {
+        const arg = rest.trim()
+        return STRIPPED_QUOTES.has(arg.charAt(0)) && arg.length > 1 && arg.endsWith(arg.charAt(0)) ? arg.slice(1, -1) : arg
+      }
+    }
+    return null
+  }
+  if (word === 'env') {
+    const rest = skipOptions(after, true)
+    return rest === '' ? null : rest
+  }
+  if (word === 'timeout') {
+    const [duration, rest] = takeWord(skipOptions(after, false))
+    return /^\d+(?:\.\d+)?[smhd]?$/.test(duration) && rest.trim() !== '' ? rest.trim() : null
+  }
+  if (word === 'nohup' || word === 'time') return after.trim() === '' ? null : after.trim()
+  return null
+}
+
+/** Class of a raw Bash command line: wrappers are looked through to the command they run, a `;`/`&&`/`||` chain takes its most significant segment's class. `headOf` reduces one segment to its first binary (session_audit's commandHead, injected so this module never imports it). The command text is read, never stored or returned. */
+export function bashCommandClassOf(raw: string, headOf: (segment: string) => string, depth = 0): string {
+  let best = CLASS_RANK.length
+  for (const seg of splitSegments(raw)) {
+    const inner = depth < WRAPPER_DEPTH ? unwrap(seg) : null
+    const cls = inner === null ? bashCommandClass(headOf(seg)) : bashCommandClassOf(inner, headOf, depth + 1)
+    const rank = CLASS_RANK.indexOf(cls)
+    if (rank >= 0 && rank < best) best = rank
+  }
+  return best === CLASS_RANK.length ? 'other' : (CLASS_RANK[best] ?? 'other')
+}
+
+/** The tool bucket a tool_use falls in: its name, or `Bash:<class>` for Bash. `command` is the raw Bash command string, undefined for a non-Bash call or a Bash call that carried none. */
+export function coldGapToolLabel(name: string, command: string | undefined, headOf: (segment: string) => string): string {
   if (name !== 'Bash') return name
-  return `Bash:${bashHead === undefined ? 'other' : bashCommandClass(bashHead)}`
+  return `Bash:${command === undefined ? 'other' : bashCommandClassOf(command, headOf)}`
 }
 
 /** Mutable per-transcript tracker. One per file; call {@link ColdGapFile.end} once the file has streamed. */
@@ -188,26 +289,28 @@ interface LaneState {
   /** Timestamp of the last assistant line of the request, null when none carried one. */
   lastMs: number | null
   tool: string | null
-  /** Tier of the last request on this lane that named one, used when a request carries no tier split. */
-  ttlMs: number
+  /** TTL of the tier the last request on this lane that named one wrote; null until one does. */
+  ttlMs: number | null
+  /** Tokens the request had cached (read + written): the prefix the next request would have to find warm. */
+  cached: number
 }
 
 function toolRow(kind: KindAcc, tool: string): { cold: number; usage: UsageSum } {
   return (kind.byTool[tool] ??= { cold: 0, usage: zeroSum() })
 }
 
-/** The TTL of the tier a request wrote, or `fallback` when its usage record names no tier split. */
-function tierTtl(u: ColdGapUsage, fallback: number): number {
+/** The TTL of the tier a request wrote, or null when its usage record names no tier split. */
+function tierTtl(u: ColdGapUsage): number | null {
   if (u.cacheWrite1h > u.cacheWrite5m) return COLD_TTL_MS_1H
   if (u.cacheWrite5m > 0 || u.cacheWrite1h > 0) return COLD_TTL_MS_5M
-  return fallback
+  return null
 }
 
-/** Whether `u`, arriving `gapMs` after the previous request, is a cold prefix re-write under `ttlMs`. */
-export function isColdRewrite(gapMs: number, ttlMs: number, u: ColdGapUsage): boolean {
+/** Whether `u`, arriving `gapMs` after the previous request, is a cold prefix re-write: the gap outlived `ttlMs` (the tier the PREVIOUS request wrote, whose cache expired) and `u` wrote at least {@link COLD_MIN_REWRITE_SHARE_OF_PREV} of the `prevCachedTokens` that request had cached. A negative gap is never cold. */
+export function isColdRewrite(gapMs: number, ttlMs: number, u: ColdGapUsage, prevCachedTokens: number): boolean {
   if (gapMs <= ttlMs) return false
   if (u.cacheWrite < COLD_MIN_CACHE_WRITE_TOKENS) return false
-  return u.cacheRead < COLD_MAX_READ_SHARE * (u.cacheRead + u.cacheWrite)
+  return u.cacheWrite >= COLD_MIN_REWRITE_SHARE_OF_PREV * prevCachedTokens
 }
 
 export function newColdGapAccumulator(): ColdGapAccumulator {
@@ -220,11 +323,11 @@ export function newColdGapAccumulator(): ColdGapAccumulator {
       return {
         request(lane, id, timestampMs, usage) {
           const prev = lanes.get(lane)
-          const ttlMs = tierTtl(usage, prev?.ttlMs ?? COLD_TTL_MS_5M)
+          const named = tierTtl(usage)
           row.requests += 1
           addSum(row.total, usage)
           addSum(acc.total, usage)
-          if (prev !== undefined && prev.lastMs !== null && timestampMs !== null && isColdRewrite(timestampMs - prev.lastMs, ttlMs, usage)) {
+          if (prev !== undefined && prev.lastMs !== null && timestampMs !== null && isColdRewrite(timestampMs - prev.lastMs, prev.ttlMs ?? named ?? COLD_TTL_MS_5M, usage, prev.cached)) {
             const label = prev.tool ?? COLD_NO_TOOL_BUCKET
             row.cold += 1
             addSum(row.coldTotal, usage)
@@ -234,7 +337,7 @@ export function newColdGapAccumulator(): ColdGapAccumulator {
             t.cold += 1
             addSum(t.usage, usage)
           }
-          lanes.set(lane, { id, lastMs: timestampMs, tool: null, ttlMs })
+          lanes.set(lane, { id, lastMs: timestampMs, tool: null, ttlMs: named ?? prev?.ttlMs ?? null, cached: usage.cacheRead + usage.cacheWrite })
         },
         line(lane, id, timestampMs) {
           const cur = lanes.get(lane)
@@ -336,7 +439,7 @@ const TOOL_ROWS_SHOWN = 12
 export function formatColdGap(c: ColdGapCensus): string[] {
   const lines: string[] = []
   lines.push('## Cold cache re-writes (gap since the previous request outlived the cache TTL, then the prefix was written again)')
-  lines.push(`TTL 5 min for 5-minute-tier writes, 1 h for 1-hour-tier writes; a re-write writes >=${fmt(COLD_MIN_CACHE_WRITE_TOKENS)} cache tokens and reads <${pct(COLD_MAX_READ_SHARE)} of (read + write). Billed-equivalent = input + cache-write (1.25 x for the 5-minute tier, 2 x for the 1-hour tier) + 0.1 x cache-read (output not priced). Attributed to the tool call the session waited on.`)
+  lines.push(`TTL 5 min for 5-minute-tier writes, 1 h for 1-hour-tier writes, judged by the previous request's tier; a re-write writes >=${fmt(COLD_MIN_CACHE_WRITE_TOKENS)} cache tokens and at least ${pct(COLD_MIN_REWRITE_SHARE_OF_PREV)} of what the previous request had cached. Billed-equivalent = input + cache-write (1.25 x for the 5-minute tier, 2 x for the 1-hour tier) + 0.1 x cache-read (output not priced). Attributed to the tool call the session waited on.`)
   for (const [label, k] of [['Main sessions', c.main], ['Subagents', c.subagent]] as const) {
     lines.push(`${label}: ${fmt(k.sessions)} transcripts, ${fmt(k.requests)} requests, cold re-writes ${fmt(k.coldRewrites)}, billed-equiv ${fmt(k.coldBilledEquivTokens)} of ${fmt(k.billedEquivTokens)} (${pct(k.coldBilledShare)}), avoidable write premium ${fmt(k.coldRewriteBilledEquivTokens)}`)
     for (const t of k.byTool.slice(0, TOOL_ROWS_SHOWN)) {
