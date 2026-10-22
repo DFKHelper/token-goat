@@ -423,7 +423,7 @@ describe('splitSegments quote pairing heuristic', () => {
   })
 })
 
-// HAND-DERIVED: invented two-request transcripts; the failing file is the same bytes as a good one on disk, with the read stream made to error after delivering them, which is what a disk or network-share read failure looks like to auditOneFile.
+// HAND-DERIVED: invented two-request transcripts; the failing file is the same bytes as a good one on disk, with the read stream made to error after delivering them, which is what a disk or network-share read failure looks like to auditOneFile. This pins the contract (a failed file leaves the cold section as if it were never read); today it passes even without restoreColdGap because coldFile.end() folds only after a clean read, and the restore itself is pinned by the 'cold gap checkpoint' unit test above.
 describe('cold gap rollback in the real corpus audit', () => {
   let corpus = ''
   let goodOnly = ''
