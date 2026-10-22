@@ -1,4 +1,4 @@
-/** Cold-cache re-write accounting behind `session-audit`. A request is a cold re-write when the gap since the previous request on its lane outlived the prompt-cache TTL of its tier and the request then wrote most of its prefix back instead of reading it. Each one is attributed to the tool call the session was waiting on during the gap (the last tool_use of the previous request), by tool name and, for Bash, a coarse class of the command's first word. Aggregates only: no command text, prompt or path is stored. Transcript fields read (CAPTURE: field names read off real Claude Code transcript lines, 2026-10-22): the line's top-level `timestamp` (ISO 8601), and the assistant message's `usage.cache_creation.ephemeral_5m_input_tokens` / `usage.cache_creation.ephemeral_1h_input_tokens`, which split `usage.cache_creation_input_tokens` by TTL tier. */
+/** Cold-cache re-write accounting behind `session-audit`. A request is a cold re-write when the gap since the previous request on its lane outlived the prompt-cache TTL of its tier and the request then wrote most of its prefix back instead of reading it. Each one is attributed to the tool call the session was waiting on during the gap (the last tool_use of the previous request), by tool name and, for Bash, a coarse class of the command's first word. Aggregates only: no command text, prompt or path is stored. Transcript fields read (CAPTURE: field names read off real Claude Code transcript JSONL `message.usage` records, 2026-10-22, key names only): the line's top-level `timestamp` (ISO 8601), and the assistant message's `usage.cache_creation.ephemeral_5m_input_tokens` / `usage.cache_creation.ephemeral_1h_input_tokens`, which split `usage.cache_creation_input_tokens` by TTL tier. */
 
 import { displaySafeText } from './paths.js'
 import { countNoun } from './util.js'
@@ -171,24 +171,41 @@ const CLASS_RANK = ['shell-loop', 'wait', 'test', 'build', 'runner', 'git', 'net
 
 const WRAPPER_DEPTH = 3
 
-/** Splits on `;`, `&&`, `||` and newlines outside quotes. */
+/** Index of the quote closing the one opened at `open`, or -1 when it never closes (the apostrophe in `echo don't` opens nothing). */
+function closingQuote(raw: string, open: number): number {
+  const q = raw.charAt(open)
+  for (let i = open + 1; i < raw.length; i++) {
+    const c = raw.charAt(i)
+    if (c === '\\' && q === '"') i++
+    else if (c === q) return i
+  }
+  return -1
+}
+
+/** Splits on `;`, `&&`, `||`, a single `|`, a background `&` and newlines outside quotes; `2>&1`, `>&2`, `&>` and `>|` are redirections, not split points, and a quote that never closes is an ordinary character. */
 function splitSegments(raw: string): string[] {
   const out: string[] = []
   let cur = ''
-  let quote = ''
   for (let i = 0; i < raw.length; i++) {
     const c = raw.charAt(i)
-    if (quote !== '') {
-      cur += c
-      if (c === '\\' && quote === '"' && i + 1 < raw.length) cur += raw.charAt(++i)
-      else if (c === quote) quote = ''
-      continue
+    if (c === '"' || c === "'") {
+      const close = closingQuote(raw, i)
+      if (close > 0) {
+        cur += raw.slice(i, close + 1)
+        i = close
+        continue
+      }
     }
-    if (c === '"' || c === "'") quote = c
-    if (c === ';' || c === '\n' || (c === '&' && raw.charAt(i + 1) === '&') || (c === '|' && raw.charAt(i + 1) === '|')) {
+    if (c === ';' || c === '\n' || c === '&' || c === '|') {
+      const next = raw.charAt(i + 1)
+      const redirect = c === '&' ? cur.endsWith('>') || cur.endsWith('<') || next === '>' : c === '|' && cur.endsWith('>')
+      if (redirect) {
+        cur += c
+        continue
+      }
       out.push(cur)
       cur = ''
-      if (c === '&' || c === '|') i++
+      if ((c === '&' || c === '|') && next === c) i++
       continue
     }
     cur += c
@@ -309,6 +326,7 @@ function toolRow(kind: KindAcc, tool: string): { cold: number; usage: UsageSum }
 }
 
 /** The TTL of the tier a request wrote, or null when its usage record names no tier split. */
+// A tie between 5m and 1h writes resolves to the 5-minute TTL on purpose: the shorter TTL expires sooner, so more gaps count as cold-eligible.
 function tierTtl(u: ColdGapUsage): number | null {
   if (u.cacheWrite1h > u.cacheWrite5m) return COLD_TTL_MS_1H
   if (u.cacheWrite5m > 0 || u.cacheWrite1h > 0) return COLD_TTL_MS_5M

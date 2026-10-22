@@ -1,5 +1,5 @@
 /** Cold-cache re-write accounting in `session-audit` (src/cold_gap.ts wired through src/session_audit.ts). */
-// FORMAT-DERIVED: the usage field names (`cache_creation_input_tokens`, `cache_read_input_tokens`, `cache_creation.ephemeral_5m_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`) and the top-level ISO `timestamp` are the names found on real Claude Code transcript assistant lines, read off a live transcript on 2026-10-22 (key names only, no content); the 5-minute and 1-hour TTLs come from Anthropic's prompt-caching documentation (cache duration section). HAND-DERIVED: every timestamp, token count, tool name and expected billed figure below is invented and computed by hand from input + 1.25 x cache-write + 0.1 x cache-read; none is copied from a real session.
+// CAPTURE: the usage field names (`cache_creation_input_tokens`, `cache_read_input_tokens`, `cache_creation.ephemeral_5m_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`) and the top-level ISO `timestamp` are the key names read off real Claude Code transcript JSONL assistant `message.usage` records on 2026-10-22 (key names only, no content); FORMAT-DERIVED: the 5-minute and 1-hour TTLs come from Anthropic's prompt-caching documentation (cache duration section). HAND-DERIVED: every timestamp, token count, tool name and expected billed figure below is invented and computed by hand from input + 1.25 x cache-write + 0.1 x cache-read; none is copied from a real session.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -262,6 +262,26 @@ describe('cold gap edge cases', () => {
     for (const [raw, cls] of RAW_COMMANDS) expect(bashCommandClassOf(raw, commandHead), raw).toBe(cls)
     expect(bashCommandClassOf('timeout 5', commandHead)).toBe('wait')
     expect(bashCommandClassOf('', commandHead)).toBe('other')
+  })
+
+  // HAND-DERIVED: invented lines in the shapes that broke the splitter; each expected class is read off which programs the line runs (a redirection such as `2>&1` is part of its command, never a command of its own, so it adds no `other` segment).
+  const SPLIT_CASES: Array<[string, string, string]> = [
+    ['unterminated apostrophe does not swallow the rest', "echo don't; sleep 5", 'wait'],
+    ['unterminated double quote does not swallow the rest', 'echo "oops; sleep 5', 'wait'],
+    ['a closed quote still hides its separators', 'echo "a; sleep 5"', 'search-read'],
+    ['single pipe splits', 'echo hi | sleep 5', 'wait'],
+    ['background ampersand splits', 'echo hi & sleep 5', 'wait'],
+    ['double pipe still splits', 'echo hi || sleep 5', 'wait'],
+    ['double ampersand still splits', 'echo hi && sleep 5', 'wait'],
+    ['stderr dup is not a split', 'echo hi 2>&1', 'search-read'],
+    ['stdout dup is not a split', 'echo hi >&2', 'search-read'],
+    ['ampersand-redirect is not a split', 'echo hi &> /dev/null', 'search-read'],
+    ['ampersand-append is not a split', 'echo hi &>> log', 'search-read'],
+    ['noclobber pipe is not a split', 'echo hi >| out', 'search-read'],
+    ['redirect then pipe splits', 'echo hi 2>&1 | sleep 5', 'wait'],
+  ]
+  it.each(SPLIT_CASES)('splits segments: %s', (_name, raw, cls) => {
+    expect(bashCommandClassOf(raw, commandHead), raw).toBe(cls)
   })
 
   it('labels each raw command by its class end to end and keeps the command text out of the report', async () => {
