@@ -122,6 +122,15 @@ const zeroSum = (): UsageSum => ({ input: 0, cacheWrite: 0, cacheWrite1h: 0, cac
 
 const emptyKind = (): KindAcc => ({ sessions: 0, requests: 0, total: zeroSum(), cold: 0, coldTotal: zeroSum(), byTool: {} })
 
+const snapshotKind = (k: KindAcc): KindAcc => ({
+  sessions: k.sessions,
+  requests: k.requests,
+  total: { ...k.total },
+  cold: k.cold,
+  coldTotal: { ...k.coldTotal },
+  byTool: Object.fromEntries(Object.entries(k.byTool).map(([tool, t]) => [tool, { cold: t.cold, usage: { ...t.usage } }])),
+})
+
 function addSum(into: UsageSum, u: ColdGapUsage): void {
   into.input += u.input
   into.cacheWrite += u.cacheWrite
@@ -365,11 +374,13 @@ export function newColdGapAccumulator(): ColdGapAccumulator {
       }
     },
     checkpoint() {
-      const saved = structuredClone(state)
+      // Per-kind numbers and the tool buckets (bounded by distinct tool labels) are copied; the session rows only ever grow, so their length is enough.
+      const sessionCount = state.sessions.length
+      const saved = { main: snapshotKind(state.main), subagent: snapshotKind(state.subagent) }
       return () => {
         state.main = saved.main
         state.subagent = saved.subagent
-        state.sessions = saved.sessions
+        state.sessions.length = sessionCount
       }
     },
     finish(weights) {

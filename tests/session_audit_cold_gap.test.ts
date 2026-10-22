@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { bashCommandClass, bashCommandClassOf, coldGapToolLabel } from '../src/cold_gap.js'
+import { bashCommandClass, bashCommandClassOf, COLD_MIN_CACHE_WRITE_TOKENS, COLD_TTL_MS_1H, COLD_TTL_MS_5M, coldGapToolLabel, formatColdGap, isColdRewrite, newColdGapAccumulator, type ColdGapUsage } from '../src/cold_gap.js'
 import { auditSessionCorpus, commandHead, type SessionAuditSummary } from '../src/session_audit.js'
 import { formatSessionAudit } from '../src/session_audit_report.js'
 
@@ -149,6 +149,12 @@ describe('cold gap accounting', () => {
     expect(text).toContain('Subagents: 1 transcripts, 5 requests, cold re-writes 2')
     expect(text).not.toContain(SECRET)
     expect(JSON.stringify(summary)).not.toContain(SECRET)
+    // Only the class label survives of a Bash command: no other word of the planted commands (`vitest run src SECRET`) and no Agent prompt or Read path reaches the text section.
+    const section = formatColdGap(summary.coldGap).join('\n')
+    expect(section).not.toContain(SECRET)
+    expect(section).not.toContain('SECRETMARK')
+    expect(section).not.toMatch(/vitest/)
+    expect(section).not.toMatch(/file_path|prompt/)
   })
 })
 
@@ -272,5 +278,100 @@ describe('cold gap edge cases', () => {
     } finally {
       fs.rmSync(d, { recursive: true, force: true })
     }
+  })
+})
+
+// HAND-DERIVED: the 5-minute TTL (300000 ms) and 1-hour TTL (3600000 ms) are Anthropic's documented cache durations; every other number is chosen so the compared quantity sits exactly on, or one unit off, a threshold (1024 written tokens, half of the previous 40000-token prefix = 20000).
+const use = (cacheWrite: number): ColdGapUsage => ({ input: 10, cacheWrite, cacheRead: 0, cacheWrite5m: cacheWrite, cacheWrite1h: 0 })
+
+describe('isColdRewrite boundaries', () => {
+  const FIVE_MIN = 300000
+  const ONE_HOUR_MS = 3600000
+
+  it.each([
+    ['5-minute tier', FIVE_MIN],
+    ['1-hour tier', ONE_HOUR_MS],
+  ])('%s: a gap exactly equal to the TTL is not cold, one millisecond over is', (_tier, ttl) => {
+    expect(isColdRewrite(ttl, ttl, use(20000), 20000), 'gap == TTL').toBe(false)
+    expect(isColdRewrite(ttl + 1, ttl, use(20000), 20000), 'gap == TTL + 1 ms').toBe(true)
+    expect(isColdRewrite(ttl - 1, ttl, use(20000), 20000), 'gap == TTL - 1 ms').toBe(false)
+  })
+
+  it('exposes the documented TTLs the accumulator uses', () => {
+    expect(COLD_TTL_MS_5M).toBe(FIVE_MIN)
+    expect(COLD_TTL_MS_1H).toBe(ONE_HOUR_MS)
+  })
+
+  it('needs at least 1024 written tokens: 1023 is not cold, 1024 is', () => {
+    expect(COLD_MIN_CACHE_WRITE_TOKENS).toBe(1024)
+    expect(isColdRewrite(FIVE_MIN + 1, FIVE_MIN, use(1023), 1000), 'write == 1023').toBe(false)
+    expect(isColdRewrite(FIVE_MIN + 1, FIVE_MIN, use(1024), 1000), 'write == 1024').toBe(true)
+    expect(isColdRewrite(FIVE_MIN + 1, FIVE_MIN, use(1025), 1000), 'write == 1025').toBe(true)
+  })
+
+  it('needs at least half of the previous prefix: exactly half is cold, one token under is not', () => {
+    expect(isColdRewrite(FIVE_MIN + 1, FIVE_MIN, use(20000), 40000), 'write == 0.5 x prefix').toBe(true)
+    expect(isColdRewrite(FIVE_MIN + 1, FIVE_MIN, use(19999), 40000), 'write == 0.5 x prefix - 1').toBe(false)
+    expect(isColdRewrite(FIVE_MIN + 1, FIVE_MIN, use(20001), 40000), 'write == 0.5 x prefix + 1').toBe(true)
+  })
+
+  it('never counts a negative gap', () => {
+    expect(isColdRewrite(-1, FIVE_MIN, use(20000), 20000)).toBe(false)
+  })
+})
+
+describe('cold gap report privacy and display safety', () => {
+  it('prints a transcript-derived tool name and session id with control characters and marker brackets escaped', () => {
+    const hostile = 'Tool\n[tg] injected\u001b[31m'
+    const text = formatColdGap({
+      main: { sessions: 1, requests: 2, billedEquivTokens: 100, coldRewrites: 1, coldBilledEquivTokens: 50, coldRewriteBilledEquivTokens: 40, coldBilledShare: 0.5, byTool: [{ tool: hostile, coldRewrites: 1, billedEquivTokens: 50, rewriteBilledEquivTokens: 40, billedShare: 0.5 }] },
+      subagent: { sessions: 0, requests: 0, billedEquivTokens: 0, coldRewrites: 0, coldBilledEquivTokens: 0, coldRewriteBilledEquivTokens: 0, coldBilledShare: 0, byTool: [] },
+      sessions: [{ session: 'sess\n[tg] x', kind: 'main', requests: 2, coldRewrites: 1, billedEquivTokens: 100, coldBilledEquivTokens: 50, coldBilledShare: 0.5 }],
+    }).join('\n')
+    expect(text).not.toContain('\u001b')
+    expect(text).not.toContain('Tool\n')
+    expect(text).not.toContain('sess\n')
+    expect(text).not.toMatch(/^\[tg\]/m)
+    expect(text).toContain('Tool\\n')
+    expect(text).toContain('sess\\n')
+  })
+})
+
+describe('cold gap checkpoint', () => {
+  const weights = { cacheWrite: 1.25, cacheWrite1h: 2, cacheRead: 0.1 }
+  const W = (cacheWrite: number): ColdGapUsage => ({ input: 10, cacheWrite, cacheRead: 100, cacheWrite5m: cacheWrite, cacheWrite1h: 0 })
+  const MIN = 60000
+
+  function addFile(acc: ReturnType<typeof newColdGapAccumulator>, session: string, kind: 'main' | 'subagent', tool: string): void {
+    const f = acc.beginFile(session, kind)
+    f.request(0, `${session}-1`, 0, W(5000))
+    f.toolUse(0, `${session}-1`, tool)
+    f.request(0, `${session}-2`, 10 * MIN, W(20000))
+    f.end()
+  }
+
+  it('rolls a folded file back so totals, session rows and tool buckets equal what they were before it, and the accumulator keeps working', () => {
+    const acc = newColdGapAccumulator()
+    addFile(acc, 'first', 'main', 'Read')
+    const before = JSON.stringify(acc.finish(weights))
+    expect(JSON.parse(before).main.coldRewrites).toBe(1)
+    const restore = acc.checkpoint()
+    addFile(acc, 'second', 'main', 'Read')
+    addFile(acc, 'third', 'subagent', 'Agent')
+    const during = acc.finish(weights)
+    expect(during.main.coldRewrites).toBe(2)
+    expect(during.subagent.coldRewrites).toBe(1)
+    expect(during.sessions.map((s) => s.session).sort()).toEqual(['first', 'second', 'third'])
+    restore()
+    const after = acc.finish(weights)
+    expect(after.main.sessions, 'main sessions').toBe(1)
+    expect(after.main.requests, 'main requests').toBe(2)
+    expect(after.subagent.sessions, 'subagent sessions').toBe(0)
+    expect(after.sessions.map((s) => s.session), 'session rows').toEqual(['first'])
+    expect(after.main.byTool.map((t) => [t.tool, t.coldRewrites]), 'main tool buckets').toEqual([['Read', 1]])
+    expect(after.subagent.byTool, 'subagent tool buckets').toEqual([])
+    expect(JSON.stringify(after), 'whole census').toBe(before)
+    addFile(acc, 'fourth', 'main', 'Read')
+    expect(acc.finish(weights).main.coldRewrites, 'folds again after a rollback').toBe(2)
   })
 })
