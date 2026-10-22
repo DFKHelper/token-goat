@@ -16,6 +16,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **With read confinement on, a relative path to a link that leads outside the workspace is now refused.** Over MCP, `sl.txt` or `./sl.txt` (a symlink in the project that points outside it), or `jn/o.txt` through a junction, was read even though the absolute spelling of the same link was refused. The check for the extra allowed roots and the standard skill and transcript folders measured the relative name under those folders instead of under the project, so it found nothing there and let the read through. It now measures the path the read opens.
 - **Preserve full output when repeating overlapping commands.** Avoids suppression loops in served-output generic elision when a command with overlapping output ranges is rerun.
 
 ## [2.9.32] - 2026-10-20

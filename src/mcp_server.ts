@@ -334,13 +334,14 @@ function pinsFor(abs: string, real: string, identity: string | null): readonly (
 }
 
 /** Exported for `tests/mcp_server_pins_the_spelling_the_reader_opens.test.ts`, which asserts the pin-coverage invariant this function is solely responsible for. It is the production entry point `confineTargets` calls, not a parallel copy: a test against a re-implementation would agree with the bug it is meant to catch, which is how the missing raw pin survived a green suite. */
-export function checkWithinProjectRoot(target: string, resolvedRoot: string): ContainmentCheck {
+export function checkWithinProjectRoot(target: string, resolvedRoot: string, readerBase: string = resolvedRoot): ContainmentCheck {
+  // `readerBase` is the directory the READ layer resolves a relative target against (the project root the call named); `resolvedRoot` is only the root this check CONTAINS the target in. They differ in the allowed and auxiliary retries: resolving `sl.txt` under the alternate root measured an absent path, which compares lexically inside, so an in-root symlink to an outside file was admitted and then read.
   const rootReal = realPathForContainment(resolvedRoot)
   // Relative targets resolve against the project root, not the server process's cwd -- that is what the read_commands handlers themselves do with the same projectRoot this gate was handed, so resolving against cwd here would reject a legitimate relative spec whose read would have succeeded. Expanded first, exactly as resolveAgainstProjectRoot expands it for the read: `~/x` is the home directory to the reader, so measuring it as a directory named `~` under the root would admit a file the read then opens outside it.
   const spelled = expandSpecPath(target)
-  const abs = path.resolve(resolvedRoot, normalizePath(spelled))
+  const abs = path.resolve(readerBase, normalizePath(spelled))
   // The caller's spelling, resolved without normalisation. This is what the handler forwards and therefore what the read layer opens, so it is BOTH the second containment check below and the path whose identity is worth recording.
-  const absRaw = path.resolve(resolvedRoot, spelled)
+  const absRaw = path.resolve(readerBase, spelled)
   // Exactly ONE stat, and it is of the raw spelling. The stat is an open plus fstat, not a path stat, so that it answers the same question as the fstat the read compares it against (see identityOf). One, because the count is load-bearing: every additional stat between this point and the read is another window an attacker can swap the target in, and the ordering argument above only holds for a stat that precedes the realpath calls. A second stat added here for the normalized spelling reopened precisely that window, and the negative-pin race tests caught it. Of the raw spelling, because that is the object the read will open. Where normalisation changed the string the two spellings can in principle name different files -- both inside the root, since both are checked -- and then the normalized key carries the raw file's identity. A read that somehow resolved to the normalized spelling would fail its identity comparison and refuse: wrong-but-closed, which is the direction a confinement gate is allowed to be wrong in. A target that does not exist (or cannot be stat'd) yields no identity: a spec may legitimately name a missing file, and that read must fail as an ordinary "could not read" rather than be refused as a swap. `pinsFor` still records it, as ABSENT.
   const identity = identityOf(absRaw)
   // The realpath is computed ONCE here and handed back, so the caller can key a pin on it without a second realpathSync -- this gate's syscall cost stays at one stat plus one realpath per target.
@@ -427,7 +428,7 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
         let check = checkWithinProjectRoot(file, resolvedRoot)
         if (!check.inside) {
           for (const allowed of allowedRoots) {
-            const altCheck = checkWithinProjectRoot(file, allowed)
+            const altCheck = checkWithinProjectRoot(file, allowed, resolvedRoot)
             if (altCheck.inside) {
               check = altCheck
               break
@@ -436,7 +437,7 @@ function confineTargets(targets: readonly string[], resolvedRoot: string, splitC
         }
         if (!check.inside) {
           for (const aux of getStandardAuxiliaryRoots(file)) {
-            const auxCheck = checkWithinProjectRoot(file, aux)
+            const auxCheck = checkWithinProjectRoot(file, aux, resolvedRoot)
             if (auxCheck.inside) {
               check = auxCheck
               break
