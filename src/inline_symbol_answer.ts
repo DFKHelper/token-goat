@@ -83,6 +83,9 @@ export async function decideInline(input: InlineInput): Promise<InlineDecision> 
 const DECLARATION_WORDS = new Set(['def', 'class', 'function', 'async', 'export', 'default', 'const', 'let', 'var', 'interface', 'type', 'enum', 'func', 'fn', 'struct', 'impl', 'pub', 'trait', 'object', 'val', 'fun'])
 const DECLARED_PATTERN_MAX_CHARS = 256
 const IDENTIFIER_RE = /^[A-Za-z_$][\w$]*$/
+/** A name as a pattern spells it: ripgrep reads an unescaped `$` as an end anchor, so a `$` inside a name is only ever the escaped `\$`. */
+const PATTERN_NAME_RE = /^(?:[A-Za-z_]|\\\$)(?:\w|\\\$)*$/
+const unescapeDollar = (name: string): string => name.replace(/\\\$/g, '$')
 
 /** The one name a declaration pattern asks for (`^class Foo\b`, `def foo\(`, `class Foo:`), or null when the pattern asks for anything else: an alternation, a wildcard, a qualified name, a bare identifier with no declaration word. Whitespace classes and a leading anchor are noise around the name. The name must also END in a terminator (word boundary, open paren, colon, `<` or end anchor): a regex is a substring match, so `class Foo` alone also matches `class FooBar` and every other longer identifier. Every other regex character is a pattern the agent wrote to match more than one thing. */
 export function declaredNameOf(pattern: string): string | null {
@@ -95,8 +98,8 @@ export function declaredNameOf(pattern: string): string | null {
   const words = spaced.split(/ +/)
   const name = words[words.length - 1] ?? ''
   const lead = words.slice(0, -1)
-  if (lead.length === 0 || !IDENTIFIER_RE.test(name) || DECLARATION_WORDS.has(name.toLowerCase())) return null
-  return lead.every((w) => DECLARATION_WORDS.has(w.toLowerCase())) ? name : null
+  if (lead.length === 0 || !PATTERN_NAME_RE.test(name) || DECLARATION_WORDS.has(name.toLowerCase())) return null
+  return lead.every((w) => DECLARATION_WORDS.has(w.toLowerCase())) ? unescapeDollar(name) : null
 }
 
 /** Grep tool_input keys that leave the answer a plain content search of one pattern in one path. Key names are Claude Code's GrepInput (@anthropic-ai/claude-code 2.1.306, sdk-tools.d.ts): pattern, path, glob, output_mode, -B, -A, -C, context, -n, -i, -o, type, head_limit, offset, multiline. `-n` only toggles line numbers, so it is harmless here. */
@@ -133,10 +136,10 @@ async function readIndexedBody(row: SymbolEntry, cwd: string): Promise<InlineBod
   return { text: printed.text, agreesWithIndex: resolved === onDisk && printed.text.includes(resolved) }
 }
 
-/** The name a bare-identifier pattern asks for (`foo`, `\bfoo\b`, `foo\b`, `\bfoo`), or null for anything else. An ASCII identifier only, with at most a word boundary on either side, so the JavaScript regex the check runs and ripgrep's agree on every line they both match: ripgrep's `\b` is Unicode-aware and JavaScript's is ASCII, which can only make this check find MORE lines than ripgrep, and an extra line passes the Grep through. */
+/** The name a bare-identifier pattern asks for (`foo`, `\bfoo\b`, `foo\b`, `\bfoo`), or null for anything else. An ASCII identifier only (a `$` in it spelled `\$`, since an unescaped one is an anchor that matches nothing), with at most a word boundary on either side, so the JavaScript regex the check runs and ripgrep's agree on every line they both match: ripgrep's `\b` is Unicode-aware and JavaScript's is ASCII, which can only make this check find MORE lines than ripgrep, and an extra line passes the Grep through. */
 export function bareNameOf(pattern: string): string | null {
-  const m = /^(?:\\b)?([A-Za-z_][A-Za-z0-9_]*)(?:\\b)?$/.exec(pattern)
-  return m === null ? null : (m[1] as string)
+  const m = /^(?:\\b)?((?:[A-Za-z_]|\\\$)(?:[A-Za-z0-9_]|\\\$)*)(?:\\b)?$/.exec(pattern)
+  return m === null ? null : unescapeDollar(m[1] as string)
 }
 
 export interface InlineAnswerArgs {

@@ -11,6 +11,8 @@ import { bundleTg, makeBundleProject, runBundle } from './helpers/bundle.js'
 // HAND-DERIVED: synthetic Python modules; scope_loader is declared once, called twice in use.py, and mentioned in a comment in an ignored directory (an index walk still indexes that file, so a second declaration there would make the name ambiguous instead).
 const MODULE = 'def scope_loader(path):\n    """Load one thing."""\n    return open(path).read()\n'
 const MENTION = '# def scope_loader is documented in mod.py\n'
+// HAND-DERIVED: a JavaScript function whose name starts with a dollar sign.
+const DOLLAR = 'function $dollar_fn(a) {\n  return a + 1\n}\n'
 const CALLER = 'from mod import scope_loader\n\na = scope_loader("a")\nb = scope_loader("b")\n'
 
 // FORMAT-DERIVED: the Claude Code PreToolUse payload keys (hook_event_name, session_id, cwd, tool_name, tool_input) and the {decision:'block', reason} reply, as src/hook_registry.ts reads and writes them.
@@ -32,6 +34,7 @@ beforeAll(() => {
   fs.mkdirSync(path.join(project, 'skipped'))
   fs.writeFileSync(path.join(project, 'mod.py'), MODULE, 'utf8')
   fs.writeFileSync(path.join(project, 'use.py'), CALLER, 'utf8')
+  fs.writeFileSync(path.join(project, 'dollar.js'), DOLLAR, 'utf8')
   fs.writeFileSync(path.join(project, 'skipped', 'copy.py'), MENTION, 'utf8')
   const idx = bundleTg(project, env, ['index', '.', '--walk'])
   expect(idx.status, idx.stderr).toBe(0)
@@ -64,6 +67,19 @@ describe('built bundle: inline symbol body for a directory or a bare name', () =
     const { reason } = hook(String.raw`\bscope_loader\b`, project, 'scope-bundle-bare')
     expect(reason).not.toBeNull()
     for (const line of ['mod.py:1:def scope_loader(path):', 'use.py:1:from mod import scope_loader', 'use.py:3:a = scope_loader("a")', 'use.py:4:b = scope_loader("b")']) expect(reason).toContain(line)
+  })
+
+  it('answers a Grep for a symbol whose name holds a dollar sign, spelled with the escaped dollar', () => {
+    for (const [pattern, session] of [[String.raw`function \$dollar_fn\b`, 'scope-bundle-dollar-decl'], [String.raw`\$dollar_fn`, 'scope-bundle-dollar-bare']] as const) {
+      const { reason } = hook(pattern, project, session)
+      expect(reason, pattern).not.toBeNull()
+      expect(reason, pattern).toContain('function $dollar_fn(a) {')
+    }
+  })
+
+  it('lets a Grep with an unescaped dollar run, since ripgrep reads it as an end anchor that matches nothing', () => {
+    expect(hook(String.raw`function $dollar_fn\b`, project, 'scope-bundle-dollar-anchor').reason).toBeNull()
+    expect(hook('$dollar_fn', project, 'scope-bundle-dollar-anchor-bare').reason).toBeNull()
   })
 
   it('lets the Grep run once the ignore rule is gone, since ripgrep would then also see the copy', () => {
