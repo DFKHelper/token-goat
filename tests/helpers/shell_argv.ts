@@ -91,8 +91,8 @@ export const OWNER_VAR = 'TG_SHARGV_OWNER'
 /** Defines `tg_live PID`, true while the pid runs: a zombie is gone, and so is a pid whose /proc stat reads empty, since under load MSYS keeps answering kill -0 for one that already exited; macOS has no /proc and keeps plain kill -0. */
 export const SH_LIVE = 'tg_live() { if [ -r /proc/self/stat ]; then tg_st=; read -r tg_st 2>/dev/null < "/proc/$1/stat"; [ -n "$tg_st" ] || return 1; case "${tg_st##*) }" in Z*) return 1 ;; esac; fi; kill -0 "$1" 2>/dev/null; }'
 
-/** Stops then kills every process whose environment carries `${OWNER_VAR}=$TG_REAP_TOKEN`, rescanning so a child forked between scan and stop is caught, and exits 1 naming any it killed that are still alive ten seconds later, each with its process state and Windows pid and with what `kill -f` printed, so a failure explains itself (a zombie awaiting its reaper counts as gone, so does a pid with no /proc entry where /proc exists, and the report lists only pids still alive when it is written, since under load a killed process can finish exiting just after the deadline). A survivor at two seconds is killed again, under MSYS through the Win32 interface (`kill -f`), since a loaded Windows machine left a signalled Git Bash process running past five seconds; the CONT after the KILL wakes a stopped process that would otherwise sit on its pending signal. Matching the token instead of a recorded pid finds the chunk subshell a timeout orphaned and everything it started, reparented or not, and cannot hit an unrelated process that reused a dead one's pid. One `grep -z` pass over every /proc/<pid>/environ on Linux and under MSYS, since bash's `read` pulls a /proc file a byte at a time and that took a loaded Windows machine past a minute; `ps -E` on macOS. The scan runs only after a failed run, so its cost never lands on a passing one. */
-const REAP_SCRIPT = [
+/** Stops then kills every process whose environment carries `${OWNER_VAR}=$TG_REAP_TOKEN`, rescanning so a child forked between scan and stop is caught, and exits 1 naming any it killed that are still alive ten seconds later, each with its process state and Windows pid and with what `kill -f` printed, so a failure explains itself (a zombie awaiting its reaper counts as gone, so does a pid with no /proc entry where /proc exists, and the report lists only pids still alive when it is written, since under load a killed process can finish exiting just after the deadline). A survivor at two seconds is killed again, under MSYS through the Win32 interface (`kill -f`), since a loaded Windows machine left a signalled Git Bash process running past five seconds; the CONT after the KILL wakes a stopped process that would otherwise sit on its pending signal. Matching the token instead of a recorded pid finds the chunk subshell a timeout orphaned and everything it started, reparented or not, and cannot hit an unrelated process that reused a dead one's pid. One `grep -z` pass over every /proc/<pid>/environ on Linux and under MSYS, since bash's `read` pulls a /proc file a byte at a time and that took a loaded Windows machine past a minute; `ps -E` on macOS. Once everything found is dead the scan runs once more and exits 0 only when it finds no live owned process outside the killed set, since a process forked after the last scan (a stop signal can land after a fork already began, and a loaded machine stretches the gap between scan and kill) would otherwise outlive the reap unseen; a process that scan finds is killed and the check repeats. The scan runs only after a failed run, so its cost never lands on a passing one. */
+export const REAP_SCRIPT = [
   `tg_needle="${OWNER_VAR}=$TG_REAP_TOKEN"`,
   'tg_owned() {',
   '  tg_found=',
@@ -118,7 +118,14 @@ const REAP_SCRIPT = [
   'while [ $((SECONDS - tg_start)) -lt 10 ]; do',
   '  tg_left=',
   '  for tg_p in $tg_all; do tg_live "$tg_p" && tg_left="$tg_left $tg_p"; done',
-  '  [ -z "$tg_left" ] && exit 0',
+  '  if [ -z "$tg_left" ]; then',
+  '    tg_owned; tg_late=',
+  '    for tg_p in $tg_found; do case " $tg_all " in *" $tg_p "*) ;; *) tg_live "$tg_p" && tg_late="$tg_late $tg_p" ;; esac; done',
+  '    [ -z "$tg_late" ] && exit 0',
+  '    kill -STOP $tg_late 2>/dev/null; kill -KILL $tg_late 2>/dev/null; kill -CONT $tg_late 2>/dev/null',
+  '    tg_all="$tg_all$tg_late"',
+  '    continue',
+  '  fi',
   '  if [ -z "$tg_forced" ] && [ $((SECONDS - tg_start)) -ge 2 ]; then',
   '    tg_forced=1',
   '    case $OSTYPE in msys* | cygwin*) tg_fout=$(/usr/bin/kill -f -KILL $tg_left 2>&1) ;; *) kill -KILL $tg_left 2>/dev/null ;; esac',
@@ -133,8 +140,8 @@ const REAP_SCRIPT = [
 ].join('\n')
 
 /** Kill whatever a failed run left behind, returning why that failed or null when nothing of the run survives. */
-export function reapOwned(sh: string, token: string): string | null {
-  const res = spawnSync(sh, ['-c', REAP_SCRIPT], { encoding: 'utf8', env: { ...process.env, TG_REAP_TOKEN: token }, windowsHide: true, timeout: 60_000 })
+export function reapOwned(sh: string, token: string, script: string = REAP_SCRIPT): string | null {
+  const res = spawnSync(sh, ['-c', script], { encoding: 'utf8', env: { ...process.env, TG_REAP_TOKEN: token }, windowsHide: true, timeout: 60_000 })
   return res.error || res.signal || res.status !== 0 ? spawnFailure(res) : null
 }
 

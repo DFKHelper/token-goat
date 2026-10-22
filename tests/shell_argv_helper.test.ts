@@ -7,7 +7,7 @@ import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { OWNER_VAR, POSIX_SH, SH_LIVE, SH_SCRIPT, reapOwned, shRunAll } from './helpers/shell_argv.js'
+import { OWNER_VAR, POSIX_SH, REAP_SCRIPT, SH_LIVE, SH_SCRIPT, reapOwned, shRunAll } from './helpers/shell_argv.js'
 import { startWatchdog } from './helpers/stall_proof_watchdog.js'
 
 describe.skipIf(POSIX_SH === null)('shRunAll', () => {
@@ -115,6 +115,36 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       }
     }
   })
+
+  // Provenance: HAND-DERIVED. The reap scans for owned processes, then kills what it found; a process forked after its last scan was never in that set and outlived the reap, which failed the timeout test above under full-suite load. The window is forced: the stop signal is made a no-op (it can land after a fork began) and the gap between the last scan and the kill lasts five seconds, in which the owned parent starts its child.
+  it('ends an owned process that was started after the reap stopped scanning', () => {
+    const slowed = REAP_SCRIPT.replace('kill -STOP $tg_new 2>/dev/null', ':').replace('[ -z "$tg_all" ] || { kill -KILL', 'sleep 5\n[ -z "$tg_all" ] || { kill -KILL')
+    expect(slowed.includes('sleep 5') && !slowed.includes('kill -STOP $tg_new'), 'the reap script no longer has the stop and kill lines this test slows').toBe(true)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlate-'))
+    const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
+    const token = `${process.pid}-${randomBytes(8).toString('hex')}`
+    // The parent waits three seconds on a FIFO nobody writes, then starts a child that blocks on a second FIFO, so only a kill ends it.
+    fs.writeFileSync(file('parent.sh'), [
+      'mkfifo "$2" "$3"',
+      'exec 3<> "$3"',
+      'read -t 3 -u 3 _',
+      '"$BASH" -c \'echo $$ > "$1"; read -r _ < "$2"\' tg "$4" "$2" < /dev/null > /dev/null 2>&1',
+    ].join('\n'))
+    const parent = spawn(sh, [file('parent.sh'), 'x', file('fifo'), file('wait'), file('kid')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
+    const got = { failure: null as string | null, kid: '', alive: true }
+    try {
+      got.failure = reapOwned(sh, token, slowed)
+      got.kid = fs.existsSync(file('kid')) ? fs.readFileSync(file('kid'), 'utf8').trim() : ''
+      if (/^[1-9]\d*$/.test(got.kid)) got.alive = spawnSync(sh, ['-c', `${SH_LIVE}; tg_live ${got.kid}`], { windowsHide: true, timeout: 30_000 }).status === 0
+    } finally {
+      if (parent.exitCode === null) parent.kill()
+      reapOwned(sh, token)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+    expect(got.kid, 'the late child never started, so the forced window did not happen').toMatch(/^[1-9]\d*$/)
+    expect(got.failure, 'the reap reported it could not end the run').toBeNull()
+    expect(got.alive,'the chunk subshell or its child is still running after the run returned').toBe(false)
+  }, 120_000)
 
   it('shares one subshell across a chunk of commands, so a run forks once per chunk', () => {
     const got = shRunAll(sh, ['tg_probe=set', 'token-goat "${tg_probe-unset}"'])
