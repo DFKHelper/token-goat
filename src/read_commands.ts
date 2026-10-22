@@ -49,7 +49,7 @@ import {
   formatDescriptionSlice,
 } from './pr_slice.js'
 import { extractPdfMeta, extractPdfOutline, extractPdfText, locatePdfPages, readPdfFileWithinBounds, type PdfExtractResult, type PdfLocateResult, type PdfMeta, type PdfOutlineEntry } from './pdf_extract.js'
-import { canShrinkFormat, decoderRefusal, isImagePath, probeImageMeta, shrinkImage, ImageDecodeError } from './image_shrink.js'
+import { canShrinkFormat, decoderRefusal, isImagePath, probeImageMeta, shrinkImage, ImageDecodeError, visionTokens } from './image_shrink.js'
 import { ocrImage, isTextHeavy, isOcrEngineAvailable, ocrIntegrityFailed } from './image_ocr.js'
 import { takeScreenshot } from './screenshot.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
@@ -1004,6 +1004,10 @@ export interface ImageMeta {
   height: number
   format: string | null
   bytes: number
+  /** Estimated visual tokens for this image based on current vision tier (28x28 patch grid). */
+  visualTokens?: number
+  /** Aspect ratio formatted string (e.g. "16:9", "4:3", or numeric ratio). */
+  aspectRatio?: string
   /** Whether token-goat's image engine could read this file's header at all. Named for the fact, not for a library: nothing here is optional any more. */
   decodable: boolean
   /** Whether the engine has a decoder for this format, i.e. whether a shrink was even attemptable. A header probe reads more formats than the re-encoder handles, so `decodable: true, shrinkable: false` is an ordinary webp or tiff -- and reporting that as "no benefit" states a capability limit as a measurement. */
@@ -1043,11 +1047,21 @@ export async function runImageMeta(file: string): Promise<ImageMeta> {
   }
   const shrinkable = canShrinkFormat(probe.format)
   const shrink = shrinkable ? await shrinkImage(data, { sizeThresholdBytes: 0 }) : null
+  const cfg = loadConfig()
+  const vTokens = probe.width > 0 && probe.height > 0
+    ? visionTokens(probe.width, probe.height, cfg.image_shrink.vision_tier)
+    : 0
+  const gcd = (a: number, b: number): number => (!b ? a : gcd(b, a % b))
+  const d = gcd(probe.width, probe.height)
+  const ar = d > 0 ? `${Math.round(probe.width / d)}:${Math.round(probe.height / d)}` : `${(probe.width / (probe.height || 1)).toFixed(2)}:1`
+
   return {
     width: probe.width,
     height: probe.height,
     format: probe.format,
     bytes,
+    visualTokens: vTokens,
+    aspectRatio: ar,
     decodable: true,
     shrinkable,
     wouldShrink: shrink !== null,
@@ -1103,6 +1117,8 @@ export async function runScreenshot(
   const result = await takeScreenshot(url, destPath, screenshotOpts)
   return `Saved screenshot to ${result.path} (${result.originalBytes} -> ${result.finalBytes} bytes)`
 }
+
+export { sliceImage, diffImages, type ImageSliceOptions, type ImageSliceResult, type ImageDiffResult } from './image_slice.js'
 
 // ---- grep -------------------------------------------------------------------
 

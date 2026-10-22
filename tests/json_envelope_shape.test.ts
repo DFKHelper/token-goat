@@ -34,7 +34,7 @@ const ENVELOPE_COMMANDS = [
 const NON_ENVELOPE_JSON_COMMANDS = [
   'read', 'brief', 'section', 'map', 'bridges-status', 'commands', 'stats', 'doctor',
   'context-stats', 'bootstrap-audit', 'waste', 'audit', 'session-outline', 'session-slice', 'session-audit', 'listing-size', 'mcp-audit',
-  'recall', 'hint-stats', 'statusline', 'exports', 'imports', 'find', 'grep', 'skill-list',
+  'recall', 'hint-stats', 'statusline', 'exports', 'imports', 'importers', 'peek', 'find', 'grep', 'skill-list',
   'skill-history', 'call-chain', 'impact', 'deps', 'scope', 'similar', 'context-for', 'search',
   'coverage-gaps', 'arch', 'blame', 'ask', 'tokens', 'budget', 'failures', 'todo', 'trace',
   'logfold', 'lockdeps', 'dep-docs', 'note', 'hot', 'recent', 'ignores', 'bash-history',
@@ -42,7 +42,7 @@ const NON_ENVELOPE_JSON_COMMANDS = [
   'resume', 'compact-hint', 'session-summary', 'cost', 'baseline', 'config', 'project',
   'affected', 'reconcile',
   'compact-doc', 'fetch-image', 'history', 'changed', 'diff', 'log', 'pdf-locate', 'pdf-outline', 'pdf-meta',
-  'image-meta', 'image-text',
+  'image-meta', 'image-text', 'image-slice', 'image-diff',
   'xlsx-sheets', 'xlsx-columns', 'xlsx-query', 'pptx-outline', 'docx-outline', 'docx-tables', 'transcript-outline', 'csv-query',
   'json-outline', 'json-query', 'yaml-outline', 'yaml-query', 'xml-outline', 'xml-query', 'html-outline', 'html-query', 'html-lint', 'openapi-outline', 'openapi-op',
   'zip-list', 'zip-read', 'pr-slice', 'sqlite-tables', 'sqlite-schema', 'sqlite-query', 'coverage-report-gaps',

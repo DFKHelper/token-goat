@@ -6,7 +6,7 @@ import { displaySafeJson } from './paths.js'
 import { recordStat } from './stats.js'
 import { cappedSourceBytesSaved } from './util.js'
 import { visionTokensSavedByText } from './image_shrink.js'
-import { runImageMeta, runImageText } from './read_commands.js'
+import { runImageMeta, runImageText, sliceImage, diffImages } from './read_commands.js'
 import { runConfigGet, runSqliteTables, runSqliteSchema, runSqliteQuery } from './read_inspect.js'
 import { isSupportedOcrLang, SUPPORTED_OCR_LANG_CODES } from './ocr_languages.js'
 import { fenceUntrustedOcrText } from './injection_scan.js'
@@ -97,9 +97,10 @@ export async function cmdImageMeta(file: string, opts: { json?: boolean } = {}) 
         ? `Shrink: not attempted (the re-encoder refused this ${meta.format ?? 'image'}: ${meta.shrinkRefusal})`
         : 'Shrink: no benefit (already small/optimal)'
   const lines = [
-    `Dimensions: ${meta.width}x${meta.height}`,
+    `Dimensions: ${meta.width}x${meta.height}${meta.aspectRatio ? ` (${meta.aspectRatio})` : ''}`,
     `Format: ${meta.format ?? '(unknown)'}`,
     `Size: ${meta.bytes} bytes`,
+    ...(meta.visualTokens !== undefined ? [`Visual Tokens: ~${meta.visualTokens}`] : []),
     shrinkLine,
   ]
   const text = opts.json === true ? displaySafeJson(meta) : lines.join('\n')
@@ -139,6 +140,87 @@ export async function cmdImageText(file: string, opts: { json?: boolean; lang?: 
   const fullSourceBytes = fileSizeOrZero(file)
   const bytesSaved = cappedSourceBytesSaved(fullSourceBytes, Buffer.byteLength(text, 'utf8'))
   recordStat('image_text', bytesSaved, visionTokensSavedByText(null, null, Buffer.byteLength(text, 'utf8'), loadConfig().image_shrink.vision_tier))
+}
+
+export async function cmdImageSlice(
+  file: string,
+  opts: {
+    x?: string
+    y?: string
+    width?: string
+    height?: string
+    format?: string
+    quality?: string
+    out?: string
+    json?: boolean
+  } = {},
+) {
+  const sliceOpts = {
+    ...(opts.x !== undefined ? { x: parseInt(opts.x, 10) } : {}),
+    ...(opts.y !== undefined ? { y: parseInt(opts.y, 10) } : {}),
+    ...(opts.width !== undefined ? { width: parseInt(opts.width, 10) } : {}),
+    ...(opts.height !== undefined ? { height: parseInt(opts.height, 10) } : {}),
+    ...(opts.format === 'jpeg' || opts.format === 'jpg' ? { format: 'jpeg' as const } : { format: 'png' as const }),
+    ...(opts.quality !== undefined ? { quality: parseInt(opts.quality, 10) } : {}),
+  }
+
+  const result = await sliceImage(file, sliceOpts)
+
+  if (opts.out) {
+    const fs = await import('node:fs')
+    fs.writeFileSync(opts.out, result.data)
+  }
+
+  if (opts.json === true) {
+    out(
+      displaySafeJson({
+        originalWidth: result.originalWidth,
+        originalHeight: result.originalHeight,
+        cropX: result.cropX,
+        cropY: result.cropY,
+        cropWidth: result.cropWidth,
+        cropHeight: result.cropHeight,
+        format: result.format,
+        bytes: result.bytes,
+        outPath: opts.out ?? null,
+      }),
+    )
+    return
+  }
+
+  const lines = [
+    `Cropped region: ${result.cropWidth}x${result.cropHeight} at (+${result.cropX},+${result.cropY})`,
+    `Original dimensions: ${result.originalWidth}x${result.originalHeight}`,
+    `Output format: ${result.format} (${result.bytes} bytes)`,
+    opts.out ? `Saved crop to: ${opts.out}` : '(use --out <path> to save cropped image)',
+  ]
+  out(lines.join('\n'))
+}
+
+export async function cmdImageDiff(
+  fileA: string,
+  fileB: string,
+  opts: { tolerance?: string; json?: boolean } = {},
+) {
+  const tolerance = opts.tolerance !== undefined ? parseInt(opts.tolerance, 10) : 0
+  const result = await diffImages(fileA, fileB, { tolerance })
+
+  if (opts.json === true) {
+    out(displaySafeJson(result))
+    return
+  }
+
+  const lines = [
+    `Images dimensions: ${result.width}x${result.height} (${result.totalPixels} total pixels)`,
+    `Status: ${result.identical ? 'IDENTICAL' : 'DIFFERENT'}`,
+    `Different pixels: ${result.differentPixels} (${result.diffPercentage}%)`,
+  ]
+  if (result.boundingBox) {
+    lines.push(
+      `Changed bounding box: ${result.boundingBox.width}x${result.boundingBox.height} at (+${result.boundingBox.minX},+${result.boundingBox.minY}) to (+${result.boundingBox.maxX},+${result.boundingBox.maxY})`,
+    )
+  }
+  out(lines.join('\n'))
 }
 
 export function cmdSqliteTables(file: string, opts: { json?: boolean }) {
@@ -217,6 +299,26 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .option('--lang <lang>', 'OCR language code (e.g. eng, fra, spa)')
     .option('-j, --json', 'output as JSON')
     .action(guard(cmdImageText))
+
+  program
+    .command('image-slice <file>')
+    .description('crop/slice an image to a specific rectangle to inspect detail without full vision token cost')
+    .option('-x <px>', 'X offset (default: 0)')
+    .option('-y <px>', 'Y offset (default: 0)')
+    .option('-w, --width <px>', 'width in pixels')
+    .option('-h, --height <px>', 'height in pixels')
+    .option('--format <fmt>', 'output format (png or jpeg, default: png)')
+    .option('--quality <n>', 'jpeg quality 1-100 (default: 85)')
+    .option('--out <file>', 'save sliced image to output file path')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdImageSlice))
+
+  program
+    .command('image-diff <fileA> <fileB>')
+    .description('compare two images pixel-by-pixel, reporting difference percentage and spatial bounding box')
+    .option('--tolerance <n>', 'per-channel color difference tolerance (0-255, default: 0)')
+    .option('-j, --json', 'output as JSON')
+    .action(guard(cmdImageDiff))
 
   program
     .command('sharepoint-resolve <shareUrl>')

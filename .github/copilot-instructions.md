@@ -48,7 +48,7 @@ This gate decides *whether* to reach for a read tool at all. Copilot CLI's nativ
 
 Shell binaries and editor programs are commands run through the shell tool, never tool identifiers: keep them out of an agent's tools and allowed-tools lists, where loaders harvest the names and warn that each is unknown.
 
-Exemptions (gate passes, read directly): the file is under ~200 lines and you need all of it; it was never indexed (new, untracked, or generated this turn); it is a genuinely opaque binary (not an image); the target has no symbol handle (e.g. a literal mid-function).
+Exemptions (gate passes, read directly): file under ~200 lines (tokens <file>) and need all of it; unindexed (new/untracked); opaque binary (not image); target has no symbol handle.
 
 Failure shapes to catch yourself in, and the command that replaces each:
 - not knowing which command answers a question you can already state in words → answer "<question>", which runs the right command and refuses rather than guess
@@ -64,12 +64,13 @@ Failure shapes to catch yourself in, and the command that replaces each:
 - re-reading output you already captured → bash-output/web-output/mcp-output by ID
 - a directory listing or recursive wildcard walk to orient in an unfamiliar repo → map --compact
 - pulling one value or subtree out of a JSON/YAML/XML file (manifest, lockfile, spec, config) → json-query file 'a.b.c' / yaml-query file 'a.b.c' / xml-query file 'a.b.c'
-- opening an image to check its dimensions, format, or size → image-meta file
+- opening an image for dimensions/format/size → image-meta file
 - opening a screenshot, diagram, or scan to read the text in it → image-text file
 - running tests immediately on edited code without fast static validation → run language validator first (e.g. ruff check --select F821 <file>, node --check, tsc --noEmit) to catch missing imports and syntax errors before test execution
+- checking file size/lines before reading → tokens <file>
 - passing concatenated or unquoted paths to shell tools → verify whitespace and argument separation in multi-path commands (e.g. git add path1 path2, never git add path1path2)
 
-Commands: symbol NAME, changed --symbol, config-get file KEY, json-outline/yaml-outline/xml-outline, gdrive-sections <file-id>, and token-goat --help for the rest.
+Commands: symbol NAME, tokens <file>, changed --symbol, config-get file KEY, json-outline/yaml-outline/xml-outline, gdrive-sections <file-id>, and token-goat --help for the rest.
 
 Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.
 

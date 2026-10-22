@@ -116,7 +116,7 @@ export function visionTokensSavedByText(width: number | null, height: number | n
 const DEFAULT_SIZE_THRESHOLD_BYTES = 512 * 1024
 
 /** Every format the engine can decode to RGBA, and how. `probeImageMeta` reads headers for more formats than this -- webp, tiff and friends -- so the two lists must be asked separately: a probe that succeeds says only that the dimensions are known, never that a re-encode is possible. Callers derive {@link canShrinkFormat} from these keys rather than listing the formats again. When the dispatch was an if/else chain, `image-meta` answered "Shrink: no benefit (already small/optimal)" for a 3000x3000 webp, reporting a missing decoder as a measured verdict. */
-const SINGLE_FRAME_DECODERS = new Map<string, (input: Buffer) => DecodedImage | null>([
+export const SINGLE_FRAME_DECODERS = new Map<string, (input: Buffer) => DecodedImage | null>([
   ['png', (input) => decodePng(input)],
   ['jpeg', (input) => decodeJpeg(input)],
   ['bmp', (input) => decodeBmp(input)],

@@ -48,7 +48,7 @@ export function generateCompactHelp(): string {
     '',
     'Utils: ignores, bash-history, web-history, history, openapi-op, openapi-outline,',
     '  gdrive-sections, screenshot, fetch-image, image-meta,',
-    '  image-text, resume, replace, insert-section, pr-slice,',
+    '  image-text, image-slice, image-diff, resume, replace, insert-section, pr-slice,',
     '  sharepoint-resolve, transcript, transcript-outline, video-chapters,',
     '  write-file, zip-list, zip-read, mcp-history, compact-doc, compact-hint,',
     '  conflicts, prune-cache',
