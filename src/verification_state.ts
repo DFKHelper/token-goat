@@ -9,6 +9,9 @@ import { recordVerificationRun, type VerificationRun } from './session.js'
 import { readSessionStateFile } from './session_store.js'
 import { displaySafePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
+import { isScriptCheckSegment } from './verification_commands.js'
+import { canonicalize, foldPath } from './path_containment.js'
+import { findProject, isUnderSystemTemp } from './project.js'
 
 /** Build, typecheck and script wrappers that are not covered by the test-runner or lint predicates. Install and dependency commands are deliberately absent: they prove nothing about the edits. */
 const OTHER_VERIFICATION_PATTERNS: ReadonlyArray<RegExp> = [
@@ -27,7 +30,7 @@ const COMMAND_SEPARATOR = /(&&|\|\||[;|\n]|(?<![>&|])&(?![>&]))/
 
 function isVerificationSegment(segment: string): boolean {
   const trimmed = segment.trim().replace(ENV_ASSIGNMENT_PREFIX, '')
-  return trimmed !== '' && (isTestRunnerCommand(trimmed) || isLintCommand(trimmed) || OTHER_VERIFICATION_PATTERNS.some((re) => re.test(trimmed)))
+  return trimmed !== '' && (isTestRunnerCommand(trimmed) || isLintCommand(trimmed) || OTHER_VERIFICATION_PATTERNS.some((re) => re.test(trimmed)) || isScriptCheckSegment(trimmed))
 }
 
 /** True when any segment of `command` is a test, lint, typecheck or build invocation. */
@@ -74,9 +77,9 @@ function storedCommand(command: string): string {
 }
 
 /** The runner and subcommand of a check, as {@link isVerificationSegment} recognises it (OTHER_VERIFICATION_PATTERNS above, lang_patterns.ts TEST_RUNNER_COMMAND_PATTERNS, bash_output_cache.ts lintCommand). Nothing after it is trusted by default. */
-const CHECK_HEAD = /^(?:(?:npx\s+)?(?:jest|vitest(?:\s+(?:run|watch))?|eslint|tsc|mypy|pyright)|pytest|(?:uv\s+run\s+)?ruff(?:\s+(?:check|format))?|go\s+(?:test|build|vet)|cargo\s+(?:test|build|check|clippy)|dotnet\s+(?:build|test)|(?:npm|pnpm|yarn)\s+(?:run(?:-script)?\s+)?(?:test|build|lint|typecheck|type-check|check|compile|verify)(?::[\w:-]+)?|python3?\s+-m\s+(?:mypy|pyright|ruff|pytest))(?=\s|$)/i
+const CHECK_HEAD = /^(?:(?:npx\s+)?(?:jest|vitest(?:\s+(?:run|watch))?|eslint|tsc|mypy|pyright)|pytest|(?:uv\s+run\s+)?ruff(?:\s+(?:check|format))?|go\s+(?:test|build|vet)|cargo\s+(?:test|build|check|clippy)|dotnet\s+(?:build|test)|(?:npm|pnpm|yarn)\s+(?:run(?:-script)?\s+)?(?:test|build|lint|typecheck|type-check|check|compile|verify)(?::[\w:-]+)?|python3?\s+-m\s+(?:mypy|pyright|ruff|pytest)|python3?(?=\s+\S*\.py(?:\s|$)))(?=\s|$)/i
 /** Switches that take no value: each is documented by a test, lint, typecheck or build runner (vitest, jest, pytest, tsc, cargo). A flag that takes a value is absent on purpose, since its name does not say whether the value is a secret. */
-const SAFE_FLAGS: ReadonlySet<string> = new Set(['--', '--ci', '--run', '--watch', '--watch=false', '--watchAll=false', '--coverage', '--bail', '--verbose', '--silent', '--no-color', '--noEmit', '--passWithNoTests', '--release', '--locked', '--all-targets', '-x', '-q', '-v', '-vv'])
+const SAFE_FLAGS: ReadonlySet<string> = new Set(['--', '--ci', '--run', '--watch', '--watch=false', '--watchAll=false', '--coverage', '--bail', '--verbose', '--silent', '--no-color', '--noEmit', '--passWithNoTests', '--release', '--locked', '--all-targets', '--self-test', '-x', '-q', '-v', '-vv'])
 /** The values of `--reporter=` that name a built-in reporter; any other value could be anything. */
 const SAFE_REPORTER = /^--reporter=(?:default|verbose|dot|basic|json|junit|tap|spec|min|list|agent)$/
 const PATH_SHAPE = /^[\w./@~][\w./@:\\-]*$/
@@ -143,13 +146,39 @@ export interface VerificationState {
   readonly editedSinceLastPass: readonly string[]
 }
 
-/** The verification verdict for one session-state key. An unreadable or absent state is an empty verdict, which never claims an edit. */
-export function evaluateVerification(stateKey: string): VerificationState {
+/** Which edits a verdict is about. */
+export interface VerificationScope {
+  /** The session's project root. An edit inside it always needs a check; one outside it is dismissed only when it sits under the OS temp dir (throwaway probes, the harness scratchpad), and a sibling package, another repo or a sibling worktree still counts. Absent, only an edit under the OS temp dir is dismissed. */
+  readonly projectRoot?: string
+}
+
+/** The project root a session working in `cwd` is judged against: the nearest project marker above it, else `cwd` itself. */
+export function verificationScopeFor(cwd: string | undefined): VerificationScope {
+  if (cwd === undefined) return {}
+  return { projectRoot: findProject(cwd)?.root ?? cwd }
+}
+
+/** Whether an edit needs a project check. One inside the session's project root always does, even a project that itself lives under the OS temp dir. Outside the root it is dismissed only when it is under the OS temp dir: a sibling package, another repo or a sibling worktree is still work nothing verified. With no root known, the same temp-dir test alone decides. A path that cannot be judged stays in scope. */
+function inScope(filePath: string, scope: VerificationScope): boolean {
+  try {
+    if (scope.projectRoot !== undefined) {
+      const root = foldPath(canonicalize(scope.projectRoot))
+      const target = foldPath(canonicalize(filePath))
+      if (target === root || target.startsWith(root.endsWith('/') ? root : `${root}/`)) return true
+    }
+  } catch {
+    return true
+  }
+  return !isUnderSystemTemp(filePath)
+}
+
+/** The verification verdict for one session-state key. An unreadable or absent state is an empty verdict, which never claims an edit. Without a `scope` every source edit counts, which is how the subagent report receipt reads it; the Stop advisory passes the session scope ({@link verificationScopeFor}). */
+export function evaluateVerification(stateKey: string, scope?: VerificationScope): VerificationState {
   const state = readSessionStateFile(stateKey)
   const runs = state?.verificationRuns ?? []
   const latestRun = runs.reduce<VerificationRun | undefined>((latest, run) => (latest === undefined || run.at >= latest.at ? run : latest), undefined)
   const lastPassAt = runs.reduce((at, run) => (run.exitCode === null || run.exitCode === 0 ? Math.max(at, run.at) : at), -1)
-  const edited = (state?.files ?? []).filter((f) => f.wasEdited && f.lastEditedAt !== undefined && languageHasFlag(detectLanguage(f.path), 'sourceHints'))
+  const edited = (state?.files ?? []).filter((f) => f.wasEdited && f.lastEditedAt !== undefined && languageHasFlag(detectLanguage(f.path), 'sourceHints') && (scope === undefined || inScope(f.path, scope)))
   const names = (files: typeof edited): string[] => [...new Set(files.map((f) => displaySafePath(f.path.split(/[/\\]/).pop() ?? f.path)))].sort()
   return {
     runs,

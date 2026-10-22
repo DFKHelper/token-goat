@@ -59,7 +59,7 @@ describe('mayBeVerificationCommand', () => {
   // HAND-DERIVED: one command per accepting rule in verification_state.ts (the test-runner, lint and OTHER_VERIFICATION_PATTERNS lists), so the keyword gate cannot be narrower than the verdict it guards.
   it.each([
     'pytest -x', 'npx jest', 'vitest run', 'go test ./...', 'cargo test', 'dotnet test', 'npm run test', 'yarn test', 'pnpm run test', 'eslint src', 'npx eslint .', 'ruff check .', 'uv run ruff format',
-    'tsc', 'npx tsc --noEmit', 'npm run build', 'pnpm typecheck', 'yarn run type-check', 'npm run check', 'npm run compile', 'npm run verify', 'npm run lint:fix', 'cargo build', 'cargo check', 'cargo clippy', 'go build ./...', 'go vet ./...', 'dotnet build', 'mypy src', 'pyright', 'python -m mypy src', 'python3 -m pytest', 'python -m ruff check',
+    'python scripts/validate-skills.py', 'python scripts/run_self_tests.py', 'python scripts/x.py --self-test', 'python scripts/check_push_bumps.py', 'tsc', 'npx tsc --noEmit', 'npm run build', 'pnpm typecheck', 'yarn run type-check', 'npm run check', 'npm run compile', 'npm run verify', 'npm run lint:fix', 'cargo build', 'cargo check', 'cargo clippy', 'go build ./...', 'go vet ./...', 'dotnet build', 'mypy src', 'pyright', 'python -m mypy src', 'python3 -m pytest', 'python -m ruff check',
   ])('lets %j through', (command) => {
     expect(isVerificationCommand(command)).toBe(true)
     expect(mayBeVerificationCommand(command)).toBe(true)
