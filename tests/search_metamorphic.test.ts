@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { globalDbPath } from '../src/constants.js'
 import { closeAllDbs, getReadDb } from '../src/db.js'
@@ -12,11 +12,16 @@ import { sanitizeFtsQuery } from '../src/index_reader.js'
 import { indexFileSync } from '../src/parser.js'
 import { executeParallelSearch } from '../src/search/parallel_search.js'
 
-const dirs: string[] = []
+// One project indexed once: the isolated global db outlives each test, so a per-test project would leave rows for the unscoped control queries to see in whatever order the tests run.
+let dir = ''
 
-afterEach(() => {
+beforeAll(() => {
+  dir = project()
+})
+
+afterAll(() => {
   closeAllDbs()
-  for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true })
+  fs.rmSync(dir, { recursive: true, force: true })
 })
 
 const CODE = [
@@ -54,15 +59,15 @@ const DOC = [
 
 const BASE_QUERIES = ['alpha beta', 'beta alpha']
 const ZERO_MATCH_TERMS = ['zzqxv', 'nonexistentterm', 'q9q9q9']
+// Below the five matching rows each channel holds, so the cut-off decides which rows a channel keeps.
 const LIMIT = 4
 
 function project(): string {
-  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-search-meta-')))
-  dirs.push(dir)
-  fs.writeFileSync(path.join(dir, 'tools.ts'), CODE)
-  fs.writeFileSync(path.join(dir, 'notes.md'), DOC)
-  for (const f of ['tools.ts', 'notes.md']) indexFileSync(path.join(dir, f), globalDbPath())
-  return dir
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-search-meta-')))
+  fs.writeFileSync(path.join(root, 'tools.ts'), CODE)
+  fs.writeFileSync(path.join(root, 'notes.md'), DOC)
+  for (const f of ['tools.ts', 'notes.md']) indexFileSync(path.join(root, f), globalDbPath())
+  return root
 }
 
 function ftsCount(match: string): number {
@@ -75,14 +80,13 @@ function bm25Scores(match: string): number[] {
   return rows.map((r) => r.score)
 }
 
-async function channelOrder(dir: string, query: string, channel: 'symbol' | 'heading'): Promise<string[]> {
+async function channelOrder(query: string, channel: 'symbol' | 'heading'): Promise<string[]> {
   const summary = await executeParallelSearch({ query, limit: LIMIT, projectRoot: dir, channels: [channel] })
   return summary.results.map((r) => `${r.kind}:${r.name}`)
 }
 
 describe('search symbol and heading channels, metamorphic', () => {
   it('start from a populated index whose base queries really need the OR fallback (control)', async () => {
-    const dir = project()
     expect(ftsCount('"alpha"')).toBeGreaterThan(0)
     expect(ftsCount('"beta"')).toBeGreaterThan(0)
     for (const query of BASE_QUERIES) {
@@ -94,7 +98,7 @@ describe('search symbol and heading channels, metamorphic', () => {
       const scores = bm25Scores(or)
       expect(new Set(scores).size, `bm25 scores of "${query}" must be distinct so no tie decides the order`).toBe(scores.length)
       for (const channel of ['symbol', 'heading'] as const) {
-        const order = await channelOrder(dir, query, channel)
+        const order = await channelOrder(query, channel)
         expect(order.length, `${channel} channel of "${query}" must return hits through the fallback`).toBeGreaterThan(1)
       }
     }
@@ -104,11 +108,10 @@ describe('search symbol and heading channels, metamorphic', () => {
     for (const query of BASE_QUERIES) {
       for (const zero of ZERO_MATCH_TERMS) {
         it(`keeps the ${channel} order of "${query}" when "${zero}" is appended`, async () => {
-          const dir = project()
           expect(ftsCount(`"${zero}"`), `"${zero}" must match no indexed row`).toBe(0)
           expect(ftsCount(sanitizeFtsQuery(query, 'AND'))).toBe(0)
-          const base = await channelOrder(dir, query, channel)
-          const extended = await channelOrder(dir, `${query} ${zero}`, channel)
+          const base = await channelOrder(query, channel)
+          const extended = await channelOrder(`${query} ${zero}`, channel)
           expect(base.length).toBeGreaterThan(1)
           expect(extended).toEqual(base)
         })
