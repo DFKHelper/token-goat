@@ -86,8 +86,8 @@ describe('a directory-scoped declaration Grep', () => {
     expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
   })
 
-  it('passes through when the directory holds a file the index has never seen, and answers once that file is gone', async () => {
-    const dir = project({ 'mod.py': MODULE, 'stray.xyz': 'x = 1\n' }, ['mod.py'])
+  it('passes through when a file the index has never seen holds a match, and answers once that file is gone', async () => {
+    const dir = project({ 'mod.py': MODULE, 'stray.xyz': 'def unique_loader(x) = 1\n' }, ['mod.py'])
     expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
     fs.rmSync(path.join(dir, 'stray.xyz'))
     expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('deny')
@@ -438,5 +438,43 @@ describe('a file name that would read as an instruction in the deny prose', () =
     const dir = project({ ['a'.repeat(118) + '.py']: MODULE })
     expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
     expect(await answerFor(dir)).toEqual({ name: 'unsafe_path_text' })
+  })
+})
+
+// HAND-DERIVED: the unindexed files are the ones a real repo carries beside its code (an ignore file, a LICENSE, a text note); only mod.py is indexed, so the files are in git's listing but not in the index. Ripgrep searches them like any other file, so the answer holds only when none of them can match.
+describe('a directory-scoped Grep and listed files the index does not hold', () => {
+  const unindexed = (extra: Record<string, string | Buffer>): string => {
+    const dir = project({ 'mod.py': MODULE })
+    for (const [name, text] of Object.entries(extra)) fs.writeFileSync(path.join(dir, name), text)
+    return dir
+  }
+
+  it('answers when the unindexed files hold no match, as a .gitignore, a LICENSE and a .txt do', async () => {
+    const dir = unindexed({ '.gitignore': 'node_modules/\n', LICENSE: 'MIT License\n', 'notes.txt': 'nothing to see here\n' })
+    const out = await inlineSymbolGrepHandler(grep(dir, LOADER, dir))
+    expect(out.hookType).toBe('deny')
+    if (out.hookType === 'deny') expect(out.message).toContain('mod.py:1:def unique_loader(path):')
+  })
+
+  it('passes when an unindexed file holds a line the pattern matches', async () => {
+    const dir = unindexed({ 'notes.txt': 'see def unique_loader(path) in mod.py\n' })
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+  })
+
+  it('passes a bare name when an unindexed file mentions it, since the listing could not carry that line', async () => {
+    const dir = unindexed({ 'notes.txt': 'call unique_loader first\n' })
+    expect((await inlineSymbolGrepHandler(grep(dir, BARE, dir))).hookType).toBe('pass')
+  })
+
+  it('passes when an unindexed file cannot be scanned, as a binary file cannot', async () => {
+    const dir = unindexed({ 'blob.bin': Buffer.from([0x41, 0x00, 0x42, 0x0a]) })
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+  })
+
+  it('reads the unindexed files against the same allowances: past the file count it passes', async () => {
+    const files: Record<string, string> = {}
+    for (let i = 0; i <= SCOPE_MAX_FILES; i++) files[`n${i}.txt`] = 'x\n'
+    const dir = unindexed(files)
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
   })
 })

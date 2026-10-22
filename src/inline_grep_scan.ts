@@ -74,6 +74,8 @@ export interface ScopeFile {
   readonly abs: string
   readonly key: string
   readonly lines: readonly string[]
+  /** False when the index holds no row for the file: the file is scanned for the pattern like any other, but a match in it cannot be answered from the index. */
+  readonly indexed: boolean
 }
 
 export type ScopeRead = { readonly files: readonly ScopeFile[] } | { readonly passReason: string }
@@ -108,7 +110,8 @@ function readScopeFile(abs: string, base: string, used: number): { file: ScopeFi
   }
   const lines = ripgrepLines(bytes)
   if (lines === null) return 'a listed file is binary, not UTF-8 or has a lone CR'
-  return { file: { abs, key: resolveIndexPath(abs, base), lines }, bytes: bytes.length }
+  const key = resolveIndexPath(abs, base)
+  return { file: { abs, key, lines, indexed: isIndexed(key) }, bytes: bytes.length }
 }
 
 /** The single file a file-scoped Grep searches (ripgrep searches an explicitly named file whatever the ignore rules say). */
@@ -117,7 +120,7 @@ export function readScopeSingleFile(abs: string, base: string): ScopeRead {
   return typeof one === 'string' ? { passReason: one } : { files: [one.file] }
 }
 
-/** Every file a recursive Grep of `dir` could search, read, or the reason the answer must not be given. The set is git's list of tracked and untracked-not-ignored files under `dir` (`git ls-files -co --exclude-standard`), which is a superset of what ripgrep searches: Claude Code runs ripgrep with `--hidden` and a `--glob` that drops only `.git`, `.svn`, `.hg`, `.bzr`, `.jj` and `.sl`, and no `--no-ignore`, so `.gitignore`, `.ignore` and the global ignore file apply (strings in claude.exe 2.1.306, read this run; ripgrep's own default ignore rules). A file git lists that ripgrep skips only adds a possible extra match, which passes the Grep through; no file ripgrep searches is left out unless `dir` itself is ignored (checked first), the tree is not a git work tree, or ripgrep reads a config file (`RIPGREP_CONFIG_PATH` set), and each of those passes. A directory entry (a submodule or a nested repository), a symlink, an unindexed file, or a file ripgrep and the index would read differently also pass. */
+/** Every file a recursive Grep of `dir` could search, read, or the reason the answer must not be given. The set is git's list of tracked and untracked-not-ignored files under `dir` (`git ls-files -co --exclude-standard`), which is a superset of what ripgrep searches: Claude Code runs ripgrep with `--hidden` and a `--glob` that drops only `.git`, `.svn`, `.hg`, `.bzr`, `.jj` and `.sl`, and no `--no-ignore`, so `.gitignore`, `.ignore` and the global ignore file apply (strings in claude.exe 2.1.306, read this run; ripgrep's own default ignore rules). A file git lists that ripgrep skips only adds a possible extra match, which passes the Grep through; no file ripgrep searches is left out unless `dir` itself is ignored (checked first), the tree is not a git work tree, or ripgrep reads a config file (`RIPGREP_CONFIG_PATH` set), and each of those passes. A directory entry (a submodule or a nested repository), a symlink, or a file ripgrep and the index would read differently also pass. A listed file the index does not hold is read and scanned like the rest, inside the same file and byte allowances, and its {@link ScopeFile.indexed} is false so the caller can pass the Grep when the pattern matches it. */
 export function readScopeDir(dir: string, root: string, deps: ScopeGitDeps = {}): ScopeRead {
   if (process.env['RIPGREP_CONFIG_PATH'] !== undefined) return { passReason: 'ripgrep reads a config file' }
   const git = scopeGit(dir, deps)
@@ -147,7 +150,6 @@ export function readScopeDir(dir: string, root: string, deps: ScopeGitDeps = {})
     if (rel.startsWith('..') || path.isAbsolute(rel) || !isInsideRoot(abs, root)) return { passReason: 'a listed file lies outside the scope' }
     const one = readScopeFile(abs, dir, used)
     if (typeof one === 'string') return { passReason: one }
-    if (!isIndexed(one.file.key)) return { passReason: 'a listed file is not indexed' }
     used += one.bytes
     files.push(one.file)
   }

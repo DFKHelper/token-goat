@@ -11,8 +11,9 @@ import { bundleTg, makeBundleProject, runBundle } from './helpers/bundle.js'
 // HAND-DERIVED: synthetic Python modules; scope_loader is declared once, called twice in use.py, and mentioned in a comment in an ignored directory (an index walk still indexes that file, so a second declaration there would make the name ambiguous instead).
 const MODULE = 'def scope_loader(path):\n    """Load one thing."""\n    return open(path).read()\n'
 const MENTION = '# def scope_loader is documented in mod.py\n'
-// HAND-DERIVED: a JavaScript function whose name starts with a dollar sign.
+// HAND-DERIVED: a JavaScript function whose name starts with a dollar sign, and the files a real repo keeps beside its code. The second set is written after the index walk, so the index holds no row for any of them.
 const DOLLAR = 'function $dollar_fn(a) {\n  return a + 1\n}\n'
+const UNINDEXED = { '.gitignore': 'node_modules/\n', LICENSE: 'MIT License\n', 'notes.txt': 'nothing to see here\n' }
 const CALLER = 'from mod import scope_loader\n\na = scope_loader("a")\nb = scope_loader("b")\n'
 
 // FORMAT-DERIVED: the Claude Code PreToolUse payload keys (hook_event_name, session_id, cwd, tool_name, tool_input) and the {decision:'block', reason} reply, as src/hook_registry.ts reads and writes them.
@@ -38,6 +39,7 @@ beforeAll(() => {
   fs.writeFileSync(path.join(project, 'skipped', 'copy.py'), MENTION, 'utf8')
   const idx = bundleTg(project, env, ['index', '.', '--walk'])
   expect(idx.status, idx.stderr).toBe(0)
+  for (const [name, text] of Object.entries(UNINDEXED)) fs.writeFileSync(path.join(project, name), text, 'utf8')
 })
 
 afterAll(() => {
@@ -80,6 +82,23 @@ describe('built bundle: inline symbol body for a directory or a bare name', () =
   it('lets a Grep with an unescaped dollar run, since ripgrep reads it as an end anchor that matches nothing', () => {
     expect(hook(String.raw`function $dollar_fn\b`, project, 'scope-bundle-dollar-anchor').reason).toBeNull()
     expect(hook('$dollar_fn', project, 'scope-bundle-dollar-anchor-bare').reason).toBeNull()
+  })
+
+  it('answers the directory although it holds files the index never saw, which hold no match', () => {
+    for (const name of Object.keys(UNINDEXED)) expect(fs.existsSync(path.join(project, name)), name).toBe(true)
+    const { reason } = hook(String.raw`def scope_loader\b`, project, 'scope-bundle-unindexed-clean')
+    expect(reason).not.toBeNull()
+    expect(reason).toContain('mod.py:1:def scope_loader(path):')
+  })
+
+  it('lets the Grep run when a file the index never saw holds a match', () => {
+    const note = path.join(project, 'notes.txt')
+    fs.writeFileSync(note, 'see def scope_loader in mod.py\n', 'utf8')
+    try {
+      expect(hook(String.raw`def scope_loader\b`, project, 'scope-bundle-unindexed-match').reason).toBeNull()
+    } finally {
+      fs.writeFileSync(note, UNINDEXED['notes.txt'], 'utf8')
+    }
   })
 
   it('lets the Grep run once the ignore rule is gone, since ripgrep would then also see the copy', () => {

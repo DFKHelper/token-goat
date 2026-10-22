@@ -251,6 +251,8 @@ async function checkPatternOverScope(input: {
   const row = input.answered
   const inRow = (m: ScopeMatch): boolean => foldPath(m.file.key) === foldPath(row.filePath) && m.line >= row.lineStart && m.line <= row.lineEnd
   if (matches.length === 0 || !matches.some(inRow)) return { name: 'pattern_mismatch' }
+  // A line of a file the index does not hold matches too: ripgrep would print it and the index cannot vouch for it, so the Grep runs as written.
+  if (matches.some((m) => !m.file.indexed)) return { name: 'pattern_mismatch' }
   // A declaration pattern must match the declaration and nothing else; a bare name may match many lines, all of which are listed.
   if (!input.bare && matches.length !== 1) return { name: 'pattern_mismatch' }
   // The lines of a file a permission rule covers, or that the hook may not touch, must not reach the deny.
