@@ -247,6 +247,8 @@ async function checkPatternOverScope(input: {
     if (input.args.isBarred(m.file.abs) || !commandPathIsTouchable(m.file.abs, input.args.event)) return { name: 'untouchable_path' }
   }
   if (input.kind === 'file' && !input.bare) return { matches: null }
+  // The raw lines are measured before any redaction, display escape or fence fold touches them: a listing past four caps is passed through unprocessed, since only a pathological redaction could bring it under the cap and a pass is always safe.
+  if (matches.reduce((bytes, m) => bytes + Buffer.byteLength(m.text, 'utf8') + 1, 0) > 4 * INLINE_SYMBOL_MAX_BYTES) return { name: 'over_cap' }
   return { matches: matches.map((m) => displaySafePath(relativeTo(input.args.cwd, m.file.abs)) + ':' + m.line + ':' + m.text.replace(/\r$/, '')) }
 }
 
