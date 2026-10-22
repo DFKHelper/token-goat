@@ -47,7 +47,7 @@ const NON_ENVELOPE_JSON_COMMANDS = [
   'json-outline', 'json-query', 'yaml-outline', 'yaml-query', 'xml-outline', 'xml-query', 'html-outline', 'html-query', 'html-lint', 'openapi-outline', 'openapi-op',
   'zip-list', 'zip-read', 'pr-slice', 'sqlite-tables', 'sqlite-schema', 'sqlite-query', 'coverage-report-gaps',
   'conflicts', 'note-get', 'note-list', 'capabilities', 'bench', 'upgrade', 'describe', 'mcp-output', 'session-schema',
-  'hook-server status',
+  'hook-server status', 'peek', 'importers',
 ] as const
 
 /** Every `--json`-capable command name in the built Commander tree, subcommands included. */
