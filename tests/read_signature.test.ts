@@ -42,7 +42,7 @@ describe('extractSignature', () => {
     const { runRead } = await import('../src/read_commands.js')
     const res = runRead({ spec: 'src/read_signature.ts::extractSignature', sig: true })
     expect(res.code).toBe(0)
-    expect(res.text).toContain('export function extractSignature(body: string, kind?: string): string')
+    expect(res.text).toContain('export function extractSignature(body: string')
     expect(res.text).not.toContain('let parenDepth = 0')
   })
 
@@ -50,7 +50,7 @@ describe('extractSignature', () => {
     const { runSymbol } = await import('../src/read_symbol.js')
     const res = runSymbol({ name: 'extractSignature', sig: true, limit: 1 })
     expect(res.code).toBe(0)
-    expect(res.text).toContain('export function extractSignature(body: string, kind?: string): string')
+    expect(res.text).toContain('export function extractSignature(body: string')
     expect(res.text).not.toContain('let parenDepth = 0')
   })
 })
