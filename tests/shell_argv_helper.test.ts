@@ -13,20 +13,20 @@ import { startWatchdog } from './helpers/stall_proof_watchdog.js'
 describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   const sh = POSIX_SH!
 
-  // A builtin loop rather than sleep: a child process would hold the output pipe open after the shell is killed. The budget is three times a measured warm run plus a second, so a loaded machine slow to start the shell still reaches the loop before the kill.
+  // A builtin wait rather than sleep: a child process would hold the output pipe open after the shell is killed. The timeout is five times a measured warm run plus two seconds, so a loaded machine slow to start the shell still reaches the wait before the kill.
   it('names a timeout when the shell is killed before every command ran', async () => {
     const started = Date.now()
     shRunAll(sh, ['token-goat w'])
     const warmMs = Date.now() - started
     const timeoutMs = Math.max(3000, warmMs * 5 + 2000)
-    // Killing the outer shell must not orphan the chunk subshell or the process it is waiting on. Provenance: HAND-DERIVED. The child's loop is bounded by SECONDS so a helper regression leaks seconds of CPU instead of a core forever, and it marks its own expiry, so a loop that ran out before the check cannot pass for one the cleanup killed.
+    // Killing the outer shell must not orphan the chunk subshell or the process it is waiting on. Provenance: HAND-DERIVED. The child blocks on an event that never comes and marks the moment its wait returns, so the pass condition is that marker staying absent, not a race against a clock.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shargv-'))
+    const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
     try {
-      const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
       const shq = (s: string): string => `'${s.replace(/'/g, `'"'"'`)}'`
-      const bound = Math.ceil(timeoutMs / 1000) + 20 + Math.ceil((warmMs * 5) / 1000)
-      const child = `'echo $$ > "$1"; while [ "$SECONDS" -lt ${bound} ]; do :; done; : > "$2"'`
-      const loop = `echo "\${BASHPID:-$(exec sh -c 'echo $PPID')}" > ${shq(file('pid'))}; "$BASH" -c ${child} tg ${shq(file('kid'))} ${shq(file('expired'))} < /dev/null > /dev/null 2>&1`
+      // The child blocks on a FIFO nobody ever opens for writing, so only the kill can end it: no clock decides the outcome. `reached` is written only if the wait returned. The run's owner token is saved so the finally below can reap the child however the test ends.
+      const child = `'echo $$ > "$1"; read -r _ < "$3"; : > "$2"'`
+      const loop = `echo "\${BASHPID:-$(exec sh -c 'echo $PPID')}" > ${shq(file('pid'))}; echo "$${OWNER_VAR}" > ${shq(file('token'))}; mkfifo ${shq(file('fifo'))} && "$BASH" -c ${child} tg ${shq(file('kid'))} ${shq(file('reached'))} ${shq(file('fifo'))} < /dev/null > /dev/null 2>&1`
       let message = ''
       try {
         shRunAll(sh, ['token-goat a', loop, 'token-goat b'], { timeoutMs })
@@ -37,22 +37,19 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       expect(message, message).not.toMatch(/cleanup/)
       const pids = ['pid', 'kid'].map((name) => fs.readFileSync(file(name), 'utf8').trim())
       for (const pid of pids) expect(pid).toMatch(/^[1-9]\d*$/)
-      // Waits for both pids to be gone, failing only when they stay alive for a stall-proof quiet limit rather than a fixed two seconds that a slow Git Bash spawn can outlast; it asks the cleanup's own liveness rule, since a stricter copy once read an exited MSYS pid as running and failed a cleanup that had succeeded.
-      const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'the chunk subshell or its child is still running' })
-      let polling = true
-      try {
-        const alive = (): boolean => spawnSync(sh, ['-c', `${SH_LIVE}; tg_live ${pids[0]} || tg_live ${pids[1]}`], { windowsHide: true, timeout: 30_000 }).status === 0
-        const gone = (async (): Promise<void> => {
-          while (polling && alive()) await new Promise((resolve) => setTimeout(resolve, 200))
-          watchdog.progress('chunk subshell and its child gone')
-        })()
-        await Promise.race([gone, watchdog.failed])
-      } finally {
-        polling = false
-        watchdog.stop()
-      }
-      expect(fs.existsSync(file('expired')), 'the child ran to its bound rather than being killed').toBe(false)
+      // shRunAll returned without a cleanup failure, so its reap has already waited, by the liveness rule asked here, for everything the run started to end: one check, no polling. The same rule is used because a stricter copy once read an exited MSYS pid as running and failed a cleanup that had succeeded.
+      const alive = (): boolean => spawnSync(sh, ['-c', `${SH_LIVE}; tg_live ${pids[0]} || tg_live ${pids[1]}`], { windowsHide: true, timeout: 30_000 }).status === 0
+      expect(alive(), 'the chunk subshell or its child is still running after the run returned').toBe(false)
+      expect(fs.existsSync(file('reached')), 'the child came back from its wait, so nothing killed it').toBe(false)
     } finally {
+      // Insurance for a failed assertion: the owner token the run's processes carry, read from the file the loop wrote, ends anything still blocked.
+      let token = ''
+      try {
+        token = fs.readFileSync(file('token'), 'utf8').trim()
+      } catch {
+        // The loop never ran, so no child exists to reap.
+      }
+      if (token !== '') reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
     }
     // The run, plus a cleanup capped at 60 s whose environment scans took seven seconds each on a loaded Windows machine.
