@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { rmSync, writeFileSync } from 'node:fs'
+import * as path from 'node:path'
+import { bundleTg, makeBundleProject, type BundleProject } from './helpers/bundle.js'
 import { extractSignature } from '../src/read_signature.js'
 
 describe('extractSignature', () => {
@@ -53,5 +56,37 @@ describe('extractSignature', () => {
     expect(res.text).toContain('export function extractSignature(body: string')
     expect(res.text).not.toContain('let parenDepth = 0')
   })
+})
+
+// Provenance: HAND-DERIVED. The file below is written by this test and the expected lines are read off it; the flag spellings are the ones docs/cli.md and README.md document. The in-process runRead/runSymbol rows above call the handler with `sig: true` directly and so never cross the Commander option parse, which is where `--sig, --signature` lands on the attribute `signature`.
+describe('the --sig and --signature flags reach the handler through the built CLI', () => {
+  const SRC_FILE = 'sample_sig.ts'
+  let tmp: BundleProject | undefined
+
+  beforeEach(() => {
+    tmp = makeBundleProject('tg-sig-')
+    writeFileSync(path.join(tmp.project, SRC_FILE), 'export function pickWinner(scores: number[]): number {\n  const SIG_BODY_MARKER = scores.length\n  return SIG_BODY_MARKER\n}\n', 'utf-8')
+  })
+
+  afterEach(() => {
+    if (tmp !== undefined) rmSync(tmp.root, { recursive: true, force: true })
+    tmp = undefined
+  })
+
+  for (const flag of ['--sig', '--signature']) {
+    it(`read ${flag} prints the declaration line and omits the body`, () => {
+      const res = bundleTg(tmp!.project, tmp!.env, ['read', `${SRC_FILE}::pickWinner`, flag])
+      expect(res.status).toBe(0)
+      expect(res.stdout).toContain('export function pickWinner(scores: number[]): number')
+      expect(res.stdout).not.toContain('SIG_BODY_MARKER')
+    })
+
+    it(`symbol ${flag} prints the declaration line and omits the body`, () => {
+      const res = bundleTg(tmp!.project, tmp!.env, ['symbol', 'pickWinner', flag, '--file', SRC_FILE])
+      expect(res.status).toBe(0)
+      expect(res.stdout).toContain('export function pickWinner(scores: number[]): number')
+      expect(res.stdout).not.toContain('SIG_BODY_MARKER')
+    })
+  }
 })
 

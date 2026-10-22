@@ -971,8 +971,9 @@ export function buildProgram(): Command {
     .option('--exclude-tests', 'hide symbols defined in a test file (opt-in; default output is unchanged)')
     .option('--exclude-vendored', 'hide symbols defined under a dependency or build directory the indexer skips (node_modules, dist, site-packages, ...) (opt-in; default output is unchanged)')
     .option('--stats', 'add per-result reference count and doc-coverage flag (project-wide count per NAME, not per definition site -- same-named symbols across files share a count)')
+    // Commander names the attribute after the last flag of a `--a, --b` pair, so this arrives as `signature`, never `sig`.
     .option('--sig, --signature', 'only output the declaration signature, omitting implementation body')
-    .action((name: string | undefined, more: string[], opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean; excludeVendored?: boolean; stats?: boolean; sig?: boolean }) => {
+    .action((name: string | undefined, more: string[], opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean; excludeVendored?: boolean; stats?: boolean; signature?: boolean }) => {
       let projectRoot: string | undefined
       if (opts.project === true) {
         projectRoot = resolveProjectRoot({ project: process.cwd() })
@@ -996,7 +997,7 @@ export function buildProgram(): Command {
               ...(opts.excludeTests === true ? { excludeTests: true } : {}),
               ...(opts.excludeVendored === true ? { excludeVendored: true } : {}),
               ...(opts.stats === true ? { stats: true } : {}),
-              ...(opts.sig === true ? { sig: true } : {}),
+              ...(opts.signature === true ? { sig: true } : {}),
             }),
           // `symbol` searches one name; there is no comma form that would search several.
           { noun: 'spec', mergeable: false },
@@ -1013,7 +1014,7 @@ export function buildProgram(): Command {
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
     .option('--sig, --signature', 'only output the declaration signature, omitting implementation body')
-    .action((spec: string, more: string[], opts: { json?: boolean; forceRefresh?: boolean; stats?: boolean; sig?: boolean }) =>
+    .action((spec: string, more: string[], opts: { json?: boolean; forceRefresh?: boolean; stats?: boolean; signature?: boolean }) =>
       runExitText(() =>
         noteExtraFileArgs(
           'read',
@@ -1025,7 +1026,7 @@ export function buildProgram(): Command {
               ...(opts.json === true ? { json: true } : {}),
               ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
               ...(opts.stats === true ? { stats: true } : {}),
-              ...(opts.sig === true ? { sig: true } : {}),
+              ...(opts.signature === true ? { sig: true } : {}),
             }),
           // Whether the comma form the note names would actually run depends on the specs themselves, not on the command: `read` merges `::` specs and nothing else.
           { noun: 'spec', mergeable: readSpecsMergeable([spec, ...more]) },
