@@ -1,4 +1,4 @@
-// The Stop advisory's scope: which edits it is about, and which finished commands count as a check. Every expected verdict is HAND-DERIVED from the order of the edits and runs each row performs; the git rows run a real repository and a real hook file.
+// The Stop advisory's scope: which edits it is about, and which finished commands count as a check. Every expected verdict is HAND-DERIVED from the order of the edits and runs each row performs; the scope rows run real directories, one of them outside the OS temp dir.
 
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -94,6 +94,67 @@ describe('edits the advisory is about', () => {
   })
 })
 
+describe('edits outside the project root', () => {
+  let base: string
+
+  beforeEach(() => {
+    clearModuleCaches()
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    // Under the working directory, not the OS temp dir (the suite's HOME and temp dir share a root), so the temp-dir dismissal cannot be what decides a row.
+    base = fs.mkdtempSync(path.join(process.cwd(), 'tg-scope-nontemp-'))
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    fs.rmSync(base, { recursive: true, force: true })
+  })
+
+  it('an edit in a sibling package still gets the advisory when the session works in another package', () => {
+    const sid = newSession()
+    const a = path.join(base, 'packages', 'a')
+    const b = path.join(base, 'packages', 'b')
+    fs.mkdirSync(a, { recursive: true })
+    fs.mkdirSync(b, { recursive: true })
+    fs.writeFileSync(path.join(a, 'package.json'), '{}')
+    inSession(sid, () => recordFileEdit(fwd(path.join(b, 'util.ts'))))
+    expect(evaluateVerification(sid, verificationScopeFor(fwd(a))).editedSinceLastPass).toEqual(['util.ts'])
+    expect(stopHandler(stopEvent(sid, fwd(a))).hookType).toBe('context')
+  })
+
+  it('an edit in another repo or a sibling worktree still gets the advisory', () => {
+    const sid = newSession()
+    const project = path.join(base, 'proj')
+    fs.mkdirSync(project, { recursive: true })
+    inSession(sid, () => {
+      recordFileEdit(fwd(path.join(base, 'proj-wt', 'a.ts')))
+      recordFileEdit(fwd(path.join(base, 'other-repo', 'b.py')))
+    })
+    expect(evaluateVerification(sid, { projectRoot: project }).editedSinceLastPass).toEqual(['a.ts', 'b.py'])
+  })
+
+  it('a scratchpad edit under the OS temp dir needs no check', () => {
+    const sid = newSession()
+    const project = path.join(base, 'proj')
+    fs.mkdirSync(project, { recursive: true })
+    const scratch = path.join(os.tmpdir(), 'claude', 'scratchpad-scope', 'probe.py')
+    inSession(sid, () => recordFileEdit(fwd(scratch)))
+    expect(evaluateVerification(sid, { projectRoot: project }).editedSinceLastPass).toEqual([])
+    expect(stopHandler(stopEvent(sid, fwd(project))).hookType).toBe('pass')
+  })
+
+  it('a spelling of the root with other case or backslashes is still inside it, even for a project under the temp dir', () => {
+    const sid = newSession()
+    const tempProject = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-case-'))
+    try {
+      const root = tempProject
+      const variant = process.platform === 'win32' ? root.toUpperCase() : root
+      inSession(sid, () => recordFileEdit(path.join(variant, 'src', 'w.ts')))
+      expect(evaluateVerification(sid, { projectRoot: fwd(root) }).editedSinceLastPass).toEqual(['w.ts'])
+    } finally {
+      fs.rmSync(tempProject, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('script checks', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -106,7 +167,8 @@ describe('script checks', () => {
   it.each([
     'python scripts/validate-skills.py',
     'python scripts/run_self_tests.py',
-    'python3 tools/run_tests.py -k parser',
+    'python3 tools/run_tests.py tests/test_parser.py::test_x',
+    'python scripts/validate-skills.py skills/foo/SKILL.md --self-test',
     'python scripts/check_related_skills.py',
     'python scripts/anything.py --self-test',
     'cd repo && python scripts/validate_x.py',
@@ -124,8 +186,27 @@ describe('script checks', () => {
     'python scripts/run_tests.sh',
     'ls scripts/validate-skills.py',
     'cat scripts/check_x.py',
+    'python scripts/validate-skills.py --help',
+    'python scripts/validate-skills.py -h',
+    'python scripts/run_self_tests.py --list',
+    'python scripts/check_x.py --version',
+    'python scripts/check_x.py --dry-run',
+    'python scripts/check_x.py --frobnicate',
+    'python scripts/check_x.py --self-test --help',
+    'python scripts/anything.py --self-test --list',
+    'python scripts/check_x.py help',
+    'python3 tools/run_tests.py -k parser',
   ])('does not count %j', (command) => {
     expect(isVerificationCommand(command)).toBe(false)
+  })
+
+  it('a help run records nothing and leaves the edit unverified', () => {
+    const sid = newSession()
+    inSession(sid, () => recordFileEdit('C:/proj/src/a.ts'))
+    inSession(sid, () => noteVerificationRun('python scripts/validate-skills.py --help', 0, false))
+    const state = evaluateVerification(sid)
+    expect(state.runs).toEqual([])
+    expect(state.editedSinceLastPass).toEqual(['a.ts'])
   })
 
   function runsAfter(work: () => void): readonly { command: string; exitCode: number | null }[] {
@@ -155,8 +236,10 @@ describe('script checks', () => {
   })
 
   it('stores only the script path and the self-test switch, never another argument', () => {
-    const runs = runsAfter(() => noteVerificationRun('python scripts/validate-skills.py --token hunter2 sk-secretvalue', 0, false))
-    expect(runs.map((r) => r.command)).toEqual(['python scripts/validate-skills.py …'])
+    const runs = runsAfter(() => noteVerificationRun('python scripts/validate-skills.py skills/a.md user:hunter2@host/x', 0, false))
+    expect(runs.map((r) => r.command)).toEqual([])
+    const kept = runsAfter(() => noteVerificationRun('python scripts/validate-skills.py skills/a.md', 0, false))
+    expect(kept.map((r) => r.command)).toEqual(['python scripts/validate-skills.py skills/a.md'])
     const selfTest = runsAfter(() => noteVerificationRun('python scripts/x.py --self-test', 0, false))
     expect(selfTest.map((r) => r.command)).toEqual(['python scripts/x.py --self-test'])
   })
@@ -166,106 +249,38 @@ describe('script checks', () => {
   })
 })
 
-describe('hook-backed git commands', () => {
+describe('git commit and push are never a check', () => {
   let repo: string
-
-  const git = (...args: string[]): void => {
-    const res = spawnSync('git', args, { cwd: repo, encoding: 'utf8', windowsHide: true })
-    expect(res.status, `git ${args.join(' ')}: ${res.stderr}`).toBe(0)
-  }
 
   beforeEach(() => {
     clearModuleCaches()
     vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
-    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-hookgit-'))
-    git('init', '-q')
-    git('config', 'gc.auto', '0')
-    git('config', 'maintenance.auto', 'false')
-    git('config', 'user.email', 'scope@example.invalid')
-    git('config', 'user.name', 'scope')
-    fs.writeFileSync(path.join(repo, 'a.txt'), 'a\n')
-    git('add', 'a.txt')
-    git('commit', '-q', '-m', 'init', '--no-verify')
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-nogit-'))
+    const init = spawnSync('git', ['init', '-q'], { cwd: repo, encoding: 'utf8', windowsHide: true })
+    expect(init.status, init.stderr).toBe(0)
+    spawnSync('git', ['config', 'gc.auto', '0'], { cwd: repo, windowsHide: true })
+    spawnSync('git', ['config', 'maintenance.auto', 'false'], { cwd: repo, windowsHide: true })
+    for (const hook of ['pre-push', 'pre-commit']) {
+      fs.writeFileSync(path.join(repo, '.git', 'hooks', hook), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    }
   })
   afterEach(() => {
     vi.unstubAllEnvs()
     fs.rmSync(repo, { recursive: true, force: true })
   })
 
-  const installHook = (name: string, dir = path.join(repo, '.git', 'hooks')): void => {
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, name), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
-  }
-
-  function recorded(command: string, exitCode: number | null, output = 'To origin\n   abc..def  main -> main', cwd: string | null = repo): string[] {
+  it.each(['git push', 'git push origin main', 'git commit -m done', 'git push --no-verify'])('%j leaves the edit unverified even beside a runnable hook on a clean tree', async (command) => {
     const sid = newSession()
-    inSession(sid, () => noteVerificationRun(command, exitCode, false, { cwd, output }))
-    return evaluateVerification(sid).runs.map((r) => `${r.command}:${r.exitCode}`)
-  }
-
-  it('a passing push counts when a pre-push hook exists and the tree is clean', () => {
-    installHook('pre-push')
-    expect(recorded('git push origin main', 0)).toEqual(['git push:0'])
-  })
-
-  it('a passing commit counts through a pre-commit hook found by core.hooksPath', () => {
-    installHook('pre-commit', path.join(repo, '.husky'))
-    git('config', 'core.hooksPath', '.husky')
-    git('add', '.husky')
-    git('commit', '-q', '-m', 'hooks', '--no-verify')
-    expect(recorded('git commit -m "done"', 0)).toEqual(['git commit:0'])
-  })
-
-  it('does not count without the hook the command would run', () => {
-    expect(recorded('git push', 0)).toEqual([])
-    installHook('pre-commit')
-    expect(recorded('git push', 0)).toEqual([])
-  })
-
-  it('does not count a push with a hook that was a no-op', () => {
-    installHook('pre-push')
-    expect(recorded('git push', 0, 'Everything up-to-date')).toEqual([])
-  })
-
-  it('does not count while uncommitted or untracked work sits outside the checked commit', () => {
-    installHook('pre-push')
-    fs.writeFileSync(path.join(repo, 'a.txt'), 'changed\n')
-    expect(recorded('git push', 0)).toEqual([])
-    git('checkout', '--', 'a.txt')
-    fs.writeFileSync(path.join(repo, 'new.ts'), 'export {}\n')
-    expect(recorded('git push', 0)).toEqual([])
-  })
-
-  it.each(['git push --no-verify', 'git commit -n -m x', 'git push -n', 'git push --dry-run', 'git push --no-ver', 'HUSKY=0 git commit -m x', 'git push || true', 'git push | tail -1', 'git -c core.hooksPath=/dev/null push', 'git status'])('does not count %j', (command) => {
-    installHook('pre-push')
-    installHook('pre-commit')
-    expect(recorded(command, 0)).toEqual([])
-  })
-
-  it('never records a failed or unknown-status push, and needs a working directory', () => {
-    installHook('pre-push')
-    expect(recorded('git push', 1)).toEqual([])
-    expect(recorded('git push', null)).toEqual(['git push:0'])
-    expect(recorded('git push', 0, 'To origin', null)).toEqual([])
-  })
-
-  it('a background launch is not a verdict', () => {
-    installHook('pre-push')
-    const sid = newSession()
-    inSession(sid, () => noteVerificationRun('git push', 0, true, { cwd: repo, output: 'To origin' }))
-    expect(evaluateVerification(sid).runs).toEqual([])
-  })
-
-  it('the post-Bash hook hands the command its directory and output', async () => {
-    installHook('pre-push')
-    const sid = newSession()
-    const event = makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', sessionId: sid, toolInput: { command: 'git push' }, raw: { cwd: fwd(repo), tool_name: 'Bash', tool_input: { command: 'git push' }, tool_response: { stdout: 'To origin\n   abc..def  main -> main', stderr: '' } } })
+    inSession(sid, () => recordFileEdit('C:/proj/src/a.ts'))
+    const event = makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', sessionId: sid, toolInput: { command }, raw: { cwd: fwd(repo), tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'To origin\n   abc..def  main -> main', stderr: '' } } })
     loadSessionState(sid)
     try {
       await postBashHandler(event)
     } finally {
       saveSessionState(sid)
     }
-    expect(evaluateVerification(sid).runs.map((r) => r.command)).toEqual(['git push'])
+    const state = evaluateVerification(sid)
+    expect(state.runs).toEqual([])
+    expect(state.editedSinceLastPass).toEqual(['a.ts'])
   })
 })
