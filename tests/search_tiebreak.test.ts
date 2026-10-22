@@ -98,6 +98,20 @@ describe('symbol and heading channel tiebreaks', () => {
     expect(found(root, '$el', CODE).map((h) => h.name)).toEqual(['$el', 'gz'])
   })
 
+  // Only the trimmed word can match here: the whole word keeps its parentheses and comma, and the tokens foo and bar are not the name.
+  it('puts a snake_case name first when the query wraps it in punctuation', () => {
+    const root = project({ 'a.ts': 'export function gz() {\n  foo_bar(foo_bar)\n}\nexport function foo_bar() {\n  return 1\n}\n' })
+    expectAllTied(root, 'foo_bar', 2, "s.kind != 'heading'")
+    expect(found(root, '(foo_bar),', CODE).map((h) => h.name)).toEqual(['foo_bar', 'gz'])
+  })
+
+  // Only the whole word can match here: the heading name ends in "!", which trimming strips, and "foo?" has the same tokens and length but sorts first by path.
+  it('puts a heading whose name ends in punctuation first for its own query', () => {
+    const root = project({ 'z.md': '## foo!\n', 'a.md': '## foo?\n' })
+    expectAllTied(root, 'foo', 2)
+    expect(found(root, 'foo!').map((h) => `${h.file}:${h.name}`)).toEqual(['z.md:foo!', 'a.md:foo?'])
+  })
+
   // Markdown headings can hold a hyphen; "foo bar" has the same tokens and length as "foo-bar", so the earlier path would win without the key.
   it('puts a hyphenated heading first for its own query', () => {
     const root = project({ 'z.md': '## foo-bar\n', 'a.md': '## foo bar\n' })

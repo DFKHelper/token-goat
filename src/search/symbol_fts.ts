@@ -49,7 +49,7 @@ function runKindFtsQuery(dbPath: string, match: string, queryTerms: string[], li
   }))
 }
 
-/** The words a query's MATCH expression searches for, folded the way the database folds a name: sanitizeFtsQuery's own terms (so this cannot drift from the split MATCH uses), each cut at the characters the unicode61 tokenizer treats as separators. */
+/** The words a query's MATCH expression searches for, folded the way the database folds a name: sanitizeFtsQuery's own terms (so this cannot drift from the split MATCH uses), each kept whole, without its wrapping punctuation, and cut into the tokens unicode61 would see. */
 function exactNameTerms(query: string): string[] {
   const words = sanitizeFtsQuery(query, 'OR').split(' OR ').filter((w) => w !== '').map((w) => w.slice(1, -1).replaceAll('""', '"'))
   // The whole word (and the word without wrapping punctuation) stays a term beside its tokens, so `foo_bar` and `$el` still equal a name spelled that way.
