@@ -43,9 +43,11 @@ function found(root: string, query: string, kind: SymbolKindFilter = HEADINGS): 
 
 /** Asserts the rows under `root` that match `query` all share one bm25 score, so only the tiebreak can order them. */
 function expectAllTied(root: string, query: string, expectedRows: number, kindClause = "s.kind = 'heading'"): void {
+  // A case-insensitive prefix compare, not LIKE (the index stores a lowercase drive letter): an underscore or percent sign in the root would act as a wildcard there.
+  const scope = root.replace(/\\/g, '/')
   const rows = getReadDb(globalDbPath())
-    .prepare(`SELECT bm25(symbols_fts) AS score FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid WHERE symbols_fts MATCH ? AND ${kindClause} AND s.file_path LIKE ?`)
-    .all(sanitizeFtsQuery(query, 'AND'), `${root.replace(/\\/g, '/')}%`) as { score: number }[]
+    .prepare(`SELECT bm25(symbols_fts) AS score FROM symbols_fts JOIN symbols s ON s.id = symbols_fts.rowid WHERE symbols_fts MATCH ? AND ${kindClause} AND lower(substr(s.file_path, 1, ?)) = lower(?)`)
+    .all(sanitizeFtsQuery(query, 'AND'), scope.length, scope) as { score: number }[]
   expect(rows, `rows matching "${query}" under the fixture`).toHaveLength(expectedRows)
   expect(new Set(rows.map((r) => r.score)).size, 'all rows must share one bm25 score').toBe(1)
 }
@@ -90,6 +92,13 @@ describe('symbol and heading channel tiebreaks', () => {
     const root = project({ 'a.ts': 'export function gz() {\n  foo_bar(foo_bar)\n}\nexport function foo_bar() {\n  return 1\n}\n' })
     expectAllTied(root, 'foo_bar', 2, "s.kind != 'heading'")
     expect(found(root, 'foo_bar', CODE).map((h) => h.name)).toEqual(['foo_bar', 'gz'])
+  })
+
+  // `bar` is the shorter name, so only the whole-word tier puts `foo_bar` first; the bodies are padded so both rows have the same token count and the same hits for the phrase "foo bar".
+  it('puts a whole-word name match above a name that is only one of its tokens', () => {
+    const root = project({ 'a.ts': 'export function bar() {\n  return foo_bar(foo_bar)\n}\nexport function foo_bar() {\n  return 1 1\n}\n' })
+    expectAllTied(root, 'foo_bar', 2, "s.kind != 'heading'")
+    expect(found(root, 'foo_bar', CODE).map((h) => h.name)).toEqual(['foo_bar', 'bar'])
   })
 
   it('puts a $-prefixed name first for its own query', () => {

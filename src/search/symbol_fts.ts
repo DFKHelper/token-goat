@@ -20,12 +20,17 @@ interface SymbolRow {
   readonly parent: string | null
 }
 
-// Equal bm25 scores are ordered for the person reading them: a name that is a query term, then the shorter (closer) name, then the shallower file, and file path, line and row id last so the order is total. Terms arrive as one JSON array parameter so the term count never meets SQLite's variable limit.
+// Equal bm25 scores are ordered for the person reading them: a name spelled as a whole query word, then a name that is one of a word's tokens, then the shorter (closer) name, then the shallower file, and file path, line and row id last so the order is total. Terms arrive as one JSON array parameter so the term count never meets SQLite's variable limit.
 const TIE_ORDER =
-  'bm25(symbols_fts), CASE WHEN TG_LOWER(s.name) IN (SELECT value FROM json_each(?)) THEN 0 ELSE 1 END, length(s.name), ' +
+  'bm25(symbols_fts), CASE WHEN TG_LOWER(s.name) IN (SELECT value FROM json_each(?)) THEN 0 WHEN TG_LOWER(s.name) IN (SELECT value FROM json_each(?)) THEN 1 ELSE 2 END, length(s.name), ' +
   "length(s.file_path) - length(replace(s.file_path, '/', '')), s.file_path, s.line_start, s.id"
 
-function runKindFtsQuery(dbPath: string, match: string, queryTerms: string[], limit: number, rootDir: string | undefined, kind: SymbolKindFilter): SymbolEntry[] {
+interface ExactNameTerms {
+  readonly whole: string[]
+  readonly tokens: string[]
+}
+
+function runKindFtsQuery(dbPath: string, match: string, queryTerms: ExactNameTerms, limit: number, rootDir: string | undefined, kind: SymbolKindFilter): SymbolEntry[] {
   const scope = rootDir !== undefined ? ownProjectScope('s.file_path', rootDir) : undefined
   const kindClause = 'equals' in kind ? 's.kind = ?' : 's.kind != ?'
   // FTS5's MATCH operator and bm25() must name the FTS table directly: a table alias resolves as a bare column reference.
@@ -35,7 +40,7 @@ function runKindFtsQuery(dbPath: string, match: string, queryTerms: string[], li
     `WHERE symbols_fts MATCH ?${scope !== undefined ? ` AND ${scope.clause}` : ''} AND ${kindClause} ORDER BY ${TIE_ORDER} LIMIT ?`
   const params: (string | number)[] = [match]
   if (scope !== undefined) params.push(...scope.params)
-  params.push('equals' in kind ? kind.equals : kind.notEquals, JSON.stringify(queryTerms), limit)
+  params.push('equals' in kind ? kind.equals : kind.notEquals, JSON.stringify(queryTerms.whole), JSON.stringify(queryTerms.tokens), limit)
   const rows = getReadDb(dbPath).prepare(sql).all(...params) as SymbolRow[]
   return rows.map((row) => ({
     filePath: row.file_path,
@@ -49,12 +54,13 @@ function runKindFtsQuery(dbPath: string, match: string, queryTerms: string[], li
   }))
 }
 
-/** The words a query's MATCH expression searches for, folded the way the database folds a name: sanitizeFtsQuery's own terms (so this cannot drift from the split MATCH uses), each kept whole, without its wrapping punctuation, and cut into the tokens unicode61 would see. */
-function exactNameTerms(query: string): string[] {
+/** The words a query's MATCH expression searches for, folded the way the database folds a name: sanitizeFtsQuery's own terms (so this cannot drift from the split MATCH uses), as whole words (kept whole, and without wrapping punctuation) and, separately, as the tokens unicode61 would see. */
+function exactNameTerms(query: string): ExactNameTerms {
   const words = sanitizeFtsQuery(query, 'OR').split(' OR ').filter((w) => w !== '').map((w) => w.slice(1, -1).replaceAll('""', '"'))
   // The whole word (and the word without wrapping punctuation) stays a term beside its tokens, so `foo_bar` and `$el` still equal a name spelled that way.
   const trimmed = (w: string): string => w.replace(/^[^\p{L}\p{N}_$]+|[^\p{L}\p{N}_$]+$/gu, '')
-  return words.flatMap((w) => [w, trimmed(w), ...(w.match(/[\p{L}\p{N}\p{Co}]+/gu) ?? [])]).filter((t) => t !== '').map(foldCase)
+  const keep = (terms: string[]): string[] => terms.filter((t) => t !== '').map(foldCase)
+  return { whole: keep(words.flatMap((w) => [w, trimmed(w)])), tokens: keep(words.flatMap((w) => w.match(/[\p{L}\p{N}\p{Co}]+/gu) ?? [])) }
 }
 
 /** Same matching as index_reader.ts::searchSymbolsFts (every term first, any term when that finds nothing), restricted to one side of `kind`, but not the same ordering: this adds a tiebreak for equal bm25 scores (see TIE_ORDER), while index_reader.ts keeps `ORDER BY bm25` alone because editing it moves EMBED_FINGERPRINT and would make every user re-embed their index. Degrades to empty when FTS5 is missing or the MATCH expression is invalid. */
