@@ -1168,6 +1168,80 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(rHelp.stdout + rHelp.stderr).not.toMatch(/unknown command|is not a function/)
     expect(rHelp.stdout).toMatch(/OCR/i)
   },
+  'image-slice': async () => {
+    // Fixture provenance: HAND-DERIVED, a 64x32 flat PNG built by sharp at run time; every expected number below is computed from the requested rectangle, not read from the command's output.
+    const dir = mkIsolated('tg-matrix-imgslice-')
+    const png = await sharp({ create: { width: 64, height: 32, channels: 3, background: { r: 10, g: 20, b: 30 } } }).png().toBuffer()
+    const imgPath = path.join(dir, 'pic.png')
+    fs.writeFileSync(imgPath, png)
+    const outPath = path.join(dir, 'crop.png')
+
+    const r = run(['image-slice', imgPath, '-x', '4', '-y', '2', '-w', '20', '-h', '10', '--out', outPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Cropped region: 20x10 at (+4,+2)')
+    expect(r.stdout).toContain('Original dimensions: 64x32')
+    const saved = await sharp(outPath).metadata()
+    expect(saved.width).toBe(20)
+    expect(saved.height).toBe(10)
+
+    const rj = run(['image-slice', imgPath, '-x', '60', '-w', '20', '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const slice = JSON.parse(rj.stdout) as { originalWidth: number; cropX: number; cropWidth: number; cropHeight: number; format: string; outPath: string | null }
+    expect(slice.originalWidth).toBe(64)
+    expect(slice.cropX).toBe(60)
+    // A rectangle past the right edge is trimmed to the 4 columns that exist; a missing height runs to the bottom edge.
+    expect(slice.cropWidth).toBe(4)
+    expect(slice.cropHeight).toBe(32)
+    expect(slice.format).toBe('png')
+    expect(slice.outPath).toBeNull()
+
+    const nonImagePath = path.join(dir, 'notes.txt')
+    fs.writeFileSync(nonImagePath, 'not an image')
+    const rBad = run(['image-slice', nonImagePath])
+    expect(rBad.status).not.toBe(0)
+    expect(rBad.stderr).toContain('Not an image file')
+  },
+  'image-diff': async () => {
+    // Fixture provenance: HAND-DERIVED, two 64x32 PNGs built by sharp at run time; b is a with one 8x4 red patch at (10,6), so 32 pixels differ (1.56% of 2048) inside a box ending at (17,9).
+    const dir = mkIsolated('tg-matrix-imgdiff-')
+    const base = await sharp({ create: { width: 64, height: 32, channels: 3, background: { r: 10, g: 20, b: 30 } } }).png().toBuffer()
+    const patch = await sharp({ create: { width: 8, height: 4, channels: 3, background: { r: 200, g: 0, b: 0 } } }).png().toBuffer()
+    const changed = await sharp(base).composite([{ input: patch, left: 10, top: 6 }]).png().toBuffer()
+    const smaller = await sharp({ create: { width: 16, height: 16, channels: 3, background: { r: 10, g: 20, b: 30 } } }).png().toBuffer()
+    const aPath = path.join(dir, 'a.png')
+    const bPath = path.join(dir, 'b.png')
+    const cPath = path.join(dir, 'small.png')
+    fs.writeFileSync(aPath, base)
+    fs.writeFileSync(bPath, changed)
+    fs.writeFileSync(cPath, smaller)
+
+    const same = run(['image-diff', aPath, aPath])
+    expect(same.status, same.stderr).toBe(0)
+    expect(same.stdout).toContain('Status: IDENTICAL')
+
+    const r = run(['image-diff', aPath, bPath])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('Status: DIFFERENT')
+    expect(r.stdout).toContain('Different pixels: 32 (1.56%)')
+    expect(r.stdout).toContain('Changed bounding box: 8x4 at (+10,+6) to (+17,+9)')
+
+    const rj = run(['image-diff', aPath, bPath, '--json'])
+    expect(rj.status, rj.stderr).toBe(0)
+    const diff = JSON.parse(rj.stdout) as { differentPixels: number; identical: boolean; boundingBox: { minX: number; minY: number; maxX: number; maxY: number } | null }
+    expect(diff.differentPixels).toBe(32)
+    expect(diff.identical).toBe(false)
+    expect(diff.boundingBox).toEqual({ minX: 10, minY: 6, maxX: 17, maxY: 9, width: 8, height: 4 })
+
+    // The patch differs by 200 on the red channel, so a tolerance of 255 hides it and a tolerance of 100 does not.
+    const rTol = run(['image-diff', aPath, bPath, '--tolerance', '255'])
+    expect(rTol.status, rTol.stderr).toBe(0)
+    expect(rTol.stdout).toContain('Status: IDENTICAL')
+    expect(run(['image-diff', aPath, bPath, '--tolerance', '100']).stdout).toContain('Status: DIFFERENT')
+
+    const rSize = run(['image-diff', aPath, cPath])
+    expect(rSize.status).not.toBe(0)
+    expect(rSize.stderr).toContain('dimensions do not match')
+  },
   'sharepoint-resolve': () => {
     const home = mkIsolated('tg-matrix-sphome-')
     const syncRoot = path.join(home, 'OneDrive - Contoso')
