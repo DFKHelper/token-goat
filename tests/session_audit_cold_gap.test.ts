@@ -4,11 +4,30 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { bashCommandClass, bashCommandClassOf, COLD_MIN_CACHE_WRITE_TOKENS, COLD_TTL_MS_1H, COLD_TTL_MS_5M, coldGapToolLabel, formatColdGap, isColdRewrite, newColdGapAccumulator, type ColdGapUsage } from '../src/cold_gap.js'
 import { auditSessionCorpus, commandHead, type SessionAuditSummary } from '../src/session_audit.js'
 import { formatSessionAudit } from '../src/session_audit_report.js'
+
+// Test seam at the fs boundary only: createReadStream of the one named file yields its bytes and then errors, every other path reads for real.
+const failingStream = vi.hoisted(() => ({ path: null as string | null, bytes: Buffer.alloc(0) }))
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof fs>()
+  const { Readable: Source } = await import('node:stream')
+  const createReadStream = (p: Parameters<typeof actual.createReadStream>[0], ...rest: unknown[]): ReturnType<typeof actual.createReadStream> => {
+    if (failingStream.path !== null && String(p).endsWith(failingStream.path)) {
+      return Source.from((async function* () {
+        yield failingStream.bytes
+        // One macrotask boundary drains the microtasks that hand every delivered line to the audit loop (its only await is the line iteration), so the error cannot overtake the lines.
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        throw new Error('simulated read failure')
+      })()) as unknown as ReturnType<typeof actual.createReadStream>
+    }
+    return (actual.createReadStream as (...a: unknown[]) => ReturnType<typeof actual.createReadStream>)(p, ...rest)
+  }
+  return { ...actual, default: { ...actual, createReadStream }, createReadStream }
+})
 
 const BASE_MS = Date.UTC(2026, 9, 1, 10, 0, 0)
 const at = (min: number, sec = 0): string => new Date(BASE_MS + (min * 60 + sec) * 1000).toISOString()
@@ -393,5 +412,50 @@ describe('cold gap checkpoint', () => {
     expect(JSON.stringify(after), 'whole census').toBe(before)
     addFile(acc, 'fourth', 'main', 'Read')
     expect(acc.finish(weights).main.coldRewrites, 'folds again after a rollback').toBe(2)
+  })
+})
+
+// HAND-DERIVED: the splitter pairs an apostrophe with the next one even inside a later double-quoted string, so the `sleep` in this invented line is hidden and the line classes as search-read; pinned as the documented heuristic, not as the right answer.
+describe('splitSegments quote pairing heuristic', () => {
+  it('hides a separator between an apostrophe and a later quote, and still splits a plain one', () => {
+    expect(bashCommandClassOf(`echo don't; sleep 5; echo "it's"`, commandHead)).toBe('search-read')
+    expect(bashCommandClassOf(`echo don't; sleep 5`, commandHead)).toBe('wait')
+  })
+})
+
+// HAND-DERIVED: invented two-request transcripts; the failing file is the same bytes as a good one on disk, with the read stream made to error after delivering them, which is what a disk or network-share read failure looks like to auditOneFile.
+describe('cold gap rollback in the real corpus audit', () => {
+  let corpus = ''
+  let goodOnly = ''
+
+  beforeAll(() => {
+    corpus = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cold-rollback-'))
+    goodOnly = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-cold-rollback-good-'))
+    fs.writeFileSync(path.join(corpus, 'a-good.jsonl'), NO_TOOL)
+    fs.writeFileSync(path.join(goodOnly, 'a-good.jsonl'), NO_TOOL)
+    fs.writeFileSync(path.join(corpus, 'b-bad.jsonl'), WARM)
+  })
+
+  afterAll(() => {
+    fs.rmSync(corpus, { recursive: true, force: true })
+    fs.rmSync(goodOnly, { recursive: true, force: true })
+  })
+
+  it('drops the cold re-writes a file folded before its read failed, leaving the section the good file alone produces', async () => {
+    const reference = await auditSessionCorpus({ dir: goodOnly })
+    expect(reference.coldGap.main.coldRewrites, 'good file alone has a cold re-write').toBe(1)
+    // Two cold-relevant requests (a 10 minute gap, 30k written) are delivered, then the stream errors.
+    failingStream.path = 'b-bad.jsonl'
+    failingStream.bytes = Buffer.from(NO_TOOL.replace(/"n1"/g, '"bad1"').replace(/"n2"/g, '"bad2"'))
+    try {
+      const s = await auditSessionCorpus({ dir: corpus })
+      expect(s.filesFailed, 'the bad file failed').toBe(1)
+      expect(s.filesScanned, 'the good file scanned').toBe(1)
+      expect(s.coldGap.main.coldRewrites, 'cold re-writes after rollback').toBe(1)
+      expect(s.coldGap.sessions.map((r) => r.session), 'session rows after rollback').toEqual(['a-good'])
+      expect(JSON.stringify(s.coldGap), 'whole cold section equals the good file alone').toBe(JSON.stringify(reference.coldGap))
+    } finally {
+      failingStream.path = null
+    }
   })
 })

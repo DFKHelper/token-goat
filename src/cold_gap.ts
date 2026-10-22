@@ -184,6 +184,7 @@ function closingQuote(raw: string, open: number): number {
 
 /** Splits on `;`, `&&`, `||`, a single `|`, a background `&` and newlines outside quotes; `2>&1`, `>&2`, `&>` and `>|` are redirections, not split points, and a quote that never closes is an ordinary character. */
 function splitSegments(raw: string): string[] {
+  // Quote pairing is a heuristic (an apostrophe pairs with the next one even inside a later double-quoted string, and a backslash-escaped separator outside quotes still splits), so a mis-split can only mislabel a command inside the closed set of classes.
   const out: string[] = []
   let cur = ''
   for (let i = 0; i < raw.length; i++) {
