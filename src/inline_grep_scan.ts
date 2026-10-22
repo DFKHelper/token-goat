@@ -6,6 +6,7 @@ import { isInsideRoot } from './path_containment.js'
 import { resolveIndexPath } from './paths.js'
 import { fileRowByIndexKey } from './sql_path.js'
 import { runGit } from './util.js'
+import type { GitResult, RunGitOptions } from './types.js'
 
 /** The text of `bytes` split into the lines ripgrep searches, or null when ripgrep and this reading could disagree about them, so the caller passes the Grep through. Lines end at `\n` only and keep a trailing `\r`: ripgrep without `--crlf` ends a line at `\n` alone, so `$` does not match before a `\r` (`rg --help` 15.1.0 on `--crlf`; `rg -n 'foo$'` on "foo\r\n" prints nothing and exits 1). A NUL byte (ripgrep's binary detection, and the mark of a UTF-16 file), bytes that are not UTF-8, and a CR that is not part of CRLF (ripgrep sees one long line where the index sees many) all return null. A leading byte-order mark is dropped, as ripgrep drops it. */
 export function ripgrepLines(bytes: Buffer): string[] | null {
@@ -25,8 +26,48 @@ export function ripgrepLines(bytes: Buffer): string[] | null {
 /** The most files a directory-scoped answer reads, and the most bytes of them. Chosen for the deny's own size: the answer delivers at most INLINE_SYMBOL_MAX_BYTES (12,000), so a scope past a few hundred files is one where a pattern is unlikely to match once, and reading two megabytes in a hook is the most a pre-tool-use check should spend. Both are counts of the files git lists, before any is opened, and a scope over either passes the Grep through. */
 export const SCOPE_MAX_FILES = 200
 export const SCOPE_MAX_BYTES = 2_000_000
-/** The bound on each git call the listing makes; a call that hits it fails the answer open. A safety stop for a huge repository, never a condition the answer relies on. */
+/** The bound on ALL the git calls one scope decision makes, shared by them (it was the bound on each call, so six calls could cost six times as much); a call that hits it, or one that would start after it, fails the answer open. A safety stop for a huge repository, never a condition the answer relies on. */
 const SCOPE_GIT_TIMEOUT_MS = 5_000
+/** The most entries read out of one git listing before the answer passes: the listing is split and held in memory, and a scope near the SCOPE_MAX_FILES allowance never lists more than a few times that once ignore rules drop their share. */
+export const SCOPE_MAX_LISTED = 5_000
+/** Config every scope git call runs under. core.ignorecase=false: it is true by default on Windows and macOS and would make git match case-insensitively, where ripgrep's ignore rules are case-sensitive. */
+const SCOPE_GIT_CONFIG = ['-c', 'core.ignorecase=false']
+
+/** Seams for a test to count git calls and move the clock; production passes none and gets the real runGit and Date.now. */
+export interface ScopeGitDeps {
+  readonly git?: (args: string[], opts: RunGitOptions) => GitResult
+  readonly now?: () => number
+}
+
+type ScopeGit = (args: string[]) => GitResult
+
+/** The one way a scope decision runs git, in `cwd`: every call carries {@link SCOPE_GIT_CONFIG} and the time left of ONE deadline set when the decision starts. A call past the deadline is not spawned and reports a timed-out exit -1, which every caller already reads as "pass the Grep through". */
+function scopeGit(cwd: string, deps: ScopeGitDeps = {}): ScopeGit {
+  const git = deps.git ?? runGit
+  const now = deps.now ?? Date.now
+  const deadline = now() + SCOPE_GIT_TIMEOUT_MS
+  return (args) => {
+    const remaining = deadline - now()
+    if (remaining <= 0) return { stdout: '', stderr: 'the git calls of one scope exceeded their shared time allowance', exitCode: -1, timedOut: true }
+    return git([...SCOPE_GIT_CONFIG, ...args], { cwd, timeoutMs: remaining })
+  }
+}
+
+/** The NUL-separated entries of a git listing, or null past {@link SCOPE_MAX_LISTED}: the scan stops at the first entry over the cap rather than splitting the whole output. */
+function splitListing(stdout: string): string[] | null {
+  const out: string[] = []
+  let start = 0
+  while (start < stdout.length) {
+    const nul = stdout.indexOf('\0', start)
+    const end = nul === -1 ? stdout.length : nul
+    if (end > start) {
+      if (out.length >= SCOPE_MAX_LISTED) return null
+      out.push(stdout.slice(start, end))
+    }
+    start = end + 1
+  }
+  return out
+}
 
 /** A file the Grep would have searched, with its lines as ripgrep sees them and its index key. */
 export interface ScopeFile {
@@ -77,19 +118,22 @@ export function readScopeSingleFile(abs: string, base: string): ScopeRead {
 }
 
 /** Every file a recursive Grep of `dir` could search, read, or the reason the answer must not be given. The set is git's list of tracked and untracked-not-ignored files under `dir` (`git ls-files -co --exclude-standard`), which is a superset of what ripgrep searches: Claude Code runs ripgrep with `--hidden` and a `--glob` that drops only `.git`, `.svn`, `.hg`, `.bzr`, `.jj` and `.sl`, and no `--no-ignore`, so `.gitignore`, `.ignore` and the global ignore file apply (strings in claude.exe 2.1.306, read this run; ripgrep's own default ignore rules). A file git lists that ripgrep skips only adds a possible extra match, which passes the Grep through; no file ripgrep searches is left out unless `dir` itself is ignored (checked first), the tree is not a git work tree, or ripgrep reads a config file (`RIPGREP_CONFIG_PATH` set), and each of those passes. A directory entry (a submodule or a nested repository), a symlink, an unindexed file, or a file ripgrep and the index would read differently also pass. */
-export function readScopeDir(dir: string, root: string): ScopeRead {
+export function readScopeDir(dir: string, root: string, deps: ScopeGitDeps = {}): ScopeRead {
   if (process.env['RIPGREP_CONFIG_PATH'] !== undefined) return { passReason: 'ripgrep reads a config file' }
+  const git = scopeGit(dir, deps)
   // Exit 1 is "not ignored"; 0 means the scope is inside an ignored directory, where ripgrep may search files git does not list; 128 means no work tree.
-  const ignored = runGit(['-c', 'core.ignorecase=false', 'check-ignore', '-q', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
+  const ignored = git(['check-ignore', '-q', '--', '.'])
   if (ignored.exitCode !== 1) return { passReason: 'the scope is ignored or not in a git work tree' }
-  const listed = runGit(['-c', 'core.ignorecase=false', 'ls-files', '-z', '-co', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
+  const listed = git(['ls-files', '-z', '-co', '--exclude-standard', '--', '.'])
   if (listed.exitCode !== 0) return { passReason: 'git could not list the scope' }
   // A tracked file that .gitignore also matches is listed by `-c`, but ripgrep applies .gitignore to it and does not search it, so the scope cannot be listed from git (rg 15.1.0, captured in tests/fixtures/rg_ignore_anchoring.txt).
-  const trackedIgnored = runGit(['-c', 'core.ignorecase=false', 'ls-files', '-z', '-c', '-i', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs: SCOPE_GIT_TIMEOUT_MS })
+  const trackedIgnored = git(['ls-files', '-z', '-c', '-i', '--exclude-standard', '--', '.'])
   if (trackedIgnored.exitCode !== 0 || trackedIgnored.stdout !== '') return { passReason: 'a tracked file is also ignored' }
-  const everything = [...new Set(listed.stdout.split('\0').filter((e) => e !== ''))]
+  const split = splitListing(listed.stdout)
+  if (split === null) return { passReason: 'git lists more than ' + SCOPE_MAX_LISTED + ' entries' }
+  const everything = [...new Set(split)]
   // The `.ignore` and `.rgignore` rules ripgrep applies after git's own: a file they drop is not searched, so it must not count as a possible match.
-  const rgDropped = ripgrepIgnoredFiles(dir, everything, SCOPE_GIT_TIMEOUT_MS)
+  const rgDropped = ripgrepIgnoredFiles(dir, everything, git)
   if ('passReason' in rgDropped) return { passReason: rgDropped.passReason }
   const entries = everything.filter((e) => !rgDropped.dropped.has(e))
   if (entries.length === 0) return { passReason: 'the scope lists no files' }
@@ -177,20 +221,20 @@ function readRules(dir: string): string[] | null {
 }
 
 /** The entries of `listed` (git's list for `dir`, relative to it) that ripgrep's `.ignore` and `.rgignore` rules drop, or why the scope cannot be judged. Only the scope's own ignore files are modelled, with git's pattern syntax, which is the one ripgrep documents for them; an ignore file in a parent or a subdirectory, one that cannot be read whole, and a `!` rule in a scope that also holds git-ignored files (which the rule could re-include, and git's list leaves out) all pass the Grep through. */
-function ripgrepIgnoredFiles(dir: string, listed: readonly string[], timeoutMs: number): IgnoredFiles {
+function ripgrepIgnoredFiles(dir: string, listed: readonly string[], git: ScopeGit): IgnoredFiles {
   if (parentHasIgnoreFile(dir)) return { passReason: 'an ignore file lies above the scope' }
   if (listed.some((entry) => isIgnoreFileName(path.posix.basename(entry)) && entry.includes('/'))) return { passReason: 'an ignore file lies below the scope' }
   const rules = readRules(dir)
   if (rules === null) return { passReason: 'an ignore file could not be read whole' }
   if (rules.length === 0) return { dropped: new Set() }
   if (rules.some((rule) => rule.startsWith('!'))) {
-    const hidden = runGit(['-c', 'core.ignorecase=false', 'ls-files', '-z', '-o', '-i', '--directory', '--exclude-standard', '--', '.'], { cwd: dir, timeoutMs })
+    const hidden = git(['ls-files', '-z', '-o', '-i', '--directory', '--exclude-standard', '--', '.'])
     if (hidden.exitCode !== 0 || hidden.stdout !== '') return { passReason: 'a negated ignore rule could re-include a git-ignored file' }
   }
   // A command-line `--exclude` anchors at the work-tree root, but ripgrep anchors a `/x` or `a/b` rule at the directory holding the ignore file, so an anchored rule is rewritten to start at the scope's path from the root (`rev-parse --show-prefix`).
   let prefix = ''
   if (rules.some((rule) => rule.replace(/^!/, '').replace(/\/+$/, '').includes('/'))) {
-    const shown = runGit(['rev-parse', '--show-prefix'], { cwd: dir, timeoutMs })
+    const shown = git(['rev-parse', '--show-prefix'])
     if (shown.exitCode !== 0) return { passReason: 'git could not place the scope in its work tree' }
     prefix = shown.stdout.trim().replace(/[\\*?[!#]/g, '\\$&')
   }
@@ -201,8 +245,9 @@ function ripgrepIgnoredFiles(dir: string, listed: readonly string[], timeoutMs: 
     // The leading slash keeps the rule anchored at the root when the prefix is empty, where dropping it would match at any depth.
     return (negated ? '!' : '') + '/' + prefix + body.replace(/^\//, '')
   }
-  // core.ignorecase is true by default on Windows and macOS and would make git match case-insensitively, where ripgrep's ignore rules are case-sensitive.
-  const dropped = runGit(['-c', 'core.ignorecase=false', 'ls-files', '-z', '-co', '-i', ...rules.map((rule) => '--exclude=' + anchored(rule)), '--', '.'], { cwd: dir, timeoutMs })
+  const dropped = git(['ls-files', '-z', '-co', '-i', ...rules.map((rule) => '--exclude=' + anchored(rule)), '--', '.'])
   if (dropped.exitCode !== 0) return { passReason: 'git could not apply the ignore rules' }
-  return { dropped: new Set(dropped.stdout.split('\0').filter((e) => e !== '')) }
+  const droppedList = splitListing(dropped.stdout)
+  if (droppedList === null) return { passReason: 'git lists more than ' + SCOPE_MAX_LISTED + ' entries' }
+  return { dropped: new Set(droppedList) }
 }
