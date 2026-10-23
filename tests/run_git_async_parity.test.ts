@@ -143,7 +143,7 @@ async function both(args: string[], opts: { cwd?: string; input?: string } = {})
 describe('runGit and runGitAsync agree', () => {
   it('on a success: stdout, empty stderr, exit 0, no timedOut key', async () => {
     const { sync, async } = await both(['rev-parse', '--is-inside-work-tree'], { cwd: repo })
-    expect(sync, 'runGit result').toStrictEqual({ stdout: 'true\n', stderr: '', exitCode: 0 })
+    expect(sync, 'runGit result').toStrictEqual({ stdout: 'true\n', stderr: '', exitCode: 0, unfinished: false })
     expect(async, 'runGitAsync result, key for key').toStrictEqual(sync)
   })
 
@@ -206,7 +206,7 @@ describe('runGit and runGitAsync agree', () => {
     expect(runGit(['hash-object', '-w', '--stdin'], { cwd: repo, input: 'x\n' }).stdout.trim(), 'the blob is stored').toBe(BLOB_X)
     const missing = 'f'.repeat(40)
     const { sync, async } = await both(['cat-file', '--batch-check'], { cwd: repo, input: `${BLOB_X}\n${missing}\n` })
-    expect(sync, 'runGit result').toStrictEqual({ stdout: `${BLOB_X} blob 2\n${missing} missing\n`, stderr: '', exitCode: 0 })
+    expect(sync, 'runGit result').toStrictEqual({ stdout: `${BLOB_X} blob 2\n${missing} missing\n`, stderr: '', exitCode: 0, unfinished: false })
     expect(async, 'runGitAsync result, key for key').toStrictEqual(sync)
   })
 
@@ -223,7 +223,7 @@ describe('runGit and runGitAsync agree', () => {
     // DIVERGENCE, runGit side not asserted: on Windows (git 2.53, 3 of 3 runs) runGit returns exit -1 with stderr `spawnSync git EOF` for a 1 MiB input that git never reads, where git itself exited 0. Whether spawnSync reports the write failure depends on the platform, so only the async side is pinned: a stdin error must not replace a result git produced.
     const run = runGitAsync(['rev-parse', '--is-inside-work-tree'], { cwd: repo, input: 'z'.repeat(1 << 20), signal: controller.signal })
     pending.push(run)
-    expect(await run, 'runGitAsync result').toStrictEqual({ stdout: 'true\n', stderr: '', exitCode: 0 })
+    expect(await run, 'runGitAsync result').toStrictEqual({ stdout: 'true\n', stderr: '', exitCode: 0, unfinished: false })
   })
 
   it('on a maxBuffer overflow: exit -1, no timedOut, ENOBUFS in stderr, nothing in stdout', async () => {
@@ -261,7 +261,7 @@ describe('runGit and runGitAsync agree', () => {
   it('on fsmonitor: a repository setting is overridden to empty by both', async () => {
     expect(runGit(['config', 'core.fsmonitor', 'repo-hook'], { cwd: repo }).exitCode).toBe(0)
     const { sync, async } = await both(['config', '--get', 'core.fsmonitor'], { cwd: repo })
-    expect(sync, 'runGit sees the command-line empty value, not the repository\'s').toStrictEqual({ stdout: '\n', stderr: '', exitCode: 0 })
+    expect(sync, 'runGit sees the command-line empty value, not the repository\'s').toStrictEqual({ stdout: '\n', stderr: '', exitCode: 0, unfinished: false })
     expect(async, 'runGitAsync result, key for key').toStrictEqual(sync)
   })
 })

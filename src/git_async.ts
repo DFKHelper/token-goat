@@ -6,17 +6,18 @@ import { forgetGitExecutable, gitExecutable, gitInvocation, gitTimeoutMs } from 
 
 const GIT_MAX_OUTPUT_BYTES = 200 * 1024 * 1024
 
-/** Run git without blocking the event loop, and end its whole process tree (a launcher, a `!` alias shell, a filter or credential helper) when the call times out, overflows or is aborted. The same invocation, limit and result as {@link runGit}, plus `signal`; it never rejects. A call that times out or overflows ends with exit -1 (`timedOut` for the first; the second carries ENOBUFS in `stderr`, which callers of runGit already read), and an aborted one with exit -1 and neither. After a kill the call settles on git's own exit and destroys the pipes, so a survivor holding one cannot keep it pending. Output beyond 200 MiB in total is an overflow. {@link GIT_UNBOUNDED} with a survivor holding the pipe of a git that exited normally has no bound to end the wait. */
+/** Run git without blocking the event loop, and end its whole process tree (a launcher, a `!` alias shell, a filter or credential helper) when the call times out, overflows or is aborted. The same invocation, limit and result as {@link runGit}, plus `signal`; it never rejects. A call that times out or overflows ends with exit -1 (`timedOut` for the first; the second carries ENOBUFS in `stderr`, which callers of runGit already read), and an aborted one with exit -1 and neither. All three set `unfinished`, as does a git killed by a signal; a call that failed before git ran (a spawn error, an abort before the spawn) does not. After a kill the call settles on git's own exit and destroys the pipes, so a survivor holding one cannot keep it pending. Output beyond 200 MiB in total is an overflow. {@link GIT_UNBOUNDED} with a survivor holding the pipe of a git that exited normally has no bound to end the wait. */
 export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Promise<GitResult> {
-  const failed = (stderr: string, timedOut?: true): GitResult => ({ stdout: '', stderr, exitCode: -1, unfinished: timedOut === true, ...(timedOut ? { timedOut } : {}) })
-  if (opts.signal?.aborted) return Promise.resolve(failed('git was aborted before it started'))
+  // `started` is whether git ran: a call ended after it started (timeout, overflow, abort) is unfinished, one that failed before git ran (spawn error, aborted before the spawn) is not.
+  const failed = (stderr: string, started: boolean, timedOut?: true): GitResult => ({ stdout: '', stderr, exitCode: -1, unfinished: started, ...(timedOut ? { timedOut } : {}) })
+  if (opts.signal?.aborted) return Promise.resolve(failed('git was aborted before it started', false))
   const timeout = gitTimeoutMs(opts.timeoutMs)
   return new Promise<GitResult>((resolve) => {
     let owned: OwnedChild
     try {
       owned = spawnOwned(gitExecutable(), gitInvocation(args), { ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     } catch (err) {
-      resolve(failed(String((err as Error).message ?? err)))
+      resolve(failed(String((err as Error).message ?? err), false))
       return
     }
     const { child } = owned
@@ -40,9 +41,9 @@ export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Prom
       resolve(result)
     }
     const finish = (exitCode: number | null, signal: string | null): void => {
-      if (cause === 'timeout') settle(failed(`spawn git ETIMEDOUT after ${timeout} ms`, true))
-      else if (cause === 'overflow') settle(failed('spawn git ENOBUFS: output exceeded the 200 MiB buffer'))
-      else if (cause === 'abort') settle(failed('git was aborted'))
+      if (cause === 'timeout') settle(failed(`spawn git ETIMEDOUT after ${timeout} ms`, true, true))
+      else if (cause === 'overflow') settle(failed('spawn git ENOBUFS: output exceeded the 200 MiB buffer', true))
+      else if (cause === 'abort') settle(failed('git was aborted', true))
       else if (exitCode === null) settle({ stdout: '', stderr: `git was killed by ${signal ?? 'a signal'}`, exitCode: -1, unfinished: signal !== null, ...(signal === null ? {} : { signal }) })
       else settle({ stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), exitCode, unfinished: false })
     }
@@ -66,7 +67,7 @@ export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Prom
     child.once('error', (e: NodeJS.ErrnoException) => {
       if (child.pid !== undefined) return
       if (e.code === 'ENOENT') forgetGitExecutable()
-      settle(failed(e.message))
+      settle(failed(e.message, false))
     })
     child.once('exit', (code, signal) => {
       exited = true

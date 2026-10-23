@@ -52,7 +52,7 @@ export interface GitResult {
   readonly timedOut?: boolean
   /** Set only when git was started and then killed by this signal (exit -1, no `timedOut`): the run finished, so it is unknown, not a git that never ran. */
   readonly signal?: string
-  /** True when git was started but did not finish: killed for running past its bound (`timedOut`) or by a signal. Every caller that would otherwise read the result as a definite answer (a refusal, an empty list, a missing ref) tests this first and takes its unknown branch instead. A clean exit 1 is an answer, not an unfinished run. runGit and runGitAsync set it; a result built by hand must set it too. */
+  /** True when git was started but did not finish by itself: ended for running past its bound (`timedOut`), for output past the buffer (ENOBUFS in `stderr`), by an abort, or by a signal. A git that never started (a spawn error such as ENOENT, or an abort before the spawn) stays false: every caller treats exit -1 as a failed read and reaches its unknown branch through that, and those that tell the two apart read false as "git is missing, so a worker could not do better". Every caller that would otherwise read the result as a definite answer (a refusal, an empty list, a missing ref) tests this first and takes its unknown branch instead. A clean exit 1 is an answer, not an unfinished run. runGit and runGitAsync set it; a result built by hand must set it too. */
   readonly unfinished: boolean
 }
 

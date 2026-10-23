@@ -1,4 +1,6 @@
 /** A branch switch rewrites files without going through any edit tool, so the Bash post hook asks git which files changed and enqueues them. When git cannot answer in the hook's budget (a spawn failure or timeout under load, or a reflog that no longer reaches back), the hook used to enqueue nothing and log nothing, and the index stayed on the old branch. It now records a reconcile request that the worker sweeps off the hook's time budget, only for a project indexed on purpose. These tests drive the production path: the real hook handler, the real request file, and the worker's own cycle (`drainOnce`, then the awaited reconcile drain, in the order runWorkerLoop calls them) with no injected index callback. PROVENANCE: HAND-DERIVED for the symbol names (computed from the files each test writes). CAPTURE for the git failure: in a repository that has switched branches, deleting `.git/logs` makes `git diff --name-only HEAD@{1} HEAD` exit 128 ("unknown revision"), observed by hand against git on this machine; no seam stands in for it. The one seam is `runGit` returning exit -1 for the reflog read (what a 5 s timeout returns), because a real timeout cannot be produced on demand. */
+import { EventEmitter } from 'node:events'
+import type * as cp from 'node:child_process'
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
@@ -25,7 +27,7 @@ import { workerErrorLogPath } from '../src/worker_lifecycle.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { indexableDir } from './helpers/temp-config.js'
 
-const seam = vi.hoisted(() => ({ failReflog: false, timeOutDiff: false, killDiff: false, gitMissing: false, timeOutTopLevelReads: 0, reconcileBudgetMs: null as number | null }))
+const seam = vi.hoisted(() => ({ failReflog: false, timeOutDiff: false, killDiff: false, overflowOrigHead: false, gitMissing: false, timeOutTopLevelReads: 0, reconcileBudgetMs: null as number | null }))
 
 // The product gives each of its git reads 5 s and fails closed past it, which a loaded machine reaches (a spawn takes 2.5 s or more) and which these tests are not about: every real git call here runs with this much longer budget so the answers come back, and the timeout itself is injected below as the answer runGit gives for one (exit -1 with timedOut, CAPTURE: Node 24.12 spawnSync reports ETIMEDOUT). The hook's reads and the worker's reconcile both run through runGitAsync (the worker's through util.ts::runGitAsyncLazy, which loads the mocked module), and runGit still serves the sync callers, so every runner answers from this one seam. Hoisted with the mocks that use it, which run before any later top-level statement.
 const answers = vi.hoisted(() => {
@@ -59,6 +61,24 @@ vi.mock('../src/git_async.js', async (importOriginal) => {
   return {
     ...actual,
     runGitAsync: async (args: string[], opts?: Parameters<typeof actual.runGitAsync>[1]) => answers.injected(args) ?? actual.runGitAsync(args, answers.unhurried(opts)),
+  }
+})
+
+// The one real runner is driven for the ORIG_HEAD read: its git is a child with no pid that streams one byte past the 200 MiB limit, so runGitAsync's own overflow path builds the result, with nothing else faked. Every other spawn passes through. Only the chunk's length is read, so the stand-in chunk costs no memory.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof cp>()
+  return {
+    ...actual,
+    spawn: ((file: string, args: readonly string[], ...rest: unknown[]) => {
+      if (!seam.overflowOrigHead || !args.includes('ORIG_HEAD')) return (actual.spawn as (...a: unknown[]) => unknown)(file, args, ...rest)
+      const pipe = (): EventEmitter & { destroy(): void } => Object.assign(new EventEmitter(), { destroy: () => undefined })
+      const child = Object.assign(new EventEmitter(), { stdout: pipe(), stderr: pipe(), stdin: { end: () => undefined, destroy: () => undefined, on: () => undefined } })
+      queueMicrotask(() => {
+        child.stdout.emit('data', { length: 200 * 1024 * 1024 + 1 })
+        child.emit('exit', null, 'SIGTERM')
+      })
+      return child
+    }) as typeof actual.spawn,
   }
 })
 
@@ -150,6 +170,7 @@ beforeEach(() => {
   seam.failReflog = false
   seam.timeOutDiff = false
   seam.killDiff = false
+  seam.overflowOrigHead = false
   seam.gitMissing = false
   seam.timeOutTopLevelReads = 0
   seam.reconcileBudgetMs = null
@@ -159,6 +180,7 @@ afterEach(() => {
   seam.failReflog = false
   seam.timeOutDiff = false
   seam.killDiff = false
+  seam.overflowOrigHead = false
   seam.gitMissing = false
   seam.timeOutTopLevelReads = 0
   seam.reconcileBudgetMs = null
@@ -243,6 +265,17 @@ describe('a head-moving git command whose changed-file list git could not produc
     expect(getDirtyPaths(), 'a diff that never answered must not enqueue guessed paths').toEqual([])
     expect(parseReconcileRequests(requestFile()).map(foldPath)).toEqual([foldPath(repo)])
     expect(workerLog()).toMatch(/git diff HEAD@\{1\} HEAD exited -1: git was killed by SIGKILL.*asked the worker to reconcile/)
+  })
+
+  it('asks for a reconcile when the ORIG_HEAD read overflowed its buffer, since git ran and never answered', async () => {
+    const { repo } = repoWithTwoBranches()
+    git(repo, 'merge', '-q', 'feature')
+    seam.overflowOrigHead = true
+
+    await postBashHandler(postBashEvent('git merge feature', repo))
+
+    expect(parseReconcileRequests(requestFile()).map(foldPath)).toEqual([foldPath(repo)])
+    expect(workerLog()).toMatch(/git rev-parse ORIG_HEAD: .*ENOBUFS.*asked the worker to reconcile/)
   })
 
   it('asks for no reconcile when git could not be started at all, since the worker needs git to sweep, and says so', async () => {

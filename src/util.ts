@@ -147,9 +147,11 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
 
   if (result.error) {
     // CAPTURE: Node 24.12 on Windows 11 reports a spawnSync timeout as error.code ETIMEDOUT (signal SIGTERM), and a missing binary, a missing cwd, a maxBuffer overflow as ENOENT, ENOENT, ENOBUFS.
-    const timedOut = (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
-    if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') gitFileCache = undefined
-    return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, unfinished: timedOut, ...(timedOut ? { timedOut } : {}) }
+    const code = (result.error as NodeJS.ErrnoException).code
+    const timedOut = code === 'ETIMEDOUT'
+    if (code === 'ENOENT') gitFileCache = undefined
+    // A timeout and an output overflow both end a git that was running; any other spawn error (a missing binary or directory) means git never ran.
+    return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, unfinished: timedOut || code === 'ENOBUFS', ...(timedOut ? { timedOut } : {}) }
   }
 
   if (result.status === null) {

@@ -139,15 +139,15 @@ describe('the working-tree status sweep when git does not answer', () => {
     expect(workerLog()).toBe('')
   })
 
-  // FORMAT-DERIVED: the overflow result src/util.ts::runGitAsync settles with (exit -1, no timedOut, this stderr text); tests/run_git_async_reaps_tree.test.ts pins that the real 200 MiB flood returns an ENOBUFS stderr, which is all the sweep's /ENOBUFS/ match reads.
+  // FORMAT-DERIVED: the overflow result src/git_async.ts::runGitAsync settles with (exit -1, unfinished, no timedOut, this stderr text); tests/git_did_not_finish.test.ts drives the real runner to it. The sweep reads it as a git that did not finish.
   it('asks the worker to reconcile the project, and logs it, when git status lists more than the output buffer holds', async () => {
-    seam.status = { unfinished: false, exitCode: -1, stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer' }
+    seam.status = { unfinished: true, exitCode: -1, stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer' }
 
     await formatterRun(dir)
 
     expect(requested()).toEqual([foldPath(normalizePath(dir))])
     expect(dirty()).toEqual([])
-    expect(workerLog()).toMatch(/post-bash status sweep in .*: git status listed more than the output buffer holds; asked the worker to reconcile the project/)
+    expect(workerLog()).toMatch(/post-bash status sweep in .*: git status did not answer in time \(spawn git ENOBUFS.*asked the worker to reconcile the project/)
   })
 
   it('logs that a file the sweep could not see may stay stale when the reconcile request cannot be recorded', async () => {

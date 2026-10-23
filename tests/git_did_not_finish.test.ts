@@ -48,6 +48,83 @@ describe('runGit sets unfinished', () => {
     vi.mocked(cp.spawnSync).mockReturnValueOnce(syncResult({ error: errnoError('ENOENT') }))
     expect(runGit(['status']).unfinished).toBe(false)
   })
+
+  it('is true for a git whose output overflowed the buffer, since git ran and was ended before it finished', () => {
+    vi.mocked(cp.spawnSync).mockReturnValueOnce(syncResult({ error: errnoError('ENOBUFS'), signal: 'SIGTERM' }))
+    const result = runGit(['log'])
+    expect(result.unfinished).toBe(true)
+    expect(result.stderr).toMatch(/ENOBUFS/)
+    expect(result.timedOut).toBeUndefined()
+  })
+})
+
+/** A child process with nothing behind it: no pid, so the tree kill is a no-op and no process exists to reap. The row drives its events by hand. */
+function fakeChild(): EventEmitter & { stdout: EventEmitter & { destroy(): void }; stderr: EventEmitter & { destroy(): void }; stdin: { end(): void; destroy(): void; on(): void } } {
+  const pipe = (): EventEmitter & { destroy(): void } => Object.assign(new EventEmitter(), { destroy: () => undefined })
+  return Object.assign(new EventEmitter(), { stdout: pipe(), stderr: pipe(), stdin: { end: () => undefined, destroy: () => undefined, on: () => undefined } })
+}
+
+describe('runGitAsync sets unfinished for a git it ended itself', () => {
+  it('is true for a git ended at its time bound, with timedOut kept for detail', async () => {
+    vi.useFakeTimers()
+    try {
+      const child = fakeChild()
+      vi.mocked(cp.spawn).mockImplementationOnce((() => child) as unknown as typeof cp.spawn)
+      const pending = runGitAsync(['status'], { timeoutMs: 50 })
+      vi.advanceTimersByTime(50)
+      child.emit('exit', null, 'SIGTERM')
+      const result = await pending
+      expect(result.unfinished, 'a timeout is unfinished').toBe(true)
+      expect(result.timedOut).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('is true for a git ended because its output overflowed the buffer', async () => {
+    const child = fakeChild()
+    vi.mocked(cp.spawn).mockImplementationOnce((() => child) as unknown as typeof cp.spawn)
+    const pending = runGitAsync(['log'])
+    // Only the chunk's length is read, so a stand-in one byte over the 200 MiB limit costs no memory.
+    child.stdout.emit('data', { length: 200 * 1024 * 1024 + 1 })
+    child.emit('exit', null, 'SIGTERM')
+    const result = await pending
+    expect(result.unfinished, 'an overflow is unfinished').toBe(true)
+    expect(result.stderr).toMatch(/ENOBUFS/)
+    expect(result.timedOut).toBeUndefined()
+    expect(result.exitCode).toBe(-1)
+  })
+
+  it('is true for a git ended because the caller aborted it', async () => {
+    const child = fakeChild()
+    vi.mocked(cp.spawn).mockImplementationOnce((() => child) as unknown as typeof cp.spawn)
+    const controller = new AbortController()
+    const pending = runGitAsync(['status'], { signal: controller.signal })
+    controller.abort()
+    child.emit('exit', null, 'SIGTERM')
+    const result = await pending
+    expect(result.unfinished, 'an abort is unfinished').toBe(true)
+    expect(result.stderr).toBe('git was aborted')
+    expect(result.timedOut).toBeUndefined()
+  })
+
+  it('is false for a spawn that failed before git ran, which only a missing binary or directory causes', async () => {
+    const child = fakeChild()
+    vi.mocked(cp.spawn).mockImplementationOnce((() => child) as unknown as typeof cp.spawn)
+    const pending = runGitAsync(['status'])
+    child.emit('error', Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }))
+    const result = await pending
+    expect(result.unfinished).toBe(false)
+    expect(result.exitCode).toBe(-1)
+  })
+
+  it('is false for a call aborted before git started, since git never ran', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const result = await runGitAsync(['status'], { signal: controller.signal })
+    expect(result.unfinished).toBe(false)
+    expect(result.stderr).toBe('git was aborted before it started')
+  })
 })
 
 describe('runGitAsync sets unfinished', () => {

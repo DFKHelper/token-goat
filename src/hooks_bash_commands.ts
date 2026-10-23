@@ -434,11 +434,6 @@ async function workingTreeStatusPaths(gitDir: string): Promise<string[]> {
   const status = await hookGitRead(gitDir, ['status', '--porcelain', '-z', '--untracked-files=all'])
   reconcileIfGitTimedOut(status, gitDir, 'status sweep', 'git status')
   const stamp = `${new Date().toISOString()} post-bash status sweep in ${gitDir}`
-  if (status.exitCode === -1 && !status.unfinished && /ENOBUFS/.test(status.stderr)) {
-    // Git ran but listed more than runGitAsync's output buffer holds, so this sweep names no file; the worker's reconcile, which reads the index rather than this listing, can still find the changed ones.
-    const recorded = requestReconcileSafe(gitDir)
-    appendWorkerErrorLog(dataDir(), `${stamp}: git status listed more than the output buffer holds; ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
-  }
   if (status.exitCode !== 0) return []
   const recorded = requestReconcileSafe(gitDir)
   const repoRoot = await gitRepoRootOrNull(gitDir)
