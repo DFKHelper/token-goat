@@ -32,13 +32,13 @@ const answers = vi.hoisted(() => {
   const UNHURRIED_MS = 120_000
   const injected = (args: string[]): GitResult | null => {
     // CAPTURE: Node 24.12 on Windows 11 reports a missing git (and a working directory that is gone) as ENOENT, with no timeout flag; runGitAsync hands it back as `spawn git ENOENT` (tests/run_git_async_parity.test.ts).
-    if (seam.gitMissing) return { stdout: '', stderr: 'spawn git ENOENT', exitCode: -1 }
-    if (seam.failReflog && args[0] === 'reflog') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
-    if (seam.timeOutDiff && args[0] === 'diff') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
-    if (seam.killDiff && args[0] === 'diff') return { stdout: '', stderr: 'git was killed by SIGKILL', exitCode: -1, signal: 'SIGKILL' }
+    if (seam.gitMissing) return { stdout: '', stderr: 'spawn git ENOENT', unfinished: false, exitCode: -1 }
+    if (seam.failReflog && args[0] === 'reflog') return { stdout: '', stderr: 'timed out', exitCode: -1, unfinished: true, timedOut: true }
+    if (seam.timeOutDiff && args[0] === 'diff') return { stdout: '', stderr: 'timed out', exitCode: -1, unfinished: true, timedOut: true }
+    if (seam.killDiff && args[0] === 'diff') return { stdout: '', stderr: 'git was killed by SIGKILL', exitCode: -1, unfinished: true, signal: 'SIGKILL' }
     if (seam.timeOutTopLevelReads > 0 && args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
       seam.timeOutTopLevelReads--
-      return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+      return { stdout: '', stderr: 'timed out', exitCode: -1, unfinished: true, timedOut: true }
     }
     return null
   }

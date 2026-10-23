@@ -3,7 +3,7 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
-import type { GitResult } from './types.js'
+import { type GitResult } from './types.js'
 import { runGit } from './util.js'
 
 /** HEAD and a `.git` file are a line or two; a bounded read keeps a hostile oversized one from being slurped whole. */
@@ -96,7 +96,7 @@ export function gitFindings(args: string[], cwd: string, timeoutMs: number): Git
 
 /** The {@link GitFindings} answer for a finished git result, shared by the sync probe above and callers that ran git asynchronously. */
 export function findingsOfGitResult(result: GitResult): GitFindings {
-  if (result.timedOut === true) return 'timed-out'
+  if (result.unfinished) return 'timed-out'
   if (result.exitCode !== 0) return 'refused'
   return result.stdout.trim() === '' ? 'clean' : 'dirty'
 }

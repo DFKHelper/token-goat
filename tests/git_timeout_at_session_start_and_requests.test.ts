@@ -39,9 +39,10 @@ import { recordIndexedRoot } from '../src/indexed_roots.js'
 import { drainReconcileRequestsAsync } from '../src/reconcile_requests.js'
 import { clearModuleCaches } from '../src/reset.js'
 
-const KILLED: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, timedOut: true }
-const REFUSED: GitResult = { stdout: '', stderr: 'fatal: not a git repository', exitCode: 128 }
-const ok = (stdout: string): GitResult => ({ stdout, stderr: '', exitCode: 0 })
+const KILLED: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, unfinished: true, timedOut: true }
+const SIGNAL_KILLED: GitResult = { stdout: '', stderr: 'git was killed by SIGKILL', exitCode: -1, unfinished: true, signal: 'SIGKILL' }
+const REFUSED: GitResult = { stdout: '', stderr: 'fatal: not a git repository', unfinished: false, exitCode: 128 }
+const ok = (stdout: string): GitResult => ({ stdout, stderr: '', unfinished: false, exitCode: 0 })
 
 let projectDir = ''
 
@@ -108,6 +109,20 @@ describe('a reconcile request whose sweep git could not list', () => {
     appendReconcileRequest(_testDataDir, projectDir)
     expect(await drainReconcileRequestsAsync(_testDataDir)).toBe(0)
     expect(fs.existsSync(reconcileRequestPathFor(_testDataDir))).toBe(false)
+  })
+
+  it('goes back for the next cycle when ls-files is killed by a signal', async () => {
+    git.answer = (args) => (args[0] === 'ls-files' ? SIGNAL_KILLED : ok(`${projectDir}\n`))
+    appendReconcileRequest(_testDataDir, projectDir)
+    expect(await drainReconcileRequestsAsync(_testDataDir)).toBe(1)
+    expect(requested()).toEqual([projectDir])
+  })
+
+  it('goes back for the next cycle when rev-parse is killed by a signal, not dropped as having no repository', async () => {
+    git.answer = (args) => (args[0] === 'rev-parse' ? SIGNAL_KILLED : ok(''))
+    appendReconcileRequest(_testDataDir, projectDir)
+    expect(await drainReconcileRequestsAsync(_testDataDir)).toBe(0)
+    expect(requested()).toEqual([projectDir])
   })
 
   it('is spent when git ran and listed nothing', async () => {

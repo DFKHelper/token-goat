@@ -52,6 +52,8 @@ export interface GitResult {
   readonly timedOut?: boolean
   /** Set only when git was started and then killed by this signal (exit -1, no `timedOut`): the run finished, so it is unknown, not a git that never ran. */
   readonly signal?: string
+  /** True when git was started but did not finish: killed for running past its bound (`timedOut`) or by a signal. Every caller that would otherwise read the result as a definite answer (a refusal, an empty list, a missing ref) tests this first and takes its unknown branch instead. A clean exit 1 is an answer, not an unfinished run. runGit and runGitAsync set it; a result built by hand must set it too. */
+  readonly unfinished: boolean
 }
 
 /** How long a git call may run when its caller names no bound. A ceiling for one-shot calls, not a budget: the slowest call measured in this codebase's own commands was 1530 ms (`log --oneline -n 2000` in a 12,645-file repository on a loaded machine), so 30 s is about twenty times that. Residents (hook server, worker, MCP server) pass tighter explicit values; this default exists so a call that forgets one can never hang a process for good. */

@@ -149,20 +149,21 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     // CAPTURE: Node 24.12 on Windows 11 reports a spawnSync timeout as error.code ETIMEDOUT (signal SIGTERM), and a missing binary, a missing cwd, a maxBuffer overflow as ENOENT, ENOENT, ENOBUFS.
     const timedOut = (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT'
     if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') gitFileCache = undefined
-    return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, ...(timedOut ? { timedOut } : {}) }
+    return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, unfinished: timedOut, ...(timedOut ? { timedOut } : {}) }
   }
 
   if (result.status === null) {
     // A child ended by a signal has no exit status: the answer is unknown, never the exit code a caller would read as a verdict.
     const signal = result.signal ?? undefined
     const note = signal === undefined ? 'git ended with no exit code' : `git was killed by ${signal}`
-    return { stdout: '', stderr: note, exitCode: -1, ...(signal === undefined ? {} : { signal }) }
+    return { stdout: '', stderr: note, exitCode: -1, unfinished: signal !== undefined, ...(signal === undefined ? {} : { signal }) }
   }
 
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
     exitCode: result.status,
+    unfinished: false,
   }
 }
 
@@ -172,7 +173,7 @@ export async function runGitAsyncLazy(args: string[], opts?: RunGitAsyncOptions)
     const { runGitAsync } = await import('./git_async.js')
     return await runGitAsync(args, opts)
   } catch (err) {
-    return { stdout: '', stderr: String((err as Error).message ?? err), exitCode: -1 }
+    return { stdout: '', stderr: String((err as Error).message ?? err), exitCode: -1, unfinished: false }
   }
 }
 

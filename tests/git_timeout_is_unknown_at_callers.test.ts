@@ -21,9 +21,10 @@ import { reconcileProject } from '../src/reconcile.js'
 import { listTrackedFiles, requireTrackedFiles } from '../src/repomap.js'
 import { indexableDir } from './helpers/temp-config.js'
 
-const KILLED: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, timedOut: true }
-const REFUSED: GitResult = { stdout: '', stderr: 'fatal: not a git repository', exitCode: 128 }
-const ok = (stdout: string): GitResult => ({ stdout, stderr: '', exitCode: 0 })
+const KILLED: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, unfinished: true, timedOut: true }
+const SIGNAL_KILLED: GitResult = { stdout: '', stderr: 'git was killed by SIGKILL', exitCode: -1, unfinished: true, signal: 'SIGKILL' }
+const REFUSED: GitResult = { stdout: '', stderr: 'fatal: not a git repository', unfinished: false, exitCode: 128 }
+const ok = (stdout: string): GitResult => ({ stdout, stderr: '', unfinished: false, exitCode: 0 })
 
 let stderr: string[] = []
 let savedInstallIndex: string | undefined
@@ -173,5 +174,37 @@ describe('changed <ref> hint when git does not answer', () => {
     git.answer = hintAnswers(ok(`nosuchref missing\n${oid} commit 200\n${oid} commit 200\n`), REFUSED)
     expect(runChanged({ ref: 'nosuchref', projectRoot: '/project', projectRootResolved: true })).toBe(1)
     expect(stderr.join('')).toMatch(/Hint:.*does not exist/)
+  })
+
+  it('offers no hint when the batch probe is killed by a signal', () => {
+    git.answer = hintAnswers(SIGNAL_KILLED, REFUSED)
+    expect(runChanged({ ref: 'nosuchref', projectRoot: '/project', projectRootResolved: true })).toBe(1)
+    expect(stderr.join('')).not.toMatch(/Hint:/)
+  })
+
+  it('offers no hint when the per-ref probes are killed by a signal after a failed batch', () => {
+    git.answer = hintAnswers(REFUSED, SIGNAL_KILLED)
+    expect(runChanged({ ref: 'nosuchref', projectRoot: '/project', projectRootResolved: true })).toBe(1)
+    expect(stderr.join('')).not.toMatch(/Hint:/)
+  })
+})
+
+describe('a git killed by a signal is unknown at the other callers', () => {
+  it('listTrackedFiles reads a signal-killed ls-files as unknown, not as an empty list', () => {
+    git.answer = () => SIGNAL_KILLED
+    expect(listTrackedFiles('/project')).toEqual({ files: [], timedOut: true })
+  })
+
+  it('queueInstallIndex reports git-timeout when the top-level probe is killed by a signal', () => {
+    const dir = indexableDir()
+    git.answer = (args) => (args[0] === 'ls-files' ? ok('') : SIGNAL_KILLED)
+    expect(queueInstallIndex(dir)).toMatchObject({ status: 'skipped', reason: 'git-timeout' })
+  })
+
+  it('resolveProjectRoot says so once on stderr when git is killed by a signal', () => {
+    const dir = indexableDir()
+    git.answer = () => SIGNAL_KILLED
+    resolveProjectRoot({ project: dir })
+    expect(stderr.filter((line) => line.includes('git did not answer while finding the project root'))).toHaveLength(1)
   })
 })

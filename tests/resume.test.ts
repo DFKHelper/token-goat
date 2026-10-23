@@ -12,7 +12,7 @@ import type { GitResult } from '../src/types.js'
 import { storeWebOutput } from '../src/web_cache.js'
 
 // Only runGitAsync (used for the "## Uncommitted changes (git diff --stat)" section) is mocked -- resolveProjectRoot resolves the real project root normally, but every git subprocess call resume.ts makes goes through this mock so no test depends on the real repo's working-tree state. Default: no diff output, matching the pre-existing tests' expectations (that section absent) unless a test overrides the mock.
-const runGitAsyncMock = vi.fn(async (..._args: unknown[]): Promise<GitResult> => ({ exitCode: 1, stdout: '', stderr: '' }))
+const runGitAsyncMock = vi.fn(async (..._args: unknown[]): Promise<GitResult> => ({ unfinished: false, exitCode: 1, stdout: '', stderr: '' }))
 vi.mock('../src/git_async.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>
   return { ...actual, runGitAsync: (...args: unknown[]) => runGitAsyncMock(...(args as [string[], unknown])) }
@@ -23,7 +23,7 @@ const { buildResumePacket } = await import('../src/resume.js')
 describe('buildResumePacket', () => {
   beforeEach(() => {
     runGitAsyncMock.mockReset()
-    runGitAsyncMock.mockResolvedValue({ exitCode: 1, stdout: '', stderr: '' })
+    runGitAsyncMock.mockResolvedValue({ unfinished: false, exitCode: 1, stdout: '', stderr: '' })
   })
 
   it('returns null for an invalid (empty) session id', async () => {
@@ -143,7 +143,7 @@ describe('buildResumePacket', () => {
   })
 
   it('includes the git diff --stat section when runGitAsync succeeds with non-empty output', async () => {
-    runGitAsyncMock.mockResolvedValue({ exitCode: 0, stdout: ' src/foo.ts | 2 +-\n', stderr: '' })
+    runGitAsyncMock.mockResolvedValue({ unfinished: false, exitCode: 0, stdout: ' src/foo.ts | 2 +-\n', stderr: '' })
     const sessionId = 'sid-git-diff-present'
     expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
 
@@ -155,7 +155,7 @@ describe('buildResumePacket', () => {
 
   it('omits the git diff --stat section when runGitAsync exits non-zero, even with non-empty stdout', async () => {
     // stdout is deliberately non-empty here so this isolates the exitCode check from the separate empty-stdout check below -- a mutation that dropped the exitCode gate entirely (leaving only the stdout-length check) would otherwise slip past undetected.
-    runGitAsyncMock.mockResolvedValue({ exitCode: 128, stdout: 'fatal: not a git repository', stderr: 'not a git repo' })
+    runGitAsyncMock.mockResolvedValue({ unfinished: false, exitCode: 128, stdout: 'fatal: not a git repository', stderr: 'not a git repo' })
     const sessionId = 'sid-git-diff-error'
     expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
 
@@ -165,7 +165,7 @@ describe('buildResumePacket', () => {
   })
 
   it('omits the git diff --stat section when the diff is clean (exit 0, empty stdout)', async () => {
-    runGitAsyncMock.mockResolvedValue({ exitCode: 0, stdout: '   \n', stderr: '' })
+    runGitAsyncMock.mockResolvedValue({ unfinished: false, exitCode: 0, stdout: '   \n', stderr: '' })
     const sessionId = 'sid-git-diff-clean'
     expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
 
@@ -186,7 +186,7 @@ describe('buildResumePacket', () => {
 
   it('says the uncommitted changes are unknown when git diff --stat is killed, where a clean diff adds no section', async () => {
     // Provenance: HAND-DERIVED. A killed git is { exitCode: -1, timedOut: true } (src/types.ts::GitResult).
-    runGitAsyncMock.mockResolvedValue({ exitCode: -1, stdout: '', stderr: 'spawn git ETIMEDOUT after 5000 ms', timedOut: true })
+    runGitAsyncMock.mockResolvedValue({ exitCode: -1, stdout: '', stderr: 'spawn git ETIMEDOUT after 5000 ms', unfinished: true, timedOut: true })
     const sessionId = 'sid-git-diff-killed'
     expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
 
@@ -198,7 +198,7 @@ describe('buildResumePacket', () => {
   it('truncates to MAX_RESUME_CHARS and appends a truncation marker when the packet is oversized', async () => {
     const sessionId = 'sid-truncation'
     // Only the first 10 edited paths and 8 top-read paths ever make it into the packet, so truncation has to come from the git-diff --stat section instead -- that's the one part of the packet with no length cap of its own.
-    runGitAsyncMock.mockResolvedValue({ exitCode: 0, stdout: 'a'.repeat(9000), stderr: '' })
+    runGitAsyncMock.mockResolvedValue({ unfinished: false, exitCode: 0, stdout: 'a'.repeat(9000), stderr: '' })
     expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
 
     const packet = await buildResumePacket(sessionId)

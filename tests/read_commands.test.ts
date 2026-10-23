@@ -229,7 +229,7 @@ beforeEach(() => {
     redaction: DEFAULT_REDACTION,
   } as unknown as ReturnType<typeof loadConfig>)
   // resolveProjectRoot (project.ts, not mocked here) calls runGit internally to find the repo top-level; default to "not a git repo" so it falls through to its findProject/cwd fallback instead of exploding on the bare vi.fn() this file's util.js mock otherwise leaves runGit as. Individual tests below (e.g. runChanged) override this per-test as needed.
-  vi.mocked(runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'not a git repo' })
+  vi.mocked(runGit).mockReturnValue({ unfinished: false, exitCode: 1, stdout: '', stderr: 'not a git repo' })
 })
 
 describe('read_commands', () => {
@@ -6408,7 +6408,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       const { stdout, stderr } = capture(() => {
         expect(runDiff({ spec: 'a.ts::touchedFn' })).toBe(0)
       })
@@ -6422,7 +6422,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       runDiff({ spec: 'a.ts::touchedFn' })
       expect(mockRunGit).toHaveBeenCalledWith(['diff', '--unified=0', '--', 'a.ts'], expect.anything())
     })
@@ -6432,7 +6432,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       runDiff({ spec: 'a.ts::touchedFn', ref: 'HEAD~3..HEAD' })
       expect(mockRunGit).toHaveBeenCalledWith(['diff', 'HEAD~3..HEAD', '--unified=0', '--', 'a.ts'], expect.anything())
     })
@@ -6442,7 +6442,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({
+      mockRunGit.mockReturnValue({ unfinished: false,
         exitCode: 0,
         stdout: [
           'diff --git a/a.ts b/a.ts',
@@ -6467,7 +6467,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: '', stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: '', stderr: '' })
       const { stdout } = capture(() => {
         expect(runDiff({ spec: 'a.ts::anyFn' })).toBe(0)
       })
@@ -6597,7 +6597,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 128, stdout: '', stderr: 'bad ref' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 128, stdout: '', stderr: 'bad ref' })
       const { stderr } = capture(() => {
         expect(runDiff({ spec: 'a.ts::touchedFn', ref: 'nope' })).toBe(1)
       })
@@ -6609,7 +6609,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: twoHunkDiff('a.ts'), stderr: '' })
       const { stdout } = capture(() => {
         expect(runDiff({ spec: 'a.ts::touchedFn', json: true })).toBe(0)
       })
@@ -6648,7 +6648,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
       const { stdout, stderr } = capture(() => {
         expect(runLog({ spec: 'a.ts::touchedFn' })).toBe(0)
       })
@@ -6662,7 +6662,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
       runLog({ spec: 'a.ts::touchedFn' })
       expect(mockRunGit).toHaveBeenCalledWith(['log', '-L10,12:a.ts', '--max-count=20'], expect.anything())
     })
@@ -6672,7 +6672,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: oneCommitLogDashL('a.ts'), stderr: '' })
       runLog({ spec: 'a.ts::touchedFn', ref: 'HEAD~3', maxCount: 5 })
       expect(mockRunGit).toHaveBeenCalledWith(['log', '-L10,12:a.ts', '--max-count=5', 'HEAD~3'], expect.anything())
     })
@@ -6682,7 +6682,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: '', stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: '', stderr: '' })
       const { stdout } = capture(() => {
         expect(runLog({ spec: 'a.ts::anyFn' })).toBe(0)
       })
@@ -6724,7 +6724,7 @@ describe('read_commands', () => {
       //
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
-      mockRunGit.mockReturnValue({ exitCode: 128, stdout: '', stderr: 'bad ref' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 128, stdout: '', stderr: 'bad ref' })
       const { stderr } = capture(() => {
         expect(runLog({ spec: 'a.ts::touchedFn', ref: 'nope' })).toBe(1)
       })
@@ -6737,7 +6737,7 @@ describe('read_commands', () => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockQuerySymbols.mockReturnValue([sym as any])
       const hash = 'b'.repeat(40)
-      mockRunGit.mockReturnValue({ exitCode: 0, stdout: oneCommitLogDashL('a.ts', hash), stderr: '' })
+      mockRunGit.mockReturnValue({ unfinished: false, exitCode: 0, stdout: oneCommitLogDashL('a.ts', hash), stderr: '' })
       const { stdout } = capture(() => {
         expect(runLog({ spec: 'a.ts::touchedFn', json: true })).toBe(0)
       })
@@ -6761,7 +6761,7 @@ describe('read_commands', () => {
       mockQuerySymbols.mockReturnValue([sym as any])
       const hashA = 'c'.repeat(40)
       const hashB = 'd'.repeat(40)
-      mockRunGit.mockReturnValue({
+      mockRunGit.mockReturnValue({ unfinished: false,
         exitCode: 0,
         stdout: [oneCommitLogDashL('a.ts', hashA), oneCommitLogDashL('a.ts', hashB)].join('\n'),
         stderr: '',
@@ -8418,7 +8418,7 @@ describe('runRefs unknown symbol vs zero-references distinction', () => {
     mockLoadConfig.mockReturnValue({
       indexing: { cross_project_symbols: true }, overflow_guard: { enabled: false } } as unknown as ReturnType<typeof loadConfig>)
     // resolveProjectRoot (not mocked in this file) shells out via runGit; the empty-result branch under test now always resolves rootDir (for the existence check), so this must be stubbed here too, matching the outer 'read_commands' describe's own beforeEach.
-    vi.mocked(runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'not a git repo' })
+    vi.mocked(runGit).mockReturnValue({ unfinished: false, exitCode: 1, stdout: '', stderr: 'not a git repo' })
   })
 
   it('reports "Symbol not found" plus a Did you mean suggestion for a typo of a real, indexed symbol', () => {

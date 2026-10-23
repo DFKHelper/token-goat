@@ -35,9 +35,9 @@ import { buildManifest } from '../src/manifest.js'
 import { userPromptSubmitHandler } from '../src/hooks_session.js'
 import type { HookEvent } from '../src/hook_registry.js'
 
-const KILLED: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, timedOut: true }
-const REFUSED: GitResult = { stdout: '', stderr: 'fatal: not a git repository', exitCode: 128 }
-const ok = (stdout: string): GitResult => ({ stdout, stderr: '', exitCode: 0 })
+const KILLED: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, unfinished: true, timedOut: true }
+const REFUSED: GitResult = { stdout: '', stderr: 'fatal: not a git repository', unfinished: false, exitCode: 128 }
+const ok = (stdout: string): GitResult => ({ stdout, stderr: '', unfinished: false, exitCode: 0 })
 const HINT_BUDGET_MS = 50
 
 const dirs: string[] = []

@@ -26,7 +26,7 @@ export type InstallIndexResult =
 /** Whether `root` is itself a git top level (`own`: a repository with nothing tracked yet), a plain folder or one nested in somebody else's repository whose top level is a different directory (`other`), or unknown because git was killed for running too long (`timed-out`). */
 function gitToplevelKind(root: string): 'own' | 'other' | 'timed-out' {
   const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: root })
-  if (toplevel.timedOut === true) return 'timed-out'
+  if (toplevel.unfinished) return 'timed-out'
   if (toplevel.exitCode !== 0 || toplevel.stdout.trim() === '') return 'other'
   return foldPath(canonicalize(fs.realpathSync(toplevel.stdout.trim()))) === foldPath(canonicalize(fs.realpathSync(root))) ? 'own' : 'other'
 }

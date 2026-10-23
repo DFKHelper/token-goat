@@ -36,7 +36,7 @@ interface TreeAnswer {
 /** The answer the first handler to need one got for a stop, read by the other handlers that run on the same event object, whichever runs first: one git process per stop wherever the answer is complete, instead of a second ask that a cold git misses while the first had answered. */
 const treeAnswerByStop = new WeakMap<HookEvent, TreeAnswer>()
 
-/** The findings for a `git status` result. A git that never completed without being timed out (output overflow, a spawn refused, an abort) is unfinished like a timeout, never clean. Not told apart: a git killed by a signal, which both runners report as exit 1 like any other error exit, and a missing git or a gone working directory, whose spawn error names ENOENT and stays silent as before. */
+/** The findings for a `git status` result. A git that did not finish (timed out, killed by a signal, or failed with no exit code: an output overflow, a refused spawn, an abort) is unfinished like a timeout, never clean. A spawn error naming ENOENT (a missing git, a gone working directory) is a refusal and stays silent as before. */
 function treeFindingsOfStatus(result: GitResult): GitFindings {
   const found = findingsOfGitResult(result)
   return found === 'refused' && result.exitCode === -1 && !result.stderr.includes('ENOENT') ? 'timed-out' : found

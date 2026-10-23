@@ -48,7 +48,7 @@ function scopeGit(cwd: string, deps: ScopeGitDeps = {}): ScopeGit {
   const deadline = now() + SCOPE_GIT_TIMEOUT_MS
   return (args) => {
     const remaining = deadline - now()
-    if (remaining <= 0) return { stdout: '', stderr: 'the git calls of one scope exceeded their shared time allowance', exitCode: -1, timedOut: true }
+    if (remaining <= 0) return { stdout: '', stderr: 'the git calls of one scope exceeded their shared time allowance', exitCode: -1, unfinished: true, timedOut: true }
     return git([...SCOPE_GIT_CONFIG, ...args], { cwd, timeoutMs: remaining })
   }
 }

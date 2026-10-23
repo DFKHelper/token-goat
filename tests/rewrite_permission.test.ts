@@ -18,7 +18,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
   return {
     ...actual,
     runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
-      if (gitSeam.timeOutLsFiles && args[0] === 'ls-files') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+      if (gitSeam.timeOutLsFiles && args[0] === 'ls-files') return { stdout: '', stderr: 'timed out', exitCode: -1, unfinished: true, timedOut: true }
       return actual.runGit(args, opts?.timeoutMs === undefined ? opts : { ...opts, timeoutMs: 120_000 })
     },
   }

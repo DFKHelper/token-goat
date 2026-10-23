@@ -13,10 +13,10 @@ export const STATUS_CLEAN = ''
 export const STATUS_A_MODIFIED = ' M a.txt\0'
 
 // Provenance: HAND-DERIVED. A killed git is `{ exitCode: -1, timedOut: true }` (src/types.ts::GitResult, the Node ETIMEDOUT CAPTURE documented at src/util.ts::runGit).
-export const KILLED_GIT: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, timedOut: true }
+export const KILLED_GIT: GitResult = { stdout: '', stderr: 'spawnSync git ETIMEDOUT', exitCode: -1, unfinished: true, timedOut: true }
 
 // Provenance: CAPTURE. git version 2.53.0.windows.1, in a scratch directory with no repository above it: `git rev-parse --show-toplevel HEAD` and `git status --porcelain -z --untracked-files=all` each printed `fatal: not a git repository (or any of the parent directories): .git` on stderr, nothing on stdout, and exited 128.
-export const NOT_A_REPOSITORY: GitResult = { stdout: '', stderr: 'fatal: not a git repository (or any of the parent directories): .git\n', exitCode: 128 }
+export const NOT_A_REPOSITORY: GitResult = { stdout: '', stderr: 'fatal: not a git repository (or any of the parent directories): .git\n', unfinished: false, exitCode: 128 }
 
 // Provenance: CAPTURE. Same scratch repository and git version as CAPTURED_HEAD: `git ls-files -z -s` printed `100644 5626abf0f72e58d7a153368ba57db4c673c0e171 0`, a tab, `a.txt` and a NUL; `git ls-files -z -o --exclude-standard` and `git ls-files -z -o -i --exclude-standard --directory` printed nothing.
 const LISTING_TRACKED = '100644 5626abf0f72e58d7a153368ba57db4c673c0e171 0\ta.txt\0'
@@ -44,12 +44,12 @@ export function cannedFingerprintAnswer(state: CannedGit, cwd: string | undefine
   if (argv === 'rev-parse --show-toplevel HEAD') {
     state.served += 1
     if (!state.repository) return NOT_A_REPOSITORY
-    return { stdout: `${cwd ?? ''}\n${state.head}\n`, stderr: '', exitCode: 0 }
+    return { stdout: `${cwd ?? ''}\n${state.head}\n`, stderr: '', unfinished: false, exitCode: 0 }
   }
   if (argv === 'status --porcelain -z --untracked-files=all') {
     state.served += 1
     if (!state.repository) return NOT_A_REPOSITORY
-    return { stdout: state.status, stderr: '', exitCode: 0 }
+    return { stdout: state.status, stderr: '', unfinished: false, exitCode: 0 }
   }
   return null
 }
@@ -57,7 +57,7 @@ export function cannedFingerprintAnswer(state: CannedGit, cwd: string | undefine
 /** The canned answer for one of the three listings the nested-skill scan takes of a checkout that holds one tracked file and nothing else, or null for any other git call. That file is no skill, command or agent, so the scan finds nothing to read. */
 export function cannedSkillListing(args: readonly string[]): GitResult | null {
   const argv = args.join(' ')
-  if (argv === 'ls-files -z -s') return { stdout: LISTING_TRACKED, stderr: '', exitCode: 0 }
-  if (argv === 'ls-files -z -o --exclude-standard' || argv === 'ls-files -z -o -i --exclude-standard --directory') return { stdout: '', stderr: '', exitCode: 0 }
+  if (argv === 'ls-files -z -s') return { stdout: LISTING_TRACKED, stderr: '', unfinished: false, exitCode: 0 }
+  if (argv === 'ls-files -z -o --exclude-standard' || argv === 'ls-files -z -o -i --exclude-standard --directory') return { stdout: '', stderr: '', unfinished: false, exitCode: 0 }
   return null
 }

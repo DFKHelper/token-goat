@@ -57,7 +57,7 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
       const top = await runGitAsyncLazy(['rev-parse', '--show-toplevel'], { cwd: projectDir, timeoutMs: 5000 })
       progressed()
       // A git that ran past its 5 s budget has not said this is no repository; dropping the request there lost the branch switch the hook had handed over, so the project goes back for the next cycle.
-      if (top.timedOut === true) {
+      if (top.unfinished) {
         requeue.push(projectDir)
         logOutcome(dir, projectDir, 'git did not answer in time, continuing next cycle')
         continue

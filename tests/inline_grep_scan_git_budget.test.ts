@@ -107,9 +107,9 @@ describe('a git listing past the entry cap', () => {
       deps: {
         git: (args, opts) => {
           calls.push({ args, timeoutMs: opts.timeoutMs })
-          if (args.includes('check-ignore')) return { stdout: '', stderr: '', exitCode: 1 }
-          if (args.includes('-co') && !args.includes('-i')) return { stdout: out, stderr: '', exitCode: 0 }
-          return { stdout: '', stderr: '', exitCode: 0 }
+          if (args.includes('check-ignore')) return { stdout: '', stderr: '', exitCode: 1, unfinished: false }
+          if (args.includes('-co') && !args.includes('-i')) return { stdout: out, stderr: '', exitCode: 0, unfinished: false }
+          return { stdout: '', stderr: '', exitCode: 0, unfinished: false }
         },
         now: () => 1_000_000,
       },

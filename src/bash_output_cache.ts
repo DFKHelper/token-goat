@@ -116,13 +116,13 @@ function statusPathStats(root: string, porcelainZ: string): string {
 function gitStateFingerprintSync(cwd: string): string | null {
   try {
     const headResult = runGit(['rev-parse', '--show-toplevel', 'HEAD'], { cwd, timeoutMs: GIT_STATE_TIMEOUT_MS })
-    if (headResult.timedOut === true) return GIT_STATE_UNKNOWN
+    if (headResult.unfinished) return GIT_STATE_UNKNOWN
     if (headResult.exitCode !== 0) return null
     const [root = '', headSha = ''] = headResult.stdout.trim().split(/\r?\n/)
 
     let statusHash = ''
     const statusResult = runGit(['status', '--porcelain', '-z', '--untracked-files=all'], { cwd, timeoutMs: GIT_STATE_TIMEOUT_MS })
-    if (statusResult.timedOut === true) return GIT_STATE_UNKNOWN
+    if (statusResult.unfinished) return GIT_STATE_UNKNOWN
     if (statusResult.exitCode === 0) {
       statusHash = shortFingerprint(`${statusResult.stdout}\x00${statusPathStats(root, statusResult.stdout)}`)
     }

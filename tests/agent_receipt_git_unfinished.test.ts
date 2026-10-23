@@ -52,9 +52,9 @@ const CLAIM = 'I fixed the parser bug.'
 const NOTE = "git status did not finish, so this report's change claim was not checked."
 
 // CAPTURE: `git status --porcelain` in a fresh `git init` directory printed nothing and exited 0.
-const CLEAN_TREE: GitResult = { stdout: '', stderr: '', exitCode: 0 }
+const CLEAN_TREE: GitResult = { stdout: '', stderr: '', unfinished: false, exitCode: 0 }
 // CAPTURE: the same command printed `?? new.txt` and a newline once an untracked new.txt existed.
-const UNTRACKED_FILE: GitResult = { stdout: '?? new.txt\n', stderr: '', exitCode: 0 }
+const UNTRACKED_FILE: GitResult = { stdout: '?? new.txt\n', stderr: '', unfinished: false, exitCode: 0 }
 
 let repo = ''
 
@@ -313,7 +313,7 @@ describe('a git that was cut off without a timeout', () => {
       warnings.push(parts.map(String).join(' '))
     })
   })
-  const OVERFLOW: GitResult = { stdout: '', stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer', exitCode: -1 }
+  const OVERFLOW: GitResult = { stdout: '', stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer', unfinished: false, exitCode: -1 }
   const UNCHECKED_WARNING = (sid: string): string => `subagent-stop: could not check the report against git status — session=${sid}, git did not finish`
 
   it('reads as unchecked on the receipt and the stop warning, never as a clean tree', async () => {
@@ -340,7 +340,7 @@ describe('a git that was cut off without a timeout', () => {
   })
 
   it('reads as unchecked when the spawn itself was refused for a reason other than a missing git', async () => {
-    bound.answer = { stdout: '', stderr: 'spawn git EACCES', exitCode: -1 }
+    bound.answer = { stdout: '', stderr: 'spawn git EACCES', unfinished: false, exitCode: -1 }
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-eacces-'))
     await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))

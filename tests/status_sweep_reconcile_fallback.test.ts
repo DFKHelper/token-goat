@@ -18,7 +18,7 @@ import { workerErrorLogPath } from '../src/worker_lifecycle.js'
 import { gitRepoWithCommit, gitRepoWithSubCommit } from './helpers/git-repo.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
-type SeamAnswer = { exitCode: number; timedOut?: true; stdout?: string; stderr?: string } | null
+type SeamAnswer = { exitCode: number; unfinished: boolean; timedOut?: true; signal?: string; stdout?: string; stderr?: string } | null
 const seam = vi.hoisted(() => ({ status: null as SeamAnswer, lsFiles: null as SeamAnswer, revParse: null as SeamAnswer, reconcileUnrecorded: false }))
 
 vi.mock('../src/dirty_queue.js', async (importOriginal) => {
@@ -77,7 +77,17 @@ describe('the working-tree status sweep when git does not answer', () => {
   })
 
   it('asks the worker to reconcile the project, and logs it, when the status read runs past its budget', async () => {
-    seam.status = { exitCode: -1, timedOut: true }
+    seam.status = { exitCode: -1, unfinished: true, timedOut: true }
+
+    await formatterRun(dir)
+
+    expect(requested()).toEqual([foldPath(normalizePath(dir))])
+    expect(dirty()).toEqual([])
+    expect(workerLog()).toMatch(/post-bash status sweep in .*: git status did not answer in time \(no answer\); asked the worker to reconcile the project/)
+  })
+
+  it('asks the worker to reconcile the project, and logs it, when the status read is killed by a signal, not reported as clean', async () => {
+    seam.status = { exitCode: -1, unfinished: true, signal: 'SIGKILL' }
 
     await formatterRun(dir)
 
@@ -87,9 +97,20 @@ describe('the working-tree status sweep when git does not answer', () => {
   })
 
   it('asks the worker to reconcile the project, and logs it, when the ls-files read that expands a git restore pathspec runs past its budget', async () => {
-    seam.lsFiles = { exitCode: -1, timedOut: true }
+    seam.lsFiles = { exitCode: -1, unfinished: true, timedOut: true }
 
     // A glob, since a literal name is enqueued as written whatever ls-files says.
+    await bashRun(dir, "git restore '*.txt'")
+
+    expect(requested()).toEqual([foldPath(normalizePath(dir))])
+    expect(dirty()).toEqual([])
+    expect(workerLog()).toMatch(/post-bash git restore in .*: git ls-files did not answer in time \(no answer\); asked the worker to reconcile the project/)
+  })
+
+  it('asks the worker to reconcile the project when the ls-files read that expands a git restore pathspec is killed by a signal', async () => {
+    seam.lsFiles = { exitCode: -1, unfinished: true, signal: 'SIGKILL' }
+
+    // A glob, as in the timed-out row above: a literal name is enqueued without asking ls-files.
     await bashRun(dir, "git restore '*.txt'")
 
     expect(requested()).toEqual([foldPath(normalizePath(dir))])
@@ -106,8 +127,8 @@ describe('the working-tree status sweep when git does not answer', () => {
   })
 
   it.each([
-    { name: 'git could not be started at all, since the worker needs git to sweep', status: { exitCode: -1 } },
-    { name: 'git answers that this is not a repository', status: { exitCode: 128 } },
+    { name: 'git could not be started at all, since the worker needs git to sweep', status: { exitCode: -1, unfinished: false } },
+    { name: 'git answers that this is not a repository', status: { exitCode: 128, unfinished: false } },
   ])('asks for nothing when $name', async ({ status }) => {
     seam.status = status
 
@@ -120,7 +141,7 @@ describe('the working-tree status sweep when git does not answer', () => {
 
   // FORMAT-DERIVED: the overflow result src/util.ts::runGitAsync settles with (exit -1, no timedOut, this stderr text); tests/run_git_async_reaps_tree.test.ts pins that the real 200 MiB flood returns an ENOBUFS stderr, which is all the sweep's /ENOBUFS/ match reads.
   it('asks the worker to reconcile the project, and logs it, when git status lists more than the output buffer holds', async () => {
-    seam.status = { exitCode: -1, stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer' }
+    seam.status = { unfinished: false, exitCode: -1, stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer' }
 
     await formatterRun(dir)
 
@@ -191,7 +212,7 @@ describe('the working-tree status sweep when git does not answer', () => {
 
   // HAND-DERIVED: porcelain v1 `-z` names a path as written, so a name holding ` -> ` is one path; Windows cannot create such a file, so the status answer is supplied directly and the path, absent from disk, is enqueued for the drain to drop.
   it('takes a status entry whose name holds ` -> ` as one path', async () => {
-    seam.status = { exitCode: 0, stdout: '?? old -> new.ts\0' }
+    seam.status = { unfinished: false, exitCode: 0, stdout: '?? old -> new.ts\0' }
 
     await formatterRun(dir)
 
@@ -199,7 +220,7 @@ describe('the working-tree status sweep when git does not answer', () => {
   })
 
   it('enqueues at most 2000 swept paths, and logs that the reconcile covers the rest', async () => {
-    seam.status = { exitCode: 0, stdout: Array.from({ length: 2001 }, (_, i) => `?? gone${i}.ts\0`).join('') }
+    seam.status = { unfinished: false, exitCode: 0, stdout: Array.from({ length: 2001 }, (_, i) => `?? gone${i}.ts\0`).join('') }
 
     await formatterRun(dir)
 
@@ -213,7 +234,7 @@ describe('the working-tree status sweep when git does not answer', () => {
   it('keeps every untracked path when the listing is over the cap, and names no untracked file as left out', async () => {
     const tracked = Array.from({ length: 1990 }, (_, i) => ` M tracked${i}.ts\0`).join('')
     const untracked = Array.from({ length: 20 }, (_, i) => `?? new${i}.ts\0`).join('')
-    seam.status = { exitCode: 0, stdout: tracked + untracked }
+    seam.status = { unfinished: false, exitCode: 0, stdout: tracked + untracked }
 
     await formatterRun(dir)
 
@@ -226,8 +247,8 @@ describe('the working-tree status sweep when git does not answer', () => {
     { name: 'a status sweep', run: (d: string) => formatterRun(d), answer: 'status' as const, stdout: ' M a.txt\0' },
     { name: 'a git restore', run: (d: string) => bashRun(d, "git restore '*.txt'"), answer: 'lsFiles' as const, stdout: 'a.txt\0' },
   ])('enqueues nothing and asks for a reconcile when $name lists files but git cannot name the repository root', async ({ run, answer, stdout }) => {
-    seam[answer] = { exitCode: 0, stdout }
-    seam.revParse = { exitCode: -1, timedOut: true }
+    seam[answer] = { unfinished: false, exitCode: 0, stdout }
+    seam.revParse = { exitCode: -1, unfinished: true, timedOut: true }
 
     await run(dir)
 

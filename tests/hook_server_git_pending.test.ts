@@ -79,7 +79,7 @@ describe('the resident hook server while a hook call waits on git', () => {
     expect(second, 'a second hook call is turned away at once, not left unread').toBeUndefined()
     expect(seam.asked, 'the turned-away call never reached git').toHaveLength(1)
 
-    gitResult.resolve({ stdout: '', stderr: '', exitCode: 0 })
+    gitResult.resolve({ stdout: '', stderr: '', unfinished: false, exitCode: 0 })
     expect(await first).toMatchObject({ ok: true })
   })
 })

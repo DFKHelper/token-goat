@@ -224,7 +224,7 @@ function noteGitRootTimeout(base: string): void {
 export function resolveProjectRoot(opts?: { project?: string }): string {
   const base = opts?.project !== undefined ? path.resolve(opts.project) : process.cwd();
   const toplevel = runGit(['rev-parse', '--show-toplevel'], { cwd: base });
-  if (toplevel.timedOut === true) noteGitRootTimeout(base);
+  if (toplevel.unfinished) noteGitRootTimeout(base);
   if (toplevel.exitCode === 0) {
     const trimmed = toplevel.stdout.trim();
     // `git rev-parse` echoes back whatever drive-letter casing the OS reports (often uppercase on Windows), unlike every other project-root source in this module (findProject, makeProjectAt), which is always canonicalize()'d. Canonicalizing here too keeps the return value consistent regardless of which resolution step produced it.

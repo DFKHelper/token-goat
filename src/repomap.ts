@@ -3,10 +3,10 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { CliError } from './command_error.js'
-import type { GitResult } from './types.js'
+import { type GitResult } from './types.js'
 import { runGit, runGitAsyncLazy } from './util.js'
 
-/** What `git ls-files` answered for a directory: the tracked files, and whether they are missing because git was killed for running too long. Empty `files` with `timedOut` false means git had nothing to list (not a repository, nothing tracked, git failed); with `timedOut` true it means nothing is known. */
+/** What `git ls-files` answered for a directory: the tracked files, and whether they are missing because git was killed (for running too long, or by a signal). Empty `files` with `timedOut` false means git had nothing to list (not a repository, nothing tracked, git failed); with `timedOut` true it means nothing is known. */
 export interface TrackedFilesResult {
   readonly files: string[]
   readonly timedOut: boolean
@@ -30,7 +30,7 @@ function trackedFilesInvocation(cwd: string): { dir: string; args: string[] } {
 
 /** What `git ls-files` answered, as a {@link TrackedFilesResult}: a killed git is unknown (`timedOut`), a failed or empty one is nothing tracked. */
 function trackedFilesFrom(dir: string, result: GitResult): TrackedFilesResult {
-  if (result.timedOut === true) return { files: [], timedOut: true }
+  if (result.unfinished) return { files: [], timedOut: true }
   if (result.exitCode !== 0 || !result.stdout) {
     return { files: [], timedOut: false }
   }

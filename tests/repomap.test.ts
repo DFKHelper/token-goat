@@ -13,6 +13,7 @@ describe('repomap', () => {
   describe('listTrackedFiles', () => {
     it('parses git ls-files output into paths', () => {
       const mockResult = {
+        unfinished: false,
         exitCode: 0,
         stdout: 'src/a.ts\nsrc/b.ts\ntests/c.ts',
         stderr: '',
@@ -30,7 +31,7 @@ describe('repomap', () => {
     })
 
     it('returns empty array on git error', () => {
-      const mockResult = { exitCode: 128, stdout: '', stderr: 'not a git repo' }
+      const mockResult = { unfinished: false, exitCode: 128, stdout: '', stderr: 'not a git repo' }
       vi.mocked(util.runGit).mockReturnValue(mockResult)
 
       const files = listTrackedFiles('/project').files
@@ -40,6 +41,7 @@ describe('repomap', () => {
 
     it('skips empty lines', () => {
       const mockResult = {
+        unfinished: false,
         exitCode: 0,
         stdout: 'src/a.ts\n\nsrc/b.ts\n',
         stderr: '',
@@ -56,7 +58,7 @@ describe('repomap', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-repomap-'))
       const file = path.join(dir, 'campaign-detectors.js')
       fs.writeFileSync(file, 'export const a = 1\n')
-      vi.mocked(util.runGit).mockReturnValue({ exitCode: 0, stdout: 'campaign-detectors.js\n', stderr: '' })
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false, exitCode: 0, stdout: 'campaign-detectors.js\n', stderr: '' })
 
       const files = listTrackedFiles(file).files
 
@@ -70,7 +72,7 @@ describe('repomap', () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-repomap-'))
       const file = path.join(dir, 'untracked.js')
       fs.writeFileSync(file, 'export const a = 1\n')
-      vi.mocked(util.runGit).mockReturnValue({ exitCode: 1, stdout: '', stderr: 'did not match any file(s) known to git' })
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false, exitCode: 1, stdout: '', stderr: 'did not match any file(s) known to git' })
 
       expect(listTrackedFiles(file).files).toEqual([])
       // Asserted explicitly: without the flag git would exit 0 and list the directory's other tracked files, so the empty result above alone does not prove the flag survived.

@@ -5,7 +5,7 @@ import { registerHook } from './hook_registry.js'
 import { contextOutput, emitRewrite, passOutput, extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, getCwd } from './hooks_common.js'
 import { fenceUntrusted, fenceUntrustedSpans } from './untrusted_fence.js'
 import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
-import type { HookOutput } from './types.js'
+import { type HookOutput } from './types.js'
 import { sweepStaleRepairScripts } from './bash_backslash_repair.js'
 import { mayBeVerificationCommand } from './hooks_verification.js'
 import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordSymbolRead, takeBashStartCwd, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
@@ -694,13 +694,13 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         const reflogTop = await hookGitRead(gitDir, ['reflog', '-1', '--format=%gs', 'HEAD'])
         if (reflogTop.exitCode === -1) {
           unanswered = `git reflog: ${reflogTop.stderr}`
-          if (reflogTop.timedOut !== true && reflogTop.signal === undefined) gitNeverRan = true
+          if (!reflogTop.unfinished) gitNeverRan = true
         }
         if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {
           const origHead = await hookGitRead(gitDir, ['rev-parse', '--verify', '-q', 'ORIG_HEAD'])
           if (origHead.exitCode === -1) {
             unanswered = `git rev-parse ORIG_HEAD: ${origHead.stderr}`
-            if (origHead.timedOut !== true && origHead.signal === undefined) gitNeverRan = true
+            if (!origHead.unfinished) gitNeverRan = true
           }
           if (origHead.exitCode === 0 && origHead.stdout.trim() !== '') diffBase = 'ORIG_HEAD'
         }
@@ -720,7 +720,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
         }
       } else {
         unanswered = `git diff ${diffBase} HEAD exited ${mutationDiff.exitCode}: ${mutationDiff.stderr}`
-        gitNeverRan = mutationDiff.exitCode === -1 && mutationDiff.timedOut !== true && mutationDiff.signal === undefined
+        gitNeverRan = mutationDiff.exitCode === -1 && !mutationDiff.unfinished
       }
       // Dropping the work here left the index on the old branch with nothing in any log, and under load each read above is one 5 s timeout from failing. The worker can learn what changed without the hook's time budget (a sweep of the tracked files against the index), so hand it the project and record why.
       if (unanswered !== null) {

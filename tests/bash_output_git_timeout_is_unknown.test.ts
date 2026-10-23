@@ -3,18 +3,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as UtilModule from '../src/util.js'
+import type { GitResult } from '../src/types.js'
 import { KILLED_GIT, SECOND_HEAD, cannedFingerprintAnswer, cannedGit } from './helpers/canned_git.js'
+
+const SIGNAL_KILLED_GIT: GitResult = { stdout: '', stderr: 'git was killed by SIGKILL', exitCode: -1, unfinished: true, signal: 'SIGKILL' }
 import type { CannedGit } from './helpers/canned_git.js'
 
 // Seam over the git calls that fingerprint a repository (src/bash_output_cache.ts::gitStateFingerprintSync): the call named by `killed` is answered as killed at its time bound, every other fingerprint call from the known repository state in `canned` (tests/helpers/canned_git.ts), so no row waits on a real git finishing inside a bound. Any other git call runs for real under its default bound.
-const seam = vi.hoisted(() => ({ killed: null as string | null, canned: null as CannedGit | null }))
+const seam = vi.hoisted(() => ({ killed: null as string | null, killedBy: 'timeout' as 'timeout' | 'signal', canned: null as CannedGit | null }))
 
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
     runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
-      if (args[0] === seam.killed) return KILLED_GIT
+      if (args[0] === seam.killed) return seam.killedBy === 'signal' ? SIGNAL_KILLED_GIT : KILLED_GIT
       const answer = seam.canned === null ? null : cannedFingerprintAnswer(seam.canned, opts?.cwd, args)
       return answer ?? actual.runGit(args, opts)
     },
@@ -28,6 +31,7 @@ import { gitRepoWithCommit } from './helpers/git-repo.js'
 beforeEach(() => {
   clearModuleCaches()
   seam.killed = null
+  seam.killedBy = 'timeout'
   seam.canned = cannedGit()
 })
 
@@ -71,6 +75,28 @@ describe.each([
     const dir = gitRepoWithCommit()
     const entry = await storedUnder(null, cmd, dir)
     expect(isBashEntryStale(entry, cmd, dir)).toBe(false)
+    seam.killed = killedCall
+    expect(isBashEntryStale(entry, cmd, dir)).toBe(true)
+  })
+})
+
+describe.each([
+  ['status', 'npm test'],
+  ['rev-parse', 'npm test'],
+])('a git %s killed by a signal fingerprinting %s', (killedCall, cmd) => {
+  beforeEach(() => {
+    seam.killedBy = 'signal'
+  })
+
+  it('is stale when the next fingerprint reads a healthy state', async () => {
+    const dir = gitRepoWithCommit()
+    const entry = await storedUnder(killedCall, cmd, dir)
+    expect(isBashEntryStale(entry, cmd, dir)).toBe(true)
+  })
+
+  it('is stale when the next fingerprint is killed by a signal too', async () => {
+    const dir = gitRepoWithCommit()
+    const entry = await storedUnder(killedCall, cmd, dir)
     seam.killed = killedCall
     expect(isBashEntryStale(entry, cmd, dir)).toBe(true)
   })

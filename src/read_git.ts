@@ -9,7 +9,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { emitGuarded, guardJsonRows, guardText, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
-import type { GitResult } from './types.js'
+import { type GitResult } from './types.js'
 import { parseColonLineRange, parseCrossFileMultiSpec, parseReadSpec, resolveProjectConfinement, resolveSymbolSpecOrEmitError } from './read_spec.js'
 import { trimBlankLines } from './read_suggest.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
@@ -190,7 +190,7 @@ function batchRowResolved(row: string | undefined): boolean {
 // Whether `ref` resolves and the first (deepest) candidate that does, from one `cat-file --batch-check` spawn. A batch git refused or cut short falls back to one `rev-parse --verify` per name, the behaviour before the batch existed, so a git that lacks the batch mode still gets its hint. Null when git was killed for running too long: that answers neither question, and "the ref does not resolve" would be a claim about the repository the run never established.
 function resolveHintRefs(cwd: string, ref: string, candidates: readonly string[]): { refResolves: boolean; suggestedRef: string | null } | null {
   const batch = runGit(['cat-file', '--batch-check'], { cwd, input: `${[ref, ...candidates].join('\n')}\n` })
-  if (batch.timedOut === true) return null
+  if (batch.unfinished) return null
   const rows = batch.stdout.split(/\r?\n/)
   if (batch.exitCode === 0 && rows.length >= candidates.length + 1) {
     return { refResolves: batchRowResolved(rows[0]), suggestedRef: candidates.find((_, i) => batchRowResolved(rows[i + 1])) ?? null }
@@ -198,7 +198,7 @@ function resolveHintRefs(cwd: string, ref: string, candidates: readonly string[]
   let timedOut = false
   const resolves = (name: string): boolean => {
     const probe = runGit(['rev-parse', '--verify', '--quiet', name], { cwd })
-    if (probe.timedOut === true) timedOut = true
+    if (probe.unfinished) timedOut = true
     return probe.exitCode === 0
   }
   if (resolves(ref)) return { refResolves: true, suggestedRef: null }

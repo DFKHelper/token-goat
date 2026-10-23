@@ -188,7 +188,7 @@ describe('hooks_session', () => {
   });
 
   it('user_prompt_submit emits a branch hint for longer prompts', async () => {
-    vi.mocked(util.runGit).mockReturnValue({ stdout: 'feature/foo', stderr: '', exitCode: 0 });
+    vi.mocked(util.runGit).mockReturnValue({ stdout: 'feature/foo', stderr: '', unfinished: false, exitCode: 0 });
     const event: HookEvent = {
       eventName: 'user_prompt_submit',
       toolName: undefined,
@@ -238,7 +238,7 @@ describe('hooks_session', () => {
     it.each([["I'll add the guard next."], ['Changed: none'], ['We updated nothing'], ['Renamed symbols are listed below.']])('does not warn on the clean-tree report %j', async (message) => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       vi.mocked(util.runGit).mockReset();
-      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', unfinished: false, exitCode: 0 });
       await subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'test-session', agentId: undefined, raw: { cwd: '/tmp/repo', last_assistant_message: message } });
       expect(warnSpy).not.toHaveBeenCalled();
       // A report that claims nothing is decided before git is asked.
@@ -248,7 +248,7 @@ describe('hooks_session', () => {
 
     it('asks git only for a report that claims a change', async () => {
       vi.mocked(util.runGit).mockReset();
-      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', unfinished: false, exitCode: 0 });
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await subagentStopHandler({ eventName: 'subagent_stop', toolName: undefined, toolInput: {}, sessionId: 'test-session', agentId: undefined, raw: { cwd: '/tmp/repo', last_assistant_message: 'I renamed foo to bar.' } });
       expect(util.runGit).toHaveBeenCalledTimes(1);
@@ -259,7 +259,7 @@ describe('hooks_session', () => {
     it('does not warn when the report is a readonly research summary and git status is clean', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      vi.mocked(util.runGit).mockReturnValue({
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false,
         stdout: '',
         stderr: '',
         exitCode: 0,
@@ -286,7 +286,7 @@ describe('hooks_session', () => {
     it('does not warn when the report claims a fix AND a commit and git status is clean (legitimate success, not a hallucination)', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      vi.mocked(util.runGit).mockReturnValue({
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false,
         stdout: '',
         stderr: '',
         exitCode: 0,
@@ -313,7 +313,7 @@ describe('hooks_session', () => {
     it('does not warn when the report claims work was pushed and git status is clean', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      vi.mocked(util.runGit).mockReturnValue({
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false,
         stdout: '',
         stderr: '',
         exitCode: 0,
@@ -340,7 +340,7 @@ describe('hooks_session', () => {
     it('warns when the report claims an implementation and git status is clean', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      vi.mocked(util.runGit).mockReturnValue({
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false,
         stdout: '',
         stderr: '',
         exitCode: 0,
@@ -369,7 +369,7 @@ describe('hooks_session', () => {
     it('does not warn when the report claims a fix but git status has changes', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      vi.mocked(util.runGit).mockReturnValue({
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false,
         stdout: ' M src/file.ts',
         stderr: '',
         exitCode: 0,
@@ -396,7 +396,7 @@ describe('hooks_session', () => {
     it('does not warn when the report has no claimed-change verbs despite clean status', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      vi.mocked(util.runGit).mockReturnValue({
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false,
         stdout: '',
         stderr: '',
         exitCode: 0,
@@ -423,7 +423,7 @@ describe('hooks_session', () => {
     it('does not warn when raw event has no last_assistant_message field (real minimal payload shape)', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      vi.mocked(util.runGit).mockReturnValue({
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false,
         stdout: '',
         stderr: '',
         exitCode: 0,
@@ -457,7 +457,7 @@ describe('hooks_session', () => {
     ])('does not warn when the report negates the claimed-change verb: %j', async (message) => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      vi.mocked(util.runGit).mockReturnValue({
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false,
         stdout: '',
         stderr: '',
         exitCode: 0,
@@ -485,7 +485,7 @@ describe('hooks_session', () => {
     it('still warns when a genuine claim follows an unrelated negated clause', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      vi.mocked(util.runGit).mockReturnValue({
+      vi.mocked(util.runGit).mockReturnValue({ unfinished: false,
         stdout: '',
         stderr: '',
         exitCode: 0,
@@ -519,7 +519,7 @@ describe('hooks_session', () => {
       saveConfig(cfg);
       invalidateConfigCache();
 
-      vi.mocked(util.runGit).mockReturnValue({ stdout: 'main', stderr: '', exitCode: 0 });
+      vi.mocked(util.runGit).mockReturnValue({ stdout: 'main', stderr: '', unfinished: false, exitCode: 0 });
 
       const event: HookEvent = {
         eventName: 'user_prompt_submit',
@@ -544,7 +544,7 @@ describe('hooks_session', () => {
       saveConfig(cfg);
       invalidateConfigCache();
 
-      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', unfinished: false, exitCode: 0 });
 
       const event: HookEvent = {
         eventName: 'subagent_stop',
@@ -598,7 +598,7 @@ describe('hooks_session', () => {
 
   describe('skill_version_drift wiring (token-goat upgraded since the skill was loaded)', () => {
     it('surfaces the drift nudge alongside the branch line when both apply', async () => {
-      vi.mocked(util.runGit).mockReturnValue({ stdout: 'main', stderr: '', exitCode: 0 });
+      vi.mocked(util.runGit).mockReturnValue({ stdout: 'main', stderr: '', unfinished: false, exitCode: 0 });
       const sessionId = nonce();
       seedOldSkillVersionSnapshot(sessionId);
 
@@ -620,7 +620,7 @@ describe('hooks_session', () => {
     });
 
     it('surfaces the drift nudge on its own when there is no branch to report', async () => {
-      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', unfinished: false, exitCode: 0 });
       const sessionId = nonce();
       seedOldSkillVersionSnapshot(sessionId);
 
@@ -639,7 +639,7 @@ describe('hooks_session', () => {
     });
 
     it('does not repeat the nudge on a second turn in the same session', async () => {
-      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', unfinished: false, exitCode: 0 });
       const sessionId = nonce();
       seedOldSkillVersionSnapshot(sessionId);
 
@@ -661,7 +661,7 @@ describe('hooks_session', () => {
     });
 
     it('does not nudge a session that never loaded the token-goat skill', async () => {
-      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', exitCode: 0 });
+      vi.mocked(util.runGit).mockReturnValue({ stdout: '', stderr: '', unfinished: false, exitCode: 0 });
       const event: HookEvent = {
         eventName: 'user_prompt_submit',
         toolName: undefined,
