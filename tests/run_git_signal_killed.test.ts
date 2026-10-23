@@ -76,7 +76,19 @@ describe('readScopeDir with a check-ignore that is killed by a signal', () => {
     writeFileSync(path.join(repo, 'mod.py'), 'x = 1\n')
     killing.signal = 'SIGKILL'
     const read = readScopeDir(repo, repo, { git: runGit })
-    expect(read).toEqual({ passReason: 'the scope is ignored or not in a git work tree' })
+    expect(read).toEqual({ passReason: 'git did not finish checking whether the scope is ignored' })
+  })
+
+  it('gives the check-ignore reason, not the not-a-work-tree one, when check-ignore never started', () => {
+    // Provenance: HAND-DERIVED. An injected git answers the spawn-failure shape the runner now sets (exit -1, unfinished, no signal) for check-ignore only.
+    const read = readScopeDir(repo, repo, { git: (args, opts) => (args.includes('check-ignore') ? { stdout: '', stderr: 'spawn git ENOENT', exitCode: -1, unfinished: true } : runGit(args, opts)) })
+    expect(read).toEqual({ passReason: 'git did not finish checking whether the scope is ignored' })
+  })
+
+  it('gives the ls-files reason when the listing was killed by a signal', () => {
+    // Provenance: HAND-DERIVED. An injected git kills only the ls-files call, with the killed shape the runner sets (exit -1, unfinished, signal named).
+    const read = readScopeDir(repo, repo, { git: (args, opts) => (args.includes('ls-files') ? { stdout: '', stderr: 'git was killed by SIGKILL', exitCode: -1, unfinished: true, signal: 'SIGKILL' } : runGit(args, opts)) })
+    expect(read).toEqual({ passReason: 'git did not finish listing the scope' })
   })
 })
 

@@ -126,8 +126,10 @@ export function readScopeDir(dir: string, root: string, deps: ScopeGitDeps = {})
   const git = scopeGit(dir, deps)
   // Exit 1 is "not ignored"; 0 means the scope is inside an ignored directory, where ripgrep may search files git does not list; 128 means no work tree.
   const ignored = git(['check-ignore', '-q', '--', '.'])
+  if (ignored.unfinished) return { passReason: 'git did not finish checking whether the scope is ignored' }
   if (ignored.exitCode !== 1) return { passReason: 'the scope is ignored or not in a git work tree' }
   const listed = git(['ls-files', '-z', '-co', '--exclude-standard', '--', '.'])
+  if (listed.unfinished) return { passReason: 'git did not finish listing the scope' }
   if (listed.exitCode !== 0) return { passReason: 'git could not list the scope' }
   // A tracked file that .gitignore also matches is listed by `-c`, but ripgrep applies .gitignore to it and does not search it, so the scope cannot be listed from git (rg 15.1.0, captured in tests/fixtures/rg_ignore_anchoring.txt).
   const trackedIgnored = git(['ls-files', '-z', '-c', '-i', '--exclude-standard', '--', '.'])
