@@ -125,14 +125,24 @@ interface ForeignKeyRow {
   to: string
 }
 
+function listUserSqliteObjects(db: SqliteDatabase): Array<{ name: string; type: string; sql: string | null }> {
+  const shadowNames = new Set(
+    (db.prepare("SELECT name FROM pragma_table_list WHERE schema = 'main' AND type = 'shadow'").all() as Array<{ name: string }>).map(
+      (row) => row.name,
+    ),
+  )
+  const objects = db
+    // `_` is literal here. SQLite reserves the `sqlite_` prefix for its own tables; actual virtual-table shadows are identified by pragma_table_list rather than guessed from their names.
+    .prepare("SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name")
+    .all() as Array<{ name: string; type: string; sql: string | null }>
+  return objects.filter((object) => !shadowNames.has(object.name))
+}
+
 /** Structural summary of a SQLite database: every table/view with its column list (name, declared type, nullable/PK flags from `PRAGMA table_info`), indexes (`PRAGMA index_list` + `PRAGMA index_info`), foreign keys (`PRAGMA foreign_key_list`), and a row count. Mirrors what `outlineJson` does for JSON structure -- concise structural facts, not a dump. */
 export function getSqliteSchema(filePath: string): SqliteSchemaResult {
   const db = openReadonlySqlite(filePath)
   try {
-    const objects = db
-      // ESCAPE makes the `_` literal. Without it `_` is LIKE's single-character wildcard, so `sqlite_%` also excludes any user table starting with `sqlite` plus one more character (`sqlitedata`, `sqlite3cfg`), and a discovery command that omits a table reads as that table not existing.
-      .prepare("SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name")
-      .all() as Array<{ name: string; type: string; sql: string | null }>
+    const objects = listUserSqliteObjects(db)
 
     const tables: SqliteTableInfo[] = objects.map((o) => {
       const module = virtualTableModule(o.sql)
@@ -230,12 +240,7 @@ export interface SqliteTableSummary {
 export function getSqliteTables(filePath: string): SqliteTableSummary[] {
   const db = openReadonlySqlite(filePath)
   try {
-    const objects = db
-      .prepare(
-        // ESCAPE makes every `_` literal; see getSqliteSchema above. Here it costs three tables rather than one, since `%_fts_%` and `%_vec0_%` exist to hide the shadow tables FTS5 and sqlite-vec create beside a virtual table, and unescaped they also hide anything of the shape `my_ftsx_cache`.
-        "SELECT name, type, sql FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name NOT LIKE '%\\_fts\\_%' ESCAPE '\\' AND name NOT LIKE '%\\_vec0\\_%' ESCAPE '\\' ORDER BY name",
-      )
-      .all() as Array<{ name: string; type: string; sql: string | null }>
+    const objects = listUserSqliteObjects(db)
 
     return objects.map((o) => {
       const module = virtualTableModule(o.sql)
