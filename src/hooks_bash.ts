@@ -116,6 +116,15 @@ function isPwshHarness(event: HookEvent): boolean {
   return process.platform === 'win32' && (h === 'codex' || h === 'copilot_cli' || isPs(event))
 }
 
+/** Equals the config upper bound for bash_compress.timeout_seconds; a test pins it. */
+export const COMPRESS_TIMEOUT_MAX = 7200
+
+/** The `--timeout` seconds a wrapped command runs under: a background call gets the config's upper bound, a foreground call its own Bash timeout (milliseconds) when that exceeds the configured value, and both never exceed the bound. */
+function compressTimeoutSeconds(event: HookEvent, configured: number): number {
+  const ms = event.toolInput['timeout']
+  return event.toolInput['run_in_background'] === true ? COMPRESS_TIMEOUT_MAX : typeof ms === 'number' ? Math.min(COMPRESS_TIMEOUT_MAX, Math.max(configured, Math.ceil(ms / 1000))) : configured
+}
+
 /** Wrap a recognized command in `token-goat compress` so its output is structurally compressed on this run. Returns a `rewriteInput` HookOutput that replaces the Bash tool input wholesale (preserving description/timeout), or null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config), the command is unsuitable, or the chosen filter is disabled. @param event  hook event; its toolInput is preserved verbatim except `command` @param rawCmd original command INCLUDING any `cd … &&` prefix and leading assignments (run by compress) @param cmd    the command with both stripped, used only to pick the filter */
 // `cap`, when given, runs the command through the passthrough filter under a token cap and names the narrower command to print if the cap cuts: set for an inline interpreter file read, whose output is a file's contents rather than tool output.
 function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap?: { maxTokens: number; hint: string }): HookOutput | null {
@@ -134,6 +143,7 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
     return null
   }
   if (!cfg.enabled) return null
+  cfg = { ...cfg, timeout_seconds: compressTimeoutSeconds(event, cfg.timeout_seconds) }
 
   // A specific filter (once the framework recognizes the command) wins over the generic catch-all. Either way the command must be a single pipe/redirect-free invocation: detectFromCommand enforces that for specific filters; the generic path requires it explicitly. The capped path is the exception: its output goes through untouched, so there is no filter to feed one command's output, and a multi-line `-c` script or a heredoc, the shape 198 of 217 measured interpreter reads arrived in, runs under it like any other. Only a detached job is declined, since the wrapper would wait on it.
   let filterName: string
