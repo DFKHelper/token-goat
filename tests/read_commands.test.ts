@@ -221,6 +221,8 @@ function latestStatBytesSaved(kind: string): number {
 // File-level defaults, so every describe below (several sit outside 'read_commands') gets a config and a no-git runGit even when `-t` runs it alone; vi.clearAllMocks in a describe's own beforeEach keeps these implementations.
 beforeEach(() => {
   vi.clearAllMocks()
+  // clearAllMocks keeps queued mockReturnValueOnce values, and a runBrief row that queues one it never consumes would answer the next row's queryRefCounts ahead of that row's own mockReturnValue; reset drops the queue and restores the factory default.
+  mockQueryRefCounts.mockReset()
   mockLoadConfig.mockReturnValue({
     indexing: { cross_project_symbols: true },
     overflow_guard: { enabled: true, max_tokens: 25000 },
