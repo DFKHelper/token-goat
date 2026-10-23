@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { preReadHandler, relPathWithinRoot } from '../src/hooks_read.js'
@@ -34,7 +34,22 @@ function cleanup() {
   tmpDirs.length = 0
 }
 
-afterEach(cleanup)
+// Rows set these env flags and never unset them; restore them so a later row sees the defaults.
+const dedupEnvKeys = ['TOKEN_GOAT_CROSS_SESSION_READ_DEDUP', 'TOKEN_GOAT_CROSS_SESSION_READ_DEDUP_TTL_SECS', 'TOKEN_GOAT_CASE_INSENSITIVE_FS'] as const
+const dedupEnvBefore = new Map<string, string | undefined>()
+
+beforeEach(() => {
+  for (const key of dedupEnvKeys) dedupEnvBefore.set(key, process.env[key])
+})
+
+afterEach(() => {
+  cleanup()
+  for (const key of dedupEnvKeys) {
+    const value = dedupEnvBefore.get(key)
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+})
 
 describe('Cross-session read dedup', () => {
   it('config flag has correct defaults (disabled by default)', () => {
