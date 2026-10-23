@@ -55,6 +55,8 @@ beforeEach(() => {
 afterEach(() => {
   if (savedEntrypoint === undefined) delete process.env['CLAUDE_CODE_ENTRYPOINT']
   else process.env['CLAUDE_CODE_ENTRYPOINT'] = savedEntrypoint
+  // A row that loaded the hidden rule check (loadHiddenRuleCheck) leaves it loaded; the unloaded-default rows read that module state, so every row unloads it.
+  resetPermissionSourceCache()
 })
 
 describe('decideRewrite: shell wrap', () => {
