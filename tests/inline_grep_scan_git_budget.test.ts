@@ -8,7 +8,7 @@ import { SCOPE_MAX_FILES, SCOPE_MAX_LISTED, readScopeDir } from '../src/inline_g
 import { indexFileSync } from '../src/parser.js'
 import { clearModuleCaches } from '../src/reset.js'
 import type { GitResult, RunGitOptions } from '../src/types.js'
-import { runGit } from '../src/util.js'
+import { GIT_UNBOUNDED, runGit } from '../src/util.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 // HAND-DERIVED: the git calls of one scope decision share ONE deadline of 5000 ms (SCOPE_GIT_TIMEOUT_MS in inline_grep_scan.ts, which was the bound of each call). The fake clock moves only when a git call runs, by a fixed 1500 ms, so the timeouts handed to git are 5000, 3500, 2000 and 500 and the fifth call finds the deadline passed. No wall clock is read: the rows count calls and compare numbers. The listing cap is the constant the module exports.
@@ -21,7 +21,7 @@ interface Call {
   readonly timeoutMs: number | symbol | undefined
 }
 
-/** A recording stand-in for runGit that runs the real git, and moves a fake clock by `step` ms after each call. */
+/** A recording stand-in for runGit that records the bound each call was handed, runs the real git with no bound of its own (these rows pin the bounds handed over, so a slow machine must not turn a call into an unfinished one and cut the sequence short), and moves a fake clock by `step` ms after each call. */
 function recorder(step: number): { calls: Call[]; deps: { git: (a: string[], o: RunGitOptions) => GitResult; now: () => number } } {
   const calls: Call[] = []
   let t = 1_000_000
@@ -31,7 +31,7 @@ function recorder(step: number): { calls: Call[]; deps: { git: (a: string[], o: 
       git: (args, opts) => {
         calls.push({ args, timeoutMs: opts.timeoutMs })
         t += step
-        return runGit(args, opts)
+        return runGit(args, { ...opts, timeoutMs: GIT_UNBOUNDED })
       },
       now: () => t,
     },
