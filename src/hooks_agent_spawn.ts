@@ -612,6 +612,8 @@ export async function subagentReportRewriteHandler(event: HookEvent): Promise<Ho
   }
 }
 
+// A background spawn's result is its launch ack (it echoes the prompt), not a report.
+const ASYNC_ACK_RE = /^\s*\{\s*"isAsync"\s*:\s*true\s*,\s*"status"\s*:\s*"async_launched"/
 export async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
   try {
     if (!isAgentTool(event.toolName) || !event.sessionId) return passOutput()
@@ -632,7 +634,7 @@ export async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
     const receipt = (await loadAgentReceipt()).takeAgentReceipt(event.sessionId, resultText)
     if (receipt !== null) recordStat('agent_receipt', 0, 0, undefined, 'agent')
     const spawnAdvisory = [buildUnrestrictedSpawnAdvisory(event.toolInput, getCwd(event)), receipt ?? ''].filter((part) => part !== '').join('\n')
-    if (!resultText || resultText.length < agentReportCfg.min_bytes) {
+    if (!resultText || resultText.length < agentReportCfg.min_bytes || ASYNC_ACK_RE.test(resultText)) {
       return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     }
     const id = storeMcpOutput(event.sessionId, event.toolName ?? 'Agent', event.toolInput, resultText)
