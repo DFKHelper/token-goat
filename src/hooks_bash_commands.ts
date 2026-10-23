@@ -401,7 +401,7 @@ export async function gitRepoRootOrNull(gitDir: string): Promise<string | null> 
   return toplevel.exitCode === 0 && toplevel.stdout.trim() !== '' ? toplevel.stdout.trim() : null
 }
 
-/** A git read that ran past the hook's 5 s budget names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without that budget, so hand it the project and record that. Git that never started (missing, or a working directory that is gone) gets no request, since the worker needs git to sweep too, and a nonzero exit is git saying this is not a repository, which has nothing to reconcile. */
+/** A git read that ran past the hook's 5 s budget names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without that budget, so hand it the project and record that. A git that never started (a spawn error: a missing git, or a working directory that is gone) is unfinished too and gets the request, since a missing git is an unknown answer and the worker, which resolves git on its own, may still sweep; a nonzero exit is git saying this is not a repository, which has nothing to reconcile. */
 function reconcileIfGitTimedOut(result: GitResult, gitDir: string, what: string, gitCommand: string): void {
   if (!result.unfinished) return
   const recorded = requestReconcileSafe(gitDir)

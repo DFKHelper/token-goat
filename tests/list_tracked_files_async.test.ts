@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
 import { reconcileProject, reconcileProjectWith } from '../src/reconcile.js'
@@ -14,6 +14,7 @@ import { gitRepoWithCommit } from './helpers/git-repo.js'
 const scratch: string[] = []
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   closeAllDbs()
   for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
@@ -46,6 +47,22 @@ describe('listTrackedFilesAsync answers as listTrackedFiles does', () => {
     const plain = scratchDir('tg-listasync-plain-')
     expect(await listTrackedFilesAsync(plain)).toEqual({ files: [], timedOut: false })
     expect(await listTrackedFilesAsync(path.join(plain, 'missing'))).toEqual({ files: [], timedOut: false })
+  })
+})
+
+describe('the three ways git can fail to list, in the blocking and the non-blocking form alike', () => {
+  it('a directory that does not exist has nothing tracked, as a directory that is no repository does', async () => {
+    const missing = path.join(scratchDir('tg-listasync-gone-'), 'missing')
+    expect(listTrackedFiles(missing)).toEqual({ files: [], timedOut: false })
+    expect(await listTrackedFilesAsync(missing)).toEqual({ files: [], timedOut: false })
+  })
+
+  // With PATH empty the spawn is refused at once, so no slow git can change the outcome; the directory exists, so nothing says it has nothing tracked.
+  it('a git that is missing from PATH is unknown, never nothing tracked', async () => {
+    const repo = gitRepoWithCommit()
+    vi.stubEnv('PATH', scratchDir('tg-listasync-emptypath-'))
+    expect(listTrackedFiles(repo)).toEqual({ files: [], timedOut: true })
+    expect(await listTrackedFilesAsync(repo)).toEqual({ files: [], timedOut: true })
   })
 })
 

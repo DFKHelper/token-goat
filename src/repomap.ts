@@ -30,7 +30,8 @@ function trackedFilesInvocation(cwd: string): { dir: string; args: string[] } {
 
 /** What `git ls-files` answered, as a {@link TrackedFilesResult}: a killed git is unknown (`timedOut`), a failed or empty one is nothing tracked. */
 function trackedFilesFrom(dir: string, result: GitResult): TrackedFilesResult {
-  if (result.unfinished) return { files: [], timedOut: true }
+  // A spawn refused with ENOENT because the directory is gone leaves git nothing to list, which is the answer for a directory that does not exist; a missing git looks the same (Node names neither), so the directory decides, and a killed or timed-out git is unknown whatever the directory.
+  if (result.unfinished) return { files: [], timedOut: !(result.timedOut !== true && result.signal === undefined && result.stderr.includes('ENOENT') && !fs.existsSync(dir)) }
   if (result.exitCode !== 0 || !result.stdout) {
     return { files: [], timedOut: false }
   }

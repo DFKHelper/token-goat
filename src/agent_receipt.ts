@@ -36,10 +36,10 @@ interface TreeAnswer {
 /** The answer the first handler to need one got for a stop, read by the other handlers that run on the same event object, whichever runs first: one git process per stop wherever the answer is complete, instead of a second ask that a cold git misses while the first had answered. */
 const treeAnswerByStop = new WeakMap<HookEvent, TreeAnswer>()
 
-/** The findings for a `git status` result. A git that did not finish (timed out, killed by a signal, or failed with no exit code: an output overflow, a refused spawn, an abort) is unfinished like a timeout, never clean. A spawn error naming ENOENT (a missing git, a gone working directory) is a refusal and stays silent as before. */
+/** The findings for a `git status` result. A git that did not finish (timed out, killed by a signal, or failed with no exit code: an output overflow, an abort) is unfinished like a timeout, never clean. A git that never started (a spawn error naming ENOENT: a missing git, a gone working directory) did not run long enough to be unfinished: it is a refusal and stays silent, since "git did not finish" would be a wrong statement for it. Every spawn error is flagged `unfinished` by the runners, so the refusal is told apart here by its message. */
 function treeFindingsOfStatus(result: GitResult): GitFindings {
-  const found = findingsOfGitResult(result)
-  return found === 'refused' && result.exitCode === -1 && !result.stderr.includes('ENOENT') ? 'timed-out' : found
+  if (result.unfinished && result.timedOut !== true && result.signal === undefined && result.stderr.includes('ENOENT')) return 'refused'
+  return findingsOfGitResult(result)
 }
 
 /** What `git status --porcelain` says in `cwd`, asked within `boundMs`; with `stop`, asked once per stop event and kept for the other handlers on it. A complete answer (clean, dirty, refused) is read by every consumer whatever bound produced it; an unfinished one only by a consumer whose bound is not longer, so no consumer waits longer than it would have alone. */

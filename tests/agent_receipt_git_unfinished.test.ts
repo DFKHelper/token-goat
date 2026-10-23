@@ -341,7 +341,7 @@ describe('a git that was cut off without a timeout', () => {
   })
 
   it('reads as unchecked when the spawn itself was refused for a reason other than a missing git', async () => {
-    bound.answer = { stdout: '', stderr: 'spawn git EACCES', unfinished: false, exitCode: -1 }
+    bound.answer = { stdout: '', stderr: 'spawn git EACCES', unfinished: true, exitCode: -1 }
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-eacces-'))
     await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
