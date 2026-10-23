@@ -8,6 +8,7 @@ import { globalDbPath } from '../src/constants.js'
 import { INLINE_SYMBOL_MAX_BYTES, inlineSymbolAnswer } from '../src/inline_symbol_answer.js'
 import { indexFileSync } from '../src/parser.js'
 import { clearModuleCaches } from '../src/reset.js'
+import type * as ScanModule from '../src/inline_grep_scan.js'
 import type * as SecretRedact from '../src/secret_redact.js'
 import { redactSecrets } from '../src/secret_redact.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -16,6 +17,12 @@ import { indexableDir } from './helpers/temp-config.js'
 vi.mock('../src/secret_redact.js', async (importOriginal) => {
   const actual = await importOriginal<typeof SecretRedact>()
   return { ...actual, redactSecrets: vi.fn(actual.redactSecrets) }
+})
+
+// These rows are about the listing cap, so the scope check runs under steadyScopeDeps: a git that missed its wall-clock bound on a loaded machine read as scope_unreadable. The real default git path of the scope check is driven by tests/inline_symbol_answer_scope_bundle.test.ts and its deadline by tests/inline_grep_scan_git_budget.test.ts.
+vi.mock('../src/inline_grep_scan.js', async (importOriginal) => {
+  const { withSteadyScopeDeps } = await import('./helpers/steady_scope_git.js')
+  return withSteadyScopeDeps((await importOriginal()) as typeof ScanModule)
 })
 
 // HAND-DERIVED: a synthetic Python module and a caller file with N lines of `value_i = unique_loader("path-number-i.txt")`, about 45 bytes each, so 1,200 lines are over four caps (48,000 bytes) of raw listing and 400 lines are between one cap and four.
