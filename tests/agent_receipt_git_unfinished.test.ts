@@ -39,7 +39,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
       if (bound.answer !== undefined) return bound.answer
       if (bound.passThrough) return actual.runGitAsyncLazy(args, opts)
       bound.unanswered.push(args.join(' '))
-      return { stdout: '', stderr: 'no canned answer for this call', exitCode: 1 }
+      return { stdout: '', stderr: 'no canned answer for this call', exitCode: 1, unfinished: false }
     },
   }
 })
@@ -304,7 +304,7 @@ describe('one git status per stop, shared by the receipt and the stop warning', 
   })
 })
 
-// HAND-DERIVED from src/git_async.ts::runGitAsync, which reports an output overflow, a refused spawn and an abort as exit -1 with no timedOut and the reason in stderr, and from src/util.ts::runGit/runGitAsync, which report a git killed by a signal as exit 1 (`code ?? 1`), the same as any error exit. A real 200 MiB overflow is not worth producing.
+// HAND-DERIVED from src/git_async.ts::runGitAsync, which reports an output overflow, a refused spawn and an abort as exit -1 with no timedOut and the reason in stderr, and from src/util.ts::runGit/runGitAsync, which report a git killed by a signal as exit -1 with `unfinished` and the signal name (tests/git_did_not_finish.test.ts drives the real runners to both). A real 200 MiB overflow is not worth producing.
 describe('a git that was cut off without a timeout', () => {
   let warnings: string[] = []
   beforeEach(() => {
@@ -313,7 +313,8 @@ describe('a git that was cut off without a timeout', () => {
       warnings.push(parts.map(String).join(' '))
     })
   })
-  const OVERFLOW: GitResult = { stdout: '', stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer', unfinished: false, exitCode: -1 }
+  const OVERFLOW: GitResult = { stdout: '', stderr: 'spawn git ENOBUFS: output exceeded the 200 MiB buffer', unfinished: true, exitCode: -1 }
+  const KILLED_BY_SIGNAL: GitResult = { stdout: '', stderr: 'git was killed by SIGKILL', unfinished: true, signal: 'SIGKILL', exitCode: -1 }
   const UNCHECKED_WARNING = (sid: string): string => `subagent-stop: could not check the report against git status — session=${sid}, git did not finish`
 
   it('reads as unchecked on the receipt and the stop warning, never as a clean tree', async () => {
@@ -355,11 +356,22 @@ describe('a git that was cut off without a timeout', () => {
     expect(warnings).toEqual([`subagent-stop: could not check the report against git status — session=${sid}, git did not finish`])
   })
 
-  // Decision pinned, not endorsed: both runners report a git killed by a signal as exit 1, so it cannot be told from an error exit and stays silent like one; a missing git or a gone directory (ENOENT) stays silent as it always did.
-  it.each([
-    ['an error exit that a signal kill also reports', { stdout: '', stderr: '', exitCode: 1 }],
-    ['a missing git or a gone working directory', { stdout: '', stderr: 'spawn git ENOENT', exitCode: -1 }],
-  ] as Array<[string, GitResult]>)('stays silent for %s', async (_what, answer) => {
+  it('reads as unchecked when git was killed by a signal, since it ran and never answered', async () => {
+    bound.answer = KILLED_BY_SIGNAL
+    const sid = newSession()
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-signal-'))
+    await runHook(buildEvent('subagent_stop', stopPayload(sid, repo, CLAIM)))
+    expect(warnings).toEqual([UNCHECKED_WARNING(sid)])
+    const delivered = JSON.stringify(await agentResult(sid, CLAIM))
+    expect(delivered).toContain(NOTE)
+    expect(delivered).not.toContain('recorded no edit')
+  })
+
+  // Decision pinned, not endorsed: a git that exited with an error stays silent, since it answered; a missing git or a gone directory (ENOENT) stays silent as it always did.
+  it.each<[string, GitResult]>([
+    ['an error exit', { stdout: '', stderr: '', exitCode: 1, unfinished: false }],
+    ['a missing git or a gone working directory', { stdout: '', stderr: 'spawn git ENOENT', exitCode: -1, unfinished: false }],
+  ])('stays silent for %s', async (_what, answer) => {
     bound.answer = answer
     const sid = newSession()
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-silent-'))
