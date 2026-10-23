@@ -8,6 +8,7 @@ import { runAdapter } from '../src/hook_adapters.js'
 import { runHook } from '../src/hook_registry.js'
 import { recordBashOutput, MAX_OUTSTANDING_AGENT_SPAWNS, getOutstandingAgentSpawns, importSessionState } from '../src/session.js'
 import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
+import { getMcpOutput } from '../src/mcp_cache.js'
 import { summarize } from '../src/stats.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
@@ -454,15 +455,29 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
 
   // Regression: the ack echoes the whole prompt, so it cleared the size floor and was cached and pointed at as the sibling spawn's report; the match was key-order sensitive, so reordering the fields let it through.
   it.each([
-    ['does not cache a background spawn\'s async_launched acknowledgement: object, real key order', { isAsync: true, status: 'async_launched' }, (ack: object) => ack],
-    ['does not cache a background spawn\'s async_launched acknowledgement: object, status first', { status: 'async_launched', isAsync: true }, (ack: object) => ack],
-    ['does not cache a background spawn\'s async_launched acknowledgement: content array of text parts', { status: 'async_launched', isAsync: true }, (ack: object) => ({ content: [{ type: 'text', text: JSON.stringify(ack) }] })],
-  ])('%s', async (_name, fields, wrap) => {
+    ['object, real key order', { isAsync: true, status: 'async_launched' }, (ack: object) => ack],
+    ['object, status first', { status: 'async_launched', isAsync: true }, (ack: object) => ack],
+    ['content array of text parts', { status: 'async_launched', isAsync: true }, (ack: object) => ({ content: [{ type: 'text', text: JSON.stringify(ack) }] })],
+    ['bare array of text parts', { status: 'async_launched', isAsync: true }, (ack: object) => [{ type: 'text', text: JSON.stringify(ack) }]],
+    ['output string field', { isAsync: true, status: 'async_launched' }, (ack: object) => ({ output: JSON.stringify(ack) })],
+    ['text string field', { status: 'async_launched', isAsync: true }, (ack: object) => ({ text: JSON.stringify(ack) })],
+  ])("does not cache a background spawn's async_launched acknowledgement: %s", async (_name, fields, wrap) => {
     const input = { description: 'bg', prompt: 'You are task T1. '.concat('research things. '.repeat(600)), run_in_background: true }
     const ack = { ...fields, agentId: 'aa26df86eaba19d7a', description: 'bg', prompt: input.prompt }
     const result = await runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: input, session_id: sessionId, tool_response: wrap(ack) }))
+    expect(getMcpOutput(sessionId, 'Agent', input)).toBeNull()
     expect(JSON.stringify(result)).not.toMatch(/mcp-output mcp_[0-9a-f]{16}/)
     expect(result.hookType).toBe('pass')
+  })
+
+  // Positive control: the store assertion above is only meaningful if the same lookup finds a record when one was written.
+  it('stores a real report over the floor, so the store assertion can fail', async () => {
+    const input = { description: 'bg', prompt: 'You are task T1. '.concat('research things. '.repeat(600)), run_in_background: true }
+    const report = 'Detailed finding line.\n'.repeat(400)
+    await runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: input, session_id: sessionId, tool_response: report }))
+    const id = getMcpOutput(sessionId, 'Agent', input)
+    expect(id).not.toBeNull()
+    expect(getBashOutput(id as string)?.output).toBe(report)
   })
 
   it('collapses the middle of an over-long fenced block, keeps both ends, and leaves every prose line byte-identical', async () => {
