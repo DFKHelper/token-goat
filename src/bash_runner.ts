@@ -83,14 +83,27 @@ class CaptureSink {
 }
 
 /** Drives a doubling heartbeat timer from `startTime`: fires `write(elapsedSeconds)` after `intervalMs`, `intervalMs * 2`, `intervalMs * 4`, ... `onOutput()` resets the schedule back to `intervalMs`, so a chatty command that keeps producing output never sees a heartbeat at all -- only a genuinely quiet stretch does. */
-function scheduleHeartbeat(startTime: number, intervalMs: number, write: (elapsedSeconds: number) => void): { onOutput: () => void; stop: () => void } {
+export function scheduleHeartbeat(startTime: number, intervalMs: number, write: (elapsedSeconds: number) => void): { onOutput: () => void; stop: () => void } {
   let interval = intervalMs
   let timer: ReturnType<typeof setTimeout> | undefined
+  let pending: ReturnType<typeof setImmediate> | undefined
+  // Bumped by every output and by stop(), so a beat decided before either one never writes.
+  let epoch = 0
+  const cancel = (): void => {
+    epoch++
+    if (timer !== undefined) clearTimeout(timer)
+    if (pending !== undefined) clearImmediate(pending)
+  }
   const arm = (): void => {
+    const armedAt = epoch
     timer = setTimeout(() => {
-      write(Math.round((Date.now() - startTime) / 1000))
-      interval *= 2
-      arm()
+      // Timers run before the loop reads the pipes: after the loop was stalled the child's output is already waiting unread, so the beat is written from the check phase, after that read has reset the schedule (a stalled loop is not a quiet command).
+      pending = setImmediate(() => {
+        if (armedAt !== epoch) return
+        write(Math.round((Date.now() - startTime) / 1000))
+        interval *= 2
+        arm()
+      })
     }, interval)
     timer.unref()
   }
@@ -98,12 +111,10 @@ function scheduleHeartbeat(startTime: number, intervalMs: number, write: (elapse
   return {
     onOutput: (): void => {
       interval = intervalMs
-      if (timer !== undefined) clearTimeout(timer)
+      cancel()
       arm()
     },
-    stop: (): void => {
-      if (timer !== undefined) clearTimeout(timer)
-    },
+    stop: cancel,
   }
 }
 
