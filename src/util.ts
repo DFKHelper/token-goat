@@ -150,15 +150,15 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     const code = (result.error as NodeJS.ErrnoException).code
     const timedOut = code === 'ETIMEDOUT'
     if (code === 'ENOENT') gitFileCache = undefined
-    // A timeout and an output overflow both end a git that was running; any other spawn error (a missing binary or directory) means git never ran.
-    return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, unfinished: timedOut || code === 'ENOBUFS', ...(timedOut ? { timedOut } : {}) }
+    // Every spawn error leaves git without an exit code of its own, so it is unfinished too; a missing binary or directory is told apart by the message, not by this flag.
+    return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, unfinished: true, ...(timedOut ? { timedOut } : {}) }
   }
 
   if (result.status === null) {
-    // A child ended by a signal has no exit status: the answer is unknown, never the exit code a caller would read as a verdict.
+    // A child that ended without an exit status (by a signal, or with neither) has no verdict to give: the answer is unknown, never the exit code a caller would read as a verdict.
     const signal = result.signal ?? undefined
     const note = signal === undefined ? 'git ended with no exit code' : `git was killed by ${signal}`
-    return { stdout: '', stderr: note, exitCode: -1, unfinished: signal !== undefined, ...(signal === undefined ? {} : { signal }) }
+    return { stdout: '', stderr: note, exitCode: -1, unfinished: true, ...(signal === undefined ? {} : { signal }) }
   }
 
   return {
@@ -169,13 +169,13 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   }
 }
 
-/** {@link runGitAsync} (src/git_async.ts), loaded when the call is made. A hook runs git only after it has decided to, and a hook entry that imported git_async.ts statically would carry it and process_tree.ts into every hook process; the module loads once per process, so the long-lived hook server pays for it once. Same arguments, limit and result as runGitAsync, and like it never rejects: a chunk that fails to load (a missing or replaced file under a long-lived hook server) is the "git never ran" result of runGit, exit -1 with the reason in `stderr`, so a hook goes on to the rest of its work. */
+/** {@link runGitAsync} (src/git_async.ts), loaded when the call is made. A hook runs git only after it has decided to, and a hook entry that imported git_async.ts statically would carry it and process_tree.ts into every hook process; the module loads once per process, so the long-lived hook server pays for it once. Same arguments, limit and result as runGitAsync, and like it never rejects: a chunk that fails to load (a missing or replaced file under a long-lived hook server) is the unfinished result of runGit, exit -1 with the reason in `stderr`, so a hook goes on to the rest of its work. */
 export async function runGitAsyncLazy(args: string[], opts?: RunGitAsyncOptions): Promise<GitResult> {
   try {
     const { runGitAsync } = await import('./git_async.js')
     return await runGitAsync(args, opts)
   } catch (err) {
-    return { stdout: '', stderr: String((err as Error).message ?? err), exitCode: -1, unfinished: false }
+    return { stdout: '', stderr: String((err as Error).message ?? err), exitCode: -1, unfinished: true }
   }
 }
 

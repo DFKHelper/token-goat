@@ -56,8 +56,8 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
     try {
       const top = await runGitAsyncLazy(['rev-parse', '--show-toplevel'], { cwd: projectDir, timeoutMs: 5000 })
       progressed()
-      // A git that ran past its 5 s budget has not said this is no repository; dropping the request there lost the branch switch the hook had handed over, so the project goes back for the next cycle.
-      if (top.unfinished) {
+      // A git that ran past its 5 s budget has not said this is no repository; dropping the request there lost the branch switch the hook had handed over, so the project goes back for the next cycle. A directory that is gone cannot be entered at all, so that spawn failure is no answer about a repository and the request is dropped as before.
+      if (top.unfinished && fs.existsSync(projectDir)) {
         requeue.push(projectDir)
         logOutcome(dir, projectDir, 'git did not answer in time, continuing next cycle')
         continue

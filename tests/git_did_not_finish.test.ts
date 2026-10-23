@@ -44,9 +44,18 @@ describe('runGit sets unfinished', () => {
     expect(runGit(['rev-parse', '--verify', 'HEAD']).unfinished).toBe(false)
   })
 
-  it('is false for a spawn that never ran git', () => {
+  it('is true for a spawn that never ran git, since git did not exit by itself', () => {
     vi.mocked(cp.spawnSync).mockReturnValueOnce(syncResult({ error: errnoError('ENOENT') }))
-    expect(runGit(['status']).unfinished).toBe(false)
+    const result = runGit(['status'])
+    expect(result.unfinished).toBe(true)
+    expect(result.exitCode).toBe(-1)
+  })
+
+  it('is true for a child that ended with neither an exit code nor a signal', () => {
+    vi.mocked(cp.spawnSync).mockReturnValueOnce(syncResult({}))
+    const result = runGit(['status'])
+    expect(result.unfinished).toBe(true)
+    expect(result.signal).toBeUndefined()
   })
 
   it('is true for a git whose output overflowed the buffer, since git ran and was ended before it finished', () => {
@@ -108,22 +117,48 @@ describe('runGitAsync sets unfinished for a git it ended itself', () => {
     expect(result.timedOut).toBeUndefined()
   })
 
-  it('is false for a spawn that failed before git ran, which only a missing binary or directory causes', async () => {
+  it('is true for a spawn that failed before git ran, since git did not exit by itself', async () => {
     const child = fakeChild()
     vi.mocked(cp.spawn).mockImplementationOnce((() => child) as unknown as typeof cp.spawn)
     const pending = runGitAsync(['status'])
     child.emit('error', Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }))
     const result = await pending
-    expect(result.unfinished).toBe(false)
+    expect(result.unfinished, 'a spawn error is unfinished').toBe(true)
     expect(result.exitCode).toBe(-1)
   })
 
-  it('is false for a call aborted before git started, since git never ran', async () => {
+  it('is true for a call aborted before git started, since git did not exit by itself', async () => {
     const controller = new AbortController()
     controller.abort()
     const result = await runGitAsync(['status'], { signal: controller.signal })
-    expect(result.unfinished).toBe(false)
+    expect(result.unfinished, 'an abort before the spawn is unfinished').toBe(true)
     expect(result.stderr).toBe('git was aborted before it started')
+  })
+
+  it('is true for a child that closed with neither an exit code nor a signal', async () => {
+    const child = new EventEmitter()
+    vi.mocked(cp.spawn).mockImplementationOnce((() => child) as unknown as typeof cp.spawn)
+    const pending = runGitAsync(['status'])
+    child.emit('close', null, null)
+    const result = await pending
+    expect(result.unfinished, 'no code and no signal is unfinished').toBe(true)
+    expect(result.exitCode).toBe(-1)
+  })
+
+  it('is true when the runner chunk cannot load, since git never answered', async () => {
+    vi.resetModules()
+    vi.doMock('../src/git_async.js', () => {
+      throw new Error('git_async chunk is gone')
+    })
+    try {
+      const util = await import('../src/util.js')
+      const result = await util.runGitAsyncLazy(['status'])
+      expect(result.unfinished, 'a chunk that fails to load is unfinished').toBe(true)
+      expect(result.exitCode).toBe(-1)
+    } finally {
+      vi.doUnmock('../src/git_async.js')
+      vi.resetModules()
+    }
   })
 })
 

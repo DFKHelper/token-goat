@@ -77,6 +77,24 @@ describe('queueInstallIndex when git does not answer', () => {
   })
 })
 
+describe('queueInstallIndex when git cannot be started', () => {
+  it('reports git-timeout, not not-git, when no git binary can be found', async () => {
+    // Provenance: HAND-DERIVED. The real runGit runs with PATH emptied, so the spawn fails with ENOENT and no git runs: a nonexistent-binary path, not a mocked answer.
+    const realUtil = await vi.importActual<typeof util>('../src/util.js')
+    git.answer = (args) => realUtil.runGit([...args])
+    const dir = indexableDir()
+    const savedPath = process.env['PATH']
+    process.env['PATH'] = ''
+    let result: ReturnType<typeof queueInstallIndex>
+    try {
+      result = queueInstallIndex(dir)
+    } finally {
+      process.env['PATH'] = savedPath
+    }
+    expect(result).toMatchObject({ status: 'skipped', reason: 'git-timeout' })
+  })
+})
+
 describe('callers that read the tracked-file list when git does not answer', () => {
   it('index refuses with a git-timeout error, also under --walk, instead of reading "no tracked files"', async () => {
     const dir = indexableDir()

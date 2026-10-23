@@ -150,8 +150,8 @@ export async function buildResumePacket(sessionId: string): Promise<string | nul
       lines.push(result.stdout.trim().split('\n').map(displaySafeText).join('\n'))
       lines.push('')
     } else if (result.unfinished) {
-      // A killed diff is unknown, not clean: leaving the section out would tell the next session the tree has no uncommitted changes.
-      lines.push('## Uncommitted changes (git diff --stat)', 'git did not answer in time, so whether the tree has uncommitted changes is unknown', '')
+      // A diff git did not finish (killed, or never started) is unknown, not clean: leaving the section out would tell the next session the tree has no uncommitted changes.
+      lines.push('## Uncommitted changes (git diff --stat)', 'git did not finish, so whether the tree has uncommitted changes is unknown', '')
     }
   } catch {
     // fail-soft: git not available or not a repo

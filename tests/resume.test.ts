@@ -8,6 +8,7 @@ import { storeBashOutput } from '../src/bash_output_cache.js'
 import { storeOutput, setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import { WEB_FETCH_KEY_SEP, exportSessionState, recordWebFetch } from '../src/session.js'
 import { clearModuleCaches } from '../src/reset.js'
+import type * as gitAsyncModule from '../src/git_async.js'
 import type { GitResult } from '../src/types.js'
 import { storeWebOutput } from '../src/web_cache.js'
 
@@ -174,14 +175,14 @@ describe('buildResumePacket', () => {
     expect(packet).not.toContain('## Uncommitted changes')
   })
 
-  it('never throws and omits the git section when runGitAsync itself rejects (fail-soft)', async () => {
+  it('never throws and says the uncommitted changes are unknown when runGitAsync itself rejects (fail-soft)', async () => {
     runGitAsyncMock.mockRejectedValue(new Error('git not available'))
     const sessionId = 'sid-git-throws'
     expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
 
     const packet = await buildResumePacket(sessionId)
     expect(packet).not.toBeNull()
-    expect(packet).not.toContain('## Uncommitted changes')
+    expect(packet).toContain('git did not finish, so whether the tree has uncommitted changes is unknown')
   })
 
   it('says the uncommitted changes are unknown when git diff --stat is killed, where a clean diff adds no section', async () => {
@@ -192,7 +193,25 @@ describe('buildResumePacket', () => {
 
     const packet = await buildResumePacket(sessionId)
     expect(packet).toContain('## Uncommitted changes (git diff --stat)')
-    expect(packet).toContain('git did not answer in time')
+    expect(packet).toContain('git did not finish, so whether the tree has uncommitted changes is unknown')
+  })
+
+  it('says the uncommitted changes are unknown when git never started for diff --stat, not that the tree is clean', async () => {
+    // Provenance: HAND-DERIVED. The real runGitAsync runs with PATH emptied, so the spawn fails because no git can be found: a nonexistent-binary path, not a mocked result.
+    const actual = await vi.importActual<typeof gitAsyncModule>('../src/git_async.js')
+    runGitAsyncMock.mockImplementationOnce((...args: unknown[]) => actual.runGitAsync(...(args as Parameters<typeof actual.runGitAsync>)))
+    const sessionId = 'sid-git-diff-never-started'
+    expect(storeBlob(SESSIONS_SUBDIR, sessionId, { files: [], bashOutputs: [] })).toBe(true)
+    const savedPath = process.env['PATH']
+    process.env['PATH'] = ''
+    let packet: string | null
+    try {
+      packet = await buildResumePacket(sessionId)
+    } finally {
+      process.env['PATH'] = savedPath
+    }
+    expect(packet).toContain('## Uncommitted changes (git diff --stat)')
+    expect(packet).toContain('git did not finish, so whether the tree has uncommitted changes is unknown')
   })
 
   it('truncates to MAX_RESUME_CHARS and appends a truncation marker when the packet is oversized', async () => {
