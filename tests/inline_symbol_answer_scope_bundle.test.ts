@@ -4,7 +4,7 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { bundleTg, makeBundleProject, runBundle } from './helpers/bundle.js'
+import { bundleTg, makeBundleProject, ROOT, runBundle } from './helpers/bundle.js'
 
 // The directory-scoped and bare-name inlined Grep answers through the shipped dist/token-goat.mjs: a real git work tree, a real `index --walk`, then the built `hook pre_tool_use` entry, with the isolated env makeBundleProject builds (every data dir under a scratch root).
 
@@ -22,6 +22,9 @@ function grepPayload(project: string, pattern: string, grepPath: string | undefi
   if (grepPath !== undefined) toolInput['path'] = grepPath
   return JSON.stringify({ hook_event_name: 'PreToolUse', session_id: sessionId, cwd: project, tool_name: 'Grep', tool_input: toolInput })
 }
+
+// The preload that decides whether the answer's git calls finish, so no row here depends on how fast git ran (see its header).
+const SCOPE_GIT_CONTROL = path.join(ROOT, 'tests', 'helpers', 'scope_git_control.cjs').replaceAll(String.fromCharCode(92), '/')
 
 let root: string
 let project: string
@@ -46,8 +49,9 @@ afterAll(() => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-function hook(pattern: string, grepPath: string | undefined, sessionId: string): { reason: string | null; stderr: string } {
-  const run = runBundle(['hook', 'pre_tool_use'], { cwd: project, env, input: grepPayload(project, pattern, grepPath, sessionId), timeout: 60000 })
+function hook(pattern: string, grepPath: string | undefined, sessionId: string, scopeGit: 'finishes' | 'unfinished' = 'finishes'): { reason: string | null; stderr: string } {
+  const hookEnv = { ...env, TG_SCOPE_GIT: scopeGit, NODE_OPTIONS: [env['NODE_OPTIONS'], '--require', JSON.stringify(SCOPE_GIT_CONTROL)].filter((p) => p !== undefined && p !== '').join(' ') }
+  const run = runBundle(['hook', 'pre_tool_use'], { cwd: project, env: hookEnv, input: grepPayload(project, pattern, grepPath, sessionId), timeout: 60000 })
   expect(run.status, run.stderr).toBe(0)
   const reply = run.stdout.trim() === '' ? {} : (JSON.parse(run.stdout) as { decision?: string; reason?: string })
   return { reason: reply.decision === 'block' ? (reply.reason ?? '') : null, stderr: run.stderr }
@@ -59,6 +63,13 @@ describe('built bundle: inline symbol body for a directory or a bare name', () =
     expect(reason).not.toBeNull()
     expect(reason).toContain('mod.py:1:def scope_loader(path):')
     expect(reason).toContain('return open(path).read()')
+  })
+
+  it('lets a Grep of the directory run when git did not finish, and answers the same Grep when it did', () => {
+    const bare = String.raw`\bscope_loader\b`
+    expect(hook(bare, project, 'scope-bundle-unknown', 'unfinished').reason).toBeNull()
+    expect(hook(String.raw`def scope_loader\b`, project, 'scope-bundle-unknown-decl', 'unfinished').reason).toBeNull()
+    expect(hook(bare, project, 'scope-bundle-known', 'finishes').reason).not.toBeNull()
   })
 
   it('answers a declaration Grep that names no path', () => {
