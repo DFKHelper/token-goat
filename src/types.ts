@@ -50,6 +50,8 @@ export interface GitResult {
   readonly exitCode: number
   /** True only when git was started and killed for running past `timeoutMs` (exit -1 with Node's ETIMEDOUT). Exit -1 without it means git never ran or its output overflowed: git missing, a working directory that is gone, a permission failure. */
   readonly timedOut?: boolean
+  /** Set only when git was started and then killed by this signal (exit -1, no `timedOut`): the run finished, so it is unknown, not a git that never ran. */
+  readonly signal?: string
 }
 
 /** How long a git call may run when its caller names no bound. A ceiling for one-shot calls, not a budget: the slowest call measured in this codebase's own commands was 1530 ms (`log --oneline -n 2000` in a 12,645-file repository on a loaded machine), so 30 s is about twenty times that. Residents (hook server, worker, MCP server) pass tighter explicit values; this default exists so a call that forgets one can never hang a process for good. */

@@ -152,10 +152,17 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, ...(timedOut ? { timedOut } : {}) }
   }
 
+  if (result.status === null) {
+    // A child ended by a signal has no exit status: the answer is unknown, never the exit code a caller would read as a verdict.
+    const signal = result.signal ?? undefined
+    const note = signal === undefined ? 'git ended with no exit code' : `git was killed by ${signal}`
+    return { stdout: '', stderr: note, exitCode: -1, ...(signal === undefined ? {} : { signal }) }
+  }
+
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    exitCode: result.status ?? 1,
+    exitCode: result.status,
   }
 }
 

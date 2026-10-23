@@ -39,11 +39,12 @@ export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Prom
       owned.release()
       resolve(result)
     }
-    const finish = (exitCode: number | null): void => {
+    const finish = (exitCode: number | null, signal: string | null): void => {
       if (cause === 'timeout') settle(failed(`spawn git ETIMEDOUT after ${timeout} ms`, true))
       else if (cause === 'overflow') settle(failed('spawn git ENOBUFS: output exceeded the 200 MiB buffer'))
       else if (cause === 'abort') settle(failed('git was aborted'))
-      else settle({ stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), exitCode: exitCode ?? 1 })
+      else if (exitCode === null) settle({ stdout: '', stderr: `git was killed by ${signal ?? 'a signal'}`, exitCode: -1, ...(signal === null ? {} : { signal }) })
+      else settle({ stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), exitCode })
     }
     // The first cause wins. A git that already exited has no exit event to wait for, so its call settles here.
     const stop = (why: 'timeout' | 'overflow' | 'abort'): void => {
@@ -51,7 +52,7 @@ export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Prom
       cause = why
       // Synchronous on purpose: OwnedChild.kill is shared with the exit hooks, which cannot wait, and this runs only on a timeout, overflow or abort; a wedged helper costs one HELPER_TIMEOUT_MS (10 s): taskkill is one call on win32, and on POSIX a timed-out ps ends the walk, so only MAX_FREEZE_PASSES (64) ps calls that each answer, in milliseconds in practice, can add to it.
       owned.kill()
-      if (exited) finish(null)
+      if (exited) finish(null, null)
     }
     const collect = (into: Buffer[]) => (chunk: Buffer): void => {
       if (cause === 'overflow') return
@@ -67,12 +68,12 @@ export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Prom
       if (e.code === 'ENOENT') forgetGitExecutable()
       settle(failed(e.message))
     })
-    child.once('exit', (code) => {
+    child.once('exit', (code, signal) => {
       exited = true
-      if (cause !== undefined) finish(code)
+      if (cause !== undefined) finish(code, signal)
     })
     // Without a cause, close follows the exit once every pipe has ended, so all of git's output is in.
-    child.once('close', (code) => finish(code))
+    child.once('close', (code, signal) => finish(code, signal))
     if (timeout !== undefined) timer = setTimeout(() => stop('timeout'), timeout)
     opts.signal?.addEventListener('abort', onAbort, { once: true })
     child.stdin?.end(opts.input)

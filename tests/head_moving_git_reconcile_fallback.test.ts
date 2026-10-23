@@ -25,7 +25,7 @@ import { workerErrorLogPath } from '../src/worker_lifecycle.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { indexableDir } from './helpers/temp-config.js'
 
-const seam = vi.hoisted(() => ({ failReflog: false, timeOutDiff: false, gitMissing: false, timeOutTopLevelReads: 0, reconcileBudgetMs: null as number | null }))
+const seam = vi.hoisted(() => ({ failReflog: false, timeOutDiff: false, killDiff: false, gitMissing: false, timeOutTopLevelReads: 0, reconcileBudgetMs: null as number | null }))
 
 // The product gives each of its git reads 5 s and fails closed past it, which a loaded machine reaches (a spawn takes 2.5 s or more) and which these tests are not about: every real git call here runs with this much longer budget so the answers come back, and the timeout itself is injected below as the answer runGit gives for one (exit -1 with timedOut, CAPTURE: Node 24.12 spawnSync reports ETIMEDOUT). The hook's reads and the worker's reconcile both run through runGitAsync (the worker's through util.ts::runGitAsyncLazy, which loads the mocked module), and runGit still serves the sync callers, so every runner answers from this one seam. Hoisted with the mocks that use it, which run before any later top-level statement.
 const answers = vi.hoisted(() => {
@@ -35,6 +35,7 @@ const answers = vi.hoisted(() => {
     if (seam.gitMissing) return { stdout: '', stderr: 'spawn git ENOENT', exitCode: -1 }
     if (seam.failReflog && args[0] === 'reflog') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
     if (seam.timeOutDiff && args[0] === 'diff') return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
+    if (seam.killDiff && args[0] === 'diff') return { stdout: '', stderr: 'git was killed by SIGKILL', exitCode: -1, signal: 'SIGKILL' }
     if (seam.timeOutTopLevelReads > 0 && args[0] === 'rev-parse' && args[1] === '--show-toplevel') {
       seam.timeOutTopLevelReads--
       return { stdout: '', stderr: 'timed out', exitCode: -1, timedOut: true }
@@ -148,6 +149,7 @@ beforeEach(() => {
   fs.rmSync(workerErrorLogPath(dataDir()), { force: true })
   seam.failReflog = false
   seam.timeOutDiff = false
+  seam.killDiff = false
   seam.gitMissing = false
   seam.timeOutTopLevelReads = 0
   seam.reconcileBudgetMs = null
@@ -156,6 +158,7 @@ beforeEach(() => {
 afterEach(() => {
   seam.failReflog = false
   seam.timeOutDiff = false
+  seam.killDiff = false
   seam.gitMissing = false
   seam.timeOutTopLevelReads = 0
   seam.reconcileBudgetMs = null
@@ -228,6 +231,18 @@ describe('a head-moving git command whose changed-file list git could not produc
     expect(getDirtyPaths(), 'a diff that never answered must not enqueue guessed paths').toEqual([])
     expect(parseReconcileRequests(requestFile()).map(foldPath)).toEqual([foldPath(repo)])
     expect(workerLog()).toMatch(/git diff HEAD@\{1\} HEAD exited -1: timed out.*asked the worker to reconcile/)
+  })
+
+  it('asks for a reconcile when the diff was killed by a signal, since git ran and never answered', async () => {
+    const { repo } = repoWithTwoBranches()
+    git(repo, 'checkout', '-q', 'feature')
+    seam.killDiff = true
+
+    await postBashHandler(postBashEvent('git checkout feature', repo))
+
+    expect(getDirtyPaths(), 'a diff that never answered must not enqueue guessed paths').toEqual([])
+    expect(parseReconcileRequests(requestFile()).map(foldPath)).toEqual([foldPath(repo)])
+    expect(workerLog()).toMatch(/git diff HEAD@\{1\} HEAD exited -1: git was killed by SIGKILL.*asked the worker to reconcile/)
   })
 
   it('asks for no reconcile when git could not be started at all, since the worker needs git to sweep, and says so', async () => {
