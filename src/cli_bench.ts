@@ -304,6 +304,8 @@ export function currentCommit(cwd?: string): string {
     const sha = r.stdout.trim()
     if (r.exitCode !== 0 || sha === '') return 'unknown'
     const st = runGit(['status', '--porcelain'], opts)
+    // A status that did not finish knows nothing about the tree, so the row must not read as clean.
+    if (st.unfinished) return 'unknown'
     return st.exitCode === 0 && st.stdout.trim() !== '' ? `${sha}-dirty` : sha
   } catch {
     return 'unknown'
