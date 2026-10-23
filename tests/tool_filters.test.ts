@@ -265,6 +265,12 @@ describe('GenericFilter (golden)', () => {
     expect(result.text).toBe('')
     expect(result.originalBytes).toBe(0)
   })
+
+  it('apply() accounts for UTF-8 bytes in the original streams', () => {
+    const raw = 'snowman ☃ and emoji 😀'
+    const result = new GenericFilter().apply(raw, '', 0, [])
+    expect(result.originalBytes).toBe(Buffer.byteLength(raw, 'utf8'))
+  })
 })
 
 describe("apply(): normalisation early-exit ratio uses pre-normalisation size, not pre-truncation size", () => {

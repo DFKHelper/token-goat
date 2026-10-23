@@ -226,7 +226,7 @@ export abstract class ToolFilter {
     let so = safeDecode(stdout)
     let se = safeDecode(stderr)
 
-    // Step 1.5: redact BEFORE any truncator/clipper/capper below ever sees the text. Every truncator in this pipeline (clampKeepingEnds, clipWideLines, capLongLines, truncateMiddleSmart, capBytes) can cut a real credential mid-value; if that happens before redaction runs, the surviving fragment can fall under a pattern's minimum-length floor (e.g. sk-ant- needs 20+ trailing chars) and the regex that would have caught the whole key no longer recognises the piece that's left, so it ships raw. Redacting the full, untruncated stream first means every truncator downstream only ever cuts placeholder text (`[REDACTED:...]`), never secret bytes. This also means the byte-accounting below (soBytes/seBytes, used as "what the command really produced" for compression-ratio reporting) is computed on the redacted text -- consistent with every other cache in this repo (bash_output_cache.ts, mcp_cache.ts) sizing off the redacted output rather than the raw pre-redaction bytes.
+    // Step 1.5: redact BEFORE any truncator/clipper/capper below ever sees the text. Every truncator in this pipeline (clampKeepingEnds, clipWideLines, capLongLines, truncateMiddleSmart, capBytes) can cut a real credential mid-value; if that happens before redaction runs, the surviving fragment can fall under a pattern's minimum-length floor (e.g. sk-ant- needs 20+ trailing chars) and the regex that would have caught the whole key no longer recognises the piece that's left, so it ships raw. Redacting the full, untruncated stream first means every truncator downstream only ever cuts placeholder text (`[REDACTED:...]`), never secret bytes. This also means the byte-accounting below (`originalBytes`, used as "what the command really produced" for compression-ratio reporting) is computed on the redacted text -- consistent with every other cache in this repo (bash_output_cache.ts, mcp_cache.ts) sizing off the redacted output rather than the raw pre-redaction bytes.
     let redactedCount = 0
     const earlySo = redactSecrets(so)
     const earlySe = redactSecrets(se)
@@ -238,8 +238,8 @@ export abstract class ToolFilter {
     const maxInput = getMaxInputBytes()
     const notes: string[] = []
     // Captured before clamping: step 3 prices the reduction against what the command really produced, so a clamp that discards the middle must not also shrink the denominator.
-    const soBytes = Buffer.from(so, 'utf8')
-    const seBytes = Buffer.from(se, 'utf8')
+    // Measure UTF-8 bytes without allocating duplicate buffers for these capped streams.
+    const originalBytes = Buffer.byteLength(so, 'utf8') + Buffer.byteLength(se, 'utf8')
     const soClamped = clampKeepingEnds(so, maxInput)
     const seClamped = clampKeepingEnds(se, maxInput)
     if (soClamped !== null) {
@@ -264,8 +264,7 @@ export abstract class ToolFilter {
       notes.push(`clipped lines wider than ${INPUT_MAX_LINE_CHARS} chars`)
     }
 
-    // Step 3: original byte count from pre-truncation byte arrays.
-    const originalBytes = soBytes.length + seBytes.length
+    // Step 3: originalBytes was captured above, before either stream was clamped.
 
     // Step 4: early-return on empty input.
     if (!so.trim() && !se.trim()) {
