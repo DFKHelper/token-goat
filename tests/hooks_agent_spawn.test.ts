@@ -452,10 +452,15 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
     }
   })
 
-  it('does not cache a background spawn\'s async_launched acknowledgement or point at it as the full report (regression: the ack echoes the whole prompt, so it cleared the size floor and was cached under an id hashed from the spawn input; the recall pointer then read as the sibling spawn\'s report and `mcp-output` served a launch ack)', async () => {
+  // Regression: the ack echoes the whole prompt, so it cleared the size floor and was cached and pointed at as the sibling spawn's report; the match was key-order sensitive, so reordering the fields let it through.
+  it.each([
+    ['does not cache a background spawn\'s async_launched acknowledgement: object, real key order', { isAsync: true, status: 'async_launched' }, (ack: object) => ack],
+    ['does not cache a background spawn\'s async_launched acknowledgement: object, status first', { status: 'async_launched', isAsync: true }, (ack: object) => ack],
+    ['does not cache a background spawn\'s async_launched acknowledgement: content array of text parts', { status: 'async_launched', isAsync: true }, (ack: object) => ({ content: [{ type: 'text', text: JSON.stringify(ack) }] })],
+  ])('%s', async (_name, fields, wrap) => {
     const input = { description: 'bg', prompt: 'You are task T1. '.concat('research things. '.repeat(600)), run_in_background: true }
-    const ack = { isAsync: true, status: 'async_launched', agentId: 'aa26df86eaba19d7a', description: 'bg', prompt: input.prompt }
-    const result = await runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: input, session_id: sessionId, tool_response: ack }))
+    const ack = { ...fields, agentId: 'aa26df86eaba19d7a', description: 'bg', prompt: input.prompt }
+    const result = await runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: input, session_id: sessionId, tool_response: wrap(ack) }))
     expect(JSON.stringify(result)).not.toMatch(/mcp-output mcp_[0-9a-f]{16}/)
     expect(result.hookType).toBe('pass')
   })

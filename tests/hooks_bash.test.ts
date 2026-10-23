@@ -4524,7 +4524,7 @@ describe('preBashHandler — config-driven bash_compress.timeout_seconds', () =>
   })
 })
 
-// Regression (A2): the wrap ignored the Bash call's own timeout, so `run_in_background` and a long foreground `timeout` were cut at the configured 600 s. A background call takes the config's 7200 s bound (config.ts bash_compress.timeout_seconds max); a foreground call takes max(configured, its timeout in ms rounded up to seconds), never past that bound.
+// Regression: the wrap ignored the Bash call's own timeout, so `run_in_background` and a long foreground `timeout` were cut at the configured 600 s. A background call takes the config's 7200 s bound (config.ts bash_compress.timeout_seconds max); a foreground call takes max(configured, its timeout in ms rounded up to seconds), never past that bound.
 describe('preBashHandler — compress --timeout follows the Bash call (run_in_background / timeout)', () => {
   afterEach(() => {
     invalidateConfigCache()
