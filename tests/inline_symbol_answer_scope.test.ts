@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ScanModule from '../src/inline_grep_scan.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { globalDbPath } from '../src/constants.js'
 import { inlineSymbolGrepHandler } from '../src/hooks_grep.js'
@@ -15,6 +16,13 @@ import { makeHookEvent } from './helpers/hook-event.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 // The directory-scoped and bare-name answers of the inlined Grep deny, on files the real parser indexed into the isolated global.db and a real git work tree (git init in a fixture directory; the answer lists its files with git). Fixtures: every source file is HAND-DERIVED (small synthetic Python modules). The ignore behaviour under test is FORMAT-DERIVED from the ripgrep invocation Claude Code 2.1.306 runs, read out of the strings in its claude.exe this run: `--hidden`, a `--glob` that drops only .git/.svn/.hg/.bzr/.jj/.sl, no `--no-ignore`, so ripgrep applies .gitignore, .ignore and the global ignore file, and git's `--exclude-standard` list is a superset of what it searches. Ripgrep's CRLF and binary rules are CAPTURE (see tests/inline_grep_scan.test.ts).
+
+// Every scope read in this file runs under steadyScopeDeps unless a row names its own: the rows are about which answer is given, and the real 5 s shared git deadline turned a slow machine into a pass.
+vi.mock('../src/inline_grep_scan.js', async (importOriginal) => {
+  const real = (await importOriginal()) as typeof ScanModule
+  const { steadyScopeDeps } = await import('./helpers/steady_scope_git.js')
+  return { ...real, readScopeDir: (dir: string, root: string, deps = steadyScopeDeps) => real.readScopeDir(dir, root, deps) }
+})
 
 const MODULE = ['def unique_loader(path):', '    """Load one thing."""', '    return open(path).read()', ''].join('\n')
 const LOADER = String.raw`def unique_loader\b`
@@ -54,6 +62,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllEnvs()
   invalidateConfigCache()
   clearModuleCaches()
@@ -476,5 +485,27 @@ describe('a directory-scoped Grep and listed files the index does not hold', () 
     for (let i = 0; i <= SCOPE_MAX_FILES; i++) files[`n${i}.txt`] = 'x\n'
     const dir = unindexed(files)
     expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
+  })
+})
+
+// HAND-DERIVED: a slow machine is a clock that moves 2000 ms each time it is read, so the 5000 ms shared git deadline passes within three reads whatever the real speed of git; the answer must not depend on it (a measured run lost the answer to a real ETIMEDOUT, see tests/helpers/steady_scope_git.ts). The scope has an anchored and a negated rule, so the decision makes all six git calls.
+describe('a scope read on a machine where every clock read costs seconds', () => {
+  const SLOW_STEP_MS = 2_000
+  const slowClock = (): void => {
+    let t = 1_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => (t += SLOW_STEP_MS))
+  }
+
+  it('lists the files rather than passing on the shared git deadline', () => {
+    const dir = project({ 'mod.py': MODULE, 'other.py': 'x = 1\n', '.ignore': '/zzz.txt\n!keep.txt\n' })
+    slowClock()
+    const read = readScopeDir(dir, dir)
+    expect('files' in read, JSON.stringify(read)).toBe(true)
+  })
+
+  it('answers the Grep', async () => {
+    const dir = project({ 'mod.py': MODULE, 'other.py': 'x = 1\n', '.ignore': '/zzz.txt\n!keep.txt\n' })
+    slowClock()
+    expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('deny')
   })
 })
