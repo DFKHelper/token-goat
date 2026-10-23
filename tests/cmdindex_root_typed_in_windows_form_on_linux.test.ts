@@ -1,5 +1,6 @@
 // `token-goat index C:\x --walk` under WSL has to walk /mnt/c/x, the folder behind that spelling there; POSIX resolves `c:/x` as a relative path to nothing. tests/cmdindex_root_spelled_as_a_mount.test.ts pins the Windows half, where a mount spelling has to open at its drive letter, with its CAPTURE. A runner cannot create /mnt/<letter>, so one mount is mapped onto a temp directory through node:fs as tests/hook_reads_of_a_drive_letter_key_open_its_wsl_mount.test.ts does, adding readdirSync for the walk. The spellings are HAND-DERIVED from WSL's documented convention of mounting drive Q: at /mnt/q.
 
+import type * as childProcess from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -12,12 +13,21 @@ import { querySymbols } from '../src/index_reader.js'
 
 const MOUNT = '/mnt/q/'
 
-const mounted = vi.hoisted(() => ({ root: null as string | null }))
+const mounted = vi.hoisted(() => ({ root: null as string | null, toHost: (p: unknown): unknown => p }))
+
+// The mount maps a path for the file system and for the git that lists it alike: with only the file system mapped, a directory that exists to the walk is a missing working directory to the spawn, which reads as a git that could not start.
+mounted.toHost = (p) => (mounted.root !== null && typeof p === 'string' && p.startsWith(MOUNT) ? path.join(mounted.root, p.slice(MOUNT.length)) : p)
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof childProcess>()
+  const spawnSync = ((command: string, args: unknown, options?: { cwd?: unknown }) =>
+    (actual.spawnSync as (...a: unknown[]) => unknown)(command, args, options === undefined ? options : { ...options, cwd: mounted.toHost(options.cwd) })) as typeof actual.spawnSync
+  return { ...actual, spawnSync, default: { ...actual, spawnSync } }
+})
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof fs>()
-  const onHost = (p: unknown): unknown =>
-    mounted.root !== null && typeof p === 'string' && p.startsWith(MOUNT) ? path.join(mounted.root, p.slice(MOUNT.length)) : p
+  const onHost = (p: unknown): unknown => mounted.toHost(p)
   const wrap = <F>(fn: F): F => ((p: unknown, ...rest: unknown[]) => (fn as (...args: unknown[]) => unknown)(onHost(p), ...rest)) as F
   const overrides = {
     statSync: wrap(actual.statSync),
