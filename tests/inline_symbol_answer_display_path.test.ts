@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ScanModule from '../src/inline_grep_scan.js'
 import { invalidateConfigCache } from '../src/config.js'
 import { globalDbPath } from '../src/constants.js'
 import { inlineSymbolGrepHandler } from '../src/hooks_grep.js'
@@ -11,6 +12,12 @@ import { indexFileSync } from '../src/parser.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { indexableDir } from './helpers/temp-config.js'
+
+// Every scope read here runs under steadyScopeDeps: the rows are about the printed path, and the real 5 s shared git deadline turned a slow machine into a pass (tests/helpers/steady_scope_git.ts).
+vi.mock('../src/inline_grep_scan.js', async (importOriginal) => {
+  const { withSteadyScopeDeps } = await import('./helpers/steady_scope_git.js')
+  return withSteadyScopeDeps((await importOriginal()) as typeof ScanModule)
+})
 
 // HAND-DERIVED: the deny prints the file in token-goat's own voice, so it prints the path relative to the Grep's working directory; the checkout root above it is not text the repository's author chose, and a space, a non-ASCII letter or a long name in it must not turn the answer off. A name inside the checkout keeps the plain-path rule. The 240 and 120 limits are the ones inline_symbol_answer.ts states.
 

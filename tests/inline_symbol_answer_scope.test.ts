@@ -19,9 +19,8 @@ import { indexableDir } from './helpers/temp-config.js'
 
 // Every scope read in this file runs under steadyScopeDeps unless a row names its own: the rows are about which answer is given, and the real 5 s shared git deadline turned a slow machine into a pass.
 vi.mock('../src/inline_grep_scan.js', async (importOriginal) => {
-  const real = (await importOriginal()) as typeof ScanModule
-  const { steadyScopeDeps } = await import('./helpers/steady_scope_git.js')
-  return { ...real, readScopeDir: (dir: string, root: string, deps = steadyScopeDeps) => real.readScopeDir(dir, root, deps) }
+  const { withSteadyScopeDeps } = await import('./helpers/steady_scope_git.js')
+  return withSteadyScopeDeps((await importOriginal()) as typeof ScanModule)
 })
 
 const MODULE = ['def unique_loader(path):', '    """Load one thing."""', '    return open(path).read()', ''].join('\n')
@@ -342,7 +341,7 @@ describe('a directory-scoped Grep and the .ignore and .rgignore files ripgrep re
       execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'ignore' })
       execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'init'], { cwd: dir, stdio: 'ignore' })
       expect(captured.get('tracked-and-ignored'), 'ripgrep skips the tracked dup.py').not.toContain('dup.py')
-      expect('passReason' in readScopeDir(dir, dir), 'before the rule, nothing is ignored').toBe(false)
+      expect('passReason' in readScopeDir(dir, dir), 'before the rule, nothing is ignored ' + JSON.stringify(readScopeDir(dir, dir))).toBe(false)
       fs.writeFileSync(path.join(dir, '.gitignore'), 'dup.py\n', 'utf8')
       expect(readScopeDir(dir, dir), 'dup.py is tracked and ignored').toEqual({ passReason: 'a tracked file is also ignored' })
       expect((await inlineSymbolGrepHandler(grep(dir, LOADER, dir))).hookType).toBe('pass')
