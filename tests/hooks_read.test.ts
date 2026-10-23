@@ -2619,9 +2619,8 @@ content here` },
   })
 
   it('points the .improve-state-*.json re-read deny at a remedy that actually works — bash_extractors.ts exempts these files from every bash-output extraction site (isOrchestratorStateFile), so a bare `bash-output <id>` can never resolve to a cached entry', () => {
-    const p = path.join(os.tmpdir(), '.improve-state-bugfixing.json')
-    fs.writeFileSync(p, JSON.stringify({ phase: 'bugfixing' }))
-    tmpFiles.push(p)
+    // Own directory: the read this row books is keyed by path, and a shared os.tmpdir() name leaked it into the next row.
+    const p = makeTmpFileNamed('.improve-state-bugfixing.json', JSON.stringify({ phase: 'bugfixing' }))
     stampAnHourBack(p)
     recordFileRead(normalizePath(p))
     const result = preReadHandler(readEvent(p))
