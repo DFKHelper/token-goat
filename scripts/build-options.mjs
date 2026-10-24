@@ -35,10 +35,12 @@ export const ORT_WEB_GLUE = 'ort-wasm-simd-threaded.mjs'
 export const BUNDLE_OUTPUTS = ['token-goat.mjs', ...Object.keys(ENTRY_POINTS).map((name) => `${name}.mjs`), `${CJS_CLIENT}.cjs`, ORT_WEB_GLUE]
 
 /** Constants every build of the shipping graph inlines. `__TG_MANIFEST__` carries the package.json fields src/version.ts exports, so a bundled process never opens package.json: that read cost 2.2ms of every CLI start and of every hook call a resident server answers. */
-export function buildDefines(pkg) {
+export function buildDefines(pkg, buildStamp = 'unknown') {
   return {
     'import.meta.env': '{}',
     // A string of JSON rather than an object: esbuild emits an object define as a module and adds a call initializing it to every lazily loaded module in the bundle, 7KB across the hook graph.
+    // The identity of this build (scripts/build-stamp.mjs): two builds of one package version differ here and nowhere else.
+    __TG_BUILD__: JSON.stringify(buildStamp),
     __TG_MANIFEST__: JSON.stringify(JSON.stringify({ version: pkg.version, name: pkg.name, bugs: { url: pkg.bugs?.url } })),
   }
 }

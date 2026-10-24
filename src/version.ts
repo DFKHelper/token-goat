@@ -10,6 +10,8 @@ interface Manifest {
 
 // Injected by esbuild's `define` as the manifest's JSON text: a string define inlines as a literal, where an object one becomes a module esbuild initializes from every lazily loaded module in the bundle. Declared so tsc accepts the reference; at runtime under tsx/vitest it is undefined and we fall back below.
 declare const __TG_MANIFEST__: string | undefined
+// Injected by esbuild's `define` from scripts/build-stamp.mjs: the identity of the build this bundle came from. Undefined under tsx/vitest.
+declare const __TG_BUILD__: string | undefined
 
 /** Fail-soft: a bundle built without the define, or source run from somewhere with no manifest beside it, must not take down whatever imported this module. Every field has a literal fallback below, and the test that pins each one runs from source, where the manifest is found, so a fallback cannot drift unnoticed. */
 function readManifest(): Manifest {
@@ -24,6 +26,9 @@ function readManifest(): Manifest {
 const manifest = readManifest()
 
 export const VERSION: string = manifest.version ?? '0.0.0'
+
+/** The identity of the build running now (`<commit>-<UTC time>`), told apart from another build of the same VERSION by nothing else. `unknown` for source run under tsx/vitest and for a tarball build with no .git. Fixed at build time, never derived at run time: an installed copy has no repository. */
+export const BUILD_STAMP: string = typeof __TG_BUILD__ === 'string' ? __TG_BUILD__ : 'unknown'
 
 /** The published npm package name, for any message telling a user how to install this tool. Read from the manifest rather than written as a literal: `doctor`'s broken-install message once hardcoded `token-goat-ts`, which is not this package and is an unregistered npm name anyone could claim, printed exactly when a user's install is broken and asking for a global install. */
 export const PACKAGE_NAME: string = manifest.name !== undefined && manifest.name !== '' ? manifest.name : 'token-goat'

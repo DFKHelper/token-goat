@@ -406,6 +406,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/baseline.ts`](src/baseline.ts) | Project map / overview (`token-goat map`). |
 | [`src/batch_serve.ts`](src/batch_serve.ts) | `--batch-serve`: run many CLI invocations inside one already-started process. |
 | [`src/bridges_status.ts`](src/bridges_status.ts) | Bridge hook-event parity matrix. |
+| [`src/build_stamp.ts`](src/build_stamp.ts) | Tells a process that its bundle was rebuilt under it. |
 | [`src/cache_session_commands.ts`](src/cache_session_commands.ts) | Cache and history commands: bash-history, web-history, clean-cache, prune-cache, cache-audit. |
 | [`src/call_streak.ts`](src/call_streak.ts) | Call-streak advisories: the two hints that judge a run of tool calls rather than one call. |
 | [`src/canonical_skill.ts`](src/canonical_skill.ts) | The canonical token-goat skill installed by `token-goat install`, generated from `src/canonical_skill.md` by `npm run skill:canonical`. |

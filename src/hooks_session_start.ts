@@ -148,6 +148,13 @@ export async function sessionStartOutput(event: HookEvent, options: SessionStart
     } catch {
       // non-fatal
     }
+    try {
+      const { staleBuildNote } = await import('./build_stamp.js')
+      const stale = staleBuildNote()
+      if (stale !== null) context += `\n${stale}`
+    } catch {
+      // non-fatal
+    }
     if (tail !== '') context += `\n\n${tail}`
     return contextOutput(context)
   } catch {
