@@ -385,3 +385,22 @@ describe('git am asks for a reconcile in every form, since no reflog diff covers
     expect(parseReconcileRequests(requestFile()), `reconcile requests after git am ${flag}`).toHaveLength(1)
   })
 })
+
+describe('git revert asks for a reconcile in every form, with real git, since its files are in no reflog diff the hook takes', () => {
+  it.each([['git revert --no-edit HEAD', ['--no-edit']], ['git revert --no-commit HEAD', ['--no-commit']]])('%s changes a.txt and n.txt and reconciles', async (command, options) => {
+    const dir = gitRepoWithCommit()
+    commitFile(dir, 'a.txt', 'base\n')
+    fs.writeFileSync(join(dir, 'a.txt'), 'changed\n')
+    fs.writeFileSync(join(dir, 'n.txt'), 'new\n')
+    git(dir, 'add', 'a.txt', 'n.txt')
+    git(dir, 'commit', '-qm', 'change a.txt and add n.txt')
+    const head = git(dir, 'rev-parse', 'HEAD')
+
+    expect(gitStatus(dir, 'revert', ...options, 'HEAD'), 'calibration: the revert runs').toBe(0)
+    expect(git(dir, 'rev-parse', 'HEAD') === head, 'calibration: a revert moves HEAD only without --no-commit').toBe(options[0] === '--no-commit')
+
+    await postBash(command, dir)
+
+    expect(parseReconcileRequests(requestFile()), `reconcile requests after ${command}`).toHaveLength(1)
+  })
+})

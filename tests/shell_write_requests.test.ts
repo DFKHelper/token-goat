@@ -612,6 +612,15 @@ describe('git am in any form asks for a reconcile, since no reflog diff covers t
   })
 })
 
+describe('git revert in any form asks for a reconcile, since it is in no reflog diff the hook takes', () => {
+  it.each([['git revert HEAD'], ['git revert --no-edit HEAD'], ['git revert --no-commit HEAD'], ['git revert -n HEAD'], ['true && git revert HEAD']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    divergedOther(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
 describe('a cherry-pick or revert naming several revisions or a range replays several commits, so it asks for a reconcile', () => {
   it.each([['git cherry-pick HEAD~1 HEAD'], ['git cherry-pick HEAD~1..HEAD'], ['git cherry-pick HEAD~2...HEAD'], ['git cherry-pick ^HEAD~1 HEAD'], ['git cherry-pick --stdin'], ['git revert HEAD HEAD~1'], ['true && git cherry-pick HEAD~1 HEAD']])('%s asks the worker to reconcile', async (command) => {
     const dir = repo()
