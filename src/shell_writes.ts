@@ -83,6 +83,11 @@ function isStaticPath(token: string): boolean {
   return token !== '' && !/[$()@*?[\]{}`]/.test(token)
 }
 
+/** A path token that names one file by itself: {@link isStaticPath} and no leading `~`, which the shell expands to the home directory. */
+function isConcretePath(token: string): boolean {
+  return isStaticPath(token) && !token.startsWith('~')
+}
+
 interface CmdletArgs {
   path: string | null
   destination: string | null
@@ -702,35 +707,44 @@ function enqueueRewrittenPath(absPath: string): void {
   enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
 }
 
-/** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. `exitCode` is the command's exit status when the harness reports one, and a non-zero one keeps only the shell-write pass. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
+/** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. `exitCode` is the command's exit status when the harness reports one, and a non-zero one drops the named files (a failed `sed -i` or `git restore` changed nothing) but keeps the shell-write pass and the sweeps. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
 export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string, exitCode?: number | null): Promise<void> {
   const atRunDir = (f: string): string => resolveIndexPath(f, runDir)
   const paths: string[] = []
   // Each directory whose working tree needs a status sweep: the run directory for a patch or formatter, or wherever `git -C` pointed a stash.
   const sweepDirs = new Set<string>()
-  if (!exitCode && GIT_RESTORE_RE.test(cmd) && !GIT_RESTORE_STAGED_ONLY_RE.test(cmd)) {
-    const specs = extractGitRestorePathspecs(cmd)
-    paths.push(...(await expandGitPathspecs(specs, runDir)))
-    // `ls-files` lists only what the index holds, so a file `--source` brought back that the index lacks is found by its literal name instead; globs, `:` magic and `.` name nothing literally.
-    for (const spec of specs) if (spec !== '.' && !spec.startsWith(':') && !/[*?[]/.test(spec)) paths.push(atRunDir(spec))
-  }
-  // Segments some extractor above already named files for, which the shell-write pass leaves alone.
+  // Segments whose files this pass named or swept, or that another pass owns, which the shell-write pass leaves alone.
   const handled = new Set<string>()
   for (const segment of splitShellSegments(cmd)) {
-    const before = paths.length + sweepDirs.size
-    if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) sweepDirs.add(runDir)
-    if (isFormatterWriteSegment(segment)) sweepDirs.add(runDir)
+    let swept = false
+    if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) { sweepDirs.add(runDir); swept = true }
+    if (isFormatterWriteSegment(segment)) { sweepDirs.add(runDir); swept = true }
     const stashDir = gitStashRewriteDir(segment, runDir)
-    if (stashDir !== null) sweepDirs.add(stashDir)
-    for (const f of extractSedInPlaceFiles(segment)) paths.push(atRunDir(f))
-    for (const f of extractTeeFiles(segment)) paths.push(atRunDir(f))
-    if (paths.length + sweepDirs.size > before || tokenGoatInvocation(segment) !== null || isHeadMovingGitCommand(segment) || GIT_RESTORE_RE.test(segment)) handled.add(segment)
+    if (stashDir !== null) { sweepDirs.add(stashDir); swept = true }
+    // A named file is queued only when the command succeeded: a failed `sed -i` or `git restore` changed nothing it could name.
+    const named: string[] = [...extractSedInPlaceFiles(segment), ...extractTeeFiles(segment)]
+    const concrete = named.filter(isConcretePath)
+    if (!exitCode) for (const f of concrete) paths.push(atRunDir(f))
+    let namesEveryFile = named.length > 0 && concrete.length === named.length
+    if (GIT_RESTORE_RE.test(segment)) {
+      if (GIT_RESTORE_STAGED_ONLY_RE.test(segment)) namesEveryFile = true
+      else {
+        const specs = extractGitRestorePathspecs(segment)
+        // A glob, a variable or a `~` names nothing this hook can resolve, so that restore stays unhandled and the reconcile covers it.
+        namesEveryFile = specs.length > 0 && specs.every((spec) => spec === '.' || isConcretePath(spec))
+        if (namesEveryFile && !exitCode) {
+          paths.push(...(await expandGitPathspecs(specs, runDir)))
+          // `ls-files` lists only what the index holds, so a file `--source` brought back that the index lacks is found by its literal name instead; `.` names nothing literally.
+          for (const spec of specs) if (spec !== '.' && !spec.startsWith(':')) paths.push(atRunDir(spec))
+        }
+      }
+    }
+    if (swept || namesEveryFile || tokenGoatInvocation(segment) !== null || isHeadMovingGitCommand(segment)) handled.add(segment)
   }
   // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.
   enqueueShellWrites(cmd, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })
-  // A command that exited non-zero keeps only the shell-write pass above: its named files and its reconcile request, since a script can write and then fail. The extractors before it stay on success, where a failed `sed -i` or `git restore` changed nothing they could name.
-  if (exitCode) return
   for (const p of new Set(paths)) enqueueRewrittenPath(p)
+  // A sweep also runs after a non-zero exit: a formatter or patch that fails part-way has already written files, and every sweep asks the worker to reconcile the project.
   for (const dir of sweepDirs) for (const p of await workingTreeStatusPaths(dir)) enqueueSweptPath(p)
 }
 
