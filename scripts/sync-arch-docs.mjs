@@ -1,357 +1,175 @@
 #!/usr/bin/env node
-/**
- * scripts/sync-arch-docs.mjs
- *
- * Automated Architecture Documentation Synchronization Engine.
- *
- * Keeps CLAUDE.arch.md's Component Map 100% in sync with the src/ codebase:
- * - Scans all source modules in src/**\/*.ts.
- * - Extracts architectural roles, docstrings, exports, and invariants.
- * - Preserves existing curated descriptions while documenting newly created/split modules.
- * - Enforces zero drift via --check (exit code 1 on mismatch) for pre-commit hooks & CI.
- * - Updates CLAUDE.arch.md in place with --write (default).
- */
-
+/** scripts/sync-arch-docs.mjs Keeps the component table in CLAUDE.arch.md in sync with the tracked source modules. Renders the arch-doc-sync skill's flat table, `| Module | Layer | Role | Key exports |`, between the ARCH_COMPONENTS markers and leaves everything outside them alone. The table contract is SKILL.md "Component Table Contract" and the config is its "Config"; the config for this repo is config/arch-docs.json. Usage: node scripts/sync-arch-docs.mjs [--check | --write]   (no flag writes) --check  read-only; findings go to stderr, stdout stays empty; exit 1 on drift. --write  rewrite the table in place; exit 0. Exit codes: 0 in sync (or written), 1 drift, 2 configuration or usage error. Not implemented, deliberately: --staged, --format=json, rename/split/merge of curated roles, layer-order and cycle checks, folder roots and Python/Go modules. A curated Role is never overwritten; an obsolete row is dropped. */
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { isMainModule } from './is-main-module.mjs'
+import { ArchDocError, globMatch, isCodeFile, layerFor, loadConfig, selectRoot } from './arch-docs/config.mjs'
+import { jsExports } from './arch-docs/exports.mjs'
+import { jsDocSentence, templateRole } from './arch-docs/prose.mjs'
+import {
+  NO_EXPORTS, assertNoLoneCr, assertTableable, byteCompare, currentInner, detectNewline, END_MARKER, findMarkers,
+  parseTable, renderTable, splice, START_MARKER, toNewline,
+} from './arch-docs/table.mjs'
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const ARCH_DOC = path.join(ROOT, 'CLAUDE.arch.md')
-const SRC_DIR = path.join(ROOT, 'src')
+const MAX_EXPORTS = 5
+const GIT_MAX_BUFFER = 256 * 1024 * 1024
+const USAGE = 'usage: node scripts/sync-arch-docs.mjs [--check | --write]'
 
-const MARKER_START = '<!-- ARCH_COMPONENTS_START -->'
-const MARKER_END = '<!-- ARCH_COMPONENTS_END -->'
-
-/**
- * Recursively discover all TypeScript source files in src/.
- */
-export function scanSourceFiles(dir = SRC_DIR) {
-  const files = []
-  function walk(current) {
-    const entries = fs.readdirSync(current, { withFileTypes: true })
-      .sort((a, b) => a.name.localeCompare(b.name))
-    for (const entry of entries) {
-      const full = path.join(current, entry.name)
-      if (entry.isDirectory()) {
-        walk(full)
-      } else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
-        files.push(full)
-      }
-    }
-  }
-  walk(dir)
-  return files
+function runGit(cwd, args) {
+  const result = spawnSync('git', ['-c', 'core.quotepath=false', ...args], { cwd, maxBuffer: GIT_MAX_BUFFER, windowsHide: true })
+  if (result.error && result.error.code === 'ENOENT') throw new ArchDocError('git executable not found on PATH')
+  return result.status === 0 && !result.error ? result.stdout : null
 }
 
-/**
- * Normalise relative paths to POSIX slashes (src/foo.ts).
- */
-export function toPosixRel(fullPath) {
-  return path.relative(ROOT, fullPath).split(path.sep).join('/')
+function repoRoot(cwd) {
+  const out = runGit(cwd, ['rev-parse', '--show-toplevel'])
+  const root = out === null ? '' : out.toString('utf8').trim()
+  if (root === '') throw new ArchDocError('not inside a git work tree')
+  return path.resolve(root)
 }
 
-/**
- * Extract existing module descriptions from CLAUDE.arch.md.
- */
-export function extractExistingDescriptions(content) {
-  const descriptions = new Map()
-  const rowRegex = /\|\s*\[?`?(src\/[a-zA-Z0-9_/.-]+\.ts)`?\]?(?:\([^)]+\))?\s*\|\s*([^|\r\n]+)\|/g
-  let match
-  while ((match = rowRegex.exec(content)) !== null) {
-    const filePath = match[1].trim()
-    const desc = match[2].trim()
-    if (filePath && desc && !descriptions.has(filePath)) {
-      descriptions.set(filePath, desc)
-    }
-  }
-  return descriptions
+/** Tracked paths only, never a filesystem walk: the list is the same on every machine. */
+function listTracked(root) {
+  const out = runGit(root, ['ls-files', '-z'])
+  if (out === null) throw new ArchDocError('not inside a git work tree (git ls-files failed)')
+  return [...new Set(out.toString('utf8').split('\0').filter((entry) => entry !== ''))]
 }
 
-/**
- * Derive an architectural role description for a module.
- */
-export function deriveModuleRole(fullPath, relPath, existingDesc) {
-  if (existingDesc) {
-    return existingDesc
+/** Contents of a regular file inside the repo, or null when it is missing or is a symlink or directory. */
+function readRegular(root, rel) {
+  const absolute = path.join(root, rel)
+  try {
+    return fs.lstatSync(absolute).isFile() ? fs.readFileSync(absolute, 'utf8') : null
+  } catch (error) {
+    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null
+    throw error
   }
-
-  const content = fs.readFileSync(fullPath, 'utf8')
-  const base = path.basename(relPath, '.ts')
-
-  // 1. Try JSDoc / block comment at start of file
-  const docMatch = content.match(/^\s*\/\*\*([\s\S]*?)\*\//)
-  if (docMatch) {
-    const cleaned = docMatch[1]
-      .split('\n')
-      .map((l) => l.replace(/^\s*\*\s?/, '').trim())
-      .filter((l) => l.length > 0 && !l.startsWith('@'))
-      .join(' ')
-    if (cleaned.length > 10) {
-      const firstSentence = cleaned.split(/(?<=[.!?])\s+/)[0]
-      return firstSentence.slice(0, 180).trim()
-    }
-  }
-
-  // 2. Subsystem domain heuristics
-  if (relPath.startsWith('src/languages/')) {
-    const lang = base.replace(/_(idx|frontend|grammar)$/, '')
-    return `Language extractor and symbol parser for ${lang}`
-  }
-  if (relPath.startsWith('src/tool_filters/')) {
-    return `Bash output compression and normalization filter for ${base.replace(/_filter$/, '')}`
-  }
-  if (relPath.startsWith('src/bridges/')) {
-    return `Harness bridge integration and hook configuration for ${base}`
-  }
-  if (relPath.startsWith('src/hints/')) {
-    return `Session hint generator submodule for ${base.replace(/_hints?$/, '')}`
-  }
-  if (relPath.startsWith('src/render/')) {
-    return `Terminal output formatting and rendering for ${base}`
-  }
-  if (relPath.startsWith('src/cli_cmd_')) {
-    return `CLI command group registration and execution for ${base.replace(/^cli_cmd_/, '')}`
-  }
-  if (relPath.startsWith('src/read_')) {
-    return `Surgical read implementation for ${base.replace(/^read_/, '')}`
-  }
-  if (relPath.startsWith('src/text_')) {
-    return `Text processing, analysis, and transformation for ${base.replace(/^text_/, '')}`
-  }
-  if (relPath.startsWith('src/cli_doctor_')) {
-    return `Doctor diagnostic health checks for ${base.replace(/^cli_doctor_/, '')}`
-  }
-  if (relPath.startsWith('src/util_')) {
-    return `Utility helper submodule for ${base.replace(/^util_/, '')}`
-  }
-
-  // 3. Key exports
-  const exports = []
-  const exportRegex = /export\s+(?:async\s+)?(?:function|class|const|interface|type)\s+([A-Za-z0-9_]+)/g
-  let expMatch
-  while ((expMatch = exportRegex.exec(content)) !== null) {
-    if (!exports.includes(expMatch[1])) exports.push(expMatch[1])
-    if (exports.length >= 4) break
-  }
-  if (exports.length > 0) {
-    return `Exports: ${exports.map((e) => `\`${e}\``).join(', ')}`
-  }
-
-  return `Core implementation module for ${base}`
 }
 
-/**
- * Assign a source file to an architectural category.
- */
-export function categorizeModule(relPath) {
-  if (relPath.startsWith('src/bridges/')) return 'Harness Bridges'
-  if (relPath.startsWith('src/languages/')) return 'Language Adapters'
-  if (relPath.startsWith('src/tool_filters/')) return 'Bash Output, Compression, and Tool Filters'
-  if (relPath.startsWith('src/hints/')) return 'Hints, Guidance, and Formatting'
-  if (relPath.startsWith('src/render/')) return 'Hints, Guidance, and Formatting'
-
-  const base = path.basename(relPath)
-
-  if (/^(main|cli|cli_dispatch|cli_help|cli_cmd_.*|mcp_server|types)\.ts$/.test(base)) {
-    return 'Entry and CLI Dispatch'
+/** The modules the tracked files add up to, and the files an exclude pattern dropped. */
+function discover(config, tracked) {
+  const components = []
+  const excluded = []
+  for (const file of tracked) {
+    if (selectRoot(config.roots, file) === undefined || !isCodeFile(file)) continue
+    if (config.exclude.some((pattern) => globMatch(pattern, file))) {
+      excluded.push(file)
+      continue
+    }
+    assertTableable(file)
+    components.push(file)
   }
-  if (/^(parser|parser_.*|worker|index_prune|fingerprint|reconcile|tree_sitter_.*)\.ts$/.test(base)) {
-    return 'Indexer and Worker (Critical Path)'
-  }
-  if (/^(db|db_.*|index_reader|section_reader|constants|stats|stats_.*)\.ts$/.test(base)) {
-    return 'Storage and Database'
-  }
-  if (/^(embeddings|embed_.*|semantic_.*)\.ts$/.test(base)) {
-    return 'Embeddings and Semantic Search'
-  }
-  if (/^(paths|project|repomap|file_.*)\.ts$/.test(base)) {
-    return 'Paths, Filesystem, and Project Detection'
-  }
-  if (/^(hook_registry|relay|hooks_.*|image_shrink|install|code_fold)\.ts$/.test(base)) {
-    return 'Hook Subsystem'
-  }
-  if (/^(session|session_.*|compact|compact_.*|skill_cache|snapshots|resume)\.ts$/.test(base)) {
-    return 'Session, Compaction, and Audit'
-  }
-  if (/^(read_commands|read_.*|text_.*|diff_.*|sanitize_.*|token_.*)\.ts$/.test(base)) {
-    return 'Surgical Reads and Text Processing'
-  }
-  if (/^(bash_.*|filters)\.ts$/.test(base)) {
-    return 'Bash Output, Compression, and Tool Filters'
-  }
-  if (/^(cli_doctor|cli_doctor_.*|reclaim_.*|pack|ask)\.ts$/.test(base)) {
-    return 'Diagnostics, Doctor, and Maintenance'
-  }
-  if (/^(bash_output_cache|web_cache|mcp_cache|gdrive|webfetch|project_memory|disk_cache)\.ts$/.test(base)) {
-    return 'Caches and Output Stores'
-  }
-  if (/^(config|util|util_.*|env|version|reset)\.ts$/.test(base)) {
-    return 'Configuration and Utilities'
-  }
-  if (/^(office_.*|pdf_.*|image_.*|media_.*|json_.*|yaml_.*|xml_.*|sqlite_.*)\.ts$/.test(base)) {
-    return 'Media, Documents, and Structured Formats'
-  }
-
-  return 'Specialized Subsystems'
+  components.sort(byteCompare)
+  return { components, excluded: excluded.sort(byteCompare) }
 }
 
-const CATEGORY_ORDER = [
-  'Entry and CLI Dispatch',
-  'Indexer and Worker (Critical Path)',
-  'Storage and Database',
-  'Embeddings and Semantic Search',
-  'Paths, Filesystem, and Project Detection',
-  'Hook Subsystem',
-  'Session, Compaction, and Audit',
-  'Surgical Reads and Text Processing',
-  'Harness Bridges',
-  'Language Adapters',
-  'Bash Output, Compression, and Tool Filters',
-  'Hints, Guidance, and Formatting',
-  'Diagnostics, Doctor, and Maintenance',
-  'Caches and Output Stores',
-  'Configuration and Utilities',
-  'Media, Documents, and Structured Formats',
-  'Specialized Subsystems',
-]
-
-/**
- * Generate the Markdown component tables for all discovered modules.
- */
-export function generateComponentTables(modules) {
-  const byCategory = new Map()
-  for (const cat of CATEGORY_ORDER) {
-    byCategory.set(cat, [])
-  }
-
-  for (const m of modules) {
-    const list = byCategory.get(m.category) || []
-    list.push(m)
-    byCategory.set(m.category, list)
-  }
-
-  const sections = []
-
-  for (const cat of CATEGORY_ORDER) {
-    const list = byCategory.get(cat)
-    if (!list || list.length === 0) continue
-
-    list.sort((a, b) => a.relPath.localeCompare(b.relPath))
-
-    const lines = [
-      `**${cat}**`,
-      '',
-      '| Module | Role |',
-      '|--------|------|',
-    ]
-
-    for (const item of list) {
-      lines.push(`| [\`${item.relPath}\`](${item.relPath}) | ${item.role} |`)
-    }
-
-    sections.push(lines.join('\n'))
-  }
-
-  return sections.join('\n\n')
+/** Role and exports a module would get with no curated text: its first doc-comment sentence, else the layer template. */
+function describeModule(key, layer, text) {
+  const exports = jsExports(text, key.slice(key.lastIndexOf('.'))).slice(0, MAX_EXPORTS)
+  return { autoRole: jsDocSentence(text) ?? templateRole(key, layer), exports: exports.length > 0 ? exports.join(', ') : NO_EXPORTS }
 }
 
-/**
- * Core sync logic: reads source files, synchronizes or checks CLAUDE.arch.md.
- */
-export function syncArchDocs({ check = false } = {}) {
-  const sourceFiles = scanSourceFiles().map(toPosixRel)
-  const sourceSet = new Set(sourceFiles)
-
-  if (!fs.existsSync(ARCH_DOC)) {
-    throw new Error(`Architecture document not found at: ${ARCH_DOC}`)
-  }
-
-  const rawDoc = fs.readFileSync(ARCH_DOC, 'utf8')
-  const existingDesc = extractExistingDescriptions(rawDoc)
-
-  // Validate coverage
-  const documentedFiles = new Set(existingDesc.keys())
-  const missingFiles = sourceFiles.filter((f) => !documentedFiles.has(f))
-  const deadLinks = [...documentedFiles].filter((f) => !sourceSet.has(f))
-
-  if (check) {
-    let hasDrift = false
-    const errors = []
-
-    if (missingFiles.length > 0) {
-      hasDrift = true
-      errors.push(`Missing from architecture documentation (${missingFiles.length} files):\n` +
-        missingFiles.map((f) => `  - ${f}`).join('\n'))
-    }
-    if (deadLinks.length > 0) {
-      hasDrift = true
-      errors.push(`Stale/deleted files in architecture documentation (${deadLinks.length} files):\n` +
-        deadLinks.map((f) => `  - ${f}`).join('\n'))
-    }
-
-    if (hasDrift) {
-      process.stderr.write(
-        `\n[ERROR] Architecture documentation (CLAUDE.arch.md) is out of sync with src/!\n\n` +
-        errors.join('\n\n') +
-        `\n\nRun 'npm run docs:arch' to regenerate the component map automatically.\n\n`
-      )
-      return { ok: false, missingFiles, deadLinks }
-    }
-
-    process.stdout.write(`All ${sourceFiles.length} modules in src/ are documented in CLAUDE.arch.md. Zero drift.\n`)
-    return { ok: true, count: sourceFiles.length }
-  }
-
-  // Build the complete module manifest
-  const modules = sourceFiles.map((relPath) => {
-    const fullPath = path.join(ROOT, relPath)
-    const role = deriveModuleRole(fullPath, relPath, existingDesc.get(relPath))
-    const category = categorizeModule(relPath)
-    return { relPath, role, category }
-  })
-
-  const generatedTables = generateComponentTables(modules)
-  const wrappedContent = `${MARKER_START}\n\n${generatedTables}\n\n${MARKER_END}`
-
-  let updatedDoc
-  if (rawDoc.includes(MARKER_START) && rawDoc.includes(MARKER_END)) {
-    const startIdx = rawDoc.indexOf(MARKER_START)
-    const endIdx = rawDoc.indexOf(MARKER_END) + MARKER_END.length
-    updatedDoc = rawDoc.slice(0, startIdx) + wrappedContent + rawDoc.slice(endIdx)
-  } else {
-    // If markers don't exist yet, insert under ## Component Map and before ## Storage Layout
-    const compHeader = '## Component Map\n\n'
-    const storageHeader = '\n## Storage Layout'
-    const compIdx = rawDoc.indexOf(compHeader)
-    const storageIdx = rawDoc.indexOf(storageHeader)
-
-    if (compIdx !== -1 && storageIdx !== -1) {
-      updatedDoc =
-        rawDoc.slice(0, compIdx + compHeader.length) +
-        wrappedContent +
-        rawDoc.slice(storageIdx)
-    } else {
-      throw new Error('Could not locate "## Component Map" or "## Storage Layout" in CLAUDE.arch.md')
-    }
-  }
-
-  // Normalize line endings
-  const normalized = updatedDoc.replace(/\r\n/g, '\n')
-  fs.writeFileSync(ARCH_DOC, normalized, 'utf8')
-
-  process.stdout.write(`Updated ${ARCH_DOC}: synchronized all ${modules.length} modules across ${CATEGORY_ORDER.length} categories.\n`)
-  return { ok: true, count: modules.length }
+/** The documented Role, when it is curated: non-empty and not text this engine could have generated for the module. */
+function keptRole(existing, generated) {
+  const role = existing === undefined ? '' : existing.role.trim()
+  return role === '' || generated.has(role) ? null : role
 }
 
-const invokedDirectly =
-  isMainModule(import.meta.url)
-
-if (invokedDirectly) {
-  const check = process.argv.includes('--check')
-  const result = syncArchDocs({ check })
-  if (!result.ok) {
-    process.exit(1)
+function plan(root, config) {
+  const docText = readRegular(root, config.doc)
+  if (docText === null) throw new ArchDocError(`${config.doc}: architecture doc not found`)
+  assertNoLoneCr(docText, config.doc)
+  const markers = findMarkers(docText)
+  const documented = parseTable(currentInner(docText, markers))
+  const { components, excluded } = discover(config, listTracked(root))
+  const rows = new Map()
+  for (const key of components) {
+    const text = readRegular(root, key)
+    if (text === null) continue
+    const layer = layerFor(key, config.layers)
+    const { autoRole, exports } = describeModule(key, layer, text)
+    const existing = documented.get(key)
+    const generated = new Set([autoRole, templateRole(key, layer)])
+    if (existing !== undefined) generated.add(templateRole(key, existing.layer))
+    rows.set(key, { module: key, layer, role: keptRole(existing, generated) ?? autoRole, exports })
   }
+  const generatedInner = toNewline(renderTable(rows.values(), config.layers), detectNewline(docText))
+  if (generatedInner.includes(START_MARKER) || generatedInner.includes(END_MARKER)) {
+    throw new ArchDocError('generated table contains a sync marker; refusing to write it')
+  }
+  return { docText, markers, documented, rows, excluded, generatedInner }
+}
+
+/** Findings in the skill's `--check` order: undocumented, obsolete, stale, then a layout-only difference. */
+function findings(p, doc) {
+  const unmapped = [...p.rows.keys()].filter((key) => !p.documented.has(key)).sort(byteCompare)
+  const obsolete = [...p.documented.keys()].filter((key) => !p.rows.has(key)).sort(byteCompare)
+  const stale = [...p.rows.keys()]
+    .filter((key) => {
+      const had = p.documented.get(key)
+      const row = p.rows.get(key)
+      return had !== undefined && (had.layer !== row.layer || had.role !== row.role || had.exports !== row.exports)
+    })
+    .sort(byteCompare)
+  const layoutDrift = unmapped.length + obsolete.length + stale.length === 0 && p.generatedInner !== currentInner(p.docText, p.markers)
+  const lines = [
+    ...unmapped.map((key) => `error: ${key}: undocumented module, run --write`),
+    ...obsolete.map((key) => `error: ${key}: obsolete entry, module no longer exists`),
+    ...stale.map((key) => `error: ${key}: stale entry, run --write`),
+    ...(layoutDrift ? [`error: ${doc}: table layout differs from generated output, run --write`] : []),
+  ]
+  return { drift: lines.length > 0, lines }
+}
+
+function writeAtomic(target, data) {
+  const temp = `${target}.tmp-${process.pid}`
+  try {
+    fs.writeFileSync(temp, data, { mode: fs.statSync(target).mode })
+    fs.renameSync(temp, target)
+  } finally {
+    fs.rmSync(temp, { force: true })
+  }
+}
+
+function parseArgs(argv) {
+  let mode
+  for (const arg of argv) {
+    if ((arg !== '--check' && arg !== '--write') || (mode !== undefined && mode !== arg)) {
+      throw new ArchDocError(`${arg === '--check' || arg === '--write' ? 'conflicting' : 'unknown'} argument ${JSON.stringify(arg)}\n${USAGE}`)
+    }
+    mode = arg
+  }
+  return mode === '--check' ? 'check' : 'write'
+}
+
+/** Runs the engine from `cwd` and returns the exit code: 0 in sync or written, 1 drift, 2 configuration or usage error. Findings go through `stderr`, one line each; nothing is ever written to stdout. */
+export function runCli(argv, { cwd = process.cwd(), stderr = (line) => process.stderr.write(`${line}\n`) } = {}) {
+  try {
+    const mode = parseArgs(argv)
+    const root = repoRoot(cwd)
+    const config = loadConfig({
+      has: (rel) => fs.existsSync(path.join(root, rel)),
+      read: (rel) => fs.readFileSync(path.join(root, rel), 'utf8'),
+    })
+    const p = plan(root, config)
+    if (mode === 'check') {
+      const result = findings(p, config.doc)
+      for (const line of result.lines) stderr(line)
+      return result.drift ? 1 : 0
+    }
+    if (p.generatedInner !== currentInner(p.docText, p.markers)) {
+      writeAtomic(path.join(root, config.doc), splice(p.docText, p.markers, p.generatedInner))
+      stderr(`info: ${config.doc}: updated (${p.rows.size} modules)`)
+    }
+    return 0
+  } catch (error) {
+    if (!(error instanceof ArchDocError)) throw error
+    stderr(`error: ${error.message}`)
+    return 2
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  process.exitCode = runCli(process.argv.slice(2))
 }
