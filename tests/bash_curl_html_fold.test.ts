@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { tempConfigPath } from './helpers/temp-config.js'
+import { tempConfigPath, tempDir } from './helpers/temp-config.js'
 
 const _testConfigPath = tempConfigPath('tg-curl-html-fold-config.toml')
 vi.mock('../src/constants.js', async (importOriginal) => {
@@ -58,9 +58,12 @@ function postEvent(command: string, output: string, exitCode = 0, sessionId = 's
 }
 
 const ORIG_BC = process.env['TOKEN_GOAT_BASH_COMPRESS']
+const ORIG_HOME = process.env['TOKEN_GOAT_HOME']
 
 describe('postBashHandler: curl HTML body cleaned via extractCleanText', () => {
   beforeEach(() => {
+    // The cached build-command branch folds a rerun into a delta against whatever the output cache already holds for that command, and that cache lives under TOKEN_GOAT_HOME, which an exported home shares across test files: a file that cached `npm run build` first turned this file's answer into a plain context hint. A home of its own per row removes the dependence on file order.
+    process.env['TOKEN_GOAT_HOME'] = tempDir()
     clearModuleCaches()
     try {
       fs.unlinkSync(_testConfigPath)
@@ -72,6 +75,8 @@ describe('postBashHandler: curl HTML body cleaned via extractCleanText', () => {
   })
 
   afterEach(() => {
+    if (ORIG_HOME === undefined) delete process.env['TOKEN_GOAT_HOME']
+    else process.env['TOKEN_GOAT_HOME'] = ORIG_HOME
     if (ORIG_BC === undefined) delete process.env['TOKEN_GOAT_BASH_COMPRESS']
     else process.env['TOKEN_GOAT_BASH_COMPRESS'] = ORIG_BC
     invalidateConfigCache()
