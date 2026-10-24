@@ -51,6 +51,12 @@ function shellCall(command: string, cwd: string, shape: 'claude' | 'copilot'): H
   return makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput, sessionId: 'shell-write-session', raw: { tool_name: 'Bash', tool_input: toolInput, tool_response: toolResponse, cwd } })
 }
 
+/** A shell post hook for `command` that exited 1. */
+function failedShellCall(command: string, cwd: string): HookEvent {
+  const toolInput = { command }
+  return makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput, sessionId: 'shell-write-session', raw: { tool_name: 'Bash', tool_input: toolInput, tool_response: { stdout: '', stderr: 'boom', exit_code: 1 }, cwd } })
+}
+
 const dirs: string[] = []
 function repo(): string {
   const dir = gitRepoWithCommit()
@@ -128,11 +134,25 @@ describe('a shell command that writes through a program the hook cannot read', (
     expect(getDirtyPaths()).toEqual([])
   })
 
-  it('asks for nothing when the command failed', async () => {
+  it('still asks to reconcile when the command failed, since it may have written before it did', async () => {
     const dir = repo()
-    const toolInput = { command: 'node scripts/generate.js' }
-    await postBashHandler(makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput, sessionId: 'shell-write-session', raw: { tool_name: 'Bash', tool_input: toolInput, tool_response: { stdout: '', stderr: 'boom', exit_code: 1 }, cwd: dir } }))
+    await postBashHandler(failedShellCall('node scripts/generate.js', dir))
+    expect(reconcileRequests()).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it('still queues the file a failed redirect named', async () => {
+    const dir = repo()
+    writeFileSync(join(dir, 'a.txt'), 'x')
+    await postBashHandler(failedShellCall('echo hi > a.txt', dir))
     expect(reconcileRequests()).toEqual([])
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+  })
+
+  it('asks for nothing when a read-only command failed', async () => {
+    const dir = repo()
+    await postBashHandler(failedShellCall('git status', dir))
+    expect(reconcileRequests()).toEqual([])
+    expect(getDirtyPaths()).toEqual([])
   })
 
   it('asks for nothing more when a sed -i already named its file', async () => {
@@ -290,7 +310,94 @@ describe('segmentMayWriteFiles', () => {
     ['npm run build', true],
     ['FOO=1 python x.py', true],
     ['Get-ChildItem | Where-Object { Set-Content $_ x }', true],
+    ['echo hi > out.txt', false],
+    ['echo hi>out.txt', false],
+    ['echo hi &> out.txt', false],
+    ['echo hi > "$f"', true],
+    ['echo hi > $OUT', true],
+    ['echo "$(python gen.py)"', true],
+    ['cat `npm run gen`', true],
+    ['diff <(make x) y', true],
+    ['find . -fls out.txt', true],
+    ['echo hi >', true],
+    ['echo "unterminated', true],
+    ['echo $(echo hi > f)', true],
+    ['echo $(echo $(echo $(echo $(pwd))))', true],
+    ['echo $(pwd)', false],
+    ['diff <(ls a) <(ls b)', false],
+    ['rg ">" src', false],
+    ['rg foo 2>&1', false],
+    ['ls 2>/dev/null', false],
+    ['echo $((1 + 2))', false],
+    ['find . \\( -name a -o -name b \\)', false],
   ])('%s -> %s', (segment, expected) => {
     expect(segmentMayWriteFiles(segment)).toBe(expected)
+  })
+})
+
+describe('a read-only head does not excuse a write the segment makes itself', () => {
+  it.each([
+    ['echo hi > "$f"'],
+    ['echo hi > $OUT'],
+    ['echo "$(python gen.py)"'],
+    ['cat `npm run gen`'],
+    ['diff <(make x) y'],
+    ['Get-ChildItem | ForEach-Object { $o = npm run gen }'],
+    ['find . -fls out.txt'],
+    ['echo hi >| out.txt'],
+    ['echo $(echo hi > f)'],
+    ['echo $(cat a | tee b)'],
+    ['Write-Output (npm run gen)'],
+    ['echo $((1 + $(npm run gen)))'],
+    ['echo "unterminated'],
+    ['rm --recursive dist.old'],
+    ['rm dist.old --recursive'],
+    ['Remove-Item -Path dist.old -Rec'],
+    ['docker cp c:/app/out.txt ./out.txt'],
+    ['Set-Content out.txt (npm run gen)'],
+  ])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests()).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it.each([
+    ['echo hi > a.txt', 'a.txt'],
+    ['echo hi>out.txt', 'out.txt'],
+    ['cat a>b', 'b'],
+    ['echo hi &> out.txt', 'out.txt'],
+    ['Write-Output hi *> out.txt', 'out.txt'],
+    ['echo hi >> a.txt', 'a.txt'],
+    ['echo hi >out.txt 2>&1', 'out.txt'],
+    ['echo "C:\\dir\\" > out.txt', 'out.txt'],
+  ])('%s queues %s and asks for nothing more', async (command, file) => {
+    const dir = repo()
+    writeFileSync(join(dir, file), 'x')
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests()).toEqual([])
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath(file, dir)))
+  })
+
+  it.each([
+    ['git status'],
+    ['rg foo'],
+    ['ls -la'],
+    ['Get-ChildItem'],
+    ['rg ">" src'],
+    ['rg foo 2>&1'],
+    ['ls 2>/dev/null'],
+    ['cat a.txt >&2'],
+    ['echo $(pwd)'],
+    ['ls $(git rev-parse --show-toplevel)'],
+    ['echo "$(date)"'],
+    ['diff <(ls a) <(ls b)'],
+    ['echo $((1 + 2))'],
+    ['Get-ChildItem | ForEach-Object { $o = Get-Date }'],
+    ['Get-ChildItem | ForEach-Object { $_.Name }'],
+  ])('%s asks for nothing', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests()).toEqual([])
+    expect(getDirtyPaths()).toEqual([])
   })
 })
