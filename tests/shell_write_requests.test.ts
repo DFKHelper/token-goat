@@ -567,6 +567,15 @@ describe('git merge --no-commit or --squash and cherry-pick -n rewrite the workt
   })
 })
 
+describe('git pull --no-commit or --squash rewrites the worktree without moving HEAD, so it asks for a reconcile', () => {
+  it.each([['git pull --no-rebase --squash . other'], ['git pull --no-commit . other'], ['git pull --squash . other']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    divergedOther(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
 describe('a PowerShell comma list is not one file name, so it asks for a reconcile', () => {
   it.each([['Set-Content a.ts,b.ts -Value x'], ['New-Item a.ts,b.ts'], ['Out-File -FilePath a.ts,b.ts'], ['Copy-Item a.ts,b.ts sub'], ['Remove-Item a.ts,b.ts'], ['Remove-Item -Path a.ts, b.ts']])(
     '%s asks the worker to reconcile',

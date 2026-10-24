@@ -789,16 +789,16 @@ function gitMayRewriteWorktree(segment: string, runDir: string): boolean {
   const sub = gitSubcommand(tokens)
   if (sub === 'restore') return !restoreIsStagedOnly(segment)
   const args = sub === null ? [] : tokens.slice(tokens.indexOf(sub) + 1)
-  if (sub === 'merge' || sub === 'cherry-pick') return noCommitRewritesWorktree(sub, args)
+  if (sub === 'merge' || sub === 'cherry-pick' || sub === 'pull') return noCommitRewritesWorktree(sub, args)
   if (sub === null || !WORKTREE_GIT_SUBCOMMANDS.has(sub)) return false
   if (args.includes('--') || args.some((t) => optionIs(t, WORKTREE_DISCARD_FLAGS, MIN_LONG_ABBREVIATION))) return true
   // A name that is not on disk is either a branch (HEAD moves, and the head-moving diff covers it) or a tracked file deleted from disk, which checkout restores without moving HEAD. Only a local branch is told apart here, from the ref files, so no git process is spawned; any other name reconciles.
   return args.some((t) => !t.startsWith('-') && (fs.existsSync(resolveIndexPath(t, runDir)) || !localBranchExists(runDir, t)))
 }
 
-/** `merge --no-commit` or `--squash`, and `cherry-pick -n` or `--no-commit`, rewrite the worktree and index without moving HEAD, so no head-moving diff lists the files they change. A short-option cluster holding `n` counts too, the cheap direction. */
-function noCommitRewritesWorktree(sub: 'merge' | 'cherry-pick', args: readonly string[]): boolean {
-  if (sub === 'merge') return args.some((t) => optionIs(t, ['--no-commit', '--squash'], MIN_LONG_ABBREVIATION))
+/** `merge` or `pull` with `--no-commit` or `--squash`, and `cherry-pick -n` or `--no-commit`, rewrite the worktree and index without moving HEAD, so no head-moving diff lists the files they change. A short-option cluster holding `n` counts too for cherry-pick, the cheap direction. */
+function noCommitRewritesWorktree(sub: 'merge' | 'cherry-pick' | 'pull', args: readonly string[]): boolean {
+  if (sub !== 'cherry-pick') return args.some((t) => optionIs(t, ['--no-commit', '--squash'], MIN_LONG_ABBREVIATION))
   return args.some((t) => optionIs(t, ['--no-commit'], MIN_LONG_ABBREVIATION) || (/^-[A-Za-z]+$/.test(t) && t.includes('n')))
 }
 
