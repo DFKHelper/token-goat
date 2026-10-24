@@ -536,6 +536,37 @@ describe('git reset --soft and --mixed discard nothing, so they ask for nothing'
   })
 })
 
+/** Branch `other` adds b.txt, then HEAD returns to its branch and gains c.txt, so `git merge other` is a real three-way merge. */
+function divergedOther(dir: string): void {
+  const git = (...args: string[]): void => {
+    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'maintenance.auto=false', '-c', 'user.email=t@t.t', '-c', 'user.name=t', ...args], { cwd: dir, stdio: 'ignore' })
+  }
+  git('checkout', '-q', '-b', 'other')
+  writeFileSync(join(dir, 'b.txt'), 'other\n')
+  git('add', 'b.txt')
+  git('commit', '-qm', 'other')
+  git('checkout', '-q', '-')
+  writeFileSync(join(dir, 'c.txt'), 'mine\n')
+  git('add', 'c.txt')
+  git('commit', '-qm', 'mine')
+}
+
+describe('git merge --no-commit or --squash and cherry-pick -n rewrite the worktree without moving HEAD, so they ask for a reconcile', () => {
+  it.each([['git merge --no-commit other'], ['git merge --squash other'], ['git merge --no-ff --no-commit other'], ['git merge --no-com other'], ['git cherry-pick -n other'], ['git cherry-pick --no-commit other'], ['git cherry-pick -xn other']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    divergedOther(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it.each([['git merge --no-ff other'], ['git cherry-pick abc1234']])('%s, which commits, asks for no reconcile', async (command) => {
+    const dir = repo()
+    secondCommit(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toEqual([])
+  })
+})
+
 describe('a PowerShell comma list is not one file name, so it asks for a reconcile', () => {
   it.each([['Set-Content a.ts,b.ts -Value x'], ['New-Item a.ts,b.ts'], ['Out-File -FilePath a.ts,b.ts'], ['Copy-Item a.ts,b.ts sub'], ['Remove-Item a.ts,b.ts'], ['Remove-Item -Path a.ts, b.ts']])(
     '%s asks the worker to reconcile',

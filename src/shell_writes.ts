@@ -782,17 +782,24 @@ const WORKTREE_DISCARD_FLAGS: readonly string[] = ['-f', '--force', '--hard', '-
 /** The `git` subcommands that rewrite working-tree files when they name a path or a discard flag. */
 const WORKTREE_GIT_SUBCOMMANDS = new Set(['checkout', 'switch', 'reset'])
 
-/** True when `segment` is a `git` command that may rewrite working-tree files a commit diff cannot list: `restore` unless it is staged-only, and `checkout`, `switch` or `reset` that names a path (`--`, a name on disk under `runDir`, or any name that is not a local branch) or discards changes (`-f`, `--hard`). Such a command asks for a reconcile whatever its exit code. */
+/** True when `segment` is a `git` command that may rewrite working-tree files a commit diff cannot list: `restore` unless it is staged-only, and `checkout`, `switch` or `reset` that names a path (`--`, a name on disk under `runDir`, or any name that is not a local branch) or discards changes (`-f`, `--hard`), and `merge --no-commit` or `--squash` and `cherry-pick -n` or `--no-commit`, which leave HEAD in place. Such a command asks for a reconcile whatever its exit code. */
 function gitMayRewriteWorktree(segment: string, runDir: string): boolean {
   const tokens = safeShlexSplit(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
   if (tokens === null || headOf(tokens) !== 'git') return false
   const sub = gitSubcommand(tokens)
   if (sub === 'restore') return !restoreIsStagedOnly(segment)
+  const args = sub === null ? [] : tokens.slice(tokens.indexOf(sub) + 1)
+  if (sub === 'merge' || sub === 'cherry-pick') return noCommitRewritesWorktree(sub, args)
   if (sub === null || !WORKTREE_GIT_SUBCOMMANDS.has(sub)) return false
-  const args = tokens.slice(tokens.indexOf(sub) + 1)
   if (args.includes('--') || args.some((t) => optionIs(t, WORKTREE_DISCARD_FLAGS, MIN_LONG_ABBREVIATION))) return true
   // A name that is not on disk is either a branch (HEAD moves, and the head-moving diff covers it) or a tracked file deleted from disk, which checkout restores without moving HEAD. Only a local branch is told apart here, from the ref files, so no git process is spawned; any other name reconciles.
   return args.some((t) => !t.startsWith('-') && (fs.existsSync(resolveIndexPath(t, runDir)) || !localBranchExists(runDir, t)))
+}
+
+/** `merge --no-commit` or `--squash`, and `cherry-pick -n` or `--no-commit`, rewrite the worktree and index without moving HEAD, so no head-moving diff lists the files they change. A short-option cluster holding `n` counts too, the cheap direction. */
+function noCommitRewritesWorktree(sub: 'merge' | 'cherry-pick', args: readonly string[]): boolean {
+  if (sub === 'merge') return args.some((t) => optionIs(t, ['--no-commit', '--squash'], MIN_LONG_ABBREVIATION))
+  return args.some((t) => optionIs(t, ['--no-commit'], MIN_LONG_ABBREVIATION) || (/^-[A-Za-z]+$/.test(t) && t.includes('n')))
 }
 
 /** True when `name` is a local branch of the repository above `runDir`: a loose ref file, or a line of packed-refs. A `.git` file (a linked worktree) or no repository above `runDir` answers false, so the caller reconciles, the cheap direction. */
