@@ -431,7 +431,7 @@ describe('a failed head-moving git command asks for a reconcile, since it may ha
 })
 
 describe('git checkout, switch, reset or restore that can rewrite the worktree asks for a reconcile, whatever its exit', () => {
-  it.each([['git checkout a.txt'], ['git checkout .'], ['git checkout -f'], ['git reset --hard'], ['git reset a.txt'], ['git switch -f feature']])('%s asks the worker to reconcile', async (command) => {
+  it.each([['git checkout a.txt'], ['git checkout .'], ['git checkout -f'], ['git reset --hard'], ['git reset a.txt'], ['git switch -f feature'], ['git reset --har'], ['git switch --discard master'], ['git checkout --forc master']])('%s asks the worker to reconcile', async (command) => {
     const dir = repo()
     secondCommit(dir)
     await postBashHandler(shellCall(command, dir, 'claude'))
@@ -511,6 +511,28 @@ describe('a git restore is staged-only only without a worktree flag', () => {
     await postBashHandler(shellCall('git restore --staged a.txt', dir, 'claude'))
     expect(getDirtyPaths()).toEqual([])
     expect(reconcileRequests()).toEqual([])
+  })
+
+  it.each([['git restore --st a.txt'], ['git restore --stag a.txt']])('%s is an abbreviation of --staged, so it queues nothing and asks for nothing', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(getDirtyPaths(), `dirty queue after ${command}`).toEqual([])
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toEqual([])
+  })
+
+  it('git restore --staged --work a.txt puts the worktree back too, so it queues the file', async () => {
+    const dir = repo()
+    await postBashHandler(shellCall('git restore --staged --work a.txt', dir, 'claude'))
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+  })
+})
+
+describe('git reset --soft and --mixed discard nothing, so they ask for nothing', () => {
+  it.each([['git reset --soft'], ['git reset --mixed']])('%s asks for no reconcile', async (command) => {
+    const dir = repo()
+    secondCommit(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toEqual([])
   })
 })
 

@@ -578,15 +578,27 @@ function restoreOptions(segment: string): string[] {
   return dashDash === -1 ? tokens : tokens.slice(0, dashDash)
 }
 
-/** True when `options` carries `longName`, or a short-option cluster holding `letter` (`-S`, `-SW`). */
-function hasRestoreFlag(options: readonly string[], letter: string, longName: string): boolean {
-  return options.some((t) => t === longName || (/^-[A-Za-z]+$/.test(t) && t.includes(letter)))
+/** The shortest `--` abbreviation git reads as an option: `--x`. */
+const MIN_LONG_ABBREVIATION = 3
+
+/** The shortest `--` abbreviation read as `--staged`: `--s` also starts `--source`, so only `--st` or longer is taken as it. */
+const MIN_STAGED_ABBREVIATION = 4
+
+/** True when `token` is one of `flags` as git reads it: the exact spelling, or a `--` abbreviation of at least `minLength` characters that a flag starts with (git accepts `--har` for `--hard`). */
+function optionIs(token: string, flags: readonly string[], minLength: number): boolean {
+  const name = token.split('=')[0]!
+  return flags.some((flag) => name === flag || (name.startsWith('--') && name.length >= minLength && flag.startsWith(name)))
 }
 
-/** `git restore --staged <file>` only rewrites the index, leaving working-tree content untouched; a worktree flag (`--worktree`, `-W`, or a cluster holding W) makes it rewrite the working tree as well. */
+/** True when `options` carries `longName` (or an abbreviation of it at least `minLength` long), or a short-option cluster holding `letter` (`-S`, `-SW`). */
+function hasRestoreFlag(options: readonly string[], letter: string, longName: string, minLength: number): boolean {
+  return options.some((t) => optionIs(t, [longName], minLength) || (/^-[A-Za-z]+$/.test(t) && t.includes(letter)))
+}
+
+/** `git restore --staged <file>` only rewrites the index, leaving working-tree content untouched; a worktree flag (`--worktree`, `-W`, or a cluster holding W, or an abbreviation of `--worktree`) makes it rewrite the working tree as well. */
 function restoreIsStagedOnly(segment: string): boolean {
   const options = restoreOptions(segment)
-  return hasRestoreFlag(options, 'S', '--staged') && !hasRestoreFlag(options, 'W', '--worktree')
+  return hasRestoreFlag(options, 'S', '--staged', MIN_STAGED_ABBREVIATION) && !hasRestoreFlag(options, 'W', '--worktree', MIN_LONG_ABBREVIATION)
 }
 
 /** The `git stash` subcommands that rewrite the working tree: `pop` and `apply` put changes back, `branch` checks out a branch and applies the stash onto it, and `push` or `save` put files back to their committed content, as a bare `git stash` or one taking only options does. `list`, `show`, `drop`, `clear`, `create` and `store` touch no file. */
@@ -765,7 +777,7 @@ function enqueueRewrittenPath(absPath: string): void {
 }
 
 /** Options that make `checkout`, `switch` or `reset` discard working-tree changes, or pick hunks to discard (`-p`, `--patch`), which no commit diff lists. */
-const WORKTREE_DISCARD_FLAGS = new Set(['-f', '--force', '--hard', '--merge', '--discard-changes', '-p', '--patch'])
+const WORKTREE_DISCARD_FLAGS: readonly string[] = ['-f', '--force', '--hard', '--merge', '--discard-changes', '-p', '--patch']
 
 /** The `git` subcommands that rewrite working-tree files when they name a path or a discard flag. */
 const WORKTREE_GIT_SUBCOMMANDS = new Set(['checkout', 'switch', 'reset'])
@@ -778,7 +790,7 @@ function gitMayRewriteWorktree(segment: string, runDir: string): boolean {
   if (sub === 'restore') return !restoreIsStagedOnly(segment)
   if (sub === null || !WORKTREE_GIT_SUBCOMMANDS.has(sub)) return false
   const args = tokens.slice(tokens.indexOf(sub) + 1)
-  if (args.includes('--') || args.some((t) => WORKTREE_DISCARD_FLAGS.has(t))) return true
+  if (args.includes('--') || args.some((t) => optionIs(t, WORKTREE_DISCARD_FLAGS, MIN_LONG_ABBREVIATION))) return true
   // A name that is not on disk is either a branch (HEAD moves, and the head-moving diff covers it) or a tracked file deleted from disk, which checkout restores without moving HEAD. Only a local branch is told apart here, from the ref files, so no git process is spawned; any other name reconciles.
   return args.some((t) => !t.startsWith('-') && (fs.existsSync(resolveIndexPath(t, runDir)) || !localBranchExists(runDir, t)))
 }
