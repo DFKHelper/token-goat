@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-/** scripts/sync-arch-docs.mjs Keeps the component table in CLAUDE.arch.md in sync with the tracked source modules. Renders the arch-doc-sync skill's flat table, `| Module | Layer | Role | Key exports |`, between the ARCH_COMPONENTS markers and leaves everything outside them alone. The table contract is SKILL.md "Component Table Contract" and the config is its "Config"; the config for this repo is config/arch-docs.json. Usage: node scripts/sync-arch-docs.mjs [--check | --write] [--staged] [--format text|json]   (no mode flag writes) --check  read-only; findings go to stderr, stdout stays empty; exit 1 on drift. --check --staged  check the commit about to be made: the doc, config, file list, renames and contents come from the git index. --check --format=json  one compact JSON object on stdout instead of the findings. --write  rewrite the table in place; exit 0. Exit codes: 0 in sync (or written), 1 drift, 2 configuration or usage error. A curated Role is never overwritten; it follows a rename, is copied to each child of a split, the longest one survives a merge, and each of those (and each drop) is reported as a warning (--check) or an info line (--write). Not implemented, deliberately: layer-order, cycle and side-effect checks (the JSON keys for them are empty arrays), folder roots and Python/Go modules. */
+/** scripts/sync-arch-docs.mjs Keeps the component table in CLAUDE.arch.md in sync with the tracked source modules. Renders the arch-doc-sync skill's flat table, `| Module | Layer | Role | Key exports |`, between the ARCH_COMPONENTS markers and leaves everything outside them alone. The table contract is SKILL.md "Component Table Contract" and the config is its "Config"; the config for this repo is config/arch-docs.json. Usage: node scripts/sync-arch-docs.mjs [--check | --write] [--staged] [--format text|json]   (no mode flag writes) --check  read-only; findings go to stderr, stdout stays empty; exit 1 on drift. --check --staged  check the commit about to be made: the doc, config, file list, renames and contents come from the git index. --check --format=json  one compact JSON object on stdout instead of the findings. --write  rewrite the table in place; exit 0. Exit codes: 0 in sync (or written), 1 drift, 2 configuration or usage error. A curated Role is never overwritten; it follows a rename, is copied to each child of a split, the longest one survives a merge, and each of those (and each drop) is reported as a warning (--check) or an info line (--write). --check also reports layer-order violations and static import cycles (SKILL.md "Architectural Analysis Contract", analysis in arch-docs/analysis.mjs) and puts side-effect labels in the JSON. Not implemented, deliberately: folder roots and Python/Go modules. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
+import { analyzeArchitecture } from './arch-docs/analysis.mjs'
 import { ArchDocError, CONFIG_CANDIDATES, globMatch, isCodeFile, layerFor, loadConfig, selectRoot } from './arch-docs/config.mjs'
 import { droppedRoleNotes, keptRole, resolveRenames } from './arch-docs/curated.mjs'
 import { jsExports } from './arch-docs/exports.mjs'
@@ -86,10 +87,10 @@ function plan(root, config, source) {
   if (generatedInner.includes(START_MARKER) || generatedInner.includes(END_MARKER)) {
     throw new ArchDocError('generated table contains a sync marker; refusing to write it')
   }
-  return { docText, markers, documented, rows, obsolete, notes, excluded, generatedInner }
+  return { docText, markers, documented, rows, texts, obsolete, notes, excluded, generatedInner }
 }
 
-/** What `--check` found, in the skill's order: undocumented, obsolete, stale, then a layout-only difference; `notes` are the curated-role warnings. */
+/** What `--check` found, in the skill's order: undocumented, obsolete, stale, layer-order violations, static cycles, then a layout-only difference; `notes` are the curated-role warnings and `sideEffects` is informational. */
 function report(p) {
   const unmapped = [...p.rows.keys()].filter((key) => !p.documented.has(key)).sort(byteCompare)
   const stale = [...p.rows.keys()]
@@ -99,8 +100,10 @@ function report(p) {
       return had !== undefined && (had.layer !== row.layer || had.role !== row.role || had.exports !== row.exports)
     })
     .sort(byteCompare)
-  const layoutDrift = unmapped.length + p.obsolete.length + stale.length === 0 && p.generatedInner !== currentInner(p.docText, p.markers)
-  return { unmapped, obsolete: p.obsolete, stale, layoutDrift, notes: p.notes, drift: unmapped.length + p.obsolete.length + stale.length > 0 || layoutDrift }
+  const { sideEffects, layerViolations, staticCycles } = analyzeArchitecture(p.rows, p.texts)
+  const rowDrift = unmapped.length + p.obsolete.length + stale.length + layerViolations.length + staticCycles.length > 0
+  const layoutDrift = !rowDrift && p.generatedInner !== currentInner(p.docText, p.markers)
+  return { unmapped, obsolete: p.obsolete, stale, layerViolations, staticCycles, sideEffects, layoutDrift, notes: p.notes, drift: rowDrift || layoutDrift }
 }
 
 function findingLines(r, doc) {
@@ -108,21 +111,23 @@ function findingLines(r, doc) {
     ...r.unmapped.map((key) => `error: ${key}: undocumented module, run --write`),
     ...r.obsolete.map((key) => `error: ${key}: obsolete entry, module no longer exists`),
     ...r.stale.map((key) => `error: ${key}: stale entry, run --write`),
+    ...r.layerViolations.map((v) => `error: ${v.source}: dependency on ${v.target} violates layer order (${v.source_layer} -> ${v.target_layer})`),
+    ...r.staticCycles.map((cycle) => `error: static dependency cycle: ${cycle.join(', ')}`),
     ...(r.layoutDrift ? [`error: ${doc}: table layout differs from generated output, run --write`] : []),
     ...r.notes.map((note) => `warning: ${note}`),
   ]
 }
 
-/** The skill's JSON object: fixed key order, compact. The layer, cycle and side-effect arrays are always empty here. */
+/** The skill's JSON object: fixed key order, compact. */
 function jsonReport(r) {
   return JSON.stringify({
     curated_at_risk: r.notes,
-    layer_violations: [],
+    layer_violations: r.layerViolations,
     layout_drift: r.layoutDrift,
     obsolete: r.obsolete,
-    side_effects: [],
+    side_effects: r.sideEffects,
     stale: r.stale,
-    static_cycles: [],
+    static_cycles: r.staticCycles,
     status: r.drift ? 'drift' : 'ok',
     unmapped: r.unmapped,
   })
