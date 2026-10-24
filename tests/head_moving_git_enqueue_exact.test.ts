@@ -311,28 +311,44 @@ describe('a command that moves HEAD more than once, or replays several commits, 
     expectNarrowEnqueue([folded('c.txt', dir)])
   })
 
-  it.each([
-    ['git rebase -i', (dir: string, base: string, original: string): number | null => gitStatus(dir, 'rebase', '-q', '-i', original), 'git rebase -i original'],
-    ['git rebase --onto', (dir: string, base: string, original: string): number | null => gitStatus(dir, 'rebase', '-q', '--onto', original, base, 'feature'), 'git rebase --onto original base feature'],
-  ])('%s replaying several commits is covered by ORIG_HEAD and enqueues only the mainline file', async (_label, replay, command) => {
-    const dir = indexableDir()
-    fs.writeFileSync(join(dir, 'base.txt'), 'base\n')
-    git(dir, 'init', '-q')
-    git(dir, 'add', '.')
-    git(dir, 'commit', '-qm', 'init')
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
-    git(dir, 'checkout', '-qb', 'feature')
-    commitFile(dir, 'first.txt', 'first\n')
-    commitFile(dir, 'second.txt', 'second\n')
-    git(dir, 'checkout', '-q', original)
-    const base = git(dir, 'rev-parse', 'HEAD')
-    commitFile(dir, 'mainline.txt', 'mainline\n')
-    git(dir, 'checkout', '-q', 'feature')
-    expect(replay(dir, base, original), 'calibration: the rebase finishes').toBe(0)
+})
 
-    await postBash(command, dir)
+/** A feature branch with two commits, off a base that gained mainline.txt after them. Returns with `feature` checked out, ready for a rebase that replays it. */
+function replayFixture(): { dir: string; original: string; base: string } {
+  const dir = indexableDir()
+  fs.writeFileSync(join(dir, 'base.txt'), 'base\n')
+  git(dir, 'init', '-q')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-qm', 'init')
+  const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+  git(dir, 'checkout', '-qb', 'feature')
+  commitFile(dir, 'first.txt', 'first\n')
+  commitFile(dir, 'second.txt', 'second\n')
+  git(dir, 'checkout', '-q', original)
+  const base = git(dir, 'rev-parse', 'HEAD')
+  commitFile(dir, 'mainline.txt', 'mainline\n')
+  git(dir, 'checkout', '-q', 'feature')
+  return { dir, original, base }
+}
+
+describe('a rebase that replays several commits is covered by ORIG_HEAD, and enqueues only the mainline file', () => {
+  it('git rebase -i replays feature and enqueues only the mainline file', async () => {
+    const { dir, original } = replayFixture()
+    expect(gitStatus(dir, 'rebase', '-q', '-i', original), 'calibration: the rebase finishes').toBe(0)
+
+    await postBash('git rebase -i original', dir)
 
     expectNarrowEnqueue([folded('mainline.txt', dir)])
+  })
+
+  it('git rebase --onto names feature as a branch, so the project is reconciled as well as the mainline file queued', async () => {
+    const { dir, original, base } = replayFixture()
+    expect(gitStatus(dir, 'rebase', '-q', '--onto', original, base, 'feature'), 'calibration: the rebase finishes').toBe(0)
+
+    await postBash('git rebase --onto original base feature', dir)
+
+    expect(dirty().sort()).toEqual([folded('mainline.txt', dir)])
+    expect(parseReconcileRequests(requestFile()), 'the rebase checked feature out before replaying it, which the reflog diff cannot list').toHaveLength(1)
   })
 })
 
@@ -402,5 +418,55 @@ describe('git revert asks for a reconcile in every form, with real git, since it
     await postBash(command, dir)
 
     expect(parseReconcileRequests(requestFile()), `reconcile requests after ${command}`).toHaveLength(1)
+  })
+})
+
+/** `other` and the base have diverged: `other` rewrites a.txt, adds o.txt and sub/a.txt, the base gains m.txt, and `third` names the first commit. Returns on the base branch. */
+function divergedBranches(): { dir: string; base: string } {
+  const dir = gitRepoWithCommit()
+  const base = git(dir, 'symbolic-ref', '--short', 'HEAD')
+  git(dir, 'branch', 'third')
+  git(dir, 'checkout', '-qb', 'other')
+  commitFile(dir, 'a.txt', 'other\n')
+  commitFile(dir, 'o.txt', 'o\n')
+  fs.mkdirSync(join(dir, 'sub'))
+  commitFile(dir, 'sub/a.txt', 'sub\n')
+  git(dir, 'checkout', '-q', base)
+  commitFile(dir, 'm.txt', 'm\n')
+  return { dir, base }
+}
+
+describe('a rebase that names a branch reconciles, since git checks that branch out before the reflog diff can see its files', () => {
+  it.each([['rebase BASE other'], ['rebase --onto third BASE other'], ['rebase -s ours BASE other'], ['rebase --exec true BASE other'], ['rebase --root other']])('git %s reconciles', async (form) => {
+    const { dir, base } = divergedBranches()
+    const argv = form.split(' ').map((word) => (word === 'BASE' ? base : word))
+    git(dir, ...argv)
+
+    await postBash(`git ${argv.join(' ')}`, dir)
+
+    expect(parseReconcileRequests(requestFile()), `reconcile requests after git ${argv.join(' ')}`).toHaveLength(1)
+  })
+
+  it('a rebase of the checked-out branch with one upstream keeps the reflog diff and asks for no reconcile', async () => {
+    const { dir, base } = divergedBranches()
+    git(dir, 'checkout', '-q', 'other')
+    git(dir, 'rebase', base)
+
+    await postBash(`git rebase ${base}`, dir)
+
+    const moved = git(dir, 'diff', '--name-only', 'ORIG_HEAD', 'HEAD').split('\n').filter((f) => f !== '')
+    expect(moved.length, 'calibration: the rebase moved files').toBeGreaterThan(0)
+    expectNarrowEnqueue(moved.map((f) => folded(f, dir)))
+  })
+
+  it.each([['rebase --exec true BASE'], ['rebase -s ours BASE']])('git %s with one upstream and an option value keeps the reflog diff', async (form) => {
+    const { dir, base } = divergedBranches()
+    git(dir, 'checkout', '-q', 'other')
+    const argv = form.split(' ').map((word) => (word === 'BASE' ? base : word))
+    git(dir, ...argv)
+
+    await postBash(`git ${argv.join(' ')}`, dir)
+
+    expect(parseReconcileRequests(requestFile()), `reconcile requests after git ${argv.join(' ')}`).toEqual([])
   })
 })
