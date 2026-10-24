@@ -603,6 +603,15 @@ describe('git rebase, cherry-pick or revert with --continue asks for a reconcile
   })
 })
 
+describe('git am in any form asks for a reconcile, since no reflog diff covers the patch it applies or its --continue', () => {
+  it.each([['git am patch.mbox'], ['git am --continue'], ['git am --cont'], ['git am --resolved'], ['git am -r'], ['true && git am --continue']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    divergedOther(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
 describe('a cherry-pick or revert naming several revisions or a range replays several commits, so it asks for a reconcile', () => {
   it.each([['git cherry-pick HEAD~1 HEAD'], ['git cherry-pick HEAD~1..HEAD'], ['git cherry-pick HEAD~2...HEAD'], ['git cherry-pick ^HEAD~1 HEAD'], ['git cherry-pick --stdin'], ['git revert HEAD HEAD~1'], ['true && git cherry-pick HEAD~1 HEAD']])('%s asks the worker to reconcile', async (command) => {
     const dir = repo()

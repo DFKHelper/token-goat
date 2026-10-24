@@ -335,3 +335,53 @@ describe('a command that moves HEAD more than once, or replays several commits, 
     expectNarrowEnqueue([folded('mainline.txt', dir)])
   })
 })
+
+/** Leaves `git am` stopped on a.txt, with the patch's new file n.txt still to write: the patch and its resolution are both real git. */
+function amStoppedOnConflict(dir: string): void {
+  const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+  commitFile(dir, 'a.txt', 'base\n')
+  git(dir, 'checkout', '-qb', 'feature')
+  fs.writeFileSync(join(dir, 'a.txt'), 'feature\n')
+  fs.writeFileSync(join(dir, 'n.txt'), 'new\n')
+  git(dir, 'add', 'a.txt', 'n.txt')
+  git(dir, 'commit', '-qm', 'feature changes a.txt and adds n.txt')
+  const mbox = join(dir, '.git', 'feature.mbox')
+  fs.writeFileSync(mbox, `${git(dir, 'format-patch', '-1', '--stdout', 'HEAD')}\n`)
+  git(dir, 'checkout', '-q', original)
+  commitFile(dir, 'a.txt', 'mainline\n')
+  expect(gitStatus(dir, 'am', mbox), 'calibration: the am stops on a.txt').not.toBe(0)
+}
+
+describe('git am asks for a reconcile in every form, since no reflog diff covers the patch it applies or its --continue', () => {
+  it('a clean git am <mbox> reconciles, although the patch adds a file and changes another', async () => {
+    const dir = gitRepoWithCommit()
+    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    commitFile(dir, 'a.txt', 'base\n')
+    git(dir, 'checkout', '-qb', 'feature')
+    commitFile(dir, 'a.txt', 'feature\n')
+    fs.writeFileSync(join(dir, 'n.txt'), 'new\n')
+    git(dir, 'add', 'n.txt')
+    git(dir, 'commit', '-qm', 'feature adds n.txt')
+    const mbox = join(dir, '.git', 'clean.mbox')
+    fs.writeFileSync(mbox, `${git(dir, 'format-patch', '-2', '--stdout', 'HEAD')}\n`)
+    git(dir, 'checkout', '-q', original)
+    expect(gitStatus(dir, 'am', mbox), 'calibration: the am applies both patches').toBe(0)
+
+    await postBash(`git am ${mbox}`, dir)
+
+    expect(parseReconcileRequests(requestFile()), 'am is never head-moving, so only the reconcile covers the files it wrote').toHaveLength(1)
+  })
+
+  it.each([['--continue'], ['--cont'], ['--resolved'], ['-r']])('git am %s after a real conflict reconciles, since the new file is written by hand', async (flag) => {
+    const dir = gitRepoWithCommit()
+    amStoppedOnConflict(dir)
+    fs.writeFileSync(join(dir, 'a.txt'), 'resolved\n')
+    fs.writeFileSync(join(dir, 'n.txt'), 'new\n')
+    git(dir, 'add', 'a.txt', 'n.txt')
+    expect(gitStatus(dir, 'am', flag), 'calibration: the continue commits the patch').toBe(0)
+
+    await postBash(`git am ${flag}`, dir)
+
+    expect(parseReconcileRequests(requestFile()), `reconcile requests after git am ${flag}`).toHaveLength(1)
+  })
+})
