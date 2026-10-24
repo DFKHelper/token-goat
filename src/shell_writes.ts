@@ -539,13 +539,20 @@ function syntaxMayWrite(segment: string, depth = 0, insideSubstitution = false):
   return syntax.substitutions.some((inner) => splitShellSegments(inner).some((part) => headMayWrite(part) || syntaxMayWrite(part, depth + 1, true)))
 }
 
-/** True when the head of `segment` is not a program known only to read, or carries a flag that makes one write. Redirects and substitutions are {@link syntaxMayWrite}'s. */
-/** True for the `git stash` forms that only list, show or print help: `list`, `show`, and any `-h` or `--help`. Every other stash form (`push`, `pop`, `apply`, `drop`, `branch`, bare `stash`) can write. */
-function gitStashReadsOnly(tokens: string[]): boolean {
-  const args = tokens.slice(tokens.indexOf('stash') + 1)
-  return args[0] === 'list' || args[0] === 'show' || args.includes('-h') || args.includes('--help')
+/** True when the stash arguments `args` ask for help: `-h` or `--help` as the first argument after `stash`, or as the first argument after its subcommand (`stash push -h`). Anywhere later it is an option's value, a message or a pathspec, so the form is judged as a write. */
+function gitStashAsksHelp(args: readonly string[]): boolean {
+  const isHelp = (t: string | undefined): boolean => t === '-h' || t === '--help'
+  if (isHelp(args[0])) return true
+  return args[0] !== undefined && !args[0].startsWith('-') && isHelp(args[1])
 }
 
+/** True for the `git stash` forms that only list, show or print help: `list`, `show`, or a help request ({@link gitStashAsksHelp}). Every other stash form (`push`, `pop`, `apply`, `drop`, `branch`, bare `stash`) can write. */
+function gitStashReadsOnly(tokens: string[]): boolean {
+  const args = tokens.slice(tokens.indexOf('stash') + 1)
+  return args[0] === 'list' || args[0] === 'show' || gitStashAsksHelp(args)
+}
+
+/** True when the head of `segment` is not a program known only to read, or carries a flag that makes one write. Redirects and substitutions are {@link syntaxMayWrite}'s. */
 function headMayWrite(segment: string): boolean {
   const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
   const head = headOf(tokens)
@@ -588,7 +595,7 @@ const GIT_STASH_REWRITE_SUBCOMMANDS = new Set(['pop', 'apply', 'branch', 'push',
 /** Git's own leading options that take their value as the next argument, per git(1): `-C <path>`, `-c <name>=<value>`, and the long forms that also accept `--opt=<value>`. */
 const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'])
 
-/** The directory whose working tree a `git stash` segment rewrites, or null when the segment is not one that rewrites it. Environment assignments ahead of `git` and git's own leading options are skipped, and each `-C <path>` moves the directory as git does, relative to the one before it (an empty path leaves it unchanged). `-h` or `--help` anywhere after `stash` prints usage and touches nothing. */
+/** The directory whose working tree a `git stash` segment rewrites, or null when the segment is not one that rewrites it. Environment assignments ahead of `git` and git's own leading options are skipped, and each `-C <path>` moves the directory as git does, relative to the one before it (an empty path leaves it unchanged). `-h` or `--help` as the first argument after `stash` or its subcommand prints usage and touches nothing. */
 function gitStashRewriteDir(segment: string, runDir: string): string | null {
   const tokens = safeShlexSplit(segment)
   if (tokens === null) return null
@@ -605,7 +612,7 @@ function gitStashRewriteDir(segment: string, runDir: string): string | null {
   }
   if (tokens[i] !== 'stash') return null
   const rest = tokens.slice(i + 1)
-  if (rest.some((t) => t === '-h' || t === '--help')) return null
+  if (gitStashAsksHelp(rest)) return null
   const sub = rest[0]
   return sub === undefined || sub.startsWith('-') || GIT_STASH_REWRITE_SUBCOMMANDS.has(sub) ? dir : null
 }

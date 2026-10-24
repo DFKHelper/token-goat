@@ -447,6 +447,35 @@ describe('git checkout, switch, reset or restore that can rewrite the worktree a
   })
 })
 
+describe('a git stash whose -h or --help follows an option, a -m value or -- is not a help request', () => {
+  it.each([
+    ['git stash push -m -h', '.'],
+    ['git stash push -m --help', '.'],
+    ['git stash -k -m -h', '.'],
+    ['git stash push -- -h', '.'],
+    ['git -C sub stash push -m -h', 'sub'],
+    ['git stash -m list', '.'],
+    ['git stash push --message=--help', '.'],
+  ])('%s asks the worker to reconcile %s', async (command, where) => {
+    const dir = repo()
+    mkdirSync(join(dir, 'sub'))
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(join(dir, where))))
+  })
+
+  it('a PowerShell-tool-shaped git stash push -m -h asks the worker to reconcile', async () => {
+    const dir = repo()
+    await postBashHandler(shellCall('git stash push -m -h', dir, 'copilot'))
+    expect(reconcileRequests(), 'reconcile requests after the copilot-shaped git stash push -m -h').toContain(foldPath(normalizePath(dir)))
+  })
+
+  it.each([['git stash -h'], ['git stash --help'], ['git stash push -h'], ['git stash list'], ['git stash show -p']])('%s is read-only and asks for no reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toEqual([])
+  })
+})
+
 describe('a writing command that fails part-way still queues the files it named', () => {
   it.each([
     ['sed -i s/one/two/ a.txt missing.txt', 2, 'a.txt'],
