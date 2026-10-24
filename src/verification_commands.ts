@@ -10,11 +10,13 @@ const CHECK_SCRIPT_NAME = /^(?:run_[\w-]*tests?[\w-]*|validate[\w-]*|check[_-][\
 const PATH_OR_SELECTOR_ARG = /^[\w./@~][\w./@\\-]*(?:::[\w./@\\-]+)*$/
 /** A directory (trailing separator, or a separator and a last segment without a dot), a `::` selector, or a file with a source extension; a data, output or document extension (`.json`, `.txt`, `.log`, `.md`) never counts, because such a file is as likely a report the script writes as an input it checks, and a document's existence says nothing about what the run verified. */
 const PATH_EVIDENCE = /::|[/\\]$|[/\\][^/\\.]+$|\.(?:py|ts|tsx|js|mjs|cjs)$/i
+/** A `.md` document as a bare word, a `::` selector or a directory form: it is never a check input, whichever of the forms in PATH_EVIDENCE it takes. */
+const DOCUMENT_ARG = /\.md(?:::|[/\\]|$)/i
 /** The one switch a recognised script run may carry: the repository's own spelling for "run this script's built-in tests". Every other switch (`-h`, `--help`, `--list`, `--version`, `--dry-run`, an unknown one) can print or preview instead of checking, so it makes the run not a check. */
 const SELF_TEST_FLAG = '--self-test'
 
 function isCheckArgument(word: string): boolean {
-  return word === SELF_TEST_FLAG || (PATH_OR_SELECTOR_ARG.test(word) && PATH_EVIDENCE.test(word))
+  return word === SELF_TEST_FLAG || (PATH_OR_SELECTOR_ARG.test(word) && PATH_EVIDENCE.test(word) && !DOCUMENT_ARG.test(word))
 }
 
 /** True when `segment` (its leading `NAME=value` assignments already removed) runs a script that checks a repository: one with a checking file name, or any script given `--self-test`, carrying only path or selector arguments besides that switch. A bare `python foo.py` is not one, and neither is a help, listing, version or preview run of a checking script. */

@@ -384,7 +384,7 @@ describe('a .md argument of a script check', () => {
     vi.unstubAllEnvs()
   })
 
-  it.each(['spec.md', 'report.md', 'out/report.md', 'REPORT.MD'])('does not count %j whether or not it exists', (word) => {
+  it.each(['spec.md', 'report.md', 'out/report.md', 'REPORT.MD', 'out.md::sel', 'OUT.MD::sel', 'out.md/'])('does not count %j whether or not it exists', (word) => {
     expect(isVerificationCommand(`python scripts/validate_x.py ${word}`)).toBe(false)
   })
 
