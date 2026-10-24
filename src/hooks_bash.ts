@@ -118,7 +118,7 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
     process.platform === 'win32' &&
     (event.raw['_tg_harness'] === 'codex' ||
       event.raw['_tg_harness'] === 'copilot_cli' ||
-      event.raw['tool_name'] === 'powershell')
+      /^powershell$/i.test(String(event.raw['tool_name'])))
 
   if (isPwshHarness) {
     if (!canRunPowerShell()) return null
@@ -258,7 +258,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // A walk of a whole filesystem root or the home directory with no depth bound outlives the shell that timed out and keeps burning CPU, so it is refused here before it starts; the harness decides whether a bare `find` is Git's or the Windows text-search one. There is no config switch for it on purpose: a switch nobody has asked for is a rule that can be left off.
   const walk = detectUnboundedWalk(rawCmd, {
     windows: process.platform === 'win32',
-    powershell: process.platform === 'win32' && (event.raw['_tg_harness'] === 'codex' || event.raw['_tg_harness'] === 'copilot_cli' || (typeof event.raw['tool_name'] === 'string' && event.raw['tool_name'].toLowerCase() === 'powershell')),
+    powershell: process.platform === 'win32' && (event.raw['_tg_harness'] === 'codex' || event.raw['_tg_harness'] === 'copilot_cli' || /^powershell$/i.test(String(event.raw['tool_name']))),
   })
   if (walk !== null) {
     recordStat('session_hint', 0, 0)
@@ -811,5 +811,7 @@ export function preBashHandler(event: HookEvent): HookOutput {
   return applyHintTracking(event, output, classifyBashHint)
 }
 
-// A Codex call loads Codex's rules check first, and a bypassPermissions call the hidden rule check, which rewrite_permission.ts needs before it lets a rewrite ship there.
-registerHook('pre_tool_use', loadingHiddenRuleCheck((event) => (detectHarness() === 'codex' ? loadCodexRules().then(() => preBashHandler(event)) : preBashHandler(event))), { toolName: 'Bash' })
+// A Codex call loads Codex's rules check first, and a bypassPermissions call the hidden rule check, which rewrite_permission.ts needs before it lets a rewrite ship there. Claude Code's PowerShell tool carries the same `command` field as Bash (https://code.claude.com/docs/en/hooks.md, PowerShell section), so it takes the same pre path.
+const preShell = loadingHiddenRuleCheck((event: HookEvent) => (detectHarness() === 'codex' ? loadCodexRules().then(() => preBashHandler(event)) : preBashHandler(event)))
+registerHook('pre_tool_use', preShell, { toolName: 'Bash' })
+registerHook('pre_tool_use', preShell, { toolName: 'PowerShell' })

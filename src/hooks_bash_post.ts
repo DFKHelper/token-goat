@@ -882,4 +882,6 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
   return passOutput()
 }
 
+// Claude Code's PowerShell tool reports the same `command` input as Bash (https://code.claude.com/docs/en/hooks.md, PowerShell section), so a Set-Content or redirect there reaches the same reindex queue.
 registerHook('post_tool_use', postBashHandler, { toolName: 'Bash' })
+registerHook('post_tool_use', postBashHandler, { toolName: 'PowerShell' })

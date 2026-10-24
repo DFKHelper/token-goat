@@ -163,6 +163,26 @@ describe('installHooks matcher narrowing', () => {
     expect(tokenGoatGroup(second.settingsPath, 'PreToolUse').matcher).toBe(toolMatcherFor('pre_tool_use'))
   })
 
+  it('adds the PowerShell tool to an existing narrowed entry that predates it', () => {
+    // The matcher string is HAND-DERIVED: the narrowed list an earlier build wrote, i.e. today's list without the PowerShell fragment.
+    for (const event of ['pre_tool_use', 'post_tool_use'] as const) {
+      expect((toolMatcherFor(event) ?? '').split('|'), `${event} must name PowerShell`).toContain('^PowerShell$')
+    }
+    const first = installHooks('project')
+    const settings = JSON.parse(fs.readFileSync(first.settingsPath, 'utf8')) as { hooks: Record<string, HookGroup[]> }
+    for (const key of ['PreToolUse', 'PostToolUse']) {
+      for (const group of settings.hooks[key] ?? []) group.matcher = (group.matcher ?? '').split('|').filter((p) => p !== '^PowerShell$').join('|')
+    }
+    fs.writeFileSync(first.settingsPath, JSON.stringify(settings, null, 2))
+
+    const second = installHooks('project')
+    expect(second.alreadyInstalled, 'adding a tool to the matcher counts as a change').toBe(false)
+    for (const [key, event] of [['PreToolUse', 'pre_tool_use'], ['PostToolUse', 'post_tool_use']] as const) {
+      expect(tokenGoatGroup(second.settingsPath, key).matcher).toBe(toolMatcherFor(event))
+      expect(new RegExp(tokenGoatGroup(second.settingsPath, key).matcher ?? '').test('PowerShell'), `${key} matches PowerShell`).toBe(true)
+    }
+  })
+
   it('leaves a matcher group the user has added their own hooks to alone', () => {
     const first = installHooks('project')
     const settings = JSON.parse(fs.readFileSync(first.settingsPath, 'utf8')) as {
