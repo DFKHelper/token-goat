@@ -282,6 +282,11 @@ export function isHeadMovingGitCommand(cmd: string): boolean {
   return true
 }
 
+/** The segments of a compound command that are head-moving git commands, so `echo hi && git checkout other` is judged by its checkout segment as a bare `git checkout other` is. */
+export function headMovingSegments(cmd: string): string[] {
+  return splitShellSegments(cmd).filter((segment) => isHeadMovingGitCommand(segment))
+}
+
 /** Subcommands where ORIG_HEAD survives multi-step operations (merge/rebase/pull). */
 export const ORIG_HEAD_ELIGIBLE_GIT_RE = /^\s*git\s+(?:pull|merge|rebase)\b/i
 

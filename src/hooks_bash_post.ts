@@ -40,7 +40,7 @@ import {
   resolveBashCall,
   bashRecallKey,
   extractCommand,
-  isHeadMovingGitCommand,
+  headMovingSegments,
   ORIG_HEAD_ELIGIBLE_GIT_RE,
   ORIG_HEAD_REFLOG_MSG_RE,
   gitRepoRootOrNull,
@@ -684,12 +684,13 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     const optedOut = compressionOptedOut(rawCmd)
 
     // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never enter queue/dirty.txt via the normal postEditHandler path -- every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep serving whatever was indexed before the mutation until each file happens to be individually read. `HEAD@{1}` is git's own reflog record of "where HEAD was immediately before this command moved it" -- correct for single-step operations, but a multi-commit rebase or `pull --rebase` creates several intermediate reflog entries, so `HEAD@{1}` can only capture the last replayed step. `ORIG_HEAD` is the more robust base for the subcommands that set it (see ORIG_HEAD_ELIGIBLE_GIT_RE above) since it survives that internal churn; `HEAD@{1}` remains the fallback for checkout/switch/reset/cherry-pick (which never set it, or for which it's excluded) and for the rare case ORIG_HEAD hasn't been set yet at all.
-    if (isHeadMovingGitCommand(cmd) && (exitCode === null || exitCode === 0)) {
+    const headMoving = headMovingSegments(cmd)
+    if (headMoving.length > 0 && (exitCode === null || exitCode === 0)) {
       const gitDir = runDir ?? process.cwd()
       let diffBase = 'HEAD@{1}'
       // Why the changed-file list cannot be trusted, when it cannot: a read git did not answer at all (spawn failure or timeout, exit -1) leaves the base possibly wrong even when the diff then succeeds.
       let unanswered: string | null = null
-      if (ORIG_HEAD_ELIGIBLE_GIT_RE.test(cmd)) {
+      if (headMoving.some((segment) => ORIG_HEAD_ELIGIBLE_GIT_RE.test(segment))) {
         const reflogTop = await hookGitRead(gitDir, ['reflog', '-1', '--format=%gs', 'HEAD'])
         if (reflogTop.exitCode === -1) unanswered = `git reflog: ${reflogTop.stderr}`
         if (reflogTop.exitCode === 0 && ORIG_HEAD_REFLOG_MSG_RE.test(reflogTop.stdout.trim())) {

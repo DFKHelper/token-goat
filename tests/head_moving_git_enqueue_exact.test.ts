@@ -176,3 +176,48 @@ describe('a head-moving git command whose git reads answer', () => {
     expectNarrowEnqueue([folded('sub/nested.txt', dir)])
   })
 })
+
+describe('a head-moving git command in any segment of a compound command gets the reflog diff', () => {
+  /** A repository whose `other` branch changes o.txt, with HEAD back on the original branch: the state a head-moving command starts from. */
+  function branchChangingOtxt(): { dir: string; original: string } {
+    const dir = gitRepoWithCommit()
+    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    commitFile(dir, 'o.txt', 'one\n')
+    git(dir, 'checkout', '-qb', 'other')
+    commitFile(dir, 'o.txt', 'two\n')
+    git(dir, 'checkout', '-q', original)
+    return { dir, original }
+  }
+
+  it.each([
+    ['echo hi && git checkout other', (dir: string): void => { git(dir, 'checkout', '-q', 'other') }],
+    ['git status && git merge other', (dir: string): void => { git(dir, 'merge', '-q', 'other') }],
+    ['git status; git pull . other', (dir: string): void => { git(dir, 'pull', '-q', '.', 'other') }],
+    ['true && git cherry-pick other', (dir: string): void => { git(dir, 'cherry-pick', 'other') }],
+    ['git status | cat; git checkout other', (dir: string): void => { git(dir, 'checkout', '-q', 'other') }],
+  ])('%s enqueues the one file the command changed', async (command, move) => {
+    const { dir } = branchChangingOtxt()
+    move(dir)
+
+    await postBash(command, dir)
+
+    expectNarrowEnqueue([folded('o.txt', dir)])
+  })
+
+  it('a path-scoped checkout in a compound command runs no reflog diff', async () => {
+    const { dir } = branchChangingOtxt()
+
+    await postBash('echo hi && git checkout -- o.txt', dir)
+
+    expect(diffBases(), 'a path-scoped checkout moves no HEAD, so no reflog base is read').toEqual([])
+  })
+
+  it('git status alone runs no reflog diff and enqueues nothing', async () => {
+    const { dir } = branchChangingOtxt()
+
+    await postBash('git status', dir)
+
+    expect(diffBases()).toEqual([])
+    expect(dirty()).toEqual([])
+  })
+})
