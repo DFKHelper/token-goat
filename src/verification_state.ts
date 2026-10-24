@@ -10,7 +10,8 @@ import { readSessionStateFile } from './session_store.js'
 import { displaySafePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
 import { isScriptCheckSegment } from './verification_commands.js'
-import { canonicalize, foldPath } from './path_containment.js'
+import * as os from 'node:os'
+import { canonicalize, foldPath, isInsideRoot } from './path_containment.js'
 import { findProject, isUnderSystemTemp } from './project.js'
 
 /** Build, typecheck and script wrappers that are not covered by the test-runner or lint predicates. Install and dependency commands are deliberately absent: they prove nothing about the edits. */
@@ -158,18 +159,19 @@ export function verificationScopeFor(cwd: string | undefined): VerificationScope
   return { projectRoot: findProject(cwd)?.root ?? cwd }
 }
 
-/** Whether an edit needs a project check. One inside the session's project root always does, even a project that itself lives under the OS temp dir. Outside the root it is dismissed only when it is under the OS temp dir: a sibling package, another repo or a sibling worktree is still work nothing verified. With no root known, the same temp-dir test alone decides. A path that cannot be judged stays in scope. */
+/** Whether an edit needs a project check. One inside the session's project root always does, even a project that itself lives under the OS temp dir. Outside the root it is dismissed only when it is under the OS temp dir: a sibling package, another repo or a sibling worktree is still work nothing verified. With no root known, the same temp-dir test alone decides. A path that cannot be judged stays in scope. Both tests also follow links, so a link or junction under the temp dir that leads into the project is a project edit, and a path whose links cannot be resolved is not dismissed. */
 function inScope(filePath: string, scope: VerificationScope): boolean {
   try {
     if (scope.projectRoot !== undefined) {
       const root = foldPath(canonicalize(scope.projectRoot))
       const target = foldPath(canonicalize(filePath))
       if (target === root || target.startsWith(root.endsWith('/') ? root : `${root}/`)) return true
+      if (isInsideRoot(filePath, scope.projectRoot)) return true
     }
+    return !(isUnderSystemTemp(filePath) && isInsideRoot(filePath, os.tmpdir()))
   } catch {
     return true
   }
-  return !isUnderSystemTemp(filePath)
 }
 
 /** The verification verdict for one session-state key. An unreadable or absent state is an empty verdict, which never claims an edit. Without a `scope` every source edit counts, which is how the subagent report receipt reads it; the Stop advisory passes the session scope ({@link verificationScopeFor}). */

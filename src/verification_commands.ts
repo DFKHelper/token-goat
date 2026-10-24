@@ -8,8 +8,8 @@ const SCRIPT_PATH = /^[\w./@~:\\-]+$/
 const CHECK_SCRIPT_NAME = /^(?:run_[\w-]*tests?[\w-]*|validate[\w-]*|check[_-][\w-]+)\.py$/i
 /** An argument that names what to check: a word that starts like a path and holds a separator, `::` or a file extension, so `help` and `list` are not one. No colon outside `::`, so `user:secret@host` is not one. */
 const PATH_OR_SELECTOR_ARG = /^[\w./@~][\w./@\\-]*(?:::[\w./@\\-]+)*$/
-/** A directory (trailing separator, or a separator and a last segment without a dot), a `::` selector, or a file with a source or doc extension; a data or output extension (`.json`, `.txt`, `.log`) never counts, because such a file is as likely a report the script writes as an input it checks. */
-const PATH_EVIDENCE = /::|[/\\]$|[/\\][^/\\.]+$|\.(?:py|md|ts|tsx|js|mjs|cjs)$/i
+/** A directory (trailing separator, or a separator and a last segment without a dot), a `::` selector, or a file with a source extension; a data, output or document extension (`.json`, `.txt`, `.log`, `.md`) never counts, because such a file is as likely a report the script writes as an input it checks, and a document's existence says nothing about what the run verified. */
+const PATH_EVIDENCE = /::|[/\\]$|[/\\][^/\\.]+$|\.(?:py|ts|tsx|js|mjs|cjs)$/i
 /** The one switch a recognised script run may carry: the repository's own spelling for "run this script's built-in tests". Every other switch (`-h`, `--help`, `--list`, `--version`, `--dry-run`, an unknown one) can print or preview instead of checking, so it makes the run not a check. */
 const SELF_TEST_FLAG = '--self-test'
 

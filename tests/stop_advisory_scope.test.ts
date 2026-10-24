@@ -168,7 +168,7 @@ describe('script checks', () => {
     'python scripts/validate-skills.py',
     'python scripts/run_self_tests.py',
     'python3 tools/run_tests.py tests/test_parser.py::test_x',
-    'python scripts/validate-skills.py skills/foo/SKILL.md --self-test',
+    'python scripts/validate-skills.py scripts/ --self-test',
     'python scripts/check_related_skills.py',
     'python scripts/anything.py --self-test',
     'cd repo && python scripts/validate_x.py',
@@ -201,6 +201,11 @@ describe('script checks', () => {
     'python scripts/check_x.py --self-test=0',
     'python scripts/check_x.py report.json',
     'python scripts/check_x.py out/result.txt',
+    'python scripts/validate-skills.py README.md',
+    'python scripts/validate-skills.py README.md --self-test',
+    'python scripts/validate-skills.py skills/foo/SKILL.md --self-test',
+    'python scripts/validate_x.py REPORT.MD',
+    'python scripts/validate_x.py scripts/ spec.md',
   ])('does not count %j', (command) => {
     expect(isVerificationCommand(command)).toBe(false)
   })
@@ -241,10 +246,10 @@ describe('script checks', () => {
   })
 
   it('stores only the script path and the self-test switch, never another argument', () => {
-    const runs = runsAfter(() => noteVerificationRun('python scripts/validate-skills.py skills/a.md user:hunter2@host/x', 0, false))
+    const runs = runsAfter(() => noteVerificationRun('python scripts/validate-skills.py scripts/a.py user:hunter2@host/x', 0, false))
     expect(runs.map((r) => r.command)).toEqual([])
-    const kept = runsAfter(() => noteVerificationRun('python scripts/validate-skills.py skills/a.md', 0, false))
-    expect(kept.map((r) => r.command)).toEqual(['python scripts/validate-skills.py skills/a.md'])
+    const kept = runsAfter(() => noteVerificationRun('python scripts/validate-skills.py scripts/a.py', 0, false))
+    expect(kept.map((r) => r.command)).toEqual(['python scripts/validate-skills.py scripts/a.py'])
     const selfTest = runsAfter(() => noteVerificationRun('python scripts/x.py --self-test', 0, false))
     expect(selfTest.map((r) => r.command)).toEqual(['python scripts/x.py --self-test'])
   })
@@ -287,5 +292,118 @@ describe('git commit and push are never a check', () => {
     const state = evaluateVerification(sid)
     expect(state.runs).toEqual([])
     expect(state.editedSinceLastPass).toEqual(['a.ts'])
+  })
+})
+
+describe('a link under the OS temp dir', () => {
+  let outside: string
+  let links: string[]
+
+  beforeEach(() => {
+    clearModuleCaches()
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    // Under the working directory, not the OS temp dir, so only the link can place the edit.
+    outside = fs.mkdtempSync(path.join(process.cwd(), 'tg-scope-linked-'))
+    links = []
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    for (const link of links) {
+      try {
+        fs.unlinkSync(link)
+      } catch {
+        fs.rmdirSync(link)
+      }
+    }
+    fs.rmSync(outside, { recursive: true, force: true })
+  })
+
+  function linkInTemp(target: string): string {
+    const link = path.join(os.tmpdir(), `tg-scope-link-${process.pid}-${Math.random().toString(36).slice(2)}`)
+    fs.symlinkSync(target, link, 'junction')
+    links.push(link)
+    return link
+  }
+
+  it('is a project edit when the link leads into the project root, whether or not the file exists yet', () => {
+    const sid = newSession()
+    const project = path.join(outside, 'proj')
+    fs.mkdirSync(path.join(project, 'src'), { recursive: true })
+    fs.writeFileSync(path.join(project, 'src', 'present.ts'), 'export {}\n')
+    const link = linkInTemp(project)
+    inSession(sid, () => {
+      recordFileEdit(fwd(path.join(link, 'src', 'present.ts')))
+      recordFileEdit(fwd(path.join(link, 'src', 'not_yet.ts')))
+    })
+    expect(evaluateVerification(sid, { projectRoot: project }).editedSinceLastPass).toEqual(['not_yet.ts', 'present.ts'])
+    expect(stopHandler(stopEvent(sid, fwd(project))).hookType).toBe('context')
+  })
+
+  it('is a project edit when it leads outside the temp dir and no project root is known', () => {
+    const sid = newSession()
+    const link = linkInTemp(outside)
+    inSession(sid, () => recordFileEdit(fwd(path.join(link, 'util.ts'))))
+    expect(evaluateVerification(sid, verificationScopeFor(undefined)).editedSinceLastPass).toEqual(['util.ts'])
+  })
+
+  it('stays dismissed when the link leads to a directory inside the temp dir', () => {
+    const sid = newSession()
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-linked-scratch-'))
+    try {
+      const link = linkInTemp(scratch)
+      const project = path.join(outside, 'proj')
+      fs.mkdirSync(project, { recursive: true })
+      inSession(sid, () => recordFileEdit(fwd(path.join(link, 'probe.py'))))
+      expect(evaluateVerification(sid, { projectRoot: project }).editedSinceLastPass).toEqual([])
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
+  it('is a project edit when the project root itself lies under the temp dir and a temp link leads into it', () => {
+    const sid = newSession()
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-root-'))
+    try {
+      fs.mkdirSync(path.join(project, 'src'))
+      const link = linkInTemp(project)
+      inSession(sid, () => recordFileEdit(fwd(path.join(link, 'src', 'w.ts'))))
+      expect(evaluateVerification(sid, { projectRoot: project }).editedSinceLastPass).toEqual(['w.ts'])
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('a .md argument of a script check', () => {
+  // A document is never a check input: whether it exists says nothing about what a script verified, and a script may be writing it, so the run is not counted and the edit stays unverified.
+  beforeEach(() => {
+    clearModuleCaches()
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+  })
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it.each(['spec.md', 'report.md', 'out/report.md', 'REPORT.MD'])('does not count %j whether or not it exists', (word) => {
+    expect(isVerificationCommand(`python scripts/validate_x.py ${word}`)).toBe(false)
+  })
+
+  it('does not count a document beside a directory or a test selector', () => {
+    expect(isVerificationCommand('python scripts/validate_x.py spec.md scripts/')).toBe(false)
+    expect(isVerificationCommand('python scripts/validate_x.py scripts/ tests/test_a.py::test_b')).toBe(true)
+  })
+
+  it('records a script check that names a document as no run, and leaves the edit unverified', () => {
+    const sid = newSession()
+    inSession(sid, () => recordFileEdit('C:/proj/src/a.ts'))
+    inSession(sid, () => noteVerificationRun('python scripts/validate_x.py spec.md', 0, false))
+    expect(evaluateVerification(sid).runs).toEqual([])
+    expect(evaluateVerification(sid).editedSinceLastPass).toEqual(['a.ts'])
+  })
+
+  it('a failing run that names only a document is not recorded as a failure', () => {
+    const sid = newSession()
+    inSession(sid, () => noteFailedVerificationRun('python scripts/validate_x.py report.md', 'Exit code 2\nboom', false))
+    expect(evaluateVerification(sid).runs).toEqual([])
   })
 })
