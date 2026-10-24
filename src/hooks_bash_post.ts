@@ -46,6 +46,7 @@ import {
   gitRepoRootOrNull,
   hookGitRead,
   enqueueNonHeadMovingRewrites,
+  reconcileHeadMoves,
   writeScopeFor,
   pipelineShapeFilter,
   isFullRecallCommand,
@@ -685,10 +686,10 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
 
     // Git-mutation staleness enqueue: checkout/switch/pull/merge/rebase/reset/cherry-pick move HEAD and rewrite working-tree file content without ever going through Claude Code's Edit tool, so those files never enter queue/dirty.txt via the normal postEditHandler path -- every surgical-read command (symbol/refs/semantic/dead/map) would otherwise silently keep serving whatever was indexed before the mutation until each file happens to be individually read. `HEAD@{1}` is git's own reflog record of "where HEAD was immediately before this command moved it" -- correct for single-step operations, but a multi-commit rebase or `pull --rebase` creates several intermediate reflog entries, so `HEAD@{1}` can only capture the last replayed step. `ORIG_HEAD` is the more robust base for the subcommands that set it (see ORIG_HEAD_ELIGIBLE_GIT_RE above) since it survives that internal churn; `HEAD@{1}` remains the fallback for checkout/switch/reset/cherry-pick (which never set it, or for which it's excluded) and for the rare case ORIG_HEAD hasn't been set yet at all.
     const headMoving = headMovingSegments(cmd)
-    // Two or more head-moving segments can move HEAD more than once, and the reflog diff below sees only the last move, so the project is reconciled whatever the exit code: a `;` chain can move HEAD and still exit non-zero.
-    if (headMoving.length >= 2) requestReconcileSafe(runDir ?? process.cwd())
-    if (headMoving.length > 0 && (exitCode === null || exitCode === 0)) {
-      const gitDir = runDir ?? process.cwd()
+    const gitDir = runDir ?? process.cwd()
+    // Each head-moving segment reconciles the repository it ran in (its `git -C`, `--git-dir` or env prefix, or the run directory), whatever the exit code: two or more can move HEAD more than once, and a `;` chain can move HEAD and still exit non-zero. The reflog diff below runs only when the one narrow move it can list exactly is the whole story.
+    const headDiffExact = headMoving.length > 0 && (await reconcileHeadMoves(cmd, gitDir, startCwd ?? gitDir))
+    if (headDiffExact && (exitCode === null || exitCode === 0)) {
       let diffBase = 'HEAD@{1}'
       // Why the changed-file list cannot be trusted, when it cannot: a read git did not answer at all (spawn failure or timeout, exit -1) leaves the base possibly wrong even when the diff then succeeds.
       let unanswered: string | null = null

@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { splitShellSegments } from './bash_extractors.js'
 import { dataDir } from './constants.js'
 import { reconcileRequestPathFor } from './dirty_queue.js'
-import { gitRepoRootOrNull, hookGitRead, isHeadMovingGitCommand, safeShlexSplit, tokenGoatInvocation } from './hooks_bash_commands.js'
+import { gitRepoRootOrNull, headMovingSegments, hookGitRead, isHeadMovingGitCommand, safeShlexSplit, tokenGoatInvocation } from './hooks_bash_commands.js'
 import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
 import { parsePorcelainZ } from './git_porcelain.js'
 import { resolveIndexPath } from './paths.js'
@@ -931,6 +931,114 @@ function redirectsMayWrite(segment: string): boolean {
   return scanShellSyntax(segment).redirects.length > 0 || syntaxMayWrite(segment)
 }
 
+/** Where a `git` segment's work tree and repositories are, read from git's own options and environment: each `-C <path>` moves the directory as git does, then `--work-tree` (or `GIT_WORK_TREE`) names the work tree, which defaults to that directory, and `--git-dir` (or `GIT_DIR`) names a repository whose top is its parent when it ends in `.git`; without `--git-dir` git finds the repository from that directory. `repos` lists each repository the segment can change, the work tree first. `known` is false when a value is not a plain path (a variable, glob, `~` or substitution) or the git dir is not a `.git` directory, so the caller reconciles `runDir` as well. A segment that is not git answers `runDir`, known. Backslashes read as separators, so a PowerShell `..\b` names `../b`. */
+export interface GitRunTarget {
+  worktree: string
+  repos: string[]
+  known: boolean
+}
+
+/** A git option value the hook cannot resolve on its own. */
+const UNRESOLVED_VALUE_RE = /[$`*?[{~]/
+
+export function gitRunTarget(segment: string, runDir: string): GitRunTarget {
+  const base = path.resolve(runDir)
+  const unknown: GitRunTarget = { worktree: base, repos: [base], known: false }
+  const tokens = safeShlexSplit(segment.replace(/\\/g, '/'))
+  if (tokens === null) return unknown
+  let i = 0
+  let gitDirValue: string | undefined
+  let workTreeValue: string | undefined
+  for (; i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!); i++) {
+    const assignment = tokens[i]!
+    if (assignment.startsWith('GIT_DIR=')) gitDirValue = assignment.slice('GIT_DIR='.length)
+    else if (assignment.startsWith('GIT_WORK_TREE=')) workTreeValue = assignment.slice('GIT_WORK_TREE='.length)
+  }
+  const program = tokens[i]
+  if (program === undefined || path.basename(program).replace(/\.exe$/i, '').toLowerCase() !== 'git') return { worktree: base, repos: [base], known: true }
+  let dir = base
+  for (i++; i < tokens.length && tokens[i]!.startsWith('-'); i++) {
+    const t = tokens[i]!
+    const eq = t.indexOf('=')
+    const name = t.startsWith('--') && eq > 0 ? t.slice(0, eq) : t
+    if (t === '-C') {
+      const value = tokens[++i]
+      if (value === undefined || UNRESOLVED_VALUE_RE.test(value)) return unknown
+      if (value !== '') dir = path.resolve(dir, value)
+    } else if (name === '--git-dir' || name === '--work-tree') {
+      const value = eq > 0 && name !== t ? t.slice(eq + 1) : tokens[++i]
+      if (value === undefined) return unknown
+      if (name === '--git-dir') gitDirValue = value
+      else workTreeValue = value
+    } else if (GIT_OPTIONS_WITH_VALUE.has(t)) i++
+  }
+  if ([gitDirValue, workTreeValue].some((value) => value !== undefined && UNRESOLVED_VALUE_RE.test(value))) return unknown
+  const worktree = workTreeValue === undefined ? dir : path.resolve(dir, workTreeValue)
+  const repos = [worktree]
+  if (gitDirValue === undefined) repos.push(dir)
+  else {
+    const gitDirPath = path.resolve(dir, gitDirValue)
+    if (path.basename(gitDirPath) !== '.git') return { worktree, repos: [...new Set([...repos, base])], known: false }
+    repos.push(path.dirname(gitDirPath))
+  }
+  return { worktree, repos: [...new Set(repos)], known: true }
+}
+
+/** True when a git segment rewrites files the reflog diff cannot list exactly, so the diff must not run for it and the reconcile covers it: a rebase that names a branch (git checks that branch out before it replays anything), or a merge, pull or cherry-pick that stops before committing (HEAD stays put, so the diff's base is an older move). */
+export function reflogDiffMisses(segment: string): boolean {
+  const tokens = safeShlexSplit(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
+  if (tokens === null || headOf(tokens) !== 'git') return false
+  const sub = gitSubcommand(tokens)
+  if (sub === null) return false
+  const args = tokens.slice(tokens.indexOf(sub) + 1)
+  if (sub === 'rebase') return rebaseNamesBranch(args)
+  if (sub === 'merge' || sub === 'pull' || sub === 'cherry-pick') return noCommitRewritesWorktree(sub, args)
+  return false
+}
+
+/** The repository a reconcile request for `dir` names: `runDir` itself when `dir` is it (the spelling every existing request uses), else the top-level git reports for `dir` (or `dir`), with forward slashes so one repository has one spelling whichever source named it. */
+export async function reconcileRootOf(dir: string, runDir: string): Promise<string> {
+  if (path.resolve(dir) === path.resolve(runDir)) return runDir
+  return ((await gitRepoRootOrNull(dir)) ?? dir).replace(/\\/g, '/')
+}
+
+/** Ask for a reconcile of `dir` unless a request for it already waits, so the passes of one command leave one line per repository. */
+export function requestReconcileOnce(dir: string): void {
+  if (!reconcileAlreadyPending(dir)) requestReconcileSafe(dir)
+}
+
+/** Request the reconciles a head-moving git command needs, one per repository root, and report whether the reflog diff of `runDir` may run. Each segment that ran in `runDir` with a known target is the narrow case the diff lists (unless {@link reflogDiffMisses}); any other segment reconciles every repository it can change. A segment after a directory change ran wherever the cd left the shell, so `runDir` and `startDir` both reconcile. Returns false when no segment ran in `runDir` as a narrow head move. */
+export async function reconcileHeadMoves(cmd: string, runDir: string, startDir: string): Promise<boolean> {
+  const { head, tail } = splitAtDirChange(cmd)
+  const base = path.resolve(runDir)
+  const dirs = new Set<string>()
+  if (headMovingSegments(cmd).length >= 2) dirs.add(runDir)
+  let narrow = 0
+  let exact = true
+  for (const segment of headMovingSegments(head)) {
+    const target = gitRunTarget(segment, runDir)
+    const isNarrow = !target.known || (target.repos.length === 1 && target.repos[0] === base)
+    if (!isNarrow) {
+      for (const repo of target.repos) dirs.add(repo)
+      continue
+    }
+    if (!target.known) dirs.add(runDir)
+    narrow++
+    if (reflogDiffMisses(segment)) {
+      exact = false
+      dirs.add(runDir)
+    }
+  }
+  if (headMovingSegments(tail).length > 0) {
+    dirs.add(runDir)
+    dirs.add(startDir)
+  }
+  const roots = new Set<string>()
+  for (const dir of dirs) roots.add(await reconcileRootOf(dir, runDir))
+  for (const root of roots) requestReconcileOnce(root)
+  return narrow > 0 && exact
+}
+
 /** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. `exitCode` is the command's exit status when the harness reports one, and a non-zero one drops the named files (a failed `sed -i` or `git restore` changed nothing) but keeps the shell-write pass and the sweeps. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
 export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScope, exitCode?: number | null): Promise<void> {
   if (!scope.cdTrusted) {
@@ -945,10 +1053,11 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScop
   const sweepDirs = new Set<string>()
   // Segments whose files this pass named or swept, or that another pass owns, which the shell-write pass leaves alone.
   const handled = new Set<string>()
-  // Set when a command that can rewrite files it does not name ran, or a command that writes failed: the files it reached are queued above, and the rest is the worker's reconcile.
-  let reconcile = false
+  // Each directory whose repository needs a reconcile: a segment that can rewrite files it does not name, or a command that writes and failed, names the repositories its `git -C` / `--git-dir` / env prefix points at.
+  const reconcileDirs = new Set<string>()
   const failed = Boolean(exitCode)
   for (const segment of splitShellSegments(head)) {
+    const target = gitRunTarget(segment, runDir)
     let swept = false
     if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) { sweepDirs.add(runDir); swept = true }
     if (isFormatterWriteSegment(segment)) { sweepDirs.add(runDir); swept = true }
@@ -965,22 +1074,27 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScop
       else {
         const specs = extractGitRestorePathspecs(segment)
         // A glob, a variable or a `~` names nothing this hook can resolve, so that restore stays unhandled and the reconcile covers it.
-        namesEveryFile = specs.length > 0 && specs.every((spec) => spec === '.' || isConcretePath(spec))
+        namesEveryFile = target.known && specs.length > 0 && specs.every((spec) => spec === '.' || isConcretePath(spec))
         if (namesEveryFile) {
-          paths.push(...(await expandGitPathspecs(specs, runDir)))
+          paths.push(...(await expandGitPathspecs(specs, target.worktree)))
           // `ls-files` lists only what the index holds, so a file `--source` brought back that the index lacks is found by its literal name instead; `.` names nothing literally.
-          for (const spec of specs) if (spec !== '.' && !spec.startsWith(':')) paths.push(atRunDir(spec))
+          for (const spec of specs) if (spec !== '.' && !spec.startsWith(':')) paths.push(resolveIndexPath(spec, target.worktree))
         }
       }
     }
     const writesFiles = swept || named.length > 0 || restores || isHeadMovingGitCommand(segment)
-    if (gitMayRewriteWorktree(segment, runDir) || (failed && writesFiles)) reconcile = true
+    if (gitMayRewriteWorktree(segment, target.known ? target.worktree : runDir) || (failed && writesFiles)) {
+      for (const repo of target.repos) reconcileDirs.add(repo)
+      if (!target.known) reconcileDirs.add(runDir)
+    }
     if (swept || namesEveryFile || tokenGoatInvocation(segment) !== null || isHeadMovingGitCommand(segment)) handled.add(segment)
   }
   // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.
-  if (tailMayChangeFiles(tail)) reconcile = true
+  if (tailMayChangeFiles(tail)) { reconcileDirs.add(runDir); reconcileDirs.add(scope.startDir) }
   enqueueShellWrites(head, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })
-  if (reconcile && !reconcileAlreadyPending(runDir)) requestReconcileSafe(runDir)
+  const reconcileRoots = new Set<string>()
+  for (const dir of reconcileDirs) reconcileRoots.add(await reconcileRootOf(dir, runDir))
+  for (const root of reconcileRoots) requestReconcileOnce(root)
   for (const p of new Set(paths)) enqueueRewrittenPath(p)
   // A sweep also runs after a non-zero exit: a formatter or patch that fails part-way has already written files, and every sweep asks the worker to reconcile the project.
   for (const dir of sweepDirs) for (const p of await workingTreeStatusPaths(dir)) enqueueSweptPath(p)

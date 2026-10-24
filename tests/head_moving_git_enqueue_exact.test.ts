@@ -341,13 +341,13 @@ describe('a rebase that replays several commits is covered by ORIG_HEAD, and enq
     expectNarrowEnqueue([folded('mainline.txt', dir)])
   })
 
-  it('git rebase --onto names feature as a branch, so the project is reconciled as well as the mainline file queued', async () => {
+  it('git rebase --onto names feature as a branch, so the project is reconciled and the reflog diff queues nothing', async () => {
     const { dir, original, base } = replayFixture()
     expect(gitStatus(dir, 'rebase', '-q', '--onto', original, base, 'feature'), 'calibration: the rebase finishes').toBe(0)
 
     await postBash('git rebase --onto original base feature', dir)
 
-    expect(dirty().sort()).toEqual([folded('mainline.txt', dir)])
+    expect(dirty().sort()).toEqual([])
     expect(parseReconcileRequests(requestFile()), 'the rebase checked feature out before replaying it, which the reflog diff cannot list').toHaveLength(1)
   })
 })
@@ -468,5 +468,155 @@ describe('a rebase that names a branch reconciles, since git checks that branch 
     await postBash(`git ${argv.join(' ')}`, dir)
 
     expect(parseReconcileRequests(requestFile()), `reconcile requests after git ${argv.join(' ')}`).toEqual([])
+  })
+})
+
+/** Two sibling repositories `a` and `b` under one indexable root, each with an `other` branch: `a` is where the command runs, `b` is the repository it names with -C, --git-dir, --work-tree or GIT_DIR. */
+function siblingRepos(): { a: string; b: string } {
+  const root = indexableDir()
+  const a = join(root, 'a')
+  const b = join(root, 'b')
+  for (const dir of [a, b]) {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(join(dir, 'base.txt'), 'base\n')
+    git(dir, 'init', '-q')
+    git(dir, 'add', '.')
+    git(dir, 'commit', '-qm', 'init')
+    git(dir, 'branch', 'other')
+  }
+  return { a, b }
+}
+
+/** The repositories the reconcile requests name, folded and sorted, one entry per request line as written (duplicates kept). */
+const spelled = (p: string): string => foldPath(p.replace(/\\/g, '/'))
+const requestedRoots = (): string[] => parseReconcileRequests(requestFile()).map(spelled).sort()
+const requestLines = (): number => requestFile().split('\n').filter((l) => l.trim() !== '').length
+
+describe('a git command aimed at another repository reconciles that repository', () => {
+  it('git -C ../b checkout other reconciles repo b and not the cwd repo', async () => {
+    const { a, b } = siblingRepos()
+    git(a, '-C', '../b', 'checkout', '-q', 'other')
+
+    await postBash('git -C ../b checkout other', a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+    expect(requestedRoots()).not.toContain(spelled(a))
+  })
+
+  it('a PowerShell backslash path, git -C ..\\b checkout other, reconciles repo b', async () => {
+    const { a, b } = siblingRepos()
+    git(a, '-C', '../b', 'checkout', '-q', 'other')
+
+    await postBash('git -C ..\\b checkout other', a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+    expect(requestedRoots()).not.toContain(spelled(a))
+  })
+
+  it('successive -C options compose: git -C .. -C b checkout other reconciles repo b', async () => {
+    const { a, b } = siblingRepos()
+    git(a, '-C', '..', '-C', 'b', 'checkout', '-q', 'other')
+
+    await postBash('git -C .. -C b checkout other', a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+    expect(requestedRoots()).not.toContain(spelled(a))
+  })
+
+  it('cd sub && git -C ../../b pull reconciles repo b, resolving -C from the directory the cd left', async () => {
+    const { a, b } = siblingRepos()
+    fs.mkdirSync(join(a, 'sub'))
+    git(b, 'checkout', '-q', 'other')
+
+    await postBash('cd sub && git -C ../../b pull', a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+  })
+
+  it('GIT_DIR and GIT_WORK_TREE prefixes reconcile repo b', async () => {
+    const { a, b } = siblingRepos()
+    git(b, 'checkout', '-q', 'other')
+
+    await postBash('GIT_DIR=../b/.git GIT_WORK_TREE=../b git checkout other', a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+  })
+
+  it('--git-dir and --work-tree reset --hard reconciles repo b', async () => {
+    const { a, b } = siblingRepos()
+    commitFile(b, 'c.txt', 'c\n')
+    git(b, 'reset', '-q', '--hard', 'HEAD~1')
+
+    await postBash('git --git-dir=../b/.git --work-tree=../b reset --hard HEAD~1', a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+  })
+
+  it('git checkout other && git -C ../b checkout other writes one request per repo', async () => {
+    const { a, b } = siblingRepos()
+    git(a, 'checkout', '-q', 'other')
+    git(a, '-C', '../b', 'checkout', '-q', 'other')
+
+    await postBash('git checkout other && git -C ../b checkout other', a)
+
+    expect(requestedRoots()).toEqual([spelled(a), spelled(b)].sort())
+    expect(requestLines(), 'one request line per repository, not one per segment').toBe(2)
+  })
+
+  it('cd ../b && git checkout other; cd - && git checkout feature requests both repos', async () => {
+    const { a, b } = siblingRepos()
+    git(a, 'branch', 'feature')
+    git(b, 'checkout', '-q', 'other')
+    git(a, 'checkout', '-q', 'feature')
+
+    await postBash('cd ../b && git checkout other; cd - && git checkout feature', a)
+
+    expect(requestedRoots()).toEqual([spelled(a), spelled(b)].sort())
+  })
+
+  it('git rebase <base> other queues no m.txt and still writes the reconcile request', async () => {
+    const { a } = siblingRepos()
+    const original = git(a, 'symbolic-ref', '--short', 'HEAD')
+    commitFile(a, 'o.txt', 'o\n')
+    git(a, 'checkout', '-q', original)
+    git(a, 'checkout', '-q', 'other')
+    commitFile(a, 'o2.txt', 'o2\n')
+    git(a, 'checkout', '-q', original)
+    commitFile(a, 'm.txt', 'mainline\n')
+    git(a, 'rebase', '-q', original, 'other')
+
+    await postBash(`git rebase ${original} other`, a)
+
+    expect(dirty()).not.toContain(folded('m.txt', a))
+    expect(requestedRoots()).toEqual([spelled(a)])
+  })
+
+  it('git merge --squash queues no path from the stale reflog base and reconciles', async () => {
+    const { a } = siblingRepos()
+    const original = git(a, 'symbolic-ref', '--short', 'HEAD')
+    git(a, 'checkout', '-qb', 'z')
+    commitFile(a, 'z.txt', 'z\n')
+    git(a, 'checkout', '-q', original)
+    git(a, 'checkout', '-qb', 'feature')
+    commitFile(a, 'f.txt', 'f\n')
+    git(a, 'checkout', '-q', original)
+    git(a, 'checkout', '-q', 'z')
+    git(a, 'checkout', '-q', original)
+    git(a, 'merge', '-q', '--squash', 'feature')
+
+    await postBash('git merge --squash feature', a)
+
+    expect(dirty()).not.toContain(folded('z.txt', a))
+    expect(requestedRoots()).toEqual([spelled(a)])
+  })
+
+  it('git status and git -C . status write nothing', async () => {
+    const { a } = siblingRepos()
+
+    await postBash('git status', a)
+    await postBash('git -C . status', a)
+
+    expect(dirty()).toEqual([])
+    expect(requestFile()).toBe('')
   })
 })

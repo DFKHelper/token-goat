@@ -273,8 +273,10 @@ export function extractCommand(event: HookEvent): string | undefined {
 }
 
 /** Matches git subcommands that can move HEAD and rewrite working-tree file content. */
-const HEAD_MOVING_GIT_RE = /^\s*git\s+(?:checkout|switch|pull|merge|rebase|reset|cherry-pick|stash\s+branch)\b/i
-const PATH_SCOPED_CHECKOUT_RE = /^\s*git\s+checkout\s+(?:\S.*?\s)?--(?:\s|$)/i
+/** The text before a git subcommand: leading `NAME=value` assignments, then git's global options (`-C <path>`, `-c <name>=<value>`, `--git-dir`, `--work-tree`, other flags), so `git -C ../b checkout other` and `GIT_DIR=... git checkout other` read as the checkout they run. */
+const GIT_PREFIX_RE_SRC = String.raw`^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*git(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+|--?[A-Za-z][\w-]*))*\s+`
+const HEAD_MOVING_GIT_RE = new RegExp(`${GIT_PREFIX_RE_SRC}(?:checkout|switch|pull|merge|rebase|reset|cherry-pick|stash\\s+branch)\\b`, 'i')
+const PATH_SCOPED_CHECKOUT_RE = new RegExp(`${GIT_PREFIX_RE_SRC}checkout\\s+(?:\\S.*?\\s)?--(?:\\s|$)`, 'i')
 
 export function isHeadMovingGitCommand(cmd: string): boolean {
   if (!HEAD_MOVING_GIT_RE.test(cmd)) return false
@@ -316,6 +318,11 @@ export async function gitRepoRootOrNull(gitDir: string): Promise<string | null> 
 /** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD (`git restore`, `git stash pop|apply`, the plain shell in-place writes, the formatters), so the index does not keep serving pre-mutation symbols. Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts). See shell_writes.ts. */
 export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScope, exitCode?: number | null): Promise<void> {
   await (await import('./shell_writes.js')).enqueueNonHeadMovingRewrites(cmd, scope, exitCode)
+}
+
+/** Request the reconciles a head-moving git command needs, one per repository root, and report whether the reflog diff of `runDir` may stand in for it. Loaded on use, like {@link enqueueNonHeadMovingRewrites}. See shell_writes.ts. */
+export async function reconcileHeadMoves(cmd: string, runDir: string, startDir: string): Promise<boolean> {
+  return (await import('./shell_writes.js')).reconcileHeadMoves(cmd, runDir, startDir)
 }
 
 export const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less', 'more'])
