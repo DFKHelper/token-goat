@@ -561,7 +561,7 @@ const GIT_PROGRAM_CONFIG_KEYS: readonly RegExp[] = [
 ]
 
 /** Environment prefixes that make git run a program (an external diff, pager, editor, ssh or askpass command, a proxy) or take config from the environment, so a `git` segment naming one reconciles. */
-const GIT_PROGRAM_ENV_RE = /(?:^|\s)(?:GIT_EXTERNAL_DIFF|GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_PROXY_COMMAND|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+)=/
+const GIT_PROGRAM_ENV_RE = /(?:^|\s)(?:GIT_EXTERNAL_DIFF|GIT_PAGER|PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_PROXY_COMMAND|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+)=/
 
 /** The `ext::` transport runs a command for a URL, so any segment naming one reconciles. */
 const GIT_EXT_TRANSPORT_RE = /ext::/i
@@ -589,17 +589,17 @@ function gitRunsProgramByConfig(tokens: readonly string[]): boolean {
   return false
 }
 
-/** True when a `git` segment makes git run a program it names, so the program may write any file: a command-valued `-c` or env key (see {@link gitRunsProgramByConfig}), an `ext::` transport, or a command option of its subcommand (`--upload-pack`, `--receive-pack` and `--exec` on any but rebase; `-u` on clone and ls-remote). The reconcile for it covers the repository it runs in and its `-C` target. */
+/** True when a `git` segment makes git run a program it names, so the program may write any file: a command-valued `-c` or env key (see {@link gitRunsProgramByConfig}), an `ext::` transport, or a command option of its subcommand (`--upload-pack`, `--receive-pack` and `--exec`, `-x` on rebase; `-u` on clone and ls-remote). The reconcile for it covers the repository it runs in and its `-C` target. */
 function gitRunsCommand(segment: string): boolean {
-  const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
+  const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, ''))
   if (headOf(tokens) !== 'git') return false
   if (gitRunsProgramByConfig(tokens) || GIT_PROGRAM_ENV_RE.test(segment) || GIT_EXT_TRANSPORT_RE.test(segment)) return true
   const sub = gitSubcommand(tokens)
   if (sub === null) return false
   const args = tokens.slice(tokens.indexOf(sub) + 1)
-  // `rebase --exec` keeps its reflog diff (tests/head_moving_git_enqueue_exact.test.ts): whether its command may reconcile is an open design call, so it is not named here.
-  const commandFlags = sub === 'rebase' ? [] : ['--upload-pack', '--receive-pack', '--exec']
-  if (args.some((t) => optionIs(t, commandFlags, MIN_LONG_ABBREVIATION))) return true
+  if (args.some((t) => optionIs(t, ['--upload-pack', '--receive-pack', '--exec'], MIN_LONG_ABBREVIATION))) return true
+  // `rebase -x <cmd>` is `--exec`; no other rebase short option starts with `x`.
+  if (sub === 'rebase' && args.some((t) => t.startsWith('-x'))) return true
   return (sub === 'clone' || sub === 'ls-remote') && args.some((t) => /^-[A-Za-z]+$/.test(t) && t.includes('u'))
 }
 

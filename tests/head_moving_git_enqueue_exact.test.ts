@@ -459,7 +459,7 @@ describe('a rebase that names a branch reconciles, since git checks that branch 
     expectNarrowEnqueue(moved.map((f) => folded(f, dir)))
   })
 
-  it.each([['rebase --exec true BASE'], ['rebase -s ours BASE']])('git %s with one upstream and an option value keeps the reflog diff', async (form) => {
+  it.each([['rebase -s ours BASE']])('git %s with one upstream and an option value keeps the reflog diff', async (form) => {
     const { dir, base } = divergedBranches()
     git(dir, 'checkout', '-q', 'other')
     const argv = form.split(' ').map((word) => (word === 'BASE' ? base : word))
@@ -618,5 +618,28 @@ describe('a git command aimed at another repository reconciles that repository',
 
     expect(dirty()).toEqual([])
     expect(requestFile()).toBe('')
+  })
+})
+
+describe('round 12d: a rebase --exec or -x runs a command that may write any file, so it reconciles', () => {
+  it.each([['--exec'], ['-x']])('git rebase %s really runs its command in the repo and reconciles it', async (flag) => {
+    const { dir, base } = divergedBranches()
+    git(dir, 'checkout', '-q', 'other')
+    git(dir, 'rebase', flag, 'touch exec-marker.txt', base)
+
+    await postBash(`git rebase ${flag} "touch exec-marker.txt" ${base}`, dir)
+
+    expect(fs.existsSync(join(dir, 'exec-marker.txt')), 'the --exec command ran in the repo').toBe(true)
+    expect(requestedRoots()).toEqual([spelled(dir)])
+  })
+
+  it('git rebase --exec true BASE with one upstream reconciles, not the reflog diff', async () => {
+    const { dir, base } = divergedBranches()
+    git(dir, 'checkout', '-q', 'other')
+    git(dir, 'rebase', '--exec', 'true', base)
+
+    await postBash(`git rebase --exec true ${base}`, dir)
+
+    expect(requestedRoots()).toEqual([spelled(dir)])
   })
 })

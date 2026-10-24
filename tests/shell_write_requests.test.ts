@@ -369,7 +369,7 @@ describe('segmentMayWriteFiles', () => {
 })
 
 describe('a git -c key or env prefix that makes git run a program asks for a reconcile, since the program can write any file', () => {
-  it.each([['git -c diff.external=touch diff'], ['git -c core.pager=touch log'], ['git -c Core.FsMonitor=touch status'], ['git --config-env=core.pager=PAGER_CMD log'], ['GIT_EXTERNAL_DIFF=touch git diff'], ['GIT_SSH_COMMAND=touch git status']])('%s asks the worker to reconcile', async (command) => {
+  it.each([['git -c diff.external=touch diff'], ['git -c core.pager=touch log'], ['git -c Core.FsMonitor=touch status'], ['git --config-env=core.pager=PAGER_CMD log'], ['GIT_EXTERNAL_DIFF=touch git diff'], ['GIT_SSH_COMMAND=touch git status'], ['GIT_PAGER="touch x" git log'], ['PAGER="touch x" git log'], ['git rebase --exec "touch x" main'], ['git rebase -x "touch x" main']])('%s asks the worker to reconcile', async (command) => {
     const dir = repo()
     await postBashHandler(shellCall(command, dir, 'claude'))
     expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
