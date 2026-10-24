@@ -16,6 +16,7 @@ import { foldPath } from '../src/util.js'
 import { workerErrorLogPath } from '../src/worker_lifecycle.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 import { makeHookEvent } from './helpers/hook-event.js'
+import { POWERSHELL } from './helpers/shell_argv.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 const seam = vi.hoisted(() => ({ calls: [] as string[][] }))
@@ -675,15 +676,17 @@ describe('round 12d: a git verb that runs no program, or runs one through a subc
     expect(requestedRoots()).toEqual([spelled(a)])
   })
 
-  it('a PowerShell run of git -C ..\\b checkout other moves repo b, and repo b is reconciled', async () => {
+  // A backslash path is a Windows spelling; elsewhere PowerShell passes it to git literally, so the script uses the platform's separator, and the row is skipped where no PowerShell runs.
+  it.skipIf(POWERSHELL === null)('a PowerShell run of git -C <sibling> checkout other moves repo b, and repo b is reconciled', async () => {
     const { a, b } = siblingRepos()
+    const target = process.platform === 'win32' ? '..\\b' : '../b'
     const script = join(a, 'run-checkout.ps1')
-    fs.writeFileSync(script, 'git -C ..\\b checkout -q other\n')
-    const run = spawnSync('pwsh', ['-NoProfile', '-File', script], { cwd: a, encoding: 'utf8' })
+    fs.writeFileSync(script, `git -C ${target} checkout -q other\n`)
+    const run = spawnSync(POWERSHELL!, ['-NoProfile', '-File', script], { cwd: a, encoding: 'utf8' })
     expect(run.status, run.stderr).toBe(0)
     expect(git(b, 'symbolic-ref', '--short', 'HEAD')).toBe('other')
 
-    await postBash('git -C ..\\b checkout other', a)
+    await postBash(`git -C ${target} checkout other`, a)
 
     expect(requestedRoots()).toEqual([spelled(b)])
   })
