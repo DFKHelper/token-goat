@@ -552,6 +552,42 @@ function gitStashReadsOnly(tokens: string[]): boolean {
   return args[0] === 'list' || args[0] === 'show' || gitStashAsksHelp(args)
 }
 
+/** Git config keys (lowercased) that make git run a program or shell command: an external diff, a pager, an editor, an ssh or proxy command, a credential helper, a filter or merge driver, a difftool. A `-c` or `--config-env` key matching one reconciles; any other key names no program (`user.*`, `color.*`, `core.autocrlf`, `diff.algorithm`, `log.*`) and is read as safe. An `alias.<name>` key is a program only when its value starts with `!` (see {@link isProgramConfigKey}). */
+const GIT_PROGRAM_CONFIG_KEYS: readonly RegExp[] = [
+  /^diff\.external$/, /^diff\..+\.(?:command|textconv)$/, /^core\.(?:pager|fsmonitor|hookspath|sshcommand|editor|askpass|gitproxy)$/,
+  /^pager\./, /^sequence\.editor$/, /^filter\./, /^merge\..+\.driver$/, /^credential\.(?:.+\.)?helper$/,
+  /^gpg\.(?:.+\.)?program$/, /^uploadpack\.packobjectshook$/, /^protocol\.ext\.allow$/, /^interactive\.difffilter$/,
+  /^(?:difftool|mergetool|browser)\..+\.cmd$/, /^trailer\..+\.command$/,
+]
+
+/** Environment prefixes that make git run a program (an external diff, pager, editor, ssh or askpass command, a proxy) or take config from the environment, so a `git` segment naming one reconciles. */
+const GIT_PROGRAM_ENV_RE = /(?:^|\s)(?:GIT_EXTERNAL_DIFF|GIT_PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_PROXY_COMMAND|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+)=/
+
+/** The `ext::` transport runs a command for a URL, so any segment naming one reconciles. */
+const GIT_EXT_TRANSPORT_RE = /ext::/i
+
+/** True when a `-c <name>=<value>` or `--config-env <name>=<envvar>` value names a key in {@link GIT_PROGRAM_CONFIG_KEYS}. */
+function isProgramConfigKey(assignment: string): boolean {
+  const eq = assignment.indexOf('=')
+  const key = (eq < 0 ? assignment : assignment.slice(0, eq)).toLowerCase()
+  if (key.startsWith('alias.')) return eq >= 0 && assignment.slice(eq + 1).startsWith('!')
+  return GIT_PROGRAM_CONFIG_KEYS.some((re) => re.test(key))
+}
+
+/** True when a leading `-c` or `--config-env` option of a `git` invocation sets a program key (see {@link isProgramConfigKey}), so git may run that program while it works. */
+function gitRunsProgramByConfig(tokens: readonly string[]): boolean {
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i]!
+    let assignment: string | undefined
+    if (t === '-c' || t === '--config-env') assignment = tokens[++i]
+    else if (t.startsWith('--config-env=')) assignment = t.slice('--config-env='.length)
+    else if (GIT_OPTIONS_WITH_VALUE.has(t)) i++
+    else if (!t.startsWith('-')) break
+    if (assignment !== undefined && isProgramConfigKey(assignment)) return true
+  }
+  return false
+}
+
 /** True when the head of `segment` is not a program known only to read, or carries a flag that makes one write. Redirects and substitutions are {@link syntaxMayWrite}'s. */
 function headMayWrite(segment: string): boolean {
   const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
@@ -559,6 +595,7 @@ function headMayWrite(segment: string): boolean {
   if (head === '') return false
   if (WRITE_MARK_RE.test(segment) || WRITE_FLAG_BY_HEAD.get(head)?.test(segment) === true) return true
   if (head === 'git') {
+    if (gitRunsProgramByConfig(tokens) || GIT_PROGRAM_ENV_RE.test(segment) || GIT_EXT_TRANSPORT_RE.test(segment)) return true
     const sub = gitSubcommand(tokens)
     if (sub === 'stash') return !gitStashReadsOnly(tokens)
     return sub === null || !READ_ONLY_GIT.has(sub)
