@@ -576,6 +576,15 @@ describe('git pull --no-commit or --squash rewrites the worktree without moving 
   })
 })
 
+describe('a sequencer abort, skip or quit rewrites the worktree without a queue entry, so it asks for a reconcile', () => {
+  it.each([['git merge --abort'], ['git merge --quit'], ['git cherry-pick --abort'], ['git cherry-pick --skip'], ['git cherry-pick --quit'], ['git revert --abort'], ['git revert --skip'], ['git rebase --abort'], ['git rebase --skip'], ['git am --abort'], ['git am --skip'], ['true && git cherry-pick --skip']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    divergedOther(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
 describe('a PowerShell comma list is not one file name, so it asks for a reconcile', () => {
   it.each([['Set-Content a.ts,b.ts -Value x'], ['New-Item a.ts,b.ts'], ['Out-File -FilePath a.ts,b.ts'], ['Copy-Item a.ts,b.ts sub'], ['Remove-Item a.ts,b.ts'], ['Remove-Item -Path a.ts, b.ts']])(
     '%s asks the worker to reconcile',

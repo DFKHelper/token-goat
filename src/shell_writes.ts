@@ -789,12 +789,18 @@ function gitMayRewriteWorktree(segment: string, runDir: string): boolean {
   const sub = gitSubcommand(tokens)
   if (sub === 'restore') return !restoreIsStagedOnly(segment)
   const args = sub === null ? [] : tokens.slice(tokens.indexOf(sub) + 1)
+  if (sub !== null && SEQUENCER_SUBCOMMANDS.has(sub) && args.some((t) => optionIs(t, SEQUENCER_STOP_FLAGS, MIN_LONG_ABBREVIATION))) return true
   if (sub === 'merge' || sub === 'cherry-pick' || sub === 'pull') return noCommitRewritesWorktree(sub, args)
   if (sub === null || !WORKTREE_GIT_SUBCOMMANDS.has(sub)) return false
   if (args.includes('--') || args.some((t) => optionIs(t, WORKTREE_DISCARD_FLAGS, MIN_LONG_ABBREVIATION))) return true
   // A name that is not on disk is either a branch (HEAD moves, and the head-moving diff covers it) or a tracked file deleted from disk, which checkout restores without moving HEAD. Only a local branch is told apart here, from the ref files, so no git process is spawned; any other name reconciles.
   return args.some((t) => !t.startsWith('-') && (fs.existsSync(resolveIndexPath(t, runDir)) || !localBranchExists(runDir, t)))
 }
+
+/** The sequencer subcommands whose `--abort`, `--skip` or `--quit` resets the worktree or drops a step with no commit diff to list. */
+const SEQUENCER_SUBCOMMANDS = new Set(['merge', 'cherry-pick', 'revert', 'rebase', 'am'])
+
+const SEQUENCER_STOP_FLAGS: readonly string[] = ['--abort', '--skip', '--quit']
 
 /** `merge` or `pull` with `--no-commit` or `--squash`, and `cherry-pick -n` or `--no-commit`, rewrite the worktree and index without moving HEAD, so no head-moving diff lists the files they change. A short-option cluster holding `n` counts too for cherry-pick, the cheap direction. */
 function noCommitRewritesWorktree(sub: 'merge' | 'cherry-pick' | 'pull', args: readonly string[]): boolean {
