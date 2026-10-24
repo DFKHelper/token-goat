@@ -155,7 +155,7 @@ describe('dependency advisory disclosure', () => {
 })
 
 /** The "this repository" row is the one claim in the table no other test here re-derives: the rest check package identity and lock-file counts, which is a proxy for what `npm audit` reports, not the audit result itself. A real advisory landing in a dev-only transitive dependency (exactly what happened with adm-zip and hono) can make the row's "clean" claim false without moving anything those other checks look at. `auditReport` is computed once at module load so every test in this file pays for at most one `npm audit` call, not one per assertion. */
-interface AuditReport { metadata?: { vulnerabilities?: { total?: number } }; error?: unknown }
+interface AuditReport { metadata?: { vulnerabilities?: { total?: number } }; vulnerabilities?: Record<string, unknown>; error?: unknown }
 
 let auditReport: AuditReport | null = null
 try {
@@ -190,6 +190,10 @@ describe('this repository row matches a live npm audit', () => {
       ).not.toMatch(/\bclean\b/)
     } else {
       expect(row, `npm audit reports 0 vulnerabilities, so the row should say so:\n${row}`).toMatch(/\bclean\b/)
+    }
+    // The row itself, not the paragraph below it, must name every package npm audit lists: a finding the row omits is the same false claim by silence.
+    for (const name of Object.keys(auditReport?.vulnerabilities ?? {})) {
+      expect(row, `npm audit lists a vulnerability in ${name}, but the "this repository" row does not name ${name}:\n${row}`).toContain(name)
     }
   })
 })
