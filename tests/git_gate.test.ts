@@ -13,7 +13,7 @@ import { processAlive } from './helpers/process_alive.js'
 
 interface Run {
   readonly child: ChildProcess
-  readonly settled: Promise<{ code: number | null; stdout: string }>
+  readonly settled: Promise<{ code: number | null; stdout: string; stderr: string }>
   readonly hasExited: () => boolean
 }
 
@@ -32,17 +32,21 @@ async function gate(passFirst?: number): Promise<GitGate> {
 }
 
 function revParse(cwd: string, env: Readonly<Record<string, string>>): Run {
-  const child = spawn('git', ['rev-parse', '--show-toplevel'], { cwd, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'ignore'] })
+  const child = spawn('git', ['rev-parse', '--show-toplevel'], { cwd, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] })
   children.push(child)
   let stdout = ''
+  let stderr = ''
   let exited = false
   child.stdout?.on('data', (d: Buffer) => {
     stdout += d.toString()
   })
-  const settled = new Promise<{ code: number | null; stdout: string }>((resolve) => {
+  child.stderr?.on('data', (d: Buffer) => {
+    stderr += d.toString()
+  })
+  const settled = new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
     child.once('close', (code) => {
       exited = true
-      resolve({ code, stdout })
+      resolve({ code, stdout, stderr })
     })
   })
   return { child, settled, hasExited: () => exited }
@@ -116,7 +120,13 @@ describe('openGitGate', () => {
     await g.reached
     await g.dispose()
     await g.dispose()
-    expect((await run.settled).code).toBe(0)
+    expect(g.holding(), 'after two dispose calls the gate still reported a git holding it').toBe(false)
+    const { code, stderr } = await run.settled
+    expect(code, 'the git freed by dispose did not settle with an exit code').not.toBeNull()
+    expect(
+      code === 0 || (code === 128 && stderr.includes('unable to parse command-line config')),
+      `the git freed by dispose exited ${code} with stderr ${JSON.stringify(stderr)}; expected 0, or 128 with 'unable to parse command-line config'`,
+    ).toBe(true)
   })
 
   // CAPTURE: on Windows, with Git for Windows' cmd directory first on PATH, the git spawned is cmd/git.exe, which starts mingw64/bin/git.exe and waits for it; that second process holds the gate. Killing only the spawned one ended the wrapper ('exit' fired) and left the holder blocked with the inherited stdout open, so neither the child's 'close' nor the gate's connection close ever came. The row ends the whole tree, as src/process_tree.ts does for the product's gits, and waits for every process of the tree to leave before it waits on either close, naming the ones that do not. CAPTURE: on Linux under CPU load (24 busy shells on 8 CPUs, WSL Ubuntu, 12 of 15 runs) a check made as killProcessTree returned failed with `processes of the blocked git still ran after its tree was ended: expected [ 1738 ] to deeply equal []`, because a SIGKILLed process is still running until the kernel finishes ending it.

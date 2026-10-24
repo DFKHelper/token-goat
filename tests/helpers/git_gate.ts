@@ -20,7 +20,7 @@ export interface GitGate {
   counted(reads: number): Promise<void>
   /** Lets every git blocked on the gate go, and every git that reaches it later. */
   release(): void
-  /** Releases, stops serving and removes what the gate created. Safe to call twice. */
+  /** Releases, stops serving and removes what the gate created. Safe to call twice. A git still blocked here is freed but may fail its next config read (on Windows the closed pipe reads as Invalid argument and git exits 128), so a test needing git's answer calls release() and awaits the git first. */
   dispose(): Promise<void>
 }
 
