@@ -764,8 +764,8 @@ function enqueueRewrittenPath(absPath: string): void {
   enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
 }
 
-/** Options that make `checkout`, `switch` or `reset` discard working-tree changes, which no commit diff lists. */
-const WORKTREE_DISCARD_FLAGS = new Set(['-f', '--force', '--hard', '--merge', '--discard-changes'])
+/** Options that make `checkout`, `switch` or `reset` discard working-tree changes, or pick hunks to discard (`-p`, `--patch`), which no commit diff lists. */
+const WORKTREE_DISCARD_FLAGS = new Set(['-f', '--force', '--hard', '--merge', '--discard-changes', '-p', '--patch'])
 
 /** The `git` subcommands that rewrite working-tree files when they name a path or a discard flag. */
 const WORKTREE_GIT_SUBCOMMANDS = new Set(['checkout', 'switch', 'reset'])

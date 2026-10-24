@@ -447,6 +447,16 @@ describe('git checkout, switch, reset or restore that can rewrite the worktree a
   })
 })
 
+describe('a git checkout, reset or stash in patch mode asks for a reconcile, since the hunks it picks rewrite the worktree', () => {
+  it.each([['echo y | git checkout -p'], ['git checkout -p other'], ['git checkout other -p'], ['git reset -p'], ['git restore -p'], ['git stash -p']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    secondCommit(dir)
+    execFileSync('git', ['-c', 'core.hooksPath=/dev/null', 'branch', 'other'], { cwd: dir, stdio: 'ignore' })
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
 describe('a git stash whose -h or --help follows an option, a -m value or -- is not a help request', () => {
   it.each([
     ['git stash push -m -h', '.'],
