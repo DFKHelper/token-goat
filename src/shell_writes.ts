@@ -196,6 +196,38 @@ const MAX_WRAPPER_DEPTH = 3
 
 const SINGLE_QUOTE = "'"
 
+/** The POSIX shells whose `-c <script>` runs the script as a command line of its own. */
+const POSIX_SHELLS: ReadonlySet<string> = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash'])
+
+/** The script of a `bash -c '<script>'` segment (also `sh`, `zsh`, `dash`, `ksh`, `ash`; `-lc`, `-ec` and a leading `NAME=value` allowed), read the way a POSIX shell reads its quotes, or null when the segment is not one or its quoting cannot be read (the segment then stands for itself and is judged as an unknown program). */
+function posixWrapperBody(segment: string): string | null {
+  const tokens = safeShlexSplit(segment)
+  if (tokens === null) return null
+  let at = 0
+  while (at < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[at]!)) at++
+  if (!POSIX_SHELLS.has(shellNameOf(tokens.slice(at)))) return null
+  // Options come first; the first word that is not one is a script file (`bash run.sh -c x` runs run.sh), and `-o`, `-O`, `--rcfile` and `--init-file` take a value word.
+  for (let k = at + 1; k < tokens.length; k++) {
+    const t = tokens[k]!
+    if (/^-[A-Za-z]+$/.test(t) && t.includes('c')) return tokens[k + 1] ?? null
+    if (!/^[-+]./.test(t) || t === '--') return null
+    if (/^[-+][oO]$/.test(t) || t === '--rcfile' || t === '--init-file') k++
+  }
+  return null
+}
+
+/** `cmd` with each `bash -c '<script>'` segment (see {@link posixWrapperBody}) replaced by its script, repeated up to {@link MAX_WRAPPER_DEPTH} levels, so the script is read as the bare command would be: its `sed -i` names its file, a `cd` inside it moves what follows. Segments join with `;`, which the analysis treats like any other separator. A command with no such wrapper comes back unchanged. */
+function inlinePosixShellScripts(cmd: string): string {
+  let current = cmd
+  for (let depth = 0; depth < MAX_WRAPPER_DEPTH; depth++) {
+    const segments = splitShellSegments(current)
+    const bodies = segments.map(posixWrapperBody)
+    if (bodies.every((body) => body === null)) return current
+    current = segments.map((segment, i) => bodies[i] ?? segment).join(' ; ')
+  }
+  return current
+}
+
 /** The body of a `powershell`/`pwsh -Command` segment, or null when the segment is not one. */
 function wrapperBody(segment: string): string | null {
   const words = psWords(segment)
@@ -1151,7 +1183,8 @@ export async function reconcileHeadMoves(cmd: string, runDir: string, startDir: 
 }
 
 /** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. `exitCode` is the command's exit status when the harness reports one, and a non-zero one drops the named files (a failed `sed -i` or `git restore` changed nothing) but keeps the shell-write pass and the sweeps. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
-export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScope, exitCode?: number | null): Promise<void> {
+export async function enqueueNonHeadMovingRewrites(command: string, scope: WriteScope, exitCode?: number | null): Promise<void> {
+  const cmd = inlinePosixShellScripts(command)
   if (!scope.cdTrusted) {
     if (splitShellSegments(cmd).some((segment) => segmentMayChangeFiles(segment)) && !reconcileAlreadyPending(scope.startDir)) requestReconcileSafe(scope.startDir)
     return
@@ -1167,6 +1200,8 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScop
   // Each directory whose repository needs a reconcile: a segment that can rewrite files it does not name, or a command that writes and failed, names the repositories its `git -C` / `--git-dir` / env prefix points at.
   const reconcileDirs = new Set<string>()
   const failed = Boolean(exitCode)
+  // The head-moving block ran on the command as typed, so a head move found only inside a `bash -c` script was never given its reflog diff and is left to the reconcile.
+  const headMovers = new Set(headMovingSegments(command))
   for (const segment of splitShellSegments(head)) {
     const target = gitRunTarget(segment, runDir)
     let swept = false
@@ -1198,7 +1233,7 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScop
       for (const repo of target.repos) reconcileDirs.add(repo)
       if (!target.known) reconcileDirs.add(runDir)
     }
-    if (swept || namesEveryFile || tokenGoatInvocation(segment) !== null || isHeadMovingGitCommand(segment)) handled.add(segment)
+    if (swept || namesEveryFile || tokenGoatInvocation(segment) !== null || (isHeadMovingGitCommand(segment) && headMovers.has(segment))) handled.add(segment)
   }
   // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.
   if (tailMayChangeFiles(tail)) for (const dir of tailReconcileDirs(tail, runDir, scope.startDir)) reconcileDirs.add(dir)

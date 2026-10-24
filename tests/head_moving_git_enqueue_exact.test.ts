@@ -814,3 +814,41 @@ describe('round 13b: git grep that opens its matches in a program reconciles the
     expect(requestFile()).toBe('')
   })
 })
+
+// Provenance: HAND-DERIVED. A shell -c wrapper runs its script as a command line, so the script's write is the one the bare command would make; the quoting follows POSIX sh.
+describe('round 13b: a bash -c or sh -c wrapper is judged by the script it runs', () => {
+  it.each([["bash -c 'sed -i s/a/b/ f.txt'"], ['sh -c "sed -i s/a/b/ f.txt"'], ["bash -lc 'sed -i s/a/b/ f.txt'"], ["FOO=1 bash -c 'sed -i s/a/b/ f.txt'"], ['sh -c "echo x > f.txt"'], [`bash -c "bash -c 'sed -i s/a/b/ f.txt'"`]])('%s queues f.txt and asks for no reconcile', async (command) => {
+    const { a } = siblingRepos()
+    fs.writeFileSync(join(a, 'f.txt'), 'a\n')
+
+    await postBash(command, a)
+
+    expect(dirty()).toEqual([folded('f.txt', a)])
+    expect(requestFile()).toBe('')
+  })
+
+  it.each([["bash -c 'cat f.txt'"], ['sh -c "git log"'], ["bash -lc 'ls; cat f.txt'"]])('control: %s writes nothing and asks for no reconcile', async (command) => {
+    const { a } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(dirty()).toEqual([])
+    expect(requestFile()).toBe('')
+  })
+
+  it.each([[`bash -c 'sed -i s/a/b/ "$F"'`], ["bash -c 'sed -i s/a/b/ f.txt"], ["bash run.sh -c 'cat f.txt'"], ["bash -c 'sed -i s/a/b/ *.txt'"], ["bash -c 'git checkout other'"], ["zsh -c 'cd . && sed -i s/a/b/ f.txt'"]])('%s cannot be read exactly and reconciles the repo it ran in', async (command) => {
+    const { a } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(requestedRoots()).toEqual([spelled(a)])
+  })
+
+  it('bash -c with a git -C script reconciles the repo the script names', async () => {
+    const { a, b } = siblingRepos()
+
+    await postBash("bash -c 'git -C ../b checkout other'", a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+  })
+})
