@@ -353,18 +353,6 @@ function extractTeeFiles(segment: string): string[] {
   return tokens.slice(1).filter((t) => t.length > 0 && !t.startsWith('-'))
 }
 
-/** Targets of `>` / `>>` output redirection in one segment. `2>&1`-style fd duplications name no file and are excluded by the target pattern. */
-function extractRedirectTargets(segment: string): string[] {
-  const targets: string[] = []
-  const re = /(?:^|\s)[0-9]?>>?\s*("[^"]*"|'[^']*'|[^\s|&<>]+)/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(segment)) !== null) {
-    const raw = m[1]!
-    targets.push(raw.length >= 2 && (raw[0] === '"' || raw[0] === "'") ? raw.slice(1, -1) : raw)
-  }
-  return targets
-}
-
 /** Pathspecs named on a `git restore` command line: everything after `--`, or every non-option token once `-s`/`--source`'s separate value is skipped. */
 function extractGitRestorePathspecs(cmd: string): string[] {
   const m = /^\s*git\s+restore\b(.*)$/i.exec(cmd)
@@ -484,8 +472,7 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string):
     if (stashDir !== null) sweepDirs.add(stashDir)
     for (const f of extractSedInPlaceFiles(segment)) paths.push(atRunDir(f))
     for (const f of extractTeeFiles(segment)) paths.push(atRunDir(f))
-    for (const f of extractRedirectTargets(segment)) paths.push(atRunDir(f))
-    if (paths.length + sweepDirs.size > before || tokenGoatInvocation(segment) !== null) handled.add(segment)
+    if (paths.length + sweepDirs.size > before || tokenGoatInvocation(segment) !== null || isHeadMovingGitCommand(segment) || GIT_RESTORE_RE.test(segment)) handled.add(segment)
   }
   for (const p of new Set(paths)) enqueueRewrittenPath(p)
   // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.

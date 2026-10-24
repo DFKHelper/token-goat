@@ -144,6 +144,55 @@ describe('a shell command that writes through a program the hook cannot read', (
   })
 })
 
+describe('a redirect does not make the program behind it innocent', () => {
+  it.each([
+    ['python gen.py > out.log'],
+    ['npm run build > b.log'],
+    ['python w.py 2>/dev/null'],
+    ['node gen.js >> out.log 2> err.log'],
+  ])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests()).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it('still queues the redirect target itself', async () => {
+    const dir = repo()
+    writeFileSync(join(dir, 'out.log'), 'x')
+    await postBashHandler(shellCall('python gen.py > out.log', dir, 'claude'))
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('out.log', dir)))
+  })
+
+  it.each([['echo hi > a.txt'], ['printf x >> a.txt'], ['cat b.txt > a.txt']])('%s, a bare writer, asks for nothing more', async (command) => {
+    const dir = repo()
+    writeFileSync(join(dir, 'a.txt'), 'x')
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests()).toEqual([])
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+  })
+
+  it.each([['git status > /dev/null'], ['ls > NUL'], ['rg x 2>/dev/null']])('%s queues and asks for nothing', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests()).toEqual([])
+    expect(getDirtyPaths()).toEqual([])
+  })
+})
+
+describe('a remove that may have taken a directory', () => {
+  it.each([['rm -rf build'], ['Remove-Item -Recurse build'], ['Remove-Item -Recurse -Force build'], ['Remove-Item build']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'copilot'))
+    expect(reconcileRequests()).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it.each([['Remove-Item old.txt'], ['Remove-Item -Force old.txt'], ['rm src/old.ts']])('%s, a file, only drops that path', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'copilot'))
+    expect(reconcileRequests()).toEqual([])
+  })
+})
+
 describe('a burst of shell writes', () => {
   it('leaves one pending reconcile request for the project, not one per call', async () => {
     const dir = repo()

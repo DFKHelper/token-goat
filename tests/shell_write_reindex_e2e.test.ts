@@ -1,6 +1,6 @@
 /** A file a Copilot CLI shell call wrote reaches the index through the shipped path: the real Copilot hook shim, the built bundle's hook entry, and the production worker drain with no injected callback, ending in a symbol lookup. PROVENANCE: the postToolUse envelope (sessionId, timestamp, cwd, toolName, toolArgs, toolResult, traceparent) is CAPTURE from tests/fixtures/copilot_cli_1_0_88/C6-006-postToolUse-powershell.json (Copilot CLI 1.0.88); the extra toolArgs keys (initial_wait, mode, shellId) are FORMAT-DERIVED from the same captured session family, and every command value and symbol name is HAND-DERIVED and synthetic. */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -39,11 +39,15 @@ function findFile(dir: string, name: string): string | null {
 }
 
 /** An indexed git project holding `a.ts` with one symbol, an isolated data home, and the installed Copilot shim. */
-function indexedProject(): { proj: string; home: string; hooksDir: string; env: NodeJS.ProcessEnv; dbPath: string } {
+function indexedProject(extra: Record<string, string> = {}): { proj: string; home: string; hooksDir: string; env: NodeJS.ProcessEnv; dbPath: string } {
   const proj = indexableDir()
   const home = realpathSync.native(mkdtempSync(join(tmpdir(), 'tg-shell-write-e2e-')))
   homes.push(home)
   writeFileSync(join(proj, 'a.ts'), fn('shellWriteBefore'))
+  for (const [rel, body] of Object.entries(extra)) {
+    mkdirSync(dirname(join(proj, rel)), { recursive: true })
+    writeFileSync(join(proj, rel), body)
+  }
   for (const args of [['init', '-q'], ['add', '-A']]) expect(spawnSync('git', args, { cwd: proj, encoding: 'utf8' }).status).toBe(0)
   const env = tgIsolatedEnv(home, { TOKEN_GOAT_HOME: home, TOKEN_GOAT_NO_WORKER_SPAWN: '1', TOKEN_GOAT_HOOK_SERVER: '0' })
   const indexed = spawnSync(process.execPath, [BUNDLE, 'index', '.'], { cwd: proj, env, encoding: 'utf8', timeout: 60_000 })
@@ -95,6 +99,37 @@ describe('a file a Copilot CLI shell call wrote reaches the index', () => {
     drainOnce(dataDirPath)
     await pendingEmbeddings()
     expect(querySymbols({ name: 'shellWriteAfterPython' }, ctx.dbPath).map((s) => normalizePath(s.filePath))).toEqual([normalizePath(file)])
+  }, 60_000)
+
+  it('indexes a brand-new untracked file a redirected python script created', async () => {
+    const ctx = indexedProject()
+    // Never staged: a git ls-files of tracked files alone cannot see it.
+    const created = join(ctx.proj, 'fresh.ts')
+    writeFileSync(created, fn('shellWriteUntracked'))
+    copilotShellCall(ctx, 'python scripts/gen.py > gen.log')
+
+    const requestFile = findFile(ctx.home, 'reconcile.txt')
+    expect(requestFile, 'a redirected program that may write files asked the worker for no reconcile').not.toBeNull()
+    const dataDirPath = dirname(dirname(requestFile as string))
+    expect(await drainReconcileRequestsAsync(dataDirPath)).toBe(1)
+    drainOnce(dataDirPath)
+    await pendingEmbeddings()
+    expect(querySymbols({ name: 'shellWriteUntracked' }, ctx.dbPath).map((s) => normalizePath(s.filePath))).toEqual([normalizePath(created)])
+  }, 60_000)
+
+  it('stops resolving the symbols of a directory a recursive remove deleted', async () => {
+    const ctx = indexedProject({ 'gone/inner.ts': fn('shellWriteInsideDir') })
+    expect(querySymbols({ name: 'shellWriteInsideDir' }, ctx.dbPath)).toHaveLength(1)
+    rmSync(join(ctx.proj, 'gone'), { recursive: true, force: true })
+    copilotShellCall(ctx, 'Remove-Item -Recurse -Force gone')
+
+    const requestFile = findFile(ctx.home, 'reconcile.txt')
+    expect(requestFile, 'a recursive remove asked the worker for no reconcile').not.toBeNull()
+    const dataDirPath = dirname(dirname(requestFile as string))
+    expect(await drainReconcileRequestsAsync(dataDirPath)).toBe(1)
+    drainOnce(dataDirPath)
+    await pendingEmbeddings()
+    expect(querySymbols({ name: 'shellWriteInsideDir' }, ctx.dbPath)).toEqual([])
   }, 60_000)
 
   it('leaves the queue and the request file alone for a read-only command', () => {

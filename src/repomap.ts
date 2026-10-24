@@ -13,7 +13,7 @@ export interface TrackedFilesResult {
 }
 
 /** Where `git ls-files` runs for `cwd`, and with what arguments. Shared by {@link listTrackedFiles} and {@link listTrackedFilesAsync} so the two cannot disagree about it. */
-function trackedFilesInvocation(cwd: string): { dir: string; args: string[] } {
+function trackedFilesInvocation(cwd: string, includeUntracked = false): { dir: string; args: string[] } {
   let dir = cwd
   let onlyFile = ''
   try {
@@ -25,18 +25,19 @@ function trackedFilesInvocation(cwd: string): { dir: string; args: string[] } {
     // Unstattable: leave it to git, which reports the same "nothing tracked" empty result.
   }
   // --error-unmatch turns "path exists but is untracked" into a non-zero exit rather than empty output, which the exitCode check in trackedFilesFrom already maps to no files.
+  if (onlyFile === '' && includeUntracked) return { dir, args: ['ls-files', '-z', '--cached', '--others', '--exclude-standard'] }
   return { dir, args: onlyFile === '' ? ['ls-files'] : ['ls-files', '--error-unmatch', '--', onlyFile] }
 }
 
 /** What `git ls-files` answered, as a {@link TrackedFilesResult}: a killed git is unknown (`timedOut`), a failed or empty one is nothing tracked. */
-function trackedFilesFrom(dir: string, result: GitResult): TrackedFilesResult {
+function trackedFilesFrom(dir: string, result: GitResult, separator = '\n'): TrackedFilesResult {
   // A spawn refused with ENOENT because the directory is gone leaves git nothing to list, which is the answer for a directory that does not exist; a missing git looks the same (Node names neither), so the directory decides, and a killed or timed-out git is unknown whatever the directory.
   if (result.unfinished) return { files: [], timedOut: !(result.timedOut !== true && result.signal === undefined && result.stderr.includes('ENOENT') && !fs.existsSync(dir)) }
   if (result.exitCode !== 0 || !result.stdout) {
     return { files: [], timedOut: false }
   }
   const files = result.stdout
-    .split('\n')
+    .split(separator)
     .filter((line) => line.trim().length > 0)
     .map((rel) => path.join(dir, rel))
   return { files, timedOut: false }
@@ -52,11 +53,11 @@ export function listTrackedFiles(cwd: string = process.cwd()): TrackedFilesResul
   }
 }
 
-/** {@link listTrackedFiles} without blocking the event loop, for the worker, whose sweep of a hung repository must not stall the drain behind it. The same answer for every input, a single file path included; never rejects. */
-export async function listTrackedFilesAsync(cwd: string = process.cwd()): Promise<TrackedFilesResult> {
+/** {@link listTrackedFiles} without blocking the event loop, for the worker, whose sweep of a hung repository must not stall the drain behind it. The same answer for every input, a single file path included; never rejects. `includeUntracked` adds the files git neither tracks nor ignores (`ls-files --others --exclude-standard`, still one bounded git call), which a file a shell command just created is until someone stages it. */
+export async function listTrackedFilesAsync(cwd: string = process.cwd(), opts: { includeUntracked?: boolean } = {}): Promise<TrackedFilesResult> {
   try {
-    const { dir, args } = trackedFilesInvocation(cwd)
-    return trackedFilesFrom(dir, await runGitAsyncLazy(args, { cwd: dir }))
+    const { dir, args } = trackedFilesInvocation(cwd, opts.includeUntracked === true)
+    return trackedFilesFrom(dir, await runGitAsyncLazy(args, { cwd: dir }), args.includes('-z') ? '\0' : '\n')
   } catch {
     return { files: [], timedOut: false }
   }

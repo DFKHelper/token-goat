@@ -171,6 +171,22 @@ export function extractPowerShellWriteTargets(segment: string): ShellWriteTarget
   return into
 }
 
+/** Targets of `>` / `>>` output redirection in one segment. `2>&1`-style fd duplications name no file and are excluded by the target pattern, and the null devices are never a file. */
+function extractRedirectTargets(segment: string): string[] {
+  const targets: string[] = []
+  const re = /(?:^|\s)[0-9]?>>?\s*("[^"]*"|'[^']*'|[^\s|&<>]+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(segment)) !== null) {
+    const raw = m[1]!
+    const target = raw.length >= 2 && (raw[0] === '"' || raw[0] === "'") ? raw.slice(1, -1) : raw
+    if (!/^(?:\/dev\/null|nul|\$null)$/i.test(target)) targets.push(target)
+  }
+  return targets
+}
+
+/** A recursive switch on a remove: `-r`, `-R`, `-rf`, `-fr`, `-Recurse` (not `-Force`, which merely contains an r). */
+const RECURSIVE_FLAG_RE = /\s-(?:[fvi]*r[fvi]*|recurse)(?=\s|$|:)/i
+
 /** True when a request for `projectDir` already waits in the reconcile-request file, so a burst of shell calls leaves one line per directory instead of one per call. A claim renames the file away, so a request made after a sweep began is recorded again. */
 function reconcileAlreadyPending(projectDir: string): boolean {
   try {
@@ -190,7 +206,11 @@ export function enqueueShellWrites(cmd: string, runDir: string, handled: Readonl
     const named = extractPowerShellWriteTargets(segment)
     for (const f of named.written) written.add(resolveIndexPath(f, runDir))
     for (const f of named.removed) removed.add(resolveIndexPath(f, runDir))
+    // A redirect says where the output went, not what the program behind it wrote, so the segment still goes to the may-write check below.
+    for (const f of extractRedirectTargets(segment)) written.add(resolveIndexPath(f, runDir))
     if (!handled.has(segment) && named.written.length === 0 && named.removed.length === 0 && segmentMayWriteFiles(segment)) unnamed = true
+    // The drain prunes only the exact path it is given, so a deleted directory leaves its children indexed until the sweep's deletion pass stats their rows: a recursive remove, or a target with no extension (already gone, so a directory cannot be told from a file), asks for that sweep.
+    if (named.removed.length > 0 && (RECURSIVE_FLAG_RE.test(segment) || named.removed.some((f) => path.extname(f) === ''))) unnamed = true
   }
   written.forEach(enqueue.written)
   removed.forEach(enqueue.removed)
@@ -199,7 +219,7 @@ export function enqueueShellWrites(cmd: string, runDir: string, handled: Readonl
 
 /** Programs whose only effect is to read or report; anything not listed may write files. */
 const READ_ONLY_HEADS: ReadonlySet<string> = new Set([
-  'ls', 'dir', 'cat', 'type', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'fd', 'find', 'pwd', 'echo', 'cd', 'pushd', 'popd', 'which', 'where', 'whereis', 'tree', 'stat', 'file', 'du', 'df', 'diff', 'cmp', 'less', 'more', 'true', 'false', 'date', 'whoami', 'basename', 'dirname', 'realpath', 'readlink', 'test', 'cls', 'clear', 'sleep',
+  'ls', 'dir', 'cat', 'type', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'fd', 'find', 'pwd', 'echo', 'cd', 'pushd', 'popd', 'which', 'where', 'whereis', 'tree', 'stat', 'file', 'du', 'df', 'diff', 'cmp', 'less', 'more', 'true', 'false', 'date', 'whoami', 'basename', 'dirname', 'realpath', 'readlink', 'test', 'cls', 'clear', 'sleep', 'printf',
   'get-content', 'gc', 'get-childitem', 'gci', 'get-item', 'gi', 'get-location', 'gl', 'select-string', 'sls', 'test-path', 'resolve-path', 'get-command', 'gcm', 'get-process', 'write-output', 'write-host', 'measure-object', 'select-object', 'select', 'where-object', 'start-sleep', 'get-date', 'get-help', 'get-filehash',
 ])
 

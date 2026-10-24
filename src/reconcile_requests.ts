@@ -75,7 +75,7 @@ export async function drainReconcileRequestsAsync(dir: string): Promise<number> 
         logOutcome(dir, projectDir, `dropped, ${root} was not indexed on purpose`)
         continue
       }
-      const listing = await listTrackedFilesAsync(root)
+      const listing = await listTrackedFilesAsync(root, { includeUntracked: true })
       progressed()
       const result = reconcileProjectWith({ cwd: root, dbPath, queueDir: dir }, listing)
       progressed()
