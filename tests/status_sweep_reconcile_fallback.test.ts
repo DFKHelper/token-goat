@@ -110,8 +110,8 @@ describe('the working-tree status sweep when git does not answer', () => {
   it('asks the worker to reconcile the project when the ls-files read that expands a git restore pathspec is killed by a signal', async () => {
     seam.lsFiles = { exitCode: -1, unfinished: true, signal: 'SIGKILL' }
 
-    // A glob, as in the timed-out row above: a literal name is enqueued without asking ls-files.
-    await bashRun(dir, "git restore '*.txt'")
+    // `.`, as in the timed-out row above: a literal name is enqueued without asking ls-files, and a glob no longer reaches it.
+    await bashRun(dir, 'git restore -- .')
 
     expect(requested()).toEqual([foldPath(normalizePath(dir))])
     expect(dirty()).toEqual([])
