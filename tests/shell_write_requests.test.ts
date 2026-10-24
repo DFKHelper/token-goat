@@ -100,6 +100,17 @@ describe('a PowerShell write cmdlet names its file to the dirty queue', () => {
     expect(extractPowerShellWriteTargets("Set-Content -Path src\\a.ts -Value x").written).toEqual(['src\\a.ts'])
   })
 
+  // HAND-DERIVED: PowerShell groups a quoted word holding a space as one argument, so `-Command` followed by a cmdlet and a quoted path is the same write as the string form.
+  it.each([
+    ['an unquoted -Command with a single-quoted path', "pwsh -Command Set-Content 'my file.txt' -Value two"],
+    ['an unquoted -Command with a double-quoted path', 'powershell -NoProfile -Command Set-Content "my file.txt" -Value two'],
+  ])('keeps the spaces of a path in %s', async (_name, command) => {
+    const dir = repo()
+    writeFileSync(join(dir, 'my file.txt'), 'two\n')
+    await postBashHandler(shellCall(command, dir, 'copilot'))
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('my file.txt', dir)))
+  })
+
   it('does not name a path only the shell could resolve', () => {
     expect(extractPowerShellWriteTargets('Set-Content -Path $target -Value x')).toEqual({ written: [], removed: [] })
     expect(extractPowerShellWriteTargets('Remove-Item *.log')).toEqual({ written: [], removed: [] })

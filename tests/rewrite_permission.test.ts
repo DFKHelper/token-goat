@@ -300,6 +300,56 @@ describe('decideRewrite: shell wrap', () => {
   })
 })
 
+// PROVENANCE: FORMAT-DERIVED from https://code.claude.com/docs/en/permissions.md, section "PowerShell" (fetched 2026-10-22): the rule name is `PowerShell`, a rule has the shape of a Bash rule, a bare `PowerShell` or `PowerShell(*)` matches every command, cmdlet aliases are canonicalized before matching (`PowerShell(Get-ChildItem *)` also matches `gci`, `ls`, `dir`) and matching is case-insensitive; its example deny rule is `PowerShell(Remove-Item *)`. Every command value is HAND-DERIVED.
+describe('decideRewrite: the PowerShell tool', () => {
+  const ps = (command: string, mode: unknown = 'default'): RewriteRequest => shell(command, mode, { ps: true })
+  const noLineRules = (): boolean => false
+
+  it.each(MODES)('a PowerShell deny rule keeps the original call in %s mode', (mode) => {
+    expect(decideRewrite(snap({ deny: ['PowerShell(Remove-Item *)'] }), ps('Remove-Item build -Recurse', mode))).toBe('skip')
+  })
+
+  it.each(MODES)('a PowerShell ask rule keeps the original call in %s mode', (mode) => {
+    expect(decideRewrite(snap({ ask: ['PowerShell(Remove-Item *)'] }), ps('Remove-Item build -Recurse', mode))).toBe('skip')
+  })
+
+  it.each([['del build'], ['ri build'], ['Get-ChildItem build']])('a PowerShell rule leaves %s alone, since an alias or a parsed script hides the cmdlet from a text search', (command) => {
+    expect(decideRewrite(snap({ deny: ['PowerShell(Remove-Item *)'] }), ps(command))).toBe('skip')
+  })
+
+  it.each([['PowerShell'], ['PowerShell(*)'], ['powershell(Remove-Item *)'], ['POWERSHELL(Remove-Item:*)']])('the rule %s keeps the original call', (rule) => {
+    expect(decideRewrite(snap({ deny: [rule] }), ps('go build ./...'))).toBe('skip')
+  })
+
+  it('a Bash deny rule still applies to a PowerShell call, as it did', () => {
+    expect(decideRewrite(snap({ deny: ['Bash(curl:*)'] }), ps('curl https://example.com'))).toBe('skip')
+  })
+
+  it('a rule that does not parse is assumed to match a PowerShell call', () => {
+    expect(decideRewrite(snap({ deny: ['PowerShell('] }), ps('go build ./...'))).toBe('skip')
+  })
+
+  it('a PowerShell rule changes nothing for a Bash call', () => {
+    expect(decideRewrite(snap({ deny: ['PowerShell(Remove-Item *)'] }), shell('go build ./...'))).toBe('rewrite')
+    expect(decideRewrite(snap({ deny: ['PowerShell'] }), shell('go build ./...'))).toBe('rewrite')
+  })
+
+  it('with no rules a PowerShell call is rewritten with no decision', () => {
+    expect(decideRewrite(NONE, ps('go build ./...'))).toBe('rewrite')
+  })
+
+  it('a Bash allow rule or Bash read-only command does not approve a PowerShell call', () => {
+    expect(decideRewrite(snap({ allow: ['Bash(go build *)'] }), shell('go build ./...'), undefined, noLineRules)).toBe('approve')
+    expect(decideRewrite(snap({ allow: ['Bash(go build *)'] }), ps('go build ./...'), undefined, noLineRules)).not.toBe('approve')
+    expect(decideRewrite(NONE, shell('ls -la src'), undefined, noLineRules)).toBe('approve')
+    expect(decideRewrite(NONE, ps('ls -la src'), undefined, noLineRules)).not.toBe('approve')
+  })
+
+  it('a PowerShell allow rule covering the wrapper does not let it run unasked', () => {
+    expect(decideRewrite(snap({ allow: ['PowerShell(token-goat *)'] }), ps('go build ./...'))).toBe('skip')
+  })
+})
+
 describe('decideRewrite: image Read', () => {
   const read = (insideCwd: boolean, harness: RewriteRequest['harness'] = 'claudecode'): RewriteRequest => ({ kind: 'read', harness, mode: 'default', cwd: CWD, original: path.join(CWD, 'private', 'shot.png'), rewritten: path.join(os.tmpdir(), 'token-goat-shrink-1-2-x.jpeg'), insideCwd })
 
@@ -442,6 +492,8 @@ describe('loadPermissionSnapshot and permissionNeutralRewrite read the real sett
   afterEach(() => {
     if (savedConfigDir === undefined) delete process.env['CLAUDE_CONFIG_DIR']
     else process.env['CLAUDE_CONFIG_DIR'] = savedConfigDir
+    // The check loaded above would otherwise stay loaded for the rows that pin the unloaded default.
+    resetPermissionSourceCache()
     fs.rmSync(root, { recursive: true, force: true })
   })
 

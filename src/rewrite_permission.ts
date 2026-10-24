@@ -63,6 +63,8 @@ export interface RewriteRequest {
   readonly insideCwd?: boolean
   /** The hook payload's `agent_type`: the subagent the call came from, whose definition may remove tools by pattern. */
   readonly agentType?: string | undefined
+  /** For a shell call: whether Claude Code's PowerShell tool made it. That tool is judged against `PowerShell(...)` rules, which Claude Code never applies to a Bash call (https://code.claude.com/docs/en/permissions.md, PowerShell section); absent means the Bash tool. */
+  readonly ps?: boolean
 }
 
 /** The payload's `agent_type`, which Claude Code sends from inside a subagent and on the main thread of a session started with `--agent`. */
@@ -299,7 +301,8 @@ function decideShell(snapshot: PermissionSnapshot, req: RewriteRequest, mode: st
   const expands = /[$`\\]/.test(original)
   const pathExpands = /[$`~*?[]/.test(original)
   for (const rule of [...snapshot.deny, ...snapshot.ask]) {
-    if (rule.tool === undefined) return 'skip'
+    // Claude Code matches a PowerShell rule after canonicalizing cmdlet aliases (`PowerShell(Remove-Item *)` also stops `rm`, `del` and `ri`) and after parsing the script's AST, which a search of the text cannot follow: any such rule leaves the call alone.
+    if (rule.tool === undefined || (req.ps && ruleToolIs(rule, ['powershell']))) return 'skip'
     if (ruleToolIs(rule, ['bash'])) {
       if (expands || bashRuleMayMatch(rule, hays)) return 'skip'
     } else if (ruleToolIs(rule, FILE_RULE_TOOLS)) {
@@ -309,13 +312,13 @@ function decideShell(snapshot: PermissionSnapshot, req: RewriteRequest, mode: st
   }
   // bypassPermissions runs the original with no prompt, so allow rules decide nothing there: decideRewrite turns this into an allow or a skip.
   if (mode === 'bypassPermissions') return 'rewrite'
-  // plan mode runs the auto-mode classifier by default, which reviews even read-only commands: an allow there would skip the review, so the wrapper is left to it.
-  if (mode !== 'plan' && provenAllowed(snapshot, original)) return 'approve'
+  // plan mode runs the auto-mode classifier by default, which reviews even read-only commands: an allow there would skip the review, so the wrapper is left to it. provenAllowed reads Bash allow rules and Bash's read-only commands, which decide nothing for a PowerShell call.
+  if (mode !== 'plan' && !req.ps && provenAllowed(snapshot, original)) return 'approve'
   // dontAsk turns a prompt into a denial, so an unproven wrapper could refuse a call a rule we cannot see allowed.
   if (mode === 'dontAsk') return 'skip'
   const allowHays = req.kind === 'shell-wrap' ? hays : haystacks([original])
   for (const rule of snapshot.allow) {
-    if (!ruleToolIs(rule, ['bash'])) continue
+    if (!ruleToolIs(rule, req.ps ? ['bash', 'powershell'] : ['bash'])) continue
     // An exact rule naming this very wrapper is the user approving it ("don't ask again" saves one): Claude Code applies it to the wrapper itself.
     if (req.kind === 'shell-wrap' && rule.content !== undefined && !rule.content.includes('*') && rule.content === req.rewritten) continue
     // A wildcard rule covering the wrapper would auto-run a command the user never allowed; one covering the original means the wrapper would add a prompt it never had.

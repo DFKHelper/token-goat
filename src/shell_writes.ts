@@ -156,13 +156,18 @@ function shellNameOf(tokens: readonly string[]): string {
 /** How deep a `powershell -Command "..."` inside another is read; past it the segment is opaque and counts as a possible writer. */
 const MAX_WRAPPER_DEPTH = 3
 
+const SINGLE_QUOTE = "'"
+
 /** The body of a `powershell`/`pwsh -Command` segment, or null when the segment is not one. */
 function wrapperBody(segment: string): string | null {
   const tokens = psTokens(segment)
   const name = shellNameOf(tokens)
   if (name !== 'powershell' && name !== 'pwsh') return null
   const flag = tokens.findIndex((t) => /^-c(?:ommand)?$/i.test(t))
-  return flag >= 0 ? tokens.slice(flag + 1).join(' ') : null
+  if (flag < 0) return null
+  const rest = tokens.slice(flag + 1)
+  // One word is the whole script in quotes. Several are the script written bare, where psTokens dropped the quotes that grouped a word holding spaces, and joining without them split a path like `my file.txt` into two words.
+  return rest.length === 1 ? rest[0]! : rest.map((t) => (t === '' || /\s/.test(t) ? SINGLE_QUOTE + t.split(SINGLE_QUOTE).join(SINGLE_QUOTE + SINGLE_QUOTE) + SINGLE_QUOTE : t)).join(' ')
 }
 
 /** The bodies of the outermost `{ ... }` script blocks in `segment` that sit outside quotes, for a segment with a cmdlet in it (a brace in `rg '{x}'` or `awk '{print}'` is not a PowerShell block). */

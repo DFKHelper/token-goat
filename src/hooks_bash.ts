@@ -102,7 +102,18 @@ function cappedInterpreterRead(event: HookEvent, rawCmd: string, cmd: string, hi
 
 /** A rewrite of this Bash call's command, or null when rewrite_permission.ts finds it could change the permission outcome of the command the model wrote. */
 function shellRewrite(event: HookEvent, kind: 'shell-wrap' | 'shell-query', original: string, command: string): HookOutput | null {
-  return permissionNeutralRewrite({ ...event.toolInput, command }, { kind, harness: detectHarness(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original, rewritten: command, agentType: agentTypeOf(event.raw) })
+  return permissionNeutralRewrite({ ...event.toolInput, command }, { kind, harness: detectHarness(), mode: event.raw['permission_mode'], cwd: getCwd(event) ?? process.cwd(), original, rewritten: command, agentType: agentTypeOf(event.raw), ps: isPs(event) })
+}
+
+/** Whether Claude Code's PowerShell tool made this call, whose rules are `PowerShell(...)` ones. */
+function isPs(event: HookEvent): boolean {
+  return /^powershell$/i.test(String(event.raw['tool_name']))
+}
+
+/** Whether this call's command runs in PowerShell: the PowerShell tool, or Codex or Copilot CLI, on Windows. */
+function isPwshHarness(event: HookEvent): boolean {
+  const h = event.raw['_tg_harness']
+  return process.platform === 'win32' && (h === 'codex' || h === 'copilot_cli' || isPs(event))
 }
 
 /** Wrap a recognized command in `token-goat compress` so its output is structurally compressed on this run. Returns a `rewriteInput` HookOutput that replaces the Bash tool input wholesale (preserving description/timeout), or null when compression is disabled (`TOKEN_GOAT_BASH_COMPRESS=0` or config), the command is unsuitable, or the chosen filter is disabled. @param event  hook event; its toolInput is preserved verbatim except `command` @param rawCmd original command INCLUDING any `cd … &&` prefix and leading assignments (run by compress) @param cmd    the command with both stripped, used only to pick the filter */
@@ -113,19 +124,8 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
   if (compressionOptedOut(rawCmd)) return null
   // VS Code's run_in_terminal runs the command in whatever shell the user's terminal uses, and its payload does not say which one, so no quoting of the wrapped command is safe in every one of them: the command is never rewritten there.
   if (event.raw['_tg_harness'] === 'vscode') return null
-
-  const isPwshHarness =
-    process.platform === 'win32' &&
-    (event.raw['_tg_harness'] === 'codex' ||
-      event.raw['_tg_harness'] === 'copilot_cli' ||
-      /^powershell$/i.test(String(event.raw['tool_name'])))
-
-  if (isPwshHarness) {
-    if (!canRunPowerShell()) return null
-  } else {
-    // No usable shell to run the wrapper under (Windows with no Git-Bash): leave the command to run normally in the harness bash, uncompressed, rather than wrapping it into a cmd.exe execution.
-    if (!canRunWrappedShell()) return null
-  }
+  // No usable shell to run the wrapper under (Windows with no Git-Bash): leave the command to run normally in the harness bash, uncompressed, rather than wrapping it into a cmd.exe execution. Off Windows the only wrapper built is quoted for bash, which the PowerShell tool does not run.
+  if (isPwshHarness(event) ? !canRunPowerShell() : isPs(event) || !canRunWrappedShell()) return null
 
   let cfg: { enabled: boolean; disabled_filters: string[]; timeout_seconds: number }
   try {
@@ -155,7 +155,7 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
   if (cfg.disabled_filters.includes(filterName)) return null
   const capArgs = cap === undefined ? '' : ` --max-tokens ${cap.maxTokens} --cap-hint-b64 ${Buffer.from(cap.hint, 'utf8').toString('base64')}`
 
-  if (isPwshHarness) {
+  if (isPwshHarness(event)) {
     // For PowerShell harnesses on Windows (Codex, Copilot CLI), avoid shell quoting pitfalls (backslashes, quotes, operators) by using base64. Skip wrapping if the base64 representation does not round-trip exactly.
     const b64 = Buffer.from(rawCmd, 'utf8').toString('base64')
     if (Buffer.from(b64, 'base64').toString('utf8') !== rawCmd) return null
@@ -258,7 +258,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // A walk of a whole filesystem root or the home directory with no depth bound outlives the shell that timed out and keeps burning CPU, so it is refused here before it starts; the harness decides whether a bare `find` is Git's or the Windows text-search one. There is no config switch for it on purpose: a switch nobody has asked for is a rule that can be left off.
   const walk = detectUnboundedWalk(rawCmd, {
     windows: process.platform === 'win32',
-    powershell: process.platform === 'win32' && (event.raw['_tg_harness'] === 'codex' || event.raw['_tg_harness'] === 'copilot_cli' || /^powershell$/i.test(String(event.raw['tool_name']))),
+    powershell: isPwshHarness(event),
   })
   if (walk !== null) {
     recordStat('session_hint', 0, 0)
