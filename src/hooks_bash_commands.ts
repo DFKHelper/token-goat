@@ -290,7 +290,7 @@ export function headMovingSegments(cmd: string): string[] {
 }
 
 /** Subcommands where ORIG_HEAD survives multi-step operations (merge/rebase/pull). */
-export const ORIG_HEAD_ELIGIBLE_GIT_RE = /^\s*git\s+(?:pull|merge|rebase)\b/i
+export const ORIG_HEAD_ELIGIBLE_GIT_RE = new RegExp(`${GIT_PREFIX_RE_SRC}(?:pull|merge|rebase)\\b`, 'i')
 
 /** Matches the HEAD reflog message a real merge/rebase/pull leaves behind. */
 export const ORIG_HEAD_REFLOG_MSG_RE = /^(merge\s|rebase\s\(|pull\s)/i

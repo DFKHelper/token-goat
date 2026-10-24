@@ -643,3 +643,15 @@ describe('round 12d: a rebase --exec or -x runs a command that may write any fil
     expect(requestedRoots()).toEqual([spelled(dir)])
   })
 })
+
+describe('round 12d: ORIG_HEAD is taken for a git verb behind a prefix, as for a bare one', () => {
+  it.each([['git -c core.autocrlf=false rebase'], ['git -C . rebase']])('%s reads the ORIG_HEAD base', async (prefix) => {
+    const { dir, original } = replayFixture()
+    git(dir, 'rebase', '-q', original)
+
+    await postBash(`${prefix} ${original}`, dir)
+
+    expectNarrowEnqueue([folded('mainline.txt', dir)])
+    expect(diffBases()).toEqual(['ORIG_HEAD'])
+  })
+})
