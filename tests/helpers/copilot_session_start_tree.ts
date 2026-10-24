@@ -197,13 +197,17 @@ export function linuxProcessState(readStat: () => string): string | null {
   } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'X' : null }
 }
 
+/** The state letter from one `ps -o stat= -p <pid>` run, 'X' (dead) when ps ran and found no such process (exit 1 with nothing printed), or null when ps could not run or failed otherwise. A process that exits between the kill(pid, 0) probe and this listing is gone, not unreadable. */
+export function darwinProcessState(listing: { status: number | null; stdout: string; error?: Error }): string | null {
+  if (listing.error) return null
+  if (listing.status === 0) return listing.stdout.trim().slice(0, 1) || null
+  return listing.status === 1 && listing.stdout.trim() === '' ? 'X' : null
+}
+
 /** The state letter the OS reports for `pid` (R, S, D, Z, X, ...), or null where the platform has no such state or it cannot be read. Linux reads /proc; macOS asks `ps`. */
 function processState(pid: number): string | null {
   if (process.platform === 'linux') return linuxProcessState(() => readFileSync(`/proc/${String(pid)}/stat`, 'utf8'))
-  if (process.platform === 'darwin') {
-    const listing = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true })
-    return listing.status === 0 ? listing.stdout.trim().slice(0, 1) || null : null
-  }
+  if (process.platform === 'darwin') return darwinProcessState(spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true }))
   return null
 }
 

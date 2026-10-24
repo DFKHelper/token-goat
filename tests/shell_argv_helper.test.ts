@@ -146,6 +146,14 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.alive,'the chunk subshell or its child is still running after the run returned').toBe(false)
   }, 120_000)
 
+  // Provenance: HAND-DERIVED. macOS has no /proc, so liveness there rests on `ps`; the branch is forced here by making the /proc test fail, and `ps` is a function that prints what the row names. A zombie state is gone though kill -0 answers yes for it; a live state, an empty listing and a ps that prints nothing for a running pid fall through to kill -0.
+  it.each([['Z', false], ['Z+', false], ['S', true], ['', true]])('reads ps state %j as alive=%s where there is no /proc', (state, expected) => {
+    const noProc = SH_LIVE.replace('[ -r /proc/self/stat ]', 'false')
+    expect(noProc, 'the liveness helper no longer tests /proc with this text').not.toBe(SH_LIVE)
+    const got = spawnSync(sh, ['-c', `${noProc}; ps() { printf '%s\\n' "$TG_FAKE_STATE"; }; tg_live $$`], { env: { ...process.env, TG_FAKE_STATE: state }, windowsHide: true, timeout: 30_000 })
+    expect(got.status === 0).toBe(expected)
+  })
+
   it('shares one subshell across a chunk of commands, so a run forks once per chunk', () => {
     const got = shRunAll(sh, ['tg_probe=set', 'token-goat "${tg_probe-unset}"'])
     expect(got.map((r) => r.calls)).toEqual([[], [['set']]])

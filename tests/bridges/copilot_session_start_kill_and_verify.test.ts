@@ -1,7 +1,7 @@
 /** Provenance: HAND-DERIVED. The process table is a fake map of pid to the command line the query would read (null: the query fails on a running process, the way queryProcessCommandLine reads a failed run: a spawn error, a nonzero exit, a timeout or empty output); no real process is signalled, so each case is deterministic and carries no wait. */
 import { expect, it } from 'vitest'
 
-import { aliveAs, killAndVerify, linuxProcessState, type KillSeam } from '../helpers/copilot_session_start_tree.js'
+import { aliveAs, darwinProcessState, killAndVerify, linuxProcessState, type KillSeam } from '../helpers/copilot_session_start_tree.js'
 
 /** A fake process table: `kills` lists every pid a signal reached, and a signalled process leaves the table. */
 function world(table: Record<number, string | null>): { seam: KillSeam; kills: number[] } {
@@ -146,6 +146,18 @@ it('reads a vanished stat file as a dead process and any other failed read as un
   expect(linuxProcessState(failing('EACCES'))).toBeNull()
   expect(linuxProcessState(() => '123 (node (-e) x) Z 1 123')).toBe('Z')
   expect(linuxProcessState(() => '123 (node) S 1 123')).toBe('S')
+})
+
+// HAND-DERIVED: the macOS twin of the row above. `ps -p` on a pid that exited between the probe and the listing exits 1 with nothing printed, which is an exited process; a ps that could not run, or failed any other way, leaves the state unknown, and unknown counts as alive.
+it('reads a ps listing that found no process as dead and any other failed listing as unknown', () => {
+  expect(darwinProcessState({ status: 1, stdout: '' })).toBe('X')
+  expect(darwinProcessState({ status: 1, stdout: '  \n' })).toBe('X')
+  expect(darwinProcessState({ status: 2, stdout: '' })).toBeNull()
+  expect(darwinProcessState({ status: null, stdout: '' })).toBeNull()
+  expect(darwinProcessState({ status: 1, stdout: '', error: new Error('ENOENT') })).toBeNull()
+  expect(darwinProcessState({ status: 0, stdout: 'Z\n' })).toBe('Z')
+  expect(darwinProcessState({ status: 0, stdout: 'S+\n' })).toBe('S')
+  expect(darwinProcessState({ status: 0, stdout: '' })).toBeNull()
 })
 
 // HAND-DERIVED: a pid that answers the liveness probe and exits before the command line is read has no line to read; the failed read must not count it as a survivor, while a pid that still answers after a failed read stays one.
