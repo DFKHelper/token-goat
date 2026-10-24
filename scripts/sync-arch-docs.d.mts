@@ -3,6 +3,8 @@ export interface RunCliIo {
   cwd?: string
   /** Receives one finding per call, without a trailing newline. Defaults to writing the line to the process stderr. */
   stderr?: (line: string) => void
+  /** Receives the one JSON object `--check --format=json` prints, without a trailing newline. Defaults to writing the line to the process stdout. */
+  stdout?: (line: string) => void
 }
 
 /** Runs the architecture-doc engine and returns its exit code: 0 in sync or written, 1 drift, 2 configuration or usage error. */
