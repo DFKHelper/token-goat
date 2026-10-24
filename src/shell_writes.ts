@@ -598,6 +598,9 @@ const GIT_PROGRAM_CONFIG_KEYS: readonly RegExp[] = [
   /^(?:difftool|mergetool|browser)\..+\.cmd$/, /^trailer\..+\.command$/, /^remote\..+\.(?:uploadpack|receivepack|vcs)$/,
 ]
 
+/** A pager assignment that runs `cat`, which writes nothing: `PAGER=cat git log` is how a read is kept from paging, and no other value is taken as harmless. */
+const PLAIN_PAGER_ENV_RE = /(?:^|\s)(?:GIT_PAGER|PAGER)=(?:cat|'cat'|"cat")(?=\s|$)/g
+
 /** Environment prefixes that make git run a program (an external diff, pager, editor, ssh or askpass command, a proxy) or take config from the environment, so a `git` segment naming one reconciles. */
 const GIT_PROGRAM_ENV_RE = /(?:^|\s)(?:GIT_EXTERNAL_DIFF|GIT_PAGER|PAGER|GIT_EDITOR|GIT_SEQUENCE_EDITOR|GIT_SSH|GIT_SSH_COMMAND|GIT_ASKPASS|GIT_PROXY_COMMAND|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+)=/
 
@@ -640,7 +643,7 @@ function gitGrepOpensPager(args: readonly string[]): boolean {
 function gitRunsCommand(segment: string): boolean {
   const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, ''))
   if (headOf(tokens) !== 'git') return false
-  if (gitRunsProgramByConfig(tokens) || GIT_PROGRAM_ENV_RE.test(segment) || GIT_EXT_TRANSPORT_RE.test(segment)) return true
+  if (gitRunsProgramByConfig(tokens) || GIT_PROGRAM_ENV_RE.test(segment.replace(PLAIN_PAGER_ENV_RE, ' ')) || GIT_EXT_TRANSPORT_RE.test(segment)) return true
   const sub = gitSubcommand(tokens)
   if (sub === null) return false
   const args = tokens.slice(tokens.indexOf(sub) + 1)

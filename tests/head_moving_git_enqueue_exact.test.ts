@@ -852,3 +852,25 @@ describe('round 13b: a bash -c or sh -c wrapper is judged by the script it runs'
     expect(requestedRoots()).toEqual([spelled(b)])
   })
 })
+
+// Provenance: HAND-DERIVED. A leading NAME=value word sets an environment variable for the command after it and changes nothing else about what that command does.
+describe('round 13b: an environment assignment before a command leaves the command read as itself', () => {
+  it.each([['PAGER=cat cat f.txt'], ['PAGER=cat git log'], ['A=1 B=2 cat f.txt']])('control: %s writes nothing and asks for no reconcile', async (command) => {
+    const { a } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(dirty()).toEqual([])
+    expect(requestFile()).toBe('')
+  })
+
+  it('FOO=1 sed -i s/a/b/ f.txt queues f.txt and asks for no reconcile', async () => {
+    const { a } = siblingRepos()
+    fs.writeFileSync(join(a, 'f.txt'), 'a\n')
+
+    await postBash('FOO=1 sed -i s/a/b/ f.txt', a)
+
+    expect(dirty()).toEqual([folded('f.txt', a)])
+    expect(requestFile()).toBe('')
+  })
+})
