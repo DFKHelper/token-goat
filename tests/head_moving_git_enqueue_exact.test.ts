@@ -60,6 +60,13 @@ function expectNarrowEnqueue(expected: string[]): void {
   expect(workerLog()).toBe('')
 }
 
+/** What a hard reset leaves: the queue holds `expected`, and the project is asked for a reconcile too, since `--hard` discards working-tree changes that no commit diff lists. Nothing is logged as a failure. */
+function expectExactEnqueueAndReconcile(expected: string[]): void {
+  expect(dirty().sort()).toEqual([...expected].sort())
+  expect(parseReconcileRequests(requestFile()), 'a hard reset discards working-tree changes the commit diff cannot list, so the project is reconciled').toHaveLength(1)
+  expect(workerLog()).toBe('')
+}
+
 beforeEach(() => {
   clearModuleCaches()
   clearDirtyQueue()
@@ -90,7 +97,7 @@ describe('a head-moving git command whose git reads answer', () => {
 
     await postBash(`git reset --hard ${first}`, dir)
 
-    expectNarrowEnqueue([folded('a.txt', dir)])
+    expectExactEnqueueAndReconcile([folded('a.txt', dir)])
     expect(diffBases()).toEqual(['HEAD@{1}'])
   })
 
@@ -133,7 +140,7 @@ describe('a head-moving git command whose git reads answer', () => {
 
     await postBash('git reset --hard HEAD~1', dir)
 
-    expectNarrowEnqueue([folded('third.txt', dir)])
+    expectExactEnqueueAndReconcile([folded('third.txt', dir)])
     expect(diffBases(), 'reset is outside the ORIG_HEAD set, so it diffs against the reflog base').toEqual(['HEAD@{1}'])
   })
 

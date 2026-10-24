@@ -4834,7 +4834,7 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
     }
   })
 
-  it('does NOT enqueue when the in-place write failed (non-zero exit)', async () => {
+  it('enqueues the file a failed in-place write named, since it may have edited it before failing', async () => {
     const dir = gitRepoWithCommit()
     try {
       const cmd = "sed -i 's/one/two/' a.txt"
@@ -4847,7 +4847,7 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
         raw: { tool_name: 'Bash', tool_input: { command: cmd }, tool_response: { output: '', exit_code: 1 }, cwd: dir },
       })
       await postBashHandler(event)
-      expect(getDirtyPaths()).toEqual([])
+      expect(getDirtyPaths().map(foldPath)).toEqual([foldPath(resolveIndexPath('a.txt', dir))])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

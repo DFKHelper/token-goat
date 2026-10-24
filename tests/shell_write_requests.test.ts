@@ -1,4 +1,5 @@
 /** What the post-shell hook asks of the worker after a command that may have written files. PROVENANCE: the Copilot `powershell` envelope and the tool_response wording are FORMAT-DERIVED from tests/fixtures/copilot_cli_1_0_88/C6-006-postToolUse-powershell.json (CAPTURE); every command value is HAND-DERIVED and synthetic. */
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -51,10 +52,18 @@ function shellCall(command: string, cwd: string, shape: 'claude' | 'copilot'): H
   return makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput, sessionId: 'shell-write-session', raw: { tool_name: 'Bash', tool_input: toolInput, tool_response: toolResponse, cwd } })
 }
 
-/** A shell post hook for `command` that exited 1. */
-function failedShellCall(command: string, cwd: string): HookEvent {
+/** A shell post hook for `command` that exited with `exitCode` (1 by default). */
+function failedShellCall(command: string, cwd: string, exitCode = 1): HookEvent {
   const toolInput = { command }
-  return makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput, sessionId: 'shell-write-session', raw: { tool_name: 'Bash', tool_input: toolInput, tool_response: { stdout: '', stderr: 'boom', exit_code: 1 }, cwd } })
+  return makeHookEvent({ eventName: 'post_tool_use', toolName: 'Bash', toolInput, sessionId: 'shell-write-session', raw: { tool_name: 'Bash', tool_input: toolInput, tool_response: { stdout: '', stderr: 'boom', exit_code: exitCode }, cwd } })
+}
+
+/** Gives the fixture repository a second commit, so `HEAD@{1}` names a real earlier tip and a head-moving diff can answer. */
+function secondCommit(dir: string): void {
+  writeFileSync(join(dir, 'b.txt'), 'two\n')
+  const hermetic = ['-c', 'core.hooksPath=/dev/null', '-c', 'maintenance.auto=false']
+  execFileSync('git', [...hermetic, 'add', 'b.txt'], { cwd: dir, stdio: 'ignore' })
+  execFileSync('git', [...hermetic, '-c', 'user.email=t@t.t', '-c', 'user.name=t', 'commit', '-qm', 'second'], { cwd: dir, stdio: 'ignore' })
 }
 
 const dirs: string[] = []
@@ -410,5 +419,58 @@ describe('a read-only head does not excuse a write the segment makes itself', ()
     await postBashHandler(shellCall(command, dir, 'claude'))
     expect(reconcileRequests()).toEqual([])
     expect(getDirtyPaths()).toEqual([])
+  })
+})
+
+describe('a failed head-moving git command asks for a reconcile, since it may have written files', () => {
+  it.each([['git merge feature'], ['git pull'], ['git rebase main'], ['git cherry-pick abc1234'], ['git checkout feature']])('%s, failed, asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(failedShellCall(command, dir))
+    expect(reconcileRequests(), `reconcile requests after failed ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
+describe('git checkout, switch, reset or restore that can rewrite the worktree asks for a reconcile, whatever its exit', () => {
+  it.each([['git checkout a.txt'], ['git checkout .'], ['git checkout -f'], ['git reset --hard'], ['git reset a.txt'], ['git switch -f feature']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    secondCommit(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it('git checkout of a tracked file deleted from disk asks the worker to reconcile, since only the index names that file', async () => {
+    const dir = repo()
+    secondCommit(dir)
+    rmSync(join(dir, 'a.txt'))
+    await postBashHandler(shellCall('git checkout a.txt', dir, 'claude'))
+    expect(reconcileRequests(), 'reconcile requests after git checkout a.txt with a.txt deleted from disk').toContain(foldPath(normalizePath(dir)))
+  })
+})
+
+describe('a writing command that fails part-way still queues the files it named', () => {
+  it.each([
+    ['sed -i s/one/two/ a.txt missing.txt', 2, 'a.txt'],
+    ['tee out.txt /nonexistent/t2.txt', 1, 'out.txt'],
+  ])('%s, exit %i, queues %s', async (command, exitCode, file) => {
+    const dir = repo()
+    writeFileSync(join(dir, 'out.txt'), 'x')
+    await postBashHandler(failedShellCall(command, dir, exitCode))
+    expect(getDirtyPaths().map(foldPath), `dirty queue after ${command}`).toContain(foldPath(resolveIndexPath(file, dir)))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
+describe('a git restore is staged-only only without a worktree flag', () => {
+  it.each([['git restore --staged --worktree a.txt'], ['git restore -S -W a.txt'], ['git restore --worktree --staged a.txt']])('%s queues the file it puts back', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(getDirtyPaths().map(foldPath), `dirty queue after ${command}`).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+  })
+
+  it('git restore --staged a.txt rewrites only the index, so it queues nothing and asks for nothing', async () => {
+    const dir = repo()
+    await postBashHandler(shellCall('git restore --staged a.txt', dir, 'claude'))
+    expect(getDirtyPaths()).toEqual([])
+    expect(reconcileRequests()).toEqual([])
   })
 })

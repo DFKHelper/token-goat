@@ -99,8 +99,8 @@ describe('the working-tree status sweep when git does not answer', () => {
   it('asks the worker to reconcile the project, and logs it, when the ls-files read that expands a git restore pathspec runs past its budget', async () => {
     seam.lsFiles = { exitCode: -1, unfinished: true, timedOut: true }
 
-    // A glob, since a literal name is enqueued as written whatever ls-files says.
-    await bashRun(dir, "git restore '*.txt'")
+    // `.` names no file literally, so only the ls-files read that expands it can name the files; a glob no longer reaches that read, since isStaticPath treats `*` as unnamed.
+    await bashRun(dir, 'git restore -- .')
 
     expect(requested()).toEqual([foldPath(normalizePath(dir))])
     expect(dirty()).toEqual([])
@@ -118,11 +118,11 @@ describe('the working-tree status sweep when git does not answer', () => {
     expect(workerLog()).toMatch(/post-bash git restore in .*: git ls-files did not answer in time \(no answer\); asked the worker to reconcile the project/)
   })
 
-  it('enqueues the restored file and asks for no reconcile when the ls-files read answers', async () => {
+  it('enqueues the restored file and also asks a reconcile, since git restore rewrites the worktree, when the ls-files read answers', async () => {
     await bashRun(dir, 'git restore a.txt')
 
     expect(dirty()).toContain(foldPath(resolveIndexPath('a.txt', dir)))
-    expect(requested()).toEqual([])
+    expect(requested()).toEqual([foldPath(normalizePath(dir))])
     expect(workerLog()).toBe('')
   })
 
@@ -174,9 +174,9 @@ describe('the working-tree status sweep when git does not answer', () => {
 
   // HAND-DERIVED: each row's queue is what the command rewrote in a repository holding a.txt, sub/a.txt and café.ts (committed), read off git's own pathspec and status semantics rather than the extractor; the hook runs after the command, so the setup writes the command's effect to disk first. A status sweep asks for a reconcile whatever it lists, since a file put back to its committed content is on no listing; a `git restore` names its files and needs none.
   const rewriteRows: Array<{ command: string; effect: (d: string) => void; expected: string[]; reconcile: boolean; reconcileIn?: string }> = [
-    { command: 'git restore -- .', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'one\n'), expected: ['a.txt', 'sub/a.txt', 'café.ts'], reconcile: false },
-    { command: 'git restore café.ts', effect: (d: string) => writeFileSync(join(d, 'café.ts'), 'export const c = 1\n'), expected: ['café.ts'], reconcile: false },
-    { command: 'cd sub && git restore a.txt', effect: (d: string) => writeFileSync(join(d, 'sub', 'a.txt'), 'two\n'), expected: ['sub/a.txt'], reconcile: false },
+    { command: 'git restore -- .', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'one\n'), expected: ['a.txt', 'sub/a.txt', 'café.ts'], reconcile: true },
+    { command: 'git restore café.ts', effect: (d: string) => writeFileSync(join(d, 'café.ts'), 'export const c = 1\n'), expected: ['café.ts'], reconcile: true },
+    { command: 'cd sub && git restore a.txt', effect: (d: string) => writeFileSync(join(d, 'sub', 'a.txt'), 'two\n'), expected: ['sub/a.txt'], reconcile: true, reconcileIn: 'sub' },
     { command: 'git stash pop', effect: (d: string) => writeFileSync(join(d, 'a.txt'), 'popped\n'), expected: ['a.txt'], reconcile: true },
     { command: 'git apply fix.patch', effect: (d: string) => { writeFileSync(join(d, 'a.txt'), 'patched\n'); mkdirSync(join(d, 'lib')); writeFileSync(join(d, 'lib', 'new.ts'), 'export const n = 1\n') }, expected: ['a.txt', 'lib/new.ts'], reconcile: true },
     { command: 'git apply fix.patch', effect: (d: string) => { mkdirSync(join(d, 'bücher')); writeFileSync(join(d, 'bücher', 'ünï.ts'), 'export const u = 1\n') }, expected: ['bücher/ünï.ts'], reconcile: true },
@@ -196,7 +196,7 @@ describe('the working-tree status sweep when git does not answer', () => {
     // The real commands run in the effect: `git stash branch` checks out a new branch at the commit the stash was made on and applies the stash there, so café.ts goes back to that commit's content (a HEAD move, which the status listing does not show) and a.txt takes the stashed change (which only the status listing shows).
     { command: 'git stash branch side', effect: (d: string) => { writeFileSync(join(d, 'a.txt'), 'stashed\n'); git(d, 'stash'); writeFileSync(join(d, 'café.ts'), 'export const c = 2\n'); git(d, 'commit', '-q', '-am', 'c2'); git(d, 'stash', 'branch', 'side') }, expected: ['a.txt', 'café.ts'], reconcile: true },
     // The real commands run in the effect: a file the last commit deleted is brought back from the commit before, so it is on disk while the index, which `git ls-files` reads, lacks it.
-    { command: 'git restore --source=HEAD~1 a.txt', effect: (d: string) => { git(d, 'rm', '-q', 'a.txt'); git(d, 'commit', '-m', 'drop a'); git(d, 'restore', '--source=HEAD~1', 'a.txt') }, expected: ['a.txt'], reconcile: false },
+    { command: 'git restore --source=HEAD~1 a.txt', effect: (d: string) => { git(d, 'rm', '-q', 'a.txt'); git(d, 'commit', '-m', 'drop a'); git(d, 'restore', '--source=HEAD~1', 'a.txt') }, expected: ['a.txt'], reconcile: true },
   ]
   it.each(rewriteRows)('enqueues exactly the files `$command` rewrote ($expected)', async ({ command, effect, expected, reconcile, reconcileIn }) => {
     dir = gitRepoWithSubCommit()

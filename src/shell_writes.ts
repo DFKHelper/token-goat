@@ -6,13 +6,9 @@ import * as path from 'node:path'
 import { splitShellSegments } from './bash_extractors.js'
 import { dataDir } from './constants.js'
 import { reconcileRequestPathFor } from './dirty_queue.js'
-import type { HookEvent } from './hook_registry.js'
-import { extractCommand, gitRepoRootOrNull, hookGitRead, isHeadMovingGitCommand, resolveBashCall, safeShlexSplit, tokenGoatInvocation } from './hooks_bash_commands.js'
-import { getCwd, passOutput } from './hooks_common.js'
+import { gitRepoRootOrNull, hookGitRead, isHeadMovingGitCommand, safeShlexSplit, tokenGoatInvocation } from './hooks_bash_commands.js'
 import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
 import { parsePorcelainZ } from './git_porcelain.js'
-import { takeBashStartCwd } from './session.js'
-import type { HookOutput } from './types.js'
 import { resolveIndexPath } from './paths.js'
 import type { GitResult } from './util.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
@@ -514,6 +510,12 @@ function syntaxMayWrite(segment: string, depth = 0, insideSubstitution = false):
 }
 
 /** True when the head of `segment` is not a program known only to read, or carries a flag that makes one write. Redirects and substitutions are {@link syntaxMayWrite}'s. */
+/** True for the `git stash` forms that only list, show or print help: `list`, `show`, and any `-h` or `--help`. Every other stash form (`push`, `pop`, `apply`, `drop`, `branch`, bare `stash`) can write. */
+function gitStashReadsOnly(tokens: string[]): boolean {
+  const args = tokens.slice(tokens.indexOf('stash') + 1)
+  return args[0] === 'list' || args[0] === 'show' || args.includes('-h') || args.includes('--help')
+}
+
 function headMayWrite(segment: string): boolean {
   const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
   const head = headOf(tokens)
@@ -521,6 +523,7 @@ function headMayWrite(segment: string): boolean {
   if (WRITE_MARK_RE.test(segment) || WRITE_FLAG_BY_HEAD.get(head)?.test(segment) === true) return true
   if (head === 'git') {
     const sub = gitSubcommand(tokens)
+    if (sub === 'stash') return !gitStashReadsOnly(tokens)
     return sub === null || !READ_ONLY_GIT.has(sub)
   }
   return !READ_ONLY_HEADS.has(head)
@@ -529,8 +532,25 @@ function headMayWrite(segment: string): boolean {
 /** Matches `git restore`, which rewrites paths without moving HEAD. */
 const GIT_RESTORE_RE = /^\s*git\s+restore\b/i
 
-/** `git restore --staged <file>` only rewrites the index, leaving working-tree content untouched. */
-const GIT_RESTORE_STAGED_ONLY_RE = /(?:^|\s)(?:--staged|-S)(?:\s|$)/
+/** The options of a `git restore` segment: the tokens before its `--`, so a pathspec after the separator is never read as a flag. */
+function restoreOptions(segment: string): string[] {
+  const m = /^\s*git\s+restore\b(.*)$/i.exec(segment)
+  if (m === null) return []
+  const tokens = safeShlexSplit(m[1] ?? '') ?? []
+  const dashDash = tokens.indexOf('--')
+  return dashDash === -1 ? tokens : tokens.slice(0, dashDash)
+}
+
+/** True when `options` carries `longName`, or a short-option cluster holding `letter` (`-S`, `-SW`). */
+function hasRestoreFlag(options: readonly string[], letter: string, longName: string): boolean {
+  return options.some((t) => t === longName || (/^-[A-Za-z]+$/.test(t) && t.includes(letter)))
+}
+
+/** `git restore --staged <file>` only rewrites the index, leaving working-tree content untouched; a worktree flag (`--worktree`, `-W`, or a cluster holding W) makes it rewrite the working tree as well. */
+function restoreIsStagedOnly(segment: string): boolean {
+  const options = restoreOptions(segment)
+  return hasRestoreFlag(options, 'S', '--staged') && !hasRestoreFlag(options, 'W', '--worktree')
+}
 
 /** The `git stash` subcommands that rewrite the working tree: `pop` and `apply` put changes back, `branch` checks out a branch and applies the stash onto it, and `push` or `save` put files back to their committed content, as a bare `git stash` or one taking only options does. `list`, `show`, `drop`, `clear`, `create` and `store` touch no file. */
 const GIT_STASH_REWRITE_SUBCOMMANDS = new Set(['pop', 'apply', 'branch', 'push', 'save'])
@@ -707,6 +727,40 @@ function enqueueRewrittenPath(absPath: string): void {
   enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
 }
 
+/** Options that make `checkout`, `switch` or `reset` discard working-tree changes, which no commit diff lists. */
+const WORKTREE_DISCARD_FLAGS = new Set(['-f', '--force', '--hard', '--merge', '--discard-changes'])
+
+/** The `git` subcommands that rewrite working-tree files when they name a path or a discard flag. */
+const WORKTREE_GIT_SUBCOMMANDS = new Set(['checkout', 'switch', 'reset'])
+
+/** True when `segment` is a `git` command that may rewrite working-tree files a commit diff cannot list: `restore` unless it is staged-only, and `checkout`, `switch` or `reset` that names a path (`--`, a name on disk under `runDir`, or any name that is not a local branch) or discards changes (`-f`, `--hard`). Such a command asks for a reconcile whatever its exit code. */
+function gitMayRewriteWorktree(segment: string, runDir: string): boolean {
+  const tokens = safeShlexSplit(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
+  if (tokens === null || headOf(tokens) !== 'git') return false
+  const sub = gitSubcommand(tokens)
+  if (sub === 'restore') return !restoreIsStagedOnly(segment)
+  if (sub === null || !WORKTREE_GIT_SUBCOMMANDS.has(sub)) return false
+  const args = tokens.slice(tokens.indexOf(sub) + 1)
+  if (args.includes('--') || args.some((t) => WORKTREE_DISCARD_FLAGS.has(t))) return true
+  // A name that is not on disk is either a branch (HEAD moves, and the head-moving diff covers it) or a tracked file deleted from disk, which checkout restores without moving HEAD. Only a local branch is told apart here, from the ref files, so no git process is spawned; any other name reconciles.
+  return args.some((t) => !t.startsWith('-') && (fs.existsSync(resolveIndexPath(t, runDir)) || !localBranchExists(runDir, t)))
+}
+
+/** True when `name` is a local branch of the repository above `runDir`: a loose ref file, or a line of packed-refs. A `.git` file (a linked worktree) or no repository above `runDir` answers false, so the caller reconciles, the cheap direction. */
+function localBranchExists(runDir: string, name: string): boolean {
+  if (name === '' || name.includes('..')) return false
+  for (let dir = path.resolve(runDir); ; dir = path.dirname(dir)) {
+    const gitDir = path.join(dir, '.git')
+    if (fs.existsSync(gitDir)) {
+      if (!fs.statSync(gitDir).isDirectory()) return false
+      if (fs.existsSync(path.join(gitDir, 'refs', 'heads', name))) return true
+      const packed = path.join(gitDir, 'packed-refs')
+      return fs.existsSync(packed) && fs.readFileSync(packed, 'utf8').split('\n').some((line) => line.endsWith(` refs/heads/${name}`))
+    }
+    if (path.dirname(dir) === dir) return false
+  }
+}
+
 /** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. `exitCode` is the command's exit status when the harness reports one, and a non-zero one drops the named files (a failed `sed -i` or `git restore` changed nothing) but keeps the shell-write pass and the sweeps. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
 export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string, exitCode?: number | null): Promise<void> {
   const atRunDir = (f: string): string => resolveIndexPath(f, runDir)
@@ -715,34 +769,41 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string, 
   const sweepDirs = new Set<string>()
   // Segments whose files this pass named or swept, or that another pass owns, which the shell-write pass leaves alone.
   const handled = new Set<string>()
+  // Set when a command that can rewrite files it does not name ran, or a command that writes failed: the files it reached are queued above, and the rest is the worker's reconcile.
+  let reconcile = false
+  const failed = Boolean(exitCode)
   for (const segment of splitShellSegments(cmd)) {
     let swept = false
     if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) { sweepDirs.add(runDir); swept = true }
     if (isFormatterWriteSegment(segment)) { sweepDirs.add(runDir); swept = true }
     const stashDir = gitStashRewriteDir(segment, runDir)
     if (stashDir !== null) { sweepDirs.add(stashDir); swept = true }
-    // A named file is queued only when the command succeeded: a failed `sed -i` or `git restore` changed nothing it could name.
+    // A named file is queued whatever the exit code: a `sed -i` that fails on one of its files has already edited the others.
     const named: string[] = [...extractSedInPlaceFiles(segment), ...extractTeeFiles(segment)]
     const concrete = named.filter(isConcretePath)
-    if (!exitCode) for (const f of concrete) paths.push(atRunDir(f))
+    for (const f of concrete) paths.push(atRunDir(f))
     let namesEveryFile = named.length > 0 && concrete.length === named.length
+    const restores = GIT_RESTORE_RE.test(segment) && !restoreIsStagedOnly(segment)
     if (GIT_RESTORE_RE.test(segment)) {
-      if (GIT_RESTORE_STAGED_ONLY_RE.test(segment)) namesEveryFile = true
+      if (!restores) namesEveryFile = true
       else {
         const specs = extractGitRestorePathspecs(segment)
         // A glob, a variable or a `~` names nothing this hook can resolve, so that restore stays unhandled and the reconcile covers it.
         namesEveryFile = specs.length > 0 && specs.every((spec) => spec === '.' || isConcretePath(spec))
-        if (namesEveryFile && !exitCode) {
+        if (namesEveryFile) {
           paths.push(...(await expandGitPathspecs(specs, runDir)))
           // `ls-files` lists only what the index holds, so a file `--source` brought back that the index lacks is found by its literal name instead; `.` names nothing literally.
           for (const spec of specs) if (spec !== '.' && !spec.startsWith(':')) paths.push(atRunDir(spec))
         }
       }
     }
+    const writesFiles = swept || named.length > 0 || restores || isHeadMovingGitCommand(segment)
+    if (gitMayRewriteWorktree(segment, runDir) || (failed && writesFiles)) reconcile = true
     if (swept || namesEveryFile || tokenGoatInvocation(segment) !== null || isHeadMovingGitCommand(segment)) handled.add(segment)
   }
   // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.
   enqueueShellWrites(cmd, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })
+  if (reconcile && !reconcileAlreadyPending(runDir)) requestReconcileSafe(runDir)
   for (const p of new Set(paths)) enqueueRewrittenPath(p)
   // A sweep also runs after a non-zero exit: a formatter or patch that fails part-way has already written files, and every sweep asks the worker to reconcile the project.
   for (const dir of sweepDirs) for (const p of await workingTreeStatusPaths(dir)) enqueueSweptPath(p)
@@ -759,24 +820,3 @@ function enqueueSweptPath(absPath: string): void {
   enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
 }
 
-/** The status line Claude Code puts first in a failed shell call's `error` (https://code.claude.com/docs/en/hooks.md, PostToolUseFailure input), or 1 when there is none, since a call that reached this event did not succeed and a script can write before it fails. */
-function failedShellExitCode(error: string): number {
-  const match = /^Exit code (-?\d+)/.exec(error)
-  const code = match === null ? 1 : Number(match[1])
-  return code === 0 ? 1 : code
-}
-
-/** A failed Bash or PowerShell call goes through the same shell-write pass a successful one does (postBashHandler), since a script that wrote files and then exited non-zero reaches only the failure event on Claude Code. `error` is the failure text of the event. Always passes: it only queues. */
-export async function shellWriteAfterFailure(event: HookEvent, error: string): Promise<HookOutput> {
-  try {
-    const reported = extractCommand(event)
-    if (reported === undefined) return passOutput()
-    const toolUseId = event.raw['tool_use_id']
-    const startCwd = (typeof toolUseId === 'string' && toolUseId !== '' ? takeBashStartCwd(toolUseId) : null) ?? getCwd(event) ?? null
-    const { cmd, runDir } = resolveBashCall(reported, startCwd)
-    await enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd(), failedShellExitCode(error))
-  } catch {
-    // A queueing failure must never turn a tool failure into a hook failure.
-  }
-  return passOutput()
-}
