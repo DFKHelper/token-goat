@@ -193,6 +193,66 @@ describe('a remove that may have taken a directory', () => {
   })
 })
 
+describe('a wrapped command and a script block are judged by their own segments', () => {
+  it('names the cmdlet target and still asks for a reconcile for the python segment of one -Command string', async () => {
+    const dir = repo()
+    await postBashHandler(shellCall('powershell -NoProfile -Command "Set-Content -Path a.txt -Value 1; python w.py"', dir, 'copilot'))
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('a.txt', dir)))
+    expect(reconcileRequests()).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it.each([
+    ['pwsh -c "powershell -Command \'python w.py\'"'],
+    ['Get-ChildItem *.ts | Where-Object { python w.py }'],
+    ['Get-ChildItem *.ts | ForEach-Object { python w.py }'],
+  ])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'copilot'))
+    expect(reconcileRequests()).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it('treats a -Command nested past the depth it reads as a possible writer', async () => {
+    const dir = repo()
+    await postBashHandler(shellCall('powershell -c "powershell -c \'powershell -c \\"powershell -c x\\"\'"', dir, 'copilot'))
+    expect(reconcileRequests()).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it.each([
+    ['powershell -Command "Get-Content a.txt; git status"'],
+    ['Get-ChildItem | Where-Object { $_.Length -gt 1 }'],
+    ["rg '{x}' a.txt"],
+    ['Get-Content a.txt | ForEach-Object { $_ }'],
+  ])('%s asks for nothing', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'copilot'))
+    expect(reconcileRequests()).toEqual([])
+  })
+})
+
+describe('a read-only program with a flag that writes, or one that is not the one on the path', () => {
+  it.each([
+    ['tree -o out.txt'],
+    ['fd -x rm'],
+    ['fd -X rm'],
+    ['fd --exec rm'],
+    ['fd --exec-batch rm'],
+    ['rg --pre ./p x'],
+    ['./cat x'],
+    ['C:/tools/cat.exe x'],
+    ['./ls'],
+  ])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests()).toContain(foldPath(normalizePath(dir)))
+  })
+
+  it.each([['tree -a'], ['fd -e ts'], ['fd x'], ['rg -o x a.txt'], ['ls -x'], ['cat x'], ['cat.exe x']])('%s asks for nothing', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests()).toEqual([])
+  })
+})
+
 describe('a burst of shell writes', () => {
   it('leaves one pending reconcile request for the project, not one per call', async () => {
     const dir = repo()

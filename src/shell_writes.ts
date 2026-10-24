@@ -143,9 +143,65 @@ function cmdletTargets(kind: WriteKind, args: readonly string[], into: ShellWrit
 const DOTNET_WRITE_RE = /\[(?:System\.)?IO\.File\]::(?:WriteAllText|WriteAllLines|WriteAllBytes|AppendAllText|AppendAllLines|Create|CreateText|AppendText)\(\s*(?:'([^']+)'|"([^"$]+)")/gi
 const DOTNET_DELETE_RE = /\[(?:System\.)?IO\.File\]::Delete\(\s*(?:'([^']+)'|"([^"$]+)")/gi
 
-/** The program a segment launches, lowercased and without its directory or `.exe`. */
+/** The program a segment launches, lowercased and without `.exe`, directory kept: `./cat` and `C:/tools/cat.exe` are some other program than the `cat` on the path, so they are not the read-only one. */
 function headOf(tokens: readonly string[]): string {
-  return (tokens[0] ?? '').replace(/^.*[/\\]/, '').replace(/\.exe$/i, '').toLowerCase()
+  return (tokens[0] ?? '').replace(/\.exe$/i, '').toLowerCase()
+}
+
+/** The shell a segment launches by its bare name, directory dropped, for recognising `powershell` and `pwsh` wherever they are installed. */
+function shellNameOf(tokens: readonly string[]): string {
+  return headOf(tokens).replace(/^.*[/\\]/, '')
+}
+
+/** How deep a `powershell -Command "..."` inside another is read; past it the segment is opaque and counts as a possible writer. */
+const MAX_WRAPPER_DEPTH = 3
+
+/** The body of a `powershell`/`pwsh -Command` segment, or null when the segment is not one. */
+function wrapperBody(segment: string): string | null {
+  const tokens = psTokens(segment)
+  const name = shellNameOf(tokens)
+  if (name !== 'powershell' && name !== 'pwsh') return null
+  const flag = tokens.findIndex((t) => /^-c(?:ommand)?$/i.test(t))
+  return flag >= 0 ? tokens.slice(flag + 1).join(' ') : null
+}
+
+/** The bodies of the outermost `{ ... }` script blocks in `segment` that sit outside quotes, for a segment with a cmdlet in it (a brace in `rg '{x}'` or `awk '{print}'` is not a PowerShell block). */
+function scriptBlocks(segment: string): string[] {
+  if (!/(?:^|\s)(?:%|\?|[A-Za-z]+-[A-Za-z]+)(?=\s|$)/.test(segment)) return []
+  const blocks: string[] = []
+  let quote: string | null = null
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i]!
+    if (quote !== null) {
+      if (ch === quote) quote = null
+    } else if (ch === '"' || ch === "'") quote = ch
+    else if (ch === '{') {
+      if (depth++ === 0) start = i + 1
+    } else if (ch === '}' && depth > 0 && --depth === 0) blocks.push(segment.slice(start, i))
+  }
+  return blocks
+}
+
+/** The segments to judge for `segment`: a `-Command` wrapper stands for the segments of its body, and a script block's own segments are judged beside the segment holding it (those starting with a variable are expressions, not programs). `opaque` is set when the nesting ran past {@link MAX_WRAPPER_DEPTH}. */
+function judgedSegments(segment: string, depth = 0): { segments: string[]; opaque: boolean } {
+  const body = wrapperBody(segment)
+  if (body !== null) {
+    if (depth >= MAX_WRAPPER_DEPTH) return { segments: [], opaque: true }
+    const out = { segments: [] as string[], opaque: false }
+    for (const inner of splitShellSegments(body)) {
+      const sub = judgedSegments(inner, depth + 1)
+      out.segments.push(...sub.segments)
+      out.opaque ||= sub.opaque
+    }
+    return out
+  }
+  const segments = [segment]
+  for (const block of scriptBlocks(segment)) {
+    for (const inner of splitShellSegments(block)) if (!inner.trimStart().startsWith('$')) segments.push(inner)
+  }
+  return { segments, opaque: false }
 }
 
 /** The files a PowerShell write cmdlet or .NET file writer in `segment` names, a `powershell -Command "..."` wrapper looked into one level. */
@@ -160,11 +216,9 @@ export function extractPowerShellWriteTargets(segment: string): ShellWriteTarget
     for (const m of text.matchAll(DOTNET_WRITE_RE)) into.written.push(m[1] ?? m[2]!)
     for (const m of text.matchAll(DOTNET_DELETE_RE)) into.removed.push(m[1] ?? m[2]!)
   }
-  const tokens = psTokens(segment)
-  const head = headOf(tokens)
-  if (head === 'powershell' || head === 'pwsh') {
-    const flag = tokens.findIndex((t) => /^-c(?:ommand)?$/i.test(t))
-    if (flag >= 0) scan(tokens.slice(flag + 1).join(' '))
+  const body = wrapperBody(segment)
+  if (body !== null) {
+    scan(body)
     return into
   }
   scan(segment)
@@ -202,7 +256,13 @@ export function enqueueShellWrites(cmd: string, runDir: string, handled: Readonl
   const written = new Set<string>()
   const removed = new Set<string>()
   let unnamed = false
-  for (const segment of splitShellSegments(cmd)) {
+  const judged: string[] = []
+  for (const top of splitShellSegments(cmd)) {
+    const expanded = judgedSegments(top)
+    if (expanded.opaque) unnamed = true
+    judged.push(...expanded.segments)
+  }
+  for (const segment of judged) {
     const named = extractPowerShellWriteTargets(segment)
     for (const f of named.written) written.add(resolveIndexPath(f, runDir))
     for (const f of named.removed) removed.add(resolveIndexPath(f, runDir))
@@ -220,7 +280,7 @@ export function enqueueShellWrites(cmd: string, runDir: string, handled: Readonl
 /** Programs whose only effect is to read or report; anything not listed may write files. */
 const READ_ONLY_HEADS: ReadonlySet<string> = new Set([
   'ls', 'dir', 'cat', 'type', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'fd', 'find', 'pwd', 'echo', 'cd', 'pushd', 'popd', 'which', 'where', 'whereis', 'tree', 'stat', 'file', 'du', 'df', 'diff', 'cmp', 'less', 'more', 'true', 'false', 'date', 'whoami', 'basename', 'dirname', 'realpath', 'readlink', 'test', 'cls', 'clear', 'sleep', 'printf',
-  'get-content', 'gc', 'get-childitem', 'gci', 'get-item', 'gi', 'get-location', 'gl', 'select-string', 'sls', 'test-path', 'resolve-path', 'get-command', 'gcm', 'get-process', 'write-output', 'write-host', 'measure-object', 'select-object', 'select', 'where-object', 'start-sleep', 'get-date', 'get-help', 'get-filehash',
+  'get-content', 'gc', 'get-childitem', 'gci', 'get-item', 'gi', 'get-location', 'gl', 'select-string', 'sls', 'test-path', 'resolve-path', 'get-command', 'gcm', 'get-process', 'write-output', 'write-host', 'measure-object', 'select-object', 'select', 'where-object', 'foreach-object', '%', '?', 'sort-object', 'start-sleep', 'get-date', 'get-help', 'get-filehash',
 ])
 
 /** `git` subcommands that never change the working tree or the index's files. */
@@ -228,6 +288,14 @@ const READ_ONLY_GIT = new Set(['status', 'diff', 'log', 'show', 'rev-parse', 'ls
 
 /** A write hiding inside an otherwise read-only program: a write cmdlet in a script block, `find -delete`, `git diff --output`. */
 const WRITE_MARK_RE = /Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item|Rename-Item|Remove-Item|Clear-Content|WriteAll|AppendAll|\.Delete\(|\s-(?:delete|exec|execdir|ok|okdir|fprint\w*)\b|--output\b/i
+
+/** Flags that make an otherwise read-only program write or run a command, by program: `tree -o file`, `fd -x/-X/--exec/--exec-batch`, `rg --pre cmd`. A flag is only a writer for its own program (`rg -o` and `ls -x` are reads). */
+const WRITE_FLAG_BY_HEAD: ReadonlyMap<string, RegExp> = new Map([
+  ['tree', /\s-[A-Za-z]*o(?=\s|$)|\s--output\b/],
+  ['fd', /\s(?:-[A-Za-z]*[xX]|--exec|--exec-batch)(?=[\s=]|$)/],
+  ['fdfind', /\s(?:-[A-Za-z]*[xX]|--exec|--exec-batch)(?=[\s=]|$)/],
+  ['rg', /\s--pre(?=[\s=]|$)/],
+])
 
 /** The subcommand of a `git` invocation, past its global options. */
 function gitSubcommand(tokens: readonly string[]): string | null {
@@ -244,7 +312,7 @@ export function segmentMayWriteFiles(segment: string): boolean {
   const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
   const head = headOf(tokens)
   if (head === '') return false
-  if (WRITE_MARK_RE.test(segment)) return true
+  if (WRITE_MARK_RE.test(segment) || WRITE_FLAG_BY_HEAD.get(head)?.test(segment) === true) return true
   if (head === 'git') {
     const sub = gitSubcommand(tokens)
     return sub === null || !READ_ONLY_GIT.has(sub)
