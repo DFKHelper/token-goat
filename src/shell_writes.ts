@@ -57,8 +57,8 @@ function psWords(text: string): PsWord[] {
     const ch = text[i]!
     if (quote !== null) {
       if (ch !== quote) cur += ch
-      else if (quote === "'" && text[i + 1] === "'") {
-        cur += "'"
+      else if (text[i + 1] === quote) {
+        cur += quote
         i++
       } else quote = null
       continue
@@ -791,8 +791,48 @@ function localBranchExists(runDir: string, name: string): boolean {
   }
 }
 
+/** Where a command's writes land: `runDir`, the directory its leading `cd` leaves the shell in, and `startDir`, where it began. `cdTrusted` is false when that leading `cd` names a directory the text cannot resolve (`cd $X`, `cd -`, `cd ~`): then no write is named, and `startDir` is reconciled instead. */
+export interface WriteScope {
+  readonly runDir: string
+  readonly startDir: string
+  readonly cdTrusted: boolean
+}
+
+/** The `cd`-family commands that move the directory later writes run in, by name and alias. */
+const DIR_CHANGE_HEADS: ReadonlySet<string> = new Set(['cd', 'chdir', 'sl', 'pushd', 'popd', 'pushl', 'popl', 'set-location', 'push-location', 'pop-location'])
+
+/** A directory-change word in command position: after the start, a separator, or a quote or bracket. A quoted `"cd"` in an argument also matches; that only splits the text earlier, which names fewer files and requests more reconciles. */
+const DIR_CHANGE_RE = new RegExp(`(?:^|[\\s(){}&|;"'\`])(?:${[...DIR_CHANGE_HEADS].join('|')})(?=[\\s;|&(){}"'\`]|$)`, 'i')
+
+/** Split `cmd` where its text stops resolving against the run directory: at the first top-level segment holding a directory change, since the leading `cd` was consumed before the text got here. Returns the text before that segment, and from it on. */
+function splitAtDirChange(cmd: string): { head: string; tail: string } {
+  const tops = splitShellSegments(cmd)
+  const k = tops.findIndex((segment) => DIR_CHANGE_RE.test(segment))
+  if (k < 0) return { head: cmd, tail: '' }
+  let at = 0
+  for (let i = 0; i < k; i++) at = cmd.indexOf(tops[i]!, at) + tops[i]!.length
+  at = cmd.indexOf(tops[k]!, at)
+  return { head: cmd.slice(0, at), tail: cmd.slice(at) }
+}
+
+/** True when a segment may change a file: a program that may write (see {@link segmentMayWriteFiles}), or any redirect, named target or not. */
+function segmentMayChangeFiles(segment: string): boolean {
+  return segmentMayWriteFiles(segment) || scanShellSyntax(segment).redirects.length > 0
+}
+
+/** True when the text after a directory change may change a file, apart from the directory change itself. */
+function tailMayChangeFiles(tail: string): boolean {
+  return splitShellSegments(tail).some((segment) => !DIR_CHANGE_HEADS.has(headOf(psTokens(segment))) && segmentMayChangeFiles(segment))
+}
+
 /** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. `exitCode` is the command's exit status when the harness reports one, and a non-zero one drops the named files (a failed `sed -i` or `git restore` changed nothing) but keeps the shell-write pass and the sweeps. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
-export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string, exitCode?: number | null): Promise<void> {
+export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScope, exitCode?: number | null): Promise<void> {
+  if (!scope.cdTrusted) {
+    if (splitShellSegments(cmd).some((segment) => segmentMayChangeFiles(segment)) && !reconcileAlreadyPending(scope.startDir)) requestReconcileSafe(scope.startDir)
+    return
+  }
+  const { runDir } = scope
+  const { head, tail } = splitAtDirChange(cmd)
   const atRunDir = (f: string): string => resolveIndexPath(f, runDir)
   const paths: string[] = []
   // Each directory whose working tree needs a status sweep: the run directory for a patch or formatter, or wherever `git -C` pointed a stash.
@@ -802,7 +842,7 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string, 
   // Set when a command that can rewrite files it does not name ran, or a command that writes failed: the files it reached are queued above, and the rest is the worker's reconcile.
   let reconcile = false
   const failed = Boolean(exitCode)
-  for (const segment of splitShellSegments(cmd)) {
+  for (const segment of splitShellSegments(head)) {
     let swept = false
     if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) { sweepDirs.add(runDir); swept = true }
     if (isFormatterWriteSegment(segment)) { sweepDirs.add(runDir); swept = true }
@@ -832,7 +872,8 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string, 
     if (swept || namesEveryFile || tokenGoatInvocation(segment) !== null || isHeadMovingGitCommand(segment)) handled.add(segment)
   }
   // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.
-  enqueueShellWrites(cmd, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })
+  if (tailMayChangeFiles(tail)) reconcile = true
+  enqueueShellWrites(head, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })
   if (reconcile && !reconcileAlreadyPending(runDir)) requestReconcileSafe(runDir)
   for (const p of new Set(paths)) enqueueRewrittenPath(p)
   // A sweep also runs after a non-zero exit: a formatter or patch that fails part-way has already written files, and every sweep asks the worker to reconcile the project.

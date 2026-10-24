@@ -511,9 +511,47 @@ describe('a home-relative write target is not a concrete path, so it asks for a 
   })
 })
 
+describe('a directory change other than a leading cd asks for a reconcile, since later writes resolve against the wrong directory', () => {
+  it.each([
+    ['ls; cd sub; echo hi > c.ts'],
+    ['ls && cd sub && tee c.ts'],
+    ['pushd sub && sed -i s/x/y/ c.ts'],
+    ['ls; cd sub; Set-Content c.ts hi'],
+    ['cd $X && echo hi > c.ts'],
+    ['cd -; echo hi > c.ts'],
+    ['cd ~ && echo hi > c.ts'],
+  ])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'copilot'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+    expect(getDirtyPaths().map(foldPath)).not.toContain(foldPath(resolveIndexPath('c.ts', dir)))
+  })
+
+  it('keeps the names a write queues before a later cd, and asks for nothing more', async () => {
+    const dir = repo()
+    writeFileSync(join(dir, 'a.ts'), 'x')
+    await postBashHandler(shellCall('echo hi > a.ts; cd sub', dir, 'copilot'))
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('a.ts', dir)))
+    expect(reconcileRequests()).toEqual([])
+  })
+
+  it('keeps a leading cd to a concrete directory, so its writes queue under that directory', async () => {
+    const dir = repo()
+    mkdirSync(join(dir, 'sub'))
+    writeFileSync(join(dir, 'sub', 'c.ts'), 'x')
+    await postBashHandler(shellCall('cd sub && echo hi > c.ts', dir, 'copilot'))
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('c.ts', join(dir, 'sub'))))
+    expect(reconcileRequests()).toEqual([])
+  })
+})
+
 describe('a doubled single quote and a GNU long option are read as the shell reads them', () => {
   it("reads a doubled single quote as one quote inside the name", () => {
     expect(extractPowerShellWriteTargets("Set-Content 'it''s.ts' -Value x").written).toEqual(["it's.ts"])
+  })
+
+  it('reads a doubled double quote inside a double-quoted name as one quote', () => {
+    expect(extractPowerShellWriteTargets('Set-Content "say ""hi"".ts" -Value x').written).toEqual(['say "hi".ts'])
   })
 
   it('reads rm --recursive sub as a remove of sub alone', () => {

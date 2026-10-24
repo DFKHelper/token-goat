@@ -46,6 +46,7 @@ import {
   gitRepoRootOrNull,
   hookGitRead,
   enqueueNonHeadMovingRewrites,
+  writeScopeFor,
   pipelineShapeFilter,
   isFullRecallCommand,
   isRecallCommand,
@@ -721,7 +722,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     }
 
     // Working-tree rewrites that never move HEAD, so the block above cannot see them: `git restore`, `git stash pop|apply`, and the plain shell in-place writes (`sed -i`, `>`/`>>`, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`). Same staleness failure class, one gap over -- none of these go through the Edit tool either, so before this nothing enqueued them and every surgical read kept serving pre-mutation content. See enqueueNonHeadMovingRewrites. Run whatever the exit code was: a script that wrote files and then failed has changed the tree, and a path queued for a file that did not change costs one SHA check.
-    await enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd(), exitCode)
+    await enqueueNonHeadMovingRewrites(cmd, writeScopeFor(rawCmd, runDir ?? process.cwd(), startCwd ?? process.cwd()), exitCode)
 
     // Item 2: record curl -o downloads by URL for cross-command dedup — only after confirming the download actually succeeded. Recording it unconditionally (before checking exit code or that the file landed on disk) meant a FAILED curl (network error, 404, ...) still got recorded as if it succeeded, and the recall-deny above would then block the user from ever retrying the same download.
     const curlDl = extractCurlDownload(cmd)

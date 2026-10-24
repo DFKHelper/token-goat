@@ -30,6 +30,7 @@ import {
   CHANGES_WHAT_RUNS_NAMES,
 } from './bash_extractors.js'
 import type { HookEvent } from './hook_registry.js'
+import type { WriteScope } from './shell_writes.js'
 
 const CD_PREFIX_RE = /^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)[ \t]*(?:&&|;|\r?\n)\s*)+/
 
@@ -126,6 +127,23 @@ export function cdPrefixCwd(rawCmd: string, cwd: string): string {
 /** The directory `rawCmd` runs in: where its leading `cd DIR` prefix leaves the shell, else `cwd` as given. A null `cwd` stays null when there is no prefix, so an event that reports no directory keys a command exactly as it always has. */
 export function commandRunDir(rawCmd: string, cwd: string | null): string | null {
   return cwd === null && extractCdPrefixDirs(rawCmd).length === 0 ? null : cdPrefixCwd(rawCmd, cwd ?? process.cwd())
+}
+
+/** True when every `cd` in the leading prefix of `rawCmd` names a directory the text alone resolves. `cd -`, `cd ~`, `cd $X` and `cd $(...)` leave the run directory unknown, so a write after one cannot be named against it. The test mirrors shell_writes.ts's isConcretePath, which this module cannot import eagerly. */
+export function leadingCdTrusted(rawCmd: string): boolean {
+  const prefixMatch = stripGroupAndExports(rawCmd).match(CD_PREFIX_RE)
+  if (prefixMatch === null) return true
+  const segmentPattern = /cd\s+(?:"([^"]*)"|'([^']*)'|(\S+))[ \t]*(?:&&|;|\r?\n)/g
+  for (const match of prefixMatch[0].matchAll(segmentPattern)) {
+    const dir = match[1] ?? match[2] ?? match[3] ?? ''
+    if (dir === '' || dir.startsWith('-') || dir.startsWith('~') || /[$()@*?[\]{}`]/.test(dir)) return false
+  }
+  return true
+}
+
+/** The write scope of `rawCmd` for {@link enqueueNonHeadMovingRewrites}: `runDir` where its leading `cd` leaves the shell, `startDir` where the command began. */
+export function writeScopeFor(rawCmd: string, runDir: string, startDir: string): WriteScope {
+  return { runDir, startDir, cdTrusted: leadingCdTrusted(rawCmd) }
 }
 
 /** The session key a cached Bash result is recorded and looked up under: the command without its output pipeline, scoped to the directory it ran in, so one command run in two directories is two entries. Both hooks build it here, which keeps the post hook's write on exactly the key the pre hook reads. */
@@ -271,8 +289,8 @@ export async function gitRepoRootOrNull(gitDir: string): Promise<string | null> 
 }
 
 /** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD (`git restore`, `git stash pop|apply`, the plain shell in-place writes, the formatters), so the index does not keep serving pre-mutation symbols. Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts). See shell_writes.ts. */
-export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string, exitCode?: number | null): Promise<void> {
-  await (await import('./shell_writes.js')).enqueueNonHeadMovingRewrites(cmd, runDir, exitCode)
+export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScope, exitCode?: number | null): Promise<void> {
+  await (await import('./shell_writes.js')).enqueueNonHeadMovingRewrites(cmd, scope, exitCode)
 }
 
 export const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less', 'more'])

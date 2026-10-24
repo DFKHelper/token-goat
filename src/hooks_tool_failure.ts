@@ -8,7 +8,7 @@ import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type * as EditNearMiss from './edit_near_miss.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
-import { enqueueNonHeadMovingRewrites, extractCommand, resolveBashCall, unwrapCompressCommand } from './hooks_bash_commands.js'
+import { enqueueNonHeadMovingRewrites, extractCommand, resolveBashCall, unwrapCompressCommand, writeScopeFor } from './hooks_bash_commands.js'
 import { noteFailedVerificationHandler } from './hooks_verification.js'
 import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
 import { contextOutput, getCwd, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
@@ -395,8 +395,8 @@ export async function shellWriteAfterFailureHandler(event: HookEvent): Promise<H
     if (reported === undefined) return passOutput()
     const toolUseId = event.raw['tool_use_id']
     const startCwd = (typeof toolUseId === 'string' && toolUseId !== '' ? takeBashStartCwd(toolUseId) : null) ?? getCwd(event) ?? null
-    const { cmd, runDir } = resolveBashCall(reported, startCwd)
-    await enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd(), failedShellExitCode(event.raw))
+    const { rawCmd, cmd, runDir } = resolveBashCall(reported, startCwd)
+    await enqueueNonHeadMovingRewrites(cmd, writeScopeFor(rawCmd, runDir ?? process.cwd(), startCwd ?? process.cwd()), failedShellExitCode(event.raw))
   } catch {
     // A queueing failure must never turn a tool failure into a hook failure.
   }
