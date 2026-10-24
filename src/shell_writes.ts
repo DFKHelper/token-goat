@@ -954,6 +954,26 @@ function tailMayChangeFiles(tail: string): boolean {
   return splitShellSegments(tail).some((segment) => (DIR_CHANGE_HEADS.has(headOf(psTokens(segment))) ? redirectsMayWrite(segment) : segmentMayChangeFiles(segment)))
 }
 
+/** The directories to reconcile for the text after a directory change: `runDir` and `startDir`, each directory a concrete `cd`, `pushd`, `Set-Location` or `sl` in it moves to (resolved from the one before), and each repository a `git` segment in it names, resolved from the directory the shell is then in. A target the text cannot resolve (`-`, `~`, a variable) moves nothing here, which `runDir` and `startDir` already cover as far as they go. */
+function tailReconcileDirs(tail: string, runDir: string, startDir: string): string[] {
+  const dirs = [runDir, startDir]
+  let dir = path.resolve(runDir)
+  for (const segment of splitShellSegments(tail)) {
+    const tokens = psTokens(segment)
+    if (DIR_CHANGE_HEADS.has(headOf(tokens))) {
+      const target = tokens.slice(1).find((t) => !t.startsWith('-'))
+      if (target !== undefined && isConcretePath(target)) {
+        dir = path.resolve(dir, target.replace(/\\/g, '/'))
+        dirs.push(dir)
+      }
+      continue
+    }
+    const run = gitRunTarget(segment, dir)
+    if (run.git) dirs.push(...run.repos)
+  }
+  return dirs
+}
+
 /** True when a segment's redirects or substitutions may write a file, named or not: the syntax of a segment whose program is a directory change. */
 function redirectsMayWrite(segment: string): boolean {
   return scanShellSyntax(segment).redirects.length > 0 || syntaxMayWrite(segment)
@@ -973,6 +993,45 @@ export interface GitRunTarget {
 /** A git option value the hook cannot resolve on its own. */
 const UNRESOLVED_VALUE_RE = /[$`*?[{~]/
 
+/** The words that run the command after them, with the options of each that take their value as the next word (`nice -n 5`, `sudo -u root`, `env -u NAME`). */
+const GIT_WRAPPER_VALUE_FLAGS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['command', new Set<string>()],
+  ['builtin', new Set<string>()],
+  ['nohup', new Set<string>()],
+  ['exec', new Set(['-a'])],
+  ['time', new Set(['-f', '-o', '--format', '--output'])],
+  ['nice', new Set(['-n', '--adjustment'])],
+  ['sudo', new Set(['-u', '-g', '-h', '-p', '-C', '-r', '-t', '-U', '-D', '-R'])],
+  ['doas', new Set(['-u', '-C'])],
+  ['env', new Set(['-u', '--unset', '-C', '--chdir'])],
+])
+
+/** Where a wrapper chain ends: the index of the program it runs, the directory an `env -C` moved it to (null when none), and `opaque` when the chain cannot be read (`env -S`, an unresolved `-C`) or runs nothing (`command -v git`). */
+function skipGitWrappers(tokens: readonly string[], from: number, base: string): { at: number; dir: string; opaque: boolean } {
+  let i = from
+  let dir = base
+  for (; i < tokens.length; i++) {
+    const word = path.basename(tokens[i]!).replace(/\.exe$/i, '').toLowerCase()
+    const valueFlags = GIT_WRAPPER_VALUE_FLAGS.get(word)
+    if (valueFlags === undefined) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) continue
+      break
+    }
+    while (i + 1 < tokens.length && tokens[i + 1]!.startsWith('-')) {
+      const flag = tokens[++i]!
+      const eq = flag.indexOf('=')
+      const name = flag.startsWith('--') && eq > 0 ? flag.slice(0, eq) : flag
+      if ((word === 'command' && /^-[vV]/.test(flag)) || (word === 'env' && /^(?:-S|--split-string)/.test(flag))) return { at: i, dir, opaque: true }
+      if (word === 'env' && /^(?:-C|--chdir)/.test(flag)) {
+        const value = eq > 0 && name !== flag ? flag.slice(eq + 1) : tokens[++i]
+        if (value === undefined || UNRESOLVED_VALUE_RE.test(value)) return { at: i, dir, opaque: true }
+        dir = path.resolve(dir, value)
+      } else if (valueFlags.has(name) && name === flag) i++
+    }
+  }
+  return { at: i, dir, opaque: false }
+}
+
 export function gitRunTarget(segment: string, runDir: string): GitRunTarget {
   const base = path.resolve(runDir)
   const unknown: GitRunTarget = { worktree: base, repos: [base], known: false, git: false, argv: [] }
@@ -987,12 +1046,19 @@ export function gitRunTarget(segment: string, runDir: string): GitRunTarget {
   }
   let i = 0
   for (; i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!); i++) assign(tokens[i]!)
+  const wrapped = skipGitWrappers(tokens, i, base)
+  for (let j = i; j < wrapped.at && j < tokens.length; j++) if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[j]!)) assign(tokens[j]!)
+  i = wrapped.at
   const isGitWord = (t: string): boolean => path.basename(t).replace(/\.exe$/i, '').toLowerCase() === 'git'
+  if (wrapped.opaque) {
+    const at = tokens.findIndex((t, k) => k >= i && isGitWord(t))
+    return at < 0 ? notGit : { ...unknown, git: true, argv: tokens.slice(at) }
+  }
   const program = tokens[i]
   if (program === undefined || !isGitWord(program)) return notGit
   const argv = tokens.slice(i)
   const unknownGit: GitRunTarget = { ...unknown, git: true, argv }
-  let dir = base
+  let dir = wrapped.dir
   for (i++; i < tokens.length && tokens[i]!.startsWith('-'); i++) {
     const t = tokens[i]!
     const eq = t.indexOf('=')
@@ -1066,10 +1132,7 @@ export async function reconcileHeadMoves(cmd: string, runDir: string, startDir: 
       dirs.add(runDir)
     }
   }
-  if (headMovingSegments(tail).length > 0) {
-    dirs.add(runDir)
-    dirs.add(startDir)
-  }
+  if (headMovingSegments(tail).length > 0) for (const dir of tailReconcileDirs(tail, runDir, startDir)) dirs.add(dir)
   const roots = new Set<string>()
   for (const dir of dirs) roots.add(await reconcileRootOf(dir, runDir))
   for (const root of roots) requestReconcileOnce(root)
@@ -1127,7 +1190,7 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScop
     if (swept || namesEveryFile || tokenGoatInvocation(segment) !== null || isHeadMovingGitCommand(segment)) handled.add(segment)
   }
   // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.
-  if (tailMayChangeFiles(tail)) { reconcileDirs.add(runDir); reconcileDirs.add(scope.startDir) }
+  if (tailMayChangeFiles(tail)) for (const dir of tailReconcileDirs(tail, runDir, scope.startDir)) reconcileDirs.add(dir)
   for (const repo of enqueueShellWrites(head, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })) reconcileDirs.add(repo)
   const reconcileRoots = new Set<string>()
   for (const dir of reconcileDirs) reconcileRoots.add(await reconcileRootOf(dir, runDir))

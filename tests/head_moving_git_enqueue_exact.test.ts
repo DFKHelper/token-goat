@@ -752,3 +752,37 @@ describe('round 13a: whatever the git verb or spelling, the repository it is aim
     expect(requestedRoots()).toEqual([spelled(a)])
   })
 })
+
+// Provenance: HAND-DERIVED. The wrapper words and directory-change commands are the ones named in the round-12 re-review; each shell runs the git behind them as git itself, so the repository it names is b.
+describe('round 13a: the repository a git command names is found behind a wrapper word or a directory change', () => {
+  it.each([
+    ['git.exe -C ../b checkout other'],
+    ['/usr/bin/git -C ../b checkout other'],
+    ['command git -C ../b checkout other'],
+    ['time git -C ../b checkout other'],
+    ['nice git -C ../b checkout other'],
+    ['sudo git -C ../b checkout other'],
+    ['env git -C ../b checkout other'],
+    ['nice -n 5 git -C ../b checkout other'],
+    ['sudo -u root git -C ../b checkout other'],
+    ['env -u FOO BAR=1 git -C ../b checkout other'],
+    ['env -C ../b git checkout other'],
+    ['env GIT_DIR=../b/.git GIT_WORK_TREE=../b git clean -fd'],
+    ['git.exe -C ../b clean -fd'],
+    ['command git -C ../b clean -fd'],
+  ])('%s reconciles repo b and not the cwd repo', async (command) => {
+    const { a, b } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+  })
+
+  it.each([['pushd ../b; git checkout other'], ['Set-Location ../b; git checkout other'], ['sl ../b; git checkout other'], ['Set-Location -Path ../b; git clean -fd'], ['echo hi; pushd ../b; git clean -fd'], ['cd ../b; git checkout other']])('%s reconciles repo b', async (command) => {
+    const { a, b } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(requestedRoots()).toContain(spelled(b))
+  })
+})
