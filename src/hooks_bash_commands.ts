@@ -1,17 +1,12 @@
 /** Shell command parsing, git mutation detection, pipeline filtering, and syntax validation. Extracted from hooks_bash.ts to isolate pure shell-command inspection and git working-tree mutation tracking from hook I/O delivery and caching. */
 
-import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import * as path from 'node:path'
 
 import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { runGitAsyncLazy } from './util.js'
-import { parsePorcelainZ } from './git_porcelain.js'
 import type { GitResult } from './util.js'
-import { dataDir } from './constants.js'
-import { appendWorkerErrorLog } from './worker_lifecycle.js'
-import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
 import {
   detectFromCommand,
   filterByName,
@@ -255,127 +250,13 @@ export const ORIG_HEAD_ELIGIBLE_GIT_RE = /^\s*git\s+(?:pull|merge|rebase)\b/i
 /** Matches the HEAD reflog message a real merge/rebase/pull leaves behind. */
 export const ORIG_HEAD_REFLOG_MSG_RE = /^(merge\s|rebase\s\(|pull\s)/i
 
-/** Matches `git restore`, which rewrites paths without moving HEAD. */
-const GIT_RESTORE_RE = /^\s*git\s+restore\b/i
-
-/** `git restore --staged <file>` only rewrites the index, leaving working-tree content untouched. */
-const GIT_RESTORE_STAGED_ONLY_RE = /(?:^|\s)(?:--staged|-S)(?:\s|$)/
-
-/** The `git stash` subcommands that rewrite the working tree: `pop` and `apply` put changes back, `branch` checks out a branch and applies the stash onto it, and `push` or `save` put files back to their committed content, as a bare `git stash` or one taking only options does. `list`, `show`, `drop`, `clear`, `create` and `store` touch no file. */
-const GIT_STASH_REWRITE_SUBCOMMANDS = new Set(['pop', 'apply', 'branch', 'push', 'save'])
-
-/** Git's own leading options that take their value as the next argument, per git(1): `-C <path>`, `-c <name>=<value>`, and the long forms that also accept `--opt=<value>`. */
-const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'])
-
-/** The directory whose working tree a `git stash` segment rewrites, or null when the segment is not one that rewrites it. Environment assignments ahead of `git` and git's own leading options are skipped, and each `-C <path>` moves the directory as git does, relative to the one before it (an empty path leaves it unchanged). `-h` or `--help` anywhere after `stash` prints usage and touches nothing. */
-function gitStashRewriteDir(segment: string, runDir: string): string | null {
-  const tokens = safeShlexSplit(segment)
-  if (tokens === null) return null
-  let i = 0
-  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i++
-  const head = tokens[i]
-  if (head === undefined || path.basename(head.replace(/\\/g, '/')).replace(/\.exe$/i, '').toLowerCase() !== 'git') return null
-  let dir = runDir
-  for (i++; i < tokens.length && tokens[i]!.startsWith('-'); i++) {
-    const t = tokens[i]!
-    if (!GIT_OPTIONS_WITH_VALUE.has(t)) continue
-    const value = tokens[++i]
-    if (t === '-C' && value !== undefined && value !== '') dir = path.resolve(dir, value)
-  }
-  if (tokens[i] !== 'stash') return null
-  const rest = tokens.slice(i + 1)
-  if (rest.some((t) => t === '-h' || t === '--help')) return null
-  const sub = rest[0]
-  return sub === undefined || sub.startsWith('-') || GIT_STASH_REWRITE_SUBCOMMANDS.has(sub) ? dir : null
-}
-
-/** Matches working-tree rewriters whose changed paths are determined by patch contents. */
-const PATCH_APPLY_SEGMENT_RE = /^\s*(?:\S*[/\\])?(?:git\s+apply|patch)\b/i
-
-/** Matches patch inspection flags without writes (`--check`, `--stat`, `--dry-run`, etc.). */
-const PATCH_APPLY_INSPECT_ONLY_RE = /(?:^|\s)--(?:check|stat|numstat|summary|dry-run)(?:\s|=|$)/i
-
-/** True for a formatter run that rewrites files in place. The file set can come from a glob, a config-driven include list, or `.` -- not parseable from the command line -- so these join the status-sweep fallback rather than growing a second, weaker path-guessing mechanism. */
-function isFormatterWriteSegment(segment: string): boolean {
-  return /(?:^|\s|[/\\])(?:prettier|eslint)\b/i.test(segment) && /(?:^|\s)--(?:write|fix)(?:\s|$)/i.test(segment)
-}
-
 /** Tokenize a segment argv-style, or `null` when it is not tokenizable (shlexSplit throws on an unterminated quote). */
-function safeShlexSplit(segment: string): string[] | null {
+export function safeShlexSplit(segment: string): string[] | null {
   try {
     return shlexSplit(segment)
   } catch {
     return null
   }
-}
-
-/** True when `token` is the leading command of the segment, allowing for a path prefix (`/usr/bin/sed`). */
-function segmentCommandIs(segment: string, name: string): boolean {
-  return new RegExp('^\\s*(?:\\S*[/\\\\])?' + name + '(?:\\.exe)?\\b', 'i').test(segment)
-}
-
-/** Files rewritten in place by `sed -i`, or `[]` when this segment is not an in-place sed. Handles the three spellings that actually appear: GNU `sed -i 's/a/b/' f`, GNU with a backup suffix `sed -i.bak ... f`, and BSD/macOS `sed -i '' 's/a/b/' f` where the empty suffix is its own argv entry. The first non-option token is the script unless `-e`/`-f` already supplied one. */
-function extractSedInPlaceFiles(segment: string): string[] {
-  if (!segmentCommandIs(segment, 'sed')) return []
-  const tokens = safeShlexSplit(segment)
-  if (tokens === null) return []
-  const rest = tokens.slice(1)
-  const inPlaceIdx = rest.findIndex((t) => t === '--in-place' || t.startsWith('--in-place=') || /^-[a-zA-Z]*i/.test(t))
-  if (inPlaceIdx === -1) return []
-  const files: string[] = []
-  let scriptTaken = rest.some((t) => t === '-e' || t === '-f' || t.startsWith('--expression') || t.startsWith('--file'))
-  for (let i = 0; i < rest.length; i++) {
-    const t = rest[i]!
-    if (i === inPlaceIdx) {
-      // BSD sed spells the no-backup form `-i ''`; the empty suffix is a separate argv entry and must not be mistaken for the script.
-      if (t === '-i' && rest[i + 1] === '') i++
-      continue
-    }
-    if (t === '-e' || t === '-f' || t === '--expression' || t === '--file') {
-      i++
-      continue
-    }
-    if (t.length > 1 && t.startsWith('-')) continue
-    if (!scriptTaken) {
-      scriptTaken = true
-      continue
-    }
-    files.push(t)
-  }
-  return files
-}
-
-/** Files written by `tee [-a] <file>...`, or `[]` when this segment is not a tee. */
-function extractTeeFiles(segment: string): string[] {
-  if (!segmentCommandIs(segment, 'tee')) return []
-  const tokens = safeShlexSplit(segment)
-  if (tokens === null) return []
-  return tokens.slice(1).filter((t) => t.length > 0 && !t.startsWith('-'))
-}
-
-/** Pathspecs named on a `git restore` command line: everything after `--`, or every non-option token once `-s`/`--source`'s separate value is skipped. */
-function extractGitRestorePathspecs(cmd: string): string[] {
-  const m = /^\s*git\s+restore\b(.*)$/i.exec(cmd)
-  if (m === null) return []
-  const tokens = safeShlexSplit(m[1] ?? '')
-  if (tokens === null) return []
-  const dashDash = tokens.indexOf('--')
-  if (dashDash !== -1) return tokens.slice(dashDash + 1)
-  const specs: string[] = []
-  let skipNext = false
-  for (const t of tokens) {
-    if (skipNext) {
-      skipNext = false
-      continue
-    }
-    if (t === '-s' || t === '--source') {
-      skipNext = true
-      continue
-    }
-    if (t.startsWith('-')) continue
-    specs.push(t)
-  }
-  return specs
 }
 
 /** A git read run in `gitDir` under the hook's 5 s budget, off the event loop so a resident hook server keeps answering other callers while git runs. */
@@ -389,108 +270,9 @@ export async function gitRepoRootOrNull(gitDir: string): Promise<string | null> 
   return toplevel.exitCode === 0 && toplevel.stdout.trim() !== '' ? toplevel.stdout.trim() : null
 }
 
-/** A git read that ran past the hook's 5 s budget names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without that budget, so hand it the project and record that. A git that never started (a spawn error: a missing git, or a working directory that is gone) is unfinished too and gets the request, since a missing git is an unknown answer and the worker, which resolves git on its own, may still sweep; a nonzero exit is git saying this is not a repository, which has nothing to reconcile. */
-function reconcileIfGitTimedOut(result: GitResult, gitDir: string, what: string, gitCommand: string): void {
-  if (!result.unfinished) return
-  const recorded = requestReconcileSafe(gitDir)
-  appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${what} in ${gitDir}: ${gitCommand} did not answer in time (${result.stderr.trim().slice(0, 200)}); ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
-}
-
-/** Expand `git restore` pathspecs (which may be `.`, a directory, or a glob) into the concrete tracked files git itself matches, repo-root-relative. */
-async function expandGitPathspecs(specs: string[], gitDir: string): Promise<string[]> {
-  if (specs.length === 0) return []
-  // `-z` names each path as written; without it a non-ASCII name comes back octal-quoted and names no file.
-  const listed = await hookGitRead(gitDir, ['ls-files', '-z', '--full-name', '--', ...specs])
-  reconcileIfGitTimedOut(listed, gitDir, 'git restore', 'git ls-files')
-  if (listed.exitCode !== 0) return []
-  const repoRoot = await gitRepoRootOrNull(gitDir)
-  if (repoRoot === null) {
-    requestReconcileSafe(gitDir)
-    return []
-  }
-  return listed.stdout
-    .split('\x00')
-    .filter((rel) => rel.length > 0)
-    .map((rel) => resolveIndexPath(rel, repoRoot))
-}
-
-/** The most paths one status sweep enqueues; past it the worker's reconcile, requested on every sweep, finds the rest of the tracked files. */
-const STATUS_SWEEP_CAP = 2000
-
-/** Every path git currently reports as changed or untracked, plus the source of each rename, absolute. The fallback for rewrites whose file set is not on the command line (stash, patch application, formatter runs). Read with `-z`, which names each path as written: plain porcelain octal-quotes a non-ASCII name and joins a rename as `old -> new`, which a name holding ` -> ` makes ambiguous. Untracked files are listed one by one, since plain porcelain folds a new directory into `dir/`, which names no file the index can take. A file the rewrite put back to its committed content is on no listing at all, so every sweep also asks the worker to reconcile the project. */
-async function workingTreeStatusPaths(gitDir: string): Promise<string[]> {
-  const status = await hookGitRead(gitDir, ['status', '--porcelain', '-z', '--untracked-files=all'])
-  reconcileIfGitTimedOut(status, gitDir, 'status sweep', 'git status')
-  const stamp = `${new Date().toISOString()} post-bash status sweep in ${gitDir}`
-  if (status.exitCode !== 0) return []
-  const recorded = requestReconcileSafe(gitDir)
-  const repoRoot = await gitRepoRootOrNull(gitDir)
-  if (repoRoot === null) return []
-  const entries = parsePorcelainZ(status.stdout)
-  // Untracked paths first: the worker's reconcile finds every tracked file this cap leaves out, but it never lists a new untracked file, so the sweep is the only thing that queues one.
-  const rels = [...entries.filter((e) => e.untracked === true), ...entries.filter((e) => e.untracked !== true)].flatMap((e) => (e.origPath === undefined ? [e.path] : [e.path, e.origPath]))
-  if (!recorded && rels.length <= STATUS_SWEEP_CAP) {
-    appendWorkerErrorLog(dataDir(), `${stamp}: could not record a reconcile request, so a file this sweep could not see may stay stale until the next index run\n`)
-  }
-  if (rels.length > STATUS_SWEEP_CAP) {
-    const untrackedDropped = Math.max(0, entries.filter((e) => e.untracked === true).length - STATUS_SWEEP_CAP)
-    appendWorkerErrorLog(dataDir(), `${stamp}: git listed ${rels.length} paths, so only the first ${STATUS_SWEEP_CAP} were queued, untracked ones first; ${untrackedDropped > 0 ? `${untrackedDropped} untracked ${untrackedDropped === 1 ? 'file was' : 'files were'} left out, which no reconcile finds, and ` : ''}${recorded ? 'asked the worker to reconcile the project for the rest of the tracked files' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
-  }
-  return rels.slice(0, STATUS_SWEEP_CAP).map((rel) => resolveIndexPath(rel, repoRoot))
-}
-
-/** Enqueue one rewritten path, filtering the shapes that must never reach the queue: a discard sink, a directory, and anything not actually on disk (a redirect whose target never materialized, or a path parsed out of a command that ran somewhere else). A path under the OS temp dir is refused by enqueueDirtyPathSafe itself, for this detector and the git-mutation one alike. */
-function enqueueRewrittenPath(absPath: string): void {
-  if (/(?:^|[/\\])(?:NUL|nul)$/.test(absPath) || absPath.replace(/\\/g, '/').endsWith('/dev/null')) return
-  try {
-    if (!statSync(absPath).isFile()) return
-  } catch {
-    return
-  }
-  enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
-}
-
-/** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. `exitCode` is the command's exit status when the harness reports one, and a non-zero one keeps only the shell-write pass. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
+/** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD (`git restore`, `git stash pop|apply`, the plain shell in-place writes, the formatters), so the index does not keep serving pre-mutation symbols. Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts). See shell_writes.ts. */
 export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string, exitCode?: number | null): Promise<void> {
-  const atRunDir = (f: string): string => resolveIndexPath(f, runDir)
-  const paths: string[] = []
-  // Each directory whose working tree needs a status sweep: the run directory for a patch or formatter, or wherever `git -C` pointed a stash.
-  const sweepDirs = new Set<string>()
-  if (!exitCode && GIT_RESTORE_RE.test(cmd) && !GIT_RESTORE_STAGED_ONLY_RE.test(cmd)) {
-    const specs = extractGitRestorePathspecs(cmd)
-    paths.push(...(await expandGitPathspecs(specs, runDir)))
-    // `ls-files` lists only what the index holds, so a file `--source` brought back that the index lacks is found by its literal name instead; globs, `:` magic and `.` name nothing literally.
-    for (const spec of specs) if (spec !== '.' && !spec.startsWith(':') && !/[*?[]/.test(spec)) paths.push(atRunDir(spec))
-  }
-  // Segments some extractor above already named files for, which the shell-write pass leaves alone.
-  const handled = new Set<string>()
-  for (const segment of splitShellSegments(cmd)) {
-    const before = paths.length + sweepDirs.size
-    if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) sweepDirs.add(runDir)
-    if (isFormatterWriteSegment(segment)) sweepDirs.add(runDir)
-    const stashDir = gitStashRewriteDir(segment, runDir)
-    if (stashDir !== null) sweepDirs.add(stashDir)
-    for (const f of extractSedInPlaceFiles(segment)) paths.push(atRunDir(f))
-    for (const f of extractTeeFiles(segment)) paths.push(atRunDir(f))
-    if (paths.length + sweepDirs.size > before || tokenGoatInvocation(segment) !== null || isHeadMovingGitCommand(segment) || GIT_RESTORE_RE.test(segment)) handled.add(segment)
-  }
-  // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.
-  ;(await import('./shell_writes.js')).enqueueShellWrites(cmd, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })
-  // A command that exited non-zero keeps only the shell-write pass above: its named files and its reconcile request, since a script can write and then fail. The extractors before it stay on success, where a failed `sed -i` or `git restore` changed nothing they could name.
-  if (exitCode) return
-  for (const p of new Set(paths)) enqueueRewrittenPath(p)
-  for (const dir of sweepDirs) for (const p of await workingTreeStatusPaths(dir)) enqueueSweptPath(p)
-}
-
-/** Enqueue a path the status sweep listed: a file to reindex, or a path that is no longer on disk (deleted, or the source of a rename) so the drain drops its rows. Anything else, such as a submodule directory, names nothing the index holds. */
-function enqueueSweptPath(absPath: string): void {
-  try {
-    if (!statSync(absPath).isFile()) return
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') return
-  }
-  enqueueDirtyPathSafe(absPath, { alreadyResolved: true })
+  await (await import('./shell_writes.js')).enqueueNonHeadMovingRewrites(cmd, runDir, exitCode)
 }
 
 export const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less', 'more'])

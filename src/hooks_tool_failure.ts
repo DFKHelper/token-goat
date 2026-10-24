@@ -8,14 +8,15 @@ import { callStreakAfterFailure } from './call_streak.js'
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type * as EditNearMiss from './edit_near_miss.js'
 import { buildLineIndex, offsetToLine } from './languages/common.js'
-import { unwrapCompressCommand } from './hooks_bash_commands.js'
+import { enqueueNonHeadMovingRewrites, extractCommand, resolveBashCall, unwrapCompressCommand } from './hooks_bash_commands.js'
 import { noteFailedVerificationHandler } from './hooks_verification.js'
 import { applyHintTracking, uncorrelatedHint } from './hint_stats.js'
-import { contextOutput, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
+import { contextOutput, getCwd, getFilePath, getToolInput, getToolName, passOutput, resolveEventPath } from './hooks_common.js'
 import { displaySafeText, hostPathOfIndexKey, normalizePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
 import { ensureDirSync } from './util.js'
 import { sessionSidecarPath } from './session_store.js'
+import { takeBashStartCwd } from './session.js'
 import { diagnoseSqlFailure } from './session_store_schema.js'
 import { recordStat } from './stats.js'
 import { classifyToolError } from './tool_error_class.js'
@@ -380,5 +381,30 @@ function adviseOnFailure(event: HookEvent, slot: AdviceSlot): HookOutput {
   }
 }
 
+/** The status line Claude Code puts first in a failed shell call's `error` (https://code.claude.com/docs/en/hooks.md, PostToolUseFailure input), or 1 when there is none, since a call that reached this event did not succeed and a script can write before it fails. */
+function failedShellExitCode(raw: Record<string, unknown>): number {
+  const match = /^Exit code (-?\d+)/.exec(extractFailureText(raw))
+  const code = match === null ? 1 : Number(match[1])
+  return code === 0 ? 1 : code
+}
+
+/** A failed Bash or PowerShell call goes through the same shell-write pass a successful one does (postBashHandler), since a script that wrote files and then exited non-zero reaches only this event on Claude Code. Always passes: it only queues. */
+export async function shellWriteAfterFailureHandler(event: HookEvent): Promise<HookOutput> {
+  try {
+    const reported = extractCommand(event)
+    if (reported === undefined) return passOutput()
+    const toolUseId = event.raw['tool_use_id']
+    const startCwd = (typeof toolUseId === 'string' && toolUseId !== '' ? takeBashStartCwd(toolUseId) : null) ?? getCwd(event) ?? null
+    const { cmd, runDir } = resolveBashCall(reported, startCwd)
+    await enqueueNonHeadMovingRewrites(cmd, runDir ?? process.cwd(), failedShellExitCode(event.raw))
+  } catch {
+    // A queueing failure must never turn a tool failure into a hook failure.
+  }
+  return passOutput()
+}
+
+// Registered ahead of the other failure handlers: one that answers with advice ends the run before a later handler is reached.
+registerHook('post_tool_use_failure', shellWriteAfterFailureHandler, { toolName: 'Bash', advisory: true })
+registerHook('post_tool_use_failure', shellWriteAfterFailureHandler, { toolName: 'PowerShell', advisory: true })
 registerHook('post_tool_use_failure', noteFailedVerificationHandler, { advisory: true })
 registerHook('post_tool_use_failure', postToolUseFailureWithExtras)
