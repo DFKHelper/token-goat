@@ -585,6 +585,42 @@ describe('a sequencer abort, skip or quit rewrites the worktree without a queue 
   })
 })
 
+describe('two or more head-moving git segments in one command ask for a reconcile, since the reflog diff sees only the last move', () => {
+  it.each([['git checkout other && git checkout -'], ['git switch other && git switch -'], ['git merge other && git merge other'], ['git checkout other; git checkout -'], ['git pull --ff-only; git pull --ff-only'], ['git checkout other && git pull --ff-only'], ['git cherry-pick HEAD~1 && git cherry-pick HEAD']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    divergedOther(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
+describe('git rebase, cherry-pick or revert with --continue asks for a reconcile, since the replayed step is all HEAD@{1} covers', () => {
+  it.each([['git rebase --continue'], ['git rebase --cont'], ['git cherry-pick --continue'], ['git revert --continue'], ['true && git rebase --continue']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    divergedOther(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
+describe('a cherry-pick or revert naming several revisions or a range replays several commits, so it asks for a reconcile', () => {
+  it.each([['git cherry-pick HEAD~1 HEAD'], ['git cherry-pick HEAD~1..HEAD'], ['git cherry-pick HEAD~2...HEAD'], ['git cherry-pick ^HEAD~1 HEAD'], ['git cherry-pick --stdin'], ['git revert HEAD HEAD~1'], ['true && git cherry-pick HEAD~1 HEAD']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    divergedOther(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+  })
+})
+
+describe('a single head-moving git command, or a status, asks for no reconcile', () => {
+  it.each([['git checkout other'], ['git status && git checkout other'], ['git status'], ['git cherry-pick -x HEAD']])('%s asks for no reconcile', async (command) => {
+    const dir = repo()
+    divergedOther(dir)
+    await postBashHandler(shellCall(command, dir, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toEqual([])
+  })
+})
+
 describe('a PowerShell comma list is not one file name, so it asks for a reconcile', () => {
   it.each([['Set-Content a.ts,b.ts -Value x'], ['New-Item a.ts,b.ts'], ['Out-File -FilePath a.ts,b.ts'], ['Copy-Item a.ts,b.ts sub'], ['Remove-Item a.ts,b.ts'], ['Remove-Item -Path a.ts, b.ts']])(
     '%s asks the worker to reconcile',

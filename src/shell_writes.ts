@@ -790,6 +790,8 @@ function gitMayRewriteWorktree(segment: string, runDir: string): boolean {
   if (sub === 'restore') return !restoreIsStagedOnly(segment)
   const args = sub === null ? [] : tokens.slice(tokens.indexOf(sub) + 1)
   if (sub !== null && SEQUENCER_SUBCOMMANDS.has(sub) && args.some((t) => optionIs(t, SEQUENCER_STOP_FLAGS, MIN_LONG_ABBREVIATION))) return true
+  if (sub !== null && SEQUENCER_CONTINUE_SUBCOMMANDS.has(sub) && args.some((t) => optionIs(t, ['--continue'], MIN_LONG_ABBREVIATION))) return true
+  if ((sub === 'cherry-pick' || sub === 'revert') && namesSeveralCommits(args)) return true
   if (sub === 'merge' || sub === 'cherry-pick' || sub === 'pull') return noCommitRewritesWorktree(sub, args)
   if (sub === null || !WORKTREE_GIT_SUBCOMMANDS.has(sub)) return false
   if (args.includes('--') || args.some((t) => optionIs(t, WORKTREE_DISCARD_FLAGS, MIN_LONG_ABBREVIATION))) return true
@@ -801,6 +803,15 @@ function gitMayRewriteWorktree(segment: string, runDir: string): boolean {
 const SEQUENCER_SUBCOMMANDS = new Set(['merge', 'cherry-pick', 'revert', 'rebase', 'am'])
 
 const SEQUENCER_STOP_FLAGS: readonly string[] = ['--abort', '--skip', '--quit']
+
+/** The sequencer subcommands whose `--continue` finishes a step that HEAD@{1} may not cover: a rebase replays several commits, and the reflog diff sees only the last one. */
+const SEQUENCER_CONTINUE_SUBCOMMANDS = new Set(['rebase', 'cherry-pick', 'revert'])
+
+/** True when a cherry-pick or revert names more than one revision, a range (`a..b`, `a...b`, `^x`) or `--stdin`, so it replays commits that HEAD@{1} does not cover. A `-m` value counts as a revision, the cheap direction. */
+function namesSeveralCommits(args: readonly string[]): boolean {
+  if (args.some((t) => t.includes('..') || t.startsWith('^') || optionIs(t, ['--stdin'], MIN_LONG_ABBREVIATION))) return true
+  return args.filter((t) => !t.startsWith('-')).length >= 2
+}
 
 /** `merge` or `pull` with `--no-commit` or `--squash`, and `cherry-pick -n` or `--no-commit`, rewrite the worktree and index without moving HEAD, so no head-moving diff lists the files they change. A short-option cluster holding `n` counts too for cherry-pick, the cheap direction. */
 function noCommitRewritesWorktree(sub: 'merge' | 'cherry-pick' | 'pull', args: readonly string[]): boolean {

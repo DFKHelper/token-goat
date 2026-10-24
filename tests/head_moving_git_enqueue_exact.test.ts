@@ -221,3 +221,117 @@ describe('a head-moving git command in any segment of a compound command gets th
     expect(dirty()).toEqual([])
   })
 })
+
+/** Runs git and returns its exit status, for a step that may stop on a conflict. */
+function gitStatus(cwd: string, ...args: string[]): number | null {
+  return spawnSync('git', ['-c', 'core.hooksPath=/dev/null', '-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'maintenance.auto=false', '-c', 'core.editor=true', '-c', 'sequence.editor=true', ...args], { cwd, encoding: 'utf8' }).status
+}
+
+describe('a command that moves HEAD more than once, or replays several commits, asks for a reconcile', () => {
+  it('git checkout other && git checkout - reconciles, and still queues the file the reflog diff finds', async () => {
+    const dir = gitRepoWithCommit()
+    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    commitFile(dir, 'o.txt', 'one\n')
+    git(dir, 'checkout', '-qb', 'other')
+    commitFile(dir, 'o.txt', 'two\n')
+    git(dir, 'checkout', '-q', original)
+    git(dir, 'checkout', '-q', 'other')
+    git(dir, 'checkout', '-q', '-')
+
+    await postBash('git checkout other && git checkout -', dir)
+
+    expect(dirty()).toEqual([folded('o.txt', dir)])
+    expect(parseReconcileRequests(requestFile()), 'two head-moving segments: the reflog diff sees only the last move').toHaveLength(1)
+  })
+
+  it('git rebase --continue after a conflict reconciles, since HEAD@{1} covers only the replayed step', async () => {
+    const dir = gitRepoWithCommit()
+    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    commitFile(dir, 'a.txt', 'base\n')
+    git(dir, 'checkout', '-qb', 'feature')
+    commitFile(dir, 'a.txt', 'feature\n')
+    commitFile(dir, 'c.txt', 'new\n')
+    git(dir, 'checkout', '-q', original)
+    commitFile(dir, 'a.txt', 'mainline\n')
+    git(dir, 'checkout', '-q', 'feature')
+    expect(gitStatus(dir, 'rebase', original), 'calibration: the rebase stops on a.txt').not.toBe(0)
+    fs.writeFileSync(join(dir, 'a.txt'), 'resolved\n')
+    git(dir, 'add', 'a.txt')
+    expect(gitStatus(dir, 'rebase', '--continue'), 'calibration: the continue finishes the rebase').toBe(0)
+
+    await postBash('git rebase --continue', dir)
+
+    expect(parseReconcileRequests(requestFile()), 'the continue replays c.txt only, and a.txt was resolved by hand').toHaveLength(1)
+  })
+
+  it('git cherry-pick naming two commits reconciles, since HEAD@{1} covers only the last one', async () => {
+    const dir = gitRepoWithCommit()
+    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    git(dir, 'checkout', '-qb', 'feature')
+    commitFile(dir, 'a.txt', 'first\n')
+    commitFile(dir, 'c.txt', 'second\n')
+    git(dir, 'checkout', '-q', original)
+    git(dir, 'cherry-pick', 'feature~1', 'feature')
+
+    await postBash('git cherry-pick feature~1 feature', dir)
+
+    expect(parseReconcileRequests(requestFile()), 'two commits replayed: a.txt is not in HEAD@{1}').toHaveLength(1)
+  })
+
+  it('git merge --continue after a conflict is covered by the reflog diff, which lists every file the merge brought in', async () => {
+    const dir = gitRepoWithCommit()
+    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    commitFile(dir, 'a.txt', 'base\n')
+    git(dir, 'checkout', '-qb', 'other')
+    commitFile(dir, 'a.txt', 'other\n')
+    commitFile(dir, 'n.txt', 'new\n')
+    git(dir, 'checkout', '-q', original)
+    commitFile(dir, 'a.txt', 'mainline\n')
+    expect(gitStatus(dir, 'merge', 'other'), 'calibration: the merge stops on a.txt').not.toBe(0)
+    fs.writeFileSync(join(dir, 'a.txt'), 'resolved\n')
+    git(dir, 'add', 'a.txt')
+    expect(gitStatus(dir, 'merge', '--continue'), 'calibration: the continue commits the merge').toBe(0)
+
+    await postBash('git merge --continue', dir)
+
+    expectNarrowEnqueue([folded('a.txt', dir), folded('n.txt', dir)])
+  })
+
+  it('git cherry-pick naming one commit keeps the reflog diff and asks for no reconcile', async () => {
+    const dir = gitRepoWithCommit()
+    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    git(dir, 'checkout', '-qb', 'feature')
+    commitFile(dir, 'a.txt', 'first\n')
+    commitFile(dir, 'c.txt', 'second\n')
+    git(dir, 'checkout', '-q', original)
+    git(dir, 'cherry-pick', 'feature')
+
+    await postBash('git cherry-pick feature', dir)
+
+    expectNarrowEnqueue([folded('c.txt', dir)])
+  })
+
+  it.each([
+    ['git rebase -i', (dir: string, base: string, original: string): number | null => gitStatus(dir, 'rebase', '-q', '-i', original), 'git rebase -i original'],
+    ['git rebase --onto', (dir: string, base: string, original: string): number | null => gitStatus(dir, 'rebase', '-q', '--onto', original, base, 'feature'), 'git rebase --onto original base feature'],
+  ])('%s replaying several commits is covered by ORIG_HEAD and enqueues only the mainline file', async (_label, replay, command) => {
+    const dir = indexableDir()
+    fs.writeFileSync(join(dir, 'base.txt'), 'base\n')
+    git(dir, 'init', '-q')
+    git(dir, 'add', '.')
+    git(dir, 'commit', '-qm', 'init')
+    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    git(dir, 'checkout', '-qb', 'feature')
+    commitFile(dir, 'first.txt', 'first\n')
+    commitFile(dir, 'second.txt', 'second\n')
+    git(dir, 'checkout', '-q', original)
+    const base = git(dir, 'rev-parse', 'HEAD')
+    commitFile(dir, 'mainline.txt', 'mainline\n')
+    git(dir, 'checkout', '-q', 'feature')
+    expect(replay(dir, base, original), 'calibration: the rebase finishes').toBe(0)
+
+    await postBash(command, dir)
+
+    expectNarrowEnqueue([folded('mainline.txt', dir)])
+  })
+})
