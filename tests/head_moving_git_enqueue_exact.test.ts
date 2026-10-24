@@ -786,3 +786,31 @@ describe('round 13a: the repository a git command names is found behind a wrappe
     expect(requestedRoots()).toContain(spelled(b))
   })
 })
+
+// Provenance: FORMAT-DERIVED from git-grep(1) (`-O[<pager>]`, `--open-files-in-pager[=<pager>]`: the matched files are opened in the pager program, an editor by default), read from the git documentation; the expected repository is the one the command is aimed at.
+describe('round 13b: git grep that opens its matches in a program reconciles the repository it is aimed at', () => {
+  it.each([['git grep -O base'], ['git grep -Ovim base'], ['git grep -nOvim base'], ['git grep --open-files-in-pager base'], ['git grep --open-files-in-pager=vim base'], ['git grep --open-f=vim base'], ['git grep -e base -O']])('%s reconciles the repo it ran in', async (command) => {
+    const { a } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(requestedRoots()).toEqual([spelled(a)])
+  })
+
+  it.each([['git -C ../b grep -O base'], ['git -C ../b grep --open-files-in-pager=vim base']])('%s reconciles repo b and not the cwd repo', async (command) => {
+    const { a, b } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+  })
+
+  it.each([['git grep base'], ['git grep -n -i base'], ['git grep -e base -- -O.txt'], ['git grep --only-matching base'], ['git -C ../b grep base']])('control: %s writes nothing and asks for no reconcile', async (command) => {
+    const { a } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(dirty()).toEqual([])
+    expect(requestFile()).toBe('')
+  })
+})

@@ -595,6 +595,15 @@ function gitRunsProgramByConfig(tokens: readonly string[]): boolean {
   return false
 }
 
+/** The shortest `--` abbreviation git reads as `--open-files-in-pager`: `--o` also starts `--only-matching` and `--or`. */
+const MIN_PAGER_ABBREVIATION = 4
+
+/** True when the `git grep` arguments `args` (after `grep`, before any `--` pathspec) ask git to open the matched files in a program: `-O`, `-O<cmd>`, a short cluster holding `O`, or `--open-files-in-pager[=<cmd>]` (an editor by default, which can write them). */
+function gitGrepOpensPager(args: readonly string[]): boolean {
+  const end = args.indexOf('--')
+  return (end < 0 ? args : args.slice(0, end)).some((t) => /^-[A-Za-z]*O/.test(t) || optionIs(t, ['--open-files-in-pager'], MIN_PAGER_ABBREVIATION))
+}
+
 /** True when a `git` segment makes git run a program it names, so the program may write any file: a command-valued `-c` or env key (see {@link gitRunsProgramByConfig}), an `ext::` transport, or a command option of its subcommand (`--upload-pack`, `--receive-pack` and `--exec`, `-x` on rebase; `-u` on clone and ls-remote). The reconcile for it covers the repository it runs in and its `-C` target. */
 function gitRunsCommand(segment: string): boolean {
   const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+)+/, ''))
@@ -606,6 +615,7 @@ function gitRunsCommand(segment: string): boolean {
   if (args.some((t) => optionIs(t, ['--upload-pack', '--receive-pack', '--exec'], MIN_LONG_ABBREVIATION))) return true
   // `rebase -x <cmd>` is `--exec`; no other rebase short option starts with `x`.
   if (sub === 'rebase' && args.some((t) => t.startsWith('-x'))) return true
+  if (sub === 'grep' && gitGrepOpensPager(args)) return true
   return (sub === 'clone' || sub === 'ls-remote') && args.some((t) => /^-[A-Za-z]+$/.test(t) && t.includes('u'))
 }
 
@@ -623,6 +633,7 @@ function headMayWrite(segment: string): boolean {
 function gitVerbMayWrite(tokens: string[]): boolean {
   const sub = gitSubcommand(tokens)
   if (sub === 'stash') return !gitStashReadsOnly(tokens)
+  if (sub === 'grep') return gitGrepOpensPager(tokens.slice(tokens.indexOf(sub) + 1))
   return sub === null || !READ_ONLY_GIT.has(sub)
 }
 
