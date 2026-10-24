@@ -795,3 +795,61 @@ describe('a doubled single quote and a GNU long option are read as the shell rea
     expect(extractPowerShellWriteTargets('rm --recursive sub')).toEqual({ written: [], removed: ['sub'] })
   })
 })
+
+// Two real repositories side by side (`a` and `b`) under the probe root, so `../b` and `-C ../b` name a real second repository.
+const PROBE_ROOT = 'C:/tgwt/r12c_probe_repos'
+function probePair(): { a: string; b: string } {
+  mkdirSync(PROBE_ROOT, { recursive: true })
+  const root = mkdtempSync(join(PROBE_ROOT, 'pair-'))
+  dirs.push(root)
+  const a = join(root, 'a')
+  const b = join(root, 'b')
+  for (const dir of [a, b]) {
+    mkdirSync(dir)
+    writeFileSync(join(dir, 'a.txt'), 'one\n')
+    const hermetic = ['-c', 'core.hooksPath=/dev/null', '-c', 'maintenance.auto=false']
+    execFileSync('git', [...hermetic, 'init', '-q'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', [...hermetic, 'add', '.'], { cwd: dir, stdio: 'ignore' })
+    execFileSync('git', [...hermetic, '-c', 'user.email=t@t.t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { cwd: dir, stdio: 'ignore' })
+  }
+  return { a, b }
+}
+
+describe('a git command option that makes git run a program asks for a reconcile of the repository it ran in and of its -C target', () => {
+  it.each([
+    ['fetch --upload-pack', 'git fetch --upload-pack="touch M" ../b', 'a'],
+    ['-C ../b fetch --upload-pack', 'git -C ../b fetch --upload-pack="touch M" ../a', 'b'],
+    ['push --receive-pack', 'git push --receive-pack="touch M" ../b', 'a'],
+    ['-C ../b push --receive-pack', 'git -C ../b push --receive-pack="touch M" ../a', 'b'],
+    ['pull --upload-pack', 'git pull --upload-pack="touch M" ../b', 'a'],
+    ['-C ../b pull --upload-pack', 'git -C ../b pull --upload-pack="touch M" ../a', 'b'],
+    ['clone -u', 'git clone -u "touch M" ../b c', 'a'],
+    ['ls-remote --upload-pack', 'git ls-remote --upload-pack="touch M" ../b', 'a'],
+    ['-C ../b ls-remote --upload-pack', 'git -C ../b ls-remote --upload-pack="touch M" ../a', 'b'],
+    ['--exec on a long option abbreviation', 'git fetch --exe="touch M" ../b', 'a'],
+    ['-c submodule key set to a command', "git -c submodule.s.update='!touch M' log", 'a'],
+    ['-c unknown key whose value is a command', "git -c x.y='!touch M' status", 'a'],
+    ['-c core.pager on a -C target', 'git -C ../b -c core.pager=touch log', 'b'],
+    ['-c remote helper key', 'git -c remote.origin.vcs=touch log', 'a'],
+  ])('%s', async (_name, command, where) => {
+    const { a, b } = probePair()
+    const expected = where === 'a' ? a : b
+    await postBashHandler(shellCall(command, a, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(expected)))
+  })
+})
+
+describe('a git command with no program option queues no file of its own', () => {
+  it.each([['git log'], ['git status'], ['git -c color.ui=never status']])('%s asks for no reconcile', async (command) => {
+    const { a } = probePair()
+    await postBashHandler(shellCall(command, a, 'claude'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toEqual([])
+  })
+
+  it('git fetch ../b queues no dirty path, and asks for the reconcile it always asked for', async () => {
+    const { a } = probePair()
+    await postBashHandler(shellCall('git fetch ../b', a, 'claude'))
+    expect(getDirtyPaths()).toEqual([])
+    expect(reconcileRequests()).toContain(foldPath(normalizePath(a)))
+  })
+})

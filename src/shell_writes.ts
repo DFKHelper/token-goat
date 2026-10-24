@@ -552,12 +552,12 @@ function gitStashReadsOnly(tokens: string[]): boolean {
   return args[0] === 'list' || args[0] === 'show' || gitStashAsksHelp(args)
 }
 
-/** Git config keys (lowercased) that make git run a program or shell command: an external diff, a pager, an editor, an ssh or proxy command, a credential helper, a filter or merge driver, a difftool. A `-c` or `--config-env` key matching one reconciles; any other key names no program (`user.*`, `color.*`, `core.autocrlf`, `diff.algorithm`, `log.*`) and is read as safe. An `alias.<name>` key is a program only when its value starts with `!` (see {@link isProgramConfigKey}). */
+/** Git config keys (lowercased) that make git run a program or shell command: an external diff, a pager, an editor, an ssh or proxy command, a credential helper, a filter or merge driver, a difftool, a remote's upload or receive command or remote helper. A `-c` or `--config-env` key matching one reconciles, as does any key whose value starts with `!` (see {@link isProgramConfigKey}); any other key names no program (`user.*`, `color.*`, `core.autocrlf`, `diff.algorithm`, `log.*`) and is read as safe. */
 const GIT_PROGRAM_CONFIG_KEYS: readonly RegExp[] = [
   /^diff\.external$/, /^diff\..+\.(?:command|textconv)$/, /^core\.(?:pager|fsmonitor|hookspath|sshcommand|editor|askpass|gitproxy)$/,
   /^pager\./, /^sequence\.editor$/, /^filter\./, /^merge\..+\.driver$/, /^credential\.(?:.+\.)?helper$/,
   /^gpg\.(?:.+\.)?program$/, /^uploadpack\.packobjectshook$/, /^protocol\.ext\.allow$/, /^interactive\.difffilter$/,
-  /^(?:difftool|mergetool|browser)\..+\.cmd$/, /^trailer\..+\.command$/,
+  /^(?:difftool|mergetool|browser)\..+\.cmd$/, /^trailer\..+\.command$/, /^remote\..+\.(?:uploadpack|receivepack|vcs)$/,
 ]
 
 /** Environment prefixes that make git run a program (an external diff, pager, editor, ssh or askpass command, a proxy) or take config from the environment, so a `git` segment naming one reconciles. */
@@ -570,7 +570,8 @@ const GIT_EXT_TRANSPORT_RE = /ext::/i
 function isProgramConfigKey(assignment: string): boolean {
   const eq = assignment.indexOf('=')
   const key = (eq < 0 ? assignment : assignment.slice(0, eq)).toLowerCase()
-  if (key.startsWith('alias.')) return eq >= 0 && assignment.slice(eq + 1).startsWith('!')
+  if (eq >= 0 && assignment.slice(eq + 1).startsWith('!')) return true
+  if (key.startsWith('alias.')) return false
   return GIT_PROGRAM_CONFIG_KEYS.some((re) => re.test(key))
 }
 
@@ -588,6 +589,20 @@ function gitRunsProgramByConfig(tokens: readonly string[]): boolean {
   return false
 }
 
+/** True when a `git` segment makes git run a program it names, so the program may write any file: a command-valued `-c` or env key (see {@link gitRunsProgramByConfig}), an `ext::` transport, or a command option of its subcommand (`--upload-pack`, `--receive-pack` and `--exec` on any but rebase; `-u` on clone and ls-remote). The reconcile for it covers the repository it runs in and its `-C` target. */
+function gitRunsCommand(segment: string): boolean {
+  const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
+  if (headOf(tokens) !== 'git') return false
+  if (gitRunsProgramByConfig(tokens) || GIT_PROGRAM_ENV_RE.test(segment) || GIT_EXT_TRANSPORT_RE.test(segment)) return true
+  const sub = gitSubcommand(tokens)
+  if (sub === null) return false
+  const args = tokens.slice(tokens.indexOf(sub) + 1)
+  // `rebase --exec` keeps its reflog diff (tests/head_moving_git_enqueue_exact.test.ts): whether its command may reconcile is an open design call, so it is not named here.
+  const commandFlags = sub === 'rebase' ? [] : ['--upload-pack', '--receive-pack', '--exec']
+  if (args.some((t) => optionIs(t, commandFlags, MIN_LONG_ABBREVIATION))) return true
+  return (sub === 'clone' || sub === 'ls-remote') && args.some((t) => /^-[A-Za-z]+$/.test(t) && t.includes('u'))
+}
+
 /** True when the head of `segment` is not a program known only to read, or carries a flag that makes one write. Redirects and substitutions are {@link syntaxMayWrite}'s. */
 function headMayWrite(segment: string): boolean {
   const tokens = psTokens(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
@@ -595,7 +610,7 @@ function headMayWrite(segment: string): boolean {
   if (head === '') return false
   if (WRITE_MARK_RE.test(segment) || WRITE_FLAG_BY_HEAD.get(head)?.test(segment) === true) return true
   if (head === 'git') {
-    if (gitRunsProgramByConfig(tokens) || GIT_PROGRAM_ENV_RE.test(segment) || GIT_EXT_TRANSPORT_RE.test(segment)) return true
+    if (gitRunsCommand(segment)) return true
     const sub = gitSubcommand(tokens)
     if (sub === 'stash') return !gitStashReadsOnly(tokens)
     return sub === null || !READ_ONLY_GIT.has(sub)
@@ -986,6 +1001,7 @@ export function gitRunTarget(segment: string, runDir: string): GitRunTarget {
 
 /** True when a git segment rewrites files the reflog diff cannot list exactly, so the diff must not run for it and the reconcile covers it: a rebase that names a branch (git checks that branch out before it replays anything), or a merge, pull or cherry-pick that stops before committing (HEAD stays put, so the diff's base is an older move). */
 export function reflogDiffMisses(segment: string): boolean {
+  if (gitRunsCommand(segment)) return true
   const tokens = safeShlexSplit(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
   if (tokens === null || headOf(tokens) !== 'git') return false
   const sub = gitSubcommand(tokens)
@@ -1083,7 +1099,7 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScop
       }
     }
     const writesFiles = swept || named.length > 0 || restores || isHeadMovingGitCommand(segment)
-    if (gitMayRewriteWorktree(segment, target.known ? target.worktree : runDir) || (failed && writesFiles)) {
+    if (gitMayRewriteWorktree(segment, target.known ? target.worktree : runDir) || (failed && writesFiles) || gitRunsCommand(segment)) {
       for (const repo of target.repos) reconcileDirs.add(repo)
       if (!target.known) reconcileDirs.add(runDir)
     }
