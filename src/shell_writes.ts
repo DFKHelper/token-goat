@@ -827,9 +827,14 @@ function segmentMayChangeFiles(segment: string): boolean {
   return segmentMayWriteFiles(segment) || scanShellSyntax(segment).redirects.length > 0
 }
 
-/** True when the text after a directory change may change a file, apart from the directory change itself. */
+/** True when the text after a directory change may change a file. A directory-change segment is no write itself, but its redirect or substitution can create one (`cd sub 2> a.txt`), so it is checked for those. */
 function tailMayChangeFiles(tail: string): boolean {
-  return splitShellSegments(tail).some((segment) => !DIR_CHANGE_HEADS.has(headOf(psTokens(segment))) && segmentMayChangeFiles(segment))
+  return splitShellSegments(tail).some((segment) => (DIR_CHANGE_HEADS.has(headOf(psTokens(segment))) ? redirectsMayWrite(segment) : segmentMayChangeFiles(segment)))
+}
+
+/** True when a segment's redirects or substitutions may write a file, named or not: the syntax of a segment whose program is a directory change. */
+function redirectsMayWrite(segment: string): boolean {
+  return scanShellSyntax(segment).redirects.length > 0 || syntaxMayWrite(segment)
 }
 
 /** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. `exitCode` is the command's exit status when the harness reports one, and a non-zero one drops the named files (a failed `sed -i` or `git restore` changed nothing) but keeps the shell-write pass and the sweeps. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
