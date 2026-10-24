@@ -461,8 +461,9 @@ function reconcileAlreadyPending(projectDir: string): boolean {
 }
 
 /** Queue what a shell command wrote: each file its PowerShell write cmdlets and .NET writers name goes to `enqueue` (`written` to reindex, `removed` for a file that is gone), and a segment that may have written files it does not name asks the worker to reconcile `runDir`'s project, once while that request is pending. `handled` holds the segments another extractor already named files for, or that are token-goat's own command, which queues its own writes. */
-export function enqueueShellWrites(cmd: string, runDir: string, handled: ReadonlySet<string>, enqueue: { written: (absPath: string) => void; removed: (absPath: string) => void }): void {
+export function enqueueShellWrites(cmd: string, runDir: string, handled: ReadonlySet<string>, enqueue: { written: (absPath: string) => void; removed: (absPath: string) => void }): string[] {
   const written = new Set<string>()
+  const aimedRepos = new Set<string>()
   const removed = new Set<string>()
   let unnamed = false
   const judged: string[] = []
@@ -472,20 +473,25 @@ export function enqueueShellWrites(cmd: string, runDir: string, handled: Readonl
     judged.push(...expanded.segments)
   }
   for (const segment of judged) {
-    const found = extractPowerShellWriteTargets(segment)
+    // A git segment aimed at another repository names that repository's files, so its words are never read as cmdlets of this one (`git -C ../b rm f` is not a `Remove-Item f`); the repositories it can change come back for the caller to reconcile.
+    const target = gitRunTarget(segment, runDir)
+    const aimed = gitAimedElsewhere(target, runDir)
+    if (aimed && !handled.has(segment) && gitVerbMayWrite(target.argv)) for (const repo of target.repos) aimedRepos.add(repo)
+    const found = aimed ? { written: [], removed: [] } : extractPowerShellWriteTargets(segment)
     for (const f of found.written) written.add(resolveIndexPath(f, runDir))
     for (const f of found.removed) removed.add(resolveIndexPath(f, runDir))
     // A redirect says where the output went, not what the program behind it wrote: a target this extractor can name is queued here, and the segment still goes through the may-write checks below.
     for (const f of extractRedirectTargets(segment)) written.add(resolveIndexPath(f, runDir))
     // A segment that names its files is trusted only when it is the write cmdlet itself: `docker cp a b` holds the token `cp` in an argument and still writes somewhere unnamed.
     const named = namesItsFiles(segment, found)
-    if (syntaxMayWrite(segment) || (!handled.has(segment) && !named && headMayWrite(segment))) unnamed = true
+    if (syntaxMayWrite(segment) || (!handled.has(segment) && !named && !aimed && headMayWrite(segment)) || (aimed && !target.known && !handled.has(segment) && gitVerbMayWrite(target.argv))) unnamed = true
     // The drain prunes only the exact path it is given, so a deleted directory leaves its children indexed until the sweep's deletion pass stats their rows: a recursive remove, or a target with no extension (already gone, so a directory cannot be told from a file), asks for that sweep.
     if (found.removed.length > 0 && (RECURSIVE_FLAG_RE.test(segment) || found.removed.some((f) => path.extname(f) === ''))) unnamed = true
   }
   written.forEach(enqueue.written)
   removed.forEach(enqueue.removed)
   if (unnamed && !reconcileAlreadyPending(runDir)) requestReconcileSafe(runDir)
+  return [...aimedRepos]
 }
 
 /** Programs whose only effect is to read or report; anything not listed may write files. */
@@ -609,13 +615,20 @@ function headMayWrite(segment: string): boolean {
   const head = headOf(tokens)
   if (head === '') return false
   if (WRITE_MARK_RE.test(segment) || WRITE_FLAG_BY_HEAD.get(head)?.test(segment) === true) return true
-  if (head === 'git') {
-    if (gitRunsCommand(segment)) return true
-    const sub = gitSubcommand(tokens)
-    if (sub === 'stash') return !gitStashReadsOnly(tokens)
-    return sub === null || !READ_ONLY_GIT.has(sub)
-  }
+  if (head === 'git') return gitRunsCommand(segment) || gitVerbMayWrite(tokens)
   return !READ_ONLY_HEADS.has(head)
+}
+
+/** True when the git command in `tokens` (from `git` on) is not one that only reads: a subcommand outside {@link READ_ONLY_GIT}, a `stash` form that can write, or none found. */
+function gitVerbMayWrite(tokens: string[]): boolean {
+  const sub = gitSubcommand(tokens)
+  if (sub === 'stash') return !gitStashReadsOnly(tokens)
+  return sub === null || !READ_ONLY_GIT.has(sub)
+}
+
+/** True when a git segment's target is not simply the run directory's own repository: a `-C`, `--git-dir`, `--work-tree` or environment target, or one the hook cannot resolve. Its words are then names relative to that target (`git -C ../b rm f` removes b's `f`), never files of the run directory. */
+function gitAimedElsewhere(target: GitRunTarget, runDir: string): boolean {
+  return target.git && (!target.known || target.repos.length !== 1 || target.repos[0] !== path.resolve(runDir))
 }
 
 /** Matches `git restore`, which rewrites paths without moving HEAD. */
@@ -951,6 +964,10 @@ export interface GitRunTarget {
   worktree: string
   repos: string[]
   known: boolean
+  /** True when the segment runs git, behind any wrapper words (`time`, `sudo`, `env`, ...) and assignments. */
+  git: boolean
+  /** The words from `git` on, wrappers and assignments dropped; empty when the segment is not git. */
+  argv: string[]
 }
 
 /** A git option value the hook cannot resolve on its own. */
@@ -958,19 +975,23 @@ const UNRESOLVED_VALUE_RE = /[$`*?[{~]/
 
 export function gitRunTarget(segment: string, runDir: string): GitRunTarget {
   const base = path.resolve(runDir)
-  const unknown: GitRunTarget = { worktree: base, repos: [base], known: false }
+  const unknown: GitRunTarget = { worktree: base, repos: [base], known: false, git: false, argv: [] }
   const tokens = safeShlexSplit(segment.replace(/\\/g, '/'))
   if (tokens === null) return unknown
-  let i = 0
   let gitDirValue: string | undefined
   let workTreeValue: string | undefined
-  for (; i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!); i++) {
-    const assignment = tokens[i]!
-    if (assignment.startsWith('GIT_DIR=')) gitDirValue = assignment.slice('GIT_DIR='.length)
-    else if (assignment.startsWith('GIT_WORK_TREE=')) workTreeValue = assignment.slice('GIT_WORK_TREE='.length)
+  const notGit: GitRunTarget = { worktree: base, repos: [base], known: true, git: false, argv: [] }
+  const assign = (word: string): void => {
+    if (word.startsWith('GIT_DIR=')) gitDirValue = word.slice('GIT_DIR='.length)
+    else if (word.startsWith('GIT_WORK_TREE=')) workTreeValue = word.slice('GIT_WORK_TREE='.length)
   }
+  let i = 0
+  for (; i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!); i++) assign(tokens[i]!)
+  const isGitWord = (t: string): boolean => path.basename(t).replace(/\.exe$/i, '').toLowerCase() === 'git'
   const program = tokens[i]
-  if (program === undefined || path.basename(program).replace(/\.exe$/i, '').toLowerCase() !== 'git') return { worktree: base, repos: [base], known: true }
+  if (program === undefined || !isGitWord(program)) return notGit
+  const argv = tokens.slice(i)
+  const unknownGit: GitRunTarget = { ...unknown, git: true, argv }
   let dir = base
   for (i++; i < tokens.length && tokens[i]!.startsWith('-'); i++) {
     const t = tokens[i]!
@@ -978,25 +999,25 @@ export function gitRunTarget(segment: string, runDir: string): GitRunTarget {
     const name = t.startsWith('--') && eq > 0 ? t.slice(0, eq) : t
     if (t === '-C') {
       const value = tokens[++i]
-      if (value === undefined || UNRESOLVED_VALUE_RE.test(value)) return unknown
+      if (value === undefined || UNRESOLVED_VALUE_RE.test(value)) return unknownGit
       if (value !== '') dir = path.resolve(dir, value)
     } else if (name === '--git-dir' || name === '--work-tree') {
       const value = eq > 0 && name !== t ? t.slice(eq + 1) : tokens[++i]
-      if (value === undefined) return unknown
+      if (value === undefined) return unknownGit
       if (name === '--git-dir') gitDirValue = value
       else workTreeValue = value
     } else if (GIT_OPTIONS_WITH_VALUE.has(t)) i++
   }
-  if ([gitDirValue, workTreeValue].some((value) => value !== undefined && UNRESOLVED_VALUE_RE.test(value))) return unknown
+  if ([gitDirValue, workTreeValue].some((value) => value !== undefined && UNRESOLVED_VALUE_RE.test(value))) return unknownGit
   const worktree = workTreeValue === undefined ? dir : path.resolve(dir, workTreeValue)
   const repos = [worktree]
   if (gitDirValue === undefined) repos.push(dir)
   else {
     const gitDirPath = path.resolve(dir, gitDirValue)
-    if (path.basename(gitDirPath) !== '.git') return { worktree, repos: [...new Set([...repos, base])], known: false }
+    if (path.basename(gitDirPath) !== '.git') return { worktree, repos: [...new Set([...repos, base])], known: false, git: true, argv }
     repos.push(path.dirname(gitDirPath))
   }
-  return { worktree, repos: [...new Set(repos)], known: true }
+  return { worktree, repos: [...new Set(repos)], known: true, git: true, argv }
 }
 
 /** True when a git segment rewrites files the reflog diff cannot list exactly, so the diff must not run for it and the reconcile covers it: a rebase that names a branch (git checks that branch out before it replays anything), or a merge, pull or cherry-pick that stops before committing (HEAD stays put, so the diff's base is an older move). */
@@ -1107,7 +1128,7 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, scope: WriteScop
   }
   // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.
   if (tailMayChangeFiles(tail)) { reconcileDirs.add(runDir); reconcileDirs.add(scope.startDir) }
-  enqueueShellWrites(head, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })
+  for (const repo of enqueueShellWrites(head, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })) reconcileDirs.add(repo)
   const reconcileRoots = new Set<string>()
   for (const dir of reconcileDirs) reconcileRoots.add(await reconcileRootOf(dir, runDir))
   for (const root of reconcileRoots) requestReconcileOnce(root)

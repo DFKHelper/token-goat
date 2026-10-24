@@ -700,3 +700,55 @@ describe('round 12d: a git verb that runs no program, or runs one through a subc
     expect(requestFile()).toBe('')
   })
 })
+
+// Provenance: HAND-DERIVED. The commands are the verbs, option spellings and wrappers named in the round-12 re-review (git's documented -C, --git-dir, --work-tree, GIT_DIR and GIT_WORK_TREE); the expected repository is the one the option names, read off the fixture layout (a runs the command, b is named).
+describe('round 13a: whatever the git verb or spelling, the repository it is aimed at is reconciled', () => {
+  it.each([
+    ['git -C ../b clean -fd'],
+    ['git -C ../b apply fix.patch'],
+    ['git -C ../b am fix.mbox'],
+    ['git -C ../b submodule update --init'],
+    ['git -C ../b read-tree -u HEAD'],
+    ['git -C ../b worktree add ../wt'],
+    ['git -C ../b sparse-checkout set sub'],
+    ['git --git-dir=../b/.git --work-tree=../b clean -fd'],
+    ['GIT_DIR=../b/.git GIT_WORK_TREE=../b git clean -fd'],
+    ['git -C ../b rm base.txt'],
+    ['git -C ../b mv base.txt moved.txt'],
+    ['git -C ../b frobnicate'],
+  ])('%s reconciles repo b and not the cwd repo', async (command) => {
+    const { a, b } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+  })
+
+  it.each([['git -C ../b rm base.txt'], ['git -C ../b mv base.txt moved.txt']])('%s queues no path of the cwd repo', async (command) => {
+    const { a, b } = siblingRepos()
+    git(b, ...command.split(' ').slice(3))
+
+    await postBash(command, a)
+
+    expect(dirty()).not.toContain(folded('base.txt', a))
+    expect(dirty().filter((p) => p.startsWith(foldPath(a)))).toEqual([])
+    expect(requestedRoots()).toEqual([spelled(b)])
+  })
+
+  it.each([['git -C ../b status'], ['git -C ../b log'], ['git --git-dir=../b/.git --work-tree=../b status']])('%s writes nothing and asks for no reconcile', async (command) => {
+    const { a } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(dirty()).toEqual([])
+    expect(requestFile()).toBe('')
+  })
+
+  it('git checkout other with no target still reconciles the cwd repo only', async () => {
+    const { a } = siblingRepos()
+
+    await postBash('git checkout other', a)
+
+    expect(requestedRoots()).toEqual([spelled(a)])
+  })
+})
