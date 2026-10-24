@@ -35,11 +35,7 @@ function findLefthookBin(startDir) {
   return null
 }
 
-/**
- * True when `dir` is a linked worktree (`git worktree add`) rather than the main checkout. A linked
- * worktree shares the main checkout's hooks directory, so `lefthook install` there would point the
- * shared hooks at this worktree's path. Any failure to ask git (no git, not a repo) answers false.
- */
+// True when `dir` is a linked worktree, whose hooks directory is shared with the main checkout; any failure to ask git answers false.
 function isLinkedWorktree(dir) {
   const r = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], {
     cwd: dir,
@@ -60,8 +56,8 @@ if (bin === null) {
 }
 
 if (isLinkedWorktree(projectRoot)) {
-  // The main checkout already wired the shared hooks; installing again from a linked worktree would
-  // repoint them at this worktree's path.
+  // Installing from a linked worktree would repoint the shared hooks at this worktree's path.
+  console.error('install-git-hooks: skipped lefthook install in a linked worktree (git hooks are shared with the main checkout)')
   process.exit(0)
 }
 
