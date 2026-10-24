@@ -267,7 +267,7 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   // The script holds the command exactly as typed, where rawCmd has its surrounding whitespace trimmed.
   const typedCmd = event.toolInput['command'] as string
   // Claude Code's Bash tool on Windows passes the command to Git Bash as a `-c` argument, and the argv quoting plus the MSYS2 runtime's decoding halve every run of two or more backslashes not directly before a double quote, and cut the command off near 8,186 characters, so the command that runs is not the one written and nothing reports the difference (anthropics/claude-code#85856). A command Claude Code would run with no prompt is run from a script file instead, rewritten through the permission check like any shell rewrite; any other is refused when a backslash run damages it, and left as it was when only its length is over the bound, since the cut-off sits well above that bound. This comes after the walk refusal so that judges the command as written, and returns before the compress wrapper so a repaired command is not wrapped twice. `_tg_harness` is 'claude' for every harness relay.ts does not map, so detectHarness() is what pins this to Claude Code; the hook server answers under the caller's own environment, so it sees the same variables here.
-  if (cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && msysDamagesCommand(typedCmd) && detectHarness() === 'claudecode') {
+  if (!isPs(event) && cfg.hints.deny_bash_double_backslash && process.platform === 'win32' && event.raw['_tg_harness'] === 'claude' && msysDamagesCommand(typedCmd) && detectHarness() === 'claudecode') {
     // The shell-wrap kind: the sourcing command is judged against the rules exactly as the compress wrapper is, with the model's command as the original, and only an approval ships.
     const repaired = repairByScriptFile(typedCmd, (sourced) => shellRewrite(event, 'shell-wrap', rawCmd, sourced))
     if (typeof repaired !== 'string') return repaired
@@ -279,8 +279,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
       ))
     }
   }
-  // Check for unbalanced shell quoting or unterminated heredocs
-  if (cfg.hints.warn_unbalanced_shell_quoting) {
+  // Check for unbalanced shell quoting or unterminated heredocs; the scanner reads POSIX quoting, which PowerShell's here-strings and backtick escapes break, so a PowerShell-tool call skips it.
+  if (!isPs(event) && cfg.hints.warn_unbalanced_shell_quoting) {
     const quoteError = detectUnbalancedShellSyntax(cmd)
     if (quoteError !== null) {
       recordStat('session_hint', 0, 0)
