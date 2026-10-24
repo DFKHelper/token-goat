@@ -174,6 +174,7 @@ describe('script checks', () => {
     'cd repo && python scripts/validate_x.py',
     'python scripts/check_x.py scripts/check_x.py',
     'python scripts/check_x.py scripts/ tests/test_a.py::test_b',
+    'python scripts/validate_x.py docs.md/check.py',
   ])('counts %j', (command) => {
     expect(isVerificationCommand(command)).toBe(true)
     expect(mayBeVerificationCommand(command)).toBe(true)
