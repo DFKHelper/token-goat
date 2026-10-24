@@ -1,5 +1,6 @@
 /** Shell command parsing, git mutation detection, pipeline filtering, and syntax validation. Extracted from hooks_bash.ts to isolate pure shell-command inspection and git working-tree mutation tracking from hook I/O delivery and caching. */
 
+import * as fs from 'node:fs'
 import { homedir } from 'node:os'
 import * as path from 'node:path'
 
@@ -141,9 +142,28 @@ export function leadingCdTrusted(rawCmd: string): boolean {
   return true
 }
 
-/** The write scope of `rawCmd` for {@link enqueueNonHeadMovingRewrites}: `runDir` where its leading `cd` leaves the shell, `startDir` where the command began. */
+/** The write scope of `rawCmd` for {@link enqueueNonHeadMovingRewrites}: `runDir` where its leading `cd` leaves the shell, `startDir` where the command began. A leading `cd` to a directory that does not exist fails and leaves the shell in `startDir`, so the scope is untrusted. */
 export function writeScopeFor(rawCmd: string, runDir: string, startDir: string): WriteScope {
-  return { runDir, startDir, cdTrusted: leadingCdTrusted(rawCmd) }
+  return { runDir, startDir, cdTrusted: leadingCdTrusted(rawCmd) && leadingCdTargetsExist(rawCmd, startDir) }
+}
+
+/** True when every directory the leading `cd` prefix of `rawCmd` names is an existing directory, each resolved against the one before it from `startCwd`. A missing one fails, so the shell stays where it was and a later write lands there, not where the text resolves it. */
+function leadingCdTargetsExist(rawCmd: string, startCwd: string): boolean {
+  let dir = startCwd
+  for (const target of extractCdPrefixDirs(rawCmd)) {
+    dir = resolveIndexPath(target, dir)
+    if (!isExistingDirectory(dir)) return false
+  }
+  return true
+}
+
+/** True when `p` names a directory on disk; a path that cannot be stat'ed is not one. */
+function isExistingDirectory(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 /** The session key a cached Bash result is recorded and looked up under: the command without its output pipeline, scoped to the directory it ran in, so one command run in two directories is two entries. Both hooks build it here, which keeps the post hook's write on exactly the key the pre hook reads. */

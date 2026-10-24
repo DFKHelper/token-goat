@@ -584,6 +584,30 @@ describe('a directory change other than a leading cd asks for a reconcile, since
   })
 })
 
+describe('a leading cd to a directory that does not exist asks for a reconcile, since the write lands where the shell stayed', () => {
+  it.each([
+    ['cd nonexist; echo hi > c.ts'],
+    ['cd nonexist\necho hi > c.ts'],
+    ['cd nonexist; cd sub; echo hi > c.ts'],
+    ['cd nonexist 2>/dev/null; echo hi > c.ts'],
+    ['cd nonexist || echo hi > c.ts'],
+  ])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'copilot'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+    expect(getDirtyPaths().map(foldPath)).not.toContain(foldPath(resolveIndexPath('c.ts', dir)))
+  })
+
+  it('keeps a leading cd to an existing directory separated by a semicolon', async () => {
+    const dir = repo()
+    mkdirSync(join(dir, 'sub'))
+    writeFileSync(join(dir, 'sub', 'c.ts'), 'x')
+    await postBashHandler(shellCall('cd sub; echo hi > c.ts', dir, 'copilot'))
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('c.ts', join(dir, 'sub'))))
+    expect(reconcileRequests()).toEqual([])
+  })
+})
+
 describe('a doubled single quote and a GNU long option are read as the shell reads them', () => {
   it("reads a doubled single quote as one quote inside the name", () => {
     expect(extractPowerShellWriteTargets("Set-Content 'it''s.ts' -Value x").written).toEqual(["it's.ts"])
