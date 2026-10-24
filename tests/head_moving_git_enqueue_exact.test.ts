@@ -655,3 +655,45 @@ describe('round 12d: ORIG_HEAD is taken for a git verb behind a prefix, as for a
     expect(diffBases()).toEqual(['ORIG_HEAD'])
   })
 })
+
+describe('round 12d: a git verb that runs no program, or runs one through a subcommand, asks for its reconcile', () => {
+  it.each([['git submodule update'], ['git submodule foreach "touch sub-marker"'], ['git archive --remote=../b HEAD']])('%s reconciles the repo it ran in', async (command) => {
+    const { a } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(requestedRoots()).toEqual([spelled(a)])
+  })
+
+  it('git fetch --upload-pack really runs its program in the repo it ran in, and that repo is reconciled', async () => {
+    const { a } = siblingRepos()
+    spawnSync('git', ['fetch', '--upload-pack=touch upload-marker', '../b'], { cwd: a, encoding: 'utf8' })
+
+    await postBash('git fetch --upload-pack=touch upload-marker ../b', a)
+
+    expect(fs.existsSync(join(a, 'upload-marker')), 'the upload-pack program ran in the repo').toBe(true)
+    expect(requestedRoots()).toEqual([spelled(a)])
+  })
+
+  it('a PowerShell run of git -C ..\\b checkout other moves repo b, and repo b is reconciled', async () => {
+    const { a, b } = siblingRepos()
+    const script = join(a, 'run-checkout.ps1')
+    fs.writeFileSync(script, 'git -C ..\\b checkout -q other\n')
+    const run = spawnSync('pwsh', ['-NoProfile', '-File', script], { cwd: a, encoding: 'utf8' })
+    expect(run.status, run.stderr).toBe(0)
+    expect(git(b, 'symbolic-ref', '--short', 'HEAD')).toBe('other')
+
+    await postBash('git -C ..\\b checkout other', a)
+
+    expect(requestedRoots()).toEqual([spelled(b)])
+  })
+
+  it.each([['git log'], ['git -c color.ui=never status']])('%s writes nothing and asks for no reconcile', async (command) => {
+    const { a } = siblingRepos()
+
+    await postBash(command, a)
+
+    expect(dirty()).toEqual([])
+    expect(requestFile()).toBe('')
+  })
+})
