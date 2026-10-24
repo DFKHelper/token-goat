@@ -474,3 +474,49 @@ describe('a git restore is staged-only only without a worktree flag', () => {
     expect(reconcileRequests()).toEqual([])
   })
 })
+
+describe('a PowerShell comma list is not one file name, so it asks for a reconcile', () => {
+  it.each([['Set-Content a.ts,b.ts -Value x'], ['New-Item a.ts,b.ts'], ['Out-File -FilePath a.ts,b.ts'], ['Copy-Item a.ts,b.ts sub'], ['Remove-Item a.ts,b.ts'], ['Remove-Item -Path a.ts, b.ts']])(
+    '%s asks the worker to reconcile',
+    async (command) => {
+      const dir = repo()
+      await postBashHandler(shellCall(command, dir, 'copilot'))
+      expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+    },
+  )
+
+  it('keeps a comma in a -Value out of the path, so the file is named and nothing is requested', async () => {
+    const dir = repo()
+    writeFileSync(join(dir, 'a.ts'), 'x')
+    await postBashHandler(shellCall('Set-Content -Path a.ts -Value 1,2,3', dir, 'copilot'))
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('a.ts', dir)))
+    expect(reconcileRequests()).toEqual([])
+  })
+
+  it('keeps a quoted comma inside one file name', async () => {
+    const dir = repo()
+    writeFileSync(join(dir, 'a,b.ts'), 'x')
+    await postBashHandler(shellCall("Set-Content -Path 'a,b.ts' -Value x", dir, 'copilot'))
+    expect(getDirtyPaths().map(foldPath)).toContain(foldPath(resolveIndexPath('a,b.ts', dir)))
+    expect(reconcileRequests()).toEqual([])
+  })
+})
+
+describe('a home-relative write target is not a concrete path, so it asks for a reconcile', () => {
+  it.each([['echo hi > ~/p/a.ts'], ['echo hi >> ~/p/a.ts'], ['Set-Content ~/p/a.ts -Value hi']])('%s asks the worker to reconcile', async (command) => {
+    const dir = repo()
+    await postBashHandler(shellCall(command, dir, 'copilot'))
+    expect(reconcileRequests(), `reconcile requests after ${command}`).toContain(foldPath(normalizePath(dir)))
+    expect(getDirtyPaths().map(foldPath)).not.toContain(foldPath(resolveIndexPath('~/p/a.ts', dir)))
+  })
+})
+
+describe('a doubled single quote and a GNU long option are read as the shell reads them', () => {
+  it("reads a doubled single quote as one quote inside the name", () => {
+    expect(extractPowerShellWriteTargets("Set-Content 'it''s.ts' -Value x").written).toEqual(["it's.ts"])
+  })
+
+  it('reads rm --recursive sub as a remove of sub alone', () => {
+    expect(extractPowerShellWriteTargets('rm --recursive sub')).toEqual({ written: [], removed: ['sub'] })
+  })
+})

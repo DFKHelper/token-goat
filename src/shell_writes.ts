@@ -38,34 +38,56 @@ const NAME_PARAMS = ['name']
 /** Parameters that take a value this extractor must step over rather than read as a path. */
 const OTHER_VALUE_PARAMS = ['value', 'encoding', 'itemtype', 'type', 'width', 'inputobject', 'filter', 'include', 'exclude', 'stream', 'credential', 'relativepath']
 
-/** Split `text` on whitespace the way PowerShell reads a command line: single and double quotes group, and a backslash is an ordinary character, so a Windows path keeps its separators. */
-function psTokens(text: string): string[] {
-  const out: string[] = []
+/** One command-line word: its text with the quotes removed, whether any quote held it, and whether a comma outside quotes makes it a list PowerShell reads as several values. */
+interface PsWord {
+  text: string
+  quoted: boolean
+  unquotedComma: boolean
+}
+
+/** Split `text` on whitespace the way PowerShell reads a command line: single and double quotes group, a doubled single quote inside single quotes is one quote, and a backslash is an ordinary character, so a Windows path keeps its separators. */
+function psWords(text: string): PsWord[] {
+  const out: PsWord[] = []
   let cur = ''
   let quote: string | null = null
   let started = false
-  for (const ch of text) {
+  let quoted = false
+  let comma = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!
     if (quote !== null) {
-      if (ch === quote) quote = null
-      else cur += ch
+      if (ch !== quote) cur += ch
+      else if (quote === "'" && text[i + 1] === "'") {
+        cur += "'"
+        i++
+      } else quote = null
       continue
     }
     if (ch === '"' || ch === "'") {
       quote = ch
       started = true
+      quoted = true
       continue
     }
     if (/\s/.test(ch)) {
-      if (started) out.push(cur)
+      if (started) out.push({ text: cur, quoted, unquotedComma: comma })
       cur = ''
       started = false
+      quoted = false
+      comma = false
       continue
     }
+    if (ch === ',') comma = true
     cur += ch
     started = true
   }
-  if (started) out.push(cur)
+  if (started) out.push({ text: cur, quoted, unquotedComma: comma })
   return out
+}
+
+/** The text of each word {@link psWords} reads from `text`. */
+function psTokens(text: string): string[] {
+  return psWords(text).map((w) => w.text)
 }
 
 /** True when `name` (a parameter written without its dash, any case) is a prefix of one of `full`, which is how PowerShell resolves an abbreviated parameter. */
@@ -85,64 +107,71 @@ function isConcretePath(token: string): boolean {
 }
 
 interface CmdletArgs {
-  path: string | null
-  destination: string | null
-  newName: string | null
-  name: string | null
-  positional: string[]
+  path: PsWord | null
+  destination: PsWord | null
+  newName: PsWord | null
+  name: PsWord | null
+  positional: PsWord[]
   directory: boolean
 }
 
-/** Read one cmdlet's arguments (the tokens after its name): the named path parameters, and the positional values in order. */
-function readCmdletArgs(args: readonly string[]): CmdletArgs {
+/** Read one cmdlet's arguments (the words after its name): the named path parameters, and the positional values in order. A long option (`--recursive`) is an option, never a path. */
+function readCmdletArgs(args: readonly PsWord[]): CmdletArgs {
   const result: CmdletArgs = { path: null, destination: null, newName: null, name: null, positional: [], directory: false }
   for (let i = 0; i < args.length; i++) {
-    const token = args[i]!
-    if (!/^-[A-Za-z]/.test(token)) {
-      result.positional.push(token)
+    const word = args[i]!
+    const token = word.text
+    if (!/^--?[A-Za-z]/.test(token)) {
+      result.positional.push(word)
       continue
     }
     const colon = token.indexOf(':')
     const param = (colon > 0 ? token.slice(1, colon) : token.slice(1)).toLowerCase()
-    const inline = colon > 0 ? token.slice(colon + 1) : null
-    const next = (): string | null => inline ?? (i + 1 < args.length ? args[++i]! : null)
+    const inline = colon > 0 ? { ...word, text: token.slice(colon + 1) } : null
+    const next = (): PsWord | null => inline ?? (i + 1 < args.length ? args[++i]! : null)
     if (paramIs(param, PATH_PARAMS)) result.path = next()
     else if (paramIs(param, DEST_PARAMS)) result.destination = next()
     else if (paramIs(param, NEWNAME_PARAMS)) result.newName = next()
     else if (paramIs(param, NAME_PARAMS)) result.name = next()
     else if (paramIs(param, OTHER_VALUE_PARAMS)) {
       const value = next()
-      if (param.startsWith('it') && value !== null && /^dir/i.test(value)) result.directory = true
+      if (param.startsWith('it') && value !== null && /^dir/i.test(value.text)) result.directory = true
     }
   }
   return result
 }
 
-/** The files one PowerShell cmdlet call writes, from its tokens (the cmdlet name first); nothing when a path is not statically known. */
-function cmdletTargets(kind: WriteKind, args: readonly string[], into: ShellWriteTargets): void {
+/** The text of a cmdlet argument that names one file: a concrete path, and not a comma list PowerShell reads as several names. A null here leaves the call unnamed, so the caller asks for a reconcile. */
+function oneFile(word: PsWord | null): string | null {
+  return word !== null && !word.unquotedComma && isConcretePath(word.text) ? word.text : null
+}
+
+/** The files one PowerShell cmdlet call writes, from its words (the cmdlet name first); nothing when a path is not statically known. */
+function cmdletTargets(kind: WriteKind, args: readonly PsWord[], into: ShellWriteTargets): void {
   const a = readCmdletArgs(args)
-  const first = a.path ?? a.positional[0] ?? null
+  const first = oneFile(a.path ?? a.positional[0] ?? null)
   const second = a.positional[a.path === null ? 1 : 0] ?? null
   if (kind === 'set') {
-    if (a.directory || first === null || !isStaticPath(first)) return
+    if (a.directory || first === null) return
     if (a.name !== null) {
-      if (isStaticPath(a.name)) into.written.push(path.join(first, a.name))
+      const name = oneFile(a.name)
+      if (name !== null) into.written.push(path.join(first, name))
     } else into.written.push(first)
     return
   }
   if (kind === 'remove') {
-    if (first !== null && isStaticPath(first)) into.removed.push(first)
+    if (first !== null) into.removed.push(first)
     return
   }
   if (kind === 'rename') {
-    const newName = a.newName ?? second
-    if (first === null || newName === null || !isStaticPath(first) || !isStaticPath(newName)) return
+    const newName = oneFile(a.newName ?? second)
+    if (first === null || newName === null) return
     into.removed.push(first)
     into.written.push(path.join(path.dirname(first), newName))
     return
   }
-  const dest = a.destination ?? second
-  if (first === null || dest === null || !isStaticPath(first) || !isStaticPath(dest)) return
+  const dest = oneFile(a.destination ?? second)
+  if (first === null || dest === null) return
   // A destination that is a directory receives the source's own name, which only the disk can tell; the caller's isFile filter drops a path that is not a file, and the join below covers the common typed spelling.
   into.written.push(dest, path.join(dest, path.basename(first)))
   if (kind === 'move') into.removed.push(first)
@@ -169,14 +198,15 @@ const SINGLE_QUOTE = "'"
 
 /** The body of a `powershell`/`pwsh -Command` segment, or null when the segment is not one. */
 function wrapperBody(segment: string): string | null {
-  const tokens = psTokens(segment)
+  const words = psWords(segment)
+  const tokens = words.map((w) => w.text)
   const name = shellNameOf(tokens)
   if (name !== 'powershell' && name !== 'pwsh') return null
   const flag = tokens.findIndex((t) => /^-c(?:ommand)?$/i.test(t))
   if (flag < 0) return null
-  const rest = tokens.slice(flag + 1)
+  const rest = words.slice(flag + 1)
   // One word is the whole script in quotes. Several are the script written bare, where psTokens dropped the quotes that grouped a word holding spaces, and joining without them split a path like `my file.txt` into two words.
-  return rest.length === 1 ? rest[0]! : rest.map((t) => (t === '' || /\s/.test(t) ? SINGLE_QUOTE + t.split(SINGLE_QUOTE).join(SINGLE_QUOTE + SINGLE_QUOTE) + SINGLE_QUOTE : t)).join(' ')
+  return rest.length === 1 ? rest[0]!.text : rest.map((w) => (w.text === '' || w.quoted || /\s/.test(w.text) ? SINGLE_QUOTE + w.text.split(SINGLE_QUOTE).join(SINGLE_QUOTE + SINGLE_QUOTE) + SINGLE_QUOTE : w.text)).join(' ')
 }
 
 /** The bodies of the outermost `{ ... }` script blocks in `segment` that sit outside quotes, for a segment with a cmdlet in it (a brace in `rg '{x}'` or `awk '{print}'` is not a PowerShell block). */
@@ -234,10 +264,10 @@ function judgedSegments(segment: string, depth = 0): { segments: string[]; opaqu
 export function extractPowerShellWriteTargets(segment: string): ShellWriteTargets {
   const into: ShellWriteTargets = { written: [], removed: [] }
   const scan = (text: string): void => {
-    const tokens = psTokens(text)
-    tokens.forEach((token, i) => {
-      const kind = CMDLET_KINDS.get(token.toLowerCase())
-      if (kind !== undefined) cmdletTargets(kind, tokens.slice(i + 1), into)
+    const words = psWords(text)
+    words.forEach((word, i) => {
+      const kind = CMDLET_KINDS.get(word.text.toLowerCase())
+      if (kind !== undefined) cmdletTargets(kind, words.slice(i + 1), into)
     })
     for (const m of text.matchAll(DOTNET_WRITE_RE)) into.written.push(m[1] ?? m[2]!)
     for (const m of text.matchAll(DOTNET_DELETE_RE)) into.removed.push(m[1] ?? m[2]!)
@@ -414,7 +444,7 @@ export function scanShellSyntax(text: string): ShellSyntax {
 
 /** Files one segment redirects output to, wherever the redirect sits (`a>b`, `&> f`, `*> f`, `>>`), when the target is a path this extractor can trust to name one file. `2>&1`-style fd duplications and the null devices name no file, and a target the shell must expand is left to {@link syntaxMayWrite}. */
 function extractRedirectTargets(segment: string): string[] {
-  return scanShellSyntax(segment).redirects.filter(isStaticPath)
+  return scanShellSyntax(segment).redirects.filter(isConcretePath)
 }
 
 /** A recursive switch on a remove: `-r`, `-R`, `-rf`, `-fr`, `--recursive`, `-Recurse` and its abbreviations (not `-Force`, which merely contains an r). */
@@ -504,7 +534,7 @@ function namesItsFiles(segment: string, found: ShellWriteTargets): boolean {
 function syntaxMayWrite(segment: string, depth = 0, insideSubstitution = false): boolean {
   const syntax = scanShellSyntax(segment)
   if (syntax.unparseable) return true
-  if (syntax.redirects.some((target) => insideSubstitution || !isStaticPath(target))) return true
+  if (syntax.redirects.some((target) => insideSubstitution || !isConcretePath(target))) return true
   if (syntax.substitutions.length > 0 && depth >= MAX_WRAPPER_DEPTH) return true
   return syntax.substitutions.some((inner) => splitShellSegments(inner).some((part) => headMayWrite(part) || syntaxMayWrite(part, depth + 1, true)))
 }
