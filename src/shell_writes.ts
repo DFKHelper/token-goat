@@ -821,9 +821,9 @@ function extractGitRestorePathspecs(cmd: string): string[] {
   return specs
 }
 
-/** A git read that ran past the hook's 5 s budget names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without that budget, so hand it the project and record that. Git that never started (missing, or a working directory that is gone) gets no request, since the worker needs git to sweep too, and a nonzero exit is git saying this is not a repository, which has nothing to reconcile. */
+/** A git read that ran past the hook's 5 s budget names no files, which would leave the index on the pre-rewrite content with nothing in any log; the worker can sweep the project without that budget, so hand it the project and record that. A git that never started (a spawn error: a missing git, or a working directory that is gone) is unfinished too and gets the request, since a missing git is an unknown answer and the worker, which resolves git on its own, may still sweep; a nonzero exit is git saying this is not a repository, which has nothing to reconcile. */
 function reconcileIfGitTimedOut(result: GitResult, gitDir: string, what: string, gitCommand: string): void {
-  if (result.timedOut !== true) return
+  if (!result.unfinished) return
   const recorded = requestReconcileSafe(gitDir)
   appendWorkerErrorLog(dataDir(), `${new Date().toISOString()} post-bash ${what} in ${gitDir}: ${gitCommand} did not answer in time (${result.stderr.trim().slice(0, 200)}); ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
 }
@@ -854,11 +854,6 @@ async function workingTreeStatusPaths(gitDir: string): Promise<string[]> {
   const status = await hookGitRead(gitDir, ['status', '--porcelain', '-z', '--untracked-files=all'])
   reconcileIfGitTimedOut(status, gitDir, 'status sweep', 'git status')
   const stamp = `${new Date().toISOString()} post-bash status sweep in ${gitDir}`
-  if (status.exitCode === -1 && status.timedOut !== true && /ENOBUFS/.test(status.stderr)) {
-    // Git ran but listed more than runGitAsync's output buffer holds, so this sweep names no file; the worker's reconcile, which reads the index rather than this listing, can still find the changed ones.
-    const recorded = requestReconcileSafe(gitDir)
-    appendWorkerErrorLog(dataDir(), `${stamp}: git status listed more than the output buffer holds; ${recorded ? 'asked the worker to reconcile the project' : 'could not record a reconcile request, so the index may stay stale until the next index run'}\n`)
-  }
   if (status.exitCode !== 0) return []
   const recorded = requestReconcileSafe(gitDir)
   const repoRoot = await gitRepoRootOrNull(gitDir)
