@@ -20,9 +20,22 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-/** Write a fake lefthook shim into node_modules/.bin that records its argv to a marker file. On Windows npm creates a `.cmd` shim, elsewhere an extensionless shell script. */
-function writeFakeLefthook(markerPath: string): void {
-  const binDir = path.join(root, 'node_modules', '.bin')
+/** The environment minus git's repo-pointing variables, so a spawned git finds the repo in its cwd. */
+const CLEAN_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith('GIT_')))
+
+/** Run git in `cwd` with the fixture-safe config: a fixed identity, no signing, no background gc or maintenance. */
+function gitIn(cwd: string, args: string[]): void {
+  const r = spawnSync(
+    'git',
+    ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', ...args],
+    { cwd, encoding: 'utf8', env: CLEAN_ENV },
+  )
+  if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`)
+}
+
+/** Write a fake lefthook shim into <projectDir>/node_modules/.bin that records its argv to a marker file. On Windows npm creates a `.cmd` shim, elsewhere an extensionless shell script. */
+function writeFakeLefthook(projectDir: string, markerPath: string): void {
+  const binDir = path.join(projectDir, 'node_modules', '.bin')
   fs.mkdirSync(binDir, { recursive: true })
   if (process.platform === 'win32') {
     fs.writeFileSync(path.join(binDir, 'lefthook.cmd'), `@echo %* > "${markerPath}"\r\n`)
@@ -33,10 +46,11 @@ function writeFakeLefthook(markerPath: string): void {
   }
 }
 
-function runPrepare(): { status: number | null; stderr: string } {
-  const r = spawnSync(process.execPath, [path.join(root, 'scripts', 'install-git-hooks.mjs')], {
-    cwd: root,
+function runPrepare(projectDir: string = root): { status: number | null; stderr: string } {
+  const r = spawnSync(process.execPath, [path.join(projectDir, 'scripts', 'install-git-hooks.mjs')], {
+    cwd: projectDir,
     encoding: 'utf8',
+    env: CLEAN_ENV,
   })
   return { status: r.status, stderr: r.stderr }
 }
@@ -44,7 +58,7 @@ function runPrepare(): { status: number | null; stderr: string } {
 describe('prepare / install-git-hooks.mjs', () => {
   it('runs `lefthook install` when lefthook is present (a dev checkout)', () => {
     const marker = path.join(root, 'invoked.txt')
-    writeFakeLefthook(marker)
+    writeFakeLefthook(root, marker)
 
     const { status } = runPrepare()
 
@@ -75,5 +89,35 @@ describe('prepare / install-git-hooks.mjs', () => {
     }
 
     expect(runPrepare().status).toBe(3)
+  })
+
+  it('skips lefthook install inside a linked worktree, and still invokes it in the main checkout', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-prepare-wt-'))
+    try {
+      const main = path.join(base, 'main')
+      const linked = path.join(base, 'linked')
+      fs.mkdirSync(main)
+      gitIn(main, ['init', '-q'])
+      gitIn(main, ['commit', '-q', '--allow-empty', '-m', 'init'])
+      gitIn(main, ['worktree', 'add', '-q', '--detach', linked])
+      for (const dir of [main, linked]) {
+        fs.mkdirSync(path.join(dir, 'scripts'), { recursive: true })
+        fs.copyFileSync(SCRIPT_SRC, path.join(dir, 'scripts', 'install-git-hooks.mjs'))
+      }
+      const markerMain = path.join(base, 'invoked-main.txt')
+      const markerLinked = path.join(base, 'invoked-linked.txt')
+      writeFakeLefthook(main, markerMain)
+      writeFakeLefthook(linked, markerLinked)
+
+      // Control: the main checkout still runs lefthook install, so the skip below is not a detector that always skips.
+      expect(runPrepare(main).status).toBe(0)
+      expect(fs.existsSync(markerMain)).toBe(true)
+
+      // The linked worktree shares the main checkout's hooks, so installing from it must not run.
+      expect(runPrepare(linked).status).toBe(0)
+      expect(fs.existsSync(markerLinked)).toBe(false)
+    } finally {
+      fs.rmSync(base, { recursive: true, force: true, maxRetries: 3 })
+    }
   })
 })
