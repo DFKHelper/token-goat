@@ -874,3 +874,83 @@ describe('round 13b: an environment assignment before a command leaves the comma
     expect(requestFile()).toBe('')
   })
 })
+
+/** Sibling repositories where `a` has just checked out `other`, so a reflog diff taken in `a` would name `o.txt`: a hook that reads the wrong repository's reflog queues `a/o.txt` for a command that ran somewhere else. */
+function siblingReposWithMovedHead(): { a: string; b: string } {
+  const { a, b } = siblingRepos()
+  const original = git(a, 'symbolic-ref', '--short', 'HEAD')
+  git(a, 'checkout', '-q', 'other')
+  commitFile(a, 'o.txt', 'o\n')
+  git(a, 'checkout', '-q', original)
+  git(a, 'checkout', '-q', 'other')
+  return { a, b }
+}
+
+// Provenance: HAND-DERIVED. The cd targets are the forms named in the round-13c brief; a shell resolves each at run time (`cd -` the previous directory, `~` the home, `$X` a variable, `$(pwd)/../b` a substitution), so the text cannot name the repository the git write lands in.
+describe('round 13c: a cd whose target the hook cannot resolve reconciles the cwd repo and queues no file under it', () => {
+  it.each([
+    ['cd -; git checkout other', 1],
+    ['cd ~/b; git checkout other', 1],
+    ['cd $X; git checkout other', 1],
+    ['cd "${X}"; git checkout other', 1],
+    ['cd "$(pwd)/../b"; git checkout other', 1],
+    ["bash -c 'cd $X && git checkout other'", 0],
+    ['echo hi; cd $X; git checkout other', 0],
+    ['echo hi; cd -; git checkout other', 0],
+    ['echo hi; cd ~/b; git checkout other', 0],
+    ['echo hi; cd "$(pwd)/../b"; git checkout other', 0],
+  ])('%s', async (command, vanishedRoots) => {
+    const { a } = siblingReposWithMovedHead()
+
+    await postBash(command, a)
+
+    const roots = requestedRoots()
+    expect(roots.filter((root) => root === spelled(a)), 'the unresolved cd leaves the cwd repo reconciled').toEqual([spelled(a)])
+    // The hook runs git where its own reading of the cd lands, a directory that does not exist; a git that cannot start there is unfinished and still asks for a reconcile (head_moving_git_reconcile_fallback), which the worker drops for a gone directory.
+    const others = roots.filter((root) => root !== spelled(a))
+    expect(others.length, 'one reconcile request for the directory the hook misread the cd as').toBe(vanishedRoots)
+    expect(others.filter((root) => fs.existsSync(root)), 'that directory is gone, so it is no repository the command touched').toEqual([])
+    expect(dirty(), 'no file is queued under a repository the command may not have touched').toEqual([])
+  })
+
+  it("bash -c 'cd ../b && git checkout other' reconciles both repos and queues no file", async () => {
+    const { a, b } = siblingReposWithMovedHead()
+
+    await postBash("bash -c 'cd ../b && git checkout other'", a)
+
+    expect(requestedRoots()).toEqual([spelled(a), spelled(b)].sort())
+    expect(dirty()).toEqual([])
+  })
+})
+
+// Provenance: HAND-DERIVED. A `pwsh -Command` string is a script of its own: the cd inside it moves the git call after it, so the repository it names is the one the cd reached, read off the fixture layout (a runs the command, b is named).
+describe('round 13c: a PowerShell location cmdlet before a git write moves the repository it reconciles', () => {
+  it.each([
+    ['Push-Location ../b; git checkout other'],
+    ['pushd ../b; git checkout other'],
+    ['Set-Location -Path ../b; git checkout other'],
+    ['echo hi; Push-Location ../b; git checkout other'],
+    ['pwsh -Command "cd ../b; git checkout other"'],
+    ['pwsh -Command "Set-Location -Path ../b; git checkout other"'],
+  ])('%s reconciles repo b as well as the cwd repo', async (command) => {
+    const { a, b } = siblingReposWithMovedHead()
+
+    await postBash(command, a)
+
+    expect(requestedRoots()).toEqual([spelled(a), spelled(b)].sort())
+    expect(dirty()).toEqual([])
+  })
+
+  // A backslash path is a Windows spelling; elsewhere PowerShell passes it to cd literally, so the script uses the platform's separator, and the row is skipped where no PowerShell runs.
+  it.skipIf(POWERSHELL === null)('a real pwsh -Command that cds into b and checks out other moves repo b, and repo b is reconciled', async () => {
+    const { a, b } = siblingReposWithMovedHead()
+    const target = process.platform === 'win32' ? '..\\b' : '../b'
+    const run = spawnSync(POWERSHELL!, ['-NoProfile', '-Command', `cd ${target}; git checkout -q other`], { cwd: a, encoding: 'utf8' })
+    expect(run.status, run.stderr).toBe(0)
+    expect(git(b, 'symbolic-ref', '--short', 'HEAD')).toBe('other')
+
+    await postBash(`pwsh -Command "cd ${target}; git checkout other"`, a)
+
+    expect(requestedRoots()).toEqual([spelled(a), spelled(b)].sort())
+  })
+})

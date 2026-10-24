@@ -216,12 +216,18 @@ function posixWrapperBody(segment: string): string | null {
   return null
 }
 
-/** `cmd` with each `bash -c '<script>'` segment (see {@link posixWrapperBody}) replaced by its script, repeated up to {@link MAX_WRAPPER_DEPTH} levels, so the script is read as the bare command would be: its `sed -i` names its file, a `cd` inside it moves what follows. Segments join with `;`, which the analysis treats like any other separator. A command with no such wrapper comes back unchanged. */
-function inlinePosixShellScripts(cmd: string): string {
+/** The script of a `powershell`/`pwsh -Command` segment whose script changes directory, or null: only then does the wrapper hide where the git write inside it lands, which the other PowerShell scripts do not. */
+function powershellDirChangeBody(segment: string): string | null {
+  const body = wrapperBody(segment)
+  return body !== null && DIR_CHANGE_RE.test(body) ? body : null
+}
+
+/** `cmd` with each `bash -c '<script>'` segment (see {@link posixWrapperBody}) and each `pwsh -Command "<script>"` segment that changes directory (see {@link powershellDirChangeBody}) replaced by its script, repeated up to {@link MAX_WRAPPER_DEPTH} levels, so the script is read as the bare command would be: its `sed -i` names its file, a `cd` inside it moves what follows. Segments join with `;`, which the analysis treats like any other separator. A command with no such wrapper comes back unchanged. */
+function inlineWrappedShellScripts(cmd: string): string {
   let current = cmd
   for (let depth = 0; depth < MAX_WRAPPER_DEPTH; depth++) {
     const segments = splitShellSegments(current)
-    const bodies = segments.map(posixWrapperBody)
+    const bodies = segments.map((segment) => posixWrapperBody(segment) ?? powershellDirChangeBody(segment))
     if (bodies.every((body) => body === null)) return current
     current = segments.map((segment, i) => bodies[i] ?? segment).join(' ; ')
   }
@@ -1182,7 +1188,7 @@ export async function reconcileHeadMoves(cmd: string, runDir: string, startDir: 
 
 /** Enqueue every file rewritten by a working-tree mutation that does NOT move HEAD, so the index does not silently keep serving pre-mutation symbols. The sibling {@link isHeadMovingGitCommand} block covers the reflog-diffable git commands. This covers the rest: `git restore` and `git stash pop|apply` (git, but HEAD never moves, so no reflog base exists) and the plain shell in-place writes that never touch git at all -- `sed -i`, `>`/`>>` redirection, `tee`, `git apply`, `patch`, `prettier --write`, `eslint --fix`. None of these go through Claude Code's Edit tool, so none of them reached `queue/dirty.txt` before. `exitCode` is the command's exit status when the harness reports one, and a non-zero one drops the named files (a failed `sed -i` or `git restore` changed nothing) but keeps the shell-write pass and the sweeps. Paths that ARE on the command line are taken from it; the rest fall back to the working-tree status sweep rather than a second guessing mechanism. Every path resolves against `runDir`, the directory the command ran in, which a stripped `cd sub && ...` prefix moves: there `sed -i ... f`, a redirect into `f` and `git restore f` all name `sub/f`, and resolved from anywhere else each names a file that is not on disk and silently enqueues nothing. */
 export async function enqueueNonHeadMovingRewrites(command: string, scope: WriteScope, exitCode?: number | null): Promise<void> {
-  const cmd = inlinePosixShellScripts(command)
+  const cmd = inlineWrappedShellScripts(command)
   if (!scope.cdTrusted) {
     if (splitShellSegments(cmd).some((segment) => segmentMayChangeFiles(segment)) && !reconcileAlreadyPending(scope.startDir)) requestReconcileSafe(scope.startDir)
     return
