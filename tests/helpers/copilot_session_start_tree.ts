@@ -188,15 +188,18 @@ export async function premiseBranch(
   return false
 }
 
-/** The state letter the OS reports for `pid` (R, S, D, Z, ...), or null where the platform has no such state or it cannot be read. Linux reads /proc; macOS asks `ps`. */
+/** The state letter from one read of /proc/<pid>/stat, 'X' (dead) when the read finds no such file, or null when it fails otherwise. A zombie reaped between the kill(pid, 0) probe and this read leaves no stat file, and that is a process that exited, not one whose state is unreadable. */
+export function linuxProcessState(readStat: () => string): string | null {
+  try {
+    const stat = readStat()
+    // The command name sits in parentheses and may itself hold spaces or parentheses, so the state is the first field after the last close.
+    return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) || null
+  } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'X' : null }
+}
+
+/** The state letter the OS reports for `pid` (R, S, D, Z, X, ...), or null where the platform has no such state or it cannot be read. Linux reads /proc; macOS asks `ps`. */
 function processState(pid: number): string | null {
-  if (process.platform === 'linux') {
-    try {
-      const stat = readFileSync(`/proc/${String(pid)}/stat`, 'utf8')
-      // The command name sits in parentheses and may itself hold spaces or parentheses, so the state is the first field after the last close.
-      return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) || null
-    } catch { return null }
-  }
+  if (process.platform === 'linux') return linuxProcessState(() => readFileSync(`/proc/${String(pid)}/stat`, 'utf8'))
   if (process.platform === 'darwin') {
     const listing = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true })
     return listing.status === 0 ? listing.stdout.trim().slice(0, 1) || null : null
@@ -209,7 +212,8 @@ export function alive(pid: number): boolean {
   try { process.kill(pid, 0) } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
-  return processState(pid) !== 'Z'
+  const state = processState(pid)
+  return state !== 'Z' && state !== 'X'
 }
 
 /** The process table aliveAs and killAndVerify consult; each member defaults to the real probe, and a test supplies fakes. */
@@ -221,7 +225,9 @@ export function aliveAs(pid: number, commandLine: string | null, seam: LivenessS
   const recorded = commandLine?.trim() ?? ''
   if (recorded === '') return true
   const current = (seam.readLine ?? readProcessCommandLine)(pid)
-  return current === null || current.trim() === recorded
+  // A failed read counts as ours only while the pid still answers: a process that exited between the probe above and the read has no line because it is gone.
+  if (current === null) return (seam.alive ?? alive)(pid)
+  return current.trim() === recorded
 }
 
 export function readOwnedPid(path: string): number {

@@ -1,7 +1,7 @@
 /** Provenance: HAND-DERIVED. The process table is a fake map of pid to the command line the query would read (null: the query fails on a running process, the way readProcessCommandLine does on a spawn error, a nonzero exit, a timeout or empty output); no real process is signalled, so each case is deterministic and carries no wait. */
 import { expect, it } from 'vitest'
 
-import { aliveAs, killAndVerify, type KillSeam } from '../helpers/copilot_session_start_tree.js'
+import { aliveAs, killAndVerify, linuxProcessState, type KillSeam } from '../helpers/copilot_session_start_tree.js'
 
 /** A fake process table: `kills` lists every pid a signal reached, and a signalled process leaves the table. */
 function world(table: Record<number, string | null>): { seam: KillSeam; kills: number[] } {
@@ -137,4 +137,22 @@ it('attaches no cause to the survivor error when the only failure was for a pid 
   try { killAndVerify(new Map([[42, 'node ours.js'], [43, 'node ours.js']]), seam) } catch (error) { caught = error }
   expect((caught as Error).message).toMatch(/43 node ours\.js/)
   expect((caught as Error).cause).toBeUndefined()
+})
+
+// HAND-DERIVED: a zombie reaped between the kill(pid, 0) probe and the /proc/<pid>/stat read leaves no stat file (ENOENT), which is an exited process; any other read failure leaves the state unknown, and unknown counts as alive.
+it('reads a vanished stat file as a dead process and any other failed read as unknown', () => {
+  const failing = (code: string) => (): string => { throw Object.assign(new Error(code), { code }) }
+  expect(linuxProcessState(failing('ENOENT'))).toBe('X')
+  expect(linuxProcessState(failing('EACCES'))).toBeNull()
+  expect(linuxProcessState(() => '123 (node (-e) x) Z 1 123')).toBe('Z')
+  expect(linuxProcessState(() => '123 (node) S 1 123')).toBe('S')
+})
+
+// HAND-DERIVED: a pid that answers the liveness probe and exits before the command line is read has no line to read; the failed read must not count it as a survivor, while a pid that still answers after a failed read stays one.
+it('does not count a pid that exited between the liveness probe and a failed command line read', () => {
+  const answers = [true, false]
+  const exiting: KillSeam = { alive: () => answers.shift() ?? false, readLine: () => null }
+  expect(aliveAs(50, 'node ours.js', exiting)).toBe(false)
+  const lingering: KillSeam = { alive: () => true, readLine: () => null }
+  expect(aliveAs(51, 'node ours.js', lingering)).toBe(true)
 })
