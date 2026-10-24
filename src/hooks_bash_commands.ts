@@ -474,7 +474,10 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string):
     // `ls-files` lists only what the index holds, so a file `--source` brought back that the index lacks is found by its literal name instead; globs, `:` magic and `.` name nothing literally.
     for (const spec of specs) if (spec !== '.' && !spec.startsWith(':') && !/[*?[]/.test(spec)) paths.push(atRunDir(spec))
   }
+  // Segments some extractor above already named files for, which the shell-write pass leaves alone.
+  const handled = new Set<string>()
   for (const segment of splitShellSegments(cmd)) {
+    const before = paths.length + sweepDirs.size
     if (PATCH_APPLY_SEGMENT_RE.test(segment) && !PATCH_APPLY_INSPECT_ONLY_RE.test(segment)) sweepDirs.add(runDir)
     if (isFormatterWriteSegment(segment)) sweepDirs.add(runDir)
     const stashDir = gitStashRewriteDir(segment, runDir)
@@ -482,8 +485,11 @@ export async function enqueueNonHeadMovingRewrites(cmd: string, runDir: string):
     for (const f of extractSedInPlaceFiles(segment)) paths.push(atRunDir(f))
     for (const f of extractTeeFiles(segment)) paths.push(atRunDir(f))
     for (const f of extractRedirectTargets(segment)) paths.push(atRunDir(f))
+    if (paths.length + sweepDirs.size > before || tokenGoatInvocation(segment) !== null) handled.add(segment)
   }
   for (const p of new Set(paths)) enqueueRewrittenPath(p)
+  // Loaded on use: the hook entry's eager set is size-guarded (tests/guards/dist_chunks_deduped.test.ts), and this pass is the part of it that grows with the shells it knows.
+  ;(await import('./shell_writes.js')).enqueueShellWrites(cmd, runDir, handled, { written: enqueueRewrittenPath, removed: enqueueSweptPath })
   for (const dir of sweepDirs) for (const p of await workingTreeStatusPaths(dir)) enqueueSweptPath(p)
 }
 

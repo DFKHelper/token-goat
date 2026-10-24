@@ -586,6 +586,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/served_lines.ts`](src/served_lines.ts) | Finding the stretches of a delivered file window that this session has already served. |
 | [`src/sessions_dir.ts`](src/sessions_dir.ts) | Where per-session state blobs live on disk, and nothing else. |
 | [`src/sharepoint_resolve.ts`](src/sharepoint_resolve.ts) | Best-effort resolution of a SharePoint/OneDrive sharing URL to a local synced file path, so `token-goat` can read a document an agent was only given a share link for instead of fai |
+| [`src/shell_writes.ts`](src/shell_writes.ts) | What a shell command line writes, for the post-shell hook that keeps the index fresh: the files PowerShell's own write cmdlets and .NET file writers name on the command line, and w |
 | [`src/shell.ts`](src/shell.ts) | Exports: `locateBashOnPath`, `resolveWindowsBash`, `wrappedShell`, `canRunWrappedShell` |
 | [`src/shrink_temp_copies.ts`](src/shrink_temp_copies.ts) | The shrunk image copies written to the OS temp dir for a host that can only point a Read at another path, and the age sweep that removes them. |
 | [`src/sibling_copy.ts`](src/sibling_copy.ts) | Name checks behind the Write pre-hook's sibling-copy advice (hooks_write.ts): which existing file a new file's name says it is a copy of, and which paths the advice never speaks ab |
