@@ -9,7 +9,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { readAllProcesses } from '../src/cli_doctor_process.js'
-import { isResidentOfInstall, readProcessCommandLine } from '../src/resident_process.js'
+import { commandLineOf, isResidentOfInstall, queryProcessCommandLine } from '../src/resident_process.js'
 import { ROOT, tgIsolatedEnv } from './helpers/bundle.js'
 import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 
@@ -112,7 +112,8 @@ afterEach(async () => {
     }
   })
   const mine = (cmd: string | null): boolean => cmd !== null && spellings.some((l) => isResidentOfInstall(cmd, l, ['worker', 'hook-server']))
-  const doomed = new Set<number>(started.splice(0).filter((pid) => alive(pid) && mine(readProcessCommandLine(pid))))
+  // A failed query folds to null, which `mine` rejects: an unreadable pid is never added to the kill set.
+  const doomed = new Set<number>(started.splice(0).filter((pid) => alive(pid) && mine(commandLineOf(queryProcessCommandLine(pid)))))
   if (Array.isArray(table)) for (const p of table) if (mine(p.commandLine)) doomed.add(p.processId)
   doomed.delete(process.pid)
   try {

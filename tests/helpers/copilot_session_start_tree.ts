@@ -15,7 +15,7 @@ import { slotStatus } from './hook_server_probe.js'
 import { buildNative } from './native_bin.js'
 import { startWatchdog, type Watchdog } from './stall_proof_watchdog.js'
 import { killIfCommandLine } from './kill_if_command_line.js'
-import { readProcessCommandLine } from '../../src/resident_process.js'
+import { commandLineOf, queryProcessCommandLine } from '../../src/resident_process.js'
 
 export const BUNDLE = join(process.cwd(), 'dist', 'token-goat.mjs')
 /** The budget the tree fixtures give a start, through the test-only seam: the shorter budget production used before it became 10 s, so a case that waits for a hung helper to be cut off ends in seconds, not in the production budget. */
@@ -197,13 +197,17 @@ export function linuxProcessState(readStat: () => string): string | null {
   } catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'X' : null }
 }
 
+/** The state letter from one `ps -o stat= -p <pid>` run, 'X' (dead) when ps ran and found no such process (exit 1 with nothing printed), or null when ps could not run or failed otherwise. A process that exits between the kill(pid, 0) probe and this listing is gone, not unreadable. */
+export function darwinProcessState(listing: { status: number | null; stdout: string; error?: Error }): string | null {
+  if (listing.error) return null
+  if (listing.status === 0) return listing.stdout.trim().slice(0, 1) || null
+  return listing.status === 1 && listing.stdout.trim() === '' ? 'X' : null
+}
+
 /** The state letter the OS reports for `pid` (R, S, D, Z, X, ...), or null where the platform has no such state or it cannot be read. Linux reads /proc; macOS asks `ps`. */
 function processState(pid: number): string | null {
   if (process.platform === 'linux') return linuxProcessState(() => readFileSync(`/proc/${String(pid)}/stat`, 'utf8'))
-  if (process.platform === 'darwin') {
-    const listing = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true })
-    return listing.status === 0 ? listing.stdout.trim().slice(0, 1) || null : null
-  }
+  if (process.platform === 'darwin') return darwinProcessState(spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true }))
   return null
 }
 
@@ -219,13 +223,16 @@ export function alive(pid: number): boolean {
 /** The process table aliveAs and killAndVerify consult; each member defaults to the real probe, and a test supplies fakes. */
 export interface LivenessSeam { alive?: (pid: number) => boolean; readLine?: (pid: number) => string | null }
 
+/** The live command line for aliveAs, folded from the query: gone and failed both read as null, which aliveAs resolves by probing the pid itself. */
+const defaultLiveLine = (pid: number): string | null => commandLineOf(queryProcessCommandLine(pid))
+
 /** Whether `pid` is still the process whose command line was `commandLine` when it was recorded. A bare pid is a claim: the OS hands a freed number to the next process it starts (36 of 300 sequential spawns on Windows), so `alive` on a pid whose owner has been ended can report a stranger. An identity that cannot be read fails closed, because a missed orphan is silent and a false survivor is loud: a null or empty recorded line means the query failed or the process was absent from the listing (it does not mean gone), and a null live read means the query failed now (it does not mean gone); a live pid in either case counts as ours. Pass a recorded line only for a pid seen alive when it was recorded; a pid that was not alive then is not a survivor, and the caller leaves it out. */
 export function aliveAs(pid: number, commandLine: string | null, seam: LivenessSeam = {}): boolean {
   if (!(seam.alive ?? alive)(pid)) return false
   const recorded = commandLine?.trim() ?? ''
   if (recorded === '') return true
-  const current = (seam.readLine ?? readProcessCommandLine)(pid)
-  // A failed read counts as ours only while the pid still answers: a process that exited between the probe above and the read has no line because it is gone.
+  const current = (seam.readLine ?? defaultLiveLine)(pid)
+  // A gone or failed read counts as ours only while the pid still answers: a process that exited between the probe above and the read has no line because it is gone, and a failed query says nothing about whether it exited.
   if (current === null) return (seam.alive ?? alive)(pid)
   return current.trim() === recorded
 }

@@ -2,7 +2,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { afterEach, expect, it } from 'vitest'
 
-import { readProcessCommandLine } from '../../src/resident_process.js'
+import { commandLineOf, queryProcessCommandLine } from '../../src/resident_process.js'
 import { alive, aliveAs } from '../helpers/copilot_session_start_tree.js'
 
 const children: ChildProcess[] = []
@@ -20,7 +20,7 @@ function sleeper(tag: string): ChildProcess {
 /** The child's command line as the query reads it; a null here would mean the query cannot see a running process, which fails the test rather than passing it. */
 function lineOf(child: ChildProcess): string {
   const pid = child.pid ?? 0
-  const line = readProcessCommandLine(pid)
+  const line = commandLineOf(queryProcessCommandLine(pid))
   expect(line, `command line of ${pid}`).not.toBeNull()
   return line ?? ''
 }

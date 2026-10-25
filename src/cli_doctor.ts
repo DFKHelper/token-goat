@@ -11,6 +11,7 @@ import { displaySafeText } from './paths.js'
 import { PACKAGE_NAME } from './version.js'
 import { compareSemver } from './cli_upgrade.js'
 import { serverStatuses } from './hook_client.js'
+import { checkBuild } from './build_stamp.js'
 import { readMarker, type ServerStatus } from './hook_ipc.js'
 import { dataDirWriteRefusal } from './worker_lifecycle.js'
 import { dataDir as defaultDataDir, configPath as defaultConfigPath } from './constants.js'
@@ -754,6 +755,7 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
 
   // Basic checks
   results.push(checkInstall())
+  results.push(checkBuild())
   results.push(checkTsCompiler())
   results.push(checkTreeSitter())
   results.push(checkStrayClaudeMdBlocks())

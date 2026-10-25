@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
-import { parsePorcelainZ } from './git_porcelain.js'
+import { parsePorcelainZ, safeShlexSplit, skipGitLeadingOptions } from './git_porcelain.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
 import { storeBlob, loadBlob, isBlobStale } from './disk_cache.js'
@@ -45,6 +45,7 @@ let _byId = new Map<string, BashOutputEntry>()
 
 const COMMAND_PATTERNS: Record<string, RegExp> = {
   gitMutable: /^\s*git\s+(diff|status)\b/i,
+  gitDiff: /^\s*git\s+diff\b/i,
   gitImmutable: /^\s*git\s+show\s+[0-9a-f]{40}\b/i,
   gitDiffScoped: /\s--\s+\S/,
   dirListing: /^\s*(?:ls|eza|exa|dir|Get-ChildItem|gci)\b/i,
@@ -71,9 +72,34 @@ const DEP_LOCKFILES: Record<string, string[]> = {
   composer: ['composer.lock'],
 }
 
+/** Git's leading options (`-C <path>`, `-c k=v`, `--git-dir=...`) sit between `git` and the subcommand, so the git-keyed types match their subcommand word here instead of the literal `git <sub>` prefix. `runDir` is only used for the directory result; the classifiers pass `''`. Null when the command is not a literal `git` invocation or does not tokenize. */
+function parseGitInvocation(cmd: string, runDir: string): { subcommand: string | undefined; dir: string } | null {
+  const tokens = safeShlexSplit(cmd)
+  if (tokens === null || !/^git$/i.test(tokens[0] ?? '')) return null
+  const { index, dir } = skipGitLeadingOptions(tokens, 1, runDir)
+  return { subcommand: tokens[index], dir }
+}
+
+/** The subcommand word each git-keyed type matches once git's leading options are skipped. A type absent here, or a command that does not tokenize, falls back to its COMMAND_PATTERNS regex. */
+const GIT_SUBCOMMAND_PATTERNS: Partial<Record<keyof typeof COMMAND_PATTERNS, RegExp>> = {
+  gitMutable: /^(?:diff|status)\b/i,
+  gitDiff: /^diff\b/i,
+  gitPush: /^push\b/i,
+}
+
 export function isCommandOfType(cmd: string, type: keyof typeof COMMAND_PATTERNS): boolean {
+  const subcommandPattern = GIT_SUBCOMMAND_PATTERNS[type]
+  if (subcommandPattern) {
+    const invocation = parseGitInvocation(cmd, '')
+    if (invocation) return subcommandPattern.test(invocation.subcommand ?? '')
+  }
   const pattern = COMMAND_PATTERNS[type]
   return pattern?.test(cmd) ?? false
+}
+
+/** The directory a git-state fingerprint is read from for `cmd` run in `cwd`: the repository a leading `git -C <path>` names, else `cwd`. */
+function gitRunDirOf(cmd: string, cwd: string): string {
+  return parseGitInvocation(cmd, cwd)?.dir ?? cwd
 }
 
 // Backward-compat aliases for predicate functions
@@ -95,7 +121,7 @@ export const isCatCommand = (cmd: string) => isCommandOfType(cmd, 'catCommand')
 export function isScopedGitStatusOrDiffStatCommand(cmd: string): boolean {
   if (!isCommandOfType(cmd, 'gitMutable')) return false
   if (!isCommandOfType(cmd, 'gitDiffScoped')) return false
-  if (/^\s*git\s+diff\b/i.test(cmd) && !/--stat\b/.test(cmd)) return false
+  if (isCommandOfType(cmd, 'gitDiff') && !/--stat\b/.test(cmd)) return false
   return true
 }
 
@@ -242,7 +268,7 @@ export function normalizeCommandForCacheKey(cmd: string): string {
 }
 
 /** Return the stable hash for a command: 16-hex-char SHA-256 prefix of the normalized command with cwd scoping. The async {@link commandHash} below is the long-standing public name and stays; this is the same body, exposed synchronously for callers that must finish the write before their (very short-lived) hook process exits. Every fingerprint helper it reaches for is already a `*Sync` one, so nothing is lost by dropping the promise. */
-export function commandHashSync(command: string, cwd: string | null = null, gitState: () => string | null = () => (cwd ? gitStateFingerprintSync(cwd) : null)): string {
+export function commandHashSync(command: string, cwd: string | null = null, gitState: () => string | null = () => (cwd ? gitStateFingerprintSync(gitRunDirOf(command, cwd)) : null)): string {
   const normalized = normalizeCommandForCacheKey(command)
   let key = cwd ? `${normalizePath(cwd)}\x00${normalized}` : normalized
 
@@ -289,7 +315,7 @@ function outputIdFromCommandHash(commandKey: string, output: string): string {
 }
 
 /** Compute current git/dir/lockfile/file state fingerprints for `command` run in `cwd`. Stored on a {@link BashOutputEntry} at write time (`storeBashOutput`) and recomputed at cache-recall time ({@link isBashEntryStale}) so a cached entry whose underlying source state has since changed is not served as if it were still fresh. - `git`: git-mutable commands (`git diff`/`git status`), `git push`, and any command whose output depends on the whole working tree -- test runners (the {@link isTestRunnerCommand} the failing-test advisory in hooks_bash_post.ts stores a run under, bare `npm test`/`yarn test`/`pnpm test` included), linters (eslint/ruff), the dev servers and bundlers the monitoring list recalls ({@link isDevServerCommand}), and `npm run <script>` -- since {@link gitStateFingerprintSync} already captures staged/unstaged/untracked changes anywhere in the tree. - `dir`: directory-listing commands, scoped to the listed directory's entry-name listing. - `lockfile`: dependency-list/install/audit/outdated commands, scoped to the resolved lockfile's content. - `file`: `cat <file>`, scoped to that one file's mtime + size. */
-export function computeBashFingerprints(command: string, cwd: string | null, gitState: () => string | null = () => (cwd ? gitStateFingerprintSync(cwd) : null)): { git?: string; dir?: string; lockfile?: string; file?: string } | undefined {
+export function computeBashFingerprints(command: string, cwd: string | null, gitState: () => string | null = () => (cwd ? gitStateFingerprintSync(gitRunDirOf(command, cwd)) : null)): { git?: string; dir?: string; lockfile?: string; file?: string } | undefined {
   const fingerprints: { git?: string; dir?: string; lockfile?: string; file?: string } = {}
 
   if (
@@ -429,7 +455,7 @@ export function summarizeOutputDelta(oldOutput: string, newOutput: string): stri
 export function storeBashOutputSync(command: string, output: string, exitCode: number, cwd: string | null = null): string {
   // The git state costs two git spawns and is the same for the command hash and the fingerprints below, so it is read once, and only if one of them asks for it.
   let gitState: { value: string | null } | null = null
-  const gitStateOnce = (): string | null => (gitState ??= { value: cwd ? gitStateFingerprintSync(cwd) : null }).value
+  const gitStateOnce = (): string | null => (gitState ??= { value: cwd ? gitStateFingerprintSync(gitRunDirOf(command, cwd)) : null }).value
   const commandKey = commandHashSync(command, cwd, gitStateOnce)
   const id = outputIdFromCommandHash(commandKey, output)
   const fingerprints = computeBashFingerprints(command, cwd, gitStateOnce)

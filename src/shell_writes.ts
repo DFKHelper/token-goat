@@ -6,9 +6,9 @@ import * as path from 'node:path'
 import { splitShellSegments } from './bash_extractors.js'
 import { dataDir } from './constants.js'
 import { reconcileRequestPathFor } from './dirty_queue.js'
-import { gitRepoRootOrNull, headMovingSegments, hookGitRead, isHeadMovingGitCommand, safeShlexSplit, tokenGoatInvocation } from './hooks_bash_commands.js'
+import { gitRepoRootOrNull, headMovingSegments, hookGitRead, isHeadMovingGitCommand, tokenGoatInvocation } from './hooks_bash_commands.js'
 import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
-import { parsePorcelainZ } from './git_porcelain.js'
+import { GIT_OPTIONS_WITH_VALUE, parsePorcelainZ, safeShlexSplit, skipGitLeadingOptions } from './git_porcelain.js'
 import { resolveIndexPath } from './paths.js'
 import type { GitResult } from './util.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
@@ -721,9 +721,6 @@ function restoreIsStagedOnly(segment: string): boolean {
 /** The `git stash` subcommands that rewrite the working tree: `pop` and `apply` put changes back, `branch` checks out a branch and applies the stash onto it, and `push` or `save` put files back to their committed content, as a bare `git stash` or one taking only options does. `list`, `show`, `drop`, `clear`, `create` and `store` touch no file. */
 const GIT_STASH_REWRITE_SUBCOMMANDS = new Set(['pop', 'apply', 'branch', 'push', 'save'])
 
-/** Git's own leading options that take their value as the next argument, per git(1): `-C <path>`, `-c <name>=<value>`, and the long forms that also accept `--opt=<value>`. */
-const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'])
-
 /** The directory whose working tree a `git stash` segment rewrites, or null when the segment is not one that rewrites it. Environment assignments ahead of `git` and git's own leading options are skipped, and each `-C <path>` moves the directory as git does, relative to the one before it (an empty path leaves it unchanged). `-h` or `--help` as the first argument after `stash` or its subcommand prints usage and touches nothing. */
 function gitStashRewriteDir(segment: string, runDir: string): string | null {
   const tokens = safeShlexSplit(segment)
@@ -732,13 +729,9 @@ function gitStashRewriteDir(segment: string, runDir: string): string | null {
   while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i++
   const head = tokens[i]
   if (head === undefined || path.basename(head.replace(/\\/g, '/')).replace(/\.exe$/i, '').toLowerCase() !== 'git') return null
-  let dir = runDir
-  for (i++; i < tokens.length && tokens[i]!.startsWith('-'); i++) {
-    const t = tokens[i]!
-    if (!GIT_OPTIONS_WITH_VALUE.has(t)) continue
-    const value = tokens[++i]
-    if (t === '-C' && value !== undefined && value !== '') dir = path.resolve(dir, value)
-  }
+  const leading = skipGitLeadingOptions(tokens, i + 1, runDir)
+  const dir = leading.dir
+  i = leading.index
   if (tokens[i] !== 'stash') return null
   const rest = tokens.slice(i + 1)
   if (gitStashAsksHelp(rest)) return null

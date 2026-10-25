@@ -1,6 +1,7 @@
 import * as esbuild from 'esbuild'
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs'
 
+import { clearBuildInfo, computeBuildStamp, writeBuildInfo } from './scripts/build-stamp.mjs'
 import { buildDefines, CJS_CLIENT, ENTRY_POINTS, EXTERNAL_NATIVE_DEPS, ORT_WEB_GLUE } from './scripts/build-options.mjs'
 import { clearBundleStamp, sourceDigest, writeBundleStamp } from './scripts/source-digest.mjs'
 import { sweepStaleChunks } from './scripts/sweep-chunks.mjs'
@@ -15,6 +16,9 @@ const LEGACY_HOOK_CHUNK_PREFIX = 'token-goat-hook-chunk-'
 const sourcesBuilt = sourceDigest('.')
 clearBundleStamp('.')
 const pkg = JSON.parse(readFileSync('./package.json', 'utf8'))
+// One identity for this build, inlined into every bundle below and written beside them as dist/build-info.json (see scripts/build-stamp.mjs). Cleared first so a build that dies half way leaves no file vouching for it.
+clearBuildInfo('.')
+const build = computeBuildStamp('.')
 
 // The entry points and the external list live in scripts/build-options.mjs: the notices generator and its guard have to bundle the same graph this build does, and a second copy of either would drift silently. See that file's own comment for why each package stays external.
 
@@ -48,7 +52,7 @@ const result = await esbuild.build({
       'const require = __cjsRequire(import.meta.url);',
     ].join('\n'),
   },
-  define: buildDefines(pkg),
+  define: buildDefines(pkg, build.stamp),
 })
 
 // The hook client again, as one CommonJS file. Every hook shim is a CommonJS script, and the first import() a CommonJS process makes starts Node's ESM loader: 3.5ms for an empty module, and 11.7ms to load the six-module ESM client against 6.3ms for this single file. A shim pays that on every hook call a resident server answers, where it is a sixth of the whole call. The ESM client above stays for the launcher, which is ESM already, and for shims installed before this file existed. `import.meta.url` has no CommonJS equivalent, so the banner derives it from the file's own path, which is what src/hook_ipc.ts reads to find the launcher beside it.
@@ -62,7 +66,7 @@ await esbuild.build({
   entryNames: '[name]',
   outExtension: { '.js': '.cjs' },
   banner: { js: "const __tgModuleUrl = require('node:url').pathToFileURL(__filename).href;" },
-  define: { ...buildDefines(pkg), 'import.meta.url': '__tgModuleUrl' },
+  define: { ...buildDefines(pkg, build.stamp), 'import.meta.url': '__tgModuleUrl' },
   // Any other import.meta the client grows would compile to an empty object and fail only at run time, inside a shim that swallows the error and quietly stops using the server.
   logOverride: { 'empty-import-meta': 'error' },
 })
@@ -94,5 +98,6 @@ const LAUNCHER = [
 writeFileSync('dist/token-goat.mjs', LAUNCHER)
 // Two builds that overlap with a source edited between their starts can interleave their outputs and leave the stamp of whichever finished last. Accepted rather than locked: it needs a hand-run build racing the test setup's, and the next edit to any source makes the stamp miss again.
 writeBundleStamp('.', sourcesBuilt)
+writeBuildInfo('.', pkg.version, build)
 
 console.log(`Built dist/token-goat.mjs  (v${pkg.version})`)

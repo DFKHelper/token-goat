@@ -402,9 +402,12 @@ describe('a .md argument of a script check', () => {
     expect(evaluateVerification(sid).editedSinceLastPass).toEqual(['a.ts'])
   })
 
-  it('a failing run that names only a document is not recorded as a failure', () => {
+  // Changed by T4: a failing check script whose only positional is a document is recorded as a failure (its exit status is the verdict), while the document still counts as no check input, so a pass on it would clear nothing.
+  it('a failing run that names only a document is recorded as a failure, with its command and status', () => {
     const sid = newSession()
+    inSession(sid, () => recordFileEdit('C:/proj/src/a.ts'))
     inSession(sid, () => noteFailedVerificationRun('python scripts/validate_x.py report.md', 'Exit code 2\nboom', false))
-    expect(evaluateVerification(sid).runs).toEqual([])
+    expect(evaluateVerification(sid).runs.map((r) => [r.command, r.exitCode])).toEqual([['python scripts/validate_x.py report.md', 2]])
+    expect(evaluateVerification(sid).editedSinceLastPass).toEqual(['a.ts'])
   })
 })

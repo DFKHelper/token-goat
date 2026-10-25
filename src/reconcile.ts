@@ -11,6 +11,7 @@ import { indexedPathSpellingIsStale } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { getDisplayRoot } from './project.js'
 import { listTrackedFiles, type TrackedFilesResult } from './repomap.js'
+import { writeSweepStamp } from './reconcile_stamp.js'
 import { projectScopeClause } from './sql_path.js'
 import { countNoun, foldPath } from './util.js'
 
@@ -67,6 +68,8 @@ export interface ReconcileOptions {
   cwd?: string
   /** Wall-clock budget for examining files, counted from once the tracked list and index rows are in hand. Defaults to {@link DEFAULT_RECONCILE_BUDGET_MS}. */
   budgetMs?: number
+  /** Kill the `git ls-files` spawn after this many ms and report the listing as timed out; omit for the default bound. */
+  listingTimeoutMs?: number
   /** Compute the drift set without enqueueing it. */
   dryRun?: boolean
   /** Index database to read/write. Defaults to {@link globalDbPath}; overridable for tests so a sweep can be run against an isolated database instead of the process-memoized default. */
@@ -231,7 +234,7 @@ export function isReconcileClean(r: ReconcileResult): boolean {
 export function reconcileProject(opts: ReconcileOptions = {}): ReconcileResult {
   const cwd = opts.cwd ?? process.cwd()
   const calledAt = Date.now()
-  const result = reconcileProjectWith({ ...opts, cwd }, listTrackedFiles(cwd))
+  const result = reconcileProjectWith({ ...opts, cwd }, listTrackedFiles(cwd, opts.listingTimeoutMs))
   // The listing is part of what this call cost, as it was before the sweep took it as an argument.
   return { ...result, elapsedMs: Date.now() - calledAt }
 }
@@ -410,6 +413,8 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
     } else if (deletionCursor !== null) {
       clearReconcileCursor(dbPath, deletionKey)
     }
+    // Only a full lap over a real listing whose drift all reached the queue lets session start skip the next sweeps.
+    if (!budgetExhausted && !listing.timedOut && tracked.length > 0 && enqueued === toEnqueue.length) writeSweepStamp(dbPath, projectRoot)
   }
 
   return {

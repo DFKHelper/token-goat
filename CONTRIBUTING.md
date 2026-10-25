@@ -42,6 +42,8 @@ If you add a language extractor, you do not need a new fixture — the choke poi
 
 If a linked worktree's `node_modules` or `vscode-extension/node_modules` is a junction or symlink into another checkout, delete that link (`[System.IO.Directory]::Delete(path, $false)` in PowerShell) before `git worktree remove`: git follows the link and empties the other checkout's `node_modules`, which then looks like an empty directory from every worktree that links to it.
 
+In a fresh linked worktree, install the VS Code extension's dependencies with `node scripts/install_vscode_extension_deps.mjs`: it runs `npm ci --ignore-scripts` inside `vscode-extension` and runs no lifecycle scripts.
+
 ## Git Bash / MSYS path mangling
 
 Git Bash (the shell that ships with Git for Windows) rewrites POSIX-looking paths that start with `/` into Windows paths, so a call like `gh api /repos/DFKHelper/token-goat/...` becomes `gh api C:/Program Files/Git/repos/DFKHelper/...` and fails with `invalid API endpoint`. Two ways around it:

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 
 import Database from '../../src/sqlite_driver.js'
-import { readProcessCommandLine } from '../../src/resident_process.js'
+import { commandLineOf, queryProcessCommandLine } from '../../src/resident_process.js'
 import { alive, aliveAs, assertOwedDeliveredOnce, BUNDLE, cleanupTrees, fixtureWatchdog, indexTreeFixture, ownedPids, ownedRoots, runInstalledStartup, runOwedToolCall, runTreeShim, startBegan, treeFixture } from '../helpers/copilot_session_start_tree.js'
 
 afterEach(() => {
@@ -19,7 +19,7 @@ afterEach(() => {
     }
   }
   // Each worker is asked about as the process it was before the kill: the number is free for reuse the moment it dies, and a stranger that took it is not a survivor. Only a worker seen alive here can survive: a line the query could not read still counts it as ours, and a number already free is not a survivor.
-  const lines = new Map(workers.filter(alive).map(pid => [pid, readProcessCommandLine(pid)]))
+  const lines = new Map(workers.filter(alive).map(pid => [pid, commandLineOf(queryProcessCommandLine(pid))]))
   cleanupTrees()
   for (const [pid, line] of lines) expect(aliveAs(pid, line), `owned worker ${pid} survived teardown`).toBe(false)
   console.log(`owned startup workers cleaned: ${workers.join(',')}`)
@@ -100,6 +100,8 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
         .toEqual({ indexed: true, workerAlive: true, queued: '' })
       // A worker already outside the jobs keeps its lease. The next startup must queue and drain its edit without killing or replacing that daemon.
       writeFileSync(source, 'export function startupWorkerSecondSymbol() { return 43 }\n')
+      // The first start (or the worker it woke) stamped a complete sweep, which stands in for the next start's own for minutes; this start must sweep to find the second edit, whenever the stamp landed.
+      fixture.env['TOKEN_GOAT_RECONCILE_MEMORY_MS'] = '0'
       const second = surface === 'installed'
         ? runInstalledStartup({ fixture, entry: BUNDLE, quietLimitMs: 40_000 })
         : runTreeShim({ fixture, entry: BUNDLE, endInput: false, quietLimitMs: 40_000 })

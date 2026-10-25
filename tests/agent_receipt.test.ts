@@ -357,6 +357,13 @@ describe('the receipt through the real hook registry', () => {
     ['Changes made:\n- None'],
     ['Changes: nothing, this was a read-only review.'],
     ["I'll add the guard next."],
+    ['I changed directory to src and ran the tests.'],
+    ['I changed my approach and read the other file.'],
+    ['I updated my estimate to 3 hours.'],
+    ['I improved my confidence in the finding after re-reading.'],
+    ['I resolved the ambiguity by reading the spec.'],
+    ['I updated the PR description.'],
+    ['I added a comment on the PR.'],
   ])('read-only report %j with a clean tree is not flagged', async (message) => {
     expect(await checkChangeClaim(message, repo)).toBe('clear')
   })
@@ -371,6 +378,12 @@ describe('the receipt through the real hook registry', () => {
     ['We replaced the cache layer.'],
     ['Fixed the parser bug.'],
     ['Done:\n- I fixed the parser\n- I added tests'],
+    ['I changed directory to src. I fixed the parser.'],
+    ['I updated my config.ts and my approach.'],
+    ['I fixed the issue in the parser.'],
+    ['I added a comment to parser.ts explaining the guard.'],
+    ['I updated the PR description. I fixed the parser.'],
+    ['I resolved the merge conflict in x.ts.'],
   ])('own-work claim %j with a clean tree is flagged', async (message) => {
     expect(await checkChangeClaim(message, repo)).toBe('lacks')
   })

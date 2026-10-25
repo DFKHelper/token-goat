@@ -43,11 +43,11 @@ function trackedFilesFrom(dir: string, result: GitResult, separator = '\n'): Tra
   return { files, timedOut: false }
 }
 
-/** Get all git-tracked files under cwd, unfiltered -- callers apply their own source/language filtering (see `cli.ts`'s `cmdIndex` and `graph_commands.ts`'s `runArch`). Returns `path.join(cwd, rel)` for each tracked file -- absolute or relative depending on whether `cwd` itself is absolute, not on platform. A single file path is accepted as well, and resolves to just that file when it is tracked: git cannot chdir into a file, so passing one as `cwd` would spawn with a non-zero exit and report a tracked file as untracked. */
-export function listTrackedFiles(cwd: string = process.cwd()): TrackedFilesResult {
+/** Get all git-tracked files under cwd, unfiltered -- callers apply their own source/language filtering (see `cli.ts`'s `cmdIndex` and `graph_commands.ts`'s `runArch`). Returns `path.join(cwd, rel)` for each tracked file -- absolute or relative depending on whether `cwd` itself is absolute, not on platform. A single file path is accepted as well, and resolves to just that file when it is tracked: git cannot chdir into a file, so passing one as `cwd` would spawn with a non-zero exit and report a tracked file as untracked. `timeoutMs` bounds the git spawn (the default applies when omitted); a git it kills is reported as `timedOut`, never as nothing tracked. */
+export function listTrackedFiles(cwd: string = process.cwd(), timeoutMs?: number): TrackedFilesResult {
   try {
     const { dir, args } = trackedFilesInvocation(cwd)
-    return trackedFilesFrom(dir, runGit(args, { cwd: dir }))
+    return trackedFilesFrom(dir, runGit(args, { cwd: dir, ...(timeoutMs !== undefined ? { timeoutMs } : {}) }))
   } catch {
     return { files: [], timedOut: false }
   }

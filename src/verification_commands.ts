@@ -19,12 +19,29 @@ function isCheckArgument(word: string): boolean {
   return word === SELF_TEST_FLAG || (PATH_OR_SELECTOR_ARG.test(word) && PATH_EVIDENCE.test(word) && !DOCUMENT_ARG.test(word))
 }
 
-/** True when `segment` (its leading `NAME=value` assignments already removed) runs a script that checks a repository: one with a checking file name, or any script given `--self-test`, carrying only path or selector arguments besides that switch. A bare `python foo.py` is not one, and neither is a help, listing, version or preview run of a checking script. */
-export function isScriptCheckSegment(segment: string): boolean {
+/** The script path and its arguments of a `python` run, or null when `segment` is not one. */
+function pythonScriptRun(segment: string): { script: string; words: string[] } | null {
   const script = PYTHON_SCRIPT_RUN.exec(segment)?.[1]
-  if (script === undefined || !SCRIPT_PATH.test(script)) return false
-  const words = segment.trim().split(/\s+/).slice(2)
-  if (!words.every(isCheckArgument)) return false
+  if (script === undefined || !SCRIPT_PATH.test(script)) return null
+  return { script, words: segment.trim().split(/\s+/).slice(2) }
+}
+
+/** True when the script's file name says its whole job is to check, or it is given `--self-test`. */
+function isCheckingScript(script: string, words: readonly string[]): boolean {
   const name = script.split(/[/\\]/).pop() ?? ''
   return CHECK_SCRIPT_NAME.test(name) || words.includes(SELF_TEST_FLAG)
+}
+
+/** True when `segment` (its leading `NAME=value` assignments already removed) runs a script that checks a repository: one with a checking file name, or any script given `--self-test`, carrying only path or selector arguments besides that switch. A bare `python foo.py` is not one, and neither is a help, listing, version or preview run of a checking script. */
+export function isScriptCheckSegment(segment: string): boolean {
+  const run = pythonScriptRun(segment)
+  return run !== null && run.words.every(isCheckArgument) && isCheckingScript(run.script, run.words)
+}
+
+/** True when `segment` is a checking script run ({@link isScriptCheckSegment}) whose only arguments besides the check ones are `.md` documents. The documents are not check inputs, so the run is judged as if they were absent: a verdict only when it fails, since a pass on a document names nothing the run verified. Without a `.md` argument it is {@link isScriptCheckSegment}'s run, and a non-checking script is never one. */
+export function isDocumentOnlyScriptCheckSegment(segment: string): boolean {
+  const run = pythonScriptRun(segment)
+  if (run === null) return false
+  const inputs = run.words.filter((word) => !DOCUMENT_ARG.test(word))
+  return inputs.length < run.words.length && inputs.every(isCheckArgument) && isCheckingScript(run.script, inputs)
 }

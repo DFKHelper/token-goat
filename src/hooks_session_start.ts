@@ -10,21 +10,40 @@ import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { buildDeltaCapsule } from './evidence_cache.js'
 import { ENV_KEYS } from './constants.js'
 import { envBool, envInt } from './env.js'
-import { DEFAULT_RECONCILE_BUDGET_MS, isReconcileClean, reconcileProject, uncheckedClauses } from './reconcile.js'
+import { requestReconcileSafe } from './hooks_index.js'
 import { countNoun, extractErrorMessage } from './util.js'
 import { claimFirstSavingsReceipt, recordStat } from './stats.js'
 import { detectHarness } from './bridges/registry.js'
 import { projectNotesFor } from './project_memory.js'
 import { buildReminder } from './session_reminder.js'
 import { recordSessionStartBegun, recordSessionStartSettled } from './session_start_owed.js'
+import { resolveIndexPath } from './paths.js'
+import { clearListingSlow, listingKnownSlow, markListingSlow, sweptRecently } from './reconcile_stamp.js'
+
+/** How long the hook waits for `git ls-files` before it hands the sweep to the worker (the listing sits outside the sweep budget). */
+export const SESSION_START_LISTING_DEADLINE_MS = 300
+
+// Kept out of constants.ts: that file feeds the parser fingerprint, and an env key name changes no extraction.
+const RECONCILE_LISTING_DEADLINE_ENV = 'TOKEN_GOAT_RECONCILE_LISTING_DEADLINE_MS'
 
 /** Sweep the project for index drift and enqueue whatever no longer matches disk. Returns a one-line note when drift was found, or null when the index is already correct -- which is the overwhelmingly common case, and stays silent so the session-start context does not grow a line that says nothing. Only runs against an already-indexed project: on an unindexed one every tracked file is legitimately absent from the index, so the sweep would report the entire repository as drift and enqueue it, which is `token-goat index .`'s job and not a hook's. Never throws. Its caller is a session-start hook, and a sweep that failed is a missed repair, not a reason to degrade the reminder the hook exists to deliver. */
-function reconcileNote(cwd: string, indexed: boolean): string | null {
+async function reconcileNote(cwd: string, indexed: boolean): Promise<string | null> {
   if (!indexed) return null
   if (!envBool(ENV_KEYS.RECONCILE, true)) return null
   try {
+    // A complete sweep within the reuse window already covered the project.
+    const projectRoot = resolveIndexPath('.', cwd)
+    if (sweptRecently(projectRoot)) return null
+    // A listing that missed the deadline in the last hour goes straight to the worker; if the request cannot be recorded the hook lists for itself.
+    if (listingKnownSlow(projectRoot) && requestReconcileSafe(cwd)) return 'token-goat: index drift check is running in the background worker (git was slow listing the project files). Symbol lookups may be briefly stale.'
+    // Loaded only when a sweep is due, so the common start that a recent sweep covers never parses the reconcile module.
+    const { DEFAULT_RECONCILE_BUDGET_MS, isReconcileClean, reconcileProject, uncheckedClauses } = await import('./reconcile.js')
     const budgetMs = envInt(ENV_KEYS.RECONCILE_BUDGET_MS, DEFAULT_RECONCILE_BUDGET_MS, 0, 60_000)
-    const result = reconcileProject({ cwd, budgetMs })
+    const result = reconcileProject({ cwd, budgetMs, listingTimeoutMs: envInt(RECONCILE_LISTING_DEADLINE_ENV, SESSION_START_LISTING_DEADLINE_MS, 1, 60_000) })
+    // A missed deadline is late, not dropped: the worker sweeps it.
+    const handedToWorker = result.gitTimedOut && requestReconcileSafe(cwd)
+    if (result.gitTimedOut) markListingSlow(projectRoot)
+    else clearListingSlow(projectRoot)
     // isReconcileClean only looks at changed/added/removed, all three of which come back empty when the sweep never reached the files that would have populated them -- a budget-exhausted pass over a large project can find zero drift purely because it ran out of time before it got past the first few tracked files, not because the rest of the project agrees with the index. Gating the early return on isReconcileClean alone reported that as silence, the same "confident wrong answer over a partial scan" runReconcile's CLI text output already refuses to give (see its own "clean or not" comment) -- this note must refuse it too. A listing git did not finish is the same partial scan: no new file could be found, so an empty drift set is not silence.
     if (isReconcileClean(result) && !result.budgetExhausted && !result.gitTimedOut) return null
     // The breakdown is only worth its bytes when there is more than one kind of drift: with a single kind it restates the total it sits beside, and this line is paid for on every session start that finds anything. Files reindexed only because an upgrade changed the parser or the chunker never changed on disk, so calling them "changed outside this session" tells the model to distrust every file it has already read; they get their own clause.
@@ -38,7 +57,7 @@ function reconcileNote(cwd: string, indexed: boolean): string | null {
     // The truncation is disclosed rather than smoothed over: a budget-limited sweep found the drift it had time to find, and a caller reading "3 files drifted" as "3 files drifted in total" would be reading a floor as a total.
     const truncated =
       (result.budgetExhausted ? ` (sweep stopped at its time budget with ${uncheckedClauses(result).join(' and ')}, so there may be more)` : '') +
-      (result.gitTimedOut ? ' (git did not answer in time listing the project files, so new files could not be found)' : '')
+      (result.gitTimedOut ? ` (git did not answer in time listing the project files, so new files could not be found${handedToWorker ? '; the background worker is finishing the check' : ''})` : '')
     const total = result.changed.length + result.added.length + result.removed.length
     if (total === 0) {
       // budgetExhausted with nothing found yet: say the sweep was incomplete instead of nothing at all.
@@ -125,7 +144,7 @@ export async function sessionStartOutput(event: HookEvent, options: SessionStart
     let context = buildReminder(indexed)
     if (cwd !== undefined) {
       // Runs before the capsule so a drifted file is already queued while the rest of the hook finishes: the worker picks it up on its next 2 s drain rather than on the next command.
-      const drift = reconcileNote(cwd, indexed)
+      const drift = await reconcileNote(cwd, indexed)
       if (drift !== null) context += `\n\n${drift}`
       const capsule = buildDeltaCapsule(cwd)
       if (capsule !== null) context += `\n\n${capsule}`
@@ -145,6 +164,13 @@ export async function sessionStartOutput(event: HookEvent, options: SessionStart
       if (update?.latest && advice !== null) {
         context += `\n[token-goat update available: v${update.current} -> v${update.latest}. ${advice}]`
       }
+    } catch {
+      // non-fatal
+    }
+    try {
+      const { staleBuildNote } = await import('./build_stamp.js')
+      const stale = staleBuildNote()
+      if (stale !== null) context += `\n${stale}`
     } catch {
       // non-fatal
     }

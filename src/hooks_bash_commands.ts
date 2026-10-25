@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { runGitAsyncLazy } from './util.js'
+import { safeShlexSplit } from './git_porcelain.js'
 import type { GitResult } from './util.js'
 import {
   detectFromCommand,
@@ -294,15 +295,6 @@ export const ORIG_HEAD_ELIGIBLE_GIT_RE = new RegExp(`${GIT_PREFIX_RE_SRC}(?:pull
 
 /** Matches the HEAD reflog message a real merge/rebase/pull leaves behind. */
 export const ORIG_HEAD_REFLOG_MSG_RE = /^(merge\s|rebase\s\(|pull\s)/i
-
-/** Tokenize a segment argv-style, or `null` when it is not tokenizable (shlexSplit throws on an unterminated quote). */
-export function safeShlexSplit(segment: string): string[] | null {
-  try {
-    return shlexSplit(segment)
-  } catch {
-    return null
-  }
-}
 
 /** A git read run in `gitDir` under the hook's 5 s budget, off the event loop so a resident hook server keeps answering other callers while git runs. */
 export function hookGitRead(gitDir: string, args: string[]): Promise<GitResult> {
