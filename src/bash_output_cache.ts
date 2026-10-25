@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
-import { parsePorcelainZ, safeShlexSplit, skipGitLeadingOptions } from './git_porcelain.js'
+import { parsePorcelainZ, safeShlexSplit, skipEnvAssignments, skipGitLeadingOptions } from './git_porcelain.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
 import { storeBlob, loadBlob, isBlobStale } from './disk_cache.js'
@@ -72,12 +72,14 @@ const DEP_LOCKFILES: Record<string, string[]> = {
   composer: ['composer.lock'],
 }
 
-/** Git's leading options (`-C <path>`, `-c k=v`, `--git-dir=...`) sit between `git` and the subcommand, so the git-keyed types match their subcommand word here instead of the literal `git <sub>` prefix. `runDir` is only used for the directory result; the classifiers pass `''`. Null when the command is not a literal `git` invocation or does not tokenize. */
-function parseGitInvocation(cmd: string, runDir: string): { subcommand: string | undefined; dir: string } | null {
+/** Git's leading options (`-C <path>`, `-c k=v`, `--git-dir=...`) sit between `git` and the subcommand, and environment assignments (`FOO=1 git ...`) sit before `git`, so the git-keyed types match their subcommand word here instead of the literal `git <sub>` prefix. `operand` is the token right after the subcommand. `runDir` is only used for the directory result; the classifiers pass `''`. Null when the command is not a literal `git` invocation or does not tokenize. */
+function parseGitInvocation(cmd: string, runDir: string): { subcommand: string | undefined; operand: string | undefined; dir: string } | null {
   const tokens = safeShlexSplit(cmd)
-  if (tokens === null || !/^git$/i.test(tokens[0] ?? '')) return null
-  const { index, dir } = skipGitLeadingOptions(tokens, 1, runDir)
-  return { subcommand: tokens[index], dir }
+  if (tokens === null) return null
+  const head = skipEnvAssignments(tokens)
+  if (!/^git$/i.test(tokens[head] ?? '')) return null
+  const { index, dir } = skipGitLeadingOptions(tokens, head + 1, runDir)
+  return { subcommand: tokens[index], operand: tokens[index + 1], dir }
 }
 
 /** The subcommand word each git-keyed type matches once git's leading options are skipped. A type absent here, or a command that does not tokenize, falls back to its COMMAND_PATTERNS regex. */
@@ -87,11 +89,18 @@ const GIT_SUBCOMMAND_PATTERNS: Partial<Record<keyof typeof COMMAND_PATTERNS, Reg
   gitPush: /^push\b/i,
 }
 
+/** A full object name as `git show` takes it: 40 hex digits, optionally followed by `:path` or a revision suffix, but not by more hex. */
+const GIT_FULL_OBJECT_NAME_RE = /^[0-9a-f]{40}(?![0-9a-z_])/i
+
 export function isCommandOfType(cmd: string, type: keyof typeof COMMAND_PATTERNS): boolean {
   const subcommandPattern = GIT_SUBCOMMAND_PATTERNS[type]
   if (subcommandPattern) {
     const invocation = parseGitInvocation(cmd, '')
     if (invocation) return subcommandPattern.test(invocation.subcommand ?? '')
+  }
+  if (type === 'gitImmutable') {
+    const invocation = parseGitInvocation(cmd, '')
+    if (invocation) return invocation.subcommand === 'show' && GIT_FULL_OBJECT_NAME_RE.test(invocation.operand ?? '')
   }
   const pattern = COMMAND_PATTERNS[type]
   return pattern?.test(cmd) ?? false
