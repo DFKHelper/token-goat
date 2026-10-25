@@ -1,6 +1,6 @@
 /** A script that runs its CLI only when it is the entry module must still do so when it is started through a symlinked directory, and must not crash when the entry path cannot be resolved. Node resolves the entry module's symlinks for import.meta.url but leaves process.argv[1] as written, so comparing the two straight skips the CLI silently with exit 0: on macOS every temp directory and /tmp sit behind a symlink (/var and /tmp point into /private), which made the pre-push focus decision see an empty record on the macOS CI job. Provenance is FORMAT-DERIVED: the Node ESM documentation ("import.meta.url", "--preserve-symlinks-main": the main module is resolved to its real path unless that flag is set) and macOS hier(7) (/tmp, /var and /etc are symbolic links into /private). Windows has no unprivileged file symlink, so a directory junction stands in, and a box that cannot create one skips these tests; the check that proves them is the red run against the old comparison, quoted in the commit. */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -30,12 +30,13 @@ afterEach(() => {
   link = ''
 })
 
-/** Copies the named scripts and the entry-module helper into a fresh directory and returns it by its real path and by a symlinked one. */
+/** Copies the named scripts, the entry-module helper and every other top-level script (scripts import one another) into a fresh directory and returns it by its real path and by a symlinked one. */
 function stage(...names: string[]): { real: string; link: string } {
   real = mkdtempSync(path.join(tmpdir(), 'tg-symlink-main-'))
   link = `${real}-link`
   if (CAN_JUNCTION) symlinkSync(real, link, 'junction')
-  for (const n of [...names, 'is-main-module.mjs']) copyFileSync(path.join(SCRIPTS, n), path.join(real, n))
+  const scripts = new Set([...names, 'is-main-module.mjs', ...readdirSync(SCRIPTS).filter((n) => n.endsWith('.mjs'))])
+  for (const n of scripts) copyFileSync(path.join(SCRIPTS, n), path.join(real, n))
   return { real, link }
 }
 
