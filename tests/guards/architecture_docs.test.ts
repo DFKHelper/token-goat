@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { resolveRenames } from '../../scripts/arch-docs/curated.mjs'
 import { parseNameStatus } from '../../scripts/arch-docs/source.mjs'
+import { runCli } from '../../scripts/sync-arch-docs.mjs'
 import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
 import { indexableDir } from '../helpers/temp-config.js'
 
@@ -55,6 +56,18 @@ function engine(dir: string, ...args: string[]): { status: number | null; stdout
   scrubRepoLocalGitEnv(env)
   const result = spawnSync(process.execPath, [ENGINE, ...args], { cwd: dir, env, encoding: 'utf8' })
   return { status: result.status, stdout: result.stdout, stderr: result.stderr }
+}
+
+/** The exit code of `--check` (text format) from the engine's entry point, in process: one node spawn fewer than `engine`. The repo-local git variables are scrubbed for the call only. */
+function checkExitCode(dir: string): number {
+  const saved = { ...process.env }
+  scrubRepoLocalGitEnv(process.env)
+  try {
+    return runCli(['--check'], { cwd: dir, stderr: () => {}, stdout: () => {} })
+  } finally {
+    for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name]
+    Object.assign(process.env, saved)
+  }
 }
 
 const synced = (): Fixture => {
@@ -402,7 +415,7 @@ describe('sync-arch-docs --check --format=json', () => {
     gitOut(dir, ['mv', 'src/b.ts', 'src/bb.ts'])
     const json = engine(dir, '--check', '--format=json')
     expect({ status: json.status, stdout: json.stdout, stderr: json.stderr }).toEqual({ status: 1, stdout: GOLDEN_RENAME, stderr: '' })
-    expect(engine(dir, '--check').status).toBe(1)
+    expect(checkExitCode(dir)).toBe(1)
   })
 
   it('exits 2 for a format that is not text or json, or json outside --check', () => {
