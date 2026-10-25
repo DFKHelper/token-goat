@@ -67,6 +67,16 @@ delete process.env['CLAUDE_CONFIG_DIR']
 delete process.env['CLAUDE_PROJECT_DIR']
 // CODEX_HOME points rewrite_permission.ts at Codex's rules files, and an inherited one would hand spawned bundles the developer's own rules; a test that wants it sets its own.
 delete process.env['CODEX_HOME']
+// COPILOT_HOME replaces Copilot CLI's user root, and an inherited one would point hook and instruction reads at the developer's own tree; a test that wants it sets its own.
+delete process.env['COPILOT_HOME']
+// COPILOT_CACHE_HOME replaces Copilot CLI's cache root, and an inherited one would read the developer's MCP tool-definition cache; a test that wants it sets its own.
+delete process.env['COPILOT_CACHE_HOME']
+// KIMI_CODE_HOME replaces Kimi Code's data root, and an inherited one would install the bridge into the developer's own Kimi tree; a test that wants it sets its own.
+delete process.env['KIMI_CODE_HOME']
+// XDG_CACHE_HOME replaces the cache root Copilot CLI uses on Linux, and an inherited one would read the developer's MCP tool-definition cache; a test that wants it sets its own.
+delete process.env['XDG_CACHE_HOME']
+// HERMES_HOME makes detectHarness() report Hermes, and an inherited one would change the harness a test sees; a test that wants it sets its own.
+delete process.env['HERMES_HOME']
 // A suite run from a Claude Code Bash call inherits the session: CLAUDE_PID sends the hidden-rule check to the developer's own claude command line, CLAUDE_CODE_ENTRYPOINT decides whether it trusts the host, the session id keys its cache, and doctor's probe reads the rest as Claude Code signals; CI has none of them, so they are deleted and a test that wants one sets its own.
 scrubClaudeSessionEnv(process.env)
 
