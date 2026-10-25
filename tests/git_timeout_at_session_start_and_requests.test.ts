@@ -36,6 +36,8 @@ import { appendReconcileRequest, parseReconcileRequests, reconcileRequestPathFor
 import type { HookEvent } from '../src/hook_registry.js'
 import { sessionStartHandler } from '../src/hooks_session_start.js'
 import { recordIndexedRoot } from '../src/indexed_roots.js'
+import { resolveIndexPath } from '../src/paths.js'
+import { clearListingSlow } from '../src/reconcile_stamp.js'
 import { drainReconcileRequestsAsync } from '../src/reconcile_requests.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -74,6 +76,8 @@ describe('session start when git does not finish listing the files', () => {
     expect(killed.hookType).toBe('context')
     if (killed.hookType === 'context') expect(killed.context).toMatch(/git did not answer in time/)
 
+    // The killed listing above marked the project slow, which would route this run to the worker without asking git; the refused answer is what this run is for.
+    clearListingSlow(resolveIndexPath('.', projectDir), _testDbPath)
     git.answer = () => REFUSED
     const refused = await sessionStartHandler(makeEvent(projectDir))
     if (refused.hookType === 'context') expect(refused.context).not.toMatch(/git did not answer in time/)

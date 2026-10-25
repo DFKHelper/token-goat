@@ -127,6 +127,8 @@ describe('sessionStartHandler', () => {
   // Regression: the whole point of dropping the exact symbol count is that the SessionStart context is byte-identical across a reindex that changes symbol counts, since it lands in the earliest, most cacheable position of the request. Asserting the absence of a digit (above) proves the count is gone but not that the string is actually stable end to end -- this drives the real change (inserting a symbol between two calls) and diffs full strings.
   it('emits byte-identical context across a reindex that changes the symbol count', async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-session-start-stable-'))
+    // This case compares two starts byte for byte, so the real git must answer inside the deadline on a loaded host or the second start would be routed to the worker with a different note.
+    vi.stubEnv('TOKEN_GOAT_RECONCILE_LISTING_DEADLINE_MS', '60000')
     try {
       const forwardSlashDir = normalizePath(projectDir)
       const db = getDb(_testDbPath)
@@ -154,6 +156,7 @@ describe('sessionStartHandler', () => {
         expect(after.context).toBe(before.context)
       }
     } finally {
+      vi.unstubAllEnvs()
       fs.rmSync(projectDir, { recursive: true, force: true })
     }
   })

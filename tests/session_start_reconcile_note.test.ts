@@ -32,7 +32,8 @@ function sessionStartContext(extraEnv: Record<string, string> = {}): string {
     cwd: projectDir,
     encoding: 'utf-8',
     input: payload,
-    env: { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, XDG_DATA_HOME: homeDir, ...extraEnv },
+    // The real git must finish listing whatever the host load, or the sweep is handed to the worker and no note is made.
+    env: { ...process.env, TOKEN_GOAT_HOME: homeDir, LOCALAPPDATA: homeDir, XDG_DATA_HOME: homeDir, TOKEN_GOAT_RECONCILE_LISTING_DEADLINE_MS: '60000', ...extraEnv },
   })
   expect(res.status, `the session_start hook exited ${res.status}; it must never fail the session`).toBe(0)
   const parsed = JSON.parse(res.stdout ?? '{}') as { hookSpecificOutput?: { additionalContext?: string } }
@@ -108,6 +109,8 @@ describe('session_start reconciliation', () => {
     const db = getDb(findGlobalDb(homeDir) as string)
     try {
       db.prepare("UPDATE files SET parser_sha = '0000000000000000' WHERE path LIKE '%alpha.ts'").run()
+      // The calibration start above swept the whole project, and a complete sweep stands in for the next five minutes of session starts; forget it so this start sweeps.
+      db.prepare("DELETE FROM reconcile_cursor WHERE root LIKE '%' || char(0) || 'swept'").run()
     } finally {
       // Closed on every path: a throwing statement must not leave the file open for the afterEach removal to fail on (Windows refuses), which would bury this case's own error.
       db.close()

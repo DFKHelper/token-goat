@@ -568,6 +568,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/queue_waker.ts`](src/queue_waker.ts) | Ends the worker's between-drain sleep when another process appends to `queue/dirty.txt` (fs.watch on the queue directory, timer fallback); the worker's own requeues keep their pacing. |
 | [`src/recall_index.ts`](src/recall_index.ts) | Cross-cache full-text search index for `token-goat recall`. |
 | [`src/reconcile_requests.ts`](src/reconcile_requests.ts) | The worker's side of a reconcile request: a hook that knew files changed but could not learn which (a branch switch whose changed-file list git failed to produce in time) leaves th |
+| [`src/reconcile_stamp.ts`](src/reconcile_stamp.ts) | What session start remembers per project, in the reconcile_cursor table under the root, a NUL and a word (`swept`, `slowlist`), so index_prune.ts removes the rows with the project: |
 | [`src/recovery_fix_policy.ts`](src/recovery_fix_policy.ts) | What a recovery pair may store and replay (recovery_pairs.ts). |
 | [`src/recovery_pairs.ts`](src/recovery_pairs.ts) | Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. |
 | [`src/ref_blindness.ts`](src/ref_blindness.ts) | Honest answers for questions the reference index cannot answer. |
