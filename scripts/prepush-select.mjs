@@ -33,6 +33,20 @@ export function orNull(fn) {
   }
 }
 
+/** @param {(modules: string[]) => {tests: Map<string, number>, setups: string[]}} read one read of the import graph for the changed modules, throws when it cannot be read @returns {{importers: (modules: string[]) => Map<string, number> | null, setups: (modules: string[]) => string[] | null}} both seams share one memo per modules key, and each is null when the read throws */
+export function importSeams(read) {
+  const memo = new Map()
+  const reachFor = (modules) => {
+    const key = modules.join('\0')
+    if (!memo.has(key)) memo.set(key, orNull(() => read(modules)))
+    return memo.get(key)
+  }
+  return {
+    importers: (modules) => reachFor(modules)?.tests ?? null,
+    setups: (modules) => reachFor(modules)?.setups ?? null,
+  }
+}
+
 /** @param {string} text the pre-push stdin: `<local ref> <local sha> <remote ref> <remote sha>` per line, per githooks(5) @returns {{refs: {lref: string, lsha: string, rref: string, rsha: string}[], bad: string | null}} bad names the first line that is not four fields with two well-formed shas */
 export function parsePushRefs(text) {
   const refs = []
@@ -171,11 +185,7 @@ function main() {
   const [root, leg, headSha, pushFile, store, deferFile] = process.argv.slice(2)
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS })
   // One read of the import graph serves both the importer and the setup seams for the same modules.
-  let reach = null
-  const reachFor = (modules) => {
-    reach ??= orNull(() => importReach(root, modules))
-    return reach
-  }
+  const seams = importSeams((modules) => importReach(root, modules))
   const result = decideSelection({
     leg,
     headSha,
@@ -195,8 +205,8 @@ function main() {
       return SHA.test(base) ? base : null
     }),
     readers: (named, srcChanged) => orNull(() => readerTiersForRepo(root, named, srcChanged)),
-    importers: (modules) => reachFor(modules)?.tests ?? null,
-    setups: (modules) => reachFor(modules)?.setups ?? null,
+    importers: seams.importers,
+    setups: seams.setups,
     durations: () => (store ? readDurations(durationsPath(store), leg) : {}),
     workers: workersFor(process.env, process.platform),
   })

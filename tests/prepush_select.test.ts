@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import * as graph from '../scripts/prepush-graph.mjs'
-import { classifyPath, decideSelection, orNull, parseNameStatus, parsePushRefs, rangeOf } from '../scripts/prepush-select.mjs'
+import { classifyPath, decideSelection, importSeams, orNull, parseNameStatus, parsePushRefs, rangeOf } from '../scripts/prepush-select.mjs'
 
 // Fixture provenance. Ref lines: FORMAT-DERIVED from githooks(5) pre-push, `<local-ref> SP <local-object-name> SP <remote-ref> SP <remote-object-name> LF`, with the all-zeroes name for a missing remote ref and `(delete)` as the local ref of a deletion; https://git-scm.com/docs/githooks read from Git 2.53.0.windows.1 doc/git-doc/githooks.html. The shas are synthetic. Changed-path rows: HAND-DERIVED. `git diff -z --name-status` text: FORMAT-DERIVED from git-diff(1) --name-status with -z (status, NUL, path, NUL); the real-git path is exercised in prepush_focus.test.ts.
 const HEAD = 'a'.repeat(40)
@@ -309,6 +309,13 @@ describe('a change that reaches test setup, or a wide push, runs the full leg', 
     const r = select([m('src/hint_stats.ts')], { importers: () => new Map(), setups: () => ['tests/setup/reset-hint-stats.ts'] })
     expect(r.full ? r.why : 'focused').toBe('tests/setup/reset-hint-stats.ts is test setup, which runs before every test')
   })
+  it('a changed module whose setup read fails selects the full leg, with the import-graph reason', () => {
+    // Fixture provenance: HAND-DERIVED. The importers seam answers, and the setups seam returns null: the setup read failed on its own.
+    const run = () => select([m('src/a.ts')], { importers: () => new Map(), setups: () => null })
+    expect(run).not.toThrow()
+    const r = run()
+    expect(r.full ? r.why : 'focused').toBe('the import graph of src and tests could not be read')
+  })
   it('the real import graph: src/hint_stats.ts reaches tests/setup and selects the full leg', () => {
     const r = select([m('src/hint_stats.ts')], { importers: (mods) => graph.testsImporting(ROOT, mods), setups: (mods) => graph.importReach(ROOT, mods).setups })
     expect(r.full ? r.why : 'focused').toMatch(/^tests\/setup\/.+ is test setup, which runs before every test$/)
@@ -321,5 +328,51 @@ describe('a change that reaches test setup, or a wide push, runs the full leg', 
   it('200 changed paths are not cut by the cap', () => {
     const r = select(docs(200))
     expect(r.full).toBe(false)
+  })
+})
+
+describe('prepush import graph seams map a failed read to null', () => {
+  // Fixture provenance: HAND-DERIVED. The read stubs are counters over synthetic module lists, not a real import graph.
+  it('a throwing read makes both seams null, not an empty map or list', () => {
+    const seams = importSeams(() => {
+      throw new Error('graph unreadable')
+    })
+    expect(seams.importers(['src/a.ts'])).toBeNull()
+    expect(seams.setups(['src/a.ts'])).toBeNull()
+  })
+
+  it('reads once per modules key, shares the read between both seams, and gives each key its own result', () => {
+    let reads = 0
+    const seams = importSeams((modules) => {
+      reads += 1
+      return { tests: new Map([[modules[0], 1]]), setups: [`tests/setup/${modules[0]}`] }
+    })
+    expect(seams.importers(['src/a.ts'])).toEqual(new Map([['src/a.ts', 1]]))
+    expect(seams.setups(['src/a.ts'])).toEqual(['tests/setup/src/a.ts'])
+    expect(reads).toBe(1)
+    expect(seams.importers(['src/b.ts'])).toEqual(new Map([['src/b.ts', 1]]))
+    expect(seams.setups(['src/b.ts'])).toEqual(['tests/setup/src/b.ts'])
+    expect(reads).toBe(2)
+  })
+})
+
+describe('a new ref with no readable merge base runs the full leg, from the real script', () => {
+  const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'prepush-select.mjs')
+  it('merge-base against a missing origin/main returns null, so the new ref selects the full leg', () => {
+    // Fixture provenance: HAND-DERIVED. The temp repo has one commit and no origin/main, so git merge-base fails on its own; the pushed sha is the repo's real HEAD.
+    const root = mkdtempSync(path.join(tmpdir(), 'prepush-select-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root })
+      writeFileSync(path.join(root, 'a.txt'), 'a\n')
+      execFileSync('git', ['add', 'a.txt'], { cwd: root })
+      execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'], { cwd: root })
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+      const pushFile = path.join(root, 'push.txt')
+      writeFileSync(pushFile, refLine(head, ZERO))
+      const out = spawnSync(process.execPath, [SCRIPT, root, 'win', head, pushFile, '', ''], { encoding: 'utf8', timeout: 60000 })
+      expect(out.stdout.split('\n')[0]).toBe('FULL\twin leg full: new remote ref refs/heads/feat with no merge base on origin/main')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
