@@ -6,3 +6,5 @@ export function importerGraph(sources: Map<string, string>): Map<string, Set<str
 export function testDistances(importers: Map<string, Set<string>>, changed: string[]): Map<string, number>
 export function readSources(root: string): Map<string, string>
 export function testsImporting(root: string, changed: string[]): Map<string, number>
+export function setupsReached(importers: Map<string, Set<string>>, changed: string[]): string[]
+export function importReach(root: string, changed: string[]): { tests: Map<string, number>; setups: string[] }

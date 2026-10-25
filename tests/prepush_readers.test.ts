@@ -86,6 +86,7 @@ describe('prepush readers in the selection', () => {
       guards: () => GUARDS,
       matrix: () => MATRIX,
       importers: () => new Map(),
+      setups: () => [],
       mergeBase: () => null,
       readers: () => READERS,
       durations: () => ({}),

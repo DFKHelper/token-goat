@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import * as graph from '../scripts/prepush-graph.mjs'
 import { importerGraph, readSources, relativeSpecifiers, resolveSpecifier, testDistances } from '../scripts/prepush-graph.mjs'
 
 // Fixture provenance: the specifier spellings are CAPTURE from this repo (grep of tests/ and src/ for `from '`, `import(` and `vi.mock(` shows the `.js` suffix on TypeScript sources, dynamic imports and vi.mock calls); the graphs are HAND-DERIVED.
@@ -135,5 +136,14 @@ describe('prepush graph: sources are the tracked files', () => {
       writeFileSync(path.join(dir, rel), 'export {}\n')
     }
     expect(() => readSources(dir)).toThrow()
+  })
+})
+
+describe('prepush graph: a setup file reached through imports', () => {
+  // Fixture provenance: HAND-DERIVED. The graph is hand-built: a setup file imports a src module, and no test imports the setup file.
+  it('lists the setup file reached from the changed module, and no test', () => {
+    const importers = new Map([['src/hint_stats.ts', new Set(['tests/setup/reset-hint-stats.ts'])]])
+    expect(graph.setupsReached(importers, ['src/hint_stats.ts'])).toEqual(['tests/setup/reset-hint-stats.ts'])
+    expect(testDistances(importers, ['src/hint_stats.ts']).size).toBe(0)
   })
 })

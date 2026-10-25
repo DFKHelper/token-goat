@@ -6,7 +6,7 @@ import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
 import { hasUnparsedFailure, readFailure } from './prepush-failed.mjs'
 import { coldCostMs, costFn, fillBudget, legBudget, workersFor } from './prepush-budget.mjs'
-import { compareCodeUnits, GIT_TIMEOUT_MS, testsImporting } from './prepush-graph.mjs'
+import { compareCodeUnits, GIT_TIMEOUT_MS, importReach } from './prepush-graph.mjs'
 import { readerTiersForRepo } from './prepush-readers.mjs'
 import { durationsPath, readDurations } from './test-durations.mjs'
 
@@ -21,6 +21,17 @@ const DOC_PATH = /^(?:docs\/|.+\.md$)/i
 const NOT_DOC = /^(?:src|tests|scripts|\.github|node_modules)\//
 // Anything under .lefthook-scripts: the hook decides what runs, so a focused leg cannot vouch for a change to it, and a change runs the full leg.
 const HOOK_SCRIPT = /^\.lefthook-scripts\//
+// Past this many changed paths the reader scan (one alternation over every path, run over every test text) costs minutes, so the leg runs in full.
+const MAX_CHANGED_PATHS = 200
+
+/** @template T @param {() => T} fn a read of the selection's input @returns {T | null} fn's value, or null when fn throws; decideSelection maps null to the full leg, so a failed read never selects nothing */
+export function orNull(fn) {
+  try {
+    return fn()
+  } catch {
+    return null
+  }
+}
 
 /** @param {string} text the pre-push stdin: `<local ref> <local sha> <remote ref> <remote sha>` per line, per githooks(5) @returns {{refs: {lref: string, lsha: string, rref: string, rsha: string}[], bad: string | null}} bad names the first line that is not four fields with two well-formed shas */
 export function parsePushRefs(text) {
@@ -78,6 +89,7 @@ export function decideSelection(io) {
     for (const row of rows) changedRows.set(row.path, row)
   }
   if (changedRows.size === 0) return { full: true, why: 'the pushed range changes no file' }
+  if (changedRows.size > MAX_CHANGED_PATHS) return { full: true, why: `the pushed range changes ${changedRows.size} paths, more than the ${MAX_CHANGED_PATHS} a focused leg reads` }
   const changedTests = []
   const modules = []
   const docs = []
@@ -106,6 +118,9 @@ export function decideSelection(io) {
     const found = io.importers(modules)
     if (found === null) return { full: true, why: 'the import graph of src and tests could not be read' }
     distances = found
+    const setups = io.setups(modules)
+    if (setups === null) return { full: true, why: 'the import graph of src and tests could not be read' }
+    if (setups.length > 0) return { full: true, why: `${setups[0]} is test setup, which runs before every test` }
   }
   // The tests the import graph cannot see: they name a changed path as text, or (src changed) read src as text or spawn the built bundle.
   let readerTiers = []
@@ -155,46 +170,33 @@ function listTests(root, sub, keep) {
 function main() {
   const [root, leg, headSha, pushFile, store, deferFile] = process.argv.slice(2)
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS })
+  // One read of the import graph serves both the importer and the setup seams for the same modules.
+  let reach = null
+  const reachFor = (modules) => {
+    reach ??= orNull(() => importReach(root, modules))
+    return reach
+  }
   const result = decideSelection({
     leg,
     headSha,
     pushText: pushFile && existsSync(pushFile) ? readFileSync(pushFile, 'utf8') : '',
     env: process.env,
-    changed: (from, to) => {
-      try {
-        git('cat-file', '-e', `${from}^{commit}`)
-        return parseNameStatus(git('diff', '-z', '--name-status', '--no-renames', from, to))
-      } catch {
-        return null
-      }
-    },
+    changed: (from, to) => orNull(() => {
+      git('cat-file', '-e', `${from}^{commit}`)
+      return parseNameStatus(git('diff', '-z', '--name-status', '--no-renames', from, to))
+    }),
     failed: () => (store ? readFailure(store, leg)?.files ?? [] : []),
     unparsedFailure: () => (store ? hasUnparsedFailure(store, leg) : false),
     exists: (rel) => existsSync(path.join(root, rel)),
     guards: () => listTests(root, 'tests/guards', () => true),
     matrix: () => readdirSync(path.join(root, 'tests')).filter((n) => n.startsWith('command_matrix_e2e') && TEST_FILE.test(n)).map((n) => `tests/${n}`).sort(),
-    mergeBase: (sha) => {
-      try {
-        const base = git('merge-base', sha, 'origin/main').trim()
-        return SHA.test(base) ? base : null
-      } catch {
-        return null
-      }
-    },
-    readers: (named, srcChanged) => {
-      try {
-        return readerTiersForRepo(root, named, srcChanged)
-      } catch {
-        return null
-      }
-    },
-    importers: (modules) => {
-      try {
-        return testsImporting(root, modules)
-      } catch {
-        return null
-      }
-    },
+    mergeBase: (sha) => orNull(() => {
+      const base = git('merge-base', sha, 'origin/main').trim()
+      return SHA.test(base) ? base : null
+    }),
+    readers: (named, srcChanged) => orNull(() => readerTiersForRepo(root, named, srcChanged)),
+    importers: (modules) => reachFor(modules)?.tests ?? null,
+    setups: (modules) => reachFor(modules)?.setups ?? null,
     durations: () => (store ? readDurations(durationsPath(store), leg) : {}),
     workers: workersFor(process.env, process.platform),
   })

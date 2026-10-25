@@ -32,6 +32,7 @@ function select(over: Partial<Io> = {}, durations: Record<string, number> = {}):
     guards: () => [G1, G2],
     matrix: () => [M1],
     importers: () => IMPORTERS,
+    setups: () => [],
     mergeBase: () => null,
     readers: () => [],
     durations: () => durations,

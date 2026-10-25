@@ -1,9 +1,12 @@
 /** scripts/prepush-select.mjs decides which test files a pre-push suite leg runs: a wrong selection fails silently (a red test is skipped), so every doubt must come back as the full leg. */
-import { readFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { classifyPath, decideSelection, parseNameStatus, parsePushRefs, rangeOf } from '../scripts/prepush-select.mjs'
+import * as graph from '../scripts/prepush-graph.mjs'
+import { classifyPath, decideSelection, orNull, parseNameStatus, parsePushRefs, rangeOf } from '../scripts/prepush-select.mjs'
 
 // Fixture provenance. Ref lines: FORMAT-DERIVED from githooks(5) pre-push, `<local-ref> SP <local-object-name> SP <remote-ref> SP <remote-object-name> LF`, with the all-zeroes name for a missing remote ref and `(delete)` as the local ref of a deletion; https://git-scm.com/docs/githooks read from Git 2.53.0.windows.1 doc/git-doc/githooks.html. The shas are synthetic. Changed-path rows: HAND-DERIVED. `git diff -z --name-status` text: FORMAT-DERIVED from git-diff(1) --name-status with -z (status, NUL, path, NUL); the real-git path is exercised in prepush_focus.test.ts.
 const HEAD = 'a'.repeat(40)
@@ -36,6 +39,7 @@ function select(changed: Row[] | null, over: Partial<Io> = {}): ReturnType<typeo
     guards: () => GUARDS,
     matrix: () => MATRIX,
     importers: () => IMPORTERS,
+    setups: () => [],
     mergeBase: () => null,
     readers: () => [[], [], []],
     durations: () => ({}),
@@ -267,5 +271,55 @@ describe('prepush range and path rules', () => {
       { status: 'A', path: 'docs/c.md' },
     ])
     expect(parseNameStatus('')).toEqual([])
+  })
+})
+
+describe('a failing git call in select main runs the full leg', () => {
+  // Fixture provenance: HAND-DERIVED. The shas are synthetic and absent from the temp repo, so the git call that reads them fails on its own.
+  const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'prepush-select.mjs')
+  it('orNull returns null when the read throws, and the read value otherwise', () => {
+    expect(
+      orNull(() => {
+        throw new Error('git failed')
+      }),
+    ).toBeNull()
+    expect(orNull(() => ['src/a.ts'])).toEqual(['src/a.ts'])
+  })
+  it('a range git cannot list selects the full leg and names the reason, from the real script', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'prepush-select-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root })
+      writeFileSync(path.join(root, 'a.txt'), 'a\n')
+      execFileSync('git', ['add', 'a.txt'], { cwd: root })
+      execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'], { cwd: root })
+      const pushFile = path.join(root, 'push.txt')
+      writeFileSync(pushFile, refLine(HEAD, REMOTE))
+      const out = spawnSync(process.execPath, [SCRIPT, root, 'win', HEAD, pushFile, '', ''], { encoding: 'utf8', timeout: 60000 })
+      expect(out.stdout.split('\n')[0]).toBe(`FULL\twin leg full: git could not list ${REMOTE.slice(0, 9)}..${HEAD.slice(0, 9)}`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('a change that reaches test setup, or a wide push, runs the full leg', () => {
+  // Fixture provenance: HAND-DERIVED. The setup seam is a stub returning the setup file the graph reached; the real-tree row reads the repo's own import graph.
+  const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  it('a changed module that reaches a setup file selects the full leg and names the file', () => {
+    const r = select([m('src/hint_stats.ts')], { importers: () => new Map(), setups: () => ['tests/setup/reset-hint-stats.ts'] })
+    expect(r.full ? r.why : 'focused').toBe('tests/setup/reset-hint-stats.ts is test setup, which runs before every test')
+  })
+  it('the real import graph: src/hint_stats.ts reaches tests/setup and selects the full leg', () => {
+    const r = select([m('src/hint_stats.ts')], { importers: (mods) => graph.testsImporting(ROOT, mods), setups: (mods) => graph.importReach(ROOT, mods).setups })
+    expect(r.full ? r.why : 'focused').toMatch(/^tests\/setup\/.+ is test setup, which runs before every test$/)
+  })
+  const docs = (n: number): Row[] => Array.from({ length: n }, (_, i) => m(`docs/d${i}.md`))
+  it('201 changed paths select the full leg and name the count', () => {
+    const r = select(docs(201))
+    expect(r.full ? r.why : 'focused').toBe('the pushed range changes 201 paths, more than the 200 a focused leg reads')
+  })
+  it('200 changed paths are not cut by the cap', () => {
+    const r = select(docs(200))
+    expect(r.full).toBe(false)
   })
 })

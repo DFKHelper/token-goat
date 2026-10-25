@@ -22,10 +22,12 @@ export interface SelectionIo {
   mergeBase: (sha: string) => string | null
   readers: (named: string[], srcChanged: boolean) => string[][] | null
   importers: (modules: string[]) => Map<string, number> | null
+  setups: (modules: string[]) => string[] | null
   durations: () => Record<string, number>
   workers: number
 }
 export type Selection = { full: true; why: string } | { full: false; files: string[]; note: string; deferred: string[]; deferredReport: string }
+export function orNull<T>(fn: () => T): T | null
 export function parsePushRefs(text: string): { refs: PushRef[]; bad: string | null }
 export function rangeOf(ref: PushRef, headSha: string, base?: string | null):{ from: string; to: string } | { full: string }
 export function classifyPath(status: string, p: string): { kind: 'test' | 'module' | 'doc' | 'skip' } | { full: string }
