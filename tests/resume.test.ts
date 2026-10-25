@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import * as fs from 'node:fs/promises'
+import * as os from 'node:os'
 import * as path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { storeBlob } from '../src/disk_cache.js'
 import { SESSIONS_SUBDIR } from '../src/session_store.js'
 import { storeBashOutput } from '../src/bash_output_cache.js'
@@ -231,17 +231,16 @@ describe('buildResumePacket', () => {
 
 // Regression: buildResumePacket dropped the Python predecessor's entire "## Skills" section -- a session that loaded a skill this session had zero trace of it in the resume packet, even though the underlying primitives (listSkills, getSkillFilePath, extractChecklistSection) were already fully implemented and tested, just never wired to this call site.
 describe('buildResumePacket — Skills section', () => {
-  const __dirname = path.dirname(fileURLToPath(import.meta.url))
-  const tempDir = path.resolve(__dirname, '.temp-resume-skills-test')
+  let tempDir: string
 
   beforeEach(async () => {
-    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {})
-    await fs.mkdir(tempDir, { recursive: true })
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tg-resume-skills-'))
     setSkillOutputsDirForTesting(tempDir)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     setSkillOutputsDirForTesting(null)
+    await fs.rm(tempDir, { recursive: true, force: true })
   })
 
   it('includes a checklist extracted from a skill loaded this session', async () => {

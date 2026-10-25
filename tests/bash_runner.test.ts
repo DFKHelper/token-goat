@@ -198,12 +198,12 @@ describe('bash_runner.run — config-driven compress limits (bash_compress.max_l
   fs.mkdirSync(path.dirname(configPath()), { recursive: true })
 
   afterEach(() => {
-    invalidateConfigCache()
     try {
-      fs.unlinkSync(path.join(DATA_DIR_TMP, 'config.toml'))
+      fs.unlinkSync(configPath())
     } catch {
       // ok — may not exist
     }
+    invalidateConfigCache()
   })
 
   it('honors a configured max_lines well below the default (unconfigured) line count', async () => {
@@ -237,12 +237,12 @@ describe('bash_runner.run — net-benefit floor (bash_compress.min_net_savings_b
   fs.mkdirSync(path.dirname(configPath()), { recursive: true })
 
   afterEach(() => {
-    invalidateConfigCache()
     try {
-      fs.unlinkSync(path.join(DATA_DIR_TMP, 'config.toml'))
+      fs.unlinkSync(configPath())
     } catch {
       // ok — may not exist
     }
+    invalidateConfigCache()
   })
 
   it('a below-floor saving passes through the ORIGINAL output untouched with no marker', async () => {

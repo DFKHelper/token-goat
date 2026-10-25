@@ -39,6 +39,7 @@ interface Fixture {
 /** A throwaway git repo with two modules, a config and an empty marker pair, all tracked. */
 function makeRepo(docText = `${DOC_HEAD}${START}\n${END}\n${DOC_TAIL}`): Fixture {
   const dir = indexableDir()
+  scratchDirs.push(dir)
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true })
   fs.writeFileSync(path.join(dir, 'src', 'a.ts'), A_TS)
   fs.writeFileSync(path.join(dir, 'src', 'b.ts'), B_TS)
