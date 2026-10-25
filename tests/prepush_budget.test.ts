@@ -1,6 +1,6 @@
 /** The pre-push time budget: scripts/prepush-budget.mjs does the arithmetic and scripts/prepush-select.mjs applies it to the priority list, so a wrong cut either skips a test that should run or blows the 1200 s the push is held to. */
 import { describe, expect, it } from 'vitest'
-import { BUDGET_ENV, CALIBRATION, DEFAULT_FILE_MS, FIXED_OVERHEAD_S, LEG_BUDGET_S, costFn, fillBudget, legBudget, workersFor } from '../scripts/prepush-budget.mjs'
+import { BUDGET_ENV, CALIBRATION, DEFAULT_FILE_MS, ELAPSED_ENV, FIXED_OVERHEAD_S, LEG_BUDGET_S, TOTAL_BUDGET_S, coldCostMs, costFn, fillBudget, legBudget, workersFor } from '../scripts/prepush-budget.mjs'
 import { resolveMaxWorkers } from './setup/max-workers.js'
 import { decideSelection } from '../scripts/prepush-select.mjs'
 
@@ -77,17 +77,28 @@ describe('prepush budget: priority order and the cut', () => {
     expect(r.files).toEqual(['tests/new.test.ts', G1, G2].sort())
   })
 
-  it('a file with no timing is costed at the median of the table, not at zero and not at the default', () => {
-    // table median is 10 s; NEAR1 is untimed, so it costs 10 s and the 5 s of room left cannot hold it
+  it('a file with no timing is costed at the mean of the table, not at zero and not at the default', () => {
+    // mean of the table is 10 s; NEAR1 is untimed, so it costs 10 s and the 5 s of room left cannot hold it
     const table = { [G1]: 10_000, [G2]: 10_000, [M1]: 10_000, [NEAR2]: 10_000, [FAR1]: 10_000, [FAR2]: 10_000 }
-    expect(DEFAULT_FILE_MS).toBeLessThan(5_000)
     const r = select({ env: { PREPUSH_BUDGET_S: budgetFor(35_000) } }, table)
     expect(r.deferred).toContain(NEAR1)
     expect(costFn(table)(NEAR1)).toBe(10_000)
   })
 
+  it('an untimed file costs the mean, not the median, of a skewed table', () => {
+    // HAND-DERIVED: median of 225, 225, 10000 is 225 ms but the mean is 3483 ms (10450 / 3, rounded)
+    expect(costFn({ 'tests/a.test.ts': 225, 'tests/b.test.ts': 225, 'tests/c.test.ts': 10_000 })('tests/x.test.ts')).toBe(3483)
+    expect(coldCostMs({ 'tests/a.test.ts': 225, 'tests/b.test.ts': 225, 'tests/c.test.ts': 10_000 })).toBe(3483)
+  })
+
   it('an empty table costs a file at the default', () => {
     expect(costFn({})('tests/x.test.ts')).toBe(DEFAULT_FILE_MS)
+    expect(DEFAULT_FILE_MS).toBe(6200)
+  })
+
+  it('with no duration table the selection note says every file is costed at the default', () => {
+    const r = select({ env: { PREPUSH_BUDGET_S: '600' } }, {})
+    expect(r.note).toContain(`no duration table, every file costed at the default ${Math.round(DEFAULT_FILE_MS / 1000)} s`)
   })
 
   it('divides the work over the workers', () => {
@@ -99,9 +110,15 @@ describe('prepush budget: priority order and the cut', () => {
 
 describe('prepush budget: the environment override', () => {
   it('PREPUSH_BUDGET_S replaces the default and the note names it', () => {
-    const r = select({ env: { PREPUSH_BUDGET_S: '100000' } }, TEN)
+    const r = select({ env: { PREPUSH_BUDGET_S: '1000' } }, TEN)
     expect(r.deferred).toEqual([])
-    expect(r.note).toContain('of a 100000 s budget (PREPUSH_BUDGET_S=100000)')
+    expect(r.note).toContain('of a 1000 s budget (PREPUSH_BUDGET_S=1000)')
+  })
+
+  it('an override above the pre-push total is capped to it, and the source says so', () => {
+    const b = legBudget('win', { PREPUSH_BUDGET_S: '100000' })
+    expect(b.seconds).toBe(TOTAL_BUDGET_S)
+    expect(b.source).toContain(`cut to ${TOTAL_BUDGET_S} s by the ${TOTAL_BUDGET_S} s pre-push total`)
   })
 
   it('without an override the leg default applies', () => {
@@ -116,7 +133,7 @@ describe('prepush budget: the environment override', () => {
   })
 
   it('the WSL leg reads its own variable and its own timings', () => {
-    const r = select({ leg: 'wsl', env: { PREPUSH_BUDGET_S: '1', PREPUSH_WSL_BUDGET_S: '100000' } }, TEN)
+    const r = select({ leg: 'wsl', env: { PREPUSH_BUDGET_S: '1', PREPUSH_WSL_BUDGET_S: '1000' } }, TEN)
     expect(r.deferred).toEqual([])
     expect(BUDGET_ENV['wsl']).toBe('PREPUSH_WSL_BUDGET_S')
   })
@@ -136,9 +153,36 @@ describe('prepush budget: what was cut is printed', () => {
   })
 
   it('prints nothing extra when nothing was cut, but the note still says 0', () => {
-    const r = select({ env: { PREPUSH_BUDGET_S: '100000' } }, TEN)
+    const r = select({ env: { PREPUSH_BUDGET_S: '1000' } }, TEN)
     expect(r.deferredReport).toBe('')
     expect(r.note).toContain('deferred to CI: 0 files')
+  })
+})
+
+describe('prepush budget: the pre-push total', () => {
+  it('a WSL leg planned after 700 s keeps its own 300 s cap, since 500 s of the total remain', () => {
+    expect(legBudget('wsl', { [ELAPSED_ENV]: '700' }).seconds).toBe(LEG_BUDGET_S['wsl'])
+  })
+
+  it('a WSL leg planned after 1000 s gets only the 200 s that remain of the total', () => {
+    const b = legBudget('wsl', { [ELAPSED_ENV]: '1000' })
+    expect(b.seconds).toBe(200)
+    expect(b.source).toContain(`cut to 200 s by the ${TOTAL_BUDGET_S} s pre-push total after 1000 s`)
+  })
+
+  it('a leg planned past the total gets 0 s, so only the never-cut files are planned', () => {
+    expect(legBudget('wsl', { [ELAPSED_ENV]: '1300' }).seconds).toBe(0)
+  })
+
+  it('an elapsed value that is not whole seconds is ignored and said so', () => {
+    const b = legBudget('win', { [ELAPSED_ENV]: 'soon' })
+    expect(b.seconds).toBe(LEG_BUDGET_S['win'])
+    expect(b.source).toContain(`${ELAPSED_ENV}=soon is not whole seconds, ignored`)
+  })
+
+  it('the per-leg caps alone fit the total, with room for the lint and typecheck overhead', () => {
+    expect(LEG_BUDGET_S['win']! + LEG_BUDGET_S['wsl']!).toBeLessThanOrEqual(TOTAL_BUDGET_S)
+    expect(TOTAL_BUDGET_S).toBe(1200)
   })
 })
 

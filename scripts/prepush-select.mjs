@@ -5,7 +5,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
 import { hasUnparsedFailure, readFailure } from './prepush-failed.mjs'
-import { costFn, fillBudget, legBudget, workersFor } from './prepush-budget.mjs'
+import { coldCostMs, costFn, fillBudget, legBudget, workersFor } from './prepush-budget.mjs'
 import { compareCodeUnits, testsImporting } from './prepush-graph.mjs'
 import { readTrackedTests, textReaderTiers } from './prepush-readers.mjs'
 import { durationsPath, readDurations } from './test-durations.mjs'
@@ -115,7 +115,10 @@ export function decideSelection(io) {
   // Never cut: the last red files, the changed tests, every guard, and the matrix when src changed. Then the importers, nearest first.
   const fixed = [...new Set([...failed, ...changedTests, ...guards, ...matrix])]
   const taken = new Set(fixed)
-  const cost = costFn(io.durations())
+  const durations = io.durations()
+  const cost = costFn(durations)
+  const timed = Object.keys(durations).length
+  const costSource = timed === 0 ? `no duration table, every file costed at the default ${Math.round(coldCostMs(durations) / 1000)} s` : `${timed} timed files, untimed files costed at their mean ${Math.round(coldCostMs(durations) / 1000)} s`
   const byCost = (a, b) => cost(a) - cost(b) || compareCodeUnits(a, b)
   const importerOrder = [...distances]
     .filter(([f]) => !taken.has(f) && io.exists(f))
@@ -136,7 +139,7 @@ export function decideSelection(io) {
   const direct = fit.kept.filter((f) => distances.get(f) === 1).length
   const files = [...fixed, ...fit.kept].sort()
   const deferredReport = fit.deferred.length === 0 ? '' : `deferred to CI: ${fit.deferred.length} files (~${Math.round(fit.deferredS)} s)\n${fit.deferred.map((f) => `  ${f}`).join('\n')}\n`
-  const note = `${leg} leg focused: ${files.length} file(s), estimated ~${Math.round(fit.estimateS)} s of a ${Math.round(budget.seconds)} s budget (${budget.source}); ${failed.length} failed before, ${changedTests.length} changed tests, ${guards.length} guard tests, ${matrix.length} bundle matrix tests, ${direct} direct and ${fit.kept.length - direct - keptReaders} further importers, ${keptReaders} text or bundle readers; deferred to CI: ${fit.deferred.length} files; set PREPUSH_FULL=1 for the full leg`
+  const note = `${leg} leg focused: ${files.length} file(s), estimated ~${Math.round(fit.estimateS)} s of a ${Math.round(budget.seconds)} s budget (${budget.source}); ${failed.length} failed before, ${changedTests.length} changed tests, ${guards.length} guard tests, ${matrix.length} bundle matrix tests, ${direct} direct and ${fit.kept.length - direct - keptReaders} further importers, ${keptReaders} text or bundle readers; deferred to CI: ${fit.deferred.length} files; costs: ${costSource}; set PREPUSH_FULL=1 for the full leg`
   return { full: false, files, note, deferred: fit.deferred, deferredReport }
 }
 

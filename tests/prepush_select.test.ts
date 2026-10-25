@@ -103,8 +103,8 @@ describe('prepush selection: focused pushes', () => {
 
   it('the note counts what was chosen, the estimate and the budget, and names the escape hatch', () => {
     const r = select([m('src/a.ts')])
-    // HAND-DERIVED: six files untimed at 3 s each = 18 s, over 4 workers = 4.5 s, times the 1.4 calibration = 6.3 s, plus the 45 s fixed overhead = 51.3 s
-    expect(r.full === false && r.note).toBe('win leg focused: 6 file(s), estimated ~51 s of a 600 s budget (default); 0 failed before, 0 changed tests, 2 guard tests, 2 bundle matrix tests, 1 direct and 1 further importers, 0 text or bundle readers; deferred to CI: 0 files; set PREPUSH_FULL=1 for the full leg')
+    // HAND-DERIVED: six files untimed at the 6.2 s cold default each = 37.2 s, over 4 workers = 9.3 s, times the 1.4 calibration = 13.02 s, plus the 45 s fixed overhead = 58.02 s
+    expect(r.full === false && r.note).toBe('win leg focused: 6 file(s), estimated ~58 s of a 600 s budget (default); 0 failed before, 0 changed tests, 2 guard tests, 2 bundle matrix tests, 1 direct and 1 further importers, 0 text or bundle readers; deferred to CI: 0 files; costs: no duration table, every file costed at the default 6 s; set PREPUSH_FULL=1 for the full leg')
   })
 })
 

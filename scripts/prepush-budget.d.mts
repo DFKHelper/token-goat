@@ -10,3 +10,6 @@ export function legBudget(leg: string, env: Record<string, string | undefined>):
 export function costFn(table: Record<string, number>): (file: string) => number
 export function workSeconds(totalMs: number, workers: number): number
 export function fillBudget(a: { fixed: string[]; ordered: string[]; cost: (f: string) => number; workers: number; budgetS: number }): { kept: string[]; deferred: string[]; estimateS: number; deferredS: number }
+export const TOTAL_BUDGET_S: number
+export const ELAPSED_ENV: string
+export function coldCostMs(table: Record<string, number>): number

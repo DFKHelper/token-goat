@@ -11,7 +11,7 @@ focus_decide() {
   FOCUS_FILE=""
   FOCUS_DEFERRED=""
   printf '%s' "$PUSH_STDIN" >"$LOG_DIR/push-refs.txt"
-  if ! sel="$(node "$SELECT_TOOL" "$ROOT_DIR" "$leg" "$HEAD_SHA" "$LOG_DIR/push-refs.txt" "$FAILED_STORE" "$LOG_DIR/deferred-$leg.txt" 2>/dev/null)"; then
+  if ! sel="$(PREPUSH_ELAPSED_S="$SECONDS" node "$SELECT_TOOL" "$ROOT_DIR" "$leg" "$HEAD_SHA" "$LOG_DIR/push-refs.txt" "$FAILED_STORE" "$LOG_DIR/deferred-$leg.txt" 2>/dev/null)"; then
     FOCUS_NOTE="$leg leg full: the selection tool failed"; return 0
   fi
   # Plain parameter expansion rather than head and tail on a here-string: no process, no temp file, so nothing for a BSD userland to differ on.

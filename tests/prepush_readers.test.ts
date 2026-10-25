@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { readTrackedTests, textReaderTiers } from '../scripts/prepush-readers.mjs'
+import { readTrackedTests, textReaderTiers, withoutCommentsOrUrls } from '../scripts/prepush-readers.mjs'
 import { decideSelection } from '../scripts/prepush-select.mjs'
 
 // Fixture provenance. Test texts: HAND-DERIVED from the two shapes the repo's own tests take (tests/bridges_status.test.ts scans every file of src with readdirSync and readFileSync; tests/helpers/bundle.ts is imported by the files that spawn dist/token-goat.mjs), reduced to the lines the scan keys on. The shas are synthetic.
@@ -33,6 +33,36 @@ describe('prepush text and bundle readers', () => {
   it('a file name is not the tail of a longer one, and an import alone is the graph business', () => {
     const t = new Map([['tests/longer.test.ts', "read('src/path_util.ts')"], ['tests/exact.test.ts', "read('src/util.ts')"], ['tests/imports.test.ts', "import { u } from '../src/util.js'"]])
     expect(textReaderTiers(t, ['src/util.ts'], false)[0]).toEqual(['tests/exact.test.ts'])
+  })
+})
+
+describe('prepush docs rule reads code, not comments or URLs', () => {
+  // Fixture provenance: the comment shape is CAPTURE of tests/recovery_pairs.test.ts line 1 (the URL the owner's push picked the file for), reduced to its one line; the readFileSync rows are HAND-DERIVED from the shape of the repo's own docs readers, and the expected tiers are computed by hand from the rule, not read off the implementation.
+  const DOCS_PUSH = ['docs/hooks.md']
+  const pick = (text: string) => textReaderTiers(new Map([['tests/t.test.ts', text]]), DOCS_PUSH, false)
+  const URL_ONLY = "// see https://code.claude.com/docs/en/hooks\nexpect(readFileSync(join(root, 'package.json'), 'utf8')).toBeTruthy()\n"
+
+  it('a test whose only docs mention is a URL in a comment is not picked on a doc push', () => {
+    expect(pick(URL_ONLY)).toEqual([[], [], []])
+  })
+
+  it('a test that reads docs/ as a path is picked on a doc push', () => {
+    expect(pick("const x = readFileSync(join(root, 'docs', 'x.md'), 'utf8')\n")).toEqual([['tests/t.test.ts'], [], []])
+  })
+
+  it('a docs/ path named in a comment or a URL string does not count, a template path does', () => {
+    expect(pick("// readFileSync(join(root, 'docs', 'x.md'))\n")).toEqual([[], [], []])
+    expect(pick("const u = 'https://example.com/docs/x'\nreadFileSync(u)\n")).toEqual([[], [], []])
+    expect(pick('readFileSync(`${root}/docs/x.md`)\n')).toEqual([['tests/t.test.ts'], [], []])
+  })
+
+  it('a regular expression literal holding a quote does not hide a docs read after it', () => {
+    expect(pick("const re = /'/\nreadFileSync(join(root, 'docs', 'x.md'))\n")).toEqual([['tests/t.test.ts'], [], []])
+  })
+
+  it('blanks a comment and a URL string to spaces, keeping the newlines and the code around them', () => {
+    // "// x" is 4 characters and the quoted URL 16, so each becomes that many spaces.
+    expect(withoutCommentsOrUrls("a // x\nb 'https://h.io/p' c /* y */ d")).toBe(`a ${' '.repeat(4)}\nb ${' '.repeat(16)} c ${' '.repeat(7)} d`)
   })
 })
 
@@ -76,8 +106,8 @@ describe('prepush readers in the selection', () => {
   })
 
   it('the budget cuts the generic readers before a test that names the changed path', () => {
-    // HAND-DERIVED: 45 s fixed + 1.4 x n files x 3 s / 4 workers = 45 + 1.05 n, so 49 s holds three files (48.15 s) and not four (49.2 s); the guard and the matrix are two, leaving room for exactly one reader
-    const r = select({ PREPUSH_BUDGET_S: '49' })
+    // HAND-DERIVED: 45 s fixed + 1.4 x n files x 6.2 s / 4 workers = 45 + 2.17 n; the guard and the matrix are two files (49.3 s), so 52 s holds one reader (51.5 s) and not two (53.7 s)
+    const r = select({ PREPUSH_BUDGET_S: '52' })
     expect(r.full === false && r.files).toContain('tests/names.test.ts')
     expect(r.full === false && r.deferred).toEqual(['tests/whole_src.test.ts', 'tests/spawner.test.ts'])
     expect(r.full === false && r.files).not.toContain('tests/whole_src.test.ts')
