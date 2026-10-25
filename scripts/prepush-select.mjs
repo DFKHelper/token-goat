@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Chooses which test files a pre-push suite leg runs, within a time budget. The pushed range (remote sha..local sha of each ref line git gives a pre-push hook) is turned into test files in priority order: the files that failed last time, the changed test files, every guard test, the built-bundle matrix when src changed (none of these is ever cut), then the tests that import a changed module, nearest first (scripts/prepush-graph.mjs), then the tests the import graph cannot see: those naming a changed path as text, and when src changed those reading src as text and those spawning the built bundle (scripts/prepush-readers.mjs). Those tests are added while the estimated wall time stays within the leg's budget (scripts/prepush-budget.mjs, costs from the duration table next to the failure record); every one not added is deferred to CI, which runs the full suite, and is listed. A documentation-only push runs the guards and the tests naming the document. A new ref is diffed from its merge base with origin/main. Any doubt (no ref lines, a deleted ref, a new ref with no merge base, a range git cannot list, a changed path outside src, tests and documentation, an unreadable failure record) means the full leg. Usage: node scripts/prepush-select.mjs ROOT LEG HEAD_SHA PUSH_FILE STORE [DEFER_FILE]. Prints `FULL<TAB>reason` or `FOCUS<TAB>note` and then one repo-relative test path per line; DEFER_FILE receives the deferred-to-CI report. Built-in modules only.
+// Chooses which test files a pre-push suite leg runs, within a time budget. The pushed range (remote sha..local sha of each ref line git gives a pre-push hook) is turned into test files in priority order: the files that failed last time, the changed test files, every guard test, the built-bundle matrix when src changed (none of these is ever cut), then the tests that import a changed module, nearest first (scripts/prepush-graph.mjs), then the tests the import graph cannot see: those naming a changed path as text, and when src changed those reading src as text and those spawning the built bundle (scripts/prepush-readers.mjs). Those tests are added while the estimated wall time stays within the leg's budget (scripts/prepush-budget.mjs, costs from the duration table next to the failure record); every one not added is deferred to CI, which runs the full suite, and is listed. A documentation-only push runs the guards and the tests naming the document. A new ref is diffed from its merge base with origin/main. Any doubt (no ref lines, a deleted ref, a new ref with no merge base, a range git cannot list, a pre-push hook file, a changed path outside src, tests and documentation, an unreadable failure record) means the full leg. Usage: node scripts/prepush-select.mjs ROOT LEG HEAD_SHA PUSH_FILE STORE [DEFER_FILE]. Prints `FULL<TAB>reason` or `FOCUS<TAB>note` and then one repo-relative test path per line; DEFER_FILE receives the deferred-to-CI report. Built-in modules only.
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -7,7 +7,7 @@ import { isMainModule } from './is-main-module.mjs'
 import { hasUnparsedFailure, readFailure } from './prepush-failed.mjs'
 import { coldCostMs, costFn, fillBudget, legBudget, workersFor } from './prepush-budget.mjs'
 import { compareCodeUnits, testsImporting } from './prepush-graph.mjs'
-import { readTrackedTests, textReaderTiers } from './prepush-readers.mjs'
+import { readerTiersForRepo } from './prepush-readers.mjs'
 import { durationsPath, readDurations } from './test-durations.mjs'
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
@@ -19,8 +19,8 @@ const NOT_FOLLOWED = /^tests\/(?:setup|fixtures)\//
 // A documentation path: a markdown file anywhere or anything under docs/, except in the directories the product, the build, the tests or the hooks read, which stay full.
 const DOC_PATH = /^(?:docs\/|.+\.md$)/i
 const NOT_DOC = /^(?:src|tests|scripts|\.github|\.lefthook-scripts|node_modules)\//
-// A pre-push hook script: its change selects the suites that exercise the hook and this selector, not the full leg.
-const HOOK_SCRIPT = /^\.lefthook-scripts\/[^/]+\.sh$/
+// Anything under .lefthook-scripts: the hook decides what runs, so a focused leg cannot vouch for a change to it, and a change runs the full leg.
+const HOOK_SCRIPT = /^\.lefthook-scripts\//
 
 /** @param {string} text the pre-push stdin: `<local ref> <local sha> <remote ref> <remote sha>` per line, per githooks(5) @returns {{refs: {lref: string, lsha: string, rref: string, rsha: string}[], bad: string | null}} bad names the first line that is not four fields with two well-formed shas */
 export function parsePushRefs(text) {
@@ -45,7 +45,7 @@ export function rangeOf(ref, headSha, base = null) {
 /** @param {string} status git's one-letter status @param {string} p repo-relative path @returns {{kind: 'test' | 'module' | 'doc' | 'skip'} | {full: string}} a doc runs the guards and the tests that name it as text (scripts/prepush-readers.mjs), never the full leg */
 export function classifyPath(status, p) {
   if (NOT_FOLLOWED.test(p)) return { full: `${p} is test setup or a fixture, which the import graph cannot see` }
-  if (HOOK_SCRIPT.test(p)) return { kind: 'hook' }
+  if (HOOK_SCRIPT.test(p)) return { full: `${p} is a pre-push hook file, which the focused leg cannot verify, so the full leg runs` }
   if (DOC_PATH.test(p) && !NOT_DOC.test(p)) return { kind: 'doc' }
   if (!MODULE_PATH.test(p)) return { full: `${p} is not a src or tests module, so the import graph cannot see what reads it` }
   const isTest = p.startsWith('tests/') && TEST_FILE.test(p)
@@ -61,7 +61,7 @@ export function parseNameStatus(out) {
   return rows
 }
 
-/** @param {{ leg: string, headSha: string, pushText: string, env: Record<string, string | undefined>, changed: (from: string, to: string) => {status: string, path: string}[] | null, failed: () => string[], unparsedFailure: () => boolean, exists: (rel: string) => boolean, guards: () => string[], matrix: () => string[], hookSuites: () => string[], importers: (modules: string[]) => Map<string, number> | null, durations: () => Record<string, number>, workers: number, }} io every outside fact comes in through here, so the decision is a pure function @returns {{full: true, why: string} | {full: false, files: string[], note: string, deferred: string[], deferredReport: string}} files are test files, highest priority first within the never-cut classes; deferredReport is the text that lists what the budget cut, empty when it cut nothing */
+/** @param {{ leg: string, headSha: string, pushText: string, env: Record<string, string | undefined>, changed: (from: string, to: string) => {status: string, path: string}[] | null, failed: () => string[], unparsedFailure: () => boolean, exists: (rel: string) => boolean, guards: () => string[], matrix: () => string[], importers: (modules: string[]) => Map<string, number> | null, durations: () => Record<string, number>, workers: number, }} io every outside fact comes in through here, so the decision is a pure function @returns {{full: true, why: string} | {full: false, files: string[], note: string, deferred: string[], deferredReport: string}} files are test files, highest priority first within the never-cut classes; deferredReport is the text that lists what the budget cut, empty when it cut nothing */
 export function decideSelection(io) {
   const { leg } = io
   if (io.env['PREPUSH_FULL'] === '1' || io.env['TG_PREPUSH_FULL'] === '1') return { full: true, why: 'PREPUSH_FULL=1' }
@@ -82,15 +82,10 @@ export function decideSelection(io) {
   const modules = []
   const docs = []
   let srcChanged = false
-  let hookChanged = false
   for (const { status, path: p } of changedRows.values()) {
     const c = classifyPath(status, p)
     if ('full' in c) return { full: true, why: c.full }
     if (p.startsWith('src/')) srcChanged = true
-    if (c.kind === 'hook') {
-      hookChanged = true
-      continue
-    }
     if (c.kind === 'doc') {
       docs.push(p)
       continue
@@ -98,9 +93,6 @@ export function decideSelection(io) {
     if (c.kind === 'skip' || !io.exists(p)) continue
     if (c.kind === 'test') changedTests.push(p)
     else modules.push(p)
-  }
-  if (hookChanged) {
-    for (const t of io.hookSuites()) if (io.exists(t) && !changedTests.includes(t)) changedTests.push(t)
   }
   const guards = io.guards()
   if (guards.length === 0) return { full: true, why: 'no guard tests found under tests/guards' }
@@ -188,7 +180,6 @@ function main() {
     unparsedFailure: () => (store ? hasUnparsedFailure(store, leg) : false),
     exists: (rel) => existsSync(path.join(root, rel)),
     guards: () => listTests(root, 'tests/guards', () => true),
-    hookSuites: () => listTests(root, 'tests', (p) => /^tests\/prepush_[^/]*$/.test(p)),
     matrix: () => readdirSync(path.join(root, 'tests')).filter((n) => n.startsWith('command_matrix_e2e') && TEST_FILE.test(n)).map((n) => `tests/${n}`).sort(),
     mergeBase: (sha) => {
       try {
@@ -200,7 +191,7 @@ function main() {
     },
     readers: (named, srcChanged) => {
       try {
-        return textReaderTiers(readTrackedTests(root), named, srcChanged)
+        return readerTiersForRepo(root, named, srcChanged)
       } catch {
         return null
       }

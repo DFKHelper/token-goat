@@ -84,7 +84,6 @@ describe('prepush readers in the selection', () => {
       unparsedFailure: () => false,
       exists: () => true,
       guards: () => GUARDS,
-      hookSuites: () => [],
       matrix: () => MATRIX,
       importers: () => new Map(),
       mergeBase: () => null,
@@ -131,5 +130,30 @@ describe('prepush tracked test scan', () => {
     git('add', '-A')
     writeFileSync(path.join(dir, 'tests/untracked.test.ts'), 'u')
     expect([...readTrackedTests(dir).keys()].sort()).toEqual(['tests/a.test.ts', 'tests/guards/g.test.ts'])
+  })
+})
+
+describe('prepush bundle spawners: every spelling, every helper, every fixture', () => {
+  // Fixture provenance: HAND-DERIVED from the spellings this repo's tests take: tests/cli_epipe.test.ts builds the bundle path with join(..., 'dist', 'token-goat.mjs'), and tests import tests/helpers/bundle.ts or a helper of their own that names the bundle.
+  it('a test that builds the bundle path from split segments is a bundle spawner', () => {
+    const t = new Map([['tests/epipe.test.ts', "const bin = join(here, '..', 'dist', 'token-goat.mjs')\nspawnSync(process.execPath, [bin])\n"]])
+    expect(textReaderTiers(t, ['src/cli.ts'], true)[2]).toEqual(['tests/epipe.test.ts'])
+  })
+
+  it('a test that imports a helper naming the bundle is a bundle spawner', () => {
+    const t = new Map([['tests/imports_helper.test.ts', "import { run } from './helpers/spawn.js'\nrun()\n"]])
+    const support = new Map([['tests/helpers/spawn.ts', "export const BIN = join(root, 'dist', 'token-goat.mjs')\n"]])
+    expect(textReaderTiers(t, ['src/cli.ts'], true, support)[2]).toEqual(['tests/imports_helper.test.ts'])
+  })
+
+  it('a test that imports a fixture which spawns the bundle is a bundle spawner', () => {
+    const t = new Map([['tests/imports_fixture.test.ts', "import './fixtures/serve.js'\n"]])
+    const support = new Map([['tests/fixtures/serve.ts', "spawn(join(root, 'dist', 'token-goat.mjs'))\n"]])
+    expect(textReaderTiers(t, ['src/cli.ts'], true, support)[2]).toEqual(['tests/imports_fixture.test.ts'])
+  })
+
+  it('a test that imports only a helper with no bundle reference is not a bundle spawner', () => {
+    const t = new Map([['tests/plain.test.ts', "import './helpers/plain.js'\n"]])
+    expect(textReaderTiers(t, ['src/cli.ts'], true, new Map([['tests/helpers/plain.ts', 'export {}\n']]))[2]).toEqual([])
   })
 })

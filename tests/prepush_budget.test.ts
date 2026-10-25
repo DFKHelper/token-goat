@@ -30,7 +30,6 @@ function select(over: Partial<Io> = {}, durations: Record<string, number> = {}):
     unparsedFailure: () => false,
     exists: () => true,
     guards: () => [G1, G2],
-    hookSuites: () => [],
     matrix: () => [M1],
     importers: () => IMPORTERS,
     mergeBase: () => null,

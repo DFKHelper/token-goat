@@ -18,7 +18,6 @@ export interface SelectionIo {
   unparsedFailure: () => boolean
   exists: (rel: string) => boolean
   guards: () => string[]
-  hookSuites: () => string[]
   matrix: () => string[]
   mergeBase: (sha: string) => string | null
   readers: (named: string[], srcChanged: boolean) => string[][] | null

@@ -79,3 +79,17 @@ describe('prepush graph: distances', () => {
     expect(Object.fromEntries(testDistances(importerGraph(s), ['src/b.ts']))).toEqual({ 'tests/t.test.ts': 2 })
   })
 })
+
+describe('prepush graph: fixtures a test spawns', () => {
+  // Fixture provenance: HAND-DERIVED. A fixture is a program a test spawns; the test names it by the basename it joins, and the fixture imports src, so the test is two hops from that src module.
+  const sources = new Map([
+    ['src/hook_server.ts', 'export {}\n'],
+    ['tests/fixtures/held_cli_server.ts', "import '../../src/hook_server.js'\n"],
+    ['tests/hook_client.test.ts', "const script = join(here, 'fixtures', 'held_cli_server.ts')\n"],
+    ['tests/unrelated.test.ts', "const script = join(here, 'fixtures', 'other_server.ts')\n"],
+  ])
+
+  it('reaches the test that names the fixture, at one hop past the fixture', () => {
+    expect(Object.fromEntries(testDistances(importerGraph(sources), ['src/hook_server.ts']))).toEqual({ 'tests/hook_client.test.ts': 2 })
+  })
+})

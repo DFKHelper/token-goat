@@ -7,7 +7,7 @@ import { isMainModule } from './is-main-module.mjs'
 const CODE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
 const ROOTS = ['src', 'tests', 'scripts']
-const SKIPPED_DIRS = new Set(['node_modules', 'fixtures'])
+const SKIPPED_DIRS = new Set(['node_modules'])
 // A relative specifier after an import, re-export, dynamic import, require or a vitest mock call. A specifier built at run time, a path named in a string and a module spawned as a program are not seen: scripts/prepush-readers.mjs finds the tests that reach a module those ways.
 const SPECIFIER = /(?:\bfrom|\bimport|\brequire|\b(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*\(?\s*(['"`])(\.{1,2}(?:\/[^'"`\n]*)?)\1/g
 const SOURCE_FOR = { '.js': ['.ts', '.tsx', '.js'], '.mjs': ['.mts', '.mjs'], '.cjs': ['.cts', '.cjs'], '.jsx': ['.tsx', '.jsx'] }
@@ -40,17 +40,26 @@ export function resolveSpecifier(from, spec, files) {
   return tries.find((t) => files.has(t)) ?? null
 }
 
-/** @param {Map<string, string>} sources repo-relative path -> file text @returns {Map<string, Set<string>>} module -> the files that import it */
+/** @param {Map<string, string>} sources repo-relative path -> file text @returns {Map<string, Set<string>>} module -> the files that import it, and each tests/fixtures file -> the tests that name its basename (a test spawns a fixture program, which imports src) */
 export function importerGraph(sources) {
   const files = new Set(sources.keys())
   const importers = new Map()
+  const addEdge = (target, file) => {
+    if (!importers.has(target)) importers.set(target, new Set())
+    importers.get(target).add(file)
+  }
   for (const [file, text] of sources) {
     for (const spec of relativeSpecifiers(text)) {
       const target = resolveSpecifier(file, spec, files)
       if (target === null || target === file) continue
-      if (!importers.has(target)) importers.set(target, new Set())
-      importers.get(target).add(file)
+      addEdge(target, file)
     }
+  }
+  const tests = [...sources].filter(([file]) => TEST_FILE.test(file) && !file.startsWith('tests/fixtures/'))
+  for (const fixture of sources.keys()) {
+    if (!fixture.startsWith('tests/fixtures/')) continue
+    const named = new RegExp(`(?<![\\w.-])${path.posix.basename(fixture).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\w)`)
+    for (const [file, text] of tests) if (named.test(text)) addEdge(fixture, file)
   }
   return importers
 }
@@ -75,7 +84,7 @@ export function testDistances(importers, changed) {
   return tests
 }
 
-/** @param {string} root @returns {Map<string, string>} repo-relative path -> text for every code file under src, tests and scripts, fixtures and node_modules left out */
+/** @param {string} root @returns {Map<string, string>} repo-relative path -> text for every code file under src, tests and scripts, node_modules left out (fixtures included, as graph nodes) */
 export function readSources(root) {
   const sources = new Map()
   const walk = (rel) => {

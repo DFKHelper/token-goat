@@ -2,29 +2,61 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { compareCodeUnits, withoutImports } from './prepush-graph.mjs'
+import { compareCodeUnits, relativeSpecifiers, resolveSpecifier, withoutImports } from './prepush-graph.mjs'
 
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
+const CODE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
 // A call that reads file text or lists a directory.
 const FS_READ = /\b(?:readFileSync|readdirSync|readFile|readdir|globSync|opendirSync)\b/
 // The src directory named as a string or a path segment.
 const SRC_DIR = /(?:['"`/]|\bjoin\([^)]*)src['"`/]/
-// The shared helper that spawns the built bundle, or the bundle's own path.
-const BUNDLE = /helpers\/bundle|dist\/token-goat/
+// The built bundle's file name in any path spelling (a join() of segments still names it), or the shared helper that spawns it.
+const BUNDLE = /token-goat\.mjs|helpers\/bundle/
 // A string literal that is a URL: a scheme, or a host name followed by a slash (code.claude.com/docs/...).
 const URL_SHAPED = /^(?:[a-z][a-z0-9+.-]*:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,}\/)/i
 // The characters after which a slash opens a regular expression literal rather than dividing.
 const REGEX_AFTER = /[(,=:[!&|?{};+\-*%<>~^]$/
 
+/** @param {string} root @returns {string[]} every tracked path under tests, listed with `git ls-files` so nothing walks the disk */
+function trackedUnderTests(root) {
+  return execFileSync('git', ['ls-files', '-z', 'tests'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).split('\0').filter((p) => p !== '')
+}
+
 /** @param {string} root @returns {Map<string, string>} repo-relative path -> text of every tracked test file outside tests/fixtures, listed with `git ls-files` so nothing walks the disk */
 export function readTrackedTests(root) {
-  const out = execFileSync('git', ['ls-files', '-z', 'tests'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
   const texts = new Map()
-  for (const p of out.split('\0')) {
-    if (p === '' || !TEST_FILE.test(p) || p.startsWith('tests/fixtures/')) continue
+  for (const p of trackedUnderTests(root)) {
+    if (!TEST_FILE.test(p) || p.startsWith('tests/fixtures/')) continue
     texts.set(p, readFileSync(path.join(root, p), 'utf8'))
   }
   return texts
+}
+
+/** @param {string} root @returns {Map<string, string>} repo-relative path -> text of every tracked code file under tests that is not a test file (helpers, fixtures, setup): the support a test reaches through an import or a spawned fixture */
+export function readTrackedSupport(root) {
+  const texts = new Map()
+  for (const p of trackedUnderTests(root)) {
+    if (TEST_FILE.test(p) || !CODE_FILE.test(p)) continue
+    texts.set(p, readFileSync(path.join(root, p), 'utf8'))
+  }
+  return texts
+}
+
+/** @param {Map<string, string>} all repo-relative path -> text of every test and support file @returns {Set<string>} each file that names the built bundle, and each file that imports one of those, to a fixpoint */
+function bundleReaders(all) {
+  const files = new Set(all.keys())
+  const imports = new Map([...all].map(([file, raw]) => [file, relativeSpecifiers(raw).map((spec) => resolveSpecifier(file, spec, files)).filter((t) => t !== null)]))
+  const bundle = new Set([...all].filter(([, raw]) => BUNDLE.test(raw)).map(([file]) => file))
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const [file, targets] of imports) {
+      if (!bundle.has(file) && targets.some((t) => bundle.has(t))) {
+        bundle.add(file)
+        grew = true
+      }
+    }
+  }
+  return bundle
 }
 
 /** @param {string} text @param {number} start index of an opening slash @returns {number} the index just past the slash that closes a regular expression literal starting there, or -1 when none closes on its line */
@@ -100,12 +132,13 @@ function namesOf(changedPath) {
   return [...new Set([changedPath, path.posix.basename(changedPath)])]
 }
 
-/** @param {Map<string, string>} texts test text by path @param {string[]} changed repo-relative changed modules and documents @param {boolean} srcChanged true when a file under src changed @returns {string[][]} the tiers, each sorted by path: tests naming a changed path, then (src changed) tests reading src as text, then (src changed) tests spawning the bundle; a test appears in the first tier it qualifies for only */
-export function textReaderTiers(texts, changed, srcChanged) {
+/** @param {Map<string, string>} texts test text by path @param {string[]} changed repo-relative changed modules and documents @param {boolean} srcChanged true when a file under src changed @param {Map<string, string>} [support] the non-test code under tests (helpers, fixtures) a test may reach through an import, which spreads the bundle tier to every test that imports a bundle reader @returns {string[][]} the tiers, each sorted by path: tests naming a changed path, then (src changed) tests reading src as text, then (src changed) tests spawning the bundle; a test appears in the first tier it qualifies for only */
+export function textReaderTiers(texts, changed, srcChanged, support = new Map()) {
   const alternatives = changed.flatMap(namesOf).map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   // A name counts only when it is not the tail of a longer word, so util.ts does not match path_util.ts.
   const named = alternatives.length === 0 ? null : new RegExp(`(?<![\\w.-])(?:${alternatives.join('|')})(?![\\w])`)
   const docsChanged = changed.some((c) => c.startsWith('docs/'))
+  const bundle = srcChanged ? bundleReaders(new Map([...support, ...texts])) : new Set()
   const naming = []
   const readers = []
   const spawners = []
@@ -116,7 +149,12 @@ export function textReaderTiers(texts, changed, srcChanged) {
     const code = docsChanged ? withoutCommentsOrUrls(text) : ''
     if ((named !== null && named.test(text)) || (docsChanged && FS_READ.test(code) && /['"`/]docs['"`/]/.test(code))) naming.push(file)
     else if (srcChanged && FS_READ.test(text) && SRC_DIR.test(text)) readers.push(file)
-    else if (srcChanged && BUNDLE.test(raw)) spawners.push(file)
+    else if (srcChanged && bundle.has(file)) spawners.push(file)
   }
   return [naming, readers, spawners]
+}
+
+/** @param {string} root @param {string[]} changed repo-relative changed modules and documents @param {boolean} srcChanged true when a file under src changed @returns {string[][]} the tiers of textReaderTiers over the tracked test files of root and their tracked support, the one list the selector and the completeness test both read */
+export function readerTiersForRepo(root, changed, srcChanged) {
+  return textReaderTiers(readTrackedTests(root), changed, srcChanged, readTrackedSupport(root))
 }

@@ -31,7 +31,6 @@ function select(changed: Row[] | null, over: Partial<Io> = {}): ReturnType<typeo
     unparsedFailure: () => false,
     exists: () => true,
     guards: () => GUARDS,
-    hookSuites: () => [],
     matrix: () => MATRIX,
     importers: () => IMPORTERS,
     mergeBase: () => null,
@@ -109,17 +108,10 @@ describe('prepush selection: focused pushes', () => {
   })
 })
 
-describe('prepush selection: a pre-push hook script', () => {
-  // Fixture provenance: the path shapes are HAND-DERIVED from the hook's own layout (.lefthook-scripts/prepush-focus.sh is the file the leg sources); the expected selections are computed by hand from the rule, not read off the implementation.
-  const HOOK_SUITES = ['tests/prepush_focus.test.ts', 'tests/prepush_select.test.ts']
-  it('a change to a hook script selects the prepush suites and the guards, not the full leg', () => {
-    const r = select([{ status: 'M', path: '.lefthook-scripts/prepush-focus.sh' }], { hookSuites: () => HOOK_SUITES })
-    expect(r.full === false && r.files).toEqual(expect.arrayContaining([...HOOK_SUITES, ...GUARDS]))
-  })
-
-  it('a path the hook-script rule does not name (nested, or not a shell script) still falls back to the full leg', () => {
-    expect(select([{ status: 'M', path: '.lefthook-scripts/lib/x.sh' }], { hookSuites: () => HOOK_SUITES }).full).toBe(true)
-    expect(select([{ status: 'M', path: '.lefthook-scripts/notes.txt' }], { hookSuites: () => HOOK_SUITES }).full).toBe(true)
+describe('prepush selection: a pre-push hook file', () => {
+  // Fixture provenance: the path shapes are HAND-DERIVED from the hook layout (.lefthook-scripts/prepush-focus.sh is the file the leg sources, lib/x.sh a nested helper); the verdict is the full leg by the rule, not read off the implementation.
+  it.each(['.lefthook-scripts/prepush-focus.sh', '.lefthook-scripts/lib/x.sh', '.lefthook-scripts/notes.txt'])('a change to %s runs the full leg, since a focused leg cannot verify the hook', (p) => {
+    expect(select([m(p)])).toEqual({ full: true, why: expect.stringContaining(p) })
   })
 })
 
