@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url'
 
 import { defineConfig } from 'vitest/config'
 
-import { resolveMaxWorkers } from './tests/setup/max-workers.js'
+import { resolveMaxWorkers, sampleIdleCpus } from './tests/setup/max-workers.js'
 import RetryVisibilityReporter from './tests/setup/retry-visibility-reporter.js'
 
 export default defineConfig({
@@ -42,7 +42,7 @@ export default defineConfig({
     // size of a CI runner, more only on a machine large enough that the heap exhaustion those
     // numbers protect against cannot recur. Why those numbers and where the bar sits:
     // tests/setup/max-workers.ts.
-    maxWorkers: resolveMaxWorkers(process.platform, os.cpus().length, os.totalmem() / 2 ** 30),
+    maxWorkers: resolveMaxWorkers(process.platform, os.cpus().length, os.totalmem() / 2 ** 30, sampleIdleCpus(() => os.cpus(), 250)),
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
