@@ -20,6 +20,7 @@ import {
   isCatCommand,
   normalizeCommandForCacheKey,
   commandHash,
+  commandHashSync,
   bashOutputIdSync,
   depLockfileFingerprint,
   computeBashFingerprints,
@@ -110,6 +111,63 @@ describe('isGitImmutableCommand', () => {
 
   it('rejects partial SHAs', () => {
     expect(isGitImmutableCommand('git show abc123')).toBe(false)
+  })
+})
+
+describe('git leading options before the subcommand (git -C <dir>, git -c k=v)', () => {
+  it('reads the push behind -C, repeated -C, quoted -C, -c, and --git-dir forms', () => {
+    expect(isGitPushCommand('git push')).toBe(true)
+    expect(isGitPushCommand('git -C dir push')).toBe(true)
+    expect(isGitPushCommand('git -C a -C b push')).toBe(true)
+    expect(isGitPushCommand('git -C "dir with space" push')).toBe(true)
+    expect(isGitPushCommand('git -c x=y -C dir push --force')).toBe(true)
+    expect(isGitPushCommand('git --git-dir=.git -C dir push origin main')).toBe(true)
+    expect(isGitPushCommand('git --git-dir .git push')).toBe(true)
+  })
+
+  it('reads a status or diff behind -C as the same mutable command as the plain form', () => {
+    expect(isGitMutableCommand('git status')).toBe(true)
+    expect(isGitMutableCommand('git -C dir status')).toBe(true)
+    expect(isGitMutableCommand('git -C dir diff --stat')).toBe(true)
+    expect(isGitMutableCommand('git -c x=y -C "dir with space" status --porcelain')).toBe(true)
+    expect(isGitPushCommand('git -C dir status')).toBe(false)
+  })
+
+  it('does not classify another subcommand, a longer word, or a bare -C behind -C', () => {
+    expect(isGitPushCommand('git -C dir pull')).toBe(false)
+    expect(isGitPushCommand('git -C dir pusher')).toBe(false)
+    expect(isGitMutableCommand('git -C dir log')).toBe(false)
+    expect(isGitMutableCommand('git -C dir statuses')).toBe(false)
+    expect(isGitMutableCommand('git -C dir')).toBe(false)
+    expect(isGitPushCommand('echo git -C dir push')).toBe(false)
+  })
+
+  it('scopes a status or --stat diff behind -C, and still rejects a full diff behind -C', () => {
+    expect(isScopedGitStatusOrDiffStatCommand('git -C dir status -- a.txt')).toBe(true)
+    expect(isScopedGitStatusOrDiffStatCommand('git -C dir diff --stat -- a.txt')).toBe(true)
+    expect(isScopedGitStatusOrDiffStatCommand('git -C dir diff -- a.txt')).toBe(false)
+    expect(isScopedGitStatusOrDiffStatCommand('git -C dir status')).toBe(false)
+  })
+
+  it('fingerprints the repository a relative -C names, not the cwd repository', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-git-c-'))
+    try {
+      const cwdRepo = path.join(root, 'cwd-repo')
+      const otherRepo = path.join(root, 'other repo')
+      for (const dir of [cwdRepo, otherRepo]) {
+        fs.mkdirSync(dir)
+        execFileSync('git', ['init', '-q'], { cwd: dir })
+        fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n')
+        execFileSync('git', ['add', 'a.txt'], { cwd: dir })
+        execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'init'], { cwd: dir })
+      }
+      const cmd = 'git -C "../other repo" status -- a.txt'
+      const before = commandHashSync(cmd, cwdRepo)
+      fs.writeFileSync(path.join(otherRepo, 'a.txt'), 'two\n')
+      expect(commandHashSync(cmd, cwdRepo)).not.toBe(before)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 })
 
