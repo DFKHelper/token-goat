@@ -1,6 +1,6 @@
 /** Matching rules for token-goat's resident processes: a stray is recognised by its command line and its launcher script, never by a process name. Fixtures: the daemon argv is FORMAT-DERIVED from src/worker_lifecycle.ts::startDetachedWorker (`[daemonEntryScript(), '--worker-daemon']`) and the hook server's from src/hook_client.ts::startServer (`[launcher, 'hook-server', 'run', '--slot', n]`); the quoted Windows interpreter path is the shape src/cli_doctor_process.ts documents for a real Windows command line; the ps rows are FORMAT-DERIVED from procps `ps -o pid=,ppid=,args=` (right-aligned pid and ppid, then the command line, no header). The must-not-match command lines are HAND-DERIVED from each shape a process list can show that merely contains the launcher path and the flag (a grep, a `sh -c` wrapper, a script argument, a path with the launcher as its tail, a longer flag), computed from the matching rule and not from the matcher; the two /proc/PID/stat lines and the ps row for a zombie are CAPTURE, taken on WSL Ubuntu (procps-ng 4.0.4) from `sh -c 'sleep 0 & exec sleep 4'` (the unreaped `sleep 0`) and from `cat` reading its own stat. */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -10,7 +10,8 @@ import { describe, expect, it } from 'vitest'
 
 import { parsePsProcessList } from '../src/cli_doctor_process.js'
 import { normalizePath } from '../src/paths.js'
-import { isResidentOfInstall, isTokenGoatResidentProcess, queryProcessCommandLine, readProcessCommandLine, residentKindOf, statIsZombie, terminateProcessTree, zombiesInPsRows } from '../src/resident_process.js'
+import { classifyPosixPsRun, commandLineOf, isResidentOfInstall, isTokenGoatResidentProcess, queryProcessCommandLine, residentKindOf, statIsZombie, terminateProcessTree, zombiesInPsRows } from '../src/resident_process.js'
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 const ENTRY = process.platform === 'win32' ? 'C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\token-goat\\dist\\token-goat.mjs' : '/usr/lib/node_modules/token-goat/dist/token-goat.mjs'
 const NODE = process.platform === 'win32' ? '"C:\\Program Files\\nodejs\\node.exe"' : '/usr/bin/node'
@@ -80,13 +81,55 @@ describe('isResidentOfInstall', () => {
   })
 })
 
-describe('readProcessCommandLine', () => {
-  it('reads the command line of a live process, and null for one that does not exist', () => {
-    const own = readProcessCommandLine(process.pid)
-    expect(own, 'the command line of this test process').not.toBeNull()
-    expect((own ?? '').toLowerCase()).toContain('node')
-    expect(readProcessCommandLine(0)).toBeNull()
-    expect(readProcessCommandLine(-5)).toBeNull()
+describe('command-line query states', () => {
+  // Provenance: HAND-DERIVED. The ps exit codes and stderr texts are the ones classifyPosixPsRun's doc comment names (procps and macOS adv_cmds-237 ps.c); the platform argument is passed explicitly, so every branch runs on every host.
+  const noKernelAnswer = (): boolean => false
+  it('classifies a POSIX ps run: exit 0 is found, an empty exit 1 is gone, and any other run is failed', () => {
+    expect(classifyPosixPsRun({ status: 0, stdout: 'node x.js', stderr: '' }, 'linux', noKernelAnswer)).toEqual({ status: 'found', commandLine: 'node x.js' })
+    expect(classifyPosixPsRun({ status: 1, stdout: '', stderr: '' }, 'linux', noKernelAnswer)).toEqual({ status: 'gone' })
+    expect(classifyPosixPsRun({ status: 1, stdout: '', stderr: 'ps: process id too large: 99999999' }, 'darwin', noKernelAnswer)).toEqual({ status: 'failed' })
+    expect(classifyPosixPsRun({ status: 1, stdout: '', stderr: 'ps: process id too large: 99999999' }, 'darwin', () => true)).toEqual({ status: 'gone' })
+    expect(classifyPosixPsRun({ status: 2, stdout: '', stderr: 'ps: bad option' }, 'linux', noKernelAnswer)).toEqual({ status: 'failed' })
+    expect(classifyPosixPsRun({ status: null, stdout: '', stderr: '' }, 'linux', noKernelAnswer)).toEqual({ status: 'failed' })
+  })
+
+  it('reads a process that exited and was reaped as gone, not failed', () => {
+    const done = spawnSync(process.execPath, ['-e', '0'])
+    expect(queryProcessCommandLine(done.pid ?? 0)).toEqual({ status: 'gone' })
+  })
+
+  it('folds only a found, non-empty line to a string, and every other state to null', () => {
+    expect(commandLineOf({ status: 'found', commandLine: 'node x.js' })).toBe('node x.js')
+    expect(commandLineOf({ status: 'found', commandLine: '' })).toBeNull()
+    expect(commandLineOf({ status: 'gone' })).toBeNull()
+    expect(commandLineOf({ status: 'failed' })).toBeNull()
+  })
+})
+
+describe('kill decision per query state', () => {
+  // Provenance: HAND-DERIVED. The failed state is stood in for by the readCommandLine seam returning null, the seam's documented meaning (the query failed); the gone state is a real exited child, and the live state a real sleeper. Each signal would reach a real process, so a missed kill is checked by the sleeper staying alive.
+  it('leaves a gone process alone and returns false without probing', () => {
+    const done = spawnSync(process.execPath, ['-e', '0'])
+    expect(killIfCommandLine(done.pid ?? 0, () => true)).toBe(false)
+  })
+
+  it('throws, and leaves a live process unsignalled, when its query failed', async () => {
+    const live = spawn(process.execPath, ['-e', 'setInterval(() => undefined, 1000)'], { stdio: 'ignore', windowsHide: true })
+    const exited = once(live, 'exit')
+    try {
+      const pid = live.pid ?? 0
+      expect(() => killIfCommandLine(pid, () => true, { readCommandLine: () => null })).toThrow(`pid ${pid}: its command line could not be read`)
+      expect(live.signalCode).toBeNull()
+      expect(() => process.kill(pid, 0)).not.toThrow()
+    } finally {
+      live.kill()
+      await exited
+    }
+  })
+
+  it('returns false, signalling nothing, when its query failed on a process that has since exited', () => {
+    const done = spawnSync(process.execPath, ['-e', '0'])
+    expect(killIfCommandLine(done.pid ?? 0, () => true, { readCommandLine: () => null })).toBe(false)
   })
 })
 

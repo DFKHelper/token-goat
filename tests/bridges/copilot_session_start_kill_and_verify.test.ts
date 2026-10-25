@@ -1,4 +1,4 @@
-/** Provenance: HAND-DERIVED. The process table is a fake map of pid to the command line the query would read (null: the query fails on a running process, the way readProcessCommandLine does on a spawn error, a nonzero exit, a timeout or empty output); no real process is signalled, so each case is deterministic and carries no wait. */
+/** Provenance: HAND-DERIVED. The process table is a fake map of pid to the command line the query would read (null: the query fails on a running process, the way queryProcessCommandLine reads a failed run: a spawn error, a nonzero exit, a timeout or empty output); no real process is signalled, so each case is deterministic and carries no wait. */
 import { expect, it } from 'vitest'
 
 import { aliveAs, killAndVerify, linuxProcessState, type KillSeam } from '../helpers/copilot_session_start_tree.js'

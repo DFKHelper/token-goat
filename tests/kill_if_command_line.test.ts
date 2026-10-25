@@ -100,7 +100,7 @@ describe('killIfCommandLine', () => {
   })
 })
 
-// Provenance: HAND-DERIVED. readProcessCommandLine returns null both for a gone process and for a failed query (a spawn error, a nonzero exit, its timeout, empty output), read off src/resident_process.ts; the failed query is stood in for by an injected reader that returns null for a real, live sleeper, since no portable way makes the real query fail on demand.
+// Provenance: HAND-DERIVED. queryProcessCommandLine reports a failed query (a spawn error, a nonzero exit, its timeout, empty output) apart from a gone process, read off src/resident_process.ts; the failed query is stood in for by an injected reader that returns null for a real, live sleeper, since no portable way makes the real query fail on demand.
 describe('killIfCommandLine when the command line cannot be read', () => {
   it('throws, naming the pid, for a live process, and leaves it unsignalled', () => {
     const live = sleeper('tg-kill-unreadable')
