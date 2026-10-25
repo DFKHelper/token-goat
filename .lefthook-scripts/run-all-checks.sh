@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Single entry point for all pre-push checks. Typecheck, ts-checks and the Windows suite run concurrently; the WSL (Linux) suite follows the Windows suite unless PREPUSH_PARALLEL_WSL=1 starts it at once, and it runs only when wsl-gate.sh says so (TG_PREPUSH_WSL=1 or a pushed path listed in wsl-paths.txt) and the Windows leg passed. After a red suite leg the next push re-runs only the failing files and what changed since (prepush-focus.sh; TG_PREPUSH_FULL=1 forces the full leg). The WSL leg runs from its own Linux-side copy in a separate VM, so its files and node_modules never overlap the Windows run; both suites then share the workstation's CPU, which is why serial is the default: concurrent, they were slower and flaky.
+# Single entry point for all pre-push checks. Typecheck, ts-checks and the Windows suite run concurrently; the WSL (Linux) suite follows the Windows suite unless PREPUSH_PARALLEL_WSL=1 starts it at once, and it runs only when wsl-gate.sh says so (TG_PREPUSH_WSL=1 or a pushed path listed in wsl-paths.txt) and the Windows leg passed. Each suite leg runs only the tests the pushed range touches plus every guard test (prepush-focus.sh, scripts/prepush-select.mjs), and the full suite in any doubt; PREPUSH_FULL=1 forces the full leg, and CI runs the full suite after the push. The WSL leg runs from its own Linux-side copy in a separate VM, so its files and node_modules never overlap the Windows run; both suites then share the workstation's CPU, which is why serial is the default: concurrent, they were slower and flaky.
 set -euo pipefail
 
 # Always anchor to git root so this script works whether lefthook invokes it
@@ -73,7 +73,7 @@ leg_secs() {
   fi
 }
 
-# Starts a suite leg (win or wsl), focused on the failures of the last push when prepush-focus.sh can say so safely, otherwise in full. $1: log name, $2: leg, $3: the leg's script.
+# Starts a suite leg (win or wsl), focused on the pushed range when prepush-focus.sh can say so safely, otherwise in full. $1: log name, $2: leg, $3: the leg's script.
 start_suite_leg() {
   focus_decide "$2"
   echo "pre-push: $FOCUS_NOTE"

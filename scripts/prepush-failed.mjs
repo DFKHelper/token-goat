@@ -22,10 +22,11 @@ function saveStore(store, data) {
   renameSync(tmp, store)
 }
 
-/** @param {string} store @param {string} leg @param {string} sha @param {string[]} files the failing test files; an empty list clears the leg, since a focused run could not be chosen from it */
-export function recordFailure(store, leg, sha, files) {
+/** @param {string} store @param {string} leg @param {string} sha @param {string[]} files the failing test files @param {boolean} [unparsed] true when the leg was red but no failing file could be read from its log: the next focused selection then falls back to the full leg (hasUnparsedFailure), while a plain empty list clears the leg */
+export function recordFailure(store, leg, sha, files, unparsed = false) {
   const data = loadStore(store)
-  if (files.length === 0) delete data[leg]
+  if (files.length === 0 && unparsed) data[leg] = { sha, files: [], unparsed: true }
+  else if (files.length === 0) delete data[leg]
   else data[leg] = { sha, files }
   saveStore(store, data)
 }
@@ -36,6 +37,12 @@ export function readFailure(store, leg) {
   if (!entry || typeof entry.sha !== 'string' || !Array.isArray(entry.files)) return null
   const files = entry.files.filter((f) => typeof f === 'string' && f !== '')
   return files.length > 0 && entry.sha !== '' ? { sha: entry.sha, files } : null
+}
+
+/** @param {string} store @param {string} leg @returns {boolean} true when the leg's last red run named no failing file */
+export function hasUnparsedFailure(store, leg) {
+  const entry = loadStore(store)[leg]
+  return entry !== null && typeof entry === 'object' && entry.unparsed === true
 }
 
 /** @param {string} store @param {string} leg */
@@ -52,7 +59,7 @@ if (isMain) {
   if (cmd === 'record' && store && leg && sha && log) {
     const run = parseFailedRun(readFileSync(log, 'utf8'))
     const files = run.trusted ? run.files : []
-    recordFailure(store, leg, sha, files)
+    recordFailure(store, leg, sha, files, files.length === 0)
     if (!run.trusted) process.stdout.write(`${run.reason}; the next ${leg} run will be full\n`)
     else process.stdout.write(files.length > 0 ? `recorded ${files.length} failing file(s) for ${leg}\n` : `no failing test file found in ${log}; the next ${leg} run will be full\n`)
   } else if (cmd === 'read' && store && leg) {

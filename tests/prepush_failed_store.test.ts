@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { clearFailure, loadStore, readFailure, recordFailure } from '../scripts/prepush-failed.mjs'
+import { clearFailure, hasUnparsedFailure, loadStore, readFailure, recordFailure } from '../scripts/prepush-failed.mjs'
 
 const SCRIPT = path.join(fileURLToPath(new URL('..', import.meta.url)), 'scripts', 'prepush-failed.mjs')
 
@@ -39,6 +39,17 @@ describe('prepush failure record', () => {
     recordFailure(store, 'win', 'abc123', ['tests/a.test.ts'])
     recordFailure(store, 'win', 'fff000', [])
     expect(readFailure(store, 'win')).toBeNull()
+  })
+
+  it('marks a red leg with no parsable failure, so the next selection is full, and a plain clear removes the mark', () => {
+    recordFailure(store, 'win', 'abc123', [], true)
+    expect(hasUnparsedFailure(store, 'win')).toBe(true)
+    expect(readFailure(store, 'win')).toBeNull()
+    expect(hasUnparsedFailure(store, 'wsl')).toBe(false)
+    clearFailure(store, 'win')
+    expect(hasUnparsedFailure(store, 'win')).toBe(false)
+    recordFailure(store, 'win', 'abc123', ['tests/a.test.ts'])
+    expect(hasUnparsedFailure(store, 'win')).toBe(false)
   })
 
   it('treats a missing, corrupt or malformed store as no record', () => {
