@@ -19,6 +19,8 @@ const NOT_FOLLOWED = /^tests\/(?:setup|fixtures)\//
 // A documentation path: a markdown file anywhere or anything under docs/, except in the directories the product, the build, the tests or the hooks read, which stay full.
 const DOC_PATH = /^(?:docs\/|.+\.md$)/i
 const NOT_DOC = /^(?:src|tests|scripts|\.github|\.lefthook-scripts|node_modules)\//
+// A pre-push hook script: its change selects the suites that exercise the hook and this selector, not the full leg.
+const HOOK_SCRIPT = /^\.lefthook-scripts\/[^/]+\.sh$/
 
 /** @param {string} text the pre-push stdin: `<local ref> <local sha> <remote ref> <remote sha>` per line, per githooks(5) @returns {{refs: {lref: string, lsha: string, rref: string, rsha: string}[], bad: string | null}} bad names the first line that is not four fields with two well-formed shas */
 export function parsePushRefs(text) {
@@ -43,6 +45,7 @@ export function rangeOf(ref, headSha, base = null) {
 /** @param {string} status git's one-letter status @param {string} p repo-relative path @returns {{kind: 'test' | 'module' | 'doc' | 'skip'} | {full: string}} a doc runs the guards and the tests that name it as text (scripts/prepush-readers.mjs), never the full leg */
 export function classifyPath(status, p) {
   if (NOT_FOLLOWED.test(p)) return { full: `${p} is test setup or a fixture, which the import graph cannot see` }
+  if (HOOK_SCRIPT.test(p)) return { kind: 'hook' }
   if (DOC_PATH.test(p) && !NOT_DOC.test(p)) return { kind: 'doc' }
   if (!MODULE_PATH.test(p)) return { full: `${p} is not a src or tests module, so the import graph cannot see what reads it` }
   const isTest = p.startsWith('tests/') && TEST_FILE.test(p)
@@ -58,7 +61,7 @@ export function parseNameStatus(out) {
   return rows
 }
 
-/** @param {{ leg: string, headSha: string, pushText: string, env: Record<string, string | undefined>, changed: (from: string, to: string) => {status: string, path: string}[] | null, failed: () => string[], unparsedFailure: () => boolean, exists: (rel: string) => boolean, guards: () => string[], matrix: () => string[], importers: (modules: string[]) => Map<string, number> | null, durations: () => Record<string, number>, workers: number, }} io every outside fact comes in through here, so the decision is a pure function @returns {{full: true, why: string} | {full: false, files: string[], note: string, deferred: string[], deferredReport: string}} files are test files, highest priority first within the never-cut classes; deferredReport is the text that lists what the budget cut, empty when it cut nothing */
+/** @param {{ leg: string, headSha: string, pushText: string, env: Record<string, string | undefined>, changed: (from: string, to: string) => {status: string, path: string}[] | null, failed: () => string[], unparsedFailure: () => boolean, exists: (rel: string) => boolean, guards: () => string[], matrix: () => string[], hookSuites: () => string[], importers: (modules: string[]) => Map<string, number> | null, durations: () => Record<string, number>, workers: number, }} io every outside fact comes in through here, so the decision is a pure function @returns {{full: true, why: string} | {full: false, files: string[], note: string, deferred: string[], deferredReport: string}} files are test files, highest priority first within the never-cut classes; deferredReport is the text that lists what the budget cut, empty when it cut nothing */
 export function decideSelection(io) {
   const { leg } = io
   if (io.env['PREPUSH_FULL'] === '1' || io.env['TG_PREPUSH_FULL'] === '1') return { full: true, why: 'PREPUSH_FULL=1' }
@@ -79,10 +82,15 @@ export function decideSelection(io) {
   const modules = []
   const docs = []
   let srcChanged = false
+  let hookChanged = false
   for (const { status, path: p } of changedRows.values()) {
     const c = classifyPath(status, p)
     if ('full' in c) return { full: true, why: c.full }
     if (p.startsWith('src/')) srcChanged = true
+    if (c.kind === 'hook') {
+      hookChanged = true
+      continue
+    }
     if (c.kind === 'doc') {
       docs.push(p)
       continue
@@ -90,6 +98,9 @@ export function decideSelection(io) {
     if (c.kind === 'skip' || !io.exists(p)) continue
     if (c.kind === 'test') changedTests.push(p)
     else modules.push(p)
+  }
+  if (hookChanged) {
+    for (const t of io.hookSuites()) if (io.exists(t) && !changedTests.includes(t)) changedTests.push(t)
   }
   const guards = io.guards()
   if (guards.length === 0) return { full: true, why: 'no guard tests found under tests/guards' }
@@ -177,6 +188,7 @@ function main() {
     unparsedFailure: () => (store ? hasUnparsedFailure(store, leg) : false),
     exists: (rel) => existsSync(path.join(root, rel)),
     guards: () => listTests(root, 'tests/guards', () => true),
+    hookSuites: () => listTests(root, 'tests', (p) => /^tests\/prepush_[^/]*$/.test(p)),
     matrix: () => readdirSync(path.join(root, 'tests')).filter((n) => n.startsWith('command_matrix_e2e') && TEST_FILE.test(n)).map((n) => `tests/${n}`).sort(),
     mergeBase: (sha) => {
       try {

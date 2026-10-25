@@ -31,6 +31,7 @@ function select(changed: Row[] | null, over: Partial<Io> = {}): ReturnType<typeo
     unparsedFailure: () => false,
     exists: () => true,
     guards: () => GUARDS,
+    hookSuites: () => [],
     matrix: () => MATRIX,
     importers: () => IMPORTERS,
     mergeBase: () => null,
@@ -108,6 +109,20 @@ describe('prepush selection: focused pushes', () => {
   })
 })
 
+describe('prepush selection: a pre-push hook script', () => {
+  // Fixture provenance: the path shapes are HAND-DERIVED from the hook's own layout (.lefthook-scripts/prepush-focus.sh is the file the leg sources); the expected selections are computed by hand from the rule, not read off the implementation.
+  const HOOK_SUITES = ['tests/prepush_focus.test.ts', 'tests/prepush_select.test.ts']
+  it('a change to a hook script selects the prepush suites and the guards, not the full leg', () => {
+    const r = select([{ status: 'M', path: '.lefthook-scripts/prepush-focus.sh' }], { hookSuites: () => HOOK_SUITES })
+    expect(r.full === false && r.files).toEqual(expect.arrayContaining([...HOOK_SUITES, ...GUARDS]))
+  })
+
+  it('a path the hook-script rule does not name (nested, or not a shell script) still falls back to the full leg', () => {
+    expect(select([{ status: 'M', path: '.lefthook-scripts/lib/x.sh' }], { hookSuites: () => HOOK_SUITES }).full).toBe(true)
+    expect(select([{ status: 'M', path: '.lefthook-scripts/notes.txt' }], { hookSuites: () => HOOK_SUITES }).full).toBe(true)
+  })
+})
+
 describe('prepush selection: the full leg', () => {
   const cases: [string, Parameters<typeof select>[0], Partial<Io>, string][] = [
     ['vitest config changed', [m('vitest.config.ts')], {}, 'vitest.config.ts'],
@@ -116,7 +131,7 @@ describe('prepush selection: the full leg', () => {
     ['tsconfig changed', [m('tsconfig.json')], {}, 'tsconfig.json'],
     ['test setup changed', [m('tests/setup/isolate-home.ts')], {}, 'tests/setup/isolate-home.ts'],
     ['fixture changed', [m('tests/fixtures/x/a.txt')], {}, 'tests/fixtures/x/a.txt'],
-    ['hook script changed', [m('.lefthook-scripts/run-test.sh')], {}, '.lefthook-scripts/run-test.sh'],
+    ['nested hook helper changed', [m('.lefthook-scripts/lib/run-test.sh')], {}, '.lefthook-scripts/lib/run-test.sh'],
     ['script a test runs changed', [m('scripts/prepush-select.mjs')], {}, 'scripts/prepush-select.mjs'],
     ['markdown inside src (the shipping tree)', [m('src/canonical_skill.md')], {}, 'src/canonical_skill.md'],
     ['markdown under .github (read by the hooks)', [m('.github/copilot-instructions.md')], {}, '.github/copilot-instructions.md'],

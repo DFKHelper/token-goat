@@ -84,6 +84,7 @@ describe('prepush readers in the selection', () => {
       unparsedFailure: () => false,
       exists: () => true,
       guards: () => GUARDS,
+      hookSuites: () => [],
       matrix: () => MATRIX,
       importers: () => new Map(),
       mergeBase: () => null,
