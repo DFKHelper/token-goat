@@ -12,7 +12,11 @@ const PUSH = refLine(HEAD, REMOTE)
 
 const GUARDS = ['tests/guards/a.test.ts', 'tests/guards/b.test.ts']
 const MATRIX = ['tests/command_matrix_e2e.1.test.ts', 'tests/command_matrix_e2e.2.test.ts']
-const READERS = ['tests/bundle_user.test.ts', 'tests/guards/a.test.ts']
+// Test files that import the changed module: one hop away, and two hops away.
+const IMPORTERS = new Map([
+  ['tests/near.test.ts', 1],
+  ['tests/far.test.ts', 2],
+])
 
 type Row = { status: string; path: string }
 type Io = Parameters<typeof decideSelection>[0]
@@ -28,27 +32,29 @@ function select(changed: Row[] | null, over: Partial<Io> = {}): ReturnType<typeo
     exists: () => true,
     guards: () => GUARDS,
     matrix: () => MATRIX,
-    readers: () => READERS,
+    importers: () => IMPORTERS,
+    durations: () => ({}),
+    workers: 4,
     ...over,
   })
 }
 const m = (p: string): Row => ({ status: 'M', path: p })
 
 describe('prepush selection: focused pushes', () => {
-  it('src-only change: the module, every guard, the tree readers and the bundle matrix', () => {
+  it('src-only change: every guard, the bundle matrix and the tests that import the module', () => {
     const r = select([m('src/a.ts')])
     expect(r).toMatchObject({ full: false })
-    expect(r.full === false && r.files).toEqual([...new Set([...MATRIX, 'src/a.ts', ...GUARDS, ...READERS])].sort())
+    expect(r.full === false && r.files).toEqual([...MATRIX, ...GUARDS, 'tests/far.test.ts', 'tests/near.test.ts'].sort())
   })
 
-  it('test-only change: the test and every guard, no tree readers and no matrix', () => {
+  it('test-only change: the test and every guard, no matrix', () => {
     const r = select([m('tests/x.test.ts')])
     expect(r.full === false && r.files).toEqual(['tests/guards/a.test.ts', 'tests/guards/b.test.ts', 'tests/x.test.ts'])
   })
 
-  it('test helper change: the helper goes to vitest related, still no tree readers', () => {
+  it('test helper change: the tests importing the helper join the guards, still no matrix', () => {
     const r = select([m('tests/helpers/bundle.ts')])
-    expect(r.full === false && r.files).toEqual(['tests/guards/a.test.ts', 'tests/guards/b.test.ts', 'tests/helpers/bundle.ts'])
+    expect(r.full === false && r.files).toEqual(['tests/far.test.ts', 'tests/guards/a.test.ts', 'tests/guards/b.test.ts', 'tests/near.test.ts'])
   })
 
   it('guard change: the guard files alone', () => {
@@ -74,9 +80,10 @@ describe('prepush selection: focused pushes', () => {
     expect(r.full === false && r.files).not.toContain('tests/old.test.ts')
   })
 
-  it('the note counts what was chosen and names the escape hatch', () => {
+  it('the note counts what was chosen, the estimate and the budget, and names the escape hatch', () => {
     const r = select([m('src/a.ts')])
-    expect(r.full === false && r.note).toContain('win leg focused: 6 file(s) (1 changed in the pushed range, 0 failed before, 2 guard tests, 4 tree-reading or bundle tests); set PREPUSH_FULL=1')
+    // HAND-DERIVED: six files untimed at 3 s each = 18 s, over 4 workers = 4.5 s, times the 1.4 calibration = 6.3 s, plus the 45 s fixed overhead = 51.3 s
+    expect(r.full === false && r.note).toBe('win leg focused: 6 file(s), estimated ~51 s of a 600 s budget (default); 0 failed before, 0 changed tests, 2 guard tests, 2 bundle matrix tests, 1 direct and 1 further importers; deferred to CI: 0 files; set PREPUSH_FULL=1 for the full leg')
   })
 })
 
@@ -105,8 +112,8 @@ describe('prepush selection: the full leg', () => {
     ['PREPUSH_FULL=1', [m('src/a.ts')], { env: { PREPUSH_FULL: '1' } }, 'PREPUSH_FULL=1'],
     ['TG_PREPUSH_FULL=1 (the older name)', [m('src/a.ts')], { env: { TG_PREPUSH_FULL: '1' } }, 'PREPUSH_FULL=1'],
     ['last red run named no failing file', [m('tests/x.test.ts')], { unparsedFailure: () => true }, 'named no failing test file'],
-    ['src changed and the tree readers cannot be listed', [m('src/a.ts')], { readers: () => null }, 'could not be listed'],
-    ['src changed and no bundle matrix is found', [m('src/a.ts')], { matrix: () => [] }, 'could not be listed'],
+    ['the import graph cannot be read', [m('src/a.ts')], { importers: () => null }, 'import graph'],
+    ['src changed and no bundle matrix is found', [m('src/a.ts')], { matrix: () => [] }, 'matrix tests could not be listed'],
     ['no guard tests found', [m('tests/x.test.ts')], { guards: () => [] }, 'no guard tests'],
   ]
   it.each(cases)('%s', (_name, changed, over, why) => {

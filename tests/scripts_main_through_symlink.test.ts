@@ -65,14 +65,15 @@ describe.skipIf(!CAN_JUNCTION)('a script started through a symlinked directory s
     expect(r.stderr).toContain('usage: node scripts/test-durations.mjs LOG')
   })
 
-  it('prepush-tree-readers.mjs lists a bundle-spawning test', () => {
-    const d = stage('prepush-tree-readers.mjs')
-    mkdirSync(path.join(d.real, 'tests'))
-    writeFileSync(path.join(d.real, 'tests', 'b.test.ts'), "import { BUNDLE } from './helpers/bundle'\n")
-    const r = run(path.join(d.link, 'prepush-tree-readers.mjs'), [d.real])
+  it('prepush-graph.mjs lists a test that imports a changed module', () => {
+    const d = stage('prepush-graph.mjs')
+    for (const sub of ['src', 'tests', 'scripts']) mkdirSync(path.join(d.real, sub))
+    writeFileSync(path.join(d.real, 'src', 'a.ts'), 'export {}\n')
+    writeFileSync(path.join(d.real, 'tests', 'b.test.ts'), "import '../src/a.js'\n")
+    const r = run(path.join(d.link, 'prepush-graph.mjs'), [d.real, 'src/a.ts'])
     expect(r.stderr).toBe('')
     expect(r.status).toBe(0)
-    expect(r.stdout).toBe('tests/b.test.ts\n')
+    expect(r.stdout).toBe('1\ttests/b.test.ts\n')
   })
 
   it('lock-commit-subject.mjs refuses a lock change under a plain subject', () => {
@@ -94,7 +95,7 @@ describe.skipIf(!CAN_JUNCTION)('a script started through a symlinked directory s
 })
 
 describe('importing a script whose entry path does not exist', () => {
-  for (const name of ['prepush-failed.mjs', 'prepush-tree-readers.mjs', 'test-durations.mjs', 'lock-commit-subject.mjs']) {
+  for (const name of ['prepush-failed.mjs', 'prepush-graph.mjs', 'test-durations.mjs', 'lock-commit-subject.mjs']) {
     it(`${name} imports cleanly and runs no CLI`, () => {
       const d = stage(name, 'test-durations.mjs')
       const url = pathToFileURL(path.join(d.real, name)).href

@@ -1,16 +1,18 @@
 #!/usr/bin/env node
-// Chooses which test files a pre-push suite leg runs. The pushed range (remote sha..local sha of each ref line git gives a pre-push hook) is turned into a list: changed test files, `vitest related` on changed modules, every guard test, and when src changed the tests that read the tree or the built bundle. Any doubt (no ref lines, a new or deleted ref, a range git cannot list, a changed path vitest's module graph cannot see) means the full leg. Usage: node scripts/prepush-select.mjs ROOT LEG HEAD_SHA PUSH_FILE STORE. Prints `FULL<TAB>reason` or `FOCUS<TAB>note` and then one repo-relative test or module path per line. Built-in modules only.
+// Chooses which test files a pre-push suite leg runs, within a time budget. The pushed range (remote sha..local sha of each ref line git gives a pre-push hook) is turned into test files in priority order: the files that failed last time, the changed test files, every guard test, the built-bundle matrix when src changed (none of these is ever cut), then the tests that import a changed module, nearest first (scripts/prepush-graph.mjs). The importers are added while the estimated wall time stays within the leg's budget (scripts/prepush-budget.mjs, costs from the duration table next to the failure record); the rest are deferred to CI, which runs the full suite, and are listed. Any doubt (no ref lines, a new or deleted ref, a range git cannot list, a changed path the import graph cannot see) means the full leg. Usage: node scripts/prepush-select.mjs ROOT LEG HEAD_SHA PUSH_FILE STORE [DEFER_FILE]. Prints `FULL<TAB>reason` or `FOCUS<TAB>note` and then one repo-relative test path per line; DEFER_FILE receives the deferred-to-CI report. Built-in modules only.
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
 import { hasUnparsedFailure, readFailure } from './prepush-failed.mjs'
-import { treeReaders } from './prepush-tree-readers.mjs'
+import { costFn, fillBudget, legBudget, workersFor } from './prepush-budget.mjs'
+import { testsImporting } from './prepush-graph.mjs'
+import { durationsPath, readDurations } from './test-durations.mjs'
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 const ZERO_SHA = /^0+$/
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
-// TypeScript and JavaScript modules under src/ and tests/: the only paths `vitest related` can follow an import edge from.
+// TypeScript and JavaScript modules under src/ and tests/: the only paths the import graph (scripts/prepush-graph.mjs) follows an edge from.
 const MODULE_PATH = /^(?:src|tests)\/.+\.(?:ts|mts|cts|js|mjs|cjs)$/
 const NOT_FOLLOWED = /^tests\/(?:setup|fixtures)\//
 
@@ -36,8 +38,8 @@ export function rangeOf(ref, headSha) {
 
 /** @param {string} status git's one-letter status @param {string} p repo-relative path @returns {{kind: 'test' | 'module' | 'skip'} | {full: string}} */
 export function classifyPath(status, p) {
-  if (NOT_FOLLOWED.test(p)) return { full: `${p} is test setup or a fixture, which vitest related cannot see` }
-  if (!MODULE_PATH.test(p)) return { full: `${p} is not a src or tests module, so vitest related cannot see what reads it` }
+  if (NOT_FOLLOWED.test(p)) return { full: `${p} is test setup or a fixture, which the import graph cannot see` }
+  if (!MODULE_PATH.test(p)) return { full: `${p} is not a src or tests module, so the import graph cannot see what reads it` }
   const isTest = p.startsWith('tests/') && TEST_FILE.test(p)
   if (status === 'D') return isTest ? { kind: 'skip' } : { full: `${p} was deleted and its importers cannot be found` }
   return { kind: isTest ? 'test' : 'module' }
@@ -51,7 +53,7 @@ export function parseNameStatus(out) {
   return rows
 }
 
-/** @param {{ leg: string, headSha: string, pushText: string, env: Record<string, string | undefined>, changed: (from: string, to: string) => {status: string, path: string}[] | null, failed: () => string[], unparsedFailure: () => boolean, exists: (rel: string) => boolean, guards: () => string[], matrix: () => string[], readers: () => string[] | null, }} io every outside fact comes in through here, so the decision is a pure function @returns {{full: true, why: string} | {full: false, files: string[], note: string}} */
+/** @param {{ leg: string, headSha: string, pushText: string, env: Record<string, string | undefined>, changed: (from: string, to: string) => {status: string, path: string}[] | null, failed: () => string[], unparsedFailure: () => boolean, exists: (rel: string) => boolean, guards: () => string[], matrix: () => string[], importers: (modules: string[]) => Map<string, number> | null, durations: () => Record<string, number>, workers: number, }} io every outside fact comes in through here, so the decision is a pure function @returns {{full: true, why: string} | {full: false, files: string[], note: string, deferred: string[], deferredReport: string}} files are test files, highest priority first within the never-cut classes; deferredReport is the text that lists what the budget cut, empty when it cut nothing */
 export function decideSelection(io) {
   const { leg } = io
   if (io.env['PREPUSH_FULL'] === '1' || io.env['TG_PREPUSH_FULL'] === '1') return { full: true, why: 'PREPUSH_FULL=1' }
@@ -68,34 +70,45 @@ export function decideSelection(io) {
     for (const row of rows) changedRows.set(row.path, row)
   }
   if (changedRows.size === 0) return { full: true, why: 'the pushed range changes no file' }
-  const files = new Set()
+  const changedTests = []
+  const modules = []
   let srcChanged = false
-  let nChanged = 0
   for (const { status, path: p } of changedRows.values()) {
     const c = classifyPath(status, p)
     if ('full' in c) return { full: true, why: c.full }
     if (p.startsWith('src/')) srcChanged = true
-    if (c.kind !== 'skip' && io.exists(p)) {
-      files.add(p)
-      nChanged += 1
-    }
+    if (c.kind === 'skip' || !io.exists(p)) continue
+    if (c.kind === 'test') changedTests.push(p)
+    else modules.push(p)
   }
-  const failed = io.failed().filter((f) => io.exists(f))
-  for (const f of failed) files.add(f)
   const guards = io.guards()
   if (guards.length === 0) return { full: true, why: 'no guard tests found under tests/guards' }
-  for (const g of guards) files.add(g)
-  let nReaders = 0
+  let matrix = []
   if (srcChanged) {
-    const readers = io.readers()
-    const matrix = io.matrix()
-    if (readers === null || readers.length === 0 || matrix.length === 0) return { full: true, why: 'src changed and the tree-reading and bundle tests could not be listed' }
-    for (const r of [...readers, ...matrix]) files.add(r)
-    nReaders = readers.length + matrix.length
+    matrix = io.matrix()
+    if (matrix.length === 0) return { full: true, why: 'src changed and the built-bundle matrix tests could not be listed' }
   }
-  const list = [...files].sort()
-  const note = `${leg} leg focused: ${list.length} file(s) (${nChanged} changed in the pushed range, ${failed.length} failed before, ${guards.length} guard tests, ${nReaders} tree-reading or bundle tests); set PREPUSH_FULL=1 for the full leg`
-  return { full: false, files: list, note }
+  let distances = new Map()
+  if (modules.length > 0) {
+    const found = io.importers(modules)
+    if (found === null) return { full: true, why: 'the import graph of src and tests could not be read' }
+    distances = found
+  }
+  const failed = io.failed().filter((f) => io.exists(f))
+  // Never cut: the last red files, the changed tests, every guard, and the matrix when src changed. Then the importers, nearest first.
+  const fixed = [...new Set([...failed, ...changedTests, ...guards, ...matrix])]
+  const taken = new Set(fixed)
+  const cost = costFn(io.durations())
+  const ordered = [...distances]
+    .filter(([f]) => !taken.has(f) && io.exists(f))
+    .sort((a, b) => a[1] - b[1] || cost(a[0]) - cost(b[0]) || a[0].localeCompare(b[0]))
+  const budget = legBudget(leg, io.env)
+  const fit = fillBudget({ fixed, ordered: ordered.map(([f]) => f), cost, workers: io.workers, budgetS: budget.seconds })
+  const direct = fit.kept.filter((f) => distances.get(f) === 1).length
+  const files = [...fixed, ...fit.kept].sort()
+  const deferredReport = fit.deferred.length === 0 ? '' : `deferred to CI: ${fit.deferred.length} files (~${Math.round(fit.deferredS)} s)\n${fit.deferred.map((f) => `  ${f}`).join('\n')}\n`
+  const note = `${leg} leg focused: ${files.length} file(s), estimated ~${Math.round(fit.estimateS)} s of a ${Math.round(budget.seconds)} s budget (${budget.source}); ${failed.length} failed before, ${changedTests.length} changed tests, ${guards.length} guard tests, ${matrix.length} bundle matrix tests, ${direct} direct and ${fit.kept.length - direct} further importers; deferred to CI: ${fit.deferred.length} files; set PREPUSH_FULL=1 for the full leg`
+  return { full: false, files, note, deferred: fit.deferred, deferredReport }
 }
 
 /** @param {string} root @param {string} sub directory under root @param {(name: string) => boolean} keep @returns {string[]} repo-relative test files directly in or below sub */
@@ -113,7 +126,7 @@ function listTests(root, sub, keep) {
 }
 
 function main() {
-  const [root, leg, headSha, pushFile, store] = process.argv.slice(2)
+  const [root, leg, headSha, pushFile, store, deferFile] = process.argv.slice(2)
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
   const result = decideSelection({
     leg,
@@ -133,14 +146,17 @@ function main() {
     exists: (rel) => existsSync(path.join(root, rel)),
     guards: () => listTests(root, 'tests/guards', () => true),
     matrix: () => readdirSync(path.join(root, 'tests')).filter((n) => n.startsWith('command_matrix_e2e') && TEST_FILE.test(n)).map((n) => `tests/${n}`).sort(),
-    readers: () => {
+    importers: (modules) => {
       try {
-        return treeReaders(root)
+        return testsImporting(root, modules)
       } catch {
         return null
       }
     },
+    durations: () => (store ? readDurations(durationsPath(store), leg) : {}),
+    workers: workersFor(process.env, process.platform),
   })
+  if (!result.full && deferFile) writeFileSync(deferFile, result.deferredReport)
   process.stdout.write(result.full ? `FULL\t${leg} leg full: ${result.why}\n` : `FOCUS\t${result.note}\n${result.files.join('\n')}\n`)
 }
 

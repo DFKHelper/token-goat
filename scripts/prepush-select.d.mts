@@ -19,9 +19,11 @@ export interface SelectionIo {
   exists: (rel: string) => boolean
   guards: () => string[]
   matrix: () => string[]
-  readers: () => string[] | null
+  importers: (modules: string[]) => Map<string, number> | null
+  durations: () => Record<string, number>
+  workers: number
 }
-export type Selection = { full: true; why: string } | { full: false; files: string[]; note: string }
+export type Selection = { full: true; why: string } | { full: false; files: string[]; note: string; deferred: string[]; deferredReport: string }
 export function parsePushRefs(text: string): { refs: PushRef[]; bad: string | null }
 export function rangeOf(ref: PushRef, headSha: string): { from: string; to: string } | { full: string }
 export function classifyPath(status: string, p: string): { kind: 'test' | 'module' | 'skip' } | { full: string }

@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { resolveWindowsBash } from '../src/shell.js'
-import { readsTreeOrBundle } from '../scripts/prepush-tree-readers.mjs'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
 
 const REPO = process.cwd().replace(/\\/g, '/')
@@ -42,17 +41,19 @@ function write(root: string, rel: string, text: string): void {
 }
 
 /** A sandbox repo with one recorded failing test, then the given files changed in a second commit. Returns the decision note and the focus list. */
-function decide(change: Record<string, string>):{ note: string; focus: string[] } {
+function decide(change: Record<string, string>, env: Record<string, string> = {}): { note: string; focus: string[]; deferred: string } {
   // The sandbox is reached through a symlink, as every macOS temp directory is (/var points into /private): a script that mistakes a symlinked path for a different file does nothing here
   realDir = mkdtempSync(path.join(tmpdir(), 'tg-focus-'))
   dir = `${realDir}-link`
   symlinkSync(realDir, dir, 'junction')
   const root = path.join(dir, 'repo')
   mkdirSync(path.join(root, 'scripts'), { recursive: true })
-  for (const f of ['prepush-failed.mjs', 'test-durations.mjs', 'prepush-tree-readers.mjs', 'prepush-select.mjs', 'is-main-module.mjs']) copyFileSync(path.join(REPO, 'scripts', f), path.join(root, 'scripts', f))
+  for (const f of ['prepush-failed.mjs', 'test-durations.mjs', 'prepush-budget.mjs', 'prepush-graph.mjs', 'prepush-select.mjs', 'is-main-module.mjs']) copyFileSync(path.join(REPO, 'scripts', f), path.join(root, 'scripts', f))
   write(root, 'src/a.ts', 'export const a = 1\n')
   write(root, 'tests/a.test.ts', "import { a } from '../src/a'\n")
-  write(root, 'tests/bundle_user.test.ts', "import { BUNDLE } from './helpers/bundle'\n")
+  write(root, 'tests/near.test.ts', "import { a } from '../src/a'\n")
+  write(root, 'tests/far.test.ts', "import './helpers/via'\n")
+  write(root, 'tests/helpers/via.ts', "import { a } from '../../src/a'\n")
   write(root, 'tests/guards/tree.test.ts', 'export {}\n')
   write(root, 'tests/other.test.ts', 'export {}\n')
   write(root, 'tests/command_matrix_e2e.1.test.ts', 'export {}\n')
@@ -78,37 +79,39 @@ function decide(change: Record<string, string>):{ note: string; focus: string[] 
     'focus_decide win',
     'echo "NOTE=$FOCUS_NOTE"',
     'echo "FILE=$FOCUS_FILE"',
+    'echo "DEFERRED_BEGIN"',
+    'echo "$FOCUS_DEFERRED"',
   ].join('\n')
-  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
+  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...process.env, ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
   const note = /^NOTE=(.*)$/m.exec(out)?.[1] ?? ''
   const file = /^FILE=(.*)$/m.exec(out)?.[1]?.trim() ?? ''
-  return { note, focus: file ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [] }
+  const deferred = out.slice(out.indexOf('DEFERRED_BEGIN') + 'DEFERRED_BEGIN'.length).trim()
+  return { note, focus: file ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [], deferred }
 }
 
 describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => {
-  it('adds the tree-reading and bundle tests when a src file changed', () => {
+  it('a src change runs the guards, the matrix and the tests that import the module', () => {
     const r = decide({ 'src/a.ts': 'export const a = 2\n' })
-    expect(r.focus).toEqual(['src/a.ts', 'tests/a.test.ts', 'tests/bundle_user.test.ts', 'tests/command_matrix_e2e.1.test.ts', 'tests/guards/tree.test.ts'])
-    expect(r.note).toContain('3 tree-reading or bundle tests')
+    expect(r.focus).toEqual(['tests/a.test.ts', 'tests/command_matrix_e2e.1.test.ts', 'tests/far.test.ts', 'tests/guards/tree.test.ts', 'tests/near.test.ts'])
+    expect(r.note).toContain('1 failed before, 0 changed tests, 1 guard tests, 1 bundle matrix tests, 1 direct and 1 further importers; deferred to CI: 0 files')
+    expect(r.deferred).toBe('')
   })
 
-  it('does not add them when only a test changed, and still runs every guard', () => {
+  it('prints the files a tiny budget cut, and still runs the never-cut ones', () => {
+    const r = decide({ 'src/a.ts': 'export const a = 2\n' }, { PREPUSH_BUDGET_S: '1' })
+    expect(r.focus).toEqual(['tests/a.test.ts', 'tests/command_matrix_e2e.1.test.ts', 'tests/guards/tree.test.ts'])
+    expect(r.deferred).toMatch(/^deferred to CI: 2 files \(~\d+ s\)\n {2}tests\/near\.test\.ts\n {2}tests\/far\.test\.ts$/)
+  })
+
+  it('a test-only change runs the test and every guard, no matrix', () => {
     const r = decide({ 'tests/other.test.ts': 'export const x = 1\n' })
     expect(r.focus).toEqual(['tests/a.test.ts', 'tests/guards/tree.test.ts', 'tests/other.test.ts'])
   })
 
-  it('runs the full leg when the pushed range changes a path vitest related cannot see', () => {
+  it('runs the full leg when the pushed range changes a path the import graph cannot see', () => {
     const r = decide({ 'package.json': '{}\n' })
     expect(r.note).toContain('win leg full: package.json is not a src or tests module')
     expect(r.focus).toEqual([])
-  })
-})
-
-describe('readsTreeOrBundle', () => {
-  it('flags a bundle spawner and an fs read of src, not a plain import', () => {
-    expect(readsTreeOrBundle("import { BUNDLE } from './helpers/bundle'")).toBe(true)
-    expect(readsTreeOrBundle("readFileSync(join(ROOT, 'src', 'x.ts'), 'utf8')")).toBe(true)
-    expect(readsTreeOrBundle("import { x } from '../src/x'\nreadFileSync(tmpFile)")).toBe(false)
   })
 })
 
@@ -121,6 +124,6 @@ describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus note', () => {
 
   it('counts each changed path once and the failed file of the earlier run', () => {
     const note = decide({ 'tests/other.test.ts': 'export const x = 1\n' }).note
-    expect(note).toContain('1 changed in the pushed range, 1 failed before, 1 guard tests')
+    expect(note).toContain('1 failed before, 1 changed tests, 1 guard tests')
   })
 })

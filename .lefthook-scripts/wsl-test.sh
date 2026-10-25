@@ -187,8 +187,8 @@ fi
 echo "wsl-test: running npm test in $WORK"
 # TOKEN_GOAT_NO_WORKER_SPAWN and TOKEN_GOAT_HARNESS_OVERRIDE are pinned by tests/setup/isolate-home.ts (vitest setupFiles) so local pre-push and CI run under the same defaults. Don't re-export them here.
 if [[ "${#FOCUS_FILES[@]}" -gt 0 ]]; then
-    echo "wsl-test: re-running ${#FOCUS_FILES[@]} focused file(s) with vitest related"
-    npx vitest related --run "${FOCUS_FILES[@]}" "${NATIVE_EXCLUDES[@]}"
+    echo "wsl-test: re-running ${#FOCUS_FILES[@]} focused file(s)"
+    npx vitest run "${FOCUS_FILES[@]}" "${NATIVE_EXCLUDES[@]}"
 elif [[ "${#NATIVE_EXCLUDES[@]}" -gt 0 ]]; then
     npm test -- "${NATIVE_EXCLUDES[@]}"
 else
