@@ -33,6 +33,8 @@ function select(changed: Row[] | null, over: Partial<Io> = {}): ReturnType<typeo
     guards: () => GUARDS,
     matrix: () => MATRIX,
     importers: () => IMPORTERS,
+    mergeBase: () => null,
+    readers: () => [[], [], []],
     durations: () => ({}),
     workers: 4,
     ...over,
@@ -62,6 +64,25 @@ describe('prepush selection: focused pushes', () => {
     expect(r.full === false && r.files).toEqual(GUARDS)
   })
 
+  it('a documentation-only push runs the guards and the tests naming the document, not the full leg, the matrix or the import graph', () => {
+    const r = select([m('CHANGELOG.md')], { readers: () => [['tests/reads_changelog.test.ts'], [], []], importers: () => { throw new Error('the import graph is not read for a document') } })
+    expect(r.full === false && r.files).toEqual([...GUARDS, 'tests/reads_changelog.test.ts'])
+  })
+
+  it('a new branch is diffed from its merge base with origin/main', () => {
+    const seen: string[] = []
+    const r = select(null, {
+      pushText: refLine(HEAD, ZERO),
+      mergeBase: () => REMOTE,
+      changed: (from: string) => {
+        seen.push(from)
+        return [m('tests/x.test.ts')]
+      },
+    })
+    expect(seen).toEqual([REMOTE])
+    expect(r.full === false && r.files).toContain('tests/x.test.ts')
+  })
+
   it('two ref lines: the changes of both are selected', () => {
     const two = refLine(HEAD, REMOTE) + refLine(HEAD, OTHER, 'refs/heads/feat', 'refs/heads/other')
     const rows: Record<string, Row[]> = { [REMOTE]: [m('tests/x.test.ts')], [OTHER]: [m('tests/y.test.ts')] }
@@ -83,7 +104,7 @@ describe('prepush selection: focused pushes', () => {
   it('the note counts what was chosen, the estimate and the budget, and names the escape hatch', () => {
     const r = select([m('src/a.ts')])
     // HAND-DERIVED: six files untimed at 3 s each = 18 s, over 4 workers = 4.5 s, times the 1.4 calibration = 6.3 s, plus the 45 s fixed overhead = 51.3 s
-    expect(r.full === false && r.note).toBe('win leg focused: 6 file(s), estimated ~51 s of a 600 s budget (default); 0 failed before, 0 changed tests, 2 guard tests, 2 bundle matrix tests, 1 direct and 1 further importers; deferred to CI: 0 files; set PREPUSH_FULL=1 for the full leg')
+    expect(r.full === false && r.note).toBe('win leg focused: 6 file(s), estimated ~51 s of a 600 s budget (default); 0 failed before, 0 changed tests, 2 guard tests, 2 bundle matrix tests, 1 direct and 1 further importers, 0 text or bundle readers; deferred to CI: 0 files; set PREPUSH_FULL=1 for the full leg')
   })
 })
 
@@ -97,7 +118,12 @@ describe('prepush selection: the full leg', () => {
     ['fixture changed', [m('tests/fixtures/x/a.txt')], {}, 'tests/fixtures/x/a.txt'],
     ['hook script changed', [m('.lefthook-scripts/run-test.sh')], {}, '.lefthook-scripts/run-test.sh'],
     ['script a test runs changed', [m('scripts/prepush-select.mjs')], {}, 'scripts/prepush-select.mjs'],
-    ['markdown changed beside a src change', [m('src/a.ts'), m('README.md')], {}, 'README.md'],
+    ['markdown inside src (the shipping tree)', [m('src/canonical_skill.md')], {}, 'src/canonical_skill.md'],
+    ['markdown under .github (read by the hooks)', [m('.github/copilot-instructions.md')], {}, '.github/copilot-instructions.md'],
+    ['markdown under scripts', [m('scripts/x.md')], {}, 'scripts/x.md'],
+    ['markdown under tests/fixtures', [m('tests/fixtures/x/a.md')], {}, 'tests/fixtures/x/a.md'],
+    ['markdown beside a package.json change', [m('README.md'), m('package.json')], {}, 'package.json'],
+    ['the test files cannot be scanned', [m('src/a.ts')], { readers: () => null }, 'could not be scanned'],
     ['src file deleted', [{ status: 'D', path: 'src/a.ts' }], {}, 'src/a.ts was deleted'],
     ['test helper deleted', [{ status: 'D', path: 'tests/helpers/x.ts' }], {}, 'tests/helpers/x.ts was deleted'],
     ['new branch', [m('src/a.ts')], { pushText: refLine(HEAD, ZERO) }, 'new remote ref refs/heads/feat'],
@@ -161,6 +187,24 @@ describe('prepush range and path rules', () => {
     expect(rangeOf({ lref: 'r', lsha: OTHER, rref: 'r', rsha: REMOTE }, HEAD)).toHaveProperty('full')
   })
 
+  it('a new remote ref is diffed from its merge base with origin/main, and is full only without one', () => {
+    const fresh = { lref: 'r', lsha: HEAD, rref: 'r', rsha: ZERO }
+    expect(rangeOf(fresh, HEAD, OTHER)).toEqual({ from: OTHER, to: HEAD })
+    expect(rangeOf(fresh, HEAD, null)).toHaveProperty('full')
+    expect(rangeOf({ ...fresh, lsha: OTHER }, HEAD, REMOTE)).toHaveProperty('full')
+  })
+
+  it.each([
+    ['M', 'CHANGELOG.md'],
+    ['M', 'docs/architecture.md'],
+    ['A', 'docs/img/a.png'],
+    ['D', 'docs/old.md'],
+    ['M', 'vscode-extension/README.md'],
+    ['M', 'demo/README.md'],
+  ])('%s %s is documentation', (status, p) => {
+    expect(classifyPath(status, p)).toEqual({ kind: 'doc' })
+  })
+
   it.each([
     ['M', 'src/a.ts', { kind: 'module' }],
     ['A', 'src/tool_filters/x.mjs', { kind: 'module' }],
@@ -171,7 +215,7 @@ describe('prepush range and path rules', () => {
     expect(classifyPath(status, p)).toEqual(want)
   })
 
-  it.each(['src/data.json', 'src/queries/a.scm', 'tests/data/a.json', 'tests/setup/x.ts', 'tests/fixtures/a.ts', 'scripts/a.mjs', 'vscode-extension/src/a.ts', 'docs/a.md', 'native/x.rs', '.github/workflows/ci.yml'])('%s is outside what vitest related can see', (p) => {
+  it.each(['src/data.json', 'src/queries/a.scm', 'tests/data/a.json', 'tests/setup/x.ts', 'tests/fixtures/a.ts', 'scripts/a.mjs', 'vscode-extension/src/a.ts', 'native/x.rs', '.github/workflows/ci.yml'])('%s is outside what vitest related can see', (p) => {
     expect(classifyPath('M', p)).toHaveProperty('full')
   })
 

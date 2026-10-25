@@ -15,8 +15,8 @@ const NEAR2 = 'tests/near2.test.ts'
 const FAR1 = 'tests/far1.test.ts'
 const FAR2 = 'tests/far2.test.ts'
 const IMPORTERS = new Map([[FAR2, 3], [NEAR1, 1], [FAR1, 2], [NEAR2, 1]])
-// Seconds the budget must allow for the never-cut files plus `extraMs` more, with half a second of slack.
-const budgetFor = (ms: number, workers = 1): string => String(FIXED_OVERHEAD_S + (CALIBRATION * ms) / 1000 / workers + 0.5)
+// Whole seconds (the budget variable takes plain digits only) the budget must allow for the never-cut files plus the given milliseconds more, with at least half a second of slack.
+const budgetFor = (ms: number, workers = 1): string => String(Math.ceil(FIXED_OVERHEAD_S + (CALIBRATION * ms) / 1000 / workers + 0.5))
 
 type Io = Parameters<typeof decideSelection>[0]
 function select(over: Partial<Io> = {}, durations: Record<string, number> = {}): Extract<ReturnType<typeof decideSelection>, { full: false }> {
@@ -32,6 +32,8 @@ function select(over: Partial<Io> = {}, durations: Record<string, number> = {}):
     guards: () => [G1, G2],
     matrix: () => [M1],
     importers: () => IMPORTERS,
+    mergeBase: () => null,
+    readers: () => [],
     durations: () => durations,
     workers: 1,
     ...over,
@@ -107,7 +109,7 @@ describe('prepush budget: the environment override', () => {
     expect(legBudget('wsl', {}).seconds).toBe(LEG_BUDGET_S['wsl'])
   })
 
-  it.each(['abc', '0', '-5', 'Infinity'])('ignores %s and says so', (raw) => {
+  it.each(['abc', '0', '-5', 'Infinity', '0x10', ' 5 ', '1e3', '5.5', '+5'])('ignores %s and says so', (raw) => {
     const b = legBudget('win', { PREPUSH_BUDGET_S: raw })
     expect(b.seconds).toBe(LEG_BUDGET_S['win'])
     expect(b.source).toContain('ignored')

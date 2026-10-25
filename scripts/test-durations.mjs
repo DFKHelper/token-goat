@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
+import { compareCodeUnits } from './prepush-graph.mjs'
 
 const ANSI = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g')
 // A file line starts with one space, a status mark and the path; sub-test lines are indented further and never match. The duration is absent for a skipped file, so such a line is not a timing and is dropped.
@@ -99,7 +100,7 @@ export function medianMs(values) {
 
 /** @param {{file: string, ms: number, detail: string}[]} entries @param {number} n */
 export function slowest(entries, n) {
-  return [...entries].sort((a, b) => b.ms - a.ms || a.file.localeCompare(b.file)).slice(0, n)
+  return [...entries].sort((a, b) => b.ms - a.ms || compareCodeUnits(a.file, b.file)).slice(0, n)
 }
 
 /** @param {{file: string, ms: number, detail: string}[]} entries */

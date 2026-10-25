@@ -1,3 +1,5 @@
+export function compareCodeUnits(a: string, b: string): number
+export function withoutImports(text: string): string
 export function relativeSpecifiers(text: string): string[]
 export function resolveSpecifier(from: string, spec: string, files: Set<string>): string | null
 export function importerGraph(sources: Map<string, string>): Map<string, Set<string>>

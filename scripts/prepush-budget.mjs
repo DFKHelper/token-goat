@@ -27,7 +27,7 @@ export function legBudget(leg, env) {
   const raw = env[name]
   if (raw === undefined || raw === '') return { seconds: LEG_BUDGET_S[leg] ?? LEG_BUDGET_S.win, source: 'default' }
   const n = Number(raw)
-  if (Number.isFinite(n) && n > 0) return { seconds: n, source: `${name}=${raw}` }
+  if (/^[0-9]+$/.test(raw) && Number.isFinite(n) && n > 0) return { seconds: n, source: `${name}=${raw}` }
   return { seconds: LEG_BUDGET_S[leg] ?? LEG_BUDGET_S.win, source: `default (${name}=${raw} is not a positive number, ignored)` }
 }
 

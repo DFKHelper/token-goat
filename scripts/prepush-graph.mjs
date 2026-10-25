@@ -8,9 +8,19 @@ const CODE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
 const ROOTS = ['src', 'tests', 'scripts']
 const SKIPPED_DIRS = new Set(['node_modules', 'fixtures'])
-// A relative specifier after an import, re-export, dynamic import, require or a vitest mock call. A specifier built at run time is not seen, which can only defer a test to CI.
+// A relative specifier after an import, re-export, dynamic import, require or a vitest mock call. A specifier built at run time, a path named in a string and a module spawned as a program are not seen: scripts/prepush-readers.mjs finds the tests that reach a module those ways.
 const SPECIFIER = /(?:\bfrom|\bimport|\brequire|\b(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*\(?\s*(['"`])(\.{1,2}(?:\/[^'"`\n]*)?)\1/g
 const SOURCE_FOR = { '.js': ['.ts', '.tsx', '.js'], '.mjs': ['.mts', '.mjs'], '.cjs': ['.cts', '.cjs'], '.jsx': ['.tsx', '.jsx'] }
+
+/** @param {string} a @param {string} b @returns {number} a plain code-unit order, the same on every locale */
+export function compareCodeUnits(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+/** @param {string} text @returns {string} the text with every relative import specifier blanked, so what is left names a module only as text */
+export function withoutImports(text) {
+  return text.replace(SPECIFIER, ' ')
+}
 
 /** @param {string} text @returns {string[]} the relative specifiers imported by one file */
 export function relativeSpecifiers(text) {
@@ -93,5 +103,5 @@ if (isMainModule(import.meta.url)) {
     process.stderr.write('usage: node scripts/prepush-graph.mjs ROOT PATH...\n')
     process.exit(2)
   }
-  for (const [file, hops] of [...testsImporting(root, changed)].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))) process.stdout.write(`${hops}\t${file}\n`)
+  for (const [file, hops] of [...testsImporting(root, changed)].sort((a, b) => a[1] - b[1] || compareCodeUnits(a[0], b[0]))) process.stdout.write(`${hops}\t${file}\n`)
 }
