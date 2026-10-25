@@ -18,7 +18,7 @@ const MODULE_PATH = /^(?:src|tests)\/.+\.(?:ts|mts|cts|js|mjs|cjs)$/
 const NOT_FOLLOWED = /^tests\/(?:setup|fixtures)\//
 // A documentation path: a markdown file anywhere or anything under docs/, except in the directories the product, the build, the tests or the hooks read, which stay full.
 const DOC_PATH = /^(?:docs\/|.+\.md$)/i
-const NOT_DOC = /^(?:src|tests|scripts|\.github|\.lefthook-scripts|node_modules)\//
+const NOT_DOC = /^(?:src|tests|scripts|\.github|node_modules)\//
 // Anything under .lefthook-scripts: the hook decides what runs, so a focused leg cannot vouch for a change to it, and a change runs the full leg.
 const HOOK_SCRIPT = /^\.lefthook-scripts\//
 
