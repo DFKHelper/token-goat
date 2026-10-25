@@ -23,6 +23,9 @@ import { clearListingSlow, listingKnownSlow, markListingSlow, sweptRecently } fr
 /** How long the hook waits for `git ls-files` before it hands the sweep to the worker (the listing sits outside the sweep budget). */
 export const SESSION_START_LISTING_DEADLINE_MS = 300
 
+// Kept out of constants.ts: that file feeds the parser fingerprint, and an env key name changes no extraction.
+const RECONCILE_LISTING_DEADLINE_ENV = 'TOKEN_GOAT_RECONCILE_LISTING_DEADLINE_MS'
+
 /** Sweep the project for index drift and enqueue whatever no longer matches disk. Returns a one-line note when drift was found, or null when the index is already correct -- which is the overwhelmingly common case, and stays silent so the session-start context does not grow a line that says nothing. Only runs against an already-indexed project: on an unindexed one every tracked file is legitimately absent from the index, so the sweep would report the entire repository as drift and enqueue it, which is `token-goat index .`'s job and not a hook's. Never throws. Its caller is a session-start hook, and a sweep that failed is a missed repair, not a reason to degrade the reminder the hook exists to deliver. */
 async function reconcileNote(cwd: string, indexed: boolean): Promise<string | null> {
   if (!indexed) return null
@@ -36,7 +39,7 @@ async function reconcileNote(cwd: string, indexed: boolean): Promise<string | nu
     // Loaded only when a sweep is due, so the common start that a recent sweep covers never parses the reconcile module.
     const { DEFAULT_RECONCILE_BUDGET_MS, isReconcileClean, reconcileProject, uncheckedClauses } = await import('./reconcile.js')
     const budgetMs = envInt(ENV_KEYS.RECONCILE_BUDGET_MS, DEFAULT_RECONCILE_BUDGET_MS, 0, 60_000)
-    const result = reconcileProject({ cwd, budgetMs, listingTimeoutMs: envInt(ENV_KEYS.RECONCILE_LISTING_DEADLINE_MS, SESSION_START_LISTING_DEADLINE_MS, 1, 60_000) })
+    const result = reconcileProject({ cwd, budgetMs, listingTimeoutMs: envInt(RECONCILE_LISTING_DEADLINE_ENV, SESSION_START_LISTING_DEADLINE_MS, 1, 60_000) })
     // A missed deadline is late, not dropped: the worker sweeps it.
     const handedToWorker = result.gitTimedOut && requestReconcileSafe(cwd)
     if (result.gitTimedOut) markListingSlow(projectRoot)

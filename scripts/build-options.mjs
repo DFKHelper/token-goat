@@ -38,9 +38,9 @@ export const BUNDLE_OUTPUTS = ['token-goat.mjs', ...Object.keys(ENTRY_POINTS).ma
 export function buildDefines(pkg, buildStamp = 'unknown') {
   return {
     'import.meta.env': '{}',
-    // A string of JSON rather than an object: esbuild emits an object define as a module and adds a call initializing it to every lazily loaded module in the bundle, 7KB across the hook graph.
     // The identity of this build (scripts/build-stamp.mjs): two builds of one package version differ here and nowhere else.
     __TG_BUILD__: JSON.stringify(buildStamp),
+    // A string of JSON rather than an object: esbuild emits an object define as a module and adds a call initializing it to every lazily loaded module in the bundle, 7KB across the hook graph.
     __TG_MANIFEST__: JSON.stringify(JSON.stringify({ version: pkg.version, name: pkg.name, bugs: { url: pkg.bugs?.url } })),
   }
 }
