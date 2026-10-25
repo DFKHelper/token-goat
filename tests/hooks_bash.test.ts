@@ -67,7 +67,7 @@ import {
   extractGhViewForBatchAdvisory,
 } from '../src/bash_extractors.js'
 import { extractTgSurgicalRead } from '../src/bash_extractors.js'
-import { bashRecallKey, cdPrefixCwd, isHeadMovingGitCommand, resolveBashCall, stripCommandPrefix, stripExportPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
+import { bashRecallKey, cdPrefixCwd, isHeadMovingGitCommand, ORIG_HEAD_ELIGIBLE_GIT_RE, resolveBashCall, stripCommandPrefix, stripExportPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -4579,6 +4579,27 @@ describe('isHeadMovingGitCommand — classification table', () => {
   })
 })
 
+describe('isHeadMovingGitCommand — leading environment assignments, as the post hook sees the command', () => {
+  it.each([
+    ['FOO=1 git pull', true],
+    ['FOO=1 BAR="x y" git pull', true],
+    ['FOO=1 echo git pull', false],
+    ['PATH=/x git pull', true],
+    ['FOO=1 git checkout -- a.txt', false],
+  ])('%s -> %s', (cmd, expected) => {
+    expect(isHeadMovingGitCommand(resolveBashCall(cmd, null).cmd)).toBe(expected)
+  })
+
+  it.each([
+    ['FOO=1 git pull', true],
+    ['FOO=1 BAR="x y" git merge topic', true],
+    ['PATH=/x git rebase main', true],
+    ['FOO=1 echo git pull', false],
+  ])('the diff base (ORIG_HEAD) reads %s -> %s', (cmd, expected) => {
+    expect(ORIG_HEAD_ELIGIBLE_GIT_RE.test(resolveBashCall(cmd, null).cmd)).toBe(expected)
+  })
+})
+
 describe('postBashHandler — git-mutation staleness enqueue', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -4709,6 +4730,47 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
       await postBashHandler(makePostBashEvent('git restore -- .', '', dir))
 
       dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('enqueues the file restored behind leading environment assignments, a PATH= one and a quoted value included', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'locally edited\n')
+      gitIn(dir)(['restore', 'a.txt'])
+
+      await postBashHandler(makePostBashEvent('FOO=1 BAR="x y" PATH=/x git restore a.txt', '', dir))
+
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('enqueues the file a stash pop rewrites behind a leading environment assignment', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      const git = gitIn(dir)
+      writeFileSync(join(dir, 'a.txt'), 'stashed change\n')
+      git(['stash', 'push', '-m', 'wip'])
+      git(['stash', 'pop'])
+
+      await postBashHandler(makePostBashEvent('FOO=1 git stash pop', '', dir))
+
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does NOT enqueue for a `git restore` that an echo, not git, runs after the assignments', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'locally edited\n')
+      await postBashHandler(makePostBashEvent('FOO=1 echo git restore a.txt', '', dir))
+      expect(getDirtyPaths()).toEqual([])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

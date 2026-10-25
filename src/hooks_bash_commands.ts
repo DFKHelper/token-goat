@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { runGitAsyncLazy } from './util.js'
-import { parsePorcelainZ, safeShlexSplit, skipGitLeadingOptions } from './git_porcelain.js'
+import { parsePorcelainZ, safeShlexSplit, skipEnvAssignments, skipGitLeadingOptions } from './git_porcelain.js'
 import type { GitResult } from './util.js'
 import { dataDir } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
@@ -240,8 +240,10 @@ export function extractCommand(event: HookEvent): string | undefined {
 }
 
 /** Matches git subcommands that can move HEAD and rewrite working-tree file content. */
-const HEAD_MOVING_GIT_RE = /^\s*git\s+(?:checkout|switch|pull|merge|rebase|reset|cherry-pick|stash\s+branch)\b/i
-const PATH_SCOPED_CHECKOUT_RE = /^\s*git\s+checkout\s+(?:\S.*?\s)?--(?:\s|$)/i
+/** The leading `NAME=value` words a git command may carry (`FOO=1 BAR="x y" git ...`), the shape skipEnvAssignments reads on tokens. The git patterns in this file take it as a prefix: stripCommandPrefix declines to peel an assignment that changes what runs (`PATH=`, `LD_*`), and such a command still runs git. */
+const LEADING_ENV_ASSIGNMENTS = String.raw`(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*`
+const HEAD_MOVING_GIT_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+(?:checkout|switch|pull|merge|rebase|reset|cherry-pick|stash\s+branch)\b`, 'i')
+const PATH_SCOPED_CHECKOUT_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+checkout\s+(?:\S.*?\s)?--(?:\s|$)`, 'i')
 
 export function isHeadMovingGitCommand(cmd: string): boolean {
   if (!HEAD_MOVING_GIT_RE.test(cmd)) return false
@@ -250,13 +252,13 @@ export function isHeadMovingGitCommand(cmd: string): boolean {
 }
 
 /** Subcommands where ORIG_HEAD survives multi-step operations (merge/rebase/pull). */
-export const ORIG_HEAD_ELIGIBLE_GIT_RE = /^\s*git\s+(?:pull|merge|rebase)\b/i
+export const ORIG_HEAD_ELIGIBLE_GIT_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+(?:pull|merge|rebase)\b`, 'i')
 
 /** Matches the HEAD reflog message a real merge/rebase/pull leaves behind. */
 export const ORIG_HEAD_REFLOG_MSG_RE = /^(merge\s|rebase\s\(|pull\s)/i
 
 /** Matches `git restore`, which rewrites paths without moving HEAD. */
-const GIT_RESTORE_RE = /^\s*git\s+restore\b/i
+const GIT_RESTORE_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+restore\b`, 'i')
 
 /** `git restore --staged <file>` only rewrites the index, leaving working-tree content untouched. */
 const GIT_RESTORE_STAGED_ONLY_RE = /(?:^|\s)(?:--staged|-S)(?:\s|$)/
@@ -268,8 +270,7 @@ const GIT_STASH_REWRITE_SUBCOMMANDS = new Set(['pop', 'apply', 'branch', 'push',
 function gitStashRewriteDir(segment: string, runDir: string): string | null {
   const tokens = safeShlexSplit(segment)
   if (tokens === null) return null
-  let i = 0
-  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i++
+  let i = skipEnvAssignments(tokens)
   const head = tokens[i]
   if (head === undefined || path.basename(head.replace(/\\/g, '/')).replace(/\.exe$/i, '').toLowerCase() !== 'git') return null
   const leading = skipGitLeadingOptions(tokens, i + 1, runDir)
@@ -351,7 +352,7 @@ function extractRedirectTargets(segment: string): string[] {
 
 /** Pathspecs named on a `git restore` command line: everything after `--`, or every non-option token once `-s`/`--source`'s separate value is skipped. */
 function extractGitRestorePathspecs(cmd: string): string[] {
-  const m = /^\s*git\s+restore\b(.*)$/i.exec(cmd)
+  const m = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+restore\b(.*)$`, 'i').exec(cmd)
   if (m === null) return []
   const tokens = safeShlexSplit(m[1] ?? '')
   if (tokens === null) return []
