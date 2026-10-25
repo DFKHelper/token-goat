@@ -89,6 +89,7 @@
     ["src/image_shrink.ts","Hook Subsystem"],
     ["src/install.ts","Hook Subsystem"],
     ["src/relay.ts","Hook Subsystem"],
+    ["src/shell_writes.ts","Hook Subsystem"],
     ["src/compact.ts","Session, Compaction, and Audit"],
     ["src/compact_dropped.ts","Session, Compaction, and Audit"],
     ["src/resume.ts","Session, Compaction, and Audit"],
