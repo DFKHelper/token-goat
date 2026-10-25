@@ -6,7 +6,7 @@ const CHANGE_VERBS = 'fixed|implemented|added|created|wrote|written|refactored|u
 const OPENER_VERBS = 'fixed|implemented|added|created|wrote|refactored|updated|changed|edited|modified|deleted|removed|patched|replaced|renamed|rewrote'
 
 /** Objects that make a change verb a write-up or a thought, not an edit: "I wrote a report", "I changed my mind", "I added that this is read-only", "Added the following findings:". */
-const NOT_AN_EDIT_OBJECT = '(?![ \\t]+(?:(?:the|a|an|my|our|this|these|some)[ \\t]+)?(?:summary|report|review|analysis|findings?|notes?|plan|mind|understanding|that|following[ \\t]+(?:findings?|notes?|observations?|points?|issues?[ \\t]+(?:I|we)[ \\t]+(?:found|noticed|saw)))\\b)'
+const NOT_AN_EDIT_OBJECT = '(?![ \\t]+(?:(?:my|our)[ \\t]+(?:approach|estimates?|confidence|conclusions?|assessment|answer)|director(?:y|ies)[ \\t]+to|(?:the[ \\t]+)?ambiguity|(?:the[ \\t]+)?(?:PR|pull[ \\t]+request|issue|ticket)[ \\t]+(?:description|title|body)|(?:a[ \\t]+)?comment[ \\t]+(?:on|to)[ \\t]+(?:the[ \\t]+)?(?:PR|pull[ \\t]+request|issue|ticket))\\b|[ \\t]+(?:(?:the|a|an|my|our|this|these|some)[ \\t]+)?(?:summary|report|review|analysis|findings?|notes?|plan|mind|understanding|that|following[ \\t]+(?:findings?|notes?|observations?|points?|issues?[ \\t]+(?:I|we)[ \\t]+(?:found|noticed|saw)))\\b)'
 
 /** A fence closes only on its own marker, so a backtick fence holding `~~~` (or the reverse) does not end early. An unterminated one runs to the end. */
 const FENCED_BLOCK_RE = /```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g

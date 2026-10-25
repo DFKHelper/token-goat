@@ -1821,7 +1821,20 @@ describe('cli_doctor', () => {
   })
 
   describe('runDoctorAndExit --fast option', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs()
+    })
+
     it('accepts fast: true and passes empty process list to skip host scanning', async () => {
+      // The Installation check resolves token-goat on PATH, so the verdict would otherwise depend on whether the host has a global install; a stand-in that prints a version makes it the same on every machine, and the real check still runs against it.
+      const binDir = path.join(tempDir, 'fake_bin')
+      fs.mkdirSync(binDir)
+      const isWin = process.platform === 'win32'
+      const binPath = path.join(binDir, isWin ? 'token-goat.cmd' : 'token-goat')
+      fs.writeFileSync(binPath, isWin ? '@echo off\r\necho 9.9.9\r\n' : '#!/bin/sh\necho 9.9.9\n', 'utf8')
+      if (!isWin) fs.chmodSync(binPath, 0o755)
+      vi.stubEnv('PATH', `${binDir}${path.delimiter}${process.env.PATH ?? ''}`)
+      expect(checkInstall()).toEqual({ name: 'Installation', status: 'ok', message: '9.9.9' })
       const code = await runDoctorAndExit({ dataDir: tempDir, fast: true })
       expect(code).toBe(0)
     })

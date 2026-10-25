@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 import { BUNDLE_OUTPUTS } from '../../scripts/build-options.mjs'
 import { readBundleStamp, sourceDigest } from '../../scripts/source-digest.mjs'
-import { isResidentOfInstall, readProcessCommandLine, terminateProcessTree } from '../../src/resident_process.js'
+import { commandLineOf, isResidentOfInstall, queryProcessCommandLine, terminateProcessTree } from '../../src/resident_process.js'
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -113,7 +113,7 @@ export function killDaemonsUnder(root: string, entryScript: string = DAEMON_LAUN
       if (Date.now() - fs.statSync(beat).mtimeMs > DAEMON_HEARTBEAT_FRESH_MS) continue
       const pid = parseInt(fs.readFileSync(beat, 'utf8').trim(), 10)
       if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue
-      const commandLine = readProcessCommandLine(pid)
+      const commandLine = commandLineOf(queryProcessCommandLine(pid))
       if (commandLine === null || !launchers.some((launcher) => isResidentOfInstall(commandLine, launcher, ['worker']))) {
         if (commandLine !== null || pidExists(pid)) process.stderr.write(`[build-bundle] not killing pid ${String(pid)} named by ${beat}: ${commandLine === null ? 'its command line cannot be read' : 'its command line is not a worker daemon of this checkout'}\n`)
         continue

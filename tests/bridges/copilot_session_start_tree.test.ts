@@ -137,7 +137,7 @@ cp.spawnSync = function(command, args, options) {
   // runGit starts the real git by its full path on Windows, so git is recognised by its file name.
   if (require('node:path').basename(String(command)).toLowerCase().replace(/[.]exe$/, '') === 'git' && args.includes('ls-files')) {
     fs.writeFileSync(${JSON.stringify(invocation)}, JSON.stringify({ args, stack: new Error().stack }))
-    ${nativeBoundary ? `return original(${JSON.stringify(nativeBoundary)}, ['hold', ${JSON.stringify(gitFile)}], { ...options, detached: true })` : ''}
+    ${nativeBoundary ? `return original(${JSON.stringify(nativeBoundary)}, ['hold', ${JSON.stringify(gitFile)}], { ...options, timeout: undefined, detached: true })` : ''}
     // Windows' libuv job may close ordinary descendants when Node dies. A detached
     // executable exercises the process-tree ownership gap independently of that job.
     const descendant = cp.spawn(process.execPath, [${JSON.stringify(blocker)}], {

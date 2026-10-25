@@ -1,4 +1,5 @@
 import * as os from 'node:os'
+import { fileURLToPath } from 'node:url'
 
 import { defineConfig } from 'vitest/config'
 
@@ -7,6 +8,8 @@ import RetryVisibilityReporter from './tests/setup/retry-visibility-reporter.js'
 
 export default defineConfig({
   test: {
+    // Per-checkout cache: the default sits in the shared C:/Projects/node_modules (vite searches for the workspace root above the checkout), where concurrent worktree runs, and the vitest a test spawns, collide on its rmdir (ENOTEMPTY).
+    fsModuleCachePath: fileURLToPath(new URL('./node_modules/.vitest-cache', import.meta.url)),
     setupFiles: ['./tests/setup/isolate-home.ts', './tests/setup/reset-hint-stats.ts', './tests/setup/load-regex-extractors.ts'],
     globalSetup: ['./tests/setup/build-bundle.ts'],
     // Name where tests live rather than enumerating everywhere they don't. With `exclude` alone, vitest's default include is `**/*.test.ts` across the whole working tree, so the suite was defined by subtraction: any test file anywhere joined it, including in untracked scratch directories. That is not hypothetical -- a draft test left in an untracked folder broke an unrelated full-suite run with `Cannot find module './helpers/bundle.js'`, because it was resolving a relative import from a directory that is not `tests/`. The first two patterns match exactly the 766 tracked test files, and tests/guards/test_suite_include_covers_every_test_file.test.ts fails if a tracked test file ever falls outside them, which is the failure that matters more: a test silently not running looks identical to a test passing. The third is not a place tests are written: retry_visibility_reporter.test.ts generates a deliberately flaky probe into `.vitest-probe/` and spawns a real vitest run over it, and a positional path there is a filter over collected files rather than an addition to them, so the probe has to be collectable or that spawn finds no tests at all -- which is exactly how tightening this was caught.

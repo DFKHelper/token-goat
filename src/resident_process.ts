@@ -127,10 +127,9 @@ export function lineReaderAsQuery(read: (pid: number) => string | null): (pid: n
   }
 }
 
-/** The command line of process `pid`, or null when it cannot be read (gone, not ours, or the query failed); a caller that must tell those apart uses {@link queryProcessCommandLine}. */
-export function readProcessCommandLine(pid: number): string | null {
-  const found = queryProcessCommandLine(pid)
-  return found.status === 'found' && found.commandLine !== '' ? found.commandLine : null
+/** The usable command line of a query, or null when there is none. This folds gone and failed into one null, so use it only where neither outcome decides a kill or restart (an identity probe that leaves an unreadable process alone); a decision that acts on the process reads the `status` of {@link queryProcessCommandLine} itself. */
+export function commandLineOf(query: CommandLineQuery): string | null {
+  return query.status === 'found' && query.commandLine !== '' ? query.commandLine : null
 }
 
 /** Whether /proc lists processes here, which makes {@link zombiePids} a file read instead of a `ps` run. */

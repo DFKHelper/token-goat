@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { displaySafeText, normalizePath, resolveIndexPath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
 import { runGitAsyncLazy } from './util.js'
-import { parsePorcelainZ } from './git_porcelain.js'
+import { parsePorcelainZ, safeShlexSplit, skipGitLeadingOptions } from './git_porcelain.js'
 import type { GitResult } from './util.js'
 import { dataDir } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
@@ -264,9 +264,6 @@ const GIT_RESTORE_STAGED_ONLY_RE = /(?:^|\s)(?:--staged|-S)(?:\s|$)/
 /** The `git stash` subcommands that rewrite the working tree: `pop` and `apply` put changes back, `branch` checks out a branch and applies the stash onto it, and `push` or `save` put files back to their committed content, as a bare `git stash` or one taking only options does. `list`, `show`, `drop`, `clear`, `create` and `store` touch no file. */
 const GIT_STASH_REWRITE_SUBCOMMANDS = new Set(['pop', 'apply', 'branch', 'push', 'save'])
 
-/** Git's own leading options that take their value as the next argument, per git(1): `-C <path>`, `-c <name>=<value>`, and the long forms that also accept `--opt=<value>`. */
-const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env'])
-
 /** The directory whose working tree a `git stash` segment rewrites, or null when the segment is not one that rewrites it. Environment assignments ahead of `git` and git's own leading options are skipped, and each `-C <path>` moves the directory as git does, relative to the one before it (an empty path leaves it unchanged). `-h` or `--help` anywhere after `stash` prints usage and touches nothing. */
 function gitStashRewriteDir(segment: string, runDir: string): string | null {
   const tokens = safeShlexSplit(segment)
@@ -275,13 +272,9 @@ function gitStashRewriteDir(segment: string, runDir: string): string | null {
   while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i++
   const head = tokens[i]
   if (head === undefined || path.basename(head.replace(/\\/g, '/')).replace(/\.exe$/i, '').toLowerCase() !== 'git') return null
-  let dir = runDir
-  for (i++; i < tokens.length && tokens[i]!.startsWith('-'); i++) {
-    const t = tokens[i]!
-    if (!GIT_OPTIONS_WITH_VALUE.has(t)) continue
-    const value = tokens[++i]
-    if (t === '-C' && value !== undefined && value !== '') dir = path.resolve(dir, value)
-  }
+  const leading = skipGitLeadingOptions(tokens, i + 1, runDir)
+  const dir = leading.dir
+  i = leading.index
   if (tokens[i] !== 'stash') return null
   const rest = tokens.slice(i + 1)
   if (rest.some((t) => t === '-h' || t === '--help')) return null
@@ -298,15 +291,6 @@ const PATCH_APPLY_INSPECT_ONLY_RE = /(?:^|\s)--(?:check|stat|numstat|summary|dry
 /** True for a formatter run that rewrites files in place. The file set can come from a glob, a config-driven include list, or `.` -- not parseable from the command line -- so these join the status-sweep fallback rather than growing a second, weaker path-guessing mechanism. */
 function isFormatterWriteSegment(segment: string): boolean {
   return /(?:^|\s|[/\\])(?:prettier|eslint)\b/i.test(segment) && /(?:^|\s)--(?:write|fix)(?:\s|$)/i.test(segment)
-}
-
-/** Tokenize a segment argv-style, or `null` when it is not tokenizable (shlexSplit throws on an unterminated quote). */
-function safeShlexSplit(segment: string): string[] | null {
-  try {
-    return shlexSplit(segment)
-  } catch {
-    return null
-  }
 }
 
 /** True when `token` is the leading command of the segment, allowing for a path prefix (`/usr/bin/sed`). */

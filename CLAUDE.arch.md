@@ -406,6 +406,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/baseline.ts`](src/baseline.ts) | Project map / overview (`token-goat map`). |
 | [`src/batch_serve.ts`](src/batch_serve.ts) | `--batch-serve`: run many CLI invocations inside one already-started process. |
 | [`src/bridges_status.ts`](src/bridges_status.ts) | Bridge hook-event parity matrix. |
+| [`src/build_stamp.ts`](src/build_stamp.ts) | Tells a process that its bundle was rebuilt under it. |
 | [`src/cache_session_commands.ts`](src/cache_session_commands.ts) | Cache and history commands: bash-history, web-history, clean-cache, prune-cache, cache-audit. |
 | [`src/call_streak.ts`](src/call_streak.ts) | Call-streak advisories: the two hints that judge a run of tool calls rather than one call. |
 | [`src/canonical_skill.ts`](src/canonical_skill.ts) | The canonical token-goat skill installed by `token-goat install`, generated from `src/canonical_skill.md` by `npm run skill:canonical`. |
@@ -484,7 +485,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/fold_structure.ts`](src/fold_structure.ts) | Turning a whole-file delivery into a structural view of it: a heading tree for a document, a declaration skeleton for source. |
 | [`src/git_async.ts`](src/git_async.ts) | The non-blocking git runner. |
 | [`src/git_hint.ts`](src/git_hint.ts) | Git facts the hooks read inside the `hints.git_hint_max_ms` budget: the branch from the HEAD file with no spawn, and a dirty-state probe that says timed-out instead of clean. |
-| [`src/git_porcelain.ts`](src/git_porcelain.ts) | One entry of `git status --porcelain -z`: the path as git names it, relative to the repository root, plus the path a rename or copy came from. |
+| [`src/git_porcelain.ts`](src/git_porcelain.ts) | One entry of `git status --porcelain -z`: the path as git names it, relative to the repository root, plus the path a rename or copy came from; and the argv of a `git` command line, skipping the options git takes before its subcommand (`-C <path>`, `-c k=v`, `--git-dir`) and resolving the directory a `-C` chain leaves git in. |
 | [`src/graph_analysis.ts`](src/graph_analysis.ts) | Code graph analysis and query commands: similar, context-for, test-for, coverage-gaps, arch, blame, and ask. |
 | [`src/graph_commands.ts`](src/graph_commands.ts) | CLI command handlers for code-graph commands. |
 | [`src/graph_inspection.ts`](src/graph_inspection.ts) | Code graph inspection commands: dead, deps, types, and scope. |
@@ -567,6 +568,7 @@ token-goat is a TypeScript CLI bundled to `dist/token-goat.mjs` via esbuild. The
 | [`src/queue_waker.ts`](src/queue_waker.ts) | Ends the worker's between-drain sleep when another process appends to `queue/dirty.txt` (fs.watch on the queue directory, timer fallback); the worker's own requeues keep their pacing. |
 | [`src/recall_index.ts`](src/recall_index.ts) | Cross-cache full-text search index for `token-goat recall`. |
 | [`src/reconcile_requests.ts`](src/reconcile_requests.ts) | The worker's side of a reconcile request: a hook that knew files changed but could not learn which (a branch switch whose changed-file list git failed to produce in time) leaves th |
+| [`src/reconcile_stamp.ts`](src/reconcile_stamp.ts) | What session start remembers per project, in the reconcile_cursor table under the root, a NUL and a word (`swept`, `slowlist`), so index_prune.ts removes the rows with the project: |
 | [`src/recovery_fix_policy.ts`](src/recovery_fix_policy.ts) | What a recovery pair may store and replay (recovery_pairs.ts). |
 | [`src/recovery_pairs.ts`](src/recovery_pairs.ts) | Failure-recovery pairs: remember what fixed a failed Bash command, and say so the next time it fails the same way. |
 | [`src/ref_blindness.ts`](src/ref_blindness.ts) | Honest answers for questions the reference index cannot answer. |

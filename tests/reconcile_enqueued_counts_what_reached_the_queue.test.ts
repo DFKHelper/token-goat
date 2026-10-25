@@ -102,7 +102,8 @@ describe('reconcile under the OS temp dir, where the queue refuses every path', 
       cwd: projectDir,
       encoding: 'utf-8',
       input: JSON.stringify({ cwd: projectDir, hook_event_name: 'SessionStart', source: 'startup' }),
-      env: isolatedEnv(homeDir),
+      // The real git must finish listing whatever the host load, or the sweep is handed to the worker and no note is made.
+      env: { ...isolatedEnv(homeDir), TOKEN_GOAT_RECONCILE_LISTING_DEADLINE_MS: '60000' },
     })
     expect(res.status, `the session_start hook exited ${res.status}; it must never fail the session`).toBe(0)
     const parsed = JSON.parse(res.stdout ?? '{}') as { hookSpecificOutput?: { additionalContext?: string } }
