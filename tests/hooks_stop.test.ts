@@ -185,6 +185,40 @@ describe('noteVerificationRun and noteFailedVerificationRun', () => {
     expect(runs.map((r) => [r.command, r.exitCode])).toEqual([['npm test', 2]])
   })
 
+  // HAND-DERIVED from the ruling that a `.md` document is never a check input: a failing check script given only documents is a failure worth recording, with its command as typed and no document read as a verdict.
+  it('records a failing check script whose only positional is a .md document, with its command and status', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const command = 'python scripts/run_self_tests.py README.md'
+    expect(mayBeVerificationCommand(command)).toBe(true)
+    const runs = runsAfter(() => {
+      noteFailedVerificationRun(command, 'Exit code 1', false)
+      noteVerificationRun('npm run lint README.md', 1, false)
+    })
+    expect(runs.map((r) => [r.command, r.exitCode])).toEqual([
+      [command, 1],
+      ['npm run lint README.md', 1],
+    ])
+  })
+
+  // HAND-DERIVED: a `.md` positional is never a check input. A pass on a document-only check clears nothing, and a flag beside the document or a script whose name does not check leaves the run unrecorded even when it fails.
+  it.each([
+    ['python scripts/run_self_tests.py README.md', (c: string) => noteVerificationRun(c, 0, false)],
+    ['python scripts/run_self_tests.py README.md', (c: string) => noteVerificationRun(c, null, false)],
+    ['python scripts/run_self_tests.py README.md --verbose', (c: string) => noteFailedVerificationRun(c, 'Exit code 1', false)],
+    ['python scripts/x.py README.md', (c: string) => noteFailedVerificationRun(c, 'Exit code 1', false)],
+    ['python scripts/x.py README.md', (c: string) => noteVerificationRun(c, 1, false)],
+  ])('does not take %j as a check run, and an edit before it stays unverified', (command, write) => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => {
+      recordFileEdit('/p/src/a.ts')
+      write(command)
+    })
+    const state = evaluateVerification(sid)
+    expect(state.runs).toEqual([])
+    expect(state.editedSinceLastPass).toEqual(['a.ts'])
+  })
+
   // HAND-DERIVED from shell semantics: the exit status of a list is the last command's, a pipeline's is its last stage's unless pipefail is set, and `||` / `;` let a later command replace the status.
   it.each([
     ['npm test 2>&1 | tail -30'],
