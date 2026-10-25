@@ -100,6 +100,8 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
         .toEqual({ indexed: true, workerAlive: true, queued: '' })
       // A worker already outside the jobs keeps its lease. The next startup must queue and drain its edit without killing or replacing that daemon.
       writeFileSync(source, 'export function startupWorkerSecondSymbol() { return 43 }\n')
+      // The first start (or the worker it woke) stamped a complete sweep, which stands in for the next start's own for minutes; this start must sweep to find the second edit, whenever the stamp landed.
+      fixture.env['TOKEN_GOAT_RECONCILE_MEMORY_MS'] = '0'
       const second = surface === 'installed'
         ? runInstalledStartup({ fixture, entry: BUNDLE, quietLimitMs: 40_000 })
         : runTreeShim({ fixture, entry: BUNDLE, endInput: false, quietLimitMs: 40_000 })

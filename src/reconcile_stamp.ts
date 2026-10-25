@@ -2,12 +2,16 @@
 
 import { globalDbPath } from './constants.js'
 import { getDb } from './db.js'
+import { envInt } from './env.js'
 
 /** How long a complete sweep stands in for a new one at session start. */
 export const SESSION_SWEEP_REUSE_MS = 5 * 60 * 1000
 
 /** How long a project whose listing missed the deadline goes straight to the worker. */
 export const SLOW_LISTING_MEMORY_MS = 60 * 60 * 1000
+
+// Named here rather than in constants.ts, which feeds the parser fingerprint.
+const MEMORY_OVERRIDE_ENV = 'TOKEN_GOAT_RECONCILE_MEMORY_MS'
 
 const SWEPT = 'swept'
 const SLOW_LISTING = 'slowlist'
@@ -29,13 +33,18 @@ function writeMark(dbPath: string, projectRoot: string, word: string, nowMs: num
   }
 }
 
-/** Whether the mark is younger than `windowMs`; missing, unreadable or future-dated reads false so the work is done. */
+/** The window a mark counts for: `windowMs`, or the value of TOKEN_GOAT_RECONCILE_MEMORY_MS when set (0 makes every session start sweep and list for itself). */
+function windowFor(windowMs: number): number {
+  return envInt(MEMORY_OVERRIDE_ENV, windowMs, 0, 24 * 60 * 60 * 1000)
+}
+
+/** Whether the mark is younger than the window; missing, unreadable or future-dated reads false so the work is done. */
 function markIsFresh(dbPath: string, projectRoot: string, word: string, windowMs: number, nowMs: number): boolean {
   try {
     const row = getDb(dbPath).prepare('SELECT updated_at FROM reconcile_cursor WHERE root = ?').get(keyOf(projectRoot, word)) as { updated_at: number } | undefined
     if (row === undefined) return false
     const age = nowMs - row.updated_at
-    return age >= 0 && age < windowMs
+    return age >= 0 && age < windowFor(windowMs)
   } catch {
     return false
   }

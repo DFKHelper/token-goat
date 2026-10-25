@@ -191,6 +191,20 @@ describe('a complete sweep standing in for the next one', () => {
     expect(sweptRecently(root, _testDbPath)).toBe(true)
   })
 
+  it('is ignored, with a slow-listing mark, when TOKEN_GOAT_RECONCILE_MEMORY_MS is 0', () => {
+    writeSweepStamp(_testDbPath, root)
+    markListingSlow(root, _testDbPath)
+    expect(sweptRecently(root, _testDbPath)).toBe(true)
+    expect(listingKnownSlow(root, _testDbPath)).toBe(true)
+    vi.stubEnv('TOKEN_GOAT_RECONCILE_MEMORY_MS', '0')
+    try {
+      expect(sweptRecently(root, _testDbPath)).toBe(false)
+      expect(listingKnownSlow(root, _testDbPath)).toBe(false)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('is not recorded when the queue refused the drift the sweep found', () => {
     const refusing = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-sweep-refused-')))
     try {
