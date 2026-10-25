@@ -20,14 +20,13 @@ export function resolveMaxWorkers(platform: string, cpus: number, memoryGb: numb
     if (!Number.isNaN(parsed) && parsed > 0) return parsed
   }
   const width = platform === 'win32' ? WORKER_CEILING_WIN32 : cpus < ROOMY_CPUS || memoryGb < ROOMY_MEMORY_GB ? 6 : WORKER_CEILING
-  return narrowToIdle(width, cpus, idleCpus)
+  return narrowToIdle(width, idleCpus)
 }
 
-// The width above is what an otherwise idle machine of that shape can carry. When other processes already hold most of the cores, that many forks cannot all start inside vitest's worker-start window (a full Windows run on a 26-core machine at ~68% CPU from other sessions logged 40 "Failed to start forks worker ... Timeout waiting for worker to respond" and a 60s setup-hook timeout), so the pool takes only its share of the idle cores. The share is rounded up, so a machine that is at least three quarters idle (width 4) keeps the full width and a CI runner at its quiet start is unchanged; the floor is one worker and the result is never above `width`. No sample (undefined) leaves the width alone.
-export function narrowToIdle(width: number, cpus: number, idleCpus: number | undefined): number {
-  if (idleCpus === undefined || !Number.isFinite(idleCpus) || cpus <= 0) return width
-  const share = Math.min(1, Math.max(0, idleCpus / cpus))
-  return Math.max(1, Math.min(width, Math.ceil(width * share)))
+// The width above is what an otherwise idle machine of that shape can carry. What starves the pool is fewer free cores than workers, not a low idle percentage: a full Windows run on a 26-core machine held at about 68% CPU by other sessions (about 8 cores free) logged 40 "Failed to start forks worker ... Timeout waiting for worker to respond" and a 60s setup-hook timeout, yet 8 free cores carry 4 workers. So the pool is capped at the whole free cores, one worker per free core with no headroom term and no new tunable; the floor is one worker and the result is never above `width`. No sample (undefined) leaves the width alone. A quiet machine with fewer cores than the width (a 4-vCPU Linux runner, width 6) now gets its core count.
+export function narrowToIdle(width: number, idleCpus: number | undefined): number {
+  if (idleCpus === undefined || !Number.isFinite(idleCpus)) return width
+  return Math.max(1, Math.min(width, Math.floor(idleCpus)))
 }
 
 export interface CpuTimes {

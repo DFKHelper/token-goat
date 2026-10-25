@@ -56,21 +56,27 @@ describe('resolveMaxWorkers', () => {
   })
 })
 
-// Provenance: HAND-DERIVED. Every expected width is ceil(width * idle / cpus) worked out on paper from the row's own numbers, clamped to [1, width]; the 26-core, ~68% busy row is the shape of the rejected pre-push run (log C:/tgwt/push_fail2_7f42686d9.tests.log: 40 forks workers failed to start).
+// Provenance: HAND-DERIVED. Every expected width is min(width, max(1, floor(idle cores))) worked out on paper from the row's own numbers; the 26-core row with 8 idle cores is the shape of the rejected pre-push run (log C:/tgwt/push_fail2_7f42686d9.tests.log: 40 forks workers failed to start), where 8 free cores still carry the full 4 workers.
 describe('resolveMaxWorkers follows the idle CPU', () => {
-  it('narrows the pool to its share of the idle cores', () => {
-    // 26 cores, 32% idle = 8.32 cores: ceil(4 * 8.32 / 26) = ceil(1.28) = 2
-    expect(resolveMaxWorkers('win32', 26, 128, 8.32)).toBe(2)
-    // linux, 4 cores, half idle: ceil(6 * 2 / 4) = 3
-    expect(resolveMaxWorkers('linux', 4, 16, 2)).toBe(3)
-    // roomy linux, 26 cores, half idle: ceil(12 * 13 / 26) = 6
-    expect(resolveMaxWorkers('linux', 26, 128, 13)).toBe(6)
+  it('keeps the full width on a big busy machine that still has free cores', () => {
+    // 26 cores, 8 idle, win32 width 4: min(4, floor(8)) = 4
+    expect(resolveMaxWorkers('win32', 26, 128, 8)).toBe(4)
   })
 
-  it('keeps the full width on a machine that is at least three quarters idle', () => {
-    expect(resolveMaxWorkers('win32', 4, 16, 4)).toBe(WORKER_CEILING_WIN32)
-    expect(resolveMaxWorkers('win32', 26, 128, 20)).toBe(WORKER_CEILING_WIN32)
-    expect(resolveMaxWorkers('linux', 4, 16, 4)).toBe(6)
+  it('narrows the pool to the free cores when they are fewer than the workers', () => {
+    // 26 cores, 2.5 idle, width 4: floor(2.5) = 2
+    expect(resolveMaxWorkers('win32', 26, 128, 2.5)).toBe(2)
+    // roomy linux, 26 cores, 5.9 idle, width 12: floor(5.9) = 5
+    expect(resolveMaxWorkers('linux', 26, 128, 5.9)).toBe(5)
+  })
+
+  it('gives one worker when under one core is free', () => {
+    // 4 cores, 0.4 idle, width 4: floor(0.4) = 0, floored to 1
+    expect(resolveMaxWorkers('win32', 4, 16, 0.4)).toBe(1)
+  })
+
+  it('keeps the roomy width of 12 on a fully idle 16-core machine', () => {
+    expect(resolveMaxWorkers('linux', 16, 32, 16)).toBe(WORKER_CEILING)
   })
 
   it('never goes below one worker', () => {
