@@ -12,7 +12,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
 const CODE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
 const BUNDLE_NAME = 'token-goat.mjs'
-// A src path that no test names, so the readers scan returns only the tests that read src or spawn the bundle.
+// A src path no other test names (this file names it, so it lands in the named tier): the readers scan then returns the tests that read src or spawn the bundle, and every tier counts as selected.
 const NO_NAMED_CHANGE = 'src/__no_such_module__.ts'
 
 const tracked = execFileSync('git', ['ls-files', '-z', 'tests'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
@@ -35,8 +35,7 @@ describe('prepush completeness over the real tree', () => {
         return target !== null && helpersWithBundle.has(target)
       })
     })
-    const [, readers, spawners] = readerTiersForRepo(ROOT, [NO_NAMED_CHANGE], true)
-    const reported = new Set([...readers, ...spawners])
+    const reported = new Set(readerTiersForRepo(ROOT, [NO_NAMED_CHANGE], true).flat())
     const missing = expected.filter((p) => !reported.has(p))
     expect(missing).toEqual([])
   })
