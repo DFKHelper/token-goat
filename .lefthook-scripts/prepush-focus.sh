@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Sourced by run-all-checks.sh. Every push runs a focused suite leg: the files changed in the pushed range, the tests related to them, every guard test and, when src changed, the tree-reading and built-bundle tests; the full suite runs in CI. Any doubt falls back to the full leg. The choice is made by scripts/prepush-select.mjs, which reads the pushed ref lines from $PUSH_STDIN. After a red leg the failing test files are recorded under the git common dir and the next focused leg adds them. Needs ROOT_DIR, LOG_DIR, HEAD_SHA and PUSH_STDIN from the caller.
+# Sourced by run-all-checks.sh. Every push runs a focused suite leg: the files changed in the pushed range, the tests related to them, every guard test and, when src changed, the tree-reading and built-bundle tests; the full suite runs in CI. Any doubt falls back to the full leg. The choice is made by scripts/prepush-select.mjs, which reads the pushed ref lines from $PUSH_STDIN. After a red leg the failing test files are recorded under the git common dir (PREPUSH_FAILED_STORE names another file) and the next focused leg adds them. Needs ROOT_DIR, LOG_DIR, HEAD_SHA and PUSH_STDIN from the caller.
 
-FAILED_STORE="$(git rev-parse --path-format=absolute --git-common-dir)/token-goat-prepush/last-failed.json"
+FAILED_STORE="${PREPUSH_FAILED_STORE:-$(git rev-parse --path-format=absolute --git-common-dir)/token-goat-prepush/last-failed.json}"
 FAILED_TOOL="$ROOT_DIR/scripts/prepush-failed.mjs"
 SELECT_TOOL="$ROOT_DIR/scripts/prepush-select.mjs"
 
