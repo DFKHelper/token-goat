@@ -1,6 +1,10 @@
 /** scripts/prepush-graph.mjs replaces `vitest related` for the pre-push selection: it must find the tests that import a changed module, with the right distance, from the specifier spellings this repo uses. */
-import { describe, expect, it } from 'vitest'
-import { importerGraph, relativeSpecifiers, resolveSpecifier, testDistances } from '../scripts/prepush-graph.mjs'
+import { execFileSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { importerGraph, readSources, relativeSpecifiers, resolveSpecifier, testDistances } from '../scripts/prepush-graph.mjs'
 
 // Fixture provenance: the specifier spellings are CAPTURE from this repo (grep of tests/ and src/ for `from '`, `import(` and `vi.mock(` shows the `.js` suffix on TypeScript sources, dynamic imports and vi.mock calls); the graphs are HAND-DERIVED.
 const files = (...names: string[]): Set<string> => new Set(names)
@@ -91,5 +95,45 @@ describe('prepush graph: fixtures a test spawns', () => {
 
   it('reaches the test that names the fixture, at one hop past the fixture', () => {
     expect(Object.fromEntries(testDistances(importerGraph(sources), ['src/hook_server.ts']))).toEqual({ 'tests/hook_client.test.ts': 2 })
+  })
+})
+
+describe('prepush graph: fixtures named only by a helper or a setup file', () => {
+  // Fixture provenance: HAND-DERIVED. The fixture is named only by a support file under tests (a helper or a setup file), which the test imports; the test reaches src through that file and the fixture, three hops from the src module.
+  it.each(['helpers', 'setup'])('reaches the test that imports a tests/%s file naming the fixture, three hops from the src module', (dir) => {
+    const sources = new Map([
+      ['src/hook_server.ts', 'export {}\n'],
+      ['tests/fixtures/held_cli_server.ts', "import '../../src/hook_server.js'\n"],
+      [`tests/${dir}/spawn.ts`, "export const script = join(here, 'fixtures', 'held_cli_server.ts')\n"],
+      ['tests/hook_client.test.ts', `import { script } from './${dir}/spawn.js'\n`],
+    ])
+    expect(Object.fromEntries(testDistances(importerGraph(sources), ['src/hook_server.ts']))).toEqual({ 'tests/hook_client.test.ts': 3 })
+  })
+})
+
+describe('prepush graph: sources are the tracked files', () => {
+  let dir = ''
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+  const git = (...args: string[]): string => execFileSync('git', ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: dir, encoding: 'utf8' })
+
+  it('lists the tracked code files and not an untracked one', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'tg-graph-'))
+    for (const rel of ['src/a.ts', 'tests/a.test.ts']) {
+      mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+      writeFileSync(path.join(dir, rel), 'export {}\n')
+    }
+    git('init', '-q')
+    git('add', '-A')
+    writeFileSync(path.join(dir, 'tests/untracked.test.ts'), 'u')
+    expect([...readSources(dir).keys()].sort()).toEqual(['src/a.ts', 'tests/a.test.ts'])
+  })
+
+  it('throws when the root is not a git repository, so the selector falls back to the full leg', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'tg-graph-'))
+    for (const rel of ['src/a.ts', 'tests/a.test.ts', 'scripts/a.mjs']) {
+      mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+      writeFileSync(path.join(dir, rel), 'export {}\n')
+    }
+    expect(() => readSources(dir)).toThrow()
   })
 })

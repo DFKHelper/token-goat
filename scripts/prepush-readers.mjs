@@ -2,7 +2,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { compareCodeUnits, relativeSpecifiers, resolveSpecifier, withoutImports } from './prepush-graph.mjs'
+import { compareCodeUnits, GIT_TIMEOUT_MS, relativeSpecifiers, resolveSpecifier, withoutImports } from './prepush-graph.mjs'
 
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
 const CODE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
@@ -10,8 +10,8 @@ const CODE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
 const FS_READ = /\b(?:readFileSync|readdirSync|readFile|readdir|globSync|opendirSync)\b/
 // The src directory named as a string or a path segment.
 const SRC_DIR = /(?:['"`/]|\bjoin\([^)]*)src['"`/]/
-// The built bundle's file name in any path spelling (a join() of segments still names it), or the shared helper that spawns it.
-const BUNDLE = /token-goat\.mjs|helpers\/bundle/
+// The built bundle's file name in any path spelling (a join() of segments still names it), its sibling entries and chunks as scripts/build-options.mjs and esbuild.config.mjs emit them (token-goat.mjs, token-goat.core.mjs, token-goat-hook.mjs, token-goat-hook-client.mjs or .cjs, token-goat-chunk-*.mjs), or the shared helper that spawns it.
+const BUNDLE = /token-goat(?:\.core|-hook(?:-client)?|-chunk-\w+)?\.(?:m|c)?js\b|helpers\/bundle/
 // A string literal that is a URL: a scheme, or a host name followed by a slash (code.claude.com/docs/...).
 const URL_SHAPED = /^(?:[a-z][a-z0-9+.-]*:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,}\/)/i
 // The characters after which a slash opens a regular expression literal rather than dividing.
@@ -19,7 +19,7 @@ const REGEX_AFTER = /[(,=:[!&|?{};+\-*%<>~^]$/
 
 /** @param {string} root @returns {string[]} every tracked path under tests, listed with `git ls-files` so nothing walks the disk */
 function trackedUnderTests(root) {
-  return execFileSync('git', ['ls-files', '-z', 'tests'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] }).split('\0').filter((p) => p !== '')
+  return execFileSync('git', ['ls-files', '-z', 'tests'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).split('\0').filter((p) => p !== '')
 }
 
 /** @param {string} root @returns {Map<string, string>} repo-relative path -> text of every tracked test file outside tests/fixtures, listed with `git ls-files` so nothing walks the disk */

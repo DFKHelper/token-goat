@@ -1,5 +1,5 @@
 /** The pre-push selector must never silently skip a test a change affects: this runs the production scanners over the real tracked tree, so a missed bundle spawner or a missed fixture spawner fails here, not on a push. */
-// Provenance: CAPTURE. The expectations are read from this repo's tests/ text at the commit that adds this file (token-goat.mjs spellings, fixture basenames named by test files, the imports each fixture makes); the scanners under test are the production modules, not copies.
+// Provenance: HAND-DERIVED. The expectations are computed here from the repo's tracked tests/ text (the built-bundle names are listed by hand from scripts/build-options.mjs and esbuild.config.mjs; fixture basenames and the imports each fixture makes are read from the files); the scanners under test are the production modules, not copies.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -11,7 +11,8 @@ import { readerTiersForRepo } from '../scripts/prepush-readers.mjs'
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
 const CODE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
-const BUNDLE_NAME = 'token-goat.mjs'
+// The built entries and chunks a test may spawn or import by name (scripts/build-options.mjs ENTRY_POINTS, the CJS client, and the launcher token-goat.mjs).
+const BUNDLE_NAMES = ['token-goat.mjs', 'token-goat.core.mjs', 'token-goat-hook.mjs', 'token-goat-hook-client.mjs', 'token-goat-hook-client.cjs']
 // A src path no other test names (this file names it, so it lands in the named tier): the readers scan then returns the tests that read src or spawn the bundle, and every tier counts as selected.
 const NO_NAMED_CHANGE = 'src/__no_such_module__.ts'
 
@@ -24,17 +25,22 @@ const supportText = new Map(tracked.filter((p) => !TEST_FILE.test(p)).map((p) =>
 const testText = new Map(testFiles.map((p) => [p, readFileSync(path.join(ROOT, p), 'utf8')]))
 
 describe('prepush completeness over the real tree', () => {
-  it('every test file that reaches token-goat.mjs, directly or through a helper it imports, is a bundle reader', () => {
-    const files = new Set(supportText.keys())
-    const helpersWithBundle = new Set([...supportText].filter(([, t]) => t.includes(BUNDLE_NAME)).map(([p]) => p))
-    const expected = testFiles.filter((p) => {
-      const text = testText.get(p) ?? ''
-      if (text.includes(BUNDLE_NAME)) return true
-      return relativeSpecifiers(text).some((spec) => {
-        const target = resolveSpecifier(p, spec, files)
-        return target !== null && helpersWithBundle.has(target)
-      })
-    })
+  it('every test file that reaches a built bundle, directly or through any chain of helpers it imports, is a bundle reader', () => {
+    const code = new Map([...supportText, ...testText])
+    const files = new Set(code.keys())
+    const reaching = new Set([...code].filter(([, t]) => BUNDLE_NAMES.some((n) => t.includes(n))).map(([p]) => p))
+    for (let grew = true; grew; ) {
+      grew = false
+      for (const [p, t] of code) {
+        if (reaching.has(p)) continue
+        const imports = relativeSpecifiers(t).map((spec) => resolveSpecifier(p, spec, files))
+        if (imports.some((target) => target !== null && reaching.has(target))) {
+          reaching.add(p)
+          grew = true
+        }
+      }
+    }
+    const expected = testFiles.filter((p) => reaching.has(p))
     const reported = new Set(readerTiersForRepo(ROOT, [NO_NAMED_CHANGE], true).flat())
     const missing = expected.filter((p) => !reported.has(p))
     expect(missing).toEqual([])
@@ -45,6 +51,11 @@ describe('prepush completeness over the real tree', () => {
     expect([...readers, ...spawners]).toContain('tests/cli_epipe.test.ts')
   })
 
+  it('tests/batch_serve_equivalence.test.ts reaches the bundle through helpers/batch-cli.js, which imports ./bundle.js, so a src change selects it as a bundle spawner', () => {
+    const [, , spawners] = readerTiersForRepo(ROOT, [NO_NAMED_CHANGE], true)
+    expect(spawners).toContain('tests/batch_serve_equivalence.test.ts')
+  })
+
   it('every test that names a fixture reaches each src module that fixture imports, so a change to that module selects it', () => {
     const sources = readSources(ROOT)
     const graph = importerGraph(sources)
@@ -52,7 +63,9 @@ describe('prepush completeness over the real tree', () => {
     const missing: string[] = []
     for (const fixture of fixtures) {
       const base = path.posix.basename(fixture)
-      const namers = testFiles.filter((t) => (testText.get(t) ?? '').includes(base))
+      // The same boundary rule as the scanner's fixture naming pass, so a name that is the tail of a longer one is not a naming test.
+      const named = new RegExp(`(?<![\\w.-])${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\w)`)
+      const namers = testFiles.filter((t) => named.test(testText.get(t) ?? ''))
       const srcModules = relativeSpecifiers(readFileSync(path.join(ROOT, fixture), 'utf8'))
         .map((spec) => resolveSpecifier(fixture, spec, files))
         .filter((t): t is string => t !== null && t.startsWith('src/'))

@@ -6,7 +6,7 @@ import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
 import { hasUnparsedFailure, readFailure } from './prepush-failed.mjs'
 import { coldCostMs, costFn, fillBudget, legBudget, workersFor } from './prepush-budget.mjs'
-import { compareCodeUnits, testsImporting } from './prepush-graph.mjs'
+import { compareCodeUnits, GIT_TIMEOUT_MS, testsImporting } from './prepush-graph.mjs'
 import { readerTiersForRepo } from './prepush-readers.mjs'
 import { durationsPath, readDurations } from './test-durations.mjs'
 
@@ -146,23 +146,15 @@ export function decideSelection(io) {
   return { full: false, files, note, deferred: fit.deferred, deferredReport }
 }
 
-/** @param {string} root @param {string} sub directory under root @param {(name: string) => boolean} keep @returns {string[]} repo-relative test files directly in or below sub */
+/** @param {string} root @param {string} sub directory under root @param {(name: string) => boolean} keep @returns {string[]} repo-relative test files tracked in or below sub, listed with `git ls-files` so nothing walks the disk; a git call that fails or times out throws, and the leg runs in full */
 function listTests(root, sub, keep) {
-  const out = []
-  const walk = (rel) => {
-    for (const e of readdirSync(path.join(root, rel), { withFileTypes: true })) {
-      const p = `${rel}/${e.name}`
-      if (e.isDirectory()) walk(p)
-      else if (TEST_FILE.test(e.name) && keep(p)) out.push(p)
-    }
-  }
-  walk(sub)
-  return out.sort()
+  const listed = execFileSync('git', ['-c', 'core.quotepath=false', 'ls-files', '-z', '--', sub], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).split('\0')
+  return listed.filter((p) => p !== '' && TEST_FILE.test(p) && keep(p)).sort()
 }
 
 function main() {
   const [root, leg, headSha, pushFile, store, deferFile] = process.argv.slice(2)
-  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] })
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS })
   const result = decideSelection({
     leg,
     headSha,

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // Finds which test files import a changed module, nearest first. A static scan of the relative import specifiers in src, tests and scripts builds the importer graph; a walk from the changed modules over it gives each test file its distance (1 = imports the module itself). This replaces `vitest related`, which follows importers to any depth and so selects most of the suite whenever a widely imported module changes. Usage: node scripts/prepush-graph.mjs ROOT PATH... prints `<distance><TAB><test file>` per line. Built-in modules only.
-import { readdirSync, readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
 
 const CODE_FILE = /\.(?:ts|tsx|mts|cts|js|jsx|mjs|cjs)$/
 const TEST_FILE = /\.(?:test|spec)\.[cm]?[jt]sx?$/
 const ROOTS = ['src', 'tests', 'scripts']
-const SKIPPED_DIRS = new Set(['node_modules'])
+// The bound on every git call the pre-push scripts make; a call that times out throws, and the caller selects the full leg.
+export const GIT_TIMEOUT_MS = 30_000
 // A relative specifier after an import, re-export, dynamic import, require or a vitest mock call. A specifier built at run time, a path named in a string and a module spawned as a program are not seen: scripts/prepush-readers.mjs finds the tests that reach a module those ways.
 const SPECIFIER = /(?:\bfrom|\bimport|\brequire|\b(?:mock|doMock|unmock|doUnmock|importActual|importMock))\s*\(?\s*(['"`])(\.{1,2}(?:\/[^'"`\n]*)?)\1/g
 const SOURCE_FOR = { '.js': ['.ts', '.tsx', '.js'], '.mjs': ['.mts', '.mjs'], '.cjs': ['.cts', '.cjs'], '.jsx': ['.tsx', '.jsx'] }
@@ -40,7 +42,7 @@ export function resolveSpecifier(from, spec, files) {
   return tries.find((t) => files.has(t)) ?? null
 }
 
-/** @param {Map<string, string>} sources repo-relative path -> file text @returns {Map<string, Set<string>>} module -> the files that import it, and each tests/fixtures file -> the tests that name its basename (a test spawns a fixture program, which imports src) */
+/** @param {Map<string, string>} sources repo-relative path -> file text @returns {Map<string, Set<string>>} module -> the files that import it, and each tests/fixtures file -> the tests, helpers and setup files under tests that name its basename (a test spawns a fixture program, which imports src; a helper that names it hands the edge to every test importing that helper) */
 export function importerGraph(sources) {
   const files = new Set(sources.keys())
   const importers = new Map()
@@ -55,11 +57,11 @@ export function importerGraph(sources) {
       addEdge(target, file)
     }
   }
-  const tests = [...sources].filter(([file]) => TEST_FILE.test(file) && !file.startsWith('tests/fixtures/'))
+  const namers = [...sources].filter(([file]) => file.startsWith('tests/') && !file.startsWith('tests/fixtures/'))
   for (const fixture of sources.keys()) {
     if (!fixture.startsWith('tests/fixtures/')) continue
     const named = new RegExp(`(?<![\\w.-])${path.posix.basename(fixture).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\w)`)
-    for (const [file, text] of tests) if (named.test(text)) addEdge(fixture, file)
+    for (const [file, text] of namers) if (named.test(text)) addEdge(fixture, file)
   }
   return importers
 }
@@ -84,20 +86,13 @@ export function testDistances(importers, changed) {
   return tests
 }
 
-/** @param {string} root @returns {Map<string, string>} repo-relative path -> text for every code file under src, tests and scripts, node_modules left out (fixtures included, as graph nodes) */
+/** @param {string} root @returns {Map<string, string>} repo-relative path -> text for every tracked code file under src, tests and scripts (fixtures included, as graph nodes); `git ls-files` lists them, so nothing walks the disk, and a git call that fails or times out throws to the caller */
 export function readSources(root) {
   const sources = new Map()
-  const walk = (rel) => {
-    for (const e of readdirSync(path.join(root, rel), { withFileTypes: true })) {
-      const p = `${rel}/${e.name}`
-      if (e.isDirectory()) {
-        if (!SKIPPED_DIRS.has(e.name)) walk(p)
-      } else if (CODE_FILE.test(e.name)) {
-        sources.set(p, readFileSync(path.join(root, p), 'utf8'))
-      }
-    }
+  const listed = execFileSync('git', ['-c', 'core.quotepath=false', 'ls-files', '-z', '--', ...ROOTS], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).split('\0')
+  for (const p of listed) {
+    if (p !== '' && CODE_FILE.test(p)) sources.set(p, readFileSync(path.join(root, p), 'utf8'))
   }
-  for (const r of ROOTS) walk(r)
   return sources
 }
 

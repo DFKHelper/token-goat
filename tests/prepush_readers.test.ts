@@ -156,4 +156,25 @@ describe('prepush bundle spawners: every spelling, every helper, every fixture',
     const t = new Map([['tests/plain.test.ts', "import './helpers/plain.js'\n"]])
     expect(textReaderTiers(t, ['src/cli.ts'], true, new Map([['tests/helpers/plain.ts', 'export {}\n']]))[2]).toEqual([])
   })
+
+  it('a test that imports a helper which imports a second helper naming the bundle is a bundle spawner', () => {
+    const t = new Map([['tests/two_hops.test.ts', "import { run } from './helpers/outer.js'\nrun()\n"]])
+    const support = new Map([
+      ['tests/helpers/outer.ts', "import { BIN } from './inner.js'\nexport const run = () => BIN\n"],
+      ['tests/helpers/inner.ts', "export const BIN = join(root, 'dist', 'token-goat.mjs')\n"],
+    ])
+    expect(textReaderTiers(t, ['src/cli.ts'], true, support)[2]).toEqual(['tests/two_hops.test.ts'])
+  })
+
+  // Fixture provenance: FORMAT-DERIVED from scripts/build-options.mjs (the ENTRY_POINTS keys token-goat.core, token-goat-hook and token-goat-hook-client, and the CJS_CLIENT entry) and esbuild.config.mjs (the launcher token-goat.mjs, the chunks token-goat-chunk-*.mjs). The names are the emitted file names, not a list copied from the scanner.
+  it.each(['token-goat.core.mjs', 'token-goat-hook.mjs', 'token-goat-hook-client.mjs', 'token-goat-hook-client.cjs', 'token-goat-chunk-26PGP2OK.mjs'])('a test that spawns dist/%s is a bundle spawner', (name) => {
+    const t = new Map([['tests/sibling.test.ts', `spawnSync(process.execPath, [join(here, '..', 'dist', '${name}')])\n`]])
+    expect(textReaderTiers(t, ['src/cli.ts'], true)[2]).toEqual(['tests/sibling.test.ts'])
+  })
+
+  // Fixture provenance: HAND-DERIVED. These names begin like the bundle's but are not built artifacts, and a src path is not one either; each must stay out of the bundle tier.
+  it.each(['token-goatish.ts', 'token-goat-util.mjs', 'src/token-goat.ts'])('a name that only starts like the bundle (%s) is not a bundle spawner', (name) => {
+    const t = new Map([['tests/near.test.ts', `const p = '${name}'\nspawnSync(p)\n`]])
+    expect(textReaderTiers(t, ['src/cli.ts'], true)[2]).toEqual([])
+  })
 })

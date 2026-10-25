@@ -71,6 +71,12 @@ describe.skipIf(!CAN_JUNCTION)('a script started through a symlinked directory s
     for (const sub of ['src', 'tests', 'scripts']) mkdirSync(path.join(d.real, sub))
     writeFileSync(path.join(d.real, 'src', 'a.ts'), 'export {}\n')
     writeFileSync(path.join(d.real, 'tests', 'b.test.ts'), "import '../src/a.js'\n")
+    // The graph lists tracked files only, so the fixture is a git repository with its files added.
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: d.real })
+    }
+    git('init', '-q')
+    git('add', '-A')
     const r = run(path.join(d.link, 'prepush-graph.mjs'), [d.real, 'src/a.ts'])
     expect(r.stderr).toBe('')
     expect(r.status).toBe(0)

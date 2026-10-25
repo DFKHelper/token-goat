@@ -1,4 +1,7 @@
 /** scripts/prepush-select.mjs decides which test files a pre-push suite leg runs: a wrong selection fails silently (a red test is skipped), so every doubt must come back as the full leg. */
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { classifyPath, decideSelection, parseNameStatus, parsePushRefs, rangeOf } from '../scripts/prepush-select.mjs'
 
@@ -110,8 +113,39 @@ describe('prepush selection: focused pushes', () => {
 
 describe('prepush selection: a pre-push hook file', () => {
   // Fixture provenance: the path shapes are HAND-DERIVED from the hook layout (.lefthook-scripts/prepush-focus.sh is the file the leg sources, lib/x.sh a nested helper); the verdict is the full leg by the rule, not read off the implementation.
-  it.each(['.lefthook-scripts/prepush-focus.sh', '.lefthook-scripts/lib/x.sh', '.lefthook-scripts/notes.txt'])('a change to %s runs the full leg, since a focused leg cannot verify the hook', (p) => {
-    expect(select([m(p)])).toEqual({ full: true, why: expect.stringContaining(p) })
+  it.each(['.lefthook-scripts/prepush-focus.sh', '.lefthook-scripts/lib/x.sh', '.lefthook-scripts/notes.txt', '.lefthook-scripts/README.md'])('a change to %s runs the full leg, since a focused leg cannot verify the hook', (p) => {
+    expect(select([m(p)])).toEqual({ full: true, why: expect.stringContaining('pre-push hook file') })
+  })
+})
+
+describe('prepush git calls are bounded', () => {
+  // Fixture provenance: HAND-DERIVED. The negative control is a call written without a timeout, the shape these scripts had before the bound; the scripts are read as text and each call is found by balancing its parentheses.
+  const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+  const callsOf = (text: string): string[] => {
+    const out: string[] = []
+    for (let at = text.indexOf('execFileSync('); at !== -1; at = text.indexOf('execFileSync(', at + 1)) {
+      let depth = 0
+      for (let j = at + 'execFileSync'.length; j < text.length; j += 1) {
+        if (text[j] === '(') depth += 1
+        if (text[j] === ')') depth -= 1
+        if (depth === 0) {
+          out.push(text.slice(at, j + 1))
+          break
+        }
+      }
+    }
+    return out
+  }
+  const unbounded = (calls: string[]): string[] => calls.filter((c) => !/\btimeout\s*:/.test(c))
+
+  it.each(['scripts/prepush-select.mjs', 'scripts/prepush-readers.mjs', 'scripts/prepush-graph.mjs'])('every git call in %s names a timeout', (rel) => {
+    const calls = callsOf(readFileSync(path.join(ROOT, rel), 'utf8'))
+    expect(calls.length, `no git call found in ${rel}`).toBeGreaterThan(0)
+    expect(unbounded(calls)).toEqual([])
+  })
+
+  it('the call scan flags a git call written without a timeout', () => {
+    expect(unbounded(callsOf("const out = execFileSync('git', ['ls-files'], { cwd: root })"))).toEqual(["execFileSync('git', ['ls-files'], { cwd: root })"])
   })
 })
 
