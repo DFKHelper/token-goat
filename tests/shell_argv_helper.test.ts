@@ -118,10 +118,11 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
 
   // Provenance: HAND-DERIVED. The reap scans for owned processes, then kills what it found; a process forked after its last scan was never in that set and outlived the reap, which failed the timeout test above under full-suite load. The window is forced: the stop signal is made a no-op (it can land after a fork began) and the gap between the last scan and the kill lasts five seconds, in which the owned parent starts its child.
   it('ends an owned process that was started after the reap stopped scanning', () => {
-    const slowed = REAP_SCRIPT.replace('kill -STOP $tg_new 2>/dev/null', ':').replace('[ -z "$tg_all" ] || { kill -KILL', 'sleep 5\n[ -z "$tg_all" ] || { kill -KILL')
-    expect(slowed.includes('sleep 5') && !slowed.includes('kill -STOP $tg_new'), 'the reap script no longer has the stop and kill lines this test slows').toBe(true)
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlate-'))
     const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
+    // The kill waits for the late child to write its pid (up to 30 s), so the window is forced by an event and not by a clock a loaded host overruns.
+    const slowed = REAP_SCRIPT.replace('kill -STOP $tg_new 2>/dev/null', ':').replace('[ -z "$tg_all" ] || { kill -KILL', `tg_i=0; while [ ! -s "${file('kid')}" ] && [ $tg_i -lt 300 ]; do sleep 0.1; tg_i=$((tg_i + 1)); done\n[ -z "$tg_all" ] || { kill -KILL`)
+    expect(slowed.includes('tg_i=0;') && !slowed.includes('kill -STOP $tg_new'), 'the reap script no longer has the stop and kill lines this test slows').toBe(true)
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
     // The parent waits three seconds on a FIFO nobody writes, then starts a child that blocks on a second FIFO, so only a kill ends it.
     fs.writeFileSync(file('parent.sh'), [
@@ -144,6 +145,38 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.kid, 'the late child never started, so the forced window did not happen').toMatch(/^[1-9]\d*$/)
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
     expect(got.alive,'the chunk subshell or its child is still running after the run returned').toBe(false)
+  }, 120_000)
+
+  // Provenance: HAND-DERIVED, from a captured failure under a fork storm: under MSYS a child shows in /proc stat, with its parent and group, one to several seconds before its environment can be read, so a child its parent started just before being killed was invisible to a reap that looks only for the token and outlived it. The window is forced by starting the child with the token removed from its environment, which is what the token scan sees of an uninitialised MSYS child; the owned parent stays alive and blocked, so the reap can end the child only by finding it through its parent.
+  it('ends an owned child whose environment does not carry the token', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shkin-'))
+    const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
+    const token = `${process.pid}-${randomBytes(8).toString('hex')}`
+    const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'tokenless child never started' })
+    fs.writeFileSync(file('parent.sh'), [
+      'mkfifo "$2"',
+      `env -u ${OWNER_VAR} "$BASH" -c 'echo $$ > "$1"; read -r _ < "$2"' tg "$1" "$2" < /dev/null > /dev/null 2>&1`,
+    ].join('\n'))
+    const parent = spawn(sh, [file('parent.sh'), file('kid'), file('fifo')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
+    let kid = ''
+    const got = { failure: null as string | null, alive: true }
+    try {
+      while (!/^[1-9]\d*$/.test(kid)) {
+        if (fs.existsSync(file('kid'))) kid = fs.readFileSync(file('kid'), 'utf8').trim()
+        if (!/^[1-9]\d*$/.test(kid)) await Promise.race([new Promise((resolve) => setTimeout(resolve, 50)), watchdog.failed])
+      }
+      watchdog.progress('tokenless child running')
+      got.failure = reapOwned(sh, token)
+      got.alive = spawnSync(sh, ['-c', `${SH_LIVE}; tg_live ${kid}`], { windowsHide: true, timeout: 30_000 }).status === 0
+    } finally {
+      watchdog.stop()
+      if (parent.exitCode === null) parent.kill()
+      if (/^[1-9]\d*$/.test(kid)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
+      reapOwned(sh, token)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+    expect(got.failure, 'the reap reported it could not end the run').toBeNull()
+    expect(got.alive, 'the child that does not carry the token is still running after the reap returned').toBe(false)
   }, 120_000)
 
   // Provenance: HAND-DERIVED. macOS has no /proc, so liveness there rests on `ps`; the branch is forced here by making the /proc test fail, and `ps` is a function that prints what the row names. A zombie state is gone though kill -0 answers yes for it; a live state, an empty listing and a ps that prints nothing for a running pid fall through to kill -0.
