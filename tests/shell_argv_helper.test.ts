@@ -56,11 +56,14 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const fifo = path.join(dir, 'fifo').replace(/\\/g, '/')
     try {
       let message = ''
+      const started = Date.now()
       try {
         shRunAll(sh, [`mkfifo '${fifo}' && read -r _ < '${fifo}'`], { timeoutMs: 1 })
       } catch (err) {
         message = (err as Error).message
       }
+      const elapsedMs = Date.now() - started
+      expect(elapsedMs, 'the 1 ms cap was ignored: the shell ran toward the 120 s default instead of ending at its cap').toBeLessThan(60_000)
       expect(message, 'the timeout did not name the cap that ended the shell').toMatch(/ran 0 of 1 commands: .*ETIMEDOUT/)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
@@ -263,6 +266,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
 
   // Provenance: HAND-DERIVED from a captured scan: the grep the reap runs to list every process carrying the token was killed by SIGHUP after four seconds and printed nothing, and the reap read that as no owned process, so it ended with the run's processes still alive. The failure is forced by a `grep` function that dies (status 129, no output) on its first two calls, which are the two scans the old reap counted as clean; the owned parent stays blocked, so only a scan that is repeated finds it. The reap runs asynchronously under the stall-proof watchdog, fed by the scan calls and the files the test waits on.
   // Provenance: HAND-DERIVED from a second capture: a scan that finished with status 2 and no error naming the owned process, which was alive and forking, listed everything but it (1 of 32 scans under load). The case is forced by a `grep` that prints nothing and exits 1 on its first two calls.
+  // macOS has no /proc, so its reap scans with ps and never calls the grep these rows force to fail.
   it.skipIf(process.platform === 'darwin').each([
     ['ends an owned process when the scan that lists it is killed before it finishes', 'return 129'],
     ['ends an owned process when the scan that lists it finishes without listing it', 'return 1'],
@@ -413,5 +417,23 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     want[17] = [['clean']]
     expect(got.map((r) => r.calls)).toEqual(want)
     expect(got.every((r) => r.stray.length === 0)).toBe(true)
+  })
+
+  // A present /proc entry with an empty stat is unknown, so the probe answers alive; only a missing entry or a zombie is gone. Provenance: HAND-DERIVED from the SH_LIVE rule, on a fake /proc root through TG_PROC_ROOT.
+  it.skipIf(process.platform === 'darwin')('reads a /proc entry with an empty stat as alive, not as gone', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlive-'))
+    try {
+      fs.mkdirSync(path.join(dir, '4242'))
+      fs.writeFileSync(path.join(dir, '4242', 'stat'), '')
+      fs.mkdirSync(path.join(dir, '4244'))
+      fs.writeFileSync(path.join(dir, '4244', 'stat'), '4244 (x) Z 1 4244 4244 0 -1 0\n')
+      const root = dir.replace(/\\/g, '/')
+      const live = (pid: number): boolean => probeAlive(sh, `${SH_LIVE}; TG_PROC_ROOT='${root}'; export TG_PROC_ROOT; tg_live ${pid}`)
+      expect(live(4242), 'an empty stat under a present entry was read as gone').toBe(true)
+      expect(live(4243), 'a pid with no /proc entry was read as alive').toBe(false)
+      expect(live(4244), 'a zombie was read as alive').toBe(false)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
