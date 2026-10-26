@@ -27,7 +27,7 @@ import { clearDirtyQueue, getDirtyPaths } from '../src/hooks_index.js'
 import { normalizePath, resolveIndexPath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { foldPath } from '../src/util.js'
-import { extractPowerShellWriteTargets, segmentMayWriteFiles } from '../src/shell_writes.js'
+import { extractPowerShellWriteTargets, gitMayRewriteWorktree, reflogDiffMisses, segmentMayWriteFiles } from '../src/shell_writes.js'
 
 /** The raw lines of the reconcile-request file, which the worker's parser would collapse but the file itself still holds. */
 function pendingRequestLines(): string[] {
@@ -460,7 +460,7 @@ describe('a failed head-moving git command asks for a reconcile, since it may ha
 })
 
 describe('git checkout, switch, reset or restore that can rewrite the worktree asks for a reconcile, whatever its exit', () => {
-  it.each([['git checkout a.txt'], ['git checkout .'], ['git checkout -f'], ['git reset --hard'], ['git reset a.txt'], ['git switch -f feature'], ['git reset --har'], ['git switch --discard master'], ['git checkout --forc master']])('%s asks the worker to reconcile', async (command) => {
+  it.each([['git checkout a.txt'], ['git checkout .'], ['git checkout -f'], ['git reset --hard'], ['git reset a.txt'], ['git switch -f feature'], ['git reset --har'], ['git switch --discard master'], ['git checkout --forc master'], ['FOO="a b" git restore a.txt'], ["FOO='a b' BAR=1 git restore a.txt"], ['FOO="a b" git reset --hard']])('%s asks the worker to reconcile', async (command) => {
     const dir = repo()
     secondCommit(dir)
     await postBashHandler(shellCall(command, dir, 'claude'))
@@ -476,7 +476,30 @@ describe('git checkout, switch, reset or restore that can rewrite the worktree a
   })
 })
 
-describe('a git checkout, reset or stash in patch mode asks for a reconcile, since the hunks it picks rewrite the worktree', () => {
+// Provenance: HAND-DERIVED from the shell's NAME=value word grammar (a quoted value may hold spaces) and git(1) subcommand semantics.
+describe('a git command behind quoted env assignments is still git, so its worktree rewrite is seen', () => {
+  it.each([
+    ['FOO="a b" git restore x', true],
+    ["FOO='a b' BAR=1 git restore x", true],
+    ['FOO=1 git restore x', true],
+    ['FOO="a b" git restore --staged x', false],
+    ['FOO="a b" git status', false],
+    ['FOO="a b" echo git restore x', false],
+    ['FOO="a b" git reset --hard', true],
+  ])('gitMayRewriteWorktree(%s) -> %s', (segment, expected) => {
+    expect(gitMayRewriteWorktree(segment, tmpdir())).toBe(expected)
+  })
+
+  it.each([
+    ['FOO="a b" git merge --no-commit topic', true],
+    ['FOO=1 git merge --no-commit topic', true],
+    ['FOO="a b" git status', false],
+  ])('reflogDiffMisses(%s) -> %s', (segment, expected) => {
+    expect(reflogDiffMisses(segment)).toBe(expected)
+  })
+})
+
+describe('a git checkout, reset or stash in patch mode asksfor a reconcile, since the hunks it picks rewrite the worktree', () => {
   it.each([['echo y | git checkout -p'], ['git checkout -p other'], ['git checkout other -p'], ['git reset -p'], ['git restore -p'], ['git stash -p']])('%s asks the worker to reconcile', async (command) => {
     const dir = repo()
     secondCommit(dir)

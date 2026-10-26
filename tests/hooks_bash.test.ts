@@ -67,7 +67,7 @@ import {
   extractGhViewForBatchAdvisory,
 } from '../src/bash_extractors.js'
 import { extractTgSurgicalRead } from '../src/bash_extractors.js'
-import { bashRecallKey, cdPrefixCwd, isHeadMovingGitCommand, ORIG_HEAD_ELIGIBLE_GIT_RE, resolveBashCall, stripCommandPrefix, stripExportPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
+import { bashRecallKey, cdPrefixCwd, GIT_PREFIX_RE_SRC, isHeadMovingGitCommand, ORIG_HEAD_ELIGIBLE_GIT_RE, resolveBashCall, stripCommandPrefix, stripExportPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
 import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
@@ -4607,6 +4607,45 @@ describe('isHeadMovingGitCommand — leading environment assignments, as the pos
     ['git -C dir log pull', false],
   ])('the diff base (ORIG_HEAD) reads %s -> %s', (cmd, expected) => {
     expect(ORIG_HEAD_ELIGIBLE_GIT_RE.test(resolveBashCall(cmd, null).cmd)).toBe(expected)
+  })
+})
+
+// Provenance: HAND-DERIVED from git's documented global-option grammar (git(1) OPTIONS) and the shell's NAME=value word grammar.
+describe('the git prefix pattern parses each env assignment and each global option one way, so a non-match costs linear time', () => {
+  const GIT_RESTORE = new RegExp(String.raw`${GIT_PREFIX_RE_SRC}restore\b`, 'i')
+  const REPEATS = 2000
+
+  it.each([
+    ['A="x" ', 'ls', 'a double-quoted assignment'],
+    ["A='x' ", 'ls', 'a single-quoted assignment'],
+    ['A=x ', 'ls', 'a bare assignment'],
+    ['A= ', 'ls', 'an empty assignment'],
+  ])('%s repeated before %s (%s) is not git, at 3 and at 2000 repeats', (unit, tail) => {
+    expect(GIT_RESTORE.test(unit.repeat(3) + tail), 'three repeats, then a non-git command').toBe(false)
+    expect(GIT_RESTORE.test(unit.repeat(3) + 'git restore x'), 'three repeats, then git restore').toBe(true)
+    expect(GIT_RESTORE.test(unit.repeat(REPEATS) + tail), `${REPEATS} repeats, then a non-git command`).toBe(false)
+  })
+
+  it.each([['-C '], ['-c '], ['--git-dir '], ['--work-tree ']])('git followed by %s repeated is not a restore, at 3 and at 2000 repeats', (unit) => {
+    expect(GIT_RESTORE.test('git ' + unit.repeat(3) + 'x'), 'three repeats, no subcommand').toBe(false)
+    expect(GIT_RESTORE.test('git ' + unit.repeat(3) + 'restore'), 'three repeats, restore taken as the last value').toBe(false)
+    expect(GIT_RESTORE.test('git ' + unit.repeat(REPEATS) + 'x'), `${REPEATS} repeats, no subcommand`).toBe(false)
+  })
+
+  it.each([
+    ['FOO="a b" git restore x', true],
+    ["FOO='a b' BAR=1 git restore x", true],
+    ['FOO="x"y git restore x', true],
+    ['git -C a -c b=c restore q', true],
+    ['git -C a -C b -C c restore q', true],
+    ['git --no-pager restore x', true],
+    ['git --git-dir=d --work-tree w -C a restore x', true],
+    ['git -Cfoo restore x', true],
+    ['git log -- restore', false],
+    ['git restorex', false],
+    ['echo git restore', false],
+  ])('%s -> %s', (cmd, expected) => {
+    expect(GIT_RESTORE.test(cmd)).toBe(expected)
   })
 })
 

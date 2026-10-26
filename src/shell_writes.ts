@@ -181,6 +181,12 @@ function cmdletTargets(kind: WriteKind, args: readonly PsWord[], into: ShellWrit
 const DOTNET_WRITE_RE = /\[(?:System\.)?IO\.File\]::(?:WriteAllText|WriteAllLines|WriteAllBytes|AppendAllText|AppendAllLines|Create|CreateText|AppendText)\(\s*(?:'([^']+)'|"([^"$]+)")/gi
 const DOTNET_DELETE_RE = /\[(?:System\.)?IO\.File\]::Delete\(\s*(?:'([^']+)'|"([^"$]+)")/gi
 
+/** The tokens of `segment` past its leading `NAME=value` assignments, quoted values included (`FOO="a b" git restore x`), or null when it is not tokenizable. */
+function tokensPastEnvAssignments(segment: string): string[] | null {
+  const all = safeShlexSplit(segment)
+  return all === null ? null : all.slice(skipEnvAssignments(all))
+}
+
 /** The program a segment launches, lowercased and without `.exe`, directory kept: `./cat` and `C:/tools/cat.exe` are some other program than the `cat` on the path, so they are not the read-only one. */
 function headOf(tokens: readonly string[]): string {
   return (tokens[0] ?? '').replace(/\.exe$/i, '').toLowerCase()
@@ -890,8 +896,8 @@ const WORKTREE_DISCARD_FLAGS: readonly string[] = ['-f', '--force', '--hard', '-
 const WORKTREE_GIT_SUBCOMMANDS = new Set(['checkout', 'switch', 'reset'])
 
 /** True when `segment` is a `git` command that may rewrite working-tree files a commit diff cannot list: `restore` unless it is staged-only, and `checkout`, `switch` or `reset` that names a path (`--`, a name on disk under `runDir`, or any name that is not a local branch) or discards changes (`-f`, `--hard`), and `merge --no-commit` or `--squash` and `cherry-pick -n` or `--no-commit`, which leave HEAD in place. Such a command asks for a reconcile whatever its exit code. */
-function gitMayRewriteWorktree(segment: string, runDir: string): boolean {
-  const tokens = safeShlexSplit(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
+export function gitMayRewriteWorktree(segment: string, runDir: string): boolean {
+  const tokens = tokensPastEnvAssignments(segment)
   if (tokens === null || headOf(tokens) !== 'git') return false
   const sub = gitSubcommand(tokens)
   if (sub === 'restore') return !restoreIsStagedOnly(segment)
@@ -1131,7 +1137,7 @@ export function gitRunTarget(segment: string, runDir: string): GitRunTarget {
 /** True when a git segment rewrites files the reflog diff cannot list exactly, so the diff must not run for it and the reconcile covers it: a rebase that names a branch (git checks that branch out before it replays anything), or a merge, pull or cherry-pick that stops before committing (HEAD stays put, so the diff's base is an older move). */
 export function reflogDiffMisses(segment: string): boolean {
   if (gitRunsCommand(segment)) return true
-  const tokens = safeShlexSplit(segment.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, ''))
+  const tokens = tokensPastEnvAssignments(segment)
   if (tokens === null || headOf(tokens) !== 'git') return false
   const sub = gitSubcommand(tokens)
   if (sub === null) return false
