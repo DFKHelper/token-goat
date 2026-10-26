@@ -6,7 +6,7 @@ import { afterEach, expect, it } from 'vitest'
 
 import Database from '../../src/sqlite_driver.js'
 import { commandLineOf, queryProcessCommandLine } from '../../src/resident_process.js'
-import { alive, aliveAs, assertOwedDeliveredOnce, BUNDLE, cleanupTrees, fixtureWatchdog, indexTreeFixture, ownedPids, ownedRoots, runInstalledStartup, runOwedToolCall, runTreeShim, startBegan, treeFixture } from '../helpers/copilot_session_start_tree.js'
+import { alive, aliveAs, assertOwedDeliveredOnce, BUNDLE, cleanupTrees, DEFERRED_DRIFT_NOTICE, expectDriftNotice, fixtureWatchdog, indexTreeFixture, ownedPids, ownedRoots, runInstalledStartup, runOwedToolCall, runTreeShim, startBegan, treeFixture } from '../helpers/copilot_session_start_tree.js'
 
 afterEach(() => {
   const workers: number[] = []
@@ -38,24 +38,9 @@ async function until(fixture: ReturnType<typeof treeFixture>, label: string, che
   watchdog.progress(label)
 }
 
-// The drift notices reconcileNote prints when git's listing missed its deadline (src/hooks_session_start.ts::reconcileNote): the worker finishes that check, so either notice is a delivered start. A budget-exhausted sweep may put its own clause before the git clause.
-const DEFERRED_DRIFT_NOTICE = /token-goat: index drift check (?:is running in the background worker|(?:\(sweep stopped[^\n]*?\) )?\(git did not answer in time listing the project files, so new files could not be found; the background worker is finishing the check\))/
-
 // The branch a slow-listing second start must take: its own listing times out (the memory is 0 here, so it lists again), new files cannot be found, and the worker is handed the check (reconcileNote's total-zero notice, with the budget clause when the sweep also ran out of time).
 const DEFERRED_NEW_FILE_NOTICE = /token-goat: index drift check (?:\(sweep stopped[^\n]*?\) )?\(git did not answer in time listing the project files, so new files could not be found; the background worker is finishing the check\) found nothing/
 
-// reconcileNote's total-zero notice for a sweep that ran out of budget with no git timeout (src/hooks_session_start.ts::reconcileNote): nothing found, nothing queued, no worker asked.
-const PARTIAL_SWEEP_NOTICE = /token-goat: index drift check \(sweep stopped at its time budget with (?:(?!git did not answer)[^\n])*\) found nothing in the part it had time to scan/
-
-// A start's drift line is exactly one of reconcileNote's outputs: the prompt reindex, the deferred check the worker finishes, or the budget-partial sweep that queued nothing. Every other text fails the named assertion, including "could not be queued" (the fixture is outside the OS temp dir) and a git timeout that did not reach the worker.
-function expectDriftNotice(stdout: string): 'reindexing' | 'deferred' | 'partial' | 'silent' {
-  if (stdout.includes('token-goat: reindexing ')) return 'reindexing'
-  if (DEFERRED_DRIFT_NOTICE.test(stdout)) return 'deferred'
-  // reconcileNote returns null, and the start prints no drift line, when its complete sweep found the index already matching disk: a running worker that got to the edit before the sweep does that.
-  if (!/token-goat: (?:index drift check|found )/.test(stdout)) return 'silent'
-  expect(stdout, 'the start must name a reindex, the deferred background drift check, or the partial sweep that queued nothing').toMatch(PARTIAL_SWEEP_NOTICE)
-  return 'partial'
-}
 
 // A silent start claims the index already matches disk, so the edit it was started for must already resolve (the sweep ran before this check, and the index only grows); a partial one queued nothing, so the edit still has to reach the worker.
 function followUp(fixture: ReturnType<typeof treeFixture>, kind: ReturnType<typeof expectDriftNotice>, resolves: boolean): void {

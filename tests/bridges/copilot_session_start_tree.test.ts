@@ -13,7 +13,7 @@ import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { SESSION_START_OWNER_DEADLINE_EXIT } from '../../src/bridges/shim_common.js'
 import { startBudgetAtShimStart } from '../helpers/shim_deadline.js'
 import { buildLegacyStartupOwner } from '../helpers/legacy_startup_owner.js'
-import { alive, startBegan, assertInstalledResidentBypass, assertOwedDeliveredOnce, assertTreeDead, BUNDLE, buildWindowsBoundary, cleanupTrees, contextText, fileAppears, fixtureWatchdog, indexTreeFixture, installStartupOwner, ownedPids, readOwnedPid, runInstalledStartup, runTreeShim, premiseBranch, DEADLINE_FAIL_OPEN, HANG_BACKSTOP_MS, ownerEndedOnDeadline, treeFixture } from '../helpers/copilot_session_start_tree.js'
+import { alive, startBegan, assertInstalledResidentBypass, assertOwedDeliveredOnce, assertTreeDead, BUNDLE, buildWindowsBoundary, cleanupTrees, contextText, fileAppears, fixtureWatchdog, indexTreeFixture, installStartupOwner, ownedPids, readOwnedPid, runInstalledStartup, runTreeShim, premiseBranch, DEADLINE_FAIL_OPEN, expectDriftNotice, HANG_BACKSTOP_MS, ownerEndedOnDeadline, treeFixture } from '../helpers/copilot_session_start_tree.js'
 
 // Cleanup is synchronous process-table work, so no fixed hook wall-clock bound applies: a loaded machine makes it slow, never wrong.
 afterEach(cleanupTrees, 0)
@@ -552,7 +552,7 @@ it.for(['copilot_cli', 'vscode'])('preserves real indexed reminder, notes and dr
   expect(context).toContain('read "file::symbol"')
   expect(context).toContain('startup-contract')
   expect(context).toContain('keep-owned-tree-bounded')
-  expect(context).toContain('changed outside this session')
+  expect(['reindexing', 'deferred'], 'the start must carry drift context (a reindex or the deferred background check)').toContain(expectDriftNotice(context))
 })
 
 it('an expired startup deadline fails open with {} and no helper, and the first tool call delivers the owed reminder once', async () => {
