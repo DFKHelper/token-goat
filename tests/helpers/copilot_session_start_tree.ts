@@ -87,14 +87,29 @@ export function treeFixture(parent: string = tmpdir()): { root: string; project:
   }
 }
 
-/** Every pid file this fixture wrote names a process that is gone; the invariant holds whether or not the run reached its interesting step. */
-export function assertTreeDead(fixture: ReturnType<typeof treeFixture>): void {
+/** The pids of `pids` still alive once they have all gone or `watchdog` declares the wait stalled. The run's SIGKILL is a request: it returns before the victim has run its exit (a probe right after it saw an alive, non-zombie process 53 of 400 times on Linux), so a pid seen alive is waited on, never counted a survivor at first sight. The wait ends on a condition, the pids going away, and is bounded by the progress watchdog alone; `alive` never reads false for a live process, so a real survivor is still reported. */
+export async function survivorsAfterWait(pids: readonly number[], watchdog: Watchdog, seam: { alive?: (pid: number) => boolean; pause?: () => Promise<void> } = {}): Promise<number[]> {
+  const probe = seam.alive ?? alive
+  const pause = seam.pause ?? (() => new Promise<void>((resolve) => setTimeout(resolve, 20)))
+  const stalled = watchdog.failed.then(() => false, () => true)
+  while (pids.some(probe)) {
+    if (await Promise.race([pause().then(() => false), stalled])) break
+  }
+  return pids.filter(probe)
+}
+
+/** Every pid file this fixture wrote names a process that is gone; the invariant holds whether or not the run reached its interesting step. A pid still exiting when the run ended is waited for under the fixture's watchdog; one that never goes fails here. */
+export async function assertTreeDead(fixture: ReturnType<typeof treeFixture>): Promise<void> {
+  const named = new Map<number, string>()
   for (const name of readdirSync(fixture.root).filter((entry) => entry.endsWith('.pid'))) {
     const pid = Number(readFileSync(join(fixture.root, name), 'utf8'))
     if (!Number.isInteger(pid) || pid <= 0) continue
     if (!ownedPids.includes(pid)) ownedPids.push(pid)
-    expect(alive(pid), `${name} names pid ${String(pid)}, which survived the run`).toBe(false)
+    named.set(pid, name)
   }
+  const watchdog = watchdogs.get(fixture.root)?.watchdog ?? fixtureWatchdog(fixture, HANG_BACKSTOP_MS, 'tree teardown')
+  const survivors = await survivorsAfterWait([...named.keys()], watchdog)
+  expect(survivors.map((pid) => `${named.get(pid) ?? ''} names pid ${String(pid)}`), 'pids that survived the run').toEqual([])
 }
 
 /** Resolves when `path` exists, by directory watch rather than a clock; the caller races it against the process closing. */
@@ -183,7 +198,7 @@ export async function premiseBranch(
   await context.annotate('branch: weak (deadline fired before the premise)')
   expect(result.stdout, `premise ${premise.join(', ')} was not reached and the start did not fail open`).toBe('{}')
   expect(result.stderr, 'premise not reached without a deadline fail-open').toMatch(DEADLINE_FAIL_OPEN)
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   await assertOwedDeliveredOnce(fixture, 'copilot_cli', sessionId)
   return false
 }

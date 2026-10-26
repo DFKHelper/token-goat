@@ -722,7 +722,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     fs.writeFileSync(entry, `require('fs').writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify(process.argv.slice(2)))\nprocess.stdout.write('{}')\n`, 'utf8')
     const sessionId = 'forwards-session-start'
     const result = await runTreeShim({ fixture, entry, quietLimitMs: 20_000, payload: { sessionId, cwd: fixture.project } }).done
-    assertTreeDead(fixture)
+    await assertTreeDead(fixture)
     if (!(await premiseBranch(ctx, fixture, result, [capturePath], sessionId))) return
     // The proof the early return is gone: token-goat was actually invoked, with the mapped internal event name. A behavioural '{}' assertion could not distinguish "no-op" from "invoked and had nothing to say".
     expect(JSON.parse(fs.readFileSync(capturePath, 'utf8')) as string[]).toEqual([
@@ -739,7 +739,7 @@ describe('COPILOT_CLI_HOOK_SCRIPT', () => {
     fs.writeFileSync(entry, `process.stdout.write(${JSON.stringify(response)})\n`, 'utf8')
     const sessionId = 'surfaces-session-start-context'
     const result = await runTreeShim({ fixture, entry, quietLimitMs: 20_000, payload: { sessionId, cwd: fixture.project } }).done
-    assertTreeDead(fixture)
+    await assertTreeDead(fixture)
     if (result.stdout === '{}') {
       await ctx.annotate('branch: weak (the 3 s budget ended the start)')
       expect(result.stderr, 'an empty answer without a deadline fail-open').toMatch(DEADLINE_FAIL_OPEN)

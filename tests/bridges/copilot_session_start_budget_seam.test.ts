@@ -81,7 +81,7 @@ it('fails open with {} for want of cleanup time, launches nothing, and leaves no
   })
   expect(run.status).toBe(0)
   expect(run.stdout).toBe('{}')
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   // The fixture shim starts its clock when it starts, so the time left once its input is in never exceeds the reserve; only an input that took the whole smallest budget to arrive ends the run another way.
   if (run.stderr.includes('input deadline exceeded')) {
     await ctx.annotate('branch: weak (the input did not arrive inside the smallest budget)')
