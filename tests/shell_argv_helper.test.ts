@@ -116,8 +116,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     }
   })
 
-  // Provenance: HAND-DERIVED. The reap scans for owned processes, then kills what it found; a process forked after its last scan was never in that set and outlived the reap, which failed the timeout test above under full-suite load. The window is forced by events and no clock: the owned parent blocks until the slowed reap has finished every scan, so its child is born after the last one however slow the host is.
-  it('ends an owned process that was started after the reap stopped scanning', () => {
+  // Provenance: HAND-DERIVED. The reap scans for owned processes, then kills what it found; a process forked after its last scan was never in that set and outlived the reap, which failed the timeout test above under full-suite load. The window is forced by events and no clock: the owned parent blocks until the slowed reap has finished every scan, so its child is born after the last one however slow the host is. The slowed reap runs asynchronously under a stall-proof watchdog fed by its own progress output and by the files it and the parent write, so no spawn timeout decides the outcome.
+  it('ends an owned process that was started after the reap stopped scanning', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlate-'))
     const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
     const read = (name: string): string => (fs.existsSync(file(name)) ? fs.readFileSync(file(name), 'utf8').trim() : '')
@@ -130,19 +130,21 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       'tg_pp=',
       'until [ -n "$tg_pp" ] && { if [ -r /proc/self/environ ]; then grep -qzxF -e "$tg_needle" "/proc/$tg_pp/environ" 2>/dev/null; else tg_light=; tg_owned; case " $tg_found " in *" $tg_pp "*) true ;; *) false ;; esac; fi; }; do',
       `  read -r tg_pp 2>/dev/null < "${file('parentpid')}"`,
+      '  echo wait',
       '  sleep 0.1',
       'done',
       'for tg_round in 1 2 3 4 5; do',
+      '  echo round',
     ].join('\n')
     // After its last scan the reap releases the parent and holds the kill until the late child wrote its pid or the parent is gone.
     const holdKill = [
       SH_LIVE,
       `echo "$tg_all" > "${file('seen')}"`,
       `: > "${file('release')}"`,
-      `until [ -s "${file('kid')}" ] || ! tg_live "$tg_pp"; do sleep 0.1; done`,
+      `until [ -s "${file('kid')}" ] || ! tg_live "$tg_pp"; do echo hold; sleep 0.1; done`,
       '[ -z "$tg_all" ] || { kill -KILL',
     ].join('\n')
-    const slowed = patch(patch(patch(REAP_SCRIPT, 'kill -STOP $tg_new 2>/dev/null', ':'), 'for tg_round in 1 2 3 4 5; do', waitForParent), '[ -z "$tg_all" ] || { kill -KILL', holdKill)
+    const slowed = patch(patch(patch(patch(REAP_SCRIPT, 'kill -STOP $tg_new 2>/dev/null', ':'), 'for tg_round in 1 2 3 4 5; do', waitForParent), '[ -z "$tg_all" ] || { kill -KILL', holdKill), '  tg_left=\n', '  echo drain\n  tg_left=\n')
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
     // The parent waits for the release file, then starts a child that blocks on a FIFO nobody writes, so only a kill ends it; its own errors land in a file.
     fs.writeFileSync(file('parent.sh'), [
@@ -152,16 +154,40 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       'until [ -e "$3" ]; do [ "$SECONDS" -lt 600 ] || exit 1; sleep 0.1; done',
       '"$BASH" -c \'echo $$ > "$1"; read -r _ < "$2"\' tg "$4" "$2" < /dev/null > /dev/null 2>&1',
     ].join('\n'))
+    // The quiet limit counts time with neither reap output nor a new file, and a tick delayed by a machine stall counts as one interval, so a slow host does not fail the test; only a reap that stops advancing does.
+    const watchdog = startWatchdog({ quietLimitMs: 60_000, label: 'the slowed reap made no progress' })
     const parent = spawn(sh, [file('parent.sh'), file('parentpid'), file('fifo'), file('release'), file('kid'), file('err')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
+    const reap = spawn(sh, ['-c', slowed], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: { ...process.env, TG_REAP_TOKEN: token } })
+    let reapErr = ''
+    reap.stdout.on('data', () => { watchdog.progress('reap output') })
+    reap.stderr.on('data', (chunk: Buffer) => { reapErr += chunk.toString() })
+    const reapExit = new Promise<number | null>((resolve, reject) => {
+      reap.once('error', reject)
+      reap.once('exit', (code) => { watchdog.progress('reap exited'); resolve(code) })
+    })
+    let watching = true
+    const watchFiles = (async (): Promise<void> => {
+      let known = 0
+      while (watching) {
+        const now = ['parentpid', 'release', 'seen', 'kid'].filter((name) => fs.existsSync(file(name))).length
+        if (now > known) { known = now; watchdog.progress('a file appeared') }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    })()
     const got = { failure: null as string | null, kid: '', parentPid: '', seen: [] as string[], err: '', alive: true }
     try {
-      got.failure = reapOwned(sh, token, slowed)
+      const code = await Promise.race([reapExit, watchdog.failed])
+      got.failure = code === 0 ? null : `exit status ${String(code)}; ${reapErr.trim()}`
       got.kid = read('kid')
       got.parentPid = read('parentpid')
       got.seen = read('seen').split(/\s+/)
       got.err = read('err')
       if (/^[1-9]\d*$/.test(got.kid)) got.alive = spawnSync(sh, ['-c', `${SH_LIVE}; tg_live ${got.kid}`], { windowsHide: true, timeout: 30_000 }).status === 0
     } finally {
+      watching = false
+      await watchFiles
+      watchdog.stop()
+      if (reap.exitCode === null && reap.signalCode === null) reap.kill()
       if (parent.exitCode === null) parent.kill()
       reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
@@ -203,6 +229,73 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     }
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
     expect(got.alive, 'the child that does not carry the token is still running after the reap returned').toBe(false)
+  }, 120_000)
+
+  // Provenance: HAND-DERIVED from a captured scan: the grep the reap runs to list every process carrying the token was killed by SIGHUP after four seconds and printed nothing, and the reap read that as no owned process, so it ended with the run's processes still alive. The failure is forced by a `grep` function that dies (status 129, no output) on its first two calls, which are the two scans the old reap counted as clean; the owned parent stays blocked, so only a scan that is repeated finds it. The reap runs asynchronously under the stall-proof watchdog, fed by the scan calls and the files the test waits on.
+  it.skipIf(process.platform === 'darwin')('ends an owned process when the scan that lists it is killed before it finishes', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shscan-'))
+    const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
+    const read = (name: string): string => (fs.existsSync(file(name)) ? fs.readFileSync(file(name), 'utf8').trim() : '')
+    const fakeGrep = [
+      'grep() {',
+      `  tg_n=$(cat "${file('calls')}" 2>/dev/null || echo 0)`,
+      `  echo $((tg_n + 1)) > "${file('calls')}"`,
+      '  if [ "$tg_n" -lt 2 ]; then return 129; fi',
+      '  command grep "$@"',
+      '}',
+    ].join('\n')
+    // The reap starts scanning only once the parent's environment is readable, so a young MSYS process cannot make the scan miss for a reason this test does not force.
+    const waitForParent = [
+      'tg_pp=',
+      'until [ ! -r /proc/self/environ ] || { [ -n "$tg_pp" ] && command grep -qzxF -e "$tg_needle" "/proc/$tg_pp/environ" 2>/dev/null; }; do',
+      `  read -r tg_pp 2>/dev/null < "${file('parentpid')}"`,
+      '  sleep 0.1',
+      'done',
+      'tg_all=',
+      'for tg_round in 1 2 3 4 5; do',
+    ].join('\n')
+    const base = REAP_SCRIPT
+    expect(base.includes('tg_all=\nfor tg_round in 1 2 3 4 5; do'), 'the reap script no longer starts its rounds with this text').toBe(true)
+    const script = `${fakeGrep}\n${base.replace('tg_all=\nfor tg_round in 1 2 3 4 5; do', () => waitForParent)}`
+    const token = `${process.pid}-${randomBytes(8).toString('hex')}`
+    fs.writeFileSync(file('parent.sh'), ['mkfifo "$2"', 'echo $$ > "$1"', 'read -r _ < "$2"'].join('\n'))
+    const watchdog = startWatchdog({ quietLimitMs: 60_000, label: 'the reap with a killed scan made no progress' })
+    const parent = spawn(sh, [file('parent.sh'), file('parentpid'), file('fifo')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
+    const reap = spawn(sh, ['-c', script], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, env: { ...process.env, TG_REAP_TOKEN: token } })
+    let reapErr = ''
+    reap.stderr.on('data', (chunk: Buffer) => { reapErr += chunk.toString() })
+    const reapExit = new Promise<number | null>((resolve, reject) => {
+      reap.once('error', reject)
+      reap.once('exit', (code) => { watchdog.progress('reap exited'); resolve(code) })
+    })
+    let watching = true
+    const watchFiles = (async (): Promise<void> => {
+      let seen = ''
+      while (watching) {
+        const now = `${read('parentpid')}/${read('calls')}`
+        if (now !== seen) { seen = now; watchdog.progress(`state ${now}`) }
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    })()
+    const got = { code: null as number | null, pid: '', calls: 0, alive: true }
+    try {
+      got.code = await Promise.race([reapExit, watchdog.failed])
+      got.pid = read('parentpid')
+      got.calls = Number(read('calls'))
+      if (/^[1-9]\d*$/.test(got.pid)) got.alive = spawnSync(sh, ['-c', `${SH_LIVE}; tg_live ${got.pid}`], { windowsHide: true, timeout: 30_000 }).status === 0
+    } finally {
+      watching = false
+      await watchFiles
+      watchdog.stop()
+      if (reap.exitCode === null && reap.signalCode === null) reap.kill()
+      if (parent.exitCode === null) parent.kill()
+      reapOwned(sh, token)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+    expect(got.pid, 'the owned parent never started').toMatch(/^[1-9]\d*$/)
+    expect(got.code, `the reap did not exit cleanly: ${reapErr}`).toBe(0)
+    expect(got.calls, 'the killed scans were not repeated until one finished').toBeGreaterThanOrEqual(3)
+    expect(got.alive, 'the owned parent is still running after a reap whose first scans were killed').toBe(false)
   }, 120_000)
 
   // Provenance: HAND-DERIVED from a macOS CI failure of the test above: macOS has no /proc, and its BSD `ps -e` lists the caller's own processes that have a terminal, with their environment, so a child started with no terminal was invisible to the kin scan, which also ran only where /proc exists. The branch is forced by making the /proc test fail, and `ps` is a function that answers as macOS does: `-wwAE` prints the owned parent with the token, `-e -o ...` prints nothing, and `-A -o ...` is the real listing.
