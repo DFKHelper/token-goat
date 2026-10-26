@@ -116,35 +116,61 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     }
   })
 
-  // Provenance: HAND-DERIVED. The reap scans for owned processes, then kills what it found; a process forked after its last scan was never in that set and outlived the reap, which failed the timeout test above under full-suite load. The window is forced: the stop signal is made a no-op (it can land after a fork began) and the gap between the last scan and the kill lasts five seconds, in which the owned parent starts its child.
+  // Provenance: HAND-DERIVED. The reap scans for owned processes, then kills what it found; a process forked after its last scan was never in that set and outlived the reap, which failed the timeout test above under full-suite load. The window is forced by events and no clock: the owned parent blocks until the slowed reap has finished every scan, so its child is born after the last one however slow the host is.
   it('ends an owned process that was started after the reap stopped scanning', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlate-'))
     const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
-    // The kill waits for the late child to write its pid (up to 30 s), so the window is forced by an event and not by a clock a loaded host overruns.
-    const slowed = REAP_SCRIPT.replace('kill -STOP $tg_new 2>/dev/null', ':').replace('[ -z "$tg_all" ] || { kill -KILL', `tg_i=0; while [ ! -s "${file('kid')}" ] && [ $tg_i -lt 300 ]; do sleep 0.1; tg_i=$((tg_i + 1)); done\n[ -z "$tg_all" ] || { kill -KILL`)
-    expect(slowed.includes('tg_i=0;') && !slowed.includes('kill -STOP $tg_new'), 'the reap script no longer has the stop and kill lines this test slows').toBe(true)
+    const read = (name: string): string => (fs.existsSync(file(name)) ? fs.readFileSync(file(name), 'utf8').trim() : '')
+    const patch = (script: string, from: string, to: string): string => {
+      expect(script.includes(from), `the reap script no longer has the text this test slows: ${from}`).toBe(true)
+      return script.replace(from, () => to)
+    }
+    // Before its first round the reap waits until the parent is in the set it found, so the parent is always among the processes the kill covers.
+    const waitForParent = [
+      'tg_pp=',
+      'until [ -n "$tg_pp" ] && { if [ -r /proc/self/environ ]; then grep -qzxF -e "$tg_needle" "/proc/$tg_pp/environ" 2>/dev/null; else tg_light=; tg_owned; case " $tg_found " in *" $tg_pp "*) true ;; *) false ;; esac; fi; }; do',
+      `  read -r tg_pp 2>/dev/null < "${file('parentpid')}"`,
+      '  sleep 0.1',
+      'done',
+      'for tg_round in 1 2 3 4 5; do',
+    ].join('\n')
+    // After its last scan the reap releases the parent and holds the kill until the late child wrote its pid or the parent is gone.
+    const holdKill = [
+      SH_LIVE,
+      `echo "$tg_all" > "${file('seen')}"`,
+      `: > "${file('release')}"`,
+      `until [ -s "${file('kid')}" ] || ! tg_live "$tg_pp"; do sleep 0.1; done`,
+      '[ -z "$tg_all" ] || { kill -KILL',
+    ].join('\n')
+    const slowed = patch(patch(patch(REAP_SCRIPT, 'kill -STOP $tg_new 2>/dev/null', ':'), 'for tg_round in 1 2 3 4 5; do', waitForParent), '[ -z "$tg_all" ] || { kill -KILL', holdKill)
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
-    // The parent waits three seconds on a FIFO nobody writes, then starts a child that blocks on a second FIFO, so only a kill ends it.
+    // The parent waits for the release file, then starts a child that blocks on a FIFO nobody writes, so only a kill ends it; its own errors land in a file.
     fs.writeFileSync(file('parent.sh'), [
-      'mkfifo "$2" "$3"',
-      'exec 3<> "$3"',
-      'read -t 3 -u 3 _',
+      'exec 2> "$5"',
+      'mkfifo "$2"',
+      'echo $$ > "$1"',
+      'until [ -e "$3" ]; do [ "$SECONDS" -lt 600 ] || exit 1; sleep 0.1; done',
       '"$BASH" -c \'echo $$ > "$1"; read -r _ < "$2"\' tg "$4" "$2" < /dev/null > /dev/null 2>&1',
     ].join('\n'))
-    const parent = spawn(sh, [file('parent.sh'), 'x', file('fifo'), file('wait'), file('kid')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
-    const got = { failure: null as string | null, kid: '', alive: true }
+    const parent = spawn(sh, [file('parent.sh'), file('parentpid'), file('fifo'), file('release'), file('kid'), file('err')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
+    const got = { failure: null as string | null, kid: '', parentPid: '', seen: [] as string[], err: '', alive: true }
     try {
       got.failure = reapOwned(sh, token, slowed)
-      got.kid = fs.existsSync(file('kid')) ? fs.readFileSync(file('kid'), 'utf8').trim() : ''
+      got.kid = read('kid')
+      got.parentPid = read('parentpid')
+      got.seen = read('seen').split(/\s+/)
+      got.err = read('err')
       if (/^[1-9]\d*$/.test(got.kid)) got.alive = spawnSync(sh, ['-c', `${SH_LIVE}; tg_live ${got.kid}`], { windowsHide: true, timeout: 30_000 }).status === 0
     } finally {
       if (parent.exitCode === null) parent.kill()
       reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
     }
-    expect(got.kid, 'the late child never started, so the forced window did not happen').toMatch(/^[1-9]\d*$/)
+    expect(got.kid, `the late child never started, so the forced window did not happen; the parent said: ${got.err}; the reap said: ${got.failure}`).toMatch(/^[1-9]\d*$/)
+    expect(got.seen, 'the reap did not hold the parent when it released it').toContain(got.parentPid)
+    expect(got.seen, 'the late child was already in the reap set, so the forced window did not happen').not.toContain(got.kid)
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
-    expect(got.alive,'the chunk subshell or its child is still running after the run returned').toBe(false)
+    expect(got.alive, 'the chunk subshell or its child is still running after the run returned').toBe(false)
   }, 120_000)
 
   // Provenance: HAND-DERIVED, from a captured failure under a fork storm: under MSYS a child shows in /proc stat, with its parent and group, one to several seconds before its environment can be read, so a child its parent started just before being killed was invisible to a reap that looks only for the token and outlived it. The window is forced by starting the child with the token removed from its environment, which is what the token scan sees of an uninitialised MSYS child; the owned parent stays alive and blocked, so the reap can end the child only by finding it through its parent.
