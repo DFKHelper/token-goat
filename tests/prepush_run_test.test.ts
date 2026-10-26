@@ -53,10 +53,10 @@ describe.skipIf(BASH === null)('pre-push focused run', () => {
     expect(r.status).toBe(0)
     expect(r.calls.length).toBeGreaterThan(1)
     for (const c of r.calls) {
-      expect(c.slice(0, 2)).toEqual(['related', '--run'])
-      expect(c.slice(2).join(' ').length).toBeLessThanOrEqual(MAX_CHUNK_CHARS)
+      expect(c.slice(0, 1)).toEqual(['run'])
+      expect(c.slice(1).join(' ').length).toBeLessThanOrEqual(MAX_CHUNK_CHARS)
     }
-    expect(r.calls.flatMap((c) => c.slice(2))).toEqual(paths)
+    expect(r.calls.flatMap((c) => c.slice(1))).toEqual(paths)
   })
 
   it('runs a list past 8191 characters that still fits one chunk as a single call', () => {
@@ -64,7 +64,7 @@ describe.skipIf(BASH === null)('pre-push focused run', () => {
     expect(paths.join(' ').length).toBeGreaterThan(8191)
     const r = run(paths)
     expect(r.status).toBe(0)
-    expect(r.calls).toEqual([['related', '--run', ...paths]])
+    expect(r.calls).toEqual([['run', ...paths]])
   })
 
   it('fails the leg when one chunk fails, after running the rest', () => {
@@ -72,6 +72,6 @@ describe.skipIf(BASH === null)('pre-push focused run', () => {
     paths[400] = 'tests/FAILME.test.ts'
     const r = run(paths)
     expect(r.status).toBe(1)
-    expect(r.calls.flatMap((c) => c.slice(2))).toEqual(paths)
+    expect(r.calls.flatMap((c) => c.slice(1))).toEqual(paths)
   })
 })

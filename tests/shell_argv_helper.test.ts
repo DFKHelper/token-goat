@@ -179,6 +179,51 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.alive, 'the child that does not carry the token is still running after the reap returned').toBe(false)
   }, 120_000)
 
+  // Provenance: HAND-DERIVED from a macOS CI failure of the test above: macOS has no /proc, and its BSD `ps -e` lists the caller's own processes that have a terminal, with their environment, so a child started with no terminal was invisible to the kin scan, which also ran only where /proc exists. The branch is forced by making the /proc test fail, and `ps` is a function that answers as macOS does: `-wwAE` prints the owned parent with the token, `-e -o ...` prints nothing, and `-A -o ...` is the real listing.
+  it('ends an owned child whose environment does not carry the token where there is no /proc and ps -e lists nothing', async () => {
+    const noProc = REAP_SCRIPT.replace('[ -r /proc/self/environ ]', 'false')
+    expect(noProc, 'the reap script no longer tests /proc with this text').not.toBe(REAP_SCRIPT)
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shbsd-'))
+    const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
+    const bsdPs = [
+      'ps() {',
+      '  case "$*" in',
+      `    *-wwAE*) printf '%s\\n' "$(cat ${file('parentpid')}) x $tg_needle x" ;;`,
+      "    '-e -o'*) ;;",
+      '    *) command ps "$@" ;;',
+      '  esac',
+      '}',
+    ].join('\n')
+    const script = `${bsdPs}\n${noProc}`
+    const token = `${process.pid}-${randomBytes(8).toString('hex')}`
+    const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'tokenless child never started' })
+    fs.writeFileSync(file('parent.sh'), [
+      'mkfifo "$2"',
+      'echo $$ > "$3"',
+      `env -u ${OWNER_VAR} "$BASH" -c 'echo $$ > "$1"; read -r _ < "$2"' tg "$1" "$2" < /dev/null > /dev/null 2>&1`,
+    ].join('\n'))
+    const parent = spawn(sh, [file('parent.sh'), file('kid'), file('fifo'), file('parentpid')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
+    let kid = ''
+    const got = { failure: null as string | null, alive: true }
+    try {
+      while (!/^[1-9]\d*$/.test(kid)) {
+        if (fs.existsSync(file('kid'))) kid = fs.readFileSync(file('kid'), 'utf8').trim()
+        if (!/^[1-9]\d*$/.test(kid)) await Promise.race([new Promise((resolve) => setTimeout(resolve, 50)), watchdog.failed])
+      }
+      watchdog.progress('tokenless child running')
+      got.failure = reapOwned(sh, token, script)
+      got.alive = spawnSync(sh, ['-c', `${SH_LIVE}; tg_live ${kid}`], { windowsHide: true, timeout: 30_000 }).status === 0
+    } finally {
+      watchdog.stop()
+      if (parent.exitCode === null) parent.kill()
+      if (/^[1-9]\d*$/.test(kid)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
+      reapOwned(sh, token)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+    expect(got.failure, 'the reap reported it could not end the run').toBeNull()
+    expect(got.alive, 'the child that does not carry the token is still running after a reap with no /proc').toBe(false)
+  }, 120_000)
+
   // Provenance: HAND-DERIVED. macOS has no /proc, so liveness there rests on `ps`; the branch is forced here by making the /proc test fail, and `ps` is a function that prints what the row names. A zombie state is gone though kill -0 answers yes for it; a live state, an empty listing and a ps that prints nothing for a running pid fall through to kill -0.
   it.each([['Z', false], ['Z+', false], ['S', true], ['', true]])('reads ps state %j as alive=%s where there is no /proc', (state, expected) => {
     const noProc = SH_LIVE.replace('[ -r /proc/self/stat ]', 'false')

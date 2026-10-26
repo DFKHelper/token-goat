@@ -12,16 +12,50 @@ export const WORKER_CEILING_WIN32 = 4
 export const ROOMY_CPUS = 16
 export const ROOMY_MEMORY_GB = 32
 
-// The ceiling rather than something like `cpus - 2` because the bar is already above the ceiling: at the smallest machine that clears it, `cpus - 2` is 14, so a per-core term could never bind and would only read as if it did. 12 is the largest arm measured green here, not an extrapolation.
-// On Windows, process spawning carries high OS overhead and each worker spawns subprocesses, creating process storms and V8 heap exhaustion if scaled to 12. Capped at WORKER_CEILING_WIN32 (4).
-export function resolveMaxWorkers(platform: string, cpus: number, memoryGb: number): number {
+// The ceiling rather than something like `cpus - 2` because the bar is already above the ceiling: at the smallest machine that clears it, `cpus - 2` is 14, so a per-core term could never bind and would only read as if it did. 12 is the largest arm measured green here, not an extrapolation. On Windows, process spawning carries high OS overhead and each worker spawns subprocesses, creating process storms and V8 heap exhaustion if scaled to 12. Capped at WORKER_CEILING_WIN32 (4).
+export function resolveMaxWorkers(platform: string, cpus: number, memoryGb: number, idleCpus?: number): number {
   const envVal = process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
   if (envVal !== undefined && envVal !== '') {
     const parsed = parseInt(envVal, 10)
     if (!Number.isNaN(parsed) && parsed > 0) return parsed
   }
-  if (platform === 'win32') return WORKER_CEILING_WIN32
-  const base = 6
-  if (cpus < ROOMY_CPUS || memoryGb < ROOMY_MEMORY_GB) return base
-  return WORKER_CEILING
+  const width = platform === 'win32' ? WORKER_CEILING_WIN32 : cpus < ROOMY_CPUS || memoryGb < ROOMY_MEMORY_GB ? 6 : WORKER_CEILING
+  return narrowToIdle(width, idleCpus)
+}
+
+// The width above is what an otherwise idle machine of that shape can carry. What starves the pool is fewer free cores than workers, not a low idle percentage: a full Windows run on a 26-core machine held at about 68% CPU by other sessions (about 8 cores free) logged 40 "Failed to start forks worker ... Timeout waiting for worker to respond" and a 60s setup-hook timeout, yet 8 free cores carry 4 workers. So the pool is capped at the whole free cores, one worker per free core with no headroom term and no new tunable; the floor is one worker and the result is never above `width`. No sample (undefined) leaves the width alone. A quiet machine with fewer cores than the width (a 4-vCPU Linux runner, width 6) now gets its core count.
+export function narrowToIdle(width: number, idleCpus: number | undefined): number {
+  if (idleCpus === undefined || !Number.isFinite(idleCpus)) return width
+  return Math.max(1, Math.min(width, Math.floor(idleCpus)))
+}
+
+export interface CpuTimes {
+  user: number
+  nice: number
+  sys: number
+  idle: number
+  irq: number
+}
+
+// The cores' worth of idle time between two os.cpus() snapshots: per core, idle ticks over all ticks that elapsed, summed. os.loadavg() is always 0 on Windows, so the tick counters are the signal that exists on all three platforms. Undefined when the snapshots do not pair up or no core ticked, which is no information rather than "idle".
+export function idleCpuCount(before: readonly { times: CpuTimes }[], after: readonly { times: CpuTimes }[]): number | undefined {
+  if (before.length === 0 || before.length !== after.length) return undefined
+  let idle = 0
+  let ticked = 0
+  for (let i = 0; i < before.length; i += 1) {
+    const a = before[i]!.times
+    const b = after[i]!.times
+    const total = b.user - a.user + (b.nice - a.nice) + (b.sys - a.sys) + (b.idle - a.idle) + (b.irq - a.irq)
+    if (!(total > 0)) continue
+    idle += Math.min(1, Math.max(0, (b.idle - a.idle) / total))
+    ticked += 1
+  }
+  return ticked === 0 ? undefined : (idle / ticked) * before.length
+}
+
+// Samples os.cpus() across a short window with a synchronous wait, because vitest reads maxWorkers while it loads its config. The window is a measurement interval, not a deadline anything waits on.
+export function sampleIdleCpus(read: () => { times: CpuTimes }[], windowMs: number): number | undefined {
+  const before = read()
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, windowMs)
+  return idleCpuCount(before, read())
 }

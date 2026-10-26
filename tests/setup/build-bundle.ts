@@ -4,9 +4,19 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import type { TestProject } from 'vitest/node'
+
 import { BUNDLE_OUTPUTS } from '../../scripts/build-options.mjs'
 import { readBundleStamp, sourceDigest } from '../../scripts/source-digest.mjs'
 import { commandLineOf, isResidentOfInstall, queryProcessCommandLine, terminateProcessTree } from '../../src/resident_process.js'
+
+import { readScopeSources, testsOutsideParser } from './regex-preload-scope.js'
+
+declare module 'vitest' {
+  export interface ProvidedContext {
+    outsideParserTests: string[]
+  }
+}
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -20,7 +30,8 @@ export function shouldBuildBundle(root: string = ROOT): boolean {
 }
 
 // vitest globalSetup: ensure the shipping bundle (dist/token-goat.mjs) is available and fresh before any test file runs. The e2e and CLI smoke tests spawn this prebuilt artifact, so without this each of them rebuilt it in its own beforeAll - six redundant esbuild runs that also raced on the same output path. One freshness-gated build here replaces all of them. Note: in watch mode this runs once at startup and not on source edits, so a bundle-spawning test will see stale dist until the watcher is restarted.
-export default function setup(): (() => void) | void {
+export default function setup(project: TestProject): (() => void) | void {
+  provideOutsideParserTests(project)
   try {
     os.setPriority(os.constants.priority.PRIORITY_LOW)
   } catch {
@@ -187,4 +198,13 @@ function enableCompileCache(): void {
     return // best-effort: no cache just means every spawn compiles from source, as before
   }
   process.env['NODE_COMPILE_CACHE'] = dir
+}
+
+// The test files that never reach src/parser.ts, worked out once here for the whole run. tests/setup/load-regex-extractors.ts used to compile about seventy adapter modules in every one of the fork-per-file workers; under a busy machine that import alone ran into the 60 s hookTimeout. A scan that fails provides nothing, and a file then loads the adapters as before.
+function provideOutsideParserTests(project: TestProject): void {
+  try {
+    project.provide('outsideParserTests', testsOutsideParser(readScopeSources(ROOT)))
+  } catch {
+    // best-effort: no list means every file loads the adapters
+  }
 }

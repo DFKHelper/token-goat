@@ -1,6 +1,6 @@
 /** A script that runs its CLI only when it is the entry module must still do so when it is started through a symlinked directory, and must not crash when the entry path cannot be resolved. Node resolves the entry module's symlinks for import.meta.url but leaves process.argv[1] as written, so comparing the two straight skips the CLI silently with exit 0: on macOS every temp directory and /tmp sit behind a symlink (/var and /tmp point into /private), which made the pre-push focus decision see an empty record on the macOS CI job. Provenance is FORMAT-DERIVED: the Node ESM documentation ("import.meta.url", "--preserve-symlinks-main": the main module is resolved to its real path unless that flag is set) and macOS hier(7) (/tmp, /var and /etc are symbolic links into /private). Windows has no unprivileged file symlink, so a directory junction stands in, and a box that cannot create one skips these tests; the check that proves them is the red run against the old comparison, quoted in the commit. */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -30,12 +30,13 @@ afterEach(() => {
   link = ''
 })
 
-/** Copies the named scripts and the entry-module helper into a fresh directory and returns it by its real path and by a symlinked one. */
+/** Copies the named scripts, the entry-module helper and every other top-level script (scripts import one another) into a fresh directory and returns it by its real path and by a symlinked one. */
 function stage(...names: string[]): { real: string; link: string } {
   real = mkdtempSync(path.join(tmpdir(), 'tg-symlink-main-'))
   link = `${real}-link`
   if (CAN_JUNCTION) symlinkSync(real, link, 'junction')
-  for (const n of [...names, 'is-main-module.mjs']) copyFileSync(path.join(SCRIPTS, n), path.join(real, n))
+  const scripts = new Set([...names, 'is-main-module.mjs', ...readdirSync(SCRIPTS).filter((n) => n.endsWith('.mjs'))])
+  for (const n of scripts) copyFileSync(path.join(SCRIPTS, n), path.join(real, n))
   return { real, link }
 }
 
@@ -65,14 +66,21 @@ describe.skipIf(!CAN_JUNCTION)('a script started through a symlinked directory s
     expect(r.stderr).toContain('usage: node scripts/test-durations.mjs LOG')
   })
 
-  it('prepush-tree-readers.mjs lists a bundle-spawning test', () => {
-    const d = stage('prepush-tree-readers.mjs')
-    mkdirSync(path.join(d.real, 'tests'))
-    writeFileSync(path.join(d.real, 'tests', 'b.test.ts'), "import { BUNDLE } from './helpers/bundle'\n")
-    const r = run(path.join(d.link, 'prepush-tree-readers.mjs'), [d.real])
+  it('prepush-graph.mjs lists a test that imports a changed module', () => {
+    const d = stage('prepush-graph.mjs')
+    for (const sub of ['src', 'tests', 'scripts']) mkdirSync(path.join(d.real, sub))
+    writeFileSync(path.join(d.real, 'src', 'a.ts'), 'export {}\n')
+    writeFileSync(path.join(d.real, 'tests', 'b.test.ts'), "import '../src/a.js'\n")
+    // The graph lists tracked files only, so the fixture is a git repository with its files added.
+    const git = (...args: string[]): void => {
+      execFileSync('git', ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: d.real })
+    }
+    git('init', '-q')
+    git('add', '-A')
+    const r = run(path.join(d.link, 'prepush-graph.mjs'), [d.real, 'src/a.ts'])
     expect(r.stderr).toBe('')
     expect(r.status).toBe(0)
-    expect(r.stdout).toBe('tests/b.test.ts\n')
+    expect(r.stdout).toBe('1\ttests/b.test.ts\n')
   })
 
   it('lock-commit-subject.mjs refuses a lock change under a plain subject', () => {
@@ -94,7 +102,7 @@ describe.skipIf(!CAN_JUNCTION)('a script started through a symlinked directory s
 })
 
 describe('importing a script whose entry path does not exist', () => {
-  for (const name of ['prepush-failed.mjs', 'prepush-tree-readers.mjs', 'test-durations.mjs', 'lock-commit-subject.mjs']) {
+  for (const name of ['prepush-failed.mjs', 'prepush-graph.mjs', 'test-durations.mjs', 'lock-commit-subject.mjs']) {
     it(`${name} imports cleanly and runs no CLI`, () => {
       const d = stage(name, 'test-durations.mjs')
       const url = pathToFileURL(path.join(d.real, name)).href

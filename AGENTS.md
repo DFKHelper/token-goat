@@ -24,7 +24,8 @@ npm run docs:arch:check # verify zero architecture drift
 Tests run in two tiers:
 
 - **`pre-commit` (fast, ~2s)** — lint + typecheck + `npm run test:guards`. The guards are pure-introspection invariants in `tests/guards/` (no bundle build, no DB, no git fixtures). They catch the structural bug class — an implemented-but-unregistered or unfunctional command — *before the commit lands*.
-- **`pre-push` / CI (full)** — the entire suite, including the built-bundle command matrix (`tests/command_matrix_e2e.*.test.ts`), which indexes a real fixture and runs every registered command against the shipped `dist/token-goat.mjs`, asserting real output.
+- **`pre-push` (focused)** — lint, typecheck, then the tests the pushed range touches (the failed, changed and guard tests, the built-bundle matrix when `src/` changed, then importers of the changed modules nearest first, then the tests that name a changed path as text, read `src/` as text or spawn the bundle) within a time budget, listing what it defers to CI; a Markdown or `docs/` push runs the guards and the tests naming the document; any doubt, or `PREPUSH_FULL=1`, runs the full suite (see CONTRIBUTING.md, "Lefthook").
+- **CI (full)** — the entire suite, including the built-bundle command matrix (`tests/command_matrix_e2e.*.test.ts`), which indexes a real fixture and runs every registered command against the shipped `dist/token-goat.mjs`, asserting real output.
 
 Both tiers derive their command set from one source, [tests/registry.ts](tests/registry.ts) (`allCommandNames()`), so a newly registered command is automatically in scope for the guard and the matrix — there is no second list to forget. **Every user-facing command must appear in the matrix**; a registered command with no matrix case fails the coverage gate by design.
 
