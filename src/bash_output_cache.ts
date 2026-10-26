@@ -46,7 +46,6 @@ let _byId = new Map<string, BashOutputEntry>()
 const COMMAND_PATTERNS: Record<string, RegExp> = {
   gitMutable: /^\s*git\s+(diff|status)\b/i,
   gitDiff: /^\s*git\s+diff\b/i,
-  gitImmutable: /^\s*git\s+show\s+[0-9a-f]{40}\b/i,
   gitDiffScoped: /\s--\s+\S/,
   dirListing: /^\s*(?:ls|eza|exa|dir|Get-ChildItem|gci)\b/i,
   depList: /^\s*(?:npm\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:ls|list)\b|pip\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list|freeze)\b|uv\s+pip\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list|freeze)\b|pnpm\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list|ls)\b|yarn\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list)\b|cargo\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*tree\b|bundle\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list|show)\b|composer\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*show\b)/i,
@@ -89,18 +88,11 @@ const GIT_SUBCOMMAND_PATTERNS: Partial<Record<keyof typeof COMMAND_PATTERNS, Reg
   gitPush: /^push\b/i,
 }
 
-/** A full object name as `git show` takes it: 40 hex digits, optionally followed by `:path` or a revision suffix, but not by more hex. */
-const GIT_FULL_OBJECT_NAME_RE = /^[0-9a-f]{40}(?![0-9a-z_])/i
-
 export function isCommandOfType(cmd: string, type: keyof typeof COMMAND_PATTERNS): boolean {
   const subcommandPattern = GIT_SUBCOMMAND_PATTERNS[type]
   if (subcommandPattern) {
     const invocation = parseGitInvocation(cmd, '')
     if (invocation) return subcommandPattern.test(invocation.subcommand ?? '')
-  }
-  if (type === 'gitImmutable') {
-    const invocation = parseGitInvocation(cmd, '')
-    if (invocation) return invocation.subcommand === 'show' && GIT_FULL_OBJECT_NAME_RE.test(invocation.operand ?? '')
   }
   const pattern = COMMAND_PATTERNS[type]
   return pattern?.test(cmd) ?? false
@@ -113,7 +105,6 @@ function gitRunDirOf(cmd: string, cwd: string): string {
 
 // Backward-compat aliases for predicate functions
 export const isGitMutableCommand = (cmd: string) => isCommandOfType(cmd, 'gitMutable')
-export const isGitImmutableCommand = (cmd: string) => isCommandOfType(cmd, 'gitImmutable')
 export const isDirListingCommand = (cmd: string) => isCommandOfType(cmd, 'dirListing')
 export const isEnvProbeCommand = (cmd: string) => isCommandOfType(cmd, 'envProbe')
 export const isDepListCommand = (cmd: string) => isCommandOfType(cmd, 'depList')

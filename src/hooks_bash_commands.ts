@@ -242,8 +242,10 @@ export function extractCommand(event: HookEvent): string | undefined {
 /** Matches git subcommands that can move HEAD and rewrite working-tree file content. */
 /** The leading `NAME=value` words a git command may carry (`FOO=1 BAR="x y" git ...`), the shape skipEnvAssignments reads on tokens. The git patterns in this file take it as a prefix: stripCommandPrefix declines to peel an assignment that changes what runs (`PATH=`, `LD_*`), and such a command still runs git. */
 const LEADING_ENV_ASSIGNMENTS = String.raw`(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*`
-const HEAD_MOVING_GIT_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+(?:checkout|switch|pull|merge|rebase|reset|cherry-pick|stash\s+branch)\b`, 'i')
-const PATH_SCOPED_CHECKOUT_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+checkout\s+(?:\S.*?\s)?--(?:\s|$)`, 'i')
+/** The `-C <dir>` and `-c <key=value>` options a git command may place before its subcommand (`git -C dir pull`), each value bare or quoted. */
+const GIT_DIR_OPTIONS = String.raw`(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)\s+)*`
+const HEAD_MOVING_GIT_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+${GIT_DIR_OPTIONS}(?:checkout|switch|pull|merge|rebase|reset|cherry-pick|stash\s+branch)\b`, 'i')
+const PATH_SCOPED_CHECKOUT_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+${GIT_DIR_OPTIONS}checkout\s+(?:\S.*?\s)?--(?:\s|$)`, 'i')
 
 export function isHeadMovingGitCommand(cmd: string): boolean {
   if (!HEAD_MOVING_GIT_RE.test(cmd)) return false

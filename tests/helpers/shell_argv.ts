@@ -125,7 +125,7 @@ export const REAP_SCRIPT = [
   'for tg_round in 1 2 3 4 5; do',
   '  tg_light=; [ "$tg_round" -gt 1 ] && tg_light=1',
   '  tg_owned',
-  // A full scan can list nothing while a live process exists: reading a forking process's environment came back empty with no error in 1 of 32 scans under load, so an empty first scan is repeated until three in a row agree.
+  // A full scan can list nothing while a live process exists: reading a forking process's environment came back empty with no error in 1 of 32 scans under load, so an empty first scan is repeated up to two more times, and the first scan that lists a process is taken as the answer.
   '  tg_again=0',
   '  while [ -z "$tg_found" ] && [ -z "$tg_all" ] && [ "$tg_again" -lt 2 ]; do tg_again=$((tg_again + 1)); tg_owned; done',
   '  tg_new=',
@@ -207,7 +207,7 @@ interface WorkerRun {
   error?: Error | undefined
 }
 
-function runInWorker(sh: string, args: string[], env: NodeJS.ProcessEnv, opts: { quietTicks?: number; killWhen?: () => boolean }): WorkerRun {
+function runInWorker(sh: string, args: string[], env: NodeJS.ProcessEnv, opts: { quietTicks?: number; killWhen?: () => boolean; deadlineMs?: number }): WorkerRun {
   const flags = new Int32Array(new SharedArrayBuffer(8))
   const { port1, port2 } = new MessageChannel()
   const worker = new Worker(RUN_WORKER, { eval: true, workerData: { sh, args, env, flags, port: port2 }, transferList: [port2] })
@@ -221,6 +221,7 @@ function runInWorker(sh: string, args: string[], env: NodeJS.ProcessEnv, opts: {
       quiet = seen === last ? quiet + 1 : 0
       last = seen
       if (ended === '' && opts.killWhen?.() === true) ended = 'ended once the event it waited for happened'
+      if (ended === '' && opts.deadlineMs !== undefined && Date.now() >= opts.deadlineMs) ended = 'ETIMEDOUT: ran past its deadline and was ended'
       if (ended === '' && opts.quietTicks !== undefined && quiet >= opts.quietTicks) ended = `printed nothing for ${String(Math.round((opts.quietTicks * RUN_TICK_MS) / 1000))} s and was ended`
       if (ended !== '' && !killed) {
         killed = true
@@ -234,6 +235,14 @@ function runInWorker(sh: string, args: string[], env: NodeJS.ProcessEnv, opts: {
     port1.close()
     void worker.terminate()
   }
+}
+
+/** Runs a liveness probe script in a POSIX shell: true for status 0 (alive), false for status 1 (gone). Any other answer, such as a null status from a probe that hit its timeout, throws, so an unanswered probe never reads as a process that exited. */
+export function probeAlive(sh: string, script: string): boolean {
+  const res = spawnSync(sh, ['-c', script], { windowsHide: true, timeout: 30_000 })
+  if (res.status === 0) return true
+  if (res.status === 1) return false
+  throw new Error(`liveness probe gave no answer: status ${String(res.status)}, signal ${String(res.signal)}${res.error ? `, ${res.error.message}` : ''}`)
 }
 
 /** Kill whatever a failed run left behind, returning why that failed or null when nothing of the run survives. A reap that prints nothing for sixty seconds has stopped advancing and is ended. */
@@ -253,7 +262,7 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
     pending.forEach((ci, j) => {
       env[`TG_CMD_${j}`] = commands[ci]
     })
-    const res = opts.killWhen === undefined ? spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: opts.timeoutMs ?? 120_000 }) : runInWorker(sh, ['-c', SH_SCRIPT], env, { killWhen: opts.killWhen })
+    const res = opts.killWhen === undefined ? spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: opts.timeoutMs ?? 120_000 }) : runInWorker(sh, ['-c', SH_SCRIPT], env, { killWhen: opts.killWhen, quietTicks: 60_000 / RUN_TICK_MS, deadlineMs: Date.now() + (opts.timeoutMs ?? 120_000) })
     // A timeout kills the outer shell only, orphaning the chunk subshell and anything a command started under it.
     let reapFailure = res.error || res.signal || (res.status !== null && res.status !== 0) ? reapOwned(sh, token) : null
     const fields = (res.stdout ?? '').split('\0')

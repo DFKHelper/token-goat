@@ -8,7 +8,6 @@ import {
   getBashOutput,
   storeBashOutput,
   isGitMutableCommand,
-  isGitImmutableCommand,
   isDirListingCommand,
   isEnvProbeCommand,
   isDepListCommand,
@@ -101,29 +100,6 @@ describe('isScopedGitStatusOrDiffStatCommand (Bug D regression)', () => {
   it('rejects unrelated git subcommands', () => {
     expect(isScopedGitStatusOrDiffStatCommand('git log -- a.txt')).toBe(false)
     expect(isScopedGitStatusOrDiffStatCommand('git show HEAD -- a.txt')).toBe(false)
-  })
-})
-
-describe('isGitImmutableCommand', () => {
-  it('detects git show with full SHA', () => {
-    expect(isGitImmutableCommand('git show 0123456789abcdef0123456789abcdef01234567')).toBe(true)
-  })
-
-  it('rejects partial SHAs', () => {
-    expect(isGitImmutableCommand('git show abc123')).toBe(false)
-  })
-
-  it('reads a full SHA behind git -C <dir> and git -c k=v as immutable, a partial one as not', () => {
-    const sha = '0123456789abcdef0123456789abcdef01234567'
-    expect(isGitImmutableCommand(`git -C dir show ${sha}`)).toBe(true)
-    expect(isGitImmutableCommand(`git -c a=b show ${sha}`)).toBe(true)
-    expect(isGitImmutableCommand('git -C dir show abc12')).toBe(false)
-  })
-
-  it('reads a full SHA behind leading environment assignments, and rejects a 41-digit name', () => {
-    const sha = '0123456789abcdef0123456789abcdef01234567'
-    expect(isGitImmutableCommand(`FOO=1 git show ${sha}`)).toBe(true)
-    expect(isGitImmutableCommand(`FOO=1 git -C dir show ${sha}0`)).toBe(false)
   })
 })
 
