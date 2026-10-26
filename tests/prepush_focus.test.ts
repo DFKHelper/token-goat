@@ -44,6 +44,9 @@ function write(root: string, rel: string, text: string): void {
 type DecideOpts = { seed?: Record<string, string>; truncatedStore?: boolean; newBranch?: boolean; originMain?: boolean }
 
 /** A sandbox repo with one recorded failing test, then the given files changed in a second commit. Returns the decision note and the focus list. */
+// The caller's environment without the PREPUSH_ and TG_PREPUSH_ knobs (PREPUSH_FULL, the budgets, the elapsed seconds), so only what a test sets reaches the script.
+const inheritedEnv = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(?:TG_)?PREPUSH_/.test(k)))
+
 function decide(change: Record<string, string>, env: Record<string, string> = {}, opts: DecideOpts = {}): { note: string; focus: string[]; deferred: string } {
   // The sandbox is reached through a symlink, as every macOS temp directory is (/var points into /private): a script that mistakes a symlinked path for a different file does nothing here
   realDir = mkdtempSync(path.join(tmpdir(), 'tg-focus-'))
@@ -88,7 +91,7 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
     'echo "DEFERRED_BEGIN"',
     'echo "$FOCUS_DEFERRED"',
   ].join('\n')
-  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...process.env, ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
+  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...inheritedEnv(), ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
   const note = /^NOTE=(.*)$/m.exec(out)?.[1] ?? ''
   const file = /^FILE=(.*)$/m.exec(out)?.[1]?.trim() ?? ''
   const deferred = out.slice(out.indexOf('DEFERRED_BEGIN') + 'DEFERRED_BEGIN'.length).trim()
@@ -131,32 +134,36 @@ describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => 
     expect(tight.deferred).toContain('  tests/spawner.test.ts')
   })
 
-  it('a truncated failure record gives the full leg', () => {
+  it('a truncated failure record is a doubt: the guards and the matrix run and the rest is chosen within the budget', () => {
     const r = decide({ 'tests/other.test.ts': 'export const x = 1\n' }, {}, { truncatedStore: true })
-    expect(r.note).toContain('win leg full: the last red win run named no failing test file')
-    expect(r.focus).toEqual([])
+    expect(r.note).toContain('win leg focused')
+    expect(r.note).toContain('doubt (1): the last red win run named no failing test file')
+    expect(r.focus).toContain('tests/other.test.ts')
   })
 
-  it('a new branch is focused from its merge base with origin/main, and full without one', () => {
+  it('a new branch is focused from its merge base with origin/main, and a doubt without one', () => {
     const withBase = decide({ 'tests/other.test.ts': 'export const x = 1\n' }, {}, { newBranch: true, originMain: true })
     expect(withBase.note).toContain('win leg focused')
     expect(withBase.focus).toContain('tests/other.test.ts')
     const without = decide({ 'tests/other.test.ts': 'export const x = 1\n' }, {}, { newBranch: true })
-    expect(without.note).toContain('win leg full: new remote ref refs/heads/feat with no merge base on origin/main')
+    expect(without.note).toContain('win leg focused')
+    expect(without.note).toContain('doubt (1): new remote ref refs/heads/feat with no merge base on origin/main')
   })
 
-  it('runs the full leg when the pushed range changes a path the import graph cannot see', () => {
+  it('a path the import graph cannot see is a doubt, not the full leg', () => {
     const r = decide({ 'package.json': '{}\n' })
-    expect(r.note).toContain('win leg full: package.json is not a src or tests module')
-    expect(r.focus).toEqual([])
+    expect(r.note).toContain('win leg focused')
+    expect(r.note).toContain('doubt (1): package.json is not a src or tests module')
+    expect(r.focus.length).toBeGreaterThan(0)
   })
 })
 
 describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus note', () => {
-  it('runs the full leg for an empty range', () => {
+  it('an empty range is a doubt that still runs the guards', () => {
     const r = decide({})
-    expect(r.note).toContain('win leg full: the pushed range changes no file')
-    expect(r.focus).toEqual([])
+    expect(r.note).toContain('win leg focused')
+    expect(r.note).toContain('doubt (1): the pushed range changes no file')
+    expect(r.focus.length).toBeGreaterThan(0)
   })
 
   it('counts each changed path once and the failed file of the earlier run', () => {

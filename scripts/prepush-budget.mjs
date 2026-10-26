@@ -1,8 +1,14 @@
-// The time budget of a pre-push suite leg, and the arithmetic that cuts a priority list to fit it. One place names every number: the budgets, the worker count assumed, the calibration of per-file timings against the real wall clock, and the cost of a file with no timing yet. Pure functions, built-in modules only. Seconds of test wall time a leg may be estimated to take. Lint and typecheck run beside the Windows leg (measured 56 s and 35 s) and the WSL leg follows it only when a platform-sensitive path changed, so 600 + 300 leaves about 300 s under the 1200 s the whole push is held to for the legs' own startup, the secrets scan and the other machine users. Override with PREPUSH_BUDGET_S and PREPUSH_WSL_BUDGET_S.
-export const LEG_BUDGET_S = { win: 600, wsl: 300 }
+// The time budget of a pre-push suite leg, and the arithmetic that cuts a priority list to fit it. One place names every number: the budgets, the worker count assumed, the calibration of per-file timings against the real wall clock, and the cost of a file with no timing yet. Pure functions, built-in modules only. Seconds of test wall time a leg may be estimated to take. Lint and typecheck run beside the Windows leg and the WSL leg follows it only when a platform-sensitive path changed, so the two caps sum to TOTAL_BUDGET_S. The guards alone take 114.7 s on Windows and 73.3 s on WSL (measured on the 221-file guard and matrix set), 188 s together, so both caps leave room for tests beyond the never-cut classes. Override with PREPUSH_BUDGET_S and PREPUSH_WSL_BUDGET_S.
+export const LEG_BUDGET_S = { win: 330, wsl: 180 }
 export const BUDGET_ENV = { win: 'PREPUSH_BUDGET_S', wsl: 'PREPUSH_WSL_BUDGET_S' }
-// Seconds the whole pre-push may take, counted from the start of run-all-checks.sh: a leg's cap is cut again to what is left of it, and an override cannot raise it.
-export const TOTAL_BUDGET_S = 1200
+// The wall time the whole hook is held to, from hook start to hook exit (the owner's 10 minutes).
+export const HOOK_LIMIT_S = 600
+// Seconds the hook spends outside the two suite legs: ref reading, the WSL decision, two selections, the duration and failure records and the slowest-files report. Not measured as a whole; the selector replay (orch5/2/replay.tsv) times the selection step alone.
+export const HOOK_OVERHEAD_S = 30
+// Share of HOOK_LIMIT_S held back because the estimates err by about this much (see CALIBRATION_EVIDENCE).
+export const MARGIN_SHARE = 0.1
+// Seconds the legs may be estimated to take together, counted from the start of run-all-checks.sh: a leg's cap is cut again to what is left of it, and an override cannot raise it. The win and wsl caps sum to this.
+export const TOTAL_BUDGET_S = HOOK_LIMIT_S - HOOK_OVERHEAD_S - HOOK_LIMIT_S * MARGIN_SHARE
 // The environment variable run-all-checks.sh sets to the seconds already used when a leg is planned.
 export const ELAPSED_ENV = 'PREPUSH_ELAPSED_S'
 // Seconds a vitest invocation spends before its first test: the globalSetup bundle build plus worker start.
