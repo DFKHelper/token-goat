@@ -10,7 +10,6 @@ import { isCompressionProfile, parseCompressionProfile, type CompressionProfile 
 import { MAX_CAPTURE_BYTES } from './constants.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { displaySafeText } from './paths.js'
-import { normalizeChildEnd, signalExitCode } from './util.js'
 import { adaptPowerShellCommand } from './powershell_compat.js'
 import { powerShellCommandArgs, resolvePowerShell, wrappedShell } from './shell.js' // tg-powershell-output-unread: runs the user's own command, not a token-goat process query
 import { spawnOwned } from './process_tree.js'
@@ -29,6 +28,7 @@ import {
   shlexSplit,
   TOOL_FILTERS,
 } from './tool_filters/index.js'
+import { type ChildOrigin, normalizeChildEnd, signalExitCode } from './util.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
 /** Default wall-clock timeout for the wrapped subprocess, in seconds. */
@@ -151,7 +151,7 @@ export function spawnTarget(
   command: string,
   nativeShell: boolean | undefined,
   shellType?: string | undefined,
-): { file: string; args: string[]; shell: boolean; cmdEnv?: NodeJS.ProcessEnv } {
+): { file: string; args: string[]; shell: boolean; cmdEnv?: NodeJS.ProcessEnv; origin: ChildOrigin } {
   if (shellType === 'pwsh' || shellType === 'powershell') {
     const ps = resolvePowerShell() // tg-powershell-output-unread: runs the user's own command, not a token-goat process query
     // Exit mirrors `pwsh -Command`, which exits 1 when the final `$?` is false and 0 otherwise (`exit N` exits directly). Invoking a scriptblock always reports success and a try/finally would make statement-terminating errors fatal, so the wrapper parses the command and splices `if ($global:TgOk = $?) { }` (which captures `$?` without resetting it) at the end of the script and of each named begin, process, end and clean block (`$?` carries from one block into the next, so an empty block still reports its predecessor), before each top-level break/continue and at the end of each top-level finally; a top-level `return X` is rewritten to capture `$?` after X; a top-level break or continue keeps a label that some loop in the script declares, and that label gets a catching loop in case no enclosing loop has it, while any other label, quoted, dotted or computed at run time, is redirected to a catching `TgEsc` loop, so no label escapes the wrapper to turn its exit into 0, except a label that converts to an empty string (`""`, `$null`, `@()`), which pwsh treats as no label and so is left to stop the innermost loop, and since evaluating a computed label resets `$?`, its rewrite ends by re-failing `$?` through an ignored Write-Error when the capture before the break recorded a failure; a parse error is thrown as a ParserError quoting the failing line and exits 1, where direct pwsh exits 1 silently; and under Windows PowerShell 5.1, which never runs a process block under -Command, the script gets empty pipeline input so its process block is skipped there too. Known divergences: when the last output is formatted through a view with scriptblock columns (`return {1}`, a returned Process), direct pwsh can exit 0 after an earlier failure because formatting resets `$?`, where the wrapper exits 1 with identical output; and an error raised on a line holding a top-level return or break quotes that line with the capture spliced in.
@@ -162,18 +162,19 @@ export function spawnTarget(
       ),
       shell: false,
       cmdEnv: { TG_CMD: adaptPowerShellCommand(command) },
+      origin: 'other',
     }
   }
   const shell = nativeShell || shellType === 'native' ? true : wrappedShell()
-  if (typeof shell === 'string') return { file: shell, args: ['-c', 'eval "$TG_CMD"'], shell: false, cmdEnv: { TG_CMD: command } }
-  return { file: command, args: [], shell }
+  // A string shell is resolveWindowsBash(): a PATH or Git-for-Windows bash.exe (WSL launchers skipped), or the unchecked TOKEN_GOAT_BASH override; `true` is /bin/sh or cmd.exe, whose status is a plain exit code.
+  if (typeof shell === 'string') return { file: shell, args: ['-c', 'eval "$TG_CMD"'], shell: false, cmdEnv: { TG_CMD: command }, origin: 'msys-bash' }
+  return { file: command, args: [], shell, origin: 'other' }
 }
 
 /** Merge the base env with any command-carrying env spawnTarget produced, without dropping the parent's environment when *env* itself is undefined (spawnSync's `env` option, once set, replaces rather than extends `process.env`). */
 function mergeSpawnEnv(env: NodeJS.ProcessEnv | undefined, cmdEnv: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv | undefined {
   return cmdEnv ? { ...(env ?? process.env), ...cmdEnv } : env
 }
-
 
 /** Resolve the effective compression profile: explicit argument wins; otherwise read from config, treating `"auto"` or an unsupported persisted value as `"balanced"`. Config errors also fall back to `"balanced"`. */
 function resolveProfile(explicit: CompressionProfile | undefined): CompressionProfile {
@@ -248,7 +249,7 @@ async function passthrough(
   shellType?: string,
   rawStdin?: boolean,
 ): Promise<number> {
-  const { file, args, shell, cmdEnv } = spawnTarget(command, nativeShell, shellType)
+  const { file, args, shell, cmdEnv, origin } = spawnTarget(command, nativeShell, shellType)
   const owned = spawnOwned(file, args, { cwd, shell, env: mergeSpawnEnv(env, cmdEnv), stdio: [childStdin(rawStdin, 'inherit'), 'inherit', 'inherit'] })
   let timedOut = false
   const timeoutHandle = setTimeout(() => {
@@ -268,7 +269,7 @@ async function passthrough(
     process.stderr.write(`[token-goat: ${displaySafeText(result.error.message)}]\n`)
     return 127
   }
-  const end = normalizeChildEnd(result.code, result.signal)
+  const end = normalizeChildEnd(result.code, result.signal, process.platform, origin)
   if (end.signal) {
     // The output is inherited, so the signal note goes straight to stderr rather than into a captured stream.
     process.stderr.write(`[token-goat: command was killed by ${end.signal}]\n`)
@@ -296,7 +297,7 @@ async function wrapAndCompress(
   const writeStdout = opts.writeStdout ?? ((s: string) => process.stdout.write(s))
   const writeStderr = opts.writeStderr ?? ((s: string) => process.stderr.write(s))
   const startTime = Date.now()
-  const { file, args, shell, cmdEnv } = spawnTarget(command, opts.nativeShell, opts.shellType)
+  const { file, args, shell, cmdEnv, origin } = spawnTarget(command, opts.nativeShell, opts.shellType)
   const stdoutSink = new CaptureSink(MAX_CAPTURE_BYTES)
   const stderrSink = new CaptureSink(MAX_CAPTURE_BYTES)
   let timedOut = false
@@ -361,7 +362,7 @@ async function wrapAndCompress(
   }
 
   if (spawnError !== null) stderrText = (stderrText ? stderrText + '\n' : '') + `[token-goat: ${displaySafeText((spawnError as Error).message)}]`
-  const end = normalizeChildEnd(code, signal)
+  const end = normalizeChildEnd(code, signal, process.platform, origin)
   let exitCode: number
   if (timedOut) {
     exitCode = 124

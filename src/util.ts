@@ -135,29 +135,39 @@ export function gitTimeoutMs(asked: RunGitOptions['timeoutMs']): number | undefi
 }
 
 /** Run git and return its captured output. With {@link runGitAsync}, the only git spawn sites in the codebase. Always: - prepends `-c core.fsmonitor=` to disable fsmonitor (prevents it from interfering with or being slowed by the agent's own git operations); - for a `diff` subcommand specifically, inserts `--no-ext-diff --no-textconv` right after it, so a repo-local `.gitattributes` diff driver or textconv filter can never run as a side effect of a `diff` call this codebase makes on the caller's behalf -- defense-in- depth against a malicious `.gitattributes`/git config in a repo this tool is pointed at. Deliberately NOT done via `-c diff.external=`/`-c core.attributesfile=`: an *empty* `diff.external` value is not "disabled" to git, it is a literal empty-string command to spawn, so `-c diff.external=` makes every diff fail with "cannot spawn : No such file or directory" -- confirmed by hand against a real repo. `--no-ext-diff`/`--no-textconv` are the flags git itself documents for this, and only `diff` (not `status`/`add`/etc., which don't accept them) needs them; - passes `windowsHide: true` so no console window flashes on Windows; - passes the args array directly (no shell, so nothing is shell-escaped). Output is decoded as UTF-8. Every call is bounded: `timeoutMs` when it is a positive number, else {@link GIT_DEFAULT_TIMEOUT_MS}; only the named {@link GIT_UNBOUNDED} runs without a limit. A spawn failure (git not on PATH) surfaces as exit -1 with the error message on `stderr` rather than throwing, and `timedOut` is set when the cause was `timeoutMs`, so a caller can tell a git that was too slow from one that could not start. */
-/** The signal name for a number, or undefined when the platform's table has no such signal. */
-function signalNameOf(signum: number): NodeJS.Signals | undefined {
-  return (Object.entries(os.constants.signals) as Array<[NodeJS.Signals, number]>).find(([, num]) => num === signum)?.[0]
+/** How a child was started, which decides how its end is read: only a Git Bash (MSYS) shell encodes a signal death in its exit code. */
+export type ChildOrigin = 'msys-bash' | 'other'
+
+// Cygwin/MSYS signal numbers by index (winsup/cygwin/include/cygwin/signal.h, cygwin/cygwin main, lines 425-459); Windows Node names 21 and 22 SIGBREAK and SIGABRT, so it cannot name them.
+const MSYS_SIGNAL_NAMES: ReadonlyArray<NodeJS.Signals | undefined> = [undefined, 'SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGTRAP', 'SIGABRT', undefined, 'SIGFPE', 'SIGKILL', 'SIGBUS', 'SIGSEGV', 'SIGSYS', 'SIGPIPE', 'SIGALRM', 'SIGTERM', 'SIGURG', 'SIGSTOP', 'SIGTSTP', 'SIGCONT', 'SIGCHLD', 'SIGTTIN', 'SIGTTOU', 'SIGIO', 'SIGXCPU', 'SIGXFSZ', 'SIGVTALRM', 'SIGPROF', 'SIGWINCH', undefined, 'SIGUSR1', 'SIGUSR2']
+
+/** The signal number of *signal* on *platform*: the Cygwin table on Windows, Node's own table elsewhere; undefined for a name the table lacks. */
+function signalNumberOf(signal: NodeJS.Signals, platform: NodeJS.Platform): number | undefined {
+  if (platform === 'win32') {
+    const index = MSYS_SIGNAL_NAMES.indexOf(signal)
+    return index < 0 ? undefined : index
+  }
+  return (os.constants.signals as Record<string, number>)[signal]
 }
 
-/** Normalize a finished child's Node-reported end so a signal death is always `signal` with `code` null; on Windows, Git Bash (Cygwin/MSYS) reports it as `code` = signum << 8 with `signal` null (`kill -TERM $$` gives 3840 = 15 << 8), and a shell's own `exit N` can never yield a multiple of 256 above 255, so that encoding is unambiguous. */
+/** Normalize a finished child's Node-reported end so a signal death is always `signal` with `code` null. A Git Bash (MSYS) child on Windows reports one as `code` = signum << 8 with `signal` null (`kill -TERM $$` gives 3840 = 15 << 8), and a shell's own `exit N` can never yield a multiple of 256 above 255, so only that origin is decoded: a cmd, PowerShell or native exit code of 256 or 3840 is a real status and passes through. */
 export function normalizeChildEnd(
   code: number | null,
   signal: NodeJS.Signals | null,
   platform: NodeJS.Platform = process.platform,
+  origin: ChildOrigin = 'other',
 ): { code: number | null; signal: NodeJS.Signals | null } {
-  if (signal !== null || code === null || platform !== 'win32') return { code, signal }
+  if (signal !== null || code === null || platform !== 'win32' || origin !== 'msys-bash') return { code, signal }
   if (code <= 255 || code % 256 !== 0 || code / 256 > 31) return { code, signal }
   const signum = code / 256
-  const name = signalNameOf(signum)
-  // A signal this platform names maps to that name; an unnamed one keeps the shell's 128+signum status.
+  const name = MSYS_SIGNAL_NAMES[signum]
+  // A signal the Cygwin table names maps to that name; an unnamed one keeps the shell's 128+signum status.
   return name === undefined ? { code: 128 + signum, signal: null } : { code: null, signal: name }
 }
 
 /** The shell exit status for a child killed by *signal*: `128 + signum`, the POSIX convention (TERM 143, KILL 137, INT 130). */
-export function signalExitCode(signal: NodeJS.Signals): number {
-  const num = (os.constants.signals as Record<string, number>)[signal]
-  return 128 + (num ?? 0)
+export function signalExitCode(signal: NodeJS.Signals, platform: NodeJS.Platform = process.platform): number {
+  return 128 + (signalNumberOf(signal, platform) ?? 0)
 }
 
 export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
@@ -180,11 +190,9 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
     return { stdout: '', stderr: String(result.error.message ?? result.error), exitCode: -1, unfinished: true, ...(timedOut ? { timedOut } : {}) }
   }
 
-  // A signal death on Windows arrives as a wait status in the exit code (see normalizeChildEnd); decode it before deciding it is a verdict.
-  const end = normalizeChildEnd(result.status, result.signal)
-  if (end.code === null) {
+  if (result.status === null) {
     // A child that ended without an exit status (by a signal, or with neither) has no verdict to give: the answer is unknown, never the exit code a caller would read as a verdict.
-    const signal = end.signal ?? undefined
+    const signal = result.signal ?? undefined
     const note = signal === undefined ? 'git ended with no exit code' : `git was killed by ${signal}`
     return { stdout: '', stderr: note, exitCode: -1, unfinished: true, ...(signal === undefined ? {} : { signal }) }
   }
@@ -192,7 +200,7 @@ export function runGit(args: string[], opts: RunGitOptions = {}): GitResult {
   return {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? '',
-    exitCode: end.code,
+    exitCode: result.status,
     unfinished: false,
   }
 }

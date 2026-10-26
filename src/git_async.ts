@@ -2,7 +2,7 @@
 
 import { spawnOwned, type OwnedChild } from './process_tree.js'
 import type { GitResult, RunGitAsyncOptions } from './types.js'
-import { forgetGitExecutable, gitExecutable, gitInvocation, gitTimeoutMs, normalizeChildEnd } from './util.js'
+import { forgetGitExecutable, gitExecutable, gitInvocation, gitTimeoutMs } from './util.js'
 
 const GIT_MAX_OUTPUT_BYTES = 200 * 1024 * 1024
 
@@ -40,13 +40,12 @@ export function runGitAsync(args: string[], opts: RunGitAsyncOptions = {}): Prom
       owned.release()
       resolve(result)
     }
-    const finish = (rawCode: number | null, rawSignal: NodeJS.Signals | null): void => {
-      const end = normalizeChildEnd(rawCode, rawSignal)
+    const finish = (exitCode: number | null, signal: string | null): void => {
       if (cause === 'timeout') settle(failed(`spawn git ETIMEDOUT after ${timeout} ms`, true))
       else if (cause === 'overflow') settle(failed('spawn git ENOBUFS: output exceeded the 200 MiB buffer'))
       else if (cause === 'abort') settle(failed('git was aborted'))
-      else if (end.code === null) settle({ stdout: '', stderr: `git was killed by ${end.signal ?? 'a signal'}`, exitCode: -1, unfinished: true, ...(end.signal === null ? {} : { signal: end.signal }) })
-      else settle({ stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), exitCode: end.code, unfinished: false })
+      else if (exitCode === null) settle({ stdout: '', stderr: `git was killed by ${signal ?? 'a signal'}`, exitCode: -1, unfinished: true, ...(signal === null ? {} : { signal }) })
+      else settle({ stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8'), exitCode, unfinished: false })
     }
     // The first cause wins. A git that already exited has no exit event to wait for, so its call settles here.
     const stop = (why: 'timeout' | 'overflow' | 'abort'): void => {
