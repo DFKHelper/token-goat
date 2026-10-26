@@ -4,6 +4,7 @@ export interface KeyParts {
   leg: string
   platform: string
   node: string
+  root: string
   deps: string
   dist: string
   env: string

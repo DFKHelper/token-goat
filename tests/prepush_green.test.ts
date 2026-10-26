@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -200,6 +200,23 @@ describe('the record file', () => {
     expect(readFileSync(store).length).toBeLessThan(32 * 1024)
   })
 
+  it('sweeps only its own temp files left stale by a crashed write', () => {
+    const parts = keyParts(root, STATIC_LEG, {})
+    mkdirSync(path.dirname(store), { recursive: true })
+    const stale = `${store}.4242.0a1b2c3d.tmp`
+    const fresh = `${store}.4243.0a1b2c3e.tmp`
+    const foreign = path.join(path.dirname(store), 'other.json.4242.0a1b2c3d.tmp')
+    for (const f of [stale, fresh, foreign]) writeFileSync(f, 'partial')
+    const old = new Date(Date.now() - 20 * 60 * 1000)
+    utimesSync(stale, old, old)
+    utimesSync(foreign, old, old)
+    recordGreen(store, 'a'.repeat(40), parts, ['lint'])
+    expect(existsSync(stale)).toBe(false)
+    expect(existsSync(fresh)).toBe(true)
+    expect(existsSync(foreign)).toBe(true)
+    expect(readEntries(store)).toHaveLength(1)
+  })
+
   it('stays parseable while several writers race', async () => {
     const parts = keyParts(root, STATIC_LEG, {})
     write('racer.mjs', `import { recordGreen } from ${JSON.stringify(`file:///${TOOL.replace(/\\/g, '/')}`)}\nrecordGreen(process.argv[2], process.argv[3], JSON.parse(process.argv[4]), ['lint'])\n`)
@@ -222,11 +239,39 @@ describe('test file reuse', () => {
   it('drops the files already green on the key and the guard files when guards were green', () => {
     const tree = 'a'.repeat(40)
     recordGreen(store, tree, parts('win'), ['tests/a.test.ts'])
-    recordGreen(store, tree, parts(STATIC_LEG), ['guards'])
+    recordGreen(store, tree, { ...parts(STATIC_LEG), dist: parts('win').dist }, ['guards'])
     const files = ['tests/a.test.ts', 'tests/b.test.ts', 'tests/guards/g.test.ts']
     expect(splitGreen(files, readEntries(store), tree, parts('win'), parts(STATIC_LEG))).toEqual({ keep: ['tests/b.test.ts'], reused: ['tests/a.test.ts', 'tests/guards/g.test.ts'] })
     expect(splitGreen(files, readEntries(store), 'b'.repeat(40), parts('win'), parts(STATIC_LEG)).reused).toEqual([])
     expect(splitGreen(files, readEntries(store), tree, parts('wsl'), parts(STATIC_LEG)).keep).toEqual(['tests/a.test.ts', 'tests/b.test.ts'])
+  })
+
+  it('reuses a guard file only while the bundle the guards read is unchanged', () => {
+    write('.gitignore', 'ran.txt\nignored.txt\n.green-store/\ndist/\n')
+    write('dist/x.mjs', 'one')
+    git('add', '-A')
+    git('commit', '-q', '-m', 'bundle')
+    const cmd = counterCmd()
+    const tree = treeId(root) ?? ''
+    expect(tree).toMatch(/^[0-9a-f]{40,64}$/)
+    expect(runChecked(root, 'guards', STATIC_LEG, cmd, envWith())).toBe(0)
+    expect(runs()).toBe(1)
+    const guardFile = ['tests/guards/g.test.ts']
+    // The run's env is keyed too, so the split is judged under the same env the record was written with.
+    const keys = (leg: string) => keyParts(root, leg, envWith())
+    expect(splitGreen(guardFile, readEntries(store), tree, keys('win'), keys(STATIC_LEG)).reused).toEqual(guardFile)
+    write('dist/x.mjs', 'two')
+    expect(treeId(root)).toBe(tree)
+    expect(splitGreen(guardFile, readEntries(store), tree, keys('win'), keys(STATIC_LEG)).keep).toEqual(guardFile)
+  })
+
+  it('keys a record by the checkout root, so another worktree never honours it', () => {
+    const tree = 'a'.repeat(40)
+    recordGreen(store, tree, parts('win'), ['tests/a.test.ts'])
+    expect(parts('win').root).toMatch(/^(?:[a-z]:)?\//)
+    expect(parts('win').root).not.toContain('\\')
+    expect(splitGreen(['tests/a.test.ts'], readEntries(store), tree, { ...parts('win'), root: 'd:/elsewhere' }, parts(STATIC_LEG)).reused).toEqual([])
+    expect(splitGreen(['tests/a.test.ts'], readEntries(store), tree, parts('win'), parts(STATIC_LEG)).reused).toEqual(['tests/a.test.ts'])
   })
 
   it('the filter and record-files commands round-trip through the real tool', () => {

@@ -2,7 +2,7 @@
 // Reuses a green check or test file when the identical bytes already passed. The key is a git tree id of the working tree made through a temporary index (so unstaged and untracked, non-ignored edits change it), the leg, the platform, the node version, a hash of the installed-dependency record, the env knobs that can change a result and, for the test legs, a hash of dist/. Usage: node scripts/prepush-green.mjs id | run NAME [--leg LEG] -- CMD ARGS... | filter LEG FOCUS_FILE TREE_FILE | record-files LEG FOCUS_FILE TREE_FILE. PREPUSH_FULL=1 ignores every record; TG_PREPUSH_NO_REUSE=1 neither reads nor writes one. Built-in modules only.
 import { spawnSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
 
@@ -62,6 +62,22 @@ function hashTree(dir, base, out) {
   }
 }
 
+/** @param {string} root @returns {string} a hash of the built bundle under dist/ (dist/ is ignored, so the tree id does not see it), or 'none' when there is no dist/ */
+function distHash(root) {
+  try {
+    const lines = []
+    hashTree(path.join(root, 'dist'), root, lines)
+    return sha256(lines.join('\n'))
+  } catch {
+    return 'none'
+  }
+}
+
+/** @param {string} root @returns {string} the checkout's root as one spelling: absolute, forward slashes, a lowercase drive letter, so a record from one worktree is never read in another */
+function normRoot(root) {
+  return path.resolve(root).replace(/\\/g, '/').replace(/^[A-Za-z]:/, (drive) => drive.toLowerCase())
+}
+
 /** @param {string} root @param {string} leg @param {Record<string, string | undefined>} env @returns {object} the key fields besides the tree id; a test leg also keys the built bundle (dist/ is ignored, so the tree id does not see it) */
 export function keyParts(root, leg, env = process.env) {
   let deps = 'none'
@@ -70,19 +86,9 @@ export function keyParts(root, leg, env = process.env) {
   } catch {
     // no installed-dependency record: keyed as none, so it matches only another run without one
   }
-  let dist = 'n/a'
-  if (leg !== STATIC_LEG) {
-    dist = 'none'
-    try {
-      const lines = []
-      hashTree(path.join(root, 'dist'), root, lines)
-      dist = sha256(lines.join('\n'))
-    } catch {
-      // no dist: keyed as none
-    }
-  }
+  const dist = leg === STATIC_LEG ? 'n/a' : distHash(root)
   const envLines = Object.keys(env).filter((k) => ENV_KEYED.test(k) && !ENV_UNKEYED.test(k) && env[k] !== undefined).sort().map((k) => `${k}=${env[k]}`)
-  return { leg, platform: process.platform, node: process.version, deps, dist, env: sha256(envLines.join('\n')) }
+  return { leg, platform: process.platform, node: process.version, root: normRoot(root), deps, dist, env: sha256(envLines.join('\n')) }
 }
 
 /** @param {string} root @returns {string | null} where the record lives: PREPUSH_GREEN_STORE, else token-goat-prepush/green.json under the git common dir */
@@ -113,6 +119,23 @@ export function isGreen(store, tree, parts, name) {
   return readEntries(store).some((e) => sameKey(e, tree, parts) && e.done.includes(name))
 }
 
+const STALE_TMP_MS = 10 * 60 * 1000
+
+/** @param {string} store @param {number} now removes this record's own temp files (named by recordGreen) older than STALE_TMP_MS, left by a write that crashed; a younger one may be a live writer's, so it stays. Never throws: a failed sweep leaves the files for the next write */
+function sweepStaleTmp(store, now) {
+  try {
+    const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const own = new RegExp(`^${escapeRe(path.basename(store))}\\.\\d+\\.[0-9a-f]{8}\\.tmp$`)
+    const dir = path.dirname(store)
+    for (const name of readdirSync(dir)) {
+      const file = path.join(dir, name)
+      if (own.test(name) && now - statSync(file).mtimeMs > STALE_TMP_MS) rmSync(file, { force: true })
+    }
+  } catch {
+    // no sweep this time: the stale files wait for the next record
+  }
+}
+
 /** @param {string} store @param {string} tree @param {object} parts @param {string[]} names @param {number} [now] adds the names to the entry of this key, newest entries last, at most MAX_ENTRIES kept; atomic by rename, so a concurrent writer can drop this update but never corrupt the file */
 export function recordGreen(store, tree, parts, names, now = Date.now()) {
   const entries = readEntries(store)
@@ -121,6 +144,7 @@ export function recordGreen(store, tree, parts, names, now = Date.now()) {
   const done = [...new Set([...(hit?.done ?? []), ...names])]
   const next = [...rest, { tree, ...parts, done, at: now }].sort((a, b) => a.at - b.at).slice(-MAX_ENTRIES)
   mkdirSync(path.dirname(store), { recursive: true })
+  sweepStaleTmp(store, now)
   const tmp = `${store}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
   try {
     writeFileSync(tmp, `${JSON.stringify({ entries: next }, null, 1)}\n`)
@@ -137,7 +161,9 @@ const quoteWin = (a) => (/^[\w./:=@+-]+$/.test(a) ? a : `"${a.replace(/"/g, '\\"
 export function runChecked(root, name, leg, cmd, env = process.env) {
   const store = storePath(root, env)
   const before = store && !recordOff(env) ? treeId(root) : null
-  const parts = before ? keyParts(root, leg, env) : null
+  // The guard suite reads the built bundle, which the tree id does not see, so its record is keyed by the bundle hash the test legs use.
+  const base = before ? keyParts(root, leg, env) : null
+  const parts = base && name === GUARDS_CHECK ? { ...base, dist: distHash(root) } : base
   if (before && parts && store && !reuseOff(env) && isGreen(store, before, parts, name)) {
     process.stdout.write(`pre-push: reused green ${name} (same tree ${before.slice(0, 12)}, ${leg}, ${process.platform}, node ${process.version})\n`)
     return 0
@@ -155,10 +181,10 @@ export function runChecked(root, name, leg, cmd, env = process.env) {
   return 0
 }
 
-/** @param {string[]} files test files in order @param {object[]} entries @param {string} tree @param {object} parts the leg's key parts @param {object} staticParts @returns {{keep: string[], reused: string[]}} the files not yet green; a file under tests/guards/ is green when the static guards check is */
+/** @param {string[]} files test files in order @param {object[]} entries @param {string} tree @param {object} parts the leg's key parts @param {object} staticParts @returns {{keep: string[], reused: string[]}} the files not yet green; a file under tests/guards/ is green when the static guards check is recorded on this tree with this leg's bundle hash */
 export function splitGreen(files, entries, tree, parts, staticParts) {
   const own = new Set(entries.filter((e) => sameKey(e, tree, parts)).flatMap((e) => e.done))
-  const guards = entries.some((e) => sameKey(e, tree, staticParts) && e.done.includes(GUARDS_CHECK))
+  const guards = entries.some((e) => sameKey(e, tree, { ...staticParts, dist: parts.dist }) && e.done.includes(GUARDS_CHECK))
   const keep = []
   const reused = []
   for (const f of files) (own.has(f) || (guards && f.startsWith(GUARDS_DIR)) ? reused : keep).push(f)

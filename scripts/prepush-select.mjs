@@ -84,7 +84,7 @@ export function parseNameStatus(out) {
   return rows
 }
 
-/** @param {{ leg: string, headSha: string, pushText: string, env: Record<string, string | undefined>, changed: (from: string, to: string) => {status: string, path: string}[] | null, onRemote: (sha: string) => boolean, mergeBase: (sha: string) => string | null, failed: () => string[], unparsedFailure: () => boolean, exists: (rel: string) => boolean, guards: () => string[], matrix: () => string[], allTests: () => string[] | null, readers: (named: string[], srcChanged: boolean) => string[][] | null, importers: (modules: string[]) => Map<string, number> | null, setups: (modules: string[]) => string[] | null, durations: () => Record<string, number>, workers: number, }} io every outside fact comes in through here, so the decision is a pure function; onRemote is true only when the commit is positively known to be in a remote-tracking ref @returns {{full: true, why: string} | {full: false, files: string[], note: string, deferred: string[], deferredReport: string, doubts: string[]}} files are test files; full is only PREPUSH_FULL=1 or a test tree that cannot be listed. Every other doubt (unreadable ref lines, unknown range, a path the import graph cannot see, an unreadable failure record) keeps the never-cut classes (failed before, changed tests, guards, the bundle matrix) and fills the budget with the remaining tests, importers first, then text readers, then the cheapest; deferredReport lists what the budget cut, empty when it cut nothing */
+/** @param {{ leg: string, headSha: string, pushText: string, env: Record<string, string | undefined>, changed: (from: string, to: string) => {status: string, path: string}[] | null, onRemote: (sha: string) => boolean, mergeBase: (sha: string) => string | null, failed: () => string[], unparsedFailure: () => boolean, exists: (rel: string) => boolean, guards: () => string[], matrix: () => string[], allTests: () => string[] | null, readers: (named: string[], srcChanged: boolean) => string[][] | null, importers: (modules: string[]) => Map<string, number> | null, setups: (modules: string[]) => string[] | null, durations: () => Record<string, number>, workers: number, }} io every outside fact comes in through here, so the decision is a pure function; onRemote is true only when the commit is positively known to be in a remote-tracking ref @returns {{full: true, why: string} | {full: false, files: string[], note: string, deferred: string[], deferredReport: string, doubts: string[]}} files are test files; full is only PREPUSH_FULL=1, or a test tree, the guard list or the bundle matrix that cannot be listed. Every other doubt (unreadable ref lines, unknown range, a path the import graph cannot see, an unreadable failure record) keeps the never-cut classes (failed before, changed tests, guards, the bundle matrix) and fills the budget with the remaining tests, importers first, then text readers, then the cheapest; deferredReport lists what the budget cut, empty when it cut nothing */
 export function decideSelection(io) {
   const { leg } = io
   if (io.env['PREPUSH_FULL'] === '1' || io.env['TG_PREPUSH_FULL'] === '1') return { full: true, why: 'PREPUSH_FULL=1' }
@@ -142,12 +142,13 @@ export function decideSelection(io) {
     else modules.push(p)
   }
   const guards = io.guards()
-  if (guards.length === 0) doubts.push('no guard tests found under tests/guards')
+  // An empty guard list is a listing that failed: the guards are never cut, so without them the leg cannot be bounded.
+  if (guards.length === 0) return { full: true, why: 'the guard tests under tests/guards could not be listed' }
   let matrix = []
   // A doubt can reach src, so it carries the built-bundle matrix too.
   if (srcChanged || doubts.length > 0) {
     matrix = io.matrix()
-    if (matrix.length === 0) doubts.push('the built-bundle matrix tests could not be listed')
+    if (matrix.length === 0) return { full: true, why: 'the built-bundle matrix tests could not be listed' }
   }
   let distances = new Map()
   if (modules.length > 0) {

@@ -215,8 +215,6 @@ describe('prepush selection: every doubt that was a full leg is now a bounded se
     ['empty range', [], {}, 'changes no file'],
     ['last red run named no failing file', [m('tests/x.test.ts')], { unparsedFailure: () => true }, 'named no failing test file'],
     ['the import graph cannot be read', [m('src/a.ts')], { importers: () => null }, 'import graph'],
-    ['src changed and no bundle matrix is found', [m('src/a.ts')], { matrix: () => [] }, 'matrix tests could not be listed'],
-    ['no guard tests found', [m('tests/x.test.ts')], { guards: () => [] }, 'no guard tests'],
   ]
   it.each(cases)('%s', (_name, changed, over, why) => {
     const r = select(changed, over)
@@ -227,6 +225,22 @@ describe('prepush selection: every doubt that was a full leg is now a bounded se
     if (!(over.guards && over.guards().length === 0)) expect(r.files).toEqual(expect.arrayContaining(GUARDS))
     if (!(over.matrix && over.matrix().length === 0)) expect(r.files).toEqual(expect.arrayContaining(MATRIX))
     expect(r.note).toContain('doubt (')
+  })
+
+  // A failed guard or matrix listing is the unlistable-tree case: the leg runs in full, never as a doubt that the budget can cut.
+  const unlisted: [string, Row[] | null, Partial<Io>, string][] = [
+    ['the guard list fails while the tests list works', [m('src/a.ts')], { guards: () => [] }, 'guard tests'],
+    ['src changed and the bundle matrix cannot be listed', [m('src/a.ts')], { matrix: () => [] }, 'bundle matrix'],
+    ['a doubt and the bundle matrix cannot be listed', [m('tests/x.test.ts')], { unparsedFailure: () => true, matrix: () => [] }, 'bundle matrix'],
+  ]
+  it.each(unlisted)('%s runs the full leg', (_name, changed, over, why) => {
+    const r = select(changed, over)
+    expect(r.full === true && r.why).toContain(why)
+  })
+
+  it('a test-only change never lists the bundle matrix, so an empty matrix stays a bounded leg', () => {
+    const r = select([m('tests/x.test.ts')], { matrix: () => [] })
+    expect(r.full).toBe(false)
   })
 
   it('a doubt fills the budget with the other tests cheapest first', () => {
@@ -278,7 +292,8 @@ describe('prepush selection: every doubt that was a full leg is now a bounded se
     try {
       execFileSync('git', ['init', '-q'], { cwd: root })
       mkdirSync(path.join(root, 'tests', 'guards'), { recursive: true })
-      for (const f of ['tests/guards/g.test.ts', 'tests/a.test.ts', 'tests/b.test.ts']) writeFileSync(path.join(root, f), 'export {}\n')
+      // The bundle matrix is in the fixture because the real tree has one: an unlistable matrix runs the full leg.
+      for (const f of ['tests/guards/g.test.ts', 'tests/a.test.ts', 'tests/b.test.ts', 'tests/command_matrix_e2e.1.test.ts']) writeFileSync(path.join(root, f), 'export {}\n')
       writeFileSync(path.join(root, 'package.json'), '{}\n')
       execFileSync('git', ['add', '.'], { cwd: root })
       const commit = (msg: string): string => {
@@ -314,7 +329,7 @@ describe('prepush selection: the pushed remote name, from the real script', () =
       const git = (...a: string[]): string => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       git('init', '-q')
       mkdirSync(path.join(root, 'tests', 'guards'), { recursive: true })
-      for (const f of ['tests/guards/g.test.ts', 'tests/a.test.ts']) writeFileSync(path.join(root, f), 'export {}\n')
+      for (const f of ['tests/guards/g.test.ts', 'tests/a.test.ts', 'tests/command_matrix_e2e.1.test.ts']) writeFileSync(path.join(root, f), 'export {}\n')
       git('add', '.')
       git('-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '-m', 'one')
       const head = git('rev-parse', 'HEAD').trim()
@@ -534,7 +549,7 @@ describe('a failing git call and no test tree in select main runs the full leg',
       const pushFile = path.join(root, 'push.txt')
       writeFileSync(pushFile, refLine(HEAD, REMOTE))
       const out = spawnSync(process.execPath, [SCRIPT, root, 'win', HEAD, pushFile, '', ''], { encoding: 'utf8', timeout: 60000, env: hermeticEnv() })
-      expect(out.stdout.split('\n')[0]).toBe(`FULL\twin leg full: git could not list ${REMOTE.slice(0, 9)}..${HEAD.slice(0, 9)}, and the test files could not be listed to choose among them`)
+      expect(out.stdout.split('\n')[0]).toBe('FULL\twin leg full: the guard tests under tests/guards could not be listed')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -613,7 +628,7 @@ describe('a new ref with no readable merge base and no test tree runs the full l
       const pushFile = path.join(root, 'push.txt')
       writeFileSync(pushFile, refLine(head, ZERO))
       const out = spawnSync(process.execPath, [SCRIPT, root, 'win', head, pushFile, '', ''], { encoding: 'utf8', timeout: 60000, env: hermeticEnv() })
-      expect(out.stdout.split('\n')[0]).toBe('FULL\twin leg full: new remote ref refs/heads/feat with no merge base on origin/main, and the test files could not be listed to choose among them')
+      expect(out.stdout.split('\n')[0]).toBe('FULL\twin leg full: the guard tests under tests/guards could not be listed')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
