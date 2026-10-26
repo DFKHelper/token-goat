@@ -1,5 +1,6 @@
 /** Real shipped SessionStart -> dirty queue -> default detached worker -> SQLite. */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 
@@ -34,6 +35,9 @@ async function until(fixture: ReturnType<typeof treeFixture>, label: string, che
 
 // The drift notices reconcileNote prints when git's listing missed its deadline (src/hooks_session_start.ts::reconcileNote): the worker finishes that check, so either notice is a delivered start.
 const DEFERRED_DRIFT_NOTICE = /token-goat: index drift check (?:is running in the background worker|\(git did not answer in time.*the background worker is finishing the check\))/
+
+// The branch a slow-listing second start must take: its own listing times out (the memory is 0 here, so it lists again), new files cannot be found, and the worker is handed the check (reconcileNote's total-zero notice).
+const DEFERRED_NEW_FILE_NOTICE = /token-goat: index drift check \(git did not answer in time listing the project files, so new files could not be found; the background worker is finishing the check\) found nothing/
 
 // A start's drift line is either the prompt reindex or the deferred check; any other text fails the named assertion.
 function expectDriftNotice(stdout: string): 'reindexing' | 'deferred' {
@@ -115,7 +119,10 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
       expect({ indexed, workerAlive: pid > 0 && alive(pid), queued }, `worker PID ${pid} after startup exit; ${result.stdout}`)
         .toEqual({ indexed: true, workerAlive: true, queued: '' })
       // A worker already outside the jobs keeps its lease. The next startup must queue and drain its edit without killing or replacing that daemon.
-      writeFileSync(source, 'export function startupWorkerSecondSymbol() { return 43 }\n')
+      const secondSource = listing === 'slow' ? join(fixture.project, 'second.ts') : source
+      // A slow-listing row's second edit is a new file staged in git: `git ls-files` lists it for the worker's drain, but the hook's own 1 ms listing cannot reach it. An untracked file is listed by neither, so it cannot test the drain.
+      writeFileSync(secondSource, 'export function startupWorkerSecondSymbol() { return 43 }\n')
+      if (listing === 'slow') execFileSync('git', ['-C', fixture.project, 'add', '--', 'second.ts'], { env: fixture.env })
       // The first start (or the worker it woke) stamped a complete sweep, which stands in for the next start's own for minutes; this start must sweep to find the second edit, whenever the stamp landed.
       fixture.env['TOKEN_GOAT_RECONCILE_MEMORY_MS'] = '0'
       const second = surface === 'installed'
@@ -130,7 +137,12 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
         expect(owed).toContain('reindexing')
       } else {
         expect(secondResult.stderr).toBe('')
-        await ctx.annotate(`second start drift notice: ${expectDriftNotice(secondResult.stdout)}`)
+        if (listing === 'slow') {
+          expect(secondResult.stdout, 'the slow-listing second start must print the deferred new-file notice').toMatch(DEFERRED_NEW_FILE_NOTICE)
+          await ctx.annotate('second start drift notice: deferred (new files left to the worker)')
+        } else {
+          await ctx.annotate(`second start drift notice: ${expectDriftNotice(secondResult.stdout)}`)
+        }
       }
       await until(fixture, 'worker indexed the second edit', () => db.prepare('SELECT name FROM symbols WHERE name = ?').get('startupWorkerSecondSymbol') !== undefined)
       expect(db.prepare('SELECT name FROM symbols WHERE name = ?').get('startupWorkerSecondSymbol')).toBeDefined()
