@@ -549,7 +549,31 @@ describe('a failing git call and no test tree in select main runs the full leg',
       const pushFile = path.join(root, 'push.txt')
       writeFileSync(pushFile, refLine(HEAD, REMOTE))
       const out = spawnSync(process.execPath, [SCRIPT, root, 'win', HEAD, pushFile, '', ''], { encoding: 'utf8', timeout: 60000, env: hermeticEnv() })
-      expect(out.stdout.split('\n')[0]).toBe('FULL\twin leg full: the guard tests under tests/guards could not be listed')
+      expect(out.stdout.split('\n')[0]).toBe(`FULL\twin leg full: git could not list ${REMOTE.slice(0, 9)}..${HEAD.slice(0, 9)}, and the test files could not be listed to choose among them`)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('a range git cannot list with a listable test tree is a doubt, from the real script', () => {
+  const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'prepush-select.mjs')
+  it('the guards and the matrix list, so the unlistable range is a bounded doubt leg, not the full one', () => {
+    // Fixture provenance: HAND-DERIVED. The temp repo has the guard, matrix and ordinary test files; the remote sha is absent, so git cannot list the range on its own.
+    const root = mkdtempSync(path.join(tmpdir(), 'prepush-select-'))
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root })
+      mkdirSync(path.join(root, 'tests', 'guards'), { recursive: true })
+      for (const f of ['tests/guards/g.test.ts', 'tests/a.test.ts', 'tests/command_matrix_e2e.1.test.ts']) writeFileSync(path.join(root, f), 'export {}\n')
+      execFileSync('git', ['add', '.'], { cwd: root })
+      execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'], { cwd: root })
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
+      const pushFile = path.join(root, 'push.txt')
+      writeFileSync(pushFile, refLine(head, REMOTE))
+      const out = spawnSync(process.execPath, [SCRIPT, root, 'win', head, pushFile, '', ''], { encoding: 'utf8', timeout: 60000, env: hermeticEnv() })
+      const first = out.stdout.split('\n')[0]
+      expect(first.startsWith('FOCUS\t')).toBe(true)
+      expect(first).toContain(`git could not list ${REMOTE.slice(0, 9)}..${head.slice(0, 9)}`)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -628,7 +652,7 @@ describe('a new ref with no readable merge base and no test tree runs the full l
       const pushFile = path.join(root, 'push.txt')
       writeFileSync(pushFile, refLine(head, ZERO))
       const out = spawnSync(process.execPath, [SCRIPT, root, 'win', head, pushFile, '', ''], { encoding: 'utf8', timeout: 60000, env: hermeticEnv() })
-      expect(out.stdout.split('\n')[0]).toBe('FULL\twin leg full: the guard tests under tests/guards could not be listed')
+      expect(out.stdout.split('\n')[0]).toBe('FULL\twin leg full: new remote ref refs/heads/feat with no merge base on origin/main, and the test files could not be listed to choose among them')
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

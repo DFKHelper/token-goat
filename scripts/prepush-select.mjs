@@ -141,6 +141,17 @@ export function decideSelection(io) {
     if (c.kind === 'test') changedTests.push(p)
     else modules.push(p)
   }
+  // The test tree is listed once, and first: a doubt with no listable test tree keeps its combined reason, whatever the guard or matrix listings say.
+  let listedOnce = false
+  let testTree = null
+  const listedTests = () => {
+    if (!listedOnce) {
+      testTree = io.allTests?.() ?? null
+      listedOnce = true
+    }
+    return testTree
+  }
+  if (doubts.length > 0 && (listedTests()?.length ?? 0) === 0) return { full: true, why: `${doubts[0]}, and the test files could not be listed to choose among them` }
   const guards = io.guards()
   // An empty guard list is a listing that failed: the guards are never cut, so without them the leg cannot be bounded.
   if (guards.length === 0) return { full: true, why: 'the guard tests under tests/guards could not be listed' }
@@ -196,7 +207,7 @@ export function decideSelection(io) {
   // A doubt spends the rest of the budget on every other test, cheapest first, so the most files run for the time.
   let restOrder = []
   if (doubts.length > 0) {
-    const all = io.allTests?.() ?? null
+    const all = listedTests()
     if (all === null || all.length === 0) return { full: true, why: `${doubts[0]}, and the test files could not be listed to choose among them` }
     restOrder = all.filter((f) => !placed.has(f) && io.exists(f)).sort(byCost)
   }
