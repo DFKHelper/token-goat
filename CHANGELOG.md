@@ -4,6 +4,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.33] - 2026-10-26
+
 ### Added
 
 - **`session-audit` counts cold-cache re-writes.** A new section lists requests that followed a gap longer than their cache TTL and wrote the prefix again, with billed-equivalent tokens, share of billed tokens, and a breakdown by the tool (and Bash command class) the session was waiting on, for main sessions and subagents separately.
