@@ -2,7 +2,8 @@
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -82,6 +83,7 @@ beforeEach(() => {
 afterEach(() => {
   clearModuleCaches()
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  rmSync(PROBE_ROOT, { recursive: true, force: true })
 })
 
 describe('a PowerShell write cmdlet names its file to the dirty queue', () => {
@@ -796,8 +798,8 @@ describe('a doubled single quote and a GNU long option are read as the shell rea
   })
 })
 
-// Two real repositories side by side (`a` and `b`) under the probe root, so `../b` and `-C ../b` name a real second repository.
-const PROBE_ROOT = 'C:/tgwt/r12c_probe_repos'
+// Two real repositories side by side (`a` and `b`) under the probe root, so `../b` and `-C ../b` name a real second repository. The probe repos live under this repo's gitignored .tmp/, not the OS temp dir (enqueueDirtyPathSafe drops temp paths) and not a host drive path (relative on Linux).
+const PROBE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '.tmp', 'probe-repos')
 function probePair(): { a: string; b: string } {
   mkdirSync(PROBE_ROOT, { recursive: true })
   const root = mkdtempSync(join(PROBE_ROOT, 'pair-'))
