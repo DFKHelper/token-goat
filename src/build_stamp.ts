@@ -49,17 +49,40 @@ export function staleBuildMessage(v: Extract<BuildVerdict, { kind: 'stale' }>): 
   return `this process runs build ${v.running} of v${v.version}, but dist/ on disk is build ${v.installed} of the same version; restart it (or the session) to load the rebuilt code`
 }
 
-/** The token-goat checkout at `from` or an ancestor that has built dist/build-info.json, or null: the source build an installed copy is judged against. Reads package.json and the stamp file only, never git. */
-export function findSourceBuild(from: string = process.cwd()): { dir: string; info: BuildInfo } | null {
+/** Where the source-build walk may climb to (`stopAt`, inclusive) and which package root is the running build itself (`ownRoot`, never a source). */
+export interface SourceWalk {
+  stopAt?: string
+  ownRoot?: string
+}
+
+/** The working directory, or null when it cannot be read (it was deleted under the process): a default must not throw. */
+function currentDir(): string | null {
+  try {
+    return process.cwd()
+  } catch {
+    return null
+  }
+}
+
+/** The token-goat checkout at `from` or an ancestor that has built dist/build-info.json, or null: the source build an installed copy is judged against. Reads package.json and the stamp file only, never git. A copy under a node_modules segment, or the running build's own package root, is not a source: judging an install against itself proves nothing. */
+export function findSourceBuild(from: string | null = currentDir(), walk: SourceWalk = {}): { dir: string; info: BuildInfo } | null {
+  if (from === null) return null
+  const ownRoot = path.resolve(walk.ownRoot ?? path.dirname(bundleDir()))
+  const stopAt = walk.stopAt === undefined ? null : path.resolve(walk.stopAt)
   let dir = path.resolve(from)
   for (;;) {
     const distDir = path.join(dir, 'dist')
-    const info = isTokenGoatCheckout(dir) ? readBuildInfo(distDir) : null
+    const info = isSourceCandidate(dir, ownRoot) ? readBuildInfo(distDir) : null
     if (info !== null) return { dir: distDir, info }
     const parent = path.dirname(dir)
-    if (parent === dir) return null
+    if (parent === dir || dir === stopAt) return null
     dir = parent
   }
+}
+
+function isSourceCandidate(dir: string, ownRoot: string): boolean {
+  if (dir === ownRoot || dir.split(/[\\/]/).includes('node_modules')) return false
+  return isTokenGoatCheckout(dir)
 }
 
 function isTokenGoatCheckout(dir: string): boolean {
@@ -71,11 +94,11 @@ function isTokenGoatCheckout(dir: string): boolean {
 }
 
 /** Judges this process against dist/ beside it and against the source build reachable from `from`; a stale verdict on either side wins. */
-function judgeBuild(dir: string | undefined, running: { stamp: string; version: string }, from: string): { stale: boolean; message: string } {
+function judgeBuild(dir: string | undefined, running: { stamp: string; version: string }, from: string | null, walk: SourceWalk): { stale: boolean; message: string } {
   const local = compareBuilds(running, readBuildInfo(dir))
   if (local.kind === 'stale') return { stale: true, message: staleBuildMessage(local) }
-  const source = findSourceBuild(from)
-  if (source === null) return { stale: false, message: `${running.stamp} (v${running.version}); unverifiable: no token-goat source build with dist/build-info.json at or above ${from}` }
+  const source = findSourceBuild(from, walk)
+  if (source === null) return { stale: false, message: `${running.stamp} (v${running.version}); unverifiable: no token-goat source build with dist/build-info.json at or above ${from ?? 'the unreadable working directory'}` }
   const verdict = compareBuilds(running, source.info)
   if (verdict.kind === 'stale') return { stale: true, message: `this process runs build ${verdict.running} of v${verdict.version}, but the source build at ${source.dir} is build ${verdict.installed}; rebuild and reinstall, then restart to load it` }
   if (verdict.kind === 'current') return { stale: false, message: `${verdict.stamp} (v${running.version}), matches the source build at ${source.dir}` }
@@ -83,13 +106,13 @@ function judgeBuild(dir: string | undefined, running: { stamp: string; version: 
 }
 
 /** One line for a session-start context when this process is older than dist/ on disk or than the source build, else null. */
-export function staleBuildNote(dir?: string, running: { stamp: string; version: string } = { stamp: BUILD_STAMP, version: VERSION }, from: string = process.cwd()): string | null {
-  const judged = judgeBuild(dir, running, from)
+export function staleBuildNote(dir?: string, running: { stamp: string; version: string } = { stamp: BUILD_STAMP, version: VERSION }, from: string | null = currentDir(), walk: SourceWalk = {}): string | null {
+  const judged = judgeBuild(dir, running, from, walk)
   return judged.stale ? `[token-goat: ${judged.message}]` : null
 }
 
 /** The doctor row: names the build that is running, and warns when it differs from dist/ beside it or from the source build reachable from `from`, the same version included. Never `fail`: the code still works, it is just not the code on disk. */
-export function checkBuild(dir?: string, running: { stamp: string; version: string } = { stamp: BUILD_STAMP, version: VERSION }, from: string = process.cwd()): DoctorResult {
-  const judged = judgeBuild(dir, running, from)
+export function checkBuild(dir?: string, running: { stamp: string; version: string } = { stamp: BUILD_STAMP, version: VERSION }, from: string | null = currentDir(), walk: SourceWalk = {}): DoctorResult {
+  const judged = judgeBuild(dir, running, from, walk)
   return { name: 'Build', status: judged.stale ? 'warn' : 'ok', message: judged.message }
 }

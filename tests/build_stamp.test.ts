@@ -2,10 +2,10 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { buildInfoPath, clearBuildInfo, computeBuildStamp, writeBuildInfo } from '../scripts/build-stamp.mjs'
-import { checkBuild, compareBuilds, readBuildInfo, staleBuildNote } from '../src/build_stamp.js'
+import { checkBuild, compareBuilds, findSourceBuild, readBuildInfo, staleBuildNote } from '../src/build_stamp.js'
 import { BUILD_STAMP } from '../src/version.js'
 
 describe('the build stamp tells two builds of one version apart', () => {
@@ -122,10 +122,66 @@ describe('the build stamp tells two builds of one version apart', () => {
 
     it('reports unverifiable, never a match, when no source build is reachable', () => {
       const { dist, running } = installed('aaa1111-20261024T100000Z')
-      const row = checkBuild(dist, running, root)
+      const walk = { stopAt: root }
+      const row = checkBuild(dist, running, root, walk)
       expect(row.message).toContain('unverifiable')
       expect(row.message).not.toContain('matches')
-      expect(staleBuildNote(dist, running, root)).toBeNull()
+      expect(staleBuildNote(dist, running, root, walk)).toBeNull()
+      expect(findSourceBuild(root, walk)).toBeNull()
+    })
+
+    it('does not throw when the working directory cannot be read, and reads the source as unverifiable', () => {
+      const { dist, running } = installed('aaa1111-20261024T100000Z')
+      const cwd = vi.spyOn(process, 'cwd').mockImplementation(() => {
+        throw new Error('ENOENT: no such file or directory, uv_cwd')
+      })
+      try {
+        expect(() => checkBuild(dist, running)).not.toThrow()
+        expect(() => staleBuildNote(dist, running)).not.toThrow()
+        expect(checkBuild(dist, running).message).toContain('unverifiable')
+      } finally {
+        cwd.mockRestore()
+      }
+    })
+
+    it('does not take an installed copy under node_modules as the source it is judged against', () => {
+      const { dist, running } = installed('aaa1111-20261024T100000Z')
+      const pkg = path.join(root, 'install', 'node_modules', 'token-goat')
+      fs.mkdirSync(path.join(pkg, 'lib'), { recursive: true })
+      fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: 'token-goat', version: '2.9.32' }))
+      writeBuildInfo(pkg, '2.9.32', { commit: 'aaa1111', builtAt: '2026-10-24T10:00:00.000Z', stamp: running.stamp })
+      const row = checkBuild(dist, running, path.join(pkg, 'lib'), { stopAt: root })
+      expect(row.message).not.toContain('matches the source build')
+      expect(row.message).toContain('unverifiable')
+      expect(staleBuildNote(dist, running, path.join(pkg, 'lib'), { stopAt: root })).toBeNull()
+    })
+
+    it('does not take the running build\'s own package root as its source', () => {
+      const { dist, running } = installed('aaa1111-20261024T100000Z')
+      const from = checkout('token-goat', 'aaa1111-20261024T100000Z')
+      const row = checkBuild(dist, running, from, { stopAt: root, ownRoot: path.join(root, 'source') })
+      expect(row.message).not.toContain('matches the source build')
+      expect(row.message).toContain('unverifiable')
+    })
+
+    it('keeps walking past a package.json that does not parse', () => {
+      checkout('token-goat', 'bbb2222-20261024T110000Z')
+      const broken = path.join(root, 'source', 'work', 'broken')
+      fs.mkdirSync(broken, { recursive: true })
+      fs.writeFileSync(path.join(broken, 'package.json'), '{ not json')
+      expect(findSourceBuild(broken, { stopAt: root })?.dir).toBe(path.join(root, 'source', 'dist'))
+    })
+
+    it('does not climb above the ceiling it is given, even to a source that lies there', () => {
+      const from = checkout('token-goat', 'bbb2222-20261024T110000Z')
+      expect(findSourceBuild(from)?.dir).toBe(path.join(root, 'source', 'dist'))
+      expect(findSourceBuild(from, { stopAt: from })).toBeNull()
+    })
+
+    it('terminates at the filesystem root without a source, whatever lies above the temp dir', () => {
+      const drive = path.parse(root).root
+      expect(() => findSourceBuild(drive)).not.toThrow()
+      expect(findSourceBuild(drive, { stopAt: drive })).toBeNull()
     })
 
     it('does not take a checkout without build-info, or one named otherwise, as the source', () => {
