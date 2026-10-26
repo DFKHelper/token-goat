@@ -32,10 +32,24 @@ async function until(fixture: ReturnType<typeof treeFixture>, label: string, che
   watchdog.progress(label)
 }
 
-it.runIf(process.platform === 'win32').for(['installed', 'direct'] as const)(
-  'keeps the default index worker alive after the %s startup tree exits',
+// The drift notices reconcileNote prints when git's listing missed its deadline (src/hooks_session_start.ts::reconcileNote): the worker finishes that check, so either notice is a delivered start.
+const DEFERRED_DRIFT_NOTICE = /token-goat: index drift check (?:is running in the background worker|\(git did not answer in time.*the background worker is finishing the check\))/
+
+// A start's drift line is either the prompt reindex or the deferred check; any other text fails the named assertion.
+function expectDriftNotice(stdout: string): 'reindexing' | 'deferred' {
+  if (stdout.includes('token-goat: reindexing ')) return 'reindexing'
+  expect(stdout, 'the start must name a reindex or the deferred background drift check').toMatch(DEFERRED_DRIFT_NOTICE)
+  return 'deferred'
+}
+
+it.runIf(process.platform === 'win32').for([
+  { surface: 'installed', listing: 'normal' },
+  { surface: 'direct', listing: 'normal' },
+  { surface: 'installed', listing: 'slow' },
+] as const)(
+  'keeps the default index worker alive after the $surface startup tree exits ($listing listing)',
   { timeout: 0 },
-  async (surface, ctx) => {
+  async ({ surface, listing }, ctx) => {
     // OS-temp projects are intentionally never queued. This owned ignored tree has its own Git root and data directory, outside that exclusion.
     const parent = join(process.cwd(), 'artifacts', 'session-start-worker-fixtures')
     mkdirSync(parent, { recursive: true })
@@ -47,6 +61,8 @@ it.runIf(process.platform === 'win32').for(['installed', 'direct'] as const)(
     expect(existsSync(pidPath), 'index setup unexpectedly spawned a worker').toBe(false)
     delete fixture.env['TOKEN_GOAT_NO_WORKER_SPAWN']
     expect(fixture.env['TOKEN_GOAT_NO_WORKER_SPAWN']).toBeUndefined()
+    // Forces git's listing past a 1 ms deadline on every start of this row, so the deferred drift check is the one delivered.
+    if (listing === 'slow') fixture.env['TOKEN_GOAT_RECONCILE_LISTING_DEADLINE_MS'] = '1'
     const canonicalPid = join(fixture.root, 'canonical.pid')
     const preload = join(fixture.root, 'canonical-probe.cjs')
     writeFileSync(preload, `
@@ -76,7 +92,7 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
         return
       } else {
         expect(result.stderr).toBe('')
-        expect(result.stdout).toContain('reindexing')
+        await ctx.annotate(`first start drift notice: ${expectDriftNotice(result.stdout)}`)
       }
       await ctx.annotate('branch: strong (the start delivered)')
       expect(alive(run.child.pid ?? 0), 'startup root still alive before worker observation').toBe(false)
@@ -114,7 +130,7 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
         expect(owed).toContain('reindexing')
       } else {
         expect(secondResult.stderr).toBe('')
-        expect(secondResult.stdout).toContain('reindexing')
+        await ctx.annotate(`second start drift notice: ${expectDriftNotice(secondResult.stdout)}`)
       }
       await until(fixture, 'worker indexed the second edit', () => db.prepare('SELECT name FROM symbols WHERE name = ?').get('startupWorkerSecondSymbol') !== undefined)
       expect(db.prepare('SELECT name FROM symbols WHERE name = ?').get('startupWorkerSecondSymbol')).toBeDefined()
