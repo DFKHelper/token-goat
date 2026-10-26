@@ -6,9 +6,9 @@ import * as path from 'node:path'
 import { splitShellSegments } from './bash_extractors.js'
 import { dataDir } from './constants.js'
 import { reconcileRequestPathFor } from './dirty_queue.js'
-import { gitRepoRootOrNull, headMovingSegments, hookGitRead, isHeadMovingGitCommand, tokenGoatInvocation } from './hooks_bash_commands.js'
+import { GIT_PREFIX_RE_SRC, gitRepoRootOrNull, headMovingSegments, hookGitRead, isHeadMovingGitCommand, tokenGoatInvocation } from './hooks_bash_commands.js'
 import { enqueueDirtyPathSafe, requestReconcileSafe } from './hooks_index.js'
-import { GIT_OPTIONS_WITH_VALUE, parsePorcelainZ, safeShlexSplit, skipGitLeadingOptions } from './git_porcelain.js'
+import { GIT_OPTIONS_WITH_VALUE, parsePorcelainZ, safeShlexSplit, skipEnvAssignments, skipGitLeadingOptions } from './git_porcelain.js'
 import { resolveIndexPath } from './paths.js'
 import type { GitResult } from './util.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
@@ -684,11 +684,14 @@ function gitAimedElsewhere(target: GitRunTarget, runDir: string): boolean {
 }
 
 /** Matches `git restore`, which rewrites paths without moving HEAD. */
-const GIT_RESTORE_RE = /^\s*git\s+restore\b/i
+const GIT_RESTORE_RE = new RegExp(String.raw`${GIT_PREFIX_RE_SRC}restore\b`, 'i')
+
+/** A `git restore` command line, its arguments captured: the shape {@link restoreOptions} and {@link extractGitRestorePathspecs} read, reaching restore past the same prefix as {@link GIT_RESTORE_RE}. */
+const GIT_RESTORE_ARGS_RE = new RegExp(String.raw`${GIT_PREFIX_RE_SRC}restore\b(.*)$`, 'i')
 
 /** The options of a `git restore` segment: the tokens before its `--`, so a pathspec after the separator is never read as a flag. */
 function restoreOptions(segment: string): string[] {
-  const m = /^\s*git\s+restore\b(.*)$/i.exec(segment)
+  const m = GIT_RESTORE_ARGS_RE.exec(segment)
   if (m === null) return []
   const tokens = safeShlexSplit(m[1] ?? '') ?? []
   const dashDash = tokens.indexOf('--')
@@ -725,8 +728,7 @@ const GIT_STASH_REWRITE_SUBCOMMANDS = new Set(['pop', 'apply', 'branch', 'push',
 function gitStashRewriteDir(segment: string, runDir: string): string | null {
   const tokens = safeShlexSplit(segment)
   if (tokens === null) return null
-  let i = 0
-  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i++
+  let i = skipEnvAssignments(tokens)
   const head = tokens[i]
   if (head === undefined || path.basename(head.replace(/\\/g, '/')).replace(/\.exe$/i, '').toLowerCase() !== 'git') return null
   const leading = skipGitLeadingOptions(tokens, i + 1, runDir)
@@ -797,7 +799,7 @@ function extractTeeFiles(segment: string): string[] {
 
 /** Pathspecs named on a `git restore` command line: everything after `--`, or every non-option token once `-s`/`--source`'s separate value is skipped. */
 function extractGitRestorePathspecs(cmd: string): string[] {
-  const m = /^\s*git\s+restore\b(.*)$/i.exec(cmd)
+  const m = GIT_RESTORE_ARGS_RE.exec(cmd)
   if (m === null) return []
   const tokens = safeShlexSplit(m[1] ?? '')
   if (tokens === null) return []

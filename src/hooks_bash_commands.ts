@@ -274,8 +274,12 @@ export function extractCommand(event: HookEvent): string | undefined {
 }
 
 /** Matches git subcommands that can move HEAD and rewrite working-tree file content. */
-/** The text before a git subcommand: leading `NAME=value` assignments, then git's global options (`-C <path>`, `-c <name>=<value>`, `--git-dir`, `--work-tree`, other flags), so `git -C ../b checkout other` and `GIT_DIR=... git checkout other` read as the checkout they run. */
-const GIT_PREFIX_RE_SRC = String.raw`^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*git(?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir(?:=|\s+)\S+|--work-tree(?:=|\s+)\S+|--?[A-Za-z][\w-]*))*\s+`
+/** The leading `NAME=value` words a git command may carry (`FOO=1 BAR="x y" git ...`), the shape skipEnvAssignments reads on tokens. The git patterns take it as a prefix: stripCommandPrefix declines to peel an assignment that changes what runs (`PATH=`, `LD_*`), and such a command still runs git. */
+const LEADING_ENV_ASSIGNMENTS = String.raw`(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S*)\s+)*`
+/** A git option's value, bare or quoted. */
+const GIT_OPTION_VALUE = String.raw`(?:"[^"]*"|'[^']*'|\S+)`
+/** The text before a git subcommand: leading `NAME=value` assignments, then git's global options (`-C <path>`, `-c <name>=<value>`, `--git-dir`, `--work-tree`, other flags), values bare or quoted, so `git -C ../b checkout other` and `GIT_DIR=... git checkout other` read as the checkout they run. Exported for the git patterns in shell_writes.ts. */
+export const GIT_PREFIX_RE_SRC = String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git(?:\s+(?:-[Cc]\s+${GIT_OPTION_VALUE}|--git-dir(?:=|\s+)${GIT_OPTION_VALUE}|--work-tree(?:=|\s+)${GIT_OPTION_VALUE}|--?[A-Za-z][\w-]*))*\s+`
 const HEAD_MOVING_GIT_RE = new RegExp(`${GIT_PREFIX_RE_SRC}(?:checkout|switch|pull|merge|rebase|reset|cherry-pick|stash\\s+branch)\\b`, 'i')
 const PATH_SCOPED_CHECKOUT_RE = new RegExp(`${GIT_PREFIX_RE_SRC}checkout\\s+(?:\\S.*?\\s)?--(?:\\s|$)`, 'i')
 

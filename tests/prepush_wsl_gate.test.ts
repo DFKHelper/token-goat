@@ -1,6 +1,6 @@
 /** The WSL gate (.lefthook-scripts/wsl-gate.sh) in a sandbox repo: a changed non-ASCII path must match its glob, and a missing pattern file must run the suite instead of skipping it. */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -29,6 +29,7 @@ function gate(changed: string, patterns: string | null): { run: string; reason: 
   git(root, 'add', '-A')
   git(root, 'commit', '-q', '-m', 'one')
   const base = git(root, 'rev-parse', 'HEAD')
+  mkdirSync(path.dirname(path.join(root, changed)), { recursive: true })
   writeFileSync(path.join(root, changed), 'export {}\n')
   git(root, 'add', '-A')
   git(root, 'commit', '-q', '-m', 'two')
@@ -61,5 +62,17 @@ describe.skipIf(BASH === null)('wsl gate', () => {
     const r = gate('src/other.ts', null)
     expect(r.run).toBe('1')
     expect(r.reason).toContain('missing or unreadable')
+  })
+
+  it('selects the WSL leg for a shared test helper under the real pattern file', () => {
+    const real = readFileSync(path.join(process.cwd(), '.lefthook-scripts', 'wsl-paths.txt'), 'utf8')
+    const r = gate('tests/helpers/bundle.ts', real)
+    expect(r.run).toBe('1')
+    expect(r.reason).toContain('tests/helpers/bundle.ts')
+  })
+
+  it('leaves a plain test file off the WSL leg under the real pattern file', () => {
+    const real = readFileSync(path.join(process.cwd(), '.lefthook-scripts', 'wsl-paths.txt'), 'utf8')
+    expect(gate('tests/plain_suite.test.ts', real).run).toBe('0')
   })
 })

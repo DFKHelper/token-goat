@@ -6,14 +6,15 @@ import { pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
 import { createRequire } from 'node:module'
 
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 
 import { COPILOT_SESSION_START_HELPERS } from '../../src/bridges/copilot_session_start.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from '../../src/bridges/copilot_cli.js'
 import { SESSION_START_OWNER_DEADLINE_EXIT } from '../../src/bridges/shim_common.js'
 import { startBudgetAtShimStart } from '../helpers/shim_deadline.js'
 import { buildLegacyStartupOwner } from '../helpers/legacy_startup_owner.js'
-import { alive, startBegan, assertInstalledResidentBypass, assertOwedDeliveredOnce, assertTreeDead, BUNDLE, buildWindowsBoundary, cleanupTrees, contextText, fileAppears, fixtureWatchdog, indexTreeFixture, installStartupOwner, ownedPids, readOwnedPid, runInstalledStartup, runTreeShim, premiseBranch, DEADLINE_FAIL_OPEN, expectDriftNotice, HANG_BACKSTOP_MS, ownerEndedOnDeadline, treeFixture } from '../helpers/copilot_session_start_tree.js'
+import type { Watchdog } from '../helpers/stall_proof_watchdog.js'
+import { alive, startBegan, assertInstalledResidentBypass, assertOwedDeliveredOnce, assertTreeDead, survivorsAfterWait, BUNDLE, buildWindowsBoundary, cleanupTrees, contextText, fileAppears, fixtureWatchdog, indexTreeFixture, installStartupOwner, ownedPids, readOwnedPid, runInstalledStartup, runTreeShim, premiseBranch, DEADLINE_FAIL_OPEN, expectDriftNotice, HANG_BACKSTOP_MS, ownerEndedOnDeadline, treeFixture } from '../helpers/copilot_session_start_tree.js'
 
 // Cleanup is synchronous process-table work, so no fixed hook wall-clock bound applies: a loaded machine makes it slow, never wrong.
 afterEach(cleanupTrees, 0)
@@ -43,7 +44,7 @@ process.stdout.write('{"hookSpecificOutput":{"additionalContext":"installed-owne
     await Promise.race([watch.appeared, run.done.catch(() => undefined)])
     watch.stop()
     const result = await run.done
-    assertTreeDead(fixture)
+    await assertTreeDead(fixture)
     if (result.stdout === '{}') {
       await assertOwedDeliveredOnce(fixture, vscode ? 'vscode' : 'copilot_cli', sessionId)
     } else {
@@ -79,7 +80,7 @@ it.runIf(process.platform === 'win32')('allows bounded owner metadata around a n
   const entry = join(fixture.root, 'entry.cjs')
   writeFileSync(entry, "process.stdout.write(JSON.stringify({hookSpecificOutput:{additionalContext:'x'.repeat(1024 * 1024 - 100)}}))")
   const result = await runInstalledStartup({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }).done
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (result.stdout === '{}') {
     await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'installed-startup')
   } else {
@@ -153,7 +154,7 @@ process.argv[1] = ${JSON.stringify(BUNDLE)}
 import(${JSON.stringify(pathToFileURL(BUNDLE).href)})
 `)
   const result = await (surface === 'installed' ? runInstalledStartup({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }) : runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS })).done
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (!await premiseBranch(ctx, fixture, result, [helperFile, gitFile, invocation], surface === 'installed' ? 'installed-startup' : 'owned-tree')) return
   const helperPid = readOwnedPid(helperFile)
   const gitPid = readOwnedPid(gitFile)
@@ -179,7 +180,7 @@ if (result.status !== 0) process.exit(1)
 process.stdout.write('{"hookSpecificOutput":{"additionalContext":"breakaway-denied"}}')
 `)
   const result = await runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }).done
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (!await premiseBranch(ctx, fixture, result, [attempted], 'owned-tree')) return
   // Check before teardown: a passing outer harness job must not clean up for us.
   const attempt = readFileSync(attempted, 'utf8')
@@ -314,7 +315,7 @@ it.runIf(process.platform === 'win32')('rejects an incompatible built native pro
   const result = await runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }).done
   expect(result.stdout).toBe('{}')
   expect(existsSync(entered)).toBe(false)
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (!result.stderr.includes('incompatible protocol or unverified cleanup')) {
     expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
     await ctx.annotate('branch: weak (the deadline fired before the protocol check)')
@@ -340,7 +341,7 @@ it.runIf(process.platform === 'win32')('rejects the actual owner argv in a built
   const result = await runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }).done
   assertNoCanonical()
   expect(result.stdout).toBe('{}')
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (!result.stderr.includes('native startup owner failed')) {
     expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
     await ctx.annotate('branch: weak (the deadline fired before the legacy owner was refused)')
@@ -355,7 +356,7 @@ it.runIf(process.platform === 'win32')('rejects the actual owner argv in a built
     "['--session-start-owner-v1', String(deadline), '--', process.execPath, ...args]"))
   const unsafe = await runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }).done
   expect(unsafe.stdout).toBe('{}')
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (!unsafe.stderr.includes('incompatible protocol or unverified cleanup')) {
     expect(unsafe.stderr).toMatch(DEADLINE_FAIL_OPEN)
     await ctx.annotate('branch: weak (the deadline fired before the separator control ran)')
@@ -378,7 +379,7 @@ it.runIf(process.platform === 'win32')('fails open on native atomic process-crea
   const result = await runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }).done
   expect(result.stdout).toBe('{}')
   expect(existsSync(entered)).toBe(false)
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (!result.stderr.includes('startup job association/process creation failed')) {
     expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
     await ctx.annotate('branch: weak (the deadline fired before process creation was attempted)')
@@ -408,7 +409,7 @@ process.stdout.write('{"hookSpecificOutput":{"additionalContext":"completed-owne
 ${behavior === 'exits' ? 'process.exit(0)' : behavior === 'crashes' ? 'process.exit(1)' : 'setInterval(() => {}, 1000)'}
 `)
   const result = await (installed ? runInstalledStartup({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }) : runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS })).done
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   const sessionId = installed ? 'installed-startup' : 'owned-tree'
   if (!await premiseBranch(ctx, fixture, result, [helperFile, descendantFile], sessionId)) return
   const helperPid = readOwnedPid(helperFile)
@@ -430,7 +431,7 @@ it('uses one input-plus-handler deadline, discarding complete stdout from a hung
   const entered = join(fixture.root, 'entry.started')
   writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, 'yes'); process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`)
   const result = await runTreeShim({ fixture, entry, delayMs: 1500, quietLimitMs: HANG_BACKSTOP_MS }).done
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (!await premiseBranch(ctx, fixture, result, [entered], 'owned-tree')) return
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toMatch(/timed out/)
@@ -442,7 +443,7 @@ it.runIf(process.platform === 'win32')('inherits the earliest installed native d
   const entered = join(fixture.root, 'helper.pid')
   writeFileSync(entry, `require('node:fs').writeFileSync(${JSON.stringify(entered)}, String(process.pid)); process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`)
   const result = await runInstalledStartup({ fixture, entry, delayMs: 1500, quietLimitMs: HANG_BACKSTOP_MS }).done
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (!await premiseBranch(ctx, fixture, result, [entered], 'installed-startup')) return
   expect(alive(readOwnedPid(entered))).toBe(false)
   expect(result.stdout).toBe('{}')
@@ -498,7 +499,7 @@ function flood() { while (process.${stream}.write(chunk)) {} }
 process.${stream}.on('drain', flood); flood(); setInterval(() => {}, 1000)
 `)
   const result = await runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS }).done
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   if (!await premiseBranch(ctx, fixture, result, [pidFile], 'owned-tree')) return
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toMatch(/exceeded 1 MiB/)
@@ -521,7 +522,7 @@ it('refuses unavailable ownership without a Windows canonical fallback', async (
     expect(result.stderr).toMatch(/native startup owner unavailable|overall deadline exceeded|insufficient time for process-tree cleanup/)
     expect(existsSync(pidFile), 'canonical work ran without ownership').toBe(false)
   } else {
-    assertTreeDead(fixture)
+    await assertTreeDead(fixture)
     if (!await premiseBranch(ctx, fixture, result, [pidFile], 'owned-tree')) return
     expect(result.stderr).toContain('process-tree cleanup failed')
     expect(result.stderr).toContain('remaining owned PIDs before fallback:')
@@ -543,7 +544,7 @@ it.for(['copilot_cli', 'vscode'])('preserves real indexed reminder, notes and dr
     ? { hook_event_name: 'SessionStart', session_id: 'notes-vscode', cwd: fixture.project }
     : { sessionId: 'notes-cli', workingDirectory: fixture.project }
   const result = await runTreeShim({ fixture, entry: BUNDLE, payload, quietLimitMs: HANG_BACKSTOP_MS }).done
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   const sessionId = harness === 'vscode' ? 'notes-vscode' : 'notes-cli'
   // Delivered at startup, or the start failed open with `{}` and the first tool call carries the same context once.
   const delivered = result.stdout === '{}' ? await assertOwedDeliveredOnce(fixture, harness as 'copilot_cli' | 'vscode', sessionId) : result.stdout
@@ -576,7 +577,7 @@ it('an expired startup deadline fails open with {} and no helper, and the first 
   expect(result.stdout).toBe('{}')
   expect(result.stderr).toContain('overall deadline exceeded')
   expect(existsSync(entered), 'no helper may start past the deadline').toBe(false)
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   expect(startBegan(fixture, 'owned-tree'), 'the payload was read, so the start began').toBe(true)
   expect(await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'owned-tree')).not.toBeNull()
 }, 0)
@@ -589,7 +590,7 @@ it('a deadline that is already past never starts the helper, prints {}, and owes
   const result = await runTreeShim({ fixture, entry, quietLimitMs: HANG_BACKSTOP_MS, deadline: Date.now() - 1000 }).done
   expect(result.stdout).toBe('{}')
   expect(existsSync(entered), 'no helper may start past the deadline').toBe(false)
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
   await ctx.annotate(`branch: payload read before the deferred deadline=${String(startBegan(fixture, 'owned-tree'))}`)
   await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'owned-tree')
 })
@@ -606,7 +607,7 @@ it.runIf(process.platform === 'win32')('a native owner stopped at its deadline i
   expect(result.stderr).toContain('native startup owner overall deadline exceeded')
   expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
   expect(existsSync(entered), 'the stand-in owner never starts the helper').toBe(false)
-  assertTreeDead(fixture)
+  await assertTreeDead(fixture)
 }, 0)
 
 // HAND-DERIVED from the ways startup_owner.rs::execute ends on its deadline; the first case is the exit a full, loaded run produced (exit 124 from the owner, no text).
@@ -632,4 +633,17 @@ it('the shim reads the exit code of both emergency exits in the native owner', (
   const source = readFileSync(join(process.cwd(), 'native', 'tg-hook', 'src', 'startup_owner.rs'), 'utf8')
   expect(source).toContain(`GetCurrentProcess(), ${String(SESSION_START_OWNER_DEADLINE_EXIT)})`)
   expect(source).toContain(`ExitProcess(${String(SESSION_START_OWNER_DEADLINE_EXIT)})`)
+})
+
+// STUBBED states, no process: a SIGKILL returns before its victim has run its exit, so the wait must outlast an alive reading and still report a pid that never goes.
+it('waits for a pid that is still exiting and reports one that never goes', async () => {
+  const idle: Watchdog = { progress: () => undefined, stop: () => undefined, failed: new Promise<never>(() => undefined) }
+  const readings = [true, true, false]
+  const exiting = vi.fn(() => readings.shift() ?? false)
+  expect(await survivorsAfterWait([4242], idle, { alive: exiting, pause: () => Promise.resolve() }), 'an alive reading that turns dead is not a survivor').toEqual([])
+  expect(exiting).toHaveBeenCalledTimes(4)
+  const stalled: Watchdog = { progress: () => undefined, stop: () => undefined, failed: Promise.reject(new Error('stalled')) }
+  stalled.failed.catch(() => undefined)
+  const never = (pid: number): boolean => pid === 4243
+  expect(await survivorsAfterWait([4242, 4243], stalled, { alive: never, pause: () => new Promise<void>(() => undefined) }), 'a pid that stays alive is reported once the watch stalls').toEqual([4243])
 })

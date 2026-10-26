@@ -41,6 +41,13 @@ export function safeShlexSplit(segment: string): string[] | null {
   }
 }
 
+/** Index of the first token past the leading `NAME=value` environment assignments (`FOO=1 BAR="x y" git ...`). shlexSplit has already removed the quotes, so only the name shape decides: a token is an assignment when its name is a shell identifier. */
+export function skipEnvAssignments(tokens: readonly string[]): number {
+  let i = 0
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]!)) i++
+  return i
+}
+
 /** Walks git's leading options from `start`, the index of the first token after `git`. Returns the index of the first token past them (the subcommand, when present) and the directory git runs in: each `-C <path>` moves it, relative to the one before it, and an empty path leaves it unchanged. */
 export function skipGitLeadingOptions(tokens: readonly string[], start: number, runDir: string): { index: number; dir: string } {
   let dir = runDir

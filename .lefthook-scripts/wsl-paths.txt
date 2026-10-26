@@ -51,6 +51,15 @@ src/embed_runtime.ts
 src/embed_runtime_web.ts
 src/embed_model.ts
 esbuild.config.mjs
+# Shared test harness: sandboxed HOME and USERPROFILE, env scrubbing, shell argv and process-kill helpers that every suite inherits.
+tests/helpers/*
+tests/setup/*
+vitest.config.ts
+# Owned process-tree ends and git child timeouts: Windows taskkill and detached children versus POSIX process groups.
+src/git_async.ts
+scripts/eval-run-owned.ts
+# Git executable resolution and the win32 EPERM kill path, read by the process and hook spawners.
+src/util.ts
 # Dependencies and the pre-push scripts themselves.
 package.json
 package-lock.json

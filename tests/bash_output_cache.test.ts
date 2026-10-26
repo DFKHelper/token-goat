@@ -8,7 +8,6 @@ import {
   getBashOutput,
   storeBashOutput,
   isGitMutableCommand,
-  isGitImmutableCommand,
   isDirListingCommand,
   isEnvProbeCommand,
   isDepListCommand,
@@ -104,16 +103,6 @@ describe('isScopedGitStatusOrDiffStatCommand (Bug D regression)', () => {
   })
 })
 
-describe('isGitImmutableCommand', () => {
-  it('detects git show with full SHA', () => {
-    expect(isGitImmutableCommand('git show 0123456789abcdef0123456789abcdef01234567')).toBe(true)
-  })
-
-  it('rejects partial SHAs', () => {
-    expect(isGitImmutableCommand('git show abc123')).toBe(false)
-  })
-})
-
 describe('git leading options before the subcommand (git -C <dir>, git -c k=v)', () => {
   it('reads the push behind -C, repeated -C, quoted -C, -c, and --git-dir forms', () => {
     expect(isGitPushCommand('git push')).toBe(true)
@@ -140,6 +129,39 @@ describe('git leading options before the subcommand (git -C <dir>, git -c k=v)',
     expect(isGitMutableCommand('git -C dir statuses')).toBe(false)
     expect(isGitMutableCommand('git -C dir')).toBe(false)
     expect(isGitPushCommand('echo git -C dir push')).toBe(false)
+  })
+
+  it('reads the push and status behind leading environment assignments, quoted values included', () => {
+    expect(isGitPushCommand('FOO=1 git push')).toBe(true)
+    expect(isGitPushCommand('FOO=1 BAR="x y" git -C d push')).toBe(true)
+    expect(isGitMutableCommand('FOO=1 git -C d status')).toBe(true)
+    expect(isGitMutableCommand('FOO=1 git status')).toBe(true)
+  })
+
+  it('does not read a git word that an environment assignment merely precedes as the git command', () => {
+    expect(isGitPushCommand('FOO=1 echo git push')).toBe(false)
+    expect(isGitMutableCommand('FOO=1 echo git status')).toBe(false)
+  })
+
+  it('fingerprints the repository a -C named behind an environment assignment', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-git-env-'))
+    try {
+      const cwdRepo = path.join(root, 'cwd-repo')
+      const otherRepo = path.join(root, 'other repo')
+      for (const dir of [cwdRepo, otherRepo]) {
+        fs.mkdirSync(dir)
+        execFileSync('git', ['init', '-q'], { cwd: dir })
+        fs.writeFileSync(path.join(dir, 'a.txt'), 'one\n')
+        execFileSync('git', ['add', 'a.txt'], { cwd: dir })
+        execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'init'], { cwd: dir })
+      }
+      const cmd = 'FOO=1 git -C "../other repo" status -- a.txt'
+      const before = commandHashSync(cmd, cwdRepo)
+      fs.writeFileSync(path.join(otherRepo, 'a.txt'), 'two\n')
+      expect(commandHashSync(cmd, cwdRepo)).not.toBe(before)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
   })
 
   it('scopes a status or --stat diff behind -C, and still rejects a full diff behind -C', () => {

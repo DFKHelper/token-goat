@@ -224,7 +224,7 @@ describe('Copilot shared-shim SessionStart deadline', { timeout: 0 }, () => {
       `process.stdout.write('{"complete":true}'); setInterval(() => {}, 1000)`,
     ].join('; '))
     const result = await runTreeShim({ fixture, entry, quietLimitMs: QUIET_LIMIT_MS, payload: copilotPayload(fixture.project) }).done
-    assertTreeDead(fixture)
+    await assertTreeDead(fixture)
     if (!await premiseBranch(ctx, fixture, result, [entered], COPILOT_SESSION)) return
     expect(result.stdout, 'the response of a helper that never exited is discarded').toBe('{}')
     expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
@@ -405,7 +405,7 @@ describe('Copilot shared-shim SessionStart deadline', { timeout: 0 }, () => {
     expect(result.stdout).toBe('{}')
     expect(result.stderr).toMatch(/SessionStart failed open.*timed out/i)
     expect(alive(readOwnedPid(pidFile)), 'the shim must not leave its helper running').toBe(false)
-    assertTreeDead(fixture)
+    await assertTreeDead(fixture)
     await assertOwedDeliveredOnce(fixture, 'copilot_cli', COPILOT_SESSION)
   })
 

@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { normalizePath } from './paths.js'
 import { shortFingerprint } from './fingerprint.js'
-import { parsePorcelainZ, safeShlexSplit, skipGitLeadingOptions } from './git_porcelain.js'
+import { parsePorcelainZ, safeShlexSplit, skipEnvAssignments, skipGitLeadingOptions } from './git_porcelain.js'
 import { registerReset } from './reset.js'
 import { runGit } from './util.js'
 import { storeBlob, loadBlob, isBlobStale } from './disk_cache.js'
@@ -46,7 +46,6 @@ let _byId = new Map<string, BashOutputEntry>()
 const COMMAND_PATTERNS: Record<string, RegExp> = {
   gitMutable: /^\s*git\s+(diff|status)\b/i,
   gitDiff: /^\s*git\s+diff\b/i,
-  gitImmutable: /^\s*git\s+show\s+[0-9a-f]{40}\b/i,
   gitDiffScoped: /\s--\s+\S/,
   dirListing: /^\s*(?:ls|eza|exa|dir|Get-ChildItem|gci)\b/i,
   depList: /^\s*(?:npm\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:ls|list)\b|pip\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list|freeze)\b|uv\s+pip\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list|freeze)\b|pnpm\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list|ls)\b|yarn\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list)\b|cargo\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*tree\b|bundle\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*(?:list|show)\b|composer\s+(?:--?[a-zA-Z0-9_-]+(?:\s+|=))*show\b)/i,
@@ -72,12 +71,14 @@ const DEP_LOCKFILES: Record<string, string[]> = {
   composer: ['composer.lock'],
 }
 
-/** Git's leading options (`-C <path>`, `-c k=v`, `--git-dir=...`) sit between `git` and the subcommand, so the git-keyed types match their subcommand word here instead of the literal `git <sub>` prefix. `runDir` is only used for the directory result; the classifiers pass `''`. Null when the command is not a literal `git` invocation or does not tokenize. */
-function parseGitInvocation(cmd: string, runDir: string): { subcommand: string | undefined; dir: string } | null {
+/** Git's leading options (`-C <path>`, `-c k=v`, `--git-dir=...`) sit between `git` and the subcommand, and environment assignments (`FOO=1 git ...`) sit before `git`, so the git-keyed types match their subcommand word here instead of the literal `git <sub>` prefix. `operand` is the token right after the subcommand. `runDir` is only used for the directory result; the classifiers pass `''`. Null when the command is not a literal `git` invocation or does not tokenize. */
+function parseGitInvocation(cmd: string, runDir: string): { subcommand: string | undefined; operand: string | undefined; dir: string } | null {
   const tokens = safeShlexSplit(cmd)
-  if (tokens === null || !/^git$/i.test(tokens[0] ?? '')) return null
-  const { index, dir } = skipGitLeadingOptions(tokens, 1, runDir)
-  return { subcommand: tokens[index], dir }
+  if (tokens === null) return null
+  const head = skipEnvAssignments(tokens)
+  if (!/^git$/i.test(tokens[head] ?? '')) return null
+  const { index, dir } = skipGitLeadingOptions(tokens, head + 1, runDir)
+  return { subcommand: tokens[index], operand: tokens[index + 1], dir }
 }
 
 /** The subcommand word each git-keyed type matches once git's leading options are skipped. A type absent here, or a command that does not tokenize, falls back to its COMMAND_PATTERNS regex. */
@@ -104,7 +105,6 @@ function gitRunDirOf(cmd: string, cwd: string): string {
 
 // Backward-compat aliases for predicate functions
 export const isGitMutableCommand = (cmd: string) => isCommandOfType(cmd, 'gitMutable')
-export const isGitImmutableCommand = (cmd: string) => isCommandOfType(cmd, 'gitImmutable')
 export const isDirListingCommand = (cmd: string) => isCommandOfType(cmd, 'dirListing')
 export const isEnvProbeCommand = (cmd: string) => isCommandOfType(cmd, 'envProbe')
 export const isDepListCommand = (cmd: string) => isCommandOfType(cmd, 'depList')
