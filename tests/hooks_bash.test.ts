@@ -4601,6 +4601,10 @@ describe('isHeadMovingGitCommand — leading environment assignments, as the pos
     ['FOO=1 BAR="x y" git merge topic', true],
     ['PATH=/x git rebase main', true],
     ['FOO=1 echo git pull', false],
+    ['git -C dir pull', true],
+    ['git -c core.autocrlf=false -C dir merge topic', true],
+    ['git -C "my dir" rebase main', true],
+    ['git -C dir log pull', false],
   ])('the diff base (ORIG_HEAD) reads %s -> %s', (cmd, expected) => {
     expect(ORIG_HEAD_ELIGIBLE_GIT_RE.test(resolveBashCall(cmd, null).cmd)).toBe(expected)
   })
@@ -4787,6 +4791,20 @@ describe('postBashHandler — non-HEAD-moving working-tree rewrite enqueue', () 
     try {
       await postBashHandler(makePostBashEvent('git restore --staged a.txt', '', dir))
       expect(getDirtyPaths()).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('enqueues the file restored by `git -C <dir> restore <path>` (the -C option sits before the subcommand)', async () => {
+    const dir = gitRepoWithCommit()
+    try {
+      writeFileSync(join(dir, 'a.txt'), 'locally edited\n')
+      gitIn(dir)(['restore', 'a.txt'])
+
+      await postBashHandler(makePostBashEvent('git -C . restore a.txt', '', dir))
+
+      dirtyOrReconciled(dir, [resolveIndexPath('a.txt', dir)])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

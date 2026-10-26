@@ -254,13 +254,13 @@ export function isHeadMovingGitCommand(cmd: string): boolean {
 }
 
 /** Subcommands where ORIG_HEAD survives multi-step operations (merge/rebase/pull). */
-export const ORIG_HEAD_ELIGIBLE_GIT_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+(?:pull|merge|rebase)\b`, 'i')
+export const ORIG_HEAD_ELIGIBLE_GIT_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+${GIT_DIR_OPTIONS}(?:pull|merge|rebase)\b`, 'i')
 
 /** Matches the HEAD reflog message a real merge/rebase/pull leaves behind. */
 export const ORIG_HEAD_REFLOG_MSG_RE = /^(merge\s|rebase\s\(|pull\s)/i
 
 /** Matches `git restore`, which rewrites paths without moving HEAD. */
-const GIT_RESTORE_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+restore\b`, 'i')
+const GIT_RESTORE_RE = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+${GIT_DIR_OPTIONS}restore\b`, 'i')
 
 /** `git restore --staged <file>` only rewrites the index, leaving working-tree content untouched. */
 const GIT_RESTORE_STAGED_ONLY_RE = /(?:^|\s)(?:--staged|-S)(?:\s|$)/
@@ -354,7 +354,7 @@ function extractRedirectTargets(segment: string): string[] {
 
 /** Pathspecs named on a `git restore` command line: everything after `--`, or every non-option token once `-s`/`--source`'s separate value is skipped. */
 function extractGitRestorePathspecs(cmd: string): string[] {
-  const m = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+restore\b(.*)$`, 'i').exec(cmd)
+  const m = new RegExp(String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git\s+${GIT_DIR_OPTIONS}restore\b(.*)$`, 'i').exec(cmd)
   if (m === null) return []
   const tokens = safeShlexSplit(m[1] ?? '')
   if (tokens === null) return []
