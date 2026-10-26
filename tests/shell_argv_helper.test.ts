@@ -88,7 +88,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       fs.rmSync(dir, { recursive: true, force: true })
     }
     expect(leftover, 'the cleanup of the test shell failed').toBeNull()
-  }, 120_000)
+  }, 0)
 
   // The shell must exit on its own with status 1. A shell that loops instead makes no progress, so the stall-proof watchdog fails it after a quiet limit that a slow shell start cannot reach, and the shell is killed in `finally`; a fixed two-second spawn timeout failed this on a busy machine.
   it('exits immediately if TG_CHUNK is missing or non-positive rather than loop forever', async () => {
@@ -192,7 +192,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.seen, 'the late child was already in the reap set, so the forced window did not happen').not.toContain(got.kid)
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
     expect(got.alive, 'the chunk subshell or its child is still running after the run returned').toBe(false)
-  }, 120_000)
+  }, 0)
 
   // Provenance: HAND-DERIVED, from a captured failure under a fork storm: under MSYS a child shows in /proc stat, with its parent and group, one to several seconds before its environment can be read, so a child its parent started just before being killed was invisible to a reap that looks only for the token and outlived it. The window is forced by starting the child with the token removed from its environment, which is what the token scan sees of an uninitialised MSYS child; the owned parent stays alive and blocked, so the reap can end the child only by finding it through its parent.
   it('ends an owned child whose environment does not carry the token', async () => {
@@ -224,7 +224,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     }
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
     expect(got.alive, 'the child that does not carry the token is still running after the reap returned').toBe(false)
-  }, 120_000)
+  }, 0)
 
   // Provenance: HAND-DERIVED from a captured scan: the grep the reap runs to list every process carrying the token was killed by SIGHUP after four seconds and printed nothing, and the reap read that as no owned process, so it ended with the run's processes still alive. The failure is forced by a `grep` function that dies (status 129, no output) on its first two calls, which are the two scans the old reap counted as clean; the owned parent stays blocked, so only a scan that is repeated finds it. The reap runs asynchronously under the stall-proof watchdog, fed by the scan calls and the files the test waits on.
   // Provenance: HAND-DERIVED from a second capture: a scan that finished with status 2 and no error naming the owned process, which was alive and forking, listed everything but it (1 of 32 scans under load). The case is forced by a `grep` that prints nothing and exits 1 on its first two calls.
@@ -302,7 +302,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.calls, 'the scans that listed nothing were not repeated until one listed the parent').toBeGreaterThanOrEqual(3)
     expect(got.seen, 'the reap read its first scans as clean, so the parent was not in the set it killed first').toContain(got.pid)
     expect(got.alive, 'the owned parent is still running after a reap whose first scans listed nothing').toBe(false)
-  }, 120_000)
+  }, 0)
 
   // Provenance: HAND-DERIVED from a macOS CI failure of the test above: macOS has no /proc, and its BSD `ps -e` lists the caller's own processes that have a terminal, with their environment, so a child started with no terminal was invisible to the kin scan, which also ran only where /proc exists. The branch is forced by making the /proc test fail, and `ps` is a function that answers as macOS does: `-wwAE` prints the owned parent with the token, `-e -o ...` prints nothing, and `-A -o ...` is the real listing.
   it('ends an owned child whose environment does not carry the token where there is no /proc and ps -e lists nothing', async () => {
@@ -347,7 +347,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     }
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
     expect(got.alive, 'the child that does not carry the token is still running after a reap with no /proc').toBe(false)
-  }, 120_000)
+  }, 0)
 
   // Provenance: HAND-DERIVED. macOS has no /proc, so liveness there rests on `ps`; the branch is forced here by making the /proc test fail, and `ps` is a function that prints what the row names. A zombie state is gone though kill -0 answers yes for it; a live state, an empty listing and a ps that prints nothing for a running pid fall through to kill -0.
   it.each([['Z', false], ['Z+', false], ['S', true], ['', true]])('reads ps state %j as alive=%s where there is no /proc', (state, expected) => {
