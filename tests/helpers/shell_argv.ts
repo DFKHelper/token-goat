@@ -1,7 +1,8 @@
 // Run suggested `token-goat …` commands through a real POSIX shell and a real PowerShell, each with a `token-goat` function standing in for the binary, and return the argv each shell handed it. An oracle independent of quotedArg: a value reaches the command as written only if both shells agree with the literal reading of its quotes.
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
+import { MessageChannel, Worker, receiveMessageOnPort } from 'node:worker_threads'
 
 import { resolveWindowsBash } from '../../src/shell.js'
 import { powershellForParsing } from './powershell_parse.js'
@@ -43,7 +44,7 @@ function splitRuns(stdout: string, decode: (payload: string) => string[], count:
 }
 
 /** Why a shell run stopped short, so a timeout or a kill reads as one instead of as an empty stderr. */
-function spawnFailure(res: SpawnSyncReturns<string>): string {
+function spawnFailure(res: { stderr?: string | null; error?: Error | null | undefined; signal?: string | null; status?: number | null }): string {
   const parts = [(res.stderr ?? '').trim(), res.error ? `spawn error: ${res.error.message}` : '', res.signal ? `killed by ${res.signal}` : '']
   return parts.filter((p) => p !== '').join('; ') || `exit status ${res.status}`
 }
@@ -100,6 +101,7 @@ export const REAP_SCRIPT = [
   'tg_leaders=',
   'tg_ps() { case $OSTYPE in msys* | cygwin*) ps -e ;; *) ps -A -o pid=,ppid=,pgid=,stat= ;; esac; }',
   'tg_owned() {',
+  '  echo scan',
   '  tg_found=',
   '  if [ -r /proc/self/environ ]; then',
   '    if [ "$tg_light" != 1 ]; then',
@@ -123,6 +125,9 @@ export const REAP_SCRIPT = [
   'for tg_round in 1 2 3 4 5; do',
   '  tg_light=; [ "$tg_round" -gt 1 ] && tg_light=1',
   '  tg_owned',
+  // A full scan can list nothing while a live process exists: reading a forking process's environment came back empty with no error in 1 of 32 scans under load, so an empty first scan is repeated until three in a row agree.
+  '  tg_again=0',
+  '  while [ -z "$tg_found" ] && [ -z "$tg_all" ] && [ "$tg_again" -lt 2 ]; do tg_again=$((tg_again + 1)); tg_owned; done',
   '  tg_new=',
   '  for tg_p in $tg_found; do case " $tg_all " in *" $tg_p "*) ;; *) tg_new="$tg_new $tg_p" ;; esac; done',
   '  [ -z "$tg_new" ] && break',
@@ -167,14 +172,79 @@ export const REAP_SCRIPT = [
   'exit 1',
 ].join('\n')
 
-/** Kill whatever a failed run left behind, returning why that failed or null when nothing of the run survives. */
+/** A synchronous run that waits on events instead of a clock: the shell runs in a worker that counts every chunk it prints, and this thread wakes each tick to look at that count and at `killWhen`. It gives up only after `quietTicks` ticks in which the count did not move, so a slow machine stretches a run without failing it and a run that stopped advancing still ends; a tick delayed by a stall counts as one. */
+const RUN_WORKER = `
+const { workerData } = require('node:worker_threads')
+const { spawn } = require('node:child_process')
+const { sh, args, env, flags, port } = workerData
+let stdout = ''
+let stderr = ''
+const child = spawn(sh, args, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+const bump = () => { Atomics.add(flags, 1, 1) }
+child.stdout.setEncoding('utf8')
+child.stderr.setEncoding('utf8')
+child.stdout.on('data', (chunk) => { stdout += chunk; bump() })
+child.stderr.on('data', (chunk) => { stderr += chunk; bump() })
+port.on('message', () => { child.kill() })
+let sent = false
+const finish = (message) => {
+  if (sent) return
+  sent = true
+  port.postMessage(message)
+  Atomics.store(flags, 0, 1)
+  Atomics.notify(flags, 0)
+}
+child.once('error', (err) => finish({ status: null, signal: null, stdout, stderr, error: String(err && err.message) }))
+child.once('exit', (status, signal) => finish({ status, signal, stdout, stderr }))
+`
+const RUN_TICK_MS = 50
+
+interface WorkerRun {
+  status: number | null
+  signal: string | null
+  stdout: string
+  stderr: string
+  error?: Error | undefined
+}
+
+function runInWorker(sh: string, args: string[], env: NodeJS.ProcessEnv, opts: { quietTicks?: number; killWhen?: () => boolean }): WorkerRun {
+  const flags = new Int32Array(new SharedArrayBuffer(8))
+  const { port1, port2 } = new MessageChannel()
+  const worker = new Worker(RUN_WORKER, { eval: true, workerData: { sh, args, env, flags, port: port2 }, transferList: [port2] })
+  let quiet = 0
+  let last = 0
+  let ended = ''
+  let killed = false
+  try {
+    while (Atomics.wait(flags, 0, 0, RUN_TICK_MS) === 'timed-out') {
+      const seen = Atomics.load(flags, 1)
+      quiet = seen === last ? quiet + 1 : 0
+      last = seen
+      if (ended === '' && opts.killWhen?.() === true) ended = 'ended once the event it waited for happened'
+      if (ended === '' && opts.quietTicks !== undefined && quiet >= opts.quietTicks) ended = `printed nothing for ${String(Math.round((opts.quietTicks * RUN_TICK_MS) / 1000))} s and was ended`
+      if (ended !== '' && !killed) {
+        killed = true
+        port1.postMessage('kill')
+      }
+    }
+    const got = receiveMessageOnPort(port1)?.message as (Omit<WorkerRun, 'error'> & { error?: string }) | undefined
+    if (got === undefined) return { status: null, signal: null, stdout: '', stderr: 'the worker ended without a result', error: new Error('no result') }
+    return { ...got, error: got.error === undefined ? undefined : new Error(got.error), stderr: ended === '' ? got.stderr : `${got.stderr}\n${ended}`.trim() }
+  } finally {
+    port1.close()
+    void worker.terminate()
+  }
+}
+
+/** Kill whatever a failed run left behind, returning why that failed or null when nothing of the run survives. A reap that prints nothing for sixty seconds has stopped advancing and is ended. */
 export function reapOwned(sh: string, token: string, script: string = REAP_SCRIPT): string | null {
-  const res = spawnSync(sh, ['-c', script], { encoding: 'utf8', env: { ...process.env, TG_REAP_TOKEN: token }, windowsHide: true, timeout: 60_000 })
+  const res = runInWorker(sh, ['-c', script], { ...process.env, TG_REAP_TOKEN: token }, { quietTicks: 60_000 / RUN_TICK_MS })
   return res.error || res.signal || res.status !== 0 ? spawnFailure(res) : null
 }
 
+
 /** Each command run by a POSIX shell, its `token-goat` calls decoded. A command that ends its chunk's subshell keeps what it printed as its run, and the chunk mates after it run again in a later pass. Git Bash drops a carriage return from the text it evaluates, quoted or not, so on Windows no quoting carries one: callers compare without it there. */
-export function shRunAll(sh: string, commands: readonly string[], opts: { timeoutMs?: number } = {}): ShellRun[] {
+export function shRunAll(sh: string, commands: readonly string[], opts: { timeoutMs?: number; killWhen?: () => boolean } = {}): ShellRun[] {
   const runs: (ShellRun | undefined)[] = new Array<ShellRun | undefined>(commands.length)
   let pending = commands.map((_, i) => i)
   while (pending.length > 0) {
@@ -183,7 +253,7 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
     pending.forEach((ci, j) => {
       env[`TG_CMD_${j}`] = commands[ci]
     })
-    const res = spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: opts.timeoutMs ?? 120_000 })
+    const res = opts.killWhen === undefined ? spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: opts.timeoutMs ?? 120_000 }) : runInWorker(sh, ['-c', SH_SCRIPT], env, { killWhen: opts.killWhen })
     // A timeout kills the outer shell only, orphaning the chunk subshell and anything a command started under it.
     let reapFailure = res.error || res.signal || (res.status !== null && res.status !== 0) ? reapOwned(sh, token) : null
     const fields = (res.stdout ?? '').split('\0')
