@@ -168,15 +168,20 @@ export const DEADLINE_FAIL_OPEN = /overall deadline exceeded|insufficient time f
 // The drift notices reconcileNote prints when git's listing missed its deadline (src/hooks_session_start.ts::reconcileNote): the worker finishes that check, so either notice is a delivered start. A budget-exhausted sweep may put its own clause before the git clause.
 export const DEFERRED_DRIFT_NOTICE = /token-goat: index drift check (?:is running in the background worker|(?:\(sweep stopped[^\n]*?\) )?\(git did not answer in time listing the project files, so new files could not be found; the background worker is finishing the check\))/
 
+// reconcileNote's unqueued return (src/hooks_session_start.ts::reconcileNote): drift found, and the queue could not take the paths, so no reindex was queued.
+export const UNQUEUED_DRIFT_NOTICE = /token-goat: found [^\n]*, but (?:\d+ of them|it|they) could not be queued for reindexing, so symbol lookups may stay stale until token-goat index runs here\./
+
 // reconcileNote's total-zero notice for a sweep that ran out of budget with no git timeout (src/hooks_session_start.ts::reconcileNote): nothing found, nothing queued, no worker asked.
 export const PARTIAL_SWEEP_NOTICE = /token-goat: index drift check \(sweep stopped at its time budget with (?:(?!git did not answer)[^\n])*\) found nothing in the part it had time to scan/
 
 // A start's drift line is exactly one of reconcileNote's outputs: the prompt reindex, the deferred check the worker finishes, or the budget-partial sweep that queued nothing. Every other text fails the named assertion, including "could not be queued" (the fixture is outside the OS temp dir) and a git timeout that did not reach the worker.
-export function expectDriftNotice(stdout: string): 'reindexing' | 'deferred' | 'partial' | 'silent' {
+export function expectDriftNotice(stdout: string): 'reindexing' | 'deferred' | 'unqueued' | 'partial' | 'silent' {
   if (stdout.includes('token-goat: reindexing ')) return 'reindexing'
   if (DEFERRED_DRIFT_NOTICE.test(stdout)) return 'deferred'
   // reconcileNote returns null, and the start prints no drift line, when its complete sweep found the index already matching disk: a running worker that got to the edit before the sweep does that.
   if (!/token-goat: (?:index drift check|found )/.test(stdout)) return 'silent'
+  // reconcileNote's unqueued branch: drift was found, but the queue refused the paths (a fixture under the OS temp dir), so the start names the drift and says it was not reindexed.
+  if (UNQUEUED_DRIFT_NOTICE.test(stdout)) return 'unqueued'
   expect(stdout, 'the start must name a reindex, the deferred background drift check, or the partial sweep that queued nothing').toMatch(PARTIAL_SWEEP_NOTICE)
   return 'partial'
 }

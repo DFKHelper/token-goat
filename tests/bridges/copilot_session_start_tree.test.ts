@@ -552,7 +552,13 @@ it.for(['copilot_cli', 'vscode'])('preserves real indexed reminder, notes and dr
   expect(context).toContain('read "file::symbol"')
   expect(context).toContain('startup-contract')
   expect(context).toContain('keep-owned-tree-bounded')
-  expect(['reindexing', 'deferred'], 'the start must carry drift context (a reindex or the deferred background check)').toContain(expectDriftNotice(context))
+  expect(['reindexing', 'deferred', 'unqueued'], 'the start must carry drift context (a reindex, the deferred background check, or the drift the queue refused)').toContain(expectDriftNotice(context))
+})
+
+// CAPTURE: pre-push wsl-test.log 2026-10-26, Linux WSL Ubuntu: the start's drift line, verbatim.
+it('classifies the unqueued drift line a Linux start prints as unqueued', () => {
+  const captured = 'token-goat: found 1 file that changed outside this session, but it could not be queued for reindexing, so symbol lookups may stay stale until token-goat index runs here.'
+  expect(expectDriftNotice(captured), 'the captured unqueued drift line must classify as unqueued').toBe('unqueued')
 })
 
 it('an expired startup deadline fails open with {} and no helper, and the first tool call delivers the owed reminder once', async () => {

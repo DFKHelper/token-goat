@@ -42,6 +42,13 @@ async function until(fixture: ReturnType<typeof treeFixture>, label: string, che
 const DEFERRED_NEW_FILE_NOTICE = /token-goat: index drift check (?:\(sweep stopped[^\n]*?\) )?\(git did not answer in time listing the project files, so new files could not be found; the background worker is finishing the check\) found nothing/
 
 
+// A worker start must name a queued reindex or the deferred check: an unqueued drift line means the edit never reached the worker, so it fails here as before.
+function expectQueuedDriftNotice(stdout: string): ReturnType<typeof expectDriftNotice> {
+  const kind = expectDriftNotice(stdout)
+  expect(kind, 'the start must name a reindex, the deferred background drift check, or the partial sweep that queued nothing').not.toBe('unqueued')
+  return kind
+}
+
 // A silent start claims the index already matches disk, so the edit it was started for must already resolve (the sweep ran before this check, and the index only grows); a partial one queued nothing, so the edit still has to reach the worker.
 function followUp(fixture: ReturnType<typeof treeFixture>, kind: ReturnType<typeof expectDriftNotice>, resolves: boolean): void {
   if (kind === 'silent') expect(resolves, 'a start that stayed silent says the index matches disk, yet the edit does not resolve').toBe(true)
@@ -107,7 +114,7 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
         await assertOwedDeliveredOnce(fixture, 'copilot_cli', surface === 'installed' ? 'installed-startup' : 'owned-tree')
       } else {
         expect(result.stderr).toBe('')
-        const kind = expectDriftNotice(result.stdout)
+        const kind = expectQueuedDriftNotice(result.stdout)
         await ctx.annotate(`first start drift notice: ${kind}`)
         await ctx.annotate('branch: strong (the start delivered)')
         expect(alive(run.child.pid ?? 0), 'startup root still alive before worker observation').toBe(false)
@@ -155,7 +162,7 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
           const owed = await runOwedToolCall(fixture, 'copilot_cli', surface === 'installed' ? 'installed-startup' : 'owned-tree')
           // A slow listing cannot reindex the new file in the start: the owed call, like the start, defers it to the worker.
           if (listing === 'slow') expect(owed, 'the owed call must hand the slow-listing check to the worker').toMatch(DEFERRED_DRIFT_NOTICE)
-          else followUp(fixture, expectDriftNotice(owed), hasSymbol('startupWorkerSecondSymbol'))
+          else followUp(fixture, expectQueuedDriftNotice(owed),hasSymbol('startupWorkerSecondSymbol'))
         } else {
           // Cut off before the payload was read: nothing is owed and no hook ran, so the product's own sweep is the only way the edit reaches the worker.
           await ctx.annotate('second start: cut off before reading its payload (worker path via the reconcile CLI)')
@@ -167,7 +174,7 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
           expect(secondResult.stdout, 'the slow-listing second start must print the deferred new-file notice').toMatch(DEFERRED_NEW_FILE_NOTICE)
           await ctx.annotate('second start drift notice: deferred (new files left to the worker)')
         } else {
-          const kind = expectDriftNotice(secondResult.stdout)
+          const kind = expectQueuedDriftNotice(secondResult.stdout)
           await ctx.annotate(`second start drift notice: ${kind}`)
           followUp(fixture, kind, hasSymbol('startupWorkerSecondSymbol'))
         }
