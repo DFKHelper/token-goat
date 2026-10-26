@@ -67,6 +67,9 @@ function followUp(fixture: ReturnType<typeof treeFixture>, kind: ReturnType<type
 function sweepAndWake(fixture: ReturnType<typeof treeFixture>): void {
   const swept = spawnSync(process.execPath, [BUNDLE, 'reconcile', '--budget-ms', '60000'], { cwd: fixture.project, env: fixture.env, encoding: 'utf8', windowsHide: true, timeout: 60_000 })
   expect(swept.status, `reconcile CLI failed: ${swept.stderr}`).toBe(0)
+  // A start killed after src/worker_lifecycle.ts::ensureWorkerAlive stamped worker-healthcheck.marker leaves a five-minute throttle with no worker behind it, so every later hook and the reconcile above only no-op: the explicit start is the one path that is not throttled, and the one a user has.
+  const started = spawnSync(process.execPath, [BUNDLE, 'worker', 'start'], { cwd: fixture.project, env: fixture.env, encoding: 'utf8', windowsHide: true, timeout: 60_000 })
+  expect(started.status, `worker start failed: ${started.stdout}${started.stderr}`).toBe(0)
 }
 
 it.runIf(process.platform === 'win32').for([

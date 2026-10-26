@@ -139,67 +139,76 @@ fn execute(command: &[OsString], epoch: u64, deadline: Instant) -> Result<(serde
     };
     // The payload arrived, so this start has an identity: stamp it begun before any relay work, so a start the budget cuts off anywhere after this point is delivered by the first tool call (a start that settles replaces the stamp with its own marker).
     crate::session_begun::stamp(&payload);
-    if command.len() < 5 || Instant::now() >= work_deadline {
-        return Err("startup command unavailable or insufficient time for process-tree cleanup".into());
-    }
-    let mut args = vec![std::env::current_exe().map_err(|e| e.to_string())?.into_os_string(), "--session-start-owner-v1".into(), epoch.to_string().into()];
-    args.extend_from_slice(command);
+    let stamped = payload.clone();
     // The relay itself is atomically owned too: killing the installed entry
     // closes this strict job, including during nested owner/shim creation.
     let job = Job::new().map_err(|e| format!("startup relay job creation failed: {e}"))?;
-    let mut child = Child::spawn(&job, &args).map_err(|e| format!("startup relay creation failed: {e}"))?;
-    // The canonical response is capped at 1 MiB; the owner adds bounded
-    // capability/accounting metadata, as the Node parent also allows.
-    let output = reader(child.output.try_clone().map_err(|e| e.to_string())?, MAX_BYTES + 4096);
-    let errors = reader(child.errors.try_clone().map_err(|e| e.to_string())?, MAX_BYTES);
-    let mut pipe = child.input.take().ok_or("missing startup relay input")?;
-    let (tx, input) = mpsc::channel();
-    std::thread::spawn(move || {
-        let result = pipe.write_all(&payload).map_err(|e| format!("startup relay input failed: {e}"));
-        drop(pipe);
-        let _ = tx.send(result);
-    });
-    let mut stdout = None;
-    let mut stderr = None;
-    let mut input_result = None;
-    let mut code = None;
-    while Instant::now() < deadline {
-        if stdout.is_none() {
-            stdout = output.try_recv().ok();
+    let outcome = (|| -> Result<(serde_json::Value, Vec<u8>, bool), String> {
+        if command.len() < 5 || Instant::now() >= work_deadline {
+            return Err("startup command unavailable or insufficient time for process-tree cleanup".into());
         }
-        if stderr.is_none() {
-            stderr = errors.try_recv().ok();
-        }
-        if input_result.is_none() {
-            input_result = input.try_recv().ok();
-        }
-        if code.is_none() {
-            code = child.exit_code().map_err(|e| e.to_string())?;
-            if code.is_some() {
-                job.terminate().map_err(|e| format!("startup relay cleanup failed: {e}"))?;
+        let mut args = vec![std::env::current_exe().map_err(|e| e.to_string())?.into_os_string(), "--session-start-owner-v1".into(), epoch.to_string().into()];
+        args.extend_from_slice(command);
+        let mut child = Child::spawn(&job, &args).map_err(|e| format!("startup relay creation failed: {e}"))?;
+        // The canonical response is capped at 1 MiB; the owner adds bounded
+        // capability/accounting metadata, as the Node parent also allows.
+        let output = reader(child.output.try_clone().map_err(|e| e.to_string())?, MAX_BYTES + 4096);
+        let errors = reader(child.errors.try_clone().map_err(|e| e.to_string())?, MAX_BYTES);
+        let mut pipe = child.input.take().ok_or("missing startup relay input")?;
+        let (tx, input) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = pipe.write_all(&payload).map_err(|e| format!("startup relay input failed: {e}"));
+            drop(pipe);
+            let _ = tx.send(result);
+        });
+        let mut stdout = None;
+        let mut stderr = None;
+        let mut input_result = None;
+        let mut code = None;
+        while Instant::now() < deadline {
+            if stdout.is_none() {
+                stdout = output.try_recv().ok();
             }
-        }
-        if code.is_some() && stdout.is_some() && stderr.is_some() && input_result.is_some() && job.active().map_err(|e| e.to_string())? == 0 {
-            let diagnostics = stderr.ok_or("missing relay stderr")??;
-            input_result.ok_or("missing relay input completion")??;
-            if code != Some(0) {
-                return Err(format!("startup relay failed: {}", String::from_utf8_lossy(&diagnostics)));
+            if stderr.is_none() {
+                stderr = errors.try_recv().ok();
             }
-            let mut ack: serde_json::Value = serde_json::from_slice(&stdout.ok_or("missing relay stdout")??).map_err(|e| format!("invalid startup relay acknowledgement: {e}"))?;
-            if ack["protocol"] != "tg-session-start-owner-v1"
-                || ack["capability"] != "atomic-job-list"
-                || ack["activeProcesses"] != 0
-                || ack["rootExited"] != true
-                || ack["pipesDrained"] != true
-                || !ack["candidate"].is_object()
-            {
-                return Err("startup relay incompatible protocol or unverified cleanup".into());
+            if input_result.is_none() {
+                input_result = input.try_recv().ok();
             }
-            return Ok((ack["candidate"].take(), diagnostics, ack["workerWake"] == true));
+            if code.is_none() {
+                code = child.exit_code().map_err(|e| e.to_string())?;
+                if code.is_some() {
+                    job.terminate().map_err(|e| format!("startup relay cleanup failed: {e}"))?;
+                }
+            }
+            if code.is_some() && stdout.is_some() && stderr.is_some() && input_result.is_some() && job.active().map_err(|e| e.to_string())? == 0 {
+                let diagnostics = stderr.ok_or("missing relay stderr")??;
+                input_result.ok_or("missing relay input completion")??;
+                if code != Some(0) {
+                    return Err(format!("startup relay failed: {}", String::from_utf8_lossy(&diagnostics)));
+                }
+                let mut ack: serde_json::Value = serde_json::from_slice(&stdout.ok_or("missing relay stdout")??).map_err(|e| format!("invalid startup relay acknowledgement: {e}"))?;
+                if ack["protocol"] != "tg-session-start-owner-v1"
+                    || ack["capability"] != "atomic-job-list"
+                    || ack["activeProcesses"] != 0
+                    || ack["rootExited"] != true
+                    || ack["pipesDrained"] != true
+                    || !ack["candidate"].is_object()
+                {
+                    return Err("startup relay incompatible protocol or unverified cleanup".into());
+                }
+                return Ok((ack["candidate"].take(), diagnostics, ack["workerWake"] == true));
+            }
+            std::thread::sleep(Duration::from_millis(2));
         }
-        std::thread::sleep(Duration::from_millis(2));
+        Err("startup relay overall deadline exceeded".into())
+    })();
+    // A start that fails open prints `{}`, so it is owed whatever settle marker the helper wrote before the relay failed (a helper that finished inside its budget but whose answer never arrived): end the helper tree, then re-stamp the start begun, as the Node shim does (src/bridges/copilot_session_start.ts::stampSessionStartOwedFiles).
+    if outcome.is_err() {
+        let _ = job.terminate();
+        crate::session_begun::stamp(&stamped);
     }
-    Err("startup relay overall deadline exceeded".into())
+    outcome
 }
 
 #[cfg(test)]
