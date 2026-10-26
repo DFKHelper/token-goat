@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as bashRunner from '../src/bash_runner.js'
 import { resolveWindowsBash } from '../src/shell.js'
-import { normalizeChildEnd, signalExitCode } from '../src/util.js'
+import { normalizeChildEnd, signalExitCode } from '../src/bash_runner.js'
 import { OWNER_VAR, reapOwned } from './helpers/shell_argv.js'
 
 const KILL_SELF_TERM = 'echo before; kill -TERM $$; echo after'
