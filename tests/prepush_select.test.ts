@@ -292,7 +292,8 @@ describe('prepush selection: every doubt that was a full leg is now a bounded se
       const pushFile = path.join(root, 'push.txt')
       writeFileSync(pushFile, refLine(second, first))
       const deferFile = path.join(root, 'defer.txt')
-      const out = spawnSync(process.execPath, [SELECT_SCRIPT, root, 'win', second, pushFile, '', deferFile], { encoding: 'utf8', timeout: 60000, env: { ...hermeticEnv(), PREPUSH_BUDGET_S: '50' } })
+      // The worker count is pinned: unset, the estimate divides by 4 on Windows and 6 elsewhere, and at 6 all three files fit the 50 s budget and nothing is deferred.
+      const out = spawnSync(process.execPath, [SELECT_SCRIPT, root, 'win', second, pushFile, '', deferFile], { encoding: 'utf8', timeout: 60000, env: { ...hermeticEnv(), PREPUSH_BUDGET_S: '50', TOKEN_GOAT_TEST_MAX_WORKERS: '4' } })
       const lines = out.stdout.split('\n')
       expect(lines[0]).toContain('FOCUS\twin leg focused')
       expect(lines[0]).toContain('doubt (')
