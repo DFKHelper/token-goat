@@ -254,10 +254,22 @@ describe('prepush selection: every doubt that was a full leg is now a bounded se
     expect(r.deferred).toContain('tests/o1.test.ts')
   })
 
-  it('a never-cut set over the budget is kept and the note says so', () => {
+  it('a floor of guards and matrix over the budget is kept and the note says so', () => {
     const r = select([m('package.json')], { env: { PREPUSH_BUDGET_S: '50' }, durations: () => Object.fromEntries(ALL_TESTS.map((f) => [f, 60_000])) })
-    expect(r.full === false && r.note).toContain('the never-cut files alone are estimated at')
+    expect(r.full === false && r.note).toContain('the guards and the matrix alone are estimated at')
     expect(r.full === false && r.files).toEqual(expect.arrayContaining([...GUARDS, ...MATRIX]))
+  })
+
+  it('changed tests and failed files that alone exceed the budget are cut to it, cheapest first, with the guards and matrix intact', () => {
+    const tests = ['tests/c1.test.ts', 'tests/c2.test.ts', 'tests/c3.test.ts', 'tests/c4.test.ts']
+    const table: Record<string, number> = { ...Object.fromEntries(ALL_TESTS.map((f) => [f, 1_000])), 'tests/c1.test.ts': 40_000, 'tests/c2.test.ts': 30_000, 'tests/c3.test.ts': 20_000, 'tests/c4.test.ts': 10_000 }
+    const r = select([m('src/a.ts'), ...tests.map((t) => m(t))], { env: { PREPUSH_BUDGET_S: '60' }, durations: () => table, exists: () => true, allTests: () => [...ALL_TESTS, ...tests].sort() })
+    if (r.full) throw new Error(r.why)
+    expect(r.files).toEqual(expect.arrayContaining([...GUARDS, ...MATRIX]))
+    expect(r.files.filter((f) => tests.includes(f))).toEqual(['tests/c3.test.ts', 'tests/c4.test.ts'])
+    expect(r.deferred.slice(0, 2)).toEqual(['tests/c2.test.ts', 'tests/c1.test.ts'])
+    expect(r.note).toContain('the never-cut set (failed before, changed tests) exceeded the budget, 2 of its 4 files deferred')
+    expect(r.deferredReport).toContain('tests/c1.test.ts')
   })
 
   it('the real script names the doubt and lists the cut files', () => {
@@ -293,8 +305,39 @@ describe('prepush selection: every doubt that was a full leg is now a bounded se
   })
 })
 
+describe('prepush selection: the pushed remote name, from the real script', () => {
+  it('a tag of a commit origin has selects the guards alone when origin is named, even with a second remote that has no tracking refs, and still selects tests when the name is absent', () => {
+    // Fixture provenance: HAND-DERIVED. A temp repo with two remotes, a tracking ref for origin only, and a tag of the commit that ref holds.
+    const root = mkdtempSync(path.join(tmpdir(), 'prepush-named-'))
+    try {
+      const git = (...a: string[]): string => execFileSync('git', a, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      git('init', '-q')
+      mkdirSync(path.join(root, 'tests', 'guards'), { recursive: true })
+      for (const f of ['tests/guards/g.test.ts', 'tests/a.test.ts']) writeFileSync(path.join(root, f), 'export {}\n')
+      git('add', '.')
+      git('-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '-m', 'one')
+      const head = git('rev-parse', 'HEAD').trim()
+      git('remote', 'add', 'origin', root)
+      git('remote', 'add', 'fork', root)
+      git('update-ref', 'refs/remotes/origin/main', head)
+      const pushFile = path.join(root, 'push.txt')
+      writeFileSync(pushFile, refLine(head, ZERO, 'refs/tags/v1', 'refs/tags/v1'))
+      const run = (...extra: string[]): string[] => spawnSync(process.execPath, [SELECT_SCRIPT, root, 'win', head, pushFile, '', '', ...extra], { encoding: 'utf8', timeout: 60000, env: hermeticEnv() }).stdout.split('\n')
+      const named = run('origin')
+      expect(named[0]).toContain('no pushed ref brings a commit the remote lacks')
+      expect(named).toContain('tests/guards/g.test.ts')
+      expect(named).not.toContain('tests/a.test.ts')
+      const unnamed = run()
+      expect(unnamed[0]).not.toContain('no pushed ref brings a commit the remote lacks')
+      expect(unnamed).toContain('tests/a.test.ts')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('prepush selection: a ref that brings no new commit', () => {
-  const TAG = refLine(OTHER, ZERO, 'refs/tags/v1', 'refs/tags/v1')
+  const TAG =refLine(OTHER, ZERO, 'refs/tags/v1', 'refs/tags/v1')
 
   it('a tag of a commit the remote has runs the guards alone, without the diff, the graph or the readers', () => {
     const r = select(null, {
@@ -349,6 +392,13 @@ describe('prepush onEveryRemote', () => {
   })
   it('is false when one of two remotes lacks it', () => {
     expect(onEveryRemote(fakeGit(['origin', 'fork'], { 'refs/remotes/origin/': 'refs/remotes/origin/main\n' }), OTHER)).toBe(false)
+  })
+  it('with the pushed remote named, only that remote counts: an extra remote with no tracking refs does not matter', () => {
+    const git = fakeGit(['origin', 'fork'], { 'refs/remotes/origin/': 'refs/remotes/origin/main\n' })
+    expect(onEveryRemote(git, OTHER, 'origin')).toBe(true)
+    expect(onEveryRemote(git, OTHER, 'fork')).toBe(false)
+    expect(onEveryRemote(git, OTHER)).toBe(false)
+    expect(onEveryRemote(git, OTHER, 'git@example.invalid:r.git')).toBe(false)
   })
   it('is false with no remote, no tracking ref, or a git call that throws', () => {
     expect(onEveryRemote(fakeGit([], {}), OTHER)).toBe(false)

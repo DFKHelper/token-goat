@@ -69,15 +69,18 @@ describe('prepush budget: priority order and the cut', () => {
     expect(r.deferred).toEqual([NEAR1, NEAR2, FAR1, FAR2])
   })
 
-  it('never cuts failed files, changed tests, guards or the matrix, whatever the budget', () => {
+  it('never cuts the guards or the matrix, and defers failed files then changed tests ahead of the importers once the budget is gone', () => {
     const r = select({ env: { PREPUSH_BUDGET_S: '1' }, failed: () => ['tests/old.test.ts'], changed: () => [{ status: 'M', path: 'src/a.ts' }, { status: 'M', path: 'tests/new.test.ts' }] }, TEN)
-    expect(r.files).toEqual(['tests/old.test.ts', 'tests/new.test.ts', G1, G2, M1].sort())
-    expect(r.deferred).toEqual([NEAR1, NEAR2, FAR1, FAR2])
+    expect(r.files).toEqual([G1, G2, M1].sort())
+    expect(r.deferred).toEqual(['tests/old.test.ts', 'tests/new.test.ts', NEAR1, NEAR2, FAR1, FAR2])
   })
 
-  it('a test-only push has no matrix to keep', () => {
+  it('a test-only push has no matrix to keep, and its changed test fills the budget before anything else', () => {
     const r = select({ env: { PREPUSH_BUDGET_S: '1' }, changed: () => [{ status: 'M', path: 'tests/new.test.ts' }] }, TEN)
-    expect(r.files).toEqual(['tests/new.test.ts', G1, G2].sort())
+    expect(r.files).toEqual([G1, G2].sort())
+    expect(r.deferred[0]).toBe('tests/new.test.ts')
+    const roomy = select({ changed: () => [{ status: 'M', path: 'tests/new.test.ts' }] }, TEN)
+    expect(roomy.files).toEqual(['tests/new.test.ts', G1, G2].sort())
   })
 
   it('a file with no timing is costed at the mean of the table, not at zero and not at the default', () => {

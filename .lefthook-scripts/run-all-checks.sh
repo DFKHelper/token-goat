@@ -14,6 +14,8 @@ source "$SCRIPT_DIR/prepush-focus.sh"
 
 # The ref lines git gives a pre-push hook (lefthook passes them on with use_stdin). The read is bounded so a stdin that never closes cannot hang the push; no lines means the pushed range is unknown and the WSL leg runs.
 PUSH_STDIN=""
+# The remote name git gives the hook as its first argument (lefthook {1}); empty when the script is run by hand.
+PUSH_REMOTE="${1:-}"
 if [[ ! -t 0 ]]; then
   while IFS= read -r -t 5 push_line; do PUSH_STDIN+="$push_line"$'\n'; done || true
 fi

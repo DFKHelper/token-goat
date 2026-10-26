@@ -36,4 +36,4 @@ export function rangeOf(ref: PushRef, base?: string | null): { from: string; to:
 export function classifyPath(status: string, p: string): { kind: 'test' | 'module' | 'doc' | 'skip' } | { doubt: string }
 export function parseNameStatus(out: string): ChangedRow[]
 export function decideSelection(io: SelectionIo): Selection
-export function onEveryRemote(git: (...args: string[]) => string, sha: string): boolean
+export function onEveryRemote(git: (...args: string[]) => string, sha: string, pushed?: string): boolean

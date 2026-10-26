@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Chooses which test files a pre-push suite leg runs, within a time budget. The pushed range (remote sha..local sha of each ref line git gives a pre-push hook) is turned into test files in priority order: the files that failed last time, the changed test files, every guard test, the built-bundle matrix when src changed (none of these is ever cut), then the tests that import a changed module, nearest first (scripts/prepush-graph.mjs), then the tests the import graph cannot see: those naming a changed path as text, and when src changed those reading src as text and those spawning the built bundle (scripts/prepush-readers.mjs). Those tests are added while the estimated wall time stays within the leg's budget (scripts/prepush-budget.mjs, costs from the duration table next to the failure record); every one not added is deferred to CI, which runs the full suite, and is listed. A documentation-only push runs the guards and the tests naming the document. A new ref is diffed from its merge base with origin/main. A ref whose commit is already in a remote-tracking ref of every remote (a tag of a pushed commit) adds no test files. Any doubt (no ref lines, a deleted ref, a ref that is not the checked-out commit, a new ref with no merge base, a range git cannot list, more than 200 paths, a pre-push hook file, test setup, a changed path outside src, tests and documentation, an unreadable import graph or failure record) keeps the never-cut classes plus the bundle matrix and spends the rest of the budget on the remaining tests, importers first, then text readers, then the cheapest; the cut files are deferred to CI and listed. Only PREPUSH_FULL=1 or a test tree that cannot be listed means the full leg. Usage: node scripts/prepush-select.mjs ROOT LEG HEAD_SHA PUSH_FILE STORE [DEFER_FILE]. Prints `FULL<TAB>reason` or `FOCUS<TAB>note` and then one repo-relative test path per line; DEFER_FILE receives the deferred-to-CI report. Built-in modules only.
+// Chooses which test files a pre-push suite leg runs, within a time budget. The pushed range (remote sha..local sha of each ref line git gives a pre-push hook) is turned into test files in priority order: every guard test and the built-bundle matrix when src changed (never cut), then the files that failed last time and the changed test files (each cheapest first, cut to the budget when they alone exceed it), then the tests that import a changed module, nearest first (scripts/prepush-graph.mjs), then the tests the import graph cannot see: those naming a changed path as text, and when src changed those reading src as text and those spawning the built bundle (scripts/prepush-readers.mjs). Those tests are added while the estimated wall time stays within the leg's budget (scripts/prepush-budget.mjs, costs from the duration table next to the failure record); every one not added is deferred to CI, which runs the full suite, and is listed. A documentation-only push runs the guards and the tests naming the document. A new ref is diffed from its merge base with origin/main. A ref whose commit is already in a remote-tracking ref of every remote (a tag of a pushed commit) adds no test files. Any doubt (no ref lines, a deleted ref, a ref that is not the checked-out commit, a new ref with no merge base, a range git cannot list, more than 200 paths, a pre-push hook file, test setup, a changed path outside src, tests and documentation, an unreadable import graph or failure record) keeps the never-cut classes plus the bundle matrix and spends the rest of the budget on the remaining tests, importers first, then text readers, then the cheapest; the cut files are deferred to CI and listed. Only PREPUSH_FULL=1 or a test tree that cannot be listed means the full leg. Usage: node scripts/prepush-select.mjs ROOT LEG HEAD_SHA PUSH_FILE STORE [DEFER_FILE]. Prints `FULL<TAB>reason` or `FOCUS<TAB>note` and then one repo-relative test path per line; DEFER_FILE receives the deferred-to-CI report. Built-in modules only.
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
@@ -167,14 +167,18 @@ export function decideSelection(io) {
     else readerTiers = found
   }
   const failed = io.failed().filter((f) => io.exists(f))
-  // Never cut: the last red files, the changed tests, every guard, and the matrix when src changed or a doubt could reach it. Then the importers, nearest first.
-  const fixed = [...new Set([...failed, ...changedTests, ...guards, ...matrix])]
-  const taken = new Set(fixed)
+  // The floor that is never cut: every guard, and the matrix when src changed or a doubt could reach it. The last red files and the changed tests lead the fill order but are cut to the budget when they alone would exceed it.
+  const fixed = [...new Set([...guards, ...matrix])]
   const durations = io.durations()
   const cost = costFn(durations)
   const timed = Object.keys(durations).length
   const costSource = timed === 0 ? `no duration table, every file costed at the default ${Math.round(coldCostMs(durations) / 1000)} s` : `${timed} timed files, untimed files costed at their mean ${Math.round(coldCostMs(durations) / 1000)} s`
   const byCost = (a, b) => cost(a) - cost(b) || compareCodeUnits(a, b)
+  const floor = new Set(fixed)
+  const failedLead = [...new Set(failed)].filter((f) => !floor.has(f)).sort(byCost)
+  const changedLead = [...new Set(changedTests)].filter((f) => !floor.has(f) && !failedLead.includes(f)).sort(byCost)
+  const lead = [...failedLead, ...changedLead]
+  const taken = new Set([...fixed, ...lead])
   const importerOrder = [...distances]
     .filter(([f]) => !taken.has(f) && io.exists(f))
     .sort((a, b) => a[1] - b[1] || byCost(a[0], b[0]))
@@ -196,19 +200,22 @@ export function decideSelection(io) {
     restOrder = all.filter((f) => !placed.has(f) && io.exists(f)).sort(byCost)
   }
   const budget = legBudget(leg, io.env)
-  const fit = fillBudget({ fixed, ordered: [...importerOrder, ...readerOrder, ...restOrder], cost, workers: io.workers, budgetS: budget.seconds })
+  const fit = fillBudget({ fixed, ordered: [...lead, ...importerOrder, ...readerOrder, ...restOrder], cost, workers: io.workers, budgetS: budget.seconds })
   const restSet = new Set(restOrder)
   const keptRest = fit.kept.filter((f) => restSet.has(f)).length
-  const keptReaders = fit.kept.filter((f) => !distances.has(f) && !restSet.has(f)).length
-  const direct = fit.kept.filter((f) => distances.get(f) === 1).length
+  const keptReaders = fit.kept.filter((f) => !distances.has(f) && !restSet.has(f) && !taken.has(f)).length
+  const keptLead = fit.kept.filter((f) => taken.has(f)).length
+  const direct = fit.kept.filter((f) => !taken.has(f) && distances.get(f) === 1).length
   const files = [...fixed, ...fit.kept].sort()
+  const leadSet = new Set(lead)
+  const leadCut = fit.deferred.filter((f) => leadSet.has(f)).length
   const deferredReport = fit.deferred.length === 0 ? '' : `deferred to CI: ${fit.deferred.length} files (~${Math.round(fit.deferredS)} s)\n${fit.deferred.map((f) => `  ${f}`).join('\n')}\n`
   const fixedS = FIXED_OVERHEAD_S + workSeconds(fixed.reduce((sum, f) => sum + cost(f), 0), io.workers)
-  const over = fixedS > budget.seconds ? `; the never-cut files alone are estimated at ~${Math.round(fixedS)} s, over the budget` : ''
+  const over = fixedS > budget.seconds ? `; the guards and the matrix alone are estimated at ~${Math.round(fixedS)} s, over the budget` : leadCut > 0 ? `; the never-cut set (failed before, changed tests) exceeded the budget, ${leadCut} of its ${lead.length} files deferred` : ''
   const why = new Set(doubts)
   const doubtNote = why.size === 0 ? '' : `; doubt (${why.size}): ${[...why][0]}${why.size > 1 ? ` and ${why.size - 1} more` : ''}, ${keptRest} other tests added cheapest first`
   const noNew = doubts.length === 0 && !newCommits ? '; no pushed ref brings a commit the remote lacks' : ''
-  const note = `${leg} leg focused: ${files.length} file(s), estimated ~${Math.round(fit.estimateS)} s of a ${Math.round(budget.seconds)} s budget (${budget.source}); ${failed.length} failed before, ${changedTests.length} changed tests, ${guards.length} guard tests, ${matrix.length} bundle matrix tests, ${direct} direct and ${fit.kept.length - direct - keptReaders - keptRest} further importers, ${keptReaders} text or bundle readers; deferred to CI: ${fit.deferred.length} files; costs: ${costSource}${over}${doubtNote}${noNew}; set PREPUSH_FULL=1 for the full leg`
+  const note = `${leg} leg focused: ${files.length} file(s), estimated ~${Math.round(fit.estimateS)} s of a ${Math.round(budget.seconds)} s budget (${budget.source}); ${failed.length} failed before, ${changedTests.length} changed tests, ${guards.length} guard tests, ${matrix.length} bundle matrix tests, ${direct} direct and ${fit.kept.length - keptLead - direct - keptReaders - keptRest} further importers, ${keptReaders} text or bundle readers; deferred to CI: ${fit.deferred.length} files; costs: ${costSource}${over}${doubtNote}${noNew}; set PREPUSH_FULL=1 for the full leg`
   return { full: false, files, note, deferred: fit.deferred, deferredReport, doubts: [...why] }
 }
 
@@ -218,11 +225,11 @@ function listTests(root, sub, keep) {
   return listed.filter((p) => p !== '' && TEST_FILE.test(p) && keep(p)).sort()
 }
 
-/** @param {(...args: string[]) => string} git @param {string} sha the pushed object, a commit or a tag @returns {boolean} true only when sha's commit equals or is an ancestor of a remote-tracking ref under every configured remote; the hook is not told which remote is pushed, so a commit missing from any one counts as new, and anything git cannot answer is false */
-export function onEveryRemote(git, sha) {
+/** @param {(...args: string[]) => string} git @param {string} sha the pushed object, a commit or a tag @param {string} [pushed] the remote name git gives the hook, empty when unknown @returns {boolean} true only when sha's commit equals or is an ancestor of a remote-tracking ref under the pushed remote, or under every configured remote when the name is unknown; a remote with no tracking refs, and anything git cannot answer, is false */
+export function onEveryRemote(git, sha, pushed = '') {
   try {
     const commit = git('rev-parse', '--verify', '--quiet', `${sha}^{commit}`).trim()
-    const remotes = git('remote').split(/\r?\n/).filter((r) => r !== '')
+    const remotes = pushed !== '' ? [pushed] : git('remote').split(/\r?\n/).filter((r) => r !== '')
     if (!SHA.test(commit) || remotes.length === 0) return false
     return remotes.every((r) => git('for-each-ref', '--contains', commit, '--format=%(refname)', '--count=1', `refs/remotes/${r}/`).trim() !== '')
   } catch {
@@ -231,7 +238,7 @@ export function onEveryRemote(git, sha) {
 }
 
 function main() {
-  const [root, leg, headSha, pushFile, store, deferFile] = process.argv.slice(2)
+  const [root, leg, headSha, pushFile, store, deferFile, pushedRemote = ''] = process.argv.slice(2)
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS })
   // One read of the import graph serves both the importer and the setup seams for the same modules.
   const seams = importSeams((modules) => importReach(root, modules))
@@ -249,7 +256,7 @@ function main() {
     exists: (rel) => existsSync(path.join(root, rel)),
     guards: () => orNull(() => listTests(root, 'tests/guards', () => true)) ?? [],
     matrix: () => orNull(() => readdirSync(path.join(root, 'tests')).filter((n) => n.startsWith('command_matrix_e2e') && TEST_FILE.test(n)).map((n) => `tests/${n}`).sort()) ?? [],
-    onRemote: (sha) => onEveryRemote(git, sha),
+    onRemote: (sha) => onEveryRemote(git, sha, pushedRemote),
     allTests: () => orNull(() => listTests(root, 'tests', () => true)),
     mergeBase: (sha) => orNull(() => {
       const base = git('merge-base', sha, 'origin/main').trim()

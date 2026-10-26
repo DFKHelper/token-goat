@@ -106,10 +106,10 @@ describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => 
     expect(r.deferred).toBe('')
   })
 
-  it('prints the files a tiny budget cut, and still runs the never-cut ones', () => {
+  it('prints the files a tiny budget cut, and still runs the guards and the matrix', () => {
     const r = decide({ 'src/a.ts': 'export const a = 2\n' }, { PREPUSH_BUDGET_S: '1' })
-    expect(r.focus).toEqual(['tests/a.test.ts', 'tests/command_matrix_e2e.1.test.ts', 'tests/guards/tree.test.ts'])
-    expect(r.deferred).toMatch(/^deferred to CI: 2 files \(~\d+ s\)\n {2}tests\/near\.test\.ts\n {2}tests\/far\.test\.ts$/)
+    expect(r.focus).toEqual(['tests/command_matrix_e2e.1.test.ts', 'tests/guards/tree.test.ts'])
+    expect(r.deferred).toMatch(/^deferred to CI: 3 files \(~\d+ s\)\n {2}tests\/a\.test\.ts\n {2}tests\/near\.test\.ts\n {2}tests\/far\.test\.ts$/)
   })
 
   it('a test-only change runs the test and every guard, no matrix', () => {
