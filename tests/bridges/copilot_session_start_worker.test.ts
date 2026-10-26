@@ -29,7 +29,12 @@ afterEach(() => {
 // A condition wait: it ends when `check` holds and fails only after the fixture's watchdog saw no progress for its whole quiet limit, so a slow machine lengthens the wait and a stuck worker still fails.
 async function until(fixture: ReturnType<typeof treeFixture>, label: string, check: () => boolean): Promise<void> {
   const watchdog = fixtureWatchdog(fixture, 40_000, 'startup worker')
-  while (!check()) await Promise.race([new Promise(resolve => setTimeout(resolve, 50)), watchdog.failed])
+  // The watchdog's rejection names the fixture's last progress, not the condition: re-raised as a named assertion so a worker that never finishes fails on the line that says what it did not do.
+  try {
+    while (!check()) await Promise.race([new Promise(resolve => setTimeout(resolve, 50)), watchdog.failed])
+  } catch (error) {
+    expect.fail(`never reached: ${label} (${error instanceof Error ? error.message : String(error)})`)
+  }
   watchdog.progress(label)
 }
 
@@ -134,7 +139,9 @@ if (process.argv[2] === '--worker-daemon') fs.writeFileSync(require('node:path')
         expect(secondResult.stderr).toMatch(/SessionStart failed open/)
         expect(startBegan(fixture, surface === 'installed' ? 'installed-startup' : 'owned-tree'), 'the shim must have read the payload').toBe(true)
         const owed = await runOwedToolCall(fixture, 'copilot_cli', surface === 'installed' ? 'installed-startup' : 'owned-tree')
-        expect(owed).toContain('reindexing')
+        // A slow listing cannot reindex the new file in the start: the owed call, like the start, defers it to the worker.
+        if (listing === 'slow') expect(owed, 'the owed call must hand the slow-listing check to the worker').toMatch(DEFERRED_DRIFT_NOTICE)
+        else expect(owed).toContain('reindexing')
       } else {
         expect(secondResult.stderr).toBe('')
         if (listing === 'slow') {
