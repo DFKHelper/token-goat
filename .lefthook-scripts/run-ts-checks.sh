@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-npm run lint
+node scripts/prepush-green.mjs run lint -- npm run lint

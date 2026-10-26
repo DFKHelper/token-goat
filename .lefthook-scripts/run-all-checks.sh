@@ -22,7 +22,7 @@ fi
 
 PIDS=()
 WSL_PID=""
-declare -A START=() END=() PID_OF=() FAILED=() ABORTED=()
+declare -A START=() END=() PID_OF=() FAILED=() ABORTED=() GREEN_TREE_OF=() GREEN_FOCUS_OF=()
 
 run_check() {
   local name=$1
@@ -80,7 +80,16 @@ start_suite_leg() {
   focus_decide "$2"
   echo "pre-push: $FOCUS_NOTE"
   if [[ -n "$FOCUS_DEFERRED" ]]; then echo "pre-push: $FOCUS_DEFERRED"; fi
-  if [[ -n "$FOCUS_FILE" ]]; then
+  # Test files already green on this exact tree (scripts/prepush-green.mjs) are dropped from the Windows leg's list; an emptied list runs nothing, since no list at all would mean the whole suite.
+  if [[ "$2" == "win" && -n "$FOCUS_FILE" ]]; then
+    GREEN_TREE_OF[$1]="$LOG_DIR/green-tree-win.txt"
+    GREEN_FOCUS_OF[$1]="$FOCUS_FILE"
+    (cd "$ROOT_DIR" && node scripts/prepush-green.mjs filter win "$FOCUS_FILE" "${GREEN_TREE_OF[$1]}") || true
+  fi
+  if [[ -n "$FOCUS_FILE" && ! -s "$FOCUS_FILE" ]]; then
+    echo "pre-push: every selected test file was already green on this tree, so the $2 leg has nothing to run"
+    run_check "$1" true
+  elif [[ -n "$FOCUS_FILE" ]]; then
     run_check "$1" env TG_PREPUSH_FOCUS="$FOCUS_FILE" bash "$3"
   else
     run_check "$1" env -u TG_PREPUSH_FOCUS bash "$3"
@@ -92,6 +101,9 @@ record_leg_outcome() {
   [[ -n "${END[$1]:-}" && -z "${ABORTED[$1]:-}" ]] || return 0
   node "$ROOT_DIR/scripts/test-durations.mjs" "$LOG_DIR/$1.log" --record "$FAILED_STORE" "$2" || true
   if [[ -n "${FAILED[$1]:-}" ]]; then focus_record_failure "$2" "$LOG_DIR/$1.log"; else focus_clear "$2"; fi
+  if [[ -z "${FAILED[$1]:-}" && -n "${GREEN_TREE_OF[$1]:-}" ]]; then
+    (cd "$ROOT_DIR" && node scripts/prepush-green.mjs record-files "$2" "${GREEN_FOCUS_OF[$1]}" "${GREEN_TREE_OF[$1]}") || true
+  fi
 }
 
 # Prints the slowest test files of one leg's vitest log. A failure of this report never changes the push result.
@@ -159,6 +171,8 @@ FAIL=0
 
 # Lint, typecheck and the Windows suite finish first; the WSL leg starts only when all three passed, since a red push would otherwise pay for the whole second suite.
 wait_legs typecheck ts-checks tests
+# A passing check's log is dropped, so what it reused is printed here.
+grep -h '^pre-push: reused' "$LOG_DIR/typecheck.log" "$LOG_DIR/ts-checks.log" 2>/dev/null || true
 [[ -z "${FAILED[tests]:-}" ]]     || { report_failure tests; FAIL=1; }
 [[ -z "${FAILED[typecheck]:-}" ]] || { report_failure typecheck; FAIL=1; }
 [[ -z "${FAILED[ts-checks]:-}" ]] || { report_failure ts-checks; FAIL=1; }

@@ -18,7 +18,7 @@ set -euo pipefail
 source "$(git rev-parse --show-toplevel)/.lefthook-scripts/tmp-base.sh"
 LOG="$(mktemp "${TMP_BASE}/token-goat-guards.XXXXXX")"
 
-if npm run test:guards >"$LOG" 2>&1; then
+if node scripts/prepush-green.mjs run guards -- npm run test:guards >"$LOG" 2>&1; then
   rm -f -- "$LOG"
   exit 0
 fi

@@ -3,15 +3,16 @@ pre-commit:
     # Fast structural gate: lint + typecheck, then the I/O-free guard suite (tests/guards) which catches implemented-but-unregistered/unfunctional commands before the commit lands. priority orders them lint -> typecheck -> guards; the full suite and built-bundle matrix stay on pre-push/CI.
     ts-lint:
       priority: 1
-      run: npm run lint
+      # Each of these four checks records its green result on the tree it checked (scripts/prepush-green.mjs) and the pre-push tier reuses it on the identical tree.
+      run: node scripts/prepush-green.mjs run lint -- npm run lint
       glob: "**/*.ts"
     ts-typecheck:
       priority: 2
-      run: npm run typecheck
+      run: node scripts/prepush-green.mjs run typecheck -- npm run typecheck
       glob: "**/*.ts"
     ts-typecheck-tests:
       priority: 2
-      run: npm run typecheck:tests
+      run: node scripts/prepush-green.mjs run typecheck:tests -- npm run typecheck:tests
       glob: "**/*.ts"
     # The three checks below are the ones CI ran that nothing local did, which is the only way a green push could still turn the build red. They carry no glob on purpose, unlike the checks above: the extension compiles against its own package.json and tsconfig, and a secret can land in a .env, a .json or a fixture as easily as in a .ts file, so a TypeScript glob would let exactly the commits that break them through. Together they cost about seven seconds against the tier's existing minute.
     ts-typecheck-vscode:
