@@ -276,8 +276,8 @@ export function extractCommand(event: HookEvent): string | undefined {
 /** Matches git subcommands that can move HEAD and rewrite working-tree file content. */
 /** The leading `NAME=value` words a git command may carry (`FOO=1 BAR="x y" git ...`), the shape skipEnvAssignments reads on tokens. The git patterns take it as a prefix: stripCommandPrefix declines to peel an assignment that changes what runs (`PATH=`, `LD_*`), and such a command still runs git. A value's first character picks its one alternative (quote group, unclosed quote, bare), so an assignment parses one way and a non-matching command costs linear time. */
 const LEADING_ENV_ASSIGNMENTS = String.raw`(?:[A-Za-z_]\w*=(?:(?:"[^"]*"|'[^']*'|"(?![^"]*")|'(?![^']*')|[^\s"'])\S*)?\s+)*`
-/** A git option's value, bare or quoted. */
-const GIT_OPTION_VALUE = String.raw`(?:"[^"]*"|'[^']*'|\S+)`
+/** A git option's value, bare or quoted; its first character picks its one alternative, as for an assignment's value, so a quoted value has one parse. */
+const GIT_OPTION_VALUE = String.raw`(?:"[^"]*"|'[^']*'|"(?![^"]*")|'(?![^']*')|[^\s"'])\S*`
 /** The text before a git subcommand: leading `NAME=value` assignments, then git's global options (`-C <path>`, `-c <name>=<value>`, `--git-dir`, `--work-tree`, other flags), values bare or quoted, so `git -C ../b checkout other` and `GIT_DIR=... git checkout other` read as the checkout they run. Exported for the git patterns in shell_writes.ts. */
 export const GIT_PREFIX_RE_SRC = String.raw`^\s*${LEADING_ENV_ASSIGNMENTS}git(?:\s+(?:-[Cc]\s+${GIT_OPTION_VALUE}|--git-dir(?:=|\s+)${GIT_OPTION_VALUE}|--work-tree(?:=|\s+)${GIT_OPTION_VALUE}|--(?!(?:git-dir|work-tree)(?:=|\s))[A-Za-z][\w-]*|-(?![Cc]\s)[A-Za-z][\w-]*))*\s+`
 const HEAD_MOVING_GIT_RE = new RegExp(`${GIT_PREFIX_RE_SRC}(?:checkout|switch|pull|merge|rebase|reset|cherry-pick|stash\\s+branch)\\b`, 'i')

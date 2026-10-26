@@ -4632,9 +4632,18 @@ describe('the git prefix pattern parses each env assignment and each global opti
     expect(GIT_RESTORE.test('git ' + unit.repeat(REPEATS) + 'x'), `${REPEATS} repeats, no subcommand`).toBe(false)
   })
 
+  it.each([['-C "a" '], ['--git-dir "a" '], ["-c 'k' "], ['--work-tree "a" ']])('git followed by the quoted option %s repeated is not a restore, at 3 and at 2000 repeats', (unit) => {
+    expect(GIT_RESTORE.test('git ' + unit.repeat(3) + 'x'), 'three repeats, no subcommand').toBe(false)
+    expect(GIT_RESTORE.test('git ' + unit.repeat(3) + 'restore q'), 'three repeats, then restore').toBe(true)
+    expect(GIT_RESTORE.test('git ' + unit.repeat(REPEATS) + 'x'), `${REPEATS} repeats, no subcommand`).toBe(false)
+  })
+
   it.each([
     ['FOO="a b" git restore x', true],
     ["FOO='a b' BAR=1 git restore x", true],
+    ['git -C "a b" -c \'k=v w\' restore x', true],
+    ['git -C "a"b restore x', true],
+    ['git -C "unclosed restore x', true],
     ['FOO="x"y git restore x', true],
     ['git -C a -c b=c restore q', true],
     ['git -C a -C b -C c restore q', true],
