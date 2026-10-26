@@ -264,7 +264,8 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
     })
     const res = opts.killWhen === undefined ? spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: opts.timeoutMs ?? 120_000 }) : runInWorker(sh, ['-c', SH_SCRIPT], env, { killWhen: opts.killWhen, quietTicks: 60_000 / RUN_TICK_MS, deadlineMs: Date.now() + (opts.timeoutMs ?? 120_000) })
     // A timeout kills the outer shell only, orphaning the chunk subshell and anything a command started under it.
-    let reapFailure = res.error || res.signal || (res.status !== null && res.status !== 0) ? reapOwned(sh, token) : null
+    const reapedAfterRun = Boolean(res.error || res.signal || (res.status !== null && res.status !== 0))
+    let reapFailure = reapedAfterRun ? reapOwned(sh, token) : null
     const fields = (res.stdout ?? '').split('\0')
     const rerun: number[] = []
     let chunkEnd = Math.min(SH_CHUNK, pending.length)
@@ -292,7 +293,8 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
         cur = { calls: [], stray: [] }
       } else if (f !== '') cur.stray.push(f)
     }
-    if (next < pending.length && reapFailure === null) reapFailure = reapOwned(sh, token)
+    // A run already reaped above is not scanned a second time: under load each scan of the process table took tens of seconds, and the repeat doubled a killed run's time.
+    if (next < pending.length && !reapedAfterRun) reapFailure = reapOwned(sh, token)
     const cleanup = reapFailure === null ? '' : `; cleanup after the kill failed: ${reapFailure}`
     if (next < pending.length) {
       const ran = runs.filter((r) => r !== undefined).length

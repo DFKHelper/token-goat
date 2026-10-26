@@ -1,14 +1,21 @@
 // The shell oracle behind the quoting tests: it must account for every command it was handed, say so when a shell was killed rather than report an empty stderr, and not fork a subshell per command, which under full-suite load took Git Bash past its 120 s cap at 158 of 184 commands. Provenance: HAND-DERIVED. Each expected argv is read off the command text by hand, independently of the helper's parser.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import type * as ChildProcessModule from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { OWNER_VAR, POSIX_SH, REAP_SCRIPT, SH_LIVE, SH_SCRIPT, probeAlive, reapOwned, shRunAll } from './helpers/shell_argv.js'
 import { startWatchdog } from './helpers/stall_proof_watchdog.js'
+
+// A pass-through spy on spawnSync, so a row can read the timeout the helper handed to the spawn call.
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof ChildProcessModule>()
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) }
+})
 
 describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   const sh = POSIX_SH!
@@ -51,19 +58,26 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   }, 150_000)
 
   // The blocked command reads a FIFO nobody writes, so the shell cannot finish and only the cap or the kill can end it: the outcome is decided by the cap, never by how fast the shell starts.
-  it('names an ETIMEDOUT when the spawn timeout ends a shell that cannot finish', () => {
+  it('names an ETIMEDOUT when the spawn timeout ends a shell that cannot finish', async () => {
+    const real = await vi.importActual<typeof ChildProcessModule>('node:child_process')
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shcap-'))
     const fifo = path.join(dir, 'fifo').replace(/\\/g, '/')
     try {
       let message = ''
-      const started = Date.now()
+      // The timeout the spawn call received is the evidence the cap was honoured, so no clock decides the row. The wrapper bounds a call that was handed a larger timeout, so an ignored cap fails the assertion below instead of blocking the suite for the 120 s default.
+      const spawnCalls = vi.mocked(spawnSync)
+      spawnCalls.mockClear()
+      spawnCalls.mockImplementationOnce((...args: Parameters<typeof spawnSync>) => {
+        const opts = (args[2] ?? {}) as { timeout?: number }
+        return real.spawnSync(args[0], args[1] as string[], { ...opts, timeout: Math.min(opts.timeout ?? 5_000, 5_000) })
+      })
       try {
         shRunAll(sh, [`mkfifo '${fifo}' && read -r _ < '${fifo}'`], { timeoutMs: 1 })
       } catch (err) {
         message = (err as Error).message
       }
-      const elapsedMs = Date.now() - started
-      expect(elapsedMs, 'the 1 ms cap was ignored: the shell ran toward the 120 s default instead of ending at its cap').toBeLessThan(60_000)
+      const shellSpawn = spawnCalls.mock.calls.find((call) => (call[1] as string[] | undefined)?.[1] === SH_SCRIPT)
+      expect((shellSpawn?.[2] as { timeout?: number } | undefined)?.timeout, 'the 1 ms cap was ignored: the shell spawn did not receive timeoutMs as its timeout').toBe(1)
       expect(message, 'the timeout did not name the cap that ended the shell').toMatch(/ran 0 of 1 commands: .*ETIMEDOUT/)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
