@@ -73,6 +73,8 @@ const SH_BUDGET_SLACK_S = 15
 
 /** Builtins only, since a process per argument made a few hundred commands take minutes under Git Bash: a call is `C<argc>` then each argument, every field NUL-terminated (no value holds NUL), `E<n>` ends command n's run, and `X` ends a chunk. The shell exits on its own once `$SECONDS` passes `TG_BUDGET_S` (default 600), so a run whose parent died cannot spin forever. Each chunk runs in a subshell, so a command that ends it cannot end the other chunks; a command can only change what its chunk mates see by smuggling in a statement, which already changes its own argv. */
 export const SH_SCRIPT = [
+  // The budget counts from here, not from the shell process: a shell that took longer than its budget to start would otherwise end on its first check, before any command ran.
+  'SECONDS=0',
   "token-goat() { printf '\\0C%d\\0' \"$#\"; printf '%s\\0' \"$@\"; }",
   '[ -n "${TG_N+x}" ] || exit 1',
   'case "$TG_N" in *[!0-9]*) exit 1 ;; esac',

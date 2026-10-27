@@ -579,6 +579,13 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.status === 0).toBe(expected)
   })
 
+  // Provenance: HAND-DERIVED, from a captured failure: under full-suite load the orphan row's shell took longer than its 2 s budget to reach its first command, exited 1 before writing its pid file, and the row stalled until its watchdog gave up. The slow start is forced without a clock: bash takes its initial `$SECONDS` from the environment, so a shell started with 100 has already used far more than the 2 s budget before its script begins. The budget counts from the script, so the command still runs.
+  it('counts its run budget from the start of the script, not from the start of the shell process', () => {
+    const res = spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', windowsHide: true, timeout: 60_000, env: { ...process.env, SECONDS: '100', TG_N: '1', TG_CHUNK: '16', TG_BUDGET_S: '2', TG_CMD_0: 'token-goat ran' } })
+    expect(res.stdout, `status ${String(res.status)}: the shell ended on its budget before its first command`).toBe('\0C1\0ran\0\0E0\0\0X\0')
+    expect(res.status).toBe(0)
+  })
+
   it('shares one subshell across a chunk of commands, so a run forks once per chunk', () => {
     const got = shRunAll(sh, ['tg_probe=set', 'token-goat "${tg_probe-unset}"'])
     expect(got.map((r) => r.calls)).toEqual([[], [['set']]])
