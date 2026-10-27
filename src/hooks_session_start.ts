@@ -10,7 +10,8 @@ import { checkSymbolBodySize } from './symbol_body_probe.js'
 import { buildDeltaCapsule } from './evidence_cache.js'
 import { ENV_KEYS } from './constants.js'
 import { envBool, envInt } from './env.js'
-import { requestReconcileSafe } from './hooks_index.js'
+import * as path from 'node:path'
+import { getDirtyPaths, requestReconcileSafe } from './hooks_index.js'
 import { countNoun, extractErrorMessage } from './util.js'
 import { claimFirstSavingsReceipt, recordStat } from './stats.js'
 import { detectHarness } from './bridges/registry.js'
@@ -33,7 +34,15 @@ async function reconcileNote(cwd: string, indexed: boolean): Promise<string | nu
   try {
     // A complete sweep within the reuse window already covered the project.
     const projectRoot = resolveIndexPath('.', cwd)
-    if (sweptRecently(projectRoot)) return null
+    // A sweep inside the reuse window stamped the project as covered when it QUEUED drift, not when the worker applied it. Silence is right only once the queue holds nothing for this project; otherwise the index still disagrees with disk, and the note has to say so.
+    if (sweptRecently(projectRoot)) {
+      const pending = getDirtyPaths().filter((p) => {
+        const rel = path.relative(projectRoot, resolveIndexPath(p, cwd))
+        return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
+      }).length
+      if (pending === 0) return null
+      return `token-goat: reindexing ${countNoun(pending, 'file')} queued by an earlier session start. Symbol lookups may be briefly stale.`
+    }
     // A listing that missed the deadline in the last hour goes straight to the worker; if the request cannot be recorded the hook lists for itself.
     if (listingKnownSlow(projectRoot) && requestReconcileSafe(cwd)) return 'token-goat: index drift check is running in the background worker (git was slow listing the project files). Symbol lookups may be briefly stale.'
     // Loaded only when a sweep is due, so the common start that a recent sweep covers never parses the reconcile module.

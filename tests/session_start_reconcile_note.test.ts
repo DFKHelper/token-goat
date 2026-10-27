@@ -162,4 +162,19 @@ describe('session_start reconciliation', () => {
     const context = sessionStartContext({ TOKEN_GOAT_RECONCILE_BUDGET_MS: '0' })
     expect(context, 'a budget-exhausted sweep must say so, not read as a clean/complete one').toMatch(/budget|unchecked/i)
   })
+
+  it('does not go silent on a second start while the edit the first start queued is still unindexed', () => {
+    // Regression: the first start's sweep queued the edit and stamped the sweep as done. With no worker draining the queue, a second start inside the reuse window returned silence while the index still disagreed with disk. Silence is correct only when the index matches disk, so the oracle checks the disk state whenever the note is silent.
+    const noWorker = { TOKEN_GOAT_NO_WORKER_SPAWN: '1' }
+    writeFileSync(join(projectDir, 'alpha.ts'), 'export function alpha(): number {\n  return 4242\n}\n')
+    const first = sessionStartContext(noWorker)
+    expect(first, 'calibration: the first start must find the edit and queue it').toContain('changed outside this session')
+
+    const second = sessionStartContext(noWorker)
+    const driftNote = /changed outside this session|reindexing|could not be queued/
+    if (!driftNote.test(second)) {
+      const dryRun = cli(['reconcile', '--dry-run'], noWorker)
+      expect(dryRun.out, 'the second start was silent while reconcile --dry-run still reports drift on disk').not.toMatch(/would reindex|would drop|would reparse|would re-embed/)
+    }
+  })
 })
