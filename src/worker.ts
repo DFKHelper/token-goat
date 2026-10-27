@@ -39,6 +39,17 @@ const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
 /** How many {@link drainOnce} cycles to skip between opportunistic {@link pruneDeletedFiles} sweeps. A `git mv`, directory rename, `git checkout <branch>`, or `git clean` never fires an Edit hook for the paths it touches, so a plain dirty-queue drain (which only reconciles a deletion when the exact old path was enqueued) never notices those rows are gone and they orphan in the index forever. `pruneDeletedFiles` walks every indexed path under a project root and stats each one to catch this — too expensive to repeat on every ~2s poll tick, so it only runs every Nth cycle (mirrors SNAPSHOT_CLEANUP_INTERVAL_MS's throttling above, keyed on drain-cycle count here instead of wall time since the trigger is "enough drain activity", not "enough time elapsed"). */
 const PRUNE_EVERY_N_DRAINS = 30
 
+/** How often a drain in progress re-reads the pid file to see whether its daemon must retire. A drain runs synchronously and can take far longer than the startup grace, so the retirement check has to happen inside it, not only between cycles; this bounds the reads to a few per second however many paths the batch holds. */
+const RETIRE_PROBE_INTERVAL_MS = 100
+
+/** The retirement check of the daemon loop running in this process, installed by {@link runWorkerLoop} for as long as the loop runs. Null outside a daemon loop, where nothing retires. Process state rather than a parameter: one daemon runs one loop, and a drain reaches the check through the call chain it already has. */
+let retireCheckForDrain: (() => boolean) | null = null
+
+/** True once the daemon running this drain has started retiring: a drain then hands its unreached paths back to the live queue (no retry is charged, since nothing failed) and claims nothing new. */
+function drainShouldHandBack(): boolean {
+  return retireCheckForDrain?.() ?? false
+}
+
 /** Per-dataDir drain-cycle counters, so unrelated worker instances (distinct test dirs, or a future multi-dataDir setup) don't share a single global cadence. */
 const drainCycleCounts = new Map<string, number>()
 
@@ -405,7 +416,7 @@ function pruneDirtyPath(p: string, remove: (absPath: string) => void, dir: strin
   }
 }
 
-/** Process one batch of dirty paths. For each path: skip if the file no longer exists or cannot be fingerprinted, otherwise re-index it. The default `index` callback parses the file and writes its rows into the global index DB; tests inject their own callback to observe the plumbing in isolation. Returns the number of paths actually (re)indexed -- a path whose callback returns `false` (the default indexer's sha-gate skip for byte-identical content) or `INDEX_FAILED` (the default indexer's sentinel for a swallowed, logged indexing failure -- see makeIndexer) is visited but not counted. Exported for unit tests so the drain logic can be exercised without a thread. */
+/** Process one batch of dirty paths. For each path: skip if the file no longer exists or cannot be fingerprinted, otherwise re-index it. The default `index` callback parses the file and writes its rows into the global index DB; tests inject their own callback to observe the plumbing in isolation. Returns the number of paths actually (re)indexed -- a path whose callback returns `false` (the default indexer's sha-gate skip for byte-identical content) or `INDEX_FAILED` (the default indexer's sentinel for a swallowed, logged indexing failure -- see makeIndexer) is visited but not counted. Exported for unit tests so the drain logic can be exercised without a thread. Once the daemon starts retiring (see {@link drainShouldHandBack}), the paths not yet reached go back to the live queue, and this batch ends. */
 export function processDirtyBatch(
   paths: string[],
   index: (absPath: string, sha: string, stamp?: PreHashStamp) => unknown = makeIndexer(globalDbPath()),
@@ -418,8 +429,15 @@ export function processDirtyBatch(
   // Memoizes findProject(dirname) for this batch only -- findProject re-runs a full ancestor-marker probe (9 markers x existsSync/lstat per level) plus isRepoContainer's readdirSync on every call, and a batch routinely contains many dirty paths under the same directory (or same project tree) that would otherwise repeat that walk once per path for a result (lastKnownProjectRoots) that is only consulted once per PRUNE_EVERY_N_DRAINS drains. Scoped to this function call (not module-level) since a project root learned from one batch's traffic can legitimately go stale by the next batch (e.g. after a project is deleted).
   const projectRootCache = new Map<string, string | null>()
   let indexed = 0
-  for (const p of paths) {
+  for (let i = 0; i < paths.length; i++) {
+    const p = paths[i]
     if (!p) continue
+    if (drainShouldHandBack()) {
+      // No retry is charged, since nothing failed. Persisted before the caller clears the claimed file that named them, so a crash in between duplicates a path (its sha gate absorbs that) and never drops one.
+      const unreached = paths.slice(i).filter((q) => q.length > 0)
+      if (!appendToDirtyQueue(dir, ...unreached)) for (const q of unreached) requeue(dir, q)
+      break
+    }
     writeDrainHeartbeat(dir)
     // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from reindexing entirely -- skip before the existence/sha checks so a blocked path is never touched, not even pruned from the index if it happens to have been deleted underneath it.
     if (isUnderBlockedRoot(p, blockedRoots)) continue
@@ -557,7 +575,8 @@ export function drainOnce(
   }
 
   // (b) Atomically claim the live queue. A concurrent appendDirtyPath either landed before the rename (its line travels in .draining) or recreates a fresh dirty.txt after it (next cycle) — it can never be deleted unindexed. On Windows a concurrent open-for-append can make rename fail with EPERM/ EBUSY/EEXIST; retry a few times, then defer (return 0 = retry next poll).
-  if (fs.existsSync(queuePath)) {
+  // A leaving daemon claims nothing new: whatever is queued stays in the live queue for the next daemon.
+  if (!drainShouldHandBack() && fs.existsSync(queuePath)) {
     // If the primary `.draining` name is still occupied by a file the loop above could not clean up (both rmSync and rename-to-corrupt failed -- typically a Windows sharing violation from something else holding it open), claiming into that same name would collide forever and starve the live queue indefinitely. Claim into a distinct `.alt-<ts>` name instead; listDrainingFiles recovers it on a future cycle.
     const claimTarget = fs.existsSync(draining) ? `${draining}.alt-${Date.now()}` : draining
     let claimed = false
@@ -781,37 +800,56 @@ export async function runWorkerLoop(
   let lastBusyMs = Date.now()
   // Ends each cycle's sleep early when a hook or command appends to the queue, so an edit is indexed within milliseconds rather than up to a poll interval later; the interval stays the fallback wherever the watch cannot run. See createQueueWaker. Every step of a cycle catches its own errors, so the loop leaves only through its exits below, each of which reaches the close.
   const waker = createQueueWaker(dir)
-  while (!shouldStop()) {
-    // Self-terminate once this daemon's own data dir no longer exists: a caller that spawned a detached daemon against an ephemeral/scratch data dir (e.g. `token-goat index --walk` in a temp directory during dogfooding or a test run) and then deletes that directory without an explicit `worker stop` leaves the daemon with nothing left to poll -- `dirty.txt`/the pid file/global.db are all gone, so every subsequent drainOnce/cleanup call below is pure wasted work against a directory that will never come back. Without this check the daemon runs forever (confirmed in practice: 524 stray `--worker-daemon` processes accumulated over two weeks of dogfooding/test scratch-dir cleanup with no corresponding `worker stop`).
-    if (!fs.existsSync(dir)) break
-    // Self-terminate once another daemon has taken over this data dir's pid file. claimWorkerPidFile's reclaim path takes the pid file from a daemon whose heartbeat lease lapsed without signalling it (by then the pid may name an unrelated process), so this check is what retires a superseded daemon that is still running: without it that daemon keeps draining the same queue forever, because the existsSync check above never fires while the shared data dir still exists -- exactly how several stray daemons accumulate over successive sessions. Once we have observed the pid file naming our own pid, a later poll that finds it naming a *different* pid means we lost ownership, so exit and leave the current owner as the sole drainer. We only act on a concrete different pid, never on readPidFile returning null: null also covers a transient read failure or a mid-write empty file (pid-file replacement is not atomic to a concurrent reader), and treating that as lost ownership would let a single filesystem hiccup terminate the sole legitimate daemon -- a self-inflicted version of the very leak this check exists to stop. A genuinely removed pid file leaves us running until either fs.existsSync(dir) fires or a real successor writes its own pid, which is the safe direction.
+  // The retirement decision from the pid file, shared by the top of each cycle and by the work inside a cycle (see retiringNow). It takes the first-ownership step and the absence/grace bookkeeping, so it must be asked on every real check, not only once per cycle.
+  const pidFileSaysRetire = (): boolean => {
     const pidOwner = readPidFile(dir)
     if (pidOwner === process.pid) {
       // First time this daemon owns the slot: end the daemon the claim displaced, off the hook path that spawned us.
       if (!ownedPidFile) retireDisplacedWorker(dir)
       ownedPidFile = true
-    } else if (ownedPidFile && pidOwner !== null) break
-    // The two cases the takeover check above cannot see, both of which strand a daemon that nothing can then find or stop. A pid file that is gone for longer than the grace: `stopWorker` and a `rm -rf` of the data dir both remove it, and on Windows the second cannot remove the rest (this daemon holds global.db and a watch on queue/ open), so the directory-gone exit never fires; a single missing read is still ignored, since a successor claiming the slot removes and recreates the file. And a pid file naming another process after a whole grace in which it never named us: the daemon it was handed to lost the slot before it ever owned it.
-    const loopNowMs = Date.now()
+    } else if (ownedPidFile && pidOwner !== null) return true
+    const nowMs = Date.now()
     if (pidFileIsAbsent(dir)) {
-      pidFileAbsentSinceMs ??= loopNowMs
-      if (loopNowMs - pidFileAbsentSinceMs >= pidFileGraceMs) break
+      pidFileAbsentSinceMs ??= nowMs
+      if (nowMs - pidFileAbsentSinceMs >= pidFileGraceMs) return true
     } else {
       pidFileAbsentSinceMs = null
-      if (!ownedPidFile && pidOwner !== null && pidOwner !== process.pid && loopNowMs - startedMs >= pidFileGraceMs) break
+      if (!ownedPidFile && pidOwner !== null && pidOwner !== process.pid && nowMs - startedMs >= pidFileGraceMs) return true
     }
+    return false
+  }
+  // Asked from inside a drain, which can run far longer than the grace. Probed at most once per RETIRE_PROBE_INTERVAL_MS, and once it has said retire it stays so.
+  let retireLatched = false
+  let lastRetireProbeMs = 0
+  const retiringNow = (): boolean => {
+    if (retireLatched) return true
+    const nowMs = Date.now()
+    if (nowMs - lastRetireProbeMs < RETIRE_PROBE_INTERVAL_MS) return false
+    lastRetireProbeMs = nowMs
+    retireLatched = pidFileSaysRetire()
+    return retireLatched
+  }
+  retireCheckForDrain = retiringNow
+  while (!shouldStop()) {
+    // Self-terminate once this daemon's own data dir no longer exists: a caller that spawned a detached daemon against an ephemeral/scratch data dir (e.g. `token-goat index --walk` in a temp directory during dogfooding or a test run) and then deletes that directory without an explicit `worker stop` leaves the daemon with nothing left to poll -- `dirty.txt`/the pid file/global.db are all gone, so every subsequent drainOnce/cleanup call below is pure wasted work against a directory that will never come back. Without this check the daemon runs forever (confirmed in practice: 524 stray `--worker-daemon` processes accumulated over two weeks of dogfooding/test scratch-dir cleanup with no corresponding `worker stop`).
+    if (!fs.existsSync(dir)) break
+    // Self-terminate once another daemon has taken over this data dir's pid file. claimWorkerPidFile's reclaim path takes the pid file from a daemon whose heartbeat lease lapsed without signalling it (by then the pid may name an unrelated process), so this check is what retires a superseded daemon that is still running: without it that daemon keeps draining the same queue forever, because the existsSync check above never fires while the shared data dir still exists -- exactly how several stray daemons accumulate over successive sessions. Once we have observed the pid file naming our own pid, a later poll that finds it naming a *different* pid means we lost ownership, so exit and leave the current owner as the sole drainer. We only act on a concrete different pid, never on readPidFile returning null: null also covers a transient read failure or a mid-write empty file (pid-file replacement is not atomic to a concurrent reader), and treating that as lost ownership would let a single filesystem hiccup terminate the sole legitimate daemon -- a self-inflicted version of the very leak this check exists to stop. A genuinely removed pid file leaves us running until either fs.existsSync(dir) fires or a real successor writes its own pid, which is the safe direction.
+    if (pidFileSaysRetire()) break
+    // The two cases the takeover check above cannot see, both of which strand a daemon that nothing can then find or stop. A pid file that is gone for longer than the grace: `stopWorker` and a `rm -rf` of the data dir both remove it, and on Windows the second cannot remove the rest (this daemon holds global.db and a watch on queue/ open), so the directory-gone exit never fires; a single missing read is still ignored, since a successor claiming the slot removes and recreates the file. And a pid file naming another process after a whole grace in which it never named us: the daemon it was handed to lost the slot before it ever owned it.
     let processed = 0
     try {
       processed = drainOnce(dir)
     } catch {
       // A bad batch must not kill the daemon; skip and retry next cycle.
     }
+    if (retiringNow()) break
     // Projects a hook asked to have swept because it could not list the files a branch switch changed (see reconcile_requests.ts). After the dirty queue so the sweep's own enqueues wait for the next cycle, as the deferred requeues in drainOnce do. Awaited here rather than run inside drainOnce, which is synchronous: the sweep's git must not block the event loop. Counts as work so an idle daemon does not retire in the middle of a catch-up.
     try {
       processed += await drainReconcileRequestsAsync(dir)
     } catch {
       // The sweep never throws; a request it left claimed is swept again next cycle.
     }
+    if (retiringNow()) break
     if (processed > 0) {
       lastActiveMs = Date.now()
       lastBusyMs = lastActiveMs
@@ -890,6 +928,7 @@ export async function runWorkerLoop(
     if (Date.now() - lastBusyMs >= idleExitMs) break
     await waker.sleep(pollIntervalMs)
   }
+  retireCheckForDrain = null
   waker.close()
 }
 

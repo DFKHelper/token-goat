@@ -9,7 +9,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { BUNDLE, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
 import { isWorkerDaemonCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { indexableDir } from './helpers/temp-config.js'
-import { stopWorker, workerPidPath } from '../src/worker_lifecycle.js'
+import { stopWorker, WORKER_STARTUP_GRACE_MS, workerPidPath } from '../src/worker_lifecycle.js'
+
+/** Dirty paths queued behind a running daemon: enough that one drain cycle takes longer than the startup grace. */
+const MID_DRAIN_FILES = 12000
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
   return sharedRunBundle(args, { cwd, env, timeout: 30000 })
@@ -116,6 +119,36 @@ describe('the built daemon retires on its own', () => {
       expect(startedPids, 'a pid seen to exit is not examined again').not.toContain(pid)
     },
     60000,
+  )
+
+  it(
+    'exits within the startup grace plus 5 s of its pid file going missing, even while a long drain is running',
+    async (ctx) => {
+      const dataBase = mkIsolated('tg-retire-e2e-middrain-')
+      const repo = mkIsolated('tg-retire-e2e-middrain-repo-')
+      const env = tgIsolatedEnv(dataBase, { TG_WORKER_POLL_MS: '200' })
+      const dir = effectiveDataDir(dataBase)
+      const pid = startWorker(env, repo)
+      await waitFor('the daemon to write its drain heartbeat', ctx.signal, () => heartbeatNames(dataBase, pid), exitedNote(pid))
+
+      // Enough dirty paths that one drain cycle outlasts the grace: the daemon checks its pid file between cycles, so a pid file removed mid-cycle used to be noticed only when the cycle ended.
+      const queued: string[] = []
+      for (let i = 0; i < MID_DRAIN_FILES; i++) {
+        const f = path.join(repo, `queued_${i}.ts`)
+        fs.writeFileSync(f, `export const q${i} = ${i}\n`)
+        queued.push(f)
+      }
+      fs.appendFileSync(path.join(dir, 'queue', 'dirty.txt'), `${queued.join('\n')}\n`)
+      await waitFor('the daemon to claim the queue into a drain', ctx.signal, () => fs.existsSync(path.join(dir, 'queue', 'dirty.txt.draining')), exitedNote(pid))
+
+      fs.rmSync(workerPidPath(dir))
+      const removedAt = Date.now()
+      await waitFor('the daemon to retire after its pid file went missing', ctx.signal, () => !alive(pid))
+      const retiredAfterMs = Date.now() - removedAt
+      observedGone(pid)
+      expect(retiredAfterMs, `the daemon outlived its pid file by ${retiredAfterMs} ms`).toBeLessThanOrEqual(WORKER_STARTUP_GRACE_MS + 5000)
+    },
+    90000,
   )
 
   it(
