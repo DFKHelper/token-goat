@@ -148,7 +148,7 @@ describe('the built daemon retires on its own', () => {
       observedGone(pid)
       expect(retiredAfterMs, `the daemon outlived its pid file by ${retiredAfterMs} ms`).toBeLessThanOrEqual(WORKER_STARTUP_GRACE_MS + 5000)
     },
-    90000,
+    60000,
   )
 
   it(

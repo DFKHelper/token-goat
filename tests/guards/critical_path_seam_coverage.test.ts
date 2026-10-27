@@ -22,21 +22,28 @@ const DECISIONS: Record<string, Decision> = {
     exempt: {
       reason: 'the only production caller is drainOnce, which passes its own index/remove/dir/requeue explicitly; these defaults are reached by direct-call tests only, and drainOnce\'s defaults (covered below) are what ships',
       file: 'src/worker.ts',
-      marker: 'processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn)',
+      marker: 'processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn, handBackFn)',
     },
   },
   'src/worker.ts::processDirtyBatch::remove': {
     exempt: {
       reason: 'same as processDirtyBatch::index -- drainOnce supplies it on every production call',
       file: 'src/worker.ts',
-      marker: 'processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn)',
+      marker: 'processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn, handBackFn)',
     },
   },
   'src/worker.ts::processDirtyBatch::requeue': {
     exempt: {
       reason: 'same as processDirtyBatch::index -- drainOnce supplies its own requeueFn so the deferred-requeue ordering holds',
       file: 'src/worker.ts',
-      marker: 'processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn)',
+      marker: 'processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn, handBackFn)',
+    },
+  },
+  'src/worker.ts::processDirtyBatch::handBack': {
+    exempt: {
+      reason: 'same as processDirtyBatch::index -- drainOnce supplies it on every production call',
+      file: 'src/worker.ts',
+      marker: 'handBackFn)',
     },
   },
   'src/worker.ts::drainOnce::index': {

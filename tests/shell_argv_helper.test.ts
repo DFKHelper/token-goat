@@ -412,7 +412,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   })
 
   // Provenance: HAND-DERIVED from a macOS CI failure of the test above: macOS has no /proc, and its BSD `ps -e` lists the caller's own processes that have a terminal, with their environment, so a child started with no terminal was invisible to the kin scan, which also ran only where /proc exists. The branch is forced by making the /proc test fail, and `ps` is a function that answers as macOS does: `-wwAE` prints the owned parent with the token, `-e -o ...` prints nothing, and `-A -o ...` is the real listing.
-  it('ends an owned child whose environment does not carry the token where there is no /proc and ps -e lists nothing', async () => {
+  it('ends an owned child whose environment does not carry the token where there is no /proc and ps lists only the owned parent and the late child', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shbsd-'))
     const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
     // The /proc test is forced false, and the environ scan is narrowed to the two pid files, so the row does not pay the whole-table /proc grep under load; the kin listing the row tests is still the real fixture above.

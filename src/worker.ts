@@ -423,6 +423,9 @@ export function processDirtyBatch(
   remove: (absPath: string) => void = makeRemover(globalDbPath()),
   dir: string = dataDir(),
   requeue: (dir: string, absPath: string) => void = requeueDirtyPath,
+  handBack: (dir: string, absPath: string) => void = (handBackDir, absPath) => {
+    appendToDirtyQueue(handBackDir, absPath)
+  },
 ): number {
   const blockedRoots = loadConfig().worker.blocked_roots
   const ixCfg = loadConfig().indexing
@@ -435,7 +438,7 @@ export function processDirtyBatch(
     if (drainShouldHandBack()) {
       // No retry is charged, since nothing failed. Persisted before the caller clears the claimed file that named them, so a crash in between duplicates a path (its sha gate absorbs that) and never drops one.
       const unreached = paths.slice(i).filter((q) => q.length > 0)
-      if (!appendToDirtyQueue(dir, ...unreached)) for (const q of unreached) requeue(dir, q)
+      if (!appendToDirtyQueue(dir, ...unreached)) for (const q of unreached) handBack(dir, q)
       break
     }
     writeDrainHeartbeat(dir)
@@ -516,8 +519,7 @@ export function drainOnce(
   const deferredRequeues: string[] = []
   // Each deferred requeue is also written at once to a sidecar named like a stage (b) fallback claim, because the queue files that named these paths are deleted before the live append below: a kill, or a throw out of stage (b), in between would otherwise lose them. This cycle's stage (a) listed its files before the sidecar existed, so only a later cycle recovers it, and the deferral holds.
   const requeueSidecar = `${draining}.alt-requeue-${process.pid}-${Date.now()}`
-  const requeueFn = (requeueDir: string, absPath: string): void => {
-    if (!bumpAndCheckRetry(requeueDir, absPath)) return
+  const deferAppend = (absPath: string): void => {
     deferredRequeues.push(absPath)
     try {
       appendDirtyQueueFile(requeueSidecar, [absPath])
@@ -525,6 +527,12 @@ export function drainOnce(
       // The in-memory copy still reaches the live queue at the end of this cycle; only a kill before then loses it.
     }
   }
+  const requeueFn = (requeueDir: string, absPath: string): void => {
+    if (!bumpAndCheckRetry(requeueDir, absPath)) return
+    deferAppend(absPath)
+  }
+  // Unreached paths of a retiring drain: deferred the same way, but never charged a retry, since nothing failed.
+  const handBackFn = (_handBackDir: string, absPath: string): void => deferAppend(absPath)
 
   // (a) Crash recovery: absorb any `.draining` (and `.draining.alt-*` fallback) files abandoned by a previous crashed or stuck drain. Multiple files can accumulate when a Windows sharing violation keeps the primary `.draining` name locked across cycles (see stage (b)'s fallback-claim comment) -- recover every one of them, not just the first, so a single stuck file can never starve the rest of the queue from ever draining.
   const liveDrainingFiles = listDrainingFiles(queuePath)
@@ -557,7 +565,7 @@ export function drainOnce(
     }
     // Only process this content if it was not already folded into a batch on a prior cycle (see unclearedDrainingSnapshots below). Without this guard, a draining file that outlives both cleanup attempts (e.g. a persistent Windows sharing violation) would be re-read and its paths reprocessed on every cycle.
     if (unclearedDrainingSnapshots.get(drainingFile) !== drainingSnapshotStamp(drainingFile, drainingContent)) {
-      processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn, dir, requeueFn)
+      processed += processDirtyBatch(parseDirtyQueueLines(drainingContent), indexFn, removeFn, dir, requeueFn, handBackFn)
     }
     // Only clear the recovered file now that its batch has been durably processed (or recognized above as already processed) -- never before -- so a crash partway through processDirtyBatch leaves the file in place for the next startup to recover, instead of deleting it up front and losing every path it named.
     try {
@@ -600,7 +608,7 @@ export function drainOnce(
       }
       if (readOk) {
         // Deliberately NOT wrapped in the try above: a throw from processDirtyBatch (e.g. the process crashing mid-batch) must propagate to the caller, not be swallowed as a "read failure", so the cleanup below never runs and the claimed file survives.
-        processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn)
+        processed += processDirtyBatch(parseDirtyQueueLines(claimedContent), indexFn, removeFn, dir, requeueFn, handBackFn)
         // Re-read the claimed file ONE more time, right before deleting it, to catch a path appended by a writer that raced the claim-rename above. The rename-to-claim pattern assumes no other writer can touch the live queue's underlying file once it has been renamed to the claim target -- but that isn't guaranteed on Windows (FILE_SHARE_DELETE lets a concurrent open-for-append follow the same underlying file object across the rename) or on POSIX (a narrow rename/open race exists there too). A dirty path appended during that window would otherwise be silently deleted along with the rest of this cycle's already-processed content and never reindexed. Forward anything found beyond what was already processed back into the live queue so the next drain cycle picks it up.
         try {
           const recheck = fs.readFileSync(claimTarget, 'utf8')
