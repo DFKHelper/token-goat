@@ -1,10 +1,12 @@
 // The time budget of a pre-push suite leg, and the arithmetic that cuts a priority list to fit it. One place names every number: the budgets, the worker count assumed, the calibration of per-file timings against the real wall clock, and the cost of a file with no timing yet. Pure functions, built-in modules only. Seconds of test wall time a leg may be estimated to take. Lint and typecheck run beside the Windows leg and the WSL leg follows it only when a platform-sensitive path changed, so the two caps sum to TOTAL_BUDGET_S. The guards alone take 114.7 s on Windows and 73.3 s on WSL (measured on the 221-file guard and matrix set), 188 s together, so both caps leave room for tests beyond the guards and the matrix. Override with PREPUSH_BUDGET_S and PREPUSH_WSL_BUDGET_S.
-export const LEG_BUDGET_S = { win: 330, wsl: 180 }
+export const LEG_BUDGET_S = { win: 330, wsl: 160 }
 export const BUDGET_ENV = { win: 'PREPUSH_BUDGET_S', wsl: 'PREPUSH_WSL_BUDGET_S' }
+// Whole seconds after a leg is planned at which its fill files stop starting (0 stops them at once), in place of the leg budget; the floor is never cut. For tests and for a push that must end sooner.
+export const DEADLINE_ENV = 'PREPUSH_DEADLINE_S'
 // The wall time the whole hook is held to, from hook start to hook exit (the owner's 10 minutes).
 export const HOOK_LIMIT_S = 600
-// Seconds the hook spends outside the two suite legs: ref reading, the WSL decision, two selections, the duration and failure records and the slowest-files report. Not measured as a whole; the selector replay (orch5/2/replay.tsv) times the selection step alone.
-export const HOOK_OVERHEAD_S = 30
+// Seconds the hook spends outside the suite legs, measured on a full run: external wall 671 s minus legs total 620 s = 51 s, rounded down to 50.
+export const HOOK_OVERHEAD_S = 50
 // Share of HOOK_LIMIT_S held back because the estimates err by about this much (see CALIBRATION_EVIDENCE).
 export const MARGIN_SHARE = 0.1
 // Seconds the legs may be estimated to take together, counted from the start of run-all-checks.sh: a leg's cap is cut again to what is left of it, and an override cannot raise it. The win and wsl caps sum to this.
@@ -58,6 +60,21 @@ export function legBudget(leg, env) {
     seconds = left
   }
   return { seconds, source: `${source}${used.note}` }
+}
+
+/** @param {string} leg @param {Record<string, string | undefined>} env @param {number} nowMs the clock at planning time, taken from the caller so a test can fix it @returns {{atMs: number, seconds: number, source: string}} the wall-clock instant after which the leg's fill files start no more: the leg budget counted from now, so the WSL leg's share is what is really left of TOTAL_BUDGET_S (PREPUSH_ELAPSED_S is the hook's own $SECONDS) and not an estimate of the Windows leg; PREPUSH_DEADLINE_S replaces it */
+export function legDeadline(leg, env, nowMs) {
+  const raw = env[DEADLINE_ENV]
+  if (raw !== undefined && raw !== '' && /^[0-9]+$/.test(raw)) {
+    // Like the budget override, never past what is left of the pre-push total.
+    const used = elapsedOf(env)
+    const left = Math.max(0, TOTAL_BUDGET_S - used.seconds)
+    const seconds = Math.min(Number(raw), left)
+    const capped = seconds < Number(raw) ? `; cut to ${left} s by the ${TOTAL_BUDGET_S} s pre-push total after ${used.seconds} s` : ''
+    return { atMs: nowMs + seconds * 1000, seconds, source: `${DEADLINE_ENV}=${raw}${capped}` }
+  }
+  const b = legBudget(leg, env)
+  return { atMs: nowMs + b.seconds * 1000, seconds: b.seconds, source: b.source }
 }
 
 /** @param {number[]} values @returns {number | null} the arithmetic mean rounded to whole ms, or null for no values */

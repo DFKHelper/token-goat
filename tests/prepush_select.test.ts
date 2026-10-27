@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import * as graph from '../scripts/prepush-graph.mjs'
-import { classifyPath, decideSelection, importSeams, onEveryRemote, orNull, parseNameStatus, parsePushRefs, rangeOf } from '../scripts/prepush-select.mjs'
+import { classifyPath, decideSelection, importSeams, onEveryRemote, orNull, parseNameStatus, parsePushRefs, planText, rangeOf } from '../scripts/prepush-select.mjs'
 
 // Fixture provenance. Ref lines: FORMAT-DERIVED from githooks(5) pre-push, `<local-ref> SP <local-object-name> SP <remote-ref> SP <remote-object-name> LF`, with the all-zeroes name for a missing remote ref and `(delete)` as the local ref of a deletion; https://git-scm.com/docs/githooks read from Git 2.53.0.windows.1 doc/git-doc/githooks.html. The shas are synthetic. Changed-path rows: HAND-DERIVED. `git diff -z --name-status` text: FORMAT-DERIVED from git-diff(1) --name-status with -z (status, NUL, path, NUL); the real-git path is exercised in prepush_focus.test.ts.
 const HEAD = 'a'.repeat(40)
@@ -121,6 +121,32 @@ describe('prepush selection: focused pushes', () => {
     const r = select([m('src/a.ts')])
     // HAND-DERIVED: six files untimed at the 6.2 s cold default each = 37.2 s, over 4 workers = 9.3 s, times the 1.4 calibration = 13.02 s, plus the 45 s fixed overhead = 58.02 s
     expect(r.full === false && r.note).toBe('win leg focused: 6 file(s), estimated ~58 s of a 330 s budget (default); 0 failed before, 0 changed tests, 2 guard tests, 2 bundle matrix tests, 1 direct and 1 further importers, 0 text or bundle readers; deferred to CI: 0 files; costs: no duration table, every file costed at the default 6 s; set PREPUSH_FULL=1 for the full leg')
+  })
+})
+
+describe('prepush selection: the floor, the fill and the wall-clock deadline of the plan', () => {
+  const NOW = 1_800_000_000_000
+  it('the floor is the guards and the matrix, the fill is the rest in priority order, and the deadline is the clock plus the leg budget', () => {
+    // Fixture provenance: HAND-DERIVED from the synthetic tree above; the win leg budget is 330 s, so the deadline is NOW + 330000.
+    const r = select([m('src/a.ts')], { now: () => NOW })
+    if (r.full) throw new Error('expected a focused selection')
+    expect(r.floor).toEqual([...GUARDS, ...MATRIX])
+    expect(r.fill.length).toBeGreaterThan(0)
+    expect([...r.fill].sort()).toEqual(r.files.filter((f) => !r.floor.includes(f)).sort())
+    expect(r.fill.slice(0, 2)).toEqual(['tests/near.test.ts', 'tests/far.test.ts'])
+    expect(r.deadlineAtMs).toBe(NOW + 330_000)
+  })
+
+  it('the WSL deadline is taken from the real elapsed seconds the hook passes, not from an estimate', () => {
+    const r = select([m('src/a.ts')], { leg: 'wsl', env: { PREPUSH_ELAPSED_S: '400' }, now: () => NOW })
+    if (r.full) throw new Error('expected a focused selection')
+    // HAND-DERIVED: 490 s total minus 400 s elapsed = 90 s left
+    expect(r.deadlineAtMs).toBe(NOW + 90_000)
+  })
+
+  it('planText is the deadline in epoch ms, then one fill file per line', () => {
+    expect(planText({ fill: ['tests/b.test.ts', 'tests/a.test.ts'], deadlineAtMs: 42 })).toBe('42\ntests/b.test.ts\ntests/a.test.ts\n')
+    expect(planText({ fill: [], deadlineAtMs: 7 })).toBe('7\n')
   })
 })
 

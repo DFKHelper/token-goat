@@ -1,6 +1,6 @@
 /** The pre-push time budget: scripts/prepush-budget.mjs does the arithmetic and scripts/prepush-select.mjs applies it to the priority list, so a wrong cut either skips a test that should run or blows the 600 s the push is held to. */
 import { describe, expect, it } from 'vitest'
-import { BUDGET_ENV, CALIBRATION, DEFAULT_FILE_MS, ELAPSED_ENV, FIXED_OVERHEAD_S, HOOK_LIMIT_S, HOOK_OVERHEAD_S, LEG_BUDGET_S, MARGIN_SHARE, TOTAL_BUDGET_S, coldCostMs, costFn, fillBudget, legBudget, workersFor } from '../scripts/prepush-budget.mjs'
+import { BUDGET_ENV, CALIBRATION, DEADLINE_ENV, DEFAULT_FILE_MS, ELAPSED_ENV, FIXED_OVERHEAD_S, HOOK_LIMIT_S, HOOK_OVERHEAD_S, LEG_BUDGET_S, MARGIN_SHARE, TOTAL_BUDGET_S, coldCostMs, costFn, fillBudget, legBudget, legDeadline, workersFor } from '../scripts/prepush-budget.mjs'
 import { resolveMaxWorkers } from './setup/max-workers.js'
 import { decideSelection } from '../scripts/prepush-select.mjs'
 
@@ -116,9 +116,9 @@ describe('prepush budget: priority order and the cut', () => {
 
 describe('prepush budget: the environment override', () => {
   it('PREPUSH_BUDGET_S replaces the default and the note names it', () => {
-    const r = select({ env: { PREPUSH_BUDGET_S: '500' } }, TEN)
+    const r = select({ env: { PREPUSH_BUDGET_S: '480' } }, TEN)
     expect(r.deferred).toEqual([])
-    expect(r.note).toContain('of a 500 s budget (PREPUSH_BUDGET_S=500)')
+    expect(r.note).toContain('of a 480 s budget (PREPUSH_BUDGET_S=480)')
   })
 
   it('an override above the pre-push total is capped to it, and the source says so', () => {
@@ -166,14 +166,14 @@ describe('prepush budget: what was cut is printed', () => {
 })
 
 describe('prepush budget: the pre-push total', () => {
-  it('a WSL leg planned after 300 s keeps its own 180 s cap, since 210 s of the total remain', () => {
+  it('a WSL leg planned after 300 s keeps its own 160 s cap, since 190 s of the total remain', () => {
     expect(legBudget('wsl', { [ELAPSED_ENV]: '300' }).seconds).toBe(LEG_BUDGET_S['wsl'])
   })
 
-  it('a WSL leg planned after 400 s gets only the 110 s that remain of the total', () => {
+  it('a WSL leg planned after 400 s gets only the 90 s that remain of the total', () => {
     const b = legBudget('wsl', { [ELAPSED_ENV]: '400' })
-    expect(b.seconds).toBe(110)
-    expect(b.source).toContain(`cut to 110 s by the ${TOTAL_BUDGET_S} s pre-push total after 400 s`)
+    expect(b.seconds).toBe(90)
+    expect(b.source).toContain(`cut to 90 s by the ${TOTAL_BUDGET_S} s pre-push total after 400 s`)
   })
 
   it('a leg planned past the total gets 0 s, so only the never-cut files are planned', () => {
@@ -188,7 +188,11 @@ describe('prepush budget: the pre-push total', () => {
 
   it('the per-leg caps alone fit the total, with room for the lint and typecheck overhead', () => {
     expect(LEG_BUDGET_S['win']! + LEG_BUDGET_S['wsl']!).toBeLessThanOrEqual(TOTAL_BUDGET_S)
-    expect(TOTAL_BUDGET_S).toBe(510)
+    expect(TOTAL_BUDGET_S).toBe(490)
+  })
+
+  it('the hook overhead is the 50 s measured outside the suite legs (measured: 671 s external wall minus 620 s of legs, rounded down)', () => {
+    expect(HOOK_OVERHEAD_S).toBe(50)
   })
 
   it('the total, the hook overhead and the calibration margin add up to the 600 s the whole hook is held to', () => {
@@ -199,6 +203,46 @@ describe('prepush budget: the pre-push total', () => {
   it('an override cannot lift a leg past what the total leaves', () => {
     expect(legBudget('win', { PREPUSH_BUDGET_S: '900' }).seconds).toBe(TOTAL_BUDGET_S)
     expect(legBudget('wsl', { PREPUSH_WSL_BUDGET_S: '900', [ELAPSED_ENV]: '400' }).seconds).toBe(TOTAL_BUDGET_S - 400)
+  })
+})
+
+describe('prepush budget: the wall-clock deadline of a leg', () => {
+  const NOW = 1_800_000_000_000
+
+  it('the WSL deadline is the time actually left: the clock at planning plus the total minus the real elapsed seconds, capped by the leg budget', () => {
+    // HAND-DERIVED: 490 s total minus 400 s real elapsed leaves 90 s, under the 160 s cap
+    const d = legDeadline('wsl', { [ELAPSED_ENV]: '400' }, NOW)
+    expect(d.seconds).toBe(90)
+    expect(d.atMs).toBe(NOW + 90_000)
+  })
+
+  it('the WSL deadline does not depend on any estimate of the Windows leg, only on the elapsed seconds the hook measured', () => {
+    // two different real elapsed values give two different deadlines from the same everything else
+    expect(legDeadline('wsl', { [ELAPSED_ENV]: '100' }, NOW).seconds).toBe(160)
+    expect(legDeadline('wsl', { [ELAPSED_ENV]: '450' }, NOW).seconds).toBe(40)
+    expect(legDeadline('wsl', { [ELAPSED_ENV]: '490' }, NOW).seconds).toBe(0)
+  })
+
+  it('the Windows leg with no elapsed value gets its own budget from the clock it was given', () => {
+    const d = legDeadline('win', {}, NOW)
+    expect(d.seconds).toBe(LEG_BUDGET_S['win'])
+    expect(d.atMs).toBe(NOW + LEG_BUDGET_S['win']! * 1000)
+  })
+
+  it(`${DEADLINE_ENV} replaces the budget: 0 stops the fill at once, and a value that is not whole seconds is ignored`, () => {
+    expect(legDeadline('win', { [DEADLINE_ENV]: '0' }, NOW)).toMatchObject({ atMs: NOW, seconds: 0, source: `${DEADLINE_ENV}=0` })
+    expect(legDeadline('win', { [DEADLINE_ENV]: '12' }, NOW).atMs).toBe(NOW + 12_000)
+    for (const bad of ['soon', '-3', '1.5', '']) expect(legDeadline('win', { [DEADLINE_ENV]: bad }, NOW).seconds).toBe(LEG_BUDGET_S['win'])
+  })
+
+  it(`${DEADLINE_ENV} cannot lift the deadline past what the pre-push total leaves`, () => {
+    // HAND-DERIVED: 490 s total minus 400 s elapsed leaves 90 s, and no elapsed value leaves all 490 s
+    const d = legDeadline('wsl', { [DEADLINE_ENV]: '99999', [ELAPSED_ENV]: '400' }, NOW)
+    expect(d.seconds).toBe(90)
+    expect(d.atMs).toBe(NOW + 90_000)
+    expect(d.source).toContain('cut to 90 s')
+    expect(legDeadline('win', { [DEADLINE_ENV]: '99999' }, NOW).seconds).toBe(TOTAL_BUDGET_S)
+    expect(legDeadline('win', { [DEADLINE_ENV]: '30' }, NOW).seconds).toBe(30)
   })
 })
 

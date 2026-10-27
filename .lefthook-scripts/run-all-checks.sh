@@ -90,9 +90,9 @@ start_suite_leg() {
     echo "pre-push: every selected test file was already green on this tree, so the $2 leg has nothing to run"
     run_check "$1" true
   elif [[ -n "$FOCUS_FILE" ]]; then
-    run_check "$1" env TG_PREPUSH_FOCUS="$FOCUS_FILE" bash "$3"
+    run_check "$1" env TG_PREPUSH_FOCUS="$FOCUS_FILE" TG_PREPUSH_PLAN="$FOCUS_PLAN" TG_PREPUSH_CUT_REPORT="$LOG_DIR/cut-$2.txt" bash "$3"
   else
-    run_check "$1" env -u TG_PREPUSH_FOCUS bash "$3"
+    run_check "$1" env -u TG_PREPUSH_FOCUS -u TG_PREPUSH_PLAN bash "$3"
   fi
 }
 
@@ -100,10 +100,17 @@ start_suite_leg() {
 record_leg_outcome() {
   [[ -n "${END[$1]:-}" && -z "${ABORTED[$1]:-}" ]] || return 0
   node "$ROOT_DIR/scripts/test-durations.mjs" "$LOG_DIR/$1.log" --record "$FAILED_STORE" "$2" || true
-  if [[ -n "${FAILED[$1]:-}" ]]; then focus_record_failure "$2" "$LOG_DIR/$1.log"; else focus_clear "$2"; fi
+  # A green leg whose fill the wall-clock deadline cut keeps the record: a file that failed last time may be among the files it did not run.
+  if [[ -n "${FAILED[$1]:-}" ]]; then focus_record_failure "$2" "$LOG_DIR/$1.log"; elif [[ ! -s "$LOG_DIR/cut-$2.txt" ]]; then focus_clear "$2"; fi
   if [[ -z "${FAILED[$1]:-}" && -n "${GREEN_TREE_OF[$1]:-}" ]]; then
     (cd "$ROOT_DIR" && node scripts/prepush-green.mjs record-files "$2" "${GREEN_FOCUS_OF[$1]}" "${GREEN_TREE_OF[$1]}") || true
   fi
+}
+
+# Prints the files a leg's wall-clock deadline cut (written by run-test.sh and wsl-test.sh); they are deferred to the full CI suite like the files the estimate cut. $1: leg.
+report_cut() {
+  [[ -s "$LOG_DIR/cut-$1.txt" ]] || return 0
+  cat "$LOG_DIR/cut-$1.txt"
 }
 
 # Prints the slowest test files of one leg's vitest log. A failure of this report never changes the push result.
@@ -177,6 +184,7 @@ grep -h '^pre-push: reused' "$LOG_DIR/typecheck.log" "$LOG_DIR/ts-checks.log" 2>
 [[ -z "${FAILED[typecheck]:-}" ]] || { report_failure typecheck; FAIL=1; }
 [[ -z "${FAILED[ts-checks]:-}" ]] || { report_failure ts-checks; FAIL=1; }
 record_leg_outcome tests win
+report_cut win
 
 if [[ "$WSL_RUN" -eq 1 ]]; then
   if [[ -z "$WSL_PID" && "$FAIL" -eq 0 ]]; then
@@ -189,6 +197,7 @@ if [[ "$WSL_RUN" -eq 1 ]]; then
     wait_legs wsl-test
     [[ -z "${FAILED[wsl-test]:-}" ]] || { report_failure wsl-test; FAIL=1; }
     record_leg_outcome wsl-test wsl
+    report_cut wsl
   fi
 fi
 

@@ -39,21 +39,46 @@ to_wsl_path() {
     echo "/mnt/${p:0:1}${p:2}" | sed 's|^/mnt/\(.\)|/mnt/\L\1|'
 }
 
+# The leg's plan (see prepush-focus.sh) splits the focus list into the floor, which runs first and is never cut, and the fill files, which run after it under the wall-clock deadline. Without a plan, or when the split fails, the whole list is the floor and no deadline applies.
+FLOOR_LIST=() FILL_LIST=() DEADLINE_MS=0
+if [[ -n "${TG_PREPUSH_FOCUS:-}" ]]; then
+    if [[ -n "${TG_PREPUSH_PLAN:-}" && -s "${TG_PREPUSH_PLAN:-}" ]] && split_out="$(node "$(git rev-parse --show-toplevel)/scripts/prepush-deadline.mjs" split "$TG_PREPUSH_FOCUS" "$TG_PREPUSH_PLAN")" && [[ "$split_out" == DEADLINE$'\t'* ]]; then
+        while IFS=$'\t' read -r kind value; do
+            case "$kind" in
+                DEADLINE) DEADLINE_MS="$value" ;;
+                FLOOR) FLOOR_LIST+=("$value") ;;
+                FILL) FILL_LIST+=("$value") ;;
+            esac
+        done <<<"$split_out"
+    else
+        while IFS= read -r focus_file; do [[ -n "$focus_file" ]] && FLOOR_LIST+=("$focus_file"); done <"$TG_PREPUSH_FOCUS"
+    fi
+fi
+
+# The deadline crosses to the Linux side as the time left, not as an instant: the WSL clock can drift from the Windows one, and the inner script adds the time left to its own clock when it starts.
+LEFT_MS=0
+if (( DEADLINE_MS > 0 )); then
+    LEFT_MS=$(( DEADLINE_MS - $(date +%s) * 1000 ))
+    if (( LEFT_MS < 0 )); then LEFT_MS=0; fi
+fi
+
 # The Linux-side half. Positional values arrive as a generated header so nothing needs quoting through wsl.exe.
 {
-    printf 'TAR=%q\nBUNDLE=%q\nNAMES=%q\nNODE_VERSION=%q\nNODE_MAJOR_MIN=%q\nNODE_MIRROR=%q\nSKIP_STATUS=%q\nPIDFILE=%q\n' \
-        "$(to_wsl_path "$TMPD/src.tar")" "$(to_wsl_path "$TMPD/history.bundle")" "$(to_wsl_path "$TMPD/confidential-names.txt")" "$NODE_VERSION" "$NODE_MAJOR_MIN" "$NODE_MIRROR" "$SKIP_STATUS" "$(to_wsl_path "$TMPD/inner.pid")"
-    # The focus list (see prepush-focus.sh) travels as an array in the generated header; empty means the whole suite.
+    printf 'TAR=%q\nBUNDLE=%q\nNAMES=%q\nNODE_VERSION=%q\nNODE_MAJOR_MIN=%q\nNODE_MIRROR=%q\nSKIP_STATUS=%q\nPIDFILE=%q\nCUTFILE=%q\nLEFT_MS=%q\n' \
+        "$(to_wsl_path "$TMPD/src.tar")" "$(to_wsl_path "$TMPD/history.bundle")" "$(to_wsl_path "$TMPD/confidential-names.txt")" "$NODE_VERSION" "$NODE_MAJOR_MIN" "$NODE_MIRROR" "$SKIP_STATUS" "$(to_wsl_path "$TMPD/inner.pid")" "$(to_wsl_path "$TMPD/cut.txt")" "$LEFT_MS"
+    # The floor list travels as an array in the generated header; empty with no fill means the whole suite.
     printf 'FOCUS_FILES=('
-    if [[ -n "${TG_PREPUSH_FOCUS:-}" ]]; then
-        while IFS= read -r focus_file; do [[ -n "$focus_file" ]] && printf '%q ' "$focus_file"; done <"$TG_PREPUSH_FOCUS"
-    fi
+    for focus_file in ${FLOOR_LIST[@]+"${FLOOR_LIST[@]}"}; do printf '%q ' "$focus_file"; done
+    printf ')\nFILL_FILES=('
+    for focus_file in ${FILL_LIST[@]+"${FILL_LIST[@]}"}; do printf '%q ' "$focus_file"; done
     printf ')\n'
     cat <<'INNER'
 set -euo pipefail
 
 # The Windows side reads this pid to end the whole Linux process tree if the push is interrupted.
 echo $$ >"$PIDFILE"
+# The fill files' deadline on this side's clock, counted from here so the setup below spends it (the WSL clock is never compared with the Windows one).
+DEADLINE_MS=$(( $(date +%s) * 1000 + LEFT_MS ))
 
 skip() {
     echo "wsl-test: $1, skipping"
@@ -186,7 +211,37 @@ fi
 
 echo "wsl-test: running npm test in $WORK"
 # TOKEN_GOAT_NO_WORKER_SPAWN and TOKEN_GOAT_HARNESS_OVERRIDE are pinned by tests/setup/isolate-home.ts (vitest setupFiles) so local pre-push and CI run under the same defaults. Don't re-export them here.
-if [[ "${#FOCUS_FILES[@]}" -gt 0 ]]; then
+if [[ "${#FILL_FILES[@]}" -gt 0 ]]; then
+    # A planned leg: the floor first and never cut, then the fill files under the reporter that cancels the run at the deadline (scripts/prepush-deadline-reporter.mjs); the files that did not finish go to CUTFILE and the Windows side reports them. The status is the floor's, plus the fill's when it ran to its end or the deadline cut it with a completed file red.
+    status=0
+    if [[ "${#FOCUS_FILES[@]}" -gt 0 ]]; then
+        echo "wsl-test: running ${#FOCUS_FILES[@]} floor file(s)"
+        npx vitest run "${FOCUS_FILES[@]}" "${NATIVE_EXCLUDES[@]}" || status=1
+    fi
+    : >"$CUTFILE"
+    if (( $(date +%s) * 1000 >= DEADLINE_MS )); then
+        printf '%s\n' "${FILL_FILES[@]}" >"$CUTFILE"
+    else
+        out="$ROOT/deadline.out"
+        : >"$out"
+        rc=0 verdict=plain
+        echo "wsl-test: running ${#FILL_FILES[@]} fill file(s) until the deadline"
+        TG_PREPUSH_DEADLINE_AT="$DEADLINE_MS" TG_PREPUSH_DEADLINE_OUT="$out" npx vitest run --reporter=default --reporter=./scripts/prepush-deadline-reporter.mjs "${FILL_FILES[@]}" "${NATIVE_EXCLUDES[@]}" || rc=$?
+        while IFS=$'\t' read -r kind file; do
+            case "$kind" in
+                STATUS) verdict="$file" ;;
+                UNFINISHED) printf '%s\n' "$file" >>"$CUTFILE" ;;
+            esac
+        done < <(node scripts/prepush-deadline.mjs summarize "$out" "${FILL_FILES[@]}")
+        case "$verdict" in
+            plain) [[ "$rc" -eq 0 ]] || status=1 ;;
+            red) status=1 ;;
+            # A cut run exits 1 by itself; any other code is a crash or a signal, which the file outcomes do not describe.
+            green) [[ "$rc" -le 1 ]] || status=1 ;;
+        esac
+    fi
+    exit "$status"
+elif [[ "${#FOCUS_FILES[@]}" -gt 0 ]]; then
     echo "wsl-test: re-running ${#FOCUS_FILES[@]} focused file(s)"
     npx vitest run "${FOCUS_FILES[@]}" "${NATIVE_EXCLUDES[@]}"
 elif [[ "${#NATIVE_EXCLUDES[@]}" -gt 0 ]]; then
@@ -218,6 +273,12 @@ wsl.exe -d "$DISTRO" -- bash -lc "exec bash '$(to_wsl_path "$TMPD/inner.sh")'" &
 WSL_PID=$!
 wait "$WSL_PID" || status=$?
 trap - INT TERM
+# The fill files the wall-clock deadline cut on the Linux side: printed here and added to the leg's cut report, which run-all-checks.sh prints for a passing leg too.
+if [[ -s "$TMPD/cut.txt" ]]; then
+    cut_report="$(node "$(git rev-parse --show-toplevel)/scripts/prepush-deadline.mjs" report "$TMPD/cut.txt")" || cut_report="deferred to CI: the files the wall-clock deadline cut (the report could not be built)"
+    printf '%s\n' "$cut_report"
+    if [[ -n "${TG_PREPUSH_CUT_REPORT:-}" ]]; then printf '%s\n' "$cut_report" >>"$TG_PREPUSH_CUT_REPORT"; fi
+fi
 rm -rf -- "$TMPD"
 if [[ "$status" -eq "$SKIP_STATUS" ]]; then
     exit 0

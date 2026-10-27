@@ -5,7 +5,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
 import { hasUnparsedFailure, readFailure } from './prepush-failed.mjs'
-import { coldCostMs, costFn, FIXED_OVERHEAD_S, fillBudget, legBudget, workersFor, workSeconds } from './prepush-budget.mjs'
+import { coldCostMs, costFn, FIXED_OVERHEAD_S, fillBudget, legBudget, legDeadline, workersFor, workSeconds } from './prepush-budget.mjs'
 import { compareCodeUnits, GIT_TIMEOUT_MS, importReach } from './prepush-graph.mjs'
 import { readerTiersForRepo } from './prepush-readers.mjs'
 import { durationsPath, readDurations } from './test-durations.mjs'
@@ -228,7 +228,13 @@ export function decideSelection(io) {
   const doubtNote = why.size === 0 ? '' : `; doubt (${why.size}): ${[...why][0]}${why.size > 1 ? ` and ${why.size - 1} more` : ''}, ${keptRest} other tests added cheapest first`
   const noNew = doubts.length === 0 && !newCommits ? '; no pushed ref brings a commit the remote lacks' : ''
   const note = `${leg} leg focused: ${files.length} file(s), estimated ~${Math.round(fit.estimateS)} s of a ${Math.round(budget.seconds)} s budget (${budget.source}); ${failed.length} failed before, ${changedTests.length} changed tests, ${guards.length} guard tests, ${matrix.length} bundle matrix tests, ${direct} direct and ${fit.kept.length - keptLead - direct - keptReaders - keptRest} further importers, ${keptReaders} text or bundle readers; deferred to CI: ${fit.deferred.length} files; costs: ${costSource}${over}${doubtNote}${noNew}; set PREPUSH_FULL=1 for the full leg`
-  return { full: false, files, note, deferred: fit.deferred, deferredReport, doubts: [...why] }
+  const deadline = legDeadline(leg, io.env, (io.now ?? Date.now)())
+  return { full: false, files, note, deferred: fit.deferred, deferredReport, doubts: [...why], floor: fixed, fill: fit.kept, deadlineAtMs: deadline.atMs }
+}
+
+/** @param {{ fill: string[], deadlineAtMs: number }} selection a focused selection @returns {string} the plan the leg script reads: the deadline (epoch ms) on the first line, then the fill files in priority order; every focus file not listed is the floor, which runs first and is never cut */
+export function planText({ fill, deadlineAtMs }) {
+  return `${deadlineAtMs}\n${fill.map((f) => `${f}\n`).join('')}`
 }
 
 /** @param {string} root @param {string} sub directory under root @param {(name: string) => boolean} keep @returns {string[]} repo-relative test files tracked in or below sub, listed with `git ls-files` so nothing walks the disk; a git call that fails or times out throws, and the leg runs in full */
@@ -250,7 +256,7 @@ export function onEveryRemote(git, sha, pushed = '') {
 }
 
 function main() {
-  const [root, leg, headSha, pushFile, store, deferFile, pushedRemote = ''] = process.argv.slice(2)
+  const [root, leg, headSha, pushFile, store, deferFile, pushedRemote = '', planFile = ''] = process.argv.slice(2)
   const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS })
   // One read of the import graph serves both the importer and the setup seams for the same modules.
   const seams = importSeams((modules) => importReach(root, modules))
@@ -281,6 +287,7 @@ function main() {
     workers: workersFor(process.env, process.platform),
   })
   if (!result.full && deferFile) writeFileSync(deferFile, result.deferredReport)
+  if (!result.full && planFile) writeFileSync(planFile, planText(result))
   process.stdout.write(result.full ? `FULL\t${leg} leg full: ${result.why}\n` : `FOCUS\t${result.note}\n${result.files.join('\n')}\n`)
 }
 

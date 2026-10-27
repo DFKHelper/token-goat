@@ -27,8 +27,10 @@ export interface SelectionIo {
   workers: number
   onRemote?: (sha: string) => boolean
   allTests?: () => string[] | null
+  now?: () => number
 }
-export type Selection = { full: true; why: string } | { full: false; files: string[]; note: string; deferred: string[]; deferredReport: string; doubts: string[] }
+export type Selection = { full: true; why: string } | { full: false; files: string[]; note: string; deferred: string[]; deferredReport: string; doubts: string[]; floor: string[]; fill: string[]; deadlineAtMs: number }
+export function planText(selection: { fill: string[]; deadlineAtMs: number }): string
 export function orNull<T>(fn: () => T): T | null
 export function importSeams(read: (modules: string[]) => { tests: Map<string, number>; setups: string[] }): { importers: (modules: string[]) => Map<string, number> | null; setups: (modules: string[]) => string[] | null }
 export function parsePushRefs(text: string): { refs: PushRef[]; bad: string | null }
