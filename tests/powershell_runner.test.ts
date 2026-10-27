@@ -4,6 +4,22 @@ import { spawnSync } from 'node:child_process'
 import { run, spawnTarget } from '../src/bash_runner.js'
 import { stripAnsiEscapes } from '../src/render/ansi.js'
 
+// Names a native (NTSTATUS-style) exit code in an assertion message so that a crash of the
+// PowerShell child, such as an access violation, is diagnosable from the failure alone.
+// Node reports a 32-bit status as a negative number on Windows; normalise before formatting.
+const NATIVE_EXIT_NAMES: Record<number, string> = {
+  0xc0000005: 'STATUS_ACCESS_VIOLATION',
+  0xc0000374: 'STATUS_HEAP_CORRUPTION',
+  0xc000013a: 'STATUS_CONTROL_C_EXIT',
+}
+function nativeExitNote(code: number | null): string {
+  if (code === null) return 'no exit code (terminated by a signal)'
+  const unsigned = code < 0 ? code + 4294967296 : code
+  if (unsigned < 0xc0000000 || unsigned > 0xffffffff) return `exit code ${code}`
+  const name = NATIVE_EXIT_NAMES[unsigned]
+  return `native exit code 0x${unsigned.toString(16).toUpperCase().padStart(8, '0')}${name ? ` (${name})` : ''}`
+}
+
 // Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` (PowerShell 7.6.4) and `powershell.exe -NoProfile -NonInteractive -Command <cmd>` (Windows PowerShell 5.1), each invoked through pwsh's call operator on Windows 11, 2026-10-02, the two agreeing on every row: a break or continue label that converts to an empty string ($null, '', "", @()) acts as no label at all and stops only the innermost loop, while 0, $false and ' ' are labels no loop declares and leave the whole script.
 const EMPTY_LABEL_CASES: Array<[string, number, string[]]> = [
   ['$x = $null; foreach ($i in 1,2) { Write-Output $i; break $x }; Write-Output after', 0, ['1', 'after']],
@@ -51,7 +67,7 @@ describe('PowerShell runner integration and resolution', () => {
       },
     })
 
-    expect(exitCode).toBe(0)
+    expect(exitCode, nativeExitNote(exitCode)).toBe(0)
     expect(captured).toContain('Test-TokenGoat: .\\path\\to\\file.ps1')
   })
 
@@ -62,7 +78,7 @@ describe('PowerShell runner integration and resolution', () => {
       writeStderr: () => {},
     })
 
-    expect(exitCode).toBe(37)
+    expect(exitCode, nativeExitNote(exitCode)).toBe(37)
   })
 
   it('clears TG_CMD before executing user script to prevent leakage to child processes', async () => {
@@ -75,7 +91,7 @@ describe('PowerShell runner integration and resolution', () => {
       },
     })
 
-    expect(exitCode).toBe(0)
+    expect(exitCode, nativeExitNote(exitCode)).toBe(0)
     expect(captured).toContain('TG_CMD_VAL:[]')
   })
 
@@ -89,7 +105,7 @@ describe('PowerShell runner integration and resolution', () => {
       },
     })
 
-    expect(exitCode).toBe(0)
+    expect(exitCode, nativeExitNote(exitCode)).toBe(0)
     expect(captured).toContain('Part1')
     expect(captured).toContain('Part2')
     expect(captured).toContain('Part3')
@@ -112,7 +128,7 @@ describe('PowerShell runner integration and resolution', () => {
     ['Write-Output (', 1],
   ])('wrapped exit code matches direct pwsh for %s', async (cmd, expected) => {
     const exitCode = await run(cmd, { shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })
-    expect(exitCode).toBe(expected)
+    expect(exitCode, nativeExitNote(exitCode)).toBe(expected)
   })
 
   // Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `pwsh -NoProfile -NonInteractive -Command <cmd>` spawned from node, PowerShell 7.6.4 on Windows 11, 2026-10-02. A statement-terminating error (unknown command, .NET exception, divide by zero) does not stop the script, `return X` and a top-level break keep the `$?` of the statement before them, a finally that runs last decides the exit, a break whose label nothing catches still exits 1 whether the label is quoted, dotted or computed, a label a loop declares still reaches that loop, a named begin, process or end block reports the `$?` of its own last statement with an empty block passing its predecessor's on, a clean block's failure decides the exit while its output never reaches stdout, and a user variable named like the wrapper's own does not change the result.
@@ -153,9 +169,10 @@ describe('PowerShell runner integration and resolution', () => {
   ])('wrapped exit code and output match direct pwsh for %s', async (cmd, expected, lines) => {
     const target = spawnTarget(cmd, undefined, 'pwsh')
     const r = spawnSync(target.file, target.args, { encoding: 'utf8', env: { ...process.env, ...target.cmdEnv } })
-    expect(r.status).toBe(expected)
+    expect(r.status, nativeExitNote(r.status)).toBe(expected)
     expect(r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)).toEqual(lines)
-    expect(await run(cmd, { filterName: 'powershell', shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })).toBe(expected)
+    const runCode = await run(cmd, { filterName: 'powershell', shellType: 'pwsh', writeStdout: () => {}, writeStderr: () => {} })
+    expect(runCode, nativeExitNote(runCode)).toBe(expected)
   })
 
   // Provenance: CAPTURE, exit code and trimmed stdout lines of a direct `powershell.exe -NoProfile -NonInteractive -Command <cmd>` spawned from node, Windows PowerShell 5.1 on Windows 11, 2026-10-02. Windows PowerShell 5.1 is what resolvePowerShell falls back to when pwsh is absent, and under -Command it never runs a process block, where pwsh 7 runs it once, so the wrapper must skip it there too or a process block's side effects and failure would happen that a direct run never has.
@@ -175,7 +192,7 @@ describe('PowerShell runner integration and resolution', () => {
       const target = spawnTarget(cmd, undefined, 'powershell')
       expect(target.file).toMatch(/powershell\.exe$/i)
       const r = spawnSync(target.file, target.args, { encoding: 'utf8', env: { ...process.env, ...target.cmdEnv } })
-      expect(r.status).toBe(expected)
+      expect(r.status, nativeExitNote(r.status)).toBe(expected)
       expect(r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)).toEqual(lines)
     } finally {
       if (prev === undefined) delete process.env['TOKEN_GOAT_POWERSHELL']
@@ -188,7 +205,7 @@ describe('PowerShell runner integration and resolution', () => {
     const target = spawnTarget('Write-Output "unterminated', undefined, 'pwsh')
     const r = spawnSync(target.file, target.args, { encoding: 'utf8', env: { ...process.env, ...target.cmdEnv } })
     const stderr = stripAnsiEscapes(r.stderr)
-    expect(r.status).toBe(1)
+    expect(r.status, nativeExitNote(r.status)).toBe(1)
     expect(stderr).toContain('ParserError')
     expect(stderr).toContain('Write-Output "unterminated')
     expect(stderr).not.toContain('Exception calling')
@@ -197,7 +214,7 @@ describe('PowerShell runner integration and resolution', () => {
   it('stops at a top-level return and still prints what ran before it', async () => {
     let captured = ''
     const exitCode = await run('Write-Output before; if ($true) { return }; Write-Output after', { filterName: 'powershell', shellType: 'pwsh', writeStdout: (s) => { captured += s }, writeStderr: () => {} })
-    expect(exitCode).toBe(0)
+    expect(exitCode, nativeExitNote(exitCode)).toBe(0)
     expect(captured).toContain('before')
     expect(captured).not.toContain('after')
   })
