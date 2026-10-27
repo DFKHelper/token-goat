@@ -1307,7 +1307,8 @@ describe('token-goat CLI', () => {
 
       const r = spawnSync(process.execPath, [BUNDLE, 'write-file', dest, '--from', src], { encoding: 'utf8' })
 
-      expect(r.status).toBe(0)
+      // stderr is part of the message: a status-1 first attempt is only diagnosable from the write's own error (EPERM after the retry budget, or something else).
+      expect(r.status, r.stderr).toBe(0)
       expect(fs.readFileSync(dest, 'utf8')).toBe('new content')
     } finally {
       holder.kill()

@@ -133,12 +133,26 @@ jobs:
           rustup show active-toolchain
       # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers per-test instances of this). A real regression fails deterministically and still fails after 3 attempts. The embedding model download used to be retried here too; it now has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
+        id: test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
           timeout_minutes: 15
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test -- --shard=${{ matrix.shard }}/3
+      # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 is a warning annotation.
+      # The retry itself stays until the onTaskUpdate RPC flake it absorbs has a known root cause.
+      - name: Report test attempts
+        if: always()
+        shell: bash
+        env:
+          TOTAL_ATTEMPTS: ${{ steps.test.outputs.total_attempts }}
+        run: |
+          n="${TOTAL_ATTEMPTS:-unknown}"
+          echo "test step needed ${n} attempts" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$n" -gt 1 ] 2>/dev/null; then
+            echo "::warning title=Test step retried::test step needed ${n} attempts; the retry hid a failed attempt"
+          fi
       # Explicit, so the extension's regression suite (vscode-extension/tests/security.test.ts) stays wired to a gate even if the root vitest config's default file discovery ever narrows its `include` -- `npm test` above already picks these tests up incidentally today, but that was never intentional and is not something to depend on silently.
       - name: Test (VS Code extension)
         if: matrix.shard == 1
@@ -205,12 +219,26 @@ jobs:
           rustup show active-toolchain
       # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers per-test instances of this). A real regression fails deterministically and still fails after 3 attempts. The embedding model download used to be retried here too; it now has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
+        id: test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
           timeout_minutes: 15
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test -- --shard=${{ matrix.shard }}/4
+      # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 is a warning annotation.
+      # The retry itself stays until the onTaskUpdate RPC flake it absorbs has a known root cause.
+      - name: Report test attempts
+        if: always()
+        shell: bash
+        env:
+          TOTAL_ATTEMPTS: ${{ steps.test.outputs.total_attempts }}
+        run: |
+          n="${TOTAL_ATTEMPTS:-unknown}"
+          echo "test step needed ${n} attempts" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$n" -gt 1 ] 2>/dev/null; then
+            echo "::warning title=Test step retried::test step needed ${n} attempts; the retry hid a failed attempt"
+          fi
       - name: Check native startup ownership and ordinary hook behavior
         shell: bash
         working-directory: native/tg-hook
@@ -284,12 +312,26 @@ jobs:
           rustup show active-toolchain
       # Retries absorb a shared-runner "[vitest-worker]: Timeout calling 'onTaskUpdate'" RPC flake with zero assertion failures anywhere in the run (vitest.config.ts's CI-only retry also covers per-test instances of this). A real regression fails deterministically and still fails after 3 attempts. The embedding model download used to be retried here too; it now has its own retries in the warm step above, which is the only step that fetches it.
       - name: Test
+        id: test
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60 # v4.0.0
         with:
           timeout_minutes: 15
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test -- --shard=${{ matrix.shard }}/3
+      # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 is a warning annotation.
+      # The retry itself stays until the onTaskUpdate RPC flake it absorbs has a known root cause.
+      - name: Report test attempts
+        if: always()
+        shell: bash
+        env:
+          TOTAL_ATTEMPTS: ${{ steps.test.outputs.total_attempts }}
+        run: |
+          n="${TOTAL_ATTEMPTS:-unknown}"
+          echo "test step needed ${n} attempts" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$n" -gt 1 ] 2>/dev/null; then
+            echo "::warning title=Test step retried::test step needed ${n} attempts; the retry hid a failed attempt"
+          fi
       - name: Test (VS Code extension)
         if: matrix.shard == 1
         run: npm run test:vscode-extension

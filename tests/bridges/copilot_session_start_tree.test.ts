@@ -553,7 +553,8 @@ it.for(['copilot_cli', 'vscode'])('preserves real indexed reminder, notes and dr
   expect(context).toContain('read "file::symbol"')
   expect(context).toContain('startup-contract')
   expect(context).toContain('keep-owned-tree-bounded')
-  expect(['reindexing', 'deferred', 'unqueued'], 'the start must carry drift context (a reindex, the deferred background check, or the drift the queue refused)').toContain(expectDriftNotice(context))
+  // The context is in the message: a "silent" result is only diagnosable from what the owed or first start actually delivered.
+  expect(['reindexing', 'deferred', 'unqueued'], `the start must carry drift context (a reindex, the deferred background check, or the drift the queue refused); delivered: ${context}`).toContain(expectDriftNotice(context))
 })
 
 // CAPTURE: pre-push wsl-test.log 2026-10-26, Linux WSL Ubuntu: the start's drift line, verbatim.
