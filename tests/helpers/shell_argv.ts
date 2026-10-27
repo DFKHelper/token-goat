@@ -253,7 +253,9 @@ export function reapOwned(sh: string, token: string, script: string = REAP_SCRIP
 
 
 /** Each command run by a POSIX shell, its `token-goat` calls decoded. A command that ends its chunk's subshell keeps what it printed as its run, and the chunk mates after it run again in a later pass. Git Bash drops a carriage return from the text it evaluates, quoted or not, so on Windows no quoting carries one: callers compare without it there. */
-export function shRunAll(sh: string, commands: readonly string[], opts: { timeoutMs?: number; killWhen?: () => boolean } = {}): ShellRun[] {
+export function shRunAll(sh: string, commands: readonly string[], opts: { timeoutMs?: number; killWhen?: () => boolean; reap?: (sh: string, token: string) => string | null } = {}): ShellRun[] {
+  // The cleanup of a failed run is a process-table scan; a caller whose row does not test that scan hands in its own, so the row does not pay a scan that took tens of seconds under load.
+  const reap = opts.reap ?? reapOwned
   const runs: (ShellRun | undefined)[] = new Array<ShellRun | undefined>(commands.length)
   let pending = commands.map((_, i) => i)
   while (pending.length > 0) {
@@ -265,7 +267,7 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
     const res = opts.killWhen === undefined ? spawnSync(sh, ['-c', SH_SCRIPT], { encoding: 'utf8', env, windowsHide: true, timeout: opts.timeoutMs ?? 120_000 }) : runInWorker(sh, ['-c', SH_SCRIPT], env, { killWhen: opts.killWhen, quietTicks: 60_000 / RUN_TICK_MS, deadlineMs: Date.now() + (opts.timeoutMs ?? 120_000) })
     // A timeout kills the outer shell only, orphaning the chunk subshell and anything a command started under it.
     const reapedAfterRun = Boolean(res.error || res.signal || (res.status !== null && res.status !== 0))
-    let reapFailure = reapedAfterRun ? reapOwned(sh, token) : null
+    let reapFailure = reapedAfterRun ? reap(sh, token) : null
     const fields = (res.stdout ?? '').split('\0')
     const rerun: number[] = []
     let chunkEnd = Math.min(SH_CHUNK, pending.length)
@@ -294,7 +296,7 @@ export function shRunAll(sh: string, commands: readonly string[], opts: { timeou
       } else if (f !== '') cur.stray.push(f)
     }
     // A run already reaped above is not scanned a second time: under load each scan of the process table took tens of seconds, and the repeat doubled a killed run's time.
-    if (next < pending.length && !reapedAfterRun) reapFailure = reapOwned(sh, token)
+    if (next < pending.length && !reapedAfterRun) reapFailure = reap(sh, token)
     const cleanup = reapFailure === null ? '' : `; cleanup after the kill failed: ${reapFailure}`
     if (next < pending.length) {
       const ran = runs.filter((r) => r !== undefined).length

@@ -20,11 +20,33 @@ vi.mock('node:child_process', async (importOriginal) => {
 describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   const sh = POSIX_SH!
 
+  // Narrows the reap's token scan from every process in the table to the pids a row names, each read from a file when the scan starts: the rows that use it test the scan's repeat or its kin search, not how many processes the machine has, and the full-table grep took seconds per scan under load.
+  const narrowScan = (script: string, pidFiles: string[]): string => {
+    const head = 'tg_owned() {'
+    const glob = '/proc/[0-9]*/environ'
+    expect(script.includes(head) && script.includes(glob), 'the reap script no longer has the scan text this test narrows').toBe(true)
+    const names = pidFiles.map((f) => `"${f}"`).join(' ')
+    const own = `${head}\n  tg_scan=; for tg_nf in ${names}; do tg_nx=; read -r tg_nx 2>/dev/null < "$tg_nf"; [ -z "$tg_nx" ] || tg_scan="$tg_scan /proc/$tg_nx/environ"; done; [ -n "$tg_scan" ] || tg_scan=/dev/null`
+    return script.replace(head, () => own).replace(glob, () => '$tg_scan')
+  }
+
+  // The same narrowing with the process listing fixed to nothing. The kin search reads `ps`, a whole-table pass that took 5-9 s under load, so a row that does not test the kin search fixes that listing too; the row that does keeps the real listing (see the row that names a tokenless child).
+  // With `marker`, each listing that the fixture answers appends to that file, so a row can assert the fixture was the listing it read (a restored real listing leaves no marker).
+  const fixScan = (script: string, pidFiles: string[], marker?: string): string => {
+    const listing = /^tg_ps\(\) \{.*\}$/m
+    const narrowed = narrowScan(script, pidFiles)
+    expect(listing.test(narrowed), 'the reap script no longer defines its process listing on one line').toBe(true)
+    const fixed = marker === undefined ? 'tg_ps() { :; }' : `tg_ps() { echo listed >> "${marker}"; :; }`
+    return narrowed.replace(listing, () => fixed)
+  }
+
   // A builtin wait rather than sleep: a child process would hold the output pipe open after the shell is killed. The shell is ended by the event of the child having started, not by a clock, so a machine slow to start the shell still has the child at its wait when the kill lands.
   it('names the kill when the shell is ended before every command ran', async () => {
     // Killing the outer shell must not orphan the chunk subshell or the process it is waiting on. Provenance: HAND-DERIVED. The child blocks on an event that never comes and marks the moment its wait returns, so the pass condition is that marker staying absent, not a race against a clock.
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shargv-'))
     const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
+    // Set once every assertion below held, so the insurance scan in `finally` runs only for a row that did not prove the run gone.
+    let verified = false
     try {
       const shq = (s: string): string => `'${s.replace(/'/g, `'"'"'`)}'`
       // The child blocks on a FIFO nobody ever opens for writing, so only the kill can end it: no clock decides the outcome. `reached` is written only if the wait returned. The run's owner token is saved so the finally below can reap the child however the test ends.
@@ -32,7 +54,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       const loop = `echo "\${BASHPID:-$(exec sh -c 'echo $PPID')}" > ${shq(file('pid'))}; echo "$${OWNER_VAR}" > ${shq(file('token'))}; mkfifo ${shq(file('fifo'))} && "$BASH" -c ${child} tg ${shq(file('kid'))} ${shq(file('reached'))} ${shq(file('fifo'))} < /dev/null > /dev/null 2>&1`
       let message = ''
       try {
-        shRunAll(sh, ['token-goat a', loop, 'token-goat b'], { killWhen: () => fs.existsSync(file('kid')) })
+        // The reap is the real one, narrowed to the two pids this row wrote, with its process listing fixed: the row tests that the killed shell's children are ended, which the narrowed scan still does, and not the whole-table search that cost tens of seconds under load.
+        shRunAll(sh, ['token-goat a', loop, 'token-goat b'], { killWhen: () => fs.existsSync(file('kid')), reap: (s, token) => reapOwned(s, token, fixScan(REAP_SCRIPT, [file('pid'), file('kid')], file('listed'))) })
       } catch (err) {
         message = (err as Error).message
       }
@@ -44,6 +67,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       const alive = (): boolean => probeAlive(sh, `${SH_LIVE}; tg_live ${pids[0]} || tg_live ${pids[1]}`)
       expect(alive(), 'the chunk subshell or its child is still running after the run returned').toBe(false)
       expect(fs.existsSync(file('reached')), 'the child came back from its wait, so nothing killed it').toBe(false)
+      expect(fs.existsSync(file('listed')), 'the reap read the whole process table instead of its fixture, so the row paid for a pass it does not test').toBe(true)
+      verified = true
     } finally {
       // Insurance for a failed assertion: the owner token the run's processes carry, read from the file the loop wrote, ends anything still blocked.
       let token = ''
@@ -52,7 +77,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       } catch {
         // The loop never ran, so no child exists to reap.
       }
-      if (token !== '') reapOwned(sh, token)
+      if (token !== '' && !verified) reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
     }
   }, 150_000)
@@ -71,11 +96,14 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
         const opts = (args[2] ?? {}) as { timeout?: number }
         return real.spawnSync(args[0], args[1] as string[], { ...opts, timeout: Math.min(opts.timeout ?? 5_000, 5_000) })
       })
+      // The row tests the cap, not the cleanup scan, so it hands in a cleanup that only counts: the real scan took tens of seconds under load for a run that left nothing but a read that ends itself, since the FIFO is open for writing too and the read has its own limit.
+      const reaps: string[] = []
       try {
-        shRunAll(sh, [`mkfifo '${fifo}' && read -r _ < '${fifo}'`], { timeoutMs: 1 })
+        shRunAll(sh, [`mkfifo '${fifo}' && exec 3<>'${fifo}' && read -r -t 30 -u 3 _`], { timeoutMs: 1, reap: (_sh, token) => { reaps.push(token); return null } })
       } catch (err) {
         message = (err as Error).message
       }
+      expect(reaps, 'the cap row did not clean up through the cleanup it was handed, so it paid for the real process-table scan').toHaveLength(1)
       const shellSpawn = spawnCalls.mock.calls.find((call) => (call[1] as string[] | undefined)?.[1] === SH_SCRIPT)
       expect((shellSpawn?.[2] as { timeout?: number } | undefined)?.timeout, 'the 1 ms cap was ignored: the shell spawn did not receive timeoutMs as its timeout').toBe(1)
       expect(message, 'the timeout did not name the cap that ended the shell').toMatch(/ran 0 of 1 commands: .*ETIMEDOUT/)
@@ -88,15 +116,20 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   it('ends a shell that never reaches its killWhen event at the timeout deadline', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shdl-'))
     const fifo = path.join(dir, 'fifo').replace(/\\/g, '/')
+    const pidFile = path.join(dir, 'pid').replace(/\\/g, '/')
+    const marker = path.join(dir, 'listed').replace(/\\/g, '/')
     try {
       let message = ''
+      // The blocked read ends itself after its own limit, so it leaves nothing behind even if the reap found nothing. The reap is the real one, narrowed to the pid the command wrote, so the row pays for one cheap reap rather than a whole-table pass.
+      const loop = `echo "\${BASHPID:-$(exec sh -c 'echo $PPID')}" > '${pidFile}'; mkfifo '${fifo}' && exec 3<>'${fifo}' && read -r -t 30 -u 3 _`
       try {
-        shRunAll(sh, [`mkfifo '${fifo}' && read -r _ < '${fifo}'`], { killWhen: () => false, timeoutMs: 2000 })
+        shRunAll(sh, [loop], { killWhen: () => false, timeoutMs: 2000, reap: (s, token) => reapOwned(s, token, fixScan(REAP_SCRIPT, [pidFile], marker)) })
       } catch (err) {
         message = (err as Error).message
       }
       expect(message, 'the killWhen run did not end at its deadline').toMatch(/ran 0 of 1 commands: .*ETIMEDOUT/)
       expect(message, message).not.toMatch(/cleanup/)
+      expect(fs.existsSync(marker), 'the reap read the whole process table instead of its fixture, so the row paid for a pass it does not test').toBe(true)
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -110,6 +143,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'orphaned shell did not exit' })
     let launcher: ChildProcess | undefined
     let leftover: string | null
+    // True once the shell was seen gone by itself; a shell that ended on its own left nothing for a cleanup scan, which cost tens of seconds under load.
+    let endedByItself = false
     try {
       // Detached because a Git Bash loop that shares its dead parent's hidden console exits with it, which would make the test pass without the deadline; detached, it survives as a real orphan does.
       fs.writeFileSync(file('launcher.cjs'), [
@@ -133,10 +168,11 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
         watchdog.progress('shell gone')
       })()
       await Promise.race([gone, watchdog.failed])
+      endedByItself = true
     } finally {
       watchdog.stop()
       if (launcher !== undefined && launcher.exitCode === null) launcher.kill()
-      leftover = reapOwned(sh, token)
+      leftover = endedByItself ? null : reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
     }
     expect(leftover, 'the cleanup of the test shell failed').toBeNull()
@@ -191,7 +227,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       `until [ -s "${file('kid')}" ] || ! tg_live "$tg_pp"; do echo hold; sleep 0.1; done`,
       '[ -z "$tg_all" ] || { kill -KILL',
     ].join('\n')
-    const slowed = patch(patch(patch(patch(REAP_SCRIPT, 'kill -STOP $tg_new 2>/dev/null', ':'), 'for tg_round in 1 2 3 4 5; do', waitForParent), '[ -z "$tg_all" ] || { kill -KILL', holdKill), '  tg_left=\n', '  echo drain\n  tg_left=\n')
+    // The token scan reads only the owned parent and the late child's pid file, and the process listing is fixed empty: this row tests the window the scan stopped in, not the kin search, which the tokenless-child row runs on the real listing.
+    const slowed = patch(patch(patch(patch(fixScan(REAP_SCRIPT, [file('parentpid'), file('kid')], file('listed')), 'kill -STOP $tg_new 2>/dev/null', ':'), 'for tg_round in 1 2 3 4 5; do', waitForParent), '[ -z "$tg_all" ] || { kill -KILL', holdKill), '  tg_left=\n', '  echo drain\n  tg_left=\n')
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
     // The parent waits for the release file, then starts a child that blocks on a FIFO nobody writes, so only a kill ends it; its own errors land in a file.
     fs.writeFileSync(file('parent.sh'), [
@@ -221,12 +258,13 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
     })()
-    const got = { failure: null as string | null, kid: '', parentPid: '', seen: [] as string[], err: '', alive: true }
+    const got = { failure: null as string | null, kid: '', parentPid: '', seen: [] as string[], err: '', alive: true, listed: false }
     try {
       const code = await Promise.race([reapExit, watchdog.failed])
       got.failure = code === 0 ? null : `exit status ${String(code)}; ${reapErr.trim()}`
       got.kid = read('kid')
       got.parentPid = read('parentpid')
+      got.listed = fs.existsSync(file('listed'))
       got.seen = read('seen').split(/\s+/)
       got.err = read('err')
       if (/^[1-9]\d*$/.test(got.kid)) got.alive = probeAlive(sh, `${SH_LIVE}; tg_live ${got.kid}`)
@@ -236,7 +274,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       watchdog.stop()
       if (reap.exitCode === null && reap.signalCode === null) reap.kill()
       if (parent.exitCode === null) parent.kill()
-      reapOwned(sh, token)
+      // The row's own reap exiting 0 means two scans in a row found nothing alive, and the probe saw the child gone, so a second scan has nothing to find; it runs only for a row that did not show that.
+      if (got.failure !== null || got.alive) reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
     }
     expect(got.kid, `the late child never started, so the forced window did not happen; the parent said: ${got.err}; the reap said: ${got.failure}`).toMatch(/^[1-9]\d*$/)
@@ -244,6 +283,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.seen, 'the late child was already in the reap set, so the forced window did not happen').not.toContain(got.kid)
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
     expect(got.alive, 'the chunk subshell or its child is still running after the run returned').toBe(false)
+    expect(got.listed, 'the reap read the whole process table instead of its fixture, so the row paid for a pass it does not test').toBe(true)
   })
 
   // Provenance: HAND-DERIVED, from a captured failure under a fork storm: under MSYS a child shows in /proc stat, with its parent and group, one to several seconds before its environment can be read, so a child its parent started just before being killed was invisible to a reap that looks only for the token and outlived it. The window is forced by starting the child with the token removed from its environment, which is what the token scan sees of an uninitialised MSYS child; the owned parent stays alive and blocked, so the reap can end the child only by finding it through its parent.
@@ -254,9 +294,12 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'tokenless child never started' })
     fs.writeFileSync(file('parent.sh'), [
       'mkfifo "$2"',
+      'echo $$ > "$3"',
       `env -u ${OWNER_VAR} "$BASH" -c 'echo $$ > "$1"; read -r _ < "$2"' tg "$1" "$2" < /dev/null > /dev/null 2>&1`,
     ].join('\n'))
-    const parent = spawn(sh, [file('parent.sh'), file('kid'), file('fifo')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
+    // The token scan lists only the owned parent: the child carries no token, so it is found through the kin search of the real process listing, which this row tests.
+    const script = narrowScan(REAP_SCRIPT, [file('parentpid')])
+    const parent = spawn(sh, [file('parent.sh'), file('kid'), file('fifo'), file('parentpid')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
     let kid = ''
     const got = { failure: null as string | null, alive: true }
     try {
@@ -265,13 +308,14 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
         if (!/^[1-9]\d*$/.test(kid)) await Promise.race([new Promise((resolve) => setTimeout(resolve, 50)), watchdog.failed])
       }
       watchdog.progress('tokenless child running')
-      got.failure = reapOwned(sh, token)
+      got.failure = reapOwned(sh, token, script)
       got.alive = probeAlive(sh, `${SH_LIVE}; tg_live ${kid}`)
     } finally {
       watchdog.stop()
       if (parent.exitCode === null) parent.kill()
       if (/^[1-9]\d*$/.test(kid)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
-      reapOwned(sh, token)
+      // A reap that returned null found nothing alive twice in a row and the probe saw the child gone, so the insurance scan runs only for a row that did not show that.
+      if (got.failure !== null || got.alive) reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
     }
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
@@ -294,6 +338,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       '  tg_n=0',
       `  if [ -r "${file('calls')}" ]; then while read -r _; do tg_n=$((tg_n + 1)); done < "${file('calls')}"; fi`,
       `  echo x >> "${file('calls')}"`,
+      `  echo "$#" >> "${file('grepargs')}"`,
       `  if [ "$tg_n" -lt 2 ]; then ${dies}; fi`,
       '  command grep "$@"',
       '}',
@@ -301,8 +346,11 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     // The reap starts scanning only once the parent's environment is readable, so a young MSYS process cannot make the scan miss for a reason this test does not force.
     const waitForParent = [
       'tg_pp=',
-      'until [ ! -r /proc/self/environ ] || { [ -n "$tg_pp" ] && command grep -qzxF -e "$tg_needle" "/proc/$tg_pp/environ" 2>/dev/null; }; do',
+      'tg_w=0',
+      // Bounded by a count of polls: when the parent is never seen the scan starts anyway, and the row's own assertions name what was missed, rather than the wait holding the row past vitest's cap.
+      'until [ ! -r /proc/self/environ ] || [ "$tg_w" -ge 40 ] || { [ -n "$tg_pp" ] && command grep -qzxF -e "$tg_needle" "/proc/$tg_pp/environ" 2>/dev/null; }; do',
       `  read -r tg_pp 2>/dev/null < "${file('parentpid')}"`,
+      '  tg_w=$((tg_w + 1))',
       '  sleep 0.1',
       'done',
       'tg_all=',
@@ -313,7 +361,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const hold = '[ -z "$tg_all" ] || { kill -KILL'
     expect(base.includes(hold), 'the reap script no longer kills with this text').toBe(true)
     const recorded = base.replace(hold, () => `echo "$tg_all" > "${file('seen')}"\n${hold}`)
-    const script = `${fakeGrep}\n${recorded.replace('tg_all=\nfor tg_round in 1 2 3 4 5; do', () => waitForParent)}`
+    const script = `${fakeGrep}\n${fixScan(recorded, [file('parentpid')], file('listed')).replace('tg_all=\nfor tg_round in 1 2 3 4 5; do', () => waitForParent)}`
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
     fs.writeFileSync(file('parent.sh'), ['mkfifo "$2"', 'echo $$ > "$1"', 'read -r _ < "$2"'].join('\n'))
     const watchdog = startWatchdog({ quietLimitMs: 60_000, label: 'the reap with a killed scan made no progress' })
@@ -334,11 +382,13 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
     })()
-    const got = { code: null as number | null, pid: '', calls: 0, seen: [] as string[], alive: true }
+    const got = { code: null as number | null, pid: '', calls: 0, args: [] as string[], seen: [] as string[], alive: true, listed: false }
     try {
       got.code = await Promise.race([reapExit, watchdog.failed])
       got.pid = read('parentpid')
       got.calls = read('calls').split(/\s+/).filter((x) => x !== '').length
+      got.listed = fs.existsSync(file('listed'))
+      got.args = read('grepargs').split(/\s+/).filter((x) => x !== '')
       got.seen = read('seen').split(/\s+/)
       if (/^[1-9]\d*$/.test(got.pid)) got.alive = probeAlive(sh, `${SH_LIVE}; tg_live ${got.pid}`)
     } finally {
@@ -347,27 +397,33 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       watchdog.stop()
       if (reap.exitCode === null && reap.signalCode === null) reap.kill()
       if (parent.exitCode === null) parent.kill()
-      reapOwned(sh, token)
+      // The row's own reap exiting 0 means two scans in a row found nothing alive, and the probe saw the owned parent gone, so the insurance scan runs only for a row that did not show that.
+      if (got.code !== 0 || got.alive) reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
     }
     expect(got.pid, 'the owned parent never started').toMatch(/^[1-9]\d*$/)
     expect(got.code, `the reap did not exit cleanly: ${reapErr}`).toBe(0)
     expect(got.calls, 'the scans that listed nothing were not repeated until one listed the parent').toBeGreaterThanOrEqual(3)
+    // The scan's arguments are the option, the pattern flag and pattern, and the one owned parent: a count above four means the scan walked the whole process table, the cost this row does not test.
+    expect(got.args, 'the scan was not narrowed to the owned parent').toEqual(new Array<string>(got.calls).fill('4'))
     expect(got.seen, 'the reap read its first scans as clean, so the parent was not in the set it killed first').toContain(got.pid)
     expect(got.alive, 'the owned parent is still running after a reap whose first scans listed nothing').toBe(false)
+    expect(got.listed, 'the reap read the whole process table instead of its fixture, so the row paid for a pass it does not test').toBe(true)
   })
 
   // Provenance: HAND-DERIVED from a macOS CI failure of the test above: macOS has no /proc, and its BSD `ps -e` lists the caller's own processes that have a terminal, with their environment, so a child started with no terminal was invisible to the kin scan, which also ran only where /proc exists. The branch is forced by making the /proc test fail, and `ps` is a function that answers as macOS does: `-wwAE` prints the owned parent with the token, `-e -o ...` prints nothing, and `-A -o ...` is the real listing.
   it('ends an owned child whose environment does not carry the token where there is no /proc and ps -e lists nothing', async () => {
-    const noProc = REAP_SCRIPT.replace('[ -r /proc/self/environ ]', 'false')
-    expect(noProc, 'the reap script no longer tests /proc with this text').not.toBe(REAP_SCRIPT)
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shbsd-'))
     const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
+    // The /proc test is forced false, and the environ scan is narrowed to the two pid files, so the row does not pay the whole-table /proc grep under load; the kin listing the row tests is still the real fixture above.
+    const noProc = narrowScan(REAP_SCRIPT.replace('[ -r /proc/self/environ ]', 'false'), [file('parentpid'), file('kid')])
+    expect(noProc, 'the reap script no longer tests /proc with this text').not.toBe(REAP_SCRIPT)
     const bsdPs = [
       'ps() {',
       '  case "$*" in',
       `    *-wwAE*) printf '%s\\n' "$(cat ${file('parentpid')}) x $tg_needle x" ;;`,
-      "    '-e -o'*) ;;",
+      // The listing the kin search reads, fixed to the owned parent and its late child, so the row does not pay for a whole-table `ps` under load; the child has no token, so only this listing can name it.
+      `    '-e'|'-A -o'*) echo listed >> '${file('listed')}'; printf '%s 1 %s S\\n%s %s %s S\\n' "$(cat ${file('parentpid')})" "$(cat ${file('parentpid')})" "$(cat ${file('kid')})" "$(cat ${file('parentpid')})" "$(cat ${file('kid')})" ;;`,
       '    *) command ps "$@" ;;',
       '  esac',
       '}',
@@ -382,7 +438,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     ].join('\n'))
     const parent = spawn(sh, [file('parent.sh'), file('kid'), file('fifo'), file('parentpid')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
     let kid = ''
-    const got = { failure: null as string | null, alive: true }
+    const got = { failure: null as string | null, alive: true, listed: false }
     try {
       while (!/^[1-9]\d*$/.test(kid)) {
         if (fs.existsSync(file('kid'))) kid = fs.readFileSync(file('kid'), 'utf8').trim()
@@ -391,15 +447,18 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       watchdog.progress('tokenless child running')
       got.failure = reapOwned(sh, token, script)
       got.alive = probeAlive(sh, `${SH_LIVE}; tg_live ${kid}`)
+      got.listed = fs.existsSync(file('listed'))
     } finally {
       watchdog.stop()
       if (parent.exitCode === null) parent.kill()
       if (/^[1-9]\d*$/.test(kid)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
-      reapOwned(sh, token)
+      // A reap that returned null found nothing alive twice in a row and the probe saw the child gone, so the insurance scan runs only for a row that did not show that.
+      if (got.failure !== null || got.alive) reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
     }
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
     expect(got.alive, 'the child that does not carry the token is still running after a reap with no /proc').toBe(false)
+    expect(got.listed, 'the reap listed the process table instead of its fixture, so the row paid for a pass it does not test').toBe(true)
   })
 
   // Provenance: HAND-DERIVED. macOS has no /proc, so liveness there rests on `ps`; the branch is forced here by making the /proc test fail, and `ps` is a function that prints what the row names. A zombie state is gone though kill -0 answers yes for it; a live state, an empty listing and a ps that prints nothing for a running pid fall through to kill -0.
@@ -422,7 +481,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     commands[15] = 'token-goat b; exit'
     commands[16] = 'exit 1'
     commands[17] = 'token-goat "${tg_left-clean}"'
-    const got = shRunAll(sh, commands)
+    // Nothing in these commands blocks, so the reap the early exit triggers has nothing to end; it runs over an empty fixture instead of a whole-table pass.
+    const got = shRunAll(sh, commands, { reap: (s, token) => reapOwned(s, token, fixScan(REAP_SCRIPT, [])) })
     expect(got).toHaveLength(40)
     const want = commands.map((_, i) => [[`n${i}`]])
     want[3] = [['a']]
