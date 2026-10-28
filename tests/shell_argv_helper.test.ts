@@ -37,8 +37,14 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const narrowed = narrowScan(script, pidFiles)
     expect(listing.test(narrowed), 'the reap script no longer defines its process listing on one line').toBe(true)
     const fixed = marker === undefined ? 'tg_ps() { :; }' : `tg_ps() { echo listed >> "${marker}"; :; }`
-    return narrowed.replace(listing, () => fixed)
+    // The kin line forks a subshell, the listing and awk for a result the fixed listing always makes empty; the listing is called in the shell itself instead, so a scan forks nothing but its own grep.
+    const kin = /^ {2}tg_kin=\$\(tg_ps .*$/m
+    expect(kin.test(narrowed), 'the reap script no longer reads its kin listing on one line').toBe(true)
+    return narrowed.replace(listing, () => fixed).replace(kin, () => '  tg_kin=; tg_ps')
   }
+
+  // True once /proc/PID/environ lists the owner token: the event the reap rows wait for before scanning, read with builtins so a poll forks nothing (a grep per tick cost one fork each).
+  const ENVHAS = 'tg_envhas() { [ -r "/proc/$1/environ" ] || return 1; while IFS= read -r -d "" tg_el || [ -n "$tg_el" ]; do [ "$tg_el" = "$tg_needle" ] && return 0; done < "/proc/$1/environ"; return 1; }'
 
   // A builtin wait rather than sleep: a child process would hold the output pipe open after the shell is killed. The shell is ended by the event of the child having started, not by a clock, so a machine slow to start the shell still has the child at its wait when the kill lands.
   it('names the kill when the shell is ended before every command ran', async () => {
@@ -210,8 +216,9 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     }
     // Before its first round the reap waits until the parent is in the set it found, so the parent is always among the processes the kill covers.
     const waitForParent = [
+      ENVHAS,
       'tg_pp=',
-      'until [ -n "$tg_pp" ] && { if [ -r /proc/self/environ ]; then grep -qzxF -e "$tg_needle" "/proc/$tg_pp/environ" 2>/dev/null; else tg_light=; tg_owned; case " $tg_found " in *" $tg_pp "*) true ;; *) false ;; esac; fi; }; do',
+      'until [ -n "$tg_pp" ] && { if [ -r /proc/self/environ ]; then tg_envhas "$tg_pp"; else tg_light=; tg_owned; case " $tg_found " in *" $tg_pp "*) true ;; *) false ;; esac; fi; }; do',
       `  read -r tg_pp 2>/dev/null < "${file('parentpid')}"`,
       '  echo wait',
       '  tg_tick',
@@ -346,12 +353,11 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     ].join('\n')
     // The reap starts scanning only once the parent's environment is readable, so a young MSYS process cannot make the scan miss for a reason this test does not force.
     const waitForParent = [
+      ENVHAS,
       'tg_pp=',
-      'tg_w=0',
-      // Bounded by a count of polls: when the parent is never seen the scan starts anyway, and the row's own assertions name what was missed, rather than the wait holding the row past vitest's cap.
-      'until [ ! -r /proc/self/environ ] || [ "$tg_w" -ge 40 ] || { [ -n "$tg_pp" ] && command grep -qzxF -e "$tg_needle" "/proc/$tg_pp/environ" 2>/dev/null; }; do',
+      // The wait ends on the event, not on a count of polls: a parent that never shows its token is a stall the watchdog names, since the reap then makes no progress.
+      'until [ -n "$tg_pp" ] && tg_envhas "$tg_pp"; do',
       `  read -r tg_pp 2>/dev/null < "${file('parentpid')}"`,
-      '  tg_w=$((tg_w + 1))',
       '  tg_tick',
       'done',
       'tg_all=',
@@ -421,10 +427,11 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(noProc, 'the reap script no longer tests /proc with this text').not.toBe(REAP_SCRIPT)
     const bsdPs = [
       'ps() {',
+      `  tg_pa=; tg_ka=; read -r tg_pa < "${file('parentpid')}"; read -r tg_ka < "${file('kid')}"`,
       '  case "$*" in',
-      `    *-wwAE*) printf '%s\\n' "$(cat ${file('parentpid')}) x $tg_needle x" ;;`,
+      `    *-wwAE*) printf '%s\\n' "$tg_pa x $tg_needle x" ;;`,
       // The listing the kin search reads, fixed to the owned parent and its late child, so the row does not pay for a whole-table `ps` under load; the child has no token, so only this listing can name it.
-      `    '-e'|'-A -o'*) echo listed >> '${file('listed')}'; printf '%s 1 %s S\\n%s %s %s S\\n' "$(cat ${file('parentpid')})" "$(cat ${file('parentpid')})" "$(cat ${file('kid')})" "$(cat ${file('parentpid')})" "$(cat ${file('kid')})" ;;`,
+      `    '-e'|'-A -o'*) echo listed >> '${file('listed')}'; printf '%s 1 %s S\\n%s %s %s S\\n' "$tg_pa" "$tg_pa" "$tg_ka" "$tg_pa" "$tg_ka" ;;`,
       '    *) command ps "$@" ;;',
       '  esac',
       '}',
