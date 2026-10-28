@@ -37,8 +37,19 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const narrowed = narrowScan(script, pidFiles)
     expect(listing.test(narrowed), 'the reap script no longer defines its process listing on one line').toBe(true)
     const fixed = marker === undefined ? 'tg_ps() { :; }' : `tg_ps() { echo listed >> "${marker}"; :; }`
-    // The fixed listing prints nothing, so the kin loop reads an empty table and a scan forks nothing but its own grep.
-    return narrowed.replace(listing, () => fixed)
+    // The fixed listing prints nothing, so the kin loop reads an empty table; it is called in place rather than through a command substitution, which would fork a subshell per scan to capture nothing (the table stays empty).
+    const call = 'tg_tbl=$(tg_ps);'
+    expect(narrowed.includes(call), 'the reap script no longer takes its kin listing with this text').toBe(true)
+    return narrowed.replace(listing, () => fixed).replace(call, () => 'tg_tbl=; tg_ps;')
+  }
+
+  // fixScan with the narrowed token scan read by builtins as well. The grep stays in the production script, where one pass over the whole table is the fast way; for a scan narrowed to a few pids it was a command substitution, a fork each, and under load a fork took seconds. The rows that use this do not test the grep; the rows that force it to fail keep fixScan.
+  const fixScanBuiltin = (script: string, pidFiles: string[], marker?: string): string => {
+    const grepLoop = /^ *while \[ "\$tg_rc" -ge 128 \] && \[ "\$tg_try" -lt 10 \]; do tg_out=\$\(grep .*done$/m
+    const fixed = fixScan(script, pidFiles, marker)
+    expect(grepLoop.test(fixed), 'the reap script no longer scans with this grep loop').toBe(true)
+    const own = 'tg_out=; tg_rc=0; for tg_ef in $tg_scan; do [ -r "$tg_ef" ] || continue; while IFS= read -r -d "" tg_el || [ -n "$tg_el" ]; do [ "$tg_el" = "$tg_needle" ] && { tg_out="$tg_out $tg_ef"; break; }; done < "$tg_ef" 2>/dev/null; done'
+    return fixed.replace(grepLoop, () => own)
   }
 
   // True once /proc/PID/environ lists the owner token: the event the reap rows wait for before scanning, read with builtins so a poll forks nothing (a grep per tick cost one fork each).
@@ -59,7 +70,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       let message = ''
       try {
         // The reap is the real one, narrowed to the two pids this row wrote, with its process listing fixed: the row tests that the killed shell's children are ended, which the narrowed scan still does, and not the whole-table search that cost tens of seconds under load.
-        shRunAll(sh, ['token-goat a', loop, 'token-goat b'], { killWhen: () => fs.existsSync(file('kid')), reap: (s, token) => reapOwned(s, token, fixScan(REAP_SCRIPT, [file('pid'), file('kid')], file('listed'))) })
+        shRunAll(sh, ['token-goat a', loop, 'token-goat b'], { killWhen: () => fs.existsSync(file('kid')), reap: (s, token) => reapOwned(s, token, fixScanBuiltin(REAP_SCRIPT, [file('pid'), file('kid')], file('listed'))) })
       } catch (err) {
         message = (err as Error).message
       }
@@ -128,7 +139,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       // The blocked read ends itself after its own limit, so it leaves nothing behind even if the reap found nothing. The reap is the real one, narrowed to the pid the command wrote, so the row pays for one cheap reap rather than a whole-table pass.
       const loop = `echo "\${BASHPID:-$(exec sh -c 'echo $PPID')}" > '${pidFile}'; mkfifo '${fifo}' && exec 3<>'${fifo}' && read -r -t 30 -u 3 _`
       try {
-        shRunAll(sh, [loop], { killWhen: () => false, timeoutMs: 2000, reap: (s, token) => reapOwned(s, token, fixScan(REAP_SCRIPT, [pidFile], marker)) })
+        shRunAll(sh, [loop], { killWhen: () => false, timeoutMs: 2000, reap: (s, token) => reapOwned(s, token, fixScanBuiltin(REAP_SCRIPT, [pidFile], marker)) })
       } catch (err) {
         message = (err as Error).message
       }
@@ -234,7 +245,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       '[ -z "$tg_all" ] || { kill -KILL',
     ].join('\n')
     // The token scan reads only the owned parent and the late child's pid file, and the process listing is fixed empty: this row tests the window the scan stopped in, not the kin search, which the tokenless-child row runs on the real listing.
-    const slowed = patch(patch(patch(patch(fixScan(REAP_SCRIPT, [file('parentpid'), file('kid')], file('listed')), 'kill -STOP $tg_new 2>/dev/null', ':'), 'for tg_round in 1 2 3 4 5; do', waitForParent), '[ -z "$tg_all" ] || { kill -KILL', holdKill), '  tg_left=\n', '  echo drain\n  tg_left=\n')
+    const slowed = patch(patch(patch(patch(fixScanBuiltin(REAP_SCRIPT, [file('parentpid'), file('kid')], file('listed')), 'kill -STOP $tg_new 2>/dev/null', ':'), 'for tg_round in 1 2 3 4 5; do', waitForParent), '[ -z "$tg_all" ] || { kill -KILL', holdKill), '  tg_left=\n', '  echo drain\n  tg_left=\n')
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
     // The parent waits for the release file, then starts a child that blocks on a FIFO nobody writes, so only a kill ends it; its own errors land in a file.
     fs.writeFileSync(file('parent.sh'), [
@@ -359,6 +370,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     } finally {
       watchdog.stop()
       if (parent.exitCode === null) parent.kill()
+      // Read again here: a reap that threw left the pid unread, and the token reap cannot see a tokenless child whose parent is gone.
+      kid = fs.existsSync(file('kid')) ? fs.readFileSync(file('kid'), 'utf8').trim() : kid
       // A shell to kill a child already shown gone is a fork the row does not need, so it runs only for a row that did not show that.
       if (/^[1-9]\d*$/.test(kid) && (got.failure !== null || got.alive)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
       if (got.failure !== null || got.alive) reapOwned(sh, token)
@@ -399,6 +412,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     } finally {
       watchdog.stop()
       if (parent.exitCode === null) parent.kill()
+      // Read again here: a reap that threw left the pid unread, and the token reap cannot see a tokenless child whose parent is gone.
+      kid = fs.existsSync(file('kid')) ? fs.readFileSync(file('kid'), 'utf8').trim() : kid
       // A shell to kill a child already shown gone is a fork the row does not need, so it runs only for a row that did not show that.
       if (/^[1-9]\d*$/.test(kid) && (got.failure !== null || got.alive)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
       if (got.failure !== null || got.alive) reapOwned(sh, token)
@@ -570,7 +585,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     commands[16] = 'exit 1'
     commands[17] = 'token-goat "${tg_left-clean}"'
     // Nothing in these commands blocks, so the reap the early exit triggers has nothing to end; it runs over an empty fixture instead of a whole-table pass.
-    const got = shRunAll(sh, commands, { reap: (s, token) => reapOwned(s, token, fixScan(REAP_SCRIPT, [])) })
+    const got = shRunAll(sh, commands, { reap: (s, token) => reapOwned(s, token, fixScanBuiltin(REAP_SCRIPT, [])) })
     expect(got).toHaveLength(40)
     const want = commands.map((_, i) => [[`n${i}`]])
     want[3] = [['a']]
