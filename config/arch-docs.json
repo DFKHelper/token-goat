@@ -75,6 +75,7 @@
     ["src/hooks_read_policy.ts","Hook Subsystem"],
     ["src/hooks_read_post.ts","Hook Subsystem"],
     ["src/hooks_read_slice.ts","Hook Subsystem"],
+    ["src/hooks_read_window_stream.ts","Hook Subsystem"],
     ["src/hooks_recovery.ts","Hook Subsystem"],
     ["src/hooks_screenshot.ts","Hook Subsystem"],
     ["src/hooks_session.ts","Hook Subsystem"],

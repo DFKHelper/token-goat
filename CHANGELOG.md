@@ -6,6 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- **Large bounded source reads stream only the requested line window**, avoiding a full-file string allocation while preserving source decoding and newline handling.
 - **Legacy PHP indexing covers include files and procedural declarations.** `.inc` files now map to PHP; multiline array initializers and top-level procedural arrays are indexed across their full spans. Literal single-quoted `eval()` declarations and assigned `create_function()` callbacks are extracted without executing dynamic code. The parser fingerprint change triggers reindexing on upgrade.
 
 ## [2.9.33] - 2026-10-26
