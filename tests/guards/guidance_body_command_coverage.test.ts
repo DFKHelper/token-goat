@@ -132,6 +132,12 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'image-diff', reason: FORMAT_EXTRACT_REASON },
   { command: 'screenshot', reason: FORMAT_EXTRACT_REASON },
 
+  // Runtime syntax validators
+  {
+    command: 'php-lint',
+    reason: 'checks PHP syntax with the runtime but does not expose file contents or replace a file-read command',
+  },
+
   // Document extractors, moved out of the always-on gate in 2.9.31
   { command: 'pdf-meta', reason: DOCUMENT_REASON },
   { command: 'pdf-outline', reason: DOCUMENT_REASON },
