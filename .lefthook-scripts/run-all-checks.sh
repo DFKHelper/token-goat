@@ -11,6 +11,7 @@ LOG_DIR="$(mktemp -d "${TMP_BASE}/token-goat-pre-push.XXXXXX")"
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 HEAD_SHA="$(git rev-parse HEAD)"
 source "$SCRIPT_DIR/prepush-focus.sh"
+source "$SCRIPT_DIR/prepush-cap.sh"
 
 # The ref lines git gives a pre-push hook (lefthook passes them on with use_stdin). The read is bounded so a stdin that never closes cannot hang the push; no lines means the pushed range is unknown and the WSL leg runs.
 PUSH_STDIN=""
@@ -22,7 +23,7 @@ fi
 
 PIDS=()
 WSL_PID=""
-declare -A START=() END=() PID_OF=() FAILED=() ABORTED=() GREEN_TREE_OF=() GREEN_FOCUS_OF=()
+declare -A START=() END=() PID_OF=() FAILED=() ABORTED=() STOPPED=() GREEN_TREE_OF=() GREEN_FOCUS_OF=()
 
 run_check() {
   local name=$1
@@ -36,22 +37,39 @@ run_check() {
   START[$name]=$SECONDS
 }
 
-# Waits for the named legs in the order they finish, so each leg's end time is its own and not the moment a slower earlier leg released the wait. Marks FAILED[name] for each leg that exited non-zero.
+# Waits for the named legs in the order they finish, so each leg's end time is its own and not the moment a slower earlier leg released the wait. Marks FAILED[name] for each leg that exited non-zero. The hard-stop watchdog is waited on too: when it fires, every leg still running is ended and reported (prepush-cap.sh), and a leg ended by the stop is not a failure.
 wait_legs() {
   local -A pid_of=()
   local name left=0 fin rc
-  for name in "$@"; do pid_of[$name]=${PID_OF[$name]}; left=$((left + 1)); done
+  for name in "$@"; do
+    # A leg the hard stop kept from starting has no pid, so it is not waited on.
+    [[ -n "${PID_OF[$name]:-}" ]] || continue
+    pid_of[$name]=${PID_OF[$name]}; left=$((left + 1))
+  done
+  if [[ -n "$HARD_PID" ]]; then pid_of[hardstop]=$HARD_PID; fi
   while [[ "$left" -gt 0 ]]; do
     rc=0
     wait -n -p fin "${pid_of[@]}" || rc=$?
+    if [[ -n "$HARD_PID" && "$fin" == "$HARD_PID" ]]; then
+      wait "$HARD_PID" 2>/dev/null || true
+      HARD_PID=""
+      unset "pid_of[hardstop]"
+      for name in "${!pid_of[@]}"; do
+        STOPPED[$name]=1
+        ABORTED[$name]=1
+        kill_tree "${pid_of[$name]}"
+      done
+      cap_report_stop "$(cap_stop_time)" "${!pid_of[@]}"
+      continue
+    fi
     for name in "${!pid_of[@]}"; do
       if [[ "${pid_of[$name]:-}" == "$fin" ]]; then
         END[$name]=$SECONDS
-        [[ "$rc" -eq 0 ]] || FAILED[$name]=1
+        [[ "$rc" -eq 0 || -n "${STOPPED[$name]:-}" ]] || FAILED[$name]=1
         unset "pid_of[$name]"
         left=$((left - 1))
         # Lint or typecheck red: the push is lost already, so end the Windows suite's tree instead of waiting for it.
-        if [[ "$rc" -ne 0 && "$name" != "tests" && -n "${pid_of[tests]:-}" ]]; then
+        if [[ "$rc" -ne 0 && -z "${STOPPED[$name]:-}" && "$name" != "tests" && -n "${pid_of[tests]:-}" ]]; then
           echo "pre-push: $name failed, stopping the Windows suite"
           kill_tree "${pid_of[tests]}"
           wait "${pid_of[tests]}" 2>/dev/null || true
@@ -77,14 +95,18 @@ leg_secs() {
 
 # Starts a suite leg (win or wsl), focused on the pushed range when prepush-focus.sh can say so safely, otherwise in full. $1: log name, $2: leg, $3: the leg's script.
 start_suite_leg() {
+  RUN_PID=""
   focus_decide "$2"
+  if [[ -n "$FOCUS_STOPPED" ]]; then cap_planning_stopped "$2"; return 0; fi
   echo "pre-push: $FOCUS_NOTE"
   if [[ -n "$FOCUS_DEFERRED" ]]; then echo "pre-push: $FOCUS_DEFERRED"; fi
   # Test files already green on this exact tree (scripts/prepush-green.mjs) are dropped from the Windows leg's list; an emptied list runs nothing, since no list at all would mean the whole suite.
   if [[ "$2" == "win" && -n "$FOCUS_FILE" ]]; then
     GREEN_TREE_OF[$1]="$LOG_DIR/green-tree-win.txt"
     GREEN_FOCUS_OF[$1]="$FOCUS_FILE"
-    (cd "$ROOT_DIR" && node scripts/prepush-green.mjs filter win "$FOCUS_FILE" "${GREEN_TREE_OF[$1]}") || true
+    local green_rc=0
+    cap_run_stoppable "$ROOT_DIR" "$LOG_DIR/green-filter.out" node scripts/prepush-green.mjs filter win "$FOCUS_FILE" "${GREEN_TREE_OF[$1]}" || green_rc=$?
+    if [[ "$green_rc" -eq "$CAP_STOP_RC" ]]; then cap_planning_stopped "$2"; return 0; fi
   fi
   if [[ -n "$FOCUS_FILE" && ! -s "$FOCUS_FILE" ]]; then
     echo "pre-push: every selected test file was already green on this tree, so the $2 leg has nothing to run"
@@ -99,6 +121,7 @@ start_suite_leg() {
 # Folds a finished suite leg's per-file timings into the duration table the next selection costs files from, and keeps the failing-files record in step with the leg: a red leg records its failures, a green one clears them, a leg that did not run or was aborted changes nothing. $1: log name, $2: leg.
 record_leg_outcome() {
   [[ -n "${END[$1]:-}" && -z "${ABORTED[$1]:-}" ]] || return 0
+  cap_clear_owed "$2"
   node "$ROOT_DIR/scripts/test-durations.mjs" "$LOG_DIR/$1.log" --record "$FAILED_STORE" "$2" || true
   # A green leg whose fill the wall-clock deadline cut keeps the record: a file that failed last time may be among the files it did not run.
   if [[ -n "${FAILED[$1]:-}" ]]; then focus_record_failure "$2" "$LOG_DIR/$1.log"; elif [[ ! -s "$LOG_DIR/cut-$2.txt" ]]; then focus_clear "$2"; fi
@@ -127,18 +150,6 @@ report_failure() {
   tail -n 120 "$LOG_DIR/$name.log"
 }
 
-# End the whole process tree under one background job. Git Bash pids map to Windows pids through /proc/<pid>/winpid, and taskkill /T takes the node children with them; elsewhere walk the children with pgrep.
-kill_tree() {
-  local pid=$1 winpid child
-  if [[ -r "/proc/$pid/winpid" ]]; then
-    winpid="$(cat "/proc/$pid/winpid")"
-    taskkill //T //F //PID "$winpid" &>/dev/null || true
-  else
-    for child in $(pgrep -P "$pid" 2>/dev/null || true); do kill_tree "$child"; done
-    kill -KILL "$pid" 2>/dev/null || true
-  fi
-}
-
 # Runs on every exit path (success, failure, INT, TERM). The WSL script gets TERM first so its own trap can end the Linux-side tree, which taskkill on the Windows side cannot reach; then every job still alive is killed with its tree.
 cleanup() {
   trap - EXIT INT TERM
@@ -157,6 +168,9 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+cap_read_limits
+cap_start
 
 wsl_decide "$PUSH_STDIN" "$SCRIPT_DIR/wsl-paths.txt"
 if [[ "$WSL_RUN" -eq 1 ]]; then
@@ -178,6 +192,8 @@ FAIL=0
 
 # Lint, typecheck and the Windows suite finish first; the WSL leg starts only when all three passed, since a red push would otherwise pay for the whole second suite.
 wait_legs typecheck ts-checks tests
+# A lint or typecheck the hard stop ended was never verified, so the push fails.
+if [[ -n "${STOPPED[typecheck]:-}" || -n "${STOPPED[ts-checks]:-}" ]]; then FAIL=1; fi
 # A passing check's log is dropped, so what it reused is printed here.
 grep -h '^pre-push: reused' "$LOG_DIR/typecheck.log" "$LOG_DIR/ts-checks.log" 2>/dev/null || true
 [[ -z "${FAILED[tests]:-}" ]]     || { report_failure tests; FAIL=1; }
@@ -187,7 +203,9 @@ record_leg_outcome tests win
 report_cut win
 
 if [[ "$WSL_RUN" -eq 1 ]]; then
-  if [[ -z "$WSL_PID" && "$FAIL" -eq 0 ]]; then
+  if [[ -z "$WSL_PID" && -e "$HARD_FLAG" ]]; then
+    cap_wsl_not_started
+  elif [[ -z "$WSL_PID" && "$FAIL" -eq 0 ]]; then
     start_suite_leg wsl-test wsl "$SCRIPT_DIR/wsl-test.sh"
     WSL_PID=$RUN_PID
   elif [[ -z "$WSL_PID" ]]; then
