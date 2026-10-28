@@ -126,7 +126,7 @@ cap_tail_open_now() {
 
 # Ends the trees of the given pids side by side (kill_tree for each) and polls until every one is gone or $1 seconds on the hook's clock pass, never blocking on a hung taskkill; a kill still running then is ended (its job) and said so. $1: deadline (SECONDS value), the rest: pids.
 cap_kill_all() {
-  local until_s=$1 p alive jobs_=() j c
+  local until_s=$1 p alive jobs_=() j c kp
   shift
   (( $# > 0 )) || return 0
   # A deadline already past still gets 2 s for the kills to finish: at most 2 s past it per call, and the stop path makes at most two calls, 4 s inside the 10 s STARTUP_RESERVE_S that the 590 s tail end leaves under 600 s.
@@ -142,9 +142,15 @@ cap_kill_all() {
     done
     [[ -n "$alive" ]] || return 0
     if (( SECONDS >= until_s )); then
-      # The job's own children (the taskkill it forked) go with it, so no hung taskkill outlives the hook.
+      # With pgrep the job's children are found by it; without (Git for Windows has none) by one MSYS ps, whose native taskkill child shows under its MSYS pid and ends on a plain kill.
       for j in $alive; do
-        for c in $(pgrep -P "$j" 2>/dev/null || true); do kill "$c" 2>/dev/null || true; done
+        if command -v pgrep >/dev/null 2>&1; then
+          for c in $(pgrep -P "$j" 2>/dev/null || true); do kill "$c" 2>/dev/null || true; done
+        else
+          while read -r c kp _; do
+            if [[ "$kp" == "$j" ]]; then kill -KILL "$c" 2>/dev/null || true; fi
+          done < <(ps 2>/dev/null || true)
+        fi
         kill "$j" 2>/dev/null || true
       done
       echo "pre-push: ending the process trees did not finish in time (kill jobs:$alive); they were not waited on"

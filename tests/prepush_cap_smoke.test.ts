@@ -1,6 +1,6 @@
 /** The pre-push hard stop's pure pieces: the stop value read from the environment (scripts/prepush-budget.mjs), the planned files a stopped leg did not finish (scripts/prepush-failed.mjs unfinishedFiles), and the owed record written beside the failed-store. The shell side runs for real below: the watchdog and kill_tree sourced alone, and the whole hook over stub legs. */
 import { spawnSync } from 'node:child_process'
-import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -368,6 +368,51 @@ describe('the hard stop ends the legs of a real hook run', () => {
     expect(r.timedOut, r.out).toBe(false)
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain(`still running ${POST_STOP_S}s after the hard stop, not waited on (name=pid):`)
+  }, true)
+
+  // Windows only: a native taskkill stub (a copy of node.exe named taskkill.exe whose preload records its pid and never returns) outlasts the 2 s kill window, so cap_kill_all ends the kill job; the native stub, a child of that job and not ended by the job's death, must be ended with it. Inert unless the dir is first on PATH and NODE_OPTIONS names the preload, which only acts inside a process named taskkill.exe.
+  hookRow('a taskkill that hangs past the kill window does not outlive the hook', () => {
+    const bin = path.join(dir, 'hangbin')
+    mkdirSync(bin)
+    copyFileSync(process.execPath, path.join(bin, 'taskkill.exe'))
+    const preload = path.join(dir, 'hang-taskkill.cjs')
+    writeFileSync(preload, "if (/taskkill\\.exe$/i.test(process.execPath)) { require('node:fs').appendFileSync(process.env.STUB_DIR + '/hung-taskkill.pids', process.pid + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300000) }\n")
+    const pidFile = path.join(stubs, 'hung-taskkill.pids')
+    try {
+      const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60', PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}`, NODE_OPTIONS: `--require ${slash(preload)}` })
+      // The legs survive the stub kills by design, so the afterEach ends them by their recorded pids.
+      leftLegs = true
+      expect(existsSync(pidFile), r.out).toBe(true)
+      expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+      const pids = readFileSync(pidFile, 'utf8')
+        .split('\n')
+        .map((l) => Number(l.trim()))
+        .filter((p) => Number.isInteger(p) && p > 0)
+      const stillUp = (): number[] =>
+        pids.filter((p) => {
+          try {
+            process.kill(p, 0)
+            return true
+          } catch {
+            return false
+          }
+        })
+      // Windows tears a killed process down asynchronously, so a 5 s poll tells that from the 300 s hang.
+      let alive = stillUp()
+      for (let i = 0; i < 25 && alive.length > 0; i++) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+        alive = stillUp()
+      }
+      expect(alive, `hung taskkill stubs still running after the hook exited\n${r.out}`).toEqual([])
+    } finally {
+      // Every stub tree is ended here on every path, whether or not the hook ended it.
+      if (existsSync(pidFile)) {
+        for (const l of readFileSync(pidFile, 'utf8').split('\n')) {
+          const p = Number(l.trim())
+          if (Number.isInteger(p) && p > 0) killIfCommandLine(p, (commandLine) => /taskkill\.exe/i.test(commandLine), { tree: true })
+        }
+      }
+    }
   }, true)
 
   // The seam for the two rows below is a node stub first on PATH (the hook runs node by name): it hangs only the duration-record call (test-durations.mjs --record) and passes every other call to the real node, so the hook's own fork is what stalls. It records its pid so the afterEach can end a hang the hook failed to end.
