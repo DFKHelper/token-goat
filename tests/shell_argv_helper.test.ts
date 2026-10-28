@@ -33,14 +33,12 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
   // The same narrowing with the process listing fixed to nothing. The kin search reads `ps`, a whole-table pass that took 5-9 s under load, so a row that does not test the kin search fixes that listing too; the row that does keeps the real listing (see the row that names a tokenless child).
   // With `marker`, each listing that the fixture answers appends to that file, so a row can assert the fixture was the listing it read (a restored real listing leaves no marker).
   const fixScan = (script: string, pidFiles: string[], marker?: string): string => {
-    const listing = /^tg_ps\(\) \{.*\}$/m
+    const listing = /^case \$OSTYPE in msys\* \| cygwin\*\) tg_ps\(\) .*esac$/m
     const narrowed = narrowScan(script, pidFiles)
     expect(listing.test(narrowed), 'the reap script no longer defines its process listing on one line').toBe(true)
     const fixed = marker === undefined ? 'tg_ps() { :; }' : `tg_ps() { echo listed >> "${marker}"; :; }`
-    // The kin line forks a subshell, the listing and awk for a result the fixed listing always makes empty; the listing is called in the shell itself and the result file is /dev/null, so a scan forks nothing but its own grep.
-    const kin = /^ {2}tg_ps 2>\/dev\/null > "\$tg_kf"; awk .*$/m
-    expect(kin.test(narrowed), 'the reap script no longer reads its kin listing on one line').toBe(true)
-    return narrowed.replace(listing, () => fixed).replace(kin, () => '  tg_ps >/dev/null; tg_ko=/dev/null')
+    // The fixed listing prints nothing, so the kin loop reads an empty table and a scan forks nothing but its own grep.
+    return narrowed.replace(listing, () => fixed)
   }
 
   // True once /proc/PID/environ lists the owner token: the event the reap rows wait for before scanning, read with builtins so a poll forks nothing (a grep per tick cost one fork each).
@@ -61,12 +59,11 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       let message = ''
       try {
         // The reap is the real one, narrowed to the two pids this row wrote, with its process listing fixed: the row tests that the killed shell's children are ended, which the narrowed scan still does, and not the whole-table search that cost tens of seconds under load.
-        shRunAll(sh, ['token-goat a', loop, 'token-goat b'], { killWhen: () => fs.existsSync(file('kid')), reap: (s, token) => reapOwned(s, token, `rm() { printf '%s ' "$@" >> "${file('rmlog')}"; command rm "$@"; }\n${fixScan(REAP_SCRIPT, [file('pid'), file('kid')], file('listed'))}`) })
+        shRunAll(sh, ['token-goat a', loop, 'token-goat b'], { killWhen: () => fs.existsSync(file('kid')), reap: (s, token) => reapOwned(s, token, fixScan(REAP_SCRIPT, [file('pid'), file('kid')], file('listed'))) })
       } catch (err) {
         message = (err as Error).message
       }
-      // The fixture points the kin result at /dev/null; the reap's exit cleanup must not name it, or a run as root deletes the device node.
-      expect(fs.existsSync(file('rmlog')) ? fs.readFileSync(file('rmlog'), 'utf8') : '', 'the reap removed /dev/null at exit').not.toContain('/dev/null')
+      // The reap keeps its kin listing in a variable, so it leaves no file at exit for a cleanup to remove; the `listed` check below proves the reap ran.
       expect(message).toMatch(/ran 1 of 3 commands: .*SIGTERM/)
       expect(message, message).not.toMatch(/cleanup/)
       const pids = ['pid', 'kid'].map((name) => fs.readFileSync(file(name), 'utf8').trim())
@@ -323,7 +320,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     } finally {
       watchdog.stop()
       if (parent.exitCode === null) parent.kill()
-      if (/^[1-9]\d*$/.test(kid)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
+      // A shell to kill a child already shown gone is a fork the row does not need, so it runs only for a row that did not show that.
+      if (/^[1-9]\d*$/.test(kid) && (got.failure !== null || got.alive)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
       // A reap that returned null found nothing alive twice in a row and the probe saw the child gone, so the insurance scan runs only for a row that did not show that.
       if (got.failure !== null || got.alive) reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
@@ -361,7 +359,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     } finally {
       watchdog.stop()
       if (parent.exitCode === null) parent.kill()
-      if (/^[1-9]\d*$/.test(kid)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
+      // A shell to kill a child already shown gone is a fork the row does not need, so it runs only for a row that did not show that.
+      if (/^[1-9]\d*$/.test(kid) && (got.failure !== null || got.alive)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
       if (got.failure !== null || got.alive) reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
     }
@@ -499,7 +498,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     } finally {
       watchdog.stop()
       if (parent.exitCode === null) parent.kill()
-      if (/^[1-9]\d*$/.test(kid)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
+      // A shell to kill a child already shown gone is a fork the row does not need, so it runs only for a row that did not show that.
+      if (/^[1-9]\d*$/.test(kid) && (got.failure !== null || got.alive)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
       // A reap that returned null found nothing alive twice in a row and the probe saw the child gone, so the insurance scan runs only for a row that did not show that.
       if (got.failure !== null || got.alive) reapOwned(sh, token)
       fs.rmSync(dir, { recursive: true, force: true })
