@@ -371,7 +371,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
   }, true)
 
   // The seam for the two rows below is a node stub first on PATH (the hook runs node by name): it hangs only the duration-record call (test-durations.mjs --record) and passes every other call to the real node, so the hook's own fork is what stalls. It records its pid so the afterEach can end a hang the hook failed to end.
-  const hangingNode = (fires: boolean): Record<string, string> => {
+  const hangingNode = (fires: boolean, gatedKill = false): Record<string, string> => {
     const bin = path.join(dir, 'nodebin')
     mkdirSync(bin)
     writeFileSync(
@@ -385,6 +385,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
         '      printf "%s\\n" "$EPOCHREALTIME" >"$STUB_DIR/fired.epoch"',
         '      kill -USR1 "$(cat "$TMPDIR"/token-goat-pre-push.*/hard-stop.pid)"',
         '    fi',
+        '    : >"$STUB_DIR/real-kill"',
         `    sleep ${HANG_S}`,
         '    exit 0 ;;',
         'esac',
@@ -392,6 +393,10 @@ describe('the hard stop ends the legs of a real hook run', () => {
         '',
       ].join('\n'),
     )
+    // A gated taskkill ends nothing until the hung node stub has started (the file real-kill), so the stop's own kill leaves the legs alive and only the later kills end them.
+    if (gatedKill) {
+      writeFileSync(path.join(bin, 'taskkill'), ['#!/usr/bin/env bash', 'if [[ -e "$STUB_DIR/real-kill" ]]; then exec /c/Windows/System32/taskkill.exe "$@"; fi', 'exit 0', ''].join('\n'))
+    }
     return { PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}`, REAL_NODE: slash(process.execPath), STUB_NODE_FIRE: fires ? '1' : '0' }
   }
 
@@ -404,6 +409,24 @@ describe('the hard stop ends the legs of a real hook run', () => {
     expect(r.timedOut, r.out).toBe(false)
     expect(r.out).toContain("the hard stop left no time for 'node'")
   })
+
+  // A leg that survives the stop's own kill is still alive when the tail deadline has passed (the hung fork above runs it out), so the exit trap's kill runs with a deadline already past and must still end the leg and its tree.
+  hookRow('a leg that survives the stop is ended by the exit trap after the tail deadline has passed', () => {
+    const r = runHook({ STUB_FIRE_STOP: 'typecheck', STUB_FIRE_AFTER_TESTS: '1', STUB_TYPECHECK_S: '60', ...hangingNode(false, true) })
+    leftHung = true
+    leftLegs = true
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+    expect(r.out).toContain("the hard stop left no time for 'node'")
+    const pid = Number(readFileSync(path.join(stubs, 'typecheck.pid'), 'utf8').trim())
+    expect(Number.isInteger(pid)).toBe(true)
+    let alive = true
+    try {
+      process.kill(pid, 0)
+    } catch {
+      alive = false
+    }
+    expect(alive, `typecheck leg ${pid} outlived the hook\n${r.out}`).toBe(false)
+  }, true)
 
   // R3: a fork that hangs before any stop is ended by the stop; the stub fires the stop (USR1 makes the watchdog write the flag, as the clock would) from inside the hung call.
   hookRow('a fork that hangs before the stop is ended when the stop fires', () => {
