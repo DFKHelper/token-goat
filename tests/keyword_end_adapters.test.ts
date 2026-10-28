@@ -399,12 +399,12 @@ describe('language detection and collision routing through the real entry points
     return file
   }
 
-  it('maps the Fortran, Pascal and CMake extensions and leaves .fpp, .inc, .pp and other .txt files unknown by path', () => {
+  it('maps the Fortran, Pascal and CMake extensions and leaves .fpp, .pp and other .txt files unknown by path, with .inc claimed by PHP', () => {
     const cases: Array<[string, string]> = [
       ['a.f', 'fortran'], ['a.for', 'fortran'], ['a.f77', 'fortran'], ['a.F90', 'fortran'], ['a.f95', 'fortran'], ['a.f03', 'fortran'], ['a.f08', 'fortran'],
       ['a.pas', 'pascal'], ['a.dpr', 'pascal'], ['a.dpk', 'pascal'], ['a.lpr', 'pascal'], ['a.dfm', 'pascal'],
       ['a.cmake', 'cmake'], ['CMakeLists.txt', 'cmake'], ['sub/cmakelists.txt', 'cmake'],
-      ['a.fpp', 'unknown'], ['a.inc', 'unknown'], ['a.pp', 'unknown'], ['a.m', 'unknown'], ['notes.txt', 'unknown'],
+      ['a.inc', 'php'], ['a.fpp', 'unknown'], ['a.pp', 'unknown'], ['a.m', 'unknown'], ['notes.txt', 'unknown'],
     ]
     for (const [p, lang] of cases) expect(detectLanguage(p), p).toBe(lang)
   })
