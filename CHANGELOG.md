@@ -39,6 +39,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **A long misspelled symbol name now lists the real name first.** When the query was 8 to 64 characters and also contained shorter real names, the list showed fragments such as `get` and `read` and missed the name one edit away.
 - **A Markdown Read no longer prints a section pointer that would be stripped.** A folded paragraph under a heading that no quote mark can hold, such as one with both a backtick and an apostrophe, is now delivered whole instead of behind a "command omitted" line. A heading holding a backtick or `::` keeps its own pointer while the other headings still share one combined command, and a heading with an invisible variation selector or a command substitution is delivered whole.
 
+### Fixed
+
+- **`qs` is pinned to 6.16.1, past GHSA-6pq8-jhm2-2vcw.** The moderate advisory covers 6.7.0 through 6.16.0, a denial of service in `qs.stringify` with `arrayFormat: 'comma'`, and the root `overrides` entry held it at 6.16.0. The entry is now the exact `6.16.1`, the first release past the range, which was published on 2026-10-14. A range would have resolved to 6.16.2 or 6.17.0, both published inside the seven-day cooldown. This repository's own `npm audit` now reports only the body-parser finding that [SECURITY.md](SECURITY.md#dependency-advisories) already describes.
+
 ## [2.9.33] - 2026-10-26
 
 ### Added
