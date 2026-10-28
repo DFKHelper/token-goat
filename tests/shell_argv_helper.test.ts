@@ -369,6 +369,46 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     expect(got.alive, 'the tokenless child forked after the first kin listing is still running after the reap returned').toBe(false)
   })
 
+  // Provenance: HAND-DERIVED from a review of the reap: the final listing of the break round is taken while a seed is signalled but not yet stopped, the seed then forks a tokenless child, and the KILL takes the seed, which stays a zombie while its parent waits in spawnSync. Every seed is then dead and the seed set is unchanged since that listing, so only the forced post-kill listing can name the child. The window is forced without a clock: the STOP is made a no-op and the reap, holding its kill after the last listing, releases the parent and waits for the child's pid file.
+  it('ends a tokenless child its owned parent forked after the last listing and before the kill', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlate-'))
+    const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
+    const token = `${process.pid}-${randomBytes(8).toString('hex')}`
+    const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'owned parent never started' })
+    fs.writeFileSync(file('parent.sh'), [
+      'mkfifo "$2" "$4"',
+      'echo $$ > "$3"',
+      'read -r _ < "$2"',
+      `env -u ${OWNER_VAR} "$BASH" -c 'echo $$ > "$1"; read -r _ < "$2"' tg "$1" "$4" < /dev/null > /dev/null 2>&1`,
+    ].join('\n'))
+    const stop = 'kill -STOP $tg_new 2>/dev/null'
+    const hold = '[ -z "$tg_all" ] || { kill -KILL'
+    const narrowed = narrowScan(REAP_SCRIPT, [file('parentpid')])
+    expect(narrowed.includes(stop) && narrowed.includes(hold), 'the reap script no longer has the stop and kill text this row patches').toBe(true)
+    const release = `echo go > "${file('go')}"; while [ ! -e "${file('kid')}" ]; do tg_tick; done`
+    const script = narrowed.replace(stop, () => ':').replace(hold, () => `${release}\n${hold}`)
+    const parent = spawn(sh, [file('parent.sh'), file('kid'), file('go'), file('parentpid'), file('hold')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
+    let kid = ''
+    const got = { failure: null as string | null, alive: true }
+    try {
+      while (!fs.existsSync(file('parentpid')) || fs.readFileSync(file('parentpid'), 'utf8').trim() === '') await Promise.race([new Promise((resolve) => setTimeout(resolve, 50)), watchdog.failed])
+      watchdog.progress('owned parent running')
+      got.failure = reapOwned(sh, token, script)
+      kid = fs.existsSync(file('kid')) ? fs.readFileSync(file('kid'), 'utf8').trim() : ''
+      if (/^[1-9]\d*$/.test(kid)) got.alive = probeAlive(sh, `${SH_LIVE}; tg_live ${kid}`)
+    } finally {
+      watchdog.stop()
+      if (parent.exitCode === null) parent.kill()
+      // A shell to kill a child already shown gone is a fork the row does not need, so it runs only for a row that did not show that.
+      if (/^[1-9]\d*$/.test(kid) && (got.failure !== null || got.alive)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
+      if (got.failure !== null || got.alive) reapOwned(sh, token)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+    expect(kid, 'the owned parent never forked its child after the last listing').toMatch(/^[1-9]\d*$/)
+    expect(got.failure, 'the reap reported it could not end the run').toBeNull()
+    expect(got.alive, 'the tokenless child forked after the last listing and before the kill is still running after the reap returned').toBe(false)
+  })
+
   // Provenance: HAND-DERIVED from a captured scan: the grep the reap runs to list every process carrying the token was killed by SIGHUP after four seconds and printed nothing, and the reap read that as no owned process, so it ended with the run's processes still alive. The failure is forced by a `grep` function that dies (status 129, no output) on its first two calls, which are the two scans the old reap counted as clean; the owned parent stays blocked, so only a scan that is repeated finds it. The reap runs asynchronously under the stall-proof watchdog, fed by the scan calls and the files the test waits on.
   // Provenance: HAND-DERIVED from a second capture: a scan that finished with status 2 and no error naming the owned process, which was alive and forking, listed everything but it (1 of 32 scans under load). The case is forced by a `grep` that prints nothing and exits 1 on its first two calls.
   // macOS has no /proc, so its reap scans with ps and never calls the grep these rows force to fail.

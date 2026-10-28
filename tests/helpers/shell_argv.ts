@@ -117,7 +117,7 @@ export const REAP_SCRIPT = [
   // The kin listing is taken by a command substitution whose only command is the listing (bash runs it in place, one fork) and read by builtins from a here-string, so a scan forks only the listing itself and leaves no file to remove at exit (a pipe, an awk and an exit-time rm each cost a fork, and a fork took seconds on a loaded Git Bash).
   'tg_leaders=; tg_listed=; tg_lastsig=',
   SH_LIVE,
-  // The listing function holds one bare command, since bash runs a substitution in place (one fork) only when it is a single command with no redirection around it.
+  // The listing function holds one bare command; measured on bash 5.2.37 (msys) with a wrapper script as ps, the wrapper's parent was the main shell for this function form and for the inlined case alike, so the function costs one fork, not two.
   'case $OSTYPE in msys* | cygwin*) tg_ps() { ps -e; } ;; *) tg_ps() { ps -A -o pid=,ppid=,pgid=,stat=; } ;; esac',
   `tg_kin() {`,
   `  tg_tbl=$(tg_ps); ${KIN_SH}`,
@@ -135,7 +135,7 @@ export const REAP_SCRIPT = [
   '  else',
   '    while read -r tg_p tg_rest; do case " $tg_rest " in *" $tg_needle "*) tg_found="$tg_found $tg_p" ;; esac; done < <(ps -wwAE -o pid= -o command= 2>/dev/null)',
   '  fi',
-  // The real listing is taken by the first scan that has seen an owned process, and again by a light scan (no token grep) while an owned process is still alive or the seed set changed since the last listing: a child its parent forked after the first listing is found only by listing again. A light scan whose seeds are all gone and unchanged since the last listing skips it, and the full scans keep to the token scan, since the listing reads the whole process table and cost seconds per pass on a loaded host.
+  // The real listing is taken by the first scan that has seen an owned process, and again by a light scan (no token grep) while an owned process is still alive or the seed set changed since the last listing: a child its parent forked after the first listing is found only by listing again. A light scan whose seeds are all gone and unchanged since the last listing skips it, and the full scans keep to the token scan, since the listing reads the whole process table and cost seconds per pass on a loaded host. The first scan after the KILL always lists once (tg_postkill): a child created after the last pre-kill listing by a seed that was only signalled has no readable token, and the dead seeds make the signature and liveness tests skip the listing that would name it.
   '  tg_sig=" $tg_found $tg_all "; tg_need=1',
   '  if [ -n "$tg_listed" ]; then',
   '    tg_need=',
@@ -143,8 +143,9 @@ export const REAP_SCRIPT = [
   '      [ "$tg_sig" = "$tg_lastsig" ] || tg_need=1',
   '      for tg_p in $tg_all; do [ -z "$tg_need" ] || break; tg_live "$tg_p" && tg_need=1; done',
   '    fi',
+  '    [ -z "$tg_postkill" ] || tg_need=1',
   '  fi',
-  '  [ -z "$tg_need" ] || { tg_kin; tg_lastsig=$tg_sig; [ -z "$tg_found$tg_all" ] || tg_listed=1; }',
+  '  [ -z "$tg_need" ] || { tg_kin; tg_postkill=; tg_lastsig=$tg_sig; [ -z "$tg_found$tg_all" ] || tg_listed=1; }',
   '}',
   'tg_all=',
   'for tg_round in 1 2 3 4 5; do',
@@ -159,7 +160,7 @@ export const REAP_SCRIPT = [
   '  kill -STOP $tg_new 2>/dev/null',
   '  tg_all="$tg_all$tg_new"',
   'done',
-  '[ -z "$tg_all" ] || { kill -KILL $tg_all; kill -CONT $tg_all; } 2>/dev/null',
+  '[ -z "$tg_all" ] || { kill -KILL $tg_all; kill -CONT $tg_all; tg_postkill=1; } 2>/dev/null',
   'tg_start=$SECONDS',
   'tg_begin=$SECONDS',
   'tg_forced=',
