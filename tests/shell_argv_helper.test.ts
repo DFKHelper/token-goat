@@ -37,10 +37,10 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const narrowed = narrowScan(script, pidFiles)
     expect(listing.test(narrowed), 'the reap script no longer defines its process listing on one line').toBe(true)
     const fixed = marker === undefined ? 'tg_ps() { :; }' : `tg_ps() { echo listed >> "${marker}"; :; }`
-    // The kin line forks a subshell, the listing and awk for a result the fixed listing always makes empty; the listing is called in the shell itself instead, so a scan forks nothing but its own grep.
-    const kin = /^ {2}tg_kin=\$\(tg_ps .*$/m
+    // The kin line forks a subshell, the listing and awk for a result the fixed listing always makes empty; the listing is called in the shell itself and the result file is /dev/null, so a scan forks nothing but its own grep.
+    const kin = /^ {2}tg_ps 2>\/dev\/null > "\$tg_kf"; awk .*$/m
     expect(kin.test(narrowed), 'the reap script no longer reads its kin listing on one line').toBe(true)
-    return narrowed.replace(listing, () => fixed).replace(kin, () => '  tg_kin=; tg_ps')
+    return narrowed.replace(listing, () => fixed).replace(kin, () => '  tg_ps >/dev/null; tg_ko=/dev/null')
   }
 
   // True once /proc/PID/environ lists the owner token: the event the reap rows wait for before scanning, read with builtins so a poll forks nothing (a grep per tick cost one fork each).

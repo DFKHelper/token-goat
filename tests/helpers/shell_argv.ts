@@ -113,8 +113,10 @@ const KIN_AWK = '$1 ~ /^[0-9]+$/ && $0 !~ /defunct/ && $4 !~ /^Z/ { known = inde
 
 /** Stops then kills every process whose environment carries `${OWNER_VAR}=$TG_REAP_TOKEN`, rescanning so a child forked between scan and stop is caught, and exits 1 naming any it killed that are still alive ten seconds later, each with its process state and Windows pid and with what `kill -f` printed, so a failure explains itself (a zombie awaiting its reaper counts as gone, so does a pid with no /proc entry where /proc exists, and the report lists only pids still alive when it is written, since under load a killed process can finish exiting just after the deadline). A survivor at two seconds is killed again, under MSYS through the Win32 interface (`kill -f`), since a loaded Windows machine left a signalled Git Bash process running past five seconds; the CONT after the KILL wakes a stopped process that would otherwise sit on its pending signal. Matching the token instead of a recorded pid finds the chunk subshell a timeout orphaned and everything it started, reparented or not, and cannot hit an unrelated process that reused a dead one's pid. One `grep -z` pass over every /proc/<pid>/environ on Linux and under MSYS (a pass that grep did not finish, killed by a signal, is repeated and never read as finding nothing, since a captured run had it die with SIGHUP and the empty answer ended the reap with the run still alive), since bash's `read` pulls a /proc file a byte at a time and that took a loaded Windows machine past a minute; `ps -E` on macOS. Once everything found is dead the scan runs once more and exits 0 only when it finds no live owned process outside the killed set, since a process forked after the last scan (a stop signal can land after a fork already began, and a loaded machine stretches the gap between scan and kill) would otherwise outlive the reap unseen; a process that scan finds is killed and the check repeats. Every scan, with or without /proc, also adds the kin found by KIN_AWK, because the token scan alone cannot see an MSYS child in the seconds between its parent starting it and its environment becoming readable (a child started just before its parent was killed outlived the reap that way); the reap exits 0 only after two consecutive scans find nothing live outside the killed set, survivors are sent KILL again every second, and a run that keeps producing new processes fails after 20 rounds instead of looping. The scan runs only after a failed run, so its cost never lands on a passing one. */
 export const REAP_SCRIPT = [
-  TICK_FN,
-  `tg_needle="${OWNER_VAR}=$TG_REAP_TOKEN"`,
+  TICK_FN,  `tg_needle="${OWNER_VAR}=$TG_REAP_TOKEN"`,
+  // The kin listing goes through two files instead of a command substitution and a pipe, which cost a subshell and a third fork per scan; the files are removed at exit only if a scan made them.
+  'tg_kf="${TMPDIR:-/tmp}/tg-kin.$$"; tg_ko="$tg_kf.o"',
+  `trap '[ ! -e "$tg_kf" ] && [ ! -e "$tg_ko" ] || rm -f "$tg_kf" "$tg_ko"' EXIT`,
   'tg_leaders=',
   'tg_ps() { case $OSTYPE in msys* | cygwin*) ps -e ;; *) ps -A -o pid=,ppid=,pgid=,stat= ;; esac; }',
   'tg_owned() {',
@@ -130,13 +132,13 @@ export const REAP_SCRIPT = [
   '  else',
   '    while read -r tg_p tg_rest; do case " $tg_rest " in *" $tg_needle "*) tg_found="$tg_found $tg_p" ;; esac; done < <(ps -wwAE -o pid= -o command= 2>/dev/null)',
   '  fi',
-  `  tg_kin=$(tg_ps 2>/dev/null | awk -v seeds=" $tg_found $tg_all " -v leaders=" $tg_leaders " '${KIN_AWK}')`,
+  `  tg_ps 2>/dev/null > "$tg_kf"; awk -v seeds=" $tg_found $tg_all " -v leaders=" $tg_leaders " '${KIN_AWK}' < "$tg_kf" > "$tg_ko"`,
   '  while read -r tg_k tg_p; do',
   '    case $tg_k in',
   '      L) tg_leaders="$tg_leaders $tg_p" ;;',
   '      K) case " $tg_found " in *" $tg_p "*) ;; *) tg_found="$tg_found $tg_p" ;; esac ;;',
   '    esac',
-  '  done <<< "$tg_kin"',
+  '  done < "$tg_ko"',
   '}',
   'tg_all=',
   'for tg_round in 1 2 3 4 5; do',
