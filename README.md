@@ -13,13 +13,22 @@ permalink: /
 
 **85%** smaller reads · **49%** of first-read bytes withheld · **97.4%** image compression · **leaner prompt cache** · **205+** filter & interception rules · **94–99%** skill overhead cut · compaction memory · **prompt injection** guard · **3.7 GB** never reached the model · **1.1 Gt** tokens saved
 
-**Reduces AI token use/costs by 40–90%, and improves its focus. Fully automated, always online.**
+**Saves AI turns, context and tokens, and improves its focus. Fully automated, always online.**
 
 **Also defends against prompt injection. Every fetched page, tool result, and extracted document is wrapped in an untrusted-content fence before hitting the model, whether or not it matched an attack pattern, and the scan only decides what the label says. One config line to disable.**
 
 **Your AI re-reads the same file three times. Every whole-file dump is paid for again on every turn after it. Every compaction causes amnesia. Every build log buries the one line that matters. You pay for all of it. Token-Goat fixes all of it — automatically.**
 
 Token-Goat sits silently between your AI and your tools. Re-read a file? It gets a one-line hint and a narrow-slice suggestion instead of the full file again. Grab a screenshot? A 100 KB copy reaches the model instead of 10 MB. Run `pytest`, `npm install`, `docker build`, or `cargo`? The thousands of progress bars and passing-test names are stripped to the failures before the output even reaches the context window. Open a PDF, a large Markdown doc, or a CSV? The hook intercepts it — heading tree, page count, or column preview — so the model never pays for the full file. Run `gh run watch` or `next dev` a second time? Prior output is recalled rather than re-run. Compact a long session? It gets a clean structured manifest of edited files and key symbols so nothing important is forgotten. Sessions drop 40–90%+ in cost. You change nothing about how you work.
+
+Each of these also costs a turn. A model that pages a file ten lines at a time, or runs the same command again to see output it already has, spends round trips as well as tokens. Token-Goat aims to answer the next question as well as the current one. These features save turns today:
+
+- `token-goat brief "file::symbol"` returns the symbol body, its callers and its containing doc section in one call.
+- `token-goat answer "<question>"` answers a plain-English question from the index alone, or refuses with a reason.
+- `token-goat read "file::symbol"` returns one function in place of paging through the file.
+- `token-goat bash-output <id>` and `token-goat web-output <id>` recall captured output instead of running the command or fetch again.
+- A repeat read of a file the session already has gets a "You've already read this file" hint in place of the whole file.
+- Before compaction, a session manifest is injected for the summary to use.
 
 The symbol index also understands native Nginx, Caddyfile, and Apache HTTP Server configuration blocks, so `token-goat read "file::symbol"` can jump directly to them.
 

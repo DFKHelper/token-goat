@@ -898,7 +898,7 @@ export function buildProgram(): Command {
   const program = new Command()
   program
     .name('token-goat')
-    .description('Surgical token-reduction companion for AI coding agents')
+    .description('Surgical companion for AI coding agents that saves turns, context and tokens')
     .version(VERSION, '-v, --version', 'print the token-goat version')
     // Lets a caller (e.g. the VS Code extension) convey a project root explicitly instead of setting the spawned process's own working directory to it -- an attacker-controlled workspace should never be the cwd a shell/launcher resolves a binary name against, but commands that key off process.cwd() for project resolution still need a way to be told where that root is.
     .option('--cwd <path>', 'run as if invoked from this directory (overrides the real working directory)')

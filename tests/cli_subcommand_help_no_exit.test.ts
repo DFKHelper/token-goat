@@ -70,7 +70,7 @@ describe('help <command>', () => {
     expect(result.stderr, 'an unknown command name was not named back to the caller').toContain('nosuchcommand')
     expect(result.code).toBe(1)
     // The failure has to be legible as one: commander's own answer here is the top-level help, which reads like success.
-    expect(result.stdout, 'the top-level command list was printed in place of an error').not.toContain('Surgical token-reduction')
+    expect(result.stdout, 'the top-level command list was printed in place of an error').not.toContain('Surgical companion for AI coding agents')
   })
 
   it('still prints the compact summary for a bare `help`', async () => {

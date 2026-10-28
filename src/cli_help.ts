@@ -4,7 +4,7 @@ export function generateCompactHelp(): string {
   const lines = [
     'Usage: token-goat [options] [command]',
     '',
-    'Surgical token-reduction companion for AI coding agents',
+    'Surgical companion for AI coding agents that saves turns, context and tokens',
     '',
     'Options:',
     '  -v, --version                   print the token-goat version',
