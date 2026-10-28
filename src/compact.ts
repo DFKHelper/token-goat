@@ -366,6 +366,24 @@ export function writeSessionManifest(
   atomicWriteText(dest, JSON.stringify(manifestJson))
 }
 
+const MANIFEST_CACHE_MAX_ENTRIES = 100
+const MAX_SESSIONS_READ = 20
+const CLEANUP_THROTTLE_SECS = 300
+
+interface CachedManifestEntry {
+  mtimeMs: number
+  data: Record<string, unknown> | null
+}
+
+const manifestParseCache = new Map<string, CachedManifestEntry>()
+const lastCleanupTimeByProject = new Map<string, number>()
+
+/** Clear in-memory manifest cache (exposed for testing). */
+export function _clearManifestParseCache(): void {
+  manifestParseCache.clear()
+  lastCleanupTimeByProject.clear()
+}
+
 /** Read all session manifest JSON files for projectHash, skipping stale and corrupt entries. */
 export function readAllSessionManifests(
   projectHash: string,
@@ -381,29 +399,73 @@ export function readAllSessionManifests(
 
   try {
     const files = fs.readdirSync(sessionsDir)
-    for (const file of files) {
-      if (!file.endsWith('.json')) {
-        continue
-      }
+    const jsonFiles = files.filter((file) => file.endsWith('.json'))
+
+    const lastCleanup = lastCleanupTimeByProject.get(projectHash) ?? 0
+    const shouldCleanup = now - lastCleanup > CLEANUP_THROTTLE_SECS
+    if (shouldCleanup) {
+      lastCleanupTimeByProject.set(projectHash, now)
+    }
+
+    interface ManifestCandidate {
+      file: string
+      fullPath: string
+      mtimeMs: number
+    }
+    const candidates: ManifestCandidate[] = []
+
+    for (const file of jsonFiles) {
+      const fullPath = path.join(sessionsDir, file)
       try {
-        const fullPath = path.join(sessionsDir, file)
         const stat = fs.statSync(fullPath)
-        if (now - stat.mtimeMs / 1000 > maxAgeSecs) {
-          // Opportunistic cleanup: an expired manifest is never coming back into the TTL window, so delete it here instead of leaving it to accumulate forever. Best-effort -- a delete failure (concurrent access, permissions) must never break the read path itself.
-          try {
-            fs.unlinkSync(fullPath)
-          } catch {
-            // ignore cleanup failure
+        const ageSecs = now - stat.mtimeMs / 1000
+        if (ageSecs > maxAgeSecs) {
+          if (shouldCleanup) {
+            try {
+              fs.unlinkSync(fullPath)
+              manifestParseCache.delete(fullPath)
+            } catch {
+              // ignore cleanup failure
+            }
           }
           continue
         }
+        candidates.push({ file, fullPath, mtimeMs: stat.mtimeMs })
+      } catch {
+        // file unlinked or inaccessible
+      }
+    }
+
+    candidates.sort((a, b) => b.mtimeMs - a.mtimeMs)
+    const activeCandidates = candidates.slice(0, MAX_SESSIONS_READ)
+
+    for (const candidate of activeCandidates) {
+      const { fullPath, mtimeMs } = candidate
+      const cached = manifestParseCache.get(fullPath)
+      if (cached && cached.mtimeMs === mtimeMs) {
+        if (cached.data !== null) {
+          results.push(cached.data)
+        }
+        continue
+      }
+
+      try {
         const text = fs.readFileSync(fullPath, 'utf8')
         const data = JSON.parse(text)
         if (typeof data === 'object' && data !== null && 'files' in data) {
+          if (manifestParseCache.size >= MANIFEST_CACHE_MAX_ENTRIES) {
+            const oldestKey = manifestParseCache.keys().next().value
+            if (oldestKey !== undefined) {
+              manifestParseCache.delete(oldestKey)
+            }
+          }
+          manifestParseCache.set(fullPath, { mtimeMs, data })
           results.push(data)
+        } else {
+          manifestParseCache.set(fullPath, { mtimeMs, data: null })
         }
       } catch {
-        // Silently skip corrupt JSON
+        manifestParseCache.set(fullPath, { mtimeMs, data: null })
       }
     }
   } catch {

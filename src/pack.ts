@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import * as minimatch from 'minimatch'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { statThroughHandle } from './handle_stat.js'
-import { decodeSource, countNoun } from './util.js'
+import { decodeSource, countContentLines, countNoun } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
 import { detectLanguage } from './parser_types.js'
 import { fenceFor } from './language_specs.js'
@@ -589,9 +589,7 @@ export function estimateBudget(
       let tokens: number
       try {
         const data = fs.readFileSync(fd)
-        const sampleSize = Math.min(1000, data.length)
-        const sampleLines = (data.toString('utf8', 0, sampleSize).match(/\n/g) || []).length
-        lines = data.length > sampleSize ? Math.ceil(sampleLines * (data.length / sampleSize)) : sampleLines + 1
+        lines = countContentLines(data)
         const tokenSampleSize = Math.min(100000, data.length)
         const text = data.toString('utf8', 0, tokenSampleSize)
         const sampleTokens = estimateTokens(text)

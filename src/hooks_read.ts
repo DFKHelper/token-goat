@@ -646,7 +646,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         return quietContextOutput(
           '[tg] Line-range read circuit breaker: read allowed after repeated denials. ' +
           'Run `token-goat read ' + quotedArg(shown + '@' + rangeSpan.start + '-' + rangeSpan.end) + '` for this window, ' +
-          'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time.',
+          'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time. ' +
+          'For ongoing exploration, delegate bounded symbol or code extraction to an explore agent (specifically Luna, else Haiku).',
           [shown],
         )
       }
@@ -668,7 +669,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       return quietContextOutput(
         '[tg] Line-range read circuit breaker: read allowed after repeated denials. ' +
         'Run `token-goat read ' + quotedArg(shown + '@' + rangeSpan.start + '-' + rangeSpan.end) + '` for this window, ' +
-        'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time.',
+        'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time. ' +
+        'For ongoing exploration, delegate bounded symbol or code extraction to an explore agent (specifically Luna, else Haiku).',
         [shown],
       )
     }
@@ -1231,7 +1233,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           (isSourceExt ? '' : ' ' + surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)))
         return denyOutput(
           'Sequential line-range paging detected on ' + readSubject(normalized, hint) + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
-          ' Inspect structure directly without manual chunk paging. Further Read/view line ranges of this file will be denied.',
+          ' Inspect structure directly without manual chunk paging. Delegate bounded symbol or code extraction to an explore agent (specifically GPT-6 Luna, else Haiku or equivalent) rather than getting stuck in micro-paging loops. Further Read/view line ranges of this file will be denied.',
         )
       }
       if (rangeSpan !== undefined && evaluateRangeEvasion({
@@ -1310,7 +1312,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const isSequentialNote = activeSpan !== undefined && isSequentialPagingChain([...activeRanges, [activeSpan.start, activeSpan.end]], 3)
     const pagingNote = (pagingWindow.isExplicitSlice && activeRanges.length >= 2 && isSequentialNote)
       ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + quotedArg(shown) + '` or ' +
-        realSymbolReadHint(normalized, shown, activeSpan) + '.'
+        realSymbolReadHint(normalized, shown, activeSpan) + ', or delegate bounded extraction to an explore agent (specifically Luna, else Haiku).'
       : ''
     // A ranged Read whose window touches no line served before, with no whole-file read behind it, hands over lines the model has never seen: the already-read note would be false.
     const windowIsNew = isUnseenWindow(pagingWindow, activeRanges, fullReads)

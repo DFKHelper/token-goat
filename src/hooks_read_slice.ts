@@ -448,9 +448,23 @@ export function readWindowFromDisk(event: HookEvent, normalized: string): string
   const start = window.offset !== undefined && window.offset >= 1 ? window.offset : 1
   const limit = window.limit
   if (start === 1 && (limit === undefined || limit <= 0)) return text
-  const lines = text.split('\n')
-  const from = start - 1
-  return (limit === undefined || limit <= 0 ? lines.slice(from) : lines.slice(from, from + limit)).join('\n')
+
+  let sliceStart = 0
+  for (let line = 1; line < start; line++) {
+    const newline = text.indexOf('\n', sliceStart)
+    if (newline === -1) return ''
+    sliceStart = newline + 1
+  }
+  if (limit === undefined || limit <= 0) return text.slice(sliceStart)
+
+  let cursor = sliceStart
+  for (let line = 0; line < limit; line++) {
+    const newline = text.indexOf('\n', cursor)
+    if (newline === -1) return text.slice(sliceStart)
+    if (line === limit - 1) return text.slice(sliceStart, newline)
+    cursor = newline + 1
+  }
+  return text.slice(sliceStart)
 }
 
 export const READ_NUMBERED_ROW_RE = /^\s*(\d+)[\t→](.*)$/

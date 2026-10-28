@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Changed
+
+- **Legacy PHP indexing covers include files and procedural declarations.** `.inc` files now map to PHP; multiline array initializers and top-level procedural arrays are indexed across their full spans. Literal single-quoted `eval()` declarations and assigned `create_function()` callbacks are extracted without executing dynamic code. The parser fingerprint change triggers reindexing on upgrade.
+
 ## [2.9.33] - 2026-10-26
 
 ### Added
@@ -26,6 +30,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`git -C <dir> push` and other git commands with options before the subcommand are classified as git commands.** The bash output cache read `git` followed directly by the subcommand, so `git -C dir push`, `git -c k=v push` and `git -C dir status` were missed: a push was not treated as a state change, and a `git -C <dir>` status was fingerprinted against the working directory's repository instead of `<dir>`'s.
 - **A failing check script given only `.md` documents is recorded as a failure.** A run such as `python scripts/run_self_tests.py README.md` that failed was dropped, so the Stop advisory never named it. Its documents still count as no check input, so a pass on one clears no edit.
 - **A git killed by a signal reads as unknown, not as exit 1.** A git ended by a signal such as SIGKILL used to read as exit 1, so an inline Grep scope check read it as a negative answer, and the post-Bash hook took it for a git that never ran and asked for no reconcile. It now reads as exit -1 with the signal named, and each caller takes its unknown branch. Upgrading reindexes: the parser fingerprint changed because `src/util.ts` is a shared extraction source, so already-indexed files are reparsed once.
+- **HTML extraction ignores style-body markup without crossing document boundaries.** CSS contents no longer produce HTML headings or symbols, while style-shaped text inside comments, RCDATA elements, declarations, custom-element attributes, and self-closing SVG styles does not hide following markup. The parser fingerprint change triggers reindexing on upgrade.
 
 - **The Stop advisory no longer fires on scratch edits or misses real checks.** It named throwaway probes in the harness scratchpad (outside the project, under the OS temp dir) as unverified work, and said "no test, lint, typecheck or build was run" after a session that ran its validator scripts. An edit outside the session's project root (the nearest project marker above the Stop event's working directory) no longer counts when it sits under the OS temp dir, and with no root known an edit under the OS temp dir does not count either; a sibling package, another repo or a sibling worktree outside the root still counts. A passing `python <dir>/run_*tests*.py`, `validate*.py`, `check_*.py` or `<script>.py ... --self-test` now counts as a check, but only with path or selector arguments: `--help`, `-h`, `--list`, `--version`, `--dry-run` and any other flag make it not a check. A `git commit` or `git push` is never counted, because a hook file existing does not prove it checks anything. The command is stored without any argument beyond the script path and `--self-test`. The advisory still speaks once per distinct state; it repeated only because each turn edited a new file.
 

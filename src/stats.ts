@@ -390,6 +390,7 @@ CREATE TABLE IF NOT EXISTS stats (
 );
 CREATE INDEX IF NOT EXISTS idx_stats_ts ON stats(ts);
 CREATE INDEX IF NOT EXISTS idx_stats_kind ON stats(kind);
+CREATE INDEX IF NOT EXISTS idx_stats_ts_kind ON stats(ts, kind);
 -- Day-granularity rollup of stats rows older than STATS_RETENTION_DAYS -- see
 -- rollupAndPruneStats's doc comment for why raw rows are pruned instead of kept forever, and
 -- summarize()'s rollup merge for how a --window-days report spanning pruned days still gets a

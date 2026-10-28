@@ -35,6 +35,8 @@ const CONST_RE = new RegExp(
   'i',
 )
 const DEFINE_RE = /^define\s*\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/i
+const GLOBAL_ARRAY_RE = /^\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:array\s*\(|\[)/i
+const CREATE_FUNCTION_ASSIGN_RE = /^\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*create_function\s*\(/i
 // `var` is PHP's legacy property-visibility declarator (a full synonym for `public`), still valid syntax in every current PHP version - without it in the alternation, a `var $foo;` property is silently dropped from the index entirely, unlike every other property-declaration style. `public(set)` / `protected(set)` / `private(set)` are PHP 8.4's asymmetric-visibility set-scope declarators, and `abstract` / `final` are the property modifiers the same version's property hooks admit; each alternative still has to be followed by a `$name`, so none of them can match a line that is not a property declaration.
 const PROP_RE = new RegExp(
   '^(?:(?:(?:public|protected|private)\\(set\\)|public|protected|private|static|readonly|abstract|final|var)\\s+)+' +
@@ -63,6 +65,141 @@ function inlinePhpMember(text: string, kind: string, parent: string | undefined,
   const constM = CONST_RE.exec(text)
   if (constM) return makeLineSymbol(filePath, constM[1] ?? '', 'const', lineNum, text, parent)
   return null
+}
+
+function phpArrayInitializerOpen(line: string, symbol: SymbolEntry): { column: number; open: '(' | '['; close: ')' | ']' } | null {
+  let valueStart = -1
+  if (symbol.kind === 'var' || symbol.kind === 'function') {
+    const variableStart = line.indexOf(`$${symbol.name}`)
+    if (variableStart < 0) return null
+    const equals = line.indexOf('=', variableStart + symbol.name.length + 1)
+    if (equals < 0) return null
+    valueStart = equals + 1
+  } else if (symbol.kind === 'const') {
+    const define = /^\s*define\s*\(/i.exec(line)
+    if (define !== null) {
+      const comma = line.indexOf(',', define[0].length - 1)
+      if (comma < 0) return null
+      valueStart = comma + 1
+    } else {
+      const declaration = /\bconst\s+[A-Za-z_][A-Za-z0-9_]*/i.exec(line)
+      if (declaration === null) return null
+      const equals = line.indexOf('=', declaration.index + declaration[0].length)
+      if (equals < 0) return null
+      valueStart = equals + 1
+    }
+  }
+  if (valueStart < 0) return null
+
+  const value = line.slice(valueStart)
+  if (symbol.kind === 'function') {
+    const dynamicFunction = /^\s*create_function\s*\(/i.exec(value)
+    if (dynamicFunction !== null) return { column: valueStart + dynamicFunction[0].lastIndexOf('('), open: '(', close: ')' }
+  }
+  const longArray = /^\s*array\s*\(/i.exec(value)
+  if (longArray !== null) return { column: valueStart + longArray[0].lastIndexOf('('), open: '(', close: ')' }
+  if (/^\s*\[/.test(value)) return { column: valueStart + value.indexOf('['), open: '[', close: ']' }
+  return null
+}
+
+function spanPhpArrayInitializers(symbols: readonly SymbolEntry[], codeLines: readonly string[], sourceLines: readonly string[]): SymbolEntry[] {
+  const result = [...symbols]
+  const candidatesByLine = new Map<number, Array<{ symbolIndex: number; column: number; open: '(' | '['; close: ')' | ']' }>>()
+  for (let symbolIndex = 0; symbolIndex < symbols.length; symbolIndex++) {
+    const symbol = symbols[symbolIndex]
+    if (symbol === undefined || symbol.lineEnd !== symbol.lineStart || (symbol.kind !== 'var' && symbol.kind !== 'const' && symbol.kind !== 'function')) continue
+    const lineIndex = symbol.lineStart - 1
+    const start = phpArrayInitializerOpen(codeLines[lineIndex] ?? '', symbol)
+    if (start === null) continue
+    const candidates = candidatesByLine.get(lineIndex) ?? []
+    candidates.push({ symbolIndex, ...start })
+    candidatesByLine.set(lineIndex, candidates)
+  }
+
+  const active: Array<{ symbolIndex: number; startLine: number; column: number; open: '(' | '['; close: ')' | ']'; depth: number }> = []
+  for (let lineIndex = 0; lineIndex < codeLines.length; lineIndex++) {
+    for (const candidate of candidatesByLine.get(lineIndex) ?? []) active.push({ ...candidate, startLine: lineIndex, depth: 0 })
+    const codeLine = codeLines[lineIndex] ?? ''
+    for (let activeIndex = active.length - 1; activeIndex >= 0; activeIndex--) {
+      const span = active[activeIndex]
+      if (span === undefined) continue
+      let endLine = 0
+      const startColumn = span.startLine === lineIndex ? span.column : 0
+      for (let column = startColumn; column < codeLine.length; column++) {
+        const char = codeLine[column]
+        if (char === span.open) span.depth++
+        if (char === span.close) {
+          span.depth--
+          if (span.depth === 0) {
+            endLine = lineIndex + 1
+            break
+          }
+        }
+      }
+      if (endLine > span.startLine + 1) {
+        const symbol = result[span.symbolIndex]
+        if (symbol !== undefined) {
+          result[span.symbolIndex] = {
+            ...symbol,
+            lineEnd: endLine,
+            body: sourceLines.slice(symbol.lineStart - 1, endLine).join('\n'),
+          }
+        }
+      }
+      if (endLine > 0) active.splice(activeIndex, 1)
+    }
+  }
+  return result
+}
+
+function phpSingleQuotedEvalSource(line: string, evalIndex: number): string | null {
+  let index = line.indexOf('(', evalIndex) + 1
+  while (/\s/.test(line[index] ?? '')) index++
+  if (line[index] !== "'") return null
+  index++
+  let source = ''
+  while (index < line.length) {
+    const char = line[index]
+    if (char === '\\') {
+      const next = line[index + 1]
+      if (next === undefined) return null
+      source += next === '\\' || next === "'" ? next : `\\${next}`
+      index += 2
+      continue
+    }
+    if (char === "'") {
+      index++
+      while (/\s/.test(line[index] ?? '')) index++
+      return line[index] === ')' ? source : null
+    }
+    source += char
+    index++
+  }
+  return null
+}
+
+function extractPhpEvalSymbols(codeLines: readonly string[], sourceLines: readonly string[], filePath: string): SymbolEntry[] {
+  const symbols: SymbolEntry[] = []
+  for (let lineIndex = 0; lineIndex < codeLines.length; lineIndex++) {
+    const evalCalls = codeLines[lineIndex]?.matchAll(/\beval\s*\(/ig)
+    if (evalCalls === undefined) continue
+    for (const call of evalCalls) {
+      const evalSource = phpSingleQuotedEvalSource(sourceLines[lineIndex] ?? '', call.index)
+      if (evalSource === null) continue
+      const parsed = extractPhpInternal(evalSource, filePath, 1)
+      for (const symbol of parsed.symbols) {
+        if (!['class', 'interface', 'trait', 'enum', 'method', 'function'].includes(symbol.kind)) continue
+        if (symbol.kind === 'function' && !/^\s*function\b/i.test(symbol.body)) continue
+        symbols.push({
+          ...symbol,
+          lineStart: lineIndex + 1,
+          lineEnd: lineIndex + 1,
+          body: sourceLines[lineIndex] ?? '',
+        })
+      }
+    }
+  }
+  return symbols
 }
 
 /** Blanks everything outside `<?php ... ?>`, keeping length and line breaks so every line number still lines up. A `.php` file is an HTML template until an opening tag says otherwise, and this adapter used to read the whole file as PHP. A `<script>function init() {` line in the markup matched the method pattern and was indexed as a PHP function: a fabricated symbol, which this repo treats as worse than a missing one. The brace-span layer walked the same markup and mis-nested on its braces. Exported because {@link extractPhp} and the brace-span pass in registry.ts must agree about where the PHP is; two copies of this rule could drift, which is the defect that produced the Groovy coupling. A file with no opening tag anywhere is returned unchanged: that is a fragment rather than a template, and blanking it would index nothing at all. */
@@ -98,9 +235,18 @@ export function extractPhp(
   content: string,
   filePath: string,
 ): { symbols: SymbolEntry[]; imports: AdapterImport[]; settled: ReadonlySet<SymbolEntry> } {
+  return extractPhpInternal(content, filePath, 0)
+}
+
+function extractPhpInternal(
+  content: string,
+  filePath: string,
+  evalDepth: number,
+): { symbols: SymbolEntry[]; imports: AdapterImport[]; settled: ReadonlySet<SymbolEntry> } {
   const symbols: SymbolEntry[] = []
   const imports: AdapterImport[] = []
   const lines = maskPhpInlineHtml(content).split(/\r?\n/)
+  const codeLines = new Array<string>(lines.length).fill('')
   // Members found on a line after its first declaration already carry their real span, so the brace-span pass must leave them alone: searching from the start of their line it would reach the class's `{` or an earlier member's, and stretch them over that block instead.
   const settled = new Set<SymbolEntry>()
   // Such members wait here for the end of their line, so they follow the line's first declaration in `symbols` the way they follow it in the source.
@@ -161,6 +307,7 @@ export function extractPhp(
     // Track brace depth. Apply the net delta (opens minus closes) before the pop check so a class's closing brace pops its context on the same line; checking before subtracting closes would leave the stale class on the stack and mis-parent the next top-level declaration. Brace-count on a string-stripped copy of the line so a literal brace inside a string literal is never counted as real nesting. On an attribute line the comment search starts past the `#[`, so the `#` that opens it is not taken for a comment marker.
     const commentFrom = attrOpen ? line.indexOf('#[') + 2 : 0
     const braceLine = stripStringLiterals(line.slice(0, commentFrom) + stripLineComment(line.slice(commentFrom), ['//', '#']))
+    codeLines[i] = braceLine
     const openB = (braceLine.match(/\{/g) ?? []).length
     const closeB = (braceLine.match(/\}/g) ?? []).length
     braceDepth += openB - closeB
@@ -316,6 +463,25 @@ export function extractPhp(
       continue
     }
 
+    // A named array at file scope is the useful symbol in procedural config/include files; local assignments are intentionally left alone.
+    const preLineDepth = braceDepth - openB + closeB
+    if (contextStack.length === 0 && preLineDepth === 0 && preLineParenDepth === 0) {
+      const arrayM = GLOBAL_ARRAY_RE.exec(stripped)
+      if (arrayM) {
+        const sym = makeLineSymbol(filePath, arrayM[1] ?? '', 'var', lineNum, stripped.slice(0, 200), undefined, lines, 'c')
+        symbols.push(sym)
+        settled.add(sym)
+        continue
+      }
+      const createFunctionM = CREATE_FUNCTION_ASSIGN_RE.exec(braceLine.trimStart())
+      if (createFunctionM) {
+        const sym = makeLineSymbol(filePath, createFunctionM[1] ?? '', 'function', lineNum, stripped.slice(0, 200), undefined, lines, 'c')
+        symbols.push(sym)
+        settled.add(sym)
+        continue
+      }
+    }
+
     // global define()
     const defineM = DEFINE_RE.exec(stripped)
     if (defineM) {
@@ -324,5 +490,17 @@ export function extractPhp(
   }
 
   flushMembers()
-  return { symbols, imports, settled }
+  const spannedSymbols = spanPhpArrayInitializers(symbols, codeLines, lines)
+  const spannedSettled = new Set<SymbolEntry>()
+  for (let symbolIndex = 0; symbolIndex < symbols.length; symbolIndex++) {
+    const symbol = symbols[symbolIndex]
+    const spanned = spannedSymbols[symbolIndex]
+    if (symbol !== undefined && spanned !== undefined && settled.has(symbol)) spannedSettled.add(spanned)
+  }
+  if (evalDepth === 0) {
+    const evalSymbols = extractPhpEvalSymbols(codeLines, lines, filePath)
+    spannedSymbols.push(...evalSymbols)
+    for (const symbol of evalSymbols) spannedSettled.add(symbol)
+  }
+  return { symbols: spannedSymbols, imports, settled: spannedSettled }
 }

@@ -48,7 +48,7 @@ Failure shapes to catch yourself in, and the command that replaces each:
 - verifying a terminal command actually wrote fresh output → `bash-output --file <path> --verify-last-write`
 - discovering schema for session store or workflow database without guessing → `session-schema [table]` or `describe <target> [table]`
 - a directory listing or recursive wildcard walk to orient in an unfamiliar repo → `map --compact`
-- pulling one value or subtree out of a JSON/YAML/XML file (manifest, lockfile, spec, config) → `json-query file 'a.b.c'` / `yaml-query file 'a.b.c'` / `xml-query file 'a.b.c'`
+- pulling one value or subtree out of a JSON/YAML/XML file (manifest, lockfile, spec, config) → `json-query file 'a.b.c'` / `yaml-query file 'a.b.c'` / `xml-query file 'a.b.c'` (use --head N on large arrays to bound output; filter with [key*="pattern" i])
 - opening an image to check its dimensions, format, or size → `image-meta file`
 - opening a screenshot, diagram, or scan to read the text in it → `image-text file`
 - opening a PDF or Office document → inspect its format first, then read a narrow slice: PDF `pdf-meta`/`pdf-outline` then `pdf-locate` to find the pages that mention a term and `pdf-extract --pages` only those; Word `docx-outline` then `docx-tables`/`docx-text`; PowerPoint `pptx-outline` then `pptx-slide`/`pptx-notes`; Excel `xlsx-sheets` then `xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`

@@ -195,6 +195,12 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   const parsed = parseReadDelivery(event, respText)
   if (parsed === null) return null
 
+  // Guard against micro-paging fragment trap: if the caller explicitly requested a tiny slice window
+  // (<= 15 delivered lines, typical micro-paging ranges), do not elide overlapping lines into a confusing placeholder.
+  // Fragmenting tiny explicit slices provokes agents into micro-shift retries and evasion locks.
+  const sliceWin = readRequestedSliceWindow(event)
+  if (sliceWin.isExplicitSlice && parsed.rows.length <= 15) return null
+
   // Composing a rewrite makes this handler the author of what the model reads, and every sibling that composes redacts first. Here the honest move is to decline instead: redacting would hand back less of the user's own file than a plain Read does today. Asked of the precise patterns only, never the recall-tuned catch-all: because declining passes the file through unredacted, a false positive here protects nothing and costs the whole rewrite -- the opposite of the asymmetry redactSecrets itself is tuned for.
   if (hasPreciseSecret(respText)) return null
 
