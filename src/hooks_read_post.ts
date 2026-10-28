@@ -2,7 +2,7 @@
 
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { emitRewrite, emitRewriteWithContext, extractToolResponseField, getCwd, getFilePath, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, passOutput } from './hooks_common.js'
+import { denyOutput, emitRewrite, emitRewriteWithContext, extractToolResponseField, getCwd, getFilePath, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, passOutput } from './hooks_common.js'
 import { type HookEvent, registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, toDisplayPath } from './paths.js'
@@ -181,7 +181,7 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
   }
 }
 
-/** Replace stretches of a completed Read that the session has already been handed, keeping every line it has not. `alreadyServedOutputId` withholds a read whose window is entirely inside an earlier delivery. The partial case is the larger one and it cannot be denied: measured over a month of real sessions, 589 Read calls carried a mix of new and already-served lines against 400 fully-served ones, and denying any of the 589 would have deleted the new lines along with the old. Rewriting the result keeps the new lines and turns the rest into a pointer at the copy the model holds. Line numbers survive untouched -- an elided run becomes a notice naming the exact range it stood for, and every kept row is emitted verbatim, padding included, so the rewrite is purely subtractive. Nothing downstream has to re-derive a position from a shortened body, and no part of the saving comes from quietly reformatting rows that were not withheld. Skipped, each toward showing the model more rather than less: - anything a precise secret pattern matches (`hasPreciseSecret`, not the recall-tuned catch-all, which false-fires on ordinary source and would forfeit the rewrite without protecting anything). On a pass-through the harness's own text reaches the model, so a file carrying a credential keeps behaving exactly as it does today instead of coming back redacted because it happened to overlap an earlier read. - a truncated read, which delivered less than its own window with no way from here to know where it stopped. - a rewrite that does not clear the shared net-savings floor. */
+/** Replace stretches of a completed Read that the session has already been handed, keeping every line it has not. A partially served requested window is denied when at least half its delivered rows would otherwise be replaced by notices; smaller overlaps are rewritten so new rows survive. Kept rows remain verbatim and line-numbered. Skipped, each toward showing the model more rather than less: - anything a precise secret pattern matches (`hasPreciseSecret`, not the recall-tuned catch-all, which false-fires on ordinary source and would forfeit the rewrite without protecting anything). On a pass-through the harness's own text reaches the model, so a file carrying a credential keeps behaving exactly as it does today instead of coming back redacted because it happened to overlap an earlier read. - a truncated read, which delivered less than its own window with no way from here to know where it stopped. - a rewrite that does not clear the shared net-savings floor. */
 function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput | null {
   if (!loadConfig().hints.elide_served_lines) return null
   const filePath = getFilePath(event)
@@ -216,6 +216,13 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
 
   const cuts = planServedElisions(parsed.rows, bodies)
   if (cuts.length === 0) return null
+  const withheldLines = cuts.reduce((total, cut) => total + cut.len, 0)
+  if (sliceWin.isExplicitSlice && withheldLines / parsed.rows.length >= 0.5) {
+    return denyOutput(
+      'At least half of this requested line range was already served; partial line redaction is blocked. ' +
+      'Use `token-goat read` for a named symbol or delegate bounded extraction to an explore subagent.',
+    )
+  }
 
   const layout = readLayout(event)
   const bodyRows: string[] = []

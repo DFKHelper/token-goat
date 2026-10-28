@@ -615,6 +615,16 @@ function knownChangedSinceRead(event: HookEvent, normalized: string): boolean {
   return rereadIdentity(sessionStateKey(event), normalized, getSessionFileEntry(normalized)).identity === 'changed'
 }
 
+function hasHighIouOverlap(span: readonly [number, number], priorRanges: ReadonlyArray<readonly [number, number]>): boolean {
+  const [start, end] = span
+  return priorRanges.some(([priorStart, priorEnd]) => {
+    const intersection = Math.max(0, Math.min(end, priorEnd) - Math.max(start, priorStart) + 1)
+    if (intersection === 0) return false
+    const union = Math.max(end, priorEnd) - Math.min(start, priorStart) + 1
+    return intersection / union > 0.6
+  })
+}
+
 function preReadHandlerInner(event: HookEvent): HookOutput {
   let filePath = getFilePath(event)
   if (filePath === undefined && event.toolName === 'Grep') {
@@ -1236,8 +1246,17 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           ' Inspect structure directly without manual chunk paging. Delegate bounded symbol or code extraction to an explore agent (specifically GPT-6 Luna, else Haiku or equivalent) rather than getting stuck in micro-paging loops. Further Read/view line ranges of this file will be denied.',
         )
       }
+      const recentRanges = getRecentReadRanges(rangeKey)
+      if (rangeSpan !== undefined && hasHighIouOverlap([rangeSpan.start, rangeSpan.end], recentRanges)) {
+        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          'deny: overlapping line-range paging detected. Use `token-goat read ' +
+          quotedArg(shown + '::Symbol') + '` for a named symbol or delegate bounded extraction to an explore subagent.',
+        )
+      }
       if (rangeSpan !== undefined && evaluateRangeEvasion({
-        span: [rangeSpan.start, rangeSpan.end], served: getRecentReadRanges(rangeKey),
+        span: [rangeSpan.start, rangeSpan.end], served: recentRanges,
         denied: getReadRangeDenials(rangeKey),
       }) !== null) {
         lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
@@ -1497,7 +1516,14 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const target = getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? resolveEventPath(event, rawGrepPath) : undefined)
   if (preToolPathDeclined(event, target)) return passOutput()
   const before = event.toolName === 'Read' && target !== undefined ? getSessionFileEntry(target) : undefined
-  const output = preReadHandlerInner(event)
+  const readsSoFar = before === undefined ? 0 : epochReadCounts(before).reads
+  const output = event.toolName === 'Read' && target !== undefined && readsSoFar >= 2
+    ? denyOutput(
+      'deny: consecutive read limit exceeded for file ' + displaySafePath(normalizePath(target)) +
+      '. Use `token-goat read ' + quotedArg(displaySafePath(normalizePath(target)) + '::Symbol') +
+      '` for a targeted extraction or delegate bounded exploration to an explore subagent.',
+    )
+    : preReadHandlerInner(event)
   // Every hint here names a token-goat command that reads the file itself, so on a path a deny or ask rule covers it would lead around the rule: Claude Code answers the call on its own.
   if (output.hookType !== 'pass' && target !== undefined && readHintCrossesRule(detectHarness(), getCwd(event) ?? process.cwd(), [target])) return passOutput()
   // The re-read denies record the Read before refusing it; one that hands over neither the file nor a diff of it left the model holding what it held, so the read is taken back and a repeated refusal neither inflates the counts it quotes nor the manifest's re-read tally.
