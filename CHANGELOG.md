@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **`session-outline`, `session-slice` and `session-audit` handle redacted thinking blocks.** A transcript block of type `redacted_thinking` (the API's safety-redacted reasoning, whose `data` field is opaque) now renders as a placeholder that says the content is redacted, and a turn holding only one previews as `(redacted thinking)`. `session-audit` counts its bytes under assistant thinking instead of dropping them.
+
 ## [2.9.33] - 2026-10-26
 
 ### Added

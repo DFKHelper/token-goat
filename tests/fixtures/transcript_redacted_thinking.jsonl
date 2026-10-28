@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Plan the refactor."}]}}
+{"type":"assistant","message":{"id":"msg_redacted_1","role":"assistant","usage":{"input_tokens":12,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":9},"content":[{"type":"redacted_thinking","data":"SYNTHETIC-OPAQUE-PAYLOAD-0000000000000000"},{"type":"text","text":"Done."}]}}

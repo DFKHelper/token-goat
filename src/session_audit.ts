@@ -779,6 +779,8 @@ async function auditOneFile(filePath: string, s: SessionAuditSummary, toolMap: M
             addCategory(s.estimated.assistantText, Buffer.byteLength(block['text'], 'utf8'))
           } else if (block['type'] === 'thinking' && typeof block['thinking'] === 'string') {
             addCategory(s.estimated.assistantThinking, Buffer.byteLength(block['thinking'], 'utf8'))
+          } else if (block['type'] === 'redacted_thinking' && typeof block['data'] === 'string') {
+            addCategory(s.estimated.assistantThinking, Buffer.byteLength(block['data'], 'utf8'))
           } else if (block['type'] === 'tool_use' && typeof block['id'] === 'string') {
             const name = typeof block['name'] === 'string' ? block['name'] : '(unnamed)'
             if (!toolNameById.has(block['id'])) {
