@@ -8,6 +8,7 @@ import { runZipList, runZipRead } from './read_inspect.js'
 import { detectLanguage } from './parser_types.js'
 import { spawnOwned } from './process_tree.js'
 import { collectWalkIndexFiles } from './walk_index.js'
+import { countNoun } from './util.js'
 
 export const PHP_LINT_CONFIG = { executable: 'php', defaultJobs: 4, maxJobs: 8 } as const
 
@@ -308,7 +309,7 @@ export async function cmdPhpLint(paths: string[] = [], opts: PhpLintOptions = {}
   const diagnosticSummary = diagnostics > 0 ? `, ${diagnostics} with diagnostics` : ''
   console.log(`[php-lint] Checked ${result.files.length} PHP files with ${php}: ${passed} passed, ${failures} failed${diagnosticSummary}.`)
   if (failures > 0) {
-    console.error(formatCommandError(new Error(`[php-lint] ${failures} PHP file(s) failed syntax validation.`)))
+    console.error(formatCommandError(new Error(`[php-lint] ${countNoun(failures, 'PHP file')} failed syntax validation.`)))
     process.exitCode = 1
     return
   }
