@@ -2,6 +2,8 @@
 import { spawnSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { MessageChannel, Worker, receiveMessageOnPort } from 'node:worker_threads'
 
 import { resolveWindowsBash } from '../../src/shell.js'
@@ -16,6 +18,20 @@ function posixShell(): string | null {
 
 /** The POSIX shell to run suggestions through, or null when none is available here. */
 export const POSIX_SH: string | null = posixShell()
+
+/** A FIFO nothing ever writes, made once per test process and removed at exit. A read on it waits out its timeout and returns nothing, so it is the fork-free clock every shell poll loop in these rows ticks on (TICK_FN). Its path must exist before any shell reads it: `<>` on a missing path creates a regular file, which answers at once and turns a wait into a spin. */
+const TICK_FIFO: string | null = POSIX_SH === null ? null : makeTickFifo(POSIX_SH)
+
+function makeTickFifo(sh: string): string {
+  const fifo = path.join(os.tmpdir(), `tg-tick-${process.pid}-${randomBytes(4).toString('hex')}`).replace(/\\/g, '/')
+  const made = spawnSync(sh, ['-c', 'mkfifo "$1"', 'mkfifo', fifo], { windowsHide: true, timeout: 30_000 })
+  if (made.status !== 0) throw new Error(`could not make the tick FIFO ${fifo}: ${made.stderr ?? ''}${made.error ? ` ${made.error.message}` : ''}`)
+  process.once('exit', () => fs.rmSync(fifo, { force: true }))
+  return fifo
+}
+
+/** Defines `tg_tick`, a wait of about 0.1 s that runs no process: a builtin read on TICK_FIFO times out. A poll loop that called `sleep 0.1` forked once per tick, and under load each fork took seconds, so the loop's wall time was the fork's latency rather than the clock. */
+export const TICK_FN = TICK_FIFO === null ? 'tg_tick() { :; }' : `tg_tick() { read -r -t 0.1 tg_tk <>'${TICK_FIFO}' || :; }`
 
 /** The PowerShell to run suggestions through, or null when none can run here (it throws on CI instead, see powershellForParsing). */
 export const POWERSHELL: string | null = powershellForParsing()
@@ -97,6 +113,7 @@ const KIN_AWK = '$1 ~ /^[0-9]+$/ && $0 !~ /defunct/ && $4 !~ /^Z/ { known = inde
 
 /** Stops then kills every process whose environment carries `${OWNER_VAR}=$TG_REAP_TOKEN`, rescanning so a child forked between scan and stop is caught, and exits 1 naming any it killed that are still alive ten seconds later, each with its process state and Windows pid and with what `kill -f` printed, so a failure explains itself (a zombie awaiting its reaper counts as gone, so does a pid with no /proc entry where /proc exists, and the report lists only pids still alive when it is written, since under load a killed process can finish exiting just after the deadline). A survivor at two seconds is killed again, under MSYS through the Win32 interface (`kill -f`), since a loaded Windows machine left a signalled Git Bash process running past five seconds; the CONT after the KILL wakes a stopped process that would otherwise sit on its pending signal. Matching the token instead of a recorded pid finds the chunk subshell a timeout orphaned and everything it started, reparented or not, and cannot hit an unrelated process that reused a dead one's pid. One `grep -z` pass over every /proc/<pid>/environ on Linux and under MSYS (a pass that grep did not finish, killed by a signal, is repeated and never read as finding nothing, since a captured run had it die with SIGHUP and the empty answer ended the reap with the run still alive), since bash's `read` pulls a /proc file a byte at a time and that took a loaded Windows machine past a minute; `ps -E` on macOS. Once everything found is dead the scan runs once more and exits 0 only when it finds no live owned process outside the killed set, since a process forked after the last scan (a stop signal can land after a fork already began, and a loaded machine stretches the gap between scan and kill) would otherwise outlive the reap unseen; a process that scan finds is killed and the check repeats. Every scan, with or without /proc, also adds the kin found by KIN_AWK, because the token scan alone cannot see an MSYS child in the seconds between its parent starting it and its environment becoming readable (a child started just before its parent was killed outlived the reap that way); the reap exits 0 only after two consecutive scans find nothing live outside the killed set, survivors are sent KILL again every second, and a run that keeps producing new processes fails after 20 rounds instead of looping. The scan runs only after a failed run, so its cost never lands on a passing one. */
 export const REAP_SCRIPT = [
+  TICK_FN,
   `tg_needle="${OWNER_VAR}=$TG_REAP_TOKEN"`,
   'tg_leaders=',
   'tg_ps() { case $OSTYPE in msys* | cygwin*) ps -e ;; *) ps -A -o pid=,ppid=,pgid=,stat= ;; esac; }',
@@ -163,7 +180,7 @@ export const REAP_SCRIPT = [
   '    case $OSTYPE in msys* | cygwin*) tg_fout=$(/usr/bin/kill -f -KILL $tg_left 2>&1) ;; *) kill -KILL $tg_left 2>/dev/null ;; esac',
   '  fi',
   '  if [ $((SECONDS - tg_lastkill)) -ge 1 ]; then tg_lastkill=$SECONDS; { kill -KILL $tg_left; kill -CONT $tg_left; } 2>/dev/null; fi',
-  '  sleep 0.1',
+  '  tg_tick',
   'done',
   'tg_why=',
   'for tg_p in $tg_left; do tg_live "$tg_p" || continue; tg_st=; read -r tg_st 2>/dev/null < "/proc/$tg_p/stat"; tg_st=${tg_st##*) }; tg_w=; read -r tg_w 2>/dev/null < "/proc/$tg_p/winpid"; tg_why="$tg_why $tg_p (state ${tg_st%% *}, winpid ${tg_w:-none})"; done',

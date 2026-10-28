@@ -8,7 +8,7 @@ import * as path from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { OWNER_VAR, POSIX_SH, REAP_SCRIPT, SH_LIVE, SH_SCRIPT, probeAlive, reapOwned, shRunAll } from './helpers/shell_argv.js'
+import { OWNER_VAR, POSIX_SH, REAP_SCRIPT, SH_LIVE, SH_SCRIPT, TICK_FN, probeAlive, reapOwned, shRunAll } from './helpers/shell_argv.js'
 import { startWatchdog } from './helpers/stall_proof_watchdog.js'
 
 // A pass-through spy on spawnSync, so a row can read the timeout the helper handed to the spawn call.
@@ -214,7 +214,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       'until [ -n "$tg_pp" ] && { if [ -r /proc/self/environ ]; then grep -qzxF -e "$tg_needle" "/proc/$tg_pp/environ" 2>/dev/null; else tg_light=; tg_owned; case " $tg_found " in *" $tg_pp "*) true ;; *) false ;; esac; fi; }; do',
       `  read -r tg_pp 2>/dev/null < "${file('parentpid')}"`,
       '  echo wait',
-      '  sleep 0.1',
+      '  tg_tick',
       'done',
       'for tg_round in 1 2 3 4 5; do',
       '  echo round',
@@ -224,7 +224,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       SH_LIVE,
       `echo "$tg_all" > "${file('seen')}"`,
       `: > "${file('release')}"`,
-      `until [ -s "${file('kid')}" ] || ! tg_live "$tg_pp"; do echo hold; sleep 0.1; done`,
+      `until [ -s "${file('kid')}" ] || ! tg_live "$tg_pp"; do echo hold; tg_tick; done`,
       '[ -z "$tg_all" ] || { kill -KILL',
     ].join('\n')
     // The token scan reads only the owned parent and the late child's pid file, and the process listing is fixed empty: this row tests the window the scan stopped in, not the kin search, which the tokenless-child row runs on the real listing.
@@ -232,10 +232,11 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
     // The parent waits for the release file, then starts a child that blocks on a FIFO nobody writes, so only a kill ends it; its own errors land in a file.
     fs.writeFileSync(file('parent.sh'), [
+      TICK_FN,
       'exec 2> "$5"',
       'mkfifo "$2"',
       'echo $$ > "$1"',
-      'until [ -e "$3" ]; do [ "$SECONDS" -lt 600 ] || exit 1; sleep 0.1; done',
+      'until [ -e "$3" ]; do [ "$SECONDS" -lt 600 ] || exit 1; tg_tick; done',
       '"$BASH" -c \'echo $$ > "$1"; read -r _ < "$2"\' tg "$4" "$2" < /dev/null > /dev/null 2>&1',
     ].join('\n'))
     // The quiet limit counts time with neither reap output nor a new file, and a tick delayed by a machine stall counts as one interval, so a slow host does not fail the test; only a reap that stops advancing does.
@@ -351,7 +352,7 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       'until [ ! -r /proc/self/environ ] || [ "$tg_w" -ge 40 ] || { [ -n "$tg_pp" ] && command grep -qzxF -e "$tg_needle" "/proc/$tg_pp/environ" 2>/dev/null; }; do',
       `  read -r tg_pp 2>/dev/null < "${file('parentpid')}"`,
       '  tg_w=$((tg_w + 1))',
-      '  sleep 0.1',
+      '  tg_tick',
       'done',
       'tg_all=',
       'for tg_round in 1 2 3 4 5; do',
