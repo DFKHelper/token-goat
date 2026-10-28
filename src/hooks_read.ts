@@ -618,6 +618,8 @@ function knownChangedSinceRead(event: HookEvent, normalized: string): boolean {
 function hasHighIouOverlap(span: readonly [number, number], priorRanges: ReadonlyArray<readonly [number, number]>): boolean {
   const [start, end] = span
   return priorRanges.some(([priorStart, priorEnd]) => {
+    // Deliberate same-anchor expansions (>20 lines) are managed by range-evasion policy
+    if (priorStart === start && end - priorEnd > 20) return false
     const intersection = Math.max(0, Math.min(end, priorEnd) - Math.max(start, priorStart) + 1)
     if (intersection === 0) return false
     const union = Math.max(end, priorEnd) - Math.min(start, priorStart) + 1

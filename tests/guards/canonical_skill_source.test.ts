@@ -13,6 +13,8 @@ const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const SCRIPT = path.join('scripts', 'generate-canonical-skill.mjs')
 const SOURCE = path.join('src', 'canonical_skill.md')
 const OUT = path.join('src', 'canonical_skill.ts')
+const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
+const MAX_COMPACT_PREFIX_BYTES = 2400
 
 const scratch: string[] = []
 afterAll(() => {
@@ -27,6 +29,18 @@ function runGenerator(root: string, args: string[]): { status: number | null; st
 describe('canonical skill source', () => {
   it('ships exactly the text in src/canonical_skill.md', () => {
     expect(CANONICAL_SKILL_MD).toBe(fs.readFileSync(path.join(REPO, SOURCE), 'utf8'))
+  })
+
+  it('keeps one compact marker within the generator byte budget', () => {
+    const lines = CANONICAL_SKILL_MD.split(/\r?\n/)
+    const markerIndexes = lines.flatMap((line, index) => line.trim() === COMPACT_END_MARKER ? [index] : [])
+    expect(markerIndexes).toHaveLength(1)
+
+    const markerIndex = markerIndexes[0]!
+    const compact = lines.slice(0, markerIndex).join('\n').trim()
+    expect(Buffer.byteLength(compact, 'utf8')).toBeLessThanOrEqual(MAX_COMPACT_PREFIX_BYTES)
+    expect(compact).toContain('Always, before a file read')
+    expect(lines.slice(markerIndex + 1).join('\n')).toMatch(/^## token-goat/m)
   })
 
   it('has a blob the generator reports as up to date', () => {
@@ -61,6 +75,37 @@ describe('canonical skill source', () => {
       { cwd: root, encoding: 'utf8' },
     )
     expect(decode.stdout).toBe(edited)
+  })
+
+  it('rejects missing and oversized compact boundaries without overwriting the blob', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-canonical-skill-'))
+    scratch.push(root)
+    fs.mkdirSync(path.join(root, 'scripts'))
+    fs.mkdirSync(path.join(root, 'src'))
+    for (const file of [SCRIPT, path.join('scripts', 'is-main-module.mjs'), SOURCE, OUT]) {
+      fs.copyFileSync(path.join(REPO, file), path.join(root, file))
+    }
+
+    const sourcePath = path.join(root, SOURCE)
+    const outputPath = path.join(root, OUT)
+    const originalSource = fs.readFileSync(sourcePath, 'utf8')
+    const originalOutput = fs.readFileSync(outputPath, 'utf8')
+
+    fs.writeFileSync(sourcePath, originalSource.replace(/^<!-- COMPACT_END -->\r?\n/m, ''))
+    const missing = runGenerator(root, [])
+    expect(missing.status).toBe(1)
+    expect(missing.stderr).toContain('exactly one standalone')
+    expect(fs.readFileSync(outputPath, 'utf8')).toBe(originalOutput)
+
+    const oversizedSource = originalSource.replace(
+      COMPACT_END_MARKER,
+      `${'x'.repeat(MAX_COMPACT_PREFIX_BYTES + 1)}\n${COMPACT_END_MARKER}`,
+    )
+    fs.writeFileSync(sourcePath, oversizedSource)
+    const oversized = runGenerator(root, ['--check'])
+    expect(oversized.status).toBe(1)
+    expect(oversized.stderr).toContain('2400-byte limit')
+    expect(fs.readFileSync(outputPath, 'utf8')).toBe(originalOutput)
   })
 
   it('rejects an unknown argument without writing anything', () => {

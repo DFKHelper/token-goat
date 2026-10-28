@@ -10,6 +10,8 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SOURCE = path.join(ROOT, 'src', 'canonical_skill.md')
 const OUT = path.join(ROOT, 'src', 'canonical_skill.ts')
 const CHUNK = 120
+const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
+const MAX_COMPACT_PREFIX_BYTES = 2400
 
 const BLOB_RE = /const CANONICAL_SKILL_GZIP_BASE64 =\n([\s\S]*?)\n\n/
 
@@ -48,6 +50,22 @@ function render(blob) {
   ].join('\n')
 }
 
+function validateCompactBoundary(source) {
+  const lines = source.split(/\r?\n/)
+  const markerIndexes = lines.flatMap((line, index) => line.trim() === COMPACT_END_MARKER ? [index] : [])
+  if (markerIndexes.length !== 1) {
+    return `src/canonical_skill.md must contain exactly one standalone ${COMPACT_END_MARKER} marker (found ${markerIndexes.length}).`
+  }
+
+  const compact = lines.slice(0, markerIndexes[0]).join('\n').trim()
+  const compactBytes = Buffer.byteLength(compact, 'utf8')
+  if (compactBytes > MAX_COMPACT_PREFIX_BYTES) {
+    return `src/canonical_skill.md compact slice exceeds the ${MAX_COMPACT_PREFIX_BYTES}-byte limit (${compactBytes} bytes before the marker).`
+  }
+
+  return null
+}
+
 /** The text src/canonical_skill.ts decodes to, or null when it carries no decodable blob. Exported for the test that checks a regenerated copy. */
 export function decodeGeneratedFile() {
   const blob = extractBlob(readNormalized(OUT))
@@ -67,6 +85,7 @@ const USAGE = [
   'usage: node scripts/generate-canonical-skill.mjs [--check | --help]',
   '  (no argument)  regenerate src/canonical_skill.ts from src/canonical_skill.md',
   '  --check        exit 1 if src/canonical_skill.ts does not decode to src/canonical_skill.md',
+  '  source must contain exactly one standalone <!-- COMPACT_END --> marker within 2400 UTF-8 bytes from the start',
   '  --help         print this usage',
   '',
 ].join('\n')
@@ -86,6 +105,12 @@ if (!invokedDirectly) {
   process.exit(1)
 } else {
   const source = fs.readFileSync(SOURCE, 'utf8')
+  const compactError = validateCompactBoundary(source)
+  if (compactError !== null) {
+    process.stderr.write(`${compactError}\n`)
+    process.exit(1)
+  }
+
   const onDisk = readNormalized(OUT)
   if (mode === 'check') {
     if (!isCurrent(onDisk, source)) {

@@ -25,6 +25,8 @@ Neighbours that own a case outright:
 - **`subagent-driven-development`** — a spawned agent starts blank and re-pays for everything its brief omitted, which is a briefing problem before it is a retrieval one.
 - **`semantic` (this skill's own command)** — when you are searching for a *concept* rather than a literal string, that is a command here, not a reason to fall back to a wide grep.
 
+<!-- COMPACT_END -->
+
 ## token-goat
 
 **Gate — before every file read, answer one question first: is there a token-goat command that returns just what I need?** If yes, run it. A read tool invoked without answering the gate is a violation, not an oversight. The gate is per file: batched or parallel reads do not exempt it.

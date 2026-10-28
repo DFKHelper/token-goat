@@ -6,6 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- **The canonical skill generator enforces a bounded compact slice**, and the generated token-goat skill now loads its read-gate overview before the detailed command reference.
 - **The read hook lets content-aware re-read checks run before count limits**, preserving changed-file, configuration, cached-output, and circuit-breaker behavior.
 - **Repeated exact line-range reads redirect to the cached output once, then fail open for that same range; fully repeated short windows are elided while partial short overlaps remain intact**, reducing denial loops without provoking micro-shift retries.
 - **Pytest compression strips ANSI escapes before classifying result lines**, so colored passing output collapses while failures remain visible.
