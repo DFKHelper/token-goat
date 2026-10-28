@@ -92,7 +92,7 @@ export function legDeadline(leg, env, nowMs) {
   return { atMs: nowMs + b.seconds * 1000, seconds: b.seconds, source: b.source }
 }
 
-/** @param {Record<string, string | undefined>} env @returns {{seconds: number, source: string}} the hard stop: PREPUSH_HARD_STOP_S when it is a positive whole number (capped at HOOK_LIMIT_S), else HARD_STOP_DEFAULT_S; a rejected value is said so in source */
+/** @param {Record<string, string | undefined>} env @returns {{seconds: number, source: string}} the hard stop: PREPUSH_HARD_STOP_S when it is a positive whole number (a larger value is clamped to HARD_STOP_DEFAULT_S, since it may only lower the stop), else HARD_STOP_DEFAULT_S; a rejected value is said so in source */
 export function hardStopOf(env) {
   const raw = env[HARD_STOP_ENV]
   if (raw === undefined || raw === '') return { seconds: HARD_STOP_DEFAULT_S, source: 'default' }

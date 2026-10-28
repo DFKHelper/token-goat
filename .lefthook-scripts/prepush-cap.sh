@@ -3,8 +3,18 @@
 
 # Reads HARD_STOP_S, HOOK_LIMIT_S, HARD_STOP_SRC, POST_STOP_S, TERM_WAIT_S and STOP_CLEANUP_S once, before any leg starts. A budget module that cannot be read fails the hook, since a run with no stop would be uncapped.
 cap_read_limits() {
-  local out
-  if ! out="$(node "$ROOT_DIR/scripts/prepush-budget.mjs" hard-stop)"; then
+  local out f p t=0 ok=1
+  f="$(mktemp)"
+  node "$ROOT_DIR/scripts/prepush-budget.mjs" hard-stop >"$f" &
+  p=$!
+  PIDS+=("$p")
+  # No watchdog exists yet, so this one read is cut off at 20 s (a node start is seconds on a loaded host); the exit trap ends a node that is still running.
+  while kill -0 "$p" 2>/dev/null && (( t < 20 )); do cap_tick; t=$((t + 1)); done
+  if kill -0 "$p" 2>/dev/null; then ok=0; elif ! wait "$p"; then ok=0; fi
+  out=""
+  if [[ "$ok" -eq 1 ]]; then out="$(<"$f")"; fi
+  rm -f -- "$f"
+  if [[ "$ok" -eq 0 ]]; then
     echo "pre-push: cannot read the hard stop from scripts/prepush-budget.mjs, so the push fails unchecked"
     exit 1
   fi
@@ -32,6 +42,8 @@ cap_term_wait() {
   local pid=$1 deadline
   kill -TERM "$pid" 2>/dev/null || true
   deadline=$((SECONDS + TERM_WAIT_S))
+  # After a stop the wait also ends at the tail deadline, so the exit trap cannot run past it.
+  if [[ -n "$CAP_TAIL_END" ]] && (( CAP_TAIL_END < deadline )); then deadline=$CAP_TAIL_END; fi
   while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do cap_tick; done
 }
 
@@ -39,6 +51,8 @@ cap_term_wait() {
 cap_watch() {
   local hook=$1 stop=$2 flag=$3
   trap 'exit 0' TERM INT
+  # USR1 is the stop as an event for a test: the flag is written as the clock would, then the watchdog exits.
+  trap 'printf "%s\n" "$SECONDS" >"$flag"; exit 0' USR1
   while (( SECONDS < stop )); do
     cap_tick
     kill -0 "$hook" 2>/dev/null || exit 0
@@ -90,7 +104,8 @@ cap_run_stoppable() {
   PIDS+=("$p")
   while kill -0 "$p" 2>/dev/null; do
     if [[ -n "$HARD_FLAG" && -e "$HARD_FLAG" ]]; then
-      kill_tree "$p"
+      # The trees are ended and polled for 2 s, not waited on: a hung taskkill must not hold the hook.
+      cap_kill_all "$((SECONDS + 2))" "$p"
       wait "$p" 2>/dev/null || true
       return "$CAP_STOP_RC"
     fi
@@ -103,7 +118,42 @@ cap_run_stoppable() {
 # The one deadline of everything after the stop, on the hook's clock: set when the stop is handled, to the post-stop allowance, the TERM wait and the cleanup room from the budget constants. The TERM wait and the reap are bounded by their own limits within it; work that forks (the notices, the owed record, the outcome records) starts only while it is open, runs under cap_run_by_deadline, and otherwise says in one builtin line what it skipped. Ending the legs is never skipped. Empty before a stop.
 CAP_TAIL_END=""
 cap_tail_open_now() {
-  CAP_TAIL_END=$((SECONDS + POST_STOP_S + TERM_WAIT_S + STOP_CLEANUP_S))
+  local base=$SECONDS
+  # Anchored to the hard stop, not to when it was handled, so watchdog lag counts against the tail; a stop fired before its time (a test) anchors to now.
+  if (( HARD_STOP_S < base )); then base=$HARD_STOP_S; fi
+  CAP_TAIL_END=$((base + POST_STOP_S + TERM_WAIT_S + STOP_CLEANUP_S))
+}
+
+# Ends the trees of the given pids side by side (kill_tree for each) and polls until every one is gone or $1 seconds on the hook's clock pass, never blocking on a hung taskkill; a kill still running then is ended (its job) and said so. $1: deadline (SECONDS value), the rest: pids.
+cap_kill_all() {
+  local until_s=$1 p alive jobs_=() j
+  shift
+  (( $# > 0 )) || return 0
+  for p in "$@"; do
+    kill_tree "$p" &
+    jobs_+=("$!")
+  done
+  while :; do
+    alive=""
+    for j in "${jobs_[@]}"; do
+      if kill -0 "$j" 2>/dev/null; then alive+=" $j"; else wait "$j" 2>/dev/null || true; fi
+    done
+    [[ -n "$alive" ]] || return 0
+    if (( SECONDS >= until_s )); then
+      for j in $alive; do kill "$j" 2>/dev/null || true; done
+      echo "pre-push: ending the process trees did not finish in time (kill jobs:$alive); they were not waited on"
+      return 0
+    fi
+    cap_tick
+  done
+}
+
+# Waits for one already-ended leg to be gone, polling the pid until it is, the watchdog flag appears, or $2 seconds pass. A leg still alive then stays in PIDS, which the exit trap ends. $1: pid, $2: seconds.
+cap_reap_wait() {
+  local pid=$1 until_s=$(( SECONDS + $2 ))
+  while kill -0 "$pid" 2>/dev/null && (( SECONDS < until_s )) && [[ ! -e "${HARD_FLAG:-}" ]]; do cap_tick; done
+  if kill -0 "$pid" 2>/dev/null; then return 0; fi
+  wait "$pid" 2>/dev/null || true
 }
 
 # True when the tail deadline has not passed (or no stop has happened, so there is none).
@@ -120,7 +170,8 @@ cap_run_by_deadline() {
   PIDS+=("$p")
   while kill -0 "$p" 2>/dev/null; do
     if ! cap_tail_left; then
-      kill_tree "$p"
+      # The trees are ended and polled for 2 s, not waited on: a hung taskkill must not hold the hook.
+      cap_kill_all "$((SECONDS + 2))" "$p"
       wait "$p" 2>/dev/null || true
       return 124
     fi
@@ -130,23 +181,29 @@ cap_run_by_deadline() {
   return "$rc"
 }
 
-# Runs a command as is before any stop, and under cap_run_by_deadline after one, so a fork that starts inside the tail cannot outlast it. Its output after a stop goes to a file, not the push output. A command the deadline ended is said so. Always returns 0: it wraps bookkeeping.
+# Runs bookkeeping that forks so it can always be ended: before a stop under cap_run_stoppable (the watchdog flag ends it), after one under cap_run_by_deadline (the tail deadline ends it). Its output is replayed with builtins when it finishes. A command a limit ended is said so. Always returns 0.
 cap_bounded() {
-  local rc=0
-  if [[ -z "$CAP_TAIL_END" ]]; then "$@" || true; return 0; fi
-  cap_run_by_deadline "$LOG_DIR/tail-bounded.out" "$@" || rc=$?
-  if [[ "$rc" -eq 124 ]]; then echo "pre-push: no time left after the hard stop, so '$1' was ended before it finished"; fi
+  local rc=0 l out="$LOG_DIR/bounded.out"
+  if [[ -z "$CAP_TAIL_END" ]]; then
+    cap_run_stoppable "$ROOT_DIR" "$out" "$@" || rc=$?
+  else
+    cap_run_by_deadline "$out" "$@" || rc=$?
+  fi
+  if [[ -r "$out" ]]; then while IFS= read -r l; do echo "$l"; done <"$out"; fi
+  if [[ "$rc" -eq 124 || "$rc" -eq "$CAP_STOP_RC" ]]; then echo "pre-push: the hard stop left no time for '$1', so it was ended before it finished"; fi
   return 0
 }
 
-# The second at which the watchdog fired, as it wrote the flag. Notices report this, not the moment they print: ending a tree takes taskkill time after the stop.
+# Sets CAP_STOP_AT to the second at which the watchdog fired, as it wrote the flag (builtins only, no subshell). Notices report this, not the moment they print: ending a tree takes taskkill time after the stop.
 cap_stop_time() {
-  cat "$HARD_FLAG" 2>/dev/null || echo "$SECONDS"
+  CAP_STOP_AT=$SECONDS
+  if [[ -r "$HARD_FLAG" ]]; then read -r CAP_STOP_AT <"$HARD_FLAG" || CAP_STOP_AT=$SECONDS; fi
 }
 
 # $1: leg (win or wsl). Printed when the hard stop passed while the leg was being planned: the leg does not start, and its files are not recorded as owed, since no selection ran for it.
 cap_planning_stopped() {
-  echo "pre-push: the $1 leg did not start, because the ${HARD_STOP_S}s hard stop passed while it was being planned ($(cap_stop_time)s); this push does not run its files, and they are not recorded as owed. CI runs the full suite on pushes to main and on pull requests."
+  cap_stop_time
+  echo "pre-push: the $1 leg did not start, because the ${HARD_STOP_S}s hard stop passed while it was being planned (${CAP_STOP_AT}s); this push does not run its files, and they are not recorded as owed. CI runs the full suite on pushes to main and on pull requests."
 }
 
 # A leg that finished on its own clears the owed list an earlier stop left: its own run has now covered those files or reported them.
@@ -156,8 +213,8 @@ cap_clear_owed() {
 
 # The notice when the tail deadline left no time to work out the unfinished files: builtins only. It names every file the leg was given, which of them did not finish is not known here, and nothing is recorded as owed. $1: leg, $2: elapsed seconds, $3: the leg's file list.
 cap_suite_notice_late() {
-  local leg=$1 elapsed=$2 plan=$3 f k=0
-  echo "pre-push: stopped the $leg leg after ${elapsed}s at the ${HARD_STOP_S}s hard stop (the pre-push limit is ${HOOK_LIMIT_S}s). There was no time left to work out which of its test files did not finish, so none is recorded as owed; it was given these, and CI runs the full suite on pushes to main and on pull requests:"
+  local leg=$1 elapsed=$2 plan=$3 why=${4:-there was no time left to work out which of its test files did not finish} f k=0
+  echo "pre-push: stopped the $leg leg after ${elapsed}s at the ${HARD_STOP_S}s hard stop (the pre-push limit is ${HOOK_LIMIT_S}s). It was given these test files; ${why}, so none is recorded as owed; the list is every file it was given, and CI runs the full suite on pushes to main and on pull requests:"
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     k=$((k + 1))
@@ -177,21 +234,22 @@ cap_suite_notice() {
   if ! cap_tail_left; then cap_suite_notice_late "$leg" "$elapsed" "$plan"; return 0; fi
   cap_run_by_deadline "$LOG_DIR/owed-$leg.out" node "$ROOT_DIR/scripts/prepush-failed.mjs" owed "$FAILED_STORE" "$leg" "$plan" "$LOG_DIR/$name.log" || rc=$?
   if [[ "$rc" -eq 124 ]]; then cap_suite_notice_late "$leg" "$elapsed" "$plan"; return 0; fi
-  out="$(<"$LOG_DIR/owed-$leg.out")"
+  out=""
+  if [[ -r "$LOG_DIR/owed-$leg.out" ]]; then out="$(<"$LOG_DIR/owed-$leg.out")"; fi
   first="${out%%$'\n'*}"
   n="${first%%$'\t'*}"
   owed_path="${first#*$'\t'}"
   body=""
   if [[ "$out" == *$'\n'* ]]; then body="${out#*$'\n'}"; fi
   if [[ ! "$n" =~ ^[0-9]+$ ]]; then
-    echo "pre-push: stopped the $leg leg after ${elapsed}s at the ${HARD_STOP_S}s hard stop (the pre-push limit is ${HOOK_LIMIT_S}s). It ran the whole suite with no file list, so the files it did not reach are not known; CI runs the full suite on pushes to main and on pull requests."
+    cap_suite_notice_late "$leg" "$elapsed" "$plan" "the tool that works out which of its test files did not finish printed no file count"
     return 0
   fi
   if [[ "$rc" -ne 0 ]]; then
     echo "pre-push: stopped the $leg leg after ${elapsed}s: it was still running at the ${HARD_STOP_S}s hard stop (the pre-push limit is ${HOOK_LIMIT_S}s). $n test file(s) did not finish; the files owed could not be recorded; CI runs the full suite on pushes to main and on pull requests."
     return 0
   fi
-  echo "pre-push: stopped the $leg leg after ${elapsed}s: it was still running at the ${HARD_STOP_S}s hard stop (the pre-push limit is ${HOOK_LIMIT_S}s). $n test file(s) did not finish and are recorded as owed in $owed_path; CI runs the full suite on pushes to main and on pull requests:"
+  echo "pre-push: stopped the $leg leg after ${elapsed}s: it was still running at the ${HARD_STOP_S}s hard stop (the pre-push limit is ${HOOK_LIMIT_S}s). $n test file(s) did not finish and are recorded in $owed_path; CI runs the full suite on pushes to main and on pull requests:"
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     k=$((k + 1))

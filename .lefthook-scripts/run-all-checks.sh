@@ -18,7 +18,7 @@ PUSH_STDIN=""
 # The remote name git gives the hook as its first argument (lefthook {1}); empty when the script is run by hand.
 PUSH_REMOTE="${1:-}"
 if [[ ! -t 0 ]]; then
-  while IFS= read -r -t 5 push_line; do PUSH_STDIN+="$push_line"$'\n'; done || true
+  while (( SECONDS < 5 )) && IFS= read -r -t 5 push_line; do PUSH_STDIN+="$push_line"$'\n'; done || true
 fi
 
 PIDS=()
@@ -55,7 +55,8 @@ wait_legs() {
       HARD_PID=""
       HARD_FIRED=1
       stop_all_legs
-      cap_report_stop "$(cap_stop_time)" "${STOP_ENDED[@]}"
+      cap_stop_time
+      cap_report_stop "$CAP_STOP_AT" "${STOP_ENDED[@]}"
       break
     fi
     for name in "${!pid_of[@]}"; do
@@ -68,7 +69,8 @@ wait_legs() {
         if [[ "$rc" -ne 0 && -z "${STOPPED[$name]:-}" && "$name" != "tests" && -n "${pid_of[tests]:-}" ]]; then
           echo "pre-push: $name failed, stopping the Windows suite"
           kill_tree "${pid_of[tests]}"
-          wait "${pid_of[tests]}" 2>/dev/null || true
+          # Polled, not waited on: a tree that will not die must not hold the hook past a stop; the exit trap ends it again.
+          cap_reap_wait "${pid_of[tests]}" "$TERM_WAIT_S"
           ABORTED[tests]=1
           unset "pid_of[tests]"
           left=$((left - 1))
@@ -80,7 +82,7 @@ wait_legs() {
 
 # The hard stop passed: every leg of this run that has not finished is ended, not only the legs the current wait named (a parallel WSL leg is not in the first wait). A leg that exited in the same second as the stop keeps its own result. The WSL leg gets TERM first, since its Linux-side tree ends only on TERM; then each stopped leg's whole tree. The stopped legs get POST_STOP_S seconds to exit; any still alive is reported by pid in one line and not waited on. Sets STOP_ENDED to the stopped leg names.
 stop_all_legs() {
-  local name rc=0 stop_until alive_list kill_pids=() k
+  local name rc=0 stop_until alive_list kill_pids=()
   STOP_ENDED=()
   stop_until=$((SECONDS + POST_STOP_S))
   cap_tail_open_now
@@ -101,11 +103,8 @@ stop_all_legs() {
     if [[ "$name" == "wsl-test" ]]; then cap_term_wait "${PID_OF[$name]}"; fi
   done
   # The trees are ended side by side, so a slow fork delays them once, not once per leg; every one is ended and reaped.
-  for name in "${STOP_ENDED[@]}"; do
-    kill_tree "${PID_OF[$name]}" &
-    kill_pids+=("$!")
-  done
-  for k in "${kill_pids[@]}"; do wait "$k" 2>/dev/null || true; done
+  for name in "${STOP_ENDED[@]}"; do kill_pids+=("${PID_OF[$name]}"); done
+  cap_kill_all "$CAP_TAIL_END" "${kill_pids[@]}"
   while :; do
     alive_list=""
     for name in "${STOP_ENDED[@]}"; do
@@ -171,7 +170,8 @@ record_leg_outcome() {
 # Prints the files a leg's wall-clock deadline cut (written by run-test.sh and wsl-test.sh); they are deferred to the full CI suite like the files the estimate cut. $1: leg.
 report_cut() {
   [[ -s "$LOG_DIR/cut-$1.txt" ]] || return 0
-  cat "$LOG_DIR/cut-$1.txt"
+  local l
+  while IFS= read -r l; do echo "$l"; done <"$LOG_DIR/cut-$1.txt"
 }
 
 # Prints the slowest test files of one leg's vitest log. A failure of this report never changes the push result.
@@ -179,25 +179,28 @@ report_slowest() {
   local name=$1 title=$2
   [[ -n "${START[$name]:-}" && -z "${ABORTED[$name]:-}" ]] || return 0
   echo "pre-push: 20 slowest test files, $title leg"
-  node "$ROOT_DIR/scripts/test-durations.mjs" "$LOG_DIR/$name.log" --top 20 || true
+  cap_bounded node "$ROOT_DIR/scripts/test-durations.mjs" "$LOG_DIR/$name.log" --top 20
 }
 
 report_failure() {
   local name=$1
   echo "pre-push: $name FAILED (last 120 lines; full log: $LOG_DIR/$name.log)"
-  tail -n 120 "$LOG_DIR/$name.log"
+  cap_bounded tail -n 120 "$LOG_DIR/$name.log"
 }
 
 # Runs on every exit path (success, failure, INT, TERM). The WSL script gets TERM first so its own trap can end the Linux-side tree, which taskkill on the Windows side cannot reach; then every job still alive is killed with its tree.
 cleanup() {
   trap - EXIT INT TERM
-  local pid
+  local pid live=()
   if [[ -n "$WSL_PID" ]] && kill -0 "$WSL_PID" 2>/dev/null; then cap_term_wait "$WSL_PID"; fi
   # The watchdog has no children, so a plain kill ends it; kill_tree would cost two forks (cat, taskkill) after the summary, seconds on a loaded host.
   if [[ -n "${HARD_PID:-}" ]]; then kill "$HARD_PID" 2>/dev/null || true; fi
+  live=()
   for pid in "${PIDS[@]}"; do
-    if [[ "$pid" != "${HARD_PID:-}" ]] && kill -0 "$pid" 2>/dev/null; then kill_tree "$pid"; fi
+    if [[ "$pid" != "${HARD_PID:-}" ]] && kill -0 "$pid" 2>/dev/null; then live+=("$pid"); fi
   done
+  # Side by side and polled: after a stop to the tail deadline, otherwise for the cleanup room the budget keeps.
+  cap_kill_all "${CAP_TAIL_END:-$((SECONDS + STOP_CLEANUP_S))}" "${live[@]}"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -230,7 +233,7 @@ wait_legs typecheck ts-checks tests
 # A lint or typecheck the hard stop ended was never verified, so the push fails.
 if [[ -n "${STOPPED[typecheck]:-}" || -n "${STOPPED[ts-checks]:-}" ]]; then FAIL=1; fi
 # A passing check's log is dropped, so what it reused is printed here.
-if cap_tail_left; then grep -h '^pre-push: reused' "$LOG_DIR/typecheck.log" "$LOG_DIR/ts-checks.log" 2>/dev/null || true; fi
+if cap_tail_left; then cap_bounded grep -h '^pre-push: reused' "$LOG_DIR/typecheck.log" "$LOG_DIR/ts-checks.log"; fi
 [[ -z "${FAILED[tests]:-}" ]]     || { report_failure tests; FAIL=1; }
 [[ -z "${FAILED[typecheck]:-}" ]] || { report_failure typecheck; FAIL=1; }
 [[ -z "${FAILED[ts-checks]:-}" ]] || { report_failure ts-checks; FAIL=1; }
@@ -258,7 +261,7 @@ fi
 if [[ -z "$HARD_FIRED" ]]; then
   report_slowest tests Windows
   report_slowest wsl-test WSL
-  if [[ "$FAIL" -eq 0 ]]; then rm -rf -- "$LOG_DIR"; fi
+  if [[ "$FAIL" -eq 0 ]]; then cap_bounded rm -rf -- "$LOG_DIR"; fi
 fi
 # The last output, so total= covers every step that forks; only the exit trap (no forks on this path) follows it.
 leg_secs ts-checks; lint_s=$LEG_SECS

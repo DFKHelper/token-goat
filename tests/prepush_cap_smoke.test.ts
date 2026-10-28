@@ -1,6 +1,6 @@
 /** The pre-push hard stop's pure pieces: the stop value read from the environment (scripts/prepush-budget.mjs), the planned files a stopped leg did not finish (scripts/prepush-failed.mjs unfinishedFiles), and the owed record written beside the failed-store. The shell side runs for real below: the watchdog and kill_tree sourced alone, and the whole hook over stub legs. */
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -28,12 +28,14 @@ describe('pre-push hard stop value', () => {
     expect(hardStopOf({ PREPUSH_HARD_STOP_S: '9999' }).source).toContain('capped at')
   })
 
-  it.each([570, 590, 600])('an accepted PREPUSH_HARD_STOP_S=%i keeps stop + term + post + cleanup + startup reserve within the hook limit', (raw) => {
+  it.each([300, 539, 540, 541, 570, 590, 600])('PREPUSH_HARD_STOP_S=%i is kept when it lowers the stop or equals the default, clamped when above, and keeps stop + term + post + cleanup + startup reserve within the hook limit', (raw) => {
     const stop = hardStopOf({ PREPUSH_HARD_STOP_S: String(raw) })
     const sum = stop.seconds + TERM_WAIT_S + postStopOf(stop.seconds, {}).seconds + STOP_CLEANUP_S + STARTUP_RESERVE_S
     expect(stop.seconds).toBeLessThanOrEqual(HARD_STOP_DEFAULT_S)
     expect(sum, `stop ${raw} gave ${stop.seconds} and a tail summing to ${sum}`).toBeLessThanOrEqual(HOOK_LIMIT_S)
+    expect(stop.seconds).toBe(Math.min(raw, HARD_STOP_DEFAULT_S))
     if (raw > HARD_STOP_MAX_S) expect(stop.source).toContain('capped at')
+    else expect(stop.source).not.toContain('capped at')
   })
 
   it.each(['0', 'abc', '-3', '2.5', '1e3'])('ignores %s and says so', (raw) => {
@@ -226,6 +228,9 @@ describe('the hard stop ends the legs of a real hook run', () => {
   let dir = ''
   let stubs = ''
   let leftLegs = false
+  let leftHung = false
+  // How long the hung node stub sleeps: past the tail bound, so a hook that waits for it fails the bound.
+  const HANG_S = 80
 
   const stubSource = (leg: (typeof LEGS)[number], ignoresTerm: boolean): string =>
     [
@@ -233,11 +238,17 @@ describe('the hard stop ends the legs of a real hook run', () => {
       `echo "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"$STUB_DIR/${leg.leg}.pid"`,
       ignoresTerm ? "trap '' TERM" : '',
       // The leg named by STUB_FIRE_STOP fires the stop once it is running, then sleeps like any other leg.
+      // With STUB_FIRE_AFTER_TESTS the firing leg waits for the tests leg's done file and then 3 s, so the hook has read that leg's end before the stop comes.
+      `if [[ "\${STUB_FIRE_STOP:-}" == "${leg.leg}" && "\${STUB_FIRE_AFTER_TESTS:-}" == "1" ]]; then`,
+      '  until [[ -e "$STUB_DIR/tests.done" ]]; do sleep 1; done',
+      '  sleep 3',
+      'fi',
       `if [[ "\${STUB_FIRE_STOP:-}" == "${leg.leg}" ]]; then`,
       '  printf "%s\\n" "$EPOCHREALTIME" >"$STUB_DIR/fired.epoch"',
       '  kill -TERM "$(cat "$TMPDIR"/token-goat-pre-push.*/hard-stop.pid)"',
       'fi',
       `sleep "\${${leg.env}:-0}"`,
+      `: >"$STUB_DIR/${leg.leg}.done"`,
       '',
     ].join('\n')
 
@@ -259,6 +270,8 @@ describe('the hard stop ends the legs of a real hook run', () => {
     // Only a run that did not return (or a leg known to survive its kill) can leave a live leg; a leg the hook ended is not signalled again, since its pid may be reused.
     if (leftLegs) endRecordedTrees(LEGS.map((leg) => path.join(stubs, `${leg.leg}.pid`)))
     leftLegs = false
+    if (leftHung) endRecordedTrees([path.join(stubs, 'hung.pid')])
+    leftHung = false
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -285,12 +298,16 @@ describe('the hard stop ends the legs of a real hook run', () => {
     })
     mkdirSync(path.join(dir, 'tmp'), { recursive: true })
     const started = Date.now()
-    const r = spawnSync(GIT_BASH, [slash(path.join(dir, '.lefthook-scripts', 'run-all-checks.sh'))], { cwd: dir, env, input: '', encoding: 'utf8', timeout: HOOK_ROW_TIMEOUT_MS })
+    // Output goes to a file, not a pipe: spawnSync on a pipe waits for every process that inherited it, so a stray survivor would turn the hook's own return time into a timeout; the file measures the hook's own exit.
+    const outFile = path.join(dir, 'hook.out')
+    const outFd = openSync(outFile, 'w')
+    const r = spawnSync(GIT_BASH, [slash(path.join(dir, '.lefthook-scripts', 'run-all-checks.sh'))], { cwd: dir, env, stdio: ['ignore', outFd, outFd], timeout: HOOK_ROW_TIMEOUT_MS })
+    closeSync(outFd)
     const ended = Date.now()
     if (r.error) leftLegs = true
     const firedFile = path.join(stubs, 'fired.epoch')
     const tailS = existsSync(firedFile) ? ended / 1000 - Number(readFileSync(firedFile, 'utf8').trim()) : null
-    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, elapsedS: (ended - started) / 1000, tailS, timedOut: r.error !== undefined }
+    return { status: r.status, out: readFileSync(outFile, 'utf8'), elapsedS: (ended - started) / 1000, tailS, timedOut: r.error !== undefined }
   }
 
   hookRow('a run with no leg past the stop passes, prints no stop notice and ends with the legs line', () => {
@@ -352,11 +369,54 @@ describe('the hard stop ends the legs of a real hook run', () => {
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain(`still running ${POST_STOP_S}s after the hard stop, not waited on (name=pid):`)
   }, true)
+
+  // The seam for the two rows below is a node stub first on PATH (the hook runs node by name): it hangs only the duration-record call (test-durations.mjs --record) and passes every other call to the real node, so the hook's own fork is what stalls. It records its pid so the afterEach can end a hang the hook failed to end.
+  const hangingNode = (fires: boolean): Record<string, string> => {
+    const bin = path.join(dir, 'nodebin')
+    mkdirSync(bin)
+    writeFileSync(
+      path.join(bin, 'node'),
+      [
+        '#!/usr/bin/env bash',
+        'case "$*" in',
+        '  *test-durations.mjs*--record*)',
+        '    echo "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"$STUB_DIR/hung.pid"',
+        '    if [[ "$STUB_NODE_FIRE" == "1" ]]; then',
+        '      printf "%s\\n" "$EPOCHREALTIME" >"$STUB_DIR/fired.epoch"',
+        '      kill -USR1 "$(cat "$TMPDIR"/token-goat-pre-push.*/hard-stop.pid)"',
+        '    fi',
+        `    sleep ${HANG_S}`,
+        '    exit 0 ;;',
+        'esac',
+        'exec "$REAL_NODE" "$@"',
+        '',
+      ].join('\n'),
+    )
+    return { PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}`, REAL_NODE: slash(process.execPath), STUB_NODE_FIRE: fires ? '1' : '0' }
+  }
+
+  // R4: a fork that starts inside the tail and hangs (the duration record of the Windows leg, which finished before the stop) is ended at the tail deadline, so the hook returns inside the tail bound instead of waiting out the whole hang.
+  hookRow('a fork that hangs inside the tail is ended at the tail deadline', () => {
+    const r = runHook({ STUB_FIRE_STOP: 'typecheck', STUB_FIRE_AFTER_TESTS: '1', STUB_TYPECHECK_S: '60', ...hangingNode(false) })
+    leftHung = true
+    // The tail bound is asserted first: a hook that did not return in time reaches the spawn timeout, which would otherwise hide as a timeout.
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.out).toContain("the hard stop left no time for 'node'")
+  })
+
+  // R3: a fork that hangs before any stop is ended by the stop; the stub fires the stop (USR1 makes the watchdog write the flag, as the clock would) from inside the hung call.
+  hookRow('a fork that hangs before the stop is ended when the stop fires', () => {
+    const r = runHook(hangingNode(true))
+    leftHung = true
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+    expect(r.out).toContain("the hard stop left no time for 'node'")
+  })
 })
 
 // Ends the process tree of each pid a test recorded in a pid file. A pid is ended only while its command line, read right now, is a bash, so a reused pid is left alone; the tree goes with it, since a plain kill leaves the children behind on Windows.
 function endRecordedTrees(pidFiles: string[]): void {
-  if (process.platform !== 'win32') return
   for (const file of pidFiles) {
     if (!existsSync(file)) continue
     const pid = Number(readFileSync(file, 'utf8').trim())
