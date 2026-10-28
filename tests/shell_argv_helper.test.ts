@@ -346,12 +346,13 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlate-'))
     const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
+    const childToken = `${process.pid}-${randomBytes(8).toString('hex')}`
     const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'owned parent never started' })
     fs.writeFileSync(file('parent.sh'), [
       'mkfifo "$2" "$4"',
       'echo $$ > "$3"',
       'read -r _ < "$2"',
-      `env -u ${OWNER_VAR} "$BASH" -c 'echo $$ > "$1"; read -r _ < "$2"' tg "$1" "$4" < /dev/null > /dev/null 2>&1`,
+      `env ${OWNER_VAR}=${childToken} "$BASH" -c 'echo $$ > "$1"; read -r _ < "$2"' tg "$1" "$4" < /dev/null > /dev/null 2>&1`,
     ].join('\n'))
     const hook = '[ -z "$tg_found$tg_all" ] || tg_listed=1;'
     const signal = `${hook} [ -n "$tg_listed" ] && [ -z "$tg_hs" ] && { tg_hs=1; echo go > "${file('go')}"; while [ ! -e "${file('kid')}" ]; do tg_tick; done; };`
@@ -375,6 +376,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       // A shell to kill a child already shown gone is a fork the row does not need, so it runs only for a row that did not show that.
       if (/^[1-9]\d*$/.test(kid) && (got.failure !== null || got.alive)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
       if (got.failure !== null || got.alive) reapOwned(sh, token)
+      // The child carries its own token, so this reap finds it even when the parent is gone and the kin listing cannot.
+      if (got.failure !== null || got.alive) reapOwned(sh, childToken)
       fs.rmSync(dir, { recursive: true, force: true })
     }
     expect(kid, 'the owned parent never forked its child after the first kin listing').toMatch(/^[1-9]\d*$/)
@@ -387,12 +390,13 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlate-'))
     const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
     const token = `${process.pid}-${randomBytes(8).toString('hex')}`
+    const childToken = `${process.pid}-${randomBytes(8).toString('hex')}`
     const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'owned parent never started' })
     fs.writeFileSync(file('parent.sh'), [
       'mkfifo "$2" "$4"',
       'echo $$ > "$3"',
       'read -r _ < "$2"',
-      `env -u ${OWNER_VAR} "$BASH" -c 'echo $$ > "$1"; read -r _ < "$2"' tg "$1" "$4" < /dev/null > /dev/null 2>&1`,
+      `env ${OWNER_VAR}=${childToken} "$BASH" -c 'echo $$ > "$1"; read -r _ < "$2"' tg "$1" "$4" < /dev/null > /dev/null 2>&1`,
     ].join('\n'))
     const stop = 'kill -STOP $tg_new 2>/dev/null'
     const hold = '[ -z "$tg_all" ] || { kill -KILL'
@@ -417,6 +421,8 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       // A shell to kill a child already shown gone is a fork the row does not need, so it runs only for a row that did not show that.
       if (/^[1-9]\d*$/.test(kid) && (got.failure !== null || got.alive)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
       if (got.failure !== null || got.alive) reapOwned(sh, token)
+      // The child carries its own token, so this reap finds it even when the parent is gone and the kin listing cannot.
+      if (got.failure !== null || got.alive) reapOwned(sh, childToken)
       fs.rmSync(dir, { recursive: true, force: true })
     }
     expect(kid, 'the owned parent never forked its child after the last listing').toMatch(/^[1-9]\d*$/)
