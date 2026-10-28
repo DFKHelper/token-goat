@@ -51,13 +51,30 @@ function render(blob) {
 }
 
 function validateCompactBoundary(source) {
-  const lines = source.split(/\r?\n/)
-  const markerIndexes = lines.flatMap((line, index) => line.trim() === COMPACT_END_MARKER ? [index] : [])
+  // Match skill_cache.ts::contentLineEntries: a marker example inside a fenced
+  // block is prose, not a boundary. Splitting only on LF also preserves CRLF
+  // bytes inside the extracted compact slice.
+  const lines = source.split('\n')
+  const markerIndexes = []
+  let inCodeBlock = false
+  for (const [index, line] of lines.entries()) {
+    const stripped = line.trim()
+    if (stripped.startsWith('```') || stripped.startsWith('~~~')) {
+      inCodeBlock = !inCodeBlock
+      continue
+    }
+    if (!inCodeBlock && stripped === COMPACT_END_MARKER) markerIndexes.push(index)
+  }
+
   if (markerIndexes.length !== 1) {
-    return `src/canonical_skill.md must contain exactly one standalone ${COMPACT_END_MARKER} marker (found ${markerIndexes.length}).`
+    return `src/canonical_skill.md must contain exactly one standalone ${COMPACT_END_MARKER} marker outside fenced code blocks (found ${markerIndexes.length}).`
   }
 
   const compact = lines.slice(0, markerIndexes[0]).join('\n').trim()
+  if (!compact) {
+    return `src/canonical_skill.md ${COMPACT_END_MARKER} marker must follow a non-empty compact slice.`
+  }
+
   const compactBytes = Buffer.byteLength(compact, 'utf8')
   if (compactBytes > MAX_COMPACT_PREFIX_BYTES) {
     return `src/canonical_skill.md compact slice exceeds the ${MAX_COMPACT_PREFIX_BYTES}-byte limit (${compactBytes} bytes before the marker).`
