@@ -6,6 +6,7 @@
 
 import { ToolFilter } from './base.js'
 import { trimRepeatedPrefix } from './helpers.js'
+import { stripAnsiEscapes } from '../render/ansi.js'
 
 // pytest-xdist worker prefix: `[gw0]`, `[gw1] [ 50%]`, … — noise on every line.
 const XDIST_PREFIX_RE = /^\[gw\d+\]\s*(?:\[\s*\d+%\]\s*)?/
@@ -66,6 +67,10 @@ export class PytestFilter extends ToolFilter {
     let pendingWarnHeader: string | null = null
 
     for (let line of lines) {
+      // Classify terminal-colored pytest output by its visible text. Keeping the
+      // emitted text plain also prevents escape sequences from defeating the
+      // pass/fail patterns and inflating otherwise routine runs.
+      line = stripAnsiEscapes(line)
       // Strip the pytest-xdist worker prefix so downstream logic sees clean lines.
       if (XDIST_PREFIX_RE.test(line)) line = line.replace(XDIST_PREFIX_RE, '')
 

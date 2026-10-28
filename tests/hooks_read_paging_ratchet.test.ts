@@ -70,7 +70,7 @@ describe('read paging ratchets', () => {
     }
   })
 
-  it('hard-denies the third Read call for one file', () => {
+  it('uses the content-aware reread response instead of a count-only third-read denial', () => {
     fs.rmSync(dir, { recursive: true, force: true })
     makeTarget('.bin')
     expect(preReadHandler(event('pre_tool_use')).hookType).not.toBe('deny')
@@ -78,9 +78,9 @@ describe('read paging ratchets', () => {
 
     const third = preReadHandler(event('pre_tool_use'))
 
-    expect(third.hookType).toBe('deny')
-    if (third.hookType === 'deny') {
-      expect(third.message).toContain('consecutive read limit exceeded for file')
+    expect(third.hookType).toBe('context')
+    if (third.hookType === 'context') {
+      expect(third.context).toContain('already read this session')
     }
   })
 

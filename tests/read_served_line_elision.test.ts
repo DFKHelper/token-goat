@@ -105,6 +105,24 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
     expect(out.updatedOutput).toContain('token-goat bash-output ')
   })
 
+  it('elides a complete repeat of a short explicit range without fragmenting it', () => {
+    deliver({ offset: 1, limit: 10 })
+    const out = readBack(rendered(1, 10), { offset: 1, limit: 10 })
+
+    expect(out.hookType).toBe('rewriteOutput')
+    if (out.hookType !== 'rewriteOutput') return
+    expect(out.updatedOutput).toContain(NOTICE)
+    expect(out.updatedOutput).toContain('token-goat bash-output ')
+    expect(out.updatedOutput).not.toContain(bodyLine(1, 'alpha'))
+  })
+
+  it('leaves a partial overlap of a short explicit range intact to avoid micro-shift retries', () => {
+    deliver({ offset: 1, limit: 10 })
+    const out = readBack(rendered(6, 15), { offset: 6, limit: 10 })
+
+    expect(out.hookType).not.toBe('rewriteOutput')
+  })
+
   it('leaves a first read of a file completely untouched', () => {
     // The ordering guard. `postReadHandler` records this read into the store the elision consults; recording before eliding would make every line match itself, and a first read would come back as a notice with the file's entire content withheld.
     const original = rendered()

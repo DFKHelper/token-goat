@@ -181,7 +181,7 @@ function recordReadAsServedOutput(event: HookEvent, deliveredRaw: string | null 
   }
 }
 
-/** Replace stretches of a completed Read that the session has already been handed, keeping every line it has not. A partially served requested window is denied when at least half its delivered rows would otherwise be replaced by notices; smaller overlaps are rewritten so new rows survive. Kept rows remain verbatim and line-numbered. Skipped, each toward showing the model more rather than less: - anything a precise secret pattern matches (`hasPreciseSecret`, not the recall-tuned catch-all, which false-fires on ordinary source and would forfeit the rewrite without protecting anything). On a pass-through the harness's own text reaches the model, so a file carrying a credential keeps behaving exactly as it does today instead of coming back redacted because it happened to overlap an earlier read. - a truncated read, which delivered less than its own window with no way from here to know where it stopped. - a rewrite that does not clear the shared net-savings floor. */
+/** Replace stretches of a completed Read that the session has already been handed, keeping every line it has not. A complete repeat of an explicit window may be replaced by its exact pointer; partial repeats of tiny windows pass through unchanged to avoid provoking micro-shift retries. For larger windows, a partially served request is denied when at least half its delivered rows would otherwise be replaced by notices; smaller overlaps are rewritten so new rows survive. Kept rows remain verbatim and line-numbered. Skipped, each toward showing the model more rather than less: - anything a precise secret pattern matches (`hasPreciseSecret`, not the recall-tuned catch-all, which false-fires on ordinary source and would forfeit the rewrite without protecting anything). On a pass-through the harness's own text reaches the model, so a file carrying a credential keeps behaving exactly as it does today instead of coming back redacted because it happened to overlap an earlier read. - a truncated read, which delivered less than its own window with no way from here to know where it stopped. - a rewrite that does not clear the shared net-savings floor. */
 function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput | null {
   if (!loadConfig().hints.elide_served_lines) return null
   const filePath = getFilePath(event)
@@ -195,11 +195,7 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   const parsed = parseReadDelivery(event, respText)
   if (parsed === null) return null
 
-  // Guard against micro-paging fragment trap: if the caller explicitly requested a tiny slice window
-  // (<= 15 delivered lines, typical micro-paging ranges), do not elide overlapping lines into a confusing placeholder.
-  // Fragmenting tiny explicit slices provokes agents into micro-shift retries and evasion locks.
   const sliceWin = readRequestedSliceWindow(event)
-  if (sliceWin.isExplicitSlice && parsed.rows.length <= 15) return null
 
   // Composing a rewrite makes this handler the author of what the model reads, and every sibling that composes redacts first. Here the honest move is to decline instead: redacting would hand back less of the user's own file than a plain Read does today. Asked of the precise patterns only, never the recall-tuned catch-all: because declining passes the file through unredacted, a false positive here protects nothing and costs the whole rewrite -- the opposite of the asymmetry redactSecrets itself is tuned for.
   if (hasPreciseSecret(respText)) return null
@@ -217,7 +213,17 @@ function elideAlreadyServedLines(event: HookEvent, respText: string): HookOutput
   const cuts = planServedElisions(parsed.rows, bodies)
   if (cuts.length === 0) return null
   const withheldLines = cuts.reduce((total, cut) => total + cut.len, 0)
-  if (sliceWin.isExplicitSlice && withheldLines / parsed.rows.length >= 0.5) {
+  const contentLineCount = parsed.rows.filter((row) => row.text !== '').length
+  const withheldContentLines = cuts.reduce(
+    (total, cut) => total + parsed.rows.slice(cut.start, cut.start + cut.len).filter((row) => row?.text !== '').length,
+    0,
+  )
+  const partiallyElided = withheldContentLines < contentLineCount
+
+  // Avoid fragmenting a tiny requested window, which provokes micro-shift retries. A complete repeat is safe to replace with its exact pointer; only a partial elision leaves a fragment that invites those retries.
+  if (sliceWin.isExplicitSlice && parsed.rows.length <= 15 && partiallyElided) return null
+
+  if (sliceWin.isExplicitSlice && partiallyElided && withheldLines / parsed.rows.length >= 0.5) {
     return denyOutput(
       'At least half of this requested line range was already served; partial line redaction is blocked. ' +
       'Use `token-goat read` for a named symbol or delegate bounded extraction to an explore subagent.',

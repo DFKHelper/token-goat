@@ -643,13 +643,36 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const rangeSpan = rangeWindow.isExplicitSlice ? requestedSliceSpan(rangeWindow) : undefined
   const rangeKey = foldPath(normalized)
   let rangeIdentity: { size: number; mtimeMs: number } | undefined
+  let exactRangeRedirectKey: string | undefined
   if (event.toolName !== 'Grep' && rangeSpan !== undefined && loadConfig().hints.reread_deny) {
     // Identity changes invalidate the lock before any early-return hint or containing-range check.
     rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
     clearReadRangeIfChanged(rangeKey, rangeIdentity)
+    exactRangeRedirectKey = 'range-lock-exact-served:' + getCompactedAt() + ':' + rangeKey + ':' +
+      getReadRangeResetAt(rangeKey) + ':' + rangeSpan.start + ':' + rangeSpan.end
     if (getReadRangeDenials(rangeKey).length > 0) {
       const resetAt = getReadRangeResetAt(rangeKey)
       const rangeBreakerKey = 'range-lock-breaker:' + getCompactedAt() + ':' + rangeKey + ':' + resetAt
+      const alreadyServed = alreadyServedOutputId(event, normalized)
+      if (alreadyServed !== null && exactRangeRedirectKey !== undefined) {
+        if (wasHintShown(exactRangeRedirectKey)) {
+          recordActualRead(event, normalized)
+          recordActualSlice(event, normalized, hashNow)
+          return quietContextOutput(
+            '[tg] This exact line range was already served in `token-goat bash-output ' + alreadyServed.id +
+            '`. Read allowed after the prior redirect to stop a retry loop; reuse that output when possible.',
+            [shown],
+          )
+        }
+        markHintShown(exactRangeRedirectKey)
+        const blocked = counterfactualCredit(alreadyServed.bytes)
+        recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          'Every line in this exact range was already served in this session. Recall it with `token-goat bash-output ' +
+          alreadyServed.id + '`. Do not retry with shifted ranges.',
+        )
+      }
       if (wasHintShown(rangeBreakerKey)) {
         recordActualRead(event, normalized)
         recordActualSlice(event, normalized, hashNow)
@@ -1162,7 +1185,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const alreadyServed = alreadyServedOutputId(event, normalized)
       if (alreadyServed !== null && !fileAlreadyDenied) {
         markHintShown(fileRereadDenyKey)
-        if (rangeSpan !== undefined) lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        if (rangeSpan !== undefined) {
+          lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+          if (exactRangeRedirectKey !== undefined) markHintShown(exactRangeRedirectKey)
+        }
         // Credit the bytes this read would actually have delivered, not the whole file: a Read carrying offset/limit was only ever going to hand over its window, and crediting the file would book bytes nothing was ever going to spend.
         const blocked = counterfactualCredit(alreadyServed.bytes)
         recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
@@ -1187,6 +1213,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           const denyRangeReread = (): HookOutput => {
             markHintShown(fileRereadDenyKey)
             lockReadRange(rangeKey, [start, end], rangeIdentity)
+            if (alreadyServed !== null && exactRangeRedirectKey !== undefined) {
+              markHintShown(exactRangeRedirectKey)
+            }
             const blocked = counterfactualCredit(rereadCreditBasis)
             recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
             recordStat('session_hint', 0, 0)
@@ -1516,14 +1545,10 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const target = getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? resolveEventPath(event, rawGrepPath) : undefined)
   if (preToolPathDeclined(event, target)) return passOutput()
   const before = event.toolName === 'Read' && target !== undefined ? getSessionFileEntry(target) : undefined
-  const readsSoFar = before === undefined ? 0 : epochReadCounts(before).reads
-  const output = event.toolName === 'Read' && target !== undefined && readsSoFar >= 2
-    ? denyOutput(
-      'deny: consecutive read limit exceeded for file ' + displaySafePath(normalizePath(target)) +
-      '. Use `token-goat read ' + quotedArg(displaySafePath(normalizePath(target)) + '::Symbol') +
-      '` for a targeted extraction or delegate bounded exploration to an explore subagent.',
-    )
-    : preReadHandlerInner(event)
+  // Let the content-aware policy decide re-reads. A second count-only gate here
+  // bypasses changed-file checks, exact-output redirects, configuration, and the
+  // range/whole-file circuit breakers that prevent repeated denial loops.
+  const output = preReadHandlerInner(event)
   // Every hint here names a token-goat command that reads the file itself, so on a path a deny or ask rule covers it would lead around the rule: Claude Code answers the call on its own.
   if (output.hookType !== 'pass' && target !== undefined && readHintCrossesRule(detectHarness(), getCwd(event) ?? process.cwd(), [target])) return passOutput()
   // The re-read denies record the Read before refusing it; one that hands over neither the file nor a diff of it left the model holding what it held, so the read is taken back and a repeated refusal neither inflates the counts it quotes nor the manifest's re-read tally.

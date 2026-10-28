@@ -6,6 +6,9 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- **The read hook lets content-aware re-read checks run before count limits**, preserving changed-file, configuration, cached-output, and circuit-breaker behavior.
+- **Repeated exact line-range reads redirect to the cached output once, then fail open for that same range; fully repeated short windows are elided while partial short overlaps remain intact**, reducing denial loops without provoking micro-shift retries.
+- **Pytest compression strips ANSI escapes before classifying result lines**, so colored passing output collapses while failures remain visible.
 - **Large bounded source reads stream only the requested line window**, avoiding a full-file string allocation while preserving source decoding and newline handling.
 - **Legacy PHP indexing covers include files and procedural declarations.** `.inc` files now map to PHP; multiline array initializers and top-level procedural arrays are indexed across their full spans. Literal single-quoted `eval()` declarations and assigned `create_function()` callbacks are extracted without executing dynamic code. The parser fingerprint change triggers reindexing on upgrade.
 

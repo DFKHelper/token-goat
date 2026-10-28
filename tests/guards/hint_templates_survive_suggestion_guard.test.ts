@@ -97,7 +97,7 @@ describe('the paging note through the relay, for a file under a directory holdin
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }))
 
   // CAPTURE: a ranged Read's tool_response { type: 'text', file: { filePath, content, numLines, startLine, totalLines } }, the envelope tests/code_fold.test.ts's `rangedEvent` documents from 798 ranged Read results in real Claude Code transcripts. The windows are HAND-DERIVED: the third read is hard-denied by the per-file ratchet.
-  it('names the targeted read command with the path in one double-quoted argument on the third read deny', async () => {
+  it('keeps paging advice and targeted commands safely quoted across repeated slices', async () => {
     const file = path.join(dir, 'my proj', 'src dir', 'big file.ts')
     const base = { session_id: 'spaced-paging-guard', cwd: dir, tool_name: 'Read' }
     const contexts: string[] = []
@@ -109,11 +109,12 @@ describe('the paging note through the relay, for a file under a directory holdin
       await relayInProcess('post_tool_use', { ...base, hook_event_name: 'PostToolUse', tool_input, tool_response: { type: 'text', file: { filePath: file, content: 'x', numLines: 100, startLine: offset, totalLines: 400 } } })
     }
     const [thirdRead, fourthRead] = contexts.slice(2)
-    expect(thirdRead, 'the third read did not hit the per-file hard deny').toContain('consecutive read limit exceeded for file')
-    expect(fourthRead, 'the refused read must remain refused').toContain('consecutive read limit exceeded for file')
+    expect(thirdRead).toContain('Sequential line-range paging detected')
+    expect(fourthRead).toContain('Sequential line-range paging detected')
+    expect(fourthRead).toContain('Further Read/view line ranges of this file will be denied')
     for (const text of [thirdRead, fourthRead]) {
       expect(text).not.toContain('command omitted')
-      expect(text).toMatch(/`token-goat read "[^"`]*my proj\/src dir\/big file\.ts::Symbol"`/)
+      expect(text).toMatch(/`token-goat (?:read|skeleton) "[^"`]*my proj\/src dir\/big file\.ts(?:@[0-9]+-[0-9]+)?"`/)
     }
   })
 })

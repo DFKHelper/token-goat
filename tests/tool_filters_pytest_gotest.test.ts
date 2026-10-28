@@ -61,6 +61,16 @@ describe('pytest filter', () => {
     expect(result.text).toContain('collapsed 50 PASSED')
   })
 
+  it('collapses ANSI-colored passing lines and preserves actionable failures', () => {
+    const passedLines = Array.from({ length: 50 }, (_, i) =>
+      `tests/test_ok.py::test_pass_${i} \u001b[32mPASSED\u001b[0m [${i + 1}%]`)
+    const text = [...passedLines, 'tests/test_bad.py::test_fail \u001b[31mFAILED\u001b[0m [100%]'].join('\n')
+    const result = pytestFilter.apply(text, '', 1, ['pytest'])
+    expect(result.text).not.toContain('test_ok.py')
+    expect(result.text).toContain('collapsed 50 PASSED')
+    expect(result.text).toContain('test_bad.py::test_fail FAILED')
+  })
+
   it('strips constant banner lines but keeps real signal', () => {
     const text =
       'platform linux -- Python 3.12.0, pytest-8.1.0\n' +
