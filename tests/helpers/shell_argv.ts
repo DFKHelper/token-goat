@@ -117,8 +117,11 @@ export const REAP_SCRIPT = [
   // The kin listing goes through two files instead of a command substitution and a pipe, which cost a subshell and a third fork per scan; the files are removed at exit only if a scan made them.
   'tg_kf="${TMPDIR:-/tmp}/tg-kin.$$"; tg_ko="$tg_kf.o"',
   `trap '[ ! -e "$tg_kf" ] && [ ! -e "$tg_ko" ] || rm -f "$tg_kf" "$tg_ko"' EXIT`,
-  'tg_leaders=',
+  'tg_leaders=; tg_listed=',
   'tg_ps() { case $OSTYPE in msys* | cygwin*) ps -e ;; *) ps -A -o pid=,ppid=,pgid=,stat= ;; esac; }',
+  `tg_kin() {`,
+  `  tg_ps 2>/dev/null > "$tg_kf"; awk -v seeds=" $tg_found $tg_all " -v leaders=" $tg_leaders " '${KIN_AWK}' < "$tg_kf" > "$tg_ko"`,
+  '}',
   'tg_owned() {',
   '  echo scan',
   '  tg_found=',
@@ -132,7 +135,9 @@ export const REAP_SCRIPT = [
   '  else',
   '    while read -r tg_p tg_rest; do case " $tg_rest " in *" $tg_needle "*) tg_found="$tg_found $tg_p" ;; esac; done < <(ps -wwAE -o pid= -o command= 2>/dev/null)',
   '  fi',
-  `  tg_ps 2>/dev/null > "$tg_kf"; awk -v seeds=" $tg_found $tg_all " -v leaders=" $tg_leaders " '${KIN_AWK}' < "$tg_kf" > "$tg_ko"`,
+  // The real listing is taken once per reap, by the first scan that has seen an owned process: it reads the whole process table, which cost seconds per pass on a loaded host and grew with its process count. Once the owned set is stopped it cannot fork, so later scans (the clean confirmations) rely on the token scan alone.
+  '  : > "$tg_ko"',
+  '  [ -n "$tg_listed" ] || { tg_kin; [ -z "$tg_found$tg_all" ] || tg_listed=1; }',
   '  while read -r tg_k tg_p; do',
   '    case $tg_k in',
   '      L) tg_leaders="$tg_leaders $tg_p" ;;',
