@@ -169,7 +169,8 @@ describe('symbol NAME prints the doc comment above its preview, as read does', (
 
   it('the doc lines do not use up the body preview', () => {
     const out = tg(['symbol', 'sevenSum'])
-    expect(out).toContain('// Sums one to seven.\n// Slowly.\nexport function sevenSum(): number {\n  let t = 0\n  t += 1\n  t += 2\n  t += 3\n  ...(3 more lines;')
+    expect(out).toContain('// Sums one to seven.\n// Slowly.\nexport function sevenSum(): number {\n  let t = 0\n  t += 1\n  t += 2\n  t += 3\n  t += 4\n  return t\n}')
+    expect(out).not.toContain('more lines;')
   })
 
   it('a Python docstring, already inside the body, is not printed twice', () => {

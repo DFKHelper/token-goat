@@ -1,4 +1,4 @@
-/** The `symbol` command: every indexed definition of a name, or of each name `--grep` matches, printed with a short body preview. A bare name searches every indexed project unless `--project` scopes it or `indexing.cross_project_symbols = false` confines it to the project it is run from. Each hit is tagged when its file is gone from disk or could not be reindexed, and a name with no match gets the nearest indexed names instead. */
+/** The `symbol` command: every indexed definition of a name, or of each name `--grep` matches, printed with its body, cut only past the inline cap. A bare name searches every indexed project unless `--project` scopes it or `indexing.cross_project_symbols = false` confines it to the project it is run from. Each hit is tagged when its file is gone from disk or could not be reindexed, and a name with no match gets the nearest indexed names instead. */
 
 import { extractSignature } from './read_signature.js'
 import { isIgnoredIndexPath } from './baseline.js'
@@ -7,7 +7,7 @@ import { CORE_SYMBOL_KINDS } from './graph_traversal.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
-import { globalDbPath } from './constants.js'
+import { globalDbPath, INLINE_SYMBOL_MAX_BYTES } from './constants.js'
 import { compileGrepMatcher, excludeTestsHiddenNote, countNoun, isTestFile } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
@@ -21,8 +21,25 @@ import { DELETED_TAG, docCommentLines, fileIsGone, guardJsonRows, guardText, hea
 import { canQuoteArg, echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { forClient } from './mcp_client_text.js'
 
-/** Body lines shown per `symbol` match before the preview is cut and the cut is announced. */
-const SYMBOL_PREVIEW_LINES = 5
+/** Body lines every match shows whatever the byte budget holds: 5 WHOLE lines whatever their size, so one minified match can print far past INLINE_SYMBOL_MAX_BYTES. */
+const SYMBOL_MIN_PREVIEW_LINES = 5
+
+/** The bytes of body text left for one runSymbol call, shared by its matches in order; it can go negative once the floor lines alone exceed it. */
+interface BodyByteBudget {
+  remaining: number
+}
+
+/** How many leading body lines to show: the floor always, then whole lines while they fit the shared budget, which each shown line draws down. Whole lines only, so a cut never splits one. */
+function takeBodyLines(lines: string[], budget: BodyByteBudget): number {
+  let shown = 0
+  for (const line of lines) {
+    const cost = Buffer.byteLength(line, 'utf8') + (shown > 0 ? 1 : 0)
+    if (shown >= SYMBOL_MIN_PREVIEW_LINES && cost > budget.remaining) break
+    budget.remaining -= cost
+    shown++
+  }
+  return shown
+}
 
 
 // The STALE counterpart of DELETED_TAG, for a result row whose file changed on disk and whose reindex was attempted and failed. A per-row suffix for the same reason DELETED_TAG is one: a bare `symbol NAME` spans every indexed project, so one hit can be current and the next one not.
@@ -309,22 +326,25 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
 
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
+  const budget: BodyByteBudget = { remaining: INLINE_SYMBOL_MAX_BYTES }
   const blocks = results.map((sym) => {
     const statsStr = formatStatsSuffix(refCounts, sym)
     // Per match, not one banner for the whole result set: a bare `symbol NAME` searches every indexed project, so one hit can be a live file and the next one a checkout that was deleted months ago. A single header line would have to lie about one of them.
     const goneTag = fileIsGone(sym.filePath) ? `  ${DELETED_TAG}` : ''
     const staleTag = stillStale.has(sym.filePath) ? `  ${STALE_TAG}` : ''
-    // The doc comment sits above lineStart, outside the body, so `symbol` printed the body alone while `read` printed both; it is shown in full and kept out of the SYMBOL_PREVIEW_LINES count, which is a budget for the body.
+    // The doc comment sits above lineStart, outside the body, so `symbol` printed the body alone while `read` printed both; it is shown in full and kept out of the INLINE_SYMBOL_MAX_BYTES budget, which is for the body.
     const doc = docCommentLines(sym)
     const docLabel = doc.length > 0 ? ` + ${doc.length}-line doc comment` : ''
     const header = `# ${displaySafeText(sym.name)} (${sym.kind}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath)), sym.lineStart, sym.lineEnd)}${docLabel}${statsStr}${goneTag}${staleTag}`
     const body = resolveBody(sym)
     const previewContent = opts.sig === true ? extractSignature(body, sym.kind) : body
     const bodyLines = previewContent.split(/\r?\n/)
-    const previewLines = opts.sig === true ? bodyLines : bodyLines.slice(0, SYMBOL_PREVIEW_LINES)
+    // The byte budget is shared across matches in order, so a later match shrinks to the floor once earlier bodies spend it; the cut is announced below.
+    const shown = opts.sig === true ? bodyLines.length : takeBodyLines(bodyLines, budget)
+    const previewLines = bodyLines.slice(0, shown)
     const preview = [...doc, ...previewLines].join('\n')
-    // The header states the symbol's real line span, so a five-line preview of a forty-line function looked like the whole thing was five lines long -- a silent cap of exactly the kind truncationFooter below exists to prevent. Say what was cut and how to get the rest.
-    const dropped = opts.sig === true ? 0 : bodyLines.length - SYMBOL_PREVIEW_LINES
+    // The header states the symbol's real line span, so a cut body that looked whole would be a silent truncation of exactly the kind truncationFooter below exists to prevent. Say what was cut and how to get the rest.
+    const dropped = bodyLines.length - shown
     const elided =
       dropped > 0
         ? forClient(`\n  ...(${countNoun(dropped, 'more line')}; full body: ${fencedCommand('token-goat read ' + quotedArg(`${displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath))}::${displaySafeText(sym.name)}`))})`)

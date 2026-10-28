@@ -6,6 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- **`symbol` prints the whole body up to about 12 KB, shared across matches; each match still shows at least 5 lines.** A body past the budget is cut at a line and names the `read` command that returns the rest.
 - **Large bounded source reads stream only the requested line window**, avoiding a full-file string allocation while preserving source decoding and newline handling.
 - **Legacy PHP indexing covers include files and procedural declarations.** `.inc` files now map to PHP; multiline array initializers and top-level procedural arrays are indexed across their full spans. Literal single-quoted `eval()` declarations and assigned `create_function()` callbacks are extracted without executing dynamic code. The parser fingerprint change triggers reindexing on upgrade.
 
