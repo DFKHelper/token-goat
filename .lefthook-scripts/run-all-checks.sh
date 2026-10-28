@@ -42,8 +42,8 @@ wait_legs() {
   local -A pid_of=()
   local name left=0 fin rc
   for name in "$@"; do
-    # A leg the hard stop kept from starting has no pid, so it is not waited on.
-    [[ -n "${PID_OF[$name]:-}" ]] || continue
+    # A leg the hard stop kept from starting has no pid, and a leg already finished or ended by the stop is not waited on again.
+    [[ -n "${PID_OF[$name]:-}" && -z "${END[$name]:-}" && -z "${ABORTED[$name]:-}" ]] || continue
     pid_of[$name]=${PID_OF[$name]}; left=$((left + 1))
   done
   if [[ -n "$HARD_PID" ]]; then pid_of[hardstop]=$HARD_PID; fi
@@ -53,14 +53,10 @@ wait_legs() {
     if [[ -n "$HARD_PID" && "$fin" == "$HARD_PID" ]]; then
       wait "$HARD_PID" 2>/dev/null || true
       HARD_PID=""
-      unset "pid_of[hardstop]"
-      for name in "${!pid_of[@]}"; do
-        STOPPED[$name]=1
-        ABORTED[$name]=1
-        kill_tree "${pid_of[$name]}"
-      done
-      cap_report_stop "$(cap_stop_time)" "${!pid_of[@]}"
-      continue
+      HARD_FIRED=1
+      stop_all_legs
+      cap_report_stop "$(cap_stop_time)" "${STOP_ENDED[@]}"
+      break
     fi
     for name in "${!pid_of[@]}"; do
       if [[ "${pid_of[$name]:-}" == "$fin" ]]; then
@@ -82,14 +78,53 @@ wait_legs() {
   done
 }
 
-# Seconds a leg took, or "skipped" when it never started.
+# The hard stop passed: every leg of this run that has not finished is ended, not only the legs the current wait named (a parallel WSL leg is not in the first wait). A leg that exited in the same second as the stop keeps its own result. The WSL leg gets TERM first, since its Linux-side tree ends only on TERM; then each stopped leg's whole tree. The stopped legs get POST_STOP_S seconds to exit; any still alive is reported by pid in one line and not waited on. Sets STOP_ENDED to the stopped leg names.
+stop_all_legs() {
+  local name rc=0 stop_until alive_list kill_pids=() k
+  STOP_ENDED=()
+  stop_until=$((SECONDS + POST_STOP_S))
+  cap_tail_open_now
+  for name in "${!PID_OF[@]}"; do
+    [[ -z "${END[$name]:-}" && -z "${ABORTED[$name]:-}" ]] || continue
+    if ! kill -0 "${PID_OF[$name]}" 2>/dev/null; then
+      wait "${PID_OF[$name]}" 2>/dev/null || rc=$?
+      END[$name]=$SECONDS
+      [[ "$rc" -eq 0 ]] || FAILED[$name]=1
+      rc=0
+      continue
+    fi
+    STOPPED[$name]=1
+    ABORTED[$name]=1
+    STOP_ENDED+=("$name")
+  done
+  for name in "${STOP_ENDED[@]}"; do
+    if [[ "$name" == "wsl-test" ]]; then cap_term_wait "${PID_OF[$name]}"; fi
+  done
+  # The trees are ended side by side, so a slow fork delays them once, not once per leg; every one is ended and reaped.
+  for name in "${STOP_ENDED[@]}"; do
+    kill_tree "${PID_OF[$name]}" &
+    kill_pids+=("$!")
+  done
+  for k in "${kill_pids[@]}"; do wait "$k" 2>/dev/null || true; done
+  while :; do
+    alive_list=""
+    for name in "${STOP_ENDED[@]}"; do
+      if kill -0 "${PID_OF[$name]}" 2>/dev/null; then alive_list+=" $name=${PID_OF[$name]}"; else wait "${PID_OF[$name]}" 2>/dev/null || true; fi
+    done
+    [[ -n "$alive_list" && "$SECONDS" -lt "$stop_until" ]] || break
+    cap_tick
+  done
+  if [[ -n "$alive_list" ]]; then echo "pre-push: stopped legs still running ${POST_STOP_S}s after the hard stop, not waited on (name=pid):$alive_list"; fi
+}
+
+# Sets LEG_SECS to a leg's seconds, or "aborted" or "skipped". A plain assignment, not a $() call: each subshell is a fork that costs seconds on a loaded host, and this runs after the stop.
 leg_secs() {
   if [[ -n "${ABORTED[$1]:-}" ]]; then
-    printf 'aborted'
+    LEG_SECS='aborted'
   elif [[ -n "${START[$1]:-}" && -n "${END[$1]:-}" ]]; then
-    printf '%ss' "$((END[$1] - START[$1]))"
+    LEG_SECS="$((END[$1] - START[$1]))s"
   else
-    printf 'skipped'
+    LEG_SECS='skipped'
   fi
 }
 
@@ -97,7 +132,8 @@ leg_secs() {
 start_suite_leg() {
   RUN_PID=""
   focus_decide "$2"
-  if [[ -n "$FOCUS_STOPPED" ]]; then cap_planning_stopped "$2"; return 0; fi
+  # The planning step can outlast the stop; a leg that would start after the stop is not started, as one planned during it is not.
+  if [[ -n "$FOCUS_STOPPED" || -e "$HARD_FLAG" ]]; then cap_planning_stopped "$2"; return 0; fi
   echo "pre-push: $FOCUS_NOTE"
   if [[ -n "$FOCUS_DEFERRED" ]]; then echo "pre-push: $FOCUS_DEFERRED"; fi
   # Test files already green on this exact tree (scripts/prepush-green.mjs) are dropped from the Windows leg's list; an emptied list runs nothing, since no list at all would mean the whole suite.
@@ -121,12 +157,14 @@ start_suite_leg() {
 # Folds a finished suite leg's per-file timings into the duration table the next selection costs files from, and keeps the failing-files record in step with the leg: a red leg records its failures, a green one clears them, a leg that did not run or was aborted changes nothing. $1: log name, $2: leg.
 record_leg_outcome() {
   [[ -n "${END[$1]:-}" && -z "${ABORTED[$1]:-}" ]] || return 0
-  cap_clear_owed "$2"
-  node "$ROOT_DIR/scripts/test-durations.mjs" "$LOG_DIR/$1.log" --record "$FAILED_STORE" "$2" || true
+  # Past the tail deadline the record's forks are not started; the leg's result and its failures still print above.
+  if ! cap_tail_left; then echo "pre-push: no time left after the hard stop, so the outcome of the $2 leg was not recorded (the next push plans from the older record)"; return 0; fi
+  cap_bounded cap_clear_owed "$2"
+  cap_bounded node "$ROOT_DIR/scripts/test-durations.mjs" "$LOG_DIR/$1.log" --record "$FAILED_STORE" "$2"
   # A green leg whose fill the wall-clock deadline cut keeps the record: a file that failed last time may be among the files it did not run.
-  if [[ -n "${FAILED[$1]:-}" ]]; then focus_record_failure "$2" "$LOG_DIR/$1.log"; elif [[ ! -s "$LOG_DIR/cut-$2.txt" ]]; then focus_clear "$2"; fi
+  if [[ -n "${FAILED[$1]:-}" ]]; then cap_bounded focus_record_failure "$2" "$LOG_DIR/$1.log"; elif [[ ! -s "$LOG_DIR/cut-$2.txt" ]]; then cap_bounded focus_clear "$2"; fi
   if [[ -z "${FAILED[$1]:-}" && -n "${GREEN_TREE_OF[$1]:-}" ]]; then
-    (cd "$ROOT_DIR" && node scripts/prepush-green.mjs record-files "$2" "${GREEN_FOCUS_OF[$1]}" "${GREEN_TREE_OF[$1]}") || true
+    cap_bounded bash -c 'cd "$1" && shift && node scripts/prepush-green.mjs record-files "$@"' _ "$ROOT_DIR" "$2" "${GREEN_FOCUS_OF[$1]}" "${GREEN_TREE_OF[$1]}"
   fi
 }
 
@@ -154,15 +192,11 @@ report_failure() {
 cleanup() {
   trap - EXIT INT TERM
   local pid
-  if [[ -n "$WSL_PID" ]] && kill -0 "$WSL_PID" 2>/dev/null; then
-    kill -TERM "$WSL_PID" 2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-      kill -0 "$WSL_PID" 2>/dev/null || break
-      sleep 0.5
-    done
-  fi
+  if [[ -n "$WSL_PID" ]] && kill -0 "$WSL_PID" 2>/dev/null; then cap_term_wait "$WSL_PID"; fi
+  # The watchdog has no children, so a plain kill ends it; kill_tree would cost two forks (cat, taskkill) after the summary, seconds on a loaded host.
+  if [[ -n "${HARD_PID:-}" ]]; then kill "$HARD_PID" 2>/dev/null || true; fi
   for pid in "${PIDS[@]}"; do
-    if kill -0 "$pid" 2>/dev/null; then kill_tree "$pid"; fi
+    if [[ "$pid" != "${HARD_PID:-}" ]] && kill -0 "$pid" 2>/dev/null; then kill_tree "$pid"; fi
   done
 }
 trap cleanup EXIT
@@ -189,13 +223,14 @@ if [[ "$WSL_RUN" -eq 1 && "${PREPUSH_PARALLEL_WSL:-0}" == "1" ]]; then
 fi
 
 FAIL=0
+HARD_FIRED=""
 
 # Lint, typecheck and the Windows suite finish first; the WSL leg starts only when all three passed, since a red push would otherwise pay for the whole second suite.
 wait_legs typecheck ts-checks tests
 # A lint or typecheck the hard stop ended was never verified, so the push fails.
 if [[ -n "${STOPPED[typecheck]:-}" || -n "${STOPPED[ts-checks]:-}" ]]; then FAIL=1; fi
 # A passing check's log is dropped, so what it reused is printed here.
-grep -h '^pre-push: reused' "$LOG_DIR/typecheck.log" "$LOG_DIR/ts-checks.log" 2>/dev/null || true
+if cap_tail_left; then grep -h '^pre-push: reused' "$LOG_DIR/typecheck.log" "$LOG_DIR/ts-checks.log" 2>/dev/null || true; fi
 [[ -z "${FAILED[tests]:-}" ]]     || { report_failure tests; FAIL=1; }
 [[ -z "${FAILED[typecheck]:-}" ]] || { report_failure typecheck; FAIL=1; }
 [[ -z "${FAILED[ts-checks]:-}" ]] || { report_failure ts-checks; FAIL=1; }
@@ -219,11 +254,16 @@ if [[ "$WSL_RUN" -eq 1 ]]; then
   fi
 fi
 
-echo "pre-push: legs: lint=$(leg_secs ts-checks) typecheck=$(leg_secs typecheck) win=$(leg_secs tests) wsl=$(leg_secs wsl-test) total=${SECONDS}s"
-report_slowest tests Windows
-report_slowest wsl-test WSL
-
-if [[ "$FAIL" -eq 0 ]]; then
-  rm -rf -- "$LOG_DIR"
+# After a stop only the result matters: the slowest-files report and the log cleanup each fork, and the logs of the stopped legs stay for the reader of the notice.
+if [[ -z "$HARD_FIRED" ]]; then
+  report_slowest tests Windows
+  report_slowest wsl-test WSL
+  if [[ "$FAIL" -eq 0 ]]; then rm -rf -- "$LOG_DIR"; fi
 fi
+# The last output, so total= covers every step that forks; only the exit trap (no forks on this path) follows it.
+leg_secs ts-checks; lint_s=$LEG_SECS
+leg_secs typecheck; typecheck_s=$LEG_SECS
+leg_secs tests; win_s=$LEG_SECS
+leg_secs wsl-test; wsl_s=$LEG_SECS
+echo "pre-push: legs: lint=$lint_s typecheck=$typecheck_s win=$win_s wsl=$wsl_s total=${SECONDS}s"
 exit "$FAIL"

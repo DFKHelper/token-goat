@@ -1,12 +1,16 @@
-/** The pre-push hard stop's pure pieces: the stop value read from the environment (scripts/prepush-budget.mjs), the planned files a stopped leg did not finish (scripts/prepush-failed.mjs unfinishedFiles), and the owed record written beside the failed-store. The shell watchdog itself is exercised by a scratch run, not here. */
+/** The pre-push hard stop's pure pieces: the stop value read from the environment (scripts/prepush-budget.mjs), the planned files a stopped leg did not finish (scripts/prepush-failed.mjs unfinishedFiles), and the owed record written beside the failed-store. The shell side runs for real below: the watchdog and kill_tree sourced alone, and the whole hook over stub legs. */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { HARD_STOP_DEFAULT_S, hardStopOf } from '../scripts/prepush-budget.mjs'
+import { HARD_STOP_DEFAULT_S, HARD_STOP_MAX_S, HOOK_LIMIT_S, STARTUP_RESERVE_S, STOP_CLEANUP_S, TERM_WAIT_S, hardStopOf, postStopOf } from '../scripts/prepush-budget.mjs'
 import { unfinishedFiles, writeOwed } from '../scripts/prepush-failed.mjs'
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+
+// Bound on every spawned hook or bash run in this file; a run that reaches it is killed and fails the row.
+const SPAWN_TIMEOUT_MS = 60_000
 
 describe('pre-push hard stop value', () => {
   it('defaults to the hook limit less the held-back share', () => {
@@ -18,8 +22,18 @@ describe('pre-push hard stop value', () => {
     expect(hardStopOf({ PREPUSH_HARD_STOP_S: '5' })).toEqual({ seconds: 5, source: 'PREPUSH_HARD_STOP_S=5' })
   })
 
-  it('caps a value above the hook limit at the limit', () => {
-    expect(hardStopOf({ PREPUSH_HARD_STOP_S: '9999' }).seconds).toBe(600)
+  it('clamps a value above the default to the default, since the variable may only lower the stop, and says so', () => {
+    expect(HARD_STOP_MAX_S).toBe(HARD_STOP_DEFAULT_S)
+    expect(hardStopOf({ PREPUSH_HARD_STOP_S: '9999' }).seconds).toBe(HARD_STOP_DEFAULT_S)
+    expect(hardStopOf({ PREPUSH_HARD_STOP_S: '9999' }).source).toContain('capped at')
+  })
+
+  it.each([570, 590, 600])('an accepted PREPUSH_HARD_STOP_S=%i keeps stop + term + post + cleanup + startup reserve within the hook limit', (raw) => {
+    const stop = hardStopOf({ PREPUSH_HARD_STOP_S: String(raw) })
+    const sum = stop.seconds + TERM_WAIT_S + postStopOf(stop.seconds, {}).seconds + STOP_CLEANUP_S + STARTUP_RESERVE_S
+    expect(stop.seconds).toBeLessThanOrEqual(HARD_STOP_DEFAULT_S)
+    expect(sum, `stop ${raw} gave ${stop.seconds} and a tail summing to ${sum}`).toBeLessThanOrEqual(HOOK_LIMIT_S)
+    if (raw > HARD_STOP_MAX_S) expect(stop.source).toContain('capped at')
   })
 
   it.each(['0', 'abc', '-3', '2.5', '1e3'])('ignores %s and says so', (raw) => {
@@ -91,6 +105,7 @@ describe('cap_run_stoppable', () => {
     writeFileSync(
       script,
       [
+        `echo "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"${slash(path.join(dir, 'bash.pid'))}"`,
         `source "${slash(CAP_SCRIPT)}"`,
         `HARD_FLAG="${flag}"`,
         'PIDS=()',
@@ -101,7 +116,9 @@ describe('cap_run_stoppable', () => {
         'kill "$WATCH" 2>/dev/null || true',
       ].join('\n') + '\n',
     )
-    const r = spawnSync(GIT_BASH, [slash(script)], { encoding: 'utf8', timeout: 60_000 })
+    const r = spawnSync(GIT_BASH, [slash(script)], { encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS })
+    // A timed-out spawn kills only bash; the step's node child and the watchdog sleep would outlive it, so their tree goes with bash.
+    if (r.error) endRecordedTrees([path.join(dir, 'bash.pid')])
     return { stdout: r.stdout, stderr: r.stderr }
   }
 
@@ -115,3 +132,235 @@ describe('cap_run_stoppable', () => {
     expect(r.stdout).toContain('rc=3')
   })
 })
+
+describe('postStopOf', () => {
+  it('gives the stopped legs what is left of the hook limit after the stop, less the TERM wait and the cleanup', () => {
+    expect(postStopOf(HARD_STOP_DEFAULT_S, {})).toEqual({ seconds: 20, source: 'default' })
+    expect(HARD_STOP_DEFAULT_S + postStopOf(HARD_STOP_DEFAULT_S, {}).seconds + TERM_WAIT_S + STOP_CLEANUP_S + STARTUP_RESERVE_S).toBe(HOOK_LIMIT_S)
+  })
+
+  it('takes a shorter positive whole number from PREPUSH_POST_STOP_S', () => {
+    expect(postStopOf(540, { PREPUSH_POST_STOP_S: '2' }).seconds).toBe(2)
+  })
+
+  it('caps PREPUSH_POST_STOP_S at what is left of the hook limit', () => {
+    expect(postStopOf(540, { PREPUSH_POST_STOP_S: '999' }).seconds).toBe(20)
+  })
+
+  it.each(['0', 'x', '1.5'])('ignores %s and says so', (raw) => {
+    const p = postStopOf(540, { PREPUSH_POST_STOP_S: raw })
+    expect(p.seconds).toBe(20)
+    expect(p.source).toContain('is not a positive whole number, ignored')
+  })
+})
+
+describe('the stop budget sums to within the hook limit', () => {
+  it('holds for every hard stop the budget does not cap', () => {
+    for (let stop = 1; stop <= HARD_STOP_MAX_S; stop++) {
+      expect(stop + postStopOf(stop, {}).seconds + TERM_WAIT_S + STOP_CLEANUP_S + STARTUP_RESERVE_S).toBeLessThanOrEqual(HOOK_LIMIT_S)
+    }
+  })
+
+  it('is what the shell reads at hook start: stop, limit, post-stop, TERM wait, cleanup, source', () => {
+    const env: Record<string, string> = {}
+    for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith('PREPUSH_')) env[k] = v
+    const r = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/prepush-budget.mjs', import.meta.url)), 'hard-stop'], { env, encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS })
+    const [stop, limit, post, term, cleanup] = r.stdout.trim().split(' ').map(Number)
+    expect([stop, limit, post, term, cleanup]).toEqual([HARD_STOP_DEFAULT_S, HOOK_LIMIT_S, 20, TERM_WAIT_S, STOP_CLEANUP_S])
+    expect((stop ?? 0) + (post ?? 0) + (term ?? 0) + (cleanup ?? 0) + STARTUP_RESERVE_S).toBeLessThanOrEqual(HOOK_LIMIT_S)
+  })
+})
+
+describe('the watchdog and kill_tree, sourced alone', () => {
+  const bashAvailable = process.platform !== 'win32' || existsSync(GIT_BASH)
+  let dir = ''
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'tg-prepush-watch-'))
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  // Runs a bash script under the hook's own `set -euo pipefail` that sources the cap, then the given lines.
+  const runScript = (lines: string[]): { status: number | null; out: string } => {
+    const script = path.join(dir, 'run.sh')
+    writeFileSync(script, ['set -euo pipefail', `source "${slash(CAP_SCRIPT)}"`, ...lines].join('\n') + '\n')
+    const r = spawnSync(GIT_BASH, [slash(script)], { encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS })
+    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}` }
+  }
+
+  // The watchdog on its real clock with no legs: the flag holds the hook-clock second it fired at, which must be the stop within one tick.
+  it.skipIf(!bashAvailable)('writes the stop flag within 2 s of the configured stop', () => {
+    const flag = slash(path.join(dir, 'hard-stop.flag'))
+    const r = runScript(['cap_tick_open', 'SECONDS=0', `cap_watch "$$" 4 "${flag}" &`, 'wait $!', `echo "flag=$(cat "${flag}")"`])
+    const m = /flag=(\d+)/.exec(r.out)
+    expect(m, r.out).not.toBeNull()
+    expect(Number(m?.[1])).toBeGreaterThanOrEqual(4)
+    expect(Number(m?.[1])).toBeLessThanOrEqual(4 + 2)
+  })
+
+  // Regression: under set -e, kill_tree's winpid="$(cat /proc/PID/winpid)" ended the whole hook when the leg exited after the readability test and before the cat, so no notice or legs line printed and the push failed with status 1. cat is a failing function here, which makes that moment deterministic.
+  it.skipIf(process.platform !== 'win32' || !bashAvailable)('kill_tree goes on when a leg left no readable winpid', () => {
+    const r = runScript(['cat() { return 1; }', 'taskkill() { echo "taskkill called $*"; }', 'kill_tree "$$"', 'echo "after kill_tree"'])
+    expect(r.out).toContain('after kill_tree')
+    expect(r.out).not.toContain('taskkill called')
+    expect(r.status, r.out).toBe(0)
+  })
+})
+
+// The hook's own stop path, run for real: a temp copy of .lefthook-scripts and scripts, with the four leg scripts replaced by stubs that sleep for a set time and record their pid. The seam is the copy; nothing in the hook is stubbed but the legs.
+describe('the hard stop ends the legs of a real hook run', () => {
+  const bashAvailable = process.platform !== 'win32' || existsSync(GIT_BASH)
+  const REPO = fileURLToPath(new URL('..', import.meta.url))
+  // The stop fires as an event, not on the clock. The hook's start-up and planning are about 25 process starts before the first leg, 0.1 s each on a quiet host and 2 to 3 s each on this loaded Windows one (a stop timed against that start-up fired before any leg began, 2026-10-27), so a stub leg ends the watchdog by TERM once it has started: the watchdog's own TERM trap exits it, which wait_legs reads as the stop. HOOK_STOP_S is only the watchdog's own deadline, set past anything a row reaches.
+  const HOOK_STOP_S = 300
+  const POST_STOP_S = 2
+  // Bash start-up before the hook's first line and process exit after its EXIT trap run outside the hook's clock, and the hook forks about six more processes after the stop (the reused-lines grep, the outcome record, the cut report) that no clock bounds, up to 3 s each on a loaded Windows host; this is that slack, stated, not measured.
+  const SPAWN_SLACK_S = 20
+  // From the event to the hook's return: the post-stop allowance, the TERM wait, the cleanup the hook keeps for itself, plus the spawn slack. A hook that waited for a stopped leg takes that leg's whole sleep, far past this.
+  const TAIL_BOUND_S = POST_STOP_S + TERM_WAIT_S + STOP_CLEANUP_S + SPAWN_SLACK_S
+  const LEGS = [
+    { file: 'run-typecheck.sh', leg: 'typecheck', env: 'STUB_TYPECHECK_S' },
+    { file: 'run-ts-checks.sh', leg: 'ts-checks', env: 'STUB_TS_CHECKS_S' },
+    { file: 'run-test.sh', leg: 'tests', env: 'STUB_TESTS_S' },
+    { file: 'wsl-test.sh', leg: 'wsl-test', env: 'STUB_WSL_S' },
+  ] as const
+  let dir = ''
+  let stubs = ''
+  let leftLegs = false
+
+  const stubSource = (leg: (typeof LEGS)[number], ignoresTerm: boolean): string =>
+    [
+      '#!/usr/bin/env bash',
+      `echo "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"$STUB_DIR/${leg.leg}.pid"`,
+      ignoresTerm ? "trap '' TERM" : '',
+      // The leg named by STUB_FIRE_STOP fires the stop once it is running, then sleeps like any other leg.
+      `if [[ "\${STUB_FIRE_STOP:-}" == "${leg.leg}" ]]; then`,
+      '  printf "%s\\n" "$EPOCHREALTIME" >"$STUB_DIR/fired.epoch"',
+      '  kill -TERM "$(cat "$TMPDIR"/token-goat-pre-push.*/hard-stop.pid)"',
+      'fi',
+      `sleep "\${${leg.env}:-0}"`,
+      '',
+    ].join('\n')
+
+  beforeEach(() => {
+    dir = mkdtempSync(path.join(tmpdir(), 'tg-prepush-hook-'))
+    stubs = path.join(dir, 'stubs')
+    mkdirSync(stubs)
+    cpSync(path.join(REPO, '.lefthook-scripts'), path.join(dir, '.lefthook-scripts'), { recursive: true })
+    cpSync(path.join(REPO, 'scripts'), path.join(dir, 'scripts'), { recursive: true })
+    for (const leg of LEGS) {
+      writeFileSync(path.join(dir, '.lefthook-scripts', leg.file), stubSource(leg, leg.leg === 'wsl-test'))
+    }
+    expect(spawnSync('git', ['init', '-q'], { cwd: dir, timeout: SPAWN_TIMEOUT_MS }).status).toBe(0)
+    const commit = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: dir, timeout: SPAWN_TIMEOUT_MS })
+    expect(commit.status).toBe(0)
+  })
+
+  afterEach(() => {
+    // Only a run that did not return (or a leg known to survive its kill) can leave a live leg; a leg the hook ended is not signalled again, since its pid may be reused.
+    if (leftLegs) endRecordedTrees(LEGS.map((leg) => path.join(stubs, `${leg.leg}.pid`)))
+    leftLegs = false
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  // tailS: seconds from the stub's stop event to the hook's return, or null when no stub fired one.
+  // A hook row has no wall-clock budget of its own: the hook's start-up is bounded by the hard stop it runs under, so the row may take that stop and the tail, as a hang guard (vitest's 60 s default is for rows that spawn one short script).
+  const HOOK_ROW_TIMEOUT_MS = (HOOK_STOP_S + TAIL_BOUND_S) * 1000
+  const hookRow = (name: string, fn: () => void, onlyWindows = false): void => {
+    it.skipIf(!bashAvailable || (onlyWindows && process.platform !== 'win32'))(name, fn, HOOK_ROW_TIMEOUT_MS)
+  }
+
+  const runHook = (extra: Record<string, string>): { status: number | null; out: string; elapsedS: number; tailS: number | null; timedOut: boolean } => {
+    const env: Record<string, string | undefined> = {}
+    for (const [k, v] of Object.entries(process.env)) {
+      if (!/^(PREPUSH_|TG_PREPUSH_|STUB_)/.test(k) && !(extra.PATH !== undefined && /^path$/i.test(k))) env[k] = v
+    }
+    Object.assign(env, {
+      PREPUSH_HARD_STOP_S: String(HOOK_STOP_S),
+      PREPUSH_POST_STOP_S: String(POST_STOP_S),
+      TG_PREPUSH_WSL: '0',
+      PREPUSH_FAILED_STORE: slash(path.join(dir, 'store', 'last-failed.json')),
+      TMPDIR: slash(path.join(dir, 'tmp')),
+      STUB_DIR: slash(stubs),
+      ...extra,
+    })
+    mkdirSync(path.join(dir, 'tmp'), { recursive: true })
+    const started = Date.now()
+    const r = spawnSync(GIT_BASH, [slash(path.join(dir, '.lefthook-scripts', 'run-all-checks.sh'))], { cwd: dir, env, input: '', encoding: 'utf8', timeout: HOOK_ROW_TIMEOUT_MS })
+    const ended = Date.now()
+    if (r.error) leftLegs = true
+    const firedFile = path.join(stubs, 'fired.epoch')
+    const tailS = existsSync(firedFile) ? ended / 1000 - Number(readFileSync(firedFile, 'utf8').trim()) : null
+    return { status: r.status, out: `${r.stdout ?? ''}${r.stderr ?? ''}`, elapsedS: (ended - started) / 1000, tailS, timedOut: r.error !== undefined }
+  }
+
+  hookRow('a run with no leg past the stop passes, prints no stop notice and ends with the legs line', () => {
+    const r = runHook({})
+    expect(r.timedOut).toBe(false)
+    expect(r.status).toBe(0)
+    expect(r.out).not.toContain('stopped the')
+    // The legs line is the hook's last output, so its total= covers every step; only bash start-up and exit lie outside that clock.
+    const lines = r.out.trimEnd().split('\n')
+    const m = /^pre-push: legs: .* total=(\d+)s$/.exec(lines[lines.length - 1] ?? '')
+    expect(m, r.out).not.toBeNull()
+    expect(r.elapsedS - Number(m?.[1])).toBeLessThan(SPAWN_SLACK_S)
+  })
+
+  hookRow('a stopped test leg is ended at the stop, and the push still passes', () => {
+    const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60' })
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+    expect(r.out).toContain('stopped the win leg after')
+    expect(r.out).toMatch(/win=aborted/)
+    expect(r.status, r.out).toBe(0)
+  })
+
+  hookRow('a stopped typecheck fails the push', () => {
+    const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TYPECHECK_S: '60' })
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+    expect(r.out).toContain(`typecheck was still running at the ${HOOK_STOP_S}s hard stop`)
+    expect(r.status, r.out).toBe(1)
+  })
+
+  hookRow('a stopped lint fails the push', () => {
+    const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TS_CHECKS_S: '60' })
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+    expect(r.out).toContain(`lint was still running at the ${HOOK_STOP_S}s hard stop`)
+    expect(r.status, r.out).toBe(1)
+  })
+
+  // A parallel WSL leg is not in the first wait; its stub ignores TERM, so only the TERM wait and the tree kill end it. It fires the stop, so it is running when the stop comes.
+  hookRow('a parallel WSL leg started before the stop is ended by it, even when it ignores TERM', () => {
+    const r = runHook({ PREPUSH_PARALLEL_WSL: '1', TG_PREPUSH_WSL: '1', STUB_FIRE_STOP: 'wsl-test', STUB_TYPECHECK_S: '60', STUB_WSL_S: '50' })
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+    expect(r.out).toContain('stopped the wsl leg after')
+    expect(r.out).toMatch(/wsl=aborted/)
+    expect(r.status, r.out).toBe(1)
+  })
+
+  // Windows only: a taskkill stub on PATH ends nothing, so each stopped leg survives its kill. The hook must report them by pid and return at the allowance.
+  hookRow('a leg that survives its kill does not hold the hook past the post-stop allowance', () => {
+    const bin = path.join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(path.join(bin, 'taskkill'), '#!/usr/bin/env bash\nexit 0\n')
+    const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60', PATH: `${slash(bin)};${process.env.PATH ?? ''}` })
+    // The stopped leg is alive by design here, so the afterEach ends it by its recorded pid.
+    leftLegs = true
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+    expect(r.out).toContain(`still running ${POST_STOP_S}s after the hard stop, not waited on (name=pid):`)
+  }, true)
+})
+
+// Ends the process tree of each pid a test recorded in a pid file. A pid is ended only while its command line, read right now, is a bash, so a reused pid is left alone; the tree goes with it, since a plain kill leaves the children behind on Windows.
+function endRecordedTrees(pidFiles: string[]): void {
+  if (process.platform !== 'win32') return
+  for (const file of pidFiles) {
+    if (!existsSync(file)) continue
+    const pid = Number(readFileSync(file, 'utf8').trim())
+    if (!Number.isInteger(pid)) continue
+    killIfCommandLine(pid, (commandLine) => /bash/i.test(commandLine), { tree: true })
+  }
+}
