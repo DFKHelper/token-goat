@@ -104,7 +104,7 @@ stop_all_legs() {
   done
   # The trees are ended side by side, so a slow fork delays them once, not once per leg; every one is ended and reaped.
   for name in "${STOP_ENDED[@]}"; do kill_pids+=("${PID_OF[$name]}"); done
-  cap_kill_all "$CAP_TAIL_END" "${kill_pids[@]}"
+  cap_kill_all "$CAP_KILL_END" "${kill_pids[@]}"
   while :; do
     alive_list=""
     for name in "${STOP_ENDED[@]}"; do

@@ -43,7 +43,7 @@ cap_term_wait() {
   kill -TERM "$pid" 2>/dev/null || true
   deadline=$((SECONDS + TERM_WAIT_S))
   # After a stop the wait also ends at the tail deadline, so the exit trap cannot run past it.
-  if [[ -n "$CAP_TAIL_END" ]] && (( CAP_TAIL_END < deadline )); then deadline=$CAP_TAIL_END; fi
+  if [[ -n "$CAP_TAIL_CLOSE" ]] && (( CAP_TAIL_CLOSE < deadline )); then deadline=$CAP_TAIL_CLOSE; fi
   while kill -0 "$pid" 2>/dev/null && (( SECONDS < deadline )); do cap_tick; done
 }
 
@@ -116,12 +116,18 @@ cap_run_stoppable() {
 }
 
 # The one deadline of everything after the stop, on the hook's clock: set when the stop is handled, to the post-stop allowance, the TERM wait and the cleanup room from the budget constants. The TERM wait and the reap are bounded by their own limits within it; work that forks (the notices, the owed record, the outcome records) starts only while it is open, runs under cap_run_by_deadline, and otherwise says in one builtin line what it skipped. Ending the legs is never skipped. Empty before a stop.
+# The tail is carved into three deadlines (S = the hard stop, at most 540; END = S + post-stop + TERM_WAIT_S + STOP_CLEANUP_S, at most 590, and post-stop is 560 - S by default or lower): CAP_TAIL_CLOSE = END - 2*CAP_KILL_WIN_S ends the TERM wait and every fork (cap_bounded forks nothing after it), CAP_KILL_END = END - CAP_KILL_WIN_S ends the stop path's kill poll, and CAP_TAIL_END ends the exit trap's kill poll, so the kill polls own the last 2*CAP_KILL_WIN_S seconds, 5 s each, which a 2-3 s taskkill fits; the one run in flight at CAP_TAIL_CLOSE is ended with a 2 s poll (end <= CLOSE + 2 < CAP_KILL_END), so the hook ends by END <= 590 plus one tick and the 10 s STARTUP_RESERVE_S, under 600 for every PREPUSH_HARD_STOP_S and PREPUSH_POST_STOP_S.
+CAP_KILL_WIN_S=5
+CAP_TAIL_CLOSE=""
+CAP_KILL_END=""
 CAP_TAIL_END=""
 cap_tail_open_now() {
   local base=$SECONDS
   # Anchored to the hard stop, not to when it was handled, so watchdog lag counts against the tail; a stop fired before its time (a test) anchors to now.
   if (( HARD_STOP_S < base )); then base=$HARD_STOP_S; fi
   CAP_TAIL_END=$((base + POST_STOP_S + TERM_WAIT_S + STOP_CLEANUP_S))
+  CAP_KILL_END=$((CAP_TAIL_END - CAP_KILL_WIN_S))
+  CAP_TAIL_CLOSE=$((CAP_TAIL_END - 2 * CAP_KILL_WIN_S))
 }
 
 # Ends the trees of the given pids side by side (kill_tree for each) and polls until every one is gone or $1 seconds on the hook's clock pass, never blocking on a hung taskkill; a kill still running then is ended (its job) and said so. $1: deadline (SECONDS value), the rest: pids.
@@ -129,8 +135,6 @@ cap_kill_all() {
   local until_s=$1 p alive jobs_=() j c kp
   shift
   (( $# > 0 )) || return 0
-  # A deadline already past still gets 2 s for the kills to finish: at most 2 s past it per call, and the stop path makes at most two calls, 4 s inside the 10 s STARTUP_RESERVE_S that the 590 s tail end leaves under 600 s.
-  if (( until_s < SECONDS + 2 )); then until_s=$((SECONDS + 2)); fi
   for p in "$@"; do
     kill_tree "$p" &
     jobs_+=("$!")
@@ -142,7 +146,7 @@ cap_kill_all() {
     done
     [[ -n "$alive" ]] || return 0
     if (( SECONDS >= until_s )); then
-      # With pgrep the job's children are found by it; without (Git for Windows has none) by one MSYS ps, whose native taskkill child shows under its MSYS pid and ends on a plain kill.
+      # With pgrep the job's children are found by it; without (Git for Windows has none) by one MSYS ps, whose native taskkill child shows under its MSYS pid and ends on kill -KILL; that ps has no deadline of its own, since a bound would be one more fork and it runs once, at the window end.
       for j in $alive; do
         if command -v pgrep >/dev/null 2>&1; then
           for c in $(pgrep -P "$j" 2>/dev/null || true); do kill "$c" 2>/dev/null || true; done
@@ -170,7 +174,7 @@ cap_reap_wait() {
 
 # True when the tail deadline has not passed (or no stop has happened, so there is none).
 cap_tail_left() {
-  [[ -z "$CAP_TAIL_END" ]] || (( SECONDS < CAP_TAIL_END ))
+  [[ -z "$CAP_TAIL_CLOSE" ]] || (( SECONDS < CAP_TAIL_CLOSE ))
 }
 
 # Like cap_run_stoppable, but ended at the tail deadline instead of the stop flag. $1: file that receives its stdout, $2...: the command. Returns its status, or 124 when the deadline ended it with its whole tree.
@@ -196,6 +200,8 @@ cap_run_by_deadline() {
 # Runs bookkeeping that forks so it can always be ended: before a stop under cap_run_stoppable (the watchdog flag ends it), after one under cap_run_by_deadline (the tail deadline ends it). Its output is replayed with builtins when it finishes. A command a limit ended is said so. Always returns 0.
 cap_bounded() {
   local rc=0 l out="$LOG_DIR/bounded.out"
+  # Past the tail close nothing forks, so no call site after it reaches cap_kill_all.
+  if ! cap_tail_left; then echo "pre-push: no time left after the hard stop, so '$1' was skipped"; return 0; fi
   if [[ -z "$CAP_TAIL_END" ]]; then
     cap_run_stoppable "$ROOT_DIR" "$out" "$@" || rc=$?
   else

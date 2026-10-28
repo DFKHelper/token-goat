@@ -453,6 +453,8 @@ describe('the hard stop ends the legs of a real hook run', () => {
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.timedOut, r.out).toBe(false)
     expect(r.out).toContain("the hard stop left no time for 'node'")
+    // The bounded calls after the tail closed fork nothing: each says so, and none reaches the kill poll.
+    expect(r.out, 'a bounded call after the tail closed was not skipped').toMatch(/no time left after the hard stop, so '.+' was skipped/)
   })
 
   // A leg that survives the stop's own kill is still alive when the tail deadline has passed (the hung fork above runs it out), so the exit trap's kill runs with a deadline already past and must still end the leg and its tree.
