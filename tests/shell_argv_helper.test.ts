@@ -61,10 +61,12 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
       let message = ''
       try {
         // The reap is the real one, narrowed to the two pids this row wrote, with its process listing fixed: the row tests that the killed shell's children are ended, which the narrowed scan still does, and not the whole-table search that cost tens of seconds under load.
-        shRunAll(sh, ['token-goat a', loop, 'token-goat b'], { killWhen: () => fs.existsSync(file('kid')), reap: (s, token) => reapOwned(s, token, fixScan(REAP_SCRIPT, [file('pid'), file('kid')], file('listed'))) })
+        shRunAll(sh, ['token-goat a', loop, 'token-goat b'], { killWhen: () => fs.existsSync(file('kid')), reap: (s, token) => reapOwned(s, token, `rm() { printf '%s ' "$@" >> "${file('rmlog')}"; command rm "$@"; }\n${fixScan(REAP_SCRIPT, [file('pid'), file('kid')], file('listed'))}`) })
       } catch (err) {
         message = (err as Error).message
       }
+      // The fixture points the kin result at /dev/null; the reap's exit cleanup must not name it, or a run as root deletes the device node.
+      expect(fs.existsSync(file('rmlog')) ? fs.readFileSync(file('rmlog'), 'utf8') : '', 'the reap removed /dev/null at exit').not.toContain('/dev/null')
       expect(message).toMatch(/ran 1 of 3 commands: .*SIGTERM/)
       expect(message, message).not.toMatch(/cleanup/)
       const pids = ['pid', 'kid'].map((name) => fs.readFileSync(file(name), 'utf8').trim())
@@ -328,6 +330,44 @@ describe.skipIf(POSIX_SH === null)('shRunAll', () => {
     }
     expect(got.failure, 'the reap reported it could not end the run').toBeNull()
     expect(got.alive, 'the child that does not carry the token is still running after the reap returned').toBe(false)
+  })
+
+  // Provenance: HAND-DERIVED from the review of the commit that took the kin listing once per reap: the light scans (no token grep) had no other detector, so a tokenless child its owned parent forked after the first listing was in no listing and outlived the reap. The fork is ordered by events: the owned parent blocks on a FIFO the reap writes right after its first kin listing, and the reap then waits for the child's pid file before it goes on to stop the parent, so the child exists strictly after the first listing and before the reap's next scan.
+  it('ends a tokenless child its owned parent forked after the first kin listing', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-shlate-'))
+    const file = (name: string): string => path.join(dir, name).replace(/\\/g, '/')
+    const token = `${process.pid}-${randomBytes(8).toString('hex')}`
+    const watchdog = startWatchdog({ quietLimitMs: 30_000, label: 'owned parent never started' })
+    fs.writeFileSync(file('parent.sh'), [
+      'mkfifo "$2" "$4"',
+      'echo $$ > "$3"',
+      'read -r _ < "$2"',
+      `env -u ${OWNER_VAR} "$BASH" -c 'echo $$ > "$1"; read -r _ < "$2"' tg "$1" "$4" < /dev/null > /dev/null 2>&1`,
+    ].join('\n'))
+    const hook = '[ -z "$tg_found$tg_all" ] || tg_listed=1;'
+    const signal = `${hook} [ -n "$tg_listed" ] && [ -z "$tg_hs" ] && { tg_hs=1; echo go > "${file('go')}"; while [ ! -e "${file('kid')}" ]; do tg_tick; done; };`
+    const narrowed = narrowScan(REAP_SCRIPT, [file('parentpid')])
+    expect(narrowed.includes(hook), 'the reap script no longer marks its first kin listing where this row signals').toBe(true)
+    const script = narrowed.replace(hook, () => signal)
+    const parent = spawn(sh, [file('parent.sh'), file('kid'), file('go'), file('parentpid'), file('hold')], { stdio: 'ignore', windowsHide: true, env: { ...process.env, [OWNER_VAR]: token } })
+    let kid = ''
+    const got = { failure: null as string | null, alive: true }
+    try {
+      while (!fs.existsSync(file('parentpid')) || fs.readFileSync(file('parentpid'), 'utf8').trim() === '') await Promise.race([new Promise((resolve) => setTimeout(resolve, 50)), watchdog.failed])
+      watchdog.progress('owned parent running')
+      got.failure = reapOwned(sh, token, script)
+      kid = fs.existsSync(file('kid')) ? fs.readFileSync(file('kid'), 'utf8').trim() : ''
+      if (/^[1-9]\d*$/.test(kid)) got.alive = probeAlive(sh, `${SH_LIVE}; tg_live ${kid}`)
+    } finally {
+      watchdog.stop()
+      if (parent.exitCode === null) parent.kill()
+      if (/^[1-9]\d*$/.test(kid)) spawnSync(sh, ['-c', `kill -KILL ${kid}`], { windowsHide: true, timeout: 30_000 })
+      if (got.failure !== null || got.alive) reapOwned(sh, token)
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+    expect(kid, 'the owned parent never forked its child after the first kin listing').toMatch(/^[1-9]\d*$/)
+    expect(got.failure, 'the reap reported it could not end the run').toBeNull()
+    expect(got.alive, 'the tokenless child forked after the first kin listing is still running after the reap returned').toBe(false)
   })
 
   // Provenance: HAND-DERIVED from a captured scan: the grep the reap runs to list every process carrying the token was killed by SIGHUP after four seconds and printed nothing, and the reap read that as no owned process, so it ended with the run's processes still alive. The failure is forced by a `grep` function that dies (status 129, no output) on its first two calls, which are the two scans the old reap counted as clean; the owned parent stays blocked, so only a scan that is repeated finds it. The reap runs asynchronously under the stall-proof watchdog, fed by the scan calls and the files the test waits on.

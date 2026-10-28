@@ -116,7 +116,7 @@ export const REAP_SCRIPT = [
   TICK_FN,  `tg_needle="${OWNER_VAR}=$TG_REAP_TOKEN"`,
   // The kin listing goes through two files instead of a command substitution and a pipe, which cost a subshell and a third fork per scan; the files are removed at exit only if a scan made them.
   'tg_kf="${TMPDIR:-/tmp}/tg-kin.$$"; tg_ko="$tg_kf.o"',
-  `trap '[ ! -e "$tg_kf" ] && [ ! -e "$tg_ko" ] || rm -f "$tg_kf" "$tg_ko"' EXIT`,
+  `trap '[ ! -e "$tg_kf" ] && [ ! -e "$tg_kf.o" ] || rm -f "$tg_kf" "$tg_kf.o"' EXIT`,
   'tg_leaders=; tg_listed=',
   'tg_ps() { case $OSTYPE in msys* | cygwin*) ps -e ;; *) ps -A -o pid=,ppid=,pgid=,stat= ;; esac; }',
   `tg_kin() {`,
@@ -135,9 +135,9 @@ export const REAP_SCRIPT = [
   '  else',
   '    while read -r tg_p tg_rest; do case " $tg_rest " in *" $tg_needle "*) tg_found="$tg_found $tg_p" ;; esac; done < <(ps -wwAE -o pid= -o command= 2>/dev/null)',
   '  fi',
-  // The real listing is taken once per reap, by the first scan that has seen an owned process: it reads the whole process table, which cost seconds per pass on a loaded host and grew with its process count. Once the owned set is stopped it cannot fork, so later scans (the clean confirmations) rely on the token scan alone.
+  // The real listing is taken by the first scan that has seen an owned process, and again by every light scan (no token grep): a child its parent forked after the first listing is found only by listing again, while the full scans keep to the token scan, since the listing reads the whole process table and cost seconds per pass on a loaded host.
   '  : > "$tg_ko"',
-  '  [ -n "$tg_listed" ] || { tg_kin; [ -z "$tg_found$tg_all" ] || tg_listed=1; }',
+  '  [ -n "$tg_listed" ] && [ "$tg_light" != 1 ] || { tg_kin; [ -z "$tg_found$tg_all" ] || tg_listed=1; }',
   '  while read -r tg_k tg_p; do',
   '    case $tg_k in',
   '      L) tg_leaders="$tg_leaders $tg_p" ;;',
