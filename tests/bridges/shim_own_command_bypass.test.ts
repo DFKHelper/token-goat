@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CLAUDECODE_HOOK_SCRIPT } from '../../src/bridges/claudecode.js'
+import { isOwnTokenGoatCommand } from '../../src/hook_adapters.js'
 
 const tempDirs: string[] = []
 
@@ -47,12 +48,32 @@ function runShim(command: string, entryPath: string, cwd: string): { stdout: str
   return { stdout: res.stdout ?? '', invoked: existsSync(join(cwd, 'invoked.txt')) }
 }
 
+describe('isOwnTokenGoatCommand (resident-server copy)', () => {
+  // HAND-DERIVED inputs, same table as the shim copy above.
+  it.each([
+    ['token-goat symbol x', true],
+    ['cd /d && token-goat read foo', true],
+    ['node "/p/token-goat.mjs" read foo', true],
+    ['token-goat symbol x\nfind / -name a', false],
+    ['token-goat symbol x\r\nfind / -name a', false],
+    ['token-goat symbol x\rfind / -name a', false],
+    ['token-goat-x symbol y', false],
+    ['token-goat.sh symbol y', false],
+  ])('%j -> %s', (command, expected) => {
+    expect(isOwnTokenGoatCommand(command)).toBe(expected)
+  })
+})
+
 describe('Claude Code shim own-command bypass', () => {
   it.each([
     'token-goat read "src/foo.ts::bar"',
     'node /path/to/token-goat.mjs read foo',
     'TOKEN_GOAT_HOME=/x token-goat read foo',
     'cd /some/dir && token-goat read foo',
+    'token-goat',
+    'token-goat symbol x\n',
+    'cd /some/dir\ntoken-goat read foo',
+    'node "/path/to/token-goat.mjs" read foo',
   ])('never invokes the entry for %s', (command) => {
     const cwd = mkIsolated()
     const { entryPath, invokedPath } = writeFakeEntry(cwd)
@@ -66,6 +87,13 @@ describe('Claude Code shim own-command bypass', () => {
     ['a compound command that merely contains a token-goat call among others', 'token-goat read foo && rm -rf /'],
     ['an unrelated Bash command', 'ls -la'],
     ['a command that only mentions token-goat inside its own text', 'echo "run token-goat later"'],
+    // HAND-DERIVED inputs: a second line after an own-command first line is a separate command the bypass must not hide.
+    ['an own command followed by an LF-joined root walk', 'token-goat symbol x\nfind / -name a'],
+    ['an own command followed by a CRLF-joined root walk', 'token-goat symbol x\r\nfind / -name a'],
+    ['an own command followed by a lone-CR-joined root walk', 'token-goat symbol x\rfind / -name a'],
+    ['a name that only starts with token-goat-', 'token-goat-x symbol y'],
+    ['a script that only starts with token-goat.', 'token-goat.sh symbol y'],
+    ['node running a script that only starts with token-goat-', 'node /p/token-goat-x.mjs read foo'],
   ])('still invokes the entry for %s', (_label, command) => {
     const cwd = mkIsolated()
     const { entryPath } = writeFakeEntry(cwd)

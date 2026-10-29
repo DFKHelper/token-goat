@@ -126,12 +126,12 @@ export function isAsyncDetachEligible(event: string, input: string): boolean {
 }
 
 const TG_CD_PREFIX_RE = /^(?:cd\s+(?:"[^"]*"|'[^']*'|\S+)[ \t]*(?:&&|;|\r?\n)\s*)+/
-const TG_OWN_COMMAND_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:token-goat\b|node(?:\.exe)?\s+["']?(?:\S*[\\/])?token-goat(?:\.mjs)?["']?\b)/i
+const TG_OWN_COMMAND_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:token-goat(?=\s|$)|node(?:\.exe)?\s+["']?(?:\S*[\\/])?token-goat(?:\.mjs)?["']?(?=\s|$))/i
 
 export function isOwnTokenGoatCommand(cmd: unknown): boolean {
   if (typeof cmd !== 'string' || cmd.trim() === '') return false
   const body = (cmd.replace(TG_CD_PREFIX_RE, '') || cmd).trim()
-  if (/[;&|`]|\$\(/.test(body)) return false
+  if (/[;&|`\r\n]|\$\(/.test(body)) return false
   return TG_OWN_COMMAND_RE.test(body)
 }
 
