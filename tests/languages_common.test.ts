@@ -262,6 +262,61 @@ describe('countContentLines', () => {
   it('counts CRLF-terminated content without the phantom element', () => {
     expect(countContentLines('a\r\nb\r\n')).toBe(2)
   })
+
+  it('counts newline bytes without allocating a decoded string', () => {
+    expect(countContentLines(Buffer.from('a\nb\n'))).toBe(2)
+    expect(countContentLines(Buffer.from('a\nb'))).toBe(2)
+    expect(countContentLines(Buffer.from('a\r\nb\r\n'))).toBe(2)
+    expect(countContentLines(Buffer.from('\n'))).toBe(1)
+    expect(countContentLines(Buffer.from(''))).toBe(0)
+  })
+})
+
+describe('HTML style body boundaries', () => {
+  it('does not index CSS contents, comment text, or custom-element names as HTML headings', () => {
+    const content = [
+      '<!-- <style> commented-out opener -->',
+      '{% comment %}<style> liquid-commented opener{% endcomment %}',
+      '<style-guide><h2>Custom element heading</h2></style-guide>',
+      '<style>',
+      '.selector[id="fake-id"] .widget[class="fake-class"] { color: red; }',
+      '<h2>Fake heading</h2>',
+      '</style>',
+      '<h2>Real heading</h2>',
+    ].join('\n')
+
+    const { symbols, sections } = extractHtml(content, 'page.html')
+
+    expect(symbols.map((symbol) => symbol.name)).not.toContain('fake-id')
+    expect(symbols.map((symbol) => symbol.name)).not.toContain('fake-class')
+    expect(sections.map((section) => section.heading)).toEqual(['Custom element heading', 'Real heading'])
+  })
+
+  it('does not treat style-shaped text in markup boundaries as a style body', () => {
+    const content = [
+      '<textarea><style></textarea>',
+      '<h2>After RCDATA</h2>',
+      '<!DOCTYPE html [<!ENTITY x "<style>">]>',
+      '<h2>After declaration</h2>',
+      '<x-widget_part data-example="<style>"><h2>After custom tag</h2>',
+      '<svg><style/><h2>After SVG style</h2></svg>',
+    ].join('\n')
+
+    const { sections } = extractHtml(content, 'page.html')
+
+    expect(sections.map((section) => section.heading)).toEqual([
+      'After RCDATA',
+      'After declaration',
+      'After custom tag',
+      'After SVG style',
+    ])
+  })
+
+  it('keeps Liquid dependencies inside style bodies visible to the Liquid extractor', () => {
+    const { imports } = extractLiquid("<style>{% render 'css-variables' %}</style>", 'theme.liquid')
+
+    expect(imports.some((entry) => entry.kind === 'liquid_render' && entry.target === 'css-variables')).toBe(true)
+  })
 })
 
 describe('flat-section adapters never end a symbol past EOF', () => {

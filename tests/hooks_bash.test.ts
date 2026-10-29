@@ -48,7 +48,7 @@ vi.mock('../src/constants.js', async (importOriginal) => {
 const _testConfigPath = tempConfigPath('tg-hooks-bash-config-test.toml')
 const _testDataDir = mkdtempSync(join(tmpdir(), 'tg-hooks-bash-data-'))
 
-import { preBashHandler } from '../src/hooks_bash.js'
+import { COMPRESS_TIMEOUT_MAX, preBashHandler } from '../src/hooks_bash.js'
 import { loadHiddenRuleCheck, resetPermissionSourceCache } from '../src/rewrite_permission.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import {
@@ -75,7 +75,7 @@ import { clearModuleCaches } from '../src/reset.js'
 import { resolveIndexPath, normalizePath } from '../src/paths.js'
 import { canRunPowerShell } from '../src/shell.js'
 import * as pathsModule from '../src/paths.js'
-import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
+import { defaultConfig, invalidateConfigCache, numericFieldBounds, saveConfig } from '../src/config.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { getDirtyPaths, clearDirtyQueue } from '../src/hooks_index.js'
 import { foldPath } from '../src/util.js'
@@ -4521,6 +4521,77 @@ describe('preBashHandler — config-driven bash_compress.timeout_seconds', () =>
     if (result.hookType === 'rewriteInput') {
       expect(String(result.updatedInput['command'])).toContain('--timeout 42')
     }
+  })
+})
+
+// Regression: the wrap ignored the Bash call's own timeout, so `run_in_background` and a long foreground `timeout` were cut at the configured 600 s. A background call takes the config's 7200 s bound (config.ts bash_compress.timeout_seconds max); a foreground call takes max(configured, its timeout in ms rounded up to seconds), never past that bound.
+describe('preBashHandler — compress --timeout follows the Bash call (run_in_background / timeout)', () => {
+  afterEach(() => {
+    invalidateConfigCache()
+    try {
+      unlinkSync(_testConfigPath)
+    } catch {
+      // ok — may not exist
+    }
+  })
+
+  function wrappedTimeout(toolInput: Record<string, unknown>): string {
+    const cfg = defaultConfig()
+    cfg.bash_compress.timeout_seconds = 42
+    saveConfig(cfg)
+    const event = makeHookEvent({
+      toolName: 'Bash',
+      toolInput: { command: 'rg "TODO" src/foo.ts', ...toolInput },
+      sessionId: 'test-session',
+      agentId: undefined,
+      raw: {},
+    })
+    const result = preBashHandler(event)
+    expect(result.hookType).toBe('rewriteInput')
+    if (result.hookType !== 'rewriteInput') return ''
+    return String(result.updatedInput['command'])
+  }
+
+  it('pins the 7200 s background bound equal to the config upper bound', () => {
+    expect(numericFieldBounds('bash_compress.timeout_seconds')?.max).toBe(COMPRESS_TIMEOUT_MAX)
+  })
+
+  it('gives a run_in_background call the 7200 s config bound', () => {
+    expect(wrappedTimeout({ run_in_background: true })).toContain(' --timeout 7200 ')
+  })
+
+  it('raises a foreground call to its own 900000 ms timeout as 900 s', () => {
+    expect(wrappedTimeout({ timeout: 900000 })).toContain(' --timeout 900 ')
+  })
+
+  it('rounds a foreground millisecond timeout up to whole seconds', () => {
+    expect(wrappedTimeout({ timeout: 900001 })).toContain(' --timeout 901 ')
+  })
+
+  it('keeps the configured timeout when a foreground call asks for less', () => {
+    expect(wrappedTimeout({ timeout: 5000 })).toContain(' --timeout 42 ')
+  })
+
+  it('keeps the configured timeout when neither field is present', () => {
+    expect(wrappedTimeout({})).toContain(' --timeout 42 ')
+  })
+
+  it('ignores a non-numeric, zero or negative timeout', () => {
+    expect(wrappedTimeout({ timeout: '900000' })).toContain(' --timeout 42 ')
+    expect(wrappedTimeout({ timeout: 0 })).toContain(' --timeout 42 ')
+    expect(wrappedTimeout({ timeout: -5 })).toContain(' --timeout 42 ')
+  })
+
+  it('clamps a foreground timeout beyond the bound to 7200 s', () => {
+    expect(wrappedTimeout({ timeout: 99_999_999_000 })).toContain(' --timeout 7200 ')
+  })
+
+  it('reads timeout only from a foreground call (run_in_background false)', () => {
+    expect(wrappedTimeout({ run_in_background: false, timeout: 900000 })).toContain(' --timeout 900 ')
+  })
+
+  it('gives a background call the bound even when it also carries a timeout', () => {
+    expect(wrappedTimeout({ run_in_background: true, timeout: 900000 })).toContain(' --timeout 7200 ')
   })
 })
 

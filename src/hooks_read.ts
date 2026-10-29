@@ -401,7 +401,7 @@ function symbolsMeetingRange(
   return found
 }
 
-/** Names up to 3 real symbols indexed for `filePath` instead of the bare `::Symbol`/`::SymbolName` placeholder a deny/hint text would otherwise print even when the file has none. When `range` is given (a ranged Read's offset/limit), symbols overlapping those lines are preferred over the file's first few. Falls back to a line-range read (`range` given) or `outline` (whole-file) when the file has no indexed symbols at all, since a bare `::Symbol` read would just fail. When the top pick is a large symbol (see {@link isLargeSymbolSpan}), the hint points at a `grep -C --symbol` slice (or `scope` to confirm the enclosing symbol) instead of naming it for a whole-body read. */
+/** Names up to 3 real symbols indexed for `filePath` instead of the bare `::Symbol`/`::SymbolName` placeholder a deny/hint text would otherwise print even when the file has none. It attempts the synchronous stale-index heal before querying so a newly created or edited file does not look symbol-less while the worker is behind. When `range` is given (a ranged Read's offset/limit), symbols overlapping those lines are preferred over the file's first few. Falls back to a line-range read (`range` given) or `outline` (whole-file) when parsing still yields no indexed symbols. When the top pick is a large symbol (see {@link isLargeSymbolSpan}), the hint points at a `grep -C --symbol` slice (or `scope` to confirm the enclosing symbol) instead of naming it for a whole-body read. */
 export function realSymbolReadHint(filePath: string, shown: string, range?: { start: number; end: number }): string {
   let candidates: { name: string; lineStart: number; lineEnd: number }[]
   try {
@@ -615,6 +615,18 @@ function knownChangedSinceRead(event: HookEvent, normalized: string): boolean {
   return rereadIdentity(sessionStateKey(event), normalized, getSessionFileEntry(normalized)).identity === 'changed'
 }
 
+function hasHighIouOverlap(span: readonly [number, number], priorRanges: ReadonlyArray<readonly [number, number]>): boolean {
+  const [start, end] = span
+  return priorRanges.some(([priorStart, priorEnd]) => {
+    // Deliberate same-anchor expansions (>20 lines) are managed by range-evasion policy
+    if (priorStart === start && end - priorEnd > 20) return false
+    const intersection = Math.max(0, Math.min(end, priorEnd) - Math.max(start, priorStart) + 1)
+    if (intersection === 0) return false
+    const union = Math.max(end, priorEnd) - Math.min(start, priorStart) + 1
+    return intersection / union > 0.6
+  })
+}
+
 function preReadHandlerInner(event: HookEvent): HookOutput {
   let filePath = getFilePath(event)
   if (filePath === undefined && event.toolName === 'Grep') {
@@ -633,20 +645,44 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const rangeSpan = rangeWindow.isExplicitSlice ? requestedSliceSpan(rangeWindow) : undefined
   const rangeKey = foldPath(normalized)
   let rangeIdentity: { size: number; mtimeMs: number } | undefined
+  let exactRangeRedirectKey: string | undefined
   if (event.toolName !== 'Grep' && rangeSpan !== undefined && loadConfig().hints.reread_deny) {
     // Identity changes invalidate the lock before any early-return hint or containing-range check.
     rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
     clearReadRangeIfChanged(rangeKey, rangeIdentity)
+    exactRangeRedirectKey = 'range-lock-exact-served:' + getCompactedAt() + ':' + rangeKey + ':' +
+      getReadRangeResetAt(rangeKey) + ':' + rangeSpan.start + ':' + rangeSpan.end
     if (getReadRangeDenials(rangeKey).length > 0) {
       const resetAt = getReadRangeResetAt(rangeKey)
       const rangeBreakerKey = 'range-lock-breaker:' + getCompactedAt() + ':' + rangeKey + ':' + resetAt
+      const alreadyServed = alreadyServedOutputId(event, normalized)
+      if (alreadyServed !== null && exactRangeRedirectKey !== undefined) {
+        if (wasHintShown(exactRangeRedirectKey)) {
+          recordActualRead(event, normalized)
+          recordActualSlice(event, normalized, hashNow)
+          return quietContextOutput(
+            '[tg] This exact line range was already served in `token-goat bash-output ' + alreadyServed.id +
+            '`. Read allowed after the prior redirect to stop a retry loop; reuse that output when possible.',
+            [shown],
+          )
+        }
+        markHintShown(exactRangeRedirectKey)
+        const blocked = counterfactualCredit(alreadyServed.bytes)
+        recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          'Every line in this exact range was already served in this session. Recall it with `token-goat bash-output ' +
+          alreadyServed.id + '`. Do not retry with shifted ranges.',
+        )
+      }
       if (wasHintShown(rangeBreakerKey)) {
         recordActualRead(event, normalized)
         recordActualSlice(event, normalized, hashNow)
         return quietContextOutput(
           '[tg] Line-range read circuit breaker: read allowed after repeated denials. ' +
           'Run `token-goat read ' + quotedArg(shown + '@' + rangeSpan.start + '-' + rangeSpan.end) + '` for this window, ' +
-          'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time.',
+          'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time. ' +
+          'For ongoing exploration, delegate bounded symbol or code extraction to an explore agent (specifically Luna, else Haiku).',
           [shown],
         )
       }
@@ -668,7 +704,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       return quietContextOutput(
         '[tg] Line-range read circuit breaker: read allowed after repeated denials. ' +
         'Run `token-goat read ' + quotedArg(shown + '@' + rangeSpan.start + '-' + rangeSpan.end) + '` for this window, ' +
-        'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time.',
+        'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time. ' +
+        'For ongoing exploration, delegate bounded symbol or code extraction to an explore agent (specifically Luna, else Haiku).',
         [shown],
       )
     }
@@ -1106,6 +1143,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Grep's cost/relevance depends on its pattern, not just the directory/file it's scoped to — re-scoping several Greps at the same path with different patterns is a legitimate workflow, so Grep is exempt from the count-based re-read dedup below (unlike a repeated whole-file Read).
   if (event.toolName !== 'Grep' && !isImagePath(normalized) && wasFileReadThisSession(normalized)) {
     const entry = getSessionFileEntry(normalized)
+    const editedPagingHint = entry?.wasEdited === true
+      ? ' Recently edited -- run `git diff HEAD -- ' + quotedArg(shown) + '` or `token-goat changed --symbol` to inspect recent changes.'
+      : ''
     // Both counts are epoch-scoped: a read from before the last compaction no longer describes what the model currently holds, so it neither counts toward a deny nor shows in the "N reads" a deny quotes. `fullReads` is whole-file re-reads only -- a file touched by nothing but a few narrow offset/limit/view-range slices has never actually been read in full, so the count-based denies below (which assume every prior touch handed over the whole file) must gate on it, not on `reads`, which a slice bumps too.
     const counts = entry !== undefined ? epochReadCounts(entry) : { reads: 1, fullReads: 0 }
     const reads = Math.max(1, counts.reads)
@@ -1150,7 +1190,10 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const alreadyServed = alreadyServedOutputId(event, normalized)
       if (alreadyServed !== null && !fileAlreadyDenied) {
         markHintShown(fileRereadDenyKey)
-        if (rangeSpan !== undefined) lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        if (rangeSpan !== undefined) {
+          lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+          if (exactRangeRedirectKey !== undefined) markHintShown(exactRangeRedirectKey)
+        }
         // Credit the bytes this read would actually have delivered, not the whole file: a Read carrying offset/limit was only ever going to hand over its window, and crediting the file would book bytes nothing was ever going to spend.
         const blocked = counterfactualCredit(alreadyServed.bytes)
         recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
@@ -1175,6 +1218,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           const denyRangeReread = (): HookOutput => {
             markHintShown(fileRereadDenyKey)
             lockReadRange(rangeKey, [start, end], rangeIdentity)
+            if (alreadyServed !== null && exactRangeRedirectKey !== undefined) {
+              markHintShown(exactRangeRedirectKey)
+            }
             const blocked = counterfactualCredit(rereadCreditBasis)
             recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
             recordStat('session_hint', 0, 0)
@@ -1231,11 +1277,21 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           (isSourceExt ? '' : ' ' + surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)))
         return denyOutput(
           'Sequential line-range paging detected on ' + readSubject(normalized, hint) + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
-          ' Inspect structure directly without manual chunk paging. Further Read/view line ranges of this file will be denied.',
+          editedPagingHint +
+          ' Inspect structure directly without manual chunk paging. Delegate bounded symbol or code extraction to an explore agent (specifically GPT-6 Luna, else Haiku or equivalent) rather than getting stuck in micro-paging loops. Further Read/view line ranges of this file will be denied.',
+        )
+      }
+      const recentRanges = getRecentReadRanges(rangeKey)
+      if (rangeSpan !== undefined && hasHighIouOverlap([rangeSpan.start, rangeSpan.end], recentRanges)) {
+        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(
+          'deny: overlapping line-range paging detected. Use ' +
+          realSymbolReadHint(normalized, shown, rangeSpan) + ' or delegate bounded extraction to an explore subagent.',
         )
       }
       if (rangeSpan !== undefined && evaluateRangeEvasion({
-        span: [rangeSpan.start, rangeSpan.end], served: getRecentReadRanges(rangeKey),
+        span: [rangeSpan.start, rangeSpan.end], served: recentRanges,
         denied: getReadRangeDenials(rangeKey),
       }) !== null) {
         lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
@@ -1310,7 +1366,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const isSequentialNote = activeSpan !== undefined && isSequentialPagingChain([...activeRanges, [activeSpan.start, activeSpan.end]], 3)
     const pagingNote = (pagingWindow.isExplicitSlice && activeRanges.length >= 2 && isSequentialNote)
       ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + quotedArg(shown) + '` or ' +
-        realSymbolReadHint(normalized, shown, activeSpan) + '.'
+        realSymbolReadHint(normalized, shown, activeSpan) + ', or delegate bounded extraction to an explore agent (specifically Luna, else Haiku).' + editedPagingHint
       : ''
     // A ranged Read whose window touches no line served before, with no whole-file read behind it, hands over lines the model has never seen: the already-read note would be false.
     const windowIsNew = isUnseenWindow(pagingWindow, activeRanges, fullReads)
@@ -1495,6 +1551,9 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const target = getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? resolveEventPath(event, rawGrepPath) : undefined)
   if (preToolPathDeclined(event, target)) return passOutput()
   const before = event.toolName === 'Read' && target !== undefined ? getSessionFileEntry(target) : undefined
+  // Let the content-aware policy decide re-reads. A second count-only gate here
+  // bypasses changed-file checks, exact-output redirects, configuration, and the
+  // range/whole-file circuit breakers that prevent repeated denial loops.
   const output = preReadHandlerInner(event)
   // Every hint here names a token-goat command that reads the file itself, so on a path a deny or ask rule covers it would lead around the rule: Claude Code answers the call on its own.
   if (output.hookType !== 'pass' && target !== undefined && readHintCrossesRule(detectHarness(), getCwd(event) ?? process.cwd(), [target])) return passOutput()

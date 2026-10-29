@@ -612,6 +612,27 @@ export async function subagentReportRewriteHandler(event: HookEvent): Promise<Ho
   }
 }
 
+// A background spawn's result is its launch ack (it echoes the prompt), not a report.
+const ASYNC_ACK_HEAD_CHARS = 200
+const ASYNC_ACK_IS_ASYNC_RE = /"isAsync"\s*:\s*true/
+const ASYNC_ACK_STATUS_RE = /"status"\s*:\s*"async_launched"/
+// Non-JSON text is not an object, so it returns null here and takes the text fallback in isAsyncAck.
+function parseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
+}
+// A parsed object is judged by its fields, so key order and whitespace cannot matter; anything else falls back to both markers near its start.
+function isAsyncAck(resultText: string): boolean {
+  const trimmed = resultText.trim()
+  const fields = parseJsonObject(trimmed)
+  if (fields !== null) return fields['isAsync'] === true && fields['status'] === 'async_launched'
+  const head = trimmed.slice(0, ASYNC_ACK_HEAD_CHARS)
+  return ASYNC_ACK_IS_ASYNC_RE.test(head) && ASYNC_ACK_STATUS_RE.test(head)
+}
 export async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
   try {
     if (!isAgentTool(event.toolName) || !event.sessionId) return passOutput()
@@ -632,7 +653,7 @@ export async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
     const receipt = (await loadAgentReceipt()).takeAgentReceipt(event.sessionId, resultText)
     if (receipt !== null) recordStat('agent_receipt', 0, 0, undefined, 'agent')
     const spawnAdvisory = [buildUnrestrictedSpawnAdvisory(event.toolInput, getCwd(event)), receipt ?? ''].filter((part) => part !== '').join('\n')
-    if (!resultText || resultText.length < agentReportCfg.min_bytes) {
+    if (!resultText || resultText.length < agentReportCfg.min_bytes || isAsyncAck(resultText)) {
       return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     }
     const id = storeMcpOutput(event.sessionId, event.toolName ?? 'Agent', event.toolInput, resultText)

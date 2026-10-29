@@ -7,7 +7,7 @@ import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
 import { querySymbols, countSymbols, queryRefCounts } from './index_reader.js'
 import { SKELETON_SYMBOL_CAP, globalDbPath } from './constants.js'
-import { compileGrepMatcher, countNoun } from './util.js'
+import { compileGrepMatcher, countContentLines, countNoun } from './util.js'
 import { filtersFilteredToEmptyNotice } from './filter_notice.js'
 import { resolveProjectRoot, getDisplayRoot } from './project.js'
 import { isVirtualIndexedPath, NOTEBOOK_CELL_LINES_SUFFIX } from './indexed_source.js'
@@ -56,8 +56,7 @@ function fileLineCount(resolved: string, symbolExtent: number): number {
   try {
     const text = indexedSourceText(resolved, fs.readFileSync(resolved, 'utf8'))
     if (text === '') return symbolExtent
-    const lines = text.split('\n')
-    return Math.max(symbolExtent, text.endsWith('\n') ? lines.length - 1 : lines.length)
+    return Math.max(symbolExtent, countContentLines(text))
   } catch {
     return symbolExtent
   }

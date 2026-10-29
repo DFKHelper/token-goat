@@ -2,8 +2,149 @@
 
 import type { SymbolEntry } from '../parser_types.js'
 import type { MiniSection, AdapterImport } from './common.js'
-import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches} from './common.js'
+import { buildLineIndex, offsetToLine, assignFlatEndLines, maskHtmlNoise, findHtmlHeadingMatches } from './common.js'
 import { countContentLines } from '../util.js'
+
+function htmlTagEnd(text: string, start: number): number {
+  let quote = ''
+  for (let i = start; i < text.length; i++) {
+    const char = text[i]
+    if (quote !== '') {
+      if (char === quote) quote = ''
+    } else if (char === '"' || char === "'") {
+      quote = char
+    } else if (char === '>') {
+      return i + 1
+    }
+  }
+  return -1
+}
+
+function htmlTagAt(text: string, start: number): { name: string; end: number; closing: boolean } | null {
+  if (text[start] !== '<') return null
+  let nameStart = start + 1
+  const closing = text[nameStart] === '/'
+  if (closing) nameStart++
+  if (!/[a-z]/i.test(text[nameStart] ?? '')) return null
+  while (nameStart < text.length && !/[ \t\n\r\f/>]/.test(text[nameStart]!)) nameStart++
+  return {
+    name: text.slice(start + (closing ? 2 : 1), nameStart).toLowerCase(),
+    end: htmlTagEnd(text, nameStart),
+    closing,
+  }
+}
+
+function findRawHtmlClose(text: string, start: number, name: string): { start: number; end: number } | null {
+  let cursor = start
+  while (cursor < text.length) {
+    const candidate = text.indexOf('<', cursor)
+    if (candidate < 0) return null
+    if (
+      text[candidate + 1] === '/' &&
+      text.slice(candidate + 2, candidate + name.length + 2).toLowerCase() === name &&
+      /[ \t\n\r\f/>]/.test(text[candidate + name.length + 2] ?? ' ')
+    ) {
+      const end = htmlTagEnd(text, candidate + name.length + 2)
+      return end < 0 ? null : { start: candidate, end }
+    }
+    cursor = candidate + 1
+  }
+  return null
+}
+
+function skipHtmlDelimited(text: string, start: number, close: string): number {
+  const end = text.indexOf(close, start)
+  return end < 0 ? text.length : end + close.length
+}
+
+const LIQUID_COMMENT_OPEN_RE = /\{%-?\s*comment\s*-?%\}/iy
+const LIQUID_COMMENT_CLOSE_RE = /\{%-?\s*endcomment\s*-?%\}/iy
+
+function skipLiquidComment(text: string, start: number): number {
+  LIQUID_COMMENT_OPEN_RE.lastIndex = start
+  const open = LIQUID_COMMENT_OPEN_RE.exec(text)
+  if (open?.index !== start) return start
+  let cursor = LIQUID_COMMENT_OPEN_RE.lastIndex
+  while (cursor < text.length) {
+    const candidate = text.indexOf('{%', cursor)
+    if (candidate < 0) return text.length
+    LIQUID_COMMENT_CLOSE_RE.lastIndex = candidate
+    const close = LIQUID_COMMENT_CLOSE_RE.exec(text)
+    if (close?.index === candidate) return LIQUID_COMMENT_CLOSE_RE.lastIndex
+    cursor = candidate + 2
+  }
+  return text.length
+}
+
+/** Blank CSS bodies while preserving tags, newlines, and source offsets. */
+export function maskHtmlStyleBodies(text: string): string {
+  const ranges: Array<{ start: number; end: number }> = []
+  let cursor = 0
+  let svgDepth = 0
+  while (cursor < text.length) {
+    if (text.startsWith('<!--', cursor)) {
+      cursor = skipHtmlDelimited(text, cursor + 4, '-->')
+      continue
+    }
+    if (text.startsWith('<![CDATA[', cursor)) {
+      cursor = skipHtmlDelimited(text, cursor + 9, ']]>')
+      continue
+    }
+    if (text.startsWith('{%', cursor)) {
+      const end = skipLiquidComment(text, cursor)
+      if (end !== cursor) {
+        cursor = end
+        continue
+      }
+    }
+    if (text.startsWith('<!', cursor) || text.startsWith('<?', cursor)) {
+      const end = htmlTagEnd(text, cursor + 2)
+      if (end < 0) break
+      cursor = end
+      continue
+    }
+    const tag = htmlTagAt(text, cursor)
+    if (tag === null) {
+      cursor++
+      continue
+    }
+    if (tag.end < 0) break
+    if (tag.closing) {
+      if (tag.name === 'svg') svgDepth = Math.max(0, svgDepth - 1)
+      cursor = tag.end
+      continue
+    }
+    const selfClosing = /\/\s*>$/.test(text.slice(cursor, tag.end))
+    if (tag.name === 'svg') {
+      if (!selfClosing) svgDepth++
+      cursor = tag.end
+      continue
+    }
+    if (tag.name === 'plaintext') break
+    if (tag.name === 'style' && svgDepth > 0 && selfClosing) {
+      cursor = tag.end
+      continue
+    }
+    if (tag.name === 'script' || tag.name === 'style' || tag.name === 'title' || tag.name === 'textarea') {
+      const close = findRawHtmlClose(text, tag.end, tag.name)
+      if (tag.name === 'style') ranges.push({ start: tag.end, end: close?.start ?? text.length })
+      if (close === null) break
+      cursor = close.end
+      continue
+    }
+    cursor = tag.end
+  }
+
+  if (ranges.length === 0) return text
+  const chunks: string[] = []
+  let copiedThrough = 0
+  for (const range of ranges) {
+    chunks.push(text.slice(copiedThrough, range.start), text.slice(range.start, range.end).replace(/[^\n]/g, ' '))
+    copiedThrough = range.end
+  }
+  chunks.push(text.slice(copiedThrough))
+  return chunks.join('')
+}
 
 export interface HtmlSection {
   readonly heading: string
@@ -158,12 +299,12 @@ export function extractHtml(
   const symbols: SymbolEntry[] = []
   const imports: AdapterImport[] = []
   const sections: MiniSection[] = []
-  // Blank out comments, <script> bodies, and CDATA sections (offset-preserving; see maskHtmlNoise in common.ts) before running any extraction regexes, so commented-out markup, JS inside a <script> tag, and CDATA payloads aren't indexed as live symbols/sections/imports and don't corrupt section line-range bookkeeping for the real markup that follows.
-  const code = maskHtmlNoise(content)
+  // Blank out comments, <script>/<style> bodies, and CDATA sections before extraction so embedded code cannot produce HTML symbols or sections.
+  const code = maskHtmlNoise(maskHtmlStyleBodies(content))
   const lineIndex = buildLineIndex(code)
 
   // Headings → sections
-  for (const hm of findHtmlHeadingMatches(content)) {
+  for (const hm of findHtmlHeadingMatches(code)) {
     if (hm.heading) {
       const line = offsetToLine(lineIndex, hm.offset)
       sections.push({ heading: hm.heading, level: hm.level, line, endLine: line })

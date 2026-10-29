@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS cache_recall (
   UNIQUE(cache_type, entry_id)
 );
 CREATE INDEX IF NOT EXISTS idx_cache_recall_type ON cache_recall(cache_type);
+CREATE INDEX IF NOT EXISTS idx_cache_recall_type_stored ON cache_recall(cache_type, stored_at DESC);
 
 -- Per-emission ledger for 'token-goat hint-stats' (hint_stats.ts). One row per hint
 -- emission event (a hook returning a 'context' HookOutput classified as a discretionary
@@ -197,6 +198,7 @@ CREATE TABLE IF NOT EXISTS hint_emissions (
 );
 CREATE INDEX IF NOT EXISTS idx_hint_emissions_category ON hint_emissions(category);
 CREATE INDEX IF NOT EXISTS idx_hint_emissions_session_pending ON hint_emissions(session_id, resolved);
+CREATE INDEX IF NOT EXISTS idx_hint_emissions_cat_harness ON hint_emissions(category, harness);
 
 -- Manual efficacy votes for a hint category (token-goat hint-stats --mark-effective/--mark-ineffective),
 -- kept separate from hint_emissions' automatic acted_on signal so the two are never silently

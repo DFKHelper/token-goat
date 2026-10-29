@@ -44,10 +44,12 @@ import {
   cmdHtmlLint,
   cmdHtmlOutline,
   cmdHtmlQuery,
+  cmdPhpLint,
   cmdJsonOutline,
   cmdJsonQuery,
   cmdOpenApiOp,
   cmdOpenApiOutline,
+  PHP_LINT_CONFIG,
   cmdXmlOutline,
   cmdXmlQuery,
   cmdYamlOutline,
@@ -557,6 +559,17 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .option('--json', 'emit the lint report as JSON instead of text')
     .option('--strict', 'treat warnings as errors (exit code 1)')
     .action(guard(cmdHtmlLint))
+
+  program
+    .command('php-lint [paths...]')
+    .description('run PHP runtime syntax checks without indexing files (defaults to the current directory)')
+    .option('--php <executable>', `PHP runtime executable (default: ${PHP_LINT_CONFIG.executable})`, PHP_LINT_CONFIG.executable)
+    .option(
+      '--jobs <count>',
+      `parallel PHP checks (1-${PHP_LINT_CONFIG.maxJobs}; default ${PHP_LINT_CONFIG.defaultJobs})`,
+      String(PHP_LINT_CONFIG.defaultJobs),
+    )
+    .action(guard(cmdPhpLint))
 
   program
     .command('openapi-outline <file>')

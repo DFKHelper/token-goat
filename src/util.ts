@@ -618,11 +618,20 @@ export function excludeTestsHiddenNote(count: number): string {
   return `${count} in test ${count === 1 ? 'file' : 'files'} hidden by --exclude-tests`
 }
 
-/** Count the lines of content actually present in `content`. `content.split('\n').length` counts a phantom final element for any file that ends in a newline, and essentially every real file does. Anything that hands that number on as a line count -- a symbol's end line, a "N lines total" preview, an "showing X of N lines" marker -- then claims one line that does not exist. */
-export function countContentLines(content: string): number {
-  if (content === '') return 0
-  const n = content.split('\n').length
-  return content.endsWith('\n') ? n - 1 : n
+/** Count the lines of content actually present in a string or UTF-8 byte buffer without allocating a split array. A trailing newline terminates the last line; it does not start a phantom one. */
+export function countContentLines(content: string | Uint8Array): number {
+  if (content.length === 0) return 0
+  let newlines = 0
+  if (typeof content === 'string') {
+    for (let i = 0; i < content.length; i++) {
+      if (content.charCodeAt(i) === 10) newlines++
+    }
+    return content.charCodeAt(content.length - 1) === 10 ? newlines : newlines + 1
+  }
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === 10) newlines++
+  }
+  return content[content.length - 1] === 10 ? newlines : newlines + 1
 }
 
 /** Appends every item of `items` to `target`, the way `target.push(...items)` reads but without passing the items as call arguments. The spread form is a function call with one argument per item, so it fails with `RangeError: Maximum call stack size exceeded` somewhere around 125,000 items -- a limit on the engine's call stack, not on memory, and low enough to be reached by ordinary files. A 5 MB JSON array, a 300,000-element XML document and a long Word document each crashed a command that exists to read exactly those files without loading them whole. Use this wherever the number of items comes from a file rather than from a fixed-size slice. */
@@ -778,4 +787,3 @@ export function hookPowershellCommand(scriptPath: string, event: string): string
   const entryArg = entryPath ? ` ${quotePowershellPath(entryPath)}` : ''
   return `${quotePowershellPath(process.execPath)} ${quotePowershellPath(scriptPath)} ${event}${entryArg}`
 }
-

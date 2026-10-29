@@ -11,6 +11,7 @@ import { countNoun, decodeSource, statSize, toKB } from './util.js'
 import { TIMESTAMP_TICK_SEC } from './fingerprint.js'
 import { load as snapshotLoad } from './snapshots.js'
 import { BYTE_RANGE_ADVICE } from './hints/file_type_handler.js'
+import { readWindowFromDiskStreaming, STREAMING_READ_MIN_BYTES } from './hooks_read_window_stream.js'
 
 /** A line of a Read result: its number in the file, its text, and the numbered form it occupies in the delivered output. */
 export interface NumberedRow {
@@ -443,14 +444,33 @@ export function readWindowFromDisk(event: HookEvent, normalized: string): string
   const onDisk = hostPathOfIndexKey(normalized)
   const size = statSize(onDisk)
   if (size === null || size > SLICE_ESTIMATE_SCAN_CAP_BYTES) return null
+  const window = size > STREAMING_READ_MIN_BYTES ? readRequestedSliceWindow(event) : undefined
+  if (window?.limit !== undefined && window.limit > 0) {
+    const start = window.offset !== undefined && window.offset >= 1 ? window.offset : 1
+    return readWindowFromDiskStreaming(onDisk, start, window.limit)
+  }
   const text = decodeSource(fs.readFileSync(onDisk))
-  const window = readRequestedSliceWindow(event)
-  const start = window.offset !== undefined && window.offset >= 1 ? window.offset : 1
-  const limit = window.limit
+  const resolvedWindow = window ?? readRequestedSliceWindow(event)
+  const start = resolvedWindow.offset !== undefined && resolvedWindow.offset >= 1 ? resolvedWindow.offset : 1
+  const limit = resolvedWindow.limit
   if (start === 1 && (limit === undefined || limit <= 0)) return text
-  const lines = text.split('\n')
-  const from = start - 1
-  return (limit === undefined || limit <= 0 ? lines.slice(from) : lines.slice(from, from + limit)).join('\n')
+
+  let sliceStart = 0
+  for (let line = 1; line < start; line++) {
+    const newline = text.indexOf('\n', sliceStart)
+    if (newline === -1) return ''
+    sliceStart = newline + 1
+  }
+  if (limit === undefined || limit <= 0) return text.slice(sliceStart)
+
+  let cursor = sliceStart
+  for (let line = 0; line < limit; line++) {
+    const newline = text.indexOf('\n', cursor)
+    if (newline === -1) return text.slice(sliceStart)
+    if (line === limit - 1) return text.slice(sliceStart, newline)
+    cursor = newline + 1
+  }
+  return text.slice(sliceStart)
 }
 
 export const READ_NUMBERED_ROW_RE = /^\s*(\d+)[\t→](.*)$/

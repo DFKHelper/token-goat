@@ -4232,6 +4232,37 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(r3.hookType).toBe('context')
     })
 
+    it('redirects an exact served range once, then allows only that same range to break the retry loop', () => {
+      const p = path.join(os.tmpdir(), `tg-exact-range-breaker-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
+      fs.writeFileSync(p, Array.from({ length: 30 }, (_, i) => `const x${i} = "${'x'.repeat(32)}";`).join('\n'))
+      tmpFiles.push(p)
+      const exactRead = makeHookEvent({
+        toolName: 'Read',
+        toolInput: { file_path: p, offset: 1, limit: 20 },
+        sessionId: 'test',
+      })
+
+      expect(preReadHandler(exactRead).hookType).not.toBe('deny')
+      postReadHandler(exactRead)
+
+      const redirect = preReadHandler(exactRead)
+      expect(redirect.hookType).toBe('deny')
+      if (redirect.hookType === 'deny') expect(redirect.message).toContain('token-goat bash-output ')
+
+      const sameRangeRetry = preReadHandler(exactRead)
+      expect(sameRangeRetry.hookType).toBe('context')
+      if (sameRangeRetry.hookType === 'context') {
+        expect(sameRangeRetry.context).toContain('Read allowed after the prior redirect')
+      }
+
+      const shiftedRange = preReadHandler(makeHookEvent({
+        toolName: 'Read',
+        toolInput: { file_path: p, offset: 2, limit: 20 },
+        sessionId: 'test',
+      }))
+      expect(shiftedRange.hookType).toBe('deny')
+    })
+
     it('detects sequential line-range paging pattern and injects advisory context note', () => {
       const p = path.join(os.tmpdir(), `tg-paging-test-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
       fs.writeFileSync(p, Array.from({ length: 150 }, (_, i) => `const x${i} = ${i};`).join('\n'))

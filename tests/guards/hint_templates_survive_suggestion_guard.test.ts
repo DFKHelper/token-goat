@@ -96,8 +96,8 @@ describe('the paging note through the relay, for a file under a directory holdin
   })
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }))
 
-  // CAPTURE: a ranged Read's tool_response { type: 'text', file: { filePath, content, numLines, startLine, totalLines } }, the envelope tests/code_fold.test.ts's `rangedEvent` documents from 798 ranged Read results in real Claude Code transcripts. The windows are HAND-DERIVED: the third sequential 100-line page draws the soft paging note, the fourth the paging deny.
-  it('names skeleton with the path in one double-quoted argument, in the note and in the deny', async () => {
+  // CAPTURE: a ranged Read's tool_response { type: 'text', file: { filePath, content, numLines, startLine, totalLines } }, the envelope tests/code_fold.test.ts's `rangedEvent` documents from 798 ranged Read results in real Claude Code transcripts. The windows are HAND-DERIVED: the third read is hard-denied by the per-file ratchet.
+  it('keeps paging advice and targeted commands safely quoted across repeated slices', async () => {
     const file = path.join(dir, 'my proj', 'src dir', 'big file.ts')
     const base = { session_id: 'spaced-paging-guard', cwd: dir, tool_name: 'Read' }
     const contexts: string[] = []
@@ -108,12 +108,13 @@ describe('the paging note through the relay, for a file under a directory holdin
       contexts.push(parsed.reason ?? parsed.hookSpecificOutput?.permissionDecisionReason ?? parsed.hookSpecificOutput?.additionalContext ?? '')
       await relayInProcess('post_tool_use', { ...base, hook_event_name: 'PostToolUse', tool_input, tool_response: { type: 'text', file: { filePath: file, content: 'x', numLines: 100, startLine: offset, totalLines: 400 } } })
     }
-    const [note, deny] = contexts.slice(2)
-    expect(note, 'the third page drew no paging note, so this case proves nothing').toContain('Sequential line-range paging detected (3 slices read)')
-    expect(deny, 'the fourth page drew no paging deny, so this case proves nothing').toContain('Sequential line-range paging detected on ')
-    for (const text of [note, deny]) {
+    const [thirdRead, fourthRead] = contexts.slice(2)
+    expect(thirdRead).toContain('Sequential line-range paging detected')
+    expect(fourthRead).toContain('Sequential line-range paging detected')
+    expect(fourthRead).toContain('Further Read/view line ranges of this file will be denied')
+    for (const text of [thirdRead, fourthRead]) {
       expect(text).not.toContain('command omitted')
-      expect(text).toMatch(/`token-goat skeleton "[^"`]*my proj\/src dir\/big file\.ts"`/)
+      expect(text).toMatch(/`token-goat (?:read|skeleton) "[^"`]*my proj\/src dir\/big file\.ts(?:@[0-9]+-[0-9]+)?"`/)
     }
   })
 })

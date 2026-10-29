@@ -35,6 +35,7 @@ afterEach(() => {
   }
 })
 
+
 const MD = [
   '# Title',
   'intro line',
@@ -940,4 +941,3 @@ describe('fuzzy heading matching for minor phrasing differences', () => {
     expect(readSection(file, 'Troubleshooting Guide')).toBeNull()
   })
 })
-

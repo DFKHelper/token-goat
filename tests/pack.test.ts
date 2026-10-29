@@ -486,6 +486,15 @@ describe('collectFiles token estimation matches the shared ratio', () => {
 })
 
 describe('estimateBudget token estimation', () => {
+  it('counts lines exactly when a short dense prefix would distort extrapolation', () => {
+    const filePath = path.join(TMP, 'uneven-lines.txt')
+    fs.writeFileSync(filePath, 'x'.repeat(900) + '\n' + 'y\n'.repeat(150))
+
+    const result = estimateBudget(TMP, ['uneven-lines.txt'])
+
+    expect(result.entries[0]?.lines).toBe(151)
+  })
+
   it('scales the token estimate for files bigger than the 100000-byte sample, like it already does for lines', () => {
     const filePath = path.join(TMP, 'big.txt')
     // 1,020,000 bytes total, well past the 100000-byte token sample cap.

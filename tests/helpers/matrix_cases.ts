@@ -864,6 +864,16 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('HTML structure is valid')
   },
+  'php-lint': () => {
+    const dir = mkIsolated('tg-matrix-phplint-')
+    const phpPath = path.join(dir, 'test.php')
+    const missingPhp = path.join(dir, 'missing-php-runtime')
+    fs.writeFileSync(phpPath, '<?php echo 1;')
+    const r = run(['php-lint', dir, '--php', missingPhp])
+    expect(r.status, r.stderr).toBe(1)
+    expect(r.stderr).toContain('PHP runtime unavailable')
+    expect(r.stderr).toContain('missing-php-runtime')
+  },
   'openapi-outline': () => {
     const dir = mkIsolated('tg-matrix-openapioutline-')
     const specPath = path.join(dir, 'openapi.json')

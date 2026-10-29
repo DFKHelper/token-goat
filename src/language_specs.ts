@@ -60,7 +60,7 @@ export const LANGUAGE_SPECS = [
   { id: 'css', extraction: 'regex', extensions: ['.css', '.scss', '.sass', '.less'], label: 'CSS', ...DATA, grepSource: true, diffable: true, fence: 'css', fenceByExtension: { '.scss': 'scss', '.sass': 'sass', '.less': 'less' } },
   { id: 'dockerfile', extraction: 'regex', extensions: [], basenames: ['dockerfile'], ...DATA, fence: 'dockerfile' },
   { id: 'csharp', extraction: 'regex', extensions: ['.cs'], label: 'C#', ...CODE, fence: 'csharp' },
-  { id: 'php', extraction: 'regex', extensions: ['.php'], label: 'PHP', ...CODE, fence: 'php' },
+  { id: 'php', extraction: 'regex', extensions: ['.php', '.inc'], label: 'PHP', ...CODE, fence: 'php' },
   { id: 'html', extraction: 'regex', extensions: ['.html', '.htm'], label: 'HTML', ...DATA, fence: 'html' },
   { id: 'liquid', extraction: 'regex', extensions: ['.liquid'], ...DATA, fence: 'liquid' },
   // Six template dialects, each masking its own delimiters out then handing off to the HTML extractor (src/languages/templates_idx.ts) -- markup formats, so DATA defaults like html/liquid.

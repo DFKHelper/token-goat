@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import Database from '../src/sqlite_driver.js'
 
-import { closeAllDbs, closeDb, getDb, SCHEMA_VERSION } from '../src/db.js'
+import { closeAllDbs, closeDb, getDb, SCHEMA_VERSION, WAL_SIZE_LIMIT_BYTES } from '../src/db.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 const tmpDirs: string[] = []
@@ -66,7 +66,13 @@ describe('getDb', () => {
     const tempStore = Number(db.pragma('temp_store', { simple: true }))
     expect(tempStore).toBe(2)
     const mmap = Number(db.pragma('mmap_size', { simple: true }))
-    expect(mmap).toBeGreaterThanOrEqual(0)
+    expect(mmap).toBe(134_217_728)
+  })
+
+  it('sets journal_size_limit to the configured WAL bound', () => {
+    const db = getDb(tmpDbPath())
+    const journalSizeLimit = Number(db.pragma('journal_size_limit', { simple: true }))
+    expect(journalSizeLimit).toBe(WAL_SIZE_LIMIT_BYTES)
   })
 
   it('sets a busy_timeout above the driver default so concurrent writers wait instead of erroring', () => {
@@ -519,5 +525,40 @@ describe('folded-path expression indexes (full table scan fix)', () => {
       .prepare('SELECT name FROM symbols WHERE TG_LOWER(file_path) = ?')
       .get('c:/proj/foo.ts') as { name: string } | undefined
     expect(row?.name).toBe('foo')
+  })
+})
+
+describe('composite operational indexes', () => {
+  it('uses the session/resolved hint-emission index for pending-session reads', () => {
+    const db = getDb(tmpDbPath())
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT id, category, correlator, calls_remaining
+         FROM hint_emissions WHERE session_id = ? AND resolved = 0`,
+      )
+      .all('test-session') as Array<{ detail: string }>
+    expect(plan.map((row) => row.detail).join(' | ')).toContain('idx_hint_emissions_session_pending')
+  })
+
+  it('uses the category/harness hint-emission index for scoped statistics', () => {
+    const db = getDb(tmpDbPath())
+    const plan = db
+      .prepare('EXPLAIN QUERY PLAN SELECT COUNT(*) FROM hint_emissions WHERE category = ? AND harness = ?')
+      .all('bash_redirect', 'copilot_cli') as Array<{ detail: string }>
+    expect(plan.map((row) => row.detail).join(' | ')).toContain('idx_hint_emissions_cat_harness')
+  })
+
+  it('uses the cache-type/stored-time index for typed newest-first recall', () => {
+    const db = getDb(tmpDbPath())
+    const plan = db
+      .prepare(
+        `EXPLAIN QUERY PLAN SELECT entry_id AS id, cache_type AS cacheType, label, content, stored_at AS storedAt
+         FROM cache_recall
+         WHERE cache_type = ? AND (label LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\')
+         ORDER BY stored_at DESC
+         LIMIT ?`,
+      )
+      .all('bash_output', '%needle%', '%needle%', 5) as Array<{ detail: string }>
+    expect(plan.map((row) => row.detail).join(' | ')).toContain('idx_cache_recall_type_stored')
   })
 })
