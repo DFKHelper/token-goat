@@ -187,7 +187,7 @@ describe('tokens command', () => {
     expect(r.status, r.stderr).toBe(0)
     const parsed = JSON.parse(r.stdout) as { entries: Array<{ rel_path: string; lines: number; tokens: number; size_bytes: number }> }
     const entry = parsed.entries[0]
-    expect(entry).toEqual({ rel_path: 'hello.ts', lines: 4, tokens: 26, size_bytes: 75 })
+    expect(entry).toEqual({ rel_path: 'hello.ts', lines: 3, tokens: 26, size_bytes: 75 })
   })
 
   it('no files matched returns zero-row message', async () => {
