@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { closeAllDbs } from '../src/db.js'
-import { preReadHandler, realSymbolReadHint } from '../src/hooks_read.js'
+import { preReadHandler } from '../src/hooks_read.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
 import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
