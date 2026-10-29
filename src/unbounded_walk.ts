@@ -40,6 +40,10 @@ function walkMessage(tool: string, bound: string, hint: string): string {
   return '`' + tool + '` ' + bound + ', so it walks the whole disk from there. A walk like that keeps running after a timed-out shell is killed and burns CPU for hours, starving every other shell.' + (hint === '' ? '' : ' ' + hint) + ALTERNATIVES
 }
 
+function unreadable(why: string, fix: string): string {
+  return why + ', so it may walk a filesystem root or the home directory with no depth bound, which burns CPU for hours after a timed-out shell is killed. ' + fix + ', with a depth bound.' + ALTERNATIVES
+}
+
 const FORMS = {
   find: walkMessage('find', 'starts at a filesystem root or the home directory with no `-maxdepth`', 'Add `-maxdepth N`, or start in the project directory.'),
   fd: walkMessage('fd', 'starts at a filesystem root or the home directory with no `-d`/`--max-depth`', 'Add `-d N`, or start in the project directory.'),
@@ -51,6 +55,9 @@ const FORMS = {
   dir: walkMessage('dir /s', 'starts at a drive root or the home directory, and has no depth limit', 'List one directory, or use `rg --files --max-depth N <dir>`.'),
   findstr: walkMessage('findstr /s', 'starts at a drive root or the home directory, and has no depth limit', ''),
   gci: walkMessage('Get-ChildItem -Recurse', 'starts at a drive root or the home directory with no `-Depth`', 'Add `-Depth N`, or start in the project directory.'),
+  nesting: unreadable('Shells are nested deeper than the walk check follows', 'Run the inner command directly'),
+  obscured: unreadable('The command word is a variable or expansion', 'Write the command name out'),
+  xargs: walkMessage('xargs', 'takes its start paths from standard input, which can be a filesystem root, with no depth bound', 'Name the directory and add a depth bound.'),
   'find-stdin':
     "This is the Windows `find.exe` text search, and with no file argument and no piped input it waits on standard input forever. A hung `find` is left running when its shell is killed, starving every other shell. Give it a file (`find \"text\" file.txt`), pipe text into it (`type file.txt | find \"text\"`), or use `rg \"text\" file.txt`. If a search timed out with no output, narrow the scope or change the tool; do not rerun a reworded variant.",
 } as const
@@ -109,9 +116,10 @@ function skipHeredocBodies(command: string, from: number, heredocs: readonly Her
   return pos
 }
 
-/** Splits a command on the operators that start a new command, keeping each word's text with backslashes literal, and whether the word was quoted. A redirection (`> f`, `2>&1`, `< f`) is dropped from the words and remembered as redirected input. */
-function scan(command: string): Segment[] {
+/** Splits a command on the operators that start a new command and the words of each, and whether the word was quoted. `posix` reads backslash escapes as a POSIX shell does (`f\ind` is `find`, `'\''` is a quote inside single quotes); without it backslashes stay literal, which is what a Windows path needs. `$'...'` and `$"..."` open a quote either way. A redirection (`> f`, `2>&1`, `< f`) is dropped from the words and remembered as redirected input. */
+function scan(command: string, posix: boolean): Segment[] {
   const segments: Segment[] = []
+  let ansi = false
   let words: Word[] = []
   let text = ''
   let has = false
@@ -142,6 +150,12 @@ function scan(command: string): Segment[] {
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!
     if (quote !== null) {
+      if (posix && ch === '\\' && i + 1 < command.length && (ansi || (quote === '"' && '$`"\\'.includes(command[i + 1]!)))) {
+        // An escape in `$'...'` is not decoded, so the word it spells is unknown, which a `$` in a command word reports.
+        text += ansi ? '$' : command[i + 1]!
+        i++
+        continue
+      }
       if (quote === '"') {
         // A heredoc inside `"$(cat <<'EOF' ... )"` carries its own quotes as data, so its body is skipped rather than read as quote delimiters.
         if (ch === '$' && command[i + 1] === '(') subshells++
@@ -159,6 +173,7 @@ function scan(command: string): Segment[] {
       }
       if (ch === quote) {
         quote = null
+        ansi = false
         subshells = 0
         quotedHeredocs.length = 0
       } else text += ch
@@ -168,6 +183,21 @@ function scan(command: string): Segment[] {
       // A word that starts with `#` opens a comment that runs to the end of the line.
       const eol = command.indexOf('\n', i)
       i = (eol === -1 ? command.length : eol) - 1
+      continue
+    }
+    if (posix && ch === '\\' && i + 1 < command.length) {
+      // An escaped character is a plain one in the word, and an escaped newline joins the lines.
+      i++
+      if (command[i] !== '\n') text += command[i]!
+      has = true
+      continue
+    }
+    if (ch === '$' && (command[i + 1] === "'" || command[i + 1] === '"')) {
+      quote = command[i + 1]!
+      ansi = posix && quote === "'"
+      i++
+      has = true
+      quoted = true
       continue
     }
     if (ch === '"' || ch === "'") {
@@ -462,6 +492,7 @@ function nestedScript(name: string, args: readonly Word[]): string | null {
     const at = args.findIndex((w) => /^-[A-Za-z]+$/.test(w.text) && w.text.includes('c'))
     return at >= 0 && args[at + 1] !== undefined ? args[at + 1]!.text : null
   }
+  if (name === 'eval') return args.length > 0 ? args.map((w) => w.text).join(' ') : null
   if (name === 'cmd') {
     const at = args.findIndex((w) => /^\/[ck]$/i.test(w.text))
     return at >= 0 ? args.slice(at + 1).map((w) => w.text).join(' ') : null
@@ -473,14 +504,54 @@ function nestedScript(name: string, args: readonly Word[]): string | null {
   return null
 }
 
-function inspectSegment(seg: Segment, ctx: WalkContext, depth: number, fromRoot: boolean): WalkRefusal | null {
+const WALKER_WORD = /(^|[^A-Za-z0-9_-])(fd(find)?|find(str)?|rg|[ef]?grep|du|tree|ls|dir|gci|get-childitem|xargs|eval|[zdk]?a?sh|cmd|p(owershell|wsh))(?![A-Za-z0-9_-])/i
+
+/** The refusal for a script wrapped deeper than `MAX_NESTING`, which is not followed any further: refused when it names a walker or another shell (quotes and backslashes removed, so `fi'n'd` still reads as `find`) or holds an expansion, since an unreadable script is unknown, not harmless. */
+function atNestingLimit(script: string): WalkRefusal | null {
+  return /[$`]/.test(script) || WALKER_WORD.test(script.replace(/[\\'"]/g, '')) ? refuse('nesting') : null
+}
+
+const XARGS_VALUED = /^(-[aIdELnPs]|--(arg-file|delimiter|max-args|max-procs))$/
+const STDIN_ROOT: Word = { text: '/', quoted: false }
+
+/** `xargs <command>`: the command is inspected as written (so `xargs find / ...` and `xargs bash -c ...` are caught), then as it would run with a root on standard input. */
+function inspectXargs(args: readonly Word[], seg: Segment, ctx: WalkContext, depth: number, fromRoot: boolean): WalkRefusal | null {
+  let i = 0
+  while (i < args.length && args[i]!.text.startsWith('-')) {
+    if (args[i]!.text === '--') {
+      i++
+      break
+    }
+    i += XARGS_VALUED.test(args[i]!.text) ? 2 : 1
+  }
+  const rest = args.slice(i)
+  if (rest.length === 0) return null
+  const inner: Segment = { ...seg, words: rest, pipedIn: true }
+  const hit = inspectSegment(inner, ctx, depth + 1, fromRoot)
+  if (hit !== null) return hit
+  const at = commandIndex(rest)
+  const { name } = commandName(rest[at]?.text ?? '')
+  const own = rest.slice(at + 1)
+  // A walker with no start path of its own reads one from standard input; `rg` and `grep` are left out because their stdin words are usually file lists (`git ls-files | xargs grep -rn x`).
+  if (/^(rg|[ef]?grep)$/.test(name) || (name === 'find' ? own[0] !== undefined && !/^(-|!|\\?\()/.test(own[0].text) : own.some((w) => !w.text.startsWith('-')))) return null
+  return inspectWalker(name, '', name === 'find' ? [STDIN_ROOT, ...own] : [...own, STDIN_ROOT], seg, ctx, false) === null ? null : refuse('xargs')
+}
+
+function inspectSegment(seg: Segment, ctx: WalkContext, depth: number, fromRoot: boolean, next?: Segment): WalkRefusal | null {
   const at = commandIndex(seg.words)
   const head = seg.words[at]
   if (head === undefined) return null
   const { name, dir } = commandName(head.text)
   const args = seg.words.slice(at + 1)
   const script = nestedScript(name, args)
-  if (script !== null) return depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1, fromRoot) : null
+  // A command word that is a variable (`$F /`) cannot be read statically. A lone `$` is what is left of a `$(` substitution; under PowerShell a `$x` inside a group, with a property access or with nothing to run is an expression.
+  if (name.includes('$') && name !== '$' && !(ctx.powershell && (seg.group !== 0 || /[.[(]/.test(name) || args.every((w) => w.text === '}'))) && !(args.length === 0 && seg.endOp === '|' && /^([%?]|[A-Z][A-Za-z]+-[A-Z][A-Za-z]+)$/.test(next?.words[commandIndex(next.words)]?.text ?? ''))) return refuse('obscured')
+  if (script !== null) return depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1, fromRoot) : atNestingLimit(script)
+  if (name === 'xargs') return inspectXargs(args, seg, ctx, depth, fromRoot)
+  return inspectWalker(name, dir, args, seg, ctx, fromRoot)
+}
+
+function inspectWalker(name: string, dir: string, args: readonly Word[], seg: Segment, ctx: WalkContext, fromRoot: boolean): WalkRefusal | null {
   switch (name) {
     case 'find':
       return inspectFind(args, dir, seg, ctx, fromRoot)
@@ -511,12 +582,18 @@ function inspectSegment(seg: Segment, ctx: WalkContext, depth: number, fromRoot:
 
 /** The refusal for a command that starts an unbounded walk of a filesystem root or the home directory, in any pipeline stage, chain or subshell, or null when it does not. A `find` with no path or a `.`-relative one is refused after a `cd` to a root or the home directory; `startsAtRoot` carries that state into a nested `bash -c` script. */
 export function detectUnboundedWalk(command: string, ctx: WalkContext, depth = 0, startsAtRoot = false): WalkRefusal | null {
+  // The command is read twice, with backslashes literal (a Windows path) and as POSIX escapes (`f\ind`), and refused when either reading walks.
+  return walkScan(command, ctx, depth, startsAtRoot, false) ?? walkScan(command, ctx, depth, startsAtRoot, true)
+}
+
+function walkScan(command: string, ctx: WalkContext, depth: number, startsAtRoot: boolean, posix: boolean): WalkRefusal | null {
   // Whether the shell sits in a root or the home directory, per `( ... )` group: a subshell starts from its parent's state and its `cd` does not reach the commands after it.
   const atRoot = new Map<number, boolean>([[0, startsAtRoot]])
-  for (const seg of scan(command)) {
+  const segments = scan(command, posix)
+  for (const [n, seg] of segments.entries()) {
     if (!atRoot.has(seg.group)) atRoot.set(seg.group, atRoot.get(seg.parentGroup) ?? startsAtRoot)
     const fromRoot = atRoot.get(seg.group)!
-    const hit = inspectSegment(seg, ctx, depth, fromRoot)
+    const hit = inspectSegment(seg, ctx, depth, fromRoot, segments[n + 1])
     if (hit !== null) return hit
     // A `cd` piped to or from another command, or sent to the background, runs in its own process and leaves the shell where it was; one followed by `||` leaves what follows to run only after it failed.
     const landed = seg.pipedIn || seg.endOp !== '' ? null : cdLandsAtRoot(seg, fromRoot, ctx)

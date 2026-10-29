@@ -375,6 +375,83 @@ describe('detectUnboundedWalk -- comments, odd quotes and PowerShell assignments
   })
 })
 
+// Provenance: HAND-DERIVED from POSIX shell quoting (a backslash or `$'..'` spells a letter, `'\'' ` is a quote inside single quotes, `eval` runs its joined arguments, `xargs` feeds stdin words to its command, a `$F` head word is whatever F holds) and from the audit probes that were allowed before the fix; none is a wire-format claim.
+describe('detectUnboundedWalk -- nesting, obscured command words and indirection', () => {
+  it.each([
+    ['cmd /c cmd /c cmd /c cmd /c find / -name x', 'nesting'],
+    ['bash -c "cmd /c cmd /c cmd /c find / -name x"', 'nesting'],
+    ['cmd /c cmd /c cmd /c cmd /c cmd /c cmd /c find / -name x', 'nesting'],
+    [String.raw`bash -c 'bash -c '\''find / -name x'\'''`, 'find'],
+    [String.raw`bash -c "bash -c \"find / -name x\""`, 'find'],
+    [String.raw`f\ind /`, 'find'],
+    [String.raw`fi$'n'd /`, 'find'],
+    [String.raw`$'\x66ind' /`, 'obscured'],
+    ['"fi"nd /', 'find'],
+    ['F=find; $F /', 'obscured'],
+    ["F='find / -name x'; $F | head", 'obscured'],
+    ["F='find / -name x'; $F", 'obscured'],
+    ['${F} / -name x', 'obscured'],
+    ['eval "find / -name x"', 'find'],
+    ['eval find / -name x', 'find'],
+    ['eval "bash -c \'find / -name x\'"', 'find'],
+    ['echo / | xargs find -name x', 'xargs'],
+    ['echo / | xargs -0 -n1 find -name x', 'xargs'],
+    ['echo / | xargs -I{} find / -name {}', 'find'],
+    ['echo / | xargs du', 'xargs'],
+    ['echo / | xargs bash -c "find / -name x"', 'find'],
+  ])('refuses %s', (command, expected) => {
+    expect(form(command, POSIX)).toBe(expected)
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBe(expected)
+  })
+
+  it.each([
+    ['find . -name x'],
+    ['find /tmp/proj -maxdepth 2 -name x'],
+    ['eval "echo hi"'],
+    ['eval ls'],
+    ['echo a | xargs grep -l x'],
+    ['git ls-files | xargs rg x'],
+    ['echo a | xargs find . -maxdepth 1'],
+    ['echo a | xargs find . -name x'],
+    ['echo a | xargs find -maxdepth 1 -name x'],
+    ['echo a | xargs -0 -I{} find {} -maxdepth 1'],
+    ['echo a | xargs du -sh'],
+    ['echo a | xargs'],
+    ['cmd /c dir'],
+    ['echo $F /'],
+    ['eval "$(ssh-agent -s)"'],
+    ['echo "x\\'],
+    ["echo $'x\\"],
+    ['$response | ConvertFrom-Json'],
+    ['$items | ForEach-Object { $_ }'],
+    ['ls $HOME/project'],
+    ['$HOME/bin/tool /'],
+    ['bash -c ls'],
+    ["bash -c 'ls'"],
+    ["bash -c \"bash -c 'ls'\""],
+    ["bash -c \"bash -c 'bash -c ls'\""],
+    ['cmd /c cmd /c cmd /c dir'],
+    ['cmd /c cmd /c cmd /c cmd /c echo hi'],
+    [String.raw`echo \$HOME`],
+    [String.raw`echo f\ind /`],
+    [String.raw`bash -c 'echo '\''find / -name x'\'''`],
+  ])('lets %s through', (command) => {
+    expect(form(command, POSIX)).toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it('keeps a Windows path to find.exe a path, not an escape', () => {
+    expect(form(String.raw`C:\Windows\System32\find.exe "x"`, POWERSHELL)).toBe('find-stdin')
+    expect(form('C:\\Users\\me\\project\\tool.exe C:\\', POWERSHELL)).toBeNull()
+  })
+
+  it('treats an obscured command word under PowerShell as unknown too, but not a property access', () => {
+    expect(form('& $F C:\\', POWERSHELL)).toBe('obscured')
+    expect(form('foreach ($f in $list) { $f.Name }', POWERSHELL)).toBeNull()
+    expect(form('if ($x -eq 1) { $x }', POWERSHELL)).toBeNull()
+  })
+})
+
 describe('detectUnboundedWalk -- the refusal text', () => {
   const samples: ReadonlyArray<readonly [string, WalkContext, string]> = [
     ['find / -name x', POSIX, 'find'],
@@ -387,6 +464,8 @@ describe('detectUnboundedWalk -- the refusal text', () => {
     ['dir /s C:\\', GIT_BASH_ON_WINDOWS, 'dir'],
     ['findstr /s foo C:\\*.txt', GIT_BASH_ON_WINDOWS, 'findstr'],
     ['Get-ChildItem -Recurse C:\\', POWERSHELL, 'gci'],
+    ['cmd /c cmd /c cmd /c cmd /c find / -name x', POSIX, 'nesting'],
+    ['F=find; $F /', POSIX, 'obscured'],
   ]
 
   it.each(samples)('%s explains the cost, names a bounded way out and discourages a reworded rerun', (command, ctx, expected) => {
