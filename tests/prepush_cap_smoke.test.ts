@@ -1,6 +1,6 @@
 /** The pre-push hard stop's pure pieces: the stop value read from the environment (scripts/prepush-budget.mjs), the planned files a stopped leg did not finish (scripts/prepush-failed.mjs unfinishedFiles), and the owed record written beside the failed-store. The shell side runs for real below: the watchdog and kill_tree sourced alone, and the whole hook over stub legs. */
 import { spawnSync } from 'node:child_process'
-import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -307,7 +307,9 @@ describe('the hard stop ends the legs of a real hook run', () => {
     if (r.error) leftLegs = true
     const firedFile = path.join(stubs, 'fired.epoch')
     const tailS = existsSync(firedFile) ? ended / 1000 - Number(readFileSync(firedFile, 'utf8').trim()) : null
-    return { status: r.status, out: readFileSync(outFile, 'utf8'), elapsedS: (ended - started) / 1000, tailS, timedOut: r.error !== undefined }
+    // With no fired.epoch the tail is unknown: lead the output with that and the stubs listing, so a failing row shows what the stubs did; prepended so the legs line stays last.
+    const noTail = tailS === null ? `fired.epoch absent; stubs dir: ${readdirSync(stubs).join(', ')}\n` : ''
+    return { status: r.status, out: noTail + readFileSync(outFile, 'utf8'), elapsedS: (ended - started) / 1000, tailS, timedOut: r.error !== undefined }
   }
 
   hookRow('a run with no leg past the stop passes, prints no stop notice and ends with the legs line', () => {
@@ -325,6 +327,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
   hookRow('a stopped test leg is ended at the stop, and the push still passes', () => {
     const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60' })
     expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain('stopped the win leg after')
     expect(r.out).toMatch(/win=aborted/)
@@ -334,6 +337,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
   hookRow('a stopped typecheck fails the push', () => {
     const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TYPECHECK_S: '60' })
     expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain(`typecheck was still running at the ${HOOK_STOP_S}s hard stop`)
     expect(r.status, r.out).toBe(1)
@@ -342,6 +346,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
   hookRow('a stopped lint fails the push', () => {
     const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TS_CHECKS_S: '60' })
     expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain(`lint was still running at the ${HOOK_STOP_S}s hard stop`)
     expect(r.status, r.out).toBe(1)
@@ -351,6 +356,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
   hookRow('a parallel WSL leg started before the stop is ended by it, even when it ignores TERM', () => {
     const r = runHook({ PREPUSH_PARALLEL_WSL: '1', TG_PREPUSH_WSL: '1', STUB_FIRE_STOP: 'wsl-test', STUB_TYPECHECK_S: '60', STUB_WSL_S: '50' })
     expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain('stopped the wsl leg after')
     expect(r.out).toMatch(/wsl=aborted/)
@@ -366,6 +372,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
     // The stopped leg is alive by design here, so the afterEach ends it by its recorded pid.
     leftLegs = true
     expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain(`still running ${POST_STOP_S}s after the hard stop, not waited on (name=pid):`)
   }, true)
@@ -383,6 +390,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
       // The legs survive the stub kills by design, so the afterEach ends them by their recorded pids.
       leftLegs = true
       expect(existsSync(pidFile), r.out).toBe(true)
+      expect(r.tailS, r.out).not.toBeNull()
       expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
       const pids = readFileSync(pidFile, 'utf8')
         .split('\n')
@@ -450,6 +458,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
     const r = runHook({ STUB_FIRE_STOP: 'typecheck', STUB_FIRE_AFTER_TESTS: '1', STUB_TYPECHECK_S: '60', ...hangingNode(false) })
     leftHung = true
     // The tail bound is asserted first: a hook that did not return in time reaches the spawn timeout, which would otherwise hide as a timeout.
+    expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.timedOut, r.out).toBe(false)
     expect(r.out).toContain("the hard stop left no time for 'node'")
@@ -462,6 +471,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
     const r = runHook({ STUB_FIRE_STOP: 'typecheck', STUB_FIRE_AFTER_TESTS: '1', STUB_TYPECHECK_S: '60', ...hangingNode(false, true) })
     leftHung = true
     leftLegs = true
+    expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain("the hard stop left no time for 'node'")
     const pid = Number(readFileSync(path.join(stubs, 'typecheck.pid'), 'utf8').trim())
@@ -480,6 +490,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
     const r = runHook(hangingNode(true))
     leftHung = true
     expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain("the hard stop left no time for 'node'")
   })
