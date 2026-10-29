@@ -1,4 +1,5 @@
 import { quotedArg, quotedArgs } from "./hint_suggestion_guard.js";
+import { markHintShown, wasHintShown } from "./session.js";
 
 export interface HintItem {
   text: string;
@@ -6,6 +7,23 @@ export interface HintItem {
 }
 
 export const HINT_PRIORITY_MEDIUM = 3;
+
+export interface ShowHintOnceOptions {
+  /** Namespace of the hint, e.g. a HINT_CATEGORIES member; keeps two hint kinds with the same key apart. */
+  category: string;
+  /** The thing the hint points at, e.g. a file path. */
+  key: string;
+  /** Fingerprint of the state the hint describes; a changed trigger shows the hint again. */
+  trigger: string;
+}
+
+/** True the first time a (category, key, trigger) triple is seen this session, and again whenever the trigger changes. The trigger lives inside the stored session key, so the persisted hintsShown shape is unchanged. */
+export function showHintOnce(options: ShowHintOnceOptions): boolean {
+  const hintKey = "hint_once:" + JSON.stringify([options.category, options.key, options.trigger]);
+  if (wasHintShown(hintKey)) return false;
+  markHintShown(hintKey);
+  return true;
+}
 
 /** `shown` is the display-safe path the suggested commands must name; the basename test still runs on `file_path`. */
 export function buildPackageManifestHint(options: {

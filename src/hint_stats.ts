@@ -28,6 +28,8 @@ export const HINT_CATEGORIES = [
   'edit_near_miss',
   // path_miss.ts: a tool call named a path that does not exist and an existing path is plausibly the one meant. Logged with no correlator: the corrected call may name the path in any spelling, so it counts as spend and emissions but never a verdict.
   'path_miss',
+  'edit_callers_tests',
+  'duplicate_function',
 ] as const
 
 export type HintCategory = (typeof HINT_CATEGORIES)[number]
