@@ -53,7 +53,7 @@ The failed commands token-goat learns fixes for are kept only as keyed digests, 
 
 | What you scan | Command | Result |
 | --- | --- | --- |
-| this repository | `npm audit` | 2 findings, development only: 1 high, body-parser GHSA-27r3-jxmh-p828; 1 moderate, qs GHSA-6pq8-jhm2-2vcw; see below |
+| this repository | `npm audit` | 3 findings, development only: 1 high, body-parser GHSA-27r3-jxmh-p828; 1 moderate, qs GHSA-6pq8-jhm2-2vcw; 1 moderate, @hono/node-server GHSA-rmxm-3fg6-px4f; see below |
 | an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | clean, 2 packages |
 | a default install | `npm install token-goat` then `npm audit --omit=dev` | clean, 62 packages |
 

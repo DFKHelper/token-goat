@@ -4,12 +4,14 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { preReadHandler } from '../src/hooks_read.js'
+import { closeAllDbs } from '../src/db.js'
+import { preReadHandler, realSymbolReadHint } from '../src/hooks_read.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
+import { indexFileSync } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { recordRecentReadRange } from '../src/read_range_evasion.js'
-import { recordFileRead } from '../src/session.js'
+import { recordFileEdit, recordFileLineRange, recordFileRead } from '../src/session.js'
 import { foldPath } from '../src/util.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
@@ -52,11 +54,14 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  closeAllDbs()
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
 describe('read paging ratchets', () => {
-  it('hard-denies IoU above 60% against any of the last three ranges', () => {
+  it('uses a real symbol in the overlapping-range deny when available', () => {
+    fs.writeFileSync(target, Array.from({ length: 60 }, (_, i) => `function fn${i + 1}() {}`).join('\n') + '\n')
+    indexFileSync(target)
     recordFileRead(normalizePath(target))
     recordRecentReadRange(foldPath(normalizePath(target)), [10, 19])
     recordRecentReadRange(foldPath(normalizePath(target)), [100, 109])
@@ -67,6 +72,43 @@ describe('read paging ratchets', () => {
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
       expect(result.message).toContain('overlapping line-range paging detected')
+      expect(result.message).not.toContain('::Symbol')
+      expect(result.message).toContain('fn12')
+    }
+  })
+
+  it('adds a diff hint to sequential paging guidance for a file edited this session', () => {
+    const normalized = normalizePath(target)
+    recordFileEdit(normalized)
+    recordFileRead(normalized, false)
+    recordFileLineRange(normalized, 1, 10)
+    recordFileLineRange(normalized, 11, 20)
+
+    const result = preReadHandler(event('pre_tool_use', { offset: 21, limit: 10 }))
+
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Recently edited')
+      expect(result.context).toContain('git diff HEAD --')
+      expect(result.context).toContain('token-goat changed --symbol')
+    }
+  })
+
+  it('adds a diff hint to the hard sequential-paging denial for a file edited this session', () => {
+    const normalized = normalizePath(target)
+    recordFileEdit(normalized)
+    recordFileRead(normalized, false)
+    recordFileLineRange(normalized, 1, 10)
+    recordFileLineRange(normalized, 11, 20)
+    recordFileLineRange(normalized, 21, 30)
+
+    const result = preReadHandler(event('pre_tool_use', { offset: 31, limit: 10 }))
+
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('Sequential line-range paging detected')
+      expect(result.message).toContain('Recently edited')
+      expect(result.message).toContain('git diff HEAD --')
     }
   })
 

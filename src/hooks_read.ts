@@ -401,7 +401,7 @@ function symbolsMeetingRange(
   return found
 }
 
-/** Names up to 3 real symbols indexed for `filePath` instead of the bare `::Symbol`/`::SymbolName` placeholder a deny/hint text would otherwise print even when the file has none. When `range` is given (a ranged Read's offset/limit), symbols overlapping those lines are preferred over the file's first few. Falls back to a line-range read (`range` given) or `outline` (whole-file) when the file has no indexed symbols at all, since a bare `::Symbol` read would just fail. When the top pick is a large symbol (see {@link isLargeSymbolSpan}), the hint points at a `grep -C --symbol` slice (or `scope` to confirm the enclosing symbol) instead of naming it for a whole-body read. */
+/** Names up to 3 real symbols indexed for `filePath` instead of the bare `::Symbol`/`::SymbolName` placeholder a deny/hint text would otherwise print even when the file has none. It attempts the synchronous stale-index heal before querying so a newly created or edited file does not look symbol-less while the worker is behind. When `range` is given (a ranged Read's offset/limit), symbols overlapping those lines are preferred over the file's first few. Falls back to a line-range read (`range` given) or `outline` (whole-file) when parsing still yields no indexed symbols. When the top pick is a large symbol (see {@link isLargeSymbolSpan}), the hint points at a `grep -C --symbol` slice (or `scope` to confirm the enclosing symbol) instead of naming it for a whole-body read. */
 export function realSymbolReadHint(filePath: string, shown: string, range?: { start: number; end: number }): string {
   let candidates: { name: string; lineStart: number; lineEnd: number }[]
   try {
@@ -1143,6 +1143,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Grep's cost/relevance depends on its pattern, not just the directory/file it's scoped to — re-scoping several Greps at the same path with different patterns is a legitimate workflow, so Grep is exempt from the count-based re-read dedup below (unlike a repeated whole-file Read).
   if (event.toolName !== 'Grep' && !isImagePath(normalized) && wasFileReadThisSession(normalized)) {
     const entry = getSessionFileEntry(normalized)
+    const editedPagingHint = entry?.wasEdited === true
+      ? ' Recently edited -- run `git diff HEAD -- ' + quotedArg(shown) + '` or `token-goat changed --symbol` to inspect recent changes.'
+      : ''
     // Both counts are epoch-scoped: a read from before the last compaction no longer describes what the model currently holds, so it neither counts toward a deny nor shows in the "N reads" a deny quotes. `fullReads` is whole-file re-reads only -- a file touched by nothing but a few narrow offset/limit/view-range slices has never actually been read in full, so the count-based denies below (which assume every prior touch handed over the whole file) must gate on it, not on `reads`, which a slice bumps too.
     const counts = entry !== undefined ? epochReadCounts(entry) : { reads: 1, fullReads: 0 }
     const reads = Math.max(1, counts.reads)
@@ -1274,6 +1277,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           (isSourceExt ? '' : ' ' + surgicalHint(normalized, basename, lineCountForSurgicalHint(normalized)))
         return denyOutput(
           'Sequential line-range paging detected on ' + readSubject(normalized, hint) + ' (' + (prevRanges.length + 1) + ' slices read). ' + hint +
+          editedPagingHint +
           ' Inspect structure directly without manual chunk paging. Delegate bounded symbol or code extraction to an explore agent (specifically GPT-6 Luna, else Haiku or equivalent) rather than getting stuck in micro-paging loops. Further Read/view line ranges of this file will be denied.',
         )
       }
@@ -1282,8 +1286,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
         recordStat('session_hint', 0, 0)
         return denyOutput(
-          'deny: overlapping line-range paging detected. Use `token-goat read ' +
-          quotedArg(shown + '::Symbol') + '` for a named symbol or delegate bounded extraction to an explore subagent.',
+          'deny: overlapping line-range paging detected. Use ' +
+          realSymbolReadHint(normalized, shown, rangeSpan) + ' or delegate bounded extraction to an explore subagent.',
         )
       }
       if (rangeSpan !== undefined && evaluateRangeEvasion({
@@ -1362,7 +1366,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const isSequentialNote = activeSpan !== undefined && isSequentialPagingChain([...activeRanges, [activeSpan.start, activeSpan.end]], 3)
     const pagingNote = (pagingWindow.isExplicitSlice && activeRanges.length >= 2 && isSequentialNote)
       ? ' Sequential line-range paging detected (' + (activeRanges.length + 1) + ' slices read). Prefer `token-goat skeleton ' + quotedArg(shown) + '` or ' +
-        realSymbolReadHint(normalized, shown, activeSpan) + ', or delegate bounded extraction to an explore agent (specifically Luna, else Haiku).'
+        realSymbolReadHint(normalized, shown, activeSpan) + ', or delegate bounded extraction to an explore agent (specifically Luna, else Haiku).' + editedPagingHint
       : ''
     // A ranged Read whose window touches no line served before, with no whole-file read behind it, hands over lines the model has never seen: the already-read note would be false.
     const windowIsNew = isUnseenWindow(pagingWindow, activeRanges, fullReads)
