@@ -1,4 +1,4 @@
-/** The re-read denial circuit breaker and the Write blind-drop guard compose: a whole-file denial loop the breaker ends hands over one real read the Write guard counts as seen, while a line-range retry is locked rather than let through, so a refused retry is never counted as seen. Provenance: HAND-DERIVED from a 200-line file; the whole-file rows read it unranged, the range rows serve its first 60 lines; the first version of the range sequence was driven through the built hook entry (PreToolUse/PostToolUse payloads with Read and Write tool inputs) and printed the deny, the breaker's advisory note, and the blind-drop refusal quoted in the merge report. The range rows pin main's 44e95a016, where a refused range read locks later slices instead of going through the breaker (the fileRereadDenyKey comment in src/hooks_read.ts). */
+/** The re-read denial circuit breaker and the Write blind-drop guard compose: a whole-file denial loop the breaker ends hands over one real read the Write guard counts as seen, while a line-range retry is redirected once and then let through for that same range, so a refused retry is never counted as seen. Provenance: HAND-DERIVED from a 200-line file; the whole-file rows read it unranged, the range rows serve its first 60 lines; the first version of the range sequence was driven through the built hook entry (PreToolUse/PostToolUse payloads with Read and Write tool inputs) and printed the deny, the breaker's advisory note, and the blind-drop refusal quoted in the merge report. The range rows pin main's 44e95a016, where a refused range read locks later slices instead of going through the breaker (the fileRereadDenyKey comment in src/hooks_read.ts). */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -87,16 +87,19 @@ describe('the re-read circuit breaker and the Write blind-drop guard', () => {
     expect((await preWriteRewriteHandler(writeEvent(target, FIRST_60_ONLY))).hookType).toBe('pass')
   })
 
-  it('locks the second identical line-range retry instead of letting it through the breaker', () => {
+  // bf14d04ad (CHANGELOG: "redirect to the cached output once, then fail open for that same range") replaced the old second-retry lock: the redirect is spent on the first retry, the identical retry is let through, and a shifted window stays denied.
+  it('lets the second identical line-range retry through after one redirect, and keeps a shifted window denied', () => {
     const target = seed('ts')
     serveFirstWindow(target)
     expect(preReadHandler(rangeReadEvent('pre_tool_use', target)).hookType, 'the first retry is denied').toBe('deny')
     const second = preReadHandler(rangeReadEvent('pre_tool_use', target))
-    expect(second.hookType, 'the second identical range retry stays denied').toBe('deny')
-    if (second.hookType === 'deny') expect(second.message).toContain('Line-range reads of this file are locked')
+    expect(second.hookType, 'the second identical range retry is let through').toBe('context')
+    if (second.hookType === 'context') expect(second.context).toContain('Read allowed after the prior redirect')
+    const shifted = preReadHandler(makeHookEvent({ eventName: 'pre_tool_use', toolName: 'Read', toolInput: { file_path: target, offset: 2, limit: 58 }, sessionId: 'breaker-write' }))
+    expect(shifted.hookType, 'a shifted window inside the served lines stays denied').toBe('deny')
   })
 
-  it('still refuses a Write that drops lines nobody saw after a locked line-range retry', async () => {
+  it('still refuses a Write that drops lines nobody saw after line-range retries', async () => {
     const target = seed('ts')
     serveFirstWindow(target)
     preReadHandler(rangeReadEvent('pre_tool_use', target))
