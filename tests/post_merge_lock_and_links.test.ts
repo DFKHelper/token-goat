@@ -9,6 +9,8 @@ import { describe, expect, it } from 'vitest'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
 import { tempDir } from './helpers/temp-config.js'
 
+import { createRepoLocalExecutableDecoys } from './helpers/repo_local_executable_decoys.js'
+
 const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'post-merge.mjs')
 
 const LOCK = {
@@ -33,6 +35,7 @@ const FAKE_NPM = [
   "  const lock = JSON.parse(fs.readFileSync('package-lock.json', 'utf8'))",
   '  for (const pkg of Object.values(lock.packages)) delete pkg.libc',
   "  fs.writeFileSync('package-lock.json', JSON.stringify(lock, null, 2) + String.fromCharCode(10))",
+  "  if (process.env.TG_FAKE_NPM_FAIL_INSTALL === '1') process.exit(23)",
   "} else if (args[0] === 'run' && args[1] === 'build') {",
   "  execFileSync(process.execPath, ['build.mjs'], { stdio: 'inherit' })",
   '}',
@@ -52,6 +55,9 @@ function checkoutWhereLockChanged(): string {
   const root = gitRepoWithCommit()
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true })
   fs.copyFileSync(SCRIPT, path.join(root, 'scripts', 'post-merge.mjs'))
+  fs.copyFileSync(path.join(path.dirname(SCRIPT), 'atomic-write.mjs'), path.join(root, 'scripts', 'atomic-write.mjs'))
+  fs.copyFileSync(path.join(path.dirname(SCRIPT), 'dependabot-body.mjs'), path.join(root, 'scripts', 'dependabot-body.mjs'))
+  fs.copyFileSync(path.join(path.dirname(SCRIPT), 'git-executable.mjs'), path.join(root, 'scripts', 'git-executable.mjs'))
   fs.writeFileSync(path.join(root, 'build.mjs'), STUB_BUILD)
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'stub', private: true, scripts: { build: 'node build.mjs' } }))
   git(root, ['add', '.'])
@@ -65,19 +71,54 @@ function checkoutWhereLockChanged(): string {
 }
 
 /** Runs the real script with a fake npm ahead of the real one on PATH; returns what the script printed and how many times the fake saw `install`. */
-function runPostMerge(root: string): { status: number | null; stdout: string; stderr: string; installs: number } {
+function runPostMerge(root: string, extra: NodeJS.ProcessEnv = {}, withDecoys = false): { status: number | null; stdout: string; stderr: string; installs: number; localExecutableRan: boolean; npmCommandRan: boolean } {
   const bin = tempDir()
   const entry = path.join(bin, 'fake-npm.mjs')
   fs.writeFileSync(entry, FAKE_NPM)
+  fs.writeFileSync(path.join(bin, 'package.json'), JSON.stringify({ type: 'module' }))
+  const npmCli = path.join(bin, 'npm-cli.js')
+  fs.writeFileSync(npmCli, FAKE_NPM)
   if (process.platform === 'win32') fs.writeFileSync(path.join(bin, 'npm.cmd'), `@"${process.execPath}" "${entry}" %*\r\n`)
   else fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/sh\nexec "${process.execPath}" "${entry}" "$@"\n`, { mode: 0o755 })
+  const decoys = process.platform === 'win32' && withDecoys ? createRepoLocalExecutableDecoys(root) : null
+  const npmMarker = path.join(root, '.repo-local-npm-ran')
+  if (decoys !== null) {
+    fs.writeFileSync(path.join(root, 'npm.cmd'), `@echo off\r\necho called>"${npmMarker}"\r\nexit /b 31\r\n`)
+  }
   const log = path.join(tempDir(), 'npm.log')
   const pathKey = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
-  const env = { ...process.env, [pathKey]: `${bin}${path.delimiter}${process.env[pathKey] ?? ''}`, TG_FAKE_NPM_LOG: log }
+  const pathPrefix = decoys === null ? [bin] : [root, bin]
+  const env: NodeJS.ProcessEnv = { ...process.env, [pathKey]: `${pathPrefix.join(path.delimiter)}${path.delimiter}${process.env[pathKey] ?? ''}`, TG_FAKE_NPM_LOG: log, ...extra }
+  if (process.platform === 'win32') {
+    for (const key of Object.keys(env)) if (key.toLowerCase() === 'npm_execpath') delete env[key]
+    env.npm_execpath = npmCli
+    if (decoys !== null) {
+      const nodeOptionsKey = Object.keys(env).find((key) => key.toUpperCase() === 'NODE_OPTIONS') ?? 'NODE_OPTIONS'
+      env[nodeOptionsKey] = [env[nodeOptionsKey], decoys.preloadOption].filter(Boolean).join(' ')
+    }
+  }
   const res = spawnSync(process.execPath, [path.join(root, 'scripts', 'post-merge.mjs')], { cwd: root, encoding: 'utf8', env })
   const installs = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split(NL).filter(Boolean).length : 0
-  return { status: res.status, stdout: res.stdout, stderr: res.stderr, installs }
+  return {
+    status: res.status,
+    stdout: res.stdout,
+    stderr: res.stderr,
+    installs,
+    localExecutableRan: decoys !== null && fs.existsSync(decoys.marker),
+    npmCommandRan: fs.existsSync(npmMarker),
+  }
 }
+
+describe('post-merge executable resolution', () => {
+  it.runIf(process.platform === 'win32')('does not execute repository-local Git or npm launchers', () => {
+    const root = checkoutWhereLockChanged()
+    const result = runPostMerge(root, {}, true)
+    expect(result.status).toBe(0)
+    expect(result.installs).toBe(1)
+    expect(result.localExecutableRan).toBe(false)
+    expect(result.npmCommandRan).toBe(false)
+  })
+})
 
 describe('post-merge after a pull that changed package-lock.json', () => {
   it('hands back the committed lock bytes the install rewrote, and says so', { timeout: 120_000 }, () => {
@@ -97,6 +138,17 @@ describe('post-merge after a pull that changed package-lock.json', () => {
     const ran = runPostMerge(root)
     expect(ran.status, ran.stderr).toBe(0)
     expect(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')).toBe(edited)
+  })
+
+  it('restores the lock atomically and stops when npm install fails', { timeout: 120_000 }, () => {
+    const root = checkoutWhereLockChanged()
+    const ran = runPostMerge(root, { TG_FAKE_NPM_FAIL_INSTALL: '1' })
+    expect(ran.status).toBe(1)
+    expect(ran.installs).toBe(1)
+    expect(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')).toBe(COMMITTED_LOCK)
+    expect(ran.stdout).not.toContain('Building token-goat bundle')
+    expect(ran.stderr).toContain('npm install failed; aborting build and synchronization.')
+    expect(fs.readdirSync(root).filter((name) => name.startsWith('.package-lock.json.'))).toEqual([])
   })
 
   it('skips the install when node_modules links to a directory outside the checkout, and names it', { timeout: 120_000 }, () => {

@@ -22,6 +22,9 @@ const STUB_BUILD = [
 function stageCheckout(root: string): void {
   fs.mkdirSync(path.join(root, 'scripts'), { recursive: true })
   fs.copyFileSync(SCRIPT, path.join(root, 'scripts', 'post-merge.mjs'))
+  fs.copyFileSync(path.join(path.dirname(SCRIPT), 'atomic-write.mjs'), path.join(root, 'scripts', 'atomic-write.mjs'))
+  fs.copyFileSync(path.join(path.dirname(SCRIPT), 'dependabot-body.mjs'), path.join(root, 'scripts', 'dependabot-body.mjs'))
+  fs.copyFileSync(path.join(path.dirname(SCRIPT), 'git-executable.mjs'), path.join(root, 'scripts', 'git-executable.mjs'))
   fs.writeFileSync(path.join(root, 'build.mjs'), STUB_BUILD)
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'stub', private: true, scripts: { build: 'node build.mjs' } }))
 }
@@ -215,31 +218,37 @@ describe('post-merge sync in a checkout that is not the active install', () => {
     fs.writeFileSync(path.join(globalDir, 'package.json'), JSON.stringify({ name: 'token-goat', version: '2.9.31' }))
   }
 
-  /** A directory holding an `npm` that refuses `root` (exit 1) and runs the stub build for `run build`, as the first PATH entry, so the script's `npm root -g` fails the way a broken npm install does while the build step still works. */
+  /** A directory holding an npm stub that refuses `root` (exit 1) and runs the stub build for `run build`; Windows names its CLI directly and POSIX finds its launcher on PATH. */
   function failingNpmPath(): NodeJS.ProcessEnv {
     const dir = tempDir()
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(
-      path.join(dir, 'npm-stub.mjs'),
-      [
-        "import { spawnSync } from 'node:child_process'",
-        'const args = process.argv.slice(2)',
-        "if (args[0] === 'root') {",
-        "  process.stderr.write('stub npm: root refused\\n')",
-        '  process.exit(1)',
-        '}',
-        "if (args[0] === 'run' && args[1] === 'build') process.exit(spawnSync(process.execPath, ['build.mjs'], { stdio: 'inherit' }).status ?? 1)",
-        'process.exit(2)',
-        '',
-      ].join('\n'),
-    )
+    const stub = [
+      "import { spawnSync } from 'node:child_process'",
+      'const args = process.argv.slice(2)',
+      "if (args[0] === 'root') {",
+      "  process.stderr.write('stub npm: root refused\\n')",
+      '  process.exit(1)',
+      '}',
+      "if (args[0] === 'run' && args[1] === 'build') process.exit(spawnSync(process.execPath, ['build.mjs'], { stdio: 'inherit' }).status ?? 1)",
+      'process.exit(2)',
+      '',
+    ].join('\n')
+    const stubPath = path.join(dir, 'npm-stub.mjs')
+    fs.writeFileSync(stubPath, stub)
     if (process.platform === 'win32') {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }))
+      fs.copyFileSync(stubPath, path.join(dir, 'npm-cli.js'))
       fs.writeFileSync(path.join(dir, 'npm.cmd'), `@"${process.execPath}" "%~dp0npm-stub.mjs" %*\r\n`)
     } else {
       fs.writeFileSync(path.join(dir, 'npm'), `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/npm-stub.mjs" "$@"\n`, { mode: 0o755 })
     }
     const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') ?? 'PATH'
-    return { [pathKey]: `${dir}${path.delimiter}${process.env[pathKey] ?? ''}` }
+    const env: NodeJS.ProcessEnv = { [pathKey]: `${dir}${path.delimiter}${process.env[pathKey] ?? ''}` }
+    if (process.platform === 'win32') {
+      const npmExecPathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'npm_execpath') ?? 'npm_execpath'
+      env[npmExecPathKey] = path.join(dir, 'npm-cli.js')
+    }
+    return env
   }
 
   it('builds and touches nothing else when the global token-goat is a registry copy elsewhere', { timeout: 120_000 }, () => {

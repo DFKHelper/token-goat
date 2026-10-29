@@ -50,14 +50,22 @@ export function assertWalkableRoot(root: string): void {
 /** Hard ceiling for a `--force` walk. `--force` is an explicit "yes, this folder really is that big" from the user, so it lifts the default {@link MAX_FILES_SCANNED} refusal -- but it does not remove the bound entirely. An unbounded walk is how one mistyped root becomes a whole-drive scan, and the enumeration itself has to terminate before any of the indexing cost is even paid. */
 export const MAX_FILES_SCANNED_FORCED = 500_000
 
-/** Collect the files a non-git walk-index should parse under `root`: the bounded source-file walk minus {@link isWalkExcluded} entries. Throws if the root is disallowed (see {@link assertWalkableRoot}) or the tree is too large (>= {@link MAX_FILES_SCANNED} source files -- the "too much stuff" ceiling), unless `force` raises that ceiling to {@link MAX_FILES_SCANNED_FORCED}. `force` deliberately governs **volume only**. {@link assertWalkableRoot} still runs unconditionally, because the two guards protect against different things: the file cap is a cost the user is entitled to accept for a folder they actually meant, while walking a filesystem root or the home directory is never what anyone meant, at any file count. */
+/** Collect the files a non-git walk-index should parse under `root`: the bounded source-file walk minus {@link isWalkExcluded} entries. Throws if the root is disallowed or either walk ceiling is reached; `force` raises only the source-file ceiling. The directory-entry safety cap and {@link assertWalkableRoot} always apply. */
 export function collectWalkIndexFiles(root: string, opts: { force?: boolean } = {}): string[] {
   const resolved = path.resolve(root)
   assertWalkableRoot(resolved)
   const force = opts.force === true
   const ceiling = force ? MAX_FILES_SCANNED_FORCED : MAX_FILES_SCANNED
-  const { files } = walkProject(resolved, { includeEmbeddableDocuments: true, maxFiles: ceiling })
-  if (files.length >= ceiling) {
+  const walk = walkProject(resolved, { includeEmbeddableDocuments: true, maxFiles: ceiling })
+  const { files } = walk
+  if (walk.truncated) {
+    if (files.length < ceiling) {
+      throw new Error(
+        `${echoedValue(resolved)} could not be fully walked (stopped at the directory-entry safety cap); ` +
+          `the source-file list is incomplete. ` +
+          (force ? 'Point at a narrower path.' : 'Index a git repo or point at a narrower path.'),
+      )
+    }
     // walkProject stops *at* the ceiling, so this count is a floor, not the true total -- say so rather than implying an exact measurement the walk never made.
     throw new Error(
       `${echoedValue(resolved)} has too many source files (walk stopped at ${ceiling}; the real total is ` +

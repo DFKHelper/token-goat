@@ -15,7 +15,7 @@ function workflowFiles(): string[] {
       what: '.github/workflows/*.yml files',
       items: fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml')),
       floor: 3,
-      mustInclude: ['ci.yml', 'publish.yml'],
+      mustInclude: ['ci.yml', 'publish.yml', 'pages.yml'],
     }),
   ]
 }
@@ -32,6 +32,22 @@ function topLevelPermissionsBlock(text: string): string | undefined {
   const body: string[] = [lines[start] as string]
   for (const line of lines.slice(start + 1)) {
     if (/^\S/.test(line)) break
+    body.push(line)
+  }
+  return body.join('\n')
+}
+
+function jobPermissionsBlock(text: string, jobName: string): string | undefined {
+  const lines = text.split('\n')
+  const jobStart = lines.findIndex((line) => line === `  ${jobName}:`)
+  if (jobStart === -1) return undefined
+  const nextJob = lines.findIndex((line, index) => index > jobStart && /^ {2}\S/.test(line))
+  const jobLines = lines.slice(jobStart, nextJob === -1 ? undefined : nextJob)
+  const start = jobLines.findIndex((line) => /^ {4}permissions:/.test(line))
+  if (start === -1) return undefined
+  const body = [jobLines[start] as string]
+  for (const line of jobLines.slice(start + 1)) {
+    if (/^ {4}\S/.test(line)) break
     body.push(line)
   }
   return body.join('\n')
@@ -67,5 +83,15 @@ describe('workflow token scope', () => {
     expect(topLevelPermissionsBlock(publish), 'id-token must not be the workflow-wide default').not.toContain(
       'id-token',
     )
+  })
+
+  it('grants Pages publishing permissions only to the deploy job', () => {
+    const pages = read('pages.yml')
+    const workflowDefault = topLevelPermissionsBlock(pages) ?? ''
+    expect(workflowDefault).not.toContain('pages:')
+    expect(workflowDefault).not.toContain('id-token:')
+    expect(jobPermissionsBlock(pages, 'build')).toBeUndefined()
+    expect(jobPermissionsBlock(pages, 'deploy')).toContain('pages: write')
+    expect(jobPermissionsBlock(pages, 'deploy')).toContain('id-token: write')
   })
 })

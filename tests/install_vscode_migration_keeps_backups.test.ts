@@ -64,7 +64,7 @@ function backupsOf(file: string): string[] {
 
 /** An existing user-scope install carrying content the user typed themselves. */
 function arrangeUserScopeInstallWithUserContent(): { userMcp: string; userInstructions: string } {
-  installVscode({})
+  installVscode({ projectRoot: project })
   const userMcp = vscodeMcpPath({})
   const userInstructions = vscodeInstructionsPath({})
   const mcp = JSON.parse(fs.readFileSync(userMcp, 'utf8')) as { servers: Record<string, unknown> }
@@ -96,7 +96,7 @@ describe('installVscode migrating a user-scope install into the project', () => 
   it('still sweeps its own backups on a real uninstall, which is what the user asked for', () => {
     // The other half of the option: without this, "keep the backups" would just be leaking litter on every uninstall, and the fix would have traded one defect for another.
     const { userMcp, userInstructions } = arrangeUserScopeInstallWithUserContent()
-    expect(uninstallVscode({})).toBe(true)
+    expect(uninstallVscode({ projectRoot: project })).toBe(true)
     expect(backupsOf(userMcp)).toEqual([])
     expect(backupsOf(userInstructions)).toEqual([])
   })

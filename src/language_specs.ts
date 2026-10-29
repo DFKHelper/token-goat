@@ -125,12 +125,12 @@ export const LANGUAGE_SPECS = [
   { id: 'metal', extraction: 'regex', extensions: ['.metal'], label: 'Metal', ...CODE, fence: 'metal' },
   // `.f`, `.for` and `.f77` are read as fixed form unless code starts in column 1. `.fpp` stays unmapped: it is used for both forms.
   { id: 'fortran', extraction: 'regex', extensions: ['.f', '.for', '.f77', '.f90', '.f95', '.f03', '.f08'], label: 'Fortran', ...CODE, fence: 'fortran' },
-  // `.inc` stays unmapped (many languages use it), and a `.pp` (Puppet uses it too) is Pascal only on a unit, program or library header: refineLanguageByContent in parser_types.ts decides. Text-form `.dfm` forms list their components.
+  // `.inc` is assigned to PHP for legacy includes, not Pascal; a `.pp` (Puppet uses it too) is Pascal only on a unit, program or library header: refineLanguageByContent in parser_types.ts decides. Text-form `.dfm` forms list their components.
   { id: 'pascal', extraction: 'regex', extensions: ['.pas', '.dpr', '.dpk', '.lpr', '.dfm'], label: 'Pascal', ...CODE, fence: 'pascal' },
   // MATLAB has no extension of its own: a `.m` that is not Objective-C is MATLAB only on a `function` or `classdef` header line, which refineLanguageByContent in parser_types.ts checks, so a Mathematica or Mercury `.m` stays unknown.
   { id: 'matlab', extraction: 'regex', extensions: [], label: 'MATLAB', ...CODE, fence: 'matlab' },
   { id: 'cmake', extraction: 'regex', extensions: ['.cmake'], basenames: ['cmakelists.txt'], label: 'CMake', ...CODE, fence: 'cmake', basenameImportsExtension: '.cmake' },
-  // One adapter for the three assembly dialects that share these extensions: GNU as (`.s`, and `.S` through the lowercase lookup), NASM (`.asm`, `.nasm`) and IBM High Level Assembler (`.asm`), which the adapter tells apart by content. `.inc` stays unmapped: many languages use it.
+  // One adapter for the three assembly dialects that share these extensions: GNU as (`.s`, and `.S` through the lowercase lookup), NASM (`.asm`, `.nasm`) and IBM High Level Assembler (`.asm`), which the adapter tells apart by content. `.inc` belongs to PHP legacy includes, not assembly, despite its use elsewhere.
   { id: 'asm', extraction: 'regex', extensions: ['.s', '.asm', '.nasm'], label: 'Assembly', ...CODE, fence: 'asm' },
   { id: 'batch', extraction: 'regex', extensions: ['.bat', '.cmd'], label: 'Windows batch', ...CODE, fence: 'batch' },
   { id: 'erlang', extraction: 'regex', extensions: ['.erl', '.hrl'], label: 'Erlang', ...CODE, fence: 'erlang' },

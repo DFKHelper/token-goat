@@ -143,6 +143,30 @@ function writeAtomic(target, data) {
   }
 }
 
+function resolveDocTarget(root, doc) {
+  const rootReal = fs.realpathSync(root)
+  const suffix = []
+  let existing = path.resolve(root, doc)
+  let target
+  while (true) {
+    try {
+      target = path.resolve(fs.realpathSync(existing), ...suffix)
+      break
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error
+      const parent = path.dirname(existing)
+      if (parent === existing) throw error
+      suffix.unshift(path.basename(existing))
+      existing = parent
+    }
+  }
+  const relative = path.relative(rootReal, target)
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new ArchDocError(`${doc}: architecture doc must resolve inside the repository`)
+  }
+  return target
+}
+
 function parseArgs(argv) {
   let mode
   let staged = false
@@ -184,6 +208,7 @@ export function runCli(argv, { cwd = process.cwd(), stderr = (line) => process.s
     const source = args.staged ? indexSource(root) : worktreeSource(root)
     if (args.staged) assertConfigStaged(root, source)
     const config = loadConfig(source.configReader)
+    const docTarget = args.staged ? null : resolveDocTarget(root, config.doc)
     const p = plan(root, config, source)
     if (args.mode === 'check') {
       const r = report(p)
@@ -193,7 +218,8 @@ export function runCli(argv, { cwd = process.cwd(), stderr = (line) => process.s
     }
     for (const note of p.notes) stderr(`info: ${note}`)
     if (p.generatedInner !== currentInner(p.docText, p.markers)) {
-      writeAtomic(path.join(root, config.doc), splice(p.docText, p.markers, p.generatedInner))
+      if (docTarget === null) throw new ArchDocError(`${config.doc}: cannot write from the staged index`)
+      writeAtomic(docTarget, splice(p.docText, p.markers, p.generatedInner))
       stderr(`info: ${config.doc}: updated (${p.rows.size} modules)`)
     }
     return 0

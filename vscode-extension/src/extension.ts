@@ -12,11 +12,36 @@ function requireTrustedWorkspace(action: string): void {
   }
 }
 
-async function withTemporaryText<T>(text: string, extension: string, action: (file: string) => Promise<T>): Promise<T> {
+function throwIfCancelled(signal?: AbortSignal): void {
+  if (!signal?.aborted) return
+  const error = new Error('The operation was cancelled.')
+  error.name = 'AbortError'
+  throw error
+}
+
+function runTokenGoatCancellable(args: string[], projectRoot: string | undefined, signal?: AbortSignal): Promise<string> {
+  if (signal) return runTokenGoat(args, projectRoot, { signal })
+  return projectRoot === undefined ? runTokenGoat(args) : runTokenGoat(args, projectRoot)
+}
+
+function runGitDiffCancellable(repoPath: string, signal?: AbortSignal): Promise<string> {
+  return signal ? runGitDiff(repoPath, { signal }) : runGitDiff(repoPath)
+}
+
+async function withTemporaryText<T>(
+  text: string,
+  extension: string,
+  action: (file: string) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  throwIfCancelled(signal)
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'token-goat-vscode-'))
   const file = path.join(directory, `payload${extension}`)
   try {
-    await fs.writeFile(file, text, 'utf8')
+    throwIfCancelled(signal)
+    if (signal) await fs.writeFile(file, text, { encoding: 'utf8', signal })
+    else await fs.writeFile(file, text, 'utf8')
+    throwIfCancelled(signal)
     return await action(file)
   } finally {
     await fs.rm(directory, { recursive: true, force: true })
@@ -63,15 +88,23 @@ export function fencePayload(payload: string): string {
 }
 
 // Single compression path for all text payloads: scrub, compress, report.
-export async function compressText(text: string, extension: string): Promise<string> {
+export async function compressText(text: string, extension: string, signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal)
   const scrubbed = scrubPii(text)
   const { redactions } = scrubbed
   // Fenced on both branches. Without the decoder there is no compressed payload to wrap, but the text still lands in a chat message between two sentences the composer wrote -- unfenced it runs into both, and the model is left to guess where the quoted material starts and stops. The redaction notice is owed on this branch too: the user is told what was removed on the strength of it happening, not of the compressor having been available to do it.
-  if (!await ensureDecoderSetup()) {
+  if (!await ensureDecoderSetup(signal)) {
+    throwIfCancelled(signal)
     reportRedactions(redactions)
     return fencePayload(scrubbed.text)
   }
-  const payload = await withTemporaryText(scrubbed.text, extension, (file) => runTokenGoat(['compress-text', '--file', file]))
+  const payload = await withTemporaryText(
+    scrubbed.text,
+    extension,
+    (file) => runTokenGoatCancellable(['compress-text', '--file', file], undefined, signal),
+    signal,
+  )
+  throwIfCancelled(signal)
   showStats(payload)
   reportRedactions(redactions)
   return fencePayload(payload)
@@ -141,7 +174,8 @@ function isUnknownMcpStatusCommandError(error: unknown): boolean {
   return /unknown command ['"]mcp-status['"]/i.test(message)
 }
 
-export async function ensureDecoderSetup(): Promise<boolean> {
+export async function ensureDecoderSetup(signal?: AbortSignal): Promise<boolean> {
+  throwIfCancelled(signal)
   if (decoderChecked) return decoderAvailable
   decoderChecked = true
   // Registering the MCP server definition makes the decoder exist by construction: VS Code starts the server from that definition on demand, so there is no mcp.json to write, no window reload, and nothing for the user to set up. Everything below this line exists only to arrange what registration already guarantees, so asking the user to run `install --vscode` here would be asking them to fix a problem they do not have.
@@ -150,10 +184,17 @@ export async function ensureDecoderSetup(): Promise<boolean> {
   // Shell out to `mcp-status` rather than reading mcp.json here directly: a user-scope install (the default since 9c220be7) has no workspace .vscode/mcp.json at all, so reading only that file made this prompt fire every session for a correctly-installed user. The CLI's vscodeDecoderConfigured is the single source of truth the installer itself writes against, so this can never drift from what "installed" actually means -- and it works with no folder open, since a user-scope install is workspace-independent.
   try {
     const args = folder ? ['mcp-status', '--vscode', '--project'] : ['mcp-status', '--vscode']
-    const stdout = await runTokenGoat(args, folder?.uri.fsPath)
+    const stdout = signal
+      ? await runTokenGoat(args, folder?.uri.fsPath, { signal })
+      : await runTokenGoat(args, folder?.uri.fsPath)
+    throwIfCancelled(signal)
     const status = JSON.parse(stdout) as { configured: boolean }
     if (status.configured) return decoderAvailable = true
   } catch (error) {
+    if (signal?.aborted) {
+      decoderChecked = false
+      throw error
+    }
     if (isUnknownMcpStatusCommandError(error)) {
       // Deliberately no fallback to reading mcp.json directly here: that was the exact per-scope-assumption bug `mcp-status` replaced (9c220be7 / 71bf3fea), so resurrecting it as a "just in case" path would reintroduce the same drift for a stale CLI, which is precisely when the version information from that old logic is least trustworthy. Telling the user to update the one thing that's actually out of date is both simpler and correct.
       void vscode.window.showWarningMessage(
@@ -168,12 +209,22 @@ export async function ensureDecoderSetup(): Promise<boolean> {
     'token-goat compressed this for chat, but no decoder is set up — chat will show an unreadable blob. Set it up now? (runs: token-goat install --vscode)',
     'Set up now', 'Not now',
   )
+  if (signal?.aborted) {
+    decoderChecked = false
+    throwIfCancelled(signal)
+  }
   if (choice !== 'Set up now') return false
   try {
     requireTrustedWorkspace('Installing the token-goat decoder')
-    await runTokenGoat(['install', '--vscode'], folder?.uri.fsPath)
+    if (signal) await runTokenGoat(['install', '--vscode'], folder?.uri.fsPath, { signal })
+    else await runTokenGoat(['install', '--vscode'], folder?.uri.fsPath)
+    throwIfCancelled(signal)
     void vscode.window.showInformationMessage('token-goat decoder installed. Two steps left: reload the window (Ctrl+Shift+P → Developer: Reload Window), then start the server when VS Code asks — or via Ctrl+Shift+P → "MCP: List Servers" → token-goat → Start. Compressed payloads also need Agent mode in chat.')
   } catch (error) {
+    if (signal?.aborted) {
+      decoderChecked = false
+      throw error
+    }
     reportError(error)
   }
   return false
@@ -321,15 +372,17 @@ function showStats(payload: string): void {
   )
 }
 
-async function compressSelectionPayload(): Promise<string> {
+async function compressSelectionPayload(signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal)
   const editor = vscode.window.activeTextEditor
   if (!editor) throw new Error('No active editor is open.')
   const text = editor.document.getText(editor.selection)
   if (!text) throw new Error('Select text before sending a compressed payload.')
-  return compressText(text, '.txt')
+  return compressText(text, '.txt', signal)
 }
 
-async function compressSurgicalPayload(): Promise<string> {
+async function compressSurgicalPayload(signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal)
   const editor = vscode.window.activeTextEditor
   if (!editor) throw new Error('No active file is open.')
   const radius = contextRadius()
@@ -338,12 +391,14 @@ async function compressSurgicalPayload(): Promise<string> {
   const end = Math.min(editor.document.lineCount, line + radius + 1)
   const sourceName = editor.document.isUntitled ? 'untitled document' : path.basename(editor.document.uri.fsPath)
   const excerpt = editor.document.getText(new vscode.Range(start, 0, end, 0))
-  const payload = await compressText(excerpt, '.txt')
+  const payload = await compressText(excerpt, '.txt', signal)
+  throwIfCancelled(signal)
   return `Surgical ${start + 1}-${end} line excerpt from ${sourceName}:\n${payload}`
 }
 
 // Resolve the symbol under the cursor via the token-goat index (`scope "file:line"` prints "name\tkind\tfile:start-end", innermost first), then pull its full body. Falls back to the cursor-window excerpt when the project is not indexed or the cursor sits outside any symbol.
-async function compressSymbolPayload(): Promise<string> {
+async function compressSymbolPayload(signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal)
   requireTrustedWorkspace('Sending a symbol')
   const editor = vscode.window.activeTextEditor
   if (!editor || editor.document.isUntitled) throw new Error('Open a saved file to send the symbol at the cursor.')
@@ -354,39 +409,50 @@ async function compressSymbolPayload(): Promise<string> {
   const line = editor.selection.active.line + 1
   let scope: string
   try {
-    scope = await runTokenGoat(['scope', `${relative}:${line}`], workspace.uri.fsPath)
-  } catch {
-    return compressSurgicalPayload()
+    scope = await runTokenGoatCancellable(['scope', `${relative}:${line}`], workspace.uri.fsPath, signal)
+  } catch (error) {
+    if (signal?.aborted) throw error
+    return compressSurgicalPayload(signal)
   }
+  throwIfCancelled(signal)
   const first = scope.split('\n')[0]?.split('\t')
-  if (!first || first.length < 3) return compressSurgicalPayload()
+  if (!first || first.length < 3) return compressSurgicalPayload(signal)
   const [name, kind, location] = first
   assertSafeArgSegment(name, 'The symbol name')
   const startLine = /:(\d+)-\d+$/.exec(location)?.[1]
   const spec = startLine ? `${relative}::${name}@${startLine}` : `${relative}::${name}`
-  const body = await runTokenGoat(['read', spec], workspace.uri.fsPath)
-  const payload = await compressText(body, '.txt')
+  const body = await runTokenGoatCancellable(['read', spec], workspace.uri.fsPath, signal)
+  throwIfCancelled(signal)
+  const payload = await compressText(body, '.txt', signal)
+  throwIfCancelled(signal)
   return `Symbol ${name} (${kind}) from ${path.basename(relative)}:\n${payload}`
 }
 
-async function compressFilePayload(target?: vscode.Uri): Promise<string> {
+async function compressFilePayload(target?: vscode.Uri, signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal)
   const editor = vscode.window.activeTextEditor
   if (target && editor && editor.document.uri.fsPath === target.fsPath) {
     // The target is open in the editor: compress the in-memory text so unsaved changes are included.
     const sourceName = path.basename(target.fsPath)
-    const payload = await compressText(editor.document.getText(), path.extname(target.fsPath) || '.txt')
+    const payload = await compressText(editor.document.getText(), path.extname(target.fsPath) || '.txt', signal)
     return `Whole file ${sourceName}:\n${payload}`
   }
   const file = target?.fsPath ?? editor?.document.uri.fsPath
   if (!file) throw new Error('No file is open or selected.')
-  const payload = await compressText(await fs.readFile(file, 'utf8'), path.extname(file) || '.txt')
+  const text = signal
+    ? await fs.readFile(file, { encoding: 'utf8', signal })
+    : await fs.readFile(file, 'utf8')
+  throwIfCancelled(signal)
+  const payload = await compressText(text, path.extname(file) || '.txt', signal)
   return `Whole file ${path.basename(file)}:\n${payload}`
 }
 
-async function compressClipboardPayload(): Promise<string> {
+async function compressClipboardPayload(signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal)
   const text = await vscode.env.clipboard.readText()
+  throwIfCancelled(signal)
   if (!text.trim()) throw new Error('The clipboard has no text. Copy the ticket, log, or message first.')
-  const payload = await compressText(text, '.txt')
+  const payload = await compressText(text, '.txt', signal)
   return `Compressed clipboard contents (${text.length} characters):\n${payload}`
 }
 
@@ -412,13 +478,17 @@ function extractLogSignal(text: string): string {
   return out.join('\n')
 }
 
-async function compressErrorsPayload(target?: vscode.Uri): Promise<string> {
+async function compressErrorsPayload(target?: vscode.Uri, signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal)
   const file = target?.fsPath ?? vscode.window.activeTextEditor?.document.uri.fsPath
   if (!file) throw new Error('Open a log file, or right-click one in the Explorer.')
-  const text = await fs.readFile(file, 'utf8')
-  const signal = extractLogSignal(text)
-  const payload = await compressText(signal, '.log')
-  return `Errors and warnings from ${path.basename(file)} (${text.length} → ${signal.length} characters before compression):\n${payload}`
+  const text = signal
+    ? await fs.readFile(file, { encoding: 'utf8', signal })
+    : await fs.readFile(file, 'utf8')
+  throwIfCancelled(signal)
+  const extracted = extractLogSignal(text)
+  const payload = await compressText(extracted, '.log', signal)
+  return `Errors and warnings from ${path.basename(file)} (${text.length} → ${extracted.length} characters before compression):\n${payload}`
 }
 
 async function zipListPayload(target?: vscode.Uri): Promise<string> {
@@ -475,25 +545,29 @@ const CANNED_PROMPTS: Record<string, string> = {
   formal: `Rewrite my text below in a formal, professional tone. Keep it clear — formal does not mean long sentences or big words.`,
 }
 
-async function cannedPromptPayload(kind: keyof typeof CANNED_PROMPTS): Promise<string> {
+async function cannedPromptPayload(kind: keyof typeof CANNED_PROMPTS, signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal)
   const editor = vscode.window.activeTextEditor
   const selection = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : ''
   const clipboard = selection ? '' : await vscode.env.clipboard.readText()
+  throwIfCancelled(signal)
   const fileText = selection || clipboard ? '' : editor && !editor.document.isUntitled ? editor.document.getText() : ''
   const text = selection || clipboard || fileText
   if (!text.trim()) throw new Error('Select some text, copy it to the clipboard, or open a file first.')
   const source = selection ? 'the selected text' : clipboard ? 'the clipboard' : 'the open file'
-  const payload = await compressText(text, '.txt')
+  const payload = await compressText(text, '.txt', signal)
   return `${CANNED_PROMPTS[kind]}\nCompressed source (${source}):\n${payload}`
 }
 
-async function compressDiffPayload(): Promise<string> {
+async function compressDiffPayload(signal?: AbortSignal): Promise<string> {
+  throwIfCancelled(signal)
   requireTrustedWorkspace('Sending a git diff')
   const workspace = vscode.workspace.workspaceFolders?.[0]
   if (!workspace) throw new Error('Open a workspace folder to send its git diff.')
-  const diff = await runGitDiff(workspace.uri.fsPath)
+  const diff = await runGitDiffCancellable(workspace.uri.fsPath, signal)
+  throwIfCancelled(signal)
   if (!diff.trim()) throw new Error('The working tree has no changes against HEAD.')
-  const payload = await compressText(diff, '.diff')
+  const payload = await compressText(diff, '.diff', signal)
   return `Compressed git diff of ${workspace.name} against HEAD:\n${payload}`
 }
 
@@ -583,30 +657,39 @@ export function activate(context: vscode.ExtensionContext): void {
   registerMcpDecoderProvider(context)
 
   const participant = vscode.chat.createChatParticipant('token-goat-vscode.tokenGoat', async (request, _ctx, stream, token) => {
+    const controller = new AbortController()
+    const cancellation = token.onCancellationRequested(() => controller.abort())
+    const signal = controller.signal
     try {
-      await ensureDecoderSetup()
+      if (token.isCancellationRequested) return
+      await ensureDecoderSetup(signal)
+      throwIfCancelled(signal)
       if (request.command) stream.progress('Compressing…')
+      const markdown = (content: string): void => {
+        if (token.isCancellationRequested || signal.aborted) return
+        stream.markdown(content)
+      }
       const reply = (content: string): void => {
-        stream.markdown(`${content}\n\n*Compressed with token-goat. Send this to Copilot in Agent mode to decode.*`)
+        markdown(`${content}\n\n*Compressed with token-goat. Send this to Copilot in Agent mode to decode.*`)
       }
       if (request.command === 'selection') {
-        reply(`Use this local token-goat compressed selection when useful:\n${await compressSelectionPayload()}`)
+        reply(`Use this local token-goat compressed selection when useful:\n${await compressSelectionPayload(signal)}`)
       } else if (request.command === 'context') {
-        reply(await compressSurgicalPayload())
+        reply(await compressSurgicalPayload(signal))
       } else if (request.command === 'symbol') {
-        reply(await compressSymbolPayload())
+        reply(await compressSymbolPayload(signal))
       } else if (request.command === 'file') {
-        reply(await compressFilePayload())
+        reply(await compressFilePayload(undefined, signal))
       } else if (request.command === 'diff') {
-        reply(await compressDiffPayload())
+        reply(await compressDiffPayload(signal))
       } else if (request.command === 'paste') {
-        reply(await compressClipboardPayload())
+        reply(await compressClipboardPayload(signal))
       } else if (request.command === 'errors') {
-        reply(await compressErrorsPayload())
+        reply(await compressErrorsPayload(undefined, signal))
       } else if (request.command && request.command in CANNED_PROMPTS) {
-        reply(await cannedPromptPayload(request.command))
+        reply(await cannedPromptPayload(request.command, signal))
       } else {
-        stream.markdown(
+        markdown(
           'Ask me to shrink something before it goes into chat. Subcommands: ' +
           '`/paste` (whatever you copied — a ticket, an email, an error message), ' +
           '`/errors` (just the errors and warnings from the open log file), ' +
@@ -618,9 +701,12 @@ export function activate(context: vscode.ExtensionContext): void {
         )
       }
     } catch (error) {
-      stream.markdown(`token-goat: ${error instanceof Error ? error.message : String(error)}`)
+      if (!token.isCancellationRequested && !signal.aborted) {
+        stream.markdown(`token-goat: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    } finally {
+      cancellation.dispose()
     }
-    if (token.isCancellationRequested) return
   })
   participant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'icon.png')
   context.subscriptions.push(participant)

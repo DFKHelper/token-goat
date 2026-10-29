@@ -112,6 +112,72 @@ describe('the test setup rebuilds dist/ exactly when it was built from other sou
     expect(shouldBuildBundle(root)).toBe(true)
   })
 
+  it('rejects a directory link from src/ that resolves outside the repository', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-bundle-outside-'))
+    const link = src('linked')
+    try {
+      fs.writeFileSync(path.join(outside, 'external.ts'), 'export const external = 1\n')
+      fs.symlinkSync(outside, link, 'junction')
+      expect(() => sourceDigest(root)).toThrow(/outside the repository/)
+    } finally {
+      fs.rmSync(link, { recursive: true, force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a file link from src/ that resolves outside the repository', (ctx) => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-bundle-outside-'))
+    const link = src('external.ts')
+    try {
+      const externalFile = path.join(outside, 'external.ts')
+      fs.writeFileSync(externalFile, 'export const external = 1\n')
+      try {
+        fs.symlinkSync(externalFile, link, 'file')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EPERM') return ctx.skip()
+        throw error
+      }
+      expect(() => sourceDigest(root)).toThrow(/outside the repository/)
+    } finally {
+      fs.rmSync(link, { force: true })
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects a build-script import that resolves outside the repository', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-bundle-outside-'))
+    try {
+      const externalFile = path.join(outside, 'external.mjs')
+      fs.writeFileSync(externalFile, 'export const external = 1\n')
+      const specifier = path.relative(root, externalFile).split(path.sep).join('/')
+      fs.writeFileSync(path.join(root, 'esbuild.config.mjs'), `import '${specifier}'\n`)
+      expect(() => buildScripts(root)).toThrow(/outside the repository/)
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true })
+    }
+  })
+
+  it('bounds the number of source files included in the digest', () => {
+    const many = path.join(root, 'src', 'many')
+    fs.mkdirSync(many)
+    for (let i = 0; i < 2049; i++) fs.writeFileSync(path.join(many, `${i}.ts`), '')
+    expect(() => sourceDigest(root)).toThrow(/file limit/)
+  })
+
+  it('bounds source-directory entries even when they contain no files', () => {
+    const many = path.join(root, 'src', 'many')
+    fs.mkdirSync(many)
+    for (let i = 0; i < 4097; i++) fs.mkdirSync(path.join(many, `${i}`))
+    expect(() => sourceDigest(root)).toThrow(/entry limit/)
+  })
+
+  it('bounds the bytes included in the digest before reading a large source file', () => {
+    const large = src('large.ts')
+    fs.writeFileSync(large, '')
+    fs.truncateSync(large, 64 * 1024 * 1024 + 1)
+    expect(() => sourceDigest(root)).toThrow(/byte limit/)
+  })
+
   it('keeps the bundle when a script the build never imports changed', () => {
     fs.writeFileSync(path.join(root, 'scripts', 'unrelated.mjs'), 'export const unrelated = 2\n')
     expect(shouldBuildBundle(root)).toBe(false)

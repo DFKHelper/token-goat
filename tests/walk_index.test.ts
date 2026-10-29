@@ -109,12 +109,35 @@ describe('collectWalkIndexFiles', () => {
         const actual = (await vi.importActual('../src/baseline.js')) as Record<string, unknown>
         const max = actual.MAX_FILES_SCANNED as number
         const huge = Array.from({ length: max }, (_, i) => `${root}/f${i}.ts`)
-        return { ...actual, walkProject: () => ({ files: huge, languages: {} }) }
+        return { ...actual, walkProject: () => ({ files: huge, languages: {}, truncated: true }) }
       })
       vi.resetModules()
       const { collectWalkIndexFiles: collect } = await import('../src/walk_index.js')
 
       expect(() => collect(root)).toThrow(/too many source files/)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses an incomplete directory walk below the source-file ceiling', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-walk-entry-cap-'))
+    try {
+      vi.doMock('../src/baseline.js', async () => {
+        const actual = (await vi.importActual('../src/baseline.js')) as Record<string, unknown>
+        return {
+          ...actual,
+          walkProject: () => ({
+            files: [`${root}/one.ts`],
+            languages: { typescript: 1 },
+            truncated: true,
+          }),
+        }
+      })
+      vi.resetModules()
+      const { collectWalkIndexFiles: collect } = await import('../src/walk_index.js')
+
+      expect(() => collect(root)).toThrow(/directory-entry safety cap/)
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
@@ -130,7 +153,8 @@ describe('collectWalkIndexFiles', () => {
           ...actual,
           walkProject: (_r: string, o: { maxFiles?: number } = {}) => {
             const want = Math.min(o.maxFiles ?? Infinity, 25_000)
-            return { files: Array.from({ length: want }, (_, i) => `${root}/f${i}.ts`), languages: {} }
+            const files = Array.from({ length: want }, (_, i) => `${root}/f${i}.ts`)
+            return { files, languages: {}, truncated: files.length >= (o.maxFiles ?? Infinity) }
           },
         }
       })

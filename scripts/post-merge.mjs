@@ -6,33 +6,47 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
 import os from 'node:os'
+import { writeFileAtomically } from './atomic-write.mjs'
+
+import { npmCommand as resolveNpmCommand } from './dependabot-body.mjs'
+import { gitExecutable } from './git-executable.mjs'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const isWin = process.platform === 'win32'
-const npmCmd = isWin ? 'npm.cmd' : 'npm'
+const npmInvocation = isWin
+  ? resolveNpmCommand({ platform: process.platform, env: process.env, execPath: process.execPath, exists: fs.existsSync })
+  : { file: 'npm', prefix: [] }
 const nodeCmd = process.execPath
 const bundlePath = path.join(projectRoot, 'dist', 'token-goat.mjs')
+const failedSteps = []
 
-/** The command and arguments to hand `spawnSync`: a Windows `.cmd` shim (npm) cannot be spawned directly, so it runs through cmd.exe. */
-function launchable(cmd, args) {
-  return isWin && cmd.endsWith('.cmd') ? { cmd: 'cmd.exe', args: ['/d', '/s', '/c', cmd, ...args] } : { cmd, args }
+function npmLaunch(args) {
+  if (npmInvocation === null) return null
+  return { cmd: npmInvocation.file, args: [...npmInvocation.prefix, ...args] }
+}
+
+function runNpmStep(label, args, options = {}) {
+  const launch = npmLaunch(args)
+  if (launch === null) return runStep(label, null, [], options)
+  return runStep(label, launch.cmd, launch.args, options)
 }
 
 function runStep(label, cmd, args, options = {}) {
   process.stdout.write(`[token-goat post-merge] ${label}... `)
   const start = Date.now()
-  const launch = launchable(cmd, args)
-  const res = spawnSync(launch.cmd, launch.args, {
-    cwd: projectRoot,
-    encoding: 'utf8',
-    ...options,
-  })
+  const res = cmd === null
+    ? { status: null, error: new Error('npm-cli.js was not found in npm_execpath or beside Node'), stderr: null }
+    : spawnSync(cmd, args, { cwd: projectRoot, encoding: 'utf8', ...options })
   const duration = Date.now() - start
   if (res.status === 0) {
     process.stdout.write(`done (${duration}ms)\n`)
     return true
   }
   process.stdout.write(`failed (${duration}ms)\n`)
+  failedSteps.push(label)
+  if (res.error) {
+    process.stderr.write(`${res.error.message}\n`)
+  }
   if (res.stderr) {
     process.stderr.write(`${res.stderr}\n`)
   }
@@ -57,7 +71,9 @@ function copilotUserHooksDir() {
 }
 
 function gitChangedFiles() {
-  const diff = spawnSync('git', ['diff-tree', '-r', '--name-only', '--no-commit-id', 'ORIG_HEAD', 'HEAD'], {
+  const executable = gitExecutable(projectRoot)
+  if (executable === null) return []
+  const diff = spawnSync(executable, ['diff-tree', '-r', '--name-only', '--no-commit-id', 'ORIG_HEAD', 'HEAD'], {
     cwd: projectRoot,
     encoding: 'utf8',
   })
@@ -69,7 +85,9 @@ function gitChangedFiles() {
 
 /** True when `cwd` is a linked worktree rather than the main checkout: a linked worktree's git dir is `.git/worktrees/<name>`, apart from the common dir every checkout of the repository shares. */
 function isLinkedWorktree(cwd) {
-  const res = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], {
+  const executable = gitExecutable(cwd)
+  if (executable === null) return false
+  const res = spawnSync(executable, ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], {
     cwd,
     encoding: 'utf8',
   })
@@ -80,7 +98,8 @@ function isLinkedWorktree(cwd) {
 
 /** What npm says about the global token-goat: `{ dir }` with the directory a global `npm install` really lives in, else `{ dir: null, reason }` naming why there is none. `npm install -g .` links the checkout into npm's global root (`npm root -g`), a registry install puts a real copy there, so the realpath says which one the user runs. No dir means npm cannot say or no global token-goat exists: the evidence is missing, not against this checkout. Unbounded in time like `installedLauncher` in src/cli_upgrade.ts: `npm root -g` reads no network and a deadline would only turn a slow machine into a wrong answer. */
 function globalInstallDir() {
-  const launch = launchable(npmCmd, ['root', '-g'])
+  const launch = npmLaunch(['root', '-g'])
+  if (launch === null) return { dir: null, reason: '`npm root -g` could not run because npm-cli.js was not found' }
   const res = spawnSync(launch.cmd, launch.args, { cwd: projectRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
   if (res.status !== 0 || typeof res.stdout !== 'string') {
     return { dir: null, reason: `\`npm root -g\` failed (${res.error ? res.error.message : `exit ${res.status}`})` }
@@ -127,12 +146,13 @@ function externalNodeModules() {
 function installKeepingLock() {
   const lockPath = path.join(projectRoot, 'package-lock.json')
   const before = fs.readFileSync(lockPath)
-  runStep('Updating dependencies (package-lock.json changed)', npmCmd, ['install', '--prefer-offline'])
+  const installed = runNpmStep('Updating dependencies (package-lock.json changed)', ['install', '--prefer-offline'])
   const after = fs.existsSync(lockPath) ? fs.readFileSync(lockPath) : null
   if (after === null || !before.equals(after)) {
-    fs.writeFileSync(lockPath, before)
+    writeFileAtomically(lockPath, before)
     console.log('[token-goat post-merge] npm install rewrote package-lock.json; restored the bytes it had before the install.')
   }
+  return installed
 }
 
 function main() {
@@ -145,12 +165,16 @@ function main() {
     if (shared !== null) {
       console.log(`[token-goat post-merge] Skipping npm install: node_modules is a link to ${shared}, outside this checkout, and an install here would change it for every checkout sharing it.`)
     } else {
-      installKeepingLock()
+      if (!installKeepingLock()) {
+        console.error('[token-goat post-merge] npm install failed; aborting build and synchronization.')
+        process.exitCode = 1
+        return
+      }
     }
   }
 
   // 2. Build dist/token-goat.mjs
-  const built = runStep('Building token-goat bundle', npmCmd, ['run', 'build'])
+  const built = runNpmStep('Building token-goat bundle', ['run', 'build'])
   if (!built || !fs.existsSync(bundlePath)) {
     console.error('[token-goat post-merge] Build failed; aborting daemon and shim reload.')
     process.exit(1)
@@ -176,8 +200,8 @@ function main() {
   runStep('Stopping resident hook servers', nodeCmd, [bundlePath, 'hook-server', 'stop'])
 
   // 4. Restart worker daemon
-  runStep('Restarting worker daemon', nodeCmd, [bundlePath, 'worker', 'stop'])
-  runStep('Starting worker daemon', nodeCmd, [bundlePath, 'worker', 'start'])
+  const workerStopped = runStep('Restarting worker daemon', nodeCmd, [bundlePath, 'worker', 'stop'])
+  if (workerStopped) runStep('Starting worker daemon', nodeCmd, [bundlePath, 'worker', 'start'])
 
   // 5. Refresh shims and instructions across harnesses
   runStep('Refreshing Claude Code hooks & shims', nodeCmd, [bundlePath, 'install'])
@@ -197,6 +221,11 @@ function main() {
   runStep('Pruning stale index entries', nodeCmd, [bundlePath, 'project', 'prune'])
   runStep('Reindexing updated files', nodeCmd, [bundlePath, 'index'])
 
+  if (failedSteps.length > 0) {
+    console.error(`[token-goat post-merge] Synchronization incomplete; failed steps: ${failedSteps.join(', ')}`)
+    process.exitCode = 1
+    return
+  }
   console.log('[token-goat post-merge] ✔️ Synchronization complete. Token-goat is up to date.')
 }
 

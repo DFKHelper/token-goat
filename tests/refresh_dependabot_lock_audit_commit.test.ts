@@ -66,7 +66,7 @@ beforeEach(() => {
   fs.mkdirSync(home)
   fs.writeFileSync(path.join(home, 'gitconfig'), '')
   fs.mkdirSync(path.join(sandbox, 'scripts'))
-  for (const name of ['refresh-dependabot-lock.mjs', 'dependabot-body.mjs', 'lock-consistency.mjs', 'lock-audit.mjs', 'lock-libc.mjs']) fs.copyFileSync(path.join(repoRoot, 'scripts', name), path.join(sandbox, 'scripts', name))
+  for (const name of ['refresh-dependabot-lock.mjs', 'dependabot-body.mjs', 'lock-consistency.mjs', 'lock-audit.mjs', 'lock-libc.mjs', 'atomic-write.mjs']) fs.copyFileSync(path.join(repoRoot, 'scripts', name), path.join(sandbox, 'scripts', name))
   fs.mkdirSync(path.join(sandbox, 'node_modules', 'js-yaml'), { recursive: true })
   fs.writeFileSync(path.join(sandbox, 'node_modules', 'js-yaml', 'package.json'), JSON.stringify({ name: 'js-yaml', type: 'module', main: 'index.js' }))
   fs.writeFileSync(path.join(sandbox, 'node_modules', 'js-yaml', 'index.js'), "export function load() { return { updates: [{ 'package-ecosystem': 'npm', cooldown: { 'default-days': 7 } }] } }\n")

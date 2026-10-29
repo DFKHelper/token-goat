@@ -182,7 +182,7 @@ describe('runTokenGoat (post-fix)', () => {
       capturedShell = options.shell
       callback(null, 'ok', '')
     }
-    await runTokenGoat(['read', spec], undefined, fakeExecFile)
+    await runTokenGoat(['read', spec], undefined, { execFileImpl: fakeExecFile })
     expect(capturedShell).toBe(false)
     // The spec argument must survive completely unmodified as a single argv element -- no quoting, no
     // escaping, and specifically no unquoted '&' introduced by any quoting step, because there is no
@@ -201,7 +201,7 @@ describe('runTokenGoat (post-fix)', () => {
       callback(null, '', '')
     }
     const hostileWorkspaceRoot = 'C:\\hostile\\workspace'
-    await runTokenGoat(['scope', 'a.ts:1'], hostileWorkspaceRoot, fakeExecFile)
+    await runTokenGoat(['scope', 'a.ts:1'], hostileWorkspaceRoot, { execFileImpl: fakeExecFile })
     const argIndex = capturedArgs?.indexOf('--cwd') ?? -1
     expect(argIndex).toBeGreaterThanOrEqual(0)
     expect(capturedArgs?.[argIndex + 1]).toBe(hostileWorkspaceRoot)
@@ -220,7 +220,7 @@ describe('runGitDiff (post-fix)', () => {
       callback(null, 'diff --git a/x b/x', '')
     }
     const hostileWorkspaceRoot = 'C:\\hostile\\workspace'
-    await runGitDiff(hostileWorkspaceRoot, fakeExecFile)
+    await runGitDiff(hostileWorkspaceRoot, { execFileImpl: fakeExecFile })
     expect(capturedShell).toBe(false)
     // The command is never a single joined string like 'git diff HEAD' handed to a shell -- that string form
     // is exactly what let a hostile git.cmd/git.exe planted at the workspace root (the old spawn cwd) get
@@ -468,7 +468,7 @@ describe('launcher failure modes the shell:false guarantee does not cover', () =
       captured = args
       callback(null, '', '')
     }
-    await runGitDiff('C:\\repo', fakeExec)
+    await runGitDiff('C:\\repo', { execFileImpl: fakeExec })
     expect(captured, 'git was left free to run a program the repository named').toContain('--no-ext-diff')
     expect(captured).toContain('--no-textconv')
   })
@@ -482,7 +482,7 @@ describe('launcher failure modes the shell:false guarantee does not cover', () =
       throw new Error('EINVAL: argument contains a NUL byte')
     }
     const settled = await Promise.race([
-      runGitDiff('C:\\repo', throwingExec).then(() => 'resolved', () => 'rejected'),
+      runGitDiff('C:\\repo', { execFileImpl: throwingExec }).then(() => 'resolved', () => 'rejected'),
       new Promise<string>((r) => setTimeout(() => r('still pending'), 250)),
     ])
     expect(settled, 'the promise never settled, so the caller waits forever').toBe('rejected')

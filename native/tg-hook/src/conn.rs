@@ -29,7 +29,7 @@ mod imp {
     use windows_sys::Win32::Storage::FileSystem::{CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile};
     use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
     use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
-    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+    use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 
     use super::{ConnectError, IoError};
 
@@ -90,6 +90,10 @@ mod imp {
 
         /// Starts one overlapped transfer with `start` and waits for it until `deadline`. A transfer still pending then is cancelled; one that completed in the meantime still counts.
         fn transfer(&mut self, deadline: Instant, start: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32) -> Result<usize, IoError> {
+            // SAFETY: this connection owns a valid event handle and starts only one transfer at a time.
+            if unsafe { ResetEvent(self.event) } == 0 {
+                return Err(IoError::Closed);
+            }
             let mut ov = OVERLAPPED { hEvent: self.event, ..Default::default() };
             if start(self.pipe, &mut ov) == 0 {
                 // SAFETY: reads this thread's last-error value.
@@ -137,11 +141,50 @@ mod imp {
             Ok(())
         }
     }
+
+    #[cfg(test)]
+    mod windows_event_tests {
+        use std::mem::ManuallyDrop;
+        use std::time::Duration;
+
+        use super::*;
+
+        struct EventGuard(HANDLE);
+
+        impl Drop for EventGuard {
+            fn drop(&mut self) {
+                // SAFETY: this test is the sole owner of the event handle.
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+
+        #[test]
+        fn transfer_resets_a_signaled_event_before_starting_io() {
+            // SAFETY: null attributes and name are accepted; the returned handle is checked below.
+            let event = unsafe { CreateEventW(null(), 1, 1, null_mut()) };
+            assert!(!event.is_null(), "CreateEventW must return a valid event");
+            let _event_guard = EventGuard(event);
+            let mut conn = ManuallyDrop::new(Conn {
+                pipe: INVALID_HANDLE_VALUE,
+                event,
+            });
+            let mut was_signaled = true;
+            // The pipe sentinel is not an I/O endpoint; this test asserts only the event state at start.
+            let _transfer_result = conn.transfer(Instant::now() + Duration::from_secs(1), |_, overlapped| {
+                // SAFETY: transfer supplies a valid OVERLAPPED whose event is owned above.
+                was_signaled = unsafe { WaitForSingleObject((*overlapped).hEvent, 0) } == WAIT_OBJECT_0;
+                1
+            });
+            assert!(!was_signaled, "transfer must clear the previous operation's event signal before starting");
+        }
+    }
 }
 
 #[cfg(unix)]
 mod imp {
     use std::io::{ErrorKind, Read, Write};
+    use std::mem::{offset_of, size_of, zeroed};
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
     use std::os::unix::net::UnixStream;
     use std::time::Instant;
 
@@ -155,14 +198,120 @@ mod imp {
         matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
     }
 
-    impl Conn {
-        /// A Unix socket connect either succeeds or fails at once; there is no pending state to put a deadline on.
-        pub fn connect(endpoint: &str, _deadline: Instant) -> Result<Conn, ConnectError> {
-            match UnixStream::connect(endpoint) {
-                Ok(stream) => Ok(Conn { stream }),
-                Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused) => Err(ConnectError::Absent),
-                Err(_) => Err(ConnectError::Other),
+    fn wait_for_connect(fd: libc::c_int, deadline: Instant) -> Result<(), ConnectError> {
+        let mut descriptor = libc::pollfd { fd, events: libc::POLLOUT, revents: 0 };
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(ConnectError::Other);
             }
+            let timeout_ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
+            descriptor.revents = 0;
+            let ready = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+            if ready < 0 {
+                if std::io::Error::last_os_error().kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(ConnectError::Other);
+            }
+            if ready == 0 {
+                continue;
+            }
+
+            let mut socket_error = 0;
+            let mut socket_error_len = size_of::<libc::c_int>() as libc::socklen_t;
+            if unsafe {
+                libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_ERROR,
+                    (&mut socket_error as *mut libc::c_int).cast(),
+                    &mut socket_error_len,
+                )
+            } < 0
+            {
+                return Err(ConnectError::Other);
+            }
+            if socket_error == 0 {
+                return if Instant::now() < deadline { Ok(()) } else { Err(ConnectError::Other) };
+            }
+            if socket_error == libc::ENOENT || socket_error == libc::ECONNREFUSED {
+                return Err(ConnectError::Absent);
+            }
+            if socket_error != libc::EINPROGRESS && socket_error != libc::EALREADY {
+                return Err(ConnectError::Other);
+            }
+        }
+    }
+
+    impl Conn {
+        /// Connects without blocking past the caller's handshake deadline.
+        pub fn connect(endpoint: &str, deadline: Instant) -> Result<Conn, ConnectError> {
+            if Instant::now() >= deadline || endpoint.as_bytes().contains(&0) {
+                return Err(ConnectError::Other);
+            }
+            let socket_fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+            if socket_fd < 0 {
+                return Err(ConnectError::Other);
+            }
+            let socket = unsafe { OwnedFd::from_raw_fd(socket_fd) };
+            let descriptor_flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_GETFD) };
+            let status_flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_GETFL) };
+            if descriptor_flags < 0
+                || status_flags < 0
+                || unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFD, descriptor_flags | libc::FD_CLOEXEC) } < 0
+                || unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFL, status_flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(ConnectError::Other);
+            }
+
+            let path = endpoint.as_bytes();
+            let mut address: libc::sockaddr_un = unsafe { zeroed() };
+            if path.len() >= address.sun_path.len() {
+                return Err(ConnectError::Other);
+            }
+            address.sun_family = libc::AF_UNIX as _;
+            for (slot, byte) in address.sun_path.iter_mut().zip(path) {
+                *slot = *byte as libc::c_char;
+            }
+            address.sun_path[path.len()] = 0;
+            let address_len = offset_of!(libc::sockaddr_un, sun_path) + path.len() + 1;
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))]
+            {
+                address.sun_len = address_len as u8;
+            }
+            let address_len = match libc::socklen_t::try_from(address_len) {
+                Ok(length) => length,
+                Err(_) => return Err(ConnectError::Other),
+            };
+            let connected = unsafe {
+                libc::connect(
+                    socket.as_raw_fd(),
+                    (&address as *const libc::sockaddr_un).cast(),
+                    address_len,
+                )
+            };
+            if connected < 0 {
+                let error = std::io::Error::last_os_error().raw_os_error().unwrap_or_default();
+                if error == libc::ENOENT || error == libc::ECONNREFUSED {
+                    return Err(ConnectError::Absent);
+                }
+                if error == libc::EINPROGRESS || error == libc::EALREADY || error == libc::EINTR {
+                    wait_for_connect(socket.as_raw_fd(), deadline)?;
+                } else {
+                    return Err(ConnectError::Other);
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(ConnectError::Other);
+            }
+
+            let status_flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_GETFL) };
+            if status_flags < 0 || unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFL, status_flags & !libc::O_NONBLOCK) } < 0 {
+                return Err(ConnectError::Other);
+            }
+            let stream = unsafe { UnixStream::from_raw_fd(socket.into_raw_fd()) };
+            Ok(Conn { stream })
         }
 
         pub fn read(&mut self, buf: &mut [u8], deadline: Instant) -> Result<usize, IoError> {
@@ -203,6 +352,44 @@ mod imp {
 }
 
 pub use imp::Conn;
+
+#[cfg(all(test, unix))]
+mod unix_connect_tests {
+    use std::fs;
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    use super::{ConnectError, imp::Conn};
+
+    static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
+
+    struct SocketPath(PathBuf);
+
+    impl Drop for SocketPath {
+        fn drop(&mut self) {
+            match fs::remove_file(&self.0) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("could not remove test socket {}: {error}", self.0.display()),
+            }
+        }
+    }
+
+    #[test]
+    fn connect_refuses_an_already_expired_deadline() {
+        let path = std::env::temp_dir().join(format!(
+            "tg-{}-{}.sock",
+            std::process::id(),
+            NEXT_SOCKET.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _cleanup = SocketPath(path.clone());
+        let _listener = UnixListener::bind(&path).expect("bind test listener");
+        let deadline = Instant::now().checked_sub(Duration::from_secs(1)).expect("past deadline");
+        assert!(matches!(Conn::connect(path.to_str().expect("UTF-8 temp path"), deadline), Err(ConnectError::Other)));
+    }
+}
 
 /// Frames read off a [`Conn`], one at a time, each by a deadline.
 pub struct FrameConn {

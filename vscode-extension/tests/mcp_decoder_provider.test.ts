@@ -4,11 +4,13 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  activate,
   ensureDecoderSetup,
   fencePayload,
   registerMcpDecoderProvider,
   resetDecoderCheckedForTests,
   resetMcpProviderRegisteredForTests,
+  resetSavingsRefreshStateForTests,
 } from '../src/extension'
 
 // 'vscode' only exists inside a real extension host, so it is faked wholesale here the same way
@@ -26,9 +28,47 @@ interface ProviderShape {
   provideMcpServerDefinitions: (token: unknown) => Promise<StdioDefinitionShape[]>
 }
 
+interface ChatToken {
+  readonly isCancellationRequested: boolean
+  onCancellationRequested(listener: () => void): { dispose: () => void }
+}
+
+interface ChatStream {
+  markdown(value: string): void
+  progress(value: string): void
+}
+
+type ChatHandler = (
+  request: { command?: string },
+  context: unknown,
+  stream: ChatStream,
+  token: ChatToken,
+) => Promise<void>
+
 // The class is declared inside the factory rather than above it: vi.hoisted runs before any
 // top-level declaration in this file, so referencing an outer class here throws at import time.
-const { showWarningMessage, registerMcpServerDefinitionProvider, StdioDefinition } = vi.hoisted(() => ({
+const {
+  activeTextEditor,
+  createChatParticipant,
+  createStatusBarItem,
+  registerCommand,
+  showWarningMessage,
+  registerMcpServerDefinitionProvider,
+  StdioDefinition,
+} = vi.hoisted(() => ({
+  activeTextEditor: { current: undefined as unknown },
+  createChatParticipant: vi.fn<(id: string, handler: ChatHandler) => { dispose: () => void; iconPath?: unknown }>(
+    () => ({ dispose: () => {} }),
+  ),
+  createStatusBarItem: vi.fn(() => ({
+    text: '',
+    tooltip: '',
+    command: '',
+    color: undefined as unknown,
+    show: vi.fn(),
+    dispose: vi.fn(),
+  })),
+  registerCommand: vi.fn(() => ({ dispose: () => {} })),
   showWarningMessage: vi.fn(),
   // Typed explicitly: an inferred `vi.fn(() => ...)` records calls as a zero-length tuple, so
   // reading `.mock.calls[0][1]` below fails typecheck:tests even though the runtime value is there.
@@ -46,8 +86,25 @@ const { showWarningMessage, registerMcpServerDefinitionProvider, StdioDefinition
 }))
 
 vi.mock('vscode', () => ({
-  workspace: { workspaceFolders: undefined, isTrusted: true },
-  window: { showWarningMessage, showInformationMessage: vi.fn(), showErrorMessage: vi.fn() },
+  workspace: {
+    workspaceFolders: undefined,
+    isTrusted: true,
+    getConfiguration: vi.fn(() => ({
+      get: (_key: string, defaultValue: unknown) => defaultValue,
+      update: vi.fn(),
+    })),
+  },
+  window: {
+    showWarningMessage,
+    showInformationMessage: vi.fn(),
+    showErrorMessage: vi.fn(),
+    createStatusBarItem,
+    get activeTextEditor() { return activeTextEditor.current },
+  },
+  commands: { registerCommand },
+  chat: { createChatParticipant },
+  StatusBarAlignment: { Right: 1 },
+  Uri: { joinPath: () => 'icon.png' },
   lm: { registerMcpServerDefinitionProvider },
   McpStdioServerDefinition: StdioDefinition,
 }))
@@ -73,9 +130,13 @@ function fakeContext(): { subscriptions: Array<{ dispose: () => void }> } {
 beforeEach(() => {
   resetDecoderCheckedForTests()
   resetMcpProviderRegisteredForTests()
+  resetSavingsRefreshStateForTests()
+  activeTextEditor.current = undefined
+  runTokenGoat.mockReset()
 })
 
 afterEach(() => {
+  resetSavingsRefreshStateForTests()
   vi.clearAllMocks()
 })
 
@@ -148,6 +209,75 @@ describe('ensureDecoderSetup with the provider registered', () => {
     runTokenGoat.mockResolvedValue(JSON.stringify({ configured: true, checkedPaths: [] }))
     await expect(ensureDecoderSetup()).resolves.toBe(true)
     expect(runTokenGoat).toHaveBeenCalledWith(['mcp-status', '--vscode'], undefined)
+  })
+})
+
+describe('chat participant cancellation', () => {
+  it('aborts in-flight CLI work and emits no response after the request is cancelled', async () => {
+    activeTextEditor.current = {
+      document: {
+        getText: () => 'selected text',
+        uri: { fsPath: 'C:\\workspace\\file.ts' },
+        isUntitled: false,
+        lineCount: 1,
+      },
+      selection: { isEmpty: false, active: { line: 0 } },
+    }
+    let markChildStarted = (): void => {}
+    const childStarted = new Promise<void>((resolve) => { markChildStarted = resolve })
+    let childSignal: AbortSignal | undefined
+    runTokenGoat.mockImplementation((
+      args: string[],
+      _projectRoot?: string,
+      options?: { signal?: AbortSignal },
+    ) => {
+      if (args[0] === 'stats') return Promise.resolve(JSON.stringify({ total_tokens_saved: 0, total_bytes_saved: 0, total_events: 0, window_days: 30, by_day: [] }))
+      if (args[0] !== 'compress-text' || !options?.signal) {
+        return Promise.reject(new Error('unexpected CLI invocation'))
+      }
+      childSignal = options.signal
+      markChildStarted()
+      return new Promise((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        }, { once: true })
+      })
+    })
+
+    activate({ ...fakeContext(), extensionUri: 'extension' } as never)
+    const handler = createChatParticipant.mock.calls[0]?.[1]
+    if (!handler) throw new Error('activate did not register the chat participant')
+
+    let cancelled = false
+    let cancel = (): void => {}
+    const token: ChatToken = {
+      get isCancellationRequested() { return cancelled },
+      onCancellationRequested(listener) {
+        cancel = () => {
+          cancelled = true
+          listener()
+        }
+        return { dispose: () => {} }
+      },
+    }
+    const markdown = vi.fn()
+    const stream: ChatStream = { markdown, progress: vi.fn() }
+    const response = handler({ command: 'selection' }, undefined, stream, token)
+    const outcome = await Promise.race([
+      childStarted.then(() => 'child-started'),
+      response.then(() => 'handler-finished'),
+    ])
+    expect(
+      outcome,
+      `the chat handler finished before starting the cancellable CLI; messages=${JSON.stringify(markdown.mock.calls)} calls=${JSON.stringify(runTokenGoat.mock.calls)}`,
+    ).toBe('child-started')
+    cancel()
+    await response
+
+    expect(childSignal?.aborted).toBe(true)
+    expect(stream.markdown).not.toHaveBeenCalled()
   })
 })
 

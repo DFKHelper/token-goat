@@ -13,6 +13,7 @@ import { stopWorker, WORKER_STARTUP_GRACE_MS, workerPidPath } from '../src/worke
 
 /** Dirty paths queued behind a running daemon: enough that one drain cycle takes longer than the startup grace. */
 const MID_DRAIN_FILES = 12000
+const MID_DRAIN_WRITE_BATCH = 128
 
 function runBundle(args: string[], env: NodeJS.ProcessEnv, cwd: string): RunResult {
   return sharedRunBundle(args, { cwd, env, timeout: 30000 })
@@ -133,10 +134,15 @@ describe('the built daemon retires on its own', () => {
 
       // Enough dirty paths that one drain cycle outlasts the grace: the daemon checks its pid file between cycles, so a pid file removed mid-cycle used to be noticed only when the cycle ended.
       const queued: string[] = []
-      for (let i = 0; i < MID_DRAIN_FILES; i++) {
-        const f = path.join(repo, `queued_${i}.ts`)
-        fs.writeFileSync(f, `export const q${i} = ${i}\n`)
-        queued.push(f)
+      for (let base = 0; base < MID_DRAIN_FILES; base += MID_DRAIN_WRITE_BATCH) {
+        const writes: Promise<void>[] = []
+        const batchEnd = Math.min(base + MID_DRAIN_WRITE_BATCH, MID_DRAIN_FILES)
+        for (let i = base; i < batchEnd; i++) {
+          const file = path.join(repo, `queued_${i}.ts`)
+          queued.push(file)
+          writes.push(fs.promises.writeFile(file, `export const q${i} = ${i}\n`))
+        }
+        await Promise.all(writes)
       }
       fs.appendFileSync(path.join(dir, 'queue', 'dirty.txt'), `${queued.join('\n')}\n`)
       await waitFor('the daemon to claim the queue into a drain', ctx.signal, () => fs.existsSync(path.join(dir, 'queue', 'dirty.txt.draining')), exitedNote(pid))
@@ -147,6 +153,9 @@ describe('the built daemon retires on its own', () => {
       const retiredAfterMs = Date.now() - removedAt
       observedGone(pid)
       expect(retiredAfterMs, `the daemon outlived its pid file by ${retiredAfterMs} ms`).toBeLessThanOrEqual(WORKER_STARTUP_GRACE_MS + 5000)
+      const liveQueue = path.join(dir, 'queue', 'dirty.txt')
+      expect(fs.existsSync(liveQueue), 'the retiring drain must hand back its unreached paths').toBe(true)
+      expect(fs.readFileSync(liveQueue, 'utf8').trim()).not.toBe('')
     },
     60000,
   )

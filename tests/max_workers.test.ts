@@ -46,12 +46,14 @@ describe('resolveMaxWorkers', () => {
   })
 
   it('honors TOKEN_GOAT_TEST_MAX_WORKERS env override when set', () => {
+    const previous = process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
     process.env['TOKEN_GOAT_TEST_MAX_WORKERS'] = '2'
     try {
       expect(resolveMaxWorkers('win32', 26, 128)).toBe(2)
       expect(resolveMaxWorkers('linux', 4, 16)).toBe(2)
     } finally {
-      delete process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+      if (previous === undefined) delete process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+      else process.env['TOKEN_GOAT_TEST_MAX_WORKERS'] = previous
     }
   })
 })
@@ -95,11 +97,13 @@ describe('resolveMaxWorkers follows the idle CPU', () => {
   })
 
   it('lets the env override win over the idle narrowing', () => {
+    const previous = process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
     process.env['TOKEN_GOAT_TEST_MAX_WORKERS'] = '5'
     try {
       expect(resolveMaxWorkers('win32', 26, 128, 0)).toBe(5)
     } finally {
-      delete process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+      if (previous === undefined) delete process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+      else process.env['TOKEN_GOAT_TEST_MAX_WORKERS'] = previous
     }
   })
 })
@@ -125,6 +129,8 @@ describe('idleCpuCount', () => {
 
   it('samples a real machine into a count between 0 and its core count', () => {
     const idle = sampleIdleCpus(() => os.cpus(), 20)
-    expect(idle === undefined || (idle >= 0 && idle <= os.cpus().length)).toBe(true)
+    if (idle === undefined) throw new Error('sampleIdleCpus returned no sample for the real machine')
+    expect(idle).toBeGreaterThanOrEqual(0)
+    expect(idle).toBeLessThanOrEqual(os.cpus().length)
   })
 })

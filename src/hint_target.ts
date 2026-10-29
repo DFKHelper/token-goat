@@ -13,6 +13,7 @@ import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
+import { RANGE_LOCK_MESSAGE_PREFIX } from './read_range_evasion.js'
 import { contextOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
 
@@ -319,6 +320,7 @@ const LED_COMMAND_RE = /`(token-goat [^`\r\n]+)`/
 export function sharpenRepeatedDeny(event: HookEvent, output: HookOutput): HookOutput {
   // A deny that delivers the content (DELIVERS_CONTENT_RE) is the content itself the second time too, so it is never cut down to a pointer.
   if (output.hookType !== 'deny' || !event.sessionId || DELIVERS_CONTENT_RE.test(output.message)) return output
+  if (output.message.startsWith('[tg] ' + RANGE_LOCK_MESSAGE_PREFIX)) return output
   const key = 'deny-repeat:' + sessionStateKey(event) + ':' + (event.toolName ?? '') + ':' + getCompactedAt() + ':' + shortFingerprint(output.message) + ':' + shortFingerprint(JSON.stringify(event.toolInput))
   if (!wasHintShown(key)) {
     markHintShown(key)

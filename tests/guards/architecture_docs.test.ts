@@ -13,6 +13,8 @@ import { runCli } from '../../scripts/sync-arch-docs.mjs'
 import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
 import { indexableDir } from '../helpers/temp-config.js'
 
+import { createRepoLocalExecutableDecoys } from '../helpers/repo_local_executable_decoys.js'
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const ENGINE = path.join(ROOT, 'scripts', 'sync-arch-docs.mjs')
 const START = '<!-- ARCH_COMPONENTS_START -->'
@@ -52,11 +54,19 @@ function makeRepo(docText = `${DOC_HEAD}${START}\n${END}\n${DOC_TAIL}`): Fixture
 }
 
 /** Runs the engine as a command from `dir`, the way `npm run docs:arch` does. */
-function engine(dir: string, ...args: string[]): { status: number | null; stdout: string; stderr: string } {
+function engineEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env = { ...process.env }
   scrubRepoLocalGitEnv(env)
-  const result = spawnSync(process.execPath, [ENGINE, ...args], { cwd: dir, env, encoding: 'utf8' })
+  return { ...env, ...extra }
+}
+
+function engineWithEnv(dir: string, extra: NodeJS.ProcessEnv, ...args: string[]): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(process.execPath, [ENGINE, ...args], { cwd: dir, env: engineEnv(extra), encoding: 'utf8' })
   return { status: result.status, stdout: result.stdout, stderr: result.stderr }
+}
+
+function engine(dir: string, ...args: string[]): { status: number | null; stdout: string; stderr: string } {
+  return engineWithEnv(dir, {}, ...args)
 }
 
 /** The exit code of `--check` (text format) from the engine's entry point, in process: one node spawn fewer than `engine`. The repo-local git variables are scrubbed for the call only. */
@@ -85,6 +95,44 @@ describe('Architecture documentation freshness and coverage', () => {
     expect(result.stdout).toBe('')
   })
 
+  it.each(['--check', '--write'])('rejects a document reached through a symlink outside the repository (%s)', (mode) => {
+    const repo = makeRepo()
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-archdoc-outside-'))
+    scratchDirs.push(outside)
+    const outsideDoc = path.join(outside, 'ARCH.md')
+    const original = `${DOC_HEAD}${START}\n${END}\n${DOC_TAIL}`
+    fs.writeFileSync(outsideDoc, original)
+    fs.symlinkSync(outside, path.join(repo.dir, 'docs'), 'junction')
+    const config = JSON.parse(CONFIG) as { doc: string; roots: string[]; layers: [string, string][] }
+    config.doc = 'docs/ARCH.md'
+    fs.writeFileSync(path.join(repo.dir, '.arch-doc-sync.json'), JSON.stringify(config))
+
+    const result = engine(repo.dir, mode)
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('must resolve inside the repository')
+    expect(fs.readFileSync(outsideDoc, 'utf8')).toBe(original)
+  })
+
+  it('writes to a document reached through a symlink inside the repository', () => {
+    const repo = makeRepo()
+    const inside = path.join(repo.dir, 'doc-target')
+    const link = path.join(repo.dir, 'docs')
+    fs.mkdirSync(inside)
+    const insideDoc = path.join(inside, 'ARCH.md')
+    const original = `${DOC_HEAD}${START}\n${END}\n${DOC_TAIL}`
+    fs.writeFileSync(insideDoc, original)
+    fs.symlinkSync(inside, link, 'junction')
+    const config = JSON.parse(CONFIG) as { doc: string; roots: string[]; layers: [string, string][] }
+    config.doc = 'docs/ARCH.md'
+    fs.writeFileSync(path.join(repo.dir, '.arch-doc-sync.json'), JSON.stringify(config))
+
+    const result = engine(repo.dir, '--write')
+
+    expect(result.status).toBe(0)
+    expect(fs.readFileSync(insideDoc, 'utf8')).not.toBe(original)
+  })
+
   it('keeps every row in a configured layer, with a bounded role and no trailing period', () => {
     const doc = fs.readFileSync(path.join(ROOT, 'CLAUDE.arch.md'), 'utf8')
     const rows = doc
@@ -101,6 +149,39 @@ describe('Architecture documentation freshness and coverage', () => {
 })
 
 describe('sync-arch-docs engine', () => {
+  it.runIf(process.platform === 'win32')('does not execute git.exe from a nested directory in the repository being analyzed', () => {
+    const fixture = makeRepo()
+    gitOut(fixture.dir, ['commit', '-m', 'fixture'])
+    const linked = path.join(path.dirname(fixture.dir), `${path.basename(fixture.dir)}-linked`)
+    scratchDirs.push(linked)
+    git(fixture.dir, ['worktree', 'add', '-q', '-b', 'linked', linked, 'HEAD'])
+    expect(fs.statSync(path.join(fixture.dir, '.git')).isDirectory()).toBe(true)
+    expect(fs.statSync(path.join(linked, '.git')).isFile()).toBe(true)
+
+    const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH'
+    const nodeOptionsKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'NODE_OPTIONS') ?? 'NODE_OPTIONS'
+    for (const root of [fixture.dir, linked]) {
+      const decoys = createRepoLocalExecutableDecoys(root)
+      const extra: NodeJS.ProcessEnv = {
+        [pathKey]: `${root}${path.delimiter}${process.env[pathKey] ?? ''}`,
+        [nodeOptionsKey]: [process.env[nodeOptionsKey], decoys.preloadOption].filter(Boolean).join(' '),
+      }
+      const env = engineEnv(extra)
+      const probe = spawnSync('git', ['-e', `require('node:fs').writeFileSync(${JSON.stringify(decoys.marker)}, 'probe')`], {
+        cwd: root,
+        env,
+        encoding: 'utf8',
+      })
+      expect(probe.status).toBe(0)
+      expect(fs.readFileSync(decoys.marker, 'utf8')).toBe('probe')
+      fs.rmSync(decoys.marker)
+
+      const result = engineWithEnv(path.join(root, 'src'), extra, '--write')
+      expect(result.status).toBe(0)
+      expect(fs.existsSync(decoys.marker)).toBe(false)
+    }
+  })
+
   it('reports an undocumented module and leaves the stdout empty', () => {
     const repo = synced()
     fs.writeFileSync(path.join(repo.dir, 'src', 'c.ts'), 'export const delta = 4\n')

@@ -8,6 +8,7 @@ import { load as loadYaml } from 'js-yaml'
 import { auditLockChange, formatDiff, parseNpmView } from './lock-audit.mjs'
 import { checkLockFiles, formatProblem } from './lock-consistency.mjs'
 import { findMissingLibc, restoreLibc } from './lock-libc.mjs'
+import { writeFileAtomically } from './atomic-write.mjs'
 import { isDependabotPullRequest, isValidPackageName, npmCommand, packageNamesFromBody, summarizeGuardFailure } from './dependabot-body.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -202,7 +203,7 @@ if (libc.unresolved.length > 0) {
 }
 if (libc.restored.length > 0) {
   const eol = lockAfter.includes('\r\n') ? '\r\n' : '\n'
-  fs.writeFileSync(lockFile, `${JSON.stringify(newLock, null, 2).replace(/\n/g, eol)}${/\n$/.test(lockAfter) ? eol : ''}`)
+  writeFileAtomically(lockFile, `${JSON.stringify(newLock, null, 2).replace(/\n/g, eol)}${/\n$/.test(lockAfter) ? eol : ''}`)
   process.stdout.write(`restored libc on ${libc.restored.length} platform package(s) npm had stripped it from\n`)
 }
 

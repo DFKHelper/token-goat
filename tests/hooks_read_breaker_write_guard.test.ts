@@ -3,14 +3,14 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConstantsModule from '../src/constants.js'
 
 const DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-breaker-write-'))
 const TEST_CONFIG_PATH = path.join(DATA_DIR, 'config.toml')
 // The recent-read protection window waves through the four most recently read files, so a lone file's whole-file re-read would never be denied without this.
-fs.writeFileSync(TEST_CONFIG_PATH, '[hints]\nprotect_recent_reads = 0\n', 'utf8')
+fs.writeFileSync(TEST_CONFIG_PATH, '[hints]\nprotect_recent_reads = 0\nreread_deny = true\n', 'utf8')
 
 vi.mock('../src/constants.js', async (importOriginal) => {
   const actual = await importOriginal<typeof ConstantsModule>()
@@ -37,6 +37,14 @@ beforeEach(() => {
 afterEach(() => {
   clearModuleCaches()
   invalidateConfigCache()
+})
+
+afterAll(() => {
+  try {
+    fs.rmSync(DATA_DIR, { recursive: true, force: true })
+  } finally {
+    fs.rmSync(FILES_DIR, { recursive: true, force: true })
+  }
 })
 
 let counter = 0
@@ -91,7 +99,8 @@ describe('the re-read circuit breaker and the Write blind-drop guard', () => {
   it('lets the second identical line-range retry through after one redirect, and keeps a shifted window denied', () => {
     const target = seed('ts')
     serveFirstWindow(target)
-    expect(preReadHandler(rangeReadEvent('pre_tool_use', target)).hookType, 'the first retry is denied').toBe('deny')
+    const first = preReadHandler(rangeReadEvent('pre_tool_use', target))
+    expect(first.hookType, 'the first retry is denied').toBe('deny')
     const second = preReadHandler(rangeReadEvent('pre_tool_use', target))
     expect(second.hookType, 'the second identical range retry is let through').toBe('context')
     if (second.hookType === 'context') expect(second.context).toContain('Read allowed after the prior redirect')

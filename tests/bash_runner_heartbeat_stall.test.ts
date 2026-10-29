@@ -4,8 +4,9 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import { scheduleHeartbeat } from '../src/bash_runner.js'
 import { spawnOwned } from '../src/process_tree.js'
+
+const { scheduleHeartbeat } = await import('../src/bash_runner.js')
 
 // The heartbeat's quiet clock restarts when output is READ from the child's pipe. A parent whose event loop was stalled (a loaded machine, a long synchronous call) runs its due timer before the loop reads the pipes, so a child that kept writing used to get a beat for a stretch in which it was not quiet. These rows stall the loop on purpose and control, by files the child and the parent hand each other, what is in the pipe when the loop resumes; nothing waits on the clock to decide the outcome.
 

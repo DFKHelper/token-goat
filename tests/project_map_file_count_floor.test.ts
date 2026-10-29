@@ -1,9 +1,11 @@
-/** `map`'s file count is a floor once the walk stopped at its ceiling. walkProject bounds itself at MAX_FILES_SCANNED (20000) and simply stops, so on a tree larger than that `files.length` is exactly the ceiling and the language histogram is tallied over a partial tree. formatProjectMap printed both flat -- `Files: 20000` -- which no reader can tell apart from a repository that genuinely holds 20000 source files. collectWalkIndexFiles already treats the same ceiling as a floor in its refusal text ("walk stopped at N; the real total is at least that"); this pins the renderer to the same honesty. Both halves are asserted: the floor form present AND the flat form absent. A previous defect in this repo printed a fabricated `lines 0-0` that a presence-only assertion sailed straight past. */
+/** `map`'s file count is a floor once the walk stopped at its file or entry ceiling. walkProject bounds source files at MAX_FILES_SCANNED (20000) and directory entries separately; either ceiling can stop the walk before all source files are found, and the language histogram is tallied over the same partial tree. formatProjectMap previously printed both flat -- `Files: 20000` -- which no reader can tell apart from a repository that genuinely holds 20000 source files. collectWalkIndexFiles now refuses an incomplete walk; this pins the renderer to the same honesty. Both halves are asserted: the floor form present AND the flat form absent. A previous defect in this repo printed a fabricated `lines 0-0` that a presence-only assertion sailed straight past. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import ts from 'typescript'
 
 import { formatProjectMap, walkProject, MAX_FILES_SCANNED } from '../src/baseline.js'
 import type { ProjectMap } from '../src/baseline.js'
@@ -49,6 +51,43 @@ describe('walkProject truncation flag', () => {
     expect(result.files.length).toBe(3)
     expect(result.truncated).toBe(false)
   })
+
+  it('bounds directory entries even when the tree contains no recognized source files', () => {
+    for (let i = 0; i < 5; i++) fs.writeFileSync(path.join(TMP, `f${i}.opaque`), 'data\n')
+
+    const result = walkProject(TMP, { maxFiles: 2, maxEntries: 4 })
+
+    expect(result.files).toHaveLength(0)
+    expect(result.truncated, 'the entry ceiling must mark an incomplete walk').toBe(true)
+  })
+
+  it('streams directory entries instead of materializing a complete listing', () => {
+    const sourcePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../src/baseline.ts')
+    const source = fs.readFileSync(sourcePath, 'utf8')
+    const sourceFile = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+    const walker = sourceFile.statements.find(
+      (statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === 'walkProject',
+    )
+    if (!walker?.body) throw new Error('walkProject function body was not found')
+
+    const directoryReadCalls: string[] = []
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === 'fs'
+      ) {
+        directoryReadCalls.push(node.expression.name.text)
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(walker.body)
+
+    expect(directoryReadCalls, 'walkProject must incrementally open directories').toContain('opendirSync')
+    expect(directoryReadCalls, 'walkProject must not materialize directory listings').not.toContain('readdirSync')
+  })
 })
 
 describe('formatProjectMap file count honesty', () => {
@@ -71,5 +110,12 @@ describe('formatProjectMap file count honesty', () => {
     expect(lines).toContain('Languages: typescript 12')
     expect(text).not.toContain('at least')
     expect(text).not.toContain('lower bound')
+  })
+
+  it('identifies directory-entry truncation without claiming the file-count cap', () => {
+    const lines = formatProjectMap(mapOf({ fileCount: 7, fileCountTruncated: true }), true).split('\n')
+
+    expect(lines).toContain('Files: at least 7 (walk stopped at the directory-entry safety cap)')
+    expect(lines).not.toContain(`Files: at least 7 (walk stopped at the ${MAX_FILES_SCANNED}-file cap)`)
   })
 })

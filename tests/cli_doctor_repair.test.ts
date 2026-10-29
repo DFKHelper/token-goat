@@ -462,7 +462,7 @@ describe('doctor auto-repair and embedding model checks', () => {
       const settings = vscodeUserSettingsPath()
       fs.mkdirSync(path.dirname(settings), { recursive: true })
       fs.writeFileSync(settings, '{\n  // custom\n  "chat.useClaudeHooks": true\n}\n', 'utf8')
-      installVscode()
+      installVscode({ projectRoot })
       fs.writeFileSync(settings, '{\n  // custom\n  "chat.useClaudeHooks": true\n}\n', 'utf8')
 
       const result = await runDoctorRepair({ rootDir: projectRoot })
@@ -489,7 +489,7 @@ describe('doctor auto-repair and embedding model checks', () => {
       installHooks('user')
       const settings = vscodeUserSettingsPath()
       fs.mkdirSync(path.dirname(settings), { recursive: true })
-      installVscode()
+      installVscode({ projectRoot })
       fs.writeFileSync(settings, '{\n  "chat.useClaudeHooks": true\n}\n', 'utf8')
       expect(fs.readFileSync(settings, 'utf8')).toContain('"chat.useClaudeHooks": true')
       if (!denyWrites(path.dirname(settings))) {

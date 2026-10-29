@@ -19,7 +19,7 @@ import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNT
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
-import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getReadRangeResetAt, getRecentReadRanges, lockReadRange, rangeLockMessage, recordRecentReadRange } from './read_range_evasion.js'
+import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -645,69 +645,16 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const rangeSpan = rangeWindow.isExplicitSlice ? requestedSliceSpan(rangeWindow) : undefined
   const rangeKey = foldPath(normalized)
   let rangeIdentity: { size: number; mtimeMs: number } | undefined
-  let exactRangeRedirectKey: string | undefined
   if (event.toolName !== 'Grep' && rangeSpan !== undefined && loadConfig().hints.reread_deny) {
     // Identity changes invalidate the lock before any early-return hint or containing-range check.
     rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
     clearReadRangeIfChanged(rangeKey, rangeIdentity)
-    exactRangeRedirectKey = 'range-lock-exact-served:' + getCompactedAt() + ':' + rangeKey + ':' +
-      getReadRangeResetAt(rangeKey) + ':' + rangeSpan.start + ':' + rangeSpan.end
     if (getReadRangeDenials(rangeKey).length > 0) {
-      const resetAt = getReadRangeResetAt(rangeKey)
-      const rangeBreakerKey = 'range-lock-breaker:' + getCompactedAt() + ':' + rangeKey + ':' + resetAt
-      const alreadyServed = alreadyServedOutputId(event, normalized)
-      if (alreadyServed !== null && exactRangeRedirectKey !== undefined) {
-        if (wasHintShown(exactRangeRedirectKey)) {
-          recordActualRead(event, normalized)
-          recordActualSlice(event, normalized, hashNow)
-          return quietContextOutput(
-            '[tg] This exact line range was already served in `token-goat bash-output ' + alreadyServed.id +
-            '`. Read allowed after the prior redirect to stop a retry loop; reuse that output when possible.',
-            [shown],
-          )
-        }
-        markHintShown(exactRangeRedirectKey)
-        const blocked = counterfactualCredit(alreadyServed.bytes)
-        recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
-        recordStat('session_hint', 0, 0)
-        return denyOutput(
-          'Every line in this exact range was already served in this session. Recall it with `token-goat bash-output ' +
-          alreadyServed.id + '`. Do not retry with shifted ranges.',
-        )
-      }
-      if (wasHintShown(rangeBreakerKey)) {
-        recordActualRead(event, normalized)
-        recordActualSlice(event, normalized, hashNow)
-        return quietContextOutput(
-          '[tg] Line-range read circuit breaker: read allowed after repeated denials. ' +
-          'Run `token-goat read ' + quotedArg(shown + '@' + rangeSpan.start + '-' + rangeSpan.end) + '` for this window, ' +
-          'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time. ' +
-          'For ongoing exploration, delegate bounded symbol or code extraction to an explore agent (specifically Luna, else Haiku).',
-          [shown],
-        )
-      }
-      const deny1Key = 'range-lock-deny-1:' + getCompactedAt() + ':' + rangeKey + ':' + resetAt
-      const deny2Key = 'range-lock-deny-2:' + getCompactedAt() + ':' + rangeKey + ':' + resetAt
-      if (!wasHintShown(deny1Key)) {
-        markHintShown(deny1Key)
-        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
-        return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
-      }
-      if (!wasHintShown(deny2Key)) {
-        markHintShown(deny2Key)
-        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
-        return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
-      }
-      markHintShown(rangeBreakerKey)
-      recordActualRead(event, normalized)
-      recordActualSlice(event, normalized, hashNow)
-      return quietContextOutput(
-        '[tg] Line-range read circuit breaker: read allowed after repeated denials. ' +
-        'Run `token-goat read ' + quotedArg(shown + '@' + rangeSpan.start + '-' + rangeSpan.end) + '` for this window, ' +
-        'or `token-goat skeleton ' + quotedArg(shown) + '` for structure next time. ' +
-        'For ongoing exploration, delegate bounded symbol or code extraction to an explore agent (specifically Luna, else Haiku).',
-        [shown],
-      )
+      // A range lock remains closed for this compaction epoch. Repeated denials
+      // must not reopen the raw Read/view path and turn the breaker into a bypass.
+      lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+      recordStat('session_hint', 0, 0)
+      return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
     }
   }
 
@@ -1192,7 +1139,6 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         markHintShown(fileRereadDenyKey)
         if (rangeSpan !== undefined) {
           lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
-          if (exactRangeRedirectKey !== undefined) markHintShown(exactRangeRedirectKey)
         }
         // Credit the bytes this read would actually have delivered, not the whole file: a Read carrying offset/limit was only ever going to hand over its window, and crediting the file would book bytes nothing was ever going to spend.
         const blocked = counterfactualCredit(alreadyServed.bytes)
@@ -1218,9 +1164,6 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           const denyRangeReread = (): HookOutput => {
             markHintShown(fileRereadDenyKey)
             lockReadRange(rangeKey, [start, end], rangeIdentity)
-            if (alreadyServed !== null && exactRangeRedirectKey !== undefined) {
-              markHintShown(exactRangeRedirectKey)
-            }
             const blocked = counterfactualCredit(rereadCreditBasis)
             recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
             recordStat('session_hint', 0, 0)

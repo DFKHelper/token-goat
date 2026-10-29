@@ -107,6 +107,11 @@ describe('sequential paging deny through the pre-read hook', () => {
     const jump = await relayInProcess('pre_tool_use', payload('pre_tool_use', s, 'paged.ts', 601, 50))
     expect(isDeny(jump)).toBe(true)
     expect(jump).toContain('Line-range reads of this file are locked')
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const retry = await relayInProcess('pre_tool_use', payload('pre_tool_use', s, 'paged.ts', 601, 50))
+      expect(isDeny(retry)).toBe(true)
+      expect(retry).toContain('Line-range reads of this file are locked')
+    }
   })
 
   it('does not add the paging note to a distant jump after two contiguous slices', async () => {

@@ -4232,7 +4232,7 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(r3.hookType).toBe('context')
     })
 
-    it('redirects an exact served range once, then allows only that same range to break the retry loop', () => {
+    it('keeps an exact served range locked after its first redirect', () => {
       const p = path.join(os.tmpdir(), `tg-exact-range-breaker-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
       fs.writeFileSync(p, Array.from({ length: 30 }, (_, i) => `const x${i} = "${'x'.repeat(32)}";`).join('\n'))
       tmpFiles.push(p)
@@ -4250,9 +4250,9 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       if (redirect.hookType === 'deny') expect(redirect.message).toContain('token-goat bash-output ')
 
       const sameRangeRetry = preReadHandler(exactRead)
-      expect(sameRangeRetry.hookType).toBe('context')
-      if (sameRangeRetry.hookType === 'context') {
-        expect(sameRangeRetry.context).toContain('Read allowed after the prior redirect')
+      expect(sameRangeRetry.hookType).toBe('deny')
+      if (sameRangeRetry.hookType === 'deny') {
+        expect(sameRangeRetry.message).toContain('Line-range reads of this file are locked')
       }
 
       const shiftedRange = preReadHandler(makeHookEvent({
@@ -4415,7 +4415,7 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(fresh.hookType).not.toBe('deny')
     })
 
-    it('trips the circuit breaker after repeated locked line-range reads to prevent agent deadlocks', () => {
+    it('keeps line-range reads locked after repeated retries', () => {
       const p = path.join(os.tmpdir(), `tg-range-breaker-${process.pid}.log`)
       fs.writeFileSync(p, Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n'))
       tmpFiles.push(p)
@@ -4429,12 +4429,13 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       const l2 = preReadHandler(slice(70, 80))
       expect(l2.hookType).toBe('deny')
       if (l2.hookType === 'deny') expect(l2.message).toContain('Line-range reads of this file are locked')
-      const b1 = preReadHandler(slice(70, 80))
-      expect(b1.hookType).toBe('context')
-      if (b1.hookType === 'context') expect(b1.context).toContain('Line-range read circuit breaker')
-      const b2 = preReadHandler(slice(70, 80))
-      expect(b2.hookType).toBe('context')
-      if (b2.hookType === 'context') expect(b2.context).toContain('Line-range read circuit breaker')
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const retry = preReadHandler(slice(70, 80))
+        expect(retry.hookType, `retry ${attempt + 1} stays locked`).toBe('deny')
+        if (retry.hookType === 'deny') {
+          expect(retry.message).toContain('Line-range reads of this file are locked')
+        }
+      }
     })
 
     it('caps isProtectedRecentRead so files read 4+ times cannot loop indefinitely in small sessions', () => {

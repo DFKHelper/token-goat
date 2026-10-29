@@ -53,9 +53,8 @@ const personalFile = (): string => path.join(home, '.copilot', 'instructions', '
 
 describe('user-scope install --vscode', () => {
   it('leaves the current project byte-identical, writes the personal instructions file, and uninstall removes it', () => {
-    process.chdir(project)
     const before = snapshot(project)
-    const result = installVscode()
+    const result = installVscode({ projectRoot: project })
     expect(result.scope).toBe('user')
     expect(result.instructionsPath).toBe(personalFile())
     expect(snapshot(project)).toEqual(before)
@@ -65,9 +64,9 @@ describe('user-scope install --vscode', () => {
     expect(text).toContain('<!-- token-goat-vscode-begin -->')
     expect(text).toContain('retrieve_text')
     // Idempotent: a second install changes nothing.
-    expect(installVscode().alreadyInstalled).toBe(true)
+    expect(installVscode({ projectRoot: project }).alreadyInstalled).toBe(true)
     expect(fs.readFileSync(personalFile(), 'utf8')).toBe(text)
-    expect(uninstallVscode()).toBe(true)
+    expect(uninstallVscode({ projectRoot: project })).toBe(true)
     expect(fs.existsSync(personalFile())).toBe(false)
     expect(snapshot(project)).toEqual(before)
   })
@@ -76,11 +75,11 @@ describe('user-scope install --vscode', () => {
     fs.mkdirSync(path.dirname(personalFile()), { recursive: true })
     const mine = "---\napplyTo: '**/*.py'\n---\nPrefer pytest.\n"
     fs.writeFileSync(personalFile(), mine)
-    installVscode()
+    installVscode({ projectRoot: project })
     const text = fs.readFileSync(personalFile(), 'utf8')
     expect(text.startsWith(mine.trimEnd())).toBe(true)
     expect(text).toContain('<!-- token-goat-vscode-end -->')
-    uninstallVscode()
+    uninstallVscode({ projectRoot: project })
     expect(fs.readFileSync(personalFile(), 'utf8')).toBe(mine)
   })
 

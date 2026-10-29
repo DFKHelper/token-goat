@@ -33,7 +33,7 @@ const BASH4_ONLY: ReadonlyArray<{ name: string; re: RegExp }> = [
 
 /** Workstation-only scripts that need a newer bash than macOS ships, with why. */
 const ALLOWED: Readonly<Record<string, string>> = {
-  'run-all-checks.sh': 'the pre-push orchestrator: associative arrays and `wait -n -p` need bash 5.1, which a macOS contributor installs (brew install bash) before the hook runs',
+  'run-all-checks.sh': 'the pre-push orchestrator: associative arrays and `wait -n -p` need bash 5.1; lefthook routes it through run-with-bash-5.sh, which selects a supported executable or fails with installation instructions',
   'wsl-test.sh': 'drives wsl.exe, which exists on Windows only, where Git for Windows ships bash 5',
 }
 
@@ -128,6 +128,25 @@ describe('.lefthook-scripts', () => {
     expect(scripts).toContain('run-test.sh')
     expect(scripts).toContain('prepush-focus.sh')
     expect(scripts).toContain('wsl-gate.sh')
+  })
+
+  it('routes the pre-push orchestrator through a Bash 5.1 selector', () => {
+    const root = path.dirname(DIR)
+    const lefthook = readFileSync(path.join(root, 'lefthook.yml'), 'utf8')
+    const selector = readFileSync(path.join(DIR, 'run-with-bash-5.sh'), 'utf8')
+
+    expect(lefthook).toContain('sh .lefthook-scripts/run-with-bash-5.sh .lefthook-scripts/run-all-checks.sh')
+    expect(selector).toContain('TG_PREPUSH_BASH')
+    expect(selector).toContain('BASH_VERSINFO')
+    expect(selector).toContain('/opt/homebrew/bin/bash')
+    expect(selector).toContain('/usr/local/bin/bash')
+    expect(selector).toContain('brew install bash')
+  })
+
+  it('keeps shell scripts on LF line endings for POSIX shell portability', () => {
+    for (const script of scripts) {
+      expect(readFileSync(path.join(DIR, script)).includes(0x0d), `${script} must use LF line endings`).toBe(false)
+    }
   })
 
   for (const script of scripts.filter((f) => !(f in ALLOWED))) {

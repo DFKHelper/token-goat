@@ -4,13 +4,17 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { ArchDocError } from './config.mjs'
 
+import { gitExecutable } from '../git-executable.mjs'
+
 const GIT_MAX_BUFFER = 256 * 1024 * 1024
 const REGULAR_MODES = new Set(['100644', '100755'])
 const CAT_FILE_SIZE = /^[0-9]+$/
 
 /** Runs git and returns its stdout, or null on a non-zero exit; `input` feeds stdin. */
 export function runGit(cwd, args, input) {
-  const result = spawnSync('git', ['-c', 'core.quotepath=false', ...args], { cwd, input, maxBuffer: GIT_MAX_BUFFER, windowsHide: true })
+  const executable = gitExecutable(cwd)
+  if (executable === null) throw new ArchDocError('git executable not found on PATH')
+  const result = spawnSync(executable, ['-c', 'core.quotepath=false', ...args], { cwd, input, maxBuffer: GIT_MAX_BUFFER, windowsHide: true })
   if (result.error && result.error.code === 'ENOENT') throw new ArchDocError('git executable not found on PATH')
   return result.status === 0 && !result.error ? result.stdout : null
 }

@@ -22,7 +22,7 @@ import { hasSkipSegmentBelowRoot } from './skip_scope.js'
 export interface ProjectMap {
   readonly rootDir: string
   readonly fileCount: number
-  // True when {@link walkProject} hit its file ceiling, making `fileCount` and `languages` lower bounds rather than totals. Optional so existing hand-built ProjectMap literals need no change, and absent means the walk completed, which is what every producer other than a capped walk means.
+  // True when {@link walkProject} hit a traversal ceiling, making `fileCount` and `languages` lower bounds rather than totals. Optional so existing hand-built ProjectMap literals need no change, and absent means the walk completed, which is what every producer other than a capped walk means.
   readonly fileCountTruncated?: boolean
   readonly languages: Record<string, number>
   readonly topSymbols: SymbolEntry[]
@@ -65,18 +65,20 @@ export function isIgnoredIndexPath(p: string, projectRoot?: string): boolean {
 
 // Cap the walk so a pathological tree cannot make `map` run unbounded. Also the "too much stuff" ceiling for the non-git walk-index fallback (see walk_index.ts).
 export const MAX_FILES_SCANNED = 20000
+// Hard upper bound on directory entries visited, including entries that are not source files.
+const MAX_WALK_DIRECTORY_ENTRIES = 1_000_000
 
 export interface WalkResult {
   readonly files: string[]
   readonly languages: Record<string, number>
-  // True when the walk stopped at its `maxFiles` ceiling rather than running out of tree, so `files.length` and every `languages` tally are floors, not totals. Any renderer that prints either as a fact MUST consult this: `Files: 20000` on a capped walk is indistinguishable from a repo that really holds exactly 20000 files.
+  // True when the walk stopped at either its file or directory-entry ceiling rather than running out of tree, so `files.length` and every `languages` tally are floors, not totals.
   readonly truncated: boolean
 }
 
 /** Recursively collect source files under `rootDir`, skipping {@link SKIP_DIRS} and any non-source ('unknown') extensions, tallying a language histogram. */
 export function walkProject(
   rootDir: string,
-  opts: { excludeTests?: boolean; includeEmbeddableDocuments?: boolean; maxFiles?: number } = {},
+  opts: { excludeTests?: boolean; includeEmbeddableDocuments?: boolean; maxFiles?: number; maxEntries?: number } = {},
 ): WalkResult {
   const files: string[] = []
   const languages: Record<string, number> = {}
@@ -88,39 +90,54 @@ export function walkProject(
   const extraSkipDirs = loadConfig().indexing.skip_dirs
   // Callers that have explicitly opted past the default ceiling (`index --walk --force`, see walk_index.ts) raise it here. Still a finite bound, never unlimited: an unbounded walk is how a mistyped root turns into a whole-drive scan.
   const maxFiles = opts.maxFiles ?? MAX_FILES_SCANNED
+  // A caller may lower the entry budget for a narrower walk, but cannot raise the hard upper bound.
+  const requestedMaxEntries = opts.maxEntries ?? MAX_WALK_DIRECTORY_ENTRIES
+  const maxEntries = Number.isFinite(requestedMaxEntries)
+    ? Math.max(0, Math.min(Math.floor(requestedMaxEntries), MAX_WALK_DIRECTORY_ENTRIES))
+    : MAX_WALK_DIRECTORY_ENTRIES
 
-  while (stack.length > 0 && files.length < maxFiles) {
+  let entriesVisited = 0
+  while (stack.length > 0 && files.length < maxFiles && entriesVisited < maxEntries) {
     const dir = stack.pop()
     if (dir === undefined) break
 
-    let entries: fs.Dirent[]
+    let directory: fs.Dir
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
+      directory = fs.opendirSync(dir)
     } catch {
       continue // unreadable directory — skip it
     }
 
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name)
-      if (entry.isDirectory()) {
-        if (SKIP_DIRS.has(entry.name) || extraSkipDirs.includes(entry.name)) continue
-        if (entry.name.startsWith('.') && entry.name !== '.') {
-          // Skip hidden dirs (dotfiles dirs) other than the root itself.
-          continue
+    try {
+      let entry: fs.Dirent | null
+      while ((entry = directory.readSync()) !== null) {
+        entriesVisited += 1
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          const hidden = entry.name.startsWith('.') && entry.name !== '.'
+          if (!SKIP_DIRS.has(entry.name) && !extraSkipDirs.includes(entry.name) && !hidden) {
+            stack.push(full)
+          }
+        } else if (entry.isFile()) {
+          const lang: Language = detectLanguageOfFile(full)
+          if (
+            (lang !== 'unknown' || (includeEmbeddableDocuments && isEmbeddableDocument(full))) &&
+            (!excludeTests || !isTestFile(full))
+          ) {
+            files.push(full)
+            languages[lang] = (languages[lang] ?? 0) + 1
+          }
         }
-        stack.push(full)
-      } else if (entry.isFile()) {
-        const lang: Language = detectLanguageOfFile(full)
-        if (lang === 'unknown' && !(includeEmbeddableDocuments && isEmbeddableDocument(full))) continue
-        if (excludeTests && isTestFile(full)) continue
-        files.push(full)
-        languages[lang] = (languages[lang] ?? 0) + 1
-        if (files.length >= maxFiles) break
+        if (files.length >= maxFiles || entriesVisited >= maxEntries) break
       }
+    } catch {
+      continue // unreadable directory — skip it
+    } finally {
+      directory.closeSync()
     }
   }
 
-  return { files, languages, truncated: files.length >= maxFiles }
+  return { files, languages, truncated: files.length >= maxFiles || entriesVisited >= maxEntries }
 }
 
 /** Raw `symbols` row shape for the top-symbols aggregate query. */
@@ -258,12 +275,13 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
   const rel = displaySafeText(path.basename(map.rootDir))
 
   lines.push(`# Project map: ${rel}`)
-  // A capped walk cannot prove its file count is the whole population, so it ships as a floor rather than as a bare number no reader can tell apart from a completed walk. Same reasoning collectWalkIndexFiles (walk_index.ts) already applies to the identical ceiling in its refusal message.
-  lines.push(map.fileCountTruncated === true ? `Files: at least ${map.fileCount} (walk stopped at the ${MAX_FILES_SCANNED}-file cap)` : `Files: ${map.fileCount}`)
+  // A capped walk cannot prove its file count is the whole population, so it ships as a floor rather than as a bare number no reader can tell apart from a completed walk.
+  const walkLimit = map.fileCount >= MAX_FILES_SCANNED ? `the ${MAX_FILES_SCANNED}-file cap` : 'the directory-entry safety cap'
+  lines.push(map.fileCountTruncated === true ? `Files: at least ${map.fileCount} (walk stopped at ${walkLimit})` : `Files: ${map.fileCount}`)
 
   const langPairs = Object.entries(map.languages).sort((a, b) => b[1] - a[1])
   const langSummary = langPairs.map(([lang, n]) => `${lang} ${n}`).join(', ')
-  // The histogram is tallied over the same capped walk, so when it stopped early every per-language count is understated too, not only the total above.
+  // The histogram is tallied over the same truncated walk, so when it stopped early every per-language count is understated too, not only the total above.
   const langSuffix = map.fileCountTruncated === true ? ' (counted over a truncated walk; each count is a lower bound)' : ''
   lines.push(`Languages: ${langSummary || '(none)'}${langSuffix}`)
 

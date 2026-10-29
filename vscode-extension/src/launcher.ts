@@ -190,7 +190,7 @@ export async function resolveNodeExecutable(): Promise<string> {
 export type ExecFileLike = (
   file: string,
   args: readonly string[],
-  options: { encoding: 'utf8'; maxBuffer: number; windowsHide: boolean; shell: false; env: NodeJS.ProcessEnv },
+  options: { encoding: 'utf8'; maxBuffer: number; windowsHide: boolean; shell: false; env: NodeJS.ProcessEnv; signal?: AbortSignal },
   callback: (error: ExecFileException | null, stdout: string, stderr: string) => void,
 ) => void
 
@@ -211,20 +211,47 @@ interface ExecSpec {
   transform: (stdout: string) => string
 }
 
-function execCapturing(prepare: () => Promise<ExecSpec>, execFileImpl: ExecFileLike): Promise<string> {
+interface ExecOptions {
+  execFileImpl?: ExecFileLike
+  signal?: AbortSignal
+}
+
+function execCapturing(
+  prepare: () => Promise<ExecSpec>,
+  execFileImpl: ExecFileLike,
+  signal?: AbortSignal,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     void prepare().then((spec) => {
+      if (signal?.aborted) {
+        const error = new Error('The operation was aborted')
+        error.name = 'AbortError'
+        reject(error)
+        return
+      }
       // execFile validates its arguments synchronously and throws, rather than calling back, for a
       // NUL byte in one of them. Thrown from inside this callback the error would reject the
       // discarded chained promise instead of this one, so the caller waited forever on a promise
       // that could never settle while the failure surfaced only as an unhandled rejection.
       try {
+        const options = {
+          encoding: 'utf8' as const,
+          maxBuffer: spec.maxBuffer,
+          windowsHide: true,
+          shell: false as const,
+          env: spec.env,
+          ...(signal ? { signal } : {}),
+        }
         execFileImpl(
           spec.file,
           spec.args,
-          { encoding: 'utf8', maxBuffer: spec.maxBuffer, windowsHide: true, shell: false, env: spec.env },
+          options,
           (error, stdout, stderr) => {
             if (error) {
+              if (error.name === 'AbortError') {
+                reject(error)
+                return
+              }
               reject(new Error(spec.describeError(error, stderr)))
               return
             }
@@ -239,7 +266,7 @@ function execCapturing(prepare: () => Promise<ExecSpec>, execFileImpl: ExecFileL
 }
 
 // projectRoot conveys a project root to token-goat's own --cwd flag (an explicit argument) rather than by setting the spawned process's working directory to it: an attacker-controlled workspace directory must never be a directory a launcher resolves a binary name against, and this way it never is one — the process cwd stays wherever the extension host itself runs from. execFileImpl is injectable so tests can assert on the constructed call without actually spawning a process.
-export function runTokenGoat(args: string[], projectRoot?: string, execFileImpl: ExecFileLike = execFile): Promise<string> {
+export function runTokenGoat(args: string[], projectRoot?: string, options: ExecOptions = {}): Promise<string> {
   return execCapturing(async () => {
     const [entrypoint, nodePath] = await Promise.all([resolveTokenGoatEntrypoint(), resolveNodeExecutable()])
     const fullArgs = projectRoot !== undefined ? ['--cwd', projectRoot, ...args] : args
@@ -252,11 +279,11 @@ export function runTokenGoat(args: string[], projectRoot?: string, execFileImpl:
       describeError: (error, stderr) => stderr.trim() || `token-goat exited with code ${error.code ?? 'unknown'}`,
       transform: (stdout) => stdout.trim(),
     }
-  }, execFileImpl)
+  }, options.execFileImpl ?? execFile, options.signal)
 }
 
 // repoPath is passed to git's own -C flag (an explicit argument), never as the spawned process's cwd, for the same reason projectRoot above is passed to token-goat via --cwd rather than via cwd: an attacker-controlled workspace directory must never be a directory a launcher resolves a binary name against. execFileImpl is injectable so tests can assert on the constructed call without actually spawning a process.
-export function runGitDiff(repoPath: string, execFileImpl: ExecFileLike = execFile): Promise<string> {
+export function runGitDiff(repoPath: string, options: ExecOptions = {}): Promise<string> {
   return execCapturing(async () => ({
     file: await resolveGitExecutable(),
     // --no-ext-diff and --no-textconv because a repository configures both in its own .git/config:
@@ -268,5 +295,5 @@ export function runGitDiff(repoPath: string, execFileImpl: ExecFileLike = execFi
     env: process.env,
     describeError: (_error, stderr) => stderr.trim() || 'git diff failed — is this a git repository?',
     transform: (stdout) => stdout,
-  }), execFileImpl)
+  }), options.execFileImpl ?? execFile, options.signal)
 }

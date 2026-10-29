@@ -167,8 +167,11 @@ export function mergeReadRangeEvasion(disk: RangeEvasionEntries, mem: RangeEvasi
   return Array.from(merged)
 }
 
+/** Stable discriminator for the locked-range refusal, which must not be weakened by the repeat-deny breaker. */
+export const RANGE_LOCK_MESSAGE_PREFIX = 'Line-range reads of this file are locked'
+
 export function rangeLockMessage(shown: string, span: ReadRange): string {
-  return 'Line-range reads of this file are locked for this compaction epoch. Run `token-goat read ' +
+  return RANGE_LOCK_MESSAGE_PREFIX + ' for this compaction epoch. Run `token-goat read ' +
     quotedArg(shown + '@' + span[0] + '-' + span[1]) + '` for this window, or `token-goat skeleton ' +
     quotedArg(shown) + '` for structure. Do not shrink, grow, or shift the Read range. ' +
     'If you need bounded symbol or code extraction from this file, delegate the query to an explore agent (specifically GPT-6 Luna, else Haiku or equivalent) rather than retrying repetitive micro-reads.'
