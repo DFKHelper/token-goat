@@ -4374,6 +4374,7 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
         expect(r4.message).toContain('Sequential line-range paging detected on')
         expect(r4.message).toContain('@140-165"`')
         expect(r4.message).not.toContain('::fn_0"`')
+        expect(r4.message).not.toContain('explore agent')
       }
 
       // Neither retry was served before; the paging lock, not micro-shift detection, denies them.

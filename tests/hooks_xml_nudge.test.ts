@@ -241,7 +241,7 @@ describe('XML, DTSX, AMPKG, XAML runtime recognition & terminal XML interception
       const out = preReadHandler(event)
       expectHookType(out, 'deny')
       expect(out.message).toContain('Sequential line-range paging detected on')
-      expect(out.message).toContain('Inspect structure directly without manual chunk paging')
+      expect(out.message).toContain('Further line-range Read/view requests are blocked')
       expect(out.message).toContain('token-goat section')
     })
 
@@ -271,7 +271,7 @@ describe('XML, DTSX, AMPKG, XAML runtime recognition & terminal XML interception
       const out = preReadHandler(event)
       expectHookType(out, 'deny')
       expect(out.message).toContain('Sequential line-range paging detected on')
-      expect(out.message).toContain('Inspect structure directly without manual chunk paging')
+      expect(out.message).toContain('Further line-range Read/view requests are blocked')
       expect(out.message).toContain('token-goat xml-outline')
       expect(out.message).toContain('token-goat xml-query')
     })

@@ -111,7 +111,7 @@ describe('the paging note through the relay, for a file under a directory holdin
     const [thirdRead, fourthRead] = contexts.slice(2)
     expect(thirdRead).toContain('Sequential line-range paging detected')
     expect(fourthRead).toContain('Sequential line-range paging detected')
-    expect(fourthRead).toContain('Further Read/view line ranges of this file will be denied')
+    expect(fourthRead).toContain('Further line-range Read/view requests are blocked')
     for (const text of [thirdRead, fourthRead]) {
       expect(text).not.toContain('command omitted')
       expect(text).toMatch(/`token-goat (?:read|skeleton) "[^"`]*my proj\/src dir\/big file\.ts(?:@[0-9]+-[0-9]+)?"`/)
