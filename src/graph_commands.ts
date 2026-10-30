@@ -52,8 +52,8 @@ import {
   buildFileSymCache,
   resolveCallers,
   refBlindKindVerdict,
-  compareHopEntries,
 } from './graph_traversal.js'
+import { compareImpactHops } from './impact_order.js'
 import { emit, emitErr } from './emit.js'
 import { CliError, formatCommandError } from './command_error.js'
 
@@ -362,7 +362,7 @@ export function runImpact(opts: ImpactOptions): number {
   // Hops are keyed by definition identity, not bare name: a caller that merely shares the target's name (an override, Other.run calling Service().run()) is a different symbol and must not be mistaken for the root. With no single definition named (a bare name), every definition of that name is the root, as before.
   const defKey = (s: SymbolEntry): string => `${s.filePath}|${s.parent ?? ''}|${s.name}|${s.lineStart}`
   const rootRows = rootDef !== undefined ? [rootDef] : querySymbols({ name: rootName, ...(fileHint !== undefined ? { filePath: fileHint } : {}), rootDir, limit: UNBOUNDED_REF_LIMIT })
-  const hops = new Map<string, { name: string; hop: number }>(rootRows.map((r) => [defKey(r), { name: rootName, hop: 0 }]))
+  const hops = new Map<string, { name: string; hop: number; filePath: string }>(rootRows.map((r) => [defKey(r), { name: rootName, hop: 0, filePath: r.filePath }]))
   // Every node is expanded once per definition. A name with several definitions in the project (Outer.run and Other.run) has its refs scoped to the definition being expanded, so impact never walks from one into the callers of the other; a name defined once keeps every ref, as before.
   const queue: Array<{ name: string; depth: number; def?: SymbolEntry }> = [{ name: rootName, depth: 0 }]
   const expandedDefs = new Set<string>()
@@ -426,13 +426,13 @@ export function runImpact(opts: ImpactOptions): number {
       if (enc === null) {
         const fileKey = `(module scope) ${ref.filePath}`
         const existing = hops.get(fileKey)
-        if (existing === undefined || existing.hop > newHop) hops.set(fileKey, { name: fileKey, hop: newHop })
+        if (existing === undefined || existing.hop > newHop) hops.set(fileKey, { name: fileKey, hop: newHop, filePath: ref.filePath })
         continue
       }
       const key = defKey(enc)
       const existing = hops.get(key)
       if (existing === undefined || existing.hop > newHop) {
-        hops.set(key, { name: enc.name, hop: newHop })
+        hops.set(key, { name: enc.name, hop: newHop, filePath: enc.filePath })
         queue.push({ name: enc.name, depth: newHop, def: enc })
       }
     }
@@ -441,7 +441,7 @@ export function runImpact(opts: ImpactOptions): number {
   for (const r of rootRows) hops.delete(defKey(r))
 
   // Two distinct definitions can share a name; the key (file, parent, line) keeps their order stable.
-  const allSorted = [...hops.entries()].sort((a, b) => compareHopEntries([a[1].name, a[1].hop], [b[1].name, b[1].hop]) || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([, v]): [string, number] => [v.name, v.hop])
+  const allSorted = [...hops.entries()].sort((a, b) => compareImpactHops({ left: { key: a[0], ...a[1] }, right: { key: b[0], ...b[1] }, rootFilePaths: rootRows.map((r) => r.filePath) })).map(([, v]): [string, number] => [v.name, v.hop])
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const grepped = matchesGrep !== undefined ? allSorted.filter(([symbol]) => matchesGrep(symbol)) : allSorted
   const sorted = grepped.slice(0, top)

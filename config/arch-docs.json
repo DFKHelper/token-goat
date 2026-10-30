@@ -266,6 +266,7 @@
     ["src/graph_commands.ts","Specialized Subsystems"],
     ["src/graph_inspection.ts","Specialized Subsystems"],
     ["src/graph_traversal.ts","Specialized Subsystems"],
+    ["src/impact_order.ts","Specialized Subsystems"],
     ["src/handle_stat.ts","Specialized Subsystems"],
     ["src/harness_channels.ts","Specialized Subsystems"],
     ["src/hint_stats.ts","Specialized Subsystems"],
