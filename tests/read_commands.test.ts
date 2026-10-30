@@ -889,6 +889,52 @@ describe('read_commands', () => {
       expect(code).toBe(1)
     })
 
+    it('preserves Java Spring annotations and excludes the method body in read and symbol signatures', () => {
+      const file = path.join(tempDir, 'Controller.java')
+      const method = [
+        '@GetMapping(paths = {"/items", "/things"})',
+        '@Transactional(readOnly = true)',
+        'public <T extends Item> List<T> find(',
+        '  @RequestParam(required = false) String filter,',
+        '  Map<String, List<T>> options',
+        ') throws IOException {',
+        '  String JAVA_SIGNATURE_BODY_MARKER = "body";',
+        '  return List.of();',
+        '}',
+      ].join('\n')
+      fs.writeFileSync(file, `@RestController\nclass Controller {\n${method}\n}\n`)
+      const row: SymbolEntry = {
+        filePath: file,
+        name: 'find',
+        kind: 'method',
+        lineStart: 3,
+        lineEnd: 11,
+        body: method,
+        docstring: '',
+        parent: 'Controller',
+      }
+      mockQuerySymbols.mockImplementation((opts?: QuerySymbolsOpts) =>
+        opts?.name === 'find' ? [row] : [],
+      )
+
+      const read = runRead({ spec: `${file}::find`, sig: true })
+      const symbol = runSymbol({ name: 'find', file, sig: true })
+      const expectedSignature = [
+        '@GetMapping(paths = {"/items", "/things"})',
+        '@Transactional(readOnly = true)',
+        'public <T extends Item> List<T> find(',
+        '  @RequestParam(required = false) String filter,',
+        '  Map<String, List<T>> options',
+        ') throws IOException',
+      ].join('\n')
+
+      for (const result of [read, symbol]) {
+        expect(result.code).toBe(0)
+        expect(result.text).toContain(expectedSignature)
+        expect(result.text).not.toContain('JAVA_SIGNATURE_BODY_MARKER')
+      }
+    })
+
     // A proper `file::symbol` spec that genuinely resolves to nothing keeps its own not-found wording untouched -- only the bare-name (no `::` at all) case below changes.
     it('a proper file::symbol spec with a bad symbol keeps its existing not-found wording', () => {
       mockQuerySymbols.mockReturnValue([])

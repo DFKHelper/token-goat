@@ -58,7 +58,7 @@ const NOT_EMBEDDING: Record<string, string> = {
   'src/config.ts': 'runtime config values (e.g. chunk-size tunables); a digest cannot represent per-machine config values, since a user\'s own config already varies outside any digest -- these are runtime inputs this fingerprint does not and cannot model, and a maintainer changing a default is a deliberate, visible act, unlike the silent staleness this digest exists to catch',
   'src/config_defaults.ts': 'default runtime config values, same reasoning as src/config.ts',
   'src/config_project.ts': 'project-level config file resolution, same reasoning as src/config.ts',
-  'src/config_types.ts': 'type-only config shape declarations, erased at compile time',
+  'src/config_types.ts': 'runtime config shape and compression-profile validation metadata; it does not choose document chunk text or boundaries',
   'src/csv_query.ts': 'queryCsv (its only export xlsx_extract.ts uses) is called only by querySheet, a CLI-only xlsx-query surface; the embedding extraction function xlsx_extract.ts actually feeds into indexFileEmbeddings, allSheetsHeadText, never calls into this file -- hashing it would be over-broad, not under-broad, so it is exempted rather than hashed',
   'src/filter_notice.ts': 'words the filtered-to-empty notices of listing commands, reached only through formatCsvTable in csv_query.ts, which the xlsx-query CLI calls and allSheetsHeadText, the embedding extraction, never does',
   'src/db.ts': 'database connection/schema infrastructure; excluded per this fingerprint\'s own design, same as src/paths.ts and src/version.ts',

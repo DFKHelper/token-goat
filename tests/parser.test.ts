@@ -1129,6 +1129,72 @@ describe('parseFile', () => {
     expect(symNames).toContain('count') // annotation_type_element_declaration — dropped pre-fix
   })
 
+  it('retains Spring annotations in Java class and method symbol bodies', async () => {
+    const javaFile = write(
+      'Controller.java',
+      [
+        '@RestController',
+        'public class Controller {',
+        '  @GetMapping("/items")',
+        '  @Transactional',
+        '  public String list() {',
+        '    return "ok";',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
+    )
+    const result = await parseFile(javaFile)
+    const controller = result.symbols.find((s) => s.name === 'Controller')
+    const list = result.symbols.find((s) => s.name === 'list')
+    expect(controller?.body).toContain('@RestController')
+    expect(list?.body).toContain('@GetMapping("/items")')
+    expect(list?.body).toContain('@Transactional')
+  })
+
+  it('indexes Java sealed interfaces, enums, records, and nested classes', async () => {
+    const javaFile = write(
+      'Event.java',
+      [
+        'public sealed interface Event permits Created {',
+        '  record Payload(String id) {}',
+        '}',
+        'final class Created implements Event {}',
+        'enum State { READY, DONE; }',
+        'class Outer {',
+        '  static class Inner {',
+        '    Inner() {}',
+        '  }',
+        '}',
+      ].join('\n'),
+    )
+    const result = await parseFile(javaFile)
+    const names = result.symbols.map((s) => s.name)
+    expect(names).toEqual(expect.arrayContaining(['Event', 'Payload', 'Created', 'State', 'Outer', 'Inner']))
+    expect(names.filter((name) => name === 'Inner').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('attributes Java record and enum initializer references to their containing type', async () => {
+    const file = write(
+      'JavaScopes.java',
+      [
+        'class Factory {',
+        '  static Factory create() { return new Factory(); }',
+        '}',
+        'record Box(String value) {',
+        '  static Factory DEFAULT = Factory.create();',
+        '}',
+        'enum Mode {',
+        '  READY;',
+        '  static Factory DEFAULT = Factory.create();',
+        '}',
+      ].join('\n'),
+    )
+    const result = await parseFile(file)
+    const createRefs = result.refs.filter((ref) => ref.name === 'create')
+    expect(createRefs.map((ref) => ref.context)).toEqual(['Box', 'Mode'])
+  })
+
   it('keeps base HTML heading/id symbols alongside lwc:ref/c-* extraction for an LWC template', async () => {
     const lwcDir = path.join(TMP, 'force-app', 'main', 'default', 'lwc', 'checkoutPanel')
     fs.mkdirSync(lwcDir, { recursive: true })

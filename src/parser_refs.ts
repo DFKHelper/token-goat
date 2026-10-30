@@ -29,7 +29,15 @@ const SCOPE_TYPES_BY_LANG: ReadonlyMap<Language, ReadonlySet<string>> = new Map(
   ['rust', new Set(['function_item'])],
   [
     'java',
-    new Set(['method_declaration', 'constructor_declaration', 'class_declaration']),
+    new Set([
+      'method_declaration',
+      'constructor_declaration',
+      'class_declaration',
+      'interface_declaration',
+      'enum_declaration',
+      'record_declaration',
+      'annotation_type_declaration',
+    ]),
   ],
   ['c', new Set(['function_definition'])],
   ['cpp', new Set(['function_definition'])],

@@ -51,6 +51,21 @@ describe('compress hook transport', () => {
     expect(command.helpInformation().replace(/\s+/g, ' ')).toContain('must NOT use this flag manually')
   })
 
+  it.each(['aggressive', 'balanced', 'minimal'])('passes supported compression profile %s to the runner', async (profile) => {
+    await run(['node', 'token-goat', 'compress', '--profile', profile, '--cmd', 'git status'])
+    expect(runner.run).toHaveBeenCalledExactlyOnceWith(
+      'git status',
+      expect.objectContaining({ compressionProfile: profile }),
+    )
+  })
+
+  it.each(['auto', 'agressive'])('rejects unsupported compression profile %s before running the command', async (profile) => {
+    await runEncoded(`token-goat compress --profile ${profile} --cmd "git status"`)
+    expect(process.exitCode).toBe(1)
+    expect(runner.run).not.toHaveBeenCalled()
+    expect(stderr.join('')).toContain('compression profile must be one of: aggressive, balanced, minimal')
+  })
+
   it.each(['compress', 'bash', 'run'])('unwraps token-goat %s with a quoted command', async (alias) => {
     await runEncoded(`token-goat ${alias} --shell pwsh --timeout 23 -f passthrough -c 'Write-Output "NYVUS C:\\a b\\雪"'`)
     expect(runner.run).toHaveBeenCalledExactlyOnceWith('Write-Output "NYVUS C:\\a b\\雪"', expect.objectContaining({

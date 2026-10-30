@@ -8,6 +8,7 @@ import * as os from 'node:os'
 
 import { storeBashOutputSync } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
+import { isCompressionProfile, parseCompressionProfile, type CompressionProfile } from './config_types.js'
 import { MAX_CAPTURE_BYTES } from './constants.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { displaySafeText } from './paths.js'
@@ -45,7 +46,7 @@ export interface RunOptions {
   timeout?: number
   cwd?: string | undefined
   env?: NodeJS.ProcessEnv | undefined
-  compressionProfile?: string | undefined
+  compressionProfile?: CompressionProfile | undefined
   maxTokens?: number
   /** Printed after the recall line when the output was cut, by `maxTokens` or by the filter's own line and byte limits:the narrower command that answers the question, since a capped dump is exactly the case where running it again is the wrong next move. */
   capHint?: string | undefined
@@ -179,12 +180,12 @@ function signalExitCode(signal: NodeJS.Signals): number {
   return 128 + (num ?? 0)
 }
 
-/** Resolve the effective compression profile: explicit argument wins; otherwise read from config, treating `"auto"` (no harness detection in the wrapper) as `"balanced"`. Config errors fall back to `"balanced"`. */
-function resolveProfile(explicit: string | undefined): string {
-  if (explicit) return explicit
+/** Resolve the effective compression profile: explicit argument wins; otherwise read from config, treating `"auto"` or an unsupported persisted value as `"balanced"`. Config errors also fall back to `"balanced"`. */
+function resolveProfile(explicit: CompressionProfile | undefined): CompressionProfile {
+  if (explicit !== undefined) return parseCompressionProfile(explicit)
   try {
     const p = loadConfig().compression.profile
-    return p && p !== 'auto' ? p : 'balanced'
+    return isCompressionProfile(p) ? p : 'balanced'
   } catch {
     return 'balanced'
   }
@@ -289,7 +290,7 @@ async function wrapAndCompress(
   argv: string[],
   filter: ToolFilter,
   timeout: number,
-  profile: string,
+  profile: CompressionProfile,
   opts: RunOptions,
 ): Promise<number> {
   const writeStdout = opts.writeStdout ?? ((s: string) => process.stdout.write(s))

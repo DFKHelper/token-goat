@@ -96,7 +96,7 @@ export const LANGUAGE_SPECS = [
   // VB.NET, VB6/VBA standard modules, VBScript and VB6 forms. A VB6 class module shares `.cls` with Apex (and LaTeX) and is told apart by content in refineLanguageByContent.
   { id: 'vb', extraction: 'regex', extensions: ['.vb', '.bas', '.vbs', '.frm'], label: 'Visual Basic', ...CODE, fence: 'vb', fenceByExtension: { '.vb': 'vbnet', '.vbs': 'vbscript' } },
   {
-    id: 'cobol', extraction: 'own-result', extensions: ['.cbl', '.cob', '.cobol', '.cpy'], label: 'COBOL', ...CODE, fence: 'cobol',
+    id: 'cobol', extraction: 'own-result', extensions: ['.cbl', '.cob', '.cobol', '.cpy', '.cop', '.cpb'], label: 'COBOL', ...CODE, fence: 'cobol',
     partialRefsReason: "PERFORM, GO TO and CALL 'literal' are recorded as references, but a paragraph also runs by falling through from the one above it and a program can be called through a data item holding its name, so `dead` skips COBOL",
   },
   // Natural object sources as NaturalONE and SYSOBJH export them. Maps (.nsm) and DDMs (.nsd) are layouts, not code, and stay unmapped.

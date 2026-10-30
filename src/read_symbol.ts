@@ -294,7 +294,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     // `filePath` rewritten to the same root-relative spelling the human blocks below render (toDisplayPath(symbolDisplayRoot, ...)) -- root-relative is reproducible while absolute is specific to one machine and one drive-letter casing, matching outline/skeleton/refs --json.
     const items = capped.items.map((s) => ({
       ...s,
-      ...(opts.sig === true ? { body: extractSignature(resolveBody(s), s.kind) } : {}),
+      ...(opts.sig === true ? { body: extractSignature(resolveBody(s), s.kind, s.filePath) } : {}),
       filePath: toDisplayPath(symbolDisplayRoot, s.filePath),
       // Only present when true, so a result set of live files stays byte-identical to what this command has always emitted and only the genuinely-gone rows grow a field.
       ...(fileIsGone(s.filePath) ? { deleted: true } : {}),
@@ -319,7 +319,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const docLabel = doc.length > 0 ? ` + ${doc.length}-line doc comment` : ''
     const header = `# ${displaySafeText(sym.name)} (${sym.kind}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath)), sym.lineStart, sym.lineEnd)}${docLabel}${statsStr}${goneTag}${staleTag}`
     const body = resolveBody(sym)
-    const previewContent = opts.sig === true ? extractSignature(body, sym.kind) : body
+    const previewContent = opts.sig === true ? extractSignature(body, sym.kind, sym.filePath) : body
     const bodyLines = previewContent.split(/\r?\n/)
     const previewLines = opts.sig === true ? bodyLines : bodyLines.slice(0, SYMBOL_PREVIEW_LINES)
     const preview = [...doc, ...previewLines].join('\n')

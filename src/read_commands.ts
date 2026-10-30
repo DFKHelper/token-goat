@@ -724,7 +724,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
   if (opts.json === true) {
     recordStaleServed('read', indexFreshness(match.filePath))
     const resolved = resolveBody(match)
-    const bodyText = opts.sig === true ? extractSignature(resolved, match.kind) : resolved
+    const bodyText = opts.sig === true ? extractSignature(resolved, match.kind, match.filePath) : resolved
     // Serialize the resolved body, not the raw row. `symbols.body` is stored empty for symbols an extractor emits without text and for any symbol over parser.ts's MAX_SYMBOL_BODY_CHARS (deliberately elided so it can be re-derived here rather than stored truncated). Emitting the row verbatim would hand a JSON consumer `"body": ""` for those, which is the one output shape with no honest signal that the text is available elsewhere -- the text form below already resolves it.
     const text = displaySafeJson(
       {
@@ -740,7 +740,7 @@ export function runRead(opts: ReadOptions): { text: string; code: number } {
 
   const doc = docCommentLines(match)
   const resolved = resolveBody(match)
-  const renderedBody = opts.sig === true ? extractSignature(resolved, match.kind) : resolved
+  const renderedBody = opts.sig === true ? extractSignature(resolved, match.kind, match.filePath) : resolved
   const body = [...doc, renderedBody].join('\n')
 
   const bodyLen = opts.sig === true ? renderedBody.split('\n').length : match.lineEnd - match.lineStart + 1

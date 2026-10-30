@@ -12,6 +12,7 @@ import { readdirSync, readFileSync, existsSync, statSync, unlinkSync } from 'nod
 import { DEFAULT_MAX_COUNT, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 import { redactSecrets } from './secret_redact.js'
 import { recordStat } from './stats.js'
+import { parseSkillSectionSpec } from './skill_section_spec.js'
 
 const COMPACT_END_MARKER = '<!-- COMPACT_END -->'
 
@@ -248,21 +249,23 @@ export function extractAllHeadings(body: string, maxLevel: number = 3): Array<[l
   return headings
 }
 
-function parseSectionOrdinal(heading: string): [baseHeading: string, ordinal: number] {
-  const match = heading.match(/^(.*?)(?:#(\d+))?$/)
-  if (!match) return [heading, 1]
-
-  const baseHeading = match[1] || heading
-  const ordinal = match[2] ? Math.max(1, parseInt(match[2], 10)) : 1
-  return [baseHeading, ordinal]
+function hasLiteralSkillHeading(lines: string[], candidate: string): boolean {
+  const wanted = stripLower(candidate)
+  for (const [, stripped] of contentLineEntries(lines)) {
+    const level = headingLevel(stripped)
+    if (level >= 1 && level <= 3 && stripLower(stripped.slice(level)) === wanted) return true
+  }
+  return false
 }
 
 export function extractNamedSection(body: string, heading: string): string | null {
   if (!body || !heading) return null
 
-  const [baseHeading, ordinal] = parseSectionOrdinal(heading)
-  const headingLower = stripLower(baseHeading)
   const lines = body.split('\n')
+  const [baseHeading, ordinal] = parseSkillSectionSpec(heading, (candidate) =>
+    hasLiteralSkillHeading(lines, candidate),
+  )
+  const headingLower = stripLower(baseHeading)
 
   let matchCount = 0
   let startIdx = -1

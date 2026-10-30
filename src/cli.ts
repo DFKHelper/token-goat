@@ -75,6 +75,7 @@ import { ensureNewline, extractErrorMessage, cappedSourceBytesSaved, isUnderBloc
 import { findProject } from './project.js'
 import { colorStdout, stripAnsiEscapes } from './render/ansi.js'
 import { loadConfig, getLastConfigParseError, getLastProjectConfigParseError, lastProjectConfigLockedKeys, withConfigProjectRoot } from './config.js'
+import { COMPRESSION_PROFILES, parseCompressionProfile } from './config_types.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit, runDoctorChecks } from './cli_doctor.js'
@@ -789,6 +790,7 @@ async function cmdCompress(
       process.exitCode = 1
       return
     }
+    const compressionProfile = opts.profile === undefined ? undefined : parseCompressionProfile(opts.profile)
     const bashRunner = await import('./bash_runner.js')
     if (opts.compress === false) {
       // Commander maps `--no-compress` to `opts.compress === false`.
@@ -807,7 +809,7 @@ async function cmdCompress(
       timeout: parseTimeout(opts.timeout, bashRunner.DEFAULT_TIMEOUT_SECONDS),
       maxTokens,
       ...(opts.capHintB64 !== undefined ? { capHint: Buffer.from(opts.capHintB64, 'base64').toString('utf8') } : {}),
-      ...(opts.profile !== undefined ? { compressionProfile: opts.profile } : {}),
+      ...(compressionProfile !== undefined ? { compressionProfile } : {}),
       ...(opts.quietSuccess === true ? { quietSuccess: true } : {}),
       ...(opts.native === true ? { nativeShell: true } : {}),
       ...(opts.shell !== undefined ? { shellType: opts.shell } : {}),
@@ -1480,7 +1482,7 @@ export function buildProgram(): Command {
     .option('-f, --filter <name>', 'filter name (auto-detected from the command when omitted)')
     .option('--timeout <seconds>', 'wall-clock timeout in seconds (0 = built-in default)')
     .option('--no-compress', 'stream output raw without compression (debug the wrapper)')
-    .option('--profile <name>', 'compression profile: aggressive | balanced | minimal')
+    .option('--profile <name>', `compression profile: ${COMPRESSION_PROFILES.join(' | ')}`)
     .option('--max-tokens <n>', 'post-compress token cap (0 = no cap)')
     .option('--cap-hint-b64 <payload>', 'base64 text printed after the output when --max-tokens cut it (the Bash hook sets it to the narrower read command)')
     .option('-q, --quiet-success', 'on exit code 0, emit only [tg: ok] summary and store full output for recall via bash-output')

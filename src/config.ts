@@ -10,6 +10,7 @@ import { SUPPORTED_OCR_LANG_CODES, isSupportedOcrLang } from './ocr_languages.js
 import { ownGet } from './own_lookup.js'
 import { atomicWriteText, extractErrorMessage } from './util.js'
 import { registerReset } from './reset.js'
+import { COMPRESSION_PROFILE_SETTINGS } from './config_types.js'
 
 export * from './config_types.js'
 export * from './config_defaults.js'
@@ -252,9 +253,9 @@ export function validateNumericField(fieldKey: string, value: number, cfg: Recor
   return clamped
 }
 
-// String-valued config fields whose value must come from a fixed set. Extracted from _buildConfig / dispatch.ts's PROFILE_CAPS and bridges/registry.ts's harness names, so a typo (e.g. `agressive` instead of `aggressive`) is rejected by `config set` instead of silently falling back to a default at runtime with no signal to the user.
+// String-valued config fields whose value must come from a fixed set. Compression profile and harness names use shared source lists, so a typo (e.g. `agressive` instead of `aggressive`) is rejected by `config set` instead of silently falling back to a default at runtime with no signal to the user.
 const ENUM_FIELD_VALUES: Record<string, string[]> = {
-  'compression.profile': ['auto', 'aggressive', 'balanced', 'minimal'],
+  'compression.profile': [...COMPRESSION_PROFILE_SETTINGS],
   'compact_assist.harness': ['auto', ...KNOWN_HARNESS_NAMES],
   'image_shrink.ocr_lang': [...SUPPORTED_OCR_LANG_CODES],
   // Deliberately has no entry above `normal`. This table is what `config set` checks; a hand-edited TOML bypasses it, which is why resolveWorkerPriority (process_priority.ts) maps an unrecognized value back to the default rather than trusting whatever the file said.
@@ -872,8 +873,8 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
 
   const cpr_raw = section(raw, 'compression')
   const cpr = getDefaultConfig('compression') as CompressionConfig
-  cpr.profile = validatedStr(cpr_raw['profile'], cpr.profile)
-  cpr.profile = envStr('TOKEN_GOAT_COMPRESS_PROFILE', cpr.profile)
+  cpr.profile = validatedEnum('compression.profile', cpr_raw['profile'], cpr.profile)
+  cpr.profile = envEnum('compression.profile', 'TOKEN_GOAT_COMPRESS_PROFILE', cpr.profile)
 
   const ctx_raw = section(raw, 'context')
   const ctx = getDefaultConfig('context') as ContextConfig

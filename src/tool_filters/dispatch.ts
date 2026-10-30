@@ -4,6 +4,7 @@
 
 import type { ApplyOptions, CompressedOutput, ToolFilter } from './base.js'
 import { resolveMinNetSavingsBytes } from './base.js'
+import { parseCompressionProfile, type CompressionProfile } from '../config_types.js'
 import { resolveIndexPath } from '../paths.js'
 import { GenericFilter, PassthroughFilter } from './generic.js'
 import { goTestFilter } from './go_test.js'
@@ -62,7 +63,7 @@ export const TOOL_FILTERS: ToolFilter[] = [
 ]
 
 /** Compression profiles → effective line cap; `minimal` also skips progress collapse. */
-const PROFILE_CAPS: Record<string, number> = { aggressive: 50, balanced: 200, minimal: 500 }
+const PROFILE_CAPS: Record<CompressionProfile, number> = { aggressive: 50, balanced: 200, minimal: 500 }
 
 /** Peel a leading `cd DIR &&`/`cd DIR ;` off `argv` so the real command lands at argv[0] for matching, and shift `cwd` to DIR so package-manager script resolution (below) resolves against the right `package.json`. Deliberately narrow: only a single `cd` immediately followed by exactly one directory token and a top-level `&&`/`;` separator qualifies. A bare `cd`, a `cd DIR` with nothing following, or a `cd` displaced from argv[0] by an earlier pass-through (e.g. inside a subshell, where shlexSplit tokenizes `(cd` as one token) are left untouched -- this is filter-selection routing, not general shell-grammar parsing. When `cwd` is `undefined` (the caller never had one), the peeled cwd stays `undefined` too: peeling must not conjure a cwd that lets script resolution run somewhere it previously couldn't -- callers that never pass cwd see no behaviour change beyond the peel itself. */
 function peelLeadingCd(argv: string[], cwd: string | undefined): { argv: string[]; cwd: string | undefined } | null {
@@ -143,10 +144,10 @@ export function detectFromCommand(command: string, cwd?: string): { filter: Tool
 export interface CompressOptions {
   maxLines?: number
   maxBytes?: number
-  compressionProfile?: string
+  compressionProfile?: CompressionProfile
 }
 
-/** Canonical wrapper entry point: run `filter` over the captured output and return a {@link CompressedOutput}. Always succeeds (the filter's own `apply` catches exceptions and falls back to truncation). The profile sets the effective line cap; an explicit tighter `maxLines` still wins. */
+/** Canonical wrapper entry point: run `filter` over the captured output and return a {@link CompressedOutput}. Valid profiles reach the filter's exception-safe `apply`; unrecognized profiles are rejected first. The profile sets the effective line cap; an explicit tighter `maxLines` still wins. */
 export function compressOutput(
   filter: ToolFilter,
   stdout: string,
@@ -155,9 +156,9 @@ export function compressOutput(
   argv: string[],
   opts: CompressOptions = {},
 ): CompressedOutput {
-  const profile = opts.compressionProfile ?? 'balanced'
+  const profile = parseCompressionProfile(opts.compressionProfile ?? 'balanced')
   const maxLines = opts.maxLines ?? 1000
-  let effectiveMaxLines = PROFILE_CAPS[profile] ?? 200
+  let effectiveMaxLines = PROFILE_CAPS[profile]
   if (maxLines < effectiveMaxLines) effectiveMaxLines = maxLines
   const skipProgress = profile === 'minimal'
   const applyOpts: ApplyOptions = { maxLines: effectiveMaxLines, skipProgress }

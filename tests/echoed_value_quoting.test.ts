@@ -170,6 +170,19 @@ describe('the exports text scan reads a Python, Rust or Java name whole', () => 
     expect(extractExportNames('public class Café {}\npublic interface $Tést {}\n', '.java')).toEqual(['Café', '$Tést'])
   })
 
+  it('recognizes sealed, non-sealed, and annotation Java types as public exports', () => {
+    const java = [
+      'public sealed interface Action permits Add, Remove {}',
+      'public non-sealed class CompatibilityAction extends ActionBase {}',
+      'public @interface ServiceMarker {}',
+    ].join('\n')
+    expect(extractExportNames(java, '.java')).toEqual([
+      'Action',
+      'CompatibilityAction',
+      'ServiceMarker',
+    ])
+  })
+
   // HAND-DERIVED: `export default été` ends at the newline with no semicolon, and ASI makes that a complete statement; without the m flag `$` matched only at the end of the text.
   it('ends a default export at a newline when there is no semicolon', () => {
     expect(extractExportNames('const été = 1\nexport default été\nconst x = 1\n', '.js')).toEqual(['été'])

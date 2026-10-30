@@ -1,11 +1,11 @@
-/** COBOL adapter: programs, procedure-division sections and paragraphs, level-01/77 data items and FD/SD file descriptions, `COPY` imports, and `PERFORM`/`GO TO`/`CALL 'x'` references. Reference format (IBM Enterprise COBOL for z/OS, https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=structure-reference-format): columns 1-6 are the sequence number area, column 7 the indicator area, 8-11 Area A, 12-72 Area B, and 73-80 are ignored. Indicator `*` or `/` makes a comment line, `D`/`d` a debugging line, `-` a continuation line (https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=format-indicator-area); `*>` starts a floating comment. Free format (`>>SOURCE FORMAT IS FREE`, the ISO 2002 directive) has no columns: text starts at column 1 and only `*>` comments. */
+/** COBOL adapter: programs, procedure-division sections and paragraphs, level-01/77 data items and FD/SD file descriptions, leading comments, `COPY` imports, and `PERFORM`/`GO TO`/`CALL`/embedded-SQL `CALL` references. Reference format (IBM Enterprise COBOL for z/OS, https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=structure-reference-format): columns 1-6 are the sequence number area, column 7 the indicator area, 8-11 Area A, 12-72 Area B, and 73-80 are ignored. Indicator `*` or `/` makes a comment line, `D`/`d` a debugging line, `-` a continuation line (https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=format-indicator-area); `*>` starts a floating comment. Free format (`>>SOURCE FORMAT IS FREE`, the ISO 2002 directive) has no columns: text starts at column 1 and only `*>` comments. */
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
 import type { AdapterImport } from './common.js'
 
 const MAX_SYMBOLS = 10_000
 
-/** One source line reduced to its program text: comment lines dropped, strings blanked in `code`. */
+/** One source line reduced to its program text: leading comments carried forward, comment lines omitted, and strings blanked in `code`. */
 interface CobolLine {
   readonly line: number
   /** Program text with comments removed; string literal contents kept. */
@@ -16,6 +16,7 @@ interface CobolLine {
   readonly offset: number
   /** True when the text begins in Area A (fixed format) or the line is free format, where there are no areas. */
   readonly areaA: boolean
+  readonly leadingComments: string
   readonly raw: string
 }
 
@@ -86,28 +87,45 @@ function joinContinuation(out: CobolLine[], areaB: string): void {
 
 function toLines(rawLines: readonly string[]): CobolLine[] {
   const out: CobolLine[] = []
+  const pendingComments: string[] = []
   let free = startsFree(rawLines)
   for (let i = 0; i < rawLines.length; i++) {
     const raw = rawLines[i]!
     const directive = SOURCE_DIRECTIVE_RE.exec(free ? raw : raw.slice(7))
     if (directive) {
       free = directive[1]!.toUpperCase() === 'FREE'
+      pendingComments.length = 0
       continue
     }
     let text: string
     let offset: number
     let areaA: boolean
     if (free) {
-      if (/^\s*>>/.test(raw)) continue
+      if (/^\s*>>/.test(raw)) {
+        pendingComments.length = 0
+        continue
+      }
       text = raw
       offset = 0
       areaA = true
     } else {
-      if (raw.length <= 7) continue
+      if (raw.length <= 7) {
+        if (raw.trim() === '') pendingComments.length = 0
+        continue
+      }
       const indicator = raw[6]!
-      // Comment and debugging lines: neither opens a declaration nor carries a reference.
-      if (indicator === '*' || indicator === '/' || indicator === 'D' || indicator === 'd') continue
+      if (indicator === '*') {
+        const comment = raw.slice(7, 72).trim()
+        if (comment !== '') pendingComments.push(comment)
+        continue
+      }
+      // Page-eject and debugging lines neither open a declaration nor carry a reference.
+      if (indicator === '/' || indicator === 'D' || indicator === 'd') {
+        pendingComments.length = 0
+        continue
+      }
       if (indicator === '-') {
+        pendingComments.length = 0
         joinContinuation(out, raw.slice(7, 72))
         continue
       }
@@ -115,10 +133,21 @@ function toLines(rawLines: readonly string[]): CobolLine[] {
       offset = 7
       areaA = text.slice(0, 4).trim() !== ''
     }
+    const commentLine = /^\s*\*>(.*)$/.exec(text)
+    if (commentLine) {
+      const comment = commentLine[1]!.trim()
+      if (comment !== '') pendingComments.push(comment)
+      continue
+    }
     text = stripFloatingComment(text).trimEnd()
-    if (text.trim() === '') continue
+    if (text.trim() === '') {
+      if (raw.trim() === '') pendingComments.length = 0
+      continue
+    }
     const lead = text.length - text.trimStart().length
-    out.push({ line: i + 1, text: text.trimStart(), code: blankStrings(text.trimStart()), offset: offset + lead, areaA, raw })
+    const leadingComments = pendingComments.join('\n')
+    pendingComments.length = 0
+    out.push({ line: i + 1, text: text.trimStart(), code: blankStrings(text.trimStart()), offset: offset + lead, areaA, leadingComments, raw })
   }
   return out
 }
@@ -136,6 +165,11 @@ function copyTarget(text: string, index: number): string | undefined {
   return m ? (m[1] ?? m[2] ?? m[3]) : undefined
 }
 
+function callTarget(text: string, index: number): string | undefined {
+  const m = /^\s*(?:"([^"]+)"|'([^']+)'|:?(?:([A-Za-z0-9_$#-]+(?:\.[A-Za-z0-9_$#-]+)*)))/.exec(text.slice(index))
+  return m ? (m[1] ?? m[2] ?? m[3]) : undefined
+}
+
 export function extractCobol(
   content: string,
   filePath: string,
@@ -147,7 +181,7 @@ export function extractCobol(
 
   const rawLines = (content.charCodeAt(0) === 0xfeff ? content.slice(1) : content).split(/\r?\n/)
   const lines = toLines(rawLines)
-  const isCopybook = /\.cpy$/i.test(filePath)
+  const isCopybook = /\.(?:cpy|cop|cpb)$/i.test(filePath)
 
   // Open declarations, each closed at the last program line before whatever ends it.
   const units: number[] = []
@@ -158,6 +192,7 @@ export function extractCobol(
   let division = ''
   let lastLine = 0
   let idDivisionLine: number | undefined
+  let idDivisionDocstring: string | undefined
 
   // A copybook with no division header is a fragment: data items when it opens with a level number, procedure text otherwise; its record level is the lowest level it uses.
   let recordLevel = 1
@@ -170,9 +205,9 @@ export function extractCobol(
     if (structural.length > 0) recordLevel = structural.reduce((a, b) => (b < a ? b : a), structural[0]!)
   }
 
-  const emit = (name: string, kind: string, line: number, parent: string): number | undefined => {
+  const emit = (name: string, kind: string, line: number, parent: string, docstring = ''): number | undefined => {
     if (symbols.length >= MAX_SYMBOLS) return undefined
-    symbols.push({ filePath, name, kind, lineStart: line, lineEnd: line, body: '', docstring: '', parent })
+    symbols.push({ filePath, name, kind, lineStart: line, lineEnd: line, body: '', docstring, parent })
     return symbols.length - 1
   }
   const close = (index: number | undefined, end: number): void => {
@@ -216,7 +251,11 @@ export function extractCobol(
       if (name !== undefined) {
         // The unit starts at its IDENTIFICATION DIVISION header when that is the program line just before PROGRAM-ID.
         const start = idDivisionLine !== undefined && idDivisionLine === lastLine ? idDivisionLine : l.line
-        const index = emit(name, id[1]!.toUpperCase() === 'FUNCTION' ? 'function' : 'program', start, unitParent())
+        let docstring = l.leadingComments
+        if (idDivisionLine === lastLine && idDivisionDocstring !== undefined) {
+          docstring = docstring === '' ? idDivisionDocstring : `${idDivisionDocstring}\n${docstring}`
+        }
+        const index = emit(name, id[1]!.toUpperCase() === 'FUNCTION' ? 'function' : 'program', start, unitParent(), docstring)
         if (index !== undefined) units.push(index)
       }
       division = 'IDENTIFICATION'
@@ -242,7 +281,13 @@ export function extractCobol(
       closeProcedure(lastLine)
       closeData(lastLine)
       division = div[1]!.toUpperCase() === 'ID' ? 'IDENTIFICATION' : div[1]!.toUpperCase()
-      if (division === 'IDENTIFICATION') idDivisionLine = l.line
+      if (division === 'IDENTIFICATION') {
+        idDivisionLine = l.line
+        idDivisionDocstring = l.leadingComments
+      } else {
+        idDivisionLine = undefined
+        idDivisionDocstring = undefined
+      }
       lastLine = l.line
       continue
     }
@@ -253,7 +298,7 @@ export function extractCobol(
       } else if (FILE_DESCRIPTION_RE.test(code)) {
         const m = FILE_DESCRIPTION_RE.exec(code)!
         closeData(lastLine)
-        fileDescription = emit(m[2]!, 'file', l.line, unitParent())
+        fileDescription = emit(m[2]!, 'file', l.line, unitParent(), l.leadingComments)
       } else {
         const m = LEVEL_RE.exec(code)
         const level = m ? Number(m[1]) : -1
@@ -266,7 +311,7 @@ export function extractCobol(
           }
           if (m[2]!.toUpperCase() !== 'FILLER') {
             const owner = fileDescription !== undefined ? symbols[fileDescription]!.name : unitParent()
-            record = emit(m[2]!, 'variable', l.line, owner)
+            record = emit(m[2]!, 'variable', l.line, owner, l.leadingComments)
           }
         }
       }
@@ -275,10 +320,10 @@ export function extractCobol(
       const para = l.areaA && !sec ? PARAGRAPH_RE.exec(code) : null
       if (sec) {
         closeProcedure(lastLine)
-        section = emit(sec[1]!, 'section', l.line, unitParent())
+        section = emit(sec[1]!, 'section', l.line, unitParent(), l.leadingComments)
       } else if (para && !NOT_A_PARAGRAPH.test(para[1]!)) {
         close(paragraph, lastLine)
-        paragraph = emit(para[1]!, 'paragraph', l.line, section !== undefined ? symbols[section]!.name : unitParent())
+        paragraph = emit(para[1]!, 'paragraph', l.line, section !== undefined ? symbols[section]!.name : unitParent(), l.leadingComments)
       }
       for (const m of l.code.matchAll(new RegExp(String.raw`\bPERFORM\s+(${NAME})(?:\s+(?:THRU|THROUGH)\s+(${NAME}))?(\s+TIMES\b)?`, 'gi'))) {
         if (m[3] !== undefined || PERFORM_NOT_A_TARGET.test(m[1]!) || /^\d+$/.test(m[1]!)) continue
@@ -289,11 +334,9 @@ export function extractCobol(
         if (/^DEPENDING$/i.test(m[1]!)) continue
         refs.push({ filePath, name: m[1]!, line: l.line, col: l.offset + m.index, context: l.raw.trim() })
       }
-      for (const m of l.code.matchAll(/\bCALL\s+(["'])/gi)) {
-        const quote = m.index + m[0].length - 1
-        const close = l.text.indexOf(m[1]!, quote + 1)
-        const name = close > quote ? l.text.slice(quote + 1, close).trim() : ''
-        if (name !== '') refs.push({ filePath, name, line: l.line, col: l.offset + m.index, context: l.raw.trim() })
+      for (const m of l.code.matchAll(/\bCALL\b/gi)) {
+        const name = callTarget(l.text, m.index + m[0].length)
+        if (name !== undefined && name !== '') refs.push({ filePath, name, line: l.line, col: l.offset + m.index, context: l.raw.trim() })
       }
     }
     lastLine = l.line

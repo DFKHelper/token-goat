@@ -108,8 +108,65 @@ describe('COBOL adapter', () => {
     expect(shape(r)).toEqual(['variable CUST-REC 1-2', 'variable CUST-ADDR 3-4'])
   })
 
+  it('attaches leading comments to programs, sections, paragraphs and copybook records', () => {
+    const src = [
+      '000100* Payroll program',
+      '000200 IDENTIFICATION DIVISION.',
+      '000300 PROGRAM-ID. PAYROLL.',
+      '000400 PROCEDURE DIVISION.',
+      '000500* Main section',
+      '000600 MAIN-SECTION SECTION.',
+      '000700* Main paragraph',
+      '000800 MAIN-PARA.',
+      '000900 GOBACK.',
+      '001000 END PROGRAM PAYROLL.',
+    ].join('\n')
+    const r = extractCobol(src, 'PAYROLL.COB')
+    expect(shape(r)).toEqual([
+      'program PAYROLL 2-10',
+      'section MAIN-SECTION 6-9 PAYROLL',
+      'paragraph MAIN-PARA 8-9 MAIN-SECTION',
+    ])
+    expect(r.symbols.map(({ kind, name, docstring }) => [kind, name, docstring])).toEqual([
+      ['program', 'PAYROLL', 'Payroll program'],
+      ['section', 'MAIN-SECTION', 'Main section'],
+      ['paragraph', 'MAIN-PARA', 'Main paragraph'],
+    ])
+
+    for (const extension of ['COP', 'CPB']) {
+      const copybook = extractCobol(['*> Customer copybook', '01 CUSTOMER-REC.', ' 05 CUSTOMER-ID PIC X(8).'].join('\n'), `CUST.${extension}`)
+      expect(copybook.symbols.map(({ name, docstring }) => [name, docstring])).toEqual([
+        ['CUSTOMER-REC', 'Customer copybook'],
+      ])
+    }
+  })
+
+  it('indexes literal, identifier and embedded SQL CALL references', () => {
+    const src = [
+      '>>SOURCE FORMAT IS FREE',
+      'identification division.',
+      'program-id. REFTEST.',
+      'procedure division.',
+      'MAIN-PARA.',
+      '  CALL "STATIC-PGM".',
+      '  CALL WS-PROGRAM.',
+      '  EXEC SQL',
+      '    CALL SQL-PROCEDURE(:WS-ARG)',
+      '  END-EXEC.',
+      '  *> CALL COMMENT-PGM',
+      '  DISPLAY "CALL STRING-PGM".',
+      '  GOBACK.',
+    ].join('\n')
+    const r = extractCobol(src, 'refs.cbl')
+    expect(r.refs.map((ref) => `${ref.name}@${ref.line}`)).toEqual([
+      'STATIC-PGM@6',
+      'WS-PROGRAM@7',
+      'SQL-PROCEDURE@9',
+    ])
+  })
+
   it('maps every COBOL extension, in any case, to cobol', () => {
-    for (const p of ['src/PAY.cbl', 'src/PAY.CBL', 'lib/X.cob', 'copy/CUST.cpy', 'a/B.COBOL']) expect(detectLanguage(p), p).toBe('cobol')
+    for (const p of ['src/PAY.cbl', 'src/PAY.CBL', 'lib/X.cob', 'copy/CUST.cpy', 'copy/CUST.cop', 'copy/CUST.cpb', 'a/B.COBOL']) expect(detectLanguage(p), p).toBe('cobol')
   })
 })
 

@@ -36,6 +36,16 @@ describe('extractSignature', () => {
     expect(extractSignature(py)).toBe('def process_data(records: list[dict], threshold: float = 0.5) -> int:')
   })
 
+  it('extracts COBOL labels and a level-01 declaration without fixed-format columns', () => {
+    expect(extractSignature('000100 MAIN-SECTION SECTION.\n000200 NEXT-PARA.', 'section')).toBe('MAIN-SECTION SECTION.')
+    expect(extractSignature('000100 RUN-PARA.\n000200 DISPLAY "BODY".', 'paragraph')).toBe('RUN-PARA.')
+    expect(extractSignature([
+      '000100 01 CUSTOMER-REC',
+      '000200     PIC X(10) VALUE "A.B".',
+      '000300 05 CUSTOMER-ID PIC X(8).',
+    ].join('\n'), 'variable')).toBe('01 CUSTOMER-REC PIC X(10) VALUE "A.B".')
+  })
+
   it('handles decorators gracefully', () => {
     const fn = `@logged\n@timed(100)\nexport function performAction(): void {\n  console.log("action")\n}`
     expect(extractSignature(fn)).toBe('export function performAction(): void')
@@ -88,5 +98,30 @@ describe('the --sig and --signature flags reach the handler through the built CL
       expect(res.stdout).not.toContain('SIG_BODY_MARKER')
     })
   }
-})
 
+  it('read and symbol --sig return the complete COBOL level-01 declaration only', () => {
+    const cobolFile = 'sample_cobol.cbl'
+    writeFileSync(path.join(tmp!.project, cobolFile), [
+      '000100 IDENTIFICATION DIVISION.',
+      '000200 PROGRAM-ID. SIGTEST.',
+      '000300 DATA DIVISION.',
+      '000400 WORKING-STORAGE SECTION.',
+      '000500 01 CUSTOMER-REC',
+      '000600     PIC X(10).',
+      '000700 PROCEDURE DIVISION.',
+      '000800 MAIN-PARA.',
+      '000900     DISPLAY "COBOL_BODY_MARKER".',
+      '001000     STOP RUN.',
+    ].join('\n'), 'utf-8')
+
+    const read = bundleTg(tmp!.project, tmp!.env, ['read', `${cobolFile}::CUSTOMER-REC`, '--signature'])
+    expect(read.status).toBe(0)
+    expect(read.stdout).toContain('01 CUSTOMER-REC PIC X(10).')
+    expect(read.stdout).not.toContain('COBOL_BODY_MARKER')
+
+    const symbol = bundleTg(tmp!.project, tmp!.env, ['symbol', 'CUSTOMER-REC', '--sig', '--file', cobolFile])
+    expect(symbol.status).toBe(0)
+    expect(symbol.stdout).toContain('01 CUSTOMER-REC PIC X(10).')
+    expect(symbol.stdout).not.toContain('COBOL_BODY_MARKER')
+  })
+})

@@ -75,6 +75,7 @@ const OLD_LABELS: Record<string, string> = {
 }
 
 const PLSQL = ['.pks', '.pkb', '.pls', '.plsql', '.pck', '.prc', '.fnc', '.trg', '.tps', '.tpb']
+const COBOL_COPYBOOK_EXTS = ['.cop', '.cpb']
 // The enterprise batch: ABAP, SAS, PL/I, RPG and JCL by extension; OpenEdge ABL has none of its own and is found by content.
 const BATCH_C = ['.abap', '.sas', '.pli', '.pl1', '.rpgle', '.sqlrpgle', '.jcl']
 const BATCH_C_IDS = ['abap', 'sas', 'pli', 'rpg', 'jcl', 'abl']
@@ -143,11 +144,12 @@ describe('language table: derived lists match the pre-refactor lists except the 
   it('extension map: only the new mappings were added, nothing moved or dropped', () => {
     for (const [ext, lang] of Object.entries(OLD_EXTENSION_LANGUAGE)) expect(EXTENSION_LANGUAGE.get(ext), ext).toBe(lang)
     const added = [...EXTENSION_LANGUAGE.keys()].filter((e) => !(e in OLD_EXTENSION_LANGUAGE))
-    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...PHP_INC, ...BATCH_C, ...BATCH_A, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_TEMPLATES, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX, ...BATCH_SERVERCONF]))
+    expect(sorted(added)).toEqual(sorted(['.zsh', '.ksh', '.bats', '.bzl', '.star', ...PLSQL, '.jsonc', '.avsc', ...PHP_INC, ...COBOL_COPYBOOK_EXTS, ...BATCH_C, ...BATCH_A, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_TEMPLATES, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX, ...BATCH_SERVERCONF]))
     for (const e of ['.zsh', '.ksh', '.bats']) expect(detectLanguage(`a${e}`), e).toBe('bash')
     for (const e of ['.bzl', '.star']) expect(detectLanguage(`a${e}`), e).toBe('python')
     for (const e of PLSQL) expect(detectLanguage(`a${e.toUpperCase()}`), e).toBe('sql')
     for (const e of ['.jsonc', '.avsc']) expect(detectLanguage(`a${e}`), e).toBe('json')
+    for (const e of COBOL_COPYBOOK_EXTS) expect(detectLanguage(`a${e.toUpperCase()}`), e).toBe('cobol')
   })
 
   it('basename maps: only the Bazel files, Jenkinsfile, CMakeLists.txt and the server configs were added; BUILD and WORKSPACE match exact case only', () => {
@@ -169,13 +171,13 @@ describe('language table: derived lists match the pre-refactor lists except the 
     expect(sorted(now)).toEqual(sorted([...OLD_SYMBOL_BEARING, ...BATCH_C_IDS, ...BATCH_A_IDS, ...BATCH_B1_IDS, ...BATCH_D_IDS, ...BATCH_VHDL_IDS, ...BATCH_LISP_IDS, ...BATCH_HASKELL_IDS, ...BATCH_OCAML_IDS, ...BATCH_FSHARP_IDS, ...BATCH_NIX_IDS, ...BATCH_SERVERCONF_IDS]))
   })
 
-  it('read hook source-hint set: adds the other Ruby extensions and Starlark only', () => {
-    expect(diff(oldReadSource, 'sourceHints')).toEqual({ added: sorted(['.bzl', '.rake', '.ruby', '.star', ...PHP_INC, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX]), removed: [] })
+  it('read hook source-hint set includes the added COBOL copybook extensions', () => {
+    expect(diff(oldReadSource, 'sourceHints')).toEqual({ added: sorted(['.bzl', '.rake', '.ruby', '.star', ...PHP_INC, ...COBOL_COPYBOOK_EXTS, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX]), removed: [] })
   })
 
   it('diff-on-reread set: adds extensions of languages already covered, and the new mappings', () => {
     expect(diff((e) => OLD_DIFFABLE_SOURCE_RE.test(`x${e}`), 'diffable')).toEqual({
-      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PHP_INC, ...PLSQL, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX, ...BATCH_SERVERCONF]),
+      added: sorted(['.avsc', '.bzl', '.cts', '.hxx', '.kts', '.mts', '.pyi', '.rake', '.ruby', '.star', ...PHP_INC, ...PLSQL, ...COBOL_COPYBOOK_EXTS, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX, ...BATCH_SERVERCONF]),
       removed: [],
     })
   })
@@ -184,7 +186,7 @@ describe('language table: derived lists match the pre-refactor lists except the 
     const missed18 = ['.mts', '.cts', '.mjs', '.cjs', '.pyi', '.kts', '.hxx', '.ps1', '.psm1', '.cls', '.trigger', '.sc', '.lua', '.ex', '.exs', '.dart', '.zig', '.r']
     expect(missed18).toHaveLength(18)
     expect(diff((e) => OLD_GREP_SOURCE_EXT_RE.test(`x${e}`), 'grepSource')).toEqual({
-      added: sorted([...missed18, '.ruby', '.rake', '.bzl', '.star', ...PHP_INC, ...SF_MARKUP, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP_GREP_ADDED, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX]),
+      added: sorted([...missed18, '.ruby', '.rake', '.bzl', '.star', ...PHP_INC, ...SF_MARKUP, ...COBOL_COPYBOOK_EXTS, ...BATCH_C, ...BATCH_A_CODE, ...BATCH_B1, ...BATCH_D, ...BATCH_VHDL, ...BATCH_LISP_GREP_ADDED, ...BATCH_HASKELL, ...BATCH_OCAML, ...BATCH_FSHARP, ...BATCH_NIX]),
       removed: [],
     })
   })

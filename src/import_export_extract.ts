@@ -102,7 +102,7 @@ export function extractExportNames(text: string, ext: string): string[] {
     }
   } else if (e === '.java') {
     for (const line of lines) {
-      const m = /\bpublic\s+(?:static\s+|final\s+|abstract\s+)*(?:class|interface|enum|record)\s+([\p{L}$_][\p{L}\p{N}\p{M}$_]*)/u.exec(line)
+      const m = /\bpublic\s+(?:(?:static|final|abstract|sealed|non-sealed)\s+)*(?:@interface|class|interface|enum|record)\s+([\p{L}$_][\p{L}\p{N}\p{M}$_]*)/u.exec(line)
       if (m) push(m[1])
     }
   }

@@ -63,6 +63,49 @@ describe('skill-section spec parsing', () => {
     expect(code).toBe(0)
     expect(stdout.join('')).toContain('scoped body text')
   })
+
+  // HAND-DERIVED: two `Deploy` headings make `#2` valid ordinal syntax while a third `Deploy#2` heading exposes the collision.
+  it('prefers a literal heading ending in #N over duplicate-heading ordinal syntax', async () => {
+    writeFileSync(
+      skillFile,
+      [
+        '# Doc',
+        '',
+        '## Deploy',
+        'first duplicate body',
+        '',
+        '## Deploy',
+        'second duplicate body',
+        '',
+        '## Deploy#2',
+        'literal heading body',
+        '',
+      ].join('\n'),
+      'utf-8',
+    )
+    await storeOutput('sess-literal-ordinal', 'literal-ordinal-skill', 'cached body', { sourcePath: skillFile })
+
+    const code = await runSkillSection('literal-ordinal-skill::Deploy#2')
+
+    expect(code).toBe(0)
+    expect(stdout.join('')).toContain('literal heading body')
+    expect(stdout.join('')).not.toContain('second duplicate body')
+  })
+
+  it('keeps #N ordinal selection when no literal heading matches', async () => {
+    writeFileSync(
+      skillFile,
+      ['# Doc', '', '## Deploy', 'first duplicate body', '', '## Deploy', 'second duplicate body', ''].join('\n'),
+      'utf-8',
+    )
+    await storeOutput('sess-ordinal-fallback', 'ordinal-fallback-skill', 'cached body', { sourcePath: skillFile })
+
+    const code = await runSkillSection('ordinal-fallback-skill::Deploy#2')
+
+    expect(code).toBe(0)
+    expect(stdout.join('')).toContain('second duplicate body')
+    expect(stdout.join('')).not.toContain('first duplicate body')
+  })
 })
 
 // Regression guard: cmdSkillSection deliberately sets process.exitCode = 1 (without throwing) when the requested heading isn't found in the skill file. The buildProgram() `guard()` wrapper that registers every guard-wrapped command (skill-section among them) used to run `process.exitCode = 0` unconditionally after the handler resolved, clobbering that 1 back to 0 and reporting a real "section not found" failure as success. Drive the real run() entry so this exercises the actual guard() + handler wiring, not the handler in isolation.
