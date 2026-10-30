@@ -50,7 +50,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     '- checking file size/lines before reading → `tokens <file>`',
     '- passing concatenated or unquoted paths to shell tools → verify whitespace and argument separation in multi-path commands (e.g. `git add path1 path2`, never `git add path1path2`)',
     '',
-    'Commands: `symbol NAME`, `tokens <file>`, `changed --symbol`, `config-get file KEY`, `json-outline`/`yaml-outline`/`xml-outline`, ' +
+    'Commands: `symbol NAME`, `tokens <file>`, `outline <file>`, `changed --symbol`, `config-get file KEY`, `json-outline`/`yaml-outline`/`xml-outline`, ' +
       (gdrive ? '`gdrive-sections <file-id>`, ' : '') +
       'and `token-goat --help` for the rest.',
     '',
