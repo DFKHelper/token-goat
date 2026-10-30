@@ -1,4 +1,4 @@
-// `token-goat index C:\x --walk` under WSL has to walk /mnt/c/x, the folder behind that spelling there; POSIX resolves `c:/x` as a relative path to nothing. tests/cmdindex_root_spelled_as_a_mount.test.ts pins the Windows half, where a mount spelling has to open at its drive letter, with its CAPTURE. A runner cannot create /mnt/<letter>, so one mount is mapped onto a temp directory through node:fs as tests/hook_reads_of_a_drive_letter_key_open_its_wsl_mount.test.ts does, adding readdirSync for the walk. The spellings are HAND-DERIVED from WSL's documented convention of mounting drive Q: at /mnt/q.
+// `token-goat index C:\x --walk` under WSL has to walk /mnt/c/x, the folder behind that spelling there; POSIX resolves `c:/x` as a relative path to nothing. tests/cmdindex_root_spelled_as_a_mount.test.ts pins the Windows half, where a mount spelling has to open at its drive letter, with its CAPTURE. A runner cannot create /mnt/<letter>, so one mount is mapped onto a temp directory through node:fs as tests/hook_reads_of_a_drive_letter_key_open_its_wsl_mount.test.ts does, adding opendirSync for the walk, the call walkProject opens each directory with: unmapped, the mount reads as an unreadable directory and the run indexes 0 files. The spellings are HAND-DERIVED from WSL's documented convention of mounting drive Q: at /mnt/q.
 
 import type * as childProcess from 'node:child_process'
 import * as fs from 'node:fs'
@@ -36,6 +36,7 @@ vi.mock('node:fs', async (importOriginal) => {
     openSync: wrap(actual.openSync),
     existsSync: wrap(actual.existsSync),
     readdirSync: wrap(actual.readdirSync),
+    opendirSync: wrap(actual.opendirSync),
   }
   return { ...actual, ...overrides, default: { ...actual, ...overrides } }
 })
