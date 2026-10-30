@@ -164,10 +164,7 @@ mod imp {
             let event = unsafe { CreateEventW(null(), 1, 1, null_mut()) };
             assert!(!event.is_null(), "CreateEventW must return a valid event");
             let _event_guard = EventGuard(event);
-            let mut conn = ManuallyDrop::new(Conn {
-                pipe: INVALID_HANDLE_VALUE,
-                event,
-            });
+            let mut conn = ManuallyDrop::new(Conn { pipe: INVALID_HANDLE_VALUE, event });
             let mut was_signaled = true;
             // The pipe sentinel is not an I/O endpoint; this test asserts only the event state at start.
             let _transfer_result = conn.transfer(Instant::now() + Duration::from_secs(1), |_, overlapped| {
@@ -220,16 +217,7 @@ mod imp {
 
             let mut socket_error = 0;
             let mut socket_error_len = size_of::<libc::c_int>() as libc::socklen_t;
-            if unsafe {
-                libc::getsockopt(
-                    fd,
-                    libc::SOL_SOCKET,
-                    libc::SO_ERROR,
-                    (&mut socket_error as *mut libc::c_int).cast(),
-                    &mut socket_error_len,
-                )
-            } < 0
-            {
+            if unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, (&mut socket_error as *mut libc::c_int).cast(), &mut socket_error_len) } < 0 {
                 return Err(ConnectError::Other);
             }
             if socket_error == 0 {
@@ -284,13 +272,7 @@ mod imp {
                 Ok(length) => length,
                 Err(_) => return Err(ConnectError::Other),
             };
-            let connected = unsafe {
-                libc::connect(
-                    socket.as_raw_fd(),
-                    (&address as *const libc::sockaddr_un).cast(),
-                    address_len,
-                )
-            };
+            let connected = unsafe { libc::connect(socket.as_raw_fd(), (&address as *const libc::sockaddr_un).cast(), address_len) };
             if connected < 0 {
                 let error = std::io::Error::last_os_error().raw_os_error().unwrap_or_default();
                 if error == libc::ENOENT || error == libc::ECONNREFUSED {
@@ -379,11 +361,7 @@ mod unix_connect_tests {
 
     #[test]
     fn connect_refuses_an_already_expired_deadline() {
-        let path = std::env::temp_dir().join(format!(
-            "tg-{}-{}.sock",
-            std::process::id(),
-            NEXT_SOCKET.fetch_add(1, Ordering::Relaxed),
-        ));
+        let path = std::env::temp_dir().join(format!("tg-{}-{}.sock", std::process::id(), NEXT_SOCKET.fetch_add(1, Ordering::Relaxed),));
         let _cleanup = SocketPath(path.clone());
         let _listener = UnixListener::bind(&path).expect("bind test listener");
         let deadline = Instant::now().checked_sub(Duration::from_secs(1)).expect("past deadline");

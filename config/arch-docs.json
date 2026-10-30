@@ -103,6 +103,7 @@
     ["src/session_store.ts","Session, Compaction, and Audit"],
     ["src/session_store_schema.ts","Session, Compaction, and Audit"],
     ["src/skill_cache.ts","Session, Compaction, and Audit"],
+    ["src/skill_section_spec.ts","Session, Compaction, and Audit"],
     ["src/snapshots.ts","Session, Compaction, and Audit"],
     ["src/read_brief.ts","Surgical Reads and Text Processing"],
     ["src/read_commands.ts","Surgical Reads and Text Processing"],
