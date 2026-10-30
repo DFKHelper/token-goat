@@ -67,6 +67,46 @@ describe('buildProjectMap top symbols and file-private definitions', () => {
     expect(list.filter((s) => s.name === 'result')).toEqual([])
   })
 
+  // Provenance: HAND-DERIVED from a regex literal whose class holds a slash-star: no comment opens inside it, so module.exports stays visible and helper is kept.
+  it('keeps a shared export when a regex literal holds a slash-star in a character class', () => {
+    const root = indexProject({
+      'a.js': 'const sep = /[/*]/\nfunction helper() {\n  return sep\n}\nmodule.exports = { helper }\n',
+      'b.js': 'export function use() {\n  return helper()\n}\n',
+    })
+    expect(topFilesFor(root, 'helper')).toEqual([normalizePath(path.join(root, 'a.js'))])
+  })
+
+  // Provenance: HAND-DERIVED from a regex literal whose class holds two slashes, followed on the same line by module.exports: the literal must not open a line comment that hides the export.
+  it('keeps a shared export when a regex literal with two slashes in a class precedes it on the line', () => {
+    const root = indexProject({
+      'a.js': 'const sep = /[//]/; module.exports = { helper }\nfunction helper() {\n  return sep\n}\n',
+      'b.js': 'export function use() {\n  return helper()\n}\n',
+    })
+    expect(topFilesFor(root, 'helper')).toEqual([normalizePath(path.join(root, 'a.js'))])
+  })
+
+  // Provenance: HAND-DERIVED from a prose block comment naming `export =` and `as default` in a file with no real export of either form: the file-private definition is dropped (T3a behaviour).
+  it('ranks no file-private definition whose only export-form text is in a block comment', () => {
+    const root = indexProject({
+      'a.ts': '/* export = and as default are named here in prose only */\nfunction result(): number {\n  return 1\n}\n',
+      'b.ts': 'export function keepMe(): number {\n  return result() + 1\n}\n',
+    })
+    const list = buildProjectMap(root).topSymbols
+    expect(list.map((s) => s.name)).toContain('keepMe')
+    expect(list.filter((s) => s.name === 'result')).toEqual([])
+  })
+
+  // Provenance: HAND-DERIVED from a regex literal followed on the same line by a prose line comment: the comment still blanks, so the file-private definition is dropped (T3a behaviour).
+  it('ranks no file-private definition whose export-form prose follows a regex literal', () => {
+    const root = indexProject({
+      'a.ts': 'const sep = /[/*]/; // export = and as default are prose here\nfunction result(): number {\n  return 1\n}\n',
+      'b.ts': 'export function keepMe(): number {\n  return result() + 1\n}\n',
+    })
+    const list = buildProjectMap(root).topSymbols
+    expect(list.map((s) => s.name)).toContain('keepMe')
+    expect(list.filter((s) => s.name === 'result')).toEqual([])
+  })
+
   // Provenance: HAND-DERIVED from the TypeScript `export =` statement form (the doubt form in code), not from the matcher.
   it('keeps a definition exported through a real export-equals statement', () => {
     const root = indexProject({

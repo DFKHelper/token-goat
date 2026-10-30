@@ -9,7 +9,7 @@ import { getDb } from './db.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
 import { extractExportNames } from './import_export_extract.js'
-import { stripJsComments } from './languages/common.js'
+import { scanQuotedStringEnd } from './languages/common.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { suggestedIndexCommand } from './index_health.js'
@@ -258,6 +258,96 @@ function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): Symbol
   }
 }
 
+/** Keywords after which a `/` opens a regex literal rather than dividing. */
+const REGEX_LEAD_KEYWORDS = new Set(['await', 'case', 'delete', 'do', 'else', 'in', 'instanceof', 'new', 'of', 'return', 'throw', 'typeof', 'void', 'yield'])
+/** Punctuation after which a `/` opens a regex literal rather than dividing. */
+const REGEX_LEAD_PUNCT = '(,=:[!&|?{};+-*%<>~^'
+
+/** True when a `/` after the significant character at `lastSig` (-1 at file start) opens a regex literal. */
+function startsRegexLiteral(text: string, lastSig: number): boolean {
+  if (lastSig < 0) return true
+  const c = text.charAt(lastSig)
+  if (REGEX_LEAD_PUNCT.includes(c)) return true
+  if (!/[A-Za-z0-9_$]/.test(c)) return false
+  let start = lastSig
+  while (start > 0 && /[A-Za-z0-9_$]/.test(text.charAt(start - 1))) start--
+  return REGEX_LEAD_KEYWORDS.has(text.slice(start, lastSig + 1))
+}
+
+/** Index just past a regex literal that starts at `start` (its `/`), or -1 when no closing `/` precedes the line end. A slash inside a `[...]` class does not close it. */
+function regexLiteralEnd(text: string, start: number): number {
+  let inClass = false
+  for (let j = start + 1; j < text.length; j++) {
+    const c = text.charAt(j)
+    if (c === '\n') return -1
+    if (c === '\\') {
+      if (text[j + 1] === '\n') return -1
+      j++
+      continue
+    }
+    if (inClass) {
+      if (c === ']') inClass = false
+      continue
+    }
+    if (c === '[') inClass = true
+    else if (c === '/') {
+      let k = j + 1
+      while (k < text.length && /[A-Za-z]/.test(text.charAt(k))) k++
+      return k
+    }
+  }
+  return -1
+}
+
+/** Blank JS/TS comments for the export doubt check only. A regex literal is copied through whole, so a comment opener inside one (`/[/*]/`, `/[//]/`) starts no comment; quoted strings keep scanQuotedStringEnd's span. `unterminated` is set when a block comment runs to end of file. */
+function blankJsCommentsForDoubt(text: string): { blanked: string; unterminated: boolean } {
+  const n = text.length
+  let out = ''
+  let lastSig = -1
+  let unterminated = false
+  let i = 0
+  while (i < n) {
+    const ch = text.charAt(i)
+    const next = text.charAt(i + 1)
+    if (ch === '/' && next === '/') {
+      let j = i
+      while (j < n && text[j] !== '\n') j++
+      out += ' '.repeat(j - i)
+      i = j
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      let j = i + 2
+      while (j < n && !(text[j] === '*' && text[j + 1] === '/')) j++
+      if (j >= n) unterminated = true
+      const end = j < n ? j + 2 : n
+      out += text.slice(i, end).replace(/[^\n]/g, ' ')
+      i = end
+      continue
+    }
+    if (ch === '/' && startsRegexLiteral(text, lastSig)) {
+      const end = regexLiteralEnd(text, i)
+      if (end > 0) {
+        out += text.slice(i, end)
+        lastSig = end - 1
+        i = end
+        continue
+      }
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const end = scanQuotedStringEnd(text, i)
+      out += text.slice(i, end)
+      lastSig = end - 1
+      i = end
+      continue
+    }
+    if (!/\s/.test(ch)) lastSig = i
+    out += ch
+    i++
+  }
+  return { blanked: out, unterminated }
+}
+
 /** Read a candidate file's exported names, or null when its exports cannot be read exactly and every candidate must be kept (keep on doubt). */
 function readExportedNames(filePath: string): Set<string> | null {
   if (/\.d\.[cm]?ts$/.test(filePath)) return null
@@ -269,7 +359,9 @@ function readExportedNames(filePath: string): Set<string> | null {
     return null
   }
   // Doubt is read from code only: prose in a comment such as "as default" must not keep a file whole.
-  if (EXPORT_SURFACE_DOUBT_RE.test(stripJsComments(text))) return null
+  // An unterminated block comment cannot be told from code, so the raw text is read instead (keep on doubt).
+  const stripped = blankJsCommentsForDoubt(text)
+  if (EXPORT_SURFACE_DOUBT_RE.test(stripped.unterminated ? text : stripped.blanked)) return null
   return new Set(extractExportNames(text, path.extname(filePath)))
 }
 
