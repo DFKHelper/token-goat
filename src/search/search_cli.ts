@@ -1,3 +1,4 @@
+import { nearSymbolNames } from '../read_suggest.js';
 import { executeParallelSearch } from './parallel_search.js';
 import { ALL_CHANNELS, type FusedSearchResult, type SearchExecutionSummary, type SearchOptions } from './types.js';
 import { displaySafeJson, displaySafeText } from '../paths.js';
@@ -80,6 +81,34 @@ export function formatSearchText(summary: SearchExecutionSummary, explicitChanne
   return lines.join('\n');
 }
 
+/** At most this many near-word retries follow one search miss, so a miss never fans out into a search per candidate. */
+export const NEAR_RETRY = { max: 3 } as const;
+
+export interface NearRetryOutcome {
+  summary: SearchExecutionSummary;
+  /** The query as typed, when a near-word name answered the miss; null when the first search hit or no retry hit. */
+  answeredFrom: string | null;
+  retries: number;
+}
+
+/** Runs the search and, on a miss, retries the near-word names {@link nearSymbolNames} ranks, stopping at the first that hits. */
+export async function searchWithNearRetry(options: SearchOptions): Promise<NearRetryOutcome> {
+  const first = await executeParallelSearch(options);
+  if (first.totalHits > 0 || options.limit === 0) return { summary: first, answeredFrom: null, retries: 0 };
+
+  const near = nearSymbolNames(first.query, options.projectRoot ?? process.cwd());
+  if (near.skipped) return { summary: first, answeredFrom: null, retries: 0 };
+
+  const candidates = near.candidates.filter((name) => name !== first.query).slice(0, NEAR_RETRY.max);
+  let retries = 0;
+  for (const candidate of candidates) {
+    retries += 1;
+    const summary = await executeParallelSearch({ ...options, query: candidate });
+    if (summary.totalHits > 0) return { summary, answeredFrom: first.query, retries };
+  }
+  return { summary: first, answeredFrom: null, retries };
+}
+
 /** Runs the parallel search command and formats the output. */
 export async function runParallelSearch(options: SearchOptions): Promise<{ text: string; code: number }> {
   if (!options.query || options.query.trim().length === 0) {
@@ -95,14 +124,16 @@ export async function runParallelSearch(options: SearchOptions): Promise<{ text:
     return { text: options.json === true ? displaySafeJson({ error: projectDenial }) : projectDenial, code: 1 };
   }
 
-  const summary = await executeParallelSearch(options);
+  const { summary, answeredFrom } = await searchWithNearRetry(options);
 
   if (options.json) {
     return {
-      text: displaySafeJson(summary),
+      text: displaySafeJson(answeredFrom === null ? summary : { ...summary, answeredFrom }),
       code: 0,
     };
   }
 
-  return { text: formatSearchText(summary, options.channels !== undefined, { limit: options.limit, projectRoot: options.projectRoot, minScore: options.minScore }), code: 0 };
+  // Named on the output so the model sees the substitution, not a result for a spelling it did not type.
+  const note = answeredFrom === null ? '' : `(note: no match for ${echoedValue(answeredFrom)}; showing results for near name ${echoedValue(summary.query)})\n`;
+  return { text: note + formatSearchText(summary, options.channels !== undefined, { limit: options.limit, projectRoot: options.projectRoot, minScore: options.minScore }), code: 0 };
 }
