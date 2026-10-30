@@ -140,7 +140,7 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test -- --shard=${{ matrix.shard }}/3
-      # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 is a warning annotation.
+      # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 fails the job, so a run that needed its retry (a step timeout included) is red even when a later attempt passed.
       # The retry itself stays until the onTaskUpdate RPC flake it absorbs has a known root cause.
       - name: Report test attempts
         if: always()
@@ -151,7 +151,8 @@ jobs:
           n="${TOTAL_ATTEMPTS:-unknown}"
           echo "test step needed ${n} attempts" >> "$GITHUB_STEP_SUMMARY"
           if [ "$n" -gt 1 ] 2>/dev/null; then
-            echo "::warning title=Test step retried::test step needed ${n} attempts; the retry hid a failed attempt"
+            echo "::error title=Test step retried::test step needed ${n} attempts; the retry hid a failed attempt, so the job fails"
+            exit 1
           fi
       # Explicit, so the extension's regression suite (vscode-extension/tests/security.test.ts) stays wired to a gate even if the root vitest config's default file discovery ever narrows its `include` -- `npm test` above already picks these tests up incidentally today, but that was never intentional and is not something to depend on silently.
       - name: Test (VS Code extension)
@@ -226,7 +227,7 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test -- --shard=${{ matrix.shard }}/4
-      # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 is a warning annotation.
+      # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 fails the job, so a run that needed its retry (a step timeout included) is red even when a later attempt passed.
       # The retry itself stays until the onTaskUpdate RPC flake it absorbs has a known root cause.
       - name: Report test attempts
         if: always()
@@ -237,7 +238,8 @@ jobs:
           n="${TOTAL_ATTEMPTS:-unknown}"
           echo "test step needed ${n} attempts" >> "$GITHUB_STEP_SUMMARY"
           if [ "$n" -gt 1 ] 2>/dev/null; then
-            echo "::warning title=Test step retried::test step needed ${n} attempts; the retry hid a failed attempt"
+            echo "::error title=Test step retried::test step needed ${n} attempts; the retry hid a failed attempt, so the job fails"
+            exit 1
           fi
       - name: Check native startup ownership and ordinary hook behavior
         shell: bash
@@ -319,7 +321,7 @@ jobs:
           max_attempts: 3
           retry_wait_seconds: 30
           command: npm test -- --shard=${{ matrix.shard }}/3
-      # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 is a warning annotation.
+      # A retry must not read as a clean pass: the attempt count goes to the job summary, and a count above 1 fails the job, so a run that needed its retry (a step timeout included) is red even when a later attempt passed.
       # The retry itself stays until the onTaskUpdate RPC flake it absorbs has a known root cause.
       - name: Report test attempts
         if: always()
@@ -330,7 +332,8 @@ jobs:
           n="${TOTAL_ATTEMPTS:-unknown}"
           echo "test step needed ${n} attempts" >> "$GITHUB_STEP_SUMMARY"
           if [ "$n" -gt 1 ] 2>/dev/null; then
-            echo "::warning title=Test step retried::test step needed ${n} attempts; the retry hid a failed attempt"
+            echo "::error title=Test step retried::test step needed ${n} attempts; the retry hid a failed attempt, so the job fails"
+            exit 1
           fi
       - name: Test (VS Code extension)
         if: matrix.shard == 1
