@@ -8,6 +8,7 @@ import { loadConfig } from './config.js'
 import { getDb } from './db.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
+import { extractExportNames } from './import_export_extract.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { suggestedIndexCommand } from './index_health.js'
@@ -153,8 +154,32 @@ interface TopSymbolRow {
 }
 
 /** Fetch headline symbols from the index: ranked by how often they're referenced elsewhere in the project (most-referenced first), with the class/interface/function kind ordering and body length as tie-breaks. Reference count is a much better orientation signal than body length -- a heavily-called function matters more than a long, never-referenced class. Returns `[]` when the index is empty or unavailable so `map` works before any indexing has happened. `global.db` is a single machine-wide index keyed by absolute path across every project ever indexed (see constants.ts), so this query MUST be scoped to `rootDir` via {@link projectScopeClause} -- otherwise `map` mixes in headline symbols from unrelated projects that happen to share the same index. `refs` rows carry only a `name` (no target-symbol column), so the ref count is aggregated once per name in a subquery -- scoped to the same project via `projectScopeClause('file_path')` -- and left-joined onto `symbols`, rather than joining the raw `refs` table per symbol row. */
+// limit: TS/JS files whose export lists one map build reads; further candidate files keep every candidate (over-keeps, never drops). revisit-when: a project with more candidate files than this shows a file-private symbol in its top list.
+const MAX_EXPORT_SCAN_FILES = 1000
+// limit: file-private (file, name) pairs inlined into one top-symbols query; the rest are kept (over-keeps, never drops). revisit-when: a project with more file-private symbols than this shows a file-private symbol in its top list.
+const MAX_EXCLUDED_PAIRS = 2000
+/** Export forms the name-level read does not model: CommonJS, `export =`, `export { x as default }`. Any match keeps every candidate of that file. */
+const EXPORT_SURFACE_DOUBT_RE = /\bexports\b|export\s*=|\bas\s+default\b/
+/** A file-private definition: `name` is defined in `filePath` and not exported from it, so no other file can reach it. */
+interface ExcludedSymbol {
+  filePath: string
+  name: string
+}
+
+/** SQL text literal for a value, as a UTF-8 hex blob cast to TEXT: exact for any name or path, with no quote characters to escape. */
+function sqlTextLiteral(value: string): string {
+  return `CAST(X'${Buffer.from(value, 'utf8').toString('hex')}' AS TEXT)`
+}
+
+/** The `excluded` CTE {@link buildTopSymbolsSql} filters against: an inline VALUES literal of hex-encoded text, or an empty relation when nothing is excluded. */
+function excludedCte(excluded: readonly ExcludedSymbol[]): string {
+  if (excluded.length === 0) return 'WITH excluded(file_path, name) AS (SELECT NULL, NULL LIMIT 0)'
+  const rows = excluded.map((e) => `(${sqlTextLiteral(e.filePath)}, ${sqlTextLiteral(e.name)})`)
+  return `WITH excluded(file_path, name) AS (VALUES ${rows.join(', ')})`
+}
+
 /** The exact SQL {@link fetchTopSymbols} runs, exported so its query plan can be asserted against the shipping string rather than a copy retyped in a test -- a copy would keep passing while production silently regressed. See tests/baseline_top_symbols_plan.test.ts. */
-export function buildTopSymbolsSql(): string {
+export function buildTopSymbolsSql(excluded: readonly ExcludedSymbol[] = []): string {
   const { clause } = projectScopeClause('s.file_path')
   const refScope = projectScopeClause('r.file_path')
   // The ref-credit join below turns the symbols read into a left-deep join the planner would otherwise start with a full scan of; pin the same path index projectScopeClause's expression matches.
@@ -163,7 +188,8 @@ export function buildTopSymbolsSql(): string {
   const family = (col: string): string => `CASE WHEN ${col} IN ('typescript', 'javascript') THEN 'js' ELSE COALESCE(${col}, '') END`
   // refs carry only a bare name, so a name defined N times cannot claim all N copies' references: divide by the number of same-named definitions, and keep one representative per name so a generic helper like `apply` occupies one slot instead of seven.
         // Ranking selects only each body's LENGTH, never its text, and the rowid join pulls bodies back for the `limit` survivors alone. Selecting `body` inside the window query instead makes SQLite carry every symbol's full text (up to boundSymbolBody's 131072 chars) through both window functions before LIMIT discards nearly all of it. Both path filters are range predicates (sql_path.ts), so the planner picks the file_path index on its own and no INDEXED BY override is needed to keep it off a full scan of the machine-wide index. An earlier LIKE-based clause did need one on the refs aggregate, because a LIKE carrying an ESCAPE cannot drive an index at all and the planner then preferred whichever index made GROUP BY sort-free.
-  return `SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent
+  return `${excludedCte(excluded)}
+         SELECT s.file_path, s.name, s.kind, s.line_start, s.line_end, s.body, s.docstring, s.parent
          FROM (
            SELECT rid, kind, score, body_len
            FROM (
@@ -187,6 +213,7 @@ export function buildTopSymbolsSql(): string {
                    AND s.file_path NOT LIKE '%/spec/%' ESCAPE '\\'
                    AND s.file_path NOT LIKE '%.test.%'
                    AND s.file_path NOT LIKE '%.spec.%'
+                   AND (s.file_path, s.name) NOT IN (SELECT file_path, name FROM excluded)
                ) d
                LEFT JOIN (
                  SELECT DISTINCT r.name AS name, r.file_path AS file_path, ${family('(SELECT rf.language FROM files rf WHERE rf.path = r.file_path)')} AS fam
@@ -213,7 +240,8 @@ function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): Symbol
     const db = getDb(dbPath)
     // Bind order follows the SQL text: the symbols filter's bounds, then the refs aggregate's.
     const bounds = projectScopeClause('file_path').params(rootDir)
-    const rows = db.prepare(buildTopSymbolsSql()).all(...bounds, ...bounds, limit) as TopSymbolRow[]
+    const excluded = filePrivateExclusions(db, rootDir)
+    const rows = db.prepare(buildTopSymbolsSql(excluded)).all(...bounds, ...bounds, limit) as TopSymbolRow[]
     return rows.map((r) => ({
       filePath: r.file_path,
       name: r.name,
@@ -227,6 +255,54 @@ function fetchTopSymbols(limit: number, dbPath: string, rootDir: string): Symbol
   } catch {
     return []
   }
+}
+
+/** Read a candidate file's exported names, or null when its exports cannot be read exactly and every candidate must be kept (keep on doubt). */
+function readExportedNames(filePath: string): Set<string> | null {
+  if (/\.d\.[cm]?ts$/.test(filePath)) return null
+  let text: string
+  try {
+    text = fs.readFileSync(filePath, 'utf8')
+  } catch {
+    // Unreadable (deleted, locked, permissions): the exclusion cannot prove privacy, so it keeps the file's candidates.
+    return null
+  }
+  if (EXPORT_SURFACE_DOUBT_RE.test(text)) return null
+  return new Set(extractExportNames(text, path.extname(filePath)))
+}
+
+/** Top-level TS/JS definitions not exported from their own file, read from disk once per file. Methods and nested definitions are never candidates. */
+function filePrivateExclusions(db: ReturnType<typeof getDb>, rootDir: string): ExcludedSymbol[] {
+  const scope = projectScopeClause('s.file_path')
+  const candidates = db
+    .prepare(
+      `SELECT DISTINCT s.file_path AS file_path, s.name AS name
+       FROM symbols s JOIN files f ON f.path = s.file_path
+       WHERE f.language IN ('typescript', 'javascript') AND s.kind IN ('class', 'function', 'interface')
+         AND COALESCE(s.parent, '') = '' AND SUBSTR(COALESCE(s.body, ''), 1, 7) <> 'export '
+         AND ${scope.clause}
+       ORDER BY s.file_path`,
+    )
+    .all(...scope.params(rootDir)) as Array<{ file_path: string; name: string }>
+  const namesByFile = new Map<string, string[]>()
+  for (const row of candidates) {
+    const names = namesByFile.get(row.file_path) ?? []
+    names.push(row.name)
+    namesByFile.set(row.file_path, names)
+  }
+  const excluded: ExcludedSymbol[] = []
+  let filesRead = 0
+  for (const [filePath, names] of namesByFile) {
+    if (filesRead >= MAX_EXPORT_SCAN_FILES) break
+    filesRead += 1
+    const exported = readExportedNames(filePath)
+    if (exported === null) continue
+    for (const name of names) {
+      if (!exported.has(name)) excluded.push({ filePath, name })
+      if (excluded.length >= MAX_EXCLUDED_PAIRS) return excluded
+    }
+  }
+  return excluded
 }
 
 /** Build a {@link ProjectMap} for `rootDir` (default: cwd). In compact mode the top-symbols list is trimmed (10 vs 30) to keep the rendered output within a small token budget. `emitsJson` says the caller prints the map itself as data rather than through {@link formatProjectMap}; without it a compact map leaves `recentFiles` empty, because ranking them stats every walked file (up to MAX_FILES_SCANNED) for a list the compact rendering never shows. */
