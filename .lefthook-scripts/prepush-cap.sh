@@ -106,7 +106,8 @@ cap_run_stoppable() {
     if [[ -n "$HARD_FLAG" && -e "$HARD_FLAG" ]]; then
       # The trees are ended and polled for 2 s, not waited on: a hung taskkill must not hold the hook.
       cap_kill_all "$((SECONDS + 2))" "$p"
-      wait "$p" 2>/dev/null || true
+      # Reaped only when gone: a wait on a step the cut kill left alive would hold the hook for the step's whole run; the exit trap ends it.
+      if ! kill -0 "$p" 2>/dev/null; then wait "$p" 2>/dev/null || true; fi
       return "$CAP_STOP_RC"
     fi
     cap_tick
@@ -130,13 +131,21 @@ cap_tail_open_now() {
   CAP_TAIL_CLOSE=$((CAP_TAIL_END - 2 * CAP_KILL_WIN_S))
 }
 
-# Ends the trees of the given pids side by side (kill_tree for each) and polls until every one is gone or $1 seconds on the hook's clock pass, never blocking on a hung taskkill; a kill still running then is ended (its job) and said so. $1: deadline (SECONDS value), the rest: pids.
+# Ends the trees of the given pids side by side (a taskkill job for each pid with a winpid, kill_tree otherwise) and polls until every one is gone or $1 seconds on the hook's clock pass, never blocking on a hung taskkill; a kill still running then is ended (its job) and said so. $1: deadline (SECONDS value), the rest: pids.
 cap_kill_all() {
-  local until_s=$1 p alive jobs_=() j c kp
+  local until_s=$1 p alive jobs_=() j c kp winpid direct=" "
   shift
   (( $# > 0 )) || return 0
   for p in "$@"; do
-    kill_tree "$p" &
+    winpid=""
+    if [[ -r "/proc/$p/winpid" ]]; then read -r winpid <"/proc/$p/winpid" 2>/dev/null || true; fi
+    if [[ -n "$winpid" ]]; then
+      # taskkill is the job itself: no subshell fork before it, and its own pid is known, so a cut needs no ps scan (a fork of seconds on a loaded host) to find it.
+      taskkill //T //F //PID "$winpid" &>/dev/null &
+      direct+="$! "
+    else
+      kill_tree "$p" &
+    fi
     jobs_+=("$!")
   done
   while :; do
@@ -148,7 +157,9 @@ cap_kill_all() {
     if (( SECONDS >= until_s )); then
       # With pgrep the job's children are found by it; without (Git for Windows has none) by one MSYS ps, whose native taskkill child shows under its MSYS pid and ends on kill -KILL; that ps has no deadline of its own, since a bound would be one more fork and it runs once, at the window end.
       for j in $alive; do
-        if command -v pgrep >/dev/null 2>&1; then
+        if [[ "$direct" == *" $j "* ]]; then
+          kill -KILL "$j" 2>/dev/null || true
+        elif command -v pgrep >/dev/null 2>&1; then
           for c in $(pgrep -P "$j" 2>/dev/null || true); do kill "$c" 2>/dev/null || true; done
         else
           while read -r c kp _; do
@@ -188,7 +199,8 @@ cap_run_by_deadline() {
     if ! cap_tail_left; then
       # The trees are ended and polled for 2 s, not waited on: a hung taskkill must not hold the hook.
       cap_kill_all "$((SECONDS + 2))" "$p"
-      wait "$p" 2>/dev/null || true
+      # Reaped only when gone: a wait on a fork the cut kill left alive would hold the hook for the fork's whole run; the exit trap ends it.
+      if ! kill -0 "$p" 2>/dev/null; then wait "$p" 2>/dev/null || true; fi
       return 124
     fi
     cap_tick
