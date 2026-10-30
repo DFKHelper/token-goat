@@ -9,6 +9,7 @@ import { getDb } from './db.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import type { Language, SymbolEntry } from './parser_types.js'
 import { extractExportNames } from './import_export_extract.js'
+import { stripJsComments } from './languages/common.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { suggestedIndexCommand } from './index_health.js'
@@ -267,7 +268,8 @@ function readExportedNames(filePath: string): Set<string> | null {
     // Unreadable (deleted, locked, permissions): the exclusion cannot prove privacy, so it keeps the file's candidates.
     return null
   }
-  if (EXPORT_SURFACE_DOUBT_RE.test(text)) return null
+  // Doubt is read from code only: prose in a comment such as "as default" must not keep a file whole.
+  if (EXPORT_SURFACE_DOUBT_RE.test(stripJsComments(text))) return null
   return new Set(extractExportNames(text, path.extname(filePath)))
 }
 

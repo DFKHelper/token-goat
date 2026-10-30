@@ -56,6 +56,26 @@ describe('buildProjectMap top symbols and file-private definitions', () => {
     expect(list.filter((s) => s.name === 'result')).toEqual([])
   })
 
+  // Provenance: HAND-DERIVED from the comment-only doubt text in src/baseline.ts:161 (a comment naming the export forms), not from the matcher.
+  it('ranks no file-private definition whose only export-form text is in a comment', () => {
+    const root = indexProject({
+      'a.ts': '// export = and as default are named here in prose only\nfunction result(): number {\n  return 1\n}\n',
+      'b.ts': 'export function keepMe(): number {\n  return result() + 1\n}\n',
+    })
+    const list = buildProjectMap(root).topSymbols
+    expect(list.map((s) => s.name)).toContain('keepMe')
+    expect(list.filter((s) => s.name === 'result')).toEqual([])
+  })
+
+  // Provenance: HAND-DERIVED from the TypeScript `export =` statement form (the doubt form in code), not from the matcher.
+  it('keeps a definition exported through a real export-equals statement', () => {
+    const root = indexProject({
+      'a.ts': 'function helper(): number {\n  return 1\n}\nexport = helper\n',
+      'b.ts': "import helper = require('./a')\nexport function use(): number {\n  return helper()\n}\n",
+    })
+    expect(topFilesFor(root, 'helper')).toEqual([normalizePath(path.join(root, 'a.ts'))])
+  })
+
   it('ranks no file-private JavaScript definition in the top list', () => {
     const root = indexProject({
       'a.js': 'function result() {\n  return 1\n}\n',
