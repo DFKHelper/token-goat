@@ -62,7 +62,7 @@ export function proseFoldNotice(keep: string, line: number, shownPath: string, n
   return `${displaySafeText(keep)} ... rest of paragraph folded (line ${line}) -- token-goat section ${quotedArg(`${shownPath}::${displaySafeText(section.heading)}`)}`
 }
 
-/** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma is left to its own per-paragraph pointer, since `section` would split it into two names; null when fewer than two headings remain. */
+/** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma or `::` is left to its own per-paragraph pointer, since `section` would split a comma into two names and read a `::` as a file boundary; null when fewer than two headings remain. */
 export function foldedSectionsCommand(folds: readonly BodyFold[], normalizedPath: string, shownPath: string): { command: string; sections: number } | null {
   const headings: string[] = []
   for (const fold of folds) {
@@ -70,7 +70,7 @@ export function foldedSectionsCommand(folds: readonly BodyFold[], normalizedPath
     const section = findContainingSection(normalizedPath, fold.firstLine, fold.firstLine)
     if (section === null) continue
     const heading = displaySafeText(section.heading)
-    if (!heading.includes(',') && !headings.includes(heading)) headings.push(heading)
+    if (!heading.includes(',') && !heading.includes('::') && !headings.includes(heading)) headings.push(heading)
   }
   if (headings.length < 2) return null
   const command = `token-goat section ${quotedArg(`${shownPath}::${headings.join(',')}`)}`

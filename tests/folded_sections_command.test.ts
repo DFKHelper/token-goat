@@ -134,4 +134,60 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     expect(JSON.stringify(out)).toContain('rest of paragraph folded')
     expect(allSectionsCommand(out)).toBeNull()
   })
+
+  // Provenance: HAND-DERIVED (headings chosen so a `::` inside one would move the parser's last-separator split, read from src/read_commands.ts::findSpecSeparator).
+  it('names no combined command when two `::` headings leave one plain heading, and keeps each `::` heading its own pointer', () => {
+    const colonA = 'Config::Keys'
+    const colonB = 'Cache::Layer'
+    const file = writeDoc([[colonA, paragraph(FIRST_MARKER)], ['Plain Section', paragraph(SECOND_MARKER)], [colonB, paragraph(COMMA_MARKER)]])
+    const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
+    expect(out.hookType).toBe('rewriteOutput')
+    const rewritten = out.hookType === 'rewriteOutput' ? out.updatedOutput : ''
+    expect(rewritten, 'a `::` heading keeps its own per-paragraph pointer').toContain(`token-goat section "${file}::${colonA}"`)
+    expect(rewritten, 'a `::` heading keeps its own per-paragraph pointer').toContain(`token-goat section "${file}::${colonB}"`)
+    expect(allSectionsCommand(out), 'one plain heading left is fewer than two, so no combined command').toBeNull()
+  })
+
+  // Provenance: HAND-DERIVED (same heading shapes as the row above, with two plain headings left, so the combined command must name exactly those).
+  it('names only the plain headings in the combined command when `::` headings sit between them', () => {
+    const file = writeDoc([['Config::Keys', paragraph(FIRST_MARKER)], ['First Section', paragraph(SECOND_MARKER)], ['Cache::Layer', paragraph(COMMA_MARKER)], ['Second Section', paragraph('the last withheld sentence, under the second plain heading')]])
+    const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
+    expect(out.hookType).toBe('rewriteOutput')
+    expect(allSectionsCommand(out), 'the combined command names the two plain headings and no `::` heading').toBe(`"${file}::First Section,Second Section"`)
+    const result = runPrinted(allSectionsCommand(out) ?? '""')
+    expect(result.code).toBe(0)
+    expect(result.text).toContain(SECOND_MARKER)
+    expect(result.text).toContain('the last withheld sentence, under the second plain heading')
+  })
+
+  // Provenance: HAND-DERIVED (a `$` makes quotedArg single-quote the spec, which both shells hand over literally; the printed line must run and return every section).
+  it('prints a single-quoted combined command that runs when a folded heading holds a dollar sign', () => {
+    const dollarMarker = 'the withheld sentence that only the section with a dollar sign in its heading holds'
+    const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], ['Cost $5 Plan', paragraph(dollarMarker)], ['Second Section', paragraph(SECOND_MARKER)]])
+    const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
+    expect(out.hookType).toBe('rewriteOutput')
+    const printed = allSectionsCommand(out)
+    expect(printed, 'the dollar-sign heading still joins the combined command').toBe(`'${file}::First Section,Cost $5 Plan,Second Section'`)
+    const spec = (printed ?? '').slice(1, -1)
+    const result = runSection({ spec })
+    expect(result.code).toBe(0)
+    expect(result.text).toContain(FIRST_MARKER)
+    expect(result.text).toContain(dollarMarker)
+    expect(result.text).toContain(SECOND_MARKER)
+  })
+
+  // Provenance: HAND-DERIVED (two sections share a heading, so the reader's ordinal form `Heading#N` (src/read_section.ts, ordinal spec) names each one; the command must run and return both).
+  it('names each same-titled section by its ordinal, and that command returns every one of them', () => {
+    const repeatMarker = 'the withheld sentence under the repeated heading'
+    const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], ['Second Section', paragraph(SECOND_MARKER)], ['First Section', paragraph(repeatMarker)]])
+    const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
+    expect(out.hookType).toBe('rewriteOutput')
+    expect(allSectionsCommand(out), 'each same-titled section keeps its own ordinal, in file order').toBe(`"${file}::First Section#1,Second Section,First Section#2"`)
+    expect(JSON.stringify(out)).toContain('to read 3 sections with folded paragraphs in one call')
+    const result = runPrinted(allSectionsCommand(out) ?? '""')
+    expect(result.code).toBe(0)
+    expect(result.text).toContain(FIRST_MARKER)
+    expect(result.text).toContain(SECOND_MARKER)
+    expect(result.text).toContain(repeatMarker)
+  })
 })
