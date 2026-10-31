@@ -13,8 +13,10 @@ const idle = idleForRun(process.env, sampledIdle)
 const maxWorkers = resolveMaxWorkers(process.platform, cpus, memoryGb, idle)
 const width = resolveMaxWorkers(process.platform, cpus, memoryGb)
 const sampleLabel = sampledIdle === undefined ? 'unavailable' : sampledIdle.toFixed(2)
-const ciNote = idle === undefined && sampledIdle !== undefined ? ', CI: not applied' : ''
-process.stderr.write(`token-goat tests: maxWorkers=${maxWorkers} (width ${width}, idle sample ${sampleLabel}${ciNote})\n`)
+const override = process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
+const reason = override ? `set by TOKEN_GOAT_TEST_MAX_WORKERS=${override}` : `width ${width}`
+const ciNote = !override && idle === undefined && sampledIdle !== undefined ? ', CI: not applied' : ''
+process.stderr.write(`token-goat tests: maxWorkers=${maxWorkers} (${reason}, idle sample ${sampleLabel}${ciNote})\n`)
 
 export default defineConfig({
   test: {
