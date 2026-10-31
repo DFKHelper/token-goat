@@ -464,6 +464,8 @@ export function capBytes(text: string, maxBytes: number): string {
 
 /** Truncate `text` to approximately `maxTokens` tokens, measured on the ANSI-stripped string so escape sequences don't trip the cap early. */
 export function capTokens(text: string, maxTokens: number): string {
+  // Stripping ANSI can only shorten the text, so avoid scanning common under-budget output.
+  if (text.length / 3.5 <= maxTokens) return text
   const clean = stripAnsiEscapes(text)
   if (clean.length / 3.5 <= maxTokens) return text
   const maxBytes = Math.floor(maxTokens * 3.5)

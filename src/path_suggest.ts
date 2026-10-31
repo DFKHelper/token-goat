@@ -174,7 +174,14 @@ function nearNameFiles(missingAbs: string, rootDir: string, files: readonly Inde
     scored.push({ abs, rank: sameDir ? 0 : 1, distance })
   }
   for (const name of entriesOf(dir, scope)) consider(path.join(dir, name), true)
-  for (const file of files ?? []) consider(resolveIndexed(file.filePath, rootDir), false)
+  for (const file of files ?? []) {
+    const name = file.base.toLowerCase()
+    const distance = levenshteinDistance(name, lower, budget)
+    if (distance > budget) continue
+    // The same-name rung already offered exact-case matches. Resolve only plausible typos instead of normalizing every indexed path.
+    if (distance === 0 && path.basename(file.filePath) === base) continue
+    scored.push({ abs: resolveIndexed(file.filePath, rootDir), rank: 1, distance })
+  }
   return scored.sort((a, b) => a.rank - b.rank || a.distance - b.distance || a.abs.localeCompare(b.abs)).map((entry) => entry.abs).filter((abs) => !samePath(abs, missingAbs) && !fileIsAbsent(abs) && permitted(abs, scope))
 }
 

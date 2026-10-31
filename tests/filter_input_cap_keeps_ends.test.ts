@@ -71,6 +71,11 @@ describe('filter input cap keeps both ends', () => {
     expect(capped).toContain('[token-goat: output capped at ~2000 tokens]')
   })
 
+  it('leaves under-budget ANSI output unchanged', () => {
+    const body = '\u001b[31mshort output\u001b[0m'
+    expect(capTokens(body, 2000)).toBe(body)
+  })
+
   it('delivers the vitest verdict through the real filter, not just the clamp', () => {
     // The unit above tests the helper; this drives the shipping path the hook actually uses, because the cap is applied inside `apply` and a filter that dropped the summary downstream would still pass the helper's tests.
     const filter = filterByName('vitest')
