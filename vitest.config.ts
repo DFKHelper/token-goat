@@ -3,8 +3,18 @@ import { fileURLToPath } from 'node:url'
 
 import { defineConfig } from 'vitest/config'
 
-import { resolveMaxWorkers, sampleIdleCpus } from './tests/setup/max-workers.js'
+import { idleForRun, resolveMaxWorkers, sampleIdleCpus } from './tests/setup/max-workers.js'
 import RetryVisibilityReporter from './tests/setup/retry-visibility-reporter.js'
+
+const cpus = os.cpus().length
+const memoryGb = os.totalmem() / 2 ** 30
+const sampledIdle = sampleIdleCpus(() => os.cpus(), 250)
+const idle = idleForRun(process.env, sampledIdle)
+const maxWorkers = resolveMaxWorkers(process.platform, cpus, memoryGb, idle)
+const width = resolveMaxWorkers(process.platform, cpus, memoryGb)
+const sampleLabel = sampledIdle === undefined ? 'unavailable' : sampledIdle.toFixed(2)
+const ciNote = idle === undefined && sampledIdle !== undefined ? ', CI: not applied' : ''
+process.stderr.write(`token-goat tests: maxWorkers=${maxWorkers} (width ${width}, idle sample ${sampleLabel}${ciNote})\n`)
 
 export default defineConfig({
   test: {
@@ -42,7 +52,7 @@ export default defineConfig({
     // size of a CI runner, more only on a machine large enough that the heap exhaustion those
     // numbers protect against cannot recur. Why those numbers and where the bar sits:
     // tests/setup/max-workers.ts.
-    maxWorkers: resolveMaxWorkers(process.platform, os.cpus().length, os.totalmem() / 2 ** 30, sampleIdleCpus(() => os.cpus(), 250)),
+    maxWorkers,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],

@@ -59,3 +59,8 @@ export function sampleIdleCpus(read: () => { times: CpuTimes }[], windowMs: numb
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, windowMs)
   return idleCpuCount(before, read())
 }
+
+// The idle narrowing protects a shared workstation from taking every core other sessions use. A CI runner is dedicated to its job, and its sample is taken while that job's own install and build still run, so it reads busy and would cut a shard to one worker. The sample is still taken and logged; CI simply does not apply it.
+export function idleForRun(env: Readonly<Record<string, string | undefined>>, sampled: number | undefined): number | undefined {
+  return env['CI'] ? undefined : sampled
+}

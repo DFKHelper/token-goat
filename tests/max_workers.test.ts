@@ -1,9 +1,28 @@
 /** `maxWorkers` is derived from the machine, and the risk of deriving it is that a formula change silently raises it on a CI runner. That is not a hypothetical: 6 workers on the 4-vCPU windows-latest runner pushed ordinary tests past the 30s bound across three consecutive workflow attempts. So the runner shapes are pinned here by value, not left to be re-reasoned about. */
 import * as os from 'node:os'
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { idleCpuCount, resolveMaxWorkers, sampleIdleCpus, ROOMY_CPUS, ROOMY_MEMORY_GB, WORKER_CEILING, WORKER_CEILING_WIN32 } from './setup/max-workers.js'
+import { idleCpuCount, idleForRun, resolveMaxWorkers, sampleIdleCpus, ROOMY_CPUS, ROOMY_MEMORY_GB, WORKER_CEILING, WORKER_CEILING_WIN32 } from './setup/max-workers.js'
+
+// The assertions pin worker counts, so the caller's environment must not reach them: clear the two variables that change the resolved count and restore the caller's values afterwards.
+const HERMETIC_KEYS = ['TOKEN_GOAT_TEST_MAX_WORKERS', 'CI'] as const
+const savedEnv: Record<string, string | undefined> = {}
+
+beforeEach(() => {
+  for (const key of HERMETIC_KEYS) {
+    savedEnv[key] = process.env[key]
+    delete process.env[key]
+  }
+})
+
+afterEach(() => {
+  for (const key of HERMETIC_KEYS) {
+    const value = savedEnv[key]
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+})
 
 describe('resolveMaxWorkers', () => {
   // The exact shapes CI runs on. Each must resolve to the value the suite was last green on.
@@ -105,6 +124,20 @@ describe('resolveMaxWorkers follows the idle CPU', () => {
       if (previous === undefined) delete process.env['TOKEN_GOAT_TEST_MAX_WORKERS']
       else process.env['TOKEN_GOAT_TEST_MAX_WORKERS'] = previous
     }
+  })
+})
+
+describe('idleForRun', () => {
+  it('does not narrow a CI run, where a sample taken during the job setup reads busy', () => {
+    expect(idleForRun({ CI: 'true' }, 1)).toBeUndefined()
+    // the 4-vCPU linux shape with a 1-core sample: narrowed to 1 locally, the width 6 on CI
+    expect(resolveMaxWorkers('linux', 4, 16, idleForRun({ CI: 'true' }, 1))).toBe(6)
+  })
+
+  it('keeps the idle narrowing on a local run, with or without an empty CI variable', () => {
+    expect(idleForRun({}, 1)).toBe(1)
+    expect(idleForRun({ CI: '' }, 1)).toBe(1)
+    expect(resolveMaxWorkers('linux', 4, 16, idleForRun({}, 1))).toBe(1)
   })
 })
 
