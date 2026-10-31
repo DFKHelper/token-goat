@@ -1,4 +1,4 @@
-/** A cut Bash result names the exact lines it left out as `bash-output <id> --lines A-B`, checked against the stored copy, so the model gets back the missing run in one call instead of paying for the whole output again with `--full`. Provenance: the helper rows are HAND-DERIVED (line counts and spans computed by hand from the inputs written here, independent of the code); the hook and bundle rows run the real filter and the real `bash-output` command, and their expectations are the lines the generated output holds, read off the input. */
+/** A cut Bash result names the exact lines it left out as `bash-output <id> --lines A-B`, checked against the stored copy, so the model gets back the missing run in one call instead of paying for the whole output again with `--full`. Provenance: each helper row carries its own tag; the hook and bundle rows run the real filter and the real `bash-output` command, and their expectations are the lines the generated output holds, read off the input. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { getBashOutput } from '../src/bash_output_cache.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
-import { elidedLineRange } from '../src/tool_filters/helpers.js'
+import * as helpers from '../src/tool_filters/helpers.js'
 import { BUNDLE } from './helpers/bundle.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
@@ -20,24 +20,33 @@ function numberedLines(n: number, label: string): string[] {
 }
 
 describe('elidedLineRange', () => {
+  // Each row first asks the module for the helper by a named assertion, so on a source without it the row fails on that assertion rather than on a TypeError from calling undefined.
+  function elidedLineRange(stored: () => string, shown: string): { from: number; to: number } | null {
+    expect(typeof Reflect.get(helpers, 'elidedLineRange'), 'src/tool_filters/helpers.ts exports elidedLineRange').toBe('function')
+    return helpers.elidedLineRange(stored, shown)
+  }
   const stored = numberedLines(10, 'line').join('\n')
   const lines = stored.split('\n')
 
+  // Provenance: HAND-DERIVED (ten stored lines, three kept ahead of a four-line marker and three after, so lines 4-7 are the cut; counted by hand).
   it('names the run between the kept head and tail', () => {
     const shown = [...lines.slice(0, 3), '... [4 more lines elided by token-goat]', ...lines.slice(7)].join('\n')
     expect(elidedLineRange(() => stored, shown), 'lines 4-7 are the four not shown').toEqual({ from: 4, to: 7 })
   })
 
+  // Provenance: HAND-DERIVED (the cap notice text is capTokens' own line, src/tool_filters/helpers.ts; the span, line 3, counted by hand).
   it('allows the trailing token-cap notice and a final newline on the stored copy', () => {
     const shown = [...lines.slice(0, 2), '... [1 more line elided by token-goat]', ...lines.slice(3), '[token-goat: output capped at ~20 tokens]'].join('\n')
     expect(elidedLineRange(() => stored + '\n', shown), 'line 3 alone was cut').toEqual({ from: 3, to: 3 })
   })
 
+  // Provenance: HAND-DERIVED (ESC [32m / ESC [0m are the ECMA-48 SGR green and reset sequences; lines 2-3 counted by hand).
   it('compares the stored copy with its ANSI colour stripped, as the cap measures', () => {
     const coloured = ['\u001b[32mline 1\u001b[0m', 'line 2', 'line 3', 'line 4'].join('\n')
     expect(elidedLineRange(() => coloured, ['line 1', '... [2 more lines elided by token-goat]', 'line 4'].join('\n'))).toEqual({ from: 2, to: 3 })
   })
 
+  // Provenance: HAND-DERIVED (near misses on the marker count: five and three where four lines were cut).
   it('refuses when the count does not add up to the stored copy (near miss: one too many, one too few)', () => {
     const tooMany = [...lines.slice(0, 3), '... [5 more lines elided by token-goat]', ...lines.slice(7)].join('\n')
     const tooFew = [...lines.slice(0, 3), '... [3 more lines elided by token-goat]', ...lines.slice(7)].join('\n')
@@ -45,6 +54,7 @@ describe('elidedLineRange', () => {
     expect(elidedLineRange(() => stored, tooFew), 'a marker counting one line too few').toBeNull()
   })
 
+  // Provenance: HAND-DERIVED (one kept line rewritten before the marker, one after, each by hand).
   it('refuses when a kept line differs from the stored copy, before or after the marker', () => {
     const headChanged = ['line 1: rewritten by a filter', ...lines.slice(1, 3), '... [4 more lines elided by token-goat]', ...lines.slice(7)].join('\n')
     const tailChanged = [...lines.slice(0, 3), '... [4 more lines elided by token-goat]', ...lines.slice(7, 9), '[REDACTED]'].join('\n')
@@ -52,6 +62,7 @@ describe('elidedLineRange', () => {
     expect(elidedLineRange(() => stored, tailChanged), 'a tail line a redaction changed').toBeNull()
   })
 
+  // Provenance: HAND-DERIVED (no marker, then two markers, written by hand).
   it('refuses when there is no marker or more than one', () => {
     let calls = 0
     const counted = (): string => {

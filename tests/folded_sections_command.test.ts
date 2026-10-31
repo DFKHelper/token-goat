@@ -171,7 +171,7 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     expect(result.text).toContain('the last withheld sentence, under the second plain heading')
   })
 
-  // Provenance: FORMAT-DERIVED (single quotes keep `$` literal in bash, GNU Bash Reference Manual 3.1.2.2 "Single Quotes", and in PowerShell, about_Quoting_Rules "Single-quoted strings"; neither re-read this run, so the two oracle rows below run the printed line through real bash and PowerShell via tests/helpers/shell_argv.ts). The line must run and return every section.
+  // Provenance: FORMAT-DERIVED (single quotes keep `$` literal in bash, GNU Bash Reference Manual Edition 5.3 (18 May 2025) 3.1.2.2 "Single Quotes", https://www.gnu.org/software/bash/manual/html_node/Single-Quotes.html, and in PowerShell, about_Quoting_Rules "Single-quoted strings" (PowerShell 7.5, ms.date 2024-09-09), https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules?view=powershell-7.5; both read 2026-10-31, and the two oracle rows below also run the printed line through real bash and PowerShell via tests/helpers/shell_argv.ts). The line must run and return every section.
   it('prints a single-quoted combined command that runs when a folded heading holds a dollar sign', () => {
     const { file, dollarMarker, printed } = dollarDoc()
     expect(printed, 'the dollar-sign heading still joins the combined command').toBe(`'${file}::First Section,Cost $5 Plan,Second Section'`)

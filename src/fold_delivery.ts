@@ -1,6 +1,6 @@
 /** Turning a delivered slice of a source file into a folded one: pick the spans, render the notices. Split out of hooks_read.ts when the shell read path became a second caller. The two surfaces gate very differently (a Read is a whole file with a numbered rendering around it, a shell read is bare text from a command that may or may not pin its line numbers) but everything between "here are the delivered rows" and "here is the folded text" is identical, and that middle is where the index-freshness rule and the notice wording live. One copy, so a change to either reaches both. */
 import { countNoun } from './util.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { canQuoteArg, quotedArg } from './hint_suggestion_guard.js'
 import { readFileSync, statSync } from 'node:fs'
 
 import { commentSyntaxFor, mergeFolds, planBodyFolds, planCommentFolds, planProseFolds, type BodyFold, type FoldSpan } from './code_fold.js'
@@ -59,7 +59,10 @@ export function proseFoldNotice(keep: string, line: number, shownPath: string, n
   const section = findContainingSection(normalizedPath, line, line)
   if (section === null) return null
   // Both the kept sentence and the resolved heading are document text, and this notice is not inside a fence: unescaped, a paragraph opening with one of our spoken markers speaks as token-goat.
-  return `${displaySafeText(keep)} ... rest of paragraph folded (line ${line}) -- token-goat section ${quotedArg(`${shownPath}::${displaySafeText(section.heading)}`)}`
+  const heading = displaySafeText(section.heading)
+  // A heading holding both a backtick (or `$`) and an apostrophe fits no quote mark, and quotedArg would print a placeholder that runs nothing: deliver the paragraph whole instead.
+  if (!canQuoteArg(`${shownPath}::${heading}`)) return null
+  return `${displaySafeText(keep)} ... rest of paragraph folded (line ${line}) -- token-goat section ${quotedArg(`${shownPath}::${heading}`)}`
 }
 
 /** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma, `::` or a backtick is left to its own per-paragraph pointer, since `section` would split a comma into two names and read a `::` as a file boundary, and a backtick closes the fence leadWithCommand sets the command in, so relay.ts's stripUnsafeSuggestions swaps the whole command for a "command omitted" placeholder; null when fewer than two headings remain or the command would still hold a backtick (one in the path). */
