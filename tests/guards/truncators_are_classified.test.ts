@@ -406,6 +406,24 @@ const TRUNCATOR_CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'elidedLineRange',
+    {
+      bucket: 'operates-on-already-redacted-input',
+      reason:
+        'Shortens nothing it returns: it drops trailing notice lines from `shown` only to parse the elision marker, and returns two line numbers. ' +
+        'Both callers pass redacted text: bash_runner.ts passes the capTokens output of deliverCompressed (redacted, see capTokens below) and the stored copy, which storeBashOutputSync redacts on write; ' +
+        'hooks_bash_post.ts passes compressOutput\'s body (apply() Step 1.5) and redactSecrets(output).text.',
+    },
+  ],
+  [
+    'elidedLinesPointer',
+    {
+      bucket: 'shortens-a-count-or-a-digest-not-free-text',
+      reason:
+        'Returns a fixed sentence holding only the recall id (a fingerprint from bashOutputIdSync) and the two line numbers elidedLineRange computed; no free text from the output reaches its return value.',
+    },
+  ],
+  [
     'capTokens',
     {
       bucket: 'operates-on-already-redacted-input',

@@ -6,7 +6,7 @@
 
 import * as os from 'node:os'
 
-import { storeBashOutputSync } from './bash_output_cache.js'
+import { getBashOutput, storeBashOutputSync } from './bash_output_cache.js'
 import { loadConfig } from './config.js'
 import { isCompressionProfile, parseCompressionProfile, type CompressionProfile } from './config_types.js'
 import { MAX_CAPTURE_BYTES } from './constants.js'
@@ -24,6 +24,7 @@ import {
   capTokens,
   deliverCompressed,
   dispatchArgv,
+  elidedLinesPointer,
   filterByName,
   selectFilter,
   shlexSplit,
@@ -404,6 +405,9 @@ async function wrapAndCompress(
     const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
     const recallId = storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null)
     body += '\n[token-goat] full output: bash-output ' + recallId + ' --full'
+    // A cut that removed one run of lines is recalled as exactly that run, checked against the copy bash-output reads, so the follow-up costs those lines and not the whole output again.
+    const stored = getBashOutput(recallId)
+    if (stored !== null) body += elidedLinesPointer(recallId, () => stored.output, text)
     if (opts.capHint) body +='\n[token-goat] ' + opts.capHint
   }
   writeStdout(body.endsWith('\n') ? body : body + '\n')

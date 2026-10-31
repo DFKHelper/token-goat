@@ -23,7 +23,7 @@ import { foldDetail, type BodyFold } from './code_fold.js'
 import { redactSecrets } from './secret_redact.js'
 import { findProject } from './project.js'
 import { indexServedBody, planServedElisions, servedRunNotice, type NumberedRow, type ServedBody } from './served_lines.js'
-import { compressOutput, detectFromCommand, filterByName, isRewriteWorthwhile, resolveMinNetSavingsBytes, splitOwnTrailingNotices } from './tool_filters/index.js'
+import { compressOutput, detectFromCommand, elidedLinesPointer, filterByName, isRewriteWorthwhile, resolveMinNetSavingsBytes, splitOwnTrailingNotices } from './tool_filters/index.js'
 import { stripAnsiEscapes } from './render/ansi.js'
 import { looksLikeHtml, extractCleanText } from './web_extract.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -370,11 +370,13 @@ async function maybeCompressCompoundOutput(
   // `--full` is required for a truthful "full output" pointer: a bare `bash-output <id>` applies head/tail elision, so it would return a truncated view, not the complete original. The fence wraps the command's own bytes and nothing else: token-goat's marker and the recall pointer sit outside it. Fold them in and the model loses its one signal for where our voice ends and the command's output begins, and anyone who guesses the marker's wording gets to write text the model reads as ours. Every other rewrite hook already follows this rule -- fetch, websearch, MCP, and the Read splice sites -- and Bash was the one substitution site in the codebase that handed the model a replacement body with no fence at all. A filter that hit its cap appends a notice saying so, and that notice is ours, so it joins the marker outside the tag rather than riding inside with the command's bytes. Leaving it in was the one case where token-goat's voice really did sit inside its own fence, which is exactly the ambiguity the fence removes -- and the marker neutraliser escapes it, so the symptom was our own cap notice arriving mangled. Nothing positional is lost: the cap trims the tail, so the point it describes is where the body ends, which the closing tag already marks.
   const { body: untrusted, notices } = splitOwnTrailingNotices(compressed.text)
   const marker = compressed.withMarker(minNet).slice(compressed.text.length)
+  // Checked against the redacted copy storeBashOutput writes below, which is what `bash-output --lines` reads.
   const body =
     fenceUntrusted(untrusted, UNTRUSTED_TOOL_TAG) +
     notices +
     marker +
-    '\n[token-goat] full output: bash-output ' + id + ' --full'
+    '\n[token-goat] full output: bash-output ' + id + ' --full' +
+    elidedLinesPointer(id, () => redactSecrets(output).text, untrusted)
   // Unlike bash_runner's pipeline, this path appends a recall pointer on top of the filter's own marker, so `compressed.bytesSaved` (which prices in neither) is not what the model gains. Gate and record against the body actually emitted, matching the shared contract every other rewrite hook follows via isRewriteWorthwhile/emitRewrite.
   const emittedBytes = Buffer.byteLength(body, 'utf-8')
   if (

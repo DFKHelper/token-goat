@@ -105,6 +105,42 @@ export function clampKeepingEnds(text: string, maxBytes: number): string | null 
   ].join('\n')
 }
 
+/** {@link clampKeepingEnds}'s marker line, with the count of lines it stands for. */
+const LINES_ELIDED_LINE_RE = /^\.\.\. \[(\d+) more lines? elided by token-goat\]$/
+/** The notice {@link capTokens} appends on its own last line. */
+const TOKEN_CAP_NOTICE_LINE_RE = /^\[token-goat: output capped at ~\d+ tokens\]$/
+
+/** The 1-based line span of `stored` that `shown` left out, so a recall pointer can name `--lines A-B` instead of the whole output: `shown` must be `stored` with one run of lines replaced by {@link clampKeepingEnds}'s marker (a trailing {@link capTokens} notice and blank lines allowed), every line before the marker equal to the stored copy's first lines and every line after it to its last lines, compared ANSI-stripped as capTokens measures, and the marker's count equal to the lines between. Null on any other shape, such as a filter that rewrote lines or a redaction that changed one, so the span never names a line the reader already saw or misses one it did not. `stored` is called only once `shown` carries exactly one marker, so a caller whose stored copy costs a redaction pass pays it only then. */
+export function elidedLineRange(stored: () => string, shown: string): { from: number; to: number } | null {
+  const lines = shown.split('\n')
+  while (lines.length > 0 && (lines[lines.length - 1] === '' || TOKEN_CAP_NOTICE_LINE_RE.test(lines[lines.length - 1] as string))) lines.pop()
+  let at = -1
+  let count = 0
+  for (let i = 0; i < lines.length; i++) {
+    const m = LINES_ELIDED_LINE_RE.exec(lines[i] as string)
+    if (m === null) continue
+    if (at !== -1) return null
+    at = i
+    count = Number(m[1])
+  }
+  if (at === -1 || count < 1) return null
+  // Mirrors how `bash-output --lines` numbers the stored text (src/cli_cached_output.ts): a final newline does not start another line.
+  const all = stored().split('\n')
+  if (all[all.length - 1] === '') all.pop()
+  const head = lines.slice(0, at)
+  const tail = lines.slice(at + 1)
+  if (head.length + count + tail.length !== all.length) return null
+  for (let i = 0; i < head.length; i++) if (stripAnsiEscapes(all[i] as string) !== head[i]) return null
+  for (let i = 0; i < tail.length; i++) if (stripAnsiEscapes(all[all.length - tail.length + i] as string) !== tail[i]) return null
+  return { from: head.length + 1, to: head.length + count }
+}
+
+/** The recall line naming exactly the lines {@link elidedLineRange} finds missing from `shown`, led by a newline, or '' when no single checked span exists. */
+export function elidedLinesPointer(id: string, stored: () => string, shown: string): string {
+  const cut = elidedLineRange(stored, shown)
+  return cut === null ? '' : `\n[token-goat] lines not shown: bash-output ${id} --lines ${cut.from}-${cut.to}`
+}
+
 /** Trailing compression-summary marker appended by `CompressedOutput.withMarker`. */
 export function compressionMarker(filter: string, pct: number): string {
   return `\n[token-goat: ${filter} filter -${Math.round(pct)}%; disable via TOKEN_GOAT_BASH_COMPRESS]`
