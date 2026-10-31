@@ -487,7 +487,7 @@ describe('sync-arch-docs --check --staged', () => {
   })
 
   it('accepts --staged only with --check', () => {
-    const result = engine(scratchRepo(), '--write', '--staged')
+    const result = engineWithEnv(scratchRepo(), {}, '--write', '--staged')
     expect(result.status).toBe(2)
     expect(result.stderr).toContain('error: --staged applies only to --check')
   })
@@ -567,9 +567,15 @@ describe('sync-arch-docs --check --format=json', () => {
 
   it('exits 2 for a format that is not text or json, or json outside --check', () => {
     const dir = scratchRepo()
-    expect(engine(dir, '--check', '--format=yaml').stderr).toContain('error: --format must be text or json, got "yaml"')
-    expect(engine(dir, '--write', '--format=json').stderr).toContain('error: --format json applies only to --check')
-    expect(engine(dir, '--check', '--format').stderr).toContain('error: --format requires a value')
+    const yaml = engine(dir, '--check', '--format=yaml')
+    expect(yaml.status).toBe(2)
+    expect(yaml.stderr).toContain('error: --format must be text or json, got "yaml"')
+    const jsonWrite = engine(dir, '--write', '--format=json')
+    expect(jsonWrite.status).toBe(2)
+    expect(jsonWrite.stderr).toContain('error: --format json applies only to --check')
+    const missing = engine(dir, '--check', '--format')
+    expect(missing.status).toBe(2)
+    expect(missing.stderr).toContain('error: --format requires a value')
   })
 })
 
