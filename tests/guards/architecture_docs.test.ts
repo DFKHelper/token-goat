@@ -5,7 +5,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 
 import { resolveRenames } from '../../scripts/arch-docs/curated.mjs'
 import { parseNameStatus } from '../../scripts/arch-docs/source.mjs'
@@ -38,19 +38,50 @@ interface Fixture {
   doc: string
 }
 
-/** A throwaway git repo with two modules, a config and an empty marker pair, all tracked. */
-function makeRepo(docText = `${DOC_HEAD}${START}\n${END}\n${DOC_TAIL}`): Fixture {
-  const dir = indexableDir()
+const DEFAULT_DOC = `${DOC_HEAD}${START}\n${END}\n${DOC_TAIL}`
+// A fixture is built once per key and each row copies it: the git and engine starts that build it are paid once per file, not once per row.
+const templates = new Map<string, string>()
+const templateDirs: string[] = []
+
+function scratchDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'tg-archdoc-'))
+}
+
+/** A fresh copy of the template for `key`, built on first use. Copying is file I/O, so it starts no git or node process. */
+function fromTemplate(key: string, build: (dir: string) => void, dest: () => string): string {
+  let template = templates.get(key)
+  if (template === undefined) {
+    template = scratchDir()
+    templateDirs.push(template)
+    build(template)
+    templates.set(key, template)
+  }
+  const dir = dest()
   scratchDirs.push(dir)
+  fs.cpSync(template, dir, { recursive: true })
+  return dir
+}
+
+/** Writes the two modules, the config and the doc, not yet in git. */
+function writeModules(dir: string, docText: string): void {
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true })
   fs.writeFileSync(path.join(dir, 'src', 'a.ts'), A_TS)
   fs.writeFileSync(path.join(dir, 'src', 'b.ts'), B_TS)
   fs.writeFileSync(path.join(dir, '.arch-doc-sync.json'), CONFIG)
-  const doc = path.join(dir, 'ARCH.md')
-  fs.writeFileSync(doc, docText)
+  fs.writeFileSync(path.join(dir, 'ARCH.md'), docText)
+}
+
+/** Writes the modules and the doc into a git repo, all tracked. */
+function buildRepo(dir: string, docText: string): void {
+  writeModules(dir, docText)
   git(dir, ['init', '-q'])
   git(dir, ['add', '.'])
-  return { dir, doc }
+}
+
+/** A throwaway git repo with two modules, a config and an empty marker pair, all tracked. */
+function makeRepo(docText = DEFAULT_DOC): Fixture {
+  const dir = fromTemplate(`makeRepo:${docText}`, (t) => buildRepo(t, docText), indexableDir)
+  return { dir, doc: path.join(dir, 'ARCH.md') }
 }
 
 /** Runs the engine as a command from `dir`, the way `npm run docs:arch` does. */
@@ -65,16 +96,22 @@ function engineWithEnv(dir: string, extra: NodeJS.ProcessEnv, ...args: string[])
   return { status: result.status, stdout: result.stdout, stderr: result.stderr }
 }
 
-function engine(dir: string, ...args: string[]): { status: number | null; stdout: string; stderr: string } {
-  return engineWithEnv(dir, {}, ...args)
-}
-
-/** The exit code of `--check` (text format) from the engine's entry point, in process: one node spawn fewer than `engine`. The repo-local git variables are scrubbed for the call only. */
-function checkExitCode(dir: string): number {
+/** Runs the engine in process from `dir`: the same findings, stdout and exit code as the command, with no node start. The repo-local git variables are scrubbed for the call only. Rows that test the command itself use `engineWithEnv`. */
+function engine(dir: string, ...args: string[]): { status: number; stdout: string; stderr: string } {
+  const out = { stdout: '', stderr: '' }
   const saved = { ...process.env }
   scrubRepoLocalGitEnv(process.env)
   try {
-    return runCli(['--check'], { cwd: dir, stderr: () => {}, stdout: () => {} })
+    const status = runCli(args, {
+      cwd: dir,
+      stderr: (line) => {
+        out.stderr += `${line}\n`
+      },
+      stdout: (line) => {
+        out.stdout += `${line}\n`
+      },
+    })
+    return { status, ...out }
   } finally {
     for (const name of Object.keys(process.env)) if (!(name in saved)) delete process.env[name]
     Object.assign(process.env, saved)
@@ -82,14 +119,20 @@ function checkExitCode(dir: string): number {
 }
 
 const synced = (): Fixture => {
-  const repo = makeRepo()
-  expect(engine(repo.dir, '--write').status).toBe(0)
-  return repo
+  const dir = fromTemplate(
+    'synced',
+    (t) => {
+      buildRepo(t, DEFAULT_DOC)
+      expect(engine(t, '--write').status).toBe(0)
+    },
+    indexableDir,
+  )
+  return { dir, doc: path.join(dir, 'ARCH.md') }
 }
 
 describe('Architecture documentation freshness and coverage', () => {
   it('has zero drift in this repository, checked as the command npm run docs:arch:check runs', () => {
-    const result = engine(ROOT, '--check')
+    const result = engineWithEnv(ROOT, {}, '--check')
     expect(result.stderr).toBe('')
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
@@ -306,6 +349,11 @@ afterEach(() => {
   for (const dir of scratchDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
 })
 
+afterAll(() => {
+  for (const dir of templateDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
+  templates.clear()
+})
+
 function gitOut(cwd: string, args: string[]): string {
   const env = { ...process.env, ...IDENTITY }
   scrubRepoLocalGitEnv(env)
@@ -314,27 +362,32 @@ function gitOut(cwd: string, args: string[]): string {
 
 /** A repo under the OS temp dir holding the two modules and the config, an empty marker pair, removed after the test. */
 function scratchRepo(): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-archdoc-'))
-  scratchDirs.push(dir)
-  fs.mkdirSync(path.join(dir, 'src'))
-  fs.writeFileSync(path.join(dir, 'src', 'a.ts'), A_TS)
-  fs.writeFileSync(path.join(dir, 'src', 'b.ts'), B_TS)
-  fs.writeFileSync(path.join(dir, '.arch-doc-sync.json'), CONFIG)
-  fs.writeFileSync(path.join(dir, 'ARCH.md'), `${DOC_HEAD}${START}\n${END}\n${DOC_TAIL}`)
-  gitOut(dir, ['init', '-q'])
-  return dir
+  return fromTemplate(
+    'scratch',
+    (t) => {
+      writeModules(t, DEFAULT_DOC)
+      gitOut(t, ['init', '-q'])
+    },
+    scratchDir,
+  )
 }
 
 /** A committed repo whose table is written and whose src/b.ts row carries a curated role. */
 function curatedRepo(): string {
-  const dir = scratchRepo()
-  gitOut(dir, ['add', '.'])
-  expect(engine(dir, '--write').status).toBe(0)
-  const doc = path.join(dir, 'ARCH.md')
-  fs.writeFileSync(doc, fs.readFileSync(doc, 'utf8').replace('Rest module: b.ts', BETA_ROLE))
-  gitOut(dir, ['add', '.'])
-  gitOut(dir, ['commit', '-q', '-m', 'base'])
-  return dir
+  return fromTemplate(
+    'curated',
+    (dir) => {
+      writeModules(dir, DEFAULT_DOC)
+      gitOut(dir, ['init', '-q'])
+      gitOut(dir, ['add', '.'])
+      expect(engine(dir, '--write').status).toBe(0)
+      const doc = path.join(dir, 'ARCH.md')
+      fs.writeFileSync(doc, fs.readFileSync(doc, 'utf8').replace('Rest module: b.ts', BETA_ROLE))
+      gitOut(dir, ['add', '.'])
+      gitOut(dir, ['commit', '-q', '-m', 'base'])
+    },
+    scratchDir,
+  )
 }
 
 describe('sync-arch-docs --check --staged', () => {
@@ -509,7 +562,7 @@ describe('sync-arch-docs --check --format=json', () => {
     gitOut(dir, ['mv', 'src/b.ts', 'src/bb.ts'])
     const json = engine(dir, '--check', '--format=json')
     expect({ status: json.status, stdout: json.stdout, stderr: json.stderr }).toEqual({ status: 1, stdout: GOLDEN_RENAME, stderr: '' })
-    expect(checkExitCode(dir)).toBe(1)
+    expect(engine(dir, '--check').status).toBe(1)
   })
 
   it('exits 2 for a format that is not text or json, or json outside --check', () => {
