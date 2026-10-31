@@ -6,7 +6,7 @@ import { denyOutput, emitRewrite, emitRewriteWithContext, extractToolResponseFie
 import { type HookEvent, registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, toDisplayPath } from './paths.js'
-import { quotedArg } from './hint_suggestion_guard.js'
+import { leadWithCommand, quotedArg } from './hint_suggestion_guard.js'
 import { indexServedBody, planServedElisions, type ServedBody, servedRunNotice } from './served_lines.js'
 import { IDENTICAL_READ_MIN_BODY_BYTES, statSize } from './util.js'
 import { loadConfig } from './config.js'
@@ -25,7 +25,7 @@ import { findProject, makeProjectAt } from './project.js'
 import { isImagePath } from './image_shrink.js'
 import { readEvidenceFileText, recordEvidence } from './evidence_cache.js'
 import { foldDetail } from './code_fold.js'
-import { ALIGNED_LAYOUT_NOTE, type FoldLayout, foldDelivery, foldingEnabled, pushWithheld } from './fold_delivery.js'
+import { ALIGNED_LAYOUT_NOTE, type FoldLayout, foldDelivery, foldedSectionsCommand, foldingEnabled, pushWithheld } from './fold_delivery.js'
 import { isStructuralRewriteAccepted, planMarkdownOutline, planSourceSkeleton, type StructuralFold } from './fold_structure.js'
 import { isDiffableSource, isSessionArtifactFile, isSourceExtension, quietContextOutput, recordActualSlice, relPathWithinRoot } from './hooks_read.js'
 
@@ -353,15 +353,19 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
   const folded = foldDelivery(parsed.rows, normalized, shown, sliceWin.isExplicitSlice, layout)
   if (folded === null) return null
   const originalBytes = Buffer.byteLength(respText, 'utf-8')
+  // Paragraphs folded under several headings otherwise cost one `section` call per heading to get back.
+  const allSections = foldedSectionsCommand(folded.folds, normalized, shown)
+  const allSectionsLine = allSections === null ? [] : [leadWithCommand(allSections.command, `to read ${allSections.sections} sections with folded paragraphs in one call`)]
 
   if (layout === 'aligned') {
     const fenced = fenceNumberedFileContent(folded.numbered.join('\n'), ALIGNED_LAYOUT_NOTE)
     const rewritten = [...parsed.header, fenced.body, ...parsed.trailer].join('\n')
     if (!keepsLineNumbers(respText, rewritten)) return null
+    const context = [fenced.preamble, ...allSectionsLine].join('\n')
     if (
       !isRewriteWorthwhile({
         originalBytes,
-        rewrittenBytes: Buffer.byteLength(rewritten, 'utf-8') + Buffer.byteLength(fenced.preamble, 'utf-8'),
+        rewrittenBytes: Buffer.byteLength(rewritten, 'utf-8') + Buffer.byteLength(context, 'utf-8'),
         noticeBytes: 0,
         minNetSavingsBytes: resolveMinNetSavingsBytes(),
       })
@@ -369,13 +373,13 @@ function foldCodeBodies(event: HookEvent, respText: string): { output: HookOutpu
       return null
     }
     return {
-      output: emitRewriteWithContext(rewritten, fenced.preamble, 'read', { kind: 'read:body_fold', originalBytes, detail: foldDetail(normalized, folded.folds) }),
+      output: emitRewriteWithContext(rewritten, context, 'read', { kind: 'read:body_fold', originalBytes, detail: foldDetail(normalized, folded.folds) }),
       deliveredRaw: folded.raw.join('\n'),
     }
   }
 
   // `folded.numbered` is file bytes with this fold's own `... N lines folded` pointers interleaved, and it shipped unfenced: a source file's own text arrived beside token-goat's narration in one unlabelled block, so a first line spelling `[tg] ...` read as this rewrite's preamble. Fence the whole run, header and trailer (the harness's own framing) left outside it. Same repair as planSourceSkeleton.
-  const rewritten = [...parsed.header, fenceUntrustedFileContent(folded.numbered.join('\n')), ...parsed.trailer].join('\n')
+  const rewritten = [...parsed.header, fenceUntrustedFileContent(folded.numbered.join('\n')), ...allSectionsLine, ...parsed.trailer].join('\n')
   if (
     !isRewriteWorthwhile({
       originalBytes,
