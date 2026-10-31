@@ -8,7 +8,7 @@ import { ArchDocError, CONFIG_CANDIDATES, globMatch, isCodeFile, layerFor, loadC
 import { droppedRoleNotes, keptRole, resolveRenames } from './arch-docs/curated.mjs'
 import { jsExports } from './arch-docs/exports.mjs'
 import { jsDocSentence, templateRole } from './arch-docs/prose.mjs'
-import { existsOnDisk, headReader, indexSource, repoRoot, worktreeSource } from './arch-docs/source.mjs'
+import { existsOnDisk, indexSource, repoRoot, worktreeSource } from './arch-docs/source.mjs'
 import {
   NO_EXPORTS, assertNoLoneCr, assertTableable, byteCompare, currentInner, detectNewline, END_MARKER, findMarkers,
   parseTable, renderTable, splice, START_MARKER, toNewline,
@@ -43,22 +43,22 @@ function describeModule(key, layer, text) {
 }
 
 /** The auto role a module had at HEAD under `layer`, or null when HEAD has no readable component at that path. */
-function headAutoRoles(root, config) {
-  const head = headReader(root)
+function headAutoRoles(source, config) {
   return (key, layer) => {
-    const text = isComponentFile(config, key) ? head.text(key) : null
+    const text = isComponentFile(config, key) ? source.headText(key) : null
     return text === null ? null : describeModule(key, layer, text).autoRole
   }
 }
 
-function plan(root, config, source) {
+function plan(config, source) {
+  // The doc and every module are read in one batch: on the index that is one git process, not one per file.
+  const texts = source.readAll([config.doc, ...source.files.filter((file) => isComponentFile(config, file))])
   const docText = source.read(config.doc)
   if (docText === null) throw new ArchDocError(`${config.doc}: architecture doc not found${source.docMissingSuffix}`)
   assertNoLoneCr(docText, config.doc)
   const markers = findMarkers(docText)
   const documented = parseTable(currentInner(docText, markers))
   const { components, excluded } = discover(config, source.files)
-  const texts = source.readAll(components)
   const described = new Map()
   for (const key of components) {
     const text = texts.get(key)
@@ -72,7 +72,7 @@ function plan(root, config, source) {
     records: source.renames,
     isComponent: (file) => isComponentFile(config, file),
     autoRole: (key) => described.get(key)?.autoRole ?? '',
-    headAutoRole: headAutoRoles(root, config),
+    headAutoRole: headAutoRoles(source, config),
   })
   const rows = new Map()
   for (const [key, { layer, autoRole, exports }] of described) {
@@ -209,7 +209,7 @@ export function runCli(argv, { cwd = process.cwd(), stderr = (line) => process.s
     if (args.staged) assertConfigStaged(root, source)
     const config = loadConfig(source.configReader)
     const docTarget = args.staged ? null : resolveDocTarget(root, config.doc)
-    const p = plan(root, config, source)
+    const p = plan(config, source)
     if (args.mode === 'check') {
       const r = report(p)
       if (args.format === 'json') stdout(jsonReport(r))

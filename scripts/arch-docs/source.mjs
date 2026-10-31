@@ -132,17 +132,18 @@ function readBlobs(root, oids) {
   return parseCatFileBatch(out, oids.length)
 }
 
-/** Every path in the HEAD commit with its mode and blob id; empty while HEAD is unborn. */
+/** Every path in the HEAD commit with its mode and blob id; empty while HEAD is unborn. The listing runs first, so a readable HEAD costs one git process. */
 function headTree(root) {
-  if (runGit(root, ['rev-parse', '--verify', '--quiet', 'HEAD']) === null) return new Map()
   const tree = runGit(root, ['ls-tree', '-r', '-z', '--full-tree', 'HEAD'])
-  if (tree === null) throw new ArchDocError('could not list HEAD (git ls-tree failed)')
-  return parseLsTree(tree)
+  if (tree !== null) return parseLsTree(tree)
+  if (runGit(root, ['rev-parse', '--verify', '--quiet', 'HEAD']) === null) return new Map()
+  throw new ArchDocError('could not list HEAD (git ls-tree failed)')
 }
 
 /** The tree the next commit would record: HEAD (empty when unborn) with the staged diff applied; intent-to-add paths are absent, as from the commit. */
 function stagedSnapshot(root) {
   const entries = headTree(root)
+  const head = new Map(entries)
   const diff = runGit(root, ['diff', '--cached', '--raw', '-z', '-M', '--no-abbrev', '--no-ext-diff', '--no-textconv'])
   if (diff === null) throw new ArchDocError('could not read the index (git diff --cached failed)')
   const renames = []
@@ -159,7 +160,7 @@ function stagedSnapshot(root) {
     }
     entries.set(change.path, { mode: change.mode, oid: change.oid })
   }
-  return { entries, renames }
+  return { entries, renames, head }
 }
 
 /** HEAD contents of single files, for the auto role a renamed-away module had; the HEAD tree is listed at most once. */
@@ -177,11 +178,13 @@ export function headReader(root) {
 /** The working tree: tracked files, renames between HEAD and the tree (staged or not), and on-disk contents. */
 export function worktreeSource(root) {
   const renames = runGit(root, ['diff', '--name-status', '-z', '-M', 'HEAD'])
+  const headFiles = headReader(root)
   return {
     name: 'working tree',
     docMissingSuffix: '',
     files: listTracked(root),
     renames: renames === null ? [] : parseNameStatus(renames),
+    headText: (rel) => headFiles.text(rel),
     read: (rel) => readRegularFile(root, rel),
     readAll(wanted) {
       const texts = new Map()
@@ -200,8 +203,12 @@ export function worktreeSource(root) {
 
 /** The git index as the next commit would record it: staged paths, staged renames and staged blob contents. */
 export function indexSource(root) {
-  const { entries, renames } = stagedSnapshot(root)
+  const { entries, renames, head } = stagedSnapshot(root)
   const blobs = new Map()
+  const headText = (rel) => {
+    const entry = head.get(rel)
+    return entry === undefined || !REGULAR_MODES.has(entry.mode) ? null : readBlobs(root, [entry.oid])[0].toString('utf8')
+  }
   const regularOid = (rel) => {
     const entry = entries.get(rel)
     if (entry === undefined) return null
@@ -223,6 +230,7 @@ export function indexSource(root) {
     docMissingSuffix: ' in the index; stage it with git add',
     files: [...entries.keys()],
     renames,
+    headText,
     has: (rel) => entries.has(rel),
     read,
     readAll(wanted) {

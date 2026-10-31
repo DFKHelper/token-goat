@@ -421,6 +421,18 @@ describe('sync-arch-docs --check --staged', () => {
     expect(engine(dir, '--check', '--staged')).toMatchObject({ status: 2, stderr: 'error: src/a.ts: unmerged path; resolve the conflict before committing\n' })
   })
 
+  // HAND-DERIVED: 5 git starts = rev-parse, ls-tree HEAD, diff --cached, cat-file for the config, cat-file for the doc and modules; worked out from the read order, not read off the engine output.
+  it('starts five git processes for one --check --staged call on a committed, in-sync repo', () => {
+    const dir = curatedRepo()
+    const traceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-archdoc-trace-'))
+    scratchDirs.push(traceDir)
+    const trace = path.join(traceDir, 'events.jsonl')
+    const result = engineWithEnv(dir, { GIT_TRACE2_EVENT: trace }, '--check', '--staged')
+    expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' })
+    const starts = fs.readFileSync(trace, 'utf8').split('\n').filter((line) => line.includes('"event":"start"'))
+    expect(starts).toHaveLength(5)
+  })
+
   it('accepts --staged only with --check', () => {
     const result = engine(scratchRepo(), '--write', '--staged')
     expect(result.status).toBe(2)
