@@ -10,6 +10,7 @@ import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/paths.js'
 import { runSection } from '../src/read_section.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { POSIX_SH, POWERSHELL, powershellArgv, shArgv } from './helpers/shell_argv.js'
 
 const tmpFiles: string[] = []
 
@@ -17,6 +18,7 @@ const FILLER = 'It then continues for a good while longer, restating the point i
 const FIRST_MARKER = 'the first withheld sentence that only the first section holds'
 const SECOND_MARKER = 'the second withheld sentence that only the second section holds'
 const COMMA_MARKER = 'the withheld sentence that only the section with a comma in its heading holds'
+const COLON_MARKER = 'the withheld sentence that only a section with `::` in its heading holds'
 const SENTENCE = /to read (\d+) sections with folded paragraphs in one call/
 
 function paragraph(marker: string): string {
@@ -63,6 +65,15 @@ function allSectionsCommand(out: unknown): string | null {
 function runPrinted(quoted: string): { text: string; code: number } {
   expect(quoted.startsWith('"') && quoted.endsWith('"'), `printed argument is double-quoted: ${quoted}`).toBe(true)
   return runSection({ spec: quoted.slice(1, -1) })
+}
+
+/** A document whose middle folded heading holds `$`, and the combined command its Read prints. */
+function dollarDoc(): { file: string; dollarMarker: string; printed: string | null } {
+  const dollarMarker = 'the withheld sentence that only the section with a dollar sign in its heading holds'
+  const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], ['Cost $5 Plan', paragraph(dollarMarker)], ['Second Section', paragraph(SECOND_MARKER)]])
+  const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
+  expect(out.hookType).toBe('rewriteOutput')
+  return { file, dollarMarker, printed: allSectionsCommand(out) }
 }
 
 describe('one command for every section a prose fold withheld paragraphs from', () => {
@@ -139,7 +150,7 @@ describe('one command for every section a prose fold withheld paragraphs from', 
   it('names no combined command when two `::` headings leave one plain heading, and keeps each `::` heading its own pointer', () => {
     const colonA = 'Config::Keys'
     const colonB = 'Cache::Layer'
-    const file = writeDoc([[colonA, paragraph(FIRST_MARKER)], ['Plain Section', paragraph(SECOND_MARKER)], [colonB, paragraph(COMMA_MARKER)]])
+    const file = writeDoc([[colonA, paragraph(FIRST_MARKER)], ['Plain Section', paragraph(SECOND_MARKER)], [colonB, paragraph(COLON_MARKER)]])
     const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
     expect(out.hookType).toBe('rewriteOutput')
     const rewritten = out.hookType === 'rewriteOutput' ? out.updatedOutput : ''
@@ -150,7 +161,7 @@ describe('one command for every section a prose fold withheld paragraphs from', 
 
   // Provenance: HAND-DERIVED (same heading shapes as the row above, with two plain headings left, so the combined command must name exactly those).
   it('names only the plain headings in the combined command when `::` headings sit between them', () => {
-    const file = writeDoc([['Config::Keys', paragraph(FIRST_MARKER)], ['First Section', paragraph(SECOND_MARKER)], ['Cache::Layer', paragraph(COMMA_MARKER)], ['Second Section', paragraph('the last withheld sentence, under the second plain heading')]])
+    const file = writeDoc([['Config::Keys', paragraph(FIRST_MARKER)], ['First Section', paragraph(SECOND_MARKER)], ['Cache::Layer', paragraph(COLON_MARKER)], ['Second Section', paragraph('the last withheld sentence, under the second plain heading')]])
     const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
     expect(out.hookType).toBe('rewriteOutput')
     expect(allSectionsCommand(out), 'the combined command names the two plain headings and no `::` heading').toBe(`"${file}::First Section,Second Section"`)
@@ -160,13 +171,9 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     expect(result.text).toContain('the last withheld sentence, under the second plain heading')
   })
 
-  // Provenance: HAND-DERIVED (a `$` makes quotedArg single-quote the spec, which both shells hand over literally; the printed line must run and return every section).
+  // Provenance: FORMAT-DERIVED (single quotes keep `$` literal in bash, GNU Bash Reference Manual 3.1.2.2 "Single Quotes", and in PowerShell, about_Quoting_Rules "Single-quoted strings"; neither re-read this run, so the two oracle rows below run the printed line through real bash and PowerShell via tests/helpers/shell_argv.ts). The line must run and return every section.
   it('prints a single-quoted combined command that runs when a folded heading holds a dollar sign', () => {
-    const dollarMarker = 'the withheld sentence that only the section with a dollar sign in its heading holds'
-    const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], ['Cost $5 Plan', paragraph(dollarMarker)], ['Second Section', paragraph(SECOND_MARKER)]])
-    const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
-    expect(out.hookType).toBe('rewriteOutput')
-    const printed = allSectionsCommand(out)
+    const { file, dollarMarker, printed } = dollarDoc()
     expect(printed, 'the dollar-sign heading still joins the combined command').toBe(`'${file}::First Section,Cost $5 Plan,Second Section'`)
     const spec = (printed ?? '').slice(1, -1)
     const result = runSection({ spec })
@@ -174,6 +181,49 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     expect(result.text).toContain(FIRST_MARKER)
     expect(result.text).toContain(dollarMarker)
     expect(result.text).toContain(SECOND_MARKER)
+  })
+
+  it.skipIf(POSIX_SH === null)('a POSIX shell hands the dollar-sign combined command its spec unchanged', () => {
+    const { file, printed } = dollarDoc()
+    expect(shArgv(POSIX_SH!, `token-goat section ${printed ?? '""'}`), 'bash keeps the single-quoted spec literal').toEqual(['section', `${file}::First Section,Cost $5 Plan,Second Section`])
+  })
+
+  it.skipIf(POWERSHELL === null)('PowerShell hands the dollar-sign combined command its spec unchanged', () => {
+    const { file, printed } = dollarDoc()
+    expect(powershellArgv(POWERSHELL!, `token-goat section ${printed ?? '""'}`), 'PowerShell keeps the single-quoted spec literal').toEqual(['section', `${file}::First Section,Cost $5 Plan,Second Section`])
+  })
+
+  // Provenance: HAND-DERIVED (a backtick in a heading: quotedArg single-quotes it, and leadWithCommand's backtick fence (src/hint_suggestion_guard.ts::fencedCommand) would close at it, so relay.ts's stripUnsafeSuggestions swaps the whole combined command for a "command omitted" placeholder).
+  it('leaves a heading holding a backtick to its own pointer and keeps it out of the fenced combined command', () => {
+    const tickHeading = 'Using `config`'
+    const tickMarker = 'the withheld sentence that only the section with a backtick in its heading holds'
+    const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], [tickHeading, paragraph(tickMarker)], ['Second Section', paragraph(SECOND_MARKER)]])
+    const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
+    expect(out.hookType).toBe('rewriteOutput')
+    const rewritten = out.hookType === 'rewriteOutput' ? out.updatedOutput : ''
+    expect(rewritten).not.toContain(tickMarker)
+    expect(rewritten, 'the backtick heading keeps its own per-paragraph pointer').toContain(`token-goat section '${file}::${tickHeading}'`)
+    expect(allSectionsCommand(out), 'a backtick heading stays out of the backtick-fenced combined command').toBe(`"${file}::First Section,Second Section"`)
+    const result = runPrinted(allSectionsCommand(out) ?? '""')
+    expect(result.code).toBe(0)
+    expect(result.text).toContain(FIRST_MARKER)
+    expect(result.text).toContain(SECOND_MARKER)
+  })
+
+  // Provenance: HAND-DERIVED (a backtick in the file's own path reaches the spec whatever the headings are, so no heading skip can keep it out of the fence).
+  it('names no combined command when the file path itself holds a backtick', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-tick`dir-'))
+    const src = writeDoc([['First Section', paragraph(FIRST_MARKER)], ['Second Section', paragraph(SECOND_MARKER)]])
+    const file = normalizePath(path.join(dir, 'doc.md'))
+    fs.writeFileSync(file, fs.readFileSync(src, 'utf-8'))
+    try {
+      const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
+      expect(out.hookType).toBe('rewriteOutput')
+      expect(JSON.stringify(out)).toContain('rest of paragraph folded')
+      expect(JSON.stringify(out), 'a backtick path leaves no combined command to be cut out of its fence').not.toMatch(SENTENCE)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   // Provenance: HAND-DERIVED (two sections share a heading, so the reader's ordinal form `Heading#N` (src/read_section.ts, ordinal spec) names each one; the command must run and return both).

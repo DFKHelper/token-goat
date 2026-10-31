@@ -62,7 +62,7 @@ export function proseFoldNotice(keep: string, line: number, shownPath: string, n
   return `${displaySafeText(keep)} ... rest of paragraph folded (line ${line}) -- token-goat section ${quotedArg(`${shownPath}::${displaySafeText(section.heading)}`)}`
 }
 
-/** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma or `::` is left to its own per-paragraph pointer, since `section` would split a comma into two names and read a `::` as a file boundary; null when fewer than two headings remain. */
+/** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma, `::` or a backtick is left to its own per-paragraph pointer, since `section` would split a comma into two names and read a `::` as a file boundary, and a backtick closes the fence leadWithCommand sets the command in, so relay.ts's stripUnsafeSuggestions swaps the whole command for a "command omitted" placeholder; null when fewer than two headings remain or the command would still hold a backtick (one in the path). */
 export function foldedSectionsCommand(folds: readonly BodyFold[], normalizedPath: string, shownPath: string): { command: string; sections: number } | null {
   const headings: string[] = []
   for (const fold of folds) {
@@ -70,12 +70,12 @@ export function foldedSectionsCommand(folds: readonly BodyFold[], normalizedPath
     const section = findContainingSection(normalizedPath, fold.firstLine, fold.firstLine)
     if (section === null) continue
     const heading = displaySafeText(section.heading)
-    if (!heading.includes(',') && !heading.includes('::') && !headings.includes(heading)) headings.push(heading)
+    if (!heading.includes(',') && !heading.includes('::') && !heading.includes('`') && !headings.includes(heading)) headings.push(heading)
   }
   if (headings.length < 2) return null
   const command = `token-goat section ${quotedArg(`${shownPath}::${headings.join(',')}`)}`
-  // quotedArg swaps a value no quote can hold for a placeholder, which would print a command that does not run.
-  return command.includes(`${shownPath}::${headings.join(',')}`) ? { command, sections: headings.length } : null
+  // quotedArg swaps a value no quote can hold for a placeholder, which would print a command that does not run; a backtick left in the path would close the fence the caller sets the command in.
+  return command.includes(`${shownPath}::${headings.join(',')}`) && !command.includes('`') ? { command, sections: headings.length } : null
 }
 
 /** The line standing in for a folded comment block. A comment has no symbol to name, so there is no `token-goat read "file::symbol"` that returns it. What does return it is a ranged Read of the exact span. That Read cannot fold its own answer, because the span is one comment run from edge to edge and a windowed delivery drops any fold touching its first or last row ({@link strictlyInteriorOnWindow}). Nor may it be refused as lines already read: a fold from a ranged delivery takes back the line range that delivery was recorded under (hooks_read_post.ts::forgetFoldedWindow, and the shell-read fold in hooks_bash_post.ts). */
