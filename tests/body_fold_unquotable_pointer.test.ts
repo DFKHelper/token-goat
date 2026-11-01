@@ -44,8 +44,6 @@ function rowsOf(file: string): FoldRow[] {
     .map((text, i) => ({ no: i + 1, text, raw: `${String(i + 1).padStart(6, ' ')}\t${text}` }))
 }
 
-const DEEP_LINE = 'total = total * 20 + 1020 // accumulate step 20 of function 1'
-
 describe('a folded body whose read pointer no quote mark can hold', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -67,10 +65,10 @@ describe('a folded body whose read pointer no quote mark can hold', () => {
     const file = writeSource("tg-it's$body-")
     expect(canQuoteArg(`${file}::computeTotal1@1`), 'fixture: the spec is unquotable').toBe(false)
     const folded = foldDelivery(rowsOf(file), file, file)
-    const printed = (folded?.numbered ?? rowsOf(file).map((r) => r.raw)).join('\n')
+    const printed = folded?.numbered.join('\n') ?? ''
+    expect(folded, 'no body folds, so foldDelivery returns null and the caller delivers the Read as it arrived').toBeNull()
     expect(printed, 'no printed line holds the placeholder for an unquotable value').not.toContain(UNQUOTABLE)
     expect((folded?.folds ?? []).filter((f) => f.kind === 'body'), 'a body with no printable pointer is never counted as folded').toEqual([])
-    expect(printed, 'the body is delivered whole').toContain(DEEP_LINE)
   })
 
   // Provenance: HAND-DERIVED (same unquotable directory name; the Read result is the `cat -n` string the post-hook parses, as tests/folded_sections_command.test.ts builds it). The file is past post_read_code_compress.min_lines (200), so the structural-navigation hint in src/hooks_read_post.ts is in reach as well as the fold.
