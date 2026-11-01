@@ -1,6 +1,7 @@
 /** `search`'s weak semantic-only page. The summaries and hit rows are HAND-DERIVED from `SearchExecutionSummary` and `FusedSearchResult` in src/search/types.ts; the note wording is CAPTURE from `token-goat search "quuxzzyNotAThing"` on the base build, 2026-10-31, in a scratch home. */
 import { describe, expect, it } from 'vitest'
 
+import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
 import { formatSearchText } from '../src/search/search_cli.js'
 import type { FusedSearchResult, SearchExecutionSummary } from '../src/search/types.js'
 
@@ -76,6 +77,29 @@ describe('formatSearchText weak semantic-only page', () => {
     const text = formatSearchText(weakSummary([hit(1), hit(2), hit(3), hit(4)]), false)
     expect(numbered(text)).toHaveLength(3)
     expect(text).toContain('(1 more weak semantic hit not shown -- `token-goat search "quuxzzyNotAThing" -c semantic` lists them)')
+  })
+
+  // Provenance: HAND-DERIVED from src/cli.ts (search's --limit and --project flags; the rerun must carry the caller's values or it lists a different set than the page says).
+  it('R6 carries a non-default --limit and the --project root into the printed command', () => {
+    const text = formatSearchText(weakSummary(sixteen()), false, { limit: 40, projectRoot: '/work/app' })
+    expect(text, 'the printed command keeps --limit 40').toContain('--limit 40')
+    expect(text, 'the printed command keeps the --project root').toContain('--project "/work/app"')
+    expect(text).toContain('`token-goat search "quuxzzyNotAThing" --limit 40 --project "/work/app" -c semantic` lists them)')
+  })
+
+  // Provenance: HAND-DERIVED from src/cli.ts (the default --limit is 20, so the default rerun prints the same command R1 pins).
+  it('R6 prints no --limit flag at the default limit', () => {
+    const text = formatSearchText(weakSummary(sixteen()), false, { limit: 20 })
+    expect(text).toContain(COMMAND)
+    expect(text).not.toContain('--limit')
+  })
+
+  // Provenance: HAND-DERIVED from src/hint_suggestion_guard.ts (stripUnsafeSuggestions removes a suggestion holding a command substitution, so a command the relay would strip is not printed).
+  it('R7 prints no command for a query with a command substitution, and the relay passes the text unchanged', () => {
+    const text = formatSearchText(weakSummary(sixteen(), { query: 'quuxzzy$(id)' }), false)
+    expect(text, 'no command is printed for a query the relay would strip').not.toContain('command omitted')
+    expect(stripUnsafeSuggestions(text), 'the relay passes the page unchanged').toBe(text)
+    expect(text).toContain('(13 more weak semantic hits not shown; rerun with -c semantic to list them)')
   })
 
   it('does not cap a semantic page with no low-confidence mark', () => {
