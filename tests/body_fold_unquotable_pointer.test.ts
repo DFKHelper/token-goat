@@ -67,10 +67,10 @@ describe('a folded body whose read pointer no quote mark can hold', () => {
     const file = writeSource("tg-it's$body-")
     expect(canQuoteArg(`${file}::computeTotal1@1`), 'fixture: the spec is unquotable').toBe(false)
     const folded = foldDelivery(rowsOf(file), file, file)
-    const printed = folded === null ? '' : folded.numbered.join('\n')
+    const printed = (folded?.numbered ?? rowsOf(file).map((r) => r.raw)).join('\n')
     expect(printed, 'no printed line holds the placeholder for an unquotable value').not.toContain(UNQUOTABLE)
     expect((folded?.folds ?? []).filter((f) => f.kind === 'body'), 'a body with no printable pointer is never counted as folded').toEqual([])
-    if (folded !== null) expect(printed, 'the body is delivered whole').toContain(DEEP_LINE)
+    expect(printed, 'the body is delivered whole').toContain(DEEP_LINE)
   })
 
   // Provenance: HAND-DERIVED (same unquotable directory name; the Read result is the `cat -n` string the post-hook parses, as tests/folded_sections_command.test.ts builds it). The file is past post_read_code_compress.min_lines (200), so the structural-navigation hint in src/hooks_read_post.ts is in reach as well as the fold.
