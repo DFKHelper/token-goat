@@ -340,9 +340,10 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string, stam
     try {
       // Register this file's project root as sweepable before any gate below can skip the file: a drain that finds everything fresh still proves the project has rows worth sweeping. See recordKnownRootThrottled.
       recordKnownRootThrottled(absPath, dir, dbPath)
-      // Skip-eligibility must be checked UNCONDITIONALLY, before the parseUnchanged sha-gate: a file that becomes skip-eligible purely from a config change (same sha) would otherwise never reach indexFileSync's purge at all, leaving symbols/refs/files rows stale forever. Guard on ixCfgForSkip !== undefined for tests that mock loadConfig with a partial { worker: {...} } shape.
-      const ixCfgForSkip = loadConfig().indexing
-      if (ixCfgForSkip !== undefined && isParseSkipEligible(absPath, ixCfgForSkip)) {
+      // Skip-eligibility must be checked UNCONDITIONALLY, before the parseUnchanged sha-gate: a file that becomes skip-eligible purely from a config change (same sha) would otherwise never reach indexFileSync's purge at all, leaving symbols/refs/files rows stale forever. Guard on ixCfg !== undefined for tests that mock loadConfig with a partial { worker: {...} } shape.
+      // One config read per file serves the skip check and the embed gates below: each loadConfig() opens and fingerprints config.toml and .token-goat.toml, and three of them per file were most of the file opens a drain of unchanged files made.
+      const ixCfg = loadConfig().indexing
+      if (ixCfg !== undefined && isParseSkipEligible(absPath, ixCfg)) {
         // Purging stale rows is real work: unlike the `false` sha-gate skip below, this must count as "indexed" in processDirtyBatch's tally.
         removeFileFromIndex(getDb(dbPath), absPath)
         return true
@@ -353,7 +354,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string, stam
       if (depsAvailable) {
         ensureEmbeddingProvenance(getDb(dbPath))
         // Same placement and the same reason as the call above, for the gates that reject a file rather than the stack that embedded it; see src/embed_backfill.ts. It throttles itself on two ledger rows, the release and the `indexing.max_chunks_per_file` it last swept under, so it sweeps once after a release or a change to that setting and otherwise costs a CREATE TABLE IF NOT EXISTS plus one primary-key SELECT per file.
-        pruneUnembeddableChunks(getDb(dbPath), loadConfig().indexing?.max_chunks_per_file ?? 0, deleteFileEmbeddings, { asset: assetEmbedSha, maxChunks: maxChunksEmbedSha })
+        pruneUnembeddableChunks(getDb(dbPath), ixCfg?.max_chunks_per_file ?? 0, deleteFileEmbeddings, { asset: assetEmbedSha, maxChunks: maxChunksEmbedSha })
       }
       const entry = getFileEntry(absPath, dbPath)
       // Skip the syntactic reparse when content is byte-identical to what's already indexed (same fingerprint) so a touched-but-unchanged file is not needlessly reparsed. ...and not when the row's own spelling has gone stale under a case-only rename, which leaves the content identical and would otherwise pin the old spelling in place forever. See indexedPathSpellingIsStale. ...and not when the rows were written by a different version of the extraction logic. files.sha answers "has the content changed", which is only half the question: a parser change alters what gets extracted from content that never moved, and before parser_sha existed those files kept their old symbol set for as long as nobody edited them. Measured on a real index, 37 of 237 source files disagreed with what the same binary produced from scratch. An empty parserSha is a row written before the column existed and is correctly stale. The expected stamp is the one for the language the row itself records, so a fix to one adapter reparses that language's files and leaves every other language's rows alone. See parserFingerprintForLanguage.
@@ -377,9 +378,9 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string, stam
           embeddingsEnabled,
           depsAvailable,
           // Same partial-config defensiveness as embeddingsEnabled above: 0 matches no stamped oversize marker (config floors this key at 1), so a mocked config re-examines the file rather than assuming it current. See isEmbedFresh.
-          loadConfig().indexing?.large_file_symbol_only_kb ?? 0,
+          ixCfg?.large_file_symbol_only_kb ?? 0,
           // Same reasoning and same 0 fallback for the chunk-count marker.
-          loadConfig().indexing?.max_chunks_per_file ?? 0,
+          ixCfg?.max_chunks_per_file ?? 0,
         )
       if (embedUnchanged) {
         // Nothing left to embed. `false` tells processDirtyBatch the gate found nothing to do at all, so it is only truthful when the parse was skipped too: a parser-stamp bump reparses the file above while correctly leaving its embedding alone, and that is a real index rather than a no-op skip.
