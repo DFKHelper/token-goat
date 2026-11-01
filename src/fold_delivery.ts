@@ -1,6 +1,6 @@
 /** Turning a delivered slice of a source file into a folded one: pick the spans, render the notices. Split out of hooks_read.ts when the shell read path became a second caller. The two surfaces gate very differently (a Read is a whole file with a numbered rendering around it, a shell read is bare text from a command that may or may not pin its line numbers) but everything between "here are the delivered rows" and "here is the folded text" is identical, and that middle is where the index-freshness rule and the notice wording live. One copy, so a change to either reaches both. */
 import { countNoun } from './util.js'
-import { canQuoteArg, quotedArg } from './hint_suggestion_guard.js'
+import { canQuoteArg, quotedArg, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
 import { readFileSync, statSync } from 'node:fs'
 
 import { commentSyntaxFor, mergeFolds, planBodyFolds, planCommentFolds, planProseFolds, type BodyFold, type FoldSpan } from './code_fold.js'
@@ -76,19 +76,19 @@ function proseFoldHeading(normalizedPath: string, line: number, shownPath: strin
   return canQuoteArg(`${shownPath}::${heading}`) ? heading : null
 }
 
-/** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma, `::` or a backtick is left to its own per-paragraph pointer, since `section` would split a comma into two names and read a `::` as a file boundary, and a backtick closes the backtick fence leadWithCommand sets the command in, so the line would no longer read as one command; null when fewer than two headings remain or the command would still hold a backtick (one in the path). */
+/** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma, `::` or a backtick is left to its own per-paragraph pointer, since `section` would split a comma into two names and read a `::` as a file boundary, and a backtick closes the backtick fence leadWithCommand sets the command in, so the line would no longer read as one command; null when fewer than two headings remain or the command would still hold a backtick (one in the path) or the relay would strip it. */
 export function foldedSectionsCommand(folds: readonly BodyFold[], normalizedPath: string, shownPath: string): { command: string; sections: number } | null {
   const headings: string[] = []
   for (const fold of folds) {
     if (fold.kind !== 'prose') continue
     const heading = proseFoldHeading(normalizedPath, fold.firstLine, shownPath)
     if (heading === null) continue
-    if (!heading.includes(',') && !heading.includes('::') && !heading.includes('`') && !headings.includes(heading)) headings.push(heading)
+    if (!/[,`]|::/.test(heading) && !headings.includes(heading)) headings.push(heading)
   }
   if (headings.length < 2) return null
   const command = `token-goat section ${quotedArg(`${shownPath}::${headings.join(',')}`)}`
   // quotedArg swaps a value no quote can hold for a placeholder, which would print a command that does not run; a backtick left in the path would close the fence the caller sets the command in.
-  return command.includes(`${shownPath}::${headings.join(',')}`) && !command.includes('`') ? { command, sections: headings.length } : null
+  return command.includes(`${shownPath}::${headings.join(',')}`) && !command.includes('`') && stripUnsafeSuggestions(command) === command ? { command, sections: headings.length } : null
 }
 
 /** The line standing in for a folded comment block. A comment has no symbol to name, so there is no `token-goat read "file::symbol"` that returns it. What does return it is a ranged Read of the exact span. That Read cannot fold its own answer, because the span is one comment run from edge to edge and a windowed delivery drops any fold touching its first or last row ({@link strictlyInteriorOnWindow}). Nor may it be refused as lines already read: a fold from a ranged delivery takes back the line range that delivery was recorded under (hooks_read_post.ts::forgetFoldedWindow, and the shell-read fold in hooks_bash_post.ts). */
