@@ -84,7 +84,11 @@ export function rankSimilarNames(candidates: string[], query: string): string[] 
     const near = candidates.filter((c) => withinEditDistance(c.toLowerCase(), queryLower, budget))
     return sortByTierThenLength([...new Set(near)], query)
   }
-  return sortByTierThenLength([...new Set(filtered)], query)
+  const ranked = sortByTierThenLength([...new Set(filtered)], query)
+  if (queryLower.length < TYPO_TWO_EDIT_MIN_LEN || queryLower.length > TYPO_MAX_QUERY_LEN) return ranked
+  const budget = typoBudget(queryLower.length)
+  const near = candidates.filter((c) => withinEditDistance(c.toLowerCase(), queryLower, budget))
+  return [...new Set([...sortByTierThenLength([...new Set(near)], query), ...ranked])]
 }
 
 export function filterSimilarHeadings(available: string[], query: string): string[] {

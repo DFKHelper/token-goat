@@ -18,6 +18,21 @@ describe('rankSimilarNames tiers', () => {
     expect(rankSimilarNames(['renderAllTheThings', 'renderAll'], 'render')).toEqual(['renderAll', 'renderAllTheThings'])
   })
 
+  it('suggests the real name one edit away first when a long camelCase query also holds fragments', () => {
+    // `getReadNavigationEvidense` is 25 characters, two edits allowed; getReadNavigationEvidence is one substitution away. get, DENSE and read are fragments of the query, so the old code never reached the edit-distance pass.
+    expect(rankSimilarNames(['get', 'DENSE', 'read', 'getReadNavigationEvidence', 'setup'], 'getReadNavigationEvidense')).toEqual(['getReadNavigationEvidence', 'get', 'DENSE', 'read'])
+  })
+
+  it('suggests a two-edit transposed name first when a fragment also matches', () => {
+    // `parseCofnig` is 11 characters; parseConfig is two edits away (swap of o and f). parse is a fragment of the query, and config is not.
+    expect(rankSimilarNames(['parseConfig', 'config', 'parse'], 'parseCofnig')[0]).toBe('parseConfig')
+  })
+
+  it('keeps a short query with an exact-prefix match as the only answer', () => {
+    // `get` is 3 characters, below the 8-character floor for the new edit-distance pass; getter contains it.
+    expect(rankSimilarNames(['get', 'set', 'getter'], 'get')).toEqual(['get', 'getter'])
+  })
+
   it('formatNoMatchesHelp provides targeted recovery suggestions', () => {
     const grepSuggestions = formatNoMatchesHelp({
       kind: 'grep',
