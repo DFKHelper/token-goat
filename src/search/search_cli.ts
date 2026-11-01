@@ -1,9 +1,12 @@
 import { executeParallelSearch } from './parallel_search.js';
-import type { FusedSearchResult, SearchExecutionSummary, SearchOptions } from './types.js';
+import { ALL_CHANNELS, type FusedSearchResult, type SearchExecutionSummary, type SearchOptions } from './types.js';
 import { displaySafeJson, displaySafeText } from '../paths.js';
 import { DELETED_TAG } from '../read_commands.js';
 import { resolveProjectConfinement } from '../read_spec.js';
-import { echoedValue } from '../hint_suggestion_guard.js'
+import { canQuoteArg, echoedValue, fencedCommand, quotedArg } from '../hint_suggestion_guard.js'
+
+/** A weak semantic-only page shows this many hits before it names the one command that lists the rest. */
+const WEAK_PAGE_SHOWN_HITS = 3;
 
 /** Formats one fused result as its location line, naming the channels that agreed on it, and a one-line preview. The fusion score stays in `--json`: it orders the list but tells a reader nothing the order does not. */
 function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
@@ -26,8 +29,20 @@ function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
   return lines.join('\n');
 }
 
-/** Renders a search summary as terminal text: one header line with the per-channel counts, any degraded-channel and relevance notes, then each hit on consecutive lines. */
-export function formatSearchText(summary: SearchExecutionSummary): string {
+/** Whether the summary is a weak semantic-only page: the semantic channel's best hit is above its weak distance and no other channel found anything. */
+function isWeakSemanticPage(summary: SearchExecutionSummary): boolean {
+  return summary.lowConfidence !== undefined && ALL_CHANNELS.every((c) => c === 'semantic' || summary.channelCounts[c] === 0);
+}
+
+/** The line standing in for the hits a weak page hides: the command that lists them when its query quotes and shows as typed, else the flag to add by hand. */
+function hiddenWeakHitsLine(query: string, hidden: number): string {
+  const more = `${hidden} more weak semantic hit${hidden === 1 ? '' : 's'} not shown`;
+  if (!canQuoteArg(query) || displaySafeText(query) !== query) return `(${more}; rerun with -c semantic to list them)`;
+  return `(${more} -- ${fencedCommand(`token-goat search ${quotedArg(query)} -c semantic`)} lists them)`;
+}
+
+/** Renders a search summary as terminal text: one header line with the per-channel counts, any degraded-channel and relevance notes, then each hit on consecutive lines. A weak semantic-only page with no channels named shows its first hits and one line for the rest. */
+export function formatSearchText(summary: SearchExecutionSummary, explicitChannels = false): string {
   const notes = [
     ...(summary.degradedChannels ?? []).map((d) => `\n(note: ${d.channel} channel degraded: ${displaySafeText(d.reason)})`),
     ...(summary.notes ?? []).map((n) => `\n(note: ${n.channel} channel ${displaySafeText(n.note)})`),
@@ -39,7 +54,11 @@ export function formatSearchText(summary: SearchExecutionSummary): string {
 
   const counts = Object.entries(summary.channelCounts).map(([c, n]) => `${c}:${n}`).join(', ');
   const header = `${summary.totalHits} result${summary.totalHits === 1 ? '' : 's'} for ${echoedValue(summary.query)} in ${summary.durationMs}ms [${counts}]${notes}`;
-  return [header, ...summary.results.map((hit, idx) => formatTerminalHit(hit, idx + 1))].join('\n');
+  const capped = !explicitChannels && isWeakSemanticPage(summary) && summary.results.length > WEAK_PAGE_SHOWN_HITS;
+  const shown = capped ? summary.results.slice(0, WEAK_PAGE_SHOWN_HITS) : summary.results;
+  const lines = [header, ...shown.map((hit, idx) => formatTerminalHit(hit, idx + 1))];
+  if (capped) lines.push(hiddenWeakHitsLine(summary.query, summary.results.length - WEAK_PAGE_SHOWN_HITS));
+  return lines.join('\n');
 }
 
 /** Runs the parallel search command and formats the output. */
@@ -66,5 +85,5 @@ export async function runParallelSearch(options: SearchOptions): Promise<{ text:
     };
   }
 
-  return { text: formatSearchText(summary), code: 0 };
+  return { text: formatSearchText(summary, options.channels !== undefined), code: 0 };
 }
