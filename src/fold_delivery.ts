@@ -68,7 +68,7 @@ export function proseFoldNotice(keep: string, line: number, shownPath: string, n
   return `${displaySafeText(keep)} ... rest of paragraph folded (line ${line}) -- token-goat section ${quotedArg(`${shownPath}::${heading}`)}`
 }
 
-/** The display-safe heading a prose fold at `line` is recalled by, or null when no section encloses it or its `section` spec holds a line break, or holds `$`, a backtick, `"` or a backslash escape together with `'`, a U+2018-U+201B quote or a control or bidi character, which no quote mark holds and quotedArg would print as a placeholder that runs nothing. One resolver for the fold planner, the notice and the combined command, so a paragraph whose pointer cannot be printed is never counted as folded. */
+/** The display-safe heading a prose fold at `line` is recalled by, or null when no section encloses it or its `section` spec holds a line break, or holds `$`, a backtick, `"`, U+201C-U+201E, or a backslash followed by another backslash or ending the value, together with `'`, a U+2018-U+201B quote, or a control or bidi character, which no quote mark holds and quotedArg would print as a placeholder that runs nothing. One resolver for the fold planner, the notice and the combined command, so a paragraph whose pointer cannot be printed is never counted as folded. */
 function proseFoldHeading(normalizedPath: string, line: number, shownPath: string): string | null {
   const section = findContainingSection(normalizedPath, line, line)
   if (section === null) return null
