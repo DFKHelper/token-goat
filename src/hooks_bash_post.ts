@@ -375,7 +375,7 @@ async function maybeCompressCompoundOutput(
     fenceUntrusted(untrusted, UNTRUSTED_TOOL_TAG) +
     notices +
     marker +
-    '\n[token-goat] full output: bash-output ' + id + ' --full' +
+    '\n[token-goat] full output: token-goat bash-output ' + id + ' --full' +
     elidedLinesPointer(id, () => redactSecrets(output).text, untrusted)
   // Unlike bash_runner's pipeline, this path appends a recall pointer on top of the filter's own marker, so `compressed.bytesSaved` (which prices in neither) is not what the model gains. Gate and record against the body actually emitted, matching the shared contract every other rewrite hook follows via isRewriteWorthwhile/emitRewrite.
   const emittedBytes = Buffer.byteLength(body, 'utf-8')
@@ -870,7 +870,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       const delta = summarizeOutputDelta(priorEntry.output, output)
       if (delta !== null) {
         recordStat('session_hint', 0, 0)
-        return contextOutput(delta + ' — full output: bash-output ' + id + ' --full')
+        return contextOutput(delta + ' — full output: token-goat bash-output ' + id + ' --full')
       }
     }
     // A curl of an HTML page is folded before the ansi-only pass, since the ansi pass alone cannot help a page that carries no escape codes at all.

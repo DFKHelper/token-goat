@@ -404,7 +404,7 @@ async function wrapAndCompress(
     // The marker's own notice names TOKEN_GOAT_BASH_COMPRESS as the way to disable compression, and a rerun carrying it as a prefix is left unwrapped by the pre-hook, but that costs the command a second run. A recall of the untruncated bytes is the cheaper follow-up, so store them the same way the compound post-hook path already does and point at it.
     const fullRaw = (stdoutText + (stderrText ? '\n' + stderrText : '')).trim()
     const recallId = storeBashOutputSync(command, fullRaw, exitCode, opts.cwd ?? null)
-    body += '\n[token-goat] full output: bash-output ' + recallId + ' --full'
+    body += '\n[token-goat] full output: token-goat bash-output ' + recallId + ' --full'
     // A cut that removed one run of lines is recalled as exactly that run, checked against the copy bash-output reads, so the follow-up costs those lines and not the whole output again.
     const stored = getBashOutput(recallId)
     if (stored !== null) body += elidedLinesPointer(recallId, () => stored.output, text)

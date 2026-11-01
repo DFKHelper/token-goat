@@ -5,6 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { UNQUOTABLE } from '../src/hint_suggestion_guard.js'
 import { normalizePath } from '../src/paths.js'
 import { runSection } from '../src/read_section.js'
 import { relayInProcess } from '../src/relay.js'
@@ -13,7 +14,6 @@ import { POSIX_SH, shArgv } from './helpers/shell_argv.js'
 const FILLER = 'It then continues for a good while longer, restating the point in more detail than a reader scanning the document has any use for, which is exactly the text this fold exists to remove from the delivered output. '
 const FIRST_MARKER = 'the first withheld sentence that only the first section holds'
 const SECOND_MARKER = 'the second withheld sentence that only the second section holds'
-const UNQUOTABLE = '<a value no quote mark can hold>'
 
 const dirs: string[] = []
 
@@ -62,7 +62,7 @@ describe('a per-paragraph section pointer through the relay', () => {
     expect(wire, 'the other paragraphs are still folded').not.toContain(FIRST_MARKER)
   })
 
-  // Provenance: HAND-DERIVED (a backtick heading with no apostrophe, so quotedArg single-quotes it). Pins the behaviour observed end to end: relay.ts::safeSuggestions runs stripUnsafeSuggestions over a rewrite's out-of-band context only, never its updatedOutput, so the single-quoted pointer reaches the model as printed in both layouts.
+  // Provenance: HAND-DERIVED (a backtick heading with no apostrophe, so quotedArg single-quotes it). A pin of current behaviour, not a regression guard for a fixed defect: it records what is observed end to end: relay.ts::safeSuggestions runs stripUnsafeSuggestions over a rewrite's out-of-band context only, never its updatedOutput, so the single-quoted pointer reaches the model as printed in both layouts.
   it.each(['compact', 'aligned'] as const)('keeps the single-quoted pointer of a backtick heading as printed on a %s-layout Read, and it runs', async (layout) => {
     const tickHeading = 'Using `config`'
     const tickMarker = 'the withheld sentence that only the section with a backtick in its heading holds'

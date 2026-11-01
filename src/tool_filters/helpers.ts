@@ -138,7 +138,7 @@ export function elidedLineRange(stored: () => string, shown: string): { from: nu
 /** The recall line naming exactly the lines {@link elidedLineRange} finds missing from `shown`, led by a newline, or '' when no single checked span exists. */
 export function elidedLinesPointer(id: string, stored: () => string, shown: string): string {
   const cut = elidedLineRange(stored, shown)
-  return cut === null ? '' : `\n[token-goat] lines not shown: bash-output ${id} --lines ${cut.from}-${cut.to}`
+  return cut === null ? '' : `\n[token-goat] lines not shown: token-goat bash-output ${id} --lines ${cut.from}-${cut.to}`
 }
 
 /** Trailing compression-summary marker appended by `CompressedOutput.withMarker`. */

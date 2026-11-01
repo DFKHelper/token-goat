@@ -215,7 +215,7 @@ export function canQuoteArg(value: string): boolean {
 }
 
 /** What {@link quotedArg} writes in place of an {@link unquotable} value: no quote mark, no backtick, nothing either shell substitutes, so the command it sits in keeps its shape, and {@link stripUnsafeSuggestions} drops that command on sight. */
-const UNQUOTABLE = '<a value no quote mark can hold>'
+export const UNQUOTABLE = '<a value no quote mark can hold>'
 
 /** Every argument of one suggested command, quoted with one mark: single quotes when {@link quotedArg} would single-quote any of them and all of them can hold single quotes, double quotes otherwise. A `"<base64>"` beside a single-quoted path puts a double quote into a command that holds `$` or a backtick, and {@link stripUnsafeSuggestions} then drops the whole command, path and all. Under double quotes a value holding `$` or a backtick is not written at all ({@link UNQUOTABLE}), since its neighbour forced the mark that would rewrite it: `"src/a$b.json" "['a.b']"` expanded `$b`. */
 export function quotedArgs(...values: string[]): string[] {

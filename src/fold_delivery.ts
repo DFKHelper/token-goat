@@ -31,13 +31,19 @@ export const COMMENT_FOLD_MIN_BLOCK = 12
 const BODY_FOLD_SYMBOL_LIMIT = 10000
 
 /** The line standing in for a folded body. It names the symbol, the exact line range removed, and the command that returns it -- everything needed to undo the fold without re-reading the file. Unlike a re-read elision, the reader has never seen these lines, so the notice must read as "here is what is missing and how to get it", not as a pointer to something already in context. */
-export function bodyFoldNotice(name: string, firstLine: number, lastLine: number, shownPath: string, declLine?: number): string {
+export function bodyFoldNotice(name: string, firstLine: number, lastLine: number, shownPath: string, declLine?: number): string | null {
   const n = lastLine - firstLine + 1
+  const spec = bodyFoldSpec(name, shownPath, declLine)
+  // A path or name holding `'` together with `$`, a backtick or `"` fits no quote mark, and quotedArg would print a placeholder that runs nothing: the caller keeps the body instead.
+  if (!canQuoteArg(spec)) return null
+  return `... ${countNoun(n, 'more line')} of ${displaySafeText(name)} (${firstLine}-${lastLine}) folded -- token-goat read ${quotedArg(spec)}`
+}
+
+/** The `file::symbol@LINE` spec {@link bodyFoldNotice} names, so the fold planner can drop a body whose spec no quote mark holds before it counts as folded. */
+function bodyFoldSpec(name: string, shownPath: string, declLine?: number): string {
   // The anchor is emitted whenever the declaration line is known, never only when a duplicate name is detected: the fold sees one file's spans and cannot cheaply know whether a name is unique, and an anchored command resolves identically for one that is. The `file::symbol@LINE` grammar is resolveSymbolSpec's, adopted by graph_commands.ts for this same failure.
-  const anchor = declLine === undefined ? '' : `@${declLine}`
   // The symbol name comes from the file being read, so it is untrusted text on a line this notice speaks in token-goat's own voice: a name shaped like one of our spoken markers would read as a directive rather than as a symbol. The path beside it is escaped by every caller already; the name was not.
-  const safeName = displaySafeText(name)
-  return `... ${countNoun(n, 'more line')} of ${safeName} (${firstLine}-${lastLine}) folded -- token-goat read ${quotedArg(`${shownPath}::${safeName}${anchor}`)}`
+  return `${shownPath}::${displaySafeText(name)}${declLine === undefined ? '' : `@${declLine}`}`
 }
 
 /** True when any of the three folds is enabled. The two hook entry points gate on this rather than on one setting each: which kind of fold a given file is eligible for is decided inside {@link foldDelivery} by what the file actually is, and a caller checking only one setting would make a file unfoldable no matter how the other two were left. */
@@ -56,23 +62,27 @@ export function isProseFoldablePath(normalizedPath: string): boolean {
 
 /** The opening sentence of a folded paragraph, followed by the pointer that returns the rest -- or `null` when no such pointer exists, in which case the caller must not fold the paragraph at all. Named a real, resolved heading via {@link findContainingSection} rather than a placeholder the reader has to work out themselves, which an earlier draft did and which this repo's own test suite caught as unactionable. A one-line ranged Read (`Read "file" with offset=N, limit=1`) looks more precise, but naming it as a fallback when no enclosing section resolves used to withhold bytes behind a route that never actually worked: prose folding only ever applies to a markdown/mdx document, and hooks_read.ts's large-markdown intercept hard-denies every re-read of a markdown file with 3+ headings regardless of how narrow the offset/limit window is (the branch's own comment says so: "regardless of size"), while the paragraph most likely to have no enclosing section is one that sits before the document's first heading at all, which is exactly the shape that intercept guards. `token-goat section` is a CLI command, not a Read the intercept ever sees, so it is the one route guaranteed to round-trip; when it cannot resolve, the honest choice is to deliver the paragraph whole rather than name a pointer that may be refused. */
 export function proseFoldNotice(keep: string, line: number, shownPath: string, normalizedPath: string): string | null {
-  const section = findContainingSection(normalizedPath, line, line)
-  if (section === null) return null
+  const heading = proseFoldHeading(normalizedPath, line, shownPath)
+  if (heading === null) return null
   // Both the kept sentence and the resolved heading are document text, and this notice is not inside a fence: unescaped, a paragraph opening with one of our spoken markers speaks as token-goat.
-  const heading = displaySafeText(section.heading)
-  // A heading holding both a backtick (or `$`) and an apostrophe fits no quote mark, and quotedArg would print a placeholder that runs nothing: deliver the paragraph whole instead.
-  if (!canQuoteArg(`${shownPath}::${heading}`)) return null
   return `${displaySafeText(keep)} ... rest of paragraph folded (line ${line}) -- token-goat section ${quotedArg(`${shownPath}::${heading}`)}`
 }
 
-/** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma, `::` or a backtick is left to its own per-paragraph pointer, since `section` would split a comma into two names and read a `::` as a file boundary, and a backtick closes the fence leadWithCommand sets the command in, so relay.ts's stripUnsafeSuggestions swaps the whole command for a "command omitted" placeholder; null when fewer than two headings remain or the command would still hold a backtick (one in the path). */
+/** The display-safe heading a prose fold at `line` is recalled by, or null when no section encloses it or its `section` spec holds `'` together with `$`, a backtick, `"` or a control or bidi character, which no quote mark holds and quotedArg would print as a placeholder that runs nothing. One resolver for the fold planner, the notice and the combined command, so a paragraph whose pointer cannot be printed is never counted as folded. */
+function proseFoldHeading(normalizedPath: string, line: number, shownPath: string): string | null {
+  const section = findContainingSection(normalizedPath, line, line)
+  if (section === null) return null
+  const heading = displaySafeText(section.heading)
+  return canQuoteArg(`${shownPath}::${heading}`) ? heading : null
+}
+
+/** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma, `::` or a backtick is left to its own per-paragraph pointer, since `section` would split a comma into two names and read a `::` as a file boundary, and a backtick closes the backtick fence leadWithCommand sets the command in, so the line would no longer read as one command; null when fewer than two headings remain or the command would still hold a backtick (one in the path). */
 export function foldedSectionsCommand(folds: readonly BodyFold[], normalizedPath: string, shownPath: string): { command: string; sections: number } | null {
   const headings: string[] = []
   for (const fold of folds) {
     if (fold.kind !== 'prose') continue
-    const section = findContainingSection(normalizedPath, fold.firstLine, fold.firstLine)
-    if (section === null) continue
-    const heading = displaySafeText(section.heading)
+    const heading = proseFoldHeading(normalizedPath, fold.firstLine, shownPath)
+    if (heading === null) continue
     if (!heading.includes(',') && !heading.includes('::') && !heading.includes('`') && !headings.includes(heading)) headings.push(heading)
   }
   if (headings.length < 2) return null
@@ -177,14 +187,15 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
   const foldBodies = loadConfig().hints.fold_code_bodies
   const spans = foldBodies ? resolveFoldSpans(normalizedPath, syntax !== null, rows) : []
 
-  const bodyFolds = foldBodies ? planBodyFolds(rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN) : []
+  // A body whose `read` spec no quote mark holds has no printable pointer, so it is kept rather than counted as folded.
+  const bodyFolds = foldBodies ? planBodyFolds(rows, spans, BODY_FOLD_KEEP_LINES, BODY_FOLD_MIN_SPAN).filter((f) => canQuoteArg(bodyFoldSpec(f.name, shownPath, f.declLine))) : []
   const claimed = new Set<number>()
   for (const fold of bodyFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
   const commentFolds = loadConfig().hints.fold_comment_blocks ? strictlyInteriorOnWindow(planCommentFolds(rows, syntax, COMMENT_FOLD_KEEP_LINES, COMMENT_FOLD_MIN_BLOCK, claimed), rows.length, windowed) : []
   for (const fold of commentFolds) for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) claimed.add(i)
   // Prose folding is the only thing that reaches a document, which has no symbol spans for the body planner and no comment syntax for the comment planner. It carries its own setting because the trade differs from code's: a folded body is recovered by naming its symbol, while a folded paragraph is recovered from the cached original. Admitted on a window through {@link strictlyInteriorOnWindow} rather than declined outright. The decline this replaces was justified on the grounds that both notices point at a ranged Read of their own span, so a recall would re-fold and hand back less than was promised. That holds for the PROSE fold, whose pointer is `limit=1` on the very row it folded, which the planner would fold again to the same opening sentence. It does NOT hold for the comment fold, and the old comment here was wrong to claim it did: the recall range starts after the kept `/**` and summary line, and planCommentFolds needs an opening marker to enter a block, so the recalled rows are not a comment run and fold to nothing. Measured, not reasoned -- the test's positive control failed when it asserted otherwise. The edge filter is kept for both anyway, since it costs one predicate and makes the property structural rather than dependent on where a planner happens to place its kept lines. A body fold is never filtered, its pointer being a `token-goat read "file::symbol"` that does not re-enter this path. A candidate prose fold whose line has no enclosing section is dropped here, before it ever reaches `folds`, rather than surviving into the merged list and only being caught when its notice is built: `folds` is what {@link isRewriteWorthwhile}/`isStructuralRewriteAccepted` price as bytes withheld, and a fold entry that ends up delivering its span raw (see the null-notice branch below) is not actually withholding anything, so it must never count as one.
   const proseFolds = isProseFoldablePath(normalizedPath) && loadConfig().hints.fold_prose_paragraphs
-    ? strictlyInteriorOnWindow(planProseFolds(rows, claimed), rows.length, windowed).filter((f) => findContainingSection(normalizedPath, f.firstLine, f.firstLine) !== null)
+    ? strictlyInteriorOnWindow(planProseFolds(rows, claimed), rows.length, windowed).filter((f) => proseFoldHeading(normalizedPath, f.firstLine, shownPath) !== null)
     : []
   const folds = mergeFolds(mergeFolds(bodyFolds, commentFolds), proseFolds)
   if (folds.length === 0) return null
@@ -215,7 +226,7 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
       }
     }
     if (notice === null) {
-      // No working recall route for this span (proseFoldNotice found no enclosing section, which is the paragraph-before-the-first-heading case a Read offset/limit pointer would name a re-read the markdown intercept can refuse outright): deliver it whole instead of withholding it behind a pointer that may not work.
+      // No working recall route for this span (no enclosing section, which is the paragraph-before-the-first-heading case a Read offset/limit pointer would name a re-read the markdown intercept can refuse outright, or a spec no quote mark holds): deliver it whole instead of withholding it behind a pointer that may not work. The planner filters above already drop both, so this is the backstop.
       for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) {
         numbered.push(rows[i]?.raw ?? '')
         raw.push(rows[i]?.text ?? '')

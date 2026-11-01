@@ -13,7 +13,7 @@ import * as helpers from '../src/tool_filters/helpers.js'
 import { BUNDLE } from './helpers/bundle.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
-const POINTER = /lines not shown: bash-output (\S+) --lines (\d+)-(\d+)/
+const POINTER = /lines not shown: token-goat bash-output (\S+) --lines (\d+)-(\d+)/
 
 function numberedLines(n: number, label: string): string[] {
   return Array.from({ length: n }, (_, i) => `${label} ${i + 1}: compiled module-${i + 1}.ts`)
@@ -34,13 +34,13 @@ describe('elidedLineRange', () => {
     expect(elidedLineRange(() => stored, shown), 'lines 4-7 are the four not shown').toEqual({ from: 4, to: 7 })
   })
 
-  // Provenance: HAND-DERIVED (the cap notice text is capTokens' own line, src/tool_filters/helpers.ts; the span, line 3, counted by hand).
+  // Provenance: FORMAT-DERIVED (the cap notice text is read off capTokens' own notice line, src/tool_filters/helpers.ts::capTokens; the span, line 3, counted by hand).
   it('allows the trailing token-cap notice and a final newline on the stored copy', () => {
     const shown = [...lines.slice(0, 2), '... [1 more line elided by token-goat]', ...lines.slice(3), '[token-goat: output capped at ~20 tokens]'].join('\n')
     expect(elidedLineRange(() => stored + '\n', shown), 'line 3 alone was cut').toEqual({ from: 3, to: 3 })
   })
 
-  // Provenance: HAND-DERIVED (ESC [32m / ESC [0m are the ECMA-48 SGR green and reset sequences; lines 2-3 counted by hand).
+  // Provenance: HAND-DERIVED (ESC [32m / ESC [0m are the SGR green and reset sequences of ECMA-48, 5th edition (June 1991), 8.3.117; lines 2-3 counted by hand).
   it('compares the stored copy with its ANSI colour stripped, as the cap measures', () => {
     const coloured = ['\u001b[32mline 1\u001b[0m', 'line 2', 'line 3', 'line 4'].join('\n')
     expect(elidedLineRange(() => coloured, ['line 1', '... [2 more lines elided by token-goat]', 'line 4'].join('\n'))).toEqual({ from: 2, to: 3 })
@@ -87,6 +87,7 @@ describe('the Bash post hook names the lines its generic filter left out', () =>
     else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = saved
   })
 
+  // Provenance: HAND-DERIVED (900 synthetic numbered lines generated here; the missing span is computed from the input against the rewrite, not from the hook's own range code). The hook payload shape is makeHookEvent's (tests/helpers/hook-event.ts), with the Bash tool_response as a plain string.
   it('points at exactly the lines missing from the rewrite, and the stored copy holds them at those numbers', async () => {
     const all = numberedLines(900, 'build step')
     const output = all.join('\n') + '\n'
@@ -120,6 +121,7 @@ describe('compress, then the printed bash-output command (built bundle)', () => 
     return { status: res.status, stdout: res.stdout ?? '' }
   }
 
+  // Provenance: CAPTURE (the real built bundle runs a real node script, and the pointer it printed is fed back to the same bundle's `bash-output` command; the 200 expected lines are the script's own output, generated here).
   it('prints a --lines pointer that, run as printed, returns exactly the lines the cap cut', () => {
     const s = path.join(scriptDir, 'cut.js')
     fs.writeFileSync(s, "for (let i = 1; i <= 200; i++) console.log('projection-line-' + i)\n")

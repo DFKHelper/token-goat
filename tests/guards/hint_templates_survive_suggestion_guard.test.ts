@@ -38,7 +38,7 @@ function templates(p: string): Array<[string, string]> {
     ['surgicalHintForConfigDoc', surgicalHintForConfigDoc(p, true, true, true, true, target, 'cat loads it all.')],
     ['sedOverlapHint', sedOverlapHint(p, [1, 40], 20, 80)],
     ['sedRangeHint', sedRangeHint(p, [[1, 40]], 'sed', SUB)],
-    ['bodyFoldNotice', bodyFoldNotice('parseFile', 10, 40, p, 9)],
+    ['bodyFoldNotice', String(bodyFoldNotice('parseFile', 10, 40, p, 9))],
     ['commentFoldNotice', commentFoldNotice(3, 14, p)],
     ['buildRecallHint', buildRecallHint('npx tsc --noEmit', 'ab12cd')],
     ['handlePdf', handlePdf(p, 4096).message],
@@ -374,6 +374,9 @@ function unquotedValues(text: string, commands: ReadonlySet<string>): Array<{ ma
 /** Interpolated values a suggestion may leave bare, each keyed `file::expression` and reviewed: an id token-goat minted, a number, a flag or command name from a fixed set, or a command line that is executed rather than suggested and quotes itself. Anything not here is quoted with quotedArg. */
 const SAFE_BARE: ReadonlyArray<{ key: string; reason: string }> = [
   ...['bash_extractors.ts::outputId', 'bash_runner.ts::id', 'cli_recall.ts::hit.id', 'content_store.ts::id', 'hooks_agent_spawn.ts::id', 'hooks_bash.ts::monOutputId', 'hooks_bash.ts::curlOutputId', 'hooks_bash.ts::ghOutputId', 'hooks_bash.ts::gitScopedOutputId', 'hooks_bash_post.ts::containerId', 'hooks_bash_post.ts::id', 'hooks_bash_post.ts::testFailId', 'hooks_fetch.ts::cacheId', 'hooks_fetch.ts::id', 'hooks_mcp.ts::id', 'hooks_read.ts::latestId', 'hooks_read.ts::alreadyServed.id', 'hooks_websearch.ts::id', 'served_lines.ts::id'].map((key) => ({ key, reason: 'a cache id token-goat minted from a hash, hex digits only' })),
+  ...['bash_runner.ts::recallId', 'tool_filters/helpers.ts::id'].map((key) => ({ key, reason: 'a bash-output id storeBashOutput minted from a hash, hex digits only' })),
+  ...['tool_filters/helpers.ts::cut.from', 'tool_filters/helpers.ts::cut.to'].map((key) => ({ key, reason: 'a line number elidedLineRange computes from array lengths' })),
+  { key: 'hooks_bash_post.ts::elidedLinesPointer(id, () => redactSecrets(output).text, untrusted)', reason: 'not an argument: the empty string or a whole newline-led `lines not shown:` line, whose own values are reviewed at tool_filters/helpers.ts' },
   { key: 'answer_router.ts::ANSWER_DELEGATE_LIMIT', reason: 'a numeric constant' },
   { key: 'read_git.ts::suggestedRef', reason: '`HEAD~n` for a number n, or the fixed empty-tree hash' },
   { key: 'hooks_bash.ts::monitoringHint', reason: 'a flag string from the fixed MONITORING_COMMAND_PATTERNS table (src/hints/lang_patterns.ts)' },
@@ -631,7 +634,7 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
     'cli_file_ops.ts::const e = Object.assign(new Error(`EISDIR: illegal operation on a directory, open \'${displaySafeText(dest)}\'`), { code: \'EISDIR\', path: dest }) as NodeJS.ErrnoException',
     'fold_delivery.ts::return `... ${countNoun(n, \'more comment line\')} (${firstLine}-${lastLine}) folded -- Read "${displaySafeText(shownPath)}" with offset=${firstLine}, limit=${n}`',
     'fold_structure.ts::return `... ${n} line${n === 1 ? \'\' : \'s\'} (${firstLine}-${lastLine}) withheld from the skeleton -- Read "${displaySafeText(shownPath)}" with offset=${firstLine}, limit=${n}`',
-    'fold_structure.ts::const notice = `Partial view: this ${originalBytes.toLocaleString(\'en-US\')} B source file was replaced with its structural skeleton, its preamble and one line per declaration, with ${plan.withheldLines.toLocaleString(\'en-US\')} line${plan.withheldLines === 1 ? \'\' : \'s\'} of bodies withheld (at least ${symbols.length} declaration${symbols.length === 1 ? \'\' : \'s\'} found). Run ${fencedCommand(`token-goat read ${quotedArg(`${shownPath}::SymbolName`)}`)} for one body verbatim, or Read "${displaySafeText(shownPath)}" with offset=1, limit=${rows.length} for the whole file.`',
+    'fold_structure.ts::const notice = `Partial view: this ${originalBytes.toLocaleString(\'en-US\')} B source file was replaced with its structural skeleton, its preamble and one line per declaration, with ${plan.withheldLines.toLocaleString(\'en-US\')} line${plan.withheldLines === 1 ? \'\' : \'s\'} of bodies withheld (at least ${symbols.length} declaration${symbols.length === 1 ? \'\' : \'s\'} found). ${canQuoteArg(spec) ? `Run ${fencedCommand(`token-goat read ${quotedArg(spec)}`)} for one body verbatim, or ` : \'\'}Read "${displaySafeText(shownPath)}" with offset=1, limit=${rows.length} for the whole file.`',
     'text_trace.ts::process.stdout.write(`  File "${displaySafeText(f.file)}", line ${f.lineNo}, in ${displaySafeText(f.func)}\\n`)',
     'xml_query.ts::attrParts.push(`${displaySafeText(k)}="${displaySafeText(escapeXmlAttr(valPreview))}"`)',
   ].map((key) => ({ key, reason: R.render })),

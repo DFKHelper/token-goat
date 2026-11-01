@@ -74,7 +74,7 @@ describe('bash_runner.run (in-process)', () => {
     const s = script('dup2.js', "for (let i = 0; i < 60; i++) console.log('compiling...')\nconsole.log('done')\n")
     let out = ''
     await run(nodeCmd(s), { filterName: 'generic', writeStdout: (x) => (out += x) })
-    const match = /full output: bash-output (\S+) --full/.exec(out)
+    const match = /full output: token-goat bash-output (\S+) --full/.exec(out)
     expect(match, 'a compressed run must carry a recall pointer').not.toBeNull()
     const entry = getBashOutput(match![1] as string)
     expect(entry, 'the pointed-at id must actually resolve to the cached full output').not.toBeNull()
@@ -102,7 +102,7 @@ describe('bash_runner.run (in-process)', () => {
     await run(nodeCmd(s), { filterName: 'passthrough', maxTokens: 20, capHint: 'Use `token-goat json-outline "r.json"` next.', writeStdout: (x) => (out += x) })
     expect(out).not.toContain('projection-line-39')
     expect(out).toContain('[token-goat] Use `token-goat json-outline "r.json"` next.')
-    const match = /full output: bash-output (\S+) --full/.exec(out)
+    const match = /full output: token-goat bash-output (\S+) --full/.exec(out)
     expect(match, 'the cut bytes must stay recallable').not.toBeNull()
     expect(getBashOutput(match![1] as string)!.output).toContain('projection-line-39')
   })

@@ -5,6 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { UNQUOTABLE } from '../src/hint_suggestion_guard.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/paths.js'
@@ -91,6 +92,7 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     }
   })
 
+  // Provenance: HAND-DERIVED (two plain headings written here; the combined spec is the two headings joined by a comma, in file order, as src/read_section.ts reads a comma list).
   it('names one command on a compact-layout Read, and that command returns both withheld sentences', () => {
     const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], ['Second Section', paragraph(SECOND_MARKER)]])
     const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
@@ -106,6 +108,7 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     expect(result.text).toContain(SECOND_MARKER)
   })
 
+  // Provenance: FORMAT-DERIVED (the aligned Read result is Claude Code's `{type: 'text', file: {...}}` object, documented in src/hooks_common.ts as CAPTURE from a recorded session corpus; the headings are written here).
   it('names the same command in the context of an aligned-layout (harness-numbered) Read', () => {
     const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], ['Second Section', paragraph(SECOND_MARKER)]])
     const out = postReadHandler(postEvent(file, claudeCodeRead(file, fs.readFileSync(file, 'utf-8'))))
@@ -114,6 +117,7 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     expect(context, 'aligned Read context names one command for every folded section').toContain(`Run \`token-goat section "${file}::First Section,Second Section"\` to read 2 sections with folded paragraphs in one call.`)
   })
 
+  // Provenance: HAND-DERIVED (a heading holding a comma, which src/read_section.ts would split into two names; the heading is written here).
   it('leaves a heading holding a comma to its own pointer and still names one command for the other folded sections', () => {
     const commaHeading = 'Launcher (in a script file, run by path)'
     const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], [commaHeading, paragraph(COMMA_MARKER)], ['Second Section', paragraph(SECOND_MARKER)]])
@@ -130,6 +134,7 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     expect(result.text).toContain(SECOND_MARKER)
   })
 
+  // Provenance: HAND-DERIVED (the second section's body is one short line, below any paragraph fold, so one folded heading is left).
   it('names no combined command when only one section had a paragraph folded', () => {
     const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], ['Second Section', 'Short tail content.']])
     const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
@@ -138,6 +143,7 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     expect(allSectionsCommand(out)).toBeNull()
   })
 
+  // Provenance: HAND-DERIVED (one comma heading and one plain heading, written here, so one heading is left for the combined command).
   it('names no combined command when, past a heading holding a comma, which the comma form would split, one section remains', () => {
     const file = writeDoc([['First, Section', paragraph(FIRST_MARKER)], ['Second Section', paragraph(SECOND_MARKER)]])
     const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
@@ -224,6 +230,24 @@ describe('one command for every section a prose fold withheld paragraphs from', 
     } finally {
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  // Provenance: HAND-DERIVED (a heading holding an apostrophe and a dollar sign, which no quote mark holds: canQuoteArg("it's $5") is false, pinned in tests/suggestion_single_quoted_args.test.ts).
+  it('names the combined command for the quotable headings and delivers the paragraph under an unquotable heading whole', () => {
+    const badHeading = "Costs $5 isn't"
+    const badMarker = 'the withheld sentence under the heading no quote mark can hold'
+    const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], [badHeading, paragraph(badMarker)], ['Second Section', paragraph(SECOND_MARKER)]])
+    const out = postReadHandler(postEvent(file, numbered(fs.readFileSync(file, 'utf-8'))))
+    expect(out.hookType).toBe('rewriteOutput')
+    const rewritten = out.hookType === 'rewriteOutput' ? out.updatedOutput : ''
+    expect(allSectionsCommand(out), 'the combined command still names the two quotable headings').toBe(`"${file}::First Section,Second Section"`)
+    expect(rewritten, 'the paragraph under the unquotable heading is delivered whole').toContain(badMarker)
+    expect(rewritten, 'the quotable paragraphs are still folded').not.toContain(FIRST_MARKER)
+    expect(JSON.stringify(out), 'no printed line holds the placeholder for an unquotable value').not.toContain(UNQUOTABLE)
+    const result = runPrinted(allSectionsCommand(out) ?? '""')
+    expect(result.code).toBe(0)
+    expect(result.text).toContain(FIRST_MARKER)
+    expect(result.text).toContain(SECOND_MARKER)
   })
 
   // Provenance: HAND-DERIVED (two sections share a heading, so the reader's ordinal form `Heading#N` (src/read_section.ts, ordinal spec) names each one; the command must run and return both).

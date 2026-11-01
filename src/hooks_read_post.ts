@@ -6,7 +6,7 @@ import { denyOutput, emitRewrite, emitRewriteWithContext, extractToolResponseFie
 import { type HookEvent, registerHook, sessionStateKey } from './hook_registry.js'
 import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavingsFloor } from './hint_stats.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, toDisplayPath } from './paths.js'
-import { leadWithCommand, quotedArg } from './hint_suggestion_guard.js'
+import { canQuoteArg, leadWithCommand, quotedArg } from './hint_suggestion_guard.js'
 import { indexServedBody, planServedElisions, type ServedBody, servedRunNotice } from './served_lines.js'
 import { IDENTICAL_READ_MIN_BODY_BYTES, statSize } from './util.js'
 import { loadConfig } from './config.js'
@@ -121,7 +121,8 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
         const minLines = loadConfig().post_read_code_compress.min_lines
         // Once per file per compaction epoch, like the edit hook's section hint: the text names the same commands on every read of the same file, so a second copy adds nothing while the first is still in context.
         const repeatKey = `read_structural_nav:${normalized}:${getCompactedAt()}`
-        if (lineCount >= minLines && !suppressStructuralHint && !wasHintShown(repeatKey)) {
+        // A path no quote mark holds would print two placeholder commands that run nothing, so no hint is composed for it.
+        if (lineCount >= minLines && !suppressStructuralHint && canQuoteArg(shown) && !wasHintShown(repeatKey)) {
           if (!meetsSavingsFloor(sz)) {
             // Split out of the single condition this used to be so that only the floor's own refusals are recorded: a file under min_lines had no hint to compose, and a suppressed one was already replaced upstream by a better rewrite, and booking either as a decline would credit this gate with refusing work it never had.
             logSuppressedDetection('read_structural_nav', event.sessionId, normalized)

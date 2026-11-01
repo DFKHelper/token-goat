@@ -47,7 +47,7 @@ describe('compound-output compression savings accounting', () => {
     else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarnessOverride
   })
 
-  // The rewrite this path ships is the filter body PLUS the filter's own trailing marker PLUS a `full output: bash-output <id> --full` recall pointer. The recorded saving must be measured against that emitted body, not against the filter's marker-less `bytesSaved`, which credits the run for bytes the model still receives.
+  // The rewrite this path ships is the filter body PLUS the filter's own trailing marker PLUS a `full output: token-goat bash-output <id> --full` recall pointer. The recorded saving must be measured against that emitted body, not against the filter's marker-less `bytesSaved`, which credits the run for bytes the model still receives.
   it('records exactly the bytes removed from what the model actually receives', async () => {
     const dup = 'this is a repeated noisy progress line that dedupes away\n'.repeat(3000)
     const result = await postBashHandler(makePostBashEvent('grep pattern app.log | sort', dup))
