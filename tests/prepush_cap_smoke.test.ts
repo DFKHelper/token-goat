@@ -91,6 +91,8 @@ describe('writeOwed', () => {
 const GIT_BASH = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash'
 const CAP_SCRIPT = fileURLToPath(new URL('../.lefthook-scripts/prepush-cap.sh', import.meta.url))
 const slash = (p: string): string => p.replace(/\\/g, '/')
+// How long after the hook's exit the cleanup process may keep ending legs, read from the script so a change to the constant cannot pass unnoticed.
+const REAP_GRACE_S = Number(/^REAP_GRACE_S=(\d+)$/m.exec(readFileSync(CAP_SCRIPT, 'utf8'))?.[1])
 
 describe('cap_run_stoppable', () => {
   const bashAvailable = process.platform !== 'win32' || existsSync(GIT_BASH)
@@ -99,6 +101,8 @@ describe('cap_run_stoppable', () => {
     dir = mkdtempSync(path.join(tmpdir(), 'tg-prepush-cap-'))
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
+  // Registered after the removal above, so it runs first (stack order): the stopped step runs in dir and the cleanup process ends its tree just after the hook returns, so the directory is busy for a moment.
+  afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }))
 
   // Runs one bash script that sources the cap, then prints the status of cap_run_stoppable. The flag appears one second in; the child would run for 20 s if nothing ended it.
   const runCap = (stepArgs: string): { stdout: string; stderr: string } => {
@@ -452,6 +456,120 @@ describe('the hard stop ends the legs of a real hook run', () => {
     }
     return { PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}`, REAL_NODE: slash(process.execPath), STUB_NODE_FIRE: fires ? '1' : '0' }
   }
+
+  // Windows only: every taskkill hangs, so no tree kill can end the stopped leg inside any kill window; the hook must still end the leg itself (kill -KILL, no taskkill), confirm it, and return inside the tail bound with the leg gone.
+  hookRow('a leg whose every taskkill hangs is ended directly and does not outlive the hook', () => {
+    const bin = path.join(dir, 'hangbin')
+    mkdirSync(bin)
+    copyFileSync(process.execPath, path.join(bin, 'taskkill.exe'))
+    const preload = path.join(dir, 'hang-taskkill.cjs')
+    writeFileSync(preload, "if (/taskkill\\.exe$/i.test(process.execPath)) { require('node:fs').appendFileSync(process.env.STUB_DIR + '/hung-taskkill.pids', process.pid + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300000) }\n")
+    const pidFile = path.join(stubs, 'hung-taskkill.pids')
+    const legUp = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    try {
+      const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60', PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}`, NODE_OPTIONS: `--require ${slash(preload)}` })
+      leftLegs = true
+      expect(r.timedOut, r.out).toBe(false)
+      expect(r.tailS, r.out).not.toBeNull()
+      expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+      const pid = Number(readFileSync(path.join(stubs, 'tests.pid'), 'utf8').trim())
+      expect(Number.isInteger(pid)).toBe(true)
+      // Windows tears a killed process down asynchronously, so a 5 s poll tells that from the 60 s sleep.
+      for (let i = 0; i < 25 && legUp(pid); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+      expect(legUp(pid), `tests leg ${pid} outlived the hook\n${r.out}`).toBe(false)
+    } finally {
+      // Every hung taskkill tree is ended here on every path; the leg is ended by its recorded pid in the afterEach.
+      if (existsSync(pidFile)) {
+        for (const l of readFileSync(pidFile, 'utf8').split('\n')) {
+          const p = Number(l.trim())
+          if (Number.isInteger(p) && p > 0) killIfCommandLine(p, (commandLine) => /taskkill\.exe/i.test(commandLine), { tree: true })
+        }
+      }
+    }
+  }, true)
+
+  // The Windows pid of the cleanup process, from the first line of its record beside the failed-store.
+  const reaperWinpid = (): number => {
+    const record = path.join(dir, 'store', 'reaper-last.txt')
+    const m = existsSync(record) ? /^reaper: pid=\d+ winpid=(\d+)/m.exec(readFileSync(record, 'utf8')) : null
+    return m === null ? 0 : Number(m[1])
+  }
+  const goneWithin = (pid: number, limitS: number): boolean => {
+    const until = Date.now() + limitS * 1000
+    const up = (): boolean => {
+      try {
+        process.kill(pid, 0)
+        return true
+      } catch {
+        return false
+      }
+    }
+    while (up() && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+    return !up()
+  }
+  // A leg stub that registers its pid, starts an msys child, then kills the hook itself with -KILL (no exit trap runs): only the cleanup process, which outlives the hook, can end what the hook left.
+  hookRow('a hook killed outright leaves no leg and no cleanup process behind', () => {
+    writeFileSync(
+      path.join(dir, '.lefthook-scripts', 'run-test.sh'),
+      [
+        '#!/usr/bin/env bash',
+        'echo "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"$STUB_DIR/tests.pid"',
+        'sleep 90 9<&- &',
+        'echo "$(cat /proc/$!/winpid 2>/dev/null || echo $!)" >"$STUB_DIR/tests-child.pid"',
+        'kill -KILL "$PPID"',
+        'sleep 90',
+        '',
+      ].join('\n'),
+    )
+    const r = runHook({})
+    leftLegs = true
+    const pids = ['tests.pid', 'tests-child.pid'].map((n) => Number(readFileSync(path.join(stubs, n), 'utf8').trim()))
+    for (const pid of pids) expect(goneWithin(pid, REAP_GRACE_S + 5), `leg process ${pid} outlived the hook\n${r.out}`).toBe(true)
+    const reaper = reaperWinpid()
+    expect(reaper, `no cleanup process record\n${r.out}`).toBeGreaterThan(1)
+    expect(goneWithin(reaper, REAP_GRACE_S + 5), `the cleanup process ${reaper} outlived the hook`).toBe(true)
+  })
+
+  // Windows only: the stopped leg cannot be ended (kill is shadowed through BASH_ENV so a -KILL of the leg's pid does nothing, and taskkill is a stub), so the hook exits with it still alive and must say which, where the record will name it; the cleanup process then records it as left running and exits by its deadline.
+  hookRow('a leg still dying at the hook exit is named with the path of the cleanup record', () => {
+    const bin = path.join(dir, 'bin')
+    mkdirSync(bin)
+    writeFileSync(path.join(bin, 'taskkill'), '#!/usr/bin/env bash\nexit 0\n')
+    const shadow = path.join(dir, 'kill-shadow.sh')
+    writeFileSync(shadow, ['kill() {', '  local a m=""', '  if [[ -r "$STUB_DIR/unkillable" ]]; then read -r m <"$STUB_DIR/unkillable" || true; fi', '  for a in "$@"; do', '    if [[ -n "$m" && "$a" == "$m" && "$*" == *-KILL* ]]; then return 0; fi', '  done', '  builtin kill "$@"', '}', ''].join('\n'))
+    writeFileSync(
+      path.join(dir, '.lefthook-scripts', 'run-test.sh'),
+      [
+        '#!/usr/bin/env bash',
+        'echo "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"$STUB_DIR/tests.pid"',
+        'echo $$ >"$STUB_DIR/unkillable"',
+        'printf "%s\\n" "$EPOCHREALTIME" >"$STUB_DIR/fired.epoch"',
+        'kill -TERM "$(cat "$TMPDIR"/token-goat-pre-push.*/hard-stop.pid)"',
+        // A loop, not a last `sleep`: the cleanup process ends the sleep child (only the leg's own pid is shadowed), and a script whose last command was that sleep would then end by itself, so the leg would be truly gone and "ended" would be the right record.
+        'while (( SECONDS < 600 )); do sleep 150; done',
+        '',
+      ].join('\n'),
+    )
+    const r = runHook({ BASH_ENV: slash(shadow), PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}` })
+    leftLegs = true
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
+    const record = slash(path.join(dir, 'store', 'reaper-last.txt'))
+    expect(r.out).toContain(`records any it cannot end in ${record}`)
+    expect(r.out).toContain('CI runs the full suite on pushes to main and on pull requests')
+    const reaper = reaperWinpid()
+    expect(reaper, `no cleanup process record\n${r.out}`).toBeGreaterThan(1)
+    expect(goneWithin(reaper, REAP_GRACE_S + 10), `the cleanup process ${reaper} outlived its deadline`).toBe(true)
+    const pid = readFileSync(path.join(dir, 'store', 'reaper-last.txt'), 'utf8')
+    expect(pid).toContain(`left running: ${readFileSync(path.join(stubs, 'unkillable'), 'utf8').trim()}`)
+  }, true)
 
   // R4: a fork that starts inside the tail and hangs (the duration record of the Windows leg, which finished before the stop) is ended at the tail deadline, so the hook returns inside the tail bound instead of waiting out the whole hang.
   hookRow('a fork that hangs inside the tail is ended at the tail deadline', () => {

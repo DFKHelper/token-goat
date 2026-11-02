@@ -1,13 +1,81 @@
 #!/usr/bin/env bash
 # Sourced by run-all-checks.sh. The hard stop: the pre-push hook ends every leg still running at HARD_STOP_S seconds on its $SECONDS clock (HOOK_LIMIT_S is the hook's limit; both come from scripts/prepush-budget.mjs). Each stopped suite leg gets a notice that says what it did not finish and records those files as owed in owed-<leg>.txt beside the failed-store; a stopped lint or typecheck fails the push. PREPUSH_FULL=1 starts no watchdog. Needs ROOT_DIR, LOG_DIR, FAILED_STORE and PIDS from the caller; defines kill_tree, which the test suite sources. Bash 3.2 compatible: no associative arrays and no wait -n here (tests/guards/lefthook_scripts_run_on_bash_3_2.test.ts).
 
+# The cleanup process (prepush-reaper.sh) does every kill. It is started once, outlives the hook only while a registered leg is alive, and ends each leg's whole tree on a request or when the hook is gone; the hook only registers pids and sends requests. REAP_GRACE_S is how long after the hook exits it may keep ending legs.
+REAP_GRACE_S=30
+REAP_DIR=""
+REAP_PID=""
+REAP_RECORD=""
+CAP_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CAP_BOUNDED_N=0
+
+# Starts the cleanup process and waits up to 5 ticks for it to say it is up; without it nothing would end a leg, so the push fails. Names the pids an earlier cleanup process could not end, then clears that record. Idempotent. A run with no hard stop (PREPUSH_FULL=1) gives it no life limit of its own.
+cap_reaper_start() {
+  [[ -z "$REAP_DIR" ]] || return 0
+  local base store life t=0 l left=""
+  base="${TMP_BASE:-${TMPDIR:-/tmp}}"
+  store="$base"
+  if [[ -n "${FAILED_STORE:-}" ]]; then store="${FAILED_STORE%/*}"; fi
+  mkdir -p -- "$store" 2>/dev/null || true
+  REAP_RECORD="$store/reaper-last.txt"
+  if [[ -r "$REAP_RECORD" ]]; then
+    while IFS= read -r l; do
+      case "$l" in "left running: "*) left+=" ${l#left running: }" ;; esac
+    done <"$REAP_RECORD"
+    if [[ -n "$left" ]]; then echo "pre-push: an earlier push's cleanup process could not end these processes (pid:$left); they may still be running, see $REAP_RECORD"; fi
+    rm -f -- "$REAP_RECORD"
+  fi
+  REAP_DIR="$(mktemp -d "$base/tg-reap.XXXXXX")" || { echo "pre-push: cannot make the cleanup process's directory, so the push fails rather than run legs nothing would end"; exit 1; }
+  : >"$REAP_DIR/pids"
+  : >"$REAP_DIR/requests"
+  life=0
+  if [[ "${PREPUSH_FULL:-0}" != "1" ]]; then life=$(( ${HOOK_LIMIT_S:-600} + REAP_GRACE_S )); fi
+  "$BASH" "$CAP_SELF_DIR/prepush-reaper.sh" "$$" "$REAP_DIR" "$REAP_RECORD" "$life" "$REAP_GRACE_S" "$CAP_KILL_WIN_S" </dev/null >/dev/null 2>&1 9<&- &
+  REAP_PID=$!
+  disown "$REAP_PID" 2>/dev/null || true
+  while [[ ! -e "$REAP_DIR/up" ]] && (( t < 5 )); do cap_tick; t=$((t + 1)); done
+  if [[ ! -e "$REAP_DIR/up" ]]; then
+    kill "$REAP_PID" 2>/dev/null || true
+    echo "pre-push: the cleanup process did not start within ${t}s, so the push fails rather than run legs nothing would end"
+    exit 1
+  fi
+}
+
+# Tells the cleanup process about a leg, right after it starts; builtins only. $1: the leg's pid.
+cap_register() {
+  cap_reaper_start
+  { printf '%s\n' "$1" >>"$REAP_DIR/pids"; } 2>/dev/null || true
+}
+
+# Asks the cleanup process to end the trees of the given pids; "all" asks for every registered leg. It reads requests once a second.
+cap_request_kill() {
+  [[ -n "$REAP_DIR" ]] || return 0
+  local p
+  for p in "$@"; do
+    { printf 'kill %s\n' "$p" >>"$REAP_DIR/requests"; } 2>/dev/null || true
+  done
+}
+
+# Printed as the hook exits: a registered leg still alive is now the cleanup process's to end, and the next push reports any it could not.
+cap_reaper_notice() {
+  [[ -n "$REAP_DIR" && -r "$REAP_DIR/pids" ]] || return 0
+  local p list=""
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    if kill -0 "$p" 2>/dev/null; then list+=" $p"; fi
+  done <"$REAP_DIR/pids"
+  [[ -z "$list" ]] || echo "pre-push: still ending after the hook exits (pid:$list); the cleanup process ends them within ${REAP_GRACE_S}s and records any it cannot end in $REAP_RECORD. CI runs the full suite on pushes to main and on pull requests."
+}
+
 # Reads HARD_STOP_S, HOOK_LIMIT_S, HARD_STOP_SRC, POST_STOP_S, TERM_WAIT_S and STOP_CLEANUP_S once, before any leg starts. A budget module that cannot be read fails the hook, since a run with no stop would be uncapped.
 cap_read_limits() {
   local out f p t=0 ok=1
   f="$(mktemp)"
-  node "$ROOT_DIR/scripts/prepush-budget.mjs" hard-stop >"$f" &
+  cap_reaper_start
+  node "$ROOT_DIR/scripts/prepush-budget.mjs" hard-stop >"$f" 9<&- &
   p=$!
   PIDS+=("$p")
+  cap_register "$p"
   # No watchdog exists yet, so this one read is cut off at 20 s (a node start is seconds on a loaded host); the exit trap ends a node that is still running.
   while kill -0 "$p" 2>/dev/null && (( t < 20 )); do cap_tick; t=$((t + 1)); done
   if kill -0 "$p" 2>/dev/null; then ok=0; elif ! wait "$p"; then ok=0; fi
@@ -99,9 +167,10 @@ CAP_STOP_RC=125
 cap_run_stoppable() {
   local dir=$1 out=$2 p rc=0
   shift 2
-  (cd "$dir" && "$@") >"$out" 2>/dev/null &
+  (cd "$dir" && "$@") >"$out" 2>/dev/null 9<&- &
   p=$!
   PIDS+=("$p")
+  cap_register "$p"
   while kill -0 "$p" 2>/dev/null; do
     if [[ -n "$HARD_FLAG" && -e "$HARD_FLAG" ]]; then
       # The trees are ended and polled for 2 s, not waited on: a hung taskkill must not hold the hook.
@@ -131,44 +200,20 @@ cap_tail_open_now() {
   CAP_TAIL_CLOSE=$((CAP_TAIL_END - 2 * CAP_KILL_WIN_S))
 }
 
-# Ends the trees of the given pids side by side (a taskkill job for each pid with a winpid, kill_tree otherwise) and polls until every one is gone or $1 seconds on the hook's clock pass, never blocking on a hung taskkill; a kill still running then is ended (its job) and said so. $1: deadline (SECONDS value), the rest: pids.
+# Asks the cleanup process to end the trees of the given pids (the hook does no kill of its own) and polls until every one is gone or $1 seconds on the hook's clock pass; a pid gone is reaped, one still alive then is left to the cleanup process and said so. $1: deadline (SECONDS value), the rest: pids.
 cap_kill_all() {
-  local until_s=$1 p alive jobs_=() j c kp winpid direct=" "
+  local until_s=$1 p alive
   shift
   (( $# > 0 )) || return 0
-  for p in "$@"; do
-    winpid=""
-    if [[ -r "/proc/$p/winpid" ]]; then read -r winpid <"/proc/$p/winpid" 2>/dev/null || true; fi
-    if [[ -n "$winpid" ]]; then
-      # taskkill is the job itself: no subshell fork before it, and its own pid is known, so a cut needs no ps scan (a fork of seconds on a loaded host) to find it.
-      taskkill //T //F //PID "$winpid" &>/dev/null &
-      direct+="$! "
-    else
-      kill_tree "$p" &
-    fi
-    jobs_+=("$!")
-  done
+  cap_request_kill "$@"
   while :; do
     alive=""
-    for j in "${jobs_[@]}"; do
-      if kill -0 "$j" 2>/dev/null; then alive+=" $j"; else wait "$j" 2>/dev/null || true; fi
+    for p in "$@"; do
+      if kill -0 "$p" 2>/dev/null; then alive+=" $p"; else wait "$p" 2>/dev/null || true; fi
     done
     [[ -n "$alive" ]] || return 0
     if (( SECONDS >= until_s )); then
-      # With pgrep the job's children are found by it; without (Git for Windows has none) by one MSYS ps, whose native taskkill child shows under its MSYS pid and ends on kill -KILL; that ps has no deadline of its own, since a bound would be one more fork and it runs once, at the window end.
-      for j in $alive; do
-        if [[ "$direct" == *" $j "* ]]; then
-          kill -KILL "$j" 2>/dev/null || true
-        elif command -v pgrep >/dev/null 2>&1; then
-          for c in $(pgrep -P "$j" 2>/dev/null || true); do kill "$c" 2>/dev/null || true; done
-        else
-          while read -r c kp _; do
-            if [[ "$kp" == "$j" ]]; then kill -KILL "$c" 2>/dev/null || true; fi
-          done < <(ps 2>/dev/null || true)
-        fi
-        kill "$j" 2>/dev/null || true
-      done
-      echo "pre-push: ending the process trees did not finish in time (kill jobs:$alive); they were not waited on"
+      echo "pre-push: ending the process trees did not finish in time (pids:$alive); they were not waited on, and the cleanup process keeps ending them"
       return 0
     fi
     cap_tick
@@ -192,9 +237,10 @@ cap_tail_left() {
 cap_run_by_deadline() {
   local out=$1 p rc=0
   shift
-  "$@" >"$out" 2>/dev/null &
+  "$@" >"$out" 2>/dev/null 9<&- &
   p=$!
   PIDS+=("$p")
+  cap_register "$p"
   while kill -0 "$p" 2>/dev/null; do
     if ! cap_tail_left; then
       # The trees are ended and polled for 2 s, not waited on: a hung taskkill must not hold the hook.
@@ -211,7 +257,9 @@ cap_run_by_deadline() {
 
 # Runs bookkeeping that forks so it can always be ended: before a stop under cap_run_stoppable (the watchdog flag ends it), after one under cap_run_by_deadline (the tail deadline ends it). Its output is replayed with builtins when it finishes. A command a limit ended is said so. Always returns 0.
 cap_bounded() {
-  local rc=0 l out="$LOG_DIR/bounded.out"
+  local rc=0 l out
+  CAP_BOUNDED_N=$((CAP_BOUNDED_N + 1))
+  out="$LOG_DIR/bounded.$CAP_BOUNDED_N.out"
   # Past the tail close nothing forks, so no call site after it reaches cap_kill_all.
   if ! cap_tail_left; then echo "pre-push: no time left after the hard stop, so '$1' was skipped"; return 0; fi
   if [[ -z "$CAP_TAIL_END" ]]; then

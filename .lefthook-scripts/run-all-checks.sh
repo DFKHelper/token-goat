@@ -30,9 +30,10 @@ run_check() {
   shift
   # Truncate once, then append: with `>` every child of the check shares one file offset and they overwrite each other's lines.
   : >"$LOG_DIR/$name.log"
-  "$@" >>"$LOG_DIR/$name.log" 2>&1 &
+  "$@" >>"$LOG_DIR/$name.log" 2>&1 9<&- &
   RUN_PID=$!
   PIDS+=("$RUN_PID")
+  cap_register "$RUN_PID"
   PID_OF[$name]=$RUN_PID
   START[$name]=$SECONDS
 }
@@ -68,7 +69,7 @@ wait_legs() {
         # Lint or typecheck red: the push is lost already, so end the Windows suite's tree instead of waiting for it.
         if [[ "$rc" -ne 0 && -z "${STOPPED[$name]:-}" && "$name" != "tests" && -n "${pid_of[tests]:-}" ]]; then
           echo "pre-push: $name failed, stopping the Windows suite"
-          kill_tree "${pid_of[tests]}"
+          cap_request_kill "${pid_of[tests]}"
           # Polled, not waited on: a tree that will not die must not hold the hook past a stop; the exit trap ends it again.
           cap_reap_wait "${pid_of[tests]}" "$TERM_WAIT_S"
           ABORTED[tests]=1
@@ -104,7 +105,8 @@ stop_all_legs() {
   done
   # The trees are ended side by side, so a slow fork delays them once, not once per leg; every one is ended and reaped.
   for name in "${STOP_ENDED[@]}"; do kill_pids+=("${PID_OF[$name]}"); done
-  cap_kill_all "$CAP_KILL_END" "${kill_pids[@]}"
+  # The legs get the post-stop allowance to exit, not the kill room: one still alive then is named below, and the cleanup process keeps ending it.
+  cap_kill_all "$(( stop_until < CAP_KILL_END ? stop_until : CAP_KILL_END ))" "${kill_pids[@]}"
   while :; do
     alive_list=""
     for name in "${STOP_ENDED[@]}"; do
@@ -201,6 +203,7 @@ cleanup() {
   done
   # Side by side and polled: after a stop to the tail deadline, otherwise for the cleanup room the budget keeps.
   cap_kill_all "${CAP_TAIL_END:-$((SECONDS + STOP_CLEANUP_S))}" "${live[@]}"
+  cap_reaper_notice
 }
 trap cleanup EXIT
 trap 'exit 130' INT
