@@ -25,6 +25,9 @@ TK_JOBS=" "
 OWNER_W=""
 GONE_AT=""
 GONE_ENDED=""
+DID_ALL=""
+# The work after the hook is gone stops one second short of the grace, so the exit stamp (taken after builtin work and a tick that may run long) is still within GRACE of the gone stamp.
+GRACE_WORK=$(( GRACE > 1 ? GRACE - 1 : 0 ))
 FINISHED=""
 SEL=" "
 F=""
@@ -221,6 +224,7 @@ do_kill() {
       if ! root_alive "${K_TOP[$i]}"; then kill -KILL "${K_PID[$i]}" 2>/dev/null || true; fi
     done
     (( SECONDS < cut_at )) || break
+    ! grace_over || break
     tick
     note_owner
   done
@@ -230,6 +234,7 @@ do_kill() {
     select_alive "$want"
     [[ "$SEL" != " " ]] || break
     kill_entries
+    ! grace_over || break
     tick
     note_owner
   done
@@ -248,21 +253,34 @@ any_alive() {
 # The hook is alive while its pid answers and, where /proc has winpid, still carries the Windows pid read at start: a reused pid is not the hook.
 owner_alive() {
   kill -0 "$OWNER" 2>/dev/null || return 1
-  [[ -z "$OWNER_W" ]] && return 0
-  local cur=""
-  if [[ -r "/proc/$OWNER/winpid" ]]; then read -r cur <"/proc/$OWNER/winpid" 2>/dev/null || cur=""; fi
-  [[ "$cur" == "$OWNER_W" ]]
+  [[ -n "$OWNER_W" ]] || return 0
+  winpid_of "$OWNER"
+  [[ -n "$W" ]] || return 0
+  [[ "$W" == "$OWNER_W" ]]
+}
+
+# True once the work allowed after the hook's death is used up, on the reaper's clock from the stamp of the hook's death.
+grace_over() {
+  [[ -n "$GONE_AT" ]] && (( SECONDS - GONE_AT >= GRACE_WORK ))
+}
+
+# Stamps the hook's death once, in the record, so a test reads the grace off the reaper's own clock.
+mark_gone() {
+  [[ -z "$GONE_AT" ]] || return 0
+  GONE_AT=$SECONDS
+  rec "hook gone: $GONE_AT"
 }
 
 # Stamps the moment the hook is first seen gone, from inside do_kill's waits as well as from the main loop: the grace runs from the hook's death, and a request being ended when the hook exited (up to 5 s window plus 3 confirm ticks) must not push the stamp, and so the exit, that far late.
 note_owner() {
-  [[ -n "$GONE_AT" ]] || owner_alive || GONE_AT=$SECONDS
+  [[ -n "$GONE_AT" ]] || owner_alive || mark_gone
 }
 
 finish() {
   local i
   [[ -z "$FINISHED" ]] || return 0
   FINISHED=1
+  rec "exit: $SECONDS"
   for (( i = 0; i < K_N; i++ )); do
     if [[ -n "${K_JOB[$i]}" ]] && ent_alive "$i"; then kill -KILL "${K_PID[$i]}" 2>/dev/null || true; fi
   done
@@ -272,6 +290,8 @@ finish() {
   done
   rm -rf -- "$DIR" 2>/dev/null || true
 }
+# A test sources the functions without running the loop.
+[[ -z "${REAP_SOURCE_ONLY:-}" ]] || return 0
 trap finish EXIT
 trap 'exit 143' TERM
 
@@ -288,15 +308,17 @@ while :; do
   tick
   sync_pids
   sync_requests
+  DID_ALL=""
   if [[ -n "$REQ_ALL" ]]; then
     do_kill all
+    DID_ALL=1
   elif [[ "$REQ_LIST" != " " ]]; then
     do_kill "$REQ_LIST"
   fi
   if [[ -z "$GONE_ENDED" ]] && ! owner_alive; then
-    [[ -n "$GONE_AT" ]] || GONE_AT=$SECONDS
+    mark_gone
     GONE_ENDED=1
-    do_kill all
+    [[ -n "$DID_ALL" ]] || do_kill all
   fi
   if (( LIFE > 0 && SECONDS - START >= LIFE )); then
     [[ -n "$GONE_ENDED" ]] || do_kill all
@@ -304,7 +326,7 @@ while :; do
   fi
   if [[ -n "$GONE_AT" ]]; then
     any_alive || break
-    (( SECONDS - GONE_AT < GRACE )) || break
+    ! grace_over || break
   else
     ingest
   fi

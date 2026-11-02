@@ -9,6 +9,31 @@ REAP_RECORD=""
 CAP_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAP_BOUNDED_N=0
 
+# True when process $1 is alive and, where /proc has winpid and $2 is given, still carries Windows pid $2: a reused pid is not the process.
+cap_proc_is() {
+  kill -0 "$1" 2>/dev/null || return 1
+  [[ -n "${2:-}" ]] || return 0
+  local cur=""
+  if [[ -r "/proc/$1/winpid" ]]; then read -r cur <"/proc/$1/winpid" 2>/dev/null || cur=""; fi
+  [[ -z "$cur" || "$cur" == "$2" ]]
+}
+
+# True when the last cleanup process named in the record is still running.
+cap_record_live() {
+  local l f p="" w=""
+  while IFS= read -r l; do
+    case "$l" in
+      "reaper: pid="*)
+        f=${l#reaper: pid=}
+        p=${f%% *}
+        f=${l#*winpid=}
+        w=${f%% *}
+        ;;
+    esac
+  done <"$REAP_RECORD"
+  [[ -n "$p" ]] && cap_proc_is "$p" "$w"
+}
+
 # Starts the cleanup process and waits up to 5 ticks for it to say it is up; without it nothing would end a leg, so the push fails. Names the pids an earlier cleanup process could not end, then clears that record. Idempotent. A run with no hard stop (PREPUSH_FULL=1) gives it no life limit of its own.
 cap_reaper_start() {
   [[ -z "$REAP_DIR" ]] || return 0
@@ -18,7 +43,8 @@ cap_reaper_start() {
   if [[ -n "${FAILED_STORE:-}" ]]; then store="${FAILED_STORE%/*}"; fi
   mkdir -p -- "$store" 2>/dev/null || true
   REAP_RECORD="$store/reaper-last.txt"
-  if [[ -r "$REAP_RECORD" ]]; then
+  # A record whose cleanup process is still alive belongs to a push running now: it is neither reported nor deleted, and this run's cleanup process appends to it.
+  if [[ -r "$REAP_RECORD" ]] && ! cap_record_live; then
     while IFS= read -r l; do
       case "$l" in "left running: "*) left+=" ${l#left running: }" ;; esac
     done <"$REAP_RECORD"
@@ -59,12 +85,18 @@ cap_request_kill() {
 # Printed as the hook exits: a registered leg still alive is now the cleanup process's to end, and the next push reports any it could not.
 cap_reaper_notice() {
   [[ -n "$REAP_DIR" && -r "$REAP_DIR/pids" ]] || return 0
-  local p list=""
+  local p list="" up_p="" up_w=""
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
     if kill -0 "$p" 2>/dev/null; then list+=" $p"; fi
   done <"$REAP_DIR/pids"
-  [[ -z "$list" ]] || echo "pre-push: still ending after the hook exits (pid:$list); the cleanup process ends them within ${REAP_GRACE_S}s and records any it cannot end in $REAP_RECORD. CI runs the full suite on pushes to main and on pull requests."
+  [[ -n "$list" ]] || return 0
+  if [[ -r "$REAP_DIR/up" ]]; then read -r up_p up_w <"$REAP_DIR/up" 2>/dev/null || true; fi
+  if [[ -n "$up_p" && "$up_p" == "$REAP_PID" ]] && cap_proc_is "$up_p" "$up_w"; then
+    echo "pre-push: still ending after the hook exits (pid:$list); the cleanup process ends them within ${REAP_GRACE_S}s and records any it cannot end in $REAP_RECORD. CI runs the full suite on pushes to main and on pull requests."
+  else
+    echo "pre-push: still running after the hook exits (pid:$list), and the cleanup process is not running, so nothing will end them; end them by hand, see $REAP_RECORD. CI runs the full suite on pushes to main and on pull requests."
+  fi
 }
 
 # Reads HARD_STOP_S, HOOK_LIMIT_S, HARD_STOP_SRC, POST_STOP_S, TERM_WAIT_S and STOP_CLEANUP_S once, before any leg starts. A budget module that cannot be read fails the hook, since a run with no stop would be uncapped.
@@ -186,8 +218,9 @@ cap_run_stoppable() {
 }
 
 # The one deadline of everything after the stop, on the hook's clock: set when the stop is handled, to the post-stop allowance, the TERM wait and the cleanup room from the budget constants. The TERM wait and the reap are bounded by their own limits within it; work that forks (the notices, the owed record, the outcome records) starts only while it is open, runs under cap_run_by_deadline, and otherwise says in one builtin line what it skipped. Ending the legs is never skipped. Empty before a stop.
-# The tail is carved into three deadlines (S = the hard stop, at most 540; END = S + post-stop + TERM_WAIT_S + STOP_CLEANUP_S, at most 590, and post-stop is 560 - S by default or lower): CAP_TAIL_CLOSE = END - 2*CAP_KILL_WIN_S ends the TERM wait and every fork (cap_bounded forks nothing after it), CAP_KILL_END = END - CAP_KILL_WIN_S ends the stop path's kill poll, and CAP_TAIL_END ends the exit trap's kill poll, so the kill polls own the last 2*CAP_KILL_WIN_S seconds, 5 s each, which a 2-3 s taskkill fits; the one run in flight at CAP_TAIL_CLOSE is ended with a 2 s poll (end <= CLOSE + 2 < CAP_KILL_END), so the hook ends by END <= 590 plus one tick and the 10 s STARTUP_RESERVE_S, under 600 for every PREPUSH_HARD_STOP_S and PREPUSH_POST_STOP_S.
+# The tail is carved into three deadlines (S = the hard stop, at most 540; END = S + post-stop + TERM_WAIT_S + STOP_CLEANUP_S - CAP_TICK_S, at most 589, and post-stop is 560 - S by default or lower): CAP_TAIL_CLOSE = END - 2*CAP_KILL_WIN_S ends the TERM wait and every fork (cap_bounded forks nothing after it), CAP_KILL_END = END - CAP_KILL_WIN_S ends the stop path's kill poll, and CAP_TAIL_END ends the exit trap's kill poll, so the kill polls own the last 2*CAP_KILL_WIN_S seconds, 5 s each, which a 2-3 s taskkill fits; the one run in flight at CAP_TAIL_CLOSE is ended with a 2 s poll (end <= CLOSE + 2 < CAP_KILL_END). A poll tests its deadline once a tick, so it ends under one tick (CAP_TICK_S) past it: the tick is reserved inside the budget (STOP_CLEANUP_S is 20 s, END counts 19 of them), so the hook ends before 589 + 1 = 590 s and, with the 10 s STARTUP_RESERVE_S, before 600 s for every PREPUSH_HARD_STOP_S and PREPUSH_POST_STOP_S.
 CAP_KILL_WIN_S=5
+CAP_TICK_S=1
 CAP_TAIL_CLOSE=""
 CAP_KILL_END=""
 CAP_TAIL_END=""
@@ -195,7 +228,7 @@ cap_tail_open_now() {
   local base=$SECONDS
   # Anchored to the hard stop, not to when it was handled, so watchdog lag counts against the tail; a stop fired before its time (a test) anchors to now.
   if (( HARD_STOP_S < base )); then base=$HARD_STOP_S; fi
-  CAP_TAIL_END=$((base + POST_STOP_S + TERM_WAIT_S + STOP_CLEANUP_S))
+  CAP_TAIL_END=$((base + POST_STOP_S + TERM_WAIT_S + STOP_CLEANUP_S - CAP_TICK_S))
   CAP_KILL_END=$((CAP_TAIL_END - CAP_KILL_WIN_S))
   CAP_TAIL_CLOSE=$((CAP_TAIL_END - 2 * CAP_KILL_WIN_S))
 }

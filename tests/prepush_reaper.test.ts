@@ -1,21 +1,27 @@
 /** The pre-push cleanup process (.lefthook-scripts/prepush-reaper.sh), run for real from a small driver that sources prepush-cap.sh, registers a leg and exits as the hook does: the leg and its tree must be ended within REAP_GRACE_S of the hook's exit even where taskkill leaves a child or hangs, a process it cannot end must be named in the record, and the cleanup process itself must be gone. */
 import { spawnSync } from 'node:child_process'
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { queryProcessCommandLine } from '../src/resident_process.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 const GIT_BASH = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash'
 const CAP_SCRIPT = fileURLToPath(new URL('../.lefthook-scripts/prepush-cap.sh', import.meta.url))
+const REAPER_SCRIPT = fileURLToPath(new URL('../.lefthook-scripts/prepush-reaper.sh', import.meta.url))
 const REPO = fileURLToPath(new URL('..', import.meta.url))
 const slash = (p: string): string => p.replace(/\\/g, '/')
 const bashAvailable = process.platform !== 'win32' || existsSync(GIT_BASH)
 // Bound on the driver: it starts the cleanup process (5 one-second ticks at most), waits up to 30 ticks for its leg and up to 60 more for a record line, and every fork costs seconds on a loaded host.
 const SPAWN_TIMEOUT_MS = 240_000
 // How long after the hook's exit the cleanup process may keep ending legs; read from the script so a change to the constant cannot pass unnoticed.
-const REAP_GRACE_S = Number(/^REAP_GRACE_S=(\d+)$/m.exec(readFileSync(CAP_SCRIPT, 'utf8'))?.[1])
+const REAP_GRACE_S = ((): number => {
+  const n = Number(/^REAP_GRACE_S=(\d+)$/m.exec(readFileSync(CAP_SCRIPT, 'utf8'))?.[1])
+  if (!Number.isInteger(n)) throw new Error('REAP_GRACE_S=<seconds> was not found in prepush-cap.sh')
+  return n
+})()
 // The cleanup process's own exit lies this far past the last leg it ends: its confirm ticks and the removal of its directory.
 const REAP_EXIT_SLACK_S = 5
 
@@ -35,6 +41,19 @@ const goneWithin = (pid: number, limitS: number): boolean => {
   const until = Date.now() + limitS * 1000
   while (alive(pid) && Date.now() < until) pause(200)
   return !alive(pid)
+}
+
+/** True when `pid` is gone within `limitS` seconds, or answers with a command line that `isOurs` rejects: a freed Windows pid is handed to the next process started, so on a busy host a pid-only probe sees a stranger and reports our process still running. An unreadable command line counts as alive. */
+const ourProcessGoneWithin = (pid: number, isOurs: (commandLine: string) => boolean, limitS: number): boolean => {
+  const running = (): boolean => {
+    if (!alive(pid)) return false
+    const q = queryProcessCommandLine(pid)
+    if (q.status === 'gone') return false
+    return q.status === 'failed' || isOurs(q.commandLine)
+  }
+  const until = Date.now() + limitS * 1000
+  while (running() && Date.now() < until) pause(200)
+  return !running()
 }
 
 // A row's own bound: the driver's spawn bound plus three waits of the cleanup process's grace and exit slack (the leg, its tree, the cleanup process); a row with no leg past the hook takes a fraction of it.
@@ -59,11 +78,18 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+    // A row whose cleanup ended the runner shows up as a vitest run that exits 0 with no summary; this names the row instead, while the worker still lives to say so.
+    expect(alive(process.ppid), `the vitest runner (pid ${process.ppid}) was ended during this row`).toBe(true)
   })
 
-  const file = (name: string): string => path.join(dir, name)
+  const file =(name: string): string => path.join(dir, name)
   const num = (name: string): number => Number(readFileSync(file(name), 'utf8').trim())
   const record = (): string => (existsSync(file('store/reaper-last.txt')) ? readFileSync(file('store/reaper-last.txt'), 'utf8') : '')
+  // A seconds stamp the cleanup process wrote on its own clock ("hook gone: 41", "exit: 53"), or null when the record has none.
+  const stamp = (name: string): number | null => {
+    const m = new RegExp(`^${name}: (\\d+)$`, 'm').exec(record())
+    return m === null ? null : Number(m[1])
+  }
 
   // The leg: records its pid and the pid of an msys `sleep` it starts as a child (with its Windows pids where /proc has them), then waits; with LEG_HOLD_S it holds that long and exits on its own, leaving the sleep an orphan.
   const writeLeg = (): void => {
@@ -157,53 +183,52 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     expect(record()).toContain(`ended: ${num('sleep.pid')}`)
   })
 
-  // Windows only: every taskkill hangs, so no tree kill ends anything inside its window; the cleanup process cuts each at the kill window, ends the tree itself, and leaves no taskkill behind. The stub is a copy of node.exe named taskkill.exe whose preload records its pid and never returns; it acts only inside a process named taskkill.exe.
-  it.skipIf(process.platform !== 'win32' || !bashAvailable)('ends a leg whose every taskkill hangs, and leaves no taskkill running', () => {
+  // Every taskkill hangs: a bash stub that writes its Windows pid to hung-taskkill.pids at once, then sleeps. The pid is written before anything can wait on it, so a row reads the file after an event it owns (the cleanup process's exit, the leg's end), never after a poll for the file.
+  const writeHangTaskkill = (): string => {
     const bin = file('hangbin')
     mkdirSync(bin)
-    copyFileSync(process.execPath, path.join(bin, 'taskkill.exe'))
-    const preload = file('hang-taskkill.cjs')
-    writeFileSync(preload, "if (/taskkill\\.exe$/i.test(process.execPath)) { require('node:fs').appendFileSync(process.env.DRIVER_DIR + '/hung-taskkill.pids', process.pid + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300000) }\n")
+    writeFileSync(
+      path.join(bin, 'taskkill'),
+      ['#!/usr/bin/env bash', 'w=$$; if [[ -r "/proc/$$/winpid" ]]; then read -r w <"/proc/$$/winpid"; fi', 'echo "$w" >>"$DRIVER_DIR/hung-taskkill.pids"', `sleep 300.${tag} 9<&-`, ''].join('\n'),
+    )
+    return slash(bin)
+  }
+  const hungTaskkillPids = (): number[] =>
+    existsSync(file('hung-taskkill.pids'))
+      ? readFileSync(file('hung-taskkill.pids'), 'utf8')
+          .split('\n')
+          .map((l) => Number(l.trim()))
+          .filter((p) => Number.isInteger(p) && p > 1)
+      : []
+  const trackHungTaskkills = (): void => {
+    for (const pid of hungTaskkillPids()) tracked.push({ pid, ours: /taskkill/i })
+  }
+
+  // Windows only: every taskkill hangs, so no tree kill ends anything inside its window; the cleanup process cuts each at the kill window, ends the tree itself, and leaves no taskkill behind. The cleanup process's exit is the event after which the stub's record is complete.
+  it.skipIf(process.platform !== 'win32' || !bashAvailable)('ends a leg whose every taskkill hangs, and leaves no taskkill running', () => {
     try {
-      runDriver([], { STUB_BIN: slash(bin), NODE_OPTIONS: `--require ${slash(preload)}` })
+      runDriver([], { STUB_BIN: writeHangTaskkill() })
     } finally {
       // Every hung taskkill tree is ended on every path, whether or not the cleanup process ended it.
-      if (existsSync(file('hung-taskkill.pids'))) {
-        for (const l of readFileSync(file('hung-taskkill.pids'), 'utf8').split('\n')) tracked.push({ pid: Number(l.trim()), ours: /taskkill\.exe/i })
-      }
+      trackHungTaskkills()
     }
-    // The cleanup process runs taskkill only after the hook is gone, so the stub's record appears some seconds after the driver returns.
-    const until = Date.now() + REAP_GRACE_S * 1000
-    while (!existsSync(file('hung-taskkill.pids')) && Date.now() < until) pause(200)
-    if (existsSync(file('hung-taskkill.pids'))) {
-      for (const l of readFileSync(file('hung-taskkill.pids'), 'utf8').split('\n')) tracked.push({ pid: Number(l.trim()), ours: /taskkill\.exe/i })
-    }
-    expect(existsSync(file('hung-taskkill.pids')), 'taskkill was never run').toBe(true)
+    expect(goneWithin(num('reaper.winpid'), REAP_GRACE_S + 2 * REAP_EXIT_SLACK_S), 'the cleanup process is still running').toBe(true)
+    trackHungTaskkills()
+    expect(hungTaskkillPids().length, 'taskkill was never run').toBeGreaterThan(0)
     expect(goneWithin(num('leg.winpid'), REAP_GRACE_S), 'the leg outlived the hook').toBe(true)
     expect(goneWithin(num('sleep.winpid'), REAP_GRACE_S), 'the leg tree outlived the hook').toBe(true)
-    for (const l of readFileSync(file('hung-taskkill.pids'), 'utf8').split('\n')) {
-      const p = Number(l.trim())
-      if (Number.isInteger(p) && p > 0) expect(goneWithin(p, REAP_GRACE_S), `hung taskkill ${p} is still running`).toBe(true)
-    }
-    expect(goneWithin(num('reaper.winpid'), REAP_GRACE_S + REAP_EXIT_SLACK_S), 'the cleanup process is still running').toBe(true)
+    for (const p of hungTaskkillPids()) expect(ourProcessGoneWithin(p, (c) => /taskkill/i.test(c), REAP_GRACE_S), `hung taskkill ${p} is still running\n${record()}\n${readFileSync(file('hung-taskkill.pids'), 'utf8')}`).toBe(true)
   })
 
   // The hook is still running when a leg is asked for and every taskkill hangs: the cleanup process ends the leg directly when the kill window is over, not only after the hook has gone. A gate on the hook being gone left such a leg alive for the hook's whole tail (41.7 s after the stop in a stamped run), so a short stub leg ended on its own first. The driver stands for the hook: it asks, then polls for 25 ticks, and records whether the leg was gone while it was still the hook.
   it.skipIf(process.platform !== 'win32' || !bashAvailable)('ends a leg whose every taskkill hangs while the hook is still running', () => {
-    const bin = file('hangbin')
-    mkdirSync(bin)
-    copyFileSync(process.execPath, path.join(bin, 'taskkill.exe'))
-    const preload = file('hang-taskkill.cjs')
-    writeFileSync(preload, "if (/taskkill\\.exe$/i.test(process.execPath)) { require('node:fs').appendFileSync(process.env.DRIVER_DIR + '/hung-taskkill.pids', process.pid + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300000) }\n")
     const asked = ['cap_request_kill "$LEG"', 't=0; until ! kill -0 "$LEG" 2>/dev/null || (( t >= 25 )); do cap_tick; t=$((t + 1)); done', 'if kill -0 "$LEG" 2>/dev/null; then echo alive >"$D/leg.state"; else echo gone >"$D/leg.state"; fi']
     try {
-      runDriver(asked, { STUB_BIN: slash(bin), NODE_OPTIONS: `--require ${slash(preload)}` })
+      runDriver(asked, { STUB_BIN: writeHangTaskkill() })
     } finally {
-      if (existsSync(file('hung-taskkill.pids'))) {
-        for (const l of readFileSync(file('hung-taskkill.pids'), 'utf8').split('\n')) tracked.push({ pid: Number(l.trim()), ours: /taskkill\.exe/i })
-      }
+      trackHungTaskkills()
     }
-    expect(existsSync(file('hung-taskkill.pids')), 'taskkill was never run').toBe(true)
+    expect(hungTaskkillPids().length, 'taskkill was never run').toBeGreaterThan(0)
     expect(readFileSync(file('leg.state'), 'utf8').trim(), 'the leg was still alive while the hook ran, 25 s after it was asked for').toBe('gone')
   })
 
@@ -256,8 +281,53 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     )
     const graceS = 12
     runDriver(['cap_request_kill "$LEG"', 'cap_tick'], { BASH_ENV: slash(shadow), STUB_BIN: slash(bin) }, graceS)
-    // From the driver's return: the grace, the cleanup process's confirm ticks and the removal of its directory, and a kill -0 that lags a tick or two on a loaded host; not the 5 s window of the request in flight.
-    expect(goneWithin(num('reaper.winpid'), graceS + 6), 'the cleanup process outlived the grace counted from the hook exit').toBe(true)
+    // The exit is awaited as an event; the grace is then read off the cleanup process's own clock, the stamps it wrote when it first saw the hook gone and when it exited, so host load moves neither.
+    expect(goneWithin(num('reaper.winpid'), REAP_GRACE_S + 2 * REAP_EXIT_SLACK_S), 'the cleanup process did not exit').toBe(true)
+    const gone = stamp('hook gone')
+    const exited = stamp('exit')
+    expect(gone, `the record has no hook-gone stamp\n${record()}`).not.toBeNull()
+    expect(exited, `the record has no exit stamp\n${record()}`).not.toBeNull()
+    expect((exited ?? 0) - (gone ?? 0), 'the cleanup process outlived the grace counted from the hook exit').toBeLessThanOrEqual(graceS)
+  })
+
+  // The cleanup process's functions, sourced without its loop (REAP_SOURCE_ONLY) and driven directly, one line of "name=value" output per probe. `winpid_of` is redefined after the source to stand for what /proc answers.
+  const runLib = (body: string[]): Record<string, string> => {
+    mkdirSync(file('rd'))
+    const script = [
+      'export REAP_SOURCE_ONLY=1',
+      `source "${slash(REAPER_SCRIPT)}" "$$" "$DRIVER_DIR/rd" "$DRIVER_DIR/lib-record.txt" 0 30 5`,
+      ...body,
+      '',
+    ].join('\n')
+    writeFileSync(file('lib.sh'), script)
+    const out = openSync(file('lib.out'), 'w')
+    const r = spawnSync(GIT_BASH, [slash(file('lib.sh'))], { env: { ...process.env, DRIVER_DIR: slash(dir), TMPDIR: slash(file('tmp')) }, stdio: ['ignore', out, out], timeout: SPAWN_TIMEOUT_MS })
+    closeSync(out)
+    const said = readFileSync(file('lib.out'), 'utf8')
+    expect(r.error, said).toBeUndefined()
+    expect(r.status, said).toBe(0)
+    const got: Record<string, string> = {}
+    for (const l of said.split('\n')) {
+      const m = /^([a-z_]+)=(.*)$/.exec(l)
+      if (m !== null) got[m[1] as string] = m[2] as string
+    }
+    return got
+  }
+
+  // The hook's Windows pid is read at start; a later read that fails leaves it empty. That is "unknown", not "the hook is gone": treating it as gone ends healthy legs and fails the push.
+  it.skipIf(!bashAvailable)('keeps the hook alive when its Windows pid cannot be read, and gone when another process answers', () => {
+    const got = runLib([
+      'winpid_of "$OWNER"; OWNER_W=${W:-111}',
+      'winpid_of() { W=$OWNER_W; }',
+      'owner_alive && echo same=alive || echo same=gone',
+      'winpid_of() { W=""; }',
+      'owner_alive && echo unreadable=alive || echo unreadable=gone',
+      'winpid_of() { W=999999; }',
+      'owner_alive && echo reused=alive || echo reused=gone',
+    ])
+    expect(got.same, 'the hook with its own Windows pid is gone').toBe('alive')
+    expect(got.unreadable, 'an unreadable Windows pid was taken for the hook being gone').toBe('alive')
+    expect(got.reused, 'a pid now answered by another process was taken for the hook').toBe('gone')
   })
 
   // Each bounded call replays its own output file: a shared file let a call that ran nothing replay the previous call's output.

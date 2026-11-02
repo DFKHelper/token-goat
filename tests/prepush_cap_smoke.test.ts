@@ -1,5 +1,5 @@
 /** The pre-push hard stop's pure pieces: the stop value read from the environment (scripts/prepush-budget.mjs), the planned files a stopped leg did not finish (scripts/prepush-failed.mjs unfinishedFiles), and the owed record written beside the failed-store. The shell side runs for real below: the watchdog and kill_tree sourced alone, and the whole hook over stub legs. */
-import { spawnSync } from 'node:child_process'
+import { type ChildProcess, spawn, spawnSync } from 'node:child_process'
 import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -11,6 +11,15 @@ import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 // Bound on every spawned hook or bash run in this file; a run that reaches it is killed and fails the row.
 const SPAWN_TIMEOUT_MS = 60_000
+// True while the process that started this test worker (the vitest runner) answers a signal-0 probe.
+const runnerAlive = (): boolean => {
+  try {
+    process.kill(process.ppid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
 
 describe('pre-push hard stop value', () => {
   it('defaults to the hook limit less the held-back share', () => {
@@ -92,7 +101,11 @@ const GIT_BASH = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.e
 const CAP_SCRIPT = fileURLToPath(new URL('../.lefthook-scripts/prepush-cap.sh', import.meta.url))
 const slash = (p: string): string => p.replace(/\\/g, '/')
 // How long after the hook's exit the cleanup process may keep ending legs, read from the script so a change to the constant cannot pass unnoticed.
-const REAP_GRACE_S = Number(/^REAP_GRACE_S=(\d+)$/m.exec(readFileSync(CAP_SCRIPT, 'utf8'))?.[1])
+const REAP_GRACE_S = ((): number => {
+  const n = Number(/^REAP_GRACE_S=(\d+)$/m.exec(readFileSync(CAP_SCRIPT, 'utf8'))?.[1])
+  if (!Number.isInteger(n)) throw new Error('REAP_GRACE_S=<seconds> was not found in prepush-cap.sh')
+  return n
+})()
 
 describe('cap_run_stoppable', () => {
   const bashAvailable = process.platform !== 'win32' || existsSync(GIT_BASH)
@@ -124,7 +137,7 @@ describe('cap_run_stoppable', () => {
     )
     const r = spawnSync(GIT_BASH, [slash(script)], { encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS })
     // A timed-out spawn kills only bash; the step's node child and the watchdog sleep would outlive it, so their tree goes with bash.
-    if (r.error) endRecordedTrees([path.join(dir, 'bash.pid')])
+    if (r.error) endRecordedTrees([path.join(dir, 'bash.pid')], dir)
     return { stdout: r.stdout, stderr: r.stderr }
   }
 
@@ -272,11 +285,19 @@ describe('the hard stop ends the legs of a real hook run', () => {
 
   afterEach(() => {
     // Only a run that did not return (or a leg known to survive its kill) can leave a live leg; a leg the hook ended is not signalled again, since its pid may be reused.
-    if (leftLegs) endRecordedTrees(LEGS.map((leg) => path.join(stubs, `${leg.leg}.pid`)))
+    // The sentinel of the unkillable leg row: its stub loops while the file exists, so removing it lets the stub end by itself.
+    rmSync(path.join(stubs, 'unkillable'), { force: true })
+    if (leftLegs) endRecordedTrees(LEGS.map((leg) => path.join(stubs, `${leg.leg}.pid`)), dir)
     leftLegs = false
-    if (leftHung) endRecordedTrees([path.join(stubs, 'hung.pid')])
+    if (leftHung) endRecordedTrees([path.join(stubs, 'hung.pid')], dir)
     leftHung = false
+    // The cleanup process cds to / and holds no file here, so a lingering one is invisible to the removal below: its exit is awaited by pid and a row whose cleanup process outlives its deadline fails.
+    const reaper = reaperWinpid()
+    const reaperGone = reaper > 1 ? goneWithin(reaper, REAP_GRACE_S + 10) : true
     rmSync(dir, { recursive: true, force: true })
+    expect(reaperGone, `the cleanup process ${reaper} outlived its deadline, past the end of the row`).toBe(true)
+    // A row whose cleanup ended the runner shows up as a vitest run that exits 0 with no summary; this names the row instead, while the worker still lives to say so.
+    expect(runnerAlive(), `the vitest runner (pid ${process.ppid}) was ended during this row`).toBe(true)
   })
 
   // tailS: seconds from the stub's stop event to the hook's return, or null when no stub fired one.
@@ -553,7 +574,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
         'printf "%s\\n" "$EPOCHREALTIME" >"$STUB_DIR/fired.epoch"',
         'kill -TERM "$(cat "$TMPDIR"/token-goat-pre-push.*/hard-stop.pid)"',
         // A loop, not a last `sleep`: the cleanup process ends the sleep child (only the leg's own pid is shadowed), and a script whose last command was that sleep would then end by itself, so the leg would be truly gone and "ended" would be the right record.
-        'while (( SECONDS < 600 )); do sleep 150; done',
+        'while [[ -e "$STUB_DIR/unkillable" ]]; do sleep 1; done',
         '',
       ].join('\n'),
     )
@@ -614,12 +635,56 @@ describe('the hard stop ends the legs of a real hook run', () => {
   })
 })
 
-// Ends the process tree of each pid a test recorded in a pid file. A pid is ended only while its command line, read right now, is a bash, so a reused pid is left alone; the tree goes with it, since a plain kill leaves the children behind on Windows.
-function endRecordedTrees(pidFiles: string[]): void {
+// Regression: a pid a stub recorded goes stale (Windows hands a freed pid to the next process it starts, and a forked bash that execs changes its winpid), and the afterEach cleanup ended whatever bash then held the number, another session's bash included; a run of this file ended silently right after the hook-killed-outright row that way.
+describe('the cleanup of recorded stub pids', () => {
+  const bashAvailable = process.platform !== 'win32' || existsSync(GIT_BASH)
+  const gone = (child: ChildProcess): boolean => {
+    for (let i = 0; i < 25 && child.exitCode === null; i++) {
+      try {
+        process.kill(child.pid ?? 0, 0)
+      } catch {
+        return true
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+    }
+    return child.exitCode !== null
+  }
+  const withBash = (script: string, body: (child: ChildProcess, dir: string) => void): void => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'tg-recorded-pids-'))
+    const child = spawn(GIT_BASH, ['-c', script.replace('@TAG@', path.basename(dir))], { stdio: ['pipe', 'ignore', 'ignore'] })
+    child.stdin?.on('error', () => undefined)
+    try {
+      writeFileSync(path.join(dir, 'leg.pid'), String(child.pid))
+      body(child, dir)
+    } finally {
+      child.stdin?.end()
+      child.kill()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  it.skipIf(!bashAvailable)('leaves a bash that is not under the row directory alone', () => {
+    withBash('read -t 60 _', (child, dir) => {
+      endRecordedTrees([path.join(dir, 'leg.pid')], dir)
+      expect(gone(child), 'a bash that is not under the row directory was ended by the recorded-pid cleanup').toBe(false)
+    })
+  })
+
+  it.skipIf(!bashAvailable)('ends a bash under the row directory', () => {
+    withBash(': @TAG@; read -t 60 _', (child, dir) => {
+      endRecordedTrees([path.join(dir, 'leg.pid')], dir)
+      expect(gone(child), 'a bash under the row directory was left running by the recorded-pid cleanup').toBe(true)
+    })
+  })
+})
+
+// Ends the process tree of each pid a test recorded in a pid file. A pid is ended only while its command line, read right now, is a bash that names the row's own temp directory (`owner`): a bash alone is not proof, since Windows hands a freed pid to the next process it starts and a recorded winpid goes stale when a forked bash execs, so a recorded pid can now be an unrelated session's bash. The tree goes with it, since a plain kill leaves the children behind on Windows.
+function endRecordedTrees(pidFiles: string[], owner: string): void {
+  const tag = path.basename(owner)
   for (const file of pidFiles) {
     if (!existsSync(file)) continue
     const pid = Number(readFileSync(file, 'utf8').trim())
     if (!Number.isInteger(pid)) continue
-    killIfCommandLine(pid, (commandLine) => /bash/i.test(commandLine), { tree: true })
+    killIfCommandLine(pid, (commandLine) => /bash/i.test(commandLine) && commandLine.includes(tag), { tree: true })
   }
 }
