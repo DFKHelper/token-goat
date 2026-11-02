@@ -102,6 +102,14 @@ describe('formatSearchText weak semantic-only page', () => {
     expect(text).toContain('(13 more weak semantic hits not shown; rerun with -c semantic to list them)')
   })
 
+  // Provenance: HAND-DERIVED from src/cli.ts (--min-score drops hits below a fusion score, so the rerun must carry it or it lists a different set than the page says).
+  it('R8 carries --min-score into the printed command only when the search was run with it', () => {
+    const scored = formatSearchText(weakSummary(sixteen()), false, { minScore: 0.5 })
+    expect(scored, 'the printed command keeps --min-score 0.5').toContain('`token-goat search "quuxzzyNotAThing" --min-score 0.5 -c semantic` lists them)')
+    const plain = formatSearchText(weakSummary(sixteen()), false)
+    expect(plain, 'the default command carries no --min-score').not.toContain('--min-score')
+  })
+
   it('does not cap a semantic page with no low-confidence mark', () => {
     const text = formatSearchText(weakSummary(sixteen(), { lowConfidence: undefined }), false)
     expect(numbered(text)).toHaveLength(16)

@@ -15,6 +15,7 @@ const WEAK_PAGE_SHOWN_HITS = 3;
 interface WeakPageRerun {
   readonly limit?: number | undefined;
   readonly projectRoot?: string | undefined;
+  readonly minScore?: number | undefined;
 }
 
 /** Formats one fused result as its location line, naming the channels that agreed on it, and a one-line preview. The fusion score stays in `--json`: it orders the list but tells a reader nothing the order does not. */
@@ -53,6 +54,7 @@ function hiddenWeakHitsLine(query: string, hidden: number, rerun: WeakPageRerun)
   const flags = [
     ...(rerun.limit !== undefined && rerun.limit !== DEFAULT_SEARCH_LIMIT ? [`--limit ${rerun.limit}`] : []),
     ...(projectRoot !== undefined ? [`--project ${quotedArg(projectRoot)}`] : []),
+    ...(rerun.minScore !== undefined ? [`--min-score ${rerun.minScore}`] : []),
   ];
   const line = `(${more} -- ${fencedCommand(['token-goat search', quotedArg(query), ...flags, '-c semantic'].join(' '))} lists them)`;
   return stripUnsafeSuggestions(line) === line ? line : byHand;
@@ -102,5 +104,5 @@ export async function runParallelSearch(options: SearchOptions): Promise<{ text:
     };
   }
 
-  return { text: formatSearchText(summary, options.channels !== undefined, { limit: options.limit, projectRoot: options.projectRoot }), code: 0 };
+  return { text: formatSearchText(summary, options.channels !== undefined, { limit: options.limit, projectRoot: options.projectRoot, minScore: options.minScore }), code: 0 };
 }
