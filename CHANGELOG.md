@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **A folded Markdown Read in the numbered layout is no longer left unfolded when the file has a long path.** The layout note that rides with such a fold is shorter, so a two-paragraph fold on a long temp path (macOS) still clears the minimum saving and is delivered.
+
 ## [2.9.34] - 2026-11-02
 
 ### Added
