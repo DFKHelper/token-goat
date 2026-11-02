@@ -34,10 +34,10 @@ cap_record_live() {
   [[ -n "$p" ]] && cap_proc_is "$p" "$w"
 }
 
-# Starts the cleanup process and waits up to 5 ticks for it to say it is up; without it nothing would end a leg, so the push fails. Names the pids an earlier cleanup process could not end, then clears that record. Idempotent. A run with no hard stop (PREPUSH_FULL=1) gives it no life limit of its own.
+# Starts the cleanup process and waits for it to say it is up or to be gone, never for a fixed count of ticks (bounded only by the default hard-stop share of the hook limit, none under PREPUSH_FULL=1); without it nothing would end a leg, so the push fails. Names the pids an earlier cleanup process could not end, then clears that record. Idempotent. A run with no hard stop (PREPUSH_FULL=1) gives it no life limit of its own.
 cap_reaper_start() {
   [[ -z "$REAP_DIR" ]] || return 0
-  local base store life t=0 l left=""
+  local base store life stop_at="" l left=""
   base="${TMP_BASE:-${TMPDIR:-/tmp}}"
   store="$base"
   if [[ -n "${FAILED_STORE:-}" ]]; then store="${FAILED_STORE%/*}"; fi
@@ -59,10 +59,15 @@ cap_reaper_start() {
   "$BASH" "$CAP_SELF_DIR/prepush-reaper.sh" "$$" "$REAP_DIR" "$REAP_RECORD" "$life" "$REAP_GRACE_S" "$CAP_KILL_WIN_S" </dev/null >/dev/null 2>&1 9<&- &
   REAP_PID=$!
   disown "$REAP_PID" 2>/dev/null || true
-  while [[ ! -e "$REAP_DIR/up" ]] && (( t < 5 )); do cap_tick; t=$((t + 1)); done
+  if [[ "${PREPUSH_FULL:-0}" != "1" ]]; then stop_at=$(( ${HOOK_LIMIT_S:-600} * 9 / 10 )); fi
+  while [[ ! -e "$REAP_DIR/up" ]] && kill -0 "$REAP_PID" 2>/dev/null && { [[ -z "$stop_at" ]] || (( SECONDS < stop_at )); }; do cap_tick; done
   if [[ ! -e "$REAP_DIR/up" ]]; then
-    kill "$REAP_PID" 2>/dev/null || true
-    echo "pre-push: the cleanup process did not start within ${t}s, so the push fails rather than run legs nothing would end"
+    if kill -0 "$REAP_PID" 2>/dev/null; then
+      kill "$REAP_PID" 2>/dev/null || true
+      echo "pre-push: the cleanup process was not up by the ${stop_at}s hard-stop budget, so the push fails rather than run legs nothing would end"
+    else
+      echo "pre-push: the cleanup process exited before it started, so the push fails rather than run legs nothing would end"
+    fi
     exit 1
   fi
 }

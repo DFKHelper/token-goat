@@ -114,7 +114,7 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
   }
 
   // Runs one driver: it sources the cap, starts the leg through cap_register, waits until the leg's sleep exists, runs `extra`, writes the cleanup process's Windows pid and returns, which is the hook's exit. Returns once the driver has exited.
-  const runDriver = (extra: string[], env: Record<string, string> = {}, graceS?: number): void => {
+  const runDriver = (extra: string[], env: Record<string, string> = {}, graceS?: number, status = 0): void => {
     writeLeg()
     const lines = [
       'export D="$DRIVER_DIR"',
@@ -125,8 +125,12 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
       'HARD_FLAG=""',
       `source "${slash(CAP_SCRIPT)}"`,
       ...(graceS === undefined ? [] : [`REAP_GRACE_S=${graceS}`]),
+      // A stub directory holding its own prepush-reaper.sh stands in for the cleanup process the cap starts.
+      'if [[ -n "${STUB_REAPER_DIR:-}" ]]; then CAP_SELF_DIR="$STUB_REAPER_DIR"; fi',
       // A stub directory is put first on the PATH in the POSIX form: a Windows PATH list handed to Git Bash is not reliably searched in order.
       'if [[ -n "${STUB_BIN:-}" ]]; then if command -v cygpath >/dev/null 2>&1; then STUB_BIN=$(cygpath -u "$STUB_BIN"); fi; PATH="$STUB_BIN:$PATH"; fi',
+      // The hook starts no leg before the cleanup process is up, so the driver starts it first too.
+      'cap_reaper_start',
       '"$BASH" "$D/leg.sh" 9<&- &',
       'LEG=$!',
       'PIDS+=("$LEG")',
@@ -152,8 +156,33 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
       if (existsSync(file(n))) tracked.push({ pid: num(n), ours: n === 'reaper.winpid' ? /prepush-reaper/ : n === 'sleep.winpid' ? new RegExp(`sleep 300\\.${tag}`) : /leg\.sh/ })
     }
     expect(r.error, said).toBeUndefined()
-    expect(r.status, said).toBe(0)
+    expect(r.status, said).toBe(status)
   }
+
+  // A cleanup process stand-in: it waits delayS seconds before it runs the real one (which writes `up`), or exits at once when delayS is empty.
+  const writeStubReaper = (delayS: number | null): string => {
+    const stub = file('stub-reaper')
+    mkdirSync(stub)
+    const body = delayS === null ? ['exit 3'] : [`sleep ${delayS}`, `exec "$BASH" "${slash(REAPER_SCRIPT)}" "$@"`]
+    writeFileSync(path.join(stub, 'prepush-reaper.sh'), ['#!/usr/bin/env bash', ...body, ''].join('\n'))
+    return slash(stub)
+  }
+
+  // The cleanup process writes `up` only after more than the old fixed 5 s wait: the hook waits for the event, runs its leg and returns. The elapsed time proves the wait outlasted 5 s.
+  it.skipIf(!bashAvailable)('waits for a cleanup process that is slow to say it is up, and still runs the leg', () => {
+    const t0 = Date.now()
+    runDriver([], { STUB_REAPER_DIR: writeStubReaper(8) })
+    expect((Date.now() - t0) / 1000, 'the stub did not take longer than the old 5 s wait, so the row proves nothing').toBeGreaterThan(5)
+    expect(existsSync(file('leg.winpid')), 'the leg never ran').toBe(true)
+    expect(readFileSync(file('driver.out'), 'utf8')).not.toContain('cleanup process')
+  })
+
+  // The cleanup process exits before it writes `up`: the push fails at once with a notice that says so, and no leg starts.
+  it.skipIf(!bashAvailable)('fails the push with a notice when the cleanup process exits before it is up', () => {
+    runDriver([], { STUB_REAPER_DIR: writeStubReaper(null) }, undefined, 1)
+    expect(readFileSync(file('driver.out'), 'utf8')).toContain('the cleanup process exited before it started')
+    expect(existsSync(file('leg.winpid')), 'a leg started with no cleanup process running').toBe(false)
+  })
 
   it.skipIf(!bashAvailable)('ends a leg and its tree within the grace after the hook exits, and exits itself', () => {
     runDriver([])
