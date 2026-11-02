@@ -1,6 +1,6 @@
 import { nearSymbolNames } from '../read_suggest.js';
 import { executeParallelSearch } from './parallel_search.js';
-import { ALL_CHANNELS, type FusedSearchResult, type SearchExecutionSummary, type SearchOptions } from './types.js';
+import { ALL_CHANNELS, type FusedSearchResult, type SearchChannel, type SearchExecutionSummary, type SearchOptions } from './types.js';
 import { displaySafeJson, displaySafeText } from '../paths.js';
 import { DELETED_TAG } from '../read_commands.js';
 import { resolveProjectConfinement } from '../read_spec.js';
@@ -84,6 +84,9 @@ export function formatSearchText(summary: SearchExecutionSummary, explicitChanne
 /** At most this many near-word retries follow one search miss, so a miss never fans out into a search per candidate. */
 export const NEAR_RETRY = { max: 3 } as const;
 
+/** The channels a near-word retry searches when the user named none: semantic is the costly one, and it maps a conceptual query onto unrelated names. */
+const NEAR_RETRY_CHANNELS: ReadonlyArray<SearchChannel> = ['symbol', 'heading', 'text'];
+
 export interface NearRetryOutcome {
   summary: SearchExecutionSummary;
   /** The query as typed, when a near-word name answered the miss; null when the first search hit or no retry hit. */
@@ -100,10 +103,11 @@ export async function searchWithNearRetry(options: SearchOptions): Promise<NearR
   if (near.skipped) return { summary: first, answeredFrom: null, retries: 0 };
 
   const candidates = near.candidates.filter((name) => name !== first.query).slice(0, NEAR_RETRY.max);
+  const retryChannels = options.channels ?? NEAR_RETRY_CHANNELS;
   let retries = 0;
   for (const candidate of candidates) {
     retries += 1;
-    const summary = await executeParallelSearch({ ...options, query: candidate });
+    const summary = await executeParallelSearch({ ...options, query: candidate, channels: retryChannels });
     if (summary.totalHits > 0) return { summary, answeredFrom: first.query, retries };
   }
   return { summary: first, answeredFrom: null, retries };
@@ -124,11 +128,12 @@ export async function runParallelSearch(options: SearchOptions): Promise<{ text:
     return { text: options.json === true ? displaySafeJson({ error: projectDenial }) : projectDenial, code: 1 };
   }
 
-  const { summary, answeredFrom } = await searchWithNearRetry(options);
+  const { summary, answeredFrom, retries } = await searchWithNearRetry(options);
 
   if (options.json) {
+    const retryFields = { ...(answeredFrom !== null ? { answeredFrom } : {}), ...(retries > 0 ? { retries } : {}) };
     return {
-      text: displaySafeJson(answeredFrom === null ? summary : { ...summary, answeredFrom }),
+      text: displaySafeJson(Object.keys(retryFields).length === 0 ? summary : { ...summary, ...retryFields }),
       code: 0,
     };
   }

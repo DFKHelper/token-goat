@@ -16,11 +16,11 @@ const DOC_ROOT_FILES: ReadonlySet<string> = new Set(['CLAUDE.md', 'CLAUDE.arch.m
 const DOC_DIR = 'docs/'
 const ARCHIVE_DIR = 'docs/plans/archive/'
 
-const VERBS = ['read', 'section', 'brief', 'refs', 'impact'] as const
+const VERBS = ['read', 'section', 'brief', 'refs', 'impact', 'diff'] as const
 type Verb = (typeof VERBS)[number]
 
 /** An optional `token-goat` prefix and leading flags, a verb, then one handle: double-quoted, single-quoted, or bare up to whitespace, a closing quote or a backtick. */
-const COMMAND = /(?:token-goat\s+(?:-{1,2}[\w-]+\s+)*)?\b(read|section|brief|refs|impact)[ \t]+(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+))/g
+const COMMAND = /(?:token-goat\s+(?:-{1,2}[\w-]+\s+)*)?\b(read|section|brief|refs|impact|diff)[ \t]+(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+))/g
 
 /** Handles the docs use as examples, not as real files. Hand-written on purpose; never generated from the scan. */
 const PLACEHOLDER_HANDLES: ReadonlySet<string> = new Set([
@@ -42,6 +42,8 @@ const SITE_EXEMPTIONS: ReadonlyArray<{ doc: string, handle: string }> = [
   { doc: 'docs/cli.md', handle: 'file.py::run@42' },
   // docs/cli.md:33 gives the qualified line-anchor syntax with file.py as the example file; no file.py is tracked.
   { doc: 'docs/cli.md', handle: 'file.py::Class.method@42' },
+  // docs/cli.md:66 gives the diff row's example with file.ts as the example file; no file.ts is tracked, as with the file.py rows above.
+  { doc: 'docs/cli.md', handle: 'file.ts::myFn' },
   // README.md:289 names doc.md as the example file in its anchor-ID prose; no doc.md is tracked.
   { doc: 'README.md', handle: 'doc.md::Quick-start' },
   // README.md:110 is a table row showing TOML section syntax; pyproject.toml is an example, not a tracked file.
@@ -85,7 +87,7 @@ function extractHandles(doc: string, text: string): Handle[] {
 /** The living documents, from the tracked-file listing, plus CLAUDE.md when it is on disk: it is gitignored, so a clean checkout (CI) has none and that leg is a no-op there. */
 function livingDocs(tracked: readonly string[]): string[] {
   const docs = tracked.filter((p) => p.endsWith('.md') && (DOC_ROOT_FILES.has(p) || (p.startsWith(DOC_DIR) && !p.startsWith(ARCHIVE_DIR))))
-  if (fs.existsSync(path.join(REPO, 'CLAUDE.md'))) docs.push('CLAUDE.md')
+  if (!docs.includes('CLAUDE.md') && fs.existsSync(path.join(REPO, 'CLAUDE.md'))) docs.push('CLAUDE.md')
   return docs
 }
 
@@ -99,6 +101,13 @@ function symbolCache(): (abs: string) => Promise<readonly string[]> {
     cache.set(abs, names)
     return names
   }
+}
+
+/** A symbol name as a handle spells it: a plain name, or `Class.method` with an optional `@<line>`, which resolves through its last dot segment. */
+function symbolResolves(part: string, names: readonly string[]): boolean {
+  if (names.includes(part)) return true
+  const bare = part.replace(/@\d+$/, '')
+  return bare.includes('.') && (names.includes(bare) || names.includes(bare.slice(bare.lastIndexOf('.') + 1)))
 }
 
 /** The reason a handle does not resolve, or null when it does. */
@@ -119,8 +128,8 @@ async function failureOf(
     return missing.length === 0 ? null : `no heading "${missing[0]}" in ${file}`
   }
   const names = await symbolsIn(abs)
-  const parts = names.includes(name) ? [name] : name.split(',').map((p) => p.trim())
-  const missing = parts.filter((p) => !names.includes(p))
+  const parts = symbolResolves(name, names) ? [name] : name.split(',').map((p) => p.trim())
+  const missing = parts.filter((p) => !symbolResolves(p, names))
   return missing.length === 0 ? null : `no symbol "${missing[0]}" in ${file}`
 }
 
@@ -142,6 +151,7 @@ describe('doc handles resolve', () => {
     for (const doc of docs) handles.push(...extractHandles(doc, fs.readFileSync(path.join(REPO, doc), 'utf8')))
 
     expect(docs.length, 'No living docs were found; the doc set or the tracked-file listing has changed.').toBeGreaterThan(5)
+    expect(new Set(docs).size, 'A living doc is listed twice, so its handles would be judged twice.').toBe(docs.length)
     expect(handles.length, 'Too few token-goat handles were found; the command regex has probably stopped matching the docs.').toBeGreaterThan(10)
     for (const must of MUST_FIND) {
       expect(tracked.has(must.doc),`${must.doc} is not a tracked file, so it cannot anchor a must-find row.`).toBe(true)
@@ -216,5 +226,23 @@ describe('doc handles resolve', () => {
       'src/parser.ts::parseFilUnquoted',
       'src/parser.ts::parseFilSingle',
     ])
+  })
+
+  // Provenance: HAND-DERIVED: McpTransport in src/mcp_jsonrpc.ts declares start, send and close only, so noSuchMethod is no symbol in that file and the handle must fail on its last segment.
+  it('a qualified handle whose last segment is not a symbol in its file fails', async () => {
+    const handles = extractHandles('scratch.md', 'token-goat read "src/mcp_jsonrpc.ts::McpTransport.noSuchMethod"')
+    const failures = await failuresOf(handles, new Set(trackedFiles()))
+    expect(failures.map((f) => f.handle)).toEqual(['src/mcp_jsonrpc.ts::McpTransport.noSuchMethod'])
+  })
+
+  // Provenance: HAND-DERIVED: McpTransport declares send at src/mcp_jsonrpc.ts:59, so the qualified handle resolves with and without its @59 line anchor.
+  it('a qualified handle whose last segment is a symbol in its file passes, with or without a line anchor', async () => {
+    const handles = extractHandles('scratch.md', [
+      'token-goat read "src/mcp_jsonrpc.ts::McpTransport.send"',
+      'token-goat read "src/mcp_jsonrpc.ts::McpTransport.send@59"',
+    ].join('\n'))
+    expect(handles.map((h) => h.handle)).toEqual(['src/mcp_jsonrpc.ts::McpTransport.send', 'src/mcp_jsonrpc.ts::McpTransport.send@59'])
+    const failures = await failuresOf(handles, new Set(trackedFiles()))
+    expect(failures).toEqual([])
   })
 })

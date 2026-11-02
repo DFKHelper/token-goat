@@ -8,9 +8,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { globalDbPath } from '../src/constants.js'
 import { closeAllDbs } from '../src/db.js'
+import { checkSemanticReadiness } from '../src/embed_preflight.js'
+import type * as PreflightModule from '../src/embed_preflight.js'
 import { indexFileSync } from '../src/parser.js'
 import { nearSymbolNames } from '../src/read_suggest.js'
 import { NEAR_RETRY, runParallelSearch, searchWithNearRetry } from '../src/search/search_cli.js'
+
+// The semantic channel asks checkSemanticReadiness before any search, so its call count is the request count for that channel.
+vi.mock('../src/embed_preflight.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof PreflightModule>()
+  return { ...actual, checkSemanticReadiness: vi.fn(actual.checkSemanticReadiness) }
+})
 
 let root: string
 let cwdSpy: ReturnType<typeof vi.spyOn>
@@ -82,5 +90,37 @@ describe('search retries near-word names on a miss', () => {
   it('prints no retry note when the first search hits', async () => {
     const r = await runParallelSearch({ query: 'parseFile', channels: ['symbol'] })
     expect(r.text).not.toContain('(note: no match')
+  })
+
+  // Provenance: HAND-DERIVED: the first search has no --channels, so it requests semantic once; a retry must not request it again.
+  it('retries on the cheap channels only when the user named no channels', async () => {
+    const preflight = vi.mocked(checkSemanticReadiness)
+    preflight.mockClear()
+    const out = await searchWithNearRetry({ query: 'gizmoAx' })
+    expect(out.retries, 'no retry ran, so the row proves nothing').toBeGreaterThan(0)
+    expect(preflight, 'a retry requested the semantic channel').toHaveBeenCalledTimes(1)
+  })
+
+  // Provenance: HAND-DERIVED: heading never holds a code name and semantic is named, so each of the NEAR_RETRY.max retries must request semantic too.
+  it('keeps the channels the user named on each retry', async () => {
+    const preflight = vi.mocked(checkSemanticReadiness)
+    preflight.mockClear()
+    const out = await searchWithNearRetry({ query: 'gizmoAx', channels: ['heading', 'semantic'] })
+    expect(out.retries).toBe(NEAR_RETRY.max)
+    expect(preflight, 'a retry dropped the user-named semantic channel').toHaveBeenCalledTimes(1 + NEAR_RETRY.max)
+  })
+
+  // Provenance: HAND-DERIVED: 'parseFle' misses the symbol channel and 'parseFile' is its one-edit near name, so exactly one retry answers it.
+  it('carries retries in the JSON output after a retried miss', async () => {
+    const r = await runParallelSearch({ query: 'parseFle', channels: ['symbol'], json: true })
+    expect(JSON.parse(r.text)).toMatchObject({ answeredFrom: 'parseFle', retries: 1 })
+  })
+
+  // Provenance: HAND-DERIVED: 'parseFile' is an indexed name, so the first search hits and the JSON keeps its pre-retry shape with no retry fields.
+  it('omits retries and answeredFrom from the JSON output on a first-search hit', async () => {
+    const r = await runParallelSearch({ query: 'parseFile', channels: ['symbol'], json: true })
+    const parsed = JSON.parse(r.text) as Record<string, unknown>
+    expect(parsed).not.toHaveProperty('retries')
+    expect(parsed).not.toHaveProperty('answeredFrom')
   })
 })

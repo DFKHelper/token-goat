@@ -441,7 +441,8 @@ export function runImpact(opts: ImpactOptions): number {
   for (const r of rootRows) hops.delete(defKey(r))
 
   // Two distinct definitions can share a name; the key (file, parent, line) keeps their order stable.
-  const allSorted = [...hops.entries()].sort((a, b) => compareImpactHops({ left: { key: a[0], ...a[1] }, right: { key: b[0], ...b[1] }, rootFilePaths: rootRows.map((r) => r.filePath) })).map(([, v]): [string, number] => [v.name, v.hop])
+  const rootFilePaths = rootRows.map((r) => r.filePath)
+  const allSorted = [...hops.entries()].sort((a, b) => compareImpactHops({ left: { key: a[0], ...a[1] }, right: { key: b[0], ...b[1] }, rootFilePaths })).map(([, v]): [string, number] => [v.name, v.hop])
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const grepped = matchesGrep !== undefined ? allSorted.filter(([symbol]) => matchesGrep(symbol)) : allSorted
   const sorted = grepped.slice(0, top)
