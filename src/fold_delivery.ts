@@ -73,7 +73,8 @@ function proseFoldHeading(normalizedPath: string, line: number, shownPath: strin
   const section = findContainingSection(normalizedPath, line, line)
   if (section === null) return null
   const heading = displaySafeText(section.heading)
-  const pointer = `token-goat section ${quotedArg(`${shownPath}::${heading}`)}`
+  // Backticks are blanked: the stripper reads one inside a single-quoted spec as a fence end, but this pointer sits in the rewritten body (relay.ts strips only context), where no fence holds it.
+  const pointer = `token-goat section ${quotedArg(`${shownPath}::${heading}`)}`.replace(/`/g, '_')
   return canQuoteArg(`${shownPath}::${heading}`) && stripUnsafeSuggestions(pointer) === pointer ? heading : null
 }
 
