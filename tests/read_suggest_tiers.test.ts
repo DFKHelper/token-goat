@@ -18,6 +18,7 @@ describe('rankSimilarNames tiers', () => {
     expect(rankSimilarNames(['renderAllTheThings', 'renderAll'], 'render')).toEqual(['renderAll', 'renderAllTheThings'])
   })
 
+  // Provenance: HAND-DERIVED (the three rows below; expected orders worked out by hand from each query's length and edit distance, not read from rankSimilarNames).
   it('suggests the real name one edit away first when a long camelCase query also holds fragments', () => {
     // `getReadNavigationEvidense` is 25 characters, two edits allowed; getReadNavigationEvidence is one substitution away. get, DENSE and read are fragments of the query, so the old code never reached the edit-distance pass.
     expect(rankSimilarNames(['get', 'DENSE', 'read', 'getReadNavigationEvidence', 'setup'], 'getReadNavigationEvidense')).toEqual(['getReadNavigationEvidence', 'get', 'DENSE', 'read'])
