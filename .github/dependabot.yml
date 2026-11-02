@@ -7,12 +7,17 @@ updates:
       interval: monthly
     cooldown:
       default-days: 7
+    # One pull request a month for every action bump together, rather than one per action.
+    groups:
+      actions:
+        patterns:
+          - '*'
 
-  # The npm tree was not watched at all, so every dependency advisory here waited on someone noticing. Grouped so a routine week is one pull request rather than twenty, and so the four gating CI jobs run once over the batch.
+  # The npm tree was not watched at all, so every dependency advisory here waited on someone noticing. Grouped so a routine month is one pull request rather than twenty, and so the four gating CI jobs run once over the batch.
   - package-ecosystem: npm
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     cooldown:
       default-days: 7
     groups:
@@ -33,7 +38,7 @@ updates:
   - package-ecosystem: npm
     directory: /vscode-extension
     schedule:
-      interval: weekly
+      interval: monthly
     cooldown:
       default-days: 7
     groups:
@@ -52,11 +57,11 @@ updates:
       # @types/vscode must never lead engines.vscode: the typings decide which APIs the extension compiles against, so a version above the declared engine floor lets it build against APIs that are missing in the oldest VS Code it claims to support, and the break only shows up on a user's machine. It was already ahead (1.125 typings against an ^1.101 engine floor) and is now pinned to the floor exactly. Raising it is a decision about which VS Code versions this extension still supports, taken together with engines.vscode, not a routine version bump.
       - dependency-name: '@types/vscode'
 
-  # The native hook client's crates, pinned by native/tg-hook/Cargo.lock, compile into every release binary, so they get the same grouped weekly updates and the same seven-day cooldown as the npm tree.
+  # The native hook client's crates, pinned by native/tg-hook/Cargo.lock, compile into every release binary, so they get the same grouped monthly updates and the same seven-day cooldown as the npm tree.
   - package-ecosystem: cargo
     directory: /native/tg-hook
     schedule:
-      interval: weekly
+      interval: monthly
     cooldown:
       default-days: 7
     groups:
