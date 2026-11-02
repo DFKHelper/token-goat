@@ -7,11 +7,43 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### Added
 
 - **token-goat is safe to run in Claude Code Code Mode sessions.** `token-goat install` now writes `"onFailure": "continue"` on every Claude Code hook entry it owns (re-running `install` adds it to existing entries; the field needs Claude Code 2.1.295 or later), so a slow or failing token-goat hook can no longer make Claude Code refuse a tool call once Code Mode code has run. `token-goat hook <event>` also ends with exit code 0 and `{}` for any failure, with the cause on stderr. Setting `TOKEN_GOAT_HOOK_CAPTURE` to an absolute directory records each hook payload as one line in `hook-payloads.jsonl` there, for inspecting what Claude Code sends; payloads are stored as received, so they can contain secrets from your prompts, commands and file contents; it is off by default, skips any payload over 1 MiB, and stops at 16 MiB. See "Claude Code Code Mode" in docs/install.md.
+- **`token-goat php-lint` runs PHP syntax checks in parallel.** It runs `php -l` on the PHP files under the given paths (the current directory by default) without indexing them. `--php <executable>` picks the PHP runtime, and `--jobs <count>` sets how many checks run at once, from 1 to 8 (default 4). Invalid paths, a missing runtime, or a syntax error exit 1.
+- **COBOL files are indexed.** Files ending in `.cbl`, `.cob`, `.cobol`, `.cpy`, `.cop` or `.cpb` get symbols, and the comments above a declaration become its docstring. `CALL` targets are recorded whether quoted or unquoted. `--sig` works for COBOL.
+- **Java records, enums, interfaces and annotation types get their own scopes.** Exports cover them too, and Java annotations stay in `--sig` output.
+
+### Changed
+
+- **Paging guidance names one command to run next.**
+- **The anti-paging read hook denies a third read of an overlapping range.** Overlap is measured by intersection over union (IoU): the lines both windows share, divided by all the lines they cover together. A same-anchor expansion of up to 20 lines is exempt, and a partly served window is denied too.
+- **Paging hints name real symbols and point to the diff of an edited file.**
+- **Symbol lookup and output compression have less overhead.**
+- **Session manifests are cached.** Repeated manifest builds reuse the stored result.
+- **The pre-push hook keeps its time budget when a check fails.** A focused leg has a wall-clock deadline, a failed guard or matrix list runs the full leg, and a green check is reused when the bytes are unchanged.
+- **When a request is cancelled, the VS Code extension stops its token-goat and git calls** instead of waiting for them to finish.
+
+### Removed
+
+- **Nine config keys that nothing read are removed.** They are `triggers`, `min_events`, `max_manifest_tokens`, `compact_skip_ttl_secs`, `noise_floor_tokens`, `edited_dir_group_threshold`, `max_section_lines`, `wide_session_threshold` and `orchestrator_commit_threshold`.
 
 ### Fixed
 
 - **The pre-push cleanup process can no longer spin on a core or outlive its bounds.** Two `prepush-reaper.sh` processes kept one core each busy for about 7 hours after their hook was gone, far past their 630 s life limit. Its one-second tick is a timed read on a descriptor; a read that fails at once (a closed or broken descriptor) returned immediately and turned the loop into a busy spin, so the tick now takes its second with `sleep` unless the read timed out. The reaper's own bounds (life limit, or the grace after the hook's death, plus the kill window and slack) are also checked inside every loop, so a pass that never reaches the main loop's tests still ends the process. Two rows in `tests/prepush_reaper.test.ts` fail on the old script.
 - **`json-query` and `yaml-query` honor `--head` for array-valued properties, and `grep` clips over-long matching lines around the match.**
+- **The guidance commands line now lists `outline`.**
+- **Skill references like `Heading#N` match the heading text literally.**
+- **`--profile` and `compression.profile` values are validated when read.**
+- **A session start that finds files queued by an earlier session says so.** Symbol lookups may be briefly stale until the worker drains the queue.
+- **A worker drain hands unfinished paths back without charging a retry.**
+- **A worker in a long drain retires once its pid file goes missing.** The check runs every 100 ms.
+- **HTML extraction ignores style-body markup without crossing document boundaries.** CSS contents no longer produce HTML headings or symbols, while style-shaped text inside comments, RCDATA elements, declarations, custom-element attributes, and self-closing SVG styles does not hide following markup. The parser fingerprint change triggers reindexing on upgrade.
+- **A Bash call that runs in the background, or sets its own long timeout, is no longer cut at the 600 s compress bound.** The compress wrapper took its `--timeout` only from `bash_compress.timeout_seconds`, so `run_in_background` calls and foreground calls with a longer `timeout` were killed at 600 s with exit 124. A background call now gets the config's 7200 s upper bound, and a foreground call gets its own timeout in seconds when that is larger than the configured value. Both stay within the bound, and the configured value still applies when neither field is set.
+- **A background Agent spawn's launch acknowledgement is no longer cached as the agent's report.** The check matched the ack's fields in one fixed order, so a reordered or wrapped ack was stored under a recall pointer and `mcp-output` served it as the report. The check now reads the fields of a JSON object and is order-independent.
+
+### Security
+
+- **`body-parser` moves to 2.4.0 in the dev tree.** This fixes [GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828).
+- **`fast-uri` moves to 3.1.9 in the dev tree.** SECURITY.md is updated to match.
+- **SECURITY.md audit notes name the `qs` and `@eslint/config-array` advisories.** The body-parser finding is dropped because the bump fixed it.
 
 ## [2.9.35] - 2026-11-10
 
@@ -111,15 +143,11 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **`git -C <dir> push` and other git commands with options before the subcommand are classified as git commands.** The bash output cache read `git` followed directly by the subcommand, so `git -C dir push`, `git -c k=v push` and `git -C dir status` were missed: a push was not treated as a state change, and a `git -C <dir>` status was fingerprinted against the working directory's repository instead of `<dir>`'s.
 - **A failing check script given only `.md` documents is recorded as a failure.** A run such as `python scripts/run_self_tests.py README.md` that failed was dropped, so the Stop advisory never named it. Its documents still count as no check input, so a pass on one clears no edit.
 - **A git killed by a signal reads as unknown, not as exit 1.** A git ended by a signal such as SIGKILL used to read as exit 1, so an inline Grep scope check read it as a negative answer, and the post-Bash hook took it for a git that never ran and asked for no reconcile. It now reads as exit -1 with the signal named, and each caller takes its unknown branch. Upgrading reindexes: the parser fingerprint changed because `src/util.ts` is a shared extraction source, so already-indexed files are reparsed once.
-- **HTML extraction ignores style-body markup without crossing document boundaries.** CSS contents no longer produce HTML headings or symbols, while style-shaped text inside comments, RCDATA elements, declarations, custom-element attributes, and self-closing SVG styles does not hide following markup. The parser fingerprint change triggers reindexing on upgrade.
-- **A Bash call that runs in the background, or sets its own long timeout, is no longer cut at the 600 s compress bound.** The compress wrapper took its `--timeout` only from `bash_compress.timeout_seconds`, so `run_in_background` calls and foreground calls with a longer `timeout` were killed at 600 s with exit 124. A background call now gets the config's 7200 s upper bound, and a foreground call gets its own timeout in seconds when that is larger than the configured value. Both stay within the bound, and the configured value still applies when neither field is set.
 
 - **The Stop advisory no longer fires on scratch edits or misses real checks.** It named throwaway probes in the harness scratchpad (outside the project, under the OS temp dir) as unverified work, and said "no test, lint, typecheck or build was run" after a session that ran its validator scripts. An edit outside the session's project root (the nearest project marker above the Stop event's working directory) no longer counts when it sits under the OS temp dir, and with no root known an edit under the OS temp dir does not count either; a sibling package, another repo or a sibling worktree outside the root still counts. A passing `python <dir>/run_*tests*.py`, `validate*.py`, `check_*.py` or `<script>.py ... --self-test` now counts as a check, but only with path or selector arguments: `--help`, `-h`, `--list`, `--version`, `--dry-run` and any other flag make it not a check. A `git commit` or `git push` is never counted, because a hook file existing does not prove it checks anything. The command is stored without any argument beyond the script path and `--self-test`. The advisory still speaks once per distinct state; it repeated only because each turn edited a new file.
 
 - **The Stop advisory no longer dismisses a project edit made through a link in the temp dir, or counts a validator that may be writing its own `.md` argument.** An edit at a path under the OS temp dir was dismissed by its spelling, so a symlink or junction there that leads into the project hid a real project edit. The dismissal now follows links, and a path whose links cannot be resolved is not dismissed. A `.md` argument no longer counts toward a script check at all, so `python scripts/validate_x.py report.md` is not recorded as a check whether or not `report.md` exists: a script given a document may be writing it, and whether that file exists says nothing about what the run verified.
 - **With read confinement on, a relative path to a link that leads outside the workspace is now refused.** Over MCP, `sl.txt` or `./sl.txt` (a symlink in the project that points outside it), or `jn/o.txt` through a junction, was read even though the absolute spelling of the same link was refused. The check for the extra allowed roots and the standard skill and transcript folders measured the relative name under those folders instead of under the project, so it found nothing there and let the read through. It now measures the path the read opens.
-- **A background Agent spawn's launch acknowledgement is no longer cached as the agent's report.** The check matched the ack's fields in one fixed order, so a reordered or wrapped ack was stored under a recall pointer and `mcp-output` served it as the report. The check now reads the fields of a JSON object and is order-independent.
-
 - **Preserve full output when repeating overlapping commands.** Avoids suppression loops in served-output generic elision when a command with overlapping output ranges is rerun.
 
 ## [2.9.32] - 2026-10-20
@@ -133,8 +161,6 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - **Windows test runs use at most 4 worker processes at low priority, and the Defender exclusions are documented.** Running the test suite on Windows now caps the vitest workers at 4 and runs the test processes at low priority, so a large machine no longer freezes under 15 or more workers; `TOKEN_GOAT_TEST_MAX_WORKERS` still sets the count. [docs/install.md](docs/install.md) and [docs/security.md](docs/security.md) now say how to exclude the token-goat processes and data folder from Windows Defender real-time scanning.
 - **Upgrading reindexes once, because the git helpers changed.** The shared helpers that start git and end a whole process tree are among the sources that decide what a parse extracts, so the parser fingerprint moved. Token-goat reparses each indexed file the first time it is needed after the upgrade, rather than keep symbols an older parser wrote, and nothing else changes for you.
-- **The README now says 255+ filter and interception rules, counted from the code.** The total was 210 against an advertised 205: four hand-typed counts had gone stale (one still counted a removed MEMORY.md rule, the rest had missed new ones) and the Grep, Glob, WebFetch, WebSearch, agent-spawn and image hooks were not counted at all. The real total is 259, every hand-listed rule now carries an anchor that a new guard checks against its source file, and the failure-runner count is read from the table the extractor dispatches through.
-- **Upgrading reindexes once more, because the git helper changed again.** The shared helpers that start git and end a whole process tree are among the sources that decide what a parse extracts, so the parser fingerprint moved. Token-goat reparses each indexed file the first time it is needed after the upgrade, and nothing else changes for you.
 - **The native hook helper now builds on Rust 1.99.1, and CI checks it on the oldest Rust it supports.** The pinned toolchain moved from 1.94.0 to 1.99.1. The minimum supported version stays at 1.94, and the `native-targets` job now builds against it, so a change that needs a newer compiler fails in CI instead of for someone building from source. A monthly workflow compares the pin with the current stable Rust and opens an issue when the pin has fallen behind.
 
 ### Fixed
