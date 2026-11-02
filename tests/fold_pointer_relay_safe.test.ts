@@ -67,20 +67,20 @@ describe('a combined section command the relay would strip', () => {
   })
 
   // Provenance: HAND-DERIVED (a heading holding U+FE0F, built with String.fromCodePoint(0xfe0f); the relay's CONTROL_OR_BIDI names it).
-  it('names only the headings whose command survives when one holds U+FE0F, and the relay omits none', async () => {
+  it('names only the headings whose command survives when one holds U+FE0F', async () => {
     const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], [`Overview${VARIATION_SELECTOR_16}`, paragraph('the withheld sentence under the variation-selector heading')], ['Second Section', paragraph(SECOND_MARKER)]])
     const wire = await relayReadAligned(file)
     expect(wire, 'the relay omits no command').not.toContain('command omitted')
-    expect(wire, 'the combined command is dropped whole when one heading would be stripped').not.toContain(`${file}::First Section,`)
+    expect(wire, 'the combined command names the surviving headings only').toContain(`${file}::First Section,Second Section`)
     expect(wire, 'the variation-selector heading is named by no combined command').not.toContain(',Overview')
   })
 
   // Provenance: HAND-DERIVED (a heading holding `$(`, which the relay strips in any quoting: a command substitution).
-  it('names only the headings whose command survives when one holds `$(`, and the relay omits none', async () => {
+  it('names only the headings whose command survives when one holds `$(`', async () => {
     const file = writeDoc([['First Section', paragraph(FIRST_MARKER)], ['Run $(id) first', paragraph('the withheld sentence under the command-substitution heading')], ['Second Section', paragraph(SECOND_MARKER)]])
     const wire = await relayReadAligned(file)
     expect(wire, 'the relay omits no command').not.toContain('command omitted')
-    expect(wire, 'the combined command is dropped whole when one heading would be stripped').not.toContain(`${file}::First Section,`)
+    expect(wire, 'the combined command names the surviving headings only').toContain(`${file}::First Section,Second Section`)
     expect(wire, 'the command-substitution heading is named by no combined command').not.toContain(',Run $(id)')
   })
 
@@ -90,5 +90,25 @@ describe('a combined section command the relay would strip', () => {
     const wire = await relayReadAligned(file)
     expect(wire, 'the relay omits no command').not.toContain('command omitted')
     expect(wire, 'no combined command is printed for one surviving heading').not.toContain('sections with folded paragraphs in one call')
+  })
+
+  // Provenance: HAND-DERIVED (a per-paragraph pointer under a heading holding U+FE0F, which the relay strips; the plain heading beside it must keep its pointer, so a guard that drops every pointer fails).
+  it('prints no per-paragraph pointer under a heading holding U+FE0F, and keeps the plain heading pointer', async () => {
+    const heading = `Overview${VARIATION_SELECTOR_16}`
+    const file = writeDoc([[heading, paragraph('the withheld sentence under the variation-selector heading')], ['First Section', paragraph(FIRST_MARKER)], ['Second Section', paragraph(SECOND_MARKER)]])
+    const wire = await relayReadAligned(file)
+    expect(wire, 'the relay omits no pointer').not.toContain('command omitted')
+    expect(wire, 'no pointer names the variation-selector heading').not.toContain(`${file}::${heading}`)
+    expect(wire, 'the plain heading still gets its pointer').toContain(`token-goat section "${file}::First Section"`)
+  })
+
+  // Provenance: HAND-DERIVED (a per-paragraph pointer under a heading holding `$(`, which the relay strips in any quoting; the plain heading beside it must keep its pointer, so a guard that drops every pointer fails).
+  it('prints no per-paragraph pointer under a heading holding `$(`, and keeps the plain heading pointer', async () => {
+    const heading = 'Run $(id) first'
+    const file = writeDoc([[heading, paragraph('the withheld sentence under the command-substitution heading')], ['First Section', paragraph(FIRST_MARKER)], ['Second Section', paragraph(SECOND_MARKER)]])
+    const wire = await relayReadAligned(file)
+    expect(wire, 'the relay omits no pointer').not.toContain('command omitted')
+    expect(wire, 'no pointer names the command-substitution heading').not.toContain(`${file}::${heading}`)
+    expect(wire, 'the plain heading still gets its pointer').toContain(`token-goat section "${file}::First Section"`)
   })
 })

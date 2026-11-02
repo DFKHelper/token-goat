@@ -70,6 +70,8 @@ function definitionSitesForMarker(markers: readonly string[]): string[] {
 
 /** Round-trip coverage claimed for each pointer-constructing function this guard's population finds. Symmetric: checked both ways below, so an entry cannot outlive the site it names and a found site cannot go uncovered. */
 const ADJUDICATED: Readonly<Record<string, string>> = {
+  'fold_delivery.ts::proseFoldHeading':
+    'Returns the heading only when its `token-goat section "file::Heading"` pointer passes both canQuoteArg and stripUnsafeSuggestions, so a heading holding U+FE0F or `$(` is never named by a pointer the relay would strip. Executed below by the SHAPE row, which follows the plain heading beside each odd one and checks that no pointer names the odd heading.',
   'fold_delivery.ts::proseFoldNotice':
     "Routes through findContainingSection to a `token-goat section \"file::Heading\"` pointer when an enclosing heading resolves (the common case for a markdown document large enough to trip the markdown re-read intercept, which is the scenario this fold exists for), and returns null (the caller must not fold, and delivers the paragraph whole) when no section wraps the withheld line or no quote mark can hold the spec (canQuoteArg; tests/prose_fold_heading_quoting_relay.test.ts), rather than naming the old `Read offset=/limit=` fallback that named a re-read the same intercept could refuse unconditionally. Both outcomes executed below by driving preReadHandler/postReadHandler against real markdown fixtures.",
   'fold_delivery.ts::foldedSectionsCommand':
@@ -171,6 +173,28 @@ describe('a folded delivery pointer, followed literally, returns the bytes it wi
       expect(decision.hookType).not.toBe('deny')
     } else {
       throw new Error(`notice line named no recognized pointer route: ${noticeLine}`)
+    }
+  })
+
+  it('SHAPE token-goat section, heading holding U+FE0F or `$(`: no pointer names it, and the plain heading beside it still returns its withheld sentence', () => {
+    const marker = 'the unique sentence this test looks for after following the plain heading pointer'
+    const filler = 'It then continues for a good while longer, restating the point in more detail than a reader scanning the document has any use for, which is exactly the text this fold exists to remove from the delivered output. '
+    const longParagraph = (sentence: string): string => `This opening sentence stays visible. ${filler.repeat(3)}${sentence}.`
+    const pad = '```\n' + 'filler line to push the file size past the markdown size threshold\n'.repeat(160) + '```'
+    for (const heading of [`Overview${String.fromCodePoint(0xfe0f)}`, 'Run $(id) first']) {
+      clearModuleCaches()
+      const body = ['# Fixture', '', pad, '', `## ${heading}`, '', longParagraph('the withheld sentence under the odd heading'), '', '## First Section', '', longParagraph(marker), '', '## Second Section', '', 'tail', ''].join('\n')
+      const file = normalizePath(path.join(os.tmpdir(), `tg-guard-fold-odd-${process.pid}-${Math.random().toString(36).slice(2)}.md`))
+      fs.writeFileSync(file, body)
+      tmpFiles.push(file)
+
+      expect(preReadHandler(readEvent(file)).hookType).not.toBe('deny')
+      const post = postReadHandler(postEvent(file, body))
+      expect(post.hookType).toBe('rewriteOutput')
+      const rewritten = post.hookType === 'rewriteOutput' ? post.updatedOutput : ''
+      expect(rewritten, `no pointer names the ${JSON.stringify(heading)} heading`).not.toContain(`${file}::${heading}`)
+      expect(rewritten, 'the plain heading still gets its pointer').toContain(`token-goat section "${file}::First Section"`)
+      expect(readSection(file, 'First Section')?.content).toContain(marker)
     }
   })
 

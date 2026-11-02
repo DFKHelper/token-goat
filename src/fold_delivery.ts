@@ -68,12 +68,13 @@ export function proseFoldNotice(keep: string, line: number, shownPath: string, n
   return `${displaySafeText(keep)} ... rest of paragraph folded (line ${line}) -- token-goat section ${quotedArg(`${shownPath}::${heading}`)}`
 }
 
-/** The display-safe heading a prose fold at `line` is recalled by, or null when no section encloses it or its `section` spec holds a line break, or holds `$`, a backtick, `"`, U+201C-U+201E, or a backslash followed by another backslash or ending the value, together with `'`, a U+2018-U+201B quote, or a control or bidi character, which no quote mark holds and quotedArg would print as a placeholder that runs nothing. One resolver for the fold planner, the notice and the combined command, so a paragraph whose pointer cannot be printed is never counted as folded. */
+/** The display-safe heading a prose fold at `line` is recalled by, or null when no section encloses it or its `section` spec holds a line break, or holds `$`, a backtick, `"`, U+201C-U+201E, or a backslash followed by another backslash or ending the value, together with `'`, a U+2018-U+201B quote, or a control or bidi character, which no quote mark holds and quotedArg would print as a placeholder that runs nothing, or whose pointer stripUnsafeSuggestions would strip (a U+FE0F or a command substitution). One resolver for the fold planner, the notice and the combined command, so a paragraph whose pointer cannot be printed is never counted as folded. */
 function proseFoldHeading(normalizedPath: string, line: number, shownPath: string): string | null {
   const section = findContainingSection(normalizedPath, line, line)
   if (section === null) return null
   const heading = displaySafeText(section.heading)
-  return canQuoteArg(`${shownPath}::${heading}`) ? heading : null
+  const pointer = `token-goat section ${quotedArg(`${shownPath}::${heading}`)}`
+  return canQuoteArg(`${shownPath}::${heading}`) && stripUnsafeSuggestions(pointer) === pointer ? heading : null
 }
 
 /** One `section` command naming, in file order, every heading the prose folds in `folds` sit under (resolved as {@link proseFoldNotice} resolves each), so a reader who needs every folded paragraph back spends one call instead of one per heading, and how many headings it names. A heading holding a comma, `::` or a backtick is left to its own per-paragraph pointer, since `section` would split a comma into two names and read a `::` as a file boundary, and a backtick closes the backtick fence leadWithCommand sets the command in, so the line would no longer read as one command; null when fewer than two headings remain or the command would still hold a backtick (one in the path) or the relay would strip it. */
@@ -203,11 +204,14 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
   const numbered: string[] = []
   const raw: string[] = []
   let at = 0
-  for (const fold of folds) {
-    for (let i = at; i < fold.startIdx; i++) {
+  const keepRows = (from: number, to: number): void => {
+    for (let i = from; i < to; i++) {
       numbered.push(rows[i]?.raw ?? '')
       raw.push(rows[i]?.text ?? '')
     }
+  }
+  for (const fold of folds) {
+    keepRows(at, fold.startIdx)
     // Written as an exhaustive switch rather than a ternary chain: a new fold kind added to `BodyFold` must fail to compile here instead of silently rendering as a body fold and naming a symbol that does not exist.
     let notice: string | null
     switch (fold.kind) {
@@ -227,19 +231,13 @@ export function foldDelivery(rows: readonly FoldRow[], normalizedPath: string, s
     }
     if (notice === null) {
       // No working recall route for this span (no enclosing section, which is the paragraph-before-the-first-heading case a Read offset/limit pointer would name a re-read the markdown intercept can refuse outright, or a spec no quote mark holds): deliver it whole instead of withholding it behind a pointer that may not work. The planner filters above already drop both, so this is the backstop.
-      for (let i = fold.startIdx; i < fold.startIdx + fold.len; i++) {
-        numbered.push(rows[i]?.raw ?? '')
-        raw.push(rows[i]?.text ?? '')
-      }
+      keepRows(fold.startIdx, fold.startIdx + fold.len)
       at = fold.startIdx + fold.len
       continue
     }
     pushWithheld(numbered, notice, fold.len, layout)
     at = fold.startIdx + fold.len
   }
-  for (let i = at; i < rows.length; i++) {
-    numbered.push(rows[i]?.raw ?? '')
-    raw.push(rows[i]?.text ?? '')
-  }
+  keepRows(at, rows.length)
   return { numbered, raw, folds }
 }
