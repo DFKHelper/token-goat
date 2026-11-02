@@ -4,6 +4,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { ALIGNED_LAYOUT_NOTE } from '../src/fold_delivery.js'
 import { serializeOutput, type HookEvent } from '../src/hook_registry.js'
 import { preReadHandler } from '../src/hooks_read.js'
 import { postReadHandler } from '../src/hooks_read_post.js'
@@ -290,6 +291,6 @@ describe('a rewritten Read keeps every line on its real line number', () => {
     expect(view.lines[0]?.text).toMatch(/^&#91;token-goat\] lines 1-30 were already served/)
     expectRealNumbering(view, body)
     // The served-elision notice is file-position line 1 here, same as every other aligned withheld-run notice; the layout note travels beside the result (PostToolUse additionalContext), not folded into a rewritten preamble line the fence would otherwise have to lead the body with.
-    expect(view.context, 'the aligned layout note travels beside a served-elision rewrite, same as every other aligned producer').toMatch(/real line number/)
+    expect(view.context, 'the aligned layout note travels beside a served-elision rewrite, same as every other aligned producer').toContain(ALIGNED_LAYOUT_NOTE)
   })
 })
