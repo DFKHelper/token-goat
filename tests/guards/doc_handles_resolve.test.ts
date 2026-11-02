@@ -19,14 +19,15 @@ const ARCHIVE_DIR = 'docs/plans/archive/'
 const VERBS = ['read', 'section', 'brief', 'refs', 'impact'] as const
 type Verb = (typeof VERBS)[number]
 
-/** A quoted first argument after `token-goat <verb>`, with optional leading flags. */
-const COMMAND = /token-goat\s+(?:-{1,2}[\w-]+\s+)*(read|section|brief|refs|impact)\s+"([^"\r\n]+)"/g
+/** An optional `token-goat` prefix and leading flags, a verb, then one handle: double-quoted, single-quoted, or bare up to whitespace, a closing quote or a backtick. */
+const COMMAND = /(?:token-goat\s+(?:-{1,2}[\w-]+\s+)*)?\b(read|section|brief|refs|impact)[ \t]+(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+))/g
 
 /** Handles the docs use as examples, not as real files. Hand-written on purpose; never generated from the scan. */
 const PLACEHOLDER_HANDLES: ReadonlySet<string> = new Set([
   'file::symbol',
   'file::Symbol',
   'file::Heading',
+  'file::Name', // docs/install.md:407 and :451 use the same placeholder shape as file::Symbol.
   'doc.md::Heading',
   'src/auth.py::login',
 ])
@@ -35,13 +36,25 @@ const PLACEHOLDER_HANDLES: ReadonlySet<string> = new Set([
 const SITE_EXEMPTIONS: ReadonlyArray<{ doc: string, handle: string }> = [
   // docs/PROMPT_SESSION_MINING.md:32 sits in a fenced Example Output card for a hypothetical session, not a live command.
   { doc: 'docs/PROMPT_SESSION_MINING.md', handle: 'src/auth.ts::verifyToken' },
+  // docs/cli.md:33 gives the qualified-lookup syntax with file.py as the example file; no file.py is tracked.
+  { doc: 'docs/cli.md', handle: 'file.py::Class.method' },
+  // docs/cli.md:33 gives the line-anchor syntax with file.py as the example file; no file.py is tracked.
+  { doc: 'docs/cli.md', handle: 'file.py::run@42' },
+  // docs/cli.md:33 gives the qualified line-anchor syntax with file.py as the example file; no file.py is tracked.
+  { doc: 'docs/cli.md', handle: 'file.py::Class.method@42' },
+  // README.md:289 names doc.md as the example file in its anchor-ID prose; no doc.md is tracked.
+  { doc: 'README.md', handle: 'doc.md::Quick-start' },
+  // README.md:110 is a table row showing TOML section syntax; pyproject.toml is an example, not a tracked file.
+  { doc: 'README.md', handle: 'pyproject.toml::tool.ruff' },
+  // docs/loop-ledger.md:245 quotes a past cd-prefixed command in a defect row; x.ts is an example name.
+  { doc: 'docs/loop-ledger.md', handle: 'x.ts::foo' },
+  // src/canonical_skill.md:45 names a shell-script heading as an example; script.sh is not a tracked file.
+  { doc: 'src/canonical_skill.md', handle: 'script.sh::# Banner' },
 ]
 
 /** Rows the extractor must keep in tracked docs, so a scanner that finds nothing cannot pass. */
 const MUST_FIND: ReadonlyArray<{ doc: string, handle: string }> = [
   { doc: 'README.md', handle: 'README.md::Install' },
-  { doc: 'docs/loop-invariants.md', handle: 'docs/loop-invariants.md::<Heading>' },
-  { doc: 'docs/loop-ledger.md', handle: 'docs/loop-ledger.md::<Heading>' },
 ]
 
 interface Handle { doc: string, line: number, verb: Verb, handle: string }
@@ -56,12 +69,12 @@ function isPlaceholder(h: Handle): boolean {
   return SITE_EXEMPTIONS.some((e) => e.doc === h.doc && e.handle === h.handle)
 }
 
-/** Every `token-goat <verb> "<file>::<name>"` in one document, with its 1-based line. */
+/** Every `<verb> <file>::<name>` handle in one document, in any of the three quoting spellings, with its 1-based line. */
 function extractHandles(doc: string, text: string): Handle[] {
   const out: Handle[] = []
   for (const m of text.matchAll(COMMAND)) {
     const verb = m[1]
-    const handle = m[2] ?? ''
+    const handle = m[2] ?? m[3] ?? m[4] ?? ''
     if (!isVerb(verb) || !handle.includes('::')) continue
     const line = text.slice(0, m.index ?? 0).split('\n').length
     out.push({ doc, line, verb, handle })
@@ -151,7 +164,22 @@ describe('doc handles resolve', () => {
     ).toEqual([])
   })
 
-  it('a scratch doc naming a missing heading or symbol fails on that handle by name', async () => {
+  it('each must-find handle is extracted, is not a placeholder, and resolves while a stale twin fails', async () => {
+    const tracked = new Set(trackedFiles())
+    const symbolsIn = symbolCache()
+    for (const must of MUST_FIND) {
+      const text = fs.readFileSync(path.join(REPO, must.doc), 'utf8')
+      const found = extractHandles(must.doc, text).find((h) => h.handle === must.handle)
+      expect(found, `${must.handle} was not extracted from ${must.doc}, so the must-find row checks nothing.`).toBeDefined()
+      if (found === undefined) continue
+      expect(isPlaceholder(found), `${must.handle} is skipped as a placeholder and never reaches the resolver.`).toBe(false)
+      expect(await failureOf(found, tracked, symbolsIn), `${must.handle} did not resolve to a real heading or symbol.`).toBeNull()
+      const stale = { ...found, handle: `${must.handle}-no-such-name` }
+      expect(await failureOf(stale, tracked, symbolsIn), `The resolver accepted ${stale.handle}, so it cannot tell real from stale.`).not.toBeNull()
+    }
+  })
+
+  it('a scratch doc naming a missing heading or symbol fails on that handle by name, in every spelling', async () => {
     const scratch = [
       'token-goat section "README.md::Install"',
       'token-goat section "README.md::No Such Heading Anywhere"',
@@ -159,12 +187,34 @@ describe('doc handles resolve', () => {
       'token-goat read "src/parser.ts::parseFil"',
       'token-goat section "docs/missing-page.md::Install"',
       'token-goat read "file::symbol"',
+      'read "src/parser.ts::parseFilUnprefixed"',
+      'refs src/parser.ts::parseFilUnquoted --callers',
+      "token-goat brief 'src/parser.ts::parseFile'",
+      'section README.md::Install',
+      "read 'src/parser.ts::parseFilSingle'",
     ].join('\n')
-    const failures = await failuresOf(extractHandles('scratch.md', scratch), new Set(trackedFiles()))
-    expect(failures.map((f) => f.handle)).toEqual([
+    const handles = extractHandles('scratch.md', scratch)
+    expect(handles.map((h) => h.handle), 'The extractor dropped a handle spelling from the scratch doc.').toEqual([
+      'README.md::Install',
+      'README.md::No Such Heading Anywhere',
+      'src/parser.ts::parseFile',
+      'src/parser.ts::parseFil',
+      'docs/missing-page.md::Install',
+      'file::symbol',
+      'src/parser.ts::parseFilUnprefixed',
+      'src/parser.ts::parseFilUnquoted',
+      'src/parser.ts::parseFile',
+      'README.md::Install',
+      'src/parser.ts::parseFilSingle',
+    ])
+    const failures = await failuresOf(handles, new Set(trackedFiles()))
+    expect(failures.map((f) => f.handle), 'A stale handle in the scratch doc did not fail the resolver.').toEqual([
       'README.md::No Such Heading Anywhere',
       'src/parser.ts::parseFil',
       'docs/missing-page.md::Install',
+      'src/parser.ts::parseFilUnprefixed',
+      'src/parser.ts::parseFilUnquoted',
+      'src/parser.ts::parseFilSingle',
     ])
   })
 })
