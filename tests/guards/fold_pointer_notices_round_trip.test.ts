@@ -193,6 +193,7 @@ describe('a folded delivery pointer, followed literally, returns the bytes it wi
       expect(post.hookType).toBe('rewriteOutput')
       const rewritten = post.hookType === 'rewriteOutput' ? post.updatedOutput : ''
       expect(rewritten, `no pointer names the ${JSON.stringify(heading)} heading`).not.toContain(`${file}::${heading}`)
+      expect(rewritten, 'odd-heading paragraph delivered whole').toContain('the withheld sentence under the odd heading')
       expect(rewritten, 'the plain heading still gets its pointer').toContain(`token-goat section "${file}::First Section"`)
       expect(readSection(file, 'First Section')?.content).toContain(marker)
     }
