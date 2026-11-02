@@ -4,6 +4,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.34] - 2026-11-02
+
+### Added
+
+- **A search that finds nothing retries a name that is a few letters off.** The retry runs on the symbol, heading and text channels only, so the semantic channel is not searched again for each near name; channels you name yourself are kept on every retry. The `--json` output gains a `retries` field when a retry ran, and is unchanged when none did.
+
 ### Changed
 
 - **The canonical skill generator enforces a bounded compact slice**, and the generated token-goat skill now loads its read-gate overview before the detailed command reference.
@@ -15,6 +21,16 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **Legacy PHP indexing covers include files and procedural declarations.** `.inc` files now map to PHP; multiline array initializers and top-level procedural arrays are indexed across their full spans. Literal single-quoted `eval()` declarations and assigned `create_function()` callbacks are extracted without executing dynamic code. The parser fingerprint change triggers reindexing on upgrade.
 - **A Markdown Read that folds paragraphs under two or more headings adds one `token-goat section "file::A,B"` command** naming those headings, so getting their folded paragraphs back takes one call instead of one per heading. A heading holding a comma, `::` or a backtick is left out of that command and keeps its own per-paragraph pointer. A heading whose `section` value holds a line break, or holds `$`, a backtick, `"`, U+201C-U+201E, or a backslash followed by another backslash or ending the value, together with `'`, a U+2018-U+201B quote, or a control or bidi character, fits no quote mark, so its paragraph is delivered unfolded and the heading is named by no command; the same rule keeps a function body unfolded when its `token-goat read` pointer could not be quoted, and a source skeleton at such a path names only the whole-file Read.
 - **A cut Bash result names the lines it left out**: when compression or the token cap removes one run of lines, the recall notice adds `lines not shown: token-goat bash-output <id> --lines A-B`, checked against the stored copy, so the follow-up fetches only those lines instead of the whole output with `--full`. The `full output:` recall pointer now also prints its `token-goat` prefix, so both lines run as printed.
+- **`impact` lists callers in other files first within each hop**, so the callers most likely to break come before those in the same file.
+- **A search page made only of weak semantic matches shows three hits.** It used to print every one of them, 16 lines for one nonsense query. One line names the command that lists the rest; naming channels with `-c` or `--channels` turns the cap off, and `--json` is unchanged.
+- **The rerun hint on a weak search page repeats `--limit`, `--project` and `--min-score`**, so the command it prints runs the same search as the one you typed.
+- **The background indexer reads the config once per file** instead of three or four times, which cut file reads by more than half when it re-checks unchanged files.
+- **The Rust hook helper uses libc 0.2.191.**
+
+### Fixed
+
+- **A long misspelled symbol name now lists the real name first.** When the query was 8 to 64 characters and also contained shorter real names, the list showed fragments such as `get` and `read` and missed the name one edit away.
+- **A Markdown Read no longer prints a section pointer that would be stripped.** A folded paragraph under a heading that no quote mark can hold, such as one with both a backtick and an apostrophe, is now delivered whole instead of behind a "command omitted" line. A heading holding a backtick or `::` keeps its own pointer while the other headings still share one combined command, and a heading with an invisible variation selector or a command substitution is delivered whole.
 
 ## [2.9.33] - 2026-10-26
 
