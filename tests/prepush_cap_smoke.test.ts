@@ -349,6 +349,18 @@ describe('the hard stop ends the legs of a real hook run', () => {
     expect(r.elapsedS - Number(m?.[1])).toBeLessThan(SPAWN_SLACK_S)
   })
 
+  // The EXIT trap fires from the start-up failure before the budget variables are read, so it must not trip set -u after the notice.
+  hookRow('a cleanup process that exits before it is up fails the push with its notice last and no unbound variable', () => {
+    writeFileSync(path.join(dir, '.lefthook-scripts', 'prepush-reaper.sh'), '#!/usr/bin/env bash\nexit 3\n')
+    const r = runHook({})
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain('the cleanup process exited before it started')
+    expect(r.out, 'the exit trap read an unset variable').not.toContain('unbound variable')
+    const pushLines = r.out.trimEnd().split('\n').filter((l) => l.startsWith('pre-push:'))
+    expect(pushLines[pushLines.length - 1], r.out).toContain('exited before it started')
+  })
+
   hookRow('a stopped test leg is ended at the stop, and the push still passes', () => {
     const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60' })
     expect(r.timedOut, r.out).toBe(false)

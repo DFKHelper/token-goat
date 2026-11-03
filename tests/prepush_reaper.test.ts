@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { HARD_STOP_DEFAULT_S } from '../scripts/prepush-budget.mjs'
 import { queryProcessCommandLine } from '../src/resident_process.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 
@@ -129,6 +130,8 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
       'if [[ -n "${STUB_REAPER_DIR:-}" ]]; then CAP_SELF_DIR="$STUB_REAPER_DIR"; fi',
       // A stub directory is put first on the PATH in the POSIX form: a Windows PATH list handed to Git Bash is not reliably searched in order.
       'if [[ -n "${STUB_BIN:-}" ]]; then if command -v cygpath >/dev/null 2>&1; then STUB_BIN=$(cygpath -u "$STUB_BIN"); fi; PATH="$STUB_BIN:$PATH"; fi',
+      // With STUB_STATE_FILE set, the driver's exit writes the Windows pid of the cleanup process it started if the system still lists it, for a run that fails inside cap_reaper_start before it can write the pid itself; the test then judges that pid by its command line.
+      'if [[ -n "${STUB_STATE_FILE:-}" ]]; then trap \'if [[ -r "/proc/${REAP_PID:-0}/winpid" ]]; then read -r w <"/proc/$REAP_PID/winpid"; echo "$w" >"$STUB_STATE_FILE"; fi\' EXIT; fi',
       // The hook starts no leg before the cleanup process is up, so the driver starts it first too.
       'cap_reaper_start',
       '"$BASH" "$D/leg.sh" 9<&- &',
@@ -182,6 +185,35 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     runDriver([], { STUB_REAPER_DIR: writeStubReaper(null) }, undefined, 1)
     expect(readFileSync(file('driver.out'), 'utf8')).toContain('the cleanup process exited before it started')
     expect(existsSync(file('leg.winpid')), 'a leg started with no cleanup process running').toBe(false)
+  })
+
+  // The cleanup process stays alive and never says it is up: the wait ends at the hard stop, lowered here through the existing PREPUSH_HARD_STOP_S override, the stand-in is ended, the push fails with the budget notice and no leg starts.
+  it.skipIf(!bashAvailable)('fails the push at the hard stop when the cleanup process is alive but never up, and ends it', () => {
+    const stub = file('stub-hang')
+    mkdirSync(stub)
+    // The stand-in records its own Windows pid first, never writes `up`, and ends by itself when the row's sentinel file is gone (the row removes it in `finally`) or after 300 ticks.
+    const sentinel = file('stub.alive')
+    writeFileSync(sentinel, '')
+    writeFileSync(path.join(stub, 'prepush-reaper.sh'), ['#!/usr/bin/env bash', 'w=$$; if [[ -r "/proc/$$/winpid" ]]; then read -r w <"/proc/$$/winpid"; fi', 'echo "$w" >"$D/stub.winpid"', 'i=0; while [[ -e "$D/stub.alive" ]] && (( i < 300 )); do sleep 1; i=$((i + 1)); done', ''].join('\n'))
+    try {
+      runDriver([], { STUB_REAPER_DIR: slash(stub), PREPUSH_HARD_STOP_S: '3' }, undefined, 1)
+      expect(readFileSync(file('driver.out'), 'utf8')).toContain('the cleanup process was not up by the 3s hard-stop budget')
+      expect(existsSync(file('leg.winpid')), 'a leg started with no cleanup process up').toBe(false)
+      // The stand-in writes its pid before anything else, so the pid file must exist by the time the hook has waited out its stop.
+      for (let n = 0; n < 50 && !existsSync(file('stub.winpid')); n++) pause(200)
+      expect(existsSync(file('stub.winpid')), 'the stand-in never recorded its pid, so it never ran').toBe(true)
+      const stubPid = num('stub.winpid')
+      tracked.push({ pid: stubPid, ours: /prepush-reaper/ })
+      expect(ourProcessGoneWithin(stubPid, (c) => /prepush-reaper/.test(c), REAP_EXIT_SLACK_S), `the stand-in cleanup process ${stubPid} is still running after the hook failed the push`).toBe(true)
+    } finally {
+      rmSync(sentinel, { force: true })
+    }
+  })
+
+  // The cap derives the default hard stop in bash because it must bound the start wait before node is asked; this keeps the two from drifting apart.
+  it('names the same default hard stop as the budget module', () => {
+    const n = Number(/^HARD_STOP_DEFAULT_S=(\d+)$/m.exec(readFileSync(CAP_SCRIPT, 'utf8'))?.[1])
+    expect(n, 'HARD_STOP_DEFAULT_S=<seconds> was not found in prepush-cap.sh').toBe(HARD_STOP_DEFAULT_S)
   })
 
   it.skipIf(!bashAvailable)('ends a leg and its tree within the grace after the hook exits, and exits itself', () => {

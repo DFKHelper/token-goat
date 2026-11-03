@@ -202,7 +202,7 @@ cleanup() {
     if [[ "$pid" != "${HARD_PID:-}" ]] && kill -0 "$pid" 2>/dev/null; then live+=("$pid"); fi
   done
   # Side by side and polled: after a stop to the tail deadline, otherwise for the cleanup room the budget keeps.
-  cap_kill_all "${CAP_TAIL_END:-$((SECONDS + STOP_CLEANUP_S))}" "${live[@]}"
+  cap_kill_all "${CAP_TAIL_END:-$((SECONDS + ${STOP_CLEANUP_S:-0}))}" "${live[@]}"
   cap_reaper_notice
 }
 trap cleanup EXIT

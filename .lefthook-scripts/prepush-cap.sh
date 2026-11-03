@@ -3,6 +3,8 @@
 
 # The cleanup process (prepush-reaper.sh) does every kill. It is started once, outlives the hook only while a registered leg is alive, and ends each leg's whole tree on a request or when the hook is gone; the hook only registers pids and sends requests. REAP_GRACE_S is how long after the hook exits it may keep ending legs.
 REAP_GRACE_S=30
+# The default hard stop in seconds; scripts/prepush-budget.mjs derives the same value (HARD_STOP_DEFAULT_S) and a test fails if the two differ.
+HARD_STOP_DEFAULT_S=540
 REAP_DIR=""
 REAP_PID=""
 REAP_RECORD=""
@@ -34,7 +36,7 @@ cap_record_live() {
   [[ -n "$p" ]] && cap_proc_is "$p" "$w"
 }
 
-# Starts the cleanup process and waits for it to say it is up or to be gone, never for a fixed count of ticks (bounded only by the default hard-stop share of the hook limit, none under PREPUSH_FULL=1); without it nothing would end a leg, so the push fails. Names the pids an earlier cleanup process could not end, then clears that record. Idempotent. A run with no hard stop (PREPUSH_FULL=1) gives it no life limit of its own.
+# Starts the cleanup process and waits for it to say it is up or to be gone, never for a fixed count of ticks (bounded by the hard stop, HARD_STOP_DEFAULT_S or the lower PREPUSH_HARD_STOP_S; unbounded under PREPUSH_FULL=1, which is uncapped, so an alive cleanup process that never says it is up holds that run); without it nothing would end a leg, so the push fails. Names the pids an earlier cleanup process could not end, then clears that record. Idempotent. A run with no hard stop (PREPUSH_FULL=1) gives it no life limit of its own.
 cap_reaper_start() {
   [[ -z "$REAP_DIR" ]] || return 0
   local base store life stop_at="" l left=""
@@ -59,7 +61,10 @@ cap_reaper_start() {
   "$BASH" "$CAP_SELF_DIR/prepush-reaper.sh" "$$" "$REAP_DIR" "$REAP_RECORD" "$life" "$REAP_GRACE_S" "$CAP_KILL_WIN_S" </dev/null >/dev/null 2>&1 9<&- &
   REAP_PID=$!
   disown "$REAP_PID" 2>/dev/null || true
-  if [[ "${PREPUSH_FULL:-0}" != "1" ]]; then stop_at=$(( ${HOOK_LIMIT_S:-600} * 9 / 10 )); fi
+  if [[ "${PREPUSH_FULL:-0}" != "1" ]]; then
+    stop_at=$HARD_STOP_DEFAULT_S
+    if [[ "${PREPUSH_HARD_STOP_S:-}" =~ ^[0-9]{1,4}$ ]] && (( 10#$PREPUSH_HARD_STOP_S > 0 && 10#$PREPUSH_HARD_STOP_S < stop_at )); then stop_at=$((10#$PREPUSH_HARD_STOP_S)); fi
+  fi
   while [[ ! -e "$REAP_DIR/up" ]] && kill -0 "$REAP_PID" 2>/dev/null && { [[ -z "$stop_at" ]] || (( SECONDS < stop_at )); }; do cap_tick; done
   if [[ ! -e "$REAP_DIR/up" ]]; then
     if kill -0 "$REAP_PID" 2>/dev/null; then
