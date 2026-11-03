@@ -304,6 +304,10 @@ describe('the hard stop ends the legs of a real hook run', () => {
     const recorded = reaperRecord()
     rmSync(dir, { recursive: true, force: true })
     expect(reaperGone, `the cleanup process ${reaper} never exited`).toBe(true)
+    if (reaper > 1 && reaperGone) {
+      expect(gone, `the cleanup process ${reaper} wrote no "hook gone" stamp\n${recorded}`).not.toBeNull()
+      expect(exited, `the cleanup process ${reaper} wrote no "exit" stamp\n${recorded}`).not.toBeNull()
+    }
     if (gone !== null && exited !== null) expect(exited - gone, `the cleanup process outlived its deadline, past the end of the row\n${recorded}`).toBeLessThanOrEqual(REAP_GRACE_S)
     // A row whose cleanup ended the runner shows up as a vitest run that exits 0 with no summary; this names the row instead, while the worker still lives to say so.
     expect(runnerAlive(), `the vitest runner (pid ${process.ppid}) was ended during this row`).toBe(true)
@@ -378,9 +382,9 @@ describe('the hard stop ends the legs of a real hook run', () => {
     const marker = path.join(dir, 'slow-reaper.pid')
     writeFileSync(path.join(dir, '.lefthook-scripts', 'prepush-reaper.sh'), `#!/usr/bin/env bash\necho "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"${slash(marker)}"\nexec sleep 300\n`)
     const r = runHook({ PREPUSH_HARD_STOP_S: '8' })
-    // Ended by the hook itself on its way out, so the stub is gone at once; a survivor is ended here first so the row fails by name.
+    // The hook ends the stub on its way out; the wait is bounded at 5 s, and a survivor is ended here after it so the row fails by name.
     const stub = Number(readFileSync(marker, 'utf8').trim())
-    const stubGone = goneWithin(stub, 0)
+    const stubGone = goneWithin(stub, 5)
     if (!stubGone) endRecordedTrees([marker], dir)
     expect(stubGone, `the slow cleanup process ${stub} outlived the hook`).toBe(true)
     expect(r.timedOut, r.out).toBe(false)
@@ -392,7 +396,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
   // A hook still starting when the spawn timeout ends it leaves its tree behind; the row ends that tree, so the directory can be removed and nothing outlives the row.
   hookRow('a hook the spawn timeout ended leaves no process holding its directory', () => {
     const marker = path.join(dir, 'slow-reaper.pid')
-    writeFileSync(path.join(dir, '.lefthook-scripts', 'prepush-reaper.sh'), `#!/usr/bin/env bash\necho "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"${slash(marker)}"\nsleep 300\n`)
+    writeFileSync(path.join(dir, '.lefthook-scripts', 'prepush-reaper.sh'), `#!/usr/bin/env bash\necho "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"${slash(marker)}"\nexec sleep 300\n`)
     const r = runHook({}, 8000)
     expect(r.timedOut, 'the hook returned before the spawn timeout, so it was not still starting').toBe(true)
     const tag = path.basename(dir)
