@@ -35,9 +35,33 @@ vi.mock('../src/config.js', async (importOriginal) => ({ ...(await importOrigina
 
 // A file that is on disk and is a regular file but cannot be read right now (an AV scanner or sync client holding a lock): stat says file, fingerprintFileWithBytes says null. A directory at the path used to stand in for this, but a directory standing where an indexed file was is a deletion now (indexedFileIsGone), so the failure is injected here instead. Everything else goes to the real module. Provenance: HAND-DERIVED failure injection; the lock itself cannot be created portably from Node.
 const unreadablePaths = vi.hoisted(() => new Set<string>())
+const fingerprintObservations = vi.hoisted(() => ({
+  capture: false,
+  fileFingerprints: [] as Array<{ path: string; sha: string; bytes: Buffer }>,
+  bufferHashes: [] as Buffer[],
+}))
 vi.mock('../src/fingerprint.js', async (importOriginal) => {
   const actual = await importOriginal<typeof Fingerprint>()
-  return { ...actual, fingerprintFileWithBytes: (filePath: string) => (unreadablePaths.has(normalizePath(filePath)) ? null : actual.fingerprintFileWithBytes(filePath)) }
+  return {
+    ...actual,
+    fingerprintContent: (content: string | Buffer) => {
+      if (fingerprintObservations.capture && Buffer.isBuffer(content)) {
+        fingerprintObservations.bufferHashes.push(content)
+      }
+      return actual.fingerprintContent(content)
+    },
+    fingerprintFileWithBytes: (filePath: string) => {
+      if (unreadablePaths.has(normalizePath(filePath))) return null
+      const fingerprint = actual.fingerprintFileWithBytes(filePath)
+      if (fingerprintObservations.capture && fingerprint !== null) {
+        fingerprintObservations.fileFingerprints.push({
+          path: normalizePath(filePath),
+          ...fingerprint,
+        })
+      }
+      return fingerprint
+    },
+  }
 })
 
 /** Create a real file at `filePath` whose read fails every time, as a locked file's does. */
@@ -1134,6 +1158,39 @@ describe('drainOnce', () => {
       expect(drainOnce(DIR)).toBe(0)
       expect(querySymbols({ name: 'shaGatedSymbol', limit: 10 }, projectDb).length).toBe(0)
     } finally {
+      closeDb(projectDb)
+    }
+  })
+
+  it('hashes a dirty file once across the default worker parse path', () => {
+    const src = path.join(DIR, 'single-hash.ts')
+    const content = Buffer.from('export function singleHashWorkerSymbol(): number {\n  return 7\n}\n')
+    fs.writeFileSync(src, content)
+    const norm = normalizePath(src)
+    const projectDb = path.join(DIR, 'global.db')
+    const fingerprintsStart = fingerprintObservations.fileFingerprints.length
+    const bufferHashesStart = fingerprintObservations.bufferHashes.length
+    const previousCapture = fingerprintObservations.capture
+    try {
+      fingerprintObservations.capture = true
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      fingerprintObservations.capture = previousCapture
+
+      const fileFingerprints = fingerprintObservations.fileFingerprints
+        .slice(fingerprintsStart)
+        .filter((fingerprint) => fingerprint.path === norm)
+      expect(fileFingerprints).toHaveLength(1)
+      const fileFingerprint = fileFingerprints[0]
+      expect(fileFingerprint?.bytes).toEqual(content)
+      const repeatedBufferHashes = fingerprintObservations.bufferHashes
+        .slice(bufferHashesStart)
+        .filter((bytes) => fileFingerprint !== undefined && bytes.equals(fileFingerprint.bytes))
+      expect(fileFingerprints.length + repeatedBufferHashes.length).toBe(1)
+      expect(getFileEntry(norm, projectDb)?.sha).toBe(fileFingerprint?.sha)
+      expect(querySymbols({ name: 'singleHashWorkerSymbol', limit: 10 }, projectDb)).toHaveLength(1)
+    } finally {
+      fingerprintObservations.capture = previousCapture
       closeDb(projectDb)
     }
   })

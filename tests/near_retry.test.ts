@@ -16,13 +16,30 @@ import { normalizePath } from '../src/paths.js'
 import { nearSymbolNames } from '../src/read_suggest.js'
 import { NEAR_RETRY, runParallelSearch, searchWithNearRetry } from '../src/search/search_cli.js'
 
-const textReadState = vi.hoisted(() => ({ watchedPath: '', reads: 0 }))
+const textReadState = vi.hoisted(() => ({
+  watchedPath: '',
+  reads: 0,
+  afterRead: null as (() => void) | null,
+  captureAll: false,
+  readsByPath: new Map<string, number>(),
+}))
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeFs>()
   const readFileSync = ((...args: Parameters<typeof actual.readFileSync>) => {
-    if (typeof args[0] === 'string' && normalizePath(args[0]) === normalizePath(textReadState.watchedPath)) textReadState.reads++
-    return actual.readFileSync(...args)
+    const filePath = typeof args[0] === 'string' ? normalizePath(args[0]) : null
+    const watched = filePath !== null && textReadState.watchedPath !== '' && filePath === normalizePath(textReadState.watchedPath)
+    if (watched) textReadState.reads++
+    if (textReadState.captureAll && filePath !== null) {
+      textReadState.readsByPath.set(filePath, (textReadState.readsByPath.get(filePath) ?? 0) + 1)
+    }
+    const content = actual.readFileSync(...args)
+    if (watched && textReadState.afterRead !== null) {
+      const afterRead = textReadState.afterRead
+      textReadState.afterRead = null
+      afterRead()
+    }
+    return content
   }) as typeof actual.readFileSync
   return { ...actual, readFileSync, default: { ...actual, readFileSync } }
 })
@@ -48,6 +65,9 @@ beforeEach(() => {
 afterEach(() => {
   textReadState.watchedPath = ''
   textReadState.reads = 0
+  textReadState.afterRead = null
+  textReadState.captureAll = false
+  textReadState.readsByPath.clear()
   closeAllDbs()
   cwdSpy.mockRestore()
   fs.rmSync(root, { recursive: true, force: true })
@@ -90,6 +110,107 @@ describe('search retries near-word names on a miss', () => {
     const guideHit = second.summary.results.find((result) => path.basename(result.filePath) === 'guide.md')
     expect(guideHit?.preview).toContain('Fresh parseFile guide entry.')
     expect(guideReads(), 'the second search should read guide.md with a fresh cache').toBe(1)
+  })
+
+  it('does not use cached text after its file is deleted before a near retry', async () => {
+    const guidePath = path.join(root, 'guide.md')
+    fs.writeFileSync(guidePath, '# Guide\n\nThe parseFile guide entry.\n')
+    indexFileSync(guidePath, globalDbPath())
+    textReadState.watchedPath = guidePath
+    textReadState.afterRead = () => fs.unlinkSync(guidePath)
+
+    const out = await searchWithNearRetry({ query: 'parseFle', projectRoot: root, channels: ['text'] })
+    expect(out.retries).toBe(1)
+    expect(
+      out.summary.results.some((result) => normalizePath(result.filePath) === normalizePath(guidePath)),
+      'the retry used text cached before the file was deleted',
+    ).toBe(false)
+    expect(textReadState.reads).toBe(1)
+  })
+
+  it('does not use cached text after its file becomes too large before a near retry', async () => {
+    const guidePath = path.join(root, 'guide.md')
+    fs.writeFileSync(guidePath, '# Guide\n\nThe parseFile guide entry.\n')
+    indexFileSync(guidePath, globalDbPath())
+    textReadState.watchedPath = guidePath
+    textReadState.afterRead = () => fs.writeFileSync(guidePath, 'x'.repeat(200_001))
+
+    const out = await searchWithNearRetry({ query: 'parseFle', projectRoot: root, channels: ['text'] })
+    expect(out.retries).toBe(1)
+    expect(
+      out.summary.results.some((result) => normalizePath(result.filePath) === normalizePath(guidePath)),
+      'the retry used cached text after the file exceeded the scan size limit',
+    ).toBe(false)
+    expect(textReadState.reads).toBe(1)
+  })
+
+  it('does not use cached text after its path escapes project confinement before a near retry', async () => {
+    const nestedDir = path.join(root, 'nested')
+    const guidePath = path.join(nestedDir, 'guide.md')
+    const outsideRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-near-retry-outside-')))
+    let junctionCreated = false
+    fs.mkdirSync(nestedDir)
+    fs.writeFileSync(guidePath, '# Guide\n\nThe parseFile guide entry.\n')
+    fs.writeFileSync(path.join(outsideRoot, 'guide.md'), '# Outside\n\nThe parseFile external entry.\n')
+    indexFileSync(guidePath, globalDbPath())
+    textReadState.watchedPath = guidePath
+    textReadState.afterRead = () => {
+      fs.unlinkSync(guidePath)
+      fs.rmdirSync(nestedDir)
+      fs.symlinkSync(outsideRoot, nestedDir, process.platform === 'win32' ? 'junction' : 'dir')
+      junctionCreated = true
+    }
+
+    try {
+      const out = await searchWithNearRetry({ query: 'parseFle', projectRoot: root, channels: ['text'] })
+      expect(junctionCreated, 'the test did not create an outside-project directory link').toBe(true)
+      expect(out.retries).toBe(1)
+      expect(
+        out.summary.results.some((result) => normalizePath(result.filePath) === normalizePath(guidePath)),
+        'the retry used cached text after the path escaped project confinement',
+      ).toBe(false)
+      expect(textReadState.reads).toBe(1)
+    } finally {
+      textReadState.afterRead = null
+      if (junctionCreated) {
+        if (process.platform === 'win32') fs.rmdirSync(nestedDir)
+        else fs.unlinkSync(nestedDir)
+      }
+      fs.rmSync(outsideRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('rereads matching text that does not fit the request-local cache budget', async () => {
+    const content = `parseFile${'x'.repeat(199_991)}`
+    expect(Buffer.byteLength(content, 'utf8')).toBe(200_000)
+    for (let i = 0; i < 336; i++) {
+      const filePath = path.join(root, `cache-${String(i).padStart(3, '0')}.md`)
+      fs.writeFileSync(filePath, content)
+      indexFileSync(filePath, globalDbPath())
+    }
+
+    textReadState.captureAll = true
+    try {
+      const out = await searchWithNearRetry({
+        query: 'parseFle',
+        projectRoot: root,
+        channels: ['text'],
+        limit: 1_000,
+      })
+      expect(out.retries).toBe(1)
+      const rereadPaths = new Set(
+        [...textReadState.readsByPath.entries()]
+          .filter(([, reads]) => reads > 1)
+          .map(([filePath]) => filePath),
+      )
+      expect(rereadPaths.size, 'no path exceeded the request-local cache budget').toBeGreaterThan(0)
+      expect(
+        out.summary.results.some((result) => rereadPaths.has(normalizePath(result.filePath))),
+        'the near retry did not search content read again after cache saturation',
+      ).toBe(true)
+    } finally {
+      textReadState.captureAll = false
+    }
   })
 
   it('issues at most NEAR_RETRY.max retries when more near names exist', async () => {

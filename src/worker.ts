@@ -365,7 +365,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string, stam
         !spellingStale
       const indexAndRestamp = () => {
         if (!parseUnchanged) {
-          indexFileSync(absPath, dbPath, preReadBytes)
+          indexFileSync(absPath, dbPath, preReadBytes, sha)
         }
         const embedEntry = parseUnchanged ? entry : getFileEntry(absPath, dbPath)
         if (stamp !== undefined && embedEntry !== null) {
