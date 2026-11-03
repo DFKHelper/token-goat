@@ -11,6 +11,13 @@ import { blobPath, DEFAULT_MAX_AGE_MS } from './disk_cache.js'
 
 export type RecallCacheType = 'bash' | 'web' | 'mcp'
 
+// The existing per-type recall command each hit's id resolves through -- mcp entries share bash-output's blob-store subdir but have their own dedicated recall command (mcp-output), see mcp_cache.ts's storeMcpOutput and cli_cached_output.ts's cmdMcpOutput. Lives here, not in cli_recall.ts, so the hook path reads it without loading the recall command's printer.
+export const RECALL_COMMAND: Record<RecallCacheType, string> = {
+  bash: 'bash-output',
+  web: 'web-output',
+  mcp: 'mcp-output',
+}
+
 export interface RecallHit {
   readonly id: string
   readonly cacheType: RecallCacheType

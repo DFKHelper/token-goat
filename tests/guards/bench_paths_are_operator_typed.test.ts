@@ -5,16 +5,14 @@ import * as path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
+import { cliDispatchFiles, relSrc } from './cli_dispatch_files.js'
 import { pinnedPopulation } from './population.js'
 
 /** Entry points that accept a caller-supplied filesystem path into the bench command. */
 const BENCH_ENTRY_POINTS = ['runBenchCommand', 'loadCorpus', 'appendTsv'] as const
 
-/** Files allowed to reference them, each with the reason it is not a reachability problem. `cli_bench.ts` defines them; `cli.ts` is the commander dispatch table, where the values come straight off the parsed command line. */
-const ALLOWED = new Map([
-  ['cli_bench.ts', 'defines the bench command'],
-  ['cli.ts', 'commander dispatch: both paths come from operator-typed flags'],
-])
+/** The file allowed to reference them by name: `cli_bench.ts` defines them. Every other allowed file is commander dispatch code (found by `cliDispatchFiles`, by what it registers and not by its name), where the values come straight off the parsed command line. */
+const DEFINING_FILE = 'src/cli_bench.ts'
 
 function walkSrc(): string[] {
   const root = path.join(process.cwd(), 'src')
@@ -69,11 +67,16 @@ describe('bench file paths stay operator-typed', () => {
         'which case it would pass against a codebase that had wired bench into a hook. Update ' +
         'BENCH_ENTRY_POINTS to the current names.',
     ).not.toEqual([])
-    expect(found, 'src/cli.ts should still dispatch the bench command').toContain('src/cli.ts')
+    const dispatchers = new Set(cliDispatchFiles().map(relSrc))
+    expect(
+      found.filter((f) => dispatchers.has(f)),
+      'a CLI dispatch file (one that registers commander commands) should still dispatch the bench command',
+    ).not.toEqual([])
   })
 
   it('no caller outside the CLI dispatch path reaches the bench entry points', () => {
-    const offenders = referencingFiles().filter((f) => !ALLOWED.has(path.basename(f)))
+    const dispatchers = new Set(cliDispatchFiles().map(relSrc))
+    const offenders = referencingFiles().filter((f) => f !== DEFINING_FILE && !dispatchers.has(f))
     expect(
       offenders,
       'A file outside the CLI dispatch path now calls into `token-goat bench`. Its --corpus and ' +

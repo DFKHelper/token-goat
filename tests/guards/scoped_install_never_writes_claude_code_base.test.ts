@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
+import { commandRegistration } from './cli_dispatch_files.js'
 import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.join(HERE, '..', '..')
-const CLI_PATH = path.join(REPO_ROOT, 'src', 'cli.ts')
 const INSTALL_PATH = path.join(REPO_ROOT, 'src', 'cli_install.ts')
 
 /** Strips comments, same naive-but-safe tradeoff every other regex/text guard in this directory makes. */
@@ -132,10 +132,7 @@ describe('scoped install/uninstall never silently touches the Claude Code base',
 
   // The help is what a user reads before running the command. Every harness flag's description began "also patch", "also register" or "also strip", so `install --codex --copilot` read as Claude Code plus two more and left a stale Claude Code shim in place. HAND-DERIVED from the gate above: a harness flag replaces the base, so its help must not say it adds to it.
   it.each(['install', 'uninstall'])('%s --help never describes a harness flag as added to the Claude Code base', (name) => {
-    const raw = fs.readFileSync(CLI_PATH, 'utf8')
-    const start = raw.indexOf(`.command('${name}')`)
-    expect(start, `.command('${name}') not found in src/cli.ts`).toBeGreaterThan(-1)
-    const registration = raw.slice(start, raw.indexOf('.action(', start))
+    const registration = commandRegistration(name).text
     for (const flag of scopes) {
       const desc = new RegExp(String.raw`\.option\('--${flag}', '([^']*)`).exec(registration)?.[1]
       expect(desc, `${name} registers no --${flag} option`).toBeDefined()

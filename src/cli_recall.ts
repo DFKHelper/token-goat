@@ -1,6 +1,6 @@
 /** CLI handler for `token-goat recall`. Unified full-text search across every bash-output, web-output, and mcp-output cache entry, so an agent that doesn't remember which cache type holds a prior result can search once instead of trying `bash-history` / `web-history` / `mcp-history` in turn. Ranking and storage live in recall_index.ts; this module is presentation only. */
 
-import { listRecentRecall, searchRecall, RECALL_DEFAULT_LIMIT, type RecallCacheType, type RecallHit } from './recall_index.js'
+import { listRecentRecall, searchRecall, RECALL_COMMAND, RECALL_DEFAULT_LIMIT, type RecallCacheType, type RecallHit } from './recall_index.js'
 import { pad } from './util.js'
 import { UNTRUSTED_WEB_TAG, UNTRUSTED_TOOL_TAG } from './injection_scan.js'
 import { fenceIfScanMatched, fenceUntrusted } from './untrusted_fence.js'
@@ -12,12 +12,6 @@ export interface RecallCommandOptions {
   json?: boolean
 }
 
-// The existing per-type recall command each hit's id resolves through -- mcp entries share bash-output's blob-store subdir but have their own dedicated recall command (mcp-output), see mcp_cache.ts's storeMcpOutput and cli_cached_output.ts's cmdMcpOutput.
-export const RECALL_COMMAND: Record<RecallCacheType, string> = {
-  bash: 'bash-output',
-  web: 'web-output',
-  mcp: 'mcp-output',
-}
 
 
 
