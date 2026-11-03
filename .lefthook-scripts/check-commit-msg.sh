@@ -36,6 +36,26 @@ if [[ -n "$OFFENDING" ]]; then
   exit 1
 fi
 
+# The model-name pattern lives in model-name-pattern.txt, which tests/guards/commit_messages_carry_no_tool_attribution.test.ts reads too, so the two cannot drift. Host products (Gemini, Codex, Claude Code, Copilot, Qwen, OpenClaw) are features of this tool and never match.
+PATTERN_FILE="$(dirname -- "${BASH_SOURCE[0]}")/model-name-pattern.txt"
+if [[ ! -f "$PATTERN_FILE" ]]; then
+  echo "commit-msg: $PATTERN_FILE is missing, so the message was not checked for AI model names. Refusing the commit." >&2
+  exit 1
+fi
+MODEL_PATTERN="$(head -n 1 -- "$PATTERN_FILE")"
+
+status=0
+MODEL_HITS="$(printf '%s\n' "$BODY" | grep -n -i -E -e "$MODEL_PATTERN")" || status=$?
+refuse_on_grep_error "$status"
+
+if [[ -n "$MODEL_HITS" ]]; then
+  echo "commit-msg: this message names an AI model. Remove it from these lines:" >&2
+  printf '%s\n' "$MODEL_HITS" >&2
+  echo >&2
+  echo "Write \"review findings\", not \"<model> review findings\". Model names never ship in a commit message." >&2
+  exit 1
+fi
+
 # Reject a commit message that contains any name from the confidential denylist.
 DENYLIST="${TOKEN_GOAT_CONFIDENTIAL_NAMES:-$HOME/.token-goat/confidential-names.txt}"
 if [[ ! -f "$DENYLIST" && -n "${USERPROFILE:-}" ]]; then
