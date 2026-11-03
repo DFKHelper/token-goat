@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { fingerprintContent, fingerprintFile } from '../src/fingerprint.js'
+import { fingerprintContent, fingerprintFile, fingerprintFileWithBytes } from '../src/fingerprint.js'
 
 const tmpFiles: string[] = []
 
@@ -65,5 +65,23 @@ describe('fingerprintFile', () => {
     const content = 'the quick brown fox'
     const p = makeTmpFile(content)
     expect(fingerprintFile(p)).toBe(fingerprintContent(content))
+  })
+})
+
+describe('fingerprintFileWithBytes', () => {
+  it('returns the raw bytes with their matching fingerprint', () => {
+    const p = path.join(os.tmpdir(), `tg-fp-bytes-${process.pid}-${Math.random().toString(36).slice(2)}.txt`)
+    const bytes = Buffer.from([0x61, 0xff, 0x0a])
+    fs.writeFileSync(p, bytes)
+    tmpFiles.push(p)
+
+    const result = fingerprintFileWithBytes(p)
+    expect(result).not.toBeNull()
+    expect(result?.sha).toBe(fingerprintContent(bytes))
+    expect(result?.bytes).toEqual(bytes)
+  })
+
+  it('returns null for an unreadable path', () => {
+    expect(fingerprintFileWithBytes(os.tmpdir())).toBeNull()
   })
 })

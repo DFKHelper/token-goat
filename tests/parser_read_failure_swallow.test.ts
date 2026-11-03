@@ -3,9 +3,9 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// Regression: indexFileSync's own fs.readFileSync catch swallowed EVERY read failure alike (ENOENT, EBUSY, EACCES, ...), returning silently instead of throwing for anything but a genuinely-deleted file. That made a transient, non-ENOENT failure (e.g. a Windows AV/editor file lock) indistinguishable from success: makeIndexer never saw a throw, so the INDEX_FAILED sentinel + worker-errors.log path -- the whole "never silently count a failed reindex as success" guarantee -- never fired, and processDirtyBatch counted the file as indexed even though nothing was ever read or written, leaving its files.sha row stale forever. ENOENT (the file was legitimately deleted in the race window between being fingerprinted and indexFileSync's own read) must stay silent -- that is expected and harmless, not a failure worth logging.
+// Regression: indexFileSync must ignore ENOENT but propagate other read failures. The direct-call cases below pin that contract. The worker integration uses a different guarantee: fingerprintFileWithBytes supplies the raw bytes to indexFileSync, so a dirty file is not reopened after its fingerprint read.
 //
-// indexFileSync and fingerprintFile now both read via a bare fs.readFileSync(path) (no options argument, raw Buffer -- see the parser.ts fix that made indexFileSync hash the same raw bytes fingerprintFile hashes, task #208), so the `options` argument can no longer distinguish "this is indexFileSync's own read" from "this is fingerprintFile's earlier gate read" the way it could when indexFileSync used to pass 'utf8'. Instead, the mock counts matching calls and injects the error starting from the `skipCalls`'th one: tests that call indexFileSync directly (no preceding fingerprintFile gate) want the very first call to fail (skipCalls = 0); the drainOnce/processDirtyBatch test wants fingerprintFile's gate-read to succeed and only indexFileSync's own subsequent read to fail (skipCalls = 1) -- reproducing the exact race window this fix protects, where fingerprintFile already succeeded (the file existed then) and the read moments later, inside indexFileSync itself, hits the injected error. vi.spyOn cannot patch node:fs (its namespace exports are non-configurable), so a module mock with hoisted flags is the portable way to inject this, matching the pattern already used in parser_sha_race.test.ts.
+// The module mock counts matching raw and canonical-path reads. Direct indexFileSync tests inject a failure on the first read; the worker integration allows the fingerprint read and would fail a second read. vi.spyOn cannot patch node:fs namespace exports, so this follows the module-mock seam in parser_sha_race.test.ts.
 const mockState = vi.hoisted(() => ({
   target: '',
   extraTargets: [] as string[],
@@ -76,7 +76,7 @@ describe('indexFileSync read-failure handling (regression)', () => {
     fs.rmSync(TMP, { recursive: true, force: true })
   })
 
-  it('silently no-ops on ENOENT (deleted between fingerprint and read) without throwing', () => {
+  it('silently no-ops on ENOENT (the file disappeared before parsing) without throwing', () => {
     const file = path.join(TMP, 'deleted.ts')
     fs.writeFileSync(file, 'export function goneSoon(): number {\n  return 1\n}\n')
     // indexFileSync reads through the canonicalized spelling of `file` (same as `resolveIndexPath`), not the raw native one, so the mock must guard that same target or the injected failure never fires and the real read succeeds.
@@ -107,43 +107,35 @@ describe('indexFileSync read-failure handling (regression)', () => {
     expect(getFileEntry(file, dbPath)).toBeNull()
   })
 
-  // Integration coverage: drives the REAL production path (drainOnce -> processDirtyBatch -> makeIndexer -> indexFileSync), not a reimplementation of the plumbing, so the fix is proven against the actual observable guarantee the worker provides (INDEX_FAILED sentinel + worker-errors.log), not just "indexFileSync itself throws".
-  it('does not count a non-ENOENT read failure as indexed, and surfaces it via worker-errors.log', () => {
+  // Integration coverage: drives the REAL production path (drainOnce -> processDirtyBatch -> makeIndexer -> indexFileSync), proving that the worker indexes the same bytes it fingerprinted rather than reopening the file.
+  it('reuses worker fingerprint bytes for indexing without a second file read', () => {
     const good = path.join(TMP, 'good.ts')
     const bad = path.join(TMP, 'bad.ts')
     fs.writeFileSync(good, 'export function knownGoodSymbol(): number {\n  return 1\n}\n')
     fs.writeFileSync(bad, 'export function neverIndexedSymbol(): number {\n  return 2\n}\n')
     writeQueue(TMP, [good, bad])
 
-    // `fingerprintFile` (processDirtyBatch's own gate-read) reads the raw `bad` spelling straight, unlike `indexFileSync`, which reads through the canonicalized one -- so the two reads this test depends on ordering (skip the first, fail the second) are two different strings, and the mock needs both: `target` catches fingerprintFile's raw-spelling call, `extraTargets` catches indexFileSync's canonical one.
+    // The fingerprint reads the raw `bad` spelling; indexFileSync would reopen its canonical spelling if the worker did not pass the pre-read bytes.
     mockState.target = bad
     mockState.extraTargets = [resolveIndexPath(bad)]
     mockState.errorCode = 'EBUSY'
-    // processDirtyBatch's own fingerprintFile(bad) gate-read must succeed (call #1) so the sha comparison proceeds normally; only indexFileSync's own subsequent read (call #2) should hit the injected failure.
+    // Allow the fingerprint read; the mock throws if the worker causes a second read of either spelling.
     mockState.skipCalls = 1
 
     const projectDb = path.join(TMP, 'global.db')
     const count = drainOnce(TMP)
 
-    // The bad file must not be counted as a successful index...
-    expect(count).toBe(1)
-    // ...and it has no `files` row at all. This assertion was inverted for a while: the retry budget used to be kept as a placeholder `files` row carrying a path and a count and nothing else, and rather than treat that as the defect it is, the test was rewritten to assert the placeholder was there and merely carried no extraction. A `files` row is what `indexMatchesDisk`, `healStaleIndex` and `staleWarning` read as "this file is in the index", so a row with no sha reads to all three as a legacy pre-fingerprinting entry and suppresses the on-demand heal for a file that was never indexed. The budget now lives in `index_retries`; see the db.ts comment there. Looked up in the normalizePath (forward-slash) spelling rather than the native one: `getFileEntry` folds case but does not normalize separators, so a bare `path.join` spelling misses on Windows and hits on Linux -- the divergence that once let a wrong assertion read green here and fail in CI.
+    expect(count).toBe(2)
+    expect(mockState.callCount, 'the worker read the dirty file more than once').toBe(1)
     const badEntry = getFileEntry(normalizePath(bad), projectDb)
-    expect(badEntry, 'a files row means the file is in the index').toBeNull()
-    expect(querySymbols({ name: 'neverIndexedSymbol', limit: 10 }, projectDb).length).toBe(0)
-    // ...and the path is back in the queue rather than dropped, which is the guarantee that row exists to serve.
-    expect(fs.readFileSync(path.join(TMP, 'queue', 'dirty.txt'), 'utf8')).toContain(bad)
-    // ...while the rest of the batch still succeeds.
+    expect(badEntry, 'the fingerprinted file must have an index row').not.toBeNull()
+    expect(querySymbols({ name: 'neverIndexedSymbol', limit: 10 }, projectDb).length).toBeGreaterThan(0)
     expect(querySymbols({ name: 'knownGoodSymbol', limit: 10 }, projectDb).length).toBeGreaterThan(
       0,
     )
 
-    // The swallowed failure must be surfaced somewhere discoverable: the worker's error log, via the INDEX_FAILED sentinel path (see makeIndexer/logIndexFailure in worker.ts).
     const logPath = path.join(TMP, 'worker-errors.log')
-    expect(fs.existsSync(logPath)).toBe(true)
-    const logContent = fs.readFileSync(logPath, 'utf8')
-    expect(logContent).toContain(bad)
-    expect(logContent).toContain('EBUSY')
+    expect(fs.existsSync(logPath)).toBe(false)
   })
 })
 

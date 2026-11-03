@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as net from 'node:net'
 import * as os from 'node:os'
 
-import { envBool } from './env.js'
+import { envBool, envInt } from './env.js'
 import {
   configStamp,
   encodeFrame,
@@ -34,8 +34,12 @@ const HANDSHAKE_TIMEOUT_MS = 150
 const FIND_BUDGET_MS = 300
 /** How long a slot gets to answer the handshake before the next slot is asked beside it. An idle server answers in 1 to 3 ms, so a slot silent this long is in synchronous work, and the caller now waits on it and the next slot at once instead of spending its whole budget on one slot and then the next: two slots each held past the handshake allowance used to use up the budget before the third, possibly idle, was ever asked. */
 const HEDGE_MS = 40
-/** A dispatched hook request that has not answered by now is failed open. Matches the hook relay's own queue wait. A CLI request has no such limit (see attempt). */
+/** Legacy wait for dispatched requests outside Copilot CLI hooks. CLI requests have no response limit (see attempt). */
 const RESPONSE_TIMEOUT_MS = 120_000
+/** Default response wait for Copilot CLI hooks, well below their 60-second harness limit. */
+const COPILOT_HOOK_RESPONSE_TIMEOUT_MS = 12_000
+/** Leave 15 seconds before Copilot CLI's installed 60-second hook limit, even with an override. */
+const MAX_COPILOT_HOOK_RESPONSE_TIMEOUT_MS = 45_000
 /** How long `status` and `stop` keep asking a slot whose handshake timed out. */
 const CONTROL_WAIT_MS = 10_000
 const SPAWN_RETRY_MS = 30_000
@@ -45,6 +49,17 @@ type Outcome = { kind: 'served'; reply: ServerReply } | { kind: 'absent' } | { k
 
 /** What lets several attempts wait on different slots at once while at most one of them dispatches: `claim` is asked on a verified challenge, with the canceller the attempt registered, and answers whether this attempt may send its request; `onCancel` registers what to run once another attempt has claimed. */
 type Race = { claim: (self: () => void) => boolean; onCancel: (cancel: () => void) => void }
+
+/** Response budget for a dispatched request, with a pre-limit default for Copilot CLI hooks. */
+export function responseTimeoutFor(request: ServerRequest): number {
+  if (request.kind !== 'hook' || request.env['TOKEN_GOAT_HARNESS_OVERRIDE'] !== 'copilot_cli') return RESPONSE_TIMEOUT_MS
+  return envInt(
+    'TOKEN_GOAT_COPILOT_HOOK_CLIENT_TIMEOUT_MS',
+    COPILOT_HOOK_RESPONSE_TIMEOUT_MS,
+    1,
+    MAX_COPILOT_HOOK_RESPONSE_TIMEOUT_MS,
+  )
+}
 
 /** One attempt against one slot. Resolves exactly once. With `race`, an attempt that loses the claim, or is cancelled before its challenge arrives, hangs up without dispatching and resolves `busy`. */
 function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs: number, dir?: string, race?: Race): Promise<Outcome> {
@@ -92,7 +107,7 @@ function attempt(slot: number, key: Buffer, request: ServerRequest, handshakeMs:
           dispatched = true
           clearTimeout(timer)
           // A CLI command waits for its answer however long it runs. The server cannot abandon a command it has started (the work is synchronous and nothing interrupts it), so giving up here only made the caller run the same command a second time beside it, on the same index, never faster (a 342.8 s `symbol` miss on a large project was 120 s of waiting here and then the whole command again). A server that dies mid-command still closes the connection, which reads as lost below, and the caller still runs it itself.
-          if (request.kind !== 'cli') timer = setTimeout(() => finish({ kind: 'lost' }), RESPONSE_TIMEOUT_MS)
+          if (request.kind !== 'cli') timer = setTimeout(() => finish({ kind: 'lost' }), responseTimeoutFor(request))
           socket.write(frame)
           return
         }

@@ -16,6 +16,18 @@ import { snippetAround } from '../snippet_window.js';
 import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from '../semantic_relevance.js';
 import { ALL_CHANNELS, type ChannelHit, type FusedSearchResult, type SearchChannel, type SearchExecutionSummary, type SearchLowConfidence, type SearchOptions } from './types.js';
 
+const MAX_TEXT_SCAN_BYTES = 64 * 1024 * 1024;
+const MAX_TEXT_CACHE_ESTIMATED_BYTES = 2 * MAX_TEXT_SCAN_BYTES;
+const TEXT_CACHE_ENTRY_OVERHEAD_BYTES = 64;
+
+type TextSearchCache = Map<string, string>;
+
+const textSearchCacheSizes = new WeakMap<TextSearchCache, number>();
+
+interface SearchExecutionContext {
+  readonly textCache?: TextSearchCache;
+}
+
 /** A symbol hit's preview: its docstring, else the first 140 characters of its body from the declaration on, so a decorated symbol previews as `def area(...)` rather than `@property`. */
 export function symbolPreview(sym: { name: string; docstring?: string | null; body?: string | null }): string {
   if (sym.docstring) return sym.docstring;
@@ -26,6 +38,15 @@ export function symbolPreview(sym: { name: string; docstring?: string | null; bo
 function matchPreview(line: string, lowerQuery: string): string {
   const text = line.trim();
   return snippetAround(text, Math.max(0, text.toLowerCase().indexOf(lowerQuery)), 114);
+}
+
+function cacheTextIfWithinBudget(cache: TextSearchCache, filePath: string, content: string): void {
+  if (cache.has(filePath)) return;
+  const estimatedBytes = 2 * (filePath.length + content.length) + TEXT_CACHE_ENTRY_OVERHEAD_BYTES;
+  const cachedBytes = textSearchCacheSizes.get(cache) ?? 0;
+  if (cachedBytes + estimatedBytes > MAX_TEXT_CACHE_ESTIMATED_BYTES) return;
+  cache.set(filePath, content);
+  textSearchCacheSizes.set(cache, cachedBytes + estimatedBytes);
 }
 
 /** Searches symbols via Full-Text Search and symbol queries. */
@@ -73,7 +94,7 @@ async function searchHeadingChannel(query: string, limit: number, rootDir?: stri
 }
 
 /** Searches textual file contents in parallel with resource bounding. */
-async function searchTextChannel(query: string, limit: number, rootDir?: string): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
+async function searchTextChannel(query: string, limit: number, rootDir?: string, textCache?: TextSearchCache): Promise<{ hits: ChannelHit[]; degradedReason?: string }> {
   await Promise.resolve();
   try {
     const fileEntries = getOwnProjectFileEntries(rootDir ?? process.cwd());
@@ -84,12 +105,11 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
     let unreadableCount = 0;
     let capped = false;
     // A byte budget, not a file count: a count of 300 stopped this repo's scan at src/ while its 1,874 indexed files came to 22.8 MB, read in under 200 ms.
-    const MAX_BYTES = 64 * 1024 * 1024;
     const PER_FILE_HITS = 3;
     const matched: Array<{ lines: Array<{ line: number; preview: string }>; count: number; filePath: string }> = [];
 
     for (const file of fileEntries.values()) {
-      if (totalBytesScanned >= MAX_BYTES) {
+      if (totalBytesScanned >= MAX_TEXT_SCAN_BYTES) {
         capped = true;
         break;
       }
@@ -106,7 +126,14 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string)
         totalBytesScanned += stat.size;
 
         // Through the reader seam, not a plain utf-8 read: the matching line is printed as the preview, so a dotenv value has to come back masked the way `read` shows it, and a UTF-16 file has to be decoded before a query can match it.
-        const content = readFileText(fullPath);
+        const cachedContent = textCache?.get(fullPath)
+        let content: string | null;
+        if (cachedContent !== undefined) {
+          content = cachedContent;
+        } else {
+          content = readFileText(fullPath);
+          if (content !== null && textCache) cacheTextIfWithinBudget(textCache, fullPath, content);
+        }
         if (content === null) {
           unreadableCount++;
           continue;
@@ -194,7 +221,7 @@ async function searchSemanticChannel(query: string, limit: number, rootDir?: str
 }
 
 /** Executes multi-angle searches concurrently across all requested channels. */
-export async function executeParallelSearch(options: SearchOptions): Promise<SearchExecutionSummary> {
+export async function executeParallelSearch(options: SearchOptions, context: SearchExecutionContext = {}): Promise<SearchExecutionSummary> {
   const startTime = Date.now();
   const query = options.query.trim().slice(0, 500);
   const limit = options.limit ?? 15;
@@ -240,7 +267,7 @@ export async function executeParallelSearch(options: SearchOptions): Promise<Sea
       );
     } else if (ch === 'text') {
       channelPromises.push(
-        searchTextChannel(query, limit, projectRoot)
+        searchTextChannel(query, limit, projectRoot, context.textCache)
           .then((res) => ({
             channel: ch,
             hits: res.hits,

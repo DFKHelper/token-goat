@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { dataDir, globalDbPath } from './constants.js'
-import { fileIsAbsent, fingerprintFile, indexedFileIsGone } from './fingerprint.js'
+import { fileIsAbsent, fingerprintFileWithBytes, indexedFileIsGone } from './fingerprint.js'
 import { assetEmbedSha, disabledStampCount, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
@@ -118,7 +118,7 @@ function bumpRetryCount(dbPath: string, absPath: string): number {
   return tx.immediate()
 }
 
-/** Drop `absPath`'s transient-failure streak in the index DB at `dbPath`. Best-effort: a DB error here (e.g. the DB does not exist yet) must not block the caller's own already-completed work. No-op if the path has no streak -- nothing to reset. Called from {@link processDirtyBatch} for every path whose `fingerprintFile` read succeeds during a drain, so a path that built up a retry streak during a transient lock episode (an antivirus scan, an editor holding the file, a OneDrive sync) starts from a full budget again the moment it can actually be read. The count is kept in the index DB (`index_retries`) rather than an in-memory Map because the processes involved do not share a heap: the edit hook runs in a short-lived CLI process while the drain loop that reads the count runs in the long-lived detached daemon. A reset that only mutated a module-level Map would be invisible to the daemon's own copy of it and would silently do nothing in the real deployed topology -- an exhausted path would stay permanently given-up-on. The index DB is the one thing both processes already share, as they do for `files.sha` and `files.embed_sha`. `appendDirtyPath` (`hooks_index.ts`) deliberately does NOT call this on the edit-hook path; its comment there explains why, and the drain-time reset above is what covers that case. */
+/** Drop `absPath`'s transient-failure streak in the index DB at `dbPath`. Best-effort: a DB error here (e.g. the DB does not exist yet) must not block the caller's own already-completed work. No-op if the path has no streak -- nothing to reset. Called from {@link processDirtyBatch} for every path whose `fingerprintFileWithBytes` read succeeds during a drain, so a path that built up a retry streak during a transient lock episode (an antivirus scan, an editor holding the file, a OneDrive sync) starts from a full budget again the moment it can actually be read. The count is kept in the index DB (`index_retries`) rather than an in-memory Map because the processes involved do not share a heap: the edit hook runs in a short-lived CLI process while the drain loop that reads the count runs in the long-lived detached daemon. A reset that only mutated a module-level Map would be invisible to the daemon's own copy of it and would silently do nothing in the real deployed topology -- an exhausted path would stay permanently given-up-on. The index DB is the one thing both processes already share, as they do for `files.sha` and `files.embed_sha`. `appendDirtyPath` (`hooks_index.ts`) deliberately does NOT call this on the edit-hook path; its comment there explains why, and the drain-time reset above is what covers that case. */
 export function clearRetryCount(dbPath: string, absPath: string): void {
   try {
     const db = getDb(dbPath)
@@ -266,14 +266,14 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string, confi
 
 function logIndexFailure(dir: string, absPath: string, err: unknown): void {
   const message = extractErrorMessage(err)
-  appendWorkerErrorLog(dir, `${new Date().toISOString()} indexFileSync failed for ${absPath}: ${message}\n`)
+  appendWorkerErrorLog(dir, `${new Date().toISOString()} indexing failed for ${absPath}: ${message}\n`)
 }
 
-// A dirty path that exists (fs.existsSync true) but whose fingerprintFile call returns null is a transient read failure -- a lock held by an AV scanner/editor/OneDrive sync, a permission error, or a race with an external writer -- not a permanent parse/index error. Before this fix, processDirtyBatch silently `continue`d past it: the path was dropped from this batch and, once drainOnce unconditionally clears the .draining marker right after processDirtyBatch returns, it was gone for good with no log entry and no way to retry it short of the file being touched again. Log it distinctly from an indexing failure and requeue it so the next drain cycle gets another chance once the lock clears.
+// A dirty path that exists (fs.existsSync true) but whose fingerprintFileWithBytes call returns null is a transient read failure -- a lock held by an AV scanner/editor/OneDrive sync, a permission error, or a race with an external writer -- not a permanent parse/index error. Before this fix, processDirtyBatch silently `continue`d past it: the path was dropped from this batch and, once drainOnce unconditionally clears the .draining marker right after processDirtyBatch returns, it was gone for good with no log entry and no way to retry it short of the file being touched again. Log it distinctly from an indexing failure and requeue it so the next drain cycle gets another chance once the lock clears.
 function logTransientReadFailure(dir: string, absPath: string): void {
   appendWorkerErrorLog(
     dir,
-    `${new Date().toISOString()} fingerprintFile returned null for existing file ${absPath} (transient read failure -- requeued for retry)\n`,
+    `${new Date().toISOString()} fingerprintFileWithBytes returned null for existing file ${absPath} (transient read failure -- requeued for retry)\n`,
   )
 }
 
@@ -332,11 +332,11 @@ export function embedPolicyResolver(): (absPath: string) => { configRoot: string
 }
 
 /** Build the index callback the drain loop uses by default: parse each changed file and write its symbol/ref rows into the index DB at `dbPath`. A parse or read failure on one file is swallowed so a single bad file never aborts the batch or crashes the drain loop -- but the failure is logged to {@link workerErrorLogPath} and signalled via the {@link INDEX_FAILED} sentinel so `processDirtyBatch` never counts it as a successful index. The file's `files.sha` row is left exactly as it was before this attempt, so if the file is ever touched again the sha-gate below will not match its (still un-indexed) content and a reindex will be retried automatically. */
-export function makeIndexer(dbPath: string): (absPath: string, sha: string, stamp?: PreHashStamp) => unknown {
+export function makeIndexer(dbPath: string): (absPath: string, sha: string, stamp?: PreHashStamp, preReadBytes?: Buffer) => unknown {
   const dir = path.dirname(dbPath)
   // Per indexer, which drainOnce builds once per drain.
   const embedPolicy = embedPolicyResolver()
-  return (absPath, sha, stamp) => {
+  return (absPath, sha, stamp, preReadBytes) => {
     try {
       // Register this file's project root as sweepable before any gate below can skip the file: a drain that finds everything fresh still proves the project has rows worth sweeping. See recordKnownRootThrottled.
       recordKnownRootThrottled(absPath, dir, dbPath)
@@ -363,13 +363,24 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string, stam
         entry?.sha === sha &&
         entry.parserSha === parserFingerprintForLanguage(entry.language) &&
         !spellingStale
-      if (!parseUnchanged) {
-        indexFileSync(absPath, dbPath)
-      } else if (entry !== null) {
-        if (stamp !== undefined) restampVerifiedUnchanged(dbPath, [{ indexedPath: entry.filePath, sha: entry.sha, stamp }])
+      const indexAndRestamp = () => {
+        if (!parseUnchanged) {
+          indexFileSync(absPath, dbPath, preReadBytes)
+        }
+        const embedEntry = parseUnchanged ? entry : getFileEntry(absPath, dbPath)
+        if (stamp !== undefined && embedEntry !== null) {
+          if (!restampVerifiedUnchanged(dbPath, [{ indexedPath: embedEntry.filePath, sha, stamp }])) {
+            throw new Error('Pre-hash freshness restamp failed')
+          }
+        }
+        return embedEntry
       }
       // Embedding freshness is gated INDEPENDENTLY of parse freshness (files.embed_sha, set only after indexFileEmbeddings actually commits -- see its doc comment in parser.ts). If a prior embedding attempt crashed or threw before stamping embed_sha, the parse-sha gate above would otherwise mask that forever: identical content would keep skipping the reparse AND skip re-embedding, leaving chunks permanently stale/missing. Re-check embed_sha against the current sha every time, even when the parse gate above skipped. While embeddings are currently disabled, indexFileEmbeddings stamps embed_sha with disabledEmbedSha(sha) instead of the bare sha (see its doc comment) so this gate can still hold and avoid re-entering indexFileEmbeddings on every drain of an unchanged file -- but a bare-sha match must never satisfy the gate while disabled, or a file that was only ever marker-stamped (never actually embedded) would look "unchanged" the instant embeddings are re-enabled, permanently skipping its real first embed. Optional chaining/fallback here is a defensive test-mock safety net, not a real production path: loadConfig() always returns a fully-populated, schema-validated config object in production. Several existing tests in this file mock loadConfig() with only a partial `{ worker: {...} }` shape (they exercise unrelated gates), so a bare `.indexing.embeddings_enabled` here would throw for those. Default to enabled (true), matching config.ts's own default, so this new gate check is a no-op for tests that never cared about embeddings. embeddingsEnabled and depsAvailable are computed above, before getFileEntry. depsAvailable lets isEmbedFresh distinguish a file that was skipped only because the optional embedding deps were absent (stamped an `unavailable:` marker) from one that was really embedded: the marker stays "fresh" while deps are still missing, but forces a re-embed the moment the model + sqlite-vec become usable. That independence covers files.parser_sha too: it answers which extractor wrote the symbol rows, never whether the stored vectors match this content, so a stale parser stamp must not drag this gate to false (it did, which re-embedded the whole index on every parser bump and made writeParseResult's embedShaToCarry dead for the waste it exists to prevent). spellingStale is the one parse-side condition that does belong here: a case-only rename leaves the content byte-identical, so isEmbedFresh would say fresh, but `chunks` rows are keyed by file_path and would keep the old spelling forever. Read the stamp the reparse above just wrote, not the one `entry` captured before it: writeParseResult clears the carried embed_sha when the reparse moved this file's embedding boundaries (see embeddingBoundariesMoved in parser.ts), and consulting the pre-parse row would defer that re-embed to some later drain -- which for a file nobody edits again is never.
-      const embedEntry = parseUnchanged ? entry : getFileEntry(absPath, dbPath)
+      // Keep the parsed rows and their pre-hash stamp atomic; IMMEDIATE is needed because the parser's nested write transaction becomes a savepoint.
+      const embedEntry =
+        stamp === undefined
+          ? indexAndRestamp()
+          : getDb(dbPath).transaction(indexAndRestamp).immediate()
       const embedUnchanged =
         !spellingStale &&
         isEmbedFresh(
@@ -420,7 +431,12 @@ function pruneDirtyPath(p: string, remove: (absPath: string) => void, dir: strin
 /** Process one batch of dirty paths. For each path: skip if the file no longer exists or cannot be fingerprinted, otherwise re-index it. The default `index` callback parses the file and writes its rows into the global index DB; tests inject their own callback to observe the plumbing in isolation. Returns the number of paths actually (re)indexed -- a path whose callback returns `false` (the default indexer's sha-gate skip for byte-identical content) or `INDEX_FAILED` (the default indexer's sentinel for a swallowed, logged indexing failure -- see makeIndexer) is visited but not counted. Exported for unit tests so the drain logic can be exercised without a thread. Once the daemon starts retiring (see {@link drainShouldHandBack}), the paths not yet reached go back to the live queue, and this batch ends. */
 export function processDirtyBatch(
   paths: string[],
-  index: (absPath: string, sha: string, stamp?: PreHashStamp) => unknown = makeIndexer(globalDbPath()),
+  index: (
+    absPath: string,
+    sha: string,
+    stamp?: PreHashStamp,
+    preReadBytes?: Buffer,
+  ) => unknown = makeIndexer(globalDbPath()),
   remove: (absPath: string) => void = makeRemover(globalDbPath()),
   dir: string = dataDir(),
   requeue: (dir: string, absPath: string) => void = requeueDirtyPath,
@@ -445,12 +461,12 @@ export function processDirtyBatch(
     writeDrainHeartbeat(dir)
     // worker.blocked_roots (set via `token-goat project exclude`) excludes a path prefix from reindexing entirely -- skip before the existence/sha checks so a blocked path is never touched, not even pruned from the index if it happens to have been deleted underneath it.
     if (isUnderBlockedRoot(p, blockedRoots)) continue
-    // A dirty path whose file is gone is a deletion to reconcile, not a no-op: prune its stale rows instead of skipping, otherwise `symbol Foo` resolves a deleted file forever. indexedFileIsGone, not fs.existsSync: a directory now standing at the path counts as gone (fingerprintFile can never read it, so it was logged as a transient failure and abandoned after its retries, leaving the old file's symbols served), while existsSync answers false for a locked or permission-denied file exactly as it does for a missing one, so a file held open by an AV scanner or sitting behind a deny ACE would have had its symbols, references, sections and embedding chunks deleted while it was still on disk -- silently, and with no way back until something edited it again. That is the same class of transient failure the fingerprint branch immediately below already logs and requeues, so an unreadable file now falls through to it instead of being pruned.
+    // A dirty path whose file is gone is a deletion to reconcile, not a no-op: prune its stale rows instead of skipping, otherwise `symbol Foo` resolves a deleted file forever. indexedFileIsGone, not fs.existsSync: a directory now standing at the path counts as gone (fingerprintFileWithBytes can never read it, so it was logged as a transient failure and abandoned after its retries, leaving the old file's symbols served), while existsSync answers false for a locked or permission-denied file exactly as it does for a missing one, so a file held open by an AV scanner or sitting behind a deny ACE would have had its symbols, references, sections and embedding chunks deleted while it was still on disk -- silently, and with no way back until something edited it again. That is the same class of transient failure the fingerprint branch immediately below already logs and requeues, so an unreadable file now falls through to it instead of being pruned.
     if (indexedFileIsGone(p)) {
       pruneDirtyPath(p, remove, dir, requeue)
       continue
     }
-    // Decided from the path and a stat before fingerprintFile reads the whole file, as cmdIndex does: a log past large_file_skip_kb was otherwise loaded whole on every drain only to be skipped, and one over 2 GiB failed that read and was requeued as transient until its retries ran out, its stale rows never purged. Counted as indexed for the same reason as makeIndexer's identical branch, which still covers its direct callers.
+    // Decided from the path and a stat before fingerprintFileWithBytes reads the whole file, as cmdIndex does: a log past large_file_skip_kb was otherwise loaded whole on every drain only to be skipped, and one over 2 GiB failed that read and was requeued as transient until its retries ran out, its stale rows never purged. Counted as indexed for the same reason as makeIndexer's identical branch, which still covers its direct callers.
     if (ixCfg !== undefined && isParseSkipEligible(p, ixCfg)) {
       recordKnownRootThrottled(p, dir, path.join(dir, 'global.db'))
       if (pruneDirtyPath(p, remove, dir, requeue)) indexed += 1
@@ -458,8 +474,8 @@ export function processDirtyBatch(
     }
     // Stat and clock before the hash, so the mtime recorded for a file whose sha matches its row is the one the hashed bytes carried and its index time is no later than the hash; makeIndexer's restamp relies on that order. A failed stat leaves it undefined and the restamp is skipped.
     const stamp = readPreHashStamp(p)
-    const sha = fingerprintFile(p)
-    if (sha === null) {
+    const fingerprint = fingerprintFileWithBytes(p)
+    if (fingerprint === null) {
       // The file exists but couldn't be read right now (lock/permission/race) -- see logTransientReadFailure's doc comment. Log and requeue instead of silently dropping it.
       logTransientReadFailure(dir, p)
       requeue(dir, p)
@@ -481,7 +497,7 @@ export function processDirtyBatch(
       // best-effort signal only -- never let project-root discovery abort a real index.
     }
     // `false` means the sha-gate skipped a no-op reindex; INDEX_FAILED means the default indexer's catch swallowed a genuine failure (logged separately -- see makeIndexer). Any other return value (including void/undefined from callers that don't bother returning anything) counts as indexed.
-    const result = index(p, sha, stamp)
+    const result = index(p, fingerprint.sha, stamp, fingerprint.bytes)
     if (result === INDEX_FAILED) {
       // Requeue for the same reason the fingerprint branch above does, and it is the same class of failure: makeIndexer's catch covers a SQLITE_BUSY on the index write and a lock inside indexFileSync that the earlier fingerprint read happened to miss, both of which clear on their own. drainOnce has already claimed this batch by renaming the queue file aside and will delete it, so a path not requeued here is gone for good -- its rows then stay stale until something edits the file again, silently, which is worse than being visibly behind. The bounded budget in bumpAndCheckRetry is what keeps a genuinely unindexable file from being retried forever.
       requeue(dir, p)

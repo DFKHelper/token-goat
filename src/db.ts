@@ -504,9 +504,10 @@ export const WAL_SIZE_LIMIT_PRAGMA = `journal_size_limit = ${WAL_SIZE_LIMIT_BYTE
 const HOOK_DB_WAIT_MS = 250
 let _hookWaits = false
 
-/** Switch this process to the short waits of {@link HOOK_DB_WAIT_MS} for every connection it opens from now on. Called once by the one-shot `hook` command and by no other path: the worker, the indexer and every other CLI command keep the 15 s budget `initConnection` documents, because a patient wait is right for them. Connections opened before the call keep the budget they were opened with. `on = false` restores the patient budget, for tests. */
+/** Set the hook/patient busy timeout on all cached connections and select that budget for future connections; `on = false` restores the patient budget. */
 export function limitDbWaitsForHook(on = true): void {
   _hookWaits = on
+  _connections.forEach((conn) => conn.pragma(`busy_timeout = ${connectionWaitBudgets().busyMs}`))
 }
 
 /** The busy_timeout and the WAL-switch deadline, in milliseconds, that a connection opened now gets: the patient indexing budgets, or the hook's short ones after {@link limitDbWaitsForHook}. */

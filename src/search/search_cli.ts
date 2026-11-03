@@ -96,7 +96,8 @@ export interface NearRetryOutcome {
 
 /** Runs the search and, on a miss, retries the near-word names {@link nearSymbolNames} ranks, stopping at the first that hits. */
 export async function searchWithNearRetry(options: SearchOptions): Promise<NearRetryOutcome> {
-  const first = await executeParallelSearch(options);
+  const searchContext = { textCache: new Map<string, string>() };
+  const first = await executeParallelSearch(options, searchContext);
   if (first.totalHits > 0 || options.limit === 0) return { summary: first, answeredFrom: null, retries: 0 };
 
   const near = nearSymbolNames(first.query, options.projectRoot ?? process.cwd());
@@ -107,7 +108,7 @@ export async function searchWithNearRetry(options: SearchOptions): Promise<NearR
   let retries = 0;
   for (const candidate of candidates) {
     retries += 1;
-    const summary = await executeParallelSearch({ ...options, query: candidate, channels: retryChannels });
+    const summary = await executeParallelSearch({ ...options, query: candidate, channels: retryChannels }, searchContext);
     if (summary.totalHits > 0) return { summary, answeredFrom: first.query, retries };
   }
   return { summary: first, answeredFrom: null, retries };

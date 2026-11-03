@@ -1,8 +1,10 @@
 /** Structural guard for the "freshness gate keyed on one of two inputs" defect class. `reconcile.ts::reconcileProject`'s drift sweep used to compare only a file's content hash (`files.sha`) against a fresh disk read, and treat a match as "nothing to do" -- skipping the file entirely, forever, unless something later happened to edit it. That misses the case a parser fix or a new parser version creates: a file nobody touched afterward still holds symbol/reference rows written by the OLD extractor, recorded in `files.parser_sha`. Content and parser version are two independent freshness keys (see `fold_delivery.ts::resolveFoldSpans`'s own doc comment: "measured on a real index, 37 of 237 source files disagreed with what the current parser produced while their content sha still matched"), and a function that reads `files.sha` to decide whether to skip re-deriving a file's rows has to check both or it is wrong in exactly this shape. A per-site regression test (tests/reconcile_parser_stale.test.ts) pins reconcile.ts's own fix. It says nothing about the next bulk sweep someone writes that makes the same content-only mistake -- this repo's cmdIndex, worker.ts's dirty-drain, and fold_delivery.ts's fold-span resolver all read `files.sha` for the same kind of decision, and a new one is exactly as easy to get wrong as reconcile.ts's was. So this guard enumerates every top-level function in `src/` whose body calls `fingerprintFile(` (the disk-hash primitive every one of these checks uses) and requires an explicit classification: does it gate a skip/reuse decision on BOTH `files.sha` and `files.parser_sha`/`PARSER_FINGERPRINT`, does it only ever WRITE the current parser fingerprint (not gate a skip on it), or does it operate on one file the caller named explicitly rather than running a background bulk sweep that could silently skip a parser-stale file forever? An unclassified function is red. */
+// This census also includes the byte-carrying fingerprintFileWithBytes helper used by the worker.
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
@@ -16,6 +18,99 @@ interface Site {
   readonly name: string
 }
 
+interface FingerprintBindings {
+  readonly functions: ReadonlySet<string>
+  readonly namespaces: ReadonlySet<string>
+}
+
+const FINGERPRINT_FUNCTION_NAMES = new Set(['fingerprintFile', 'fingerprintFileWithBytes'])
+
+function callTargetName(expression: ts.Expression): string | undefined {
+  if (ts.isIdentifier(expression)) return expression.text
+  if (ts.isPropertyAccessExpression(expression)) return expression.name.text
+  if (
+    ts.isElementAccessExpression(expression) &&
+    expression.argumentExpression &&
+    ts.isStringLiteralLike(expression.argumentExpression)
+  ) {
+    return expression.argumentExpression.text
+  }
+  return undefined
+}
+
+// limit: follows relative imports to fingerprint.ts and local aliases, not path aliases or re-export chains; revisit when src uses either.
+function fingerprintBindingsForModule(src: string, filePath: string): FingerprintBindings {
+  const source = ts.createSourceFile(filePath, src, ts.ScriptTarget.Latest, true)
+  const functions = new Set(FINGERPRINT_FUNCTION_NAMES)
+  const namespaces = new Set<string>()
+  const fingerprintModulePath = path.resolve(SRC_DIR, 'fingerprint').toLowerCase()
+
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue
+    const specifier = statement.moduleSpecifier.text
+    if (!specifier.startsWith('.')) continue
+    const importedPath = path
+      .resolve(path.dirname(filePath), specifier)
+      .replace(/\.(?:[cm]?[jt]sx?)$/i, '')
+      .toLowerCase()
+    if (importedPath !== fingerprintModulePath) continue
+
+    const namedBindings = statement.importClause?.namedBindings
+    if (namedBindings && ts.isNamespaceImport(namedBindings)) {
+      namespaces.add(namedBindings.name.text)
+    } else if (namedBindings && ts.isNamedImports(namedBindings)) {
+      for (const binding of namedBindings.elements) {
+        const importedName = binding.propertyName?.text ?? binding.name.text
+        if (FINGERPRINT_FUNCTION_NAMES.has(importedName)) functions.add(binding.name.text)
+      }
+    }
+  }
+
+  return { functions, namespaces }
+}
+
+function callsFileFingerprint(body: string, bindings: FingerprintBindings): boolean {
+  const source = ts.createSourceFile('fingerprint-site.ts', body, ts.ScriptTarget.Latest, true)
+  const functions = new Set(bindings.functions)
+  const namespaces = new Set(bindings.namespaces)
+  const isFingerprintReference = (expression: ts.Expression): boolean => {
+    const name = callTargetName(expression)
+    if (name !== undefined) return functions.has(name)
+    return (
+      ts.isElementAccessExpression(expression) &&
+      ts.isIdentifier(expression.expression) &&
+      namespaces.has(expression.expression.text)
+    )
+  }
+  let found = false
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      if (ts.isIdentifier(node.initializer) && namespaces.has(node.initializer.text)) {
+        namespaces.add(node.name.text)
+      } else if (isFingerprintReference(node.initializer)) {
+        functions.add(node.name.text)
+      }
+    } else if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(node.left)
+    ) {
+      if (ts.isIdentifier(node.right) && namespaces.has(node.right.text)) {
+        namespaces.add(node.left.text)
+      } else if (isFingerprintReference(node.right)) {
+        functions.add(node.left.text)
+      }
+    }
+
+    if (ts.isCallExpression(node)) {
+      if (isFingerprintReference(node.expression)) found = true
+    }
+    if (!found) ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return found
+}
+
 function sites(): readonly Site[] {
   const out: Site[] = []
   ;(function walk(dir: string) {
@@ -27,8 +122,9 @@ function sites(): readonly Site[] {
       }
       if (!e.name.endsWith('.ts') || e.name.endsWith('.test.ts')) continue
       const src = fs.readFileSync(p, 'utf8')
+      const bindings = fingerprintBindingsForModule(src, p)
       for (const fn of parseTopLevelFunctions(src)) {
-        if (/fingerprintFile\s*\(/.test(fn.body)) {
+        if (callsFileFingerprint(fn.body, bindings)) {
           out.push({ file: path.relative(SRC_DIR, p).split(path.sep).join('/'), name: fn.name })
         }
       }
@@ -77,17 +173,6 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
         'fold_delivery.ts only reuses indexed spans when entry.sha matches AND entry.parserSha === ' +
         'PARSER_FINGERPRINT; a miss on either falls through to a fresh disk-based fold and enqueues ' +
         'a reindex. Its own doc comment cites the 37/237 measurement this guard generalizes.',
-    },
-  ],
-  [
-    'writeParseResult',
-    {
-      bucket: 'always-writes-current-parser-sha-does-not-gate-a-skip',
-      reason:
-        'parser.ts always writes PARSER_FINGERPRINT as the row\'s new parser_sha on every parse -- ' +
-        'it never reuses an old row based on a sha match, so there is no skip decision here for ' +
-        'parser_sha to gate. (Separately, it now carries embed_sha forward on unchanged content -- ' +
-        'the C2 fix -- which is a different freshness key again.)',
     },
   ],
   [
@@ -147,14 +232,23 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'fingerprintFile',
+    {
+      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
+      reason:
+        'fingerprint.ts retains the sha-only API as a one-path wrapper over fingerprintFileWithBytes; ' +
+        'it returns a hash without a database read or a freshness skip decision.',
+    },
+  ],
+  [
     'processDirtyBatch',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
       reason:
         'worker.ts drains an explicit dirty-queue entry list -- every path here was already queued ' +
         'for reindexing by something else, so there is no "looks unchanged, skip it forever" ' +
-        'decision being made; fingerprintFile here detects content drift for the requeue/log path, ' +
-        'not a parser-freshness gate.',
+        'decision being made; fingerprintFileWithBytes here carries the content hash for the queued ' +
+        'path, not a parser-freshness gate.',
     },
   ],
   [
@@ -166,14 +260,66 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
   ],
 ])
 
-describe('every bulk-vs-single freshness check on fingerprintFile is classified for parser_sha (freshness-gate defect class)', () => {
+describe('every bulk-vs-single freshness check on file fingerprint APIs is classified for parser_sha (freshness-gate defect class)', () => {
+  it('recognizes both fingerprint APIs and ignores comments, strings and longer-name near misses', () => {
+    const found = parseTopLevelFunctions(`
+function shaOnly() { fingerprintFile(path) }
+function withBytes() { fingerprintFileWithBytes(path) }
+function memberBytes() { api.fingerprintFileWithBytes(path) }
+function computedBytes() { api['fingerprintFileWithBytes'](path) }
+function spreadBytes() { fingerprintFileWithBytes(...paths) }
+function aliasedBytes() {
+  const first = fingerprintFileWithBytes
+  const second = first
+  return second(path)
+}
+function commentOnly() { /* fingerprintFileWithBytes(path) */ }
+function stringOnly() { const note = "fingerprintFileWithBytes(path)" }
+function shaNearMiss() { fingerprintFileExtra(path) }
+function bytesNearMiss() { fingerprintFileWithBytesExtra(path) }
+function unrelatedStaticMember() { api['lookup'](path) }
+`)
+      .filter((fn) =>
+        callsFileFingerprint(fn.body, {
+          functions: FINGERPRINT_FUNCTION_NAMES,
+          namespaces: new Set<string>(),
+        }),
+      )
+      .map((fn) => fn.name)
+    expect(found).toEqual(['shaOnly', 'withBytes', 'memberBytes', 'computedBytes', 'spreadBytes', 'aliasedBytes'])
+  })
+
+  it('fails closed on op-keyed calls through the imported fingerprint namespace', () => {
+    const src = `
+import * as fingerprint from './fingerprint.js'
+import { fingerprintFileWithBytes as hashBytes } from './fingerprint.js'
+function opKeyed() { fingerprint[operation](path) }
+function namespaceAlias() {
+  const localFingerprint = fingerprint
+  return localFingerprint[operation](path)
+}
+function computedAlias() {
+  const selected = fingerprint[operation]
+  return selected(path)
+}
+function namedImportAlias() { return hashBytes(path) }
+function unrelatedComputedCall() { values[Symbol.iterator]() }
+`
+    const bindings = fingerprintBindingsForModule(src, path.join(SRC_DIR, 'guard-fixture.ts'))
+    const found = parseTopLevelFunctions(src)
+      .filter((fn) => callsFileFingerprint(fn.body, bindings))
+      .map((fn) => fn.name)
+
+    expect(found).toEqual(['opKeyed', 'namespaceAlias', 'computedAlias', 'namedImportAlias'])
+  })
+
   it('scans a real, non-empty population', () => {
     const found = sites().map((s) => s.name)
     pinnedPopulation({
-      what: 'top-level functions in src/**/*.ts that call fingerprintFile(',
+      what: 'top-level functions in src/**/*.ts that call fingerprintFile() or fingerprintFileWithBytes()',
       items: found,
       floor: 6,
-      mustInclude: ['reconcileProjectWith', 'writeParseResult'],
+      mustInclude: ['reconcileProjectWith', 'fingerprintFile', 'processDirtyBatch'],
     })
   })
 
@@ -181,7 +327,7 @@ describe('every bulk-vs-single freshness check on fingerprintFile is classified 
     const unclassified = sites().filter((s) => !CLASSIFICATION.has(s.name))
     expect(
       unclassified.map((s) => `${s.file}::${s.name}`),
-      'These functions call fingerprintFile() but carry no entry in CLASSIFICATION. Decide whether ' +
+      'These functions call a file fingerprint helper but carry no entry in CLASSIFICATION. Decide whether ' +
         'they gate a skip/reuse decision on BOTH files.sha and files.parser_sha, only ever write the ' +
         'current parser fingerprint, or run against one explicitly-named file rather than a bulk ' +
         'sweep -- and classify them here, or fix them if a bulk sweep is keying on content alone.',

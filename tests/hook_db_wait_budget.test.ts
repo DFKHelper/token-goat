@@ -80,4 +80,24 @@ describe('limitDbWaitsForHook', () => {
     const conn = getDb(path.join(dir, 'short.db'))
     expect(Number(conn.pragma('busy_timeout', { simple: true }))).toBe(budgets.busyMs)
   })
+
+  it('updates every cached connection when hook waits are enabled and restores the patient budget', () => {
+    const connections = [
+      getDb(path.join(dir, 'cached-first.db')),
+      getDb(path.join(dir, 'cached-second.db')),
+    ]
+    for (const conn of connections) {
+      expect(Number(conn.pragma('busy_timeout', { simple: true }))).toBe(15_000)
+    }
+
+    limitDbWaitsForHook(true)
+    for (const conn of connections) {
+      expect(Number(conn.pragma('busy_timeout', { simple: true }))).toBe(250)
+    }
+
+    limitDbWaitsForHook(false)
+    for (const conn of connections) {
+      expect(Number(conn.pragma('busy_timeout', { simple: true }))).toBe(15_000)
+    }
+  })
 })

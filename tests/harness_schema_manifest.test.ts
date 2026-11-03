@@ -134,6 +134,35 @@ describe('Copilot hook-input shape manifest', () => {
     expect(canonical['prompt']).toBe('summarize the failing test')
     expect(canonical['cwd']).toBe(cwd)
   })
+
+  it('fails open on oversized stdin before relaying it', () => {
+    const cwd = mkIsolated()
+    const capturePath = path.join(cwd, 'captured.json')
+    writeCaptureBin(cwd, capturePath)
+    const env = { ...process.env, PATH: cwd + path.delimiter + (process.env['PATH'] ?? '') }
+    const script = COPILOT_CLI_HOOK_SCRIPT.replace(
+      'const COPILOT_HOOK_MAX_INPUT_BYTES = 64 * 1024 * 1024',
+      'const COPILOT_HOOK_MAX_INPUT_BYTES = 2048',
+    )
+    expect(script).not.toBe(COPILOT_CLI_HOOK_SCRIPT)
+
+    const payload = {
+      sessionId: 'stdin-limit',
+      workingDirectory: cwd,
+      toolName: 'view',
+      toolArgs: { path: 'notes.md' },
+    }
+    const acceptedInput = JSON.stringify(payload)
+    expect(Buffer.byteLength(acceptedInput)).toBeLessThan(2048)
+    runShim('preToolUse', acceptedInput, cwd, env, script)
+    expect(fs.existsSync(capturePath)).toBe(true)
+
+    fs.rmSync(capturePath)
+    const oversizedInput = JSON.stringify({ ...payload, toolArgs: { path: 'x'.repeat(3000) } })
+    expect(Buffer.byteLength(oversizedInput)).toBeGreaterThan(2048)
+    expect(runShim('preToolUse', oversizedInput, cwd, env, script)).toBe('{}')
+    expect(fs.existsSync(capturePath)).toBe(false)
+  })
 })
 
 /** The key Copilot CLI's command hooks really send for the working directory is `cwd`, not the SDK's `workingDirectory`: every payload Copilot CLI 1.0.88 sent in the tg-captures run carried `cwd` and none carried `workingDirectory`. PROVENANCE: CAPTURE. tests/fixtures/copilot_cli_1_0_88/C1a-005-postToolUse-view.json and C7-007-userPromptSubmitted.json, the stdin Copilot CLI 1.0.88 handed a hook (see tests/fixtures/copilot_cli_1_0_88.ts). The payload's `cwd` is set to a directory different from the one the shim runs in, so a builder that ignored `cwd` and fell back to process.cwd() fails here instead of being accidentally right, as it would be when Copilot spawns the hook in the project directory. */
@@ -201,14 +230,14 @@ function writeCaptureBin(cwd: string, capturePath: string): void {
   if (process.platform !== 'win32') fs.chmodSync(binPath, 0o755)
 }
 
-function runShim(eventName: string, stdin: string, cwd: string, env: NodeJS.ProcessEnv): void {
+function runShim(eventName: string, stdin: string, cwd: string, env: NodeJS.ProcessEnv, script = COPILOT_CLI_HOOK_SCRIPT): string {
   const scriptPath = path.join(cwd, 'shim.js')
-  fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT, 'utf8')
-  spawnSync(process.execPath, [scriptPath, eventName], {
+  fs.writeFileSync(scriptPath, script, 'utf8')
+  return spawnSync(process.execPath, [scriptPath, eventName], {
     cwd,
     input: stdin,
     encoding: 'utf8',
     timeout: 15000,
     env,
-  })
+  }).stdout
 }
