@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { HARD_STOP_DEFAULT_S, HARD_STOP_MAX_S, HOOK_LIMIT_S, STARTUP_RESERVE_S, STOP_CLEANUP_S, TERM_WAIT_S, hardStopOf, postStopOf } from '../scripts/prepush-budget.mjs'
 import { unfinishedFiles, writeOwed } from '../scripts/prepush-failed.mjs'
-import { killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { killAllIfCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 // Bound on every spawned hook or bash run in this file; a run that reaches it is killed and fails the row.
 const SPAWN_TIMEOUT_MS = 60_000
@@ -117,7 +117,7 @@ describe('cap_run_stoppable', () => {
   // Registered after the removal above, so it runs first (stack order): the stopped step runs in dir and the cleanup process ends its tree just after the hook returns, so the directory is busy for a moment.
   afterEach(() => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }))
 
-  // Runs one bash script that sources the cap, then prints the status of cap_run_stoppable. The flag appears one second in; the child would run for 20 s if nothing ended it.
+  // Runs one bash script that sources the cap, then prints the status of cap_run_stoppable. The flag appears once the step has written step.started, if it does.
   const runCap = (stepArgs: string): { stdout: string; stderr: string } => {
     const flag = slash(path.join(dir, 'hard-stop.flag'))
     const script = path.join(dir, 'run.sh')
@@ -128,7 +128,8 @@ describe('cap_run_stoppable', () => {
         `source "${slash(CAP_SCRIPT)}"`,
         `HARD_FLAG="${flag}"`,
         'PIDS=()',
-        `(sleep 1; : > "${flag}") &`,
+        // The stop comes once the step has said it is running (an event), never after a delay the step could outlast.
+        `(until [ -e "${slash(path.join(dir, 'step.started'))}" ]; do sleep 0.2; done; : > "${flag}") &`,
         'WATCH=$!',
         `cap_run_stoppable "${slash(dir)}" "${slash(path.join(dir, 'out.txt'))}" ${stepArgs}`,
         'echo "rc=$?"',
@@ -142,7 +143,8 @@ describe('cap_run_stoppable', () => {
   }
 
   it.skipIf(!bashAvailable)('ends a step still running at the stop and returns the stop status', () => {
-    const r = runCap(`"${slash(process.execPath)}" -e "setTimeout(() => {}, 20000)"`)
+    // The step records that it started, then stays alive until something ends it; it has no end of its own to race the stop.
+    const r = runCap(`"${slash(process.execPath)}" -e "require('fs').writeFileSync('${slash(path.join(dir, 'step.started'))}', '1'); setInterval(() => {}, 1000)"`)
     expect(r.stdout).toContain('rc=125')
   })
 
@@ -261,8 +263,11 @@ describe('the hard stop ends the legs of a real hook run', () => {
       '  sleep 3',
       'fi',
       `if [[ "\${STUB_FIRE_STOP:-}" == "${leg.leg}" ]]; then`,
+      // The watchdog's pid is read first, so the instant recorded is followed only by builtins up to the signal: a slow fork in the stub is not part of the hook's tail.
+      // STUB_FORK_DELAY stands in for a fork that takes that many seconds on an overloaded host.
+      '  hard_pid="$(sleep "${STUB_FORK_DELAY:-0}"; cat "$TMPDIR"/token-goat-pre-push.*/hard-stop.pid)"',
       '  printf "%s\\n" "$EPOCHREALTIME" >"$STUB_DIR/fired.epoch"',
-      '  kill -TERM "$(cat "$TMPDIR"/token-goat-pre-push.*/hard-stop.pid)"',
+      '  kill -TERM "$hard_pid"',
       'fi',
       `sleep "\${${leg.env}:-0}"`,
       `: >"$STUB_DIR/${leg.leg}.done"`,
@@ -291,11 +296,15 @@ describe('the hard stop ends the legs of a real hook run', () => {
     leftLegs = false
     if (leftHung) endRecordedTrees([path.join(stubs, 'hung.pid')], dir)
     leftHung = false
-    // The cleanup process cds to / and holds no file here, so a lingering one is invisible to the removal below: its exit is awaited by pid and a row whose cleanup process outlives its deadline fails.
+    // The cleanup process cds to / and holds no file here, so a lingering one is invisible to the removal below: its exit is awaited by pid as an event (the row's hang guard bounds the wait, not its verdict), and the grace is read off the stamps it wrote on its own clock, so host load moves neither.
     const reaper = reaperWinpid()
-    const reaperGone = reaper > 1 ? goneWithin(reaper, REAP_GRACE_S + 10) : true
+    const reaperGone = reaper > 1 ? goneWithin(reaper, HOOK_ROW_TIMEOUT_MS / 1000) : true
+    const gone = reaperStamp('hook gone')
+    const exited = reaperStamp('exit')
+    const recorded = reaperRecord()
     rmSync(dir, { recursive: true, force: true })
-    expect(reaperGone, `the cleanup process ${reaper} outlived its deadline, past the end of the row`).toBe(true)
+    expect(reaperGone, `the cleanup process ${reaper} never exited`).toBe(true)
+    if (gone !== null && exited !== null) expect(exited - gone, `the cleanup process outlived its deadline, past the end of the row\n${recorded}`).toBeLessThanOrEqual(REAP_GRACE_S)
     // A row whose cleanup ended the runner shows up as a vitest run that exits 0 with no summary; this names the row instead, while the worker still lives to say so.
     expect(runnerAlive(), `the vitest runner (pid ${process.ppid}) was ended during this row`).toBe(true)
   })
@@ -307,7 +316,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
     it.skipIf(!bashAvailable || (onlyWindows && process.platform !== 'win32'))(name, fn, HOOK_ROW_TIMEOUT_MS)
   }
 
-  const runHook = (extra: Record<string, string>): { status: number | null; out: string; elapsedS: number; tailS: number | null; timedOut: boolean } => {
+  const runHook = (extra: Record<string, string>, timeoutMs: number = HOOK_ROW_TIMEOUT_MS): { status: number | null; out: string; elapsedS: number; tailS: number | null; timedOut: boolean } => {
     const env: Record<string, string | undefined> = {}
     for (const [k, v] of Object.entries(process.env)) {
       if (!/^(PREPUSH_|TG_PREPUSH_|STUB_)/.test(k) && !(extra.PATH !== undefined && /^path$/i.test(k))) env[k] = v
@@ -326,10 +335,13 @@ describe('the hard stop ends the legs of a real hook run', () => {
     // Output goes to a file, not a pipe: spawnSync on a pipe waits for every process that inherited it, so a stray survivor would turn the hook's own return time into a timeout; the file measures the hook's own exit.
     const outFile = path.join(dir, 'hook.out')
     const outFd = openSync(outFile, 'w')
-    const r = spawnSync(GIT_BASH, [slash(path.join(dir, '.lefthook-scripts', 'run-all-checks.sh'))], { cwd: dir, env, stdio: ['ignore', outFd, outFd], timeout: HOOK_ROW_TIMEOUT_MS })
+    const r = spawnSync(GIT_BASH, [slash(path.join(dir, '.lefthook-scripts', 'run-all-checks.sh'))], { cwd: dir, env, stdio: ['ignore', outFd, outFd], timeout: timeoutMs })
     closeSync(outFd)
     const ended = Date.now()
-    if (r.error) leftLegs = true
+    if (r.error) {
+      leftLegs = true
+      endTreesNamingDir(dir)
+    }
     const firedFile = path.join(stubs, 'fired.epoch')
     const tailS = existsSync(firedFile) ? ended / 1000 - Number(readFileSync(firedFile, 'utf8').trim()) : null
     // With no fired.epoch the tail is unknown: lead the output with that and the stubs listing, so a failing row shows what the stubs did; prepended so the legs line stays last.
@@ -361,6 +373,33 @@ describe('the hard stop ends the legs of a real hook run', () => {
     expect(pushLines[pushLines.length - 1], r.out).toContain('exited before it started')
   })
 
+  // A cleanup process that is alive but slow to say it is up (an overloaded host) is the start-up the hard stop bounds: no leg starts, the push fails by name, and the hook returns within the stop plus its tail.
+  hookRow('a cleanup process that never says it is up fails the push at the hard stop with no leg started', () => {
+    const marker = path.join(dir, 'slow-reaper.pid')
+    writeFileSync(path.join(dir, '.lefthook-scripts', 'prepush-reaper.sh'), `#!/usr/bin/env bash\necho "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"${slash(marker)}"\nexec sleep 300\n`)
+    const r = runHook({ PREPUSH_HARD_STOP_S: '8' })
+    // Ended by the hook itself on its way out, so the stub is gone at once; a survivor is ended here first so the row fails by name.
+    const stub = Number(readFileSync(marker, 'utf8').trim())
+    const stubGone = goneWithin(stub, 0)
+    if (!stubGone) endRecordedTrees([marker], dir)
+    expect(stubGone, `the slow cleanup process ${stub} outlived the hook`).toBe(true)
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain('the cleanup process was not up by the 8s hard-stop budget')
+    expect(readdirSync(stubs), 'a leg started although nothing could end it').toEqual([])
+  })
+
+  // A hook still starting when the spawn timeout ends it leaves its tree behind; the row ends that tree, so the directory can be removed and nothing outlives the row.
+  hookRow('a hook the spawn timeout ended leaves no process holding its directory', () => {
+    const marker = path.join(dir, 'slow-reaper.pid')
+    writeFileSync(path.join(dir, '.lefthook-scripts', 'prepush-reaper.sh'), `#!/usr/bin/env bash\necho "$(cat /proc/$$/winpid 2>/dev/null || echo $$)" >"${slash(marker)}"\nsleep 300\n`)
+    const r = runHook({}, 8000)
+    expect(r.timedOut, 'the hook returned before the spawn timeout, so it was not still starting').toBe(true)
+    const tag = path.basename(dir)
+    const q = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${tag}*' -and $_.ProcessId -ne $PID }).ProcessId`], { encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS })
+    expect((q.stdout ?? '').trim(), 'processes naming the row directory outlived the ended hook').toBe('')
+  }, true)
+
   hookRow('a stopped test leg is ended at the stop, and the push still passes', () => {
     const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60' })
     expect(r.timedOut, r.out).toBe(false)
@@ -377,6 +416,15 @@ describe('the hard stop ends the legs of a real hook run', () => {
     expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.out).toContain(`typecheck was still running at the ${HOOK_STOP_S}s hard stop`)
+    expect(r.status, r.out).toBe(1)
+  })
+
+  // A fork in the stop-firing stub that takes longer than the whole tail bound is the stub's slowness, not the hook's: the tail starts at the signal.
+  hookRow('a slow fork in the stub before it signals the stop is not counted in the hook tail', () => {
+    const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TYPECHECK_S: '200', STUB_FORK_DELAY: String(TAIL_BOUND_S + 8) })
+    expect(r.timedOut, r.out).toBe(false)
+    expect(r.tailS, r.out).not.toBeNull()
+    expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
     expect(r.status, r.out).toBe(1)
   })
 
@@ -533,6 +581,15 @@ describe('the hard stop ends the legs of a real hook run', () => {
     const record = path.join(dir, 'store', 'reaper-last.txt')
     const m = existsSync(record) ? /^reaper: pid=\d+ winpid=(\d+)/m.exec(readFileSync(record, 'utf8')) : null
     return m === null ? 0 : Number(m[1])
+  }
+  const reaperRecord = (): string => {
+    const record = path.join(dir, 'store', 'reaper-last.txt')
+    return existsSync(record) ? readFileSync(record, 'utf8') : ''
+  }
+  // A seconds stamp the cleanup process wrote on its own clock ("hook gone: 41", "exit: 53"), or null when the record has none.
+  const reaperStamp = (name: string): number | null => {
+    const m = new RegExp(`^${name}: (\\d+)$`, 'm').exec(reaperRecord())
+    return m === null ? null : Number(m[1])
   }
   const goneWithin = (pid: number, limitS: number): boolean => {
     const until = Date.now() + limitS * 1000
@@ -691,6 +748,15 @@ describe('the cleanup of recorded stub pids', () => {
 })
 
 // Ends the process tree of each pid a test recorded in a pid file. A pid is ended only while its command line, read right now, is a bash that names the row's own temp directory (`owner`): a bash alone is not proof, since Windows hands a freed pid to the next process it starts and a recorded winpid goes stale when a forked bash execs, so a recorded pid can now be an unrelated session's bash. The tree goes with it, since a plain kill leaves the children behind on Windows.
+// A hook run the spawn timeout ended lost only its top bash: every process still naming the row's unique directory in its command line is the row's own, and holds the directory (EPERM on removal). Windows only; elsewhere the process group ends with the spawn.
+function endTreesNamingDir(owner: string): void {
+  if (process.platform !== 'win32') return
+  const tag = path.basename(owner)
+  const q = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${tag}*' -and $_.ProcessId -ne $PID }).ProcessId`], { encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS })
+  const pids = (q.stdout ?? '').split(/\s+/).map(Number).filter((n) => Number.isInteger(n) && n > 1)
+  killAllIfCommandLine(pids, (commandLine) => commandLine.includes(tag), { tree: true })
+}
+
 function endRecordedTrees(pidFiles: string[], owner: string): void {
   const tag = path.basename(owner)
   for (const file of pidFiles) {

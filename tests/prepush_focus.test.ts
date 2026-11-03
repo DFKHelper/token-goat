@@ -1,9 +1,9 @@
 /** The pre-push focus decision (.lefthook-scripts/prepush-focus.sh calling scripts/prepush-select.mjs) in a sandbox repo with real git: the pushed range selects the files, and an empty or unseeable range falls back to the full leg. */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { DeadlineReporter, optionsFromEnv } from '../scripts/prepush-deadline-reporter.mjs'
 import { DEADLINE_REASON, cutReport, isRealError, legVerdict, moduleOutcome, parseOut, splitPlan, summarize } from '../scripts/prepush-deadline.mjs'
 import { queryProcessCommandLine } from '../src/resident_process.js'
@@ -75,16 +75,18 @@ function write(root: string, rel: string, text: string): void {
 /** seed: files committed with the first commit; truncatedStore: the failure record is cut off mid-way after it is written; newBranch: the remote has no such branch; originMain: origin/main exists and points at the first commit */
 type DecideOpts = { seed?: Record<string, string>; truncatedStore?: boolean; newBranch?: boolean; originMain?: boolean }
 
-/** A sandbox repo with one recorded failing test, then the given files changed in a second commit. Returns the decision note and the focus list. */
-// The caller's environment without the PREPUSH_ and TG_PREPUSH_ knobs (PREPUSH_FULL, the budgets, the elapsed seconds), so only what a test sets reaches the script.
-const inheritedEnv = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(?:TG_)?PREPUSH_/.test(k)))
-
-function decide(change: Record<string, string>, env: Record<string, string> = {}, opts: DecideOpts = {}): { note: string; focus: string[]; deferred: string } {
-  // The sandbox is reached through a symlink, as every macOS temp directory is (/var points into /private): a script that mistakes a symlinked path for a different file does nothing here
-  realDir = mkdtempSync(path.join(tmpdir(), 'tg-focus-'))
-  dir = `${realDir}-link`
-  symlinkSync(realDir, dir, 'junction')
-  const root = path.join(dir, 'repo')
+const templates = new Map<string, { dir: string; base: string }>()
+afterAll(() => {
+  for (const t of templates.values()) rmSync(t.dir, { recursive: true, force: true })
+  templates.clear()
+})
+/** A directory holding a sandbox repo with its first commit and the recorded failing test, built once per seed; the second commit and the pushed range are each row's own. */
+function firstCommitTemplate(seed: Record<string, string>): { dir: string; base: string } {
+  const key = JSON.stringify(seed)
+  const have = templates.get(key)
+  if (have) return have
+  const tpl = mkdtempSync(path.join(tmpdir(), 'tg-focus-tpl-'))
+  const root = path.join(tpl, 'repo')
   mkdirSync(path.join(root, 'scripts'), { recursive: true })
   for (const f of ['prepush-failed.mjs', 'test-durations.mjs', 'prepush-budget.mjs', 'prepush-graph.mjs', 'prepush-readers.mjs', 'prepush-select.mjs', 'is-main-module.mjs']) copyFileSync(path.join(REPO, 'scripts', f), path.join(root, 'scripts', f))
   write(root, 'src/a.ts', 'export const a = 1\n')
@@ -95,17 +97,36 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
   write(root, 'tests/guards/tree.test.ts', 'export {}\n')
   write(root, 'tests/other.test.ts', 'export {}\n')
   write(root, 'tests/command_matrix_e2e.1.test.ts', 'export {}\n')
-  for (const [rel, text] of Object.entries(opts.seed ?? {})) write(root, rel, text)
-  git(dir, 'init', '-q', 'repo')
+  for (const [rel, text] of Object.entries(seed)) write(root, rel, text)
+  git(tpl, 'init', '-q', 'repo')
   git(root, 'add', '-A')
   git(root, 'commit', '-q', '-m', 'one')
   const base = git(root, 'rev-parse', 'HEAD')
-  const log = path.join(dir, 'tests.log')
+  const log = path.join(tpl, 'tests.log')
   writeFileSync(log, ' FAIL  tests/a.test.ts > a > fails\n Test Files  1 failed | 4 passed (5)\n')
+  execFileSync(process.execPath, [path.join(root, 'scripts/prepush-failed.mjs'), 'record', path.join(tpl, 'store.json'), 'win', base, log])
+  const made = { dir: tpl, base }
+  templates.set(key, made)
+  return made
+}
+
+/** A sandbox repo with one recorded failing test, then the given files changed in a second commit. Returns the decision note and the focus list. */
+// The caller's environment without the PREPUSH_ and TG_PREPUSH_ knobs (PREPUSH_FULL, the budgets, the elapsed seconds), so only what a test sets reaches the script.
+const inheritedEnv = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(?:TG_)?PREPUSH_/.test(k)))
+
+function decide(change: Record<string, string>, env: Record<string, string> = {}, opts: DecideOpts = {}): { note: string; focus: string[]; deferred: string } {
+  // The sandbox is reached through a symlink, as every macOS temp directory is (/var points into /private): a script that mistakes a symlinked path for a different file does nothing here
+  realDir = mkdtempSync(path.join(tmpdir(), 'tg-focus-'))
+  dir = `${realDir}-link`
+  symlinkSync(realDir, dir, 'junction')
+  const root = path.join(dir, 'repo')
+  // The first commit and the recorded failure are the same for every row with the same seed, so they are built once per seed and copied: each spawn costs a fraction of a second on a loaded host, and a row paid for them again every time
+  const template = firstCommitTemplate(opts.seed ?? {})
+  cpSync(template.dir, realDir, { recursive: true })
+  const base = template.base
   const store = path.join(dir, 'store.json')
-  execFileSync(process.execPath, [path.join(root, 'scripts/prepush-failed.mjs'), 'record', store, 'win', base, log])
   if (opts.truncatedStore) writeFileSync(store, readFileSync(store, 'utf8').slice(0, 20))
-  if (opts.originMain) git(root, 'update-ref', 'refs/remotes/origin/main', base)
+  if (opts.originMain) write(root, '.git/refs/remotes/origin/main', `${base}\n`)
   for (const [rel, text] of Object.entries(change)) write(root, rel, text)
   git(root, 'add', '-A')
   git(root, 'commit', '-q', '--allow-empty', '-m', 'two')
@@ -132,6 +153,13 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
 }
 
 describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => {
+  // One decision per row: each runs the real script, and two in one row doubled the row's cost. The first-commit sandboxes are built in the hook, which has its own budget, so no row pays for them.
+  const changelogSeed = { 'tests/reads_changelog.test.ts': "import fs from 'node:fs'\nfs.readFileSync('CHANGELOG.md')\n", 'CHANGELOG.md': 'one\n' }
+  const wholeSrcSeed = { 'tests/whole_src.test.ts': "import fs from 'node:fs'\nfs.readdirSync('src')\n", 'tests/spawner.test.ts': "import { bundleTg } from './helpers/bundle.js'\nbundleTg()\n", 'tests/helpers/bundle.ts': 'export const bundleTg = () => 1\n' }
+  beforeAll(() => {
+    for (const seed of [{}, changelogSeed, wholeSrcSeed]) firstCommitTemplate(seed)
+  })
+
   it('a src change runs the guards, the matrix and the tests that import the module', () => {
     const r = decide({ 'src/a.ts': 'export const a = 2\n' })
     expect(r.focus).toEqual(['tests/a.test.ts', 'tests/command_matrix_e2e.1.test.ts', 'tests/far.test.ts', 'tests/guards/tree.test.ts', 'tests/near.test.ts'])
@@ -151,17 +179,18 @@ describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => 
   })
 
   it('a document change runs the guards, the failed file and the test that reads the document, and never the full leg', () => {
-    const seed = { 'tests/reads_changelog.test.ts': "import fs from 'node:fs'\nfs.readFileSync('CHANGELOG.md')\n", 'CHANGELOG.md': 'one\n' }
-    const r = decide({ 'CHANGELOG.md': 'two\n' }, {}, { seed })
+    const r = decide({ 'CHANGELOG.md': 'two\n' }, {}, { seed: changelogSeed })
     expect(r.note).toContain('win leg focused')
     expect(r.focus).toEqual(['tests/a.test.ts', 'tests/guards/tree.test.ts', 'tests/reads_changelog.test.ts'])
   })
 
-  it('a src change lists a whole-src reader and a bundle spawner: run with room, deferred without', () => {
-    const seed = { 'tests/whole_src.test.ts': "import fs from 'node:fs'\nfs.readdirSync('src')\n", 'tests/spawner.test.ts': "import { bundleTg } from './helpers/bundle.js'\nbundleTg()\n", 'tests/helpers/bundle.ts': 'export const bundleTg = () => 1\n' }
-    const roomy = decide({ 'src/a.ts': 'export const a = 2\n' }, {}, { seed })
+  it('a src change lists a whole-src reader and a bundle spawner: run with room', () => {
+    const roomy = decide({ 'src/a.ts': 'export const a = 2\n' }, {}, { seed: wholeSrcSeed })
     expect(roomy.focus).toEqual(expect.arrayContaining(['tests/whole_src.test.ts', 'tests/spawner.test.ts']))
-    const tight = decide({ 'src/a.ts': 'export const a = 2\n' }, { PREPUSH_BUDGET_S: '1' }, { seed })
+  })
+
+  it('a src change lists a whole-src reader and a bundle spawner: deferred without room', () => {
+    const tight = decide({ 'src/a.ts': 'export const a = 2\n' }, { PREPUSH_BUDGET_S: '1' }, { seed: wholeSrcSeed })
     expect(tight.focus).not.toContain('tests/whole_src.test.ts')
     expect(tight.deferred).toContain('  tests/whole_src.test.ts')
     expect(tight.deferred).toContain('  tests/spawner.test.ts')
@@ -174,10 +203,13 @@ describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => 
     expect(r.focus).toContain('tests/other.test.ts')
   })
 
-  it('a new branch is focused from its merge base with origin/main, and a doubt without one', () => {
+  it('a new branch is focused from its merge base with origin/main', () => {
     const withBase = decide({ 'tests/other.test.ts': 'export const x = 1\n' }, {}, { newBranch: true, originMain: true })
     expect(withBase.note).toContain('win leg focused')
     expect(withBase.focus).toContain('tests/other.test.ts')
+  })
+
+  it('a new branch with no merge base on origin/main is a doubt', () => {
     const without = decide({ 'tests/other.test.ts': 'export const x = 1\n' }, {}, { newBranch: true })
     expect(without.note).toContain('win leg focused')
     expect(without.note).toContain('doubt (1): new remote ref refs/heads/feat with no merge base on origin/main')
