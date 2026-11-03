@@ -1,12 +1,14 @@
 /** The pre-push focus decision (.lefthook-scripts/prepush-focus.sh calling scripts/prepush-select.mjs) in a sandbox repo with real git: the pushed range selects the files, and an empty or unseeable range falls back to the full leg. */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { DeadlineReporter, optionsFromEnv } from '../scripts/prepush-deadline-reporter.mjs'
 import { DEADLINE_REASON, cutReport, isRealError, legVerdict, moduleOutcome, parseOut, splitPlan, summarize } from '../scripts/prepush-deadline.mjs'
+import { queryProcessCommandLine } from '../src/resident_process.js'
 import { resolveWindowsBash } from '../src/shell.js'
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
 
 const REPO = process.cwd().replace(/\\/g, '/')
@@ -32,6 +34,34 @@ afterEach(() => {
   dir = ''
   realDir = ''
 })
+
+// The focus script sources the cap, whose cleanup process writes its record into the failure store's directory (the sandbox) and lives on for a moment after the script exits; teardown must wait for that process by its pid, or it creates a file under the directory being removed.
+const REAP_GRACE_S = ((): number => {
+  const n = Number(/^REAP_GRACE_S=(\d+)$/m.exec(readFileSync(path.join(REPO, '.lefthook-scripts/prepush-cap.sh'), 'utf8'))?.[1])
+  if (!Number.isInteger(n)) throw new Error('REAP_GRACE_S=<seconds> was not found in prepush-cap.sh')
+  return n
+})()
+const CLEANUP_WAIT_S = REAP_GRACE_S + 10
+const cleanupRunning = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0)
+  } catch {
+    return false
+  }
+  const q = queryProcessCommandLine(pid)
+  return q.status === 'failed' || (q.status !== 'gone' && /prepush-reaper/.test(q.commandLine))
+}
+/** Waits for the cleanup process the script started to exit, and fails by name when it does not; the record names its Windows pid. */
+function awaitCleanupGone(sandbox: string): void {
+  const record = path.join(sandbox, 'reaper-last.txt')
+  const m = existsSync(record) ? /^reaper: pid=\d+ winpid=(\d+)/m.exec(readFileSync(record, 'utf8')) : null
+  expect(m, 'the cleanup process left no record naming its pid').not.toBeNull()
+  const pid = Number(m?.[1])
+  const until = Date.now() + CLEANUP_WAIT_S * 1000
+  while (cleanupRunning(pid) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+  if (cleanupRunning(pid)) killIfCommandLine(pid, (c) => /prepush-reaper/.test(c), { tree: true })
+  expect(cleanupRunning(pid), `the cleanup process ${pid} was still running when the row ended, so it would write into the sandbox being removed`).toBe(false)
+}
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' }).trim()
@@ -94,6 +124,7 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
     'echo "$FOCUS_DEFERRED"',
   ].join('\n')
   const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...inheritedEnv(), ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
+  awaitCleanupGone(dir)
   const note = /^NOTE=(.*)$/m.exec(out)?.[1] ?? ''
   const file = /^FILE=(.*)$/m.exec(out)?.[1]?.trim() ?? ''
   const deferred = out.slice(out.indexOf('DEFERRED_BEGIN') + 'DEFERRED_BEGIN'.length).trim()
