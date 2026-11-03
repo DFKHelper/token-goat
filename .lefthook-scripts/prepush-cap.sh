@@ -39,7 +39,7 @@ cap_record_live() {
 # Starts the cleanup process and waits for it to say it is up or to be gone, never for a fixed count of ticks (bounded by the hard stop, HARD_STOP_DEFAULT_S or the lower PREPUSH_HARD_STOP_S; unbounded under PREPUSH_FULL=1, which is uncapped, so an alive cleanup process that never says it is up holds that run); without it nothing would end a leg, so the push fails. Names the pids an earlier cleanup process could not end, then clears that record. Idempotent. A run with no hard stop (PREPUSH_FULL=1) gives it no life limit of its own.
 cap_reaper_start() {
   [[ -z "$REAP_DIR" ]] || return 0
-  local base store life stop_at="" l left=""
+  local base store life stop_at="" l left="" n=0
   base="${TMP_BASE:-${TMPDIR:-/tmp}}"
   store="$base"
   if [[ -n "${FAILED_STORE:-}" ]]; then store="${FAILED_STORE%/*}"; fi
@@ -68,7 +68,13 @@ cap_reaper_start() {
   while [[ ! -e "$REAP_DIR/up" ]] && kill -0 "$REAP_PID" 2>/dev/null && { [[ -z "$stop_at" ]] || (( SECONDS < stop_at )); }; do cap_tick; done
   if [[ ! -e "$REAP_DIR/up" ]]; then
     if kill -0 "$REAP_PID" 2>/dev/null; then
-      kill "$REAP_PID" 2>/dev/null || true
+      # One TERM can be lost or ignored while the process is still starting: send it each tick until the recorded pid is gone, then KILL it after CAP_KILL_WIN_S ticks; only our own child's pid is signalled.
+      while kill -0 "$REAP_PID" 2>/dev/null; do
+        if (( n >= CAP_KILL_WIN_S )); then kill -9 "$REAP_PID" 2>/dev/null || true; break; fi
+        kill "$REAP_PID" 2>/dev/null || true
+        cap_tick
+        n=$((n + 1))
+      done
       echo "pre-push: the cleanup process was not up by the ${stop_at}s hard-stop budget, so the push fails rather than run legs nothing would end"
     else
       echo "pre-push: the cleanup process exited before it started, so the push fails rather than run legs nothing would end"

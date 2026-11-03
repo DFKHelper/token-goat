@@ -188,13 +188,15 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
   })
 
   // The cleanup process stays alive and never says it is up: the wait ends at the hard stop, lowered here through the existing PREPUSH_HARD_STOP_S override, the stand-in is ended, the push fails with the budget notice and no leg starts.
-  it.skipIf(!bashAvailable)('fails the push at the hard stop when the cleanup process is alive but never up, and ends it', () => {
+  // The second case is a stand-in that ignores the first TERM, which is what a signal sent while the process is still starting looks like: one kill is not enough, the hook must confirm the process is gone and end it.
+  for (const [name, ignoreTerm] of [['', false], [', even when it ignores TERM', true]] as const) {
+  it.skipIf(!bashAvailable)(`fails the push at the hard stop when the cleanup process is alive but never up, and ends it${name}`, () => {
     const stub = file('stub-hang')
     mkdirSync(stub)
     // The stand-in records its own Windows pid first, never writes `up`, and ends by itself when the row's sentinel file is gone (the row removes it in `finally`) or after 300 ticks.
     const sentinel = file('stub.alive')
     writeFileSync(sentinel, '')
-    writeFileSync(path.join(stub, 'prepush-reaper.sh'), ['#!/usr/bin/env bash', 'w=$$; if [[ -r "/proc/$$/winpid" ]]; then read -r w <"/proc/$$/winpid"; fi', 'echo "$w" >"$D/stub.winpid"', 'i=0; while [[ -e "$D/stub.alive" ]] && (( i < 300 )); do sleep 1; i=$((i + 1)); done', ''].join('\n'))
+    writeFileSync(path.join(stub, 'prepush-reaper.sh'), ['#!/usr/bin/env bash', ...(ignoreTerm ? ["trap '' TERM"] : []), 'w=$$; if [[ -r "/proc/$$/winpid" ]]; then read -r w <"/proc/$$/winpid"; fi', 'echo "$w" >"$D/stub.winpid"', 'i=0; while [[ -e "$D/stub.alive" ]] && (( i < 300 )); do sleep 1; i=$((i + 1)); done', ''].join('\n'))
     try {
       runDriver([], { STUB_REAPER_DIR: slash(stub), PREPUSH_HARD_STOP_S: '3' }, undefined, 1)
       expect(readFileSync(file('driver.out'), 'utf8')).toContain('the cleanup process was not up by the 3s hard-stop budget')
@@ -209,6 +211,7 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
       rmSync(sentinel, { force: true })
     }
   })
+  }
 
   // The cap derives the default hard stop in bash because it must bound the start wait before node is asked; this keeps the two from drifting apart.
   it('names the same default hard stop as the budget module', () => {
