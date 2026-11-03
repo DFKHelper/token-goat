@@ -414,23 +414,30 @@ MATLAB, OpenEdge ABL and Salesforce metadata share their file extensions with ot
 
 ## Troubleshooting
 
-### Windows Defender / Real-Time Antivirus Scanning
+### Windows Defender / Real-Time Antivirus Scanning & EDR Overhead
 
-On Windows, real-time scanning can add latency to hook invocations (`tg-hook.exe`, `token-goat.cmd`) and cause intermittent `EPERM` sharing lock errors during SQLite index transactions.
+On Windows, real-time scanning can add significant latency to hook invocations (`tg-hook.exe`, `token-goat.cmd`), cause high CPU contention under Defender ATP (`MsSense`) or CrowdStrike during agent multi-turn sessions, and cause intermittent `EPERM` sharing lock errors during SQLite index transactions.
+
+Similarly, AI harnesses (Claude Code, GitHub Copilot CLI, Codex) write high-volume turn transcripts, tool logs, and gigabyte-scale session-state JSONL databases into their respective home folders (`~/.claude`, `~/.copilot`, `~/.codex`).
 
 To configure exclusions, open PowerShell as administrator:
 
 ```powershell
 # Exclude CLI and hook binaries/processes
-Add-MpPreference -ExclusionProcess @('token-goat.exe', 'token-goat', 'tg.exe', 'tg', 'tg-hook.exe')
+Add-MpPreference -ExclusionProcess @('token-goat.exe', 'token-goat', 'tg.exe', 'tg', 'tg-hook.exe', 'copilot.exe', 'node.exe')
 
-# Exclude data directories and global npm wrapper path
+# Exclude data directories, global npm wrapper path, and agent harness home dirs
 Add-MpPreference -ExclusionPath @(
   "$env:LOCALAPPDATA\dfk-helper\token-goat",
   "$env:USERPROFILE\.token-goat",
+  "$env:USERPROFILE\.copilot",
+  "$env:USERPROFILE\.claude",
+  "$env:USERPROFILE\.codex",
   "$env:APPDATA\npm"
 )
 ```
+
+> **(disclaimer):** Exclusions create an antivirus blind spot for downloaded packages, cloned repos, and build artifacts. Only apply exclusions that comply with your organization's security policy, and prefer process-scoped rules over broad directory exemptions.
 
 Verify active exclusions:
 ```powershell

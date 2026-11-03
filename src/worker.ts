@@ -751,9 +751,9 @@ function embeddingsReady(dir: string): boolean {
 }
 
 /** How long a daemon runs with an empty queue and nothing left to embed before it exits on its own; ensureWorkerAlive starts a new one on the next enqueue, so an unused data dir costs nothing but its hourly housekeeping. */
-const DEFAULT_IDLE_EXIT_MS = 6 * 60 * 60 * 1000
+const DEFAULT_IDLE_EXIT_MS = 30 * 60 * 1000
 
-/** The idle period after which a daemon exits: a positive-integer `TG_WORKER_IDLE_EXIT_MS`, else six hours. Anything else in the variable (empty, non-numeric, zero, negative) is ignored, as `TG_WORKER_POLL_MS` is. */
+/** The idle period after which a daemon exits: a positive-integer `TG_WORKER_IDLE_EXIT_MS`, else 30 minutes. Anything else in the variable (empty, non-numeric, zero, negative) is ignored, as `TG_WORKER_POLL_MS` is. */
 export function resolveIdleExitMs(): number {
   const parsed = parseInt(process.env['TG_WORKER_IDLE_EXIT_MS'] ?? '', 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_IDLE_EXIT_MS

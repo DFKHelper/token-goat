@@ -3,7 +3,6 @@ import { attemptedCommandName, suggestForUnknownCommand } from './command_intent
 import { renamedFlagsIn, rewriteOptionIntent, suggestForUnknownOption } from './option_intent.js'
 import { spawnSync } from 'child_process'
 import * as fs from 'fs'
-import * as path from 'path'
 // Type-only imports: erased at compile time, so referencing them here does not eagerly load mcp_server.js (and transitively the whole MCP protocol layer and zod) at CLI startup. The runtime values are lazy-imported only inside cmdMcpServe.
 import type { createMcpServer as CreateMcpServerFn } from './mcp_server.js'
 import type { StdioServerTransport as StdioServerTransportClass } from './mcp_stdio.js'
@@ -41,29 +40,26 @@ import { embedPolicyResolver, runDetachedWorkerDaemon } from './worker.js'
 import { ensureWorkerAlive, isWorkerRunning, startDetachedWorker, stopWorkerDetailed, WorkerAlreadyRunningError, workerLeftRunningNote } from './worker_lifecycle.js'
 import { enqueueDirtyPathsSafe } from './hooks_index.js'
 // Loaded on demand inside cmdCompress, not at module scope: bash_runner pulls in the whole bash tool-filter registry (every language, linter, cloud and package-manager filter), which only the compress command ever uses. See the same reasoning for relay in cmdHook.
-import { runRead, runPeek, runPrSlice } from './read_commands.js'
-import { runSymbol } from './read_symbol.js'
-import { namedSpecsMergeable, readSpecsMergeable } from './read_spec.js'
-import { runBrief } from './read_brief.js'
-import { runSection } from './read_section.js'
-import { runListSections } from './read_inspect.js'
-import { runSkeleton, runOutline, type SkeletonOptions } from './read_outline.js'
+import { runPrSlice } from './read_commands.js'
 import { runSemantic, runSemanticMulti } from './read_semantic.js'
 import { runSemanticDistances } from './semantic_distances.js'
-import { runRefs } from './read_refs.js'
 import {
-  runExit,
   runExitText,
-  noteExtraFileArgs,
-  emitExtraFileArgsNote,
   requireInt,
   requireNonNegativeInt,
   requirePositiveInt,
 } from './cli_dispatch.js'
 import { generateCompactHelp } from './cli_help.js'
+import { registerInspectCommands } from './cli_cmd_inspect.js'
+import { registerIndexCommands } from './cli_cmd_index.js'
+import { registerContentCommands } from './cli_cmd_content.js'
+import { registerIntegrationCommands } from './cli_cmd_integrations.js'
+import { registerDiagnosticCommands } from './cli_cmd_diagnostics.js'
 import { registerFormatCommands } from './cli_cmd_formats.js'
 import { registerAnalysisCommands } from './cli_cmd_analysis.js'
 import { registerSessionCommands } from './cli_cmd_session.js'
+import { registerDocumentCommands } from './cli_cmd_documents.js'
+import { registerSystemCommands } from './cli_cmd_system.js'
 import { cmdHookServerRun, cmdHookServerStatus, cmdHookServerStop } from './cli_hook_server.js'
 import { cmdInstall, cmdMcpStatus, cmdUninstall } from './cli_install.js'
 import { runPayloads } from './cli_payloads.js'
@@ -961,514 +957,54 @@ export function buildProgram(): Command {
       }
     }
 
-  program
-    .command('symbol [name] [more...]')
-    .description('search for a symbol by name, or project-wide by --grep name pattern')
-    .option('-l, --limit <n>', 'max results')
-    .option('-f, --file <path>', 'restrict to one file')
-    .option('-k, --kind <kind>', 'restrict to one kind (function, class, ...)')
-    .option('-p, --project [path]', 'scope search to one project root instead of the global index (defaults to cwd)')
-    .option('-j, --json', 'output as JSON')
-    .option('--grep <pattern>', 'only show symbols whose name matches this regex (literal substring if it is not valid regex); cannot be combined with <name>')
-    .option('--exclude-tests', 'hide symbols defined in a test file (opt-in; default output is unchanged)')
-    .option('--exclude-vendored', 'hide symbols defined under a dependency or build directory the indexer skips (node_modules, dist, site-packages, ...) (opt-in; default output is unchanged)')
-    .option('--stats', 'add per-result reference count and doc-coverage flag (project-wide count per NAME, not per definition site -- same-named symbols across files share a count)')
-    // Commander names the attribute after the last flag of a `--a, --b` pair, so this arrives as `signature`, never `sig`.
-    .option('--sig, --signature', 'only output the declaration signature, omitting implementation body')
-    .action((name: string | undefined, more: string[], opts: { limit?: string; file?: string; kind?: string; project?: string | boolean; json?: boolean; grep?: string; excludeTests?: boolean; excludeVendored?: boolean; stats?: boolean; signature?: boolean }) => {
-      let projectRoot: string | undefined
-      if (opts.project === true) {
-        projectRoot = resolveProjectRoot({ project: process.cwd() })
-      } else if (typeof opts.project === 'string') {
-        projectRoot = resolveProjectRoot({ project: opts.project })
-      }
-      return runExitText(() =>
-        noteExtraFileArgs(
-          'symbol',
-          name ?? '',
-          more,
-          () =>
-            runSymbol({
-              ...(name !== undefined ? { name } : {}),
-              limit: opts.limit !== undefined ? requirePositiveInt('--limit', opts.limit) : 20,
-              ...(opts.file !== undefined ? { file: opts.file } : {}),
-              ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
-              ...(projectRoot !== undefined ? { projectRoot } : {}),
-              ...(opts.json === true ? { json: true } : {}),
-              ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-              ...(opts.excludeTests === true ? { excludeTests: true } : {}),
-              ...(opts.excludeVendored === true ? { excludeVendored: true } : {}),
-              ...(opts.stats === true ? { stats: true } : {}),
-              ...(opts.signature === true ? { sig: true } : {}),
-            }),
-          // `symbol` searches one name; there is no comma form that would search several.
-          { noun: 'spec', mergeable: false },
-        ),
-      )
-    })
+  registerInspectCommands(program, guard, { cmdSemantic, cmdSearch })
 
-  program
-    .command('read <spec> [more...]')
-    .description(
-      "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol; a trailing @LINE anchor -- file::symbol@LINE, or combined as file::Parent.symbol@LINE -- picks out a specific candidate by its exact starting line, for the case a Parent qualifier can't reach (e.g. a top-level definition); comma-separated file::a,b for a merged multi-symbol view, or a::x,b::y to merge symbols across several files; file:LINE or file:START-END resolves a line number to the region enclosing it -- the symbol, the file preamble, or the gap between two symbols -- while file@START-END serves those raw lines)",
-    )
-    .option('-j, --json', 'output as JSON')
-    .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
-    .option('--stats', 'add per-symbol reference count and doc-coverage flag')
-    .option('--sig, --signature', 'only output the declaration signature, omitting implementation body')
-    .action((spec: string, more: string[], opts: { json?: boolean; forceRefresh?: boolean; stats?: boolean; signature?: boolean }) =>
-      runExitText(() =>
-        noteExtraFileArgs(
-          'read',
-          spec,
-          more,
-          () =>
-            runRead({
-              spec,
-              ...(opts.json === true ? { json: true } : {}),
-              ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
-              ...(opts.stats === true ? { stats: true } : {}),
-              ...(opts.signature === true ? { sig: true } : {}),
-            }),
-          // Whether the comma form the note names would actually run depends on the specs themselves, not on the command: `read` merges `::` specs and nothing else.
-          { noun: 'spec', mergeable: readSpecsMergeable([spec, ...more]) },
-        ),
-      ),
-    )
-
-  program
-    .command('peek <spec>')
-    .description('context window around a file:line location (default 5 lines context, e.g. src/index.ts:42)')
-    .option('-C, --context <n>', 'lines of context before and after (default: 5)')
-    .option('-j, --json', 'output as JSON')
-    .action((spec: string, opts: { context?: string; json?: boolean }) =>
-      runExitText(() =>
-        runPeek({
-          spec,
-          ...(opts.context !== undefined ? { context: requireNonNegativeInt('-C/--context', opts.context) } : {}),
-          ...(opts.json === true ? { json: true } : {}),
-        }),
-      ),
-    )
-
-  program
-    .command('brief <spec> [more...]')
-    .description(
-      'symbol body + callers + containing doc section in one call (spec: file::symbol; also accepts the file::symbol@LINE anchor form documented under `read`; comma-separated file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported)',
-    )
-    .option('-j, --json', 'output as JSON')
-    .option('--limit <n>', 'max callers to show (default: 20)')
-    .option('-C, --context <n>', 'lines of call-site source to show before and after each caller (default 0)')
-    .option('--exclude-tests', 'hide callers whose call site lives in a test file (opt-in; default output is unchanged)')
-    .option('--grep <pattern>', 'only show callers whose enclosing symbol name matches this regex (literal substring if it is not valid regex)')
-    .action((spec: string, more: string[], opts: { json?: boolean; limit?: string; context?: string; excludeTests?: boolean; grep?: string }) =>
-      runExit(() => {
-        emitExtraFileArgsNote('brief', spec, more, { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) })
-        return runBrief({
-          spec,
-          ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
-          ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
-          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
-          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-        })
-      }),
-    )
-
-  program
-    .command('section <spec> [more...]')
-    .description(
-      'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading; comma-separated file::A,B for a merged multi-heading view), or list all sections with --list',
-    )
-    .option('-j, --json', 'output as JSON')
-    .option('--list', 'list all section headings in the file instead of reading one')
-    .option('--grep <pattern>', 'with --list, filter headings to this regex; otherwise keep only the matching body lines of each section under their nearest sub-heading (literal substring if it is not valid regex)')
-    .option('--max-lines <n>', 'limit returned section content to at most N lines from the top')
-    .option('--head <n>', 'alias for --max-lines')
-    .action((spec: string, more: string[], opts: { json?: boolean; list?: boolean; grep?: string; maxLines?: string; head?: string }) => {
-      const maxLinesRaw = opts.maxLines ?? opts.head
-      const maxLines = maxLinesRaw !== undefined ? requireNonNegativeInt('--max-lines', maxLinesRaw) : undefined
-      return opts.list === true
-        ? runExit(() => {
-            // --list reads a plain file and has no comma form, so name no suggestion here.
-            emitExtraFileArgsNote('section --list', spec, more, { mergeable: false })
-            return runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
-          })
-        : runExitText(() =>
-            noteExtraFileArgs(
-              'section',
-              spec,
-              more,
-              () =>
-                runSection({
-                  spec,
-                  ...(opts.json === true ? { json: true } : {}),
-                  ...(maxLines !== undefined ? { maxLines } : {}),
-                  ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-                }),
-              { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) },
-            ),
-          )
-    })
-
-  program
-    .command('semantic [query] [more...]')
-    .description('semantic search (falls back to full-text search); several queries run in one call, one headed block per query')
-    .option('-l, --limit <n>', 'max results (default: 20; 0 or less is refused)')
-    .option('-j, --json', 'output as JSON')
-    .option('--grep <pattern>', 'filter to hits whose file path matches this regex (literal substring if it is not valid regex); matched against the path as rendered')
-    .option('--exclude-tests', 'hide hits whose file is a test file (opt-in; default output is unchanged)')
-    .option('--preflight', 'run semantic embedding preflight check and exit')
-    .option('--warm', 'warm up the embedding model session in memory')
-    .option('--distances', 'report the closest-distance spread of recorded semantic queries (no query text is stored) and the current weak_distance')
-    .option('--all', 'with --distances: every project instead of the current one')
-    .action(guard(cmdSemantic))
-
-  program
-    .command('search [query] [more...]')
-    .description('parallel multi-angle search fusing symbol, heading, text, and semantic channels concurrently via reciprocal rank fusion')
-    .option('-l, --limit <n>', 'max results (default: 20)')
-    .option('-c, --channels <list>', 'comma-separated channels to query (symbol,heading,text,semantic)')
-    .option('-p, --project [path]', 'scope search to one project root instead of the global index (defaults to cwd)')
-    .option('-j, --json', 'output as JSON')
-    .option('--min-score <score>', 'minimum reciprocal rank fusion score threshold')
-    .action(guard(cmdSearch))
-
-  // `skeleton` and `outline` are the same command over the same options (see OutlineOptions, which is an alias of SkeletonOptions) and differ only in which renderer they hand the file to. They were registered by two blocks identical line for line apart from the name, description and callee, so a flag added to one silently did not exist on the other. Registered in the original order, so `--help` still lists skeleton before outline.
-  const registerSymbolListing = (
-    name: string,
-    description: string,
-    run: (opts: SkeletonOptions) => { text: string; code: number },
-  ): void => {
-    program
-      .command(`${name} <file> [more...]`)
-      .description(description)
-      .option('-j, --json', 'output as JSON')
-      .option('--min-lines <n>', 'only show symbols at least N lines long')
-      .option('--grep <pattern>', 'only show symbols whose name matches this regex (literal substring if it is not valid regex)')
-      .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
-      .option('--stats', 'add per-symbol reference count and doc-coverage flag')
-      .action(
-        (file: string, more: string[], opts: { json?: boolean; minLines?: string; grep?: string; forceRefresh?: boolean; stats?: boolean }) =>
-          runExitText(() =>
-            noteExtraFileArgs(name, file, more, () =>
-              run({
-                file,
-                ...(opts.json === true ? { json: true } : {}),
-                ...(opts.minLines !== undefined ? { minLines: requireNonNegativeInt('--min-lines', opts.minLines) } : {}),
-                ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-                ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
-                ...(opts.stats === true ? { stats: true } : {}),
-              }),
-            ),
-          ),
-      )
-  }
-
-  registerSymbolListing(
-    'skeleton',
-    'list all symbols in a file without bodies (also accepts a comma-separated file list "a,b,c" for one headed block per file)',
-    runSkeleton,
-  )
-  registerSymbolListing(
-    'outline',
-    'list symbols with line ranges and docstrings (also accepts a comma-separated file list "a,b,c" for one headed block per file)',
-    runOutline,
+  registerIndexCommands(
+    program,
+    guard,
+    { cmdIndex, cmdMap, cmdBridgesStatus, cmdCommands, cmdMcpServe },
+    {
+      maxFilesScanned: MAX_FILES_SCANNED,
+      maxFilesScannedForced: MAX_FILES_SCANNED_FORCED,
+      inlineEmbedBudgetMs: INDEX_INLINE_EMBED_BUDGET_MS,
+    },
   )
 
-  program
-    .command('refs <spec> [more...]')
-    .description('find references to one or more symbols (spec: file::symbol, symbol, or comma-separated a,b,c / file::a,b for a merged multi-symbol view; cross-file a.ts::x,b.ts::y is also supported). For an unambiguous TypeScript symbol, automatically type-resolves candidates via the TypeScript compiler API to drop same-named-different-symbol false positives; falls back to name-based matching when that is not possible.')
-    .option('--callers', 'group references by their enclosing caller symbol')
-    .option('-l, --limit <n>', 'max results')
-    .option(
-      '--top <n>',
-      'for a high-fanout symbol, group references by file (count only) and show only the top N files by reference count instead of a per-line dump',
-    )
-    .option('-C, --context <n>', 'lines of call-site source to show before and after each reference (default 0)')
-    .option('-j, --json', 'output as JSON')
-    .option('--exclude-tests', 'hide references whose call site lives in a test file (opt-in; default output is unchanged)')
-    .option('--grep <pattern>', 'filter to references whose call-site file path matches this regex (falls back to a literal substring match when the pattern does not compile); matched against the path as rendered, so ^src/ matches what you see in every form -- drops test/vendored hits from a wide-fanout symbol')
-    .action((spec: string, more: string[], opts: { callers?: boolean; limit?: string; top?: string; context?: string; json?: boolean; excludeTests?: boolean; grep?: string }) =>
-      runExit(() => {
-        emitExtraFileArgsNote('refs', spec, more, { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) })
-        return runRefs({
-          spec,
-          ...(opts.callers === true ? { callers: true } : {}),
-          ...(opts.json === true ? { json: true } : {}),
-          ...(opts.limit !== undefined ? { limit: requirePositiveInt('--limit', opts.limit) } : {}),
-          ...(opts.top !== undefined ? { top: requirePositiveInt('--top', opts.top) } : {}),
-          ...(opts.context !== undefined ? { context: requireNonNegativeInt('--context', opts.context) } : {}),
-          ...(opts.excludeTests === true ? { excludeTests: true } : {}),
-          ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-        })
-      }),
-    )
+  registerContentCommands(program, guard, {
+    cmdContentCompress,
+    cmdRetrieve,
+    cmdHandoffCreate,
+    cmdHandoffResolve,
+    runBenchCommand,
+    out,
+  })
 
-  program
-    .command('index [path]')
-    .description('parse all git-tracked files and (re)build the symbol index')
-    .option('--walk', 'if not a git repo, index a bounded directory walk instead (skips .env / generated / oversized trees)')
-    .option('--force', 'bypass the SHA-freshness cache and reindex every tracked file, even byte-identical ones (e.g. after a parser upgrade changes what gets extracted)')
-    .option('--force-walk', `index a non-git folder via --walk and raise its ${MAX_FILES_SCANNED} source-file refusal to ${MAX_FILES_SCANNED_FORCED} (slow; produces a large index)`)
-    .option('--embed', `embed every file before returning; without it, files still waiting after ${INDEX_INLINE_EMBED_BUDGET_MS / 1000} s of embedding are left to the background worker`)
-    .action(guard(cmdIndex))
+  registerIntegrationCommands(program, guard, {
+    cmdHook,
+    cmdInstall,
+    cmdUninstall,
+    cmdMcpStatus,
+    cmdWorkerStart,
+    cmdWorkerStop,
+    cmdWorkerStatus,
+    cmdHookServerRun,
+    cmdHookServerStatus,
+    cmdHookServerStop,
+  })
 
-  program
-    .command('map')
-    .description('project overview')
-    .option('-c, --compact', 'compact, low-token summary')
-    .option('--json', 'emit the project map as JSON instead of text')
-    .action(guard(cmdMap))
-
-  program
-    .command('bridges-status')
-    .description('hook-event parity matrix across every AI-harness bridge (read-only static analysis, never invokes a real harness binary)')
-    .option('--json', 'emit the matrix as JSON instead of text')
-    .action(guard(cmdBridgesStatus))
-
-  program
-    .command('commands')
-    .description('machine-readable manifest of every registered command, its options, and its arguments')
-    .option('--json', 'emit the manifest as JSON instead of text')
-    .option('--grep <pattern>', 'filter to commands whose name, description, or aliases match this regex')
-    .action(guard(cmdCommands))
-
-  program
-    .command('mcp-serve')
-    .description('run token-goat as an MCP stdio server exposing surgical reads and local compression/handoff tools')
-    .action(guard(cmdMcpServe))
-
-  program
-    .command('bench')
-    .description('replay a corpus of captured command output through the compressors; prints the byte savings ratio and a fidelity check, and exits 1 when a must-keep line was dropped')
-    .option('--corpus <dir>', 'corpus directory (default: tests/fixtures/bench, relative to the working directory)')
-    .option('--tsv <path>', 'append one result row, keyed by the current commit, creating the file and its header if absent')
-    .option('--validate', 'score the corpus with control filters instead: proves the ratio has a floor and the fidelity guard can actually fail')
-    .option('-j, --json', 'output as JSON')
-    .action((opts: { corpus?: string; tsv?: string; validate?: boolean; json?: boolean }) =>
-      // A report graded by its exit code, not an error message: it goes to stdout whether or not a check failed, the way doctor's does.
-      runExit(() => {
-        const { text, code } = runBenchCommand({
-          corpus: opts.corpus ?? path.join('tests', 'fixtures', 'bench'),
-          ...(opts.tsv !== undefined ? { tsv: opts.tsv } : {}),
-          ...(opts.validate === true ? { validate: true } : {}),
-          ...(opts.json === true ? { json: true } : {}),
-        })
-        out(text)
-        return code
-      }),
-    )
-
-  program
-    .command('compress-text [text]')
-    .description('compress arbitrary local text and print an opaque recovery ID plus compact payload')
-    .option('--file <path>', 'read text from a local file instead of the argument')
-    .option('--payload', 'always print the compact payload, even when inlining it costs more tokens than the original text')
-    .action(guard(cmdContentCompress))
-
-  program
-    .command('retrieve <id>')
-    .description('retrieve original text previously stored by token-goat compress')
-    .option('--head <n>', 'show first N lines')
-    .option('--tail <n>', 'show last N lines')
-    .option('--grep <pattern>', 'filter lines matching regex')
-    .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
-    .option('--section <heading>', 'extract a specific section from the retrieved text')
-    .option('--full', 'print the entire retrieved text with no head/tail elision (default behaviour when no other flag is given)')
-    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405; with --section, the numbers -n prints')
-    .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
-    .option('--context <n>', 'with --grep, also show N lines around each match')
-    .action(guard(cmdRetrieve))
-
-  program
-    .command('handoff-create <name> [text]')
-    .description('create a project-local named compressed handoff')
-    .option('--file <path>', 'read handoff text from a local file instead of the argument')
-    .action(guard(cmdHandoffCreate))
-
-  program
-    .command('handoff-resolve <name>')
-    .description('resolve a project-local handoff compactly, or return it in full')
-    .option('--full', 'return the full handoff text')
-    .action(guard(cmdHandoffResolve))
-
-  program
-    .command('hook <event>')
-    .description('hook relay entrypoint (reads JSON on stdin)')
-    .option('--harness <name>', 'override harness detection for this invocation (sets TOKEN_GOAT_HARNESS_OVERRIDE)')
-    .action(guard(cmdHook))
-
-  program
-    .command('install')
-    .description('install hooks into Claude Code settings, or with harness flags into those harnesses instead')
-    .option('-p, --project', 'install into project scope instead of user scope')
-    .option('--user', 'with --vscode, install into user scope instead of this project (every project at once, but nothing past the first folder of a multi-root workspace)')
-    .option('--codex', 'patch Codex CLI ($CODEX_HOME or ~/.codex: config.toml, AGENTS.md)')
-    .option('--gemini', 'patch Gemini CLI (~/.gemini/settings.json)')
-    .option('--qwen', 'patch Qwen Code (~/.qwen/settings.json)')
-    .option('--kimi', 'register a Kimi Code hook config, shim, instructions block and skill ($KIMI_CODE_HOME or ~/.kimi-code: config.toml, hooks/token-goat-shim.cjs, AGENTS.md, skills/token-goat/SKILL.md)')
-    .option('--pi', 'drop a pi (pi-coding-agent) extension (~/.pi/agent/extensions/token-goat.ts)')
-    .option('--opencode', 'drop an opencode plugin (~/.config/opencode/plugins/token-goat.ts, or under $XDG_CONFIG_HOME when set)')
-    .option('--hermes', 'verify token-goat hooks are present for Hermes Agent (writes nothing new)')
-    .option('--openclaw', 'register an OpenClaw plugin (~/.openclaw/openclaw.json, ~/.openclaw/plugins/token-goat.ts)')
-    .option('--copilot', 'register a Copilot CLI hook config and routing block (~/.copilot/hooks/token-goat.json, ~/.copilot/hooks/token-goat-shim.cjs, ~/.copilot/copilot-instructions.md; with --local or -p/--project, <project>/.github/hooks/token-goat.json, <project>/.github/hooks/token-goat-shim.cjs, <project>/.github/copilot-instructions.md)')
-    .option('--grok', 'register a Grok CLI (xAI Grok Build) hook config (~/.grok/hooks/token-goat.json, ~/.grok/hooks/token-goat-shim.cjs)')
-    .option('--antigravity', 'register an Antigravity CLI (agy) plugin (~/.gemini/config/plugins/token-goat/: plugin.json, hooks.json, and token-goat-hook.cmd on Windows)')
-    .option('--vscode', 'configure a VS Code MCP server (the workspace .vscode/mcp.json by default; --user for the user-profile mcp.json) and Copilot routing guidance')
-    .option('--visualstudio', 'configure a Visual Studio (2022 17.14+ / 2026) Copilot MCP server and routing guidance, no hooks (%USERPROFILE%\\.mcp.json and %USERPROFILE%\\copilot-instructions.md; -p/--project for <project>/.mcp.json and <project>/.github/copilot-instructions.md)')
-    .option('--zed', 'register token-goat as a Zed MCP context server (%APPDATA%\\Zed\\settings.json on Windows, ~/.config/zed/settings.json elsewhere, plus a generated shim script); Zed has no hooks API, so this is user scope only, no -p/--project support')
-    .option('--cursor', 'register a Cursor MCP server (~/.cursor/mcp.json by default; -p/--project for <project>/.cursor/mcp.json); writes no Cursor hooks config -- Cursor already imports the Claude Code hooks `token-goat install` writes to ~/.claude/settings.json')
-    .option('--jetbrains', 'configure a JetBrains Suite (WebStorm, IntelliJ, PyCharm, Rider) MCP server and Copilot routing guidance')
-    .option('--neovim', 'install Neovim Lua integration module (<project>/.nvim/token-goat.lua, or user plugin dir)')
-    .option('--aider', 'install Aider coding conventions (<project>/CONVENTIONS.md, or ~/.aider.conventions.md)')
-    .option('--detect', 'inspect the current workspace and detect all IDEs and coding agent ecosystems')
-    .option('--auto', 'automatically install token-goat across all detected developer ecosystems')
-    .option('--all', 'install token-goat across all supported IDE and coding agent environments')
-    .option('--local', 'with --pi or --copilot, install the project-local config instead of the global one (<project>/.pi/extensions/token-goat.ts, <project>/.github/hooks/token-goat.json); the same as -p/--project')
-    .option('--no-index', 'do not queue the project in the current directory for its first index (TOKEN_GOAT_INSTALL_INDEX=0 does the same)')
-    .action(guard(cmdInstall))
-
-  program
-    .command('uninstall')
-    .description('remove token-goat hooks from Claude Code settings, or with harness flags from those harnesses instead')
-    .option('-p, --project', 'uninstall from project scope instead of user scope')
-    .option('--user', 'with --vscode, remove the user-scope install instead of this project one')
-    .option('--codex', 'strip the Codex CLI integration ($CODEX_HOME or ~/.codex: config.toml, AGENTS.md)')
-    .option('--gemini', 'strip the Gemini CLI integration (~/.gemini/settings.json)')
-    .option('--qwen', 'strip the Qwen Code integration (~/.qwen/settings.json)')
-    .option('--kimi', 'strip the Kimi Code integration (config.toml hooks, hooks/token-goat-shim.cjs, the AGENTS.md block and skills/token-goat under $KIMI_CODE_HOME or ~/.kimi-code)')
-    .option('--pi', 'remove the pi (pi-coding-agent) extension')
-    .option('--opencode', 'remove the opencode plugin')
-    .option('--hermes', 'no-op verification flag for symmetry with install (removes no files)')
-    .option('--openclaw', 'remove the OpenClaw plugin and config entry')
-    .option('--copilot', 'remove the Copilot CLI hook config and shim script, and strip the token-goat block from ~/.copilot/copilot-instructions.md (or <project>/.github/copilot-instructions.md with --local or -p/--project)')
-    .option('--grok', 'remove the Grok CLI hook config and shim script')
-    .option('--antigravity', 'remove the Antigravity CLI (agy) plugin (~/.gemini/config/plugins/token-goat/)')
-    .option('--vscode', 'remove the VS Code MCP server (project scope by default; --user for the user-profile one) and routing guidance')
-    .option('--visualstudio', 'remove the Visual Studio MCP server entry and routing guidance (user scope by default; -p/--project for the project one)')
-    .option('--zed', 'remove the Zed MCP context server entry and its generated shim script')
-    .option('--cursor', 'remove the Cursor MCP server entry (user scope by default; -p/--project for the project one)')
-    .option('--jetbrains', 'remove the JetBrains MCP server entry and Copilot routing guidance')
-    .option('--neovim', 'remove the Neovim Lua integration module')
-    .option('--aider', 'remove Aider coding conventions')
-    .option('--all', 'uninstall token-goat across all supported environments')
-    .option('--local', 'with --pi or --copilot, remove the project-local config instead of the global one; the same as -p/--project')
-    .option('--purge', 'also delete the data directories (index, caches, session state, logs); refuses while the worker is running')
-    .action(guard(cmdUninstall))
-
-  program
-    .command('mcp-status')
-    .description('check whether an MCP integration is already configured (used by the VS Code extension)')
-    .option('--vscode', 'check VS Code mcp.json (user scope, plus workspace scope with --project)')
-    .option('--visualstudio', 'check the Visual Studio %USERPROFILE%\\.mcp.json (plus the project .mcp.json with --project)')
-    .option('-p, --project', 'also check the project file: .vscode/mcp.json for --vscode, .mcp.json for --visualstudio (relative to --cwd or the real cwd)')
-    .action(guard(cmdMcpStatus))
-
-  const worker = program.command('worker').description('background indexer lifecycle')
-  worker.command('start').description('start the background indexer').action(guard(cmdWorkerStart))
-  worker.command('stop').description('stop the background indexer; exits 1 and says so when the worker is left running').action(guard(cmdWorkerStop))
-  worker.command('status').description('check if the indexer is running').action(guard(cmdWorkerStatus))
-
-  const hookServer = program.command('hook-server').description('resident processes that answer hook calls and read-only commands without starting Node for each one')
-  hookServer.command('run', { hidden: true }).description('serve one slot (started automatically by the first hook call)').option('--slot <n>', 'which slot to serve', '0').action(guard(cmdHookServerRun))
-  hookServer.command('status').description('list the running hook servers').option('-j, --json', 'output as JSON').action(guard(cmdHookServerStatus))
-  hookServer.command('stop').description('stop every running hook server (the next hook call starts a fresh one)').action(guard(cmdHookServerStop))
-
-  program
-    .command('stats')
-    .description('show session statistics (bare = totals only; --full for the breakdown)')
-    .option('-j, --json', 'output as JSON')
-    .option('--full', 'show the full breakdown (by source, by command, by day)')
-    .option('--short', 'force the rich short KPI view even when stdout is not a TTY (e.g. piped)')
-    .option('--methodology', 'explain local savings estimates and their billing limits')
-    .option('--hooks', 'show the per-event/per-harness hook latency breakdown (median/p95/slowest/last-seen)')
-    .option('--payloads', "show what token-goat adds to every session's context, and whether the files each note names were read again")
-    .option('--window-days <days>', 'days to include (0 = all time)', '30')
-    .option('--home-dir <path>', 'home directory (for testing)')
-    .action(guard(cmdStats))
-
-  program
-    .command('doctor')
-    .description('diagnose token-goat health')
-    .option('--fast', 'skip slow host process scanning for quick health check')
-    .option('--context', 'include context footprint analysis')
-    .option('--json', 'emit check results as JSON instead of text')
-    .option('--repair', 'automatically repair fixable issues (permissive settings, missing semantics models)')
-    .option('--fix', 'alias for --repair')
-    .option('--probe <harness>', 'run one real prompt through a harness (claudecode, codex, copilot_cli) and check that token-goat\'s context hooks reach the model; exits 3 for an editor host (vscode, visualstudio, jetbrains) that has no headless mode')
-    .action(guard(cmdDoctor))
-
-  program
-    .command('bash-output [id]')
-    .description('retrieve cached bash output by ID or file')
-    .option('--head <n>', 'show first N lines')
-    .option('--tail <n>', 'show last N lines')
-    .option('--grep <pattern>', 'filter lines matching regex')
-    .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
-    .option('--section <heading>', 'extract a specific section from the output')
-    .option('--full', 'print the entire cached entry with no head/tail elision')
-    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405; with --section, the numbers -n prints')
-    .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
-    .option('--context <n>', 'with --grep, also show N lines around each match')
-    .option('--file <path>', 'read from raw output file instead of cache')
-    .option('--transcript', 'parse the --file as a JSONL agent transcript: keep assistant text blocks in order before filtering')
-    .option('--verify-last-write [seconds]', 'verify the file or cache entry was written within [seconds] (default: 60s) to catch stale/no-op terminal output')
-    .option('--strict', 'exit non-zero when --verify-last-write detects stale output')
-    .action(guard(cmdBashOutput))
-
-  program
-    .command('web-output [id]')
-    .description('retrieve a cached WebFetch response body by ID')
-    .option('--head <n>', 'show first N lines')
-    .option('--tail <n>', 'show last N lines')
-    .option('--grep <pattern>', 'filter lines matching regex')
-    .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
-    .option('--section <heading>', 'extract a specific section from the response')
-    .option('--full', 'print the entire cached entry with no head/tail elision')
-    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405; with --section, the numbers -n prints')
-    .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
-    .option('--context <n>', 'with --grep, also show N lines around each match')
-    .option('--raw', 'return the body as actually fetched, before extractCleanText cleaning, instead of the default cleaned text')
-    .action(guard(cmdWebOutput))
-
-  program
-    .command('mcp-output [id]')
-    .description('retrieve a cached MCP tool result by ID (the id an MCP post_tool_use hook cached, or a `[token-goat: compressed, full via mcp-output <id>]` label points here)')
-    .option('--head <n>', 'show first N lines (or first N items with --json-query)')
-    .option('--tail <n>', 'show last N lines')
-    .option('--grep <pattern>', 'filter lines matching regex')
-    .option('--max-matches <n>', 'cap --grep output to the first N matching lines')
-    .option('--section <heading>', 'extract a specific section from the result')
-    .option('--full', 'print the entire cached entry with no head/tail elision')
-    .option('--lines <a-b>', 'print exactly lines A-B (1-based, inclusive) with no elision, e.g. 395-405; with --section, the numbers -n prints')
-    .option('-n, --line-numbers', 'prefix every printed line with its line number (N:text)')
-    .option('--context <n>', 'with --grep, also show N lines around each match')
-    .option('--json-query <path>', 'query JSON content using a dot/bracket path expression (e.g. "issues[*].key"); filters are the ones json-query takes, see json-query --help')
-    .option('--file <path>', 'read and query an on-disk tool spill file (e.g. content.json) instead of cache')
-    .option('--json', 'emit query results as structured JSON envelope')
-    .action(guard(cmdMcpOutput))
-
-  program
-    .command('pr-slice <pr> <slice>')
-    .description(
-      'one slice of a GitHub PR (files / one file\'s diff / review comments / description) via `gh` instead of a full `gh pr view`/`gh pr diff` dump\n\n' +
-        'pr is a PR number or URL. slice is one of: files (changed files with +/- counts), ' +
-        "diff:<path> (one file's diff hunk), comments (review comments), description (title/body/metadata)",
-    )
-    .option('--repo <owner/repo>', "target repo (default: resolved from the current directory's git remote 'origin')")
-    .option('--json', 'emit the slice as JSON instead of text')
-    .action(guard(cmdPrSlice))
+  registerDiagnosticCommands(program, guard, {
+    cmdStats,
+    cmdDoctor,
+    cmdBashOutput,
+    cmdWebOutput,
+    cmdMcpOutput,
+    cmdPrSlice,
+  })
 
   registerFormatCommands(program, guard)
   registerAnalysisCommands(program, guard)
   registerSessionCommands(program, guard)
-  program
-    .command('gdrive-sections <file-id>')
-    .description('fetch and list sections from a public Google Doc')
-    .option('--heading <name>', 'get content of one named section')
-    .option('--fresh', 'skip the on-disk cache and force a live fetch')
-    .action(guard(cmdGdriveSections))
+  registerDocumentCommands(program, guard, cmdGdriveSections)
 
   program
     .command('compress [command...]')
@@ -1490,27 +1026,7 @@ export function buildProgram(): Command {
     .option('--stdin', 'give the wrapped command the standard input of this process (it gets none by default, on every path)')
     .action(cmdCompress)
 
-  program
-    .command('upgrade')
-    .alias('update')
-    .description('check for updates and upgrade token-goat to the latest version')
-    .option('--check', 'check whether an update is available without installing')
-    .option('-j, --json', 'emit version check status as JSON')
-    .action((opts: { check?: boolean; json?: boolean }) =>
-      guard(async () => {
-        const { cmdUpgrade } = await import('./cli_upgrade.js')
-        await cmdUpgrade(opts, () => cmdInstall({}))
-      })(),
-    )
-
-  program
-    .command('version')
-    .description('print the token-goat version')
-    .action(
-      guard(() => {
-        out(VERSION)
-      }),
-    )
+  registerSystemCommands(program, guard, { cmdInstall, out })
 
   program
     .command('help [command]')

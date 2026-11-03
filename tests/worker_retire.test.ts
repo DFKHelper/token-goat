@@ -242,15 +242,15 @@ describe('resolveIdleExitMs', () => {
     else process.env['TG_WORKER_IDLE_EXIT_MS'] = saved
   })
 
-  it('defaults to six hours and accepts a positive integer from the environment', () => {
+  it('defaults to 30 minutes and accepts a positive integer from the environment', () => {
     delete process.env['TG_WORKER_IDLE_EXIT_MS']
-    expect(resolveIdleExitMs()).toBe(6 * 60 * 60 * 1000)
+    expect(resolveIdleExitMs()).toBe(30 * 60 * 1000)
     process.env['TG_WORKER_IDLE_EXIT_MS'] = '1500'
     expect(resolveIdleExitMs()).toBe(1500)
   })
 
   it.each(['', 'soon', '0', '-5'])('ignores %j', (value) => {
     process.env['TG_WORKER_IDLE_EXIT_MS'] = value
-    expect(resolveIdleExitMs()).toBe(6 * 60 * 60 * 1000)
+    expect(resolveIdleExitMs()).toBe(30 * 60 * 1000)
   })
 })
