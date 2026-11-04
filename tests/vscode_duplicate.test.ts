@@ -9,7 +9,11 @@ import { installCopilotHooksFile, releaseCopilotHooksFile } from '../src/bridges
 import { _resetDataDirCacheForTesting, dataDir } from '../src/constants.js'
 import { normalizePayload } from '../src/hooks_cli.js'
 import { buildEvent, relayInProcess } from '../src/relay.js'
-import { VSCODE_HOOKS_DIR_ENV, shouldSuppressDuplicateVscodeHook } from '../src/vscode_duplicate.js'
+import {
+  COPILOT_HOOKS_DIR_ENV,
+  VSCODE_HOOKS_DIR_ENV,
+  shouldSuppressDuplicateVscodeHook,
+} from '../src/vscode_duplicate.js'
 
 /** CAPTURE — armD_multiroot.jsonl, tag `USER-sessionStart`, workspace root substituted. */
 function sessionStartPayload(cwd: string): Record<string, unknown> {
@@ -58,6 +62,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_HARNESS_OVERRIDE',
   'CLAUDE_CODE_SESSION_ID',
   VSCODE_HOOKS_DIR_ENV,
+  COPILOT_HOOKS_DIR_ENV,
 ]
 
 /** A workspace folder with (or without) its own project-scope token-goat install. The install is REAL -- `installCopilotHooksFile`, the function `installVscode` calls -- rather than a hand-written `token-goat.json`. That matters now: a bare file at that path is exactly the attack shape `a repository-committed hooks file` below covers, and standing down for it is the defect. Only a file this machine's own installer wrote, with its ownership sidecar, counts. */
@@ -65,6 +70,12 @@ function makeWorkspace(name: string, withProjectHooks: boolean): string {
   const root = path.join(tmp, name)
   fs.mkdirSync(root, { recursive: true })
   if (withProjectHooks) installCopilotHooksFile(path.join(root, '.github', 'hooks'), 'vscode')
+  return root
+}
+
+function makeCopilotWorkspace(name: string): string {
+  const root = makeWorkspace(name, false)
+  installCopilotHooksFile(path.join(root, '.github', 'hooks'), 'copilot')
   return root
 }
 
@@ -98,6 +109,7 @@ beforeEach(() => {
   process.env['XDG_DATA_HOME'] = path.join(tmp, 'data')
   _resetDataDirCacheForTesting()
   delete process.env[VSCODE_HOOKS_DIR_ENV]
+  delete process.env[COPILOT_HOOKS_DIR_ENV]
 })
 
 afterEach(() => {
@@ -115,13 +127,33 @@ afterEach(() => {
 })
 
 describe('shouldSuppressDuplicateVscodeHook', () => {
-  it('never suppresses on a harness that is not vscode', () => {
+  it('never suppresses on a harness outside the supported pair', () => {
     const ws = makeWorkspace('rootA', true)
     process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
     const event = pathlessEvent(ws)
-    // The exact setup that suppresses under 'vscode' below.
-    expect(shouldSuppressDuplicateVscodeHook(event, 'copilot_cli')).toBe(false)
     expect(shouldSuppressDuplicateVscodeHook(event, 'claude')).toBe(false)
+  })
+
+  it('stands the Copilot CLI user-scope copy down for a Copilot-owned project install', () => {
+    const ws = makeCopilotWorkspace('copilotRoot')
+    process.env[COPILOT_HOOKS_DIR_ENV] = userHooksDir()
+    expect(shouldSuppressDuplicateVscodeHook(pathlessEvent(ws), 'copilot_cli')).toBe(true)
+    expect(
+      shouldSuppressDuplicateVscodeHook(readEvent(ws, path.join(ws, 'README.md')), 'copilot_cli'),
+    ).toBe(true)
+  })
+
+  it('uses the VS Code shim directory as the Copilot CLI fallback', () => {
+    const ws = makeWorkspace('vscodeOwnedRoot', true)
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+    expect(shouldSuppressDuplicateVscodeHook(pathlessEvent(ws), 'copilot_cli')).toBe(true)
+  })
+
+  it('prefers the Copilot CLI shim directory over the VS Code fallback', () => {
+    const ws = makeCopilotWorkspace('copilotRoot')
+    process.env[COPILOT_HOOKS_DIR_ENV] = path.join(ws, '.github', 'hooks')
+    process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
+    expect(shouldSuppressDuplicateVscodeHook(pathlessEvent(ws), 'copilot_cli')).toBe(false)
   })
 
   it('stands the user-scope copy down when the workspace carries its own project hooks file', () => {
@@ -158,6 +190,23 @@ describe('shouldSuppressDuplicateVscodeHook', () => {
     expect(shouldSuppressDuplicateVscodeHook(pathlessEvent(rootB), 'vscode')).toBe(true)
     // A third root would stand down too.
     expect(shouldSuppressDuplicateVscodeHook(pathlessEvent(rootA), 'vscode')).toBe(true)
+  })
+
+  it('elects exactly one copy of a pathless Copilot CLI event', () => {
+    const rootA = makeCopilotWorkspace('copilotA')
+    const rootB = makeCopilotWorkspace('copilotB')
+    process.env[COPILOT_HOOKS_DIR_ENV] = path.join(rootA, '.github', 'hooks')
+    expect(shouldSuppressDuplicateVscodeHook(pathlessEvent(rootA), 'copilot_cli')).toBe(false)
+    process.env[COPILOT_HOOKS_DIR_ENV] = path.join(rootB, '.github', 'hooks')
+    expect(shouldSuppressDuplicateVscodeHook(pathlessEvent(rootB), 'copilot_cli')).toBe(true)
+  })
+
+  it('uses the Copilot CLI event marker for path-bearing events too', () => {
+    const ws = makeCopilotWorkspace('copilotPathRoot')
+    process.env[COPILOT_HOOKS_DIR_ENV] = path.join(ws, '.github', 'hooks')
+    const event = readEvent(ws, path.join(ws, 'README.md'))
+    expect(shouldSuppressDuplicateVscodeHook(event, 'copilot_cli')).toBe(false)
+    expect(shouldSuppressDuplicateVscodeHook(event, 'copilot_cli')).toBe(true)
   })
 
   it('does not confuse two genuinely distinct pathless events in one session', () => {
@@ -198,6 +247,9 @@ describe('shouldSuppressDuplicateVscodeHook', () => {
     const event = buildEvent('session_start', payload)
     expect(shouldSuppressDuplicateVscodeHook(event, 'vscode')).toBe(false)
     expect(shouldSuppressDuplicateVscodeHook(event, 'vscode')).toBe(false)
+    process.env[COPILOT_HOOKS_DIR_ENV] = path.join(ws, '.github', 'hooks')
+    expect(shouldSuppressDuplicateVscodeHook(event, 'copilot_cli')).toBe(false)
+    expect(shouldSuppressDuplicateVscodeHook(event, 'copilot_cli')).toBe(false)
   })
 
   it('is actually reached by relayInProcess, not just callable', async () => {
@@ -212,6 +264,20 @@ describe('shouldSuppressDuplicateVscodeHook', () => {
     expect(
       fs.existsSync(markers) && fs.readdirSync(markers).some((e) => e !== '.pruned'),
       'relayInProcess did not reach the duplicate election — no marker was claimed',
+    ).toBe(true)
+  })
+
+  it('is reached by relayInProcess under Copilot CLI', async () => {
+    const ws = makeCopilotWorkspace('copilotRoot')
+    process.env[COPILOT_HOOKS_DIR_ENV] = path.join(ws, '.github', 'hooks')
+    process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'copilot_cli'
+    delete process.env['CLAUDE_CODE_SESSION_ID']
+    const markers = path.join(dataDir(), 'vscode-dedupe')
+    expect(fs.existsSync(markers)).toBe(false)
+    await relayInProcess('session_start', sessionStartPayload(ws))
+    expect(
+      fs.existsSync(markers) && fs.readdirSync(markers).some((e) => e !== '.pruned'),
+      'Copilot CLI relay did not claim a duplicate marker',
     ).toBe(true)
   })
 
@@ -237,6 +303,13 @@ describe('a repository-committed hooks file cannot stand the real hook down', ()
     process.env[VSCODE_HOOKS_DIR_ENV] = userHooksDir()
     expect(fs.readFileSync(path.join(hostile, '.github', 'hooks', 'token-goat.owners'), 'utf8')).toContain('vscode')
     expect(shouldSuppressDuplicateVscodeHook(readEvent(hostile, path.join(hostile, 'README.md')), 'vscode')).toBe(false)
+  })
+
+  it('keeps working when the clone forges a Copilot ownership sidecar', () => {
+    const hostile = makeHostileWorkspace('forgedCopilot', { forgeSidecar: true })
+    fs.writeFileSync(path.join(hostile, '.github', 'hooks', 'token-goat.owners'), 'copilot\n')
+    process.env[COPILOT_HOOKS_DIR_ENV] = userHooksDir()
+    expect(shouldSuppressDuplicateVscodeHook(pathlessEvent(hostile), 'copilot_cli')).toBe(false)
   })
 
   it('keeps working when a real install elsewhere left a ledger entry for a different path', () => {
@@ -310,6 +383,8 @@ describe('a two-separator workspace root is declined before anything stats it', 
     expect(fs.readFileSync(path.join(spelled, '.github', 'hooks', 'token-goat.owners'), 'utf8')).toContain('vscode')
 
     expect(shouldSuppressDuplicateVscodeHook(readEvent(spelled, path.join(spelled, 'README.md')), 'vscode')).toBe(false)
+    process.env[COPILOT_HOOKS_DIR_ENV] = userHooksDir()
+    expect(shouldSuppressDuplicateVscodeHook(readEvent(spelled, path.join(spelled, 'README.md')), 'copilot_cli')).toBe(false)
   })
 
   it('still stands down for the same install addressed normally', () => {

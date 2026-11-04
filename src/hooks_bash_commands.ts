@@ -19,7 +19,7 @@ import {
   type ToolFilter,
 } from './tool_filters/index.js'
 import { isTestRunnerCommand, isBuildCommand } from './hints/lang_patterns.js'
-import { RECALL_COMMAND } from './cli_recall.js'
+import { RECALL_COMMAND } from './recall_index.js'
 import {
   splitShellSegments,
   extractCatFile,

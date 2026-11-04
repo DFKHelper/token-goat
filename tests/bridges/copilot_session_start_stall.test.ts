@@ -147,8 +147,8 @@ async function assertDeliveredOrOwed(
 /** The embedded reader, evaluated in-process against a stream the test controls, so framing is judged without a clock or a child. */
 function loadReader(stdin: PassThrough): (timeoutMs: number) => Promise<string> {
   const sandbox: Record<string, unknown> = { process: { stdin }, Buffer, Error, setTimeout, clearTimeout, setImmediate }
-  runInNewContext(COPILOT_SESSION_START_HELPERS, sandbox)
-  return sandbox['readSessionStartInput'] as (timeoutMs: number) => Promise<string>
+  // The shim's SessionStart call is readBoundedHookInput bound to the 1 MiB cap; its consts are script-scoped, so the closing expression is how they reach the test.
+  return runInNewContext(`${COPILOT_SESSION_START_HELPERS}\n;(timeoutMs) => readBoundedHookInput(timeoutMs, SESSION_START_MAX_INPUT_BYTES)`, sandbox) as (timeoutMs: number) => Promise<string>
 }
 
 // Far beyond any test's runtime: the reader's own deadline never decides these rows.
@@ -439,22 +439,18 @@ describe('Copilot shared-shim SessionStart deadline', { timeout: 0 }, () => {
     expect(text, 'the start must say which wait it gave up on').toContain('database is locked')
   })
 
-  it('keeps non-SessionStart events on their existing EOF-delimited input path', { timeout: 0 }, async () => {
+  // Since 586909ed8 the shim frames every event's input with the bounded reader, so a host that never closes stdin no longer stalls a non-SessionStart hook; the row waits on the child's own close event and the still-open stdin is what proves EOF did not end it.
+  it('answers a non-SessionStart event once its object is complete, without waiting for stdin EOF', { timeout: 0 }, async () => {
     const fixture = treeFixture()
     const entryPath = join(fixture.root, 'fast-entry.cjs')
     writeFileSync(entryPath, "process.stdout.write('{}')\n", 'utf8')
     const child = startShim(fixture, 'preToolUse', entryPath)
     const observation = observe(fixture, child)
     child.stdin.write(JSON.stringify({ toolName: 'view', toolArgs: { path: 'sample.txt' } }))
-    await new Promise((resolve) => setTimeout(resolve, 150))
-
-    // Nothing can make a run that was never given EOF exit sooner, so a stalled machine only makes this check easier to satisfy.
-    expect(child.exitCode).toBeNull()
-    expect(observation.stdout()).toBe('')
-    child.stdin.end()
 
     const result = await observation.done
     assertFinished(result)
-    parseOneObject(result.stdout)
+    expect(result.stdinEnded, 'the shim must answer while stdin is still open').toBe(false)
+    expect(parseOneObject(result.stdout)).toEqual({})
   })
 })

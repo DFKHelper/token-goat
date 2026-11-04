@@ -15,13 +15,14 @@ const SESSION_START_CLEANUP_RESERVE_MS = 1000
 // How long past the deadline the shim keeps its stdin listener for a payload already in the pipe: on Windows the pipe read completes on a worker thread, so the completion can land many event-loop turns after the listener attaches. Measured resume-to-data under 52 busy loops on 26 CPUs: p50 5.7 ms, max 204 ms.
 const SESSION_START_LATE_PAYLOAD_GRACE_MS = 1000
 const SESSION_START_MAX_INPUT_BYTES = 1024 * 1024
+const COPILOT_HOOK_MAX_INPUT_BYTES = 64 * 1024 * 1024
 
 function failOpenSessionStart(reason) {
   process.stderr.write('[token-goat] SessionStart failed open: ' + reason + '\\n')
   process.stdout.write('{}')
 }
 
-function readSessionStartInput(timeoutMs) {
+function readBoundedHookInput(timeoutMs, maxInputBytes) {
   return new Promise((resolve, reject) => {
     const chunks = []
     const closers = []
@@ -55,8 +56,8 @@ function readSessionStartInput(timeoutMs) {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       const chunkStart = totalBytes
       totalBytes += bytes.length
-      if (totalBytes > SESSION_START_MAX_INPUT_BYTES) {
-        finish('input exceeded 1 MiB')
+      if (totalBytes > maxInputBytes) {
+        finish(maxInputBytes === SESSION_START_MAX_INPUT_BYTES ? 'input exceeded 1 MiB' : 'input exceeded ' + maxInputBytes + ' bytes')
         return
       }
       chunks.push(bytes)

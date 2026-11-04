@@ -10,7 +10,8 @@ import { DEFAULT_DIM, setPipelineFnForTesting } from '../src/embeddings.js'
 import { getFileEntry } from '../src/index_reader.js'
 import { indexFileSync } from '../src/parser.js'
 import { fingerprintFile } from '../src/fingerprint.js'
-import { makeIndexer, pendingEmbeddings, sigtermDrainDeadline } from '../src/worker.js'
+import { loadConfig } from '../src/config.js'
+import { abandonQueuedEmbeds, makeIndexer, pendingEmbeddings, sigtermDrainDeadline } from '../src/worker.js'
 import { clearModuleCaches } from '../src/reset.js'
 
 let DIR: string
@@ -92,5 +93,43 @@ describe('sigtermDrainDeadline', () => {
     await sigtermDrainDeadline(80)
     const elapsed = Date.now() - start
     expect(elapsed, 'sigtermDrainDeadline waited far longer than its own bound for a call that will never settle').toBeLessThan(1000)
+  })
+})
+
+describe('abandonQueuedEmbeds', () => {
+  it('settles the embeds still queued for a slot without running them, and lets the running ones finish', async () => {
+    const limit = loadConfig().worker.max_pool_workers ?? 4
+    const queuedBehindCap = 3
+    let ran = 0
+    let openGate: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      openGate = resolve
+    })
+    let allSlotsRunning: () => void = () => undefined
+    const slotsRunning = new Promise<void>((resolve) => {
+      allSlotsRunning = resolve
+    })
+    setPipelineFnForTesting((async () => async (text: string) => {
+      ran += 1
+      if (ran >= limit) allSlotsRunning()
+      await gate
+      return { data: Float32Array.from({ length: DEFAULT_DIM }, (_, i) => ((text.length + i) % 17) / 1700) }
+    }) as never)
+    const body = fs.readFileSync(filePath, 'utf8')
+    for (let i = 0; i < limit + queuedBehindCap; i++) {
+      const file = path.join(DIR, `widget_${i}.ts`)
+      fs.writeFileSync(file, body.replace('widget', `widget${i}`))
+      indexFileSync(file, dbPath)
+      const sha = fingerprintFile(file)
+      expect(sha, 'fingerprintFile could not hash the fixture').not.toBeNull()
+      makeIndexer(dbPath)(file, sha as string)
+    }
+    await slotsRunning
+
+    abandonQueuedEmbeds()
+    openGate()
+    // Without the abandon this waits for the queued embeds to run behind the cap, which is the wait a retiring daemon cannot afford.
+    await pendingEmbeddings()
+    expect(ran, 'an embed queued behind the cap ran after the daemon began retiring').toBe(limit)
   })
 })

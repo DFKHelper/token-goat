@@ -539,11 +539,12 @@ function writeParseResult(
   content: Buffer,
   result: ParseResult,
   dbPath: string,
+  precomputedSha?: string,
 ): void {
   const db = getDb(dbPath)
 
   // Hash the SAME raw bytes that were actually parsed, not a fresh disk re-read: if the file changes between the parse read and this write, a re-read here would record a SHA that does not match the symbols/refs actually written below, and the worker's SHA-gated incremental drain would skip reindexing a file whose stored SHA happens to match a later version, leaving it permanently stuck with stale symbols. Takes the raw Buffer (not the utf8-decoded string used for parsing) so this SHA is computed over the same bytes worker.ts's gate hashes via fingerprintFile() -- a lossy utf8 decode/re-encode round-trip on invalid-UTF-8 content would otherwise produce a different digest than hashing the raw bytes directly, permanently defeating the gate for any such file. writeParseResult's only caller (indexFileSync) always has a successfully-read Buffer in hand by the time it calls this -- a read failure returns or throws before reaching this call -- so there is never a "content is unreadable" case to fall back to a disk re-read for.
-  const sha = fingerprintContent(content)
+  const sha = precomputedSha ?? fingerprintContent(content)
   const mtime = safeMtime(filePath)
   const now = Date.now() / 1000
 
@@ -602,9 +603,14 @@ function writeParseResult(
   writeAll.immediate()
 }
 
-/** Synchronous index: read, parse, and write one file's rows in a single call. The worker drain loop runs synchronously — it clears the dirty queue only after the batch has been written — so it needs a synchronous entry point. Reads with `readFileSync`, runs the same `parseContent` extractor, and shares {@link writeParseResult}. A file genuinely gone (ENOENT — deleted in the race window between being fingerprinted and this read) is skipped silently, never throws. Any other read failure (EBUSY/EPERM/EACCES from an AV or editor file lock, EIO, ...) is rethrown, so it reaches {@link makeIndexer}'s catch in worker.ts, which logs it and returns the `INDEX_FAILED` sentinel instead of letting `processDirtyBatch` silently count this file as indexed. */
-// `preReadBytes`, when passed, is used verbatim instead of this function opening `filePath` itself. This exists so a confinement-pinned caller (read_commands.ts's healStaleIndex / force-refresh paths) can verify the file's identity against its MCP-validated pin BEFORE any bytes are read, then hand those already-verified bytes straight through -- closing the check-then-open race that a second, independent fs.readFileSync inside this function would reopen. A CLI caller (worker.ts, cli.ts) never has a pin to verify against and omits this parameter, so this function's own fs.readFileSync (below) still runs for every call site except the pinned ones, unchanged from before this parameter existed.
-export function indexFileSync(rawPath: string, dbPath: string = globalDbPath(), preReadBytes?: Buffer): void {
+/** Synchronous index: consume a supplied byte snapshot or read, parse, and persist one file's rows. An ENOENT on the direct-read path is skipped; other read failures propagate to the caller. */
+// Confinement-pinned read_commands callers pass bytes only after checking file identity; the worker passes the same bytes and their precomputed SHA from its freshness gate so parsing and persistence neither reopen nor rehash that snapshot. Other callers omit the snapshot and retain this function's own read and hash.
+export function indexFileSync(
+  rawPath: string,
+  dbPath: string = globalDbPath(),
+  preReadBytes?: Buffer,
+  preReadSha?: string,
+): void {
   // Every symbols/refs/files row this call writes derives from this one spelling, so the whole parse side of the index agrees on a single name for the file. See canonicalizeIndexPath.
   const filePath = canonicalizeIndexPath(rawPath)
   const ixCfg = loadConfig().indexing
@@ -630,7 +636,13 @@ export function indexFileSync(rawPath: string, dbPath: string = globalDbPath(), 
   const content = decodeSource(raw)
   const language = refineLanguageByContent(filePath, pathLanguage, content)
   const { symbols, refs } = parseContent(content, filePath, language)
-  writeParseResult(filePath, raw, { symbols, refs, language, duration: 0 }, dbPath)
+  writeParseResult(
+    filePath,
+    raw,
+    { symbols, refs, language, duration: 0 },
+    dbPath,
+    preReadBytes === undefined ? undefined : preReadSha,
+  )
 }
 
 // buildEmbeddingBoundaries moved to embedding_boundaries.ts so EMBED_FINGERPRINT can hash exactly the sources that decide chunk boundaries without pulling in the rest of this file, and without PARSER_FINGERPRINT hashing embedding-only code. Re-exported here so every existing caller and test importing it from parser.ts keeps working.

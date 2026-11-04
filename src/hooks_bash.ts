@@ -765,10 +765,12 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   if (tgRead !== null) {
     const cliKey = tgRead.sub + '::' + tgRead.spec
     const notes = []
-    if (wasCliReadThisSession(cliKey)) {
+    if (wasCliReadThisSession(cliKey) && !wasHintShown('cli_repeat::' + cliKey)) {
+      markHintShown('cli_repeat::' + cliKey)
       notes.push('You already ran this exact `token-goat ' + tgRead.sub + '` query earlier this session — check your context above before re-running it.')
     }
-    if (tgRead.filePath !== null && wasFileReadThisSession(tgRead.filePath)) {
+    if (tgRead.filePath !== null && wasFileReadThisSession(tgRead.filePath) && !wasHintShown('file_read_covered::' + quotedArg(tgRead.filePath))) {
+      markHintShown('file_read_covered::' + quotedArg(tgRead.filePath))
       notes.push(sentenceStart(fileSubject('', displaySafePath(tgRead.filePath))) + ' was already fully read via the Read tool this session — that content may already cover this.')
     }
     if (notes.length > 0) {

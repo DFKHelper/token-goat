@@ -33,11 +33,35 @@ vi.mock('../src/resident_process.js', async (importOriginal) => {
 
 vi.mock('../src/config.js', async (importOriginal) => ({ ...(await importOriginal<Record<string, unknown>>()), loadConfig: vi.fn() }))
 
-// A file that is on disk and is a regular file but cannot be read right now (an AV scanner or sync client holding a lock): stat says file, fingerprintFile says null. A directory at the path used to stand in for this, but a directory standing where an indexed file was is a deletion now (indexedFileIsGone), so the failure is injected here instead. Everything else goes to the real module. Provenance: HAND-DERIVED failure injection; the lock itself cannot be created portably from Node.
+// A file that is on disk and is a regular file but cannot be read right now (an AV scanner or sync client holding a lock): stat says file, fingerprintFileWithBytes says null. A directory at the path used to stand in for this, but a directory standing where an indexed file was is a deletion now (indexedFileIsGone), so the failure is injected here instead. Everything else goes to the real module. Provenance: HAND-DERIVED failure injection; the lock itself cannot be created portably from Node.
 const unreadablePaths = vi.hoisted(() => new Set<string>())
+const fingerprintObservations = vi.hoisted(() => ({
+  capture: false,
+  fileFingerprints: [] as Array<{ path: string; sha: string; bytes: Buffer }>,
+  bufferHashes: [] as Buffer[],
+}))
 vi.mock('../src/fingerprint.js', async (importOriginal) => {
   const actual = await importOriginal<typeof Fingerprint>()
-  return { ...actual, fingerprintFile: (filePath: string) => (unreadablePaths.has(normalizePath(filePath)) ? null : actual.fingerprintFile(filePath)) }
+  return {
+    ...actual,
+    fingerprintContent: (content: string | Buffer) => {
+      if (fingerprintObservations.capture && Buffer.isBuffer(content)) {
+        fingerprintObservations.bufferHashes.push(content)
+      }
+      return actual.fingerprintContent(content)
+    },
+    fingerprintFileWithBytes: (filePath: string) => {
+      if (unreadablePaths.has(normalizePath(filePath))) return null
+      const fingerprint = actual.fingerprintFileWithBytes(filePath)
+      if (fingerprintObservations.capture && fingerprint !== null) {
+        fingerprintObservations.fileFingerprints.push({
+          path: normalizePath(filePath),
+          ...fingerprint,
+        })
+      }
+      return fingerprint
+    },
+  }
 })
 
 /** Create a real file at `filePath` whose read fails every time, as a locked file's does. */
@@ -664,8 +688,8 @@ describe('processDirtyBatch', () => {
     expect(removed).toEqual([])
   })
 
-  // Regression: a dirty path that exists (fs.existsSync true) but whose fingerprintFile call returns null -- a transient read failure such as a lock held by an AV scanner/editor/OneDrive sync, a permission error, or a race with an external writer -- used to be silently dropped: `continue`d past with no log entry and no way to retry short of the file being touched again, since drainOnce unconditionally clears the .draining marker right after this function returns. Trigger the failure with a REAL, unmocked read error (a directory sitting at the dirty-queued path, so fs.existsSync is true but fs.readFileSync throws EISDIR and fingerprintFile returns null) rather than mocking fingerprintFile, exercising the actual production call.
-  it('logs and requeues a path whose fingerprintFile call fails despite the file existing', () => {
+  // Regression: a dirty path that exists (fs.existsSync true) but whose fingerprintFileWithBytes call returns null -- a transient read failure such as a lock held by an AV scanner/editor/OneDrive sync, a permission error, or a race with an external writer -- used to be silently dropped: `continue`d past with no log entry and no way to retry short of the file being touched again, since drainOnce unconditionally clears the .draining marker right after this function returns. Trigger the failure with the mock above rather than a directory (which indexedFileIsGone now treats as a deletion), exercising the actual production call.
+  it('logs and requeues a path whose fingerprintFileWithBytes call fails despite the file existing', () => {
     const lockedPath = path.join(DIR, 'locked.ts')
     makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
     const real = path.join(DIR, 'real.ts')
@@ -760,7 +784,7 @@ describe('processDirtyBatch', () => {
     expect(giveUpLines.length).toBe(1)
   })
 
-  // Regression: the retry count was cleared on a *successful* read (processDirtyBatch) but never on a fresh edit re-dirtying the path -- so a path that once exhausted its retry budget during a transient lock episode stayed permanently exhausted for the rest of the daemon's lifetime, even after the file was edited again. The fix is clearRetryCount, which processDirtyBatch calls for every path whose fingerprintFile read succeeds during a drain, so the budget comes back as soon as the file can actually be read again. (appendDirtyPath in hooks_index.ts used to call it too, on the edit-hook path; that call was removed on purpose because it opened a full DB connection on every single edit to run a reset that is a no-op for virtually every file -- its comment there has the reasoning.) Pass this test's own DIR-scoped DB explicitly, so it names the same DB drainOnce(DIR) itself reads, exactly as a real hook-process/daemon-process pair would both resolve to the one shared global.db.
+  // Regression: the retry count was cleared on a *successful* read (processDirtyBatch) but never on a fresh edit re-dirtying the path -- so a path that once exhausted its retry budget during a transient lock episode stayed permanently exhausted for the rest of the daemon's lifetime, even after the file was edited again. The fix is clearRetryCount, which processDirtyBatch calls for every path whose fingerprintFileWithBytes read succeeds during a drain, so the budget comes back as soon as the file can actually be read again. (appendDirtyPath in hooks_index.ts used to call it too, on the edit-hook path; that call was removed on purpose because it opened a full DB connection on every single edit to run a reset that is a no-op for virtually every file -- its comment there has the reasoning.) Pass this test's own DIR-scoped DB explicitly, so it names the same DB drainOnce(DIR) itself reads, exactly as a real hook-process/daemon-process pair would both resolve to the one shared global.db.
   it('gives a fresh retry budget to a path re-dirtied after exhausting its retry cap', () => {
     const lockedPath = path.join(DIR, 'stuck2.ts')
     makeUnreadable(lockedPath) // a regular file on disk whose read fails every time (transient failure)
@@ -1138,7 +1162,40 @@ describe('drainOnce', () => {
     }
   })
 
-  // Regression: indexFileSync stored the SHA of the utf8-DECODED content string (invalid byte sequences replaced with U+FFFD, then re-encoded), while processDirtyBatch's gate SHA (fingerprintFile) hashes the RAW file bytes directly. For a file containing an invalid-UTF-8 byte, those two hashes could never match, so the sha gate above never engaged and the file was fully reparsed on every single drain even when byte-for-byte unchanged.
+  it('hashes a dirty file once across the default worker parse path', () => {
+    const src = path.join(DIR, 'single-hash.ts')
+    const content = Buffer.from('export function singleHashWorkerSymbol(): number {\n  return 7\n}\n')
+    fs.writeFileSync(src, content)
+    const norm = normalizePath(src)
+    const projectDb = path.join(DIR, 'global.db')
+    const fingerprintsStart = fingerprintObservations.fileFingerprints.length
+    const bufferHashesStart = fingerprintObservations.bufferHashes.length
+    const previousCapture = fingerprintObservations.capture
+    try {
+      fingerprintObservations.capture = true
+      writeQueue(DIR, [norm])
+      expect(drainOnce(DIR)).toBe(1)
+      fingerprintObservations.capture = previousCapture
+
+      const fileFingerprints = fingerprintObservations.fileFingerprints
+        .slice(fingerprintsStart)
+        .filter((fingerprint) => fingerprint.path === norm)
+      expect(fileFingerprints).toHaveLength(1)
+      const fileFingerprint = fileFingerprints[0]
+      expect(fileFingerprint?.bytes).toEqual(content)
+      const repeatedBufferHashes = fingerprintObservations.bufferHashes
+        .slice(bufferHashesStart)
+        .filter((bytes) => fileFingerprint !== undefined && bytes.equals(fileFingerprint.bytes))
+      expect(fileFingerprints.length + repeatedBufferHashes.length).toBe(1)
+      expect(getFileEntry(norm, projectDb)?.sha).toBe(fileFingerprint?.sha)
+      expect(querySymbols({ name: 'singleHashWorkerSymbol', limit: 10 }, projectDb)).toHaveLength(1)
+    } finally {
+      fingerprintObservations.capture = previousCapture
+      closeDb(projectDb)
+    }
+  })
+
+  // Regression: indexFileSync stored the SHA of the utf8-DECODED content string (invalid byte sequences replaced with U+FFFD, then re-encoded), while processDirtyBatch's gate SHA (fingerprintFileWithBytes) hashes the RAW file bytes directly. For a file containing an invalid-UTF-8 byte, those two hashes could never match, so the sha gate above never engaged and the file was fully reparsed on every single drain even when byte-for-byte unchanged.
   it('sha gate still skips an unchanged file whose raw bytes are not valid UTF-8', () => {
     const src = path.join(DIR, 'invalid-utf8.ts')
     const content = Buffer.concat([

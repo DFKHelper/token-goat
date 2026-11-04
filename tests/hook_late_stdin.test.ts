@@ -52,5 +52,5 @@ describe('the hook entry on a payload that arrives after the old idle window', (
     expect(res.stderr).not.toMatch(/tool_name missing|timed out waiting for stdin/)
   }, 60_000)
 
-  // Copilot CLI is covered by construction rather than by this test: its shim (src/bridges/copilot_cli.ts) reads stdin with a blocking readFileSync(0) and has no idle timer to lose the race.
+  // Copilot CLI's bounded stdin reader is exercised with a reduced byte cap in tests/harness_schema_manifest.test.ts.
 })

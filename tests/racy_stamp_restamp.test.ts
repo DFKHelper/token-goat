@@ -7,24 +7,34 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getDb } from '../src/db.js'
-import { appendDirtyQueuePaths } from '../src/dirty_queue.js'
+import { appendDirtyQueuePaths, getDirtyPathsFor } from '../src/dirty_queue.js'
 import type * as FingerprintModule from '../src/fingerprint.js'
 import { indexFileSync } from '../src/parser.js'
-import { resolveIndexPath } from '../src/paths.js'
+import { normalizePath, resolveIndexPath } from '../src/paths.js'
 import { reconcileProject, restampVerifiedUnchanged } from '../src/reconcile.js'
 import { drainOnce, pendingEmbeddings } from '../src/worker.js'
 import { indexableDir } from './helpers/temp-config.js'
 import { runTeardown } from './helpers/strict_teardown.js'
 
-const hashed = vi.hoisted(() => ({ calls: 0, duringHash: undefined as (() => void) | undefined }))
+const hashed = vi.hoisted(() => ({
+  calls: 0,
+  byteCalls: 0,
+  duringHash: undefined as ((filePath: string) => void) | undefined,
+}))
 vi.mock('../src/fingerprint.js', async (importOriginal) => {
   const actual = await importOriginal<typeof FingerprintModule>()
   return {
     ...actual,
+    fingerprintFileWithBytes: (filePath: string) => {
+      hashed.byteCalls++
+      const fingerprint = actual.fingerprintFileWithBytes(filePath)
+      hashed.duringHash?.(filePath)
+      return fingerprint
+    },
     fingerprintFile: (filePath: string) => {
       hashed.calls++
       const sha = actual.fingerprintFile(filePath)
-      hashed.duringHash?.()
+      hashed.duringHash?.(filePath)
       return sha
     },
   }
@@ -116,6 +126,49 @@ describe('the worker restamp of a touched file whose bytes did not change', () =
     expect(row('writing.ts').indexed_at, 'the drain gave a file still being written an index time').toBe(INDEXED)
     expect(dryHashes(), 'a file still being written was treated as calm; the racy guard is weakened').toBe(1)
   })
+
+  it('does not stamp a post-fingerprint replacement as current when the restamp fails', async () => {
+    const nowMs = 1_800_000_000_000
+    const nowSec = nowMs / 1000
+    const snapshotMtime = nowSec - 30
+    const replacementMtime = nowSec - 20
+    const snapshotContent = 'export const value = 2\n'
+    const replacementContent = 'export const value = 3\n'
+    const file = indexWith('replaced-after-hash.ts', OLD, INDEXED)
+    const db = getDb(dbPath)
+    const oldSha = db.prepare('SELECT sha FROM files WHERE path LIKE ?').get('%/replaced-after-hash.ts') as { sha: string }
+    fs.writeFileSync(file, snapshotContent)
+    fs.utimesSync(file, snapshotMtime, snapshotMtime)
+    db.exec("CREATE TRIGGER fail_worker_restamp BEFORE UPDATE OF mtime, indexed_at ON files BEGIN SELECT RAISE(ABORT, 'restamp unavailable'); END")
+    appendDirtyQueuePaths(dataDir, [resolveIndexPath('replaced-after-hash.ts', projectDir)])
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(nowMs)
+    hashed.byteCalls = 0
+    hashed.calls = 0
+    let replacedAfterSnapshot = false
+    hashed.duringHash = (hashedPath) => {
+      if (path.basename(hashedPath).toLowerCase() !== path.basename(file).toLowerCase() || replacedAfterSnapshot) return
+      replacedAfterSnapshot = true
+      fs.writeFileSync(file, replacementContent)
+      fs.utimesSync(file, replacementMtime, replacementMtime)
+    }
+
+    drainOnce(dataDir)
+    await pendingEmbeddings()
+    hashed.duringHash = undefined
+
+    expect(hashed.byteCalls, 'the worker did not fingerprint the fixture through its byte-snapshot helper').toBe(1)
+    expect(replacedAfterSnapshot, 'the fixture did not replace the file after its fingerprint read').toBe(true)
+    expect(db.prepare('SELECT sha FROM files WHERE path LIKE ?').get('%/replaced-after-hash.ts')).toEqual(oldSha)
+    expect(getDirtyPathsFor(dataDir).map((queuedPath) => normalizePath(queuedPath))).toContain(
+      normalizePath(resolveIndexPath('replaced-after-hash.ts', projectDir)),
+    )
+    const log = fs.readFileSync(path.join(dataDir, 'worker-errors.log'), 'utf8')
+    expect(log).toContain('indexing failed for')
+    expect(log).toContain('Pre-hash freshness restamp failed')
+    const result = reconcileProject({ cwd: projectDir, dbPath, budgetMs: 0, dryRun: true, queueDir: dataDir })
+    expect(result.changed, 'reconcile missed bytes written after the worker fingerprint').toHaveLength(1)
+  })
 })
 
 describe('the reconcile record of a clean hash', () => {
@@ -191,12 +244,19 @@ describe('the clock a clean hash is judged by', () => {
     appendDirtyQueuePaths(dataDir, [resolveIndexPath('drained.ts', projectDir)])
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(SWEEP_START_MS)
-    hashed.duringHash = () => vi.setSystemTime(Date.now() + HASH_TAKES_MS)
+    hashed.byteCalls = 0
+    let hashAdvanced = false
+    hashed.duringHash = () => {
+      hashAdvanced = true
+      vi.setSystemTime(Date.now() + HASH_TAKES_MS)
+    }
 
     drainOnce(dataDir)
     await pendingEmbeddings()
     hashed.duringHash = undefined
 
+    expect(hashed.byteCalls, 'the worker must call fingerprintFileWithBytes').toBe(1)
+    expect(hashAdvanced, 'the worker fingerprint must advance the injected clock').toBe(true)
     expect(row('drained.ts').indexed_at, 'the worker restamp took its index time after the hash').toBe(STAMP_SEC)
     expect(dryHashes(), 'a file whose stamp was inside the tick of the drain hash was treated as calm').toBe(1)
   })

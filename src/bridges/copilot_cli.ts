@@ -376,14 +376,14 @@ async function main() {
   let raw = ''
   if (sessionStartDeadline !== undefined) {
     try {
-      raw = await readSessionStartInput(sessionStartDeadline - Date.now())
+      raw = await readBoundedHookInput(sessionStartDeadline - Date.now(), SESSION_START_MAX_INPUT_BYTES)
     } catch (error) {
       failOpenSessionStart(error && error.message ? error.message : 'input could not be read')
       return
     }
   } else {
     try {
-      raw = require('node:fs').readFileSync(0, 'utf8')
+      raw = await readBoundedHookInput(SHIM_FALLBACK_TIMEOUT_MS, COPILOT_HOOK_MAX_INPUT_BYTES)
     } catch {
       process.stdout.write('{}')
       return

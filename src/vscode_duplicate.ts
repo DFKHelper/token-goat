@@ -15,6 +15,9 @@ import { vscodePathAllowed } from './vscode_path_gate.js'
 /** Set by the hook shim to its own directory, which is the hooks directory VS Code loaded it from. That is the only way this process can tell a user-scope copy from a project-scope one: both are byte-identical files running the same binary, and the payload is identical too (captured: the two copies' env and payload differ in nothing but the `cwd` VS Code resolved for each). */
 export const VSCODE_HOOKS_DIR_ENV = 'TOKEN_GOAT_VSCODE_HOOKS_DIR'
 
+/** Set by Copilot CLI's hook shim to the directory containing that shim. */
+export const COPILOT_HOOKS_DIR_ENV = 'TOKEN_GOAT_COPILOT_HOOKS_DIR'
+
 /** Markers older than this are litter from finished sessions. */
 const MARKER_MAX_AGE_MS = 60 * 60 * 1000
 
@@ -30,9 +33,12 @@ function foldDir(p: string): string {
   return process.platform === 'win32' ? forward.toLowerCase() : forward
 }
 
-/** The hooks directory VS Code loaded this invocation's shim from, or undefined when it did not say. */
-function shimHooksDir(): string | undefined {
-  const raw = process.env[VSCODE_HOOKS_DIR_ENV]
+/** The hooks directory this invocation's shim came from, or undefined when the shim did not say. */
+function shimHooksDir(harness: 'vscode' | 'copilot_cli'): string | undefined {
+  const raw =
+    harness === 'copilot_cli'
+      ? process.env[COPILOT_HOOKS_DIR_ENV] || process.env[VSCODE_HOOKS_DIR_ENV]
+      : process.env[VSCODE_HOOKS_DIR_ENV]
   return typeof raw === 'string' && raw !== '' ? raw : undefined
 }
 
@@ -41,9 +47,9 @@ function userHooksDir(): string {
   return path.join(os.homedir(), '.copilot', 'hooks')
 }
 
-/** True when this invocation is the user-scope copy AND the workspace it was handed carries its own project-scope token-goat hooks file THIS MACHINE INSTALLED. That project copy sees the same event with a cwd that is actually this workspace folder, so it is the one that should answer. The bare `existsSync` this started as made a repository file into an off switch: committing `.github/hooks/token-goat.json` containing `{}` stood the real user-scope hook down for every event in that clone -- read dedup, hints, image shrinking, edit-queue reindexing and the pre-approval path gate all silently returned `{}`, which is indistinguishable from working. Two independent checks now have to agree before this copy defers: - the ownership sidecar (`token-goat.owners`) names `vscode`, which `installCopilotHooksFile` writes and a hooks file dropped in by hand does not have; and - the created-configs ledger, which lives in token-goat's own data directory OUTSIDE the clone, records that an install on this machine wrote that exact path. A repository can still forge the sidecar -- it is a plain text file in the clone -- so this raises the cost of the attack rather than eliminating the class. The ledger is what a clone cannot write, and it is the check that actually has to fail for the attack to work; the sidecar is kept because it is the cheap one and it also catches the honest case of an unrelated third-party hooks file sharing the name. Both checks fail CLOSED for suppression and OPEN for the hook: anything unproven means this copy keeps working, which duplicates a hook at worst. See the module header for why that is the only acceptable direction. */
-function userScopeCopyIsRedundant(event: HookEvent): boolean {
-  const hooksDir = shimHooksDir()
+/** True when this invocation is the user-scope copy AND the workspace it was handed carries its own project-scope token-goat hooks file THIS MACHINE INSTALLED. That project copy sees the same event with a cwd that is actually this workspace folder, so it is the one that should answer. The bare `existsSync` this started as made a repository file into an off switch: committing `.github/hooks/token-goat.json` containing `{}` stood the real user-scope hook down for every event in that clone -- read dedup, hints, image shrinking, edit-queue reindexing and the pre-approval path gate all silently returned `{}`, which is indistinguishable from working. Two independent checks now have to agree before this copy defers: - the ownership sidecar (`token-goat.owners`) names the matching owner (`vscode` or `copilot`) written by `installCopilotHooksFile`; a hooks file dropped in by hand has no owner sidecar; and - the created-configs ledger, which lives in token-goat's own data directory OUTSIDE the clone, records that an install on this machine wrote that exact path. A repository can still forge the sidecar -- it is a plain text file in the clone -- so this raises the cost of the attack rather than eliminating the class. The ledger is what a clone cannot write, and it is the check that actually has to fail for the attack to work; the sidecar is kept because it is the cheap one and it also catches the honest case of an unrelated third-party hooks file sharing the name. Both checks fail CLOSED for suppression and OPEN for the hook: anything unproven means this copy keeps working, which duplicates a hook at worst. See the module header for why that is the only acceptable direction. */
+function userScopeCopyIsRedundant(event: HookEvent, harness: 'vscode' | 'copilot_cli'): boolean {
+  const hooksDir = shimHooksDir(harness)
   if (hooksDir === undefined) return false
   if (foldDir(hooksDir) !== foldDir(userHooksDir())) return false
   const cwd = getCwd(event)
@@ -52,7 +58,11 @@ function userScopeCopyIsRedundant(event: HookEvent): boolean {
   const projectHooksDir = path.join(cwd, '.github', 'hooks')
   // This runs before VS Code has asked the user to approve anything, and `cwd` is whatever the harness handed us, so the read below goes through the same gate every pre_tool_use handler uses. It matters most for a UNC `cwd` (`\\host\share`): on Windows merely statting one opens an SMB connection to that host and offers an NTLM authentication, with no timeout available on the in-process path -- a hook that hangs or leaks a credential hash before approval.
   if (!vscodePathAllowed(projectHooksDir, cwd)) return false
-  if (!readCopilotHooksOwners(projectHooksDir).has('vscode')) return false
+  const owners = readCopilotHooksOwners(projectHooksDir)
+  // Both hook formats share the same config file, so Copilot can defer to either install owner.
+  const hasProjectOwner =
+    harness === 'copilot_cli' ? owners.has('copilot') || owners.has('vscode') : owners.has('vscode')
+  if (!hasProjectOwner) return false
   return hasCreatedConfig(path.join(projectHooksDir, 'token-goat.json'))
 }
 
@@ -60,7 +70,7 @@ function userScopeCopyIsRedundant(event: HookEvent): boolean {
 function logStandDown(reason: string, event: HookEvent): void {
   if (process.env['TOKEN_GOAT_LOG'] === undefined || process.env['TOKEN_GOAT_LOG'] === '') return
   try {
-    process.stderr.write(displaySafeText(`token-goat: vscode hook stood down (${reason}) event=${event.eventName} cwd=${getCwd(event) ?? '<none>'}`) + '\n')
+    process.stderr.write(displaySafeText(`token-goat: hook copy stood down (${reason}) event=${event.eventName} cwd=${getCwd(event) ?? '<none>'}`) + '\n')
   } catch {
     // A log line must never be the reason a hook fails.
   }
@@ -133,17 +143,17 @@ function alreadyClaimed(sessionId: string, eventName: string, timestamp: string)
   return false
 }
 
-/** Whether this VS Code hook invocation is a duplicate of one another copy is already handling. Never throws and never suppresses on an error path; see this module's header for why that direction is the only acceptable one. */
+/** Whether this VS Code or Copilot CLI hook invocation is a duplicate of one another copy is already handling. Never throws and never suppresses on an error path; see this module's header for why that direction is the only acceptable one. */
 export function shouldSuppressDuplicateVscodeHook(event: HookEvent, harness: string): boolean {
-  if (harness !== 'vscode') return false
+  if (harness !== 'vscode' && harness !== 'copilot_cli') return false
   try {
-    if (userScopeCopyIsRedundant(event)) {
+    if (userScopeCopyIsRedundant(event, harness)) {
       logStandDown('a project-scope install owns this workspace', event)
       return true
     }
 
-    // A gateable path is present: vscode_path_gate.ts already elects the copy whose workspace contains it, and electing a second time here could stand down the only copy that would have acted.
-    if (getFilePath(event) !== undefined) return false
+    // VS Code's path gate already elects the copy whose workspace contains a target; Copilot CLI uses the marker for path-bearing events too.
+    if (harness === 'vscode' && getFilePath(event) !== undefined) return false
 
     const sessionId = event.sessionId
     if (typeof sessionId !== 'string' || sessionId === '') return false

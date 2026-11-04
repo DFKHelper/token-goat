@@ -5,10 +5,10 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
+import { commandRegistration } from './cli_dispatch_files.js'
 import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const CLI = path.join(HERE, '..', '..', 'src', 'cli.ts')
 const INSTALL = path.join(HERE, '..', '..', 'src', 'cli_install.ts')
 
 type ScopeDefault = 'user-default' | 'project-default' | 'no-scope'
@@ -169,7 +169,7 @@ describe('harness scope defaults are classified', () => {
 
   it('keeps the --user opt-out registered on both install and uninstall', () => {
     // Without this flag the inverted default has no escape hatch and a user who wants the old behaviour has no way to ask for it. Two registrations, one per command.
-    const registrations = [...fs.readFileSync(CLI, 'utf8').matchAll(/\.option\('--user',/g)]
+    const registrations = ['install', 'uninstall'].filter((name) => commandRegistration(name).text.includes(".option('--user',"))
     expect(registrations.length, 'expected --user on both the install and uninstall commands').toBe(2)
   })
 })

@@ -6,6 +6,7 @@ import * as os from 'node:os'
 import { spawnSync } from 'node:child_process'
 import type { DoctorResult } from './doctor_result.js'
 import { displaySafeText } from './paths.js'
+import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
 
 /** Maximum recommended total size in bytes before warning about harness session bloat (5 GB). */
 export const DEFAULT_MAX_HARNESS_SESSION_BYTES = 5 * 1024 * 1024 * 1024
@@ -122,8 +123,8 @@ export function getWindowsDefenderExclusionPaths(): string[] | null {
 
   try {
     const res = spawnSync(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-Command', '$ProgressPreference="SilentlyContinue"; (Get-MpPreference).ExclusionPath'],
+      windowsPowerShellPath(),
+      powerShellTextQueryArgs('$ProgressPreference="SilentlyContinue"; (Get-MpPreference).ExclusionPath'),
       { encoding: 'utf-8', timeout: 2500, windowsHide: true }
     )
     if (res.status === 0 && res.stdout) {
