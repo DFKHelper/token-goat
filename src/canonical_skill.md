@@ -38,10 +38,10 @@ Fallback clauses may name your harness's own native read, search, and edit tools
 Exemptions (gate passes, read directly): the file is under ~200 lines and you need all of it; it was never indexed (new, untracked, or generated this turn); it is a genuinely opaque binary (not an image); the target has no symbol handle (e.g. a literal mid-function).
 
 Failure shapes to catch yourself in, and the command that replaces each:
-- a shell text search with context flags to find a function body → `read "file::symbol"`
+- a shell text search with context flags to find a function body → `read "file" "symbol"`
 - paging one function with view/view_range → `read "file::symbol"`
 - reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`
-- reading one heading of a large doc → `section "file::Heading"`
+- reading one heading of a large doc → `section "file" "Heading"`
 - reading a procedural shell script check or step → `section "script.sh::# Banner"` or `read "script.sh::# Banner"`
 - searching for a symbol's callers → `refs file::symbol --callers`
 - searching for a *concept* rather than a literal string → `semantic "description"`
@@ -59,7 +59,7 @@ Failure shapes to catch yourself in, and the command that replaces each:
 - raw-Reading a Claude Code session JSONL transcript → `session-outline` then `session-slice`
 - re-searching cached tool output across the whole session → `recall <query>`
 - persisting a small cross-call fact in conversation context → `note set/get/unset/list`
-Commands: `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file 'a.b.c'`/`yaml-query`/`xml-query`, `json-outline file`/`yaml-outline`/`xml-outline`, `bash-output`/`web-output`/`mcp-output`, `gdrive-sections <file-id>`, `image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-locate`/`pdf-extract`, `docx-outline`/`docx-tables`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`, `skill-section`/`skill-body`, `session-outline`/`session-slice`, `recall`, `note set/get/unset/list`.
+Commands: `symbol NAME`, `read "file" "symbol"`, `brief "file::symbol"`, `section "file" "Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs "file::symbol" --callers`, `changed --symbol`, `config-get file KEY`, `json-query file 'a.b.c'`/`yaml-query file 'a.b.c'`/`xml-query file 'a.b.c'`, `json-outline file`/`yaml-outline file`/`xml-outline file`, `bash-output`/`web-output`/`mcp-output`, `gdrive-sections <file-id>`, `image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-locate`/`pdf-extract`, `docx-outline`/`docx-tables`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`, `skill-section`/`skill-body`, `session-outline`/`session-slice`, `recall`, `note set/get/unset/list`.
 
 Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.
 
@@ -118,11 +118,11 @@ Paths go in relative to the working directory; `waste` prints absolute ones, so 
 
 If a paging notice or `[tg]` range denial appears, stop Read/view line ranges; do not retry with a shifted or resized window. Run the exact token-goat command named by the denial first.
 Use the one surgical command that fits:
-- Definition → `token-goat read "file::symbol"`.
-- Denied window → `token-goat read "file@start-end"`.
+- Definition → `token-goat read "file" "symbol"`.
+- Denied window → `token-goat read "file" "start-end"`.
 - Structure → `token-goat skeleton <file>` (or `outline`).
 - Text excerpt → `token-goat grep "<pattern>" <file> -C 15 --symbol`.
-- Markdown heading → `token-goat section "file::Heading"`.
+- Markdown heading → `token-goat section "file" "Heading"`.
 
 ## Anti-Patterns
 

@@ -188,6 +188,21 @@ describe('extra positional arguments are reported, never dropped in silence', ()
     expect(output).not.toContain(' ignored (')
   })
 
+  it('accepts separate file and symbol, raw range, and heading arguments', async () => {
+    const symbol = await runCli(['read', fileA, 'alpha'])
+    expect(lastExitCode).toBe(0)
+    expect(symbol).toContain('return 1')
+    expect(symbol).not.toContain('extra spec argument ignored')
+
+    const range = await runCli(['read', fileA, '1-2'])
+    expect(lastExitCode).toBe(0)
+    expect(range).toContain('return 1')
+
+    const section = await runCli(['section', docA, 'Heading A'])
+    expect(lastExitCode).toBe(0)
+    expect(section).toContain('body a')
+  })
+
   it('prints no note for the comma form these commands point at', async () => {
     const output = await runCli(['read', `${fileA}::alpha,${fileB}::beta`])
     expect(output).not.toContain(' ignored (')

@@ -44,7 +44,7 @@ const HOSTILE_HEADING_DOC = '# Title\n\n## ' + HOSTILE_HEADING + '\n\ntext\n\n##
 /** Every hint shape a path reaches, each passed through the guard as relayInProcess passes it. */
 function guardedHints(p: string): string[] {
   const raw = [
-    'Use `token-goat read "' + p + '::SymbolName"` to read one function or class.',
+    'Use `token-goat read "' + p + '" "SymbolName"` to read one function or class.',
     docSectionHint(p, 'Intro', 'The file is large.'),
     grepLinesHint('<pattern>', p),
     fileQueryHint(p.replace(/\.\w+$/, '.json')),
@@ -81,7 +81,7 @@ describe('PowerShell double quotes in a path', () => {
   })
 
   it.each(BENIGN_PATHS)('leaves the suggestion for %j byte-identical', (p) => {
-    const poisoned = 'Use `token-goat read "' + p + '::SymbolName"` to read one function or class.'
+    const poisoned = 'Use `token-goat read "' + p + '" "SymbolName"` to read one function or class.'
     expect(stripUnsafeSuggestions(poisoned)).toBe(poisoned)
     const section = docSectionHint(p, 'Intro')
     expect(stripUnsafeSuggestions(section)).toBe(section)
@@ -91,7 +91,7 @@ describe('PowerShell double quotes in a path', () => {
     const target = hintTarget('d.md', 'section', { content: HOSTILE_HEADING_DOC })
     expect(target.name).toBe(HOSTILE_HEADING)
     const command = sliceCommand('d.md', target)
-    expect(command).toBe("token-goat section 'd.md::" + HOSTILE_HEADING + "'")
+    expect(command).toBe("token-goat section 'd.md' '" + HOSTILE_HEADING + "'")
     expect(outsideSingleQuotes(command)).not.toContain(MARKER)
     const hint = 'Use `' + command + '` to read one section.'
     expect(stripUnsafeSuggestions(hint)).toBe(hint)
@@ -126,7 +126,7 @@ describe.skipIf(POWERSHELL === null)('every suggestion that survives the guard i
   }, 120_000)
 
   it('the oracle itself sees the breakout: an unguarded payload parses as three statements', () => {
-    const commands = BREAKOUT_PATHS.slice(0, DOUBLE_QUOTES.length).map((p) => 'token-goat read "' + p + '::SymbolName"')
+    const commands = BREAKOUT_PATHS.slice(0, DOUBLE_QUOTES.length).map((p) => 'token-goat read "' + p + '" "SymbolName"')
     expect(parseWithPowerShell(exe, commands).map((r) => r.statements)).toEqual(DOUBLE_QUOTES.map(() => 3))
   }, 60_000)
 })

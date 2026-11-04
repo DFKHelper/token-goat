@@ -298,5 +298,5 @@ export function configGetCommand(shownPath: string, key: string): string {
 export function docSectionHint(shownPath: string, heading: string, reason = ''): string {
   const nav = docNavigation(shownPath)
   if (!nav.section) return grepLinesHint('<pattern>', shownPath, reason)
-  return leadWithCommand('token-goat section ' + quotedArg(shownPath + '::' + heading), 'to read one section' + (nav.outline ? ', or ' + fencedCommand('token-goat outline ' + quotedArg(shownPath)) + ' for every heading with line ranges' : ''), reason)
+  return leadWithCommand('token-goat section ' + quotedArg(shownPath) + ' ' + quotedArg(heading), 'to read one section' + (nav.outline ? ', or ' + fencedCommand('token-goat outline ' + quotedArg(shownPath)) + ' for every heading with line ranges' : ''), reason)
 }

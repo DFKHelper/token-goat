@@ -8,11 +8,11 @@ import {
   runExit,
   runExitText,
 } from './cli_dispatch.js'
-import { namedSpecsMergeable, readSpecsMergeable } from './read_spec.js'
+import { namedSpecsMergeable, parseLineRange, parseReadSpec, readSpecsMergeable } from './read_spec.js'
 import { runBrief } from './read_brief.js'
 import { runListSections } from './read_inspect.js'
 import { runOutline, runSkeleton, type SkeletonOptions } from './read_outline.js'
-import { runPeek, runRead } from './read_commands.js'
+import { fileExists, runPeek, runRead } from './read_commands.js'
 import { runRefs } from './read_refs.js'
 import { runSection } from './read_section.js'
 import { runSymbol } from './read_symbol.js'
@@ -97,30 +97,51 @@ export function registerInspectCommands(program: Command, guard: GuardFn, handle
   program
     .command('read <spec> [more...]')
     .description(
-      "read one symbol's full body (spec: file::symbol; disambiguate a name shared by several classes with file::Parent.symbol; a trailing @LINE anchor -- file::symbol@LINE, or combined as file::Parent.symbol@LINE -- picks out a specific candidate by its exact starting line, for the case a Parent qualifier can't reach (e.g. a top-level definition); comma-separated file::a,b for a merged multi-symbol view, or a::x,b::y to merge symbols across several files; file:LINE or file:START-END resolves a line number to the region enclosing it -- the symbol, the file preamble, or the gap between two symbols -- while file@START-END serves those raw lines)",
+      "read one symbol's full body (preferred: separate file and selector, e.g. `read \"src/index.ts\" \"parseThing\"`; raw lines: `read \"src/index.ts\" \"10-20\"`; also accepts the legacy `file::symbol`, `file@START-END`, and `file:LINE[-END]` forms; a trailing @LINE anchor in a legacy `file::symbol@LINE` spec picks a specific candidate by its exact starting line; comma-separated symbols in one selector and cross-file legacy specs remain supported)",
     )
     .option('-j, --json', 'output as JSON')
     .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
     .option('--stats', 'add per-symbol reference count and doc-coverage flag')
     .option('--sig, --signature', 'only output the declaration signature, omitting implementation body')
     .action((spec: string, more: string[], opts: { json?: boolean; forceRefresh?: boolean; stats?: boolean; signature?: boolean }) =>
-      runExitText(() =>
-        noteExtraFileArgs(
+      runExitText(() => {
+        const selector = more.length === 1 ? more[0]! : undefined
+        let positionalSpec: string | undefined
+        if (
+          selector !== undefined &&
+          selector.length > 0 &&
+          fileExists(spec) &&
+          !fileExists(`${spec} ${selector}`)
+        ) {
+          const rangeSpec = `${spec}@${selector}`
+          const range = parseLineRange(rangeSpec)
+          if (range !== null && range.file === spec) {
+            positionalSpec = rangeSpec
+          } else if (!selector.includes('::') && !fileExists(selector)) {
+            const symbolSpec = `${spec}::${selector}`
+            const parsed = parseReadSpec(symbolSpec)
+            if (parsed.file === spec && parsed.symbol === selector) positionalSpec = symbolSpec
+          }
+        }
+
+        const execute = (readSpec: string) =>
+          runRead({
+            spec: readSpec,
+            ...(opts.json === true ? { json: true } : {}),
+            ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
+            ...(opts.stats === true ? { stats: true } : {}),
+            ...(opts.signature === true ? { sig: true } : {}),
+          })
+        if (positionalSpec !== undefined) return execute(positionalSpec)
+        return noteExtraFileArgs(
           'read',
           spec,
           more,
-          () =>
-            runRead({
-              spec,
-              ...(opts.json === true ? { json: true } : {}),
-              ...(opts.forceRefresh === true ? { forceRefresh: true } : {}),
-              ...(opts.stats === true ? { stats: true } : {}),
-              ...(opts.signature === true ? { sig: true } : {}),
-            }),
+          () => execute(spec),
           // Whether the comma form the note names would actually run depends on the specs themselves, not on the command: `read` merges `::` specs and nothing else.
           { noun: 'spec', mergeable: readSpecsMergeable([spec, ...more]) },
-        ),
-      ),
+        )
+      }),
     )
 
   program
@@ -165,7 +186,7 @@ export function registerInspectCommands(program: Command, guard: GuardFn, handle
   program
     .command('section <spec> [more...]')
     .description(
-      'read one section from a file (spec: file::heading, or file::<unambiguous heading prefix> — e.g. "Lesson 16" resolves a longer unique heading; comma-separated file::A,B for a merged multi-heading view), or list all sections with --list',
+      'read one section from a file (preferred: separate file and heading arguments, e.g. `section "docs/guide.md" "Lesson 16"`; also accepts legacy `file::heading` specs and comma-separated headings in one selector), or list all sections with --list',
     )
     .option('-j, --json', 'output as JSON')
     .option('--list', 'list all section headings in the file instead of reading one')
@@ -181,21 +202,33 @@ export function registerInspectCommands(program: Command, guard: GuardFn, handle
             emitExtraFileArgsNote('section --list', spec, more, { mergeable: false })
             return runListSections({ file: spec, ...(opts.json === true ? { json: true } : {}), ...(opts.grep !== undefined ? { grep: opts.grep } : {}) })
           })
-        : runExitText(() =>
-            noteExtraFileArgs(
+        : runExitText(() => {
+            const selector = more.length === 1 ? more[0]! : undefined
+            const positionalSpec =
+              selector !== undefined &&
+              selector.length > 0 &&
+              !selector.includes('::') &&
+              fileExists(spec) &&
+              !fileExists(`${spec} ${selector}`) &&
+              !fileExists(selector)
+                ? `${spec}::${selector}`
+                : undefined
+            const execute = (sectionSpec: string) =>
+              runSection({
+                spec: sectionSpec,
+                ...(opts.json === true ? { json: true } : {}),
+                ...(maxLines !== undefined ? { maxLines } : {}),
+                ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+              })
+            if (positionalSpec !== undefined) return execute(positionalSpec)
+            return noteExtraFileArgs(
               'section',
               spec,
               more,
-              () =>
-                runSection({
-                  spec,
-                  ...(opts.json === true ? { json: true } : {}),
-                  ...(maxLines !== undefined ? { maxLines } : {}),
-                  ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
-                }),
+              () => execute(spec),
               { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) },
-            ),
-          )
+            )
+          })
     })
 
   program
