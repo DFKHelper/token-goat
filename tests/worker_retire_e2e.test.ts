@@ -6,6 +6,8 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
+import Database from '../src/sqlite_driver.js'
+
 import { BUNDLE, runBundle as sharedRunBundle, tgIsolatedEnv, type RunResult } from './helpers/bundle.js'
 import { isWorkerDaemonCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { indexableDir } from './helpers/temp-config.js'
@@ -153,9 +155,25 @@ describe('the built daemon retires on its own', () => {
       const retiredAfterMs = Date.now() - removedAt
       observedGone(pid)
       expect(retiredAfterMs, `the daemon outlived its pid file by ${retiredAfterMs} ms`).toBeLessThanOrEqual(WORKER_STARTUP_GRACE_MS + 5000)
-      const liveQueue = path.join(dir, 'queue', 'dirty.txt')
-      expect(fs.existsSync(liveQueue), 'the retiring drain must hand back its unreached paths').toBe(true)
-      expect(fs.readFileSync(liveQueue, 'utf8').trim()).not.toBe('')
+      // Whether the drain is still running when the grace ends depends on how fast the host indexes (about 580 files/s measured on a loaded Windows box, so a host twice as fast finishes first), so the row accounts for every queued path instead of assuming the drain was cut short.
+      const queueDir = path.join(dir, 'queue')
+      const liveQueue = path.join(queueDir, 'dirty.txt')
+      const leftovers = fs.readdirSync(queueDir).filter((name) => name === 'dirty.txt' || name.startsWith('dirty.txt.draining'))
+      const handedBack = new Set(leftovers.flatMap((name) => fs.readFileSync(path.join(queueDir, name), 'utf8').split('\n')).filter((line) => line !== '').map((line) => path.basename(line)))
+      const db = new Database(path.join(dir, 'global.db'))
+      let indexed: Set<string>
+      try {
+        indexed = new Set((db.prepare('SELECT path FROM files').all() as Array<{ path: string }>).map((row) => path.basename(row.path)))
+      } finally {
+        db.close()
+      }
+      const lost = queued.map((file) => path.basename(file)).filter((name) => !indexed.has(name) && !handedBack.has(name))
+      expect(lost.length, `queued paths neither indexed nor handed back to the live queue, first: ${lost.slice(0, 3).join(', ')}`).toBe(0)
+      if (fs.existsSync(liveQueue)) {
+        expect(fs.readFileSync(liveQueue, 'utf8').trim(), 'the retiring drain must hand back its unreached paths').not.toBe('')
+      } else {
+        expect(indexed.size, 'with no live queue left, the drain must have indexed every queued path before the grace ended').toBeGreaterThanOrEqual(MID_DRAIN_FILES)
+      }
     },
     60000,
   )
