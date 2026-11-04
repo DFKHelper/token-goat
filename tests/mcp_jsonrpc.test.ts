@@ -1,5 +1,5 @@
 /** Differential test for token-goat's in-house MCP server against `@modelcontextprotocol/sdk`. src/mcp_jsonrpc.ts replaced the SDK on the shipping path to drop 91 packages from every install (see that file's header for the full reasoning). The SDK stays as a devDependency precisely so it can serve as the oracle here: it is a genuinely independent implementation of the same protocol, not a mock of the code under test, which is the distinction CLAUDE.md's injected-seam warning turns on. Two things are checked against it, and the second is the one that matters: 1. A hand-written shape table, covering every zod construct mcp_server.ts actually registers. 2. **The real production registrations.** `createMcpServer()` is run twice -- once normally, and once with src/mcp_jsonrpc.js substituted for a shim that forwards every `registerTool` call into the SDK's own `McpServer`. Both are then driven by the SDK's reference `Client` over its `InMemoryTransport`, and their `tools/list` results must be byte-identical. So all 18 tools, with their real descriptions and their real schemas, are compared as they actually ship. A table-only test would pass forever after someone registered a nineteenth tool using a zod construct neither implementation agrees on. The `execution.taskSupport` field and the `MCP error -32602: ` prefix on tool errors are matched to the SDK on purpose, and this test is what holds them there. The two deliberate divergences -- `capabilities.tools`, where the SDK claims `listChanged: true` and we send `{}`, and `inputSchema.$schema`, which the SDK sends as draft-07 and we leave out -- are each asserted on BOTH sides, so if the SDK ever changes either, the test fails and the stale comment gets found, rather than the divergence quietly disappearing. */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
@@ -20,6 +20,16 @@ import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
 
 // These cases call tools that are opt-in by default; name them all so the server registers them.
 process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
+
+function neutralizeHarnessSignals(): void {
+  vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'generic')
+  vi.stubEnv('COPILOT_HOME', undefined)
+  vi.stubEnv('CLAUDE_CODE_SESSION_ID', undefined)
+  vi.stubEnv('TERM_PROGRAM', undefined)
+}
+
+beforeEach(neutralizeHarnessSignals)
+afterEach(() => vi.unstubAllEnvs())
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -248,6 +258,69 @@ describe('mcp_jsonrpc protocol handling', () => {
     }
     // Guards the fallback constant against drifting out of its own supported list.
     expect(SUPPORTED_PROTOCOL_VERSIONS).toContain(LATEST_PROTOCOL_VERSION)
+  })
+
+  it('disables tools when initialize identifies a hooks-enabled harness or client', async () => {
+    const detections = [
+      { label: 'Copilot client name', clientName: 'GitHub Copilot CLI' },
+      { label: 'Claude client name', clientName: 'Claude Code' },
+      {
+        label: 'Copilot harness',
+        clientName: 'generic-test-client',
+        env: { name: 'TOKEN_GOAT_HARNESS_OVERRIDE', value: 'copilot_cli' },
+      },
+      {
+        label: 'Claude harness',
+        clientName: 'generic-test-client',
+        env: { name: 'TOKEN_GOAT_HARNESS_OVERRIDE', value: 'claudecode' },
+      },
+      {
+        label: 'COPILOT_HOME',
+        clientName: 'generic-test-client',
+        env: { name: 'COPILOT_HOME', value: 'C:\\copilot' },
+      },
+      {
+        label: 'Claude Code session',
+        clientName: 'generic-test-client',
+        env: { name: 'CLAUDE_CODE_SESSION_ID', value: 'session' },
+      },
+      {
+        label: 'Claude Code terminal',
+        clientName: 'generic-test-client',
+        env: { name: 'TERM_PROGRAM', value: 'claude-code' },
+      },
+    ]
+
+    for (const detection of detections) {
+      neutralizeHarnessSignals()
+      if (detection.env !== undefined) vi.stubEnv(detection.env.name, detection.env.value)
+
+      const { transport, sent, deliver } = rawTransport()
+      const server = new McpServer({ name: 't', version: '1' })
+      const handler = vi.fn(() => textResult('should not run'))
+      server.registerTool('hidden', {}, handler)
+      await server.connect(transport)
+      deliver({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { clientInfo: { name: detection.clientName, version: '1' } },
+      })
+      deliver({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+      deliver({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hidden' } })
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+
+      expect(sent, detection.label).toHaveLength(3)
+      expect((sent[1] as any).result.tools, detection.label).toEqual([])
+      expect((sent[2] as any).result, detection.label).toEqual({
+        content: [
+          { type: 'text', text: 'token-goat MCP tools are disabled because hooks are available for this harness' },
+        ],
+        isError: true,
+      })
+      expect(handler, detection.label).not.toHaveBeenCalled()
+      await server.close()
+    }
   })
 
   it('answers ping and refuses a method it does not implement', async () => {

@@ -38,7 +38,7 @@ export function buildGuidanceBody(fallbackToolClause: string, opts: GuidanceOpti
     '- paging a function/file or receiving a `[tg]` range denial → stop range reads; run its exact command, `read "file" "symbol"` for a definition, `read "file" "start-end"` for a window, `skeleton file` for structure, or `grep "<pattern>" file -C 15 --symbol` for an excerpt',
     '- reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`',
     '- reading one heading of a large doc → `section "file" "Heading"`',
-    '- searching for a symbol\\'s callers → `refs "file::symbol" --callers`',
+    "- searching for a symbol's callers → `refs \"file::symbol\" --callers`",
     '- searching across symbols, headings, text, and concepts concurrently → `search "<query>"`',
     '- searching for a *concept* rather than a literal string → `semantic "description"`',
     '- re-reading output you already captured → `bash-output`/`web-output`/`mcp-output` by ID',

@@ -2,6 +2,7 @@
 
 import { z } from 'zod'
 
+import { detectHarness } from './bridges/registry.js'
 import { answeringMcpToolCall } from './mcp_client_text.js'
 import { displaySafeText } from './paths.js'
 
@@ -146,6 +147,7 @@ export class McpServer {
   private readonly info: { name: string; version: string }
   private readonly tools = new Map<string, RegisteredTool>()
   private readonly handlers = new Map<string, ErasedHandler>()
+  private hooksAvailable = false
   private transport: McpTransport | undefined
   /** Set by the caller to learn when the peer hung up; `mcp-serve` waits on exactly this. */
   onclose: (() => void) | undefined
@@ -213,9 +215,25 @@ export class McpServer {
     const params = (message.params ?? {}) as Record<string, unknown>
     try {
       switch (method) {
-        case 'initialize':
+        case 'initialize': {
+          const clientInfo = params['clientInfo'] as Record<string, unknown> | undefined
+          const clientNameValue = clientInfo?.['name']
+          const clientName = typeof clientNameValue === 'string' ? clientNameValue.toLowerCase() : ''
+          const harness = detectHarness()
+          if (
+            harness === 'copilot_cli' ||
+            harness === 'claudecode' ||
+            clientName.includes('copilot') ||
+            clientName.includes('claude') ||
+            process.env['COPILOT_HOME'] !== undefined ||
+            process.env['CLAUDE_CODE_SESSION_ID'] !== undefined ||
+            process.env['TERM_PROGRAM'] === 'claude-code'
+          ) {
+            this.hooksAvailable = true
+          }
           await this.send({ jsonrpc: '2.0', id, result: this.initializeResult(params) })
           return
+        }
         case 'ping':
           await this.send({ jsonrpc: '2.0', id, result: {} })
           return
@@ -254,6 +272,7 @@ export class McpServer {
   }
 
   private listTools(): Record<string, unknown>[] {
+    if (this.hooksAvailable) return []
     return [...this.tools.values()].map((tool) => ({
       name: tool.name,
       ...(tool.description !== undefined ? { description: tool.description } : {}),
@@ -266,6 +285,9 @@ export class McpServer {
   }
 
   private async callTool(params: Record<string, unknown>): Promise<CallToolResult> {
+    if (this.hooksAvailable) {
+      return errorText('token-goat MCP tools are disabled because hooks are available for this harness')
+    }
     const name = params['name']
     if (typeof name !== 'string') return errorText('Invalid params: tools/call requires a string "name"')
     const tool = this.tools.get(name)
