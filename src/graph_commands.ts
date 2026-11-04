@@ -34,7 +34,7 @@ import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { spawnResolvedSync } from './process_util.js'
 import { buildContextWindow, renderContextWindow } from './util_context.js'
 import { globalDbPath } from './constants.js'
-import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
+import { isIndexEmptyForProject, emptyIndexMessage, indexCoverageLine } from './index_health.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
 import { createTypedRefsSession } from './ts_refs.js'
@@ -156,7 +156,10 @@ export function runCallers(opts: CallersOptions): number {
     }
     emitErr(formatCommandError(`No references found for ${echoedValue(opts.symbol)}`))
     if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(name, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
-    if (opts.json !== true && isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
+    if (opts.json !== true) {
+      const indexNote = isIndexEmptyForProject(globalDbPath(), rootDir) ? emptyIndexMessage(rootDir) : indexCoverageLine(globalDbPath(), rootDir)
+      if (indexNote !== undefined) emitErr(indexNote)
+    }
     return 1
   }
 
@@ -508,6 +511,10 @@ export function runImpact(opts: ImpactOptions): number {
     }
     emitErr(formatCommandError(`No callers found for ${echoedValue(opts.symbol)}`))
     if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(rootName, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
+    if (opts.json !== true) {
+      const indexNote = isIndexEmptyForProject(globalDbPath(), rootDir) ? emptyIndexMessage(rootDir) : indexCoverageLine(globalDbPath(), rootDir)
+      if (indexNote !== undefined) emitErr(indexNote)
+    }
     return 1
   }
 

@@ -15,7 +15,7 @@ import { commentSyntaxFor, type CommentSyntax } from './code_fold.js'
 import { checkSemanticReadiness, foregroundDownloadDeferred, modelDownloadHeld, WARM_COMMAND } from './embed_preflight.js'
 import { withExplicitDownload } from './model_download_gate.js'
 import { searchEvidenceSemantically } from './evidence_cache.js'
-import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage } from './index_health.js'
+import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage, indexCoverageLine } from './index_health.js'
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
 import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, toDisplayPath } from './paths.js'
@@ -544,6 +544,9 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       text += forClient(`\nTry: token-goat symbol ${quotedArg(trimmedQuery)}`)
     }
   }
+  // The empty-index case above already says no file is indexed; every other empty result gets how much of the project the empty answer covers.
+  const coverageLine = indexEmpty ? undefined : indexCoverageLine(globalDbPath(), rootDir)
+  if (coverageLine !== undefined) text += forClient(`\n${coverageLine}`)
   if (preflight.status !== 'ready') {
     text += `\n(note: semantic indexing is degraded [${preflight.status}]: ${preflight.summary}${preflight.actionRequired ? ` — ${preflight.actionRequired}` : ''})`
   } else if (searchSemanticError !== null) {

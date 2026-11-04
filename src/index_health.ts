@@ -5,6 +5,14 @@ import { projectScopeClause } from './sql_path.js'
 import { foreignStampCurrent } from './stamp_authority.js'
 import { detectWalkMode } from './walk_mode.js'
 import { echoedValue, fencedCommand } from './hint_suggestion_guard.js'
+import { getProjectFileEntries } from './index_reader.js'
+import { isParseSkipEligible } from './parser.js'
+import { detectLanguageOfFile } from './parser_types.js'
+import { isEmbeddableDocument } from './doc_embed_extract.js'
+import { loadConfig } from './config.js'
+import { foldPath, isUnderBlockedRoot } from './util.js'
+import { normalizePath, resolveIndexPath } from './paths.js'
+import { listTrackedFiles } from './repomap.js'
 
 /** Raw indexed file/symbol counts for `dbPath`, scoped to `rootDir` when given. Extracted from cli_doctor_index.ts's checkSymbolCount (which still owns the human-readable message) so index_status (mcp_server.ts) can report the same numbers as structured JSON instead of duplicating the SQL. Throws on a DB error -- callers that want the doctor-style "could not query" fallback must catch it themselves, matching checkSymbolCount's own try/catch. */
 export function getProjectIndexCounts(dbPath: string, rootDir?: string): { fileCount: number; symbolCount: number } {
@@ -61,6 +69,42 @@ export function getParserFreshness(
     if (row.parser_sha !== null && (row.parser_sha === expectedFor(row.language ?? 'unknown') || foreignStampCurrent(db, row.parser_sha))) currentFiles += row.c
   }
   return { indexedFiles, currentFiles }
+}
+
+/** How many of the files `token-goat index` would take from `rootDir` actually have a row in the index, or null when that cannot be known (git listed nothing or was killed, so there is no eligible set to count against). The eligible set is the one cmdIndex (cli.ts) walks, predicate for predicate: a git-tracked file that exists, is not under a blocked root, has a language or is an embeddable document, and is not excluded by indexing.skip_dirs / skip_files / minified / size. reconcile.ts's `added` is not that set: it counts every tracked file, images and lockfiles included, so it would report a gap the indexer never meant to close. A file missing a row here was never indexed or failed to index; the index records no parse-failure count, so those two are not told apart. Throws on a DB error, matching the counters above -- callers own their own fallback. */
+export function getFileIndexCoverage(dbPath: string, rootDir: string): { indexedFiles: number; eligibleFiles: number } | null {
+  const listing = listTrackedFiles(rootDir)
+  if (listing.timedOut || listing.files.length === 0) return null
+  const projectRoot = resolveIndexPath('.', rootDir)
+  const indexed = getProjectFileEntries(projectRoot, dbPath)
+  const cfg = loadConfig()
+  const walkRootKey = resolveIndexPath(rootDir)
+  let eligibleFiles = 0
+  let indexedFiles = 0
+  for (const file of listing.files) {
+    const key = resolveIndexPath(file)
+    if (isUnderBlockedRoot(key, cfg.worker.blocked_roots)) continue
+    if (detectLanguageOfFile(key) === 'unknown' && !isEmbeddableDocument(key)) continue
+    if (!fs.existsSync(key) || isParseSkipEligible(key, cfg.indexing, walkRootKey)) continue
+    eligibleFiles += 1
+    if (indexed.has(foldPath(normalizePath(file)))) indexedFiles += 1
+  }
+  return { indexedFiles, eligibleFiles }
+}
+
+/** The one coverage sentence `semantic`, `search` and `refs` append to an empty result, so a reader can tell "nothing in the project matches" from "most of the project was never indexed" without another turn: `indexed 812 of 840 files in this project` and, when files are missing, `28 not indexed; run token-goat index . to add them`. Printed when coverage is complete too, on purpose: it is what tells the reader the empty answer covers every file. Undefined when the numbers cannot be had (no git listing, DB error) -- a diagnostic never fails the query it annotates. Only meant for the empty-result path: it lists the tracked files and stats each. */
+export function indexCoverageLine(dbPath: string, rootDir: string): string | undefined {
+  try {
+    const coverage = getFileIndexCoverage(dbPath, rootDir)
+    if (coverage === null) return undefined
+    const { indexedFiles, eligibleFiles } = coverage
+    const base = `indexed ${indexedFiles} of ${eligibleFiles} files in this project`
+    const missing = eligibleFiles - indexedFiles
+    if (missing <= 0) return base
+    return `${base}, ${missing} not indexed; an empty result does not cover them. Run ${fencedCommand(suggestedIndexCommand(rootDir))} to add them`
+  } catch {
+    return undefined
+  }
 }
 
 /** True when `dbPath` (scoped to `rootDir` when given, matching checkSymbolCount's own scoping) has zero indexed files and zero symbols -- the exact condition doctor's Symbols check warns on. Only meant to be called AFTER a query already returned empty: it always pays a DB read, so gating it behind an existing zero-result check keeps it off the hot (nonempty-result) path. */

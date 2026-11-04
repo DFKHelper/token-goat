@@ -57,6 +57,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- **`semantic`, `search` and `refs` (and `callers`, `impact`) say how much of the project is indexed when they find nothing.** The result gains one line such as `indexed 2 of 4 files in this project, 2 not indexed`, counted against the files `token-goat index` would take, so an empty answer can be told from a project that was never fully indexed.
 - **`symbol` prints the whole body up to about 12 KB, shared fairly across matches; each match still shows at least 5 lines, none longer than 2,400 bytes.** A body past the budget is cut at a line and names the `read` command that returns the rest.
 - Repeated Markdown section hints now advance after a served range and unchanged-file fingerprint confirm a section read; when no selectable section remains, the hint points to the outline command.
 - The canonical skill now treats whole-file/range denials and the >80%-indexed warning as a per-file circuit breaker, directing reads and edits to surgical token-goat commands.

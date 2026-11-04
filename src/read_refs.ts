@@ -4,7 +4,7 @@ import { globalDbPath } from './constants.js'
 import { deliveredOutputBytes } from './delivery_cap.js'
 import { emit, emitErr } from './emit.js'
 import { refBlindKindVerdict } from './graph_commands.js'
-import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
+import { isIndexEmptyForProject, emptyIndexMessage, indexCoverageLine } from './index_health.js'
 import { querySymbols, queryRefs, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { detectLanguageOfFile, type RefEntry, type SymbolEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
@@ -400,7 +400,8 @@ function runRefsSingle(opts: RefsOptions): number {
     if (kindVerdict.blindCount > 0) emitErr(refBlindKindPartialNote(symName, kindVerdict.blindKinds, kindVerdict.blindCount, kindRows.length))
     // Only paid after the query already came back empty, and only in text mode -- this branch already emits plain prose regardless of --json (there's no separate opts.json check here), so there's no JSON envelope to protect either way.
     if (opts.json !== true) {
-      if (isIndexEmptyForProject(globalDbPath(), rootDir)) emitErr(emptyIndexMessage(rootDir))
+      const indexNote = isIndexEmptyForProject(globalDbPath(), rootDir) ? emptyIndexMessage(rootDir) : indexCoverageLine(globalDbPath(), rootDir)
+      if (indexNote !== undefined) emitErr(indexNote)
     }
     return 1
   }

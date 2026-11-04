@@ -4,6 +4,9 @@ import { ALL_CHANNELS, type FusedSearchResult, type SearchChannel, type SearchEx
 import { displaySafeJson, displaySafeText } from '../paths.js';
 import { DELETED_TAG } from '../read_commands.js';
 import { resolveProjectConfinement } from '../read_spec.js';
+import { globalDbPath } from '../constants.js';
+import { indexCoverageLine } from '../index_health.js';
+import { resolveProjectRoot } from '../project.js';
 import { canQuoteArg, echoedValue, fencedCommand, quotedArg, stripUnsafeSuggestions } from '../hint_suggestion_guard.js'
 
 /** The default `--limit` of `token-goat search`, as src/cli.ts applies it: a rerun prints `--limit` only when the page's search used another. */
@@ -141,5 +144,8 @@ export async function runParallelSearch(options: SearchOptions): Promise<{ text:
 
   // Named on the output so the model sees the substitution, not a result for a spelling it did not type.
   const note = answeredFrom === null ? '' : `(note: no match for ${echoedValue(answeredFrom)}; showing results for near name ${echoedValue(summary.query)})\n`;
-  return { text: note + formatSearchText(summary, options.channels !== undefined, { limit: options.limit, projectRoot: options.projectRoot, minScore: options.minScore }), code: 0 };
+  // A miss says how much of the project it searched; only paid when nothing matched.
+  const coverageLine = summary.totalHits === 0 ? indexCoverageLine(globalDbPath(), options.projectRoot ?? resolveProjectRoot({ project: process.cwd() })) : undefined;
+  const coverage = coverageLine === undefined ? '' : `\n${coverageLine}`;
+  return { text: note + formatSearchText(summary, options.channels !== undefined, { limit: options.limit, projectRoot: options.projectRoot, minScore: options.minScore }) + coverage, code: 0 };
 }
