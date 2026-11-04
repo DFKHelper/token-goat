@@ -217,6 +217,9 @@ export const ENV_KEYS = {
 // Largest symbol body stored in the index; parser.ts re-exports this as MAX_SYMBOL_BODY_CHARS and its docblock carries the full rationale. The value lives here rather than there because db.ts bakes it into the partial index backing checkSymbolBodySize, and parser.ts imports db.ts. Changing it invalidates that index's predicate: bump SCHEMA_VERSION and add a MIGRATIONS step dropping idx_symbols_oversized_body, or the stored index keeps the old threshold.
 export const SYMBOL_BODY_CHAR_CAP = 128 * 1024
 
+/** The most a deny will inline, and the most `symbol` prints across all its matches. Smaller than hooks_skill.ts's COMPACT_INLINE_MAX_BYTES (24_000) because a wrong body here costs a turn the pointer would not have; inline_symbol_answer.ts's decideInline clamps any caller-supplied cap to it, so nothing can raise it. */
+export const INLINE_SYMBOL_MAX_BYTES = 12_000
+
 /** Upper bound on the number of symbols fetched in one SQL query for skeleton/outline, and on the number listed in one result. */
 export const SKELETON_SYMBOL_CAP = 5000
 

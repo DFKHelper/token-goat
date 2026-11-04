@@ -98,7 +98,7 @@ vi.mock('../src/screenshot.js', () => ({
 import { runRead, runGrep, withPinnedReads, runScreenshot } from '../src/read_commands.js'
 import { answeringMcpToolCall } from '../src/mcp_client_text.js'
 import { runSymbol } from '../src/read_symbol.js'
-import { stripUnsafeSuggestions } from '../src/hint_suggestion_guard.js'
+import { INLINE_SYMBOL_MAX_BYTES } from '../src/inline_symbol_answer.js'
 import { runSection } from '../src/read_section.js'
 import { runSkeleton, runOutline } from '../src/read_outline.js'
 import { runFind, runLocate, runListSections, runConfigGet, runSqliteSchema, runSqliteQuery, runExports, runImports, extractTranscriptText, runZipRead, runZipList } from '../src/read_inspect.js'
@@ -259,21 +259,16 @@ describe('read_commands', () => {
       expect(stderr).toContain('missing')
     })
 
-    it('marks a body longer than the preview cap with an elision line pointing to the full read (regression: a 5-line preview of a 40-line function read as if the whole thing were 5 lines)', () => {
+    it('prints a 12-line body whole, since it is under the inline cap, with no elision line and no read footer', () => {
       const body = Array.from({ length: 12 }, (_, i) => `  line${i + 1}()`).join('\n')
       mockQuerySymbols.mockReturnValue([
         { name: 'bigFn', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 10, lineEnd: 21, body, docstring: '', parent: '' },
       ])
       const { text, code } = runSymbol({ name: 'bigFn' })
       expect(code).toBe(0)
-      // 12 body lines, 5 shown -> 7 dropped, so the marker must count 7 and name the retry command.
-      expect(text, 'the preview must announce how many lines it cut').toContain('...(7 more lines;')
-      expect(text, 'the marker must point at the full-body read').toContain('token-goat read "src/read_commands.ts::bigFn"')
-      // Regression: unfenced, the suggestion guard read on past the closing `"` to the `)` and replaced the command with its omitted-command placeholder. HAND-DERIVED: the symbol row is constructed by this test.
-      expect(text, 'the full-body read must be backtick-fenced').toContain('full body: `token-goat read "src/read_commands.ts::bigFn"`)')
-      expect(stripUnsafeSuggestions(text), 'the elision line must pass the suggestion guard unchanged').toBe(text)
-      // The 6th body line onward must NOT be inline -- proof the preview really stopped at 5.
-      expect(text, 'the preview must stop at the cap, not print the whole body').not.toContain('line6()')
+      expect(text, 'the body under the cap must be printed through its last line').toContain('  line12()')
+      expect(text, 'a body under the cap must not announce a cut').not.toContain('more line')
+      expect(text, 'a body under the cap must not name a read command').not.toContain('token-goat read')
     })
 
     it('emits no elision line when the body fits within the preview cap', () => {
@@ -283,6 +278,107 @@ describe('read_commands', () => {
       const { text, code } = runSymbol({ name: 'smallFn' })
       expect(code).toBe(0)
       expect(text, 'a body that fits must not grow a spurious elision marker').not.toContain('more line')
+    })
+
+    it('prints all 40 lines of a 40-line function with no read footer', () => {
+      // Provenance: HAND-DERIVED. The 40 body lines are built by this test, and the expected last line is the 40th one written.
+      const body = Array.from({ length: 40 }, (_, i) => `  step${i + 1}();`).join('\n')
+      mockQuerySymbols.mockReturnValue([
+        { name: 'longFn', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 40, body, docstring: '', parent: '' },
+      ])
+      const { text, code } = runSymbol({ name: 'longFn' })
+      expect(code).toBe(0)
+      expect(text, 'the first body line must print').toContain('  step1();')
+      expect(text, 'the last body line must print, not a 5-line preview').toContain('  step40();')
+      expect(text, 'a whole body must not name a read command').not.toContain('token-goat read')
+    })
+
+    it('cuts a body past the inline cap at a line boundary, within the cap, and names the read command', () => {
+      // Provenance: HAND-DERIVED. 200 lines of about 97 bytes each come to roughly 19 KB, past INLINE_SYMBOL_MAX_BYTES, by construction in this test.
+      const body = Array.from({ length: 200 }, (_, i) => `  v${i} = ${'x'.repeat(90)}`).join('\n')
+      mockQuerySymbols.mockReturnValue([
+        { name: 'hugeFn', kind: 'function', filePath: 'src/read_commands.ts', lineStart: 1, lineEnd: 200, body, docstring: '', parent: '' },
+      ])
+      const { text, code } = runSymbol({ name: 'hugeFn' })
+      expect(code).toBe(0)
+      expect(text, 'the cut must keep the first body line').toContain('  v0 = ')
+      expect(text, 'the cut must not print the last body line').not.toContain('v199 = ')
+      expect(text, 'the cut must announce how many lines it dropped').toMatch(/\.\.\.\(\d+ more lines;/)
+      expect(text, 'the cut must name the full-body read').toContain('token-goat read "src/read_commands.ts::hugeFn"')
+      expect(Buffer.byteLength(text, 'utf8'), 'the printed body must stay within the cap plus header and footer').toBeLessThanOrEqual(INLINE_SYMBOL_MAX_BYTES + 512)
+    })
+
+    describe('the inline byte budget', () => {
+      // Provenance: HAND-DERIVED. Every body below is built by its test from byte lengths, not from the implementation under test.
+      const row = (name: string, file: string, body: string) => ({ name, kind: 'function', filePath: file, lineStart: 1, lineEnd: 1 + body.split('\n').length, body, docstring: '', parent: '' })
+      const footers = (text: string): number[] => [...text.matchAll(/\.\.\.\((\d+) more lines?;/g)].map((m) => Number(m[1]))
+      const printed = (text: string, prefix: string): number => text.split('\n').filter((l) => l.startsWith(prefix)).length
+
+      it('counts CRLF body lines as lines, with no carriage return in the output', () => {
+        const body = Array.from({ length: 200 }, (_, i) => `  c${i} = ${'x'.repeat(90)}`).join('\r\n')
+        mockQuerySymbols.mockReturnValue([row('crlfFn', 'src/crlf.ts', body)])
+        const { text } = runSymbol({ name: 'crlfFn' })
+        expect(text, 'no carriage return may reach the output').not.toContain('\r')
+        const shown = printed(text, '  c')
+        expect(shown, 'the floor and the budget both apply to CRLF bodies').toBeGreaterThan(5)
+        expect(footers(text), 'the footer must count every line the cut dropped').toEqual([200 - shown])
+      })
+
+      it('counts the cap in UTF-8 bytes: six 3 KB lines are cut to the floor though their characters fit', () => {
+        const body = Array.from({ length: 6 }, (_, i) => `  m${i} = ${'é'.repeat(1500)}`).join('\n')
+        mockQuerySymbols.mockReturnValue([row('multiFn', 'src/multi.ts', body)])
+        const { text } = runSymbol({ name: 'multiFn' })
+        expect(printed(text, '  m'), 'only the floor of five lines may print').toBe(5)
+        expect(footers(text), 'the footer must name the one dropped line').toEqual([1])
+      })
+
+      it('prints a single line over the cap, and the footer count agrees with the lines it drops', () => {
+        const body = ['  big = ' + 'z'.repeat(13000), '  s2 = 1', '  s3 = 1', '  s4 = 1', '  s5 = 1', '  s6 = 1', '  s7 = 1'].join('\n')
+        mockQuerySymbols.mockReturnValue([row('hugeLine', 'src/hugeline.ts', body)])
+        const { text } = runSymbol({ name: 'hugeLine' })
+        expect(text, 'the over-cap line must still print').toContain('z'.repeat(13000))
+        expect(printed(text, '  s') + footers(text)[0], 'shown plus dropped must equal the six lines after the first').toBe(6)
+        expect(footers(text), 'two lines beyond the floor are dropped').toEqual([2])
+      })
+
+      it('keeps a joined body of exactly the cap whole, and cuts one byte more', () => {
+        // The first five lines are 54 bytes joined; the sixth is sized so the whole body is exactly the cap, then one byte over it.
+        const sixth = (last: number) => `L5${'p'.repeat(last - 2)}`
+        const bodyOf = (total: number) => [...Array.from({ length: 5 }, (_, i) => `L${i}${'p'.repeat(8)}`), sixth(total - 55)].join('\n')
+        mockQuerySymbols.mockReturnValue([row('edgeFn', 'src/edge.ts', bodyOf(12000))])
+        const atCap = runSymbol({ name: 'edgeFn' }).text
+        expect(printed(atCap, 'L'), 'a body of exactly the cap must print all six lines').toBe(6)
+        expect(footers(atCap), 'a body of exactly the cap must have no footer').toEqual([])
+        mockQuerySymbols.mockReturnValue([row('edgeFn', 'src/edge.ts', bodyOf(12001))])
+        const overCap = runSymbol({ name: 'edgeFn' }).text
+        expect(printed(overCap, 'L'), 'one byte over the cap must drop the sixth line').toBe(5)
+        expect(footers(overCap), 'the footer must name the one dropped line').toEqual([1])
+      })
+
+      it('shares one budget across matches: the first is full, later ones are cut to the floor with a footer each', () => {
+        const bodyFor = (p: string) => Array.from({ length: 100 }, (_, i) => `  ${p}${i} = `.padEnd(115, 'x')).join('\n')
+        mockQuerySymbols.mockReturnValue([row('agg', 'src/a.ts', bodyFor('A')), row('agg', 'src/b.ts', bodyFor('B')), row('agg', 'src/c.ts', bodyFor('C'))])
+        const { text } = runSymbol({ name: 'agg' })
+        expect(printed(text, '  A'), 'the first match fits the budget whole').toBe(100)
+        expect(printed(text, '  B'), 'a later match must shrink to the floor once the budget is spent').toBe(5)
+        expect(printed(text, '  C'), 'every later match shrinks to the floor').toBe(5)
+        expect(footers(text), 'each cut match names its dropped lines').toEqual([95, 95])
+      })
+
+      it('prints every match signature under --sig, though the bodies would have spent the shared budget', () => {
+        // Provenance: HAND-DERIVED. Each signature is built by this test: four parameter lines of 3 KB, so one signature alone is past INLINE_SYMBOL_MAX_BYTES, and each body would spend the budget without --sig.
+        const sigOf = (p: string) => [`function ${p}agg(`, ...Array.from({ length: 4 }, (_, i) => `  ${p}p${i}: ${'t'.repeat(3000)},`), '): number {'].join('\n')
+        const bodyOf = (p: string) => [sigOf(p), ...Array.from({ length: 100 }, (_, i) => `    ${p}body${i} = `.padEnd(115, 'x')), '}'].join('\n')
+        mockQuerySymbols.mockReturnValue([row('agg', 'src/a.ts', bodyOf('A')), row('agg', 'src/b.ts', bodyOf('B'))])
+        const { text } = runSymbol({ name: 'agg', sig: true })
+        for (const p of ['A', 'B']) {
+          expect(text, `match ${p} must print its signature header`).toContain(`function ${p}agg(`)
+          expect(text, `match ${p} must print its last parameter line`).toContain(`  ${p}p3: `)
+          expect(text, `match ${p} must print the closing line of its signature`).toContain('): number')
+        }
+        expect(text, '--sig prints the signature, not the body').not.toContain('Abody0')
+        expect(footers(text), 'no signature is cut, so no footer').toEqual([])
+      })
     })
 
     it('appends a Did you mean block with near-name candidates on a miss', () => {

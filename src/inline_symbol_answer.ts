@@ -15,9 +15,9 @@ import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { denyOutput } from './hooks_common.js'
 import { countNoun, foldPath } from './util.js'
+import { INLINE_SYMBOL_MAX_BYTES } from './constants.js'
 
-/** The most a deny will inline. Smaller than hooks_skill.ts's COMPACT_INLINE_MAX_BYTES (24_000) because a wrong body here costs a turn the pointer would not have; {@link decideInline} clamps any caller-supplied cap to it, so nothing can raise it. */
-export const INLINE_SYMBOL_MAX_BYTES = 12_000
+export { INLINE_SYMBOL_MAX_BYTES }
 
 /** Why an answer was not inlined; the caller falls back to the command-naming hint for every one of these. */
 export type NameReason = 'disabled' | 'no_declaration_pattern' | 'none' | 'ambiguous' | 'stale' | 'staleness_unknown' | 'unreadable_body' | 'untouchable_path' | 'outside_project' | 'pattern_mismatch' | 'scope_unreadable' | 'body_mismatch' | 'over_cap' | 'unsafe_path_text'

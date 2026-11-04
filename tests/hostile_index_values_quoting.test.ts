@@ -121,7 +121,8 @@ describe('suggestions built from hostile names in a real index', () => {
     project = mkdtempSync(join(tmpdir(), 'tg-hostile-names-'))
     writeFileSync(join(project, 'package.json'), '{"name":"hostile-names"}\n')
     mkdirSync(join(project, 'src'))
-    const body = Array.from({ length: 12 }, (_, i) => `  const v${i} = ${i}`).join('\n')
+    // Each body line is about 1.1 KB, so the 12-line body passes the 12,000-byte inline cap and `symbol` names its full-body read.
+    const body = Array.from({ length: 12 }, (_, i) => `  const v${i} = '${'x'.repeat(1100)}'`).join('\n')
     const ts = join(project, 'src', FILE_NAME)
     writeFileSync(ts, `export function ${IDENT}(): number {\n${body}\n  return 1\n}\n\nexport class Aa {\n  ${IDENT}(): number {\n    return 2\n  }\n}\n\nexport class Bb {\n  ${IDENT}(): number {\n    return 3\n  }\n  ${IDENT}x(): number {\n    return 4\n  }\n}\n\nexport class Cc {\n  ${IDENT}x(): number {\n    return 5\n  }\n}\n`)
     const md = join(project, 'doc.md')

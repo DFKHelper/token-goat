@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Changed
+
+- **`symbol` prints the whole body up to about 12 KB, shared across matches; each match still shows at least 5 lines.** A body past the budget is cut at a line and names the `read` command that returns the rest.
+
 ## [2.9.34] - 2026-11-02
 
 ### Added
