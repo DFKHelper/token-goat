@@ -426,3 +426,27 @@ describe('U+2028 / U+2029 inside a JSON string', () => {
     expect(await buildSessionOutline(file)).toHaveLength(1)
   })
 })
+
+// Fixture: tests/fixtures/transcript_redacted_thinking.jsonl (FORMAT-DERIVED from the redacted_thinking shape in the Anthropic thinking docs). Its opaque `data` payload is synthetic and must never reach output.
+describe('redacted_thinking blocks', () => {
+  const REDACTED_FIXTURE = path.join(__dirname, 'fixtures', 'transcript_redacted_thinking.jsonl')
+  const OPAQUE_DATA = 'SYNTHETIC-OPAQUE-PAYLOAD-0000000000000000'
+
+  it('renders a redacted_thinking block as a placeholder that never prints its opaque data', async () => {
+    const text = formatSessionSlice(await sliceSessionTurns(REDACTED_FIXTURE, 2, 2))
+    expect(text).toContain('[redacted_thinking]')
+    expect(text).toContain('content redacted')
+    expect(text).toContain('Done.')
+    expect(text).not.toContain(OPAQUE_DATA)
+  })
+
+  it('previews a turn whose only block is redacted_thinking as "(redacted thinking)", not "(empty)"', async () => {
+    const file = writeFixture([
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'redacted_thinking', data: OPAQUE_DATA }] } },
+    ])
+    const text = formatSessionOutline(await buildSessionOutline(file))
+    expect(text).toContain('(redacted thinking)')
+    expect(text).not.toContain('(empty)')
+    expect(text).not.toContain(OPAQUE_DATA)
+  })
+})

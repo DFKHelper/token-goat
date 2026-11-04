@@ -443,3 +443,21 @@ describe('bash filter fire-rate and read repeat census', () => {
     expect(s.parseFailedLines).toBe(0)
   })
 })
+
+// Fixture: tests/fixtures/transcript_redacted_thinking.jsonl (FORMAT-DERIVED from the redacted_thinking shape in the Anthropic thinking docs). The opaque `data` payload is synthetic; its length is the expected byte count.
+describe('redacted_thinking blocks in the corpus audit', () => {
+  const OPAQUE_DATA = 'SYNTHETIC-OPAQUE-PAYLOAD-0000000000000000'
+
+  it('counts the redacted_thinking data payload as assistant thinking, not as text', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-redacted-thinking-'))
+    try {
+      fs.copyFileSync(path.join(__dirname, 'fixtures', 'transcript_redacted_thinking.jsonl'), path.join(dir, 'session-redacted.jsonl'))
+      const s = await auditSessionCorpus({ dir })
+      expect(s.estimated.assistantThinking.count).toBe(1)
+      expect(s.estimated.assistantThinking.bytes).toBe(OPAQUE_DATA.length)
+      expect(s.estimated.assistantText).toMatchObject({ count: 1, bytes: 'Done.'.length })
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

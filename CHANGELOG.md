@@ -36,6 +36,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **A folded Markdown Read in the numbered layout is no longer left unfolded when the file has a long path.** The layout note that rides with such a fold is shorter, so a two-paragraph fold on a long temp path (macOS) still clears the minimum saving and is delivered.
 - **A long misspelled symbol name now lists the real name first.** When the query was 8 to 64 characters and also contained shorter real names, the list showed fragments such as `get` and `read` and missed the name one edit away.
 - **A Markdown Read no longer prints a section pointer that would be stripped.** A folded paragraph under a heading that no quote mark can hold, such as one with both a backtick and an apostrophe, is now delivered whole instead of behind a "command omitted" line. A heading holding a backtick or `::` keeps its own pointer while the other headings still share one combined command, and a heading with an invisible variation selector or a command substitution is delivered whole.
+- **`session-outline`, `session-slice` and `session-audit` handle redacted thinking blocks.** A transcript block of type `redacted_thinking` (the API's safety-redacted reasoning, whose `data` field is opaque) now renders as a placeholder that says the content is redacted, and a turn holding only one previews as `(redacted thinking)`. `session-audit` counts its bytes under assistant thinking instead of dropping them.
 
 ## [2.9.33] - 2026-10-26
 

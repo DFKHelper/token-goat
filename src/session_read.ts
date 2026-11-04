@@ -119,6 +119,7 @@ function previewForBlocks(blocks: SessionBlock[]): string {
   }
   const toolUse = blocks.find((b) => b.type === 'tool_use')
   if (toolUse) return `${toolUse.name ?? 'tool'}(${truncate(safeStringify(toolUse.input), PREVIEW_MAX - 20)})`
+  if (blocks.some((b) => b.type === 'redacted_thinking')) return '(redacted thinking)'
   return '(empty)'
 }
 
@@ -236,6 +237,8 @@ function formatBlock(block: SessionBlock): string {
       return block.text ?? ''
     case 'thinking':
       return `[thinking]\n${block.text ?? ''}`
+    case 'redacted_thinking':
+      return '[redacted_thinking]\n(content redacted by the API; not shown)'
     case 'tool_use':
       return `[tool_use: ${block.name ?? '?'}]\n${safeStringify(block.input)}`
     case 'tool_result':
