@@ -183,7 +183,12 @@ export function pendingEmbeddings(): Promise<unknown> {
 /** Global concurrency gate for embedding pipelines across ALL files, honoring `config.worker.max_pool_workers`. {@link inFlightEmbeddings} only serializes duplicate work on the SAME file -- a dirty batch of N distinct changed files previously fired N concurrent `indexFileEmbeddings` transformer-inference pipelines with no cap at all, which can spike CPU/memory proportionally to batch size. `activeEmbedSlots` tracks how many pipelines are currently running; `embedSlotWaiters` holds resolvers for callers queued behind the cap, woken one at a time (FIFO) as slots free up in {@link makeReleaseEmbedSlot}. */
 let activeEmbedSlots = 0
 
-const embedSlotWaiters: Array<() => void> = []
+const embedSlotWaiters: Array<{ start: () => void; abandon: () => void }> = []
+
+/** Settles every embed still queued for a slot without running it, for a daemon that is retiring. The exit waits (bounded) for embeds to settle, and a drain of thousands of files queues thousands behind the few that run, so waiting for the whole queue spent the entire settle bound after a retirement that had already waited out the startup grace. A file whose embed never started keeps its NULL embed_sha, which the backlog sweep embeds later, so nothing is lost; embeds already running are left to finish. */
+export function abandonQueuedEmbeds(): void {
+  for (const waiter of embedSlotWaiters.splice(0)) waiter.abandon()
+}
 
 /** Bumped by the reset below. A release closure carries the epoch it was created under, so an embed that was already running when the reset fired cannot decrement the counter the reset just zeroed. */
 let embedSlotEpoch = 0
@@ -195,8 +200,7 @@ function makeReleaseEmbedSlot(): () => void {
     // A pre-reset embed settling after the reset used to decrement the fresh counter, taking it negative -- and a negative count means `activeEmbedSlots < limit` stays true for one extra caller per stale task, so the global cap this gate exists to enforce was quietly loosened for the rest of the process. The dispatch it belonged to is gone; its release is too.
     if (epoch !== embedSlotEpoch) return
     activeEmbedSlots -= 1
-    const next = embedSlotWaiters.shift()
-    if (next) next()
+    embedSlotWaiters.shift()?.start()
   }
 }
 
@@ -249,9 +253,12 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string, confi
       return dispatchEmbed()
     }
     return new Promise<unknown>((resolve) => {
-      embedSlotWaiters.push(() => {
-        activeEmbedSlots += 1
-        resolve(dispatchEmbed())
+      embedSlotWaiters.push({
+        start: () => {
+          activeEmbedSlots += 1
+          resolve(dispatchEmbed())
+        },
+        abandon: () => resolve(undefined),
       })
     })
   }
@@ -1003,5 +1010,8 @@ export function runDetachedWorkerDaemon(options?: { claimSlot: boolean }): void 
   })
   writeDrainHeartbeat(dir, true)
   // The loop returning is the daemon retiring (data dir gone, pid file lost, idle). Leave the way a SIGTERM does -- after in-flight embeds settle, bounded -- rather than trusting the event loop to empty: on Windows an open handle left by the sweeps would keep a retired daemon alive, invisible.
-  void runWorkerLoop(dir, safeInterval).finally(() => void sigtermDrainDeadline().finally(() => process.exit(0)))
+  void runWorkerLoop(dir, safeInterval).finally(() => {
+    abandonQueuedEmbeds()
+    void sigtermDrainDeadline().finally(() => process.exit(0))
+  })
 }
