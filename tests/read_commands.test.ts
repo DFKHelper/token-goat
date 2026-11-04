@@ -332,37 +332,82 @@ describe('read_commands', () => {
         expect(footers(text), 'the footer must name the one dropped line').toEqual([1])
       })
 
-      it('prints a single line over the cap, and the footer count agrees with the lines it drops', () => {
+      it('cuts a line past the per-line bound and keeps the lines after it, naming the cut', () => {
+        // Provenance: HAND-DERIVED. One 13,000-byte line then six short ones, built by this test; the bound is INLINE_SYMBOL_MAX_BYTES / 5 floor lines = 2,400.
         const body = ['  big = ' + 'z'.repeat(13000), '  s2 = 1', '  s3 = 1', '  s4 = 1', '  s5 = 1', '  s6 = 1', '  s7 = 1'].join('\n')
         mockQuerySymbols.mockReturnValue([row('hugeLine', 'src/hugeline.ts', body)])
         const { text } = runSymbol({ name: 'hugeLine' })
-        expect(text, 'the over-cap line must still print').toContain('z'.repeat(13000))
-        expect(printed(text, '  s') + footers(text)[0], 'shown plus dropped must equal the six lines after the first').toBe(6)
-        expect(footers(text), 'two lines beyond the floor are dropped').toEqual([2])
+        expect(text, 'the over-bound line must not print whole').not.toContain('z'.repeat(2400))
+        expect(text, 'the over-bound line must print up to its bound').toContain('z'.repeat(2300))
+        expect(text, 'the cut must be marked on the line').toContain('...(line cut at 2400 bytes)')
+        expect(printed(text, '  s'), 'the short lines after the cut line still fit and print').toBe(6)
+        expect(text, 'a cut line with no dropped line must still name the full-body read').toMatch(/\.\.\.\(1 line cut; full body: [^)]*token-goat read/)
+      })
+
+      it('bounds a single 50,000-character line body to the line bound, not the whole line', () => {
+        // Provenance: HAND-DERIVED. One minified line of 50,000 characters, built by this test; the bound is INLINE_SYMBOL_MAX_BYTES / 5 floor lines = 2,400.
+        mockQuerySymbols.mockReturnValue([row('minFn', 'src/min.ts', 'm'.repeat(50000))])
+        const { text } = runSymbol({ name: 'minFn' })
+        expect(text, 'the line must not print past 2,400 bytes').not.toContain('m'.repeat(2401))
+        expect(text, 'the line must print up to 2,400 bytes').toContain('m'.repeat(2400))
+        expect(Buffer.byteLength(text, 'utf8'), 'a minified match must stay within the cap plus header and footer').toBeLessThanOrEqual(INLINE_SYMBOL_MAX_BYTES + 512)
+        expect(text, 'the cut must name the full-body read').toContain('token-goat read "src/min.ts::minFn"')
+      })
+
+      it('never splits a multi-byte character when it cuts a line', () => {
+        // Provenance: HAND-DERIVED. 5,000 two-byte characters; 2,400 bytes hold 1,200 of them.
+        mockQuerySymbols.mockReturnValue([row('wideFn', 'src/wide.ts', 'é'.repeat(5000))])
+        const { text } = runSymbol({ name: 'wideFn' })
+        expect(text, 'the cut must leave no replacement character').not.toContain('\uFFFD')
+        expect(text, 'the line is cut to 1,200 two-byte characters').toContain('é'.repeat(1200))
+        expect(text).not.toContain('é'.repeat(1201))
       })
 
       it('keeps a joined body of exactly the cap whole, and cuts one byte more', () => {
-        // The first five lines are 54 bytes joined; the sixth is sized so the whole body is exactly the cap, then one byte over it.
-        const sixth = (last: number) => `L5${'p'.repeat(last - 2)}`
-        const bodyOf = (total: number) => [...Array.from({ length: 5 }, (_, i) => `L${i}${'p'.repeat(8)}`), sixth(total - 55)].join('\n')
-        mockQuerySymbols.mockReturnValue([row('edgeFn', 'src/edge.ts', bodyOf(12000))])
+        // Provenance: HAND-DERIVED. Five floor lines of 10 bytes join to 54; five more lines of 2,388 or 2,389 bytes add 1 newline each, so the whole body is 54 + 11,941 + 5 = 12,000 bytes, then one byte more. Every line is under the 2,400-byte line bound.
+        const bodyOf = (lastLen: number) => [...Array.from({ length: 5 }, (_, i) => `L${i}${'p'.repeat(8)}`), ...[2388, 2388, 2388, 2388, lastLen].map((n, k) => `E${k}${'p'.repeat(n - 2)}`)].join('\n')
+        mockQuerySymbols.mockReturnValue([row('edgeFn', 'src/edge.ts', bodyOf(2389))])
         const atCap = runSymbol({ name: 'edgeFn' }).text
-        expect(printed(atCap, 'L'), 'a body of exactly the cap must print all six lines').toBe(6)
+        expect(printed(atCap, 'E'), 'a body of exactly the cap must print all five lines past the floor').toBe(5)
         expect(footers(atCap), 'a body of exactly the cap must have no footer').toEqual([])
-        mockQuerySymbols.mockReturnValue([row('edgeFn', 'src/edge.ts', bodyOf(12001))])
+        mockQuerySymbols.mockReturnValue([row('edgeFn', 'src/edge.ts', bodyOf(2390))])
         const overCap = runSymbol({ name: 'edgeFn' }).text
-        expect(printed(overCap, 'L'), 'one byte over the cap must drop the sixth line').toBe(5)
+        expect(printed(overCap, 'E'), 'one byte over the cap must drop the last line').toBe(4)
         expect(footers(overCap), 'the footer must name the one dropped line').toEqual([1])
       })
 
-      it('shares one budget across matches: the first is full, later ones are cut to the floor with a footer each', () => {
+      it('gives each match an equal share of what is left: no match is starved by the one before it', () => {
+        // Provenance: HAND-DERIVED. Each line is 115 bytes (116 with its newline). Share 1 = 12000/3 = 4000 holds 34 lines (115 + 33 * 116 = 3943); 8057 is left, share 2 = 4028 holds 34; 4114 is left, share 3 holds 35 (115 + 34 * 116 = 4059).
         const bodyFor = (p: string) => Array.from({ length: 100 }, (_, i) => `  ${p}${i} = `.padEnd(115, 'x')).join('\n')
         mockQuerySymbols.mockReturnValue([row('agg', 'src/a.ts', bodyFor('A')), row('agg', 'src/b.ts', bodyFor('B')), row('agg', 'src/c.ts', bodyFor('C'))])
         const { text } = runSymbol({ name: 'agg' })
-        expect(printed(text, '  A'), 'the first match fits the budget whole').toBe(100)
-        expect(printed(text, '  B'), 'a later match must shrink to the floor once the budget is spent').toBe(5)
-        expect(printed(text, '  C'), 'every later match shrinks to the floor').toBe(5)
-        expect(footers(text), 'each cut match names its dropped lines').toEqual([95, 95])
+        expect([printed(text, '  A'), printed(text, '  B'), printed(text, '  C')], 'each match prints its share, the unspent part passing on').toEqual([34, 34, 35])
+        expect(footers(text), 'each cut match names its dropped lines').toEqual([66, 66, 65])
+      })
+
+      it('shows every one of three matches that are each larger than the whole budget', () => {
+        // Provenance: HAND-DERIVED. Each body is 200 lines of 100 bytes (101 with its newline). Share 1 = 4000 holds 39 lines (100 + 38 * 101 = 3938); 8062 is left, share 2 = 4031 holds 39; 4124 is left, share 3 holds 40 (100 + 39 * 101 = 4039).
+        const bodyFor = (p: string) => Array.from({ length: 200 }, (_, i) => `  ${p}${i} = `.padEnd(100, 'x')).join('\n')
+        mockQuerySymbols.mockReturnValue([row('big3', 'src/a.ts', bodyFor('A')), row('big3', 'src/b.ts', bodyFor('B')), row('big3', 'src/c.ts', bodyFor('C'))])
+        const { text } = runSymbol({ name: 'big3' })
+        expect([printed(text, '  A'), printed(text, '  B'), printed(text, '  C')], 'match 1 must not spend the budget the other two share').toEqual([39, 39, 40])
+        expect(footers(text), 'each match names its dropped lines').toEqual([161, 161, 160])
+      })
+
+      it('keeps the five-line floor for every match once the budget is spent', () => {
+        // Provenance: HAND-DERIVED. Each body is six lines of 3,000 bytes, cut to 2,400; the floor of five lines alone (about 12,004 bytes) spends the whole budget on match 1, and two matches keep the text under the overflow guard's own cap.
+        const bodyFor = (p: string) => Array.from({ length: 6 }, (_, i) => `  ${p}${i} = `.padEnd(3000, 'x')).join('\n')
+        mockQuerySymbols.mockReturnValue([row('floor3', 'src/a.ts', bodyFor('A')), row('floor3', 'src/b.ts', bodyFor('B'))])
+        const { text } = runSymbol({ name: 'floor3' })
+        expect([printed(text, '  A'), printed(text, '  B')], 'the floor holds for each match').toEqual([5, 5])
+      })
+
+      it('prints a body shorter than the floor whole, with no marker', () => {
+        // Provenance: HAND-DERIVED. Three short lines written by this test.
+        mockQuerySymbols.mockReturnValue([row('tiny', 'src/tiny.ts', '  a()\n  b()\n  c()')])
+        const { text } = runSymbol({ name: 'tiny' })
+        expect(printed(text, '  '), 'all three short lines print').toBe(3)
+        expect(text).not.toContain('...(')
       })
 
       it('prints every match signature under --sig, though the bodies would have spent the shared budget', () => {

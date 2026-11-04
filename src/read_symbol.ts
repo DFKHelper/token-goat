@@ -21,24 +21,42 @@ import { DELETED_TAG, docCommentLines, fileIsGone, guardJsonRows, guardText, hea
 import { canQuoteArg, echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { forClient } from './mcp_client_text.js'
 
-/** Body lines every match shows whatever the byte budget holds: 5 WHOLE lines whatever their size, so one minified match can print far past INLINE_SYMBOL_MAX_BYTES. */
+/** Body lines every match shows whatever the byte budget holds, each cut to SYMBOL_MAX_LINE_BYTES, so a floor costs at most INLINE_SYMBOL_MAX_BYTES. */
 const SYMBOL_MIN_PREVIEW_LINES = 5
 
-/** The bytes of body text left for one runSymbol call, shared by its matches in order; it can go negative once the floor lines alone exceed it. */
+/** The most bytes of one body line `symbol` prints: the inline budget split over the floor lines, so five minified lines together still fit it. */
+const SYMBOL_MAX_LINE_BYTES = Math.floor(INLINE_SYMBOL_MAX_BYTES / SYMBOL_MIN_PREVIEW_LINES)
+
+/** The bytes of body text left for one runSymbol call, and how many matches still draw on it; remaining can go negative once the floor lines alone exceed it. */
 interface BodyByteBudget {
   remaining: number
+  matchesLeft: number
 }
 
-/** How many leading body lines to show: the floor always, then whole lines while they fit the shared budget, which each shown line draws down. Whole lines only, so a cut never splits one. */
-function takeBodyLines(lines: string[], budget: BodyByteBudget): number {
-  let shown = 0
+/** `line` cut to at most `maxBytes` UTF-8 bytes, never mid-character, with a marker naming the cut. */
+function cutLineToBytes(line: string, maxBytes: number): string {
+  const kept = Buffer.from(line, 'utf8').subarray(0, maxBytes).toString('utf8').replace(/�+$/u, '')
+  return `${kept} ...(line cut at ${maxBytes} bytes)`
+}
+
+/** The body lines to show, plus how many of them were cut short. The floor always, then whole lines while they fit this match's share: an equal part of what the budget still holds for the matches not yet printed, so a big first match cannot starve the rest and what a small one leaves over passes on. Each shown line draws the budget down. */
+function takeBodyLines(lines: string[], budget: BodyByteBudget): { shown: string[]; cutLines: number } {
+  const share = Math.max(0, Math.floor(budget.remaining / Math.max(1, budget.matchesLeft)))
+  budget.matchesLeft--
+  const shown: string[] = []
+  let spent = 0
+  let cutLines = 0
   for (const line of lines) {
-    const cost = Buffer.byteLength(line, 'utf8') + (shown > 0 ? 1 : 0)
-    if (shown >= SYMBOL_MIN_PREVIEW_LINES && cost > budget.remaining) break
-    budget.remaining -= cost
-    shown++
+    const full = Buffer.byteLength(line, 'utf8')
+    const cut = full > SYMBOL_MAX_LINE_BYTES
+    const cost = Math.min(full, SYMBOL_MAX_LINE_BYTES) + (shown.length > 0 ? 1 : 0)
+    if (shown.length >= SYMBOL_MIN_PREVIEW_LINES && spent + cost > share) break
+    spent += cost
+    shown.push(cut ? cutLineToBytes(line, SYMBOL_MAX_LINE_BYTES) : line)
+    if (cut) cutLines++
   }
-  return shown
+  budget.remaining -= spent
+  return { shown, cutLines }
 }
 
 
@@ -326,7 +344,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
   }
 
   // Header + short body preview per match (mirrors the richer surface that the native CLI handler used before the two read surfaces were consolidated).
-  const budget: BodyByteBudget = { remaining: INLINE_SYMBOL_MAX_BYTES }
+  const budget: BodyByteBudget = { remaining: INLINE_SYMBOL_MAX_BYTES, matchesLeft: results.length }
   const blocks = results.map((sym) => {
     const statsStr = formatStatsSuffix(refCounts, sym)
     // Per match, not one banner for the whole result set: a bare `symbol NAME` searches every indexed project, so one hit can be a live file and the next one a checkout that was deleted months ago. A single header line would have to lie about one of them.
@@ -339,16 +357,15 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     const body = resolveBody(sym)
     const previewContent = opts.sig === true ? extractSignature(body, sym.kind, sym.filePath) : body
     const bodyLines = previewContent.split(/\r?\n/)
-    // The byte budget is shared across matches in order, so a later match shrinks to the floor once earlier bodies spend it; the cut is announced below.
-    const shown = opts.sig === true ? bodyLines.length : takeBodyLines(bodyLines, budget)
-    const previewLines = bodyLines.slice(0, shown)
+    // The byte budget is split over the matches still to print, so none shrinks to the floor because an earlier one was big; every cut is announced below.
+    const taken = opts.sig === true ? { shown: bodyLines, cutLines: 0 } : takeBodyLines(bodyLines, budget)
+    const previewLines = taken.shown
     const preview = [...doc, ...previewLines].join('\n')
     // The header states the symbol's real line span, so a cut body that looked whole would be a silent truncation of exactly the kind truncationFooter below exists to prevent. Say what was cut and how to get the rest.
-    const dropped = bodyLines.length - shown
-    const elided =
-      dropped > 0
-        ? forClient(`\n  ...(${countNoun(dropped, 'more line')}; full body: ${fencedCommand('token-goat read ' + quotedArg(`${displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath))}::${displaySafeText(sym.name)}`))})`)
-        : ''
+    const dropped = bodyLines.length - previewLines.length
+    const readCmd = fencedCommand('token-goat read ' + quotedArg(`${displaySafeText(toDisplayPath(symbolDisplayRoot, sym.filePath))}::${displaySafeText(sym.name)}`))
+    const note = dropped > 0 ? countNoun(dropped, 'more line') : taken.cutLines > 0 ? `${countNoun(taken.cutLines, 'line')} cut` : ''
+    const elided = note !== '' ? forClient(`\n  ...(${note}; full body: ${readCmd})`) : ''
     return preview.trim() !== '' ? `${header}\n${preview}${elided}` : header
   })
   const warning = opts.file !== undefined ? staleWarning(resolveSpecPath(opts.file, opts.projectRoot ?? process.cwd()), 'symbol') : ''

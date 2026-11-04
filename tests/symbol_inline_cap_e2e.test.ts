@@ -21,6 +21,12 @@ beforeAll(() => {
   const huge = ['export function hugeFn(): string {', ...Array.from({ length: 200 }, (_, i) => `  const s${i} = '${'x'.repeat(80)}'`), '  return s0', '}']
   // The provenance comment is followed by a blank line, so it is not the doc comment of the function below it.
   fs.writeFileSync(path.join(project, 'long.ts'), ['// Provenance: HAND-DERIVED, written by tests/symbol_inline_cap_e2e.test.ts.', '', ...forty, '', ...huge, ''].join('\n'))
+  // Provenance: HAND-DERIVED. minFn is one 50,000-character line; tripleFn is defined in three files, each body about 20 KB (200 lines of about 100 bytes), past INLINE_SYMBOL_MAX_BYTES on its own.
+  fs.writeFileSync(path.join(project, 'min.ts'), `export function minFn(): string { return '${'m'.repeat(50000)}' }\n`)
+  for (const p of ['A', 'B', 'C']) {
+    const body = Array.from({ length: 200 }, (_, i) => `  const ${p}${i} = '${'x'.repeat(80)}'`)
+    fs.writeFileSync(path.join(project, `triple${p}.ts`), ['export function tripleFn(): string {', ...body, '  return A0', '}', ''].join('\n'))
+  }
   const idx = tg(['index', '.', '--walk'])
   expect(idx.status, idx.stderr).toBe(0)
 })
@@ -45,5 +51,27 @@ describe('built bundle: symbol prints a body up to the inline cap', () => {
     expect(r.stdout, 'the cut must keep the first body line').toContain("  const s0 = 'xxxx")
     expect(r.stdout, 'the cut must not print the last body line').not.toContain('const s199 = ')
     expect(r.stdout, 'the cut must name the full-body read').toMatch(/token-goat read "[^"]*long\.ts::hugeFn"/)
+  })
+
+  it('bounds a one-line 50,000-character body to the per-line bound and names the read', () => {
+    const r = tg(['symbol', 'minFn'])
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout, 'the minified line must not print past 2,400 bytes of m').not.toContain('m'.repeat(2401))
+    expect(r.stdout, 'the minified line must print most of its 2,400 bytes, after the export prefix').toContain('m'.repeat(2300))
+    expect(r.stdout, 'the cut must be marked').toContain('...(line cut at 2400 bytes)')
+    expect(r.stdout, 'the cut must name the full-body read').toMatch(/token-goat read "[^"]*min\.ts::minFn"/)
+    expect(Buffer.byteLength(r.stdout, 'utf8'), 'the output must stay near the cap, not near 50,000 bytes').toBeLessThan(12_000 + 1024)
+  })
+
+  it('shows every one of three matches that are each past the whole budget', () => {
+    const r = tg(['symbol', 'tripleFn'])
+    expect(r.status, r.stderr).toBe(0)
+    for (const p of ['A', 'B', 'C']) {
+      const shown = r.stdout.split('\n').filter((l) => l.startsWith(`  const ${p}`)).length
+      // A third of the budget holds about 40 lines of about 100 bytes; far more than the 5-line floor, far fewer than the body.
+      expect(shown, `match ${p} must get its share, not the floor and not everything`).toBeGreaterThan(20)
+      expect(shown, `match ${p} must not take more than its share`).toBeLessThan(60)
+    }
+    expect([...r.stdout.matchAll(/token-goat read "[^"]*triple[ABC]\.ts::tripleFn"/g)], 'each match names its own read').toHaveLength(3)
   })
 })
