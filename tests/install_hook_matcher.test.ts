@@ -140,12 +140,12 @@ describe('installHooks matcher narrowing', () => {
     }
   })
 
-  it('leaves the catch-all on events that carry no tool name', () => {
+  it('omits matchers on events that carry no tool name', () => {
     const result = installHooks('project')
 
-    for (const eventKey of ['PreCompact', 'UserPromptSubmit', 'SubagentStop', 'SessionStart']) {
+    for (const eventKey of ['PreCompact', 'PostCompact', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'SessionStart']) {
       const group = tokenGoatGroup(result.settingsPath, eventKey)
-      expect(group.matcher, `${eventKey} must stay on the catch-all matcher`).toBe('')
+      expect(group.matcher, `${eventKey} must omit the matcher property`).toBeUndefined()
     }
   })
 
