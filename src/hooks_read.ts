@@ -19,7 +19,7 @@ import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNT
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
-import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordRecentReadRange } from './read_range_evasion.js'
+import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordReadRangeLockRefusal, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -653,8 +653,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // A range lock remains closed for this compaction epoch. Repeated denials
       // must not reopen the raw Read/view path and turn the breaker into a bypass.
       lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+      const lockCount = recordReadRangeLockRefusal(rangeKey)
       recordStat('session_hint', 0, 0)
-      return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
+      return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end], lockCount))
     }
   }
 
@@ -1238,8 +1239,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         denied: getReadRangeDenials(rangeKey),
       }) !== null) {
         lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        const lockCount = recordReadRangeLockRefusal(rangeKey)
         recordStat('session_hint', 0, 0)
-        return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
+        return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end], lockCount))
       }
     }
 
