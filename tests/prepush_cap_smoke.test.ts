@@ -665,6 +665,9 @@ describe('the hard stop ends the legs of a real hook run', () => {
     expect(pid).toContain(`left running: ${readFileSync(path.join(stubs, 'unkillable'), 'utf8').trim()}`)
   }, true)
 
+  // Used only by the surviving-leg row below: either notice proves the tail deadline passed before the node fork was needed (the fork was ended at the deadline, or a slow stop kill used the whole tail first and it was skipped), and that row's subject is the surviving leg being ended, not which tail branch ran.
+  const TAIL_PASSED_FOR_NODE = /the hard stop left no time for 'node'|no time left after the hard stop, so 'node' was skipped/
+
   // R4: a fork that starts inside the tail and hangs (the duration record of the Windows leg, which finished before the stop) is ended at the tail deadline, so the hook returns inside the tail bound instead of waiting out the whole hang.
   hookRow('a fork that hangs inside the tail is ended at the tail deadline', () => {
     const r = runHook({ STUB_FIRE_STOP: 'typecheck', STUB_FIRE_AFTER_TESTS: '1', STUB_TYPECHECK_S: '60', ...hangingNode(false) })
@@ -685,7 +688,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
     leftLegs = true
     expect(r.tailS, r.out).not.toBeNull()
     expect(r.tailS, r.out).toBeLessThan(TAIL_BOUND_S)
-    expect(r.out).toContain("the hard stop left no time for 'node'")
+    expect(r.out, 'the tail deadline had not passed for the node fork').toMatch(TAIL_PASSED_FOR_NODE)
     const pid = Number(readFileSync(path.join(stubs, 'typecheck.pid'), 'utf8').trim())
     expect(Number.isInteger(pid)).toBe(true)
     let alive = true
