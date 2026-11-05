@@ -617,7 +617,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
 
   program
     .command('sqlite-query <file> <sql>')
-    .description('run a read-only SELECT against a SQLite database instead of a raw Read or shelling out to sqlite3 -- rejects any non-SELECT statement')
+    .description('run a read-only SELECT against a SQLite database; rejects non-SELECT statements. Use "session" for the active Copilot session database.')
     .option('--head <n>', 'limit to the first N returned rows')
     .option('--json', 'emit rows as a JSON array of objects instead of a table')
     .action(guard(cmdSqliteQuery))

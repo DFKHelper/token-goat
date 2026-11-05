@@ -61,6 +61,8 @@ Failure shapes to catch yourself in, and the command that replaces each:
 - persisting a small cross-call fact in conversation context → `note set/get/unset/list`
 Commands: `symbol NAME`, `read "file" "symbol"`, `brief "file::symbol"`, `section "file" "Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs "file::symbol" --callers`, `changed --symbol`, `config-get file KEY`, `json-query file 'a.b.c'`/`yaml-query file 'a.b.c'`/`xml-query file 'a.b.c'`, `json-outline file`/`yaml-outline file`/`xml-outline file`, `bash-output`/`web-output`/`mcp-output`, `gdrive-sections <file-id>`, `image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-locate`/`pdf-extract`, `docx-outline`/`docx-tables`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`, `skill-section`/`skill-body`, `session-outline`/`session-slice`, `recall`, `note set/get/unset/list`.
 
+`sqlite-query session "<SELECT ...>"` queries the active Copilot session database. COBOL `.cbl`/`.cpy` files expose procedure sections/paragraphs and named level 01–49/77 items plus 88 conditions to `outline`, `symbol`, and `read`.
+
 Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.
 
 `token-goat stats` — self-check. Flat counts during code work mean the gate is being skipped.

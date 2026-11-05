@@ -124,4 +124,40 @@ describe('the --sig and --signature flags reach the handler through the built CL
     expect(symbol.stdout).toContain('01 CUSTOMER-REC PIC X(10).')
     expect(symbol.stdout).not.toContain('COBOL_BODY_MARKER')
   })
+
+  it('outline and read resolve COBOL paragraphs and copybook data conditions', () => {
+    const cobolFile = 'sample_cobol.cbl'
+    const copybookFile = 'customer.cpy'
+    writeFileSync(path.join(tmp!.project, cobolFile), [
+      '000100 IDENTIFICATION DIVISION.',
+      '000200 PROGRAM-ID. SIGTEST.',
+      '000300 PROCEDURE DIVISION.',
+      '000400 MAIN-PARA.',
+      '000500     DISPLAY "COBOL_BODY_MARKER".',
+      '000600     STOP RUN.',
+    ].join('\n'), 'utf-8')
+    writeFileSync(path.join(tmp!.project, copybookFile), [
+      '*> Customer copybook',
+      '01 CUSTOMER-REC.',
+      '  05 CUSTOMER-STATUS PIC X.',
+      '    88 CUSTOMER-ACTIVE VALUE "A".',
+    ].join('\n'), 'utf-8')
+
+    const cobolOutline = bundleTg(tmp!.project, tmp!.env, ['outline', cobolFile])
+    expect(cobolOutline.status).toBe(0)
+    expect(cobolOutline.stdout).toMatch(/paragraph\s+MAIN-PARA/)
+
+    const paragraph = bundleTg(tmp!.project, tmp!.env, ['read', `${cobolFile}::MAIN-PARA`])
+    expect(paragraph.status).toBe(0)
+    expect(paragraph.stdout).toContain('COBOL_BODY_MARKER')
+
+    const copybookOutline = bundleTg(tmp!.project, tmp!.env, ['outline', copybookFile])
+    expect(copybookOutline.status).toBe(0)
+    expect(copybookOutline.stdout).toMatch(/variable\s+CUSTOMER-STATUS/)
+    expect(copybookOutline.stdout).toMatch(/condition\s+CUSTOMER-ACTIVE/)
+
+    const condition = bundleTg(tmp!.project, tmp!.env, ['read', `${copybookFile}::CUSTOMER-ACTIVE`])
+    expect(condition.status).toBe(0)
+    expect(condition.stdout).toContain('88 CUSTOMER-ACTIVE VALUE "A".')
+  })
 })

@@ -247,6 +247,19 @@ export function findLatestCopilotSession(projectRootOrOpts?: string | FindCopilo
   return bestActive ?? (opts.onlyActive === true ? null : bestInactive)
 }
 
+/** Return the database file alongside the currently active Copilot session log. */
+export function findActiveCopilotSessionDatabasePath(): string | null {
+  const eventsPath = findActiveCopilotSession()
+  if (eventsPath === null) return null
+
+  const databasePath = path.join(path.dirname(eventsPath), 'session.db')
+  try {
+    return fs.statSync(databasePath).isFile() ? databasePath : null
+  } catch {
+    return null
+  }
+}
+
 export interface DetectedSession {
   path: string
   kind: 'copilot' | 'claude'

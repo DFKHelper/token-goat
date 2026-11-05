@@ -20,7 +20,7 @@ function shape(r: Extracted): string[] {
 
 describe('COBOL adapter', () => {
   it('reads a very large copybook instead of throwing out of the extractor', () => {
-    // HAND-DERIVED: a copybook with no division header is a fragment, so the adapter takes the lowest level number it uses. That list holds one entry per data line and has no cap of its own, and spreading a list this size into Math.min exceeds the engine's argument limit -- which threw, so the file indexed to nothing at all rather than to fewer symbols.
+    // HAND-DERIVED: a copybook with no division header is a fragment; scanning its levels must not materialize an uncapped list before the symbol limit is applied.
     const lines: string[] = []
     for (let i = 0; i < 150_000; i++) lines.push(`       05 FIELD-${i} PIC X.`)
     const r = extractCobol(lines.join('\n'), 'BIG.cpy')
@@ -38,6 +38,8 @@ describe('COBOL adapter', () => {
       'program PAYROLL 2-27',
       'file EMP-FILE 7-10 PAYROLL',
       'variable EMP-REC 8-10 EMP-FILE',
+      'variable EMP-ID 9-9 EMP-REC',
+      'variable EMP-PAY 10-10 EMP-REC',
       'variable WS-TOTAL 12-12 PAYROLL',
       'variable WS-COUNT 13-13 PAYROLL',
       'paragraph MAIN-PARA 17-21 PAYROLL',
@@ -103,9 +105,41 @@ describe('COBOL adapter', () => {
     expect(r.refs.map((x) => x.name)).toEqual(['inner-para', 'SUBPGM'])
   })
 
-  it('reads a copybook with no division as record-level data items', () => {
-    const r = extractCobol(['       01  CUST-REC.', '           05  CUST-ID  PIC 9(5).', '       01  CUST-ADDR.', '           05  STREET   PIC X(30).'].join('\n'), 'CUST.cpy')
-    expect(shape(r)).toEqual(['variable CUST-REC 1-2', 'variable CUST-ADDR 3-4'])
+  it('reads nested data items and 88-level conditions after leading comments in a copybook', () => {
+    const r = extractCobol([
+      '*> Customer copybook',
+      '',
+      '01 CUST-REC.',
+      '  05 CUST-ID PIC 9(5).',
+      '  05 CUST-STATUS PIC X.',
+      '    88 CUST-ACTIVE VALUE "A".',
+      '    88 CUST-INACTIVE VALUE "I".',
+      '01 CUST-ADDR.',
+      '  05 STREET PIC X(30).',
+    ].join('\n'), 'CUST.cpy')
+    expect(shape(r)).toEqual([
+      'variable CUST-REC 3-7',
+      'variable CUST-ID 4-4 CUST-REC',
+      'variable CUST-STATUS 5-7 CUST-REC',
+      'condition CUST-ACTIVE 6-6 CUST-STATUS',
+      'condition CUST-INACTIVE 7-7 CUST-STATUS',
+      'variable CUST-ADDR 8-9',
+      'variable STREET 9-9 CUST-ADDR',
+    ])
+  })
+
+  it('closes 88-level conditions before level-66 and level-78 entries', () => {
+    const r = extractCobol([
+      '*> Data item boundary test',
+      '01 CUST-REC.',
+      '  05 CUST-STATUS PIC X.',
+      '    88 CUST-ACTIVE VALUE "A".',
+      '  66 CUST-STATUS-ALIAS RENAMES CUST-STATUS.',
+      '  78 CUST-UNKNOWN VALUE 1.',
+      '  05 CUST-NEXT PIC X.',
+    ].join('\n'), 'CUST.cpy')
+
+    expect(shape(r)).toContain('condition CUST-ACTIVE 4-4 CUST-STATUS')
   })
 
   it('attaches leading comments to programs, sections, paragraphs and copybook records', () => {
@@ -137,6 +171,7 @@ describe('COBOL adapter', () => {
       const copybook = extractCobol(['*> Customer copybook', '01 CUSTOMER-REC.', ' 05 CUSTOMER-ID PIC X(8).'].join('\n'), `CUST.${extension}`)
       expect(copybook.symbols.map(({ name, docstring }) => [name, docstring])).toEqual([
         ['CUSTOMER-REC', 'Customer copybook'],
+        ['CUSTOMER-ID', ''],
       ])
     }
   })

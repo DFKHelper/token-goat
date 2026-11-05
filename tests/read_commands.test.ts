@@ -5030,6 +5030,60 @@ describe('read_commands', () => {
         expect(stdout).toContain('1,Alice')
       })
 
+      it('resolves the session alias to the active Copilot session database', () => {
+        const f = makeFixtureDb()
+        const copilotHome = path.join(tempDir, 'copilot-home')
+        const sessionId = 'sqlite-query-active'
+        const sessionDir = path.join(copilotHome, 'session-state', sessionId)
+        fs.mkdirSync(sessionDir, { recursive: true })
+        fs.writeFileSync(path.join(sessionDir, 'events.jsonl'), '', 'utf-8')
+        fs.copyFileSync(f, path.join(sessionDir, 'session.db'))
+
+        const previousHome = process.env['COPILOT_HOME']
+        const previousSessionId = process.env['COPILOT_AGENT_SESSION_ID']
+        process.env['COPILOT_HOME'] = copilotHome
+        process.env['COPILOT_AGENT_SESSION_ID'] = sessionId
+        try {
+          let code = -1
+          const { stdout } = capture(() => {
+            code = runSqliteQuery({ file: 'session', sql: 'SELECT id, name FROM users ORDER BY id' })
+          })
+          expect(code).toBe(0)
+          expect(stdout).toContain('1,Alice')
+        } finally {
+          if (previousHome === undefined) delete process.env['COPILOT_HOME']
+          else process.env['COPILOT_HOME'] = previousHome
+          if (previousSessionId === undefined) delete process.env['COPILOT_AGENT_SESSION_ID']
+          else process.env['COPILOT_AGENT_SESSION_ID'] = previousSessionId
+        }
+      })
+
+      it('returns a clear error when no active session database exists', () => {
+        const copilotHome = path.join(tempDir, 'copilot-home')
+        const sessionId = 'sqlite-query-no-database'
+        const sessionDir = path.join(copilotHome, 'session-state', sessionId)
+        fs.mkdirSync(sessionDir, { recursive: true })
+        fs.writeFileSync(path.join(sessionDir, 'events.jsonl'), '', 'utf-8')
+
+        const previousHome = process.env['COPILOT_HOME']
+        const previousSessionId = process.env['COPILOT_AGENT_SESSION_ID']
+        process.env['COPILOT_HOME'] = copilotHome
+        process.env['COPILOT_AGENT_SESSION_ID'] = sessionId
+        try {
+          let code = -1
+          const { stderr } = capture(() => {
+            code = runSqliteQuery({ file: 'session', sql: 'SELECT 1' })
+          })
+          expect(code).toBe(1)
+          expect(stderr).toContain('No active Copilot session SQLite database was found')
+        } finally {
+          if (previousHome === undefined) delete process.env['COPILOT_HOME']
+          else process.env['COPILOT_HOME'] = previousHome
+          if (previousSessionId === undefined) delete process.env['COPILOT_AGENT_SESSION_ID']
+          else process.env['COPILOT_AGENT_SESSION_ID'] = previousSessionId
+        }
+      })
+
       it('emits a JSON envelope with columns/items/truncated/totalCount under --json', () => {
         const f = makeFixtureDb()
         const { stdout } = capture(() => {

@@ -7,6 +7,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### Changed
 
 - The canonical skill now treats whole-file/range denials and the >80%-indexed warning as a per-file circuit breaker, directing reads and edits to surgical token-goat commands.
+- `sqlite-query session` resolves the active Copilot session database; COBOL outlines expose nested data items and level-88 conditions.
 
 ## [2.9.34] - 2026-11-02
 
