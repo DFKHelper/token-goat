@@ -116,13 +116,14 @@ Paths go in relative to the working directory; `waste` prints absolute ones, so 
 
 ## Anti-Paging Trap
 
-If a paging notice or `[tg]` range denial appears, stop Read/view line ranges; do not retry with a shifted or resized window. Run the exact token-goat command named by the denial first.
+If `[tg]` denies a whole-file or line-range Read/view, or warns that more than 80% of the file is indexed, immediately stop calling Read/view on that file. Never retry with a smaller, shifted, or resized `view_range`: repeated attempts create a denial loop. Switch to a token-goat command instead, including when editing a denied file.
 Use the one surgical command that fits:
-- Definition → `token-goat read "file" "symbol"`.
-- Denied window → `token-goat read "file" "start-end"`.
+- Definition → `token-goat read "file::symbol"`.
+- Denied window → `token-goat read "file@start-end"`.
 - Structure → `token-goat skeleton <file>` (or `outline`).
-- Text excerpt → `token-goat grep "<pattern>" <file> -C 15 --symbol`.
+- Text excerpt → `token-goat grep "<pattern>" "file" -C 15 --symbol`.
 - Markdown heading → `token-goat section "file" "Heading"`.
+- Surgical edit → `token-goat replace "file" --old-b64 ... --new-b64 ...`.
 
 ## Anti-Patterns
 
@@ -130,6 +131,7 @@ Use the one surgical command that fits:
 - **Treating a batch as one gate.** Five reads issued in one message are five gates, not one. Batching is a latency optimisation; it does not pool the token cost.
 - **Using `symbol` as a grep.** `symbol NAME` resolves a definition. When you want every *use*, that is `refs file::symbol --callers`; when you want a concept rather than a literal string, that is `semantic`. Reaching for the wrong one and then falling back to a wide search spends the cost of both.
 - **Slicing a file that was never indexed.** A file created, generated, or left untracked this turn has no index entry, so a slice command returns nothing and reads as "not there" rather than "not indexed". That case is an explicit exemption -- read it directly and move on instead of retrying the slice.
+- **Retrying Read/view after `[tg]` denial or the >80%-indexed warning.** The stop applies to the whole file, not just the denied window; use a token-goat slice, grep, or surgical replace instead.
 - **Re-running a command to see output you already have.** Captured output is addressable by ID via `bash-output`/`web-output`/`mcp-output`, and anything cached this session is reachable with `recall`. Re-running is the most expensive way to scroll up.
 - **Writing tool or binary names into an agent's `tools`/`allowed-tools` frontmatter.** Shell binaries and editor programs are invoked *through* the shell tool; they are not tool identifiers. Instruction-file loaders harvest such names into an allowlist and then warn that every one is unknown -- which is why the gate text above deliberately names none.
 - **Dropping the gate from a sub-agent brief.** A sub-agent inherits none of this context and spends the same budget, so a brief without the gate verbatim is where the savings quietly leak back out.

@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Changed
+
+- The canonical skill now treats whole-file/range denials and the >80%-indexed warning as a per-file circuit breaker, directing reads and edits to surgical token-goat commands.
+
 ## [2.9.34] - 2026-11-02
 
 ### Added
