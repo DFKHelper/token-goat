@@ -127,6 +127,11 @@ fn main() {
         Some("--selftest-env") => selftest::run_env(),
         _ => match parse_hook_args(&raw) {
             Some(hook) => run_hook(hook, main_start),
+            None if raw.is_empty() => {
+                // Some hosts execute a hook's `command` but drop its separate `args` array. With no event or command to run, fail open with the valid no-op response so one foreign hook config cannot block every tool call.
+                println!("{{}}");
+                0
+            }
             None => {
                 eprintln!("{USAGE}");
                 2
