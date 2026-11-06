@@ -24,7 +24,7 @@ const NAME = /^(?:.*(?:Path|Name|Heading|Script)|path|name|heading|sym|shown|saf
 const SPELLINGS = new Set(['displaySafePath', 'displaySafeText'])
 
 /** Calls whose arguments are quoted for the shells or named the quoted way, or never reach the model at all. */
-const SAFE_CALLS = new Set(['quotedArg', 'quotedArgs', 'fileSubject', 'nameSubject', 'recordStat', 'join', 'resolve', 'debugLog', 'logDebug', 'RegExp'])
+const SAFE_CALLS = new Set(['quotedArg', 'quotedArgs', 'fileSubject', 'nameSubject', 'recordStat', 'wasHintShown', 'markHintShown', 'join', 'resolve', 'debugLog', 'logDebug', 'RegExp'])
 
 /** `file::expression` splices that name a value from a fixed vocabulary, and why. */
 const ALLOWED: Record<string, string> = {

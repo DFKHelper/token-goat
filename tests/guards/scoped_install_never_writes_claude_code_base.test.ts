@@ -9,7 +9,7 @@ import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.join(HERE, '..', '..')
-const CLI_PATH = path.join(REPO_ROOT, 'src', 'cli.ts')
+const CLI_PATH = path.join(REPO_ROOT, 'src', 'cli_cmd_integrations.ts')
 const INSTALL_PATH = path.join(REPO_ROOT, 'src', 'cli_install.ts')
 
 /** Strips comments, same naive-but-safe tradeoff every other regex/text guard in this directory makes. */

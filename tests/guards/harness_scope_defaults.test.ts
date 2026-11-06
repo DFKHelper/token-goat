@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { pinnedPopulation } from './population.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const CLI = path.join(HERE, '..', '..', 'src', 'cli.ts')
+const CLI = path.join(HERE, '..', '..', 'src', 'cli_cmd_integrations.ts')
 const INSTALL = path.join(HERE, '..', '..', 'src', 'cli_install.ts')
 
 type ScopeDefault = 'user-default' | 'project-default' | 'no-scope'

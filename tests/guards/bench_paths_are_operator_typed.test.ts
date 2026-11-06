@@ -10,10 +10,11 @@ import { pinnedPopulation } from './population.js'
 /** Entry points that accept a caller-supplied filesystem path into the bench command. */
 const BENCH_ENTRY_POINTS = ['runBenchCommand', 'loadCorpus', 'appendTsv'] as const
 
-/** Files allowed to reference them, each with the reason it is not a reachability problem. `cli_bench.ts` defines them; `cli.ts` is the commander dispatch table, where the values come straight off the parsed command line. */
+/** Files allowed to reference them, each with the reason it is not a reachability problem. `cli_bench.ts` defines them; `cli.ts` and `cli_cmd_content.ts` are the commander dispatch table, where the values come straight off the parsed command line. */
 const ALLOWED = new Map([
   ['cli_bench.ts', 'defines the bench command'],
-  ['cli.ts', 'commander dispatch: both paths come from operator-typed flags'],
+  ['cli.ts', 'commander dispatch: passes runBenchCommand into registerContentCommands'],
+  ['cli_cmd_content.ts', 'commander dispatch: both paths come from operator-typed flags'],
 ])
 
 function walkSrc(): string[] {

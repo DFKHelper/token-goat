@@ -23,6 +23,7 @@ import { reclaimIndex, walCheckpointBusyNoWait } from './index_reclaim.js'
 import { applyIndexingPriority } from './process_priority.js'
 import { cleanup_stale } from './snapshots.js'
 import { sweepCacheRoots } from './disk_cache.js'
+import { sessionsDir } from './sessions_dir.js'
 import { sweepStaleShrinkCopies } from './shrink_temp_copies.js'
 import { findProject, isUnderSystemTemp } from './project.js'
 import { registerReset } from './reset.js'
@@ -35,6 +36,19 @@ import { appendWorkerErrorLog, claimCurrentWorker, readPidFile, resolvePollInter
 
 // Stale session-snapshot sweep runs on the same loop as the dirty-queue drain (see runWorkerLoop) but throttled to this interval -- cleanup_stale's own default 24h staleness window doesn't need finer-grained sweeping than hourly, and a full directory scan on every 2s poll tick would be wasteful.
 const SNAPSHOT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000
+
+/** How long a foreground session write suppresses heavy background worker maintenance (embedding backlog walks, known-roots sweeps, snapshot/cache sweeps, idle vacuuming) so interactive CLI turns do not compete with background I/O. */
+export const FOREGROUND_ACTIVITY_YIELD_MS = 6_000
+
+/** True when any session state in `sessDir` (defaults to {@link sessionsDir}) was updated within {@link FOREGROUND_ACTIVITY_YIELD_MS} of `now`. Absent or unreadable directories return false so idle daemons and isolated tests proceed normally. */
+export function hasRecentForegroundActivity(now = Date.now(), sessDir: string = sessionsDir()): boolean {
+  try {
+    const mtimeMs = fs.statSync(sessDir).mtimeMs
+    return now - mtimeMs >= 0 && now - mtimeMs < FOREGROUND_ACTIVITY_YIELD_MS
+  } catch {
+    return false
+  }
+}
 
 /** How many {@link drainOnce} cycles to skip between opportunistic {@link pruneDeletedFiles} sweeps. A `git mv`, directory rename, `git checkout <branch>`, or `git clean` never fires an Edit hook for the paths it touches, so a plain dirty-queue drain (which only reconciles a deletion when the exact old path was enqueued) never notices those rows are gone and they orphan in the index forever. `pruneDeletedFiles` walks every indexed path under a project root and stats each one to catch this — too expensive to repeat on every ~2s poll tick, so it only runs every Nth cycle (mirrors SNAPSHOT_CLEANUP_INTERVAL_MS's throttling above, keyed on drain-cycle count here instead of wall time since the trigger is "enough drain activity", not "enough time elapsed"). */
 const PRUNE_EVERY_N_DRAINS = 30
@@ -875,11 +889,12 @@ export async function runWorkerLoop(
       // The sweep never throws; a request it left claimed is swept again next cycle.
     }
     if (retiringNow()) break
+    const foregroundBusy = hasRecentForegroundActivity()
     if (processed > 0) {
       lastActiveMs = Date.now()
       lastBusyMs = lastActiveMs
-    } else if (inFlightEmbeddings.size === 0) {
-      // Only with the queue drained and every embed settled, so the backlog never competes with an edit. See requeueStaleEmbeddings.
+    } else if (inFlightEmbeddings.size === 0 && !foregroundBusy) {
+      // Only with the queue drained, every embed settled, and no active foreground hook turn, so the backlog never competes with an edit or interactive CLI turn. See requeueStaleEmbeddings.
       try {
         const ready = embeddingsReady(dir)
         const stamps = disabledStampCount()
@@ -896,8 +911,8 @@ export async function runWorkerLoop(
         // An unreadable index this cycle: the cursor stays put and the next idle cycle tries again.
       }
     }
-    // Sweep stale session-snapshot directories on the same periodic loop as the dirty-queue drain above, so accumulating session_snapshots/<sessionId>/ dirs get cleaned up on a schedule instead of growing unbounded for the life of the daemon.
-    if (Date.now() - lastSnapshotCleanupMs >= SNAPSHOT_CLEANUP_INTERVAL_MS) {
+    // Sweep stale session-snapshot directories on the same periodic loop as the dirty-queue drain above, so accumulating session_snapshots/<sessionId>/ dirs get cleaned up on a schedule instead of growing unbounded for the life of the daemon. Deferred while a foreground CLI turn is active so synchronous directory scans do not compete with interactive tool calls.
+    if (!foregroundBusy && Date.now() - lastSnapshotCleanupMs >= SNAPSHOT_CLEANUP_INTERVAL_MS) {
       try {
         cleanup_stale()
       } catch {
@@ -920,7 +935,7 @@ export async function runWorkerLoop(
       lastSnapshotCleanupMs = Date.now()
     }
     // Auto-prune dead file rows across every known project root -- see sweepKnownRoots' docstring for the safety guarantees (grace period before treating an unreachable root as gone, anomaly-ratio guard against a mount-point outage under a live root). This is what keeps the shared global.db from silently accumulating dead rows indefinitely the way it used to, when pruning only ever ran via a manually-invoked `token-goat index`.
-    if (Date.now() - lastKnownRootsSweepMs >= KNOWN_ROOTS_SWEEP_INTERVAL_MS) {
+    if (!foregroundBusy && Date.now() - lastKnownRootsSweepMs >= KNOWN_ROOTS_SWEEP_INTERVAL_MS) {
       try {
         const result = sweepKnownRoots(path.join(dir, 'global.db'))
         if (result.flaggedRoots.length > 0) {
@@ -933,7 +948,7 @@ export async function runWorkerLoop(
     }
     // Perform off-peak idle space reclamation / vacuum on global.db when the daemon has been continuously idle (no dirty items) for at least IDLE_VACUUM_COOLDOWN_MS and at least IDLE_VACUUM_INTERVAL_MS has elapsed since the last vacuum.
     const now = Date.now()
-    if (now - lastIdleVacuumMs >= IDLE_VACUUM_INTERVAL_MS && now - lastActiveMs >= IDLE_VACUUM_COOLDOWN_MS) {
+    if (!foregroundBusy && now - lastIdleVacuumMs >= IDLE_VACUUM_INTERVAL_MS && now - lastActiveMs >= IDLE_VACUUM_COOLDOWN_MS) {
       const reclaimTarget = path.join(dir, 'global.db')
       // No database yet is nothing to reclaim, not a refusal: it neither counts nor logs, and the mark stays put so the next cycle looks again. idleReclaim keeps its own false for a missing file, which tests/wal_size_bounded.test.ts pins.
       if (fs.existsSync(reclaimTarget)) {

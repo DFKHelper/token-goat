@@ -91,7 +91,7 @@ describe('PowerShell double quotes in a path', () => {
     const target = hintTarget('d.md', 'section', { content: HOSTILE_HEADING_DOC })
     expect(target.name).toBe(HOSTILE_HEADING)
     const command = sliceCommand('d.md', target)
-    expect(command).toBe("token-goat section 'd.md' '" + HOSTILE_HEADING + "'")
+    expect(command).toBe('token-goat section "d.md" \'' + HOSTILE_HEADING + "'")
     expect(outsideSingleQuotes(command)).not.toContain(MARKER)
     const hint = 'Use `' + command + '` to read one section.'
     expect(stripUnsafeSuggestions(hint)).toBe(hint)
@@ -126,7 +126,7 @@ describe.skipIf(POWERSHELL === null)('every suggestion that survives the guard i
   }, 120_000)
 
   it('the oracle itself sees the breakout: an unguarded payload parses as three statements', () => {
-    const commands = BREAKOUT_PATHS.slice(0, DOUBLE_QUOTES.length).map((p) => 'token-goat read "' + p + '" "SymbolName"')
+    const commands = BREAKOUT_PATHS.slice(0, DOUBLE_QUOTES.length).map((p) => 'token-goat read "' + p + '::SymbolName"')
     expect(parseWithPowerShell(exe, commands).map((r) => r.statements)).toEqual(DOUBLE_QUOTES.map(() => 3))
   }, 60_000)
 })
