@@ -79,6 +79,7 @@
     ["src/hooks_index.ts","Hook Subsystem"],
     ["src/hooks_mcp.ts","Hook Subsystem"],
     ["src/hooks_read.ts","Hook Subsystem"],
+    ["src/hooks_read_override.ts","Hook Subsystem"],
     ["src/hooks_read_policy.ts","Hook Subsystem"],
     ["src/hooks_read_post.ts","Hook Subsystem"],
     ["src/hooks_read_slice.ts","Hook Subsystem"],

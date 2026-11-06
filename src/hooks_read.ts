@@ -23,6 +23,7 @@ import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, get
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
+import { escalateRepeatedFileTypeDeny, fileTypeHost, readFilePrefix, readOverridesFileTypeDeny, readOverridesLargeFileDeny } from './hooks_read_override.js'
 import {
   readRequestedSliceWindow,
   requestedSliceSpan,
@@ -61,7 +62,7 @@ import {
   extractChangelogVersionHint,
   MARKDOWN_SIZE_THRESHOLD,
 } from './hints/markdown_hints.js'
-import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS, LARGE_SYMBOL_LINE_THRESHOLD } from './hints/file_type_handler.js'
+import { dispatchFileTypeHandler, FILE_TYPE_THRESHOLDS, LARGE_SYMBOL_LINE_THRESHOLD, TEXT_PREFIX_PROBE_BYTES } from './hints/file_type_handler.js'
 import { fenceUntrustedFileContent } from './injection_scan.js'
 import { recordStat, savedTokensFromBytes } from './stats.js'
 import { findProject, makeProjectAt } from './project.js'
@@ -650,8 +651,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
     clearReadRangeIfChanged(rangeKey, rangeIdentity)
     if (getReadRangeDenials(rangeKey).length > 0) {
-      // A range lock remains closed for this compaction epoch. Repeated denials
-      // must not reopen the raw Read/view path and turn the breaker into a bypass.
+      // A range lock remains closed for this compaction epoch. Repeated denials must not reopen the raw Read/view path and turn the breaker into a bypass.
       lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
       recordStat('session_hint', 0, 0)
       return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end]))
@@ -1369,7 +1369,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const kb = toKB(size)
     const config = loadConfig()
     const hint = surgicalHint(normalized, basename, 1000)
-    if (gateSize >= largeFileDenyBytes()) {
+    if (gateSize >= largeFileDenyBytes() && !readOverridesLargeFileDeny(event, normalized, onDisk)) {
       // The read is blocked outright, so it never actually happened — don't record it against re-read dedup. Otherwise a retry (this hook doesn't distinguish offset/limit params from a plain re-read) hits "already read this session" instead of this same actionable deny, leaving no way to follow its own advice.
       const denyCredit = counterfactualCredit(size)
       recordStat('session_hint', denyCredit, savedTokensFromBytes(denyCredit), undefined, 'large-file-deny')
@@ -1403,21 +1403,27 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     const ftSlice = estimateRequestedSlice(event, normalized)
     const ftEffectiveLength = ftSlice.kind === 'bytes' ? Math.min(ftSlice.bytes, fileStatSize) : fileStatSize
     let ftContent = ''
+    let ftBytes: Buffer = Buffer.alloc(0)
+    // Only the head of a text file past the scan cap is read: it sizes the window the deny names and the one a repeat inlines, and nothing else of the file is loaded.
+    let ftHead: Buffer | undefined
     // Guarded the same way every other full-content fs.readFileSync in this file is (see SLICE_ESTIMATE_SCAN_CAP_BYTES's other call sites above) -- without this, a multi-GB .csv/.txt/.log/.html file (isKnownFileType is unconditional on size) would be read into a JS string in full on every single call, even a cheap bounded offset/limit request whose small ftEffectiveLength was always going to pass every handler's length-gate below without ever touching content.
     if (!BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       try {
-        const ftBytes = fs.readFileSync(onDisk)
+        ftBytes = fs.readFileSync(onDisk)
         // The range record below hashes these same bytes instead of reading the file again.
         hashNow.adopt(ftBytes)
         ftContent = ftBytes.toString('utf8')
       } catch {
         // best-effort — empty content will pass through
       }
+    } else if (TEXT_FILE_TYPE_EXTS.has(fileTypeExt) && fileStatSize > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+      ftHead = readFilePrefix(onDisk, TEXT_PREFIX_PROBE_BYTES)
     }
-    const ftResult = dispatchFileTypeHandler(normalized, ftContent, ftEffectiveLength)
-    if (ftResult?.shouldBlock) {
+    const ftResult = dispatchFileTypeHandler(normalized, ftContent, ftEffectiveLength, fileTypeHost(event), ftHead)
+    if (ftResult?.shouldBlock && !readOverridesFileTypeDeny(event, fileTypeExt, TEXT_FILE_TYPE_EXTS.has(fileTypeExt), onDisk)) {
       // Blocked read never happened — don't count it against re-read dedup. These messages (large txt/log/csv/generic) tell the caller to retry with offset/limit; recording the read here would make that retry hit the "already read this session" deny instead, with no way to ever read the file.
-      return denyOutput(ftResult.message)
+      const escalated = escalateRepeatedFileTypeDeny(event, normalized, ftHead === undefined ? { bytes: ftBytes, complete: true } : { bytes: ftHead, complete: false })
+      return denyOutput(escalated ?? ftResult.message)
     }
   }
 
@@ -1494,9 +1500,7 @@ export function preReadHandler(event: HookEvent): HookOutput {
   const target = getFilePath(event) ?? (typeof rawGrepPath === 'string' && rawGrepPath !== '' ? resolveEventPath(event, rawGrepPath) : undefined)
   if (preToolPathDeclined(event, target)) return passOutput()
   const before = event.toolName === 'Read' && target !== undefined ? getSessionFileEntry(target) : undefined
-  // Let the content-aware policy decide re-reads. A second count-only gate here
-  // bypasses changed-file checks, exact-output redirects, configuration, and the
-  // range/whole-file circuit breakers that prevent repeated denial loops.
+  // Let the content-aware policy decide re-reads. A second count-only gate here bypasses changed-file checks, exact-output redirects, configuration, and the range/whole-file circuit breakers that prevent repeated denial loops.
   const output = preReadHandlerInner(event)
   // Every hint here names a token-goat command that reads the file itself, so on a path a deny or ask rule covers it would lead around the rule: Claude Code answers the call on its own.
   if (output.hookType !== 'pass' && target !== undefined && readHintCrossesRule(detectHarness(), getCwd(event) ?? process.cwd(), [target])) return passOutput()
