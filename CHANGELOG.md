@@ -8,6 +8,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 - The canonical skill now treats whole-file/range denials and the >80%-indexed warning as a per-file circuit breaker, directing reads and edits to surgical token-goat commands.
 - `sqlite-query session` resolves the active Copilot session database; COBOL outlines expose nested data items and level-88 conditions.
+- Tree-sitter parsing reuses one native parser per grammar, reducing repeated AST extraction setup; the parser fingerprint changed, so existing indexes reindex after upgrade.
 
 ## [2.9.34] - 2026-11-02
 

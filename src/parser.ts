@@ -44,7 +44,7 @@ const COMPILER_ARTIFACT_REF_NAMES: ReadonlySet<string> = new Set(['__name'])
 // --- Tree-sitter grammar loading (optional, cached) -------------------------
 
 // Minimal structural typings for the node-tree-sitter API surface we touch. The packages ship no first-class .d.ts under this resolution, so we model only the members used here rather than pulling `any` through the module.
-import type { Grammar, TsParserCtor } from './parser_ts_types.js'
+import type { Grammar, TsParser, TsParserCtor } from './parser_ts_types.js'
 export type { Grammar, TsNode, TsParser, TsParserCtor, TsPoint, TsTree } from './parser_ts_types.js'
 
 import {
@@ -115,6 +115,8 @@ let _parserCtorOverride: TsParserCtor | null | undefined = undefined
 // Test-only load error reported alongside a forced binding, so doctor's classification runs on a real captured error.
 let _parserCtorErrorOverride: Error | null | undefined = undefined
 const _grammarCache = new Map<string, Grammar | null>()
+// Tree-sitter parsing is synchronous, so one native parser per resolved grammar can be reused safely on the current thread.
+const _parserByGrammar = new Map<Grammar, TsParser>()
 
 function loadParserCtor(): TsParserCtor | null {
   if (_parserCtorOverride !== undefined) return _parserCtorOverride
@@ -142,6 +144,7 @@ export function treeSitterCoreLoadError(): Error | null {
 export function setTreeSitterCoreForTesting(mod: TsParserCtor | null | undefined, loadError: Error | null = null): void {
   _parserCtorOverride = mod
   _parserCtorErrorOverride = mod === undefined ? undefined : loadError
+  _parserByGrammar.clear()
 }
 
 // `.h` is inherently ambiguous between C and C++ (unlike `.hpp`, which is unambiguous cpp) -- the same extension is used for both languages. None of `class`, `namespace`, `template<`, `::`, or an access-specifier label (`public:`/`private:`/`protected:`) are valid C syntax, so any match is a strong, low-false-positive signal that a `.h` file is genuinely a C++ header. Used to route such files to the cpp grammar instead of the c grammar -- parsing C++-only syntax with tree-sitter-c still "succeeds" (error recovery doesn't throw) but produces ERROR nodes around it, silently dropping or mis-scoping symbols/refs, exactly the same failure mode `useTsx` below guards against.
@@ -344,13 +347,20 @@ function parseContent(content: string, filePath: string, language: Language): Pa
 
 /** The tree-sitter half of {@link parseContent}, split out so a caller that must never be handed the regex fallback can ask for tree-sitter alone. `null` means tree-sitter did not produce this file's symbols: no grammar or no parser constructor for the language, or the parse threw. It never means "this file has no symbols", which is the empty array. {@link parseSourceSymbolsTreeSitterOnly} is the caller that needs that distinction, while {@link parseContent} itself reads null as "fall through to the regex pass", exactly as it did when this block was inline. */
 function parseWithTreeSitter(content: string, filePath: string, language: Language): ParseContentResult | null {
-  if (!isTreeSitterAvailable(language)) return null
+  if (!TREE_SITTER_LANGUAGES.includes(language)) return null
+  let grammar: Grammar | null = null
+  let parser: TsParser | undefined
   try {
     const Ctor = loadParserCtor()
-    const grammar = loadGrammar(language, filePath, content)
-    if (Ctor === null || grammar === null) return null
-    const parser = new Ctor()
-    parser.setLanguage(grammar)
+    if (Ctor === null) return null
+    grammar = loadGrammar(language, filePath, content)
+    if (grammar === null) return null
+    parser = _parserByGrammar.get(grammar)
+    if (parser === undefined) {
+      parser = new Ctor()
+      parser.setLanguage(grammar)
+      _parserByGrammar.set(grammar, parser)
+    }
     const tree = parser.parse(content)
     const root = tree.rootNode
     let symbols: SymbolEntry[]
@@ -376,6 +386,7 @@ function parseWithTreeSitter(content: string, filePath: string, language: Langua
       : parsed
   } catch {
     // Parser threw on this input: the caller decides whether a regex pass is an acceptable substitute for what it could not produce.
+    if (grammar !== null && parser !== undefined) _parserByGrammar.delete(grammar)
     return null
   }
 }
