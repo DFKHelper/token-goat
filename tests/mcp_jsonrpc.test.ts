@@ -17,18 +17,12 @@ import {
   type McpTransport,
 } from '../src/mcp_jsonrpc.js'
 import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+import { neutralizeMcpHarnessSignals } from './helpers/mcp_test_harness.js'
 
 // These cases call tools that are opt-in by default; name them all so the server registers them.
 process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
 
-function neutralizeHarnessSignals(): void {
-  vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'generic')
-  vi.stubEnv('COPILOT_HOME', undefined)
-  vi.stubEnv('CLAUDE_CODE_SESSION_ID', undefined)
-  vi.stubEnv('TERM_PROGRAM', undefined)
-}
-
-beforeEach(neutralizeHarnessSignals)
+beforeEach(neutralizeMcpHarnessSignals)
 afterEach(() => vi.unstubAllEnvs())
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -292,7 +286,7 @@ describe('mcp_jsonrpc protocol handling', () => {
     ]
 
     for (const detection of detections) {
-      neutralizeHarnessSignals()
+      neutralizeMcpHarnessSignals()
       if (detection.env !== undefined) vi.stubEnv(detection.env.name, detection.env.value)
 
       const { transport, sent, deliver } = rawTransport()
