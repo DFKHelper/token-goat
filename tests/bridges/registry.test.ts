@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { detectHarness, getHarnessName, setRelaySeededSessionId } from '../../src/bridges/registry.js'
+import { detectHarness, getHarnessName, hasClaudeCodeEnvSignal, setRelaySeededSessionId } from '../../src/bridges/registry.js'
 import { clearModuleCaches } from '../../src/reset.js'
 import { HARNESS_DETECTION_ENV_KEYS } from '../helpers/harness-env.js'
 
@@ -191,6 +191,57 @@ describe('harness detection', () => {
       process.env['HERMES_SESSION_ID'] = 'h-1'
       process.env['CLAUDE_CODE_VERSION'] = '1.0'
       expect(detectHarness()).toBe('hermes')
+    })
+
+    // HAND-DERIVED: the signals are the three explicit Claude Code tests in src/bridges/registry.ts::hasClaudeCodeEnvSignal; no host schema is cited.
+    describe('hasClaudeCodeEnvSignal', () => {
+      it('is false with no signal, and for a bare ANTHROPIC_API_KEY or the harness override', () => {
+        expect(hasClaudeCodeEnvSignal()).toBe(false)
+        process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test'
+        expect(hasClaudeCodeEnvSignal()).toBe(false)
+        process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
+        expect(hasClaudeCodeEnvSignal()).toBe(false)
+      })
+
+      it('is true for TERM_PROGRAM=claude-code, and false for another TERM_PROGRAM', () => {
+        process.env['TERM_PROGRAM'] = 'vscode'
+        expect(hasClaudeCodeEnvSignal()).toBe(false)
+        process.env['TERM_PROGRAM'] = 'claude-code'
+        expect(hasClaudeCodeEnvSignal()).toBe(true)
+      })
+
+      it('is true for CLAUDE_CODE_VERSION, even empty', () => {
+        process.env['CLAUDE_CODE_VERSION'] = ''
+        expect(hasClaudeCodeEnvSignal()).toBe(true)
+      })
+
+      it('is true for a CLAUDE_CODE_SESSION_ID, unless it is the value relay seeded', () => {
+        process.env['CLAUDE_CODE_SESSION_ID'] = 'sess-abc'
+        expect(hasClaudeCodeEnvSignal()).toBe(true)
+        setRelaySeededSessionId('sess-abc')
+        try {
+          expect(hasClaudeCodeEnvSignal()).toBe(false)
+          process.env['CLAUDE_CODE_SESSION_ID'] = 'sess-other'
+          expect(hasClaudeCodeEnvSignal()).toBe(true)
+        } finally {
+          setRelaySeededSessionId(undefined)
+        }
+      })
+
+      it('reads the env it is given, not process.env', () => {
+        expect(hasClaudeCodeEnvSignal({ CLAUDE_CODE_VERSION: '1' })).toBe(true)
+        expect(hasClaudeCodeEnvSignal({})).toBe(false)
+      })
+
+      it('leaves detectHarness unchanged: a bare ANTHROPIC_API_KEY still answers claudecode, and Hermes still wins over CLAUDE_CODE_VERSION', () => {
+        process.env['ANTHROPIC_API_KEY'] = 'sk-ant-test'
+        expect(detectHarness()).toBe('claudecode')
+        delete process.env['ANTHROPIC_API_KEY']
+        process.env['HERMES_HOME'] = '/tmp/hermes'
+        process.env['CLAUDE_CODE_VERSION'] = '1.0'
+        expect(hasClaudeCodeEnvSignal()).toBe(true)
+        expect(detectHarness()).toBe('hermes')
+      })
     })
 
     describe('TOKEN_GOAT_HARNESS_OVERRIDE', () => {
