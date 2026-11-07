@@ -119,11 +119,11 @@ Paths go in relative to the working directory; `waste` prints absolute ones, so 
 ## Anti-Paging Trap
 
 If `[tg]` denies a whole-file or line-range Read/view, or warns that more than 80% of the file is indexed, immediately stop calling Read/view on that file. Never retry with a smaller, shifted, or resized `view_range`: repeated attempts create a denial loop. Switch to a token-goat command instead, including when editing a denied file.
-Use the one surgical command that fits:
-- Definition → `token-goat read "file::symbol"`.
-- Denied window → `token-goat read "file@start-end"`.
+Run the exact token-goat command named by the denial first. Otherwise use the one surgical command that fits:
+- Definition → `token-goat read "file" "symbol"`.
+- Denied window → `token-goat read "file" "start-end"`.
 - Structure → `token-goat skeleton <file>` (or `outline`).
-- Text excerpt → `token-goat grep "<pattern>" "file" -C 15 --symbol`.
+- Text excerpt → `token-goat grep "<pattern>" <file> -C 15 --symbol`.
 - Markdown heading → `token-goat section "file" "Heading"`.
 - Surgical edit → `token-goat replace "file" --old-b64 ... --new-b64 ...`.
 
