@@ -13,16 +13,17 @@ import { resolveProjectRoot, getDisplayRoot } from './project.js'
 import { isVirtualIndexedPath, NOTEBOOK_CELL_LINES_SUFFIX } from './indexed_source.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 
-import { indexFileSyncPinned, healStaleIndex, staleWarning, guardText, fileIsGone, indexFreshness, recordReadStat, recordStaleServed, guardJsonRows, sumFileSizes } from './read_commands.js'
+import { indexFileSyncPinned, healStaleIndex, staleWarning, guardText, fileIsGone, indexFreshness, recordReadStat, recordStaleServed, guardJsonRows, resolveBody, sumFileSizes } from './read_commands.js'
 import { noSymbolsMessage, formatStatsSuffix, hasRealDocstring } from './read_meta.js'
 import { firstBodyLine } from './read_suggest.js'
 import { parseMultiFileSpec, fileConfinementRefusal } from './read_spec.js'
+import { extractSignature } from './read_signature.js'
 
 export interface SkeletonOptions {
   file: string
   json?: boolean
   minLines?: number
-  /** Only list symbols whose NAME matches this pattern. Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
+  /** Match symbol names, plus Java declaration signatures (including annotations). Regex, falling back to a literal substring match when it does not compile -- see compileGrepMatcher. */
   grep?: string
   /** Internal. Set only by the multi-file path, where several files merge into one payload and each row needs to name its own file. Single-file callers already know the file they asked for, and every extra field per row costs rows under the byte cap. */
   includeFilePath?: boolean
@@ -96,9 +97,13 @@ export function prepareSymbolListing(
     healStaleIndex(resolved)
   }
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-  const matches = (s: SymbolEntry): boolean =>
-    (opts.minLines === undefined || s.lineEnd - s.lineStart + 1 >= opts.minLines) &&
-    (matchesGrep === undefined || matchesGrep(s.name))
+  const matches = (s: SymbolEntry): boolean => {
+    if (opts.minLines !== undefined && s.lineEnd - s.lineStart + 1 < opts.minLines) return false
+    if (matchesGrep === undefined || matchesGrep(s.name)) return true
+    if (!s.filePath.toLowerCase().endsWith('.java')) return false
+    const body = s.body === '' ? resolveBody(s) : s.body
+    return matchesGrep(extractSignature(body, s.kind, s.filePath))
+  }
 
   // Page the scan rather than filtering one capped window: `--grep` compiles to a JS matcher (a guarded regex, or a substring fallback when the pattern is refused), so no SQL clause can express it, and applying it after `LIMIT SKELETON_SYMBOL_CAP` meant a symbol past the 5000th in source order was cut before the predicate ever saw it -- an empty result byte-identical to an honest no-match, under a notice blaming a filter that never ran. The cap now bounds the *matches* and stops the walk as soon as it has that many, so the common case still costs one query. There is deliberately no second cap on how far the walk may go: `isParseSkipEligible` already refuses to index a file larger than `indexing.large_file_skip_kb`, which bounds how many symbols one file can contribute, and peak memory here is one page plus the matches either way, since bodies for non-matching rows are dropped with the page.
   const filtered: SymbolEntry[] = []

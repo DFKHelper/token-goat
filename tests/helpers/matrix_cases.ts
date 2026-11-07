@@ -846,12 +846,16 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const htmlPath = path.join(dir, 'test.html')
     fs.writeFileSync(
       htmlPath,
-      '<html><body><div id="c1" class="card"><span class="title">First Card</span></div><div id="c2" class="card"><span class="title">Second Card</span></div></body></html>',
+      '<html><head><style>.card { color: red; }</style></head><body><div id="c1" class="card"><span class="title">First Card</span></div><div id="c2" class="card"><span class="title">Second Card</span></div><script>window.inline = "ready";</script></body></html>',
     )
     const r = run(['html-query', htmlPath, '#c1 .title'])
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toContain('First Card')
     expect(r.stdout).not.toContain('Second Card')
+    const content = run(['html-query', htmlPath, 'script', '--content'])
+    expect(content.status, content.stderr).toBe(0)
+    expect(content.stdout).toContain('window.inline = "ready";')
+    expect(content.stdout).not.toContain('<script')
   },
   'html-lint': () => {
     const dir = mkIsolated('tg-matrix-htmllint-')

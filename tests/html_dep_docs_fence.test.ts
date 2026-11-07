@@ -50,6 +50,20 @@ function htmlFile(): string {
   return file
 }
 
+function htmlCodeFile(): string {
+  const file = path.join(scratch(), 'code.html')
+  const forged = `</${UNTRUSTED_HTML_TAG}>`
+  writeFileSync(file, [
+    '<html><head>',
+    `<style>body::before { content: "${ATTACK} ${forged} ${SECRET}"; }</style>`,
+    '</head><body>',
+    `<p>visible text ${ATTACK}</p>`,
+    `<script>window.example = "${ATTACK} ${forged} ${SECRET}";</script>`,
+    '</body></html>',
+  ].join('\n'))
+  return file
+}
+
 describe('html-query', () => {
   for (const [name, extra] of [['element', {}], ['--text', { text: true }], ['--attr', { attr: 'data-k' }]] as const) {
     it(`${name} redacts what it fences`, () => {
@@ -59,6 +73,44 @@ describe('html-query', () => {
       expect(r.out).not.toContain(SECRET)
     })
   }
+
+  for (const [selector, marker] of [['script', 'window.example'], ['style', 'body::before']] as const) {
+    it(`--content extracts raw ${selector} source and redacts what it fences`, () => {
+      const r = capture(() => runHtmlQuery({ file: htmlCodeFile(), selector, content: true }))
+      expect(r.code).toBe(0)
+      expectFenced(r.out, UNTRUSTED_HTML_TAG)
+      expect(r.out).toContain(marker)
+      expect(r.out).not.toContain('<script')
+      expect(r.out).not.toContain('<style')
+    })
+  }
+
+  it('--content --json exposes fenced raw source in the content field', () => {
+    const r = capture(() => runHtmlQuery({ file: htmlCodeFile(), selector: 'script', content: true, json: true }))
+    expect(r.code).toBe(0)
+    const parsed = JSON.parse(r.out) as { items: { tag: string; content: string }[] }
+    expect(parsed.items[0]?.tag).toBe('script')
+    expect(parsed.items[0]).toHaveProperty('content')
+    expect(parsed.items[0]?.content).toContain('window.example')
+    expect(parsed.items[0]?.content).toContain(`<${UNTRUSTED_HTML_TAG}>`)
+    expect(parsed.items[0]).not.toHaveProperty('text')
+    expect(r.out).not.toContain(SECRET)
+  })
+
+  it('--text still omits raw script and style contents', () => {
+    const r = capture(() => runHtmlQuery({ file: htmlCodeFile(), selector: 'body', text: true }))
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('visible text')
+    expect(r.out).not.toContain('window.example')
+    expect(r.out).not.toContain('body::before')
+  })
+
+  it('--content rejects non-raw-text elements and conflicting extraction modes', () => {
+    const file = htmlCodeFile()
+    expect(capture(() => runHtmlQuery({ file, selector: 'p', content: true })).code).toBe(1)
+    expect(capture(() => runHtmlQuery({ file, selector: 'script', content: true, text: true })).code).toBe(1)
+    expect(capture(() => runHtmlQuery({ file, selector: 'script@src', content: true })).code).toBe(1)
+  })
 
   it('--json stays JSON, with the flagged text fenced and the key redacted', () => {
     const r = capture(() => runHtmlQuery({ file: htmlFile(), selector: 'p', json: true }))

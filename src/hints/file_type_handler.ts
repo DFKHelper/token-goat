@@ -77,10 +77,16 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.html) return { shouldBlock: false, message: '' }
 
+  const quotedPath = quotedArg(displaySafePath(filePath))
+  const htmlQueryHints =
+    `Use ${fencedCommand(`token-goat html-outline ${quotedPath}`)} for structure, or extract inline JavaScript ` +
+    `with ${fencedCommand(`token-goat html-query ${quotedPath} script --content`)}, or CSS with ` +
+    `${fencedCommand(`token-goat html-query ${quotedPath} style --content`)}`
+
   if (previewUnavailable(content, length)) {
     return {
       shouldBlock: true,
-      message: `Large HTML file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap). Use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedArg(displaySafePath(filePath))} -t plain`,
+      message: `Large HTML file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap). ${htmlQueryHints}, or use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedPath} -t plain`,
     }
   }
 
@@ -99,7 +105,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
   if (isMinified) {
     return {
       shouldBlock: true,
-      message: `HTML file appears minified (${formatBytes(length)}). Consider fetching the source or converting with: pandoc ${quotedArg(displaySafePath(filePath))} -t plain`,
+      message: `HTML file appears minified (${formatBytes(length)}). ${htmlQueryHints}. Consider fetching the source or converting with: pandoc ${quotedPath} -t plain`,
     }
   }
 
@@ -115,7 +121,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
               .join('\n'),
           )
         : '',
-      `Use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedArg(displaySafePath(filePath))} -t plain`,
+      `${htmlQueryHints}, or use token-goat section to extract a section by heading, or convert to text: pandoc ${quotedPath} -t plain`,
     ].filter(Boolean).join('\n'),
   }
 }

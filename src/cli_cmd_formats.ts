@@ -551,6 +551,7 @@ export function registerFormatCommands(program: Command, guard: GuardFn): void {
     .option('--json', 'emit the result as JSON instead of text')
     .option('--text', 'extract only the inner text of matching elements')
     .option('--attr <name>', 'extract the value of the specified attribute')
+    .option('--content', 'extract raw source from matching script or style elements')
     .action(guard(cmdHtmlQuery))
 
   program

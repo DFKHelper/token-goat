@@ -42,6 +42,7 @@
     ["src/db_integrity.ts","Storage and Database"],
     ["src/index_reader.ts","Storage and Database"],
     ["src/section_reader.ts","Storage and Database"],
+    ["src/section_regions.ts","Storage and Database"],
     ["src/stats.ts","Storage and Database"],
     ["src/stats_report.ts","Storage and Database"],
     ["src/embed_backfill.ts","Embeddings and Semantic Search"],
