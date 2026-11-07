@@ -81,6 +81,8 @@ describe('quotedArg', () => {
 // HAND-DERIVED: the paths name what a shell rewrites inside double quotes; the placeholders and key names are the ones the templates print. A `$name` path keeps its command single-quoted; a backtick closes the fence around the command and `$(` runs a command if a retyped suggestion loses its quotes, so those two lose the command and keep the sentence.
 const METACHAR_PATHS = ['src/a$b.ts']
 const FENCE_BREAKING_PATHS = ['src/a`b.ts', 'src/a$(id).ts']
+/** The name arguments the templates print in double quotes (quotedArg double-quotes a name holding no $). */
+const QUOTED_NAMES = ['Install', 'parseFile', 'SymbolName']
 
 /** `text` as relay.ts passes it on, checked to have lost its command but kept the sentence before it. */
 function expectCommandDropped(text: string, name: string, p: string): void {
@@ -156,9 +158,9 @@ describe('deny and hint templates around a path holding $ or a backtick, as rela
   it.each(METACHAR_PATHS)('keeps every command for %s', (p) => {
     for (const [name, text] of templates(p)) {
       expect.soft(stripUnsafeSuggestions(text), name).toBe(text)
-      // The name argument may be double-quoted (it holds no $); the path may not sit beside a double quote.
-      expect.soft(text, name).not.toContain(`"${p}`)
-      expect.soft(text, name).not.toContain(`${p}"`)
+      // Only a name argument may be double-quoted: strip those, and no other double quote may remain.
+      const outsideNames = QUOTED_NAMES.reduce((rest, n) => rest.split(`"${n}"`).join(''), text)
+      expect.soft(outsideNames, name).not.toContain('"')
     }
   })
 
