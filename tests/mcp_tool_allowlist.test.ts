@@ -5,13 +5,16 @@ import * as path from 'node:path'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ALL_MCP_TOOLS, ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+import { neutralizeMcpHarnessSignals } from './helpers/mcp_test_harness.js'
 
 const { createMcpServer, DEFAULT_MCP_TOOLS } = await import('../src/mcp_server.js')
 
 const ENV_KEY = 'TOKEN_GOAT_MCP_TOOLS'
+beforeEach(neutralizeMcpHarnessSignals)
+afterEach(() => vi.unstubAllEnvs())
 /** Every tool the default list leaves out, derived so a tool added to the server or dropped from the default is covered without editing this file. */
 const OPT_IN_TOOLS: readonly string[] = ALL_MCP_TOOLS.filter((t) => !DEFAULT_MCP_TOOLS.includes(t))
 /** Captured once, so a value inherited from the surrounding environment is restored rather than deleted. */
