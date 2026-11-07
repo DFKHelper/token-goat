@@ -318,8 +318,7 @@ function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstal
   // Checked before the MCP step, which is the first write and makes the Copilot home when there is none.
   const scopeDir = path.dirname(instructionsPath)
   const scopeDirExisted = fs.existsSync(scopeDir)
-  // Copilot CLI has native hooks available, so token-goat does not load or install MCP for it.
-  // If an MCP entry was previously installed, remove it so Copilot CLI uses hooks instead of MCP.
+  // Copilot CLI has native hooks available, so token-goat does not load or install MCP for it. If an MCP entry was previously installed, remove it so Copilot CLI uses hooks instead of MCP.
   const mcpChanged = userScope && isCopilotMcpServerInstalled() ? uninstallCopilotMcpServer() : false
   if (!scopeDirExisted && fs.existsSync(scopeDir)) recordCreatedConfig(scopeDir)
   const { hooks, instructionsChanged: scopeInstructionsChanged } = syncCopilotHooksAndInstructions(opts)

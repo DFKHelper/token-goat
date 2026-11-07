@@ -813,11 +813,19 @@ describe('process behaviour', () => {
 
   it('usage errors exit 2 without running anything', () => {
     const runs = fallbackRuns()
-    for (const args of [[], ['--harness', 'claudecode'], ['--']]) {
+    for (const args of [['--harness', 'claudecode'], ['--']]) {
       const res = spawnSync(bin, args, { cwd: sb.proj, env: sb.env, input: '{}', encoding: 'utf8' })
       expect(res.status, JSON.stringify(args)).toBe(2)
       expect(res.stderr).toMatch(/usage: tg-hook/)
     }
+    expect(fallbackRuns()).toBe(runs)
+  })
+
+  it('an empty argv passes through as the no-op response without running anything', () => {
+    const runs = fallbackRuns()
+    const res = spawnSync(bin, [], { cwd: sb.proj, env: sb.env, input: '{}', encoding: 'utf8' })
+    expect(res.status).toBe(0)
+    expect(res.stdout.trim()).toBe('{}')
     expect(fallbackRuns()).toBe(runs)
   })
 
