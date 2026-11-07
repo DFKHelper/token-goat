@@ -4299,7 +4299,7 @@ describe('preBashHandler — powershell-wrapped Get-Content recall (wiring)', ()
     const result = preBashHandler(makeBashEvent(`pwsh -c "gc README.md"`))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat section "README.md::')
+      expect(result.message).toContain('token-goat section "README.md" "')
     }
   })
 })
@@ -5218,7 +5218,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat docs/loop46_memory.md 2>/dev/null'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('Run `token-goat section "docs/loop46_memory.md::SectionHeading"` to read one section, or `token-goat outline "docs/loop46_memory.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
+      expect(result.context).toBe('Run `token-goat section "docs/loop46_memory.md" "SectionHeading"` to read one section, or `token-goat outline "docs/loop46_memory.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -5242,7 +5242,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat -n README_loop46.md 2>/dev/null | tail -60'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('Run `token-goat section "README_loop46.md::SectionHeading"` to read one section, or `token-goat outline "README_loop46.md"` for every heading with line ranges.\n`tail` bypasses read hooks.')
+      expect(result.context).toBe('Run `token-goat section "README_loop46.md" "SectionHeading"` to read one section, or `token-goat outline "README_loop46.md"` for every heading with line ranges.\n`tail` bypasses read hooks.')
     }
   })
 
@@ -5441,7 +5441,7 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
   it('denies a doc .NET file read with section hint', () => {
     const result = preBashHandler(makeBashEvent(`[IO.File]::ReadAllText('README.md')`))
     expect(interceptedReadHint(result)).not.toBeNull()
-    expect(interceptedReadHint(result)).toContain('token-goat section "README.md::')
+    expect(interceptedReadHint(result)).toContain('token-goat section "README.md" "')
   })
 
   it('emits advisory contextOutput for SQL .NET file read', () => {

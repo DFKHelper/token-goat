@@ -45,9 +45,9 @@ function firstCommand(text: string): string {
 
 /** Runs a printed `token-goat <verb> "<arg>"` command through the built bundle, taking the one quoted argument as written. */
 function runPrinted(command: string): { status: number | null; stdout: string; stderr: string } {
-  const m = /^token-goat (\S+) "([^"]+)"$/.exec(command)
+  const m = /^token-goat (\S+) "([^"]+)" "([^"]+)"$/.exec(command)
   if (m === null) throw new Error('unexpected command shape: ' + command)
-  const res = spawnSync(process.execPath, [BUNDLE, m[1] ?? '', m[2] ?? ''], { encoding: 'utf8', cwd: dir })
+  const res = spawnSync(process.execPath, [BUNDLE, m[1] ?? '', m[2] ?? '', m[3] ?? ''], { encoding: 'utf8', cwd: dir })
   return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' }
 }
 
@@ -61,7 +61,7 @@ describe('the section hint for a file with no headings', () => {
     const context = out.hookType === 'context' ? out.context : ''
     expect(context).not.toContain('HeadingName')
     const command = firstCommand(context)
-    expect(command).toContain('::1-80')
+    expect(command).toContain('"1-80"')
     const ran = runPrinted(command)
     expect(ran.status, ran.stderr).toBe(0)
     expect(ran.stdout).toContain('A line of plain notes')
@@ -85,7 +85,7 @@ describe('the section hint for a file with no headings', () => {
   })
 
   it('a real heading still gets the section command', () => {
-    expect(sectionOrRangeCommand('notes.md', { name: 'Install', real: true, slice: 'section' })).toBe('token-goat section "notes.md::Install"')
-    expect(sectionOrRangeCommand('notes.md', { name: 'SectionHeading', real: false, slice: 'section' })).toBe('token-goat read "notes.md::1-80"')
+    expect(sectionOrRangeCommand('notes.md', { name: 'Install', real: true, slice: 'section' })).toBe('token-goat section "notes.md" "Install"')
+    expect(sectionOrRangeCommand('notes.md', { name: 'SectionHeading', real: false, slice: 'section' })).toBe('token-goat read "notes.md" "1-80"')
   })
 })

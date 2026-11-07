@@ -31,7 +31,7 @@ describe('a single-quoted path holding a double quote', () => {
 
   it('survives the guard byte-identical in the section hint', () => {
     const hint = docSectionHint(p, 'Install', 'Read loads the whole file.')
-    expect(hint).toContain(`token-goat section 'docs/a"b.md::Install'`)
+    expect(hint).toContain(`token-goat section 'docs/a"b.md' "Install"`)
     expect(stripUnsafeSuggestions(hint)).toBe(hint)
   })
 
@@ -39,7 +39,7 @@ describe('a single-quoted path holding a double quote', () => {
     const reason = await relayedCatReason(p, 'dq')
     expect(reason).not.toContain('command omitted')
     const commands = fencedCommands(reason)
-    expect(commands).toEqual([`token-goat section 'docs/a"b.md::SectionHeading'`, `token-goat outline 'docs/a"b.md'`])
+    expect(commands).toEqual([`token-goat section 'docs/a"b.md' "SectionHeading"`, `token-goat outline 'docs/a"b.md'`])
     if (SH !== null) expect(shArgv(SH, commands[1]!)).toEqual(['outline', p])
   })
 
@@ -117,9 +117,9 @@ describe('quotable', () => {
     expect(hintTarget('f.json', 'key', { content: '{"$schema": "x", "ok": 2}\n' })).toMatchObject({ name: '$schema', real: true })
     expect(hintTarget('d.md', 'section', { content: '## Cost $5\n\n## Usage\n' })).toMatchObject({ name: 'Cost $5', real: true })
     const hint = docSectionHint('docs/a.md', 'Cost $5', 'Read loads the whole file.')
-    expect(hint).toContain("token-goat section 'docs/a.md::Cost $5'")
+    expect(hint).toContain(`token-goat section "docs/a.md" 'Cost $5'`)
     expect(stripUnsafeSuggestions(hint)).toBe(hint)
-    if (SH !== null) expect(shArgv(SH, "token-goat section 'docs/a.md::Cost $5'")).toEqual(['section', 'docs/a.md::Cost $5'])
+    if (SH !== null) expect(shArgv(SH, `token-goat section "docs/a.md" 'Cost $5'`)).toEqual(['section', 'docs/a.md', 'Cost $5'])
   })
 
   it('still refuses a name holding a backtick, which ends the fence whatever quotes it', () => {

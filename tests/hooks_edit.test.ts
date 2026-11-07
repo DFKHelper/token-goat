@@ -123,7 +123,7 @@ describe('postEditHandler', () => {
       expect(result.context).toContain('README.md')
       expect(result.context).toContain('was edited')
       expect(result.context).toContain('token-goat read')
-      expect(result.context).toContain('::1-80')
+      expect(result.context).toContain('"1-80"')
     }
   })
 
@@ -208,7 +208,7 @@ describe('postEditHandler', () => {
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       // HAND-DERIVED: single quotes hold a `"` literally in bash and PowerShell, so the emitted `token-goat read` command stays one argument instead of the raw quote breaking out of a double-quoted one; a backslash escape is not one PowerShell reads.
-      expect(result.context).toContain(`token-goat read '/project/say "hi"/README.md::1-80'`)
+      expect(result.context).toContain(`token-goat read '/project/say "hi"/README.md' "1-80"`)
       expect(result.context).not.toContain('"/project/say')
       expect(result.context).not.toContain('\\"')
     }

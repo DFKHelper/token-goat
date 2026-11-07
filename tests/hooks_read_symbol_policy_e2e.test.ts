@@ -85,7 +85,8 @@ describe('first-read symbol policy on a really indexed file', () => {
     if (out.hookType !== 'deny') return
     expect(out.message).toContain('Whole-file first read denied by first_read_symbol_policy')
     expect(out.message).toContain('1200 indexed symbols')
-    expect(out.message).toContain('::alphaEntry0')
+    // provenance: CAPTURE, built-tree emitter output observed fix1e 2026-11-05
+    expect(out.message).toMatch(/Run `token-goat read "[^"]*" "alphaEntry0"` to read surgically\./)
   })
 
   it('allows a retried whole-file read through the circuit breaker in the same session', () => {
@@ -150,7 +151,8 @@ describe('first-read symbol policy on a really indexed file', () => {
     expect(out.hookType).toBe('deny')
     if (out.hookType !== 'deny') return
     const relayed = stripUnsafeSuggestions(out.message)
-    expect(relayed).toMatch(/Run `token-goat read '[^']*gen\$big\.ts::alphaEntry0'` to read surgically\./)
+    // provenance: CAPTURE, built-tree emitter output observed fix1e 2026-11-05
+    expect(relayed).toMatch(/Run `token-goat read '[^']*gen\$big\.ts' "alphaEntry0"` to read surgically\./)
     expect(relayed).toContain('Whole-file first read denied by first_read_symbol_policy')
     expect(relayed).toMatch(/`token-goat outline '[^']*gen\$big\.ts'`/)
     expect(relayed).toMatch(/`token-goat skeleton '[^']*gen\$big\.ts'`/)

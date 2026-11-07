@@ -505,7 +505,7 @@ describe('preGrepHandler — single-file structural searches', () => {
     const result = preGrepHandler(event)
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat section "docs/arch.md::SectionHeading"')
+      expect(result.context).toContain('token-goat section "docs/arch.md" "SectionHeading"')
       expect(result.context).toContain('token-goat outline "docs/arch.md"')
     }
   })

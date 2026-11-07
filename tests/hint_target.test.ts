@@ -154,15 +154,15 @@ describe('hintTarget names what the file holds', () => {
 describe('sliceCommand prints the command each slice runs through', () => {
   const t = (name: string, slice: HintTarget['slice']): HintTarget => ({ name, real: true, slice })
   it.each([
-    ['doc.md', t('Install', 'section'), 'token-goat section "doc.md::Install"'],
-    ['cfg.toml', t('server', 'section'), 'token-goat section "cfg.toml::server"'],
+    ['doc.md', t('Install', 'section'), 'token-goat section "doc.md" "Install"'],
+    ['cfg.toml', t('server', 'section'), 'token-goat section "cfg.toml" "server"'],
     ['conf.json', t('alpha', 'key'), 'token-goat json-query "conf.json" "alpha"'],
     ['conf.json', t('a.b', 'key'), `token-goat json-query "conf.json" "['a.b']"`],
     ['conf.json', t("it's", 'key'), 'token-goat json-outline "conf.json"'],
     ['ci.yaml', t('jobs', 'key'), 'token-goat yaml-query "ci.yaml" "jobs"'],
     ['.env', t('PORT', 'key'), 'token-goat config-get ".env" "PORT"'],
-    ['schema.sql', t('users', 'table'), 'token-goat read "schema.sql::users"'],
-    ['mod.ts', t('parseConfig', 'symbol'), 'token-goat read "mod.ts::parseConfig"'],
+    ['schema.sql', t('users', 'table'), 'token-goat read "schema.sql" "users"'],
+    ['mod.ts', t('parseConfig', 'symbol'), 'token-goat read "mod.ts" "parseConfig"'],
   ] as const)('%s %s', (shown, target, expected) => {
     expect(sliceCommand(shown, target)).toBe(expected)
     const hint = leadWithCommand(expected, 'to read it', 'Why the hook spoke.')
@@ -215,9 +215,9 @@ describe('a repeated identical deny, through the real relay', () => {
     const session = uniq('repeat')
     const first = denyOf(await relayInProcess('pre_tool_use', catPre(session, 'guide.md')))
     const second = denyOf(await relayInProcess('pre_tool_use', catPre(session, 'guide.md')))
-    expect(first).toContain('token-goat section "guide.md::Install"')
+    expect(first).toContain('token-goat section "guide.md" "Install"')
     expect(first).toContain('`cat` loads the entire file into context.')
-    expect(second).toBe('[tg] Run `token-goat section "guide.md::Install"` instead. Repeat refusal of this exact call; the earlier refusal this session has the full reason.')
+    expect(second).toBe('[tg] Run `token-goat section "guide.md" "Install"` instead. Repeat refusal of this exact call; the earlier refusal this session has the full reason.')
     expect(second.length).toBeLessThan(first.length)
     // Another session never saw the first copy, so it gets the full text, even from this same process, whose in-memory session state loadSessionState leaves in place for a session with nothing on disk yet.
     const other = denyOf(await relayInProcess('pre_tool_use', catPre(uniq('repeat'), 'guide.md')))
@@ -273,8 +273,8 @@ interface Site {
 const SITES: Site[] = [
   {
     name: 'hooks_bash.ts cat deny',
-    real: (h) => 'Run `token-goat section "guide.md::' + h + '"`',
-    fallback: 'Run `token-goat section "guide.md::SectionHeading"`',
+    real: (h) => 'Run `token-goat section "guide.md" "' + h + '"`',
+    fallback: 'Run `token-goat section "guide.md" "SectionHeading"`',
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {
@@ -300,7 +300,7 @@ const SITES: Site[] = [
   },
   {
     name: 'hooks_read_slice.ts truncated-read deny',
-    real: (h) => '::' + h + '"` for one part',
+    real: (h) => '" "' + h + '"` for one part',
     fallback: 'Run `token-goat skeleton "',
     guarded: true,
     fallbackHeadings: [],
@@ -308,8 +308,8 @@ const SITES: Site[] = [
   },
   {
     name: 'hooks_grep.ts structural heading search',
-    real: (h) => 'Run `token-goat section "guide.md::' + h + '"`',
-    fallback: 'Run `token-goat section "guide.md::SectionHeading"`',
+    real: (h) => 'Run `token-goat section "guide.md" "' + h + '"`',
+    fallback: 'Run `token-goat section "guide.md" "SectionHeading"`',
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {
@@ -321,8 +321,8 @@ const SITES: Site[] = [
   },
   {
     name: 'hooks_edit.ts post-edit hint',
-    real: (h) => '::' + h + '"` to re-read a specific section',
-    fallback: '::1-80"` to re-read a specific section',
+    real: (h) => '" "' + h + '"` to re-read a specific section',
+    fallback: '" "1-80"` to re-read a specific section',
     guarded: true,
     fallbackHeadings: [],
     run: async (headings) => {

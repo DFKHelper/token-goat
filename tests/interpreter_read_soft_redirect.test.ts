@@ -51,7 +51,7 @@ describe('inline interpreter file reads run capped instead of refused', () => {
 
   it('wraps node readFileSync and PowerShell ReadAllText reads the same way', () => {
     expect(capHint(wrapped(preBashHandler(bashEvent(`node -e "console.log(require('fs').readFileSync('src/cli.ts','utf8').length)"`))))).toContain('token-goat outline "src/cli.ts"')
-    expect(capHint(wrapped(preBashHandler(bashEvent(`powershell -Command "[IO.File]::ReadAllText('README.md')"`))))).toContain('token-goat section "README.md::')
+    expect(capHint(wrapped(preBashHandler(bashEvent(`powershell -Command "[IO.File]::ReadAllText('README.md')"`))))).toContain('token-goat section "README.md" "')
   })
 
   it('refuses with the full message when compression is off, so the wrapper cannot run', () => {

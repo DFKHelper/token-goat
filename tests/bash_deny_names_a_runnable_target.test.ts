@@ -133,12 +133,12 @@ describe('hintTarget for a symbol a Grep pattern names', () => {
 describe('surgicalHintFor with a resolved target', () => {
   it('leads with the real heading for a doc, and still offers outline for the rest', () => {
     const hint = surgicalHintFor('doc.md', false, false, true, false, real('First Heading', 'section'), '`cat` loads the entire file into context.')
-    expect(hint).toBe('Run `token-goat section "doc.md::First Heading"` to read one section, or `token-goat outline "doc.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
+    expect(hint).toBe('Run `token-goat section "doc.md" "First Heading"` to read one section, or `token-goat outline "doc.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
   })
 
   it('keeps the placeholder name when no target could be resolved', () => {
     const hint = surgicalHintFor('doc.md', false, false, true, false, none('section', 'SectionHeading'))
-    expect(hint).toBe('Run `token-goat section "doc.md::SectionHeading"` to read one section, or `token-goat outline "doc.md"` for every heading with line ranges.')
+    expect(hint).toBe('Run `token-goat section "doc.md" "SectionHeading"` to read one section, or `token-goat outline "doc.md"` for every heading with line ranges.')
     expect(PLACEHOLDER_SECTION_FAILS).toContain('not found')
   })
 
@@ -397,7 +397,7 @@ describe('the commands a deny names run against the file', () => {
       fs.writeFileSync(path.join(proj, 'big.md'), count(120).map((i) => `## Heading ${i}\n\n${'prose line for padding the section out\n'.repeat(4)}\n`).join(''), 'utf8')
       indexProject()
       const commands = namedCommands(hook('Grep', { pattern, path: 'big.md' }))
-      expect(commands[0]).toBe('token-goat section "big.md::' + heading + '"')
+      expect(commands[0]).toBe('token-goat section "big.md" "' + heading + '"')
       expect(run(commands[0]!).status).toBe(0)
     })
 

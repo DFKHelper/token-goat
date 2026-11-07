@@ -311,7 +311,7 @@ const ANCHORS: Record<string, { stdout: string | RegExp; exit?: number }> = {
   'copilot_cli|bash deny with toolArgs as a JSON string': { stdout: /^\{"permissionDecision":"deny"/ },
   'copilot_cli|the same bash failure twice (repeat notice)': { stdout: /^\{"additionalContext":"\[token-goat\] Bash just failed with the same error/ },
   'copilot_cli|edit failure (old_str not found)': { stdout: /^\{"additionalContext":"\[token-goat\] Edit failed: string not found in notes\.md/ },
-  'copilot_cli|view, remapped to Read with path to file_path': { stdout: /notes\.md::/ },
+  'copilot_cli|view, remapped to Read with path to file_path': { stdout: /notes\.md\\" \\"/ },
   'copilot_cli|agent stop': { stdout: '{"decision":"allow"}' },
   'copilot_cli|subagent stop with a long report': { stdout: /^\{"modifiedResponse":"Here is what I found\.\\n```\\ngate output line 0/ },
   'copilot_cli|subagent start': { stdout: /^\{"additionalContext":"## Session briefing/ },

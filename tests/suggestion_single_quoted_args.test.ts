@@ -156,7 +156,9 @@ describe('deny and hint templates around a path holding $ or a backtick, as rela
   it.each(METACHAR_PATHS)('keeps every command for %s', (p) => {
     for (const [name, text] of templates(p)) {
       expect.soft(stripUnsafeSuggestions(text), name).toBe(text)
-      expect.soft(text, name).not.toContain('"')
+      // The name argument may be double-quoted (it holds no $); the path may not sit beside a double quote.
+      expect.soft(text, name).not.toContain(`"${p}`)
+      expect.soft(text, name).not.toContain(`${p}"`)
     }
   })
 
