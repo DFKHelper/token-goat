@@ -8,7 +8,7 @@ import { runAdapter } from '../src/hook_adapters.js'
 import { runHook } from '../src/hook_registry.js'
 import { recordBashOutput, MAX_OUTSTANDING_AGENT_SPAWNS, getOutstandingAgentSpawns, importSessionState } from '../src/session.js'
 import { storeBashOutput, getBashOutput } from '../src/bash_output_cache.js'
-import { getMcpOutput } from '../src/mcp_cache.js'
+import { getMcpOutput, mcpHash, mcpOutputId } from '../src/mcp_cache.js'
 import { summarize } from '../src/stats.js'
 import { _resetDataDirCacheForTesting, dataDirForHome } from '../src/constants.js'
 import { loadSessionState, saveSessionState } from '../src/session_store.js'
@@ -468,6 +468,70 @@ describe('postAgentHandler — outlier-large subagent report caching (real runHo
     expect(getMcpOutput(sessionId, 'Agent', input)).toBeNull()
     expect(JSON.stringify(result)).not.toMatch(/mcp-output mcp_[0-9a-f]{16}/)
     expect(result.hookType).toBe('pass')
+  })
+
+  it("does not cache a background spawn's plain-text launch acknowledgement (the text form returned when the result is not JSON)", async () => {
+    const input = { description: 'bg', prompt: 'You are task T2. '.concat('research things. '.repeat(600)), run_in_background: true }
+    const ack = `Async agent launched successfully. (This tool result is internal metadata, not the report.)\nagentId: aa26df86eaba19d7a (internal ID)\nThe agent is working in the background. You will be notified automatically when it completes.\nprompt: ${input.prompt}`
+    const result = await runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: input, session_id: sessionId, tool_response: ack }))
+    expect(getMcpOutput(sessionId, 'Agent', input)).toBeNull()
+    expect(result.hookType).toBe('pass')
+  })
+
+  it('caches a long plain-text report that quotes both ack markers near its start (regression: the head-only text fallback read it as a launch ack and never cached it)', async () => {
+    const report = 'Reviewed the launcher: it returns {"isAsync": true, "status": "async_launched"} for background spawns.\n' + 'Detailed finding line.\n'.repeat(400)
+    const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      const m = /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(result.context)
+      expect(m).not.toBeNull()
+      expect(getBashOutput(m![1] as string)?.output).toBe(report)
+    }
+  })
+
+  it('gives two spawns with identical input but different tool_use_id their own cached reports (regression: the id hashed only tool name and input, so the second report overwrote the first)', async () => {
+    const reportA = 'Report A line.\n'.repeat(700)
+    const reportB = 'Report B line.\n'.repeat(700)
+    const payloadFor = (toolUseId: string, report: string): Record<string, unknown> => ({ tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_use_id: toolUseId, tool_response: report })
+    const idFrom = (context: string): string | undefined => /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(context)?.[1]
+    const a = await runHook(buildEvent('post_tool_use', payloadFor('toolu_A1', reportA)))
+    const b = await runHook(buildEvent('post_tool_use', payloadFor('toolu_B2', reportB)))
+    expect(a.hookType).toBe('context')
+    expect(b.hookType).toBe('context')
+    const idA = a.hookType === 'context' ? idFrom(a.context) : undefined
+    const idB = b.hookType === 'context' ? idFrom(b.context) : undefined
+    expect(idA).toBeDefined()
+    expect(idB).toBeDefined()
+    expect(idB).not.toBe(idA)
+    expect(getBashOutput(idA as string)?.output).toBe(reportA)
+    expect(getBashOutput(idB as string)?.output).toBe(reportB)
+  })
+
+  it('keeps the recall id of a spawn with no tool_use_id identical to the id from its tool name and input alone (characterization: existing recall ids must not move)', async () => {
+    const report = 'Stable report line.\n'.repeat(700)
+    const result = await runHook(buildEvent('post_tool_use', postPayload(report)))
+    expect(result.hookType).toBe('context')
+    const expected = mcpOutputId(sessionId, mcpHash('Agent', toolInput))
+    if (result.hookType === 'context') expect(result.context).toContain(`token-goat mcp-output ${expected} --full`)
+    expect(getBashOutput(expected)?.output).toBe(report)
+  })
+
+  it('keeps an input field named tool_use_id apart from a raw tool_use_id (regression: the spread put both into one hash slot, so an input key of that name collided with a raw id of the same value)', async () => {
+    const keyedInput = { ...toolInput, tool_use_id: 'X' }
+    const fieldReport = 'Field-keyed line.\n'.repeat(700)
+    const rawReport = 'Raw-keyed line.\n'.repeat(700)
+    const idFrom = (context: string): string | undefined => /token-goat mcp-output (mcp_[0-9a-f]{16})/.exec(context)?.[1]
+    const fieldResult = await runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: keyedInput, session_id: sessionId, tool_response: fieldReport }))
+    const rawResult = await runHook(buildEvent('post_tool_use', { tool_name: 'Agent', tool_input: toolInput, session_id: sessionId, tool_use_id: 'X', tool_response: rawReport }))
+    expect(fieldResult.hookType).toBe('context')
+    expect(rawResult.hookType).toBe('context')
+    const idField = fieldResult.hookType === 'context' ? idFrom(fieldResult.context) : undefined
+    const idRaw = rawResult.hookType === 'context' ? idFrom(rawResult.context) : undefined
+    expect(idField).toBeDefined()
+    expect(idRaw).toBeDefined()
+    expect(idRaw).not.toBe(idField)
+    expect(getBashOutput(idField as string)?.output).toBe(fieldReport)
+    expect(getBashOutput(idRaw as string)?.output).toBe(rawReport)
   })
 
   // Positive control: the store assertion above is only meaningful if the same lookup finds a record when one was written.

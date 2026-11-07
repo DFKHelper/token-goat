@@ -1,3 +1,4 @@
+import { isMainModule } from './is-main-module.mjs'
 // The time budget of a pre-push suite leg, and the arithmetic that cuts a priority list to fit it. One place names every number: the budgets, the worker count assumed, the calibration of per-file timings against the real wall clock, and the cost of a file with no timing yet. Pure functions, built-in modules only. Seconds of test wall time a leg may be estimated to take. Lint and typecheck run beside the Windows leg and the WSL leg follows it only when a platform-sensitive path changed, so the two caps sum to TOTAL_BUDGET_S. The guards alone take 114.7 s on Windows and 73.3 s on WSL (measured on the 221-file guard and matrix set), 188 s together, so both caps leave room for tests beyond the guards and the matrix. Override with PREPUSH_BUDGET_S and PREPUSH_WSL_BUDGET_S.
 export const LEG_BUDGET_S = { win: 330, wsl: 160 }
 export const BUDGET_ENV = { win: 'PREPUSH_BUDGET_S', wsl: 'PREPUSH_WSL_BUDGET_S' }
@@ -13,6 +14,20 @@ export const MARGIN_SHARE = 0.1
 export const TOTAL_BUDGET_S = HOOK_LIMIT_S - HOOK_OVERHEAD_S - HOOK_LIMIT_S * MARGIN_SHARE
 // The environment variable run-all-checks.sh sets to the seconds already used when a leg is planned.
 export const ELAPSED_ENV = 'PREPUSH_ELAPSED_S'
+// The environment variable that replaces the hard stop (whole seconds; a value above the default is clamped to it, so it only lowers the stop); tests use a short one.
+export const HARD_STOP_ENV = 'PREPUSH_HARD_STOP_S'
+// Seconds after hook start at which every suite or lint leg still running is ended: the hook limit less the share MARGIN_SHARE holds back (540 s), so the last minute is left for the startup reserve, the TERM wait, the notices and the record.
+export const HARD_STOP_DEFAULT_S = Math.round(HOOK_LIMIT_S * (1 - MARGIN_SHARE))
+// Seconds a stopped leg that is still alive gets after TERM before its tree is ended (cap_term_wait); counted on the hook's own clock, so a slow fork cannot stretch it.
+export const TERM_WAIT_S = 10
+// Seconds kept after the stop, the post-stop allowance and TERM_WAIT_S for the tree kills, the notices, the owed record and the EXIT trap; the hook's last work.
+export const STOP_CLEANUP_S = 20
+// Seconds before $SECONDS starts, which the owner's 10 minutes include: bash start-up and the lefthook launch. Measured at 4.5 to 5.5 s (wall time minus the hook's total= line, real runs), so 10 s covers it with margin.
+export const STARTUP_RESERVE_S = 10
+// The latest hard stop accepted is the default: PREPUSH_HARD_STOP_S may only lower the stop, since the default already leaves exactly the tail room (TERM wait + post-stop + cleanup + startup reserve) that HOOK_LIMIT_S allows.
+export const HARD_STOP_MAX_S = HARD_STOP_DEFAULT_S
+// The environment variable that shortens the post-stop allowance (whole seconds); tests use a short one.
+export const POST_STOP_ENV = 'PREPUSH_POST_STOP_S'
 // Seconds a vitest invocation spends before its first test: the globalSetup bundle build plus worker start.
 export const FIXED_OVERHEAD_S = 45
 // Wall seconds per estimated second, where the estimate is the sum of per-file durations over the workers. Per-file durations are measured inside a contended parallel run and leave out the scheduling gaps between files, so the raw estimate is off by a constant; the evidence for this value is in CALIBRATION_EVIDENCE.
@@ -77,6 +92,31 @@ export function legDeadline(leg, env, nowMs) {
   return { atMs: nowMs + b.seconds * 1000, seconds: b.seconds, source: b.source }
 }
 
+/** @param {Record<string, string | undefined>} env @returns {{seconds: number, source: string}} the hard stop: PREPUSH_HARD_STOP_S when it is a positive whole number (a larger value is clamped to HARD_STOP_DEFAULT_S, since it may only lower the stop), else HARD_STOP_DEFAULT_S; a rejected value is said so in source */
+export function hardStopOf(env) {
+  const raw = env[HARD_STOP_ENV]
+  if (raw === undefined || raw === '') return { seconds: HARD_STOP_DEFAULT_S, source: 'default' }
+  const n = Number(raw)
+  if (!/^[0-9]+$/.test(raw) || !Number.isFinite(n) || n <= 0) {
+    return { seconds: HARD_STOP_DEFAULT_S, source: `default (${HARD_STOP_ENV}=${raw} is not a positive whole number, ignored)` }
+  }
+  if (n > HARD_STOP_MAX_S) return { seconds: HARD_STOP_MAX_S, source: `${HARD_STOP_ENV}=${raw} capped at the ${HARD_STOP_MAX_S} s default, since it may only lower the stop` }
+  return { seconds: n, source: `${HARD_STOP_ENV}=${raw}` }
+}
+
+/** @param {number} stopS the hard stop in seconds, from hardStopOf @param {Record<string, string | undefined>} env @returns {{seconds: number, source: string}} the seconds the legs a stop ended get to exit: what is left of HOOK_LIMIT_S after the stop, less TERM_WAIT_S and STOP_CLEANUP_S, or PREPUSH_POST_STOP_S when that is a positive whole number below it */
+export function postStopOf(stopS, env) {
+  const room = Math.max(0, HOOK_LIMIT_S - stopS - TERM_WAIT_S - STOP_CLEANUP_S - STARTUP_RESERVE_S)
+  const raw = env[POST_STOP_ENV]
+  if (raw === undefined || raw === '') return { seconds: room, source: 'default' }
+  const n = Number(raw)
+  if (!/^[0-9]+$/.test(raw) || !Number.isFinite(n) || n <= 0) {
+    return { seconds: room, source: `default (${POST_STOP_ENV}=${raw} is not a positive whole number, ignored)` }
+  }
+  if (n > room) return { seconds: room, source: `${POST_STOP_ENV}=${raw} capped at ${room} s` }
+  return { seconds: n, source: `${POST_STOP_ENV}=${raw}` }
+}
+
 /** @param {number[]} values @returns {number | null} the arithmetic mean rounded to whole ms, or null for no values */
 function meanOf(values) {
   if (values.length === 0) return null
@@ -113,4 +153,15 @@ export function fillBudget({ fixed, ordered, cost, workers, budgetS }) {
   const deferred = ordered.slice(i)
   const deferredMs = deferred.reduce((sum, f) => sum + cost(f), 0)
   return { kept, deferred, estimateS: FIXED_OVERHEAD_S + workSeconds(ms, workers), deferredS: workSeconds(deferredMs, workers) }
+}
+
+// The shell reads every stop limit once at hook start, in one process (a node start costs seconds on a loaded Windows host): `node scripts/prepush-budget.mjs hard-stop` prints "<hard stop s> <limit s> <post-stop s> <TERM wait s> <cleanup s> <source>".
+if (isMainModule(import.meta.url)) {
+  if (process.argv[2] === 'hard-stop') {
+    const h = hardStopOf(process.env)
+    process.stdout.write(`${h.seconds} ${HOOK_LIMIT_S} ${postStopOf(h.seconds, process.env).seconds} ${TERM_WAIT_S} ${STOP_CLEANUP_S} ${h.source}\n`)
+  } else {
+    process.stderr.write('usage: node scripts/prepush-budget.mjs hard-stop\n')
+    process.exit(2)
+  }
 }

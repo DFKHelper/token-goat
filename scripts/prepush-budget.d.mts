@@ -18,3 +18,12 @@ export const MARGIN_SHARE: number
 export const TOTAL_BUDGET_S: number
 export const ELAPSED_ENV: string
 export function coldCostMs(table: Record<string, number>): number
+export const HARD_STOP_ENV: string
+export const HARD_STOP_DEFAULT_S: number
+export function hardStopOf(env: Record<string, string | undefined>): { seconds: number; source: string }
+export const HARD_STOP_MAX_S: number
+export const TERM_WAIT_S: number
+export const STOP_CLEANUP_S: number
+export const STARTUP_RESERVE_S: number
+export const POST_STOP_ENV: string
+export function postStopOf(stopS: number, env: Record<string, string | undefined>): { seconds: number; source: string }

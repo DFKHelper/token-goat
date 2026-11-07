@@ -613,9 +613,7 @@ export async function subagentReportRewriteHandler(event: HookEvent): Promise<Ho
 }
 
 // A background spawn's result is its launch ack (it echoes the prompt), not a report.
-const ASYNC_ACK_HEAD_CHARS = 200
-const ASYNC_ACK_IS_ASYNC_RE = /"isAsync"\s*:\s*true/
-const ASYNC_ACK_STATUS_RE = /"status"\s*:\s*"async_launched"/
+const ASYNC_ACK_TEXT_OPENER = 'Async agent launched successfully.'
 // Non-JSON text is not an object, so it returns null here and takes the text fallback in isAsyncAck.
 function parseJsonObject(text: string): Record<string, unknown> | null {
   try {
@@ -625,13 +623,12 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
     return null
   }
 }
-// A parsed object is judged by its fields, so key order and whitespace cannot matter; anything else falls back to both markers near its start.
+// A parsed object is judged by its fields, so key order and whitespace cannot matter; plain text is an ack only when it opens with the launch sentence, so a report that quotes the markers is never misread.
 function isAsyncAck(resultText: string): boolean {
   const trimmed = resultText.trim()
   const fields = parseJsonObject(trimmed)
   if (fields !== null) return fields['isAsync'] === true && fields['status'] === 'async_launched'
-  const head = trimmed.slice(0, ASYNC_ACK_HEAD_CHARS)
-  return ASYNC_ACK_IS_ASYNC_RE.test(head) && ASYNC_ACK_STATUS_RE.test(head)
+  return trimmed.startsWith(ASYNC_ACK_TEXT_OPENER)
 }
 export async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
   try {
@@ -656,7 +653,10 @@ export async function postAgentHandler(event: HookEvent): Promise<HookOutput> {
     if (!resultText || resultText.length < agentReportCfg.min_bytes || isAsyncAck(resultText)) {
       return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     }
-    const id = storeMcpOutput(event.sessionId, event.toolName ?? 'Agent', event.toolInput, resultText)
+    // A raw tool_use_id is hashed in a namespaced shape, so an input field of the same name cannot take its slot; absent, the input is hashed unchanged and the id stays as it was.
+    const toolUseId = event.raw['tool_use_id']
+    const callInput = typeof toolUseId === 'string' && toolUseId !== '' ? { input: event.toolInput, tool_use_id: toolUseId } : event.toolInput
+    const id = storeMcpOutput(event.sessionId, event.toolName ?? 'Agent', callInput, resultText)
     if (id === null) return spawnAdvisory === '' ? passOutput() : contextOutput(spawnAdvisory)
     // Recorded here rather than at the redaction above, and here rather than inside either branch below, because this is the first point past which the redacted report is guaranteed to reach someone: it is now in the cache, and both remaining returns (the compacted rewrite and the annotate-only notice) hand back or point at that same sanitized text. Recording at the redaction itself would credit the early `min_bytes` return, where the raw report reaches the model untouched. `storeMcpOutput`'s own redaction pass finds nothing left to strip now that the text arrives clean, so its disk_cache stat reports zero -- this replaces that count rather than double-counting it.
     if (redactedReport.count > 0) recordStat('secret_redacted', 0, redactedReport.count, undefined, 'agent')

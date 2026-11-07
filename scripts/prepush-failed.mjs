@@ -3,7 +3,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
-import { parseFailedRun } from './test-durations.mjs'
+import { parseDurations, parseFailedFiles, parseFailedRun } from './test-durations.mjs'
 
 /** @param {unknown} e @returns {boolean} true for a missing-file error */
 function isMissing(e) {
@@ -93,6 +93,35 @@ export function clearFailure(store, leg) {
   saveStore(store, data)
 }
 
+/** @param {string} file @returns {string} the file's text, or '' when it does not exist */
+function readOptional(file) {
+  try {
+    return readFileSync(file, 'utf8')
+  } catch (e) {
+    if (isMissing(e)) return ''
+    throw e
+  }
+}
+
+/** @param {string} planText the leg's planned test files, one per line @param {string} logText the leg's vitest output, possibly cut short @returns {string[]} the planned files with no result line in the log, in plan order: a file that finished, passed or failed, has one */
+export function unfinishedFiles(planText, logText) {
+  const done = new Set([...parseDurations(logText).map((e) => e.file), ...parseFailedFiles(logText)])
+  const planned = [...new Set(planText.split(/\r?\n/).map((f) => f.trim()).filter((f) => f !== ''))]
+  return planned.filter((f) => !done.has(f))
+}
+
+/** @param {string} store @param {string} leg a leg name (win or wsl) @param {string[]} files @returns {string} the path of `owed-<leg>.txt` beside the store, written through a temp file and a rename; throws when it cannot be written */
+export function writeOwed(store, leg, files) {
+  if (!/^[a-z]+$/.test(leg)) throw new Error(`owed leg name ${leg} is not a plain word`)
+  const dir = path.dirname(store)
+  mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `owed-${leg}.txt`)
+  const tmp = `${file}.${process.pid}.tmp`
+  writeFileSync(tmp, files.map((f) => `${f}\n`).join(''))
+  renameSync(tmp, file)
+  return file
+}
+
 const isMain = isMainModule(import.meta.url)
 if (isMain) {
   const [cmd, store, leg, sha, log] = process.argv.slice(2)
@@ -108,8 +137,23 @@ if (isMain) {
     process.stdout.write(`${rec.sha}\n${rec.files.join('\n')}\n`)
   } else if (cmd === 'clear' && store && leg) {
     clearFailure(store, leg)
+  } else if (cmd === 'owed' && store && leg && sha && log) {
+    // For owed the fourth argument is the leg's plan file (one planned file per line), not a sha.
+    const files = unfinishedFiles(readOptional(sha), readOptional(log))
+    let owedPath = path.join(path.dirname(store), `owed-${leg}.txt`)
+    let written = true
+    try {
+      owedPath = writeOwed(store, leg, files)
+    } catch (e) {
+      written = false
+      process.stderr.write(`owed list not written to ${owedPath}: ${e instanceof Error ? e.message : String(e)}\n`)
+    }
+    // First line: the count and the path; then the files, only when they were written.
+    process.stdout.write(`${files.length}\t${owedPath}\n`)
+    if (written) process.stdout.write(files.map((f) => `${f}\n`).join(''))
+    process.exit(written ? 0 : 1)
   } else {
-    process.stderr.write('usage: node scripts/prepush-failed.mjs record STORE LEG SHA LOG | read STORE LEG | clear STORE LEG\n')
+    process.stderr.write('usage: node scripts/prepush-failed.mjs record STORE LEG SHA LOG | read STORE LEG | clear STORE LEG | owed STORE LEG PLAN LOG\n')
     process.exit(2)
   }
 }

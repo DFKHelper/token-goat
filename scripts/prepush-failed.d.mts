@@ -9,3 +9,5 @@ export function recordFailure(store: string, leg: string, sha: string, files: st
 export function readFailure(store: string, leg: string): FailureRecord | null
 export function hasUnparsedFailure(store: string, leg: string): boolean
 export function clearFailure(store: string, leg: string): void
+export function unfinishedFiles(planText: string, logText: string): string[]
+export function writeOwed(store: string, leg: string, files: string[]): string
