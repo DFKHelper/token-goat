@@ -217,17 +217,27 @@ describe('mcp_jsonrpc vs the reference SDK', () => {
 
 describe('mcp_jsonrpc protocol handling', () => {
   /** A bare transport, so protocol-level behaviour can be driven without a client in the way. */
-  function rawTransport(): { transport: McpTransport; sent: JsonRpcMessage[]; deliver: (m: JsonRpcMessage) => void } {
+  function rawTransport(): {
+    transport: McpTransport
+    sent: JsonRpcMessage[]
+    deliver: (m: JsonRpcMessage) => void
+    whenSent: (count: number) => Promise<void>
+  } {
     const sent: JsonRpcMessage[] = []
+    const waiters: { count: number; resolve: () => void }[] = []
     const transport: McpTransport = {
       start: () => Promise.resolve(),
       send: (message) => {
         sent.push(message)
+        for (const waiter of waiters) if (sent.length >= waiter.count) waiter.resolve()
         return Promise.resolve()
       },
       close: () => Promise.resolve(),
     }
-    return { transport, sent, deliver: (m) => transport.onmessage?.(m) }
+    // Resolves once `count` replies have reached the transport, so a row waits on the event it asserts on and not on a guessed number of microtask turns.
+    const whenSent = (count: number): Promise<void> =>
+      sent.length >= count ? Promise.resolve() : new Promise<void>((resolve) => waiters.push({ count, resolve }))
+    return { transport, sent, deliver: (m) => transport.onmessage?.(m), whenSent }
   }
 
   it('echoes a supported older protocol version and falls back to the latest for an unknown one', async () => {
@@ -287,9 +297,11 @@ describe('mcp_jsonrpc protocol handling', () => {
 
     for (const detection of detections) {
       neutralizeMcpHarnessSignals()
+      // The suite setup sets the opt-out to 1 for every test, so the gate row must unset it to see the gate close.
+      vi.stubEnv('TOKEN_GOAT_MCP_WITH_HOOKS', undefined)
       if (detection.env !== undefined) vi.stubEnv(detection.env.name, detection.env.value)
 
-      const { transport, sent, deliver } = rawTransport()
+      const { transport, sent, deliver, whenSent } = rawTransport()
       const server = new McpServer({ name: 't', version: '1' })
       const handler = vi.fn(() => textResult('should not run'))
       server.registerTool('hidden', {}, handler)
@@ -302,17 +314,61 @@ describe('mcp_jsonrpc protocol handling', () => {
       })
       deliver({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
       deliver({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hidden' } })
-      for (let i = 0; i < 10; i++) await Promise.resolve()
+      await whenSent(3)
 
       expect(sent, detection.label).toHaveLength(3)
       expect((sent[1] as any).result.tools, detection.label).toEqual([])
       expect((sent[2] as any).result, detection.label).toEqual({
         content: [
-          { type: 'text', text: 'token-goat MCP tools are disabled because hooks are available for this harness' },
+          {
+            type: 'text',
+            text: 'token-goat MCP tools are disabled because hooks are available for this harness; set TOKEN_GOAT_MCP_WITH_HOOKS=1 to keep them on',
+          },
         ],
         isError: true,
       })
       expect(handler, detection.label).not.toHaveBeenCalled()
+      await server.close()
+    }
+  })
+
+  it('keeps tools on under a hooks-enabled harness when TOKEN_GOAT_MCP_WITH_HOOKS opts out', async () => {
+    // Provenance: HAND-DERIVED. The harness override and client name are the same hooks signals the gate test above uses; the opt-out value is the documented `1`.
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    vi.stubEnv('TOKEN_GOAT_MCP_WITH_HOOKS', '1')
+    const { transport, sent, deliver, whenSent } = rawTransport()
+    const server = new McpServer({ name: 't', version: '1' })
+    server.registerTool('visible', {}, () => textResult('ran'))
+    await server.connect(transport)
+    try {
+      deliver({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'Claude Code', version: '1' } } })
+      deliver({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+      deliver({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'visible' } })
+      await whenSent(3)
+      expect((sent[1] as any).result.tools.map((tool: { name: string }) => tool.name)).toEqual(['visible'])
+      expect((sent[2] as any).result).toEqual({ content: [{ type: 'text', text: 'ran' }], isError: false })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('keeps tools disabled when a later initialize carries no hooks signal, since the first one latched hooks on', async () => {
+    // Provenance: HAND-DERIVED. The claudecode and generic overrides are the same harness signals the gate test above uses; the unset opt-out is what the suite setup would otherwise set to 1.
+    vi.stubEnv('TOKEN_GOAT_MCP_WITH_HOOKS', undefined)
+    const { transport, sent, deliver, whenSent } = rawTransport()
+    const server = new McpServer({ name: 't', version: '1' })
+    server.registerTool('hidden', {}, () => textResult('should not run'))
+    await server.connect(transport)
+    try {
+      vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+      deliver({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'Claude Code', version: '1' } } })
+      await whenSent(1)
+      vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'generic')
+      deliver({ jsonrpc: '2.0', id: 2, method: 'initialize', params: { clientInfo: { name: 'generic', version: '1' } } })
+      deliver({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
+      await whenSent(3)
+      expect((sent[2] as any).result.tools).toEqual([])
+    } finally {
       await server.close()
     }
   })

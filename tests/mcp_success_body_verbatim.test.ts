@@ -82,11 +82,11 @@ describe('a successful MCP result carries the file body as written', () => {
     expect(r.text).toContain(PATTERN_LINES[1]!.trim())
   })
 
-  it('symbol keeps the previewed lines and still words its own full-body note for MCP', async () => {
+  it('symbol inlines the body under the cap, every line as written, for MCP', async () => {
     const r = await call('symbol', { name: 'hold' })
     expect(r.isError, r.text).toBe(false)
-    expect(r.text).toContain(PATTERN_LINES.join('\n'))
-    expect(r.text).toContain('full body: `the "read" tool again with a more specific spec (e.g. "a.ts::hold")`')
+    expect(r.text).toContain(HOLD_LINES.join('\n'))
+    expect(r.text).not.toContain('full body:')
     expect(r.text).not.toContain('token-goat read "a.ts::hold"')
   })
 
