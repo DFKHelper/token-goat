@@ -38,10 +38,10 @@ Fallback clauses may name your harness's own native read, search, and edit tools
 Exemptions (gate passes, read directly): the file is under ~200 lines and you need all of it; it was never indexed (new, untracked, or generated this turn); it is a genuinely opaque binary (not an image); the target has no symbol handle (e.g. a literal mid-function).
 
 Failure shapes to catch yourself in, and the command that replaces each:
-- a shell text search with context flags to find a function body → `read "file::symbol"`
+- a shell text search with context flags to find a function body → `read "file" "symbol"`
 - paging one function with view/view_range → `read "file::symbol"`
 - reading a symbol plus chasing its callers and containing doc section as separate reads → `brief "file::symbol"`
-- reading one heading of a large doc → `section "file::Heading"`
+- reading one heading of a large doc → `section "file" "Heading"`
 - reading a procedural shell script check or step → `section "script.sh::# Banner"` or `read "script.sh::# Banner"`
 - searching for a symbol's callers → `refs file::symbol --callers`
 - searching for a *concept* rather than a literal string → `semantic "description"`
@@ -59,7 +59,9 @@ Failure shapes to catch yourself in, and the command that replaces each:
 - raw-Reading a Claude Code session JSONL transcript → `session-outline` then `session-slice`
 - re-searching cached tool output across the whole session → `recall <query>`
 - persisting a small cross-call fact in conversation context → `note set/get/unset/list`
-Commands: `symbol NAME`, `read "file::symbol"`, `brief "file::symbol"`, `section "file::Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs file::symbol --callers`, `changed --symbol`, `config-get file KEY`, `json-query file 'a.b.c'`/`yaml-query`/`xml-query`, `json-outline file`/`yaml-outline`/`xml-outline`, `bash-output`/`web-output`/`mcp-output`, `gdrive-sections <file-id>`, `image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-locate`/`pdf-extract`, `docx-outline`/`docx-tables`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`, `skill-section`/`skill-body`, `session-outline`/`session-slice`, `recall`, `note set/get/unset/list`.
+Commands: `symbol NAME`, `read "file" "symbol"`, `brief "file::symbol"`, `section "file" "Heading"`, `semantic "description"`, `outline file`/`skeleton file`, `map --compact`, `refs "file::symbol" --callers`, `changed --symbol`, `config-get file KEY`, `json-query file 'a.b.c'`/`yaml-query file 'a.b.c'`/`xml-query file 'a.b.c'`, `json-outline file`/`yaml-outline file`/`xml-outline file`, `bash-output`/`web-output`/`mcp-output`, `gdrive-sections <file-id>`, `image-meta file`/`image-text file`, `pdf-meta`/`pdf-outline`/`pdf-locate`/`pdf-extract`, `docx-outline`/`docx-tables`/`docx-text`, `pptx-outline`/`pptx-slide`/`pptx-notes`/`pptx-text`, `xlsx-sheets`/`xlsx-columns`/`xlsx-head`/`xlsx-range`/`xlsx-query`, `skill-section`/`skill-body`, `session-outline`/`session-slice`, `recall`, `note set/get/unset/list`.
+
+`sqlite-query session "<SELECT ...>"` queries the active Copilot session database. COBOL `.cbl`/`.cpy` files expose procedure sections/paragraphs and named level 01–49/77 items plus 88 conditions to `outline`, `symbol`, and `read`.
 
 Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of this context and its reads spend the same token budget.
 
@@ -116,13 +118,14 @@ Paths go in relative to the working directory; `waste` prints absolute ones, so 
 
 ## Anti-Paging Trap
 
-If a paging notice or `[tg]` range denial appears, stop Read/view line ranges; do not retry with a shifted or resized window. Run the exact token-goat command named by the denial first.
+If `[tg]` denies a whole-file or line-range Read/view, or warns that more than 80% of the file is indexed, immediately stop calling Read/view on that file. Never retry with a smaller, shifted, or resized `view_range`: repeated attempts create a denial loop. Switch to a token-goat command instead, including when editing a denied file.
 Use the one surgical command that fits:
 - Definition → `token-goat read "file::symbol"`.
 - Denied window → `token-goat read "file@start-end"`.
 - Structure → `token-goat skeleton <file>` (or `outline`).
-- Text excerpt → `token-goat grep "<pattern>" <file> -C 15 --symbol`.
-- Markdown heading → `token-goat section "file::Heading"`.
+- Text excerpt → `token-goat grep "<pattern>" "file" -C 15 --symbol`.
+- Markdown heading → `token-goat section "file" "Heading"`.
+- Surgical edit → `token-goat replace "file" --old-b64 ... --new-b64 ...`.
 
 ## Anti-Patterns
 
@@ -130,6 +133,7 @@ Use the one surgical command that fits:
 - **Treating a batch as one gate.** Five reads issued in one message are five gates, not one. Batching is a latency optimisation; it does not pool the token cost.
 - **Using `symbol` as a grep.** `symbol NAME` resolves a definition. When you want every *use*, that is `refs file::symbol --callers`; when you want a concept rather than a literal string, that is `semantic`. Reaching for the wrong one and then falling back to a wide search spends the cost of both.
 - **Slicing a file that was never indexed.** A file created, generated, or left untracked this turn has no index entry, so a slice command returns nothing and reads as "not there" rather than "not indexed". That case is an explicit exemption -- read it directly and move on instead of retrying the slice.
+- **Retrying Read/view after `[tg]` denial or the >80%-indexed warning.** The stop applies to the whole file, not just the denied window; use a token-goat slice, grep, or surgical replace instead.
 - **Re-running a command to see output you already have.** Captured output is addressable by ID via `bash-output`/`web-output`/`mcp-output`, and anything cached this session is reachable with `recall`. Re-running is the most expensive way to scroll up.
 - **Writing tool or binary names into an agent's `tools`/`allowed-tools` frontmatter.** Shell binaries and editor programs are invoked *through* the shell tool; they are not tool identifiers. Instruction-file loaders harvest such names into an allowlist and then warn that every one is unknown -- which is why the gate text above deliberately names none.
 - **Dropping the gate from a sub-agent brief.** A sub-agent inherits none of this context and spends the same budget, so a brief without the gate verbatim is where the savings quietly leak back out.

@@ -16,6 +16,7 @@ import {
 } from './coverage_query.js'
 import { extractExportNames, extractImports, importsExtensionFor } from './import_export_extract.js'
 import { querySymbols } from './index_reader.js'
+import { findActiveCopilotSessionDatabasePath } from './copilot_waste.js'
 import { getNote, isNoteStale, listNotes, WHOLE_FILE_NOTE_SYMBOL } from './notes.js'
 import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
@@ -237,7 +238,14 @@ export function runSqliteQuery(opts: SqliteQueryCliOptions): number {
   }
 
   try {
-    const result = runReadOnlySqliteQuery(opts.file, opts.sql)
+    const databasePath = opts.file.toLowerCase() === 'session'
+      ? findActiveCopilotSessionDatabasePath()
+      : opts.file
+    if (databasePath === null) {
+      throw new Error('No active Copilot session SQLite database was found')
+    }
+
+    const result = runReadOnlySqliteQuery(databasePath, opts.sql)
     const totalCount = result.rows.length
     const headTruncated = head !== undefined && result.rows.length > head
     const rows = head !== undefined ? result.rows.slice(0, head) : result.rows

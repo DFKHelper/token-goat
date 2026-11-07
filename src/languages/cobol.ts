@@ -1,4 +1,4 @@
-/** COBOL adapter: programs, procedure-division sections and paragraphs, level-01/77 data items and FD/SD file descriptions, leading comments, `COPY` imports, and `PERFORM`/`GO TO`/`CALL`/embedded-SQL `CALL` references. Reference format (IBM Enterprise COBOL for z/OS, https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=structure-reference-format): columns 1-6 are the sequence number area, column 7 the indicator area, 8-11 Area A, 12-72 Area B, and 73-80 are ignored. Indicator `*` or `/` makes a comment line, `D`/`d` a debugging line, `-` a continuation line (https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=format-indicator-area); `*>` starts a floating comment. Free format (`>>SOURCE FORMAT IS FREE`, the ISO 2002 directive) has no columns: text starts at column 1 and only `*>` comments. */
+/** COBOL adapter: programs, procedure-division sections and paragraphs, level-01/49/77 data items, level-88 conditions, FD/SD file descriptions, leading comments, `COPY` imports, and `PERFORM`/`GO TO`/`CALL`/embedded-SQL `CALL` references. Reference format (IBM Enterprise COBOL for z/OS, https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=structure-reference-format): columns 1-6 are the sequence number area, column 7 the indicator area, 8-11 Area A, 12-72 Area B, and 73-80 are ignored. Indicator `*` or `/` makes a comment line, `D`/`d` a debugging line, `-` a continuation line (https://www.ibm.com/docs/en/cobol-zos/6.4.0?topic=format-indicator-area); `*>` starts a floating comment. Free format (`>>SOURCE FORMAT IS FREE`, the ISO 2002 directive) has no columns: text starts at column 1 and only `*>` comments. */
 
 import type { RefEntry, SymbolEntry } from '../parser_types.js'
 import type { AdapterImport } from './common.js'
@@ -188,21 +188,17 @@ export function extractCobol(
   let section: number | undefined
   let paragraph: number | undefined
   let fileDescription: number | undefined
-  let record: number | undefined
+  const dataItems: Array<{ level: number; index: number | undefined }> = []
+  let condition: number | undefined
   let division = ''
   let lastLine = 0
   let idDivisionLine: number | undefined
   let idDivisionDocstring: string | undefined
 
-  // A copybook with no division header is a fragment: data items when it opens with a level number, procedure text otherwise; its record level is the lowest level it uses.
-  let recordLevel = 1
+  // A divisionless copybook is a fragment; ignore leading comments and blank lines when classifying it.
   if (isCopybook && !lines.some((l) => DIVISION_RE.test(l.code))) {
-    const levels = lines.map((l) => LEVEL_RE.exec(l.code)).filter((m) => m !== null).map((m) => Number(m[1]))
-    const first = lines[0]
+    const first = lines.find((l) => l.code.trim() !== '')
     division = first !== undefined && LEVEL_RE.test(first.code) ? 'DATA' : 'PROCEDURE'
-    const structural = levels.filter((n) => n >= 1 && n <= 49)
-    // Reduced, not spread: `structural` holds one entry per matching line with no cap (MAX_SYMBOLS gates `emit`, which runs later), so a large copybook spread into Math.min exceeds the engine's argument limit and throws out of the extractor.
-    if (structural.length > 0) recordLevel = structural.reduce((a, b) => (b < a ? b : a), structural[0]!)
   }
 
   const emit = (name: string, kind: string, line: number, parent: string, docstring = ''): number | undefined => {
@@ -225,9 +221,25 @@ export function extractCobol(
     close(section, end)
     section = undefined
   }
+  const closeDataItems = (end: number, minLevel: number): void => {
+    while (dataItems.length > 0) {
+      const item = dataItems[dataItems.length - 1]!
+      if (item.level < minLevel) break
+      dataItems.pop()
+      close(item.index, end)
+    }
+  }
+  const dataParent = (): string => {
+    for (let i = dataItems.length - 1; i >= 0; i--) {
+      const index = dataItems[i]!.index
+      if (index !== undefined) return symbols[index]!.name
+    }
+    return fileDescription !== undefined ? symbols[fileDescription]!.name : unitParent()
+  }
   const closeData = (end: number): void => {
-    close(record, end)
-    record = undefined
+    close(condition, end)
+    condition = undefined
+    closeDataItems(end, 0)
     close(fileDescription, end)
     fileDescription = undefined
   }
@@ -302,16 +314,28 @@ export function extractCobol(
       } else {
         const m = LEVEL_RE.exec(code)
         const level = m ? Number(m[1]) : -1
-        if (m && (level === recordLevel || level === 77)) {
-          close(record, lastLine)
-          record = undefined
-          if (level === 77) {
-            close(fileDescription, lastLine)
-            fileDescription = undefined
-          }
-          if (m[2]!.toUpperCase() !== 'FILLER') {
-            const owner = fileDescription !== undefined ? symbols[fileDescription]!.name : unitParent()
-            record = emit(m[2]!, 'variable', l.line, owner, l.leadingComments)
+        if (m) {
+          close(condition, lastLine)
+          condition = undefined
+        }
+        if (m && (level === 88 || level === 77 || (level >= 1 && level <= 49))) {
+          const name = m[2]!
+          if (level === 88) {
+            if (name.toUpperCase() !== 'FILLER') {
+              condition = emit(name, 'condition', l.line, dataParent(), l.leadingComments)
+            }
+          } else {
+            if (level === 77) {
+              closeDataItems(lastLine, 0)
+              close(fileDescription, lastLine)
+              fileDescription = undefined
+            } else {
+              closeDataItems(lastLine, level)
+            }
+            const index = name.toUpperCase() !== 'FILLER'
+              ? emit(name, 'variable', l.line, dataParent(), l.leadingComments)
+              : undefined
+            dataItems.push({ level, index })
           }
         }
       }

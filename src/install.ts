@@ -361,14 +361,18 @@ function installHooksScoped(scope: HookScope): InstallResult {
       // Re-narrow an already-installed entry. Without this the matcher improvement below would only ever reach brand-new installs: every existing user would keep the catch-all they were installed with and see no benefit. Only groups whose hooks are all token-goat's own are touched -- a group the user has added their own commands to is left exactly as-is.
       const narrowed = toolMatcherFor(eventArg as HookEventName)
       let renarrowed = false
-      if (narrowed !== null) {
-        for (let i = 0; i < groups.length; i++) {
-          const group = groups[i]
-          if (group === undefined) continue
-          const ownHooks = hooksOf(group)
-          const isOwnGroup = ownHooks.length > 0 && ownHooks.every((h) => isOwnHookEntry(h, isOurs))
-          if (isOwnGroup && group.matcher !== narrowed) {
+      for (let i = 0; i < groups.length; i++) {
+        const group = groups[i]
+        if (group === undefined) continue
+        const ownHooks = hooksOf(group)
+        const isOwnGroup = ownHooks.length > 0 && ownHooks.every((h) => isOwnHookEntry(h, isOurs))
+        if (isOwnGroup) {
+          if (narrowed !== null && group.matcher !== narrowed) {
             groups[i] = { ...group, matcher: narrowed }
+            renarrowed = true
+          } else if (narrowed === null && group.matcher !== undefined) {
+            const { matcher: _dropped, ...rest } = group
+            groups[i] = rest
             renarrowed = true
           }
         }
@@ -380,9 +384,9 @@ function installHooksScoped(scope: HookScope): InstallResult {
       continue
     }
 
-    // Narrow the matcher to the tools this event actually has handlers for. Claude Code spawns a process per matcher hit and ~90% of that cost is Node startup plus bundle evaluation, so a catch-all makes every unhandled tool pay full price twice (pre + post). toolMatcherFor returns null when narrowing would be unsafe -- a non-tool event, or a handler that really does want everything -- and the catch-all is the correct answer then.
-    const matcher = toolMatcherFor(eventArg as HookEventName) ?? ''
-    groups.push({ matcher, hooks: [{ type: 'command', command: expected.command, ...(expected.args !== undefined ? { args: expected.args } : {}) }] })
+    // Narrow the matcher to the tools this event actually has handlers for. Claude Code spawns a process per matcher hit and ~90% of that cost is Node startup plus bundle evaluation, so a catch-all makes every unhandled tool pay full price twice (pre + post). toolMatcherFor returns null when narrowing would be unsafe -- a non-tool event, or a handler that really does want everything -- and the catch-all is the correct answer then (where matcher is omitted entirely, since Claude Code schema forbids empty string matchers).
+    const matcher = toolMatcherFor(eventArg as HookEventName)
+    groups.push({ ...(matcher !== null ? { matcher } : {}), hooks: [{ type: 'command', command: expected.command, ...(expected.args !== undefined ? { args: expected.args } : {}) }] })
     hooks[eventKey] = groups
     settingsChanged = true
   }

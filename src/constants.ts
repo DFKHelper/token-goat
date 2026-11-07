@@ -212,6 +212,7 @@ export const ENV_KEYS = {
   RECONCILE: 'TOKEN_GOAT_RECONCILE',
   RECONCILE_BUDGET_MS: 'TOKEN_GOAT_RECONCILE_BUDGET_MS',
   MCP_TOOLS: 'TOKEN_GOAT_MCP_TOOLS',
+  MCP_WITH_HOOKS: 'TOKEN_GOAT_MCP_WITH_HOOKS',
 } as const
 
 // Largest symbol body stored in the index; parser.ts re-exports this as MAX_SYMBOL_BODY_CHARS and its docblock carries the full rationale. The value lives here rather than there because db.ts bakes it into the partial index backing checkSymbolBodySize, and parser.ts imports db.ts. Changing it invalidates that index's predicate: bump SCHEMA_VERSION and add a MIGRATIONS step dropping idx_symbols_oversized_body, or the stored index keeps the old threshold.

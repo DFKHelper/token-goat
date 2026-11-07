@@ -130,6 +130,8 @@ if (!process.env['TOKEN_GOAT_INSTALL_INDEX']) {
 if (!process.env['TOKEN_GOAT_HARNESS_OVERRIDE']) {
   process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = 'claudecode'
 }
+// The harness is pinned to claudecode above, which switches the MCP tools off (src/mcp_jsonrpc.ts); this documented opt-out keeps them on for every MCP test, and the tests of the hooks gate itself unset it. Assigned unconditionally so a shell that exports 0 cannot switch the tools off for the whole suite.
+process.env['TOKEN_GOAT_MCP_WITH_HOOKS'] = '1'
 // A resident hook server started from a test would outlive the test file that started it. Tests that exercise one set this themselves.
 if (!process.env['TOKEN_GOAT_HOOK_SERVER']) {
   process.env['TOKEN_GOAT_HOOK_SERVER'] = '0'

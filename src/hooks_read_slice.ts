@@ -436,7 +436,7 @@ export function truncatedReadDenyMessage(rawPath: string): string {
   const target = hintTarget(rawPath, sliceForPath(rawPath))
   return target.real
     ? leadWithCommand(sliceCommand(normalized, target), 'for one part, or ' + fencedCommand(skeleton) + ' for structure', reason)
-    : leadWithCommand(skeleton, 'for structure, or ' + fencedCommand('token-goat read ' + quotedArg(normalized + '::SymbolName')) + ' for one function', reason)
+    : leadWithCommand(skeleton, 'for structure, or ' + fencedCommand('token-goat read ' + quotedArg(normalized) + ' ' + quotedArg('SymbolName')) + ' for one function', reason)
 }
 
 /** Slices window text directly from disk. */

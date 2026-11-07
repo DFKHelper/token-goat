@@ -268,7 +268,7 @@ export function hintTarget(filePath: string, slice: HintSlice, source: HintTarge
 export function sliceCommand(shownPath: string, target: HintTarget): string {
   switch (target.slice) {
     case 'section':
-      return 'token-goat section ' + quotedArg(shownPath + '::' + target.name)
+      return 'token-goat section ' + quotedArg(shownPath) + ' ' + quotedArg(target.name)
     case 'key': {
       const format = structuredFormat(shownPath)
       if (format === null) return configGetCommand(shownPath, target.name)
@@ -278,7 +278,7 @@ export function sliceCommand(shownPath: string, target: HintTarget): string {
     }
     case 'symbol':
     case 'table':
-      return 'token-goat read ' + quotedArg(shownPath + '::' + target.name)
+      return 'token-goat read ' + quotedArg(shownPath) + ' ' + quotedArg(target.name)
   }
 }
 
@@ -287,7 +287,9 @@ const NO_HEADING_RANGE_LINES = 80
 
 /** The command that reads one part of `shownPath` when the hint is about a section: `section` on `heading` when it is a real heading, else a read of the file's first lines. A file with no headings (`section` exits 1 on it, and `::HeadingName` is a name no file holds) still gets a command that runs. */
 export function sectionOrRangeCommand(shownPath: string, heading: HintTarget): string {
-  return heading.real ? sliceCommand(shownPath, heading) : 'token-goat read ' + quotedArg(shownPath + '::1-' + NO_HEADING_RANGE_LINES)
+  return heading.real
+    ? sliceCommand(shownPath, heading)
+    : 'token-goat read ' + quotedArg(shownPath) + ' ' + quotedArg('1-' + NO_HEADING_RANGE_LINES)
 }
 
 /** Lock files whose bytes are a JSON or YAML document under an extension the format commands would not infer. */

@@ -9,6 +9,8 @@ export const KEPT_TOKEN_GOAT_ENV_VARS = [
   'TOKEN_GOAT_NO_WORKER_SPAWN',
   'TOKEN_GOAT_INSTALL_INDEX',
   'TOKEN_GOAT_HARNESS_OVERRIDE',
+  // tests/setup/isolate-home.ts sets this one unconditionally, so an inherited value does not win.
+  'TOKEN_GOAT_MCP_WITH_HOOKS',
   'TOKEN_GOAT_HOOK_SERVER',
   'TOKEN_GOAT_NATIVE_HOOKS',
   // Set through GITHUB_ENV by .github/workflows/ci.yml so the embedding tests find the warmed model and fail rather than skip without it.

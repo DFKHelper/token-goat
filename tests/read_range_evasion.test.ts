@@ -3,8 +3,8 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  clearAllReadRangeEvasion, coerceReadRangeEvasion, evaluateRangeEvasion, exportReadRangeEvasion, getReadRangeDenials, getReadRangeResetAt, importReadRangeEvasion, lockReadRange,
-  getRecentReadRanges, recordRecentReadRange,
+  clearAllReadRangeEvasion, clearReadRangeEvasion, coerceReadRangeEvasion, evaluateRangeEvasion, exportReadRangeEvasion, getReadRangeDenials, getReadRangeResetAt, importReadRangeEvasion, lockReadRange,
+  getRecentReadRanges, rangeLockMessage, recordReadRangeLockRefusal, recordRecentReadRange,
   type ReadRange,
 } from '../src/read_range_evasion.js'
 import { exportSessionState, importSessionState, markCompacted, resetFileLineRanges, recordFileLineRange, MAX_RANGES_PER_FILE } from '../src/session.js'
@@ -180,5 +180,30 @@ describe('range evasion across hook-process snapshots', () => {
     saveSessionState('compact')
     loadSessionState('compact')
     expect(getReadRangeDenials('file')).toEqual([])
+  })
+
+  it('progressively varies rangeLockMessage on repeated refusals', () => {
+    const key = 'prog.ts'
+    clearReadRangeEvasion(key)
+    const span: [number, number] = [10, 20]
+
+    const msg1 = rangeLockMessage(key, span, 1)
+    expect(msg1).toContain('Line-range reads of this file are locked for this compaction epoch.')
+    expect(msg1).toContain('Do not retry with a different range.')
+
+    const msg2 = rangeLockMessage(key, span, 2)
+    expect(msg2).toContain('Line-range reads of this file are locked (see earlier refusal).')
+    expect(msg2).not.toContain('Do not retry with a different range.')
+
+    const msg3 = rangeLockMessage(key, span, 3)
+    expect(msg3).toContain('Line-range reads of this file are locked: run `token-goat read "prog.ts@10-20"`')
+    expect(msg3.length).toBeLessThan(msg2.length)
+
+    // recordReadRangeLockRefusal increments sequentially and resets on clearReadRangeEvasion
+    expect(recordReadRangeLockRefusal(key)).toBe(1)
+    expect(recordReadRangeLockRefusal(key)).toBe(2)
+    expect(recordReadRangeLockRefusal(key)).toBe(3)
+    clearReadRangeEvasion(key)
+    expect(recordReadRangeLockRefusal(key)).toBe(1)
   })
 })

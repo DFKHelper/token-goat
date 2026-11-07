@@ -4423,18 +4423,26 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       const slice = (start: number, end: number): HookEvent => copilotViewEvent(p, 'test', start, end)
       expect(preReadHandler(slice(10, 50)).hookType).not.toBe('deny')
       postReadHandler(postCopilotViewEvent(p, 'test', 10, 50))
+      // slice(20, 30) is inside lines 10..50, so denyRangeReread fires and locks the range
       expect(preReadHandler(slice(20, 30)).hookType).toBe('deny')
+      // l1 is the first locked range refusal for this file in this epoch
       const l1 = preReadHandler(slice(70, 80))
       expect(l1.hookType).toBe('deny')
-      if (l1.hookType === 'deny') expect(l1.message).toContain('Line-range reads of this file are locked')
+      if (l1.hookType === 'deny') {
+        expect(l1.message).toContain('Line-range reads of this file are locked for this compaction epoch.')
+      }
+      // l2 is the second locked range refusal: references earlier refusal
       const l2 = preReadHandler(slice(70, 80))
       expect(l2.hookType).toBe('deny')
-      if (l2.hookType === 'deny') expect(l2.message).toContain('Line-range reads of this file are locked')
+      if (l2.hookType === 'deny') {
+        expect(l2.message).toContain('Line-range reads of this file are locked (see earlier refusal).')
+      }
+      // 3rd+ refusals: concise escalating reminder
       for (let attempt = 0; attempt < 4; attempt++) {
         const retry = preReadHandler(slice(70, 80))
         expect(retry.hookType, `retry ${attempt + 1} stays locked`).toBe('deny')
         if (retry.hookType === 'deny') {
-          expect(retry.message).toContain('Line-range reads of this file are locked')
+          expect(retry.message).toContain('Line-range reads of this file are locked: run `token-goat read')
         }
       }
     })

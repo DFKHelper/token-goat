@@ -31,6 +31,8 @@ Both tiers derive their command set from one source, [tests/registry.ts](tests/r
 
 **Tests must be deterministic.** Do not dismiss intermittent failures as environmental noise or waive them with retries. Find and remove the source of timing, shared-state, ordering, or resource-contention flakiness; a test is complete only when it passes reliably in its real full-suite execution mode.
 
+**Pre-commit verification discipline.** Even when commit or push hooks are bypassed (e.g. `--no-verify`), agents must always run fast static validation on all touched files (`npm run typecheck` / `npm run build` / `npm run lint`) before concluding a task. In string literals, verify quote balancing and character escaping (prefer template literals or double quotes when apostrophes occur in single-quoted text) to prevent syntax errors like unterminated string constants. Never conclude or claim completion without verifying that modified files compile cleanly.
+
 ## The indexer and worker are the critical path — prioritize them
 
 The indexer (`src/parser.ts`: parse, then write symbols/refs/sections, plus embeddings) and the worker that drives it (`src/worker.ts`: drain the dirty queue, reindex changed files) are the core of the product. Every surgical-read command — `symbol`, `read`, `skeleton`, `outline`, `semantic`, read-dedup — returns nothing if this pipeline is broken. Treat it as the **highest priority for tests, bug-fixing, and improvements**, above hooks, image-shrinking, formatting, and CLI ergonomics, when triaging or planning work.

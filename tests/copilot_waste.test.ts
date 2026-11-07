@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   buildCopilotWasteReport,
   findActiveCopilotSession,
+  findActiveCopilotSessionDatabasePath,
   findLatestCopilotSession,
   findProjectSession,
   isCopilotSessionActive,
@@ -259,6 +260,34 @@ describe('findLatestCopilotSession', () => {
     expect(findLatestCopilotSession(project)).toBe(olderActive)
     expect(findLatestCopilotSession(project)).not.toBe(newerInactive)
     expect(findActiveCopilotSession(project)).toBe(olderActive)
+  })
+
+  it('finds the active session database beside its event log', () => {
+    const activeId = 'tg-active-db'
+    const inactiveId = 'tg-inactive-db'
+    const activeDir = join(root, 'session-state', activeId)
+    const inactiveDir = join(root, 'session-state', inactiveId)
+    session(activeId, 1_000_000)
+    session(inactiveId, 2_000_000)
+    const activeDb = join(activeDir, 'session.db')
+    writeFileSync(activeDb, '')
+    writeFileSync(join(activeDir, `inuse.${process.pid}.lock`), String(process.pid), 'utf-8')
+    writeFileSync(join(inactiveDir, 'session.db'), '')
+
+    expect(findActiveCopilotSessionDatabasePath()).toBe(activeDb)
+  })
+
+  it('does not fall back to an inactive session database when the active session has none', () => {
+    const activeId = 'tg-active-without-db'
+    const inactiveId = 'tg-inactive-with-db'
+    const activeDir = join(root, 'session-state', activeId)
+    const inactiveDir = join(root, 'session-state', inactiveId)
+    session(activeId, 1_000_000)
+    session(inactiveId, 2_000_000)
+    writeFileSync(join(activeDir, `inuse.${process.pid}.lock`), String(process.pid), 'utf-8')
+    writeFileSync(join(inactiveDir, 'session.db'), '')
+
+    expect(findActiveCopilotSessionDatabasePath()).toBeNull()
   })
 
   it('honors COPILOT_AGENT_SESSION_ID when projectRoot matches', () => {

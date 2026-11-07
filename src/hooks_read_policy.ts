@@ -102,12 +102,12 @@ export function evaluateFirstReadSymbolPolicy(ctx: ReadPolicyContext): ReadPolic
   if (evidence.symbolCount > 0 && evidence.topSymbols.length > 0) {
     const target = hintTargetFromNames(evidence.topSymbols.map((s) => s.name), 'symbol')
     if (target.real) {
-      surgicalCommands.push('token-goat read ' + quotedArg(`${safeShown}::${target.name}`))
+      surgicalCommands.push('token-goat read ' + quotedArg(safeShown) + ' ' + quotedArg(target.name))
     }
   } else if (evidence.headingCount > 0 && evidence.topHeadings.length > 0) {
     const target = hintTargetFromNames(evidence.topHeadings.map((h) => h.name), 'section')
     if (target.real) {
-      surgicalCommands.push('token-goat section ' + quotedArg(`${safeShown}::${target.name}`))
+      surgicalCommands.push('token-goat section ' + quotedArg(safeShown) + ' ' + quotedArg(target.name))
     }
   }
 

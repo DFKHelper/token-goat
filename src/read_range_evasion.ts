@@ -9,6 +9,7 @@ export interface RangeEvasionState {
   denied: Visit[]
   recent: Visit[]
   identity?: Identity
+  lockCount: number
 }
 export type RangeEvasionEntries = Array<[string, RangeEvasionState]>
 export type RangeEvasionReason = 'locked' | 'same_anchor' | 'micro_shift' | 'overlap'
@@ -22,7 +23,7 @@ function stamp(): number {
 }
 
 function stateFor(key: string): RangeEvasionState {
-  const state = states.get(key) ?? { resetAt: 0, denied: [], recent: [] }
+  const state = states.get(key) ?? { resetAt: 0, denied: [], recent: [], lockCount: 0 }
   states.set(key, state)
   return state
 }
@@ -98,7 +99,7 @@ export function clearReadRangeIfChanged(key: string, identity: Identity | undefi
 
 export function clearReadRangeEvasion(key: string): void {
   // Persist the reset generation so an overlapping hook's stale snapshot cannot resurrect a lock.
-  states.set(key, { resetAt: stamp(), denied: [], recent: [] })
+  states.set(key, { resetAt: stamp(), denied: [], recent: [], lockCount: 0 })
 }
 
 export function clearAllReadRangeEvasion(): void {
@@ -139,6 +140,7 @@ export function coerceReadRangeEvasion(raw: unknown): RangeEvasionEntries {
       resetAt: value.resetAt,
       denied: visits('denied' in value ? value.denied : undefined),
       recent: visits('recent' in value ? value.recent : undefined),
+      lockCount: 'lockCount' in value && finite(value.lockCount) ? Math.floor(value.lockCount as number) : 0,
     }
     if ('identity' in value && typeof value.identity === 'object' && value.identity !== null &&
       'size' in value.identity && 'mtimeMs' in value.identity && finite(value.identity.size) && finite(value.identity.mtimeMs)) {
@@ -161,17 +163,34 @@ export function mergeReadRangeEvasion(disk: RangeEvasionEntries, mem: RangeEvasi
       const denied = mergeVisits(prior.denied, state.denied)
       const recent = mergeVisits(prior.recent, state.recent)
       const newestIdentity = (state.denied.at(-1)?.at ?? 0) >= (prior.denied.at(-1)?.at ?? 0) ? state.identity : prior.identity
-      merged.set(key, { resetAt: state.resetAt, denied, recent, ...(newestIdentity ? { identity: newestIdentity } : {}) })
+      const lockCount = Math.max(prior.lockCount, state.lockCount)
+      merged.set(key, { resetAt: state.resetAt, denied, recent, lockCount, ...(newestIdentity ? { identity: newestIdentity } : {}) })
     }
   }
   return Array.from(merged)
 }
 
+/** Increments and returns the sequential refusal count for locked range reads of this key. */
+export function recordReadRangeLockRefusal(key: string): number {
+  const state = stateFor(key)
+  state.lockCount = (state.lockCount ?? 0) + 1
+  return state.lockCount
+}
+
 /** Stable discriminator for the locked-range refusal, which must not be weakened by the repeat-deny breaker. */
 export const RANGE_LOCK_MESSAGE_PREFIX = 'Line-range reads of this file are locked'
 
-export function rangeLockMessage(shown: string, span: ReadRange): string {
-  return RANGE_LOCK_MESSAGE_PREFIX + ' for this compaction epoch. Use `token-goat read ' +
-    quotedArg(shown + '@' + span[0] + '-' + span[1]) + '` for this window; use `token-goat skeleton ' +
-    quotedArg(shown) + '` for structure. Do not retry with a different range.'
+export function rangeLockMessage(shown: string, span: ReadRange, count: number = 1): string {
+  const readCmd = '`token-goat read ' + quotedArg(shown + '@' + span[0] + '-' + span[1]) + '`'
+  const skeletonCmd = '`token-goat skeleton ' + quotedArg(shown) + '`'
+
+  if (count <= 1) {
+    return RANGE_LOCK_MESSAGE_PREFIX + ' for this compaction epoch. Use ' +
+      readCmd + ' for this window; use ' + skeletonCmd + ' for structure. Do not retry with a different range.'
+  }
+  if (count === 2) {
+    return RANGE_LOCK_MESSAGE_PREFIX + ' (see earlier refusal). Use ' +
+      readCmd + ' for this window, or ' + skeletonCmd + ' for structure.'
+  }
+  return RANGE_LOCK_MESSAGE_PREFIX + ': run ' + readCmd + ' or ' + skeletonCmd + '.'
 }

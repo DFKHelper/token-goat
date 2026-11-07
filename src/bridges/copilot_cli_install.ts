@@ -12,7 +12,11 @@ import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
 import { copilotCliCacheRoot, copilotCliMcpToolsDir, copilotCliUserRoot } from '../copilot_home.js'
 import { copilotHooksOwnersPath, HOOKS_CONFIG_FILE, readCopilotHooksOwners, type CopilotHooksOwner } from './copilot_hooks_owners.js'
-import { copilotMcpConfigPath, installCopilotMcpServer, uninstallCopilotMcpServer } from './copilot_mcp_install.js'
+import {
+  copilotMcpConfigPath,
+  isCopilotMcpServerInstalled,
+  uninstallCopilotMcpServer,
+} from './copilot_mcp_install.js'
 import { syncVisualStudioProjectGuidance } from './visualstudio_install.js'
 import { stripBom } from '../jsonc_text.js'
 
@@ -198,9 +202,9 @@ export interface CopilotCliInstallResult {
   readonly scriptPath: string
   /** Path to the copilot-instructions.md that received the token-goat routing block. */
   readonly instructionsPath: string
-  /** `<COPILOT_HOME>/mcp-config.json`, which received the `token-goat` MCP server entry; undefined for a `--local` install, since Copilot reads MCP servers only from the user-scope file. */
+  /** Legacy MCP config path when the managed entry remains installed; normally absent because user-scope installs remove it. */
   readonly mcpConfigPath?: string
-  /** True when the shim script, the hook config, the instructions block and the MCP entry were all already up to date (no write needed). */
+  /** True when hooks and instructions were already up to date and no legacy MCP entry needed removal. */
   readonly alreadyInstalled: boolean
 }
 
@@ -314,7 +318,9 @@ function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstal
   // Checked before the MCP step, which is the first write and makes the Copilot home when there is none.
   const scopeDir = path.dirname(instructionsPath)
   const scopeDirExisted = fs.existsSync(scopeDir)
-  const mcpChanged = userScope ? installCopilotMcpServer() : false
+  // Copilot CLI has native hooks available, so token-goat does not load or install MCP for it.
+  // If an MCP entry was previously installed, remove it so Copilot CLI uses hooks instead of MCP.
+  const mcpChanged = userScope && isCopilotMcpServerInstalled() ? uninstallCopilotMcpServer() : false
   if (!scopeDirExisted && fs.existsSync(scopeDir)) recordCreatedConfig(scopeDir)
   const { hooks, instructionsChanged: scopeInstructionsChanged } = syncCopilotHooksAndInstructions(opts)
   let instructionsChanged = scopeInstructionsChanged
@@ -333,7 +339,7 @@ function installCopilotCliScoped(opts: CopilotCliScopeOptions): CopilotCliInstal
     configPath: hooks.configPath,
     scriptPath: hooks.scriptPath,
     instructionsPath,
-    ...(userScope ? { mcpConfigPath: copilotMcpConfigPath() } : {}),
+    ...(userScope && isCopilotMcpServerInstalled() ? { mcpConfigPath: copilotMcpConfigPath() } : {}),
     alreadyInstalled: !hooks.changed && !instructionsChanged && !mcpChanged,
   }
 }

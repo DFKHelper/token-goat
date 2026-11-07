@@ -2,6 +2,9 @@
 
 import { z } from 'zod'
 
+import { detectHarness } from './bridges/registry.js'
+import { ENV_KEYS } from './constants.js'
+import { envBool } from './env.js'
 import { answeringMcpToolCall } from './mcp_client_text.js'
 import { displaySafeText } from './paths.js'
 
@@ -141,11 +144,29 @@ function isRequest(message: JsonRpcMessage): message is JsonRpcRequest {
   return 'method' in message && 'id' in message && message.id !== undefined && message.id !== null
 }
 
+/** True when the peer or the process environment names a hooks-capable harness, so hooks answer and the MCP tools stay off. `TOKEN_GOAT_MCP_WITH_HOOKS=1` is the one opt-out: it keeps the tools on for a user who wants MCP beside hooks, and the test suite sets it by default. */
+function hooksDisableMcpTools(clientInfo: unknown): boolean {
+  if (envBool(ENV_KEYS.MCP_WITH_HOOKS, false)) return false
+  const nameValue = (clientInfo as Record<string, unknown> | undefined)?.['name']
+  const clientName = typeof nameValue === 'string' ? nameValue.toLowerCase() : ''
+  const harness = detectHarness()
+  return (
+    harness === 'copilot_cli' ||
+    harness === 'claudecode' ||
+    clientName.includes('copilot') ||
+    clientName.includes('claude') ||
+    process.env['COPILOT_HOME'] !== undefined ||
+    process.env['CLAUDE_CODE_SESSION_ID'] !== undefined ||
+    process.env['TERM_PROGRAM'] === 'claude-code'
+  )
+}
+
 /** A tools-only MCP server. Handlers are registered up front and never change, so there is no `notifications/tools/list_changed` and the `tools` capability declares no `listChanged`. */
 export class McpServer {
   private readonly info: { name: string; version: string }
   private readonly tools = new Map<string, RegisteredTool>()
   private readonly handlers = new Map<string, ErasedHandler>()
+  private toolsDisabledByHooks = false
   private transport: McpTransport | undefined
   /** Set by the caller to learn when the peer hung up; `mcp-serve` waits on exactly this. */
   onclose: (() => void) | undefined
@@ -213,9 +234,11 @@ export class McpServer {
     const params = (message.params ?? {}) as Record<string, unknown>
     try {
       switch (method) {
-        case 'initialize':
+        case 'initialize': {
+          if (hooksDisableMcpTools(params['clientInfo'])) this.toolsDisabledByHooks = true
           await this.send({ jsonrpc: '2.0', id, result: this.initializeResult(params) })
           return
+        }
         case 'ping':
           await this.send({ jsonrpc: '2.0', id, result: {} })
           return
@@ -254,6 +277,7 @@ export class McpServer {
   }
 
   private listTools(): Record<string, unknown>[] {
+    if (this.toolsDisabledByHooks) return []
     return [...this.tools.values()].map((tool) => ({
       name: tool.name,
       ...(tool.description !== undefined ? { description: tool.description } : {}),
@@ -266,6 +290,9 @@ export class McpServer {
   }
 
   private async callTool(params: Record<string, unknown>): Promise<CallToolResult> {
+    if (this.toolsDisabledByHooks) {
+      return errorText('token-goat MCP tools are disabled because hooks are available for this harness; set TOKEN_GOAT_MCP_WITH_HOOKS=1 to keep them on')
+    }
     const name = params['name']
     if (typeof name !== 'string') return errorText('Invalid params: tools/call requires a string "name"')
     const tool = this.tools.get(name)
