@@ -306,6 +306,87 @@ describe('Visual Basic #Region sections', () => {
   })
 })
 
+describe('C# #region sections', () => {
+  const CSHARP = [
+    'namespace Demo;',
+    'public sealed class CacheService(CancellationToken token)',
+    '{',
+    '#region Members',
+    '  #region Properties',
+    '  public required string Name { get; init; }',
+    '  #endregion',
+    '  #region Async methods',
+    '  public async Task<int> LoadAsync()',
+    '  {',
+    '    await Task.Yield();',
+    '    return 1;',
+    '  }',
+    '  #endregion',
+    '  #region Nested types',
+    '  public sealed class Entry { public string Id { get; init; } = ""; }',
+    '  #endregion',
+    '  #region Comment and string examples',
+    '  /*',
+    '  #region Commented out',
+    '  */',
+    '  private const string raw = """',
+    '#region Raw string content',
+    '""";',
+    '  #endregion',
+    '}',
+    '#endregion',
+    '#endregion',
+    '#region Unclosed',
+    'public class Tail { }',
+  ].join('\n')
+
+  it('lists regions at every nesting depth without reading directive-like text in comments or raw strings', () => {
+    const file = tmpFile('Widget.cs', CSHARP)
+    expect(listSections(file)).toEqual([
+      'Members',
+      'Properties',
+      'Async methods',
+      'Nested types',
+      'Comment and string examples',
+      'Unclosed',
+    ])
+  })
+
+  it('ends each section at its matching #endregion and extends unclosed sections to EOF', () => {
+    const file = tmpFile('Widget.cs', CSHARP)
+    const members = readSection(file, 'Members')
+    expect([members?.lineStart, members?.lineEnd]).toEqual([4, 27])
+    expect(members?.content).toContain('public required string Name { get; init; }')
+    expect(members?.content).not.toContain('public class Tail')
+
+    const asyncMethods = readSection(file, 'Async methods')
+    expect([asyncMethods?.lineStart, asyncMethods?.lineEnd]).toEqual([8, 14])
+    expect(asyncMethods?.content).toContain('await Task.Yield();')
+
+    const unclosed = readSection(file, 'Unclosed')
+    expect([unclosed?.lineStart, unclosed?.lineEnd]).toEqual([29, 30])
+  })
+
+  it('does not sniff C# code lines as sections when the file has no regions', () => {
+    const file = tmpFile('Plain.cs', 'namespace Demo;\nclass CacheService { string Name { get; init; } }\n')
+    expect(listSections(file)).toEqual([])
+  })
+
+  it('continues masking a raw string opened after a multiline block comment closes', () => {
+    const source = [
+      '/* comment starts',
+      '   closes */ private const string raw = """',
+      '#region Hidden',
+      '""";',
+      '#region Visible',
+      'class Visible { }',
+      '#endregion',
+    ].join('\n')
+    const file = tmpFile('Edges.cs', source)
+    expect(listSections(file)).toEqual(['Visible'])
+  })
+})
+
 describe('listSections', () => {
   it('returns all headings at all nesting levels from a file', () => {
     const file = tmpFile('doc.md', MD)
