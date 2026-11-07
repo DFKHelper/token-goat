@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { drainOnce, makeIndexer, pendingEmbeddings, processDirtyBatch, clearRetryCount, runWorkerLoop } from '../src/worker.js'
+import { drainOnce, makeIndexer, pendingEmbeddings, processDirtyBatch, clearRetryCount, runWorkerLoop, hasRecentForegroundActivity } from '../src/worker.js'
 import { getDirtyPathsFor } from '../src/dirty_queue.js'
 import { claimWorkerPidFile, currentDaemonStamp, daemonEntryScript, drainHeartbeatPathFor, ensureWorkerAlive, isWorkerRunning, resolvePollIntervalMs, stopWorker, stopWorkerDetailed, workerLeftRunningNote, workerPidPath, workerStampPath } from '../src/worker_lifecycle.js'
 import * as parserModule from '../src/parser.js'
@@ -2098,6 +2098,9 @@ describe('runWorkerLoop cache sweep (regression)', () => {
     fs.writeFileSync(freshPath, '{}')
     const staleTime = new Date(Date.now() - 25 * 3600 * 1000)
     fs.utimesSync(stalePath, staleTime, staleTime)
+    // Writing the two blobs just touched the sessions directory, and its mtime is the foreground-activity signal that defers every sweep for FOREGROUND_ACTIVITY_YIELD_MS: backdate it so the gate reads this fixture as an idle machine, leaving the gate itself as shipped.
+    fs.utimesSync(sessionsDir, staleTime, staleTime)
+    expect(hasRecentForegroundActivity()).toBe(false)
 
     // Stop after the loop body (drain + sweep) has run exactly once, before it sleeps.
     let calls = 0
