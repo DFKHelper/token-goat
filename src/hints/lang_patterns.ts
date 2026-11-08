@@ -208,13 +208,15 @@ export function isBuildCommand(cmd: string): boolean {
   return BUILD_COMMAND_PATTERNS.some((re) => re.test(cmd))
 }
 
-/** Regex patterns for test-runner bash commands whose failing output is worth extracting via `token-goat failures` instead of the caller scrolling the raw dump. Kept separate from BUILD_COMMAND_PATTERNS / MONITORING_COMMAND_PATTERNS because it also needs to match the bare `npm test` / `yarn test` / `pnpm test` spellings that those two lists deliberately exclude as too generic to cache on every green run. */
+/** Patterns for test-runner Bash commands needing special output handling. Kept separate from BUILD_COMMAND_PATTERNS / MONITORING_COMMAND_PATTERNS because it also needs to match the bare `npm test` / `yarn test` / `pnpm test` spellings that those two lists deliberately exclude as too generic to cache on every green run. */
 export const TEST_RUNNER_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   // pytest (Python)
   /^pytest(?:\s|$)/i,
   // Jest / Vitest (direct or via npx)
   /^(?:npx\s+)?jest(?:\s|$)/i,
   /^(?:npx\s+)?vitest(?:\s+run|\s+watch)?(?:\s|$)/i,
+  // Node's built-in test runner
+  /^node(?:\.exe)?\s+--test(?:\s|$)/i,
   // Go
   /^go test(?:\s|$)/i,
   // Rust / Cargo
@@ -227,7 +229,7 @@ export const TEST_RUNNER_COMMAND_PATTERNS: ReadonlyArray<RegExp> = [
   /^(?:yarn|pnpm)(?:\s+run)? test(?:\s|$)/i,
 ]
 
-/** True when `cmd` invokes a test runner covered by `token-goat failures` (pytest, jest, vitest, go test, cargo test, or an npm/yarn/pnpm wrapper around one). @param cmd - The full bash command string. */
+/** True when `cmd` invokes a recognized test runner for post-hook handling (pytest, jest, vitest, Node's built-in test runner, dotnet test, go test, cargo test, or an npm/yarn/pnpm wrapper around one). @param cmd - The full bash command string. */
 export function isTestRunnerCommand(cmd: string): boolean {
   return TEST_RUNNER_COMMAND_PATTERNS.some((re) => re.test(cmd))
 }

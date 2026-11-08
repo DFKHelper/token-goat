@@ -663,7 +663,8 @@ export function extractRefs(root: TsNode, filePath: string, language: Language):
   const record = (name: string, node: TsNode): void => {
     if (name.length <= 1 || noise.has(name)) return
     const line = node.startPosition.row + 1
-    const key = `${name}\0${line}`
+    const context = stack.length > 0 ? (stack[stack.length - 1] ?? '') : ''
+    const key = `${name}\0${line}\0${context}`
     if (seen.has(key)) return
     seen.add(key)
     out.push({
@@ -671,7 +672,7 @@ export function extractRefs(root: TsNode, filePath: string, language: Language):
       name,
       line,
       col: node.startPosition.column,
-      context: stack.length > 0 ? (stack[stack.length - 1] ?? '') : '',
+      context,
     })
   }
 

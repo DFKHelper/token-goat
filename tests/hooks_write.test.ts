@@ -67,6 +67,7 @@ afterEach(() => {
   invalidateConfigCache()
 })
 
+// Synthetic line-diff bodies use .txt so the syntax preflight tests remain separate from rewrite-hint coverage.
 describe('preWriteRewriteHandler', () => {
   it('ignores non-Write events', async () => {
     const event = makeHookEvent({ toolName: 'Edit', toolInput: {} })
@@ -74,7 +75,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('passes through a Write to a brand-new file with zero comparison attempted', async () => {
-    const target = path.join(FILES_DIR, 'brand-new.ts')
+    const target = path.join(FILES_DIR, 'brand-new.txt')
     expect(fs.existsSync(target)).toBe(false)
     const result = await preWriteRewriteHandler(writeEvent(target, makeLines(100)))
     expect(result.hookType).toBe('pass')
@@ -82,7 +83,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('passes through when the file exists but is small (below write_rewrite_min_lines)', async () => {
-    const target = path.join(FILES_DIR, 'small.ts')
+    const target = path.join(FILES_DIR, 'small.txt')
     fs.writeFileSync(target, makeLines(10))
     // New content keeps only 1 of the 10 old lines -- would clearly fire on a large file, but this file is trivially small (default floor is 40 lines), so it must pass regardless.
     const newContent = 'line 0\n' + makeLines(9, 'brand-new-line').replace(/\n$/, '')
@@ -91,7 +92,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('fires the hint for a large file where most lines are unchanged', async () => {
-    const target = path.join(FILES_DIR, 'mostly-unchanged.ts')
+    const target = path.join(FILES_DIR, 'mostly-unchanged.txt')
     const oldLines: string[] = []
     for (let i = 0; i < 100; i++) oldLines.push(`line ${i}`)
     fs.writeFileSync(target, oldLines.join('\n') + '\n')
@@ -110,7 +111,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('does not fire (false positive) for a large file that is a genuine, mostly-different rewrite', async () => {
-    const target = path.join(FILES_DIR, 'genuine-rewrite.ts')
+    const target = path.join(FILES_DIR, 'genuine-rewrite.txt')
     fs.writeFileSync(target, makeLines(100, 'old'))
 
     // Entirely different line content -- a real rewrite, not a small edit.
@@ -121,7 +122,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('passes through identical content (no-op write)', async () => {
-    const target = path.join(FILES_DIR, 'identical.ts')
+    const target = path.join(FILES_DIR, 'identical.txt')
     const body = makeLines(100)
     fs.writeFileSync(target, body)
     const result = await preWriteRewriteHandler(writeEvent(target, body))
@@ -153,7 +154,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('fails open without reading the old file when it exceeds the byte-size cap, even though its line count is well under MAX_LINES_FOR_DIFF', async () => {
-    const target = path.join(FILES_DIR, 'huge-few-lines.ts')
+    const target = path.join(FILES_DIR, 'huge-few-lines.txt')
     // 200 lines of 30KB each (~6MB total) -- far over the 4MB byte cap, but only 200 lines, well under MAX_LINES_FOR_DIFF (4000). Pre-fix, the only gate was the line-count check performed AFTER the full file was already read and split, so this shape sailed straight through: full readFileSync of ~6MB, followed by a hint firing since 200 < 4000 and most lines are unchanged.
     const oldLines: string[] = []
     for (let i = 0; i < 200; i++) oldLines.push(`line ${i} ` + 'x'.repeat(30_000))
@@ -169,7 +170,7 @@ describe('preWriteRewriteHandler', () => {
 
   // Mutation guard: a lowered write_rewrite_min_lines / write_rewrite_unchanged_pct must actually change behavior, proving the fields drive this gate rather than a hardcoded literal.
   it('write_rewrite_min_lines wiring: a file too small at the default floor fires once the floor is lowered', async () => {
-    const target = path.join(FILES_DIR, 'wiring-min-lines.ts')
+    const target = path.join(FILES_DIR, 'wiring-min-lines.txt')
     const oldLines: string[] = []
     for (let i = 0; i < 20; i++) oldLines.push(`line ${i}`)
     fs.writeFileSync(target, oldLines.join('\n') + '\n')
@@ -191,7 +192,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('reports the file\'s real line count and unchanged percentage, not the ones a trailing newline inflates (regression: split on a final newline yields a phantom empty element, so a 40-line file was described as 41-line and 30 of 40 kept lines as 76%)', async () => {
-    const target = path.join(FILES_DIR, 'trailing-newline.ts')
+    const target = path.join(FILES_DIR, 'trailing-newline.txt')
     const oldLines: string[] = []
     for (let i = 0; i < 40; i++) oldLines.push(`line ${i}`)
     fs.writeFileSync(target, oldLines.join('\n') + '\n')
@@ -209,7 +210,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('counts a file one line short of write_rewrite_min_lines as short (regression: the phantom trailing element let a 39-line file clear a 40-line floor)', async () => {
-    const target = path.join(FILES_DIR, 'floor-off-by-one.ts')
+    const target = path.join(FILES_DIR, 'floor-off-by-one.txt')
     const oldLines: string[] = []
     for (let i = 0; i < 39; i++) oldLines.push(`line ${i}`)
     fs.writeFileSync(target, oldLines.join('\n') + '\n')
@@ -226,7 +227,7 @@ describe('preWriteRewriteHandler', () => {
   })
 
   it('write_rewrite_unchanged_pct wiring: raising the threshold suppresses a hint that fired at the default', async () => {
-    const target = path.join(FILES_DIR, 'wiring-pct.ts')
+    const target = path.join(FILES_DIR, 'wiring-pct.txt')
     const oldLines: string[] = []
     for (let i = 0; i < 100; i++) oldLines.push(`line ${i}`)
     fs.writeFileSync(target, oldLines.join('\n') + '\n')
@@ -278,7 +279,7 @@ describe('write_blind_drop guard', () => {
 
   describe('placeholder lines', () => {
     it('denies a Write whose new content carries a placeholder the file does not hold, naming the line', async () => {
-      const target = path.join(FILES_DIR, 'ph-existing.ts')
+      const target = path.join(FILES_DIR, 'ph-existing.txt')
       fs.writeFileSync(target, makeLines(50))
       const result = await preWriteRewriteHandler(writeEvent(target, 'line 0\n' + PLACEHOLDER + '\n'))
       expect(result.hookType).toBe('deny')
@@ -287,7 +288,7 @@ describe('write_blind_drop guard', () => {
     })
 
     it('lets the identical call through on the retry', async () => {
-      const target = path.join(FILES_DIR, 'ph-retry.ts')
+      const target = path.join(FILES_DIR, 'ph-retry.txt')
       fs.writeFileSync(target, makeLines(50))
       const event = writeEvent(target, 'line 0\n' + PLACEHOLDER + '\n')
       expect((await preWriteRewriteHandler(event)).hookType).toBe('deny')
@@ -295,15 +296,15 @@ describe('write_blind_drop guard', () => {
     })
 
     it('passes a placeholder line the file already holds', async () => {
-      const target = path.join(FILES_DIR, 'ph-already.ts')
+      const target = path.join(FILES_DIR, 'ph-already.txt')
       fs.writeFileSync(target, 'line 0\n' + PLACEHOLDER + '\nline 2\n')
       expect((await preWriteRewriteHandler(writeEvent(target, 'line 0\n' + PLACEHOLDER + '\nline 2 changed\n'))).hookType).toBe('pass')
     })
 
     it('flags a brand-new file that is a placeholder, and passes one that is not', async () => {
-      const target = path.join(FILES_DIR, 'ph-new.ts')
+      const target = path.join(FILES_DIR, 'ph-new.txt')
       expect((await preWriteRewriteHandler(writeEvent(target, 'import x from "x"\n// ... existing code ...\n'))).hookType).toBe('deny')
-      expect((await preWriteRewriteHandler(writeEvent(path.join(FILES_DIR, 'ph-new-clean.ts'), 'import x from "x"\n'))).hookType).toBe('pass')
+      expect((await preWriteRewriteHandler(writeEvent(path.join(FILES_DIR, 'ph-new-clean.txt'), 'import x from "x"\n'))).hookType).toBe('pass')
     })
 
     // HAND-DERIVED from the review of the first version: each line is ordinary code or prose that an earlier pattern took for a placeholder (a spread or rest binding written across lines, a comment that only starts like a marker, and markdown or SQL headings and bullets that share a comment lead).
@@ -325,7 +326,7 @@ describe('write_blind_drop guard', () => {
       '"""existing code"""',
       '-- remaining content',
     ])('does not mistake ordinary prose or code for a placeholder: %s', async (line) => {
-      const target = path.join(FILES_DIR, 'ph-prose-' + Buffer.from(line).toString('hex').slice(0, 40) + '.ts')
+      const target = path.join(FILES_DIR, 'ph-prose-' + Buffer.from(line).toString('hex').slice(0, 40) + '.txt')
       expect((await preWriteRewriteHandler(writeEvent(target, line + '\n'))).hookType).toBe('pass')
     })
 
@@ -342,28 +343,28 @@ describe('write_blind_drop guard', () => {
       '// ... remaining content ...',
       '... 29 more lines of recordEditedFile (46-74) folded -- token-goat read "x::y@38"',
     ])('recognizes the placeholder %s', async (line) => {
-      const target = path.join(FILES_DIR, 'ph-kind-' + Math.abs(line.length * 17 + line.charCodeAt(4)) + '.ts')
+      const target = path.join(FILES_DIR, 'ph-kind-' + Math.abs(line.length * 17 + line.charCodeAt(4)) + '.txt')
       expect((await preWriteRewriteHandler(writeEvent(target, line + '\n'))).hookType).toBe('deny')
     })
 
     it('checks an Edit new_string, passing when old_string already holds the marker', async () => {
-      const target = path.join(FILES_DIR, 'ph-edit.ts')
+      const target = path.join(FILES_DIR, 'ph-edit.txt')
       fs.writeFileSync(target, 'a\nb\n')
       expect((await preWriteRewriteHandler(editEvent('Edit', { file_path: target, old_string: 'b', new_string: '// ... existing code ...' }))).hookType).toBe('deny')
-      const held = path.join(FILES_DIR, 'ph-edit-held.ts')
+      const held = path.join(FILES_DIR, 'ph-edit-held.txt')
       fs.writeFileSync(held, 'a\n// ... existing code ...\n')
       expect((await preWriteRewriteHandler(editEvent('Edit', { file_path: held, old_string: '// ... existing code ...', new_string: '// ... existing code ...\nc' }))).hookType).toBe('pass')
     })
 
     it('checks every edit of a MultiEdit', async () => {
-      const target = path.join(FILES_DIR, 'ph-multi.ts')
+      const target = path.join(FILES_DIR, 'ph-multi.txt')
       fs.writeFileSync(target, 'a\nb\n')
       const edits = [{ old_string: 'a', new_string: 'A' }, { old_string: 'b', new_string: '// rest of file unchanged' }]
       expect((await preWriteRewriteHandler(editEvent('MultiEdit', { file_path: target, edits }))).hookType).toBe('deny')
     })
 
     it('reads a Copilot CLI create through the real payload normalization', async () => {
-      const target = path.join(FILES_DIR, 'ph-copilot.ts')
+      const target = path.join(FILES_DIR, 'ph-copilot.txt')
       fs.writeFileSync(target, makeLines(50))
       const wire = { tool_name: 'create', tool_input: { path: target, file_text: 'line 0\n' + PLACEHOLDER + '\n' } }
       const normalized = normalizePayload(wire, 'copilot_cli') as { tool_name: string; tool_input: Record<string, unknown> }
@@ -372,7 +373,7 @@ describe('write_blind_drop guard', () => {
     })
 
     it('reads a Copilot CLI edit through the real payload normalization', async () => {
-      const target = path.join(FILES_DIR, 'ph-copilot-edit.ts')
+      const target = path.join(FILES_DIR, 'ph-copilot-edit.txt')
       fs.writeFileSync(target, 'a\nb\n')
       // PROVENANCE: FORMAT-DERIVED, not a capture of an executed call: the system.message in a real Copilot CLI 1.0.88 session log (<user>/.copilot/session-state/<session>/events.jsonl) documents the edit tool with the arguments path, old_str and new_str. No executed edit call was present in the available logs, so this proves agreement with the producer's description and not that a shipped build sends it. Marker text is HAND-DERIVED.
       const wire = { tool_name: 'edit', tool_input: { path: target, old_str: 'b', new_str: '// ... existing code ...' } }
@@ -381,7 +382,7 @@ describe('write_blind_drop guard', () => {
     })
 
     it('reads the added lines of a Codex apply_patch, and passes a patch that adds none', async () => {
-      const target = path.join(FILES_DIR, 'ph-codex.ts')
+      const target = path.join(FILES_DIR, 'ph-codex.txt')
       fs.writeFileSync(target, 'a\nb\n')
       const patch = (added: string): string => `*** Begin Patch\n*** Update File: ${target}\n@@\n-b\n+${added}\n*** End Patch\n`
       const wire = (command: string) => ({ tool_name: 'apply_patch', tool_input: { command } })
@@ -395,7 +396,7 @@ describe('write_blind_drop guard', () => {
 
   describe('whole-file Write after a partial read', () => {
     it('denies a Write that drops lines outside the windows the session was shown, naming them', async () => {
-      const { target, lines } = seedPartialRead('bd-deny.ts', 'partial', [[1, 40]])
+      const { target, lines } = seedPartialRead('bd-deny.txt', 'partial', [[1, 40]])
       const result = await preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n'))
       expect(result.hookType).toBe('deny')
       if (result.hookType === 'deny') {
@@ -407,49 +408,49 @@ describe('write_blind_drop guard', () => {
     })
 
     it('lets the identical Write through on the retry', async () => {
-      const { target, lines } = seedPartialRead('bd-retry.ts', 'partial', [[1, 40]])
+      const { target, lines } = seedPartialRead('bd-retry.txt', 'partial', [[1, 40]])
       const event = writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n')
       expect((await preWriteRewriteHandler(event)).hookType).toBe('deny')
       expect((await preWriteRewriteHandler(event)).hookType).toBe('pass')
     })
 
     it('passes when the dropped lines were inside the served windows', async () => {
-      const { target, lines } = seedPartialRead('bd-seen.ts', 'partial', [[1, 40], [41, 100]])
+      const { target, lines } = seedPartialRead('bd-seen.txt', 'partial', [[1, 40], [41, 100]])
       expect((await preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n'))).hookType).toBe('pass')
     })
 
     it('passes when the file was never read in part (no read shape)', async () => {
-      const target = path.join(FILES_DIR, 'bd-noshape.ts')
+      const target = path.join(FILES_DIR, 'bd-noshape.txt')
       const lines = makeLines(100).trimEnd().split('\n')
       fs.writeFileSync(target, lines.join('\n') + '\n')
       expect((await preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n'))).hookType).toBe('pass')
     })
 
     it('passes when the file was read whole after the partial read', async () => {
-      const { target, lines } = seedPartialRead('bd-fullread.ts', 'partial', [[1, 40]])
+      const { target, lines } = seedPartialRead('bd-fullread.txt', 'partial', [[1, 40]])
       recordFileRead(target, true)
       expect((await preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n'))).hookType).toBe('pass')
     })
 
     it('passes when fewer than five unseen lines are dropped', async () => {
-      const { target, lines } = seedPartialRead('bd-few.ts', 'partial', [[1, 96]])
+      const { target, lines } = seedPartialRead('bd-few.txt', 'partial', [[1, 96]])
       // Mostly-unchanged content may draw the unrelated rewrite hint; only the guard is under test.
       expect((await preWriteRewriteHandler(writeEvent(target, lines.slice(0, 96).join('\n') + '\nline 96\nline 97 changed\n'))).hookType).not.toBe('deny')
       expect(vi.mocked(recordStat).mock.calls.some((c) => c[0] === 'write_blind_drop')).toBe(false)
     })
 
     it('treats a partial shape with no recorded windows as unknown and passes', async () => {
-      const { target, lines } = seedPartialRead('bd-nowindows.ts', 'partial', [])
+      const { target, lines } = seedPartialRead('bd-nowindows.txt', 'partial', [])
       expect((await preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n'))).hookType).toBe('pass')
     })
 
     it('denies after an outline-shaped read, which showed no lines at all', async () => {
-      const { target, lines } = seedPartialRead('bd-outline.ts', 'outline', [])
+      const { target, lines } = seedPartialRead('bd-outline.txt', 'outline', [])
       expect((await preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n'))).hookType).toBe('deny')
     })
 
     it('passes after a fold-shaped read, whose shown lines cannot be placed', async () => {
-      const { target, lines } = seedPartialRead('bd-fold.ts', 'fold', [])
+      const { target, lines } = seedPartialRead('bd-fold.txt', 'fold', [])
       expect((await preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n'))).hookType).toBe('pass')
     })
   })
@@ -457,28 +458,28 @@ describe('write_blind_drop guard', () => {
   describe('hints.write_blind_drop', () => {
     it('warn adds a note instead of refusing, and quiet hours silence it', async () => {
       setPolicy('warn')
-      const a = path.join(FILES_DIR, 'cfg-warn.ts')
+      const a = path.join(FILES_DIR, 'cfg-warn.txt')
       fs.writeFileSync(a, makeLines(10))
       expect((await preWriteRewriteHandler(writeEvent(a, PLACEHOLDER + '\n'))).hookType).toBe('context')
       setPolicy('warn', '00:00-23:59')
-      const b = path.join(FILES_DIR, 'cfg-warn-quiet.ts')
+      const b = path.join(FILES_DIR, 'cfg-warn-quiet.txt')
       fs.writeFileSync(b, makeLines(10))
       expect((await preWriteRewriteHandler(writeEvent(b, PLACEHOLDER + '\n'))).hookType).toBe('pass')
     })
 
     it('deny stays in force inside quiet hours', async () => {
       setPolicy('deny', '00:00-23:59')
-      const a = path.join(FILES_DIR, 'cfg-deny-quiet.ts')
+      const a = path.join(FILES_DIR, 'cfg-deny-quiet.txt')
       fs.writeFileSync(a, makeLines(10))
       expect((await preWriteRewriteHandler(writeEvent(a, PLACEHOLDER + '\n'))).hookType).toBe('deny')
     })
 
     it('off turns both checks off', async () => {
       setPolicy('off')
-      const a = path.join(FILES_DIR, 'cfg-off.ts')
+      const a = path.join(FILES_DIR, 'cfg-off.txt')
       fs.writeFileSync(a, makeLines(10))
       expect((await preWriteRewriteHandler(writeEvent(a, PLACEHOLDER + '\n'))).hookType).toBe('pass')
-      const { target, lines } = seedPartialRead('cfg-off-bd.ts', 'partial', [[1, 40]])
+      const { target, lines } = seedPartialRead('cfg-off-bd.txt', 'partial', [[1, 40]])
       expect((await preWriteRewriteHandler(writeEvent(target, lines.slice(0, 40).join('\n') + '\nnew tail\n'))).hookType).toBe('pass')
     })
   })
@@ -514,16 +515,22 @@ describe('siblingCandidates', () => {
 })
 
 describe('sibling-copy advice', () => {
+  function makePythonLines(n: number, prefix = 'line'): string {
+    const lines: string[] = []
+    for (let i = 0; i < n; i++) lines.push(`line_${i} = ${JSON.stringify(`${prefix} ${i}`)}`)
+    return lines.join('\n') + '\n'
+  }
+
   /** A directory (optionally nested under `parts`) holding `original` of `lines` lines. */
   function setup(original: string, lines: number, ...parts: string[]): { dir: string; original: string } {
     const dir = path.join(fs.mkdtempSync(path.join(FILES_DIR, 'sib-')), ...parts)
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, original), makeLines(lines))
+    fs.writeFileSync(path.join(dir, original), makePythonLines(lines))
     return { dir, original: path.join(dir, original) }
   }
 
-  /** `makeLines(n)` with its last line replaced, so the copy is 98% unchanged for n = 50. */
-  const nearCopy = (n: number): string => makeLines(n - 1) + 'changed last line\n'
+  /** `makePythonLines(n)` with its last line replaced, so the copy is 98% unchanged for n = 50. */
+  const nearCopy = (n: number): string => makePythonLines(n - 1) + 'changed_last_line = "changed last line"\n'
 
   it.each([
     ['solver_v2.py', 'solver.py'],
@@ -554,7 +561,7 @@ describe('sibling-copy advice', () => {
 
   it('passes a copy that shares too little with the original', async () => {
     const { dir } = setup('solver.py', 50)
-    expect((await preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), makeLines(50, 'other')))).hookType).toBe('pass')
+    expect((await preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), makePythonLines(50, 'other')))).hookType).toBe('pass')
   })
 
   it('passes when the original is below the minimum line count', async () => {
@@ -613,13 +620,13 @@ describe('sibling-copy advice', () => {
 
   it('leaves a Write to an existing versioned file to the rewrite check', async () => {
     const { dir } = setup('solver.py', 50)
-    fs.writeFileSync(path.join(dir, 'solver_v2.py'), makeLines(50, 'other'))
+    fs.writeFileSync(path.join(dir, 'solver_v2.py'), makePythonLines(50, 'other'))
     expect((await preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50)))).hookType).toBe('pass')
   })
 
   it('lets a placeholder refusal win over the advice', async () => {
     const { dir } = setup('solver.py', 50)
-    expect((await preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50) + '// ... existing code ...\n'))).hookType).toBe('deny')
+    expect((await preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), nearCopy(50) + '# ... existing code ...\n'))).hookType).toBe('deny')
   })
 
   it('reads a Copilot CLI create through the real payload normalization', async () => {
@@ -651,7 +658,7 @@ describe('a token-goat read or section call counts as lines the session was show
   const dropping = (from: number, to: number, tail: string): string => [...TWO_HUNDRED.slice(0, from - 1), ...TWO_HUNDRED.slice(to), tail].join('\n') + '\n'
 
   it('lets a changed Write through once the named range was read, and still refuses before', async () => {
-    const target = seed('ext-range.ts', TWO_HUNDRED.join('\n') + '\n', 'partial', [[1, 100]])
+    const target = seed('ext-range.txt', TWO_HUNDRED.join('\n') + '\n', 'partial', [[1, 100]])
     expect((await preWriteRewriteHandler(writeEvent(target, dropping(150, 170, 'first attempt')))).hookType).toBe('deny')
     await postBash(`token-goat read "${normalizePath(target)}@150-170"`)
     vi.mocked(recordStat).mockClear()
@@ -660,7 +667,7 @@ describe('a token-goat read or section call counts as lines the session was show
   })
 
   it('still refuses when the read was narrowed by a flag, so its extent says nothing about what was shown', async () => {
-    const target = seed('ext-grep.ts', TWO_HUNDRED.join('\n') + '\n', 'partial', [[1, 100]])
+    const target = seed('ext-grep.txt', TWO_HUNDRED.join('\n') + '\n', 'partial', [[1, 100]])
     await postBash(`token-goat read "${normalizePath(target)}@150-170" --grep value`)
     expect((await preWriteRewriteHandler(writeEvent(target, dropping(150, 170, 'changed')))).hookType).toBe('deny')
   })
@@ -679,11 +686,11 @@ describe('a token-goat read or section call counts as lines the session was show
   it('counts a symbol read after an outline-shaped read', async () => {
     const body = ['export function alpha(): number {', ...Array.from({ length: 12 }, (_, i) => `  const a${i} = ${i}`), '  return 1', '}', '', 'export function beta(): number {', ...Array.from({ length: 12 }, (_, i) => `  const b${i} = ${i}`), '  return 2', '}']
     const target = seed('ext-symbol.ts', body.join('\n') + '\n', 'outline', [])
-    const withoutAlpha = [...body.slice(15), 'added'].join('\n') + '\n'
+    const withoutAlpha = [...body.slice(15), '// added'].join('\n') + '\n'
     expect((await preWriteRewriteHandler(writeEvent(target, withoutAlpha))).hookType).toBe('deny')
     await postBash(`token-goat read "${normalizePath(target)}::alpha"`)
     vi.mocked(recordStat).mockClear()
-    expect((await preWriteRewriteHandler(writeEvent(target, withoutAlpha + 'and more\n'))).hookType).not.toBe('deny')
+    expect((await preWriteRewriteHandler(writeEvent(target, withoutAlpha + '// and more\n'))).hookType).not.toBe('deny')
     expect(vi.mocked(recordStat).mock.calls.some((c) => c[0] === 'write_blind_drop')).toBe(false)
   })
 })
@@ -729,4 +736,43 @@ describe('the identical retry across two hook processes', () => {
     expect(run()).toContain('"decision":"block"')
     expect(run().trim()).toBe('{}')
   }, 120_000)
+})
+
+describe('Write/Edit syntax preflight', () => {
+  it('rejects invalid syntax before a Write can create the target', async () => {
+    const filePath = path.join(FILES_DIR, 'invalid.json')
+    const result = await preWriteRewriteHandler(writeEvent(filePath, '{"value": }\n'))
+
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') expect(result.message).toMatch(/line 1, column \d+.*token/)
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
+
+  it('rejects an Edit whose resulting TypeScript file is syntactically invalid', async () => {
+    const filePath = path.join(FILES_DIR, 'edit-invalid.ts')
+    fs.writeFileSync(filePath, 'const value = 1;\n')
+    const event = makeHookEvent({
+      eventName: 'pre_tool_use',
+      toolName: 'Edit',
+      toolInput: { file_path: filePath, old_string: '1', new_string: ';' },
+      sessionId: 'test',
+    })
+
+    const result = await preWriteRewriteHandler(event)
+
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') expect(result.message).toMatch(/line 1, column \d+.*token/)
+  })
+})
+
+describe('Write safety preflight', () => {
+  it('rejects an obvious mock credential in production content', async () => {
+    const result = await preWriteRewriteHandler(
+      writeEvent(path.join(FILES_DIR, 'config.ts'), 'const API_KEY = "mock-placeholder";\n'),
+    )
+
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') expect(result.message).toContain('mock-data-leak')
+    if (result.hookType === 'deny') expect(result.message).toMatch(/line 1, column \d+, token/)
+  })
 })

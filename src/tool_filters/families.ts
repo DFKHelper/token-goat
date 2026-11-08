@@ -1,31 +1,34 @@
-// Filter family factories: shared compression skeletons that multiple per-tool filters configure rather than reimplement. The first family is the Node test runner (Jest / Mocha / Ava / Tap, Vitest), whose output all shares the same shape — per-file PASS/FAIL headers, indented per-test pass ticks, collapsible console/stdout blocks, and a trailing summary. The Python port had these as separate hand-written `compress` loops; here one loop, parameterised by a few regexes and nouns, drives every member so the behaviour stays identical and the next runner is a config object, not another loop.
+// Filter family factories: shared compression skeletons that multiple per-tool filters configure rather than reimplement. The first family is the Node test runner (Jest / Mocha / Ava / Tap, Vitest, and Node's built-in runner), whose output shares per-test pass/fail lines, collapsible console/stdout blocks, and a trailing summary. The Python port had these as separate hand-written `compress` loops; here one loop, parameterised by a few regexes and nouns, drives every member so the behaviour stays identical and the next runner is a config object, not another loop.
 //
 // The second family is the simple package-manager "line-drop" filter: combine stdout+stderr, walk lines dropping any that match a set of noise regexes (each with its own count note), optionally first checking a keep-regex that short-circuits dropping. Covers Bundler and Pub, which share this structure.
 
 import { ToolFilter } from './base.js'
 import { ERROR_SIGNAL_RE, maybeNote, squeezeBlankLines } from './helpers.js'
+import { externalStackFrameNote, isExternalStackTraceFrame } from './stack_trace.js'
 
 /** `''` for a count of 1, otherwise the plural suffix (default `'s'`). */
 export function plural(n: number, suffix = 's'): string {
   return n === 1 ? '' : suffix
 }
 
-/** Configuration for a Node test-runner filter (see {@link makeNodeTestRunnerFilter}). The five regexes classify each output line; the two nouns label the collapse notes. `failuresSection` opts into Jest's `--verbose` duplicate-`Failures:` block handling (Vitest has no such section). */
+/** Configuration for a Node test-runner filter (see {@link makeNodeTestRunnerFilter}). The regexes classify output lines; the optional argv predicate narrows shared binaries like `node`. The two nouns label the collapse notes. `failuresSection` opts into Jest's `--verbose` duplicate-`Failures:` block handling (Vitest has no such section). */
 export interface NodeTestRunnerConfig {
   /** Filter name (marker + stats key), e.g. `'jest'`. */
   readonly name: string
   /** Command basenames this filter handles. */
   readonly binaries: readonly string[]
-  /** File-level PASS header (e.g. `PASS src/foo.test.js` or `✓ file (12ms)`) → counted. */
+  /** Additional argv condition for binaries that also serve non-test commands. */
+  readonly argvPredicate?: (argv: string[]) => boolean
+  /** Passing file/test line (e.g. `PASS src/foo.test.js` or `✔ test name`) → counted. */
   readonly passFileRe: RegExp
-  /** File-level FAIL header → opens a verbatim fail block. */
+  /** Failure header → opens a fail block whose app frames remain verbatim. */
   readonly failFileRe: RegExp
   /** Summary line (`Test Suites:`, `Test Files`, `Duration`, …) → always kept. */
   readonly summaryRe: RegExp
   /** Indented per-test pass tick (`✓ should …`) → counted. */
   readonly testTickRe: RegExp
   /** Output-block header (`console.log`, `stdout |`) → block collapsed to a count. */
-  readonly outputHdrRe: RegExp
+  readonly outputHdrRe?: RegExp
   /** Middle word(s) of the block-collapse note, e.g. `'console output'` or `'stdout'`. */
   readonly outputNoun: string
   /** Singular noun for the pass-file note, e.g. `'PASS file'` or `'passing file'`. */
@@ -198,11 +201,15 @@ export function makeLinterFilter(cfg: LinterFilterConfig): ToolFilter {
   })()
 }
 
-/** Build a {@link ToolFilter} for a Node test runner from `cfg`. The returned filter overrides `compress` directly (test runners exit non-zero on failures, so the base error-passthrough must stay off — FAIL blocks are preserved by the loop, not dumped raw). The loop is a faithful port of the Python `JestFilter` / `VitestFilter` `compress` methods, unified: file PASS headers and per-test ticks collapse to counts, FAIL blocks pass through verbatim until a blank line, summary lines are always kept, and console/stdout blocks collapse to a single count line. All state is per-call (locals), so a single shared instance is concurrency-safe. */
+/** Build a {@link ToolFilter} for a Node test runner from `cfg`. The returned filter overrides `compress` directly (test runners exit non-zero on failures, so the base error-passthrough must stay off — failure blocks are preserved while external stack frames collapse to a count). The loop is a faithful port of the Python `JestFilter` / `VitestFilter` `compress` methods, unified: passing lines and per-test ticks collapse to counts, application frames remain verbatim, summary lines are always kept, and console/stdout blocks collapse to a single count line. All state is per-call (locals), so a single shared instance is concurrency-safe. */
 export function makeNodeTestRunnerFilter(cfg: NodeTestRunnerConfig): ToolFilter {
   return new (class extends ToolFilter {
     readonly name = cfg.name
     override readonly binaries = new Set(cfg.binaries)
+
+    override matches(argv: string[]): boolean {
+      return super.matches(argv) && (cfg.argvPredicate?.(argv) ?? true)
+    }
 
     override compress(stdout: string, stderr: string, _exitCode: number, _argv: string[]): string {
       const merged = this.combineOutput(stdout, stderr)
@@ -215,6 +222,12 @@ export function makeNodeTestRunnerFilter(cfg: NodeTestRunnerConfig): ToolFilter 
       let inBlock = false
       let inFailuresSection = false
       let failuresDropped = 0
+      let externalFramesHidden = 0
+
+      const flushExternalFrames = (): void => {
+        if (externalFramesHidden) kept.push(externalStackFrameNote(externalFramesHidden))
+        externalFramesHidden = 0
+      }
 
       const flush = (): void => {
         if (blockLines) {
@@ -228,6 +241,7 @@ export function makeNodeTestRunnerFilter(cfg: NodeTestRunnerConfig): ToolFilter 
         // Jest --verbose duplicate "Failures:" section: drop the header and its repeated failure bodies (already shown inline); a summary line ends it.
         if (cfg.failuresSection) {
           if (line.trim() === 'Failures:') {
+            flushExternalFrames()
             flush()
             inFail = false
             inFailuresSection = true
@@ -253,6 +267,7 @@ export function makeNodeTestRunnerFilter(cfg: NodeTestRunnerConfig): ToolFilter 
         }
         // File-level FAIL header → open a verbatim fail block.
         if (cfg.failFileRe.test(line)) {
+          flushExternalFrames()
           flush()
           inFail = true
           kept.push(line)
@@ -260,23 +275,32 @@ export function makeNodeTestRunnerFilter(cfg: NodeTestRunnerConfig): ToolFilter 
         }
         // Summary lines are always kept (and end any open output block).
         if (cfg.summaryRe.test(line)) {
+          flushExternalFrames()
           flush()
           kept.push(line)
+          inFail = false
           continue
         }
         // Blank line ends a fail block.
         if (!line.trim() && inFail) {
+          flushExternalFrames()
           inFail = false
           kept.push(line)
           continue
         }
         // Inside a fail block: pass everything through verbatim.
         if (inFail) {
+          if (isExternalStackTraceFrame(line)) {
+            externalFramesHidden += 1
+            continue
+          }
+          flushExternalFrames()
           kept.push(line)
           continue
         }
         // Output-block header (console.* / stdout |) → start collapsing.
-        if (cfg.outputHdrRe.test(line)) {
+        if (cfg.outputHdrRe?.test(line)) {
+          flushExternalFrames()
           flush()
           inBlock = true
           blockLines = 1

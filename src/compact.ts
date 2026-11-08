@@ -5,7 +5,7 @@ import * as path from 'node:path'
 import { detectHarness } from './bridges/registry.js'
 import { isAutoTriggerMultiplierExplicit, loadConfig } from './config.js'
 import { dataDir } from './constants.js'
-import { tokenGoatHome } from './disk_cache.js'
+import { DEFAULT_MAX_AGE_MS, tokenGoatHome } from './disk_cache.js'
 import { ensureDirSync, atomicWriteText, normalizePathForwardSlash } from './util.js'
 import { estimateTokens } from './overflow_guard.js'
 import { readSessionStateFile, sessionFileStem, AGENT_SALT_MARKER } from './session_store.js'
@@ -217,6 +217,30 @@ export function getContextPressure(cache?: SessionCacheObject, transcriptPath?: 
   } catch {
     return { fillFraction: 0.0, tier: 'cool' }
   }
+}
+
+/**
+ * Give the PreCompact summarizer pressure-tiered rules for rolling context cleanup.
+ * The recovery channel is intentionally excluded: it runs after the summary is written
+ * and carries declarative metadata, not instructions.
+ */
+export function getRollingCompactionDirective(pressure: ContextPressure): string {
+  const ttlHours = DEFAULT_MAX_AGE_MS / (60 * 60 * 1000)
+  const ttl = Number.isInteger(ttlHours) ? `${ttlHours}h` : `${ttlHours.toFixed(1)}h`
+  const pressureRule: Record<ContextPressure['tier'], string> = {
+    cool: 'Retain recent stdout, test logs, and read-cache bodies; omit only byte-identical output duplicates.',
+    warm: 'Replace successful test logs with command, final result, and counts; retain failure output, failure diagnostics, and unique diagnostics. For repeated unchanged reads, keep only the latest unchanged whole-file read.',
+    hot: 'Discard superseded successful test logs and keep only a concise latest result per test command, plus unresolved failures and unique diagnostics. Collapse repeated reads of unchanged files, keeping only the latest unchanged whole-file read.',
+    critical: 'At critical pressure, discard raw test logs and stdout once their outcomes are summarized; retain unresolved failure evidence and unique diagnostics. Replace repeated unchanged read bodies with one concise summary.',
+  }
+
+  return [
+    `### Rolling compaction (${pressure.tier} context pressure)`,
+    `Remove expired tool stdout receipts (past the ${ttl} cache TTL) and receipts no longer recallable; do not preserve dead receipt IDs.`,
+    pressureRule[pressure.tier],
+    'Never prune edited-file state or surgical reads.',
+    'Always preserve core findings, decisions, notes, user constraints, active task state (goal, status, blockers, and next steps), and unique failure evidence.',
+  ].join('\n')
 }
 
 /** Get the effective auto_trigger_multiplier for the detected harness. */

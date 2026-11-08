@@ -51,6 +51,7 @@ import {
   type ScopeRequest,
   buildFileSymCache,
   resolveCallers,
+  queryCallGraphCallers,
   refBlindKindVerdict,
 } from './graph_traversal.js'
 import { compareImpactHops } from './impact_order.js'
@@ -257,9 +258,21 @@ export function runCallChain(opts: CallChainOptions): number {
   let suppressedCount = 0
 
   const callersOf: CallersOfFn = (n: string): string[] => {
+    if (fileHint === undefined || n !== name) {
+      const names = new Set<string>()
+      for (const caller of queryCallGraphCallers({ name: n, limit: UNBOUNDED_REF_LIMIT, rootDir })) {
+        if (opts.excludeTests === true && isTestFile(caller.file)) {
+          suppressedCount += 1
+          continue
+        }
+        if (caller.caller !== '(module scope)') names.add(caller.caller)
+      }
+      return [...names]
+    }
+
     const refs = queryRefs({ name: n, limit: UNBOUNDED_REF_LIMIT, rootDir })
     if (refs.length === 0) return []
-    const scoped = fileHint !== undefined && n === name ? scopeRefsToDefinition(refs, n, fileHint, getSyms, def) : refs
+    const scoped = scopeRefsToDefinition(refs, n, fileHint, getSyms, def)
     const names = new Set<string>()
     for (const ref of scoped) {
       if (opts.excludeTests === true && isTestFile(ref.filePath)) {

@@ -209,7 +209,7 @@ export function shimBundlePath(shimFile: string, rel: string, platform: NodeJS.P
   return p.resolve(p.dirname(shimFile), rel)
 }
 
-/** Looks `name` up on PATH. `resolveOnPath` appends every PATHEXT extension to the whole name, so a name that already carries one (`token-goat.cmd`, `node.exe`) is never found by it; such a name is looked up as written, in each PATH directory except the current one. */
+/** Looks `name` up on PATH with the shared resolver first, then retries a PATHEXT-qualified name verbatim in each non-empty, non-dot PATH entry. */
 export function findOnPath(name: string): string | null {
   const hit = resolveOnPath(name)
   if (hit !== null) return hit

@@ -105,6 +105,18 @@ describe('postReadHandler withholds already-served stretches of a Read', () => {
     expect(out.updatedOutput).toContain('token-goat bash-output ')
   })
 
+  it('deduplicates multiple previously served windows in one later read', () => {
+    deliver({ offset: 1, limit: 12 })
+    deliver({ offset: 29, limit: 12 })
+    const out = readBack(rendered())
+
+    expect(out.hookType).toBe('rewriteOutput')
+    if (out.hookType !== 'rewriteOutput') return
+    expect((out.updatedOutput ?? '').split(NOTICE)).toHaveLength(3)
+    for (const n of [1, 6, 12, 29, 34, 40]) expect(out.updatedOutput).not.toContain(bodyLine(n, 'alpha'))
+    for (const n of [13, 20, 28]) expect(out.updatedOutput).toContain(bodyLine(n, 'alpha'))
+  })
+
   it('elides a complete repeat of a short explicit range without fragmenting it', () => {
     deliver({ offset: 1, limit: 10 })
     const out = readBack(rendered(1, 10), { offset: 1, limit: 10 })

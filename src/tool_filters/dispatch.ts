@@ -26,7 +26,7 @@ import { TEST_RUNNER_FILTERS } from './test_runners.js'
 
 /** Ordered per-tool filter registry. Filled batch by batch; `selectFilter` returns null (and the hook leaves the command unwrapped) for anything no entry matches. Order matters: more specific filters must precede the generic package-manager handlers they overlap with — each batch documents its placement. */
 export const TOOL_FILTERS: ToolFilter[] = [
-  // Batch A — test runners. Node family (jest/mocha/ava/tap, vitest) first, then the bespoke runners (pytest, go test) that need their own structural logic. No overlap with later batches; safe at the head — except `go-test`, which must precede any future `go build`/`go run` filter (both match `go`), so it is registered here ahead of the build batch.
+  // Batch A — test runners. Node family (jest/mocha/ava/tap, vitest, node --test) first, then the bespoke runners (pytest, go test) that need their own structural logic. No overlap with later batches; safe at the head — except `go-test`, which must precede any future `go build`/`go run` filter (both match `go`), so it is registered here ahead of the build batch.
   ...TEST_RUNNER_FILTERS,
   pytestFilter,
   goTestFilter,

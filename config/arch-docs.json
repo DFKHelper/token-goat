@@ -111,6 +111,7 @@
     ["src/session_start_owed.ts","Session, Compaction, and Audit"],
     ["src/session_store.ts","Session, Compaction, and Audit"],
     ["src/session_store_schema.ts","Session, Compaction, and Audit"],
+    ["src/shared_memory_db.ts","Session, Compaction, and Audit"],
     ["src/skill_cache.ts","Session, Compaction, and Audit"],
     ["src/skill_section_spec.ts","Session, Compaction, and Audit"],
     ["src/snapshots.ts","Session, Compaction, and Audit"],

@@ -21,7 +21,7 @@ import { clearModuleCaches } from '../src/reset.js'
 import { setTsModuleForTesting } from '../src/ts_compiler.js'
 import { setSkillOutputsDirForTesting } from '../src/skill_cache.js'
 import { normalizePath } from '../src/paths.js'
-import { GLOBAL_SCHEMA_SQL } from '../src/stats.js'
+import { GLOBAL_SCHEMA_SQL, HOOK_PROBE_ENV } from '../src/stats.js'
 import { PARSER_FINGERPRINT } from '../src/parser_fingerprint.js'
 import { MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import { checkSymbolBodySize, OVERSIZED_BODY_PROBE_SQL } from '../src/symbol_body_probe.js'
@@ -1418,6 +1418,104 @@ describe('cli_doctor', () => {
       fs.writeFileSync(configPath, JSON.stringify({ version: 1, hooks }))
     }
 
+    describe.skipIf(process.platform !== 'win32')('PATHEXT PATH resolution', () => {
+      function withWindowsPath<T>(binDir: string, run: () => T): T {
+        const savedPath = process.env['PATH']
+        const savedPathExt = process.env['PATHEXT']
+        process.env['PATH'] = binDir
+        process.env['PATHEXT'] = '.COM;.EXE;.BAT;.CMD'
+        try {
+          return run()
+        } finally {
+          if (savedPath === undefined) delete process.env['PATH']
+          else process.env['PATH'] = savedPath
+          if (savedPathExt === undefined) delete process.env['PATHEXT']
+          else process.env['PATHEXT'] = savedPathExt
+        }
+      }
+
+      it('resolves a direct node.exe entry from PATH before probing', async () => {
+        const stubPath = path.join(tempDir, 'direct-path-hook.js')
+        fs.writeFileSync(stubPath, "process.stdout.write('{}')")
+        const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+        fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+        const configPath = path.join(tempDir, 'token-goat.json')
+        writeConfig(configPath, {
+          preToolUse: [{ type: 'command', exec: 'node.exe', args: [stubPath], timeoutSec: 60 }],
+        })
+
+        const { spawnSync } = await import('child_process')
+        const mockedSpawnSync = vi.mocked(spawnSync)
+        mockedSpawnSync.mockClear()
+
+        const result = withWindowsPath(path.dirname(process.execPath), () => checkCopilotCli(configPath, scriptPath))
+
+        expect(result?.status).toBe('ok')
+        const probe = mockedSpawnSync.mock.calls.find(([command]) => command === 'node.exe')
+        expect(probe?.[1]).toEqual([stubPath])
+      })
+
+      it('resolves a native tg-hook.exe entry from PATH before probing', async () => {
+        const binDir = path.join(tempDir, 'bin')
+        fs.mkdirSync(binDir)
+        fs.writeFileSync(path.join(binDir, 'tg-hook.exe'), 'native executable placeholder')
+        const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+        fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+        const configPath = path.join(tempDir, 'token-goat.json')
+        const args = ['--harness', 'copilot_cli', '--', process.execPath, scriptPath, 'preToolUse']
+        writeConfig(configPath, { preToolUse: [{ type: 'command', exec: 'tg-hook.exe', args, timeoutSec: 60 }] })
+
+        const { spawnSync } = await import('child_process')
+        const mockedSpawnSync = vi.mocked(spawnSync)
+        mockedSpawnSync.mockClear()
+        mockedSpawnSync.mockReturnValueOnce({
+          pid: process.pid,
+          output: [],
+          stdout: '{}',
+          stderr: '',
+          status: 0,
+          signal: null,
+        })
+
+        const result = withWindowsPath(binDir, () => checkCopilotCli(configPath, scriptPath))
+
+        expect(result?.status).toBe('ok')
+        const probe = mockedSpawnSync.mock.calls.find(([command]) => command === 'tg-hook.exe')
+        expect(probe?.[1]).toEqual(args)
+      })
+
+      it('resolves the wrapped node.exe entry from PATH before probing the native client', async () => {
+        const binDir = path.join(tempDir, 'bin')
+        fs.mkdirSync(binDir)
+        fs.writeFileSync(path.join(binDir, 'node.exe'), 'wrapped node executable placeholder')
+        const nativeBin = path.join(tempDir, 'tg-hook.exe')
+        fs.writeFileSync(nativeBin, 'native executable placeholder')
+        const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+        fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+        const configPath = path.join(tempDir, 'token-goat.json')
+        const args = ['--harness', 'copilot_cli', '--', 'node.exe', scriptPath, 'preToolUse']
+        writeConfig(configPath, { preToolUse: [{ type: 'command', exec: nativeBin, args, timeoutSec: 60 }] })
+
+        const { spawnSync } = await import('child_process')
+        const mockedSpawnSync = vi.mocked(spawnSync)
+        mockedSpawnSync.mockClear()
+        mockedSpawnSync.mockReturnValueOnce({
+          pid: process.pid,
+          output: [],
+          stdout: '{}',
+          stderr: '',
+          status: 0,
+          signal: null,
+        })
+
+        const result = withWindowsPath(binDir, () => checkCopilotCli(configPath, scriptPath))
+
+        expect(result?.status).toBe('ok')
+        const probe = mockedSpawnSync.mock.calls.find(([command]) => command === nativeBin)
+        expect(probe?.[1]).toEqual(args)
+      })
+    })
+
     it('returns null when Copilot CLI integration is not installed', () => {
       const configPath = path.join(tempDir, 'token-goat.json')
       const scriptPath = path.join(tempDir, 'token-goat-shim.js')
@@ -1444,6 +1542,82 @@ describe('cli_doctor', () => {
       const result = checkCopilotCli(configPath, scriptPath)
       expect(result?.status).toBe('fail')
       expect(result?.message).toContain('no preToolUse entry')
+    })
+
+    it('probes direct exec and args without a shell and returns valid JSON', async () => {
+      const stubPath = path.join(tempDir, 'direct-hook.js')
+      fs.writeFileSync(stubPath, "process.stdout.write('{}')")
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+      const configPath = path.join(tempDir, 'token-goat.json')
+      writeConfig(configPath, {
+        preToolUse: [{ type: 'command', exec: process.execPath, args: [stubPath], timeoutSec: 60 }],
+      })
+
+      const { spawnSync } = await import('child_process')
+      const mockedSpawnSync = vi.mocked(spawnSync)
+      mockedSpawnSync.mockClear()
+
+      const result = checkCopilotCli(configPath, scriptPath)
+
+      expect(result).toEqual({ name: 'Copilot CLI', status: 'ok', message: 'preToolUse hook invokes cleanly and returns valid JSON' })
+      const probe = mockedSpawnSync.mock.calls.find(([command]) => command === process.execPath)
+      expect(probe).toBeDefined()
+      expect(probe?.[1]).toEqual([stubPath])
+      expect(probe?.[2]).toMatchObject({
+        input: expect.any(String),
+        encoding: 'utf8',
+        timeout: 60_000,
+        windowsHide: true,
+        env: expect.objectContaining({ [HOOK_PROBE_ENV]: '1' }),
+      })
+      expect(probe?.[2]).not.toHaveProperty('shell')
+    })
+
+    it.each([
+      { field: 'exec', exec: 'bad\0exec', args: [] },
+      { field: 'argument', exec: process.execPath, args: ['bad\0argument'] },
+    ])('rejects a NUL in direct $field before probing', async ({ field, exec, args }) => {
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+      const configPath = path.join(tempDir, 'token-goat.json')
+      writeConfig(configPath, { preToolUse: [{ type: 'command', exec, args, timeoutSec: 60 }] })
+
+      const { spawnSync } = await import('child_process')
+      const mockedSpawnSync = vi.mocked(spawnSync)
+      mockedSpawnSync.mockClear()
+
+      let result: ReturnType<typeof checkCopilotCli> | undefined
+      let thrown: unknown
+      try {
+        result = checkCopilotCli(configPath, scriptPath)
+      } catch (error) {
+        thrown = error
+      }
+
+      expect(thrown, `direct ${field} NUL should be rejected before spawnSync`).toBeUndefined()
+      expect(result?.status).toBe('fail')
+      expect(result?.message).toContain('NUL')
+      expect(mockedSpawnSync).not.toHaveBeenCalled()
+    })
+
+    it('checks a direct native binary and its wrapped node path before probing', () => {
+      const scriptPath = path.join(tempDir, 'token-goat-shim.js')
+      fs.writeFileSync(scriptPath, COPILOT_CLI_HOOK_SCRIPT)
+      const configPath = path.join(tempDir, 'token-goat.json')
+      const nativeBin = path.join(tempDir, 'tg-hook.exe')
+      const wrappedNode = path.join(tempDir, 'missing-node.exe')
+      const args = ['--harness', 'copilot_cli', '--', wrappedNode, scriptPath, 'preToolUse']
+      writeConfig(configPath, { preToolUse: [{ type: 'command', exec: nativeBin, args, timeoutSec: 60 }] })
+
+      const missingBinary = checkCopilotCli(configPath, scriptPath)
+      expect(missingBinary?.status).toBe('fail')
+      expect(missingBinary?.message).toContain(`native hook client binary that no longer exists (${nativeBin})`)
+
+      fs.writeFileSync(nativeBin, 'test executable placeholder')
+      const missingWrappedNode = checkCopilotCli(configPath, scriptPath)
+      expect(missingWrappedNode?.status).toBe('fail')
+      expect(missingWrappedNode?.message).toContain(`node binary that no longer exists (${wrappedNode})`)
     })
 
     it('returns fail when the baked node binary no longer exists (stale after an nvm/fnm/volta upgrade)', () => {
@@ -1595,6 +1769,28 @@ describe('cli_doctor', () => {
       expect(result?.status).toBe('warn')
       expect(result?.message).toContain('not written by token-goat on this machine')
       expect(result?.message).toContain('token-goat install --copilot --local')
+    })
+
+    it('does not run a project-scope direct exec entry until the owner ledger records the config', () => {
+      const { configPath, scriptPath, marker } = writeProjectHooks()
+      const hookPath = path.join(path.dirname(configPath), 'hook.js')
+      writeConfig(configPath, {
+        preToolUse: [{ type: 'command', exec: process.execPath, args: [hookPath], timeoutSec: 60 }],
+      })
+
+      const unowned = checkCopilotCli(configPath, scriptPath, 'project')
+      expect(fs.existsSync(marker)).toBe(false)
+      expect(unowned?.status).toBe('warn')
+      expect(unowned?.message).toContain('not written by token-goat on this machine')
+
+      recordCreatedConfig(configPath)
+      try {
+        const owned = checkCopilotCli(configPath, scriptPath, 'project')
+        expect(fs.existsSync(marker)).toBe(true)
+        expect(owned).toEqual({ name: 'Copilot CLI (project)', status: 'ok', message: 'preToolUse hook invokes cleanly and returns valid JSON' })
+      } finally {
+        takeCreatedConfig(configPath)
+      }
     })
 
     it('runs a project-scope hook command once the ledger records that this machine wrote the config', () => {

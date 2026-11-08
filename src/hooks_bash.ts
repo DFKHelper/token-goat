@@ -91,6 +91,7 @@ import {
   compressionOptedOut,
 } from './bash_extractors.js'
 import { countTextLines, SLICE_ESTIMATE_SCAN_CAP_BYTES } from './hooks_read_slice.js'
+import { findShellSafetyViolation } from './write_guards.js'
 
 /** Token budget for an inline interpreter file read run under the wrapper: room for one registry entry or config block printed whole, well under a whole-file dump. */
 const INTERPRETER_READ_TOKEN_CAP = 2000
@@ -218,6 +219,12 @@ function syntaxOutput(output: HookOutput): HookOutput {
 function preBashHandlerInner(event: HookEvent): HookOutput {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined) return passOutput()
+  const violation = findShellSafetyViolation(rawCmd)
+  if (violation !== null) {
+    return syntaxOutput(denyOutput(
+      `Safety violation (${violation.rule}) at line ${violation.line}, column ${violation.column}, token ${JSON.stringify(violation.token)}: ${violation.message}`,
+    ))
+  }
   const cmd = stripCommandPrefix(rawCmd)
   // Only a stripped `cd` moves the directory a relative path resolves against; a stripped assignment or subshell group does not, though a `cd` inside the group does.
   const grouped = stripGroupAndExports(rawCmd)

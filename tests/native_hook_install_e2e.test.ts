@@ -33,6 +33,7 @@ const specialFor = (harness: PayloadHarness): string => (harness === 'grok' ? SP
 
 interface Entry {
   command: string
+  exec?: string
   args?: string[]
   bash?: string
   powershell?: string
@@ -143,12 +144,12 @@ async function served(sb: Sandbox): Promise<number> {
   return s.served
 }
 
-/** Every object with a string `command` under `value`. */
+/** Every shell-command or direct-exec hook entry under `value`. */
 function entriesIn(value: unknown, out: Entry[] = []): Entry[] {
   if (Array.isArray(value)) for (const v of value) entriesIn(v, out)
   else if (value !== null && typeof value === 'object') {
     const o = value as Record<string, unknown>
-    if (typeof o['command'] === 'string') out.push(o as unknown as Entry)
+    if (typeof o['command'] === 'string' || typeof o['exec'] === 'string') out.push(o as unknown as Entry)
     else for (const v of Object.values(o)) entriesIn(v, out)
   }
   return out
@@ -159,10 +160,11 @@ function tokenGoatEntries(file: string): Entry[] {
   if (!fs.existsSync(file)) return []
   const text = fs.readFileSync(file, 'utf8')
   const parsed = (file.endsWith('.json') ? JSON.parse(text) : parseToml(text)) as Record<string, unknown>
-  return entriesIn(parsed['hooks']).filter((e) => [e.command, ...(e.args ?? [])].join(' ').includes('token-goat-shim'))
+  return entriesIn(parsed['hooks']).filter((e) => [e.exec ?? e.command, ...(e.args ?? [])].join(' ').includes('token-goat-shim'))
 }
 
 function wordsOf(e: Entry, shell: HookShell): string[] {
+  if (e.exec !== undefined) return [e.exec, ...(e.args ?? [])]
   return e.args !== undefined && e.args.length > 0 ? [e.command, ...e.args] : splitHookCommand(e.command, shell)
 }
 
@@ -230,14 +232,14 @@ interface Way {
   /** What the row asserts about, e.g. `powershell field via VS Code`. */
   label: string
   /** Which field of the entry this way runs. */
-  field: 'command' | 'bash' | 'powershell' | 'exec'
+  field: 'command' | 'bash' | 'powershell' | 'exec' | 'directExec'
   /** How the harness splits that field into words, for finding the entry and its wrapped command. */
   split: HookShell
   run: (cmd: string, e: Entry) => Launch
 }
 
 /** How each harness runs a hook command on this platform. */
-function waysFor(harness: PayloadHarness, claudeForm: 'exec' | 'string'): Way[] {
+function waysFor(harness: PayloadHarness, claudeForm: 'exec' | 'string', entries: readonly Entry[]): Way[] {
   const pwsh = WIN ? whereOnWindows('pwsh') : undefined
   switch (harness) {
     case 'claudecode':
@@ -254,6 +256,17 @@ function waysFor(harness: PayloadHarness, claudeForm: 'exec' | 'string'): Way[] 
     case 'kimi':
       return [{ label: WIN ? 'spawn shell: true (cmd.exe)' : 'spawn shell: true (/bin/sh)', field: 'command', split: WIN ? 'cmd' : 'sh', run: nodeShell }]
     case 'copilot_cli':
+      if (entries.some((entry) => typeof entry.exec === 'string')) {
+        return [{
+          label: 'exec and args fields, spawned directly',
+          field: 'directExec',
+          split: 'sh',
+          run: (_c, e) => {
+            if (e.exec === undefined) throw new Error('Copilot CLI direct entry has no exec field')
+            return { file: e.exec, args: e.args ?? [] }
+          },
+        }]
+      }
       return [
         WIN
           ? { label: 'powershell field via VS Code', field: 'powershell', split: 'powershell', run: powershell('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NoLogo', '-Command']) }
@@ -286,12 +299,12 @@ function caseFor(harness: PayloadHarness): HookPayloadCase {
   return c
 }
 
-/** The written entry for `c`'s event, the words the harness's shell makes of `way`'s field, and the command that field launches. */
+/** The written entry for `c`'s event, its invocation words, and the command that field launches. */
 function wiredFor(entries: readonly Entry[], c: HookPayloadCase, way: Way): { entry: Entry; words: string[]; cmd: string } {
   for (const entry of entries) {
-    const cmd = way.field === 'exec' ? entry.command : way.field === 'command' ? entry.command : entry[way.field]
+    const cmd = way.field === 'exec' || way.field === 'command' ? entry.command : way.field === 'directExec' ? entry.exec : entry[way.field]
     if (typeof cmd !== 'string') continue
-    const words = way.field === 'exec' ? wordsOf(entry, 'sh') : splitHookCommand(cmd, way.split)
+    const words = way.field === 'exec' || way.field === 'directExec' ? wordsOf(entry, 'sh') : splitHookCommand(cmd, way.split)
     if (eventOf(words) === c.event) return { entry, words, cmd }
   }
   throw new Error(`no ${c.event} entry for ${way.label}`)
@@ -305,7 +318,7 @@ async function driveHarness(sb: Sandbox, harness: PayloadHarness, claudeForm: 'e
   const id: Env = harness === 'claudecode' ? { CLAUDE_CODE_SESSION_ID: 'tg-native-e2e' } : {}
   let native = 0
   let fallback = 0
-  for (const way of waysFor(harness, claudeForm)) {
+  for (const way of waysFor(harness, claudeForm, entries)) {
     const { entry, words, cmd } = wiredFor(entries, c, way)
     const inv = parseNativeInvocation(words)
     expect(inv, `${way.label}: not the native form: ${cmd}`).toBeDefined()
@@ -334,7 +347,7 @@ async function driveNodeForm(sb: Sandbox, harness: PayloadHarness): Promise<void
   const c = caseFor(harness)
   const entries = tokenGoatEntries(CONFIG_FILE[harness](sb))
   const id: Env = harness === 'claudecode' ? { CLAUDE_CODE_SESSION_ID: 'tg-node-e2e' } : {}
-  for (const way of waysFor(harness, 'exec')) {
+  for (const way of waysFor(harness, 'exec', entries)) {
     const { entry, words, cmd } = wiredFor(entries, c, way)
     expect(parseNativeInvocation(words), `${way.label}: not the Node form: ${cmd}`).toBeUndefined()
     expect(words.some((w) => w.includes(specialFor(harness))), words.join(' | ')).toBe(true)
@@ -538,8 +551,9 @@ describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli
     expect(bins.every((b) => b === gone), JSON.stringify(bins)).toBe(true)
     // Run the broken entries the way the harness does: a binary that cannot start must not read as a hook that exited 0 and allowed the call. Through PowerShell this is POWERSHELL_EXIT_SUFFIX's guard, since LASTEXITCODE is never set when the call operator finds nothing to run.
     const c = caseFor(harness)
-    for (const way of waysFor(harness, 'exec')) {
-      const { entry, cmd } = wiredFor(tokenGoatEntries(file), c, way)
+    const brokenEntries = tokenGoatEntries(file)
+    for (const way of waysFor(harness, 'exec', brokenEntries)) {
+      const { entry, cmd } = wiredFor(brokenEntries, c, way)
       const r = await launch(way.run(cmd, entry), c, sb, 'tg-native-broken', {}).catch((e: unknown) => ({ stdout: '', stderr: String(e), exit: -1 }))
       expect(r.exit, `${way.label}: ${r.stderr}`).not.toBe(0)
     }
@@ -713,7 +727,8 @@ describe.runIf(NATIVE)('doctor on a build whose native hook client is stale, bro
     if (WIN) {
       // The entries run the data-directory copy, which still works.
       expect(absent.status, absent.message).toBe('warn')
-      expect(absent.message).toContain(`self-test passed, but this build ships no native hook client for ${TARGET}; run \`${run}\` to switch to the Node form`)
+      expect(absent.message).toContain(`, but this build ships no native hook client for ${TARGET}; run \`${run}\` to switch to the Node form`)
+      expect(absent.message).not.toContain('self-test passed')
     } else {
       // The entries ran the packaged binary itself, which has gone with it.
       expect(absent.status, absent.message).toBe('fail')

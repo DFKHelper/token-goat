@@ -324,6 +324,8 @@ async function maybeElideServedGenericOutput(
   return emitRewrite(rewrittenText, 'already-served shell output collapsed', { kind: 'bash_compress:generic-served-elision', originalBytes: deliveredOutputBytes(originalBytes) })
 }
 
+const FAILURE_TRACE_FILTER_NAMES = new Set(['jest', 'vitest', 'node-test', 'pytest', 'dotnet'])
+
 async function maybeCompressCompoundOutput(
   cmd: string,
   optedOut: boolean,
@@ -340,8 +342,9 @@ async function maybeCompressCompoundOutput(
   if (isFullRecallCommand(cmd)) return null
   // token-goat's own commands already print the narrow form, whatever launcher spelled them, so piping one through head or 2>&1 must not run it through generic compression.
   if (isTokenGoatOwnCommand(cmd)) return null
-  // Don't compact a command that reported a non-zero exit: a failing compound pipeline's diagnostics must reach the model in full on its first read, not behind a `--full` recall. An unknown exit (null -- common on harnesses that do not report one) is treated as non-failure, matching the success gates elsewhere in this handler.
-  if (exitCode !== null && exitCode !== 0) return null
+  // Keep unrelated non-zero output verbatim. A dedicated test-runner filter preserves the failure details while distilling framework frames.
+  const failedTestRun = exitCode !== null && exitCode !== 0
+  if (failedTestRun && !isTestRunnerCommand(cmd)) return null
   let cfg: { enabled: boolean; disabled_filters: string[]; max_lines: number; max_bytes: number }
   try {
     cfg = loadConfig().bash_compress
@@ -353,6 +356,7 @@ async function maybeCompressCompoundOutput(
   // A pure pipeline whose downstream stages only pass bytes through gets the filter for whatever shaped them; an unwrapped single command gets its command-specific filter; everything else keeps the generic filter this path has always used. Both lookups find a package-manager script's runner in the directory the command ran in, not the event's cwd, which for a subagent is where the call started whatever its cd did, and the store below files the output under that directory too. Under the event's cwd, an unwrapped `cd ../other && git diff` left the other repository's diff where a later `git diff` in the starting one took it for its own prior run, and the waste report, which looks a call up under the directory it ran in, found nothing.
   const shaped = pipelineShapeFilter(cmd, runDir) ?? (isUnwrapped ? detectFromCommand(cmd, runDir ?? undefined) ?? null : null)
   const useShaped = shaped !== null && !cfg.disabled_filters.includes(shaped.filter.name)
+  if (failedTestRun && (!useShaped || !FAILURE_TRACE_FILTER_NAMES.has(shaped?.filter.name ?? ''))) return null
   const filter = useShaped ? shaped.filter : filterByName('generic')
   if (filter === null) return null
   // Only the shaped filter gets argv: the generic fallback is chosen precisely because no filter claimed this command, so handing it the first stage's tokens would invite it to read flags meant for something else.
@@ -804,8 +808,25 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       return contextOutput(buildGhViewBatchAdvisory(ghView.sub, ghView.ref))
     }
 
-    // Failing test-runner advisory: nudge toward `token-goat failures` instead of the caller scrolling the raw dump. Covers pytest/jest/vitest/go test/cargo test plus the npm/yarn/pnpm script wrappers, including bare `npm test`, which the build/monitoring cache patterns above deliberately exclude as too generic to cache on every green run -- so those commands never get a cached id from the blocks below, and this is the only place that stores one for them. Cache the output here (even for the runners the later blocks would otherwise cache) so the returned id is always real, then return before falling into the later cache logic to avoid a duplicate store under the same key. Gated on a genuine non-zero exit (never on exitCode === null, unlike the git-mutation and gh-api paths above, since an unknown exit code here would silently repeat this hint on every ambiguous run) and on the shared cache_min_bytes floor, same as the other advisory caches in this handler.
-    if (isTestRunnerCommand(cmd) && exitCode !== null && exitCode !== 0 && Buffer.byteLength(output, 'utf-8') >= cacheMinBytes) {
+    const detectedTestRunner = isTestRunnerCommand(cmd) ? detectFromCommand(cmd, runDir ?? undefined) : null
+    // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), a test run with a filter or a `git diff` that ran directly is compressed here on post-hook; other unwrapped commands fall through so cat recall, curl and build caching below still see them. Failed supported test runs are distilled here before the generic failing-test advisory below.
+    if (isUnwrapped && (detectedTestRunner !== null || /^git(?:\s+-[^\s]+|\s+--[^\s]+)*\s+diff\b/i.test(cmd))) {
+      const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, runDir, cacheMinBytes, isUnwrapped)
+      if (unwrappedCompressed !== null) {
+        // The compressor already stored this output under bashOutputIdSync's id; record the same session mapping the monitoring cache below writes, or a repeat run of the same test command loses its recall hint.
+        recordBashOutput(bashRecallKey(cmd, runDir), bashOutputIdSync(cmd, output, runDir), Buffer.byteLength(output, 'utf-8'))
+        return unwrappedCompressed
+      }
+    }
+
+    // Failing test-runner advisory for output `token-goat failures` can extract. Node's built-in reporter is handled by its filter above, but that command does not parse Node output. Gated on a genuine non-zero exit (never on exitCode === null, unlike the git-mutation and gh-api paths above, since an unknown exit code here would silently repeat this hint on every ambiguous run) and on the shared cache_min_bytes floor, same as the other advisory caches in this handler.
+    if (
+      isTestRunnerCommand(cmd) &&
+      detectedTestRunner?.filter.name !== 'node-test' &&
+      exitCode !== null &&
+      exitCode !== 0 &&
+      Buffer.byteLength(output, 'utf-8') >= cacheMinBytes
+    ) {
       const testFailHash = bashRecallKey(cmd, runDir)
       const testFailId = await storeBashOutput(cmd, output, exitCode, runDir)
       recordBashOutput(testFailHash, testFailId, Buffer.byteLength(output, 'utf-8'))
@@ -818,16 +839,6 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       const gitScopedCacheHash = bashRecallKey(cmd, runDir)
       const gitScopedCacheId = await storeBashOutput(cmd, output, exitCode ?? 0, runDir)
       recordBashOutput(gitScopedCacheHash, gitScopedCacheId, Buffer.byteLength(output, 'utf-8'))
-    }
-
-    // In environments without pre-hook wrapping (VS Code run_in_terminal, unwrapped shells), a test run with a filter (e.g. `dotnet test`, `cargo test`) or a `git diff` that ran directly is compressed here on post-hook; other unwrapped commands fall through so cat recall, curl and build caching below still see them.
-    if (isUnwrapped && ((isTestRunnerCommand(cmd) && detectFromCommand(cmd, runDir ?? undefined) !== null) || /^git(?:\s+-[^\s]+|\s+--[^\s]+)*\s+diff\b/i.test(cmd))) {
-      const unwrappedCompressed = await maybeCompressCompoundOutput(cmd, optedOut, output, exitCode, runDir, cacheMinBytes, isUnwrapped)
-      if (unwrappedCompressed !== null) {
-        // The compressor already stored this output under bashOutputIdSync's id; record the same session mapping the monitoring cache below writes, or a repeat run of the same test command loses its recall hint.
-        recordBashOutput(bashRecallKey(cmd, runDir), bashOutputIdSync(cmd, output, runDir), Buffer.byteLength(output, 'utf-8'))
-        return unwrappedCompressed
-      }
     }
 
     // Only cache monitoring, build, and curl GET commands — not generic shell commands.

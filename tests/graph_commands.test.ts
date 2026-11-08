@@ -14,6 +14,7 @@ import { querySymbols, queryRefs, searchSymbolsFts, distinctSymbolKinds } from '
 import { getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
 import type * as IndexReaderModule from '../src/index_reader.js'
+import type * as GraphTraversalModule from '../src/graph_traversal.js'
 import {
   bfsCallChains,
   compareHopEntries,
@@ -57,10 +58,15 @@ function captureStderr(fn: () => void): string {
   return errCaptured
 }
 
-// Wrap querySymbols in a spy-able vi.fn() while still delegating to the real implementation. vi.mock is hoisted above these imports by vitest, so every call site (this test file's own `querySymbols` import and graph_commands.ts's internal import) resolves to the same mocked module instance and can be counted via vi.mocked(querySymbols).mock.calls -- used below to regression-test that buildFileSymCache() is hoisted once outside the BFS loop in runCallChain/runImpact rather than rebuilt (and its memoization reset) on every node visited. queryRefs is wrapped the same way (real implementation by default, overridable per-test via mockReturnValueOnce) so the `--json` path-spelling negative-control tests below can hand callers/testFor a synthetic out-of-project row without indexing a real file there.
+// Wrap querySymbols in a spy-able vi.fn() while still delegating to the real implementation. vi.mock is hoisted above these imports by vitest, so every call site (this test file's own `querySymbols` import and graph_commands.ts's internal import) resolves to the same mocked module instance and can be counted via vi.mocked(querySymbols).mock.calls. queryRefs is wrapped the same way for paths that still need raw references, and resolveCallers is wrapped so the display-path negative control can supply an out-of-project row without indexing a real file there.
 vi.mock('../src/index_reader.js', async (importOriginal) => {
   const actual = await importOriginal<typeof IndexReaderModule>()
   return { ...actual, querySymbols: vi.fn(actual.querySymbols), searchSymbolsFts: vi.fn(actual.searchSymbolsFts), queryRefs: vi.fn(actual.queryRefs), distinctSymbolKinds: vi.fn(actual.distinctSymbolKinds) }
+})
+
+vi.mock('../src/graph_traversal.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof GraphTraversalModule>()
+  return { ...actual, resolveCallers: vi.fn(actual.resolveCallers) }
 })
 
 // ---- helpers ----------------------------------------------------------------
@@ -1169,7 +1175,7 @@ describe('runCallers integration', () => {
   // Negative control: a row outside the resolved project root must stay absolute, unmangled -- proves the fix renders through toDisplayPath's own root-membership check rather than blindly stripping a prefix from every row.
   it('leaves an out-of-project --json file absolute (negative control)', () => {
     const outOfProjectAbs = normalizePath(join(tmpdir(), 'tg-callers-outside-project-fixture', 'far.ts'))
-    vi.mocked(queryRefs).mockReturnValueOnce([{ name: 'querySymbols', filePath: outOfProjectAbs, line: 5, col: 0, context: '' }])
+    vi.mocked(resolveCallers).mockReturnValueOnce([{ caller: 'querySymbols', kind: 'function', file: outOfProjectAbs, line: 5 }])
     const captured = captureStdout(() => {
       const code = runCallers({ symbol: 'querySymbols', json: true })
       expect(code).toBe(0)
@@ -2901,11 +2907,11 @@ describe('runCallChain cross-project scoping', () => {
   })
 })
 
-// ---- runCallChain file-symbol cache hoisting (regression) --------------------
+// ---- runCallChain call-matrix lookup (regression) ----------------------------
 
-describe('runCallChain file-symbol cache hoisting', () => {
-  // Regression: runCallChain used to call buildFileSymCache() from inside the callersOf closure that runs once per BFS node, discarding the memoized Map and forcing a fresh querySymbols() call for the same file on every hop instead of reusing one cache across the whole BFS.
-  it('calls querySymbols at most once per unique file across the whole BFS, not once per hop', () => {
+describe('runCallChain call-matrix lookup', () => {
+  // The caller context is already indexed with each reference, so an unqualified BFS no longer needs to load every symbol in each call-site file.
+  it('does not query per-file symbol rows while traversing callers', () => {
     const dir = mkdtempSync(join(process.cwd(), 'tg-chain-cache-'))
     try {
       const file = join(dir, 'chain.ts')
@@ -2925,8 +2931,7 @@ describe('runCallChain file-symbol cache hoisting', () => {
       const callsForFile = vi.mocked(querySymbols).mock.calls.filter(
         (call) => (call[0] as { filePath?: string }).filePath === normalizePath(file),
       )
-      // All four BFS hops (cacheLevel0 -> cacheLevel1 -> cacheLevel2 -> cacheLevel3) resolve references inside the same file. With the cache correctly hoisted once outside the BFS loop, that file's symbols are fetched exactly once and reused for every hop.
-      expect(callsForFile.length).toBe(1)
+      expect(callsForFile.length).toBe(0)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

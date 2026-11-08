@@ -1,4 +1,4 @@
-/** `doctor`'s native hook client rows: per harness and scope, which form of hook command is wired (the native client in front of the Node command, or the Node command alone), whether the wired binary exists and passes its self-test, whether it is the form this build would write, and how the last week's hook calls were answered. */
+/** `doctor`'s native hook client rows: per harness and scope, which form of hook command is wired (the native client in front of the Node command, or the Node command alone), whether the wired binary resolves and this build's binary passes its self-test, whether it is the form this build would write, and how the last week's hook calls were answered. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -13,6 +13,7 @@ import { nativeHookCounts, type NativeHookCounts } from './hook_latency.js'
 import { wiredClaudeHookWords } from './install.js'
 import { nativeCopyCurrent, nativeCopyPath, nativeHookBinary, nativeSelftest, packagedNativeBinary, parseNativeInvocation, type NativeSelftest, type WiredHookEntry } from './native_hook.js'
 import { displaySafeText } from './paths.js'
+import { resolveOnPath } from './process_util.js'
 import { HOOK_STATS_RETENTION_DAYS } from './stats.js'
 import { fencedCommand } from './hint_suggestion_guard.js'
 
@@ -105,6 +106,20 @@ export function checkNativeHookWiring(wiring: NativeWiring, avail: NativeAvailab
   const nativeCount = bins.length
   const form = nativeCount === total ? 'native' : nativeCount === 0 ? 'Node' : 'mixed'
   const wiredBins = [...new Set(bins)]
+  const resolvedBins = new Map<string, string>()
+  const missing = wiredBins.filter((bin) => {
+    const resolved = resolveOnPath(bin)
+    if (resolved !== null) {
+      resolvedBins.set(bin, resolved)
+      return false
+    }
+    // Keep an existing relative spelling diagnosable; only the resolved build binary is self-tested.
+    if (fs.existsSync(bin)) {
+      resolvedBins.set(bin, path.resolve(bin))
+      return false
+    }
+    return true
+  })
   const tail = formatNativeCounts(counts, wiring.harnesses)
   const run = `run ${fencedCommand(wiring.install)}`
   const row = (status: DoctorResult['status'], text: string): DoctorResult => ({ name, status, message: `${text}; ${tail}` })
@@ -112,16 +127,22 @@ export function checkNativeHookWiring(wiring: NativeWiring, avail: NativeAvailab
   const outdated = wiring.entries.filter((e) => e.current === false).length
   const settled = (text: string): DoctorResult => (outdated > 0 ? row('warn', `${text}, but ${outdated} of ${total} hook entries are not the command this build writes; ${run} to rewrite them`) : row('ok', text))
 
-  const missing = wiredBins.filter((b) => !fs.existsSync(b))
   if (missing.length > 0) {
     const broken = bins.filter((b) => missing.includes(b)).length
     return row('fail', `${broken} of ${total} hook entries run the native hook client at ${missing.map(displaySafeText).join(', ')}, which no longer exists, so those events fail instead of falling back to Node; ${run} to rewrite them`)
   }
+  const selfTested = new Set<string>()
   for (const bin of wiredBins) {
-    const test = selftest(bin)
-    if (!test.ok) return row('fail', `the native hook client at ${displaySafeText(bin)} fails its self-test (${displaySafeText(test.reason ?? 'unknown')}); ${run} to rewrite the entries as Node commands`)
+    const resolved = resolvedBins.get(bin)
+    if (resolved === undefined || avail.expected === undefined || !samePath(resolved, avail.expected)) continue
+    const test = selftest(resolved)
+    if (!test.ok) return row('fail', `the native hook client at ${displaySafeText(resolved)} fails its self-test (${displaySafeText(test.reason ?? 'unknown')}); ${run} to rewrite the entries as Node commands`)
+    selfTested.add(bin)
   }
-  const wiredText = form === 'Node' ? 'Node form' : `${form === 'native' ? 'native' : `mixed (${nativeCount} of ${total} native)`}, ${wiredBins.map(displaySafeText).join(', ')}, self-test passed`
+  const allSelfTested = wiredBins.length > 0 && wiredBins.every((bin) => selfTested.has(bin))
+  const wiredText = form === 'Node'
+    ? 'Node form'
+    : `${form === 'native' ? 'native' : `mixed (${nativeCount} of ${total} native)`}, ${wiredBins.map((bin) => displaySafeText(resolvedBins.get(bin) ?? bin)).join(', ')}${allSelfTested ? ', self-test passed' : ''}`
 
   if (!avail.enabled) {
     if (form === 'Node') return settled('Node form; native hooks are off (hooks.native or TOKEN_GOAT_NATIVE_HOOKS)')
@@ -142,7 +163,10 @@ export function checkNativeHookWiring(wiring: NativeWiring, avail: NativeAvailab
   }
   if (form !== 'native') return row('warn', `${form === 'Node' ? 'Node form' : wiredText} while the native hook client is available; ${run} to switch`)
   const expected = avail.expected
-  const foreign = wiredBins.filter((b) => !samePath(b, expected))
+  const foreign = wiredBins.filter((bin) => {
+    const resolved = resolvedBins.get(bin)
+    return resolved !== undefined && !samePath(resolved, expected)
+  })
   if (foreign.length > 0) return row('warn', `${wiredText}, not this build's ${displaySafeText(expected)}; ${run} to rewrite them`)
   return settled(wiredText)
 }

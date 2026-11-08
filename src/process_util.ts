@@ -119,6 +119,8 @@ export function resolveOnPath(label: string): string | null {
 
   const onWindows = process.platform === 'win32'
   const exts = onWindows ? (process.env['PATHEXT'] ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((e) => e.trim() !== '') : ['']
+  const labelExt = onWindows ? path.win32.extname(label).toLowerCase() : ''
+  const searchExts = onWindows && exts.some((ext) => ext.toLowerCase() === labelExt) ? [''] : exts
   let cwd: string
   try { cwd = realpathSync(process.cwd()) } catch { cwd = path.resolve(process.cwd()) }
 
@@ -128,7 +130,7 @@ export function resolveOnPath(label: string): string | null {
     let resolvedDir: string
     try { resolvedDir = realpathSync(path.resolve(dir)) } catch { continue }
     if (foldPath(resolvedDir) === foldPath(cwd)) continue
-    for (const ext of exts) {
+    for (const ext of searchExts) {
       const candidate = path.join(resolvedDir, label + ext)
       try { if (statSync(candidate).isFile()) return candidate } catch { /* try the next extension */ }
     }

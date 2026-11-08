@@ -16,6 +16,7 @@ export interface CommandManifestArgument {
 
 export interface CommandManifestEntry {
   readonly name: string
+  readonly supportsBatchQuery: boolean
   readonly description: string
   readonly aliases: readonly string[]
   readonly options: readonly CommandManifestOption[]
@@ -23,9 +24,63 @@ export interface CommandManifestEntry {
   readonly subcommands: readonly CommandManifestEntry[]
 }
 
-function toEntry(cmd: Command): CommandManifestEntry {
+export const BATCH_QUERY_COMMANDS = [
+  'symbol',
+  'read',
+  'brief',
+  'section',
+  'semantic',
+  'skeleton',
+  'outline',
+  'refs',
+] as const
+
+export type BatchQueryCommand = (typeof BATCH_QUERY_COMMANDS)[number]
+
+export interface BatchQueryOperation {
+  readonly id?: string | number
+  readonly command: string
+  readonly args?: readonly string[]
+}
+
+export interface NormalizedBatchQueryOperation extends BatchQueryOperation {
+  readonly command: BatchQueryCommand
+  readonly args: readonly string[]
+}
+
+const batchQueryCommands: ReadonlySet<string> = new Set(BATCH_QUERY_COMMANDS)
+
+export function isBatchQueryCommand(command: string): command is BatchQueryCommand {
+  return batchQueryCommands.has(command)
+}
+
+export function normalizeBatchQueryOperation(value: unknown): NormalizedBatchQueryOperation {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Batch query operation must be an object')
+  }
+  const operation = value as Record<string, unknown>
+  if (typeof operation['command'] !== 'string' || !isBatchQueryCommand(operation['command'])) {
+    throw new Error('Unsupported batch query command')
+  }
+  if (operation['id'] !== undefined && typeof operation['id'] !== 'string' && typeof operation['id'] !== 'number') {
+    throw new Error('Batch query operation id must be a string or number')
+  }
+  const args = operation['args'] ?? []
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== 'string')) {
+    throw new Error('Batch query operation args must be an array of strings')
+  }
   return {
-    name: cmd.name(),
+    ...(operation['id'] !== undefined ? { id: operation['id'] } : {}),
+    command: operation['command'],
+    args,
+  }
+}
+
+function toEntry(cmd: Command): CommandManifestEntry {
+  const name = cmd.name()
+  return {
+    name,
+    supportsBatchQuery: isBatchQueryCommand(name),
     description: cmd.description(),
     aliases: cmd.aliases(),
     options: cmd.options.map((o) => ({ flags: o.flags, description: o.description })),

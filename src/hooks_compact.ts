@@ -17,6 +17,7 @@ import { BUDGET_ESCALATION_MARKER, MANIFEST_PREAMBLE, MANIFEST_RECOVERY_PREAMBLE
 import { dropsPreCompactContext } from './harness_channels.js'
 import { MAX_PENDING_CONTEXT_BYTES, replacePendingContextBlock } from './pending_context.js'
 import { recordCompactDroppedPaths } from './compact_dropped.js'
+import { getContextPressure, getRollingCompactionDirective, loadSessionCache } from './compact.js'
 
 /** Publishes the compaction epoch to the session's subagents, whose own PreCompact carries no `agent_id` and so stamps only the parent state. See session_store.ts::applySessionCompaction. Fail-soft: a write failure must never break PreCompact. */
 function recordSessionCompaction(sessionId: string | undefined, now: number): void {
@@ -37,8 +38,11 @@ export function preCompactHandler(event: HookEvent): HookOutput {
   let out: HookOutput = passOutput()
   if (cfg.enabled) {
     if (!dropsPreCompactContext()) {
-      const manifest = buildManifest(event.sessionId, getCwd(event), getTranscriptPath(event))
-      out = contextOutput(`${MANIFEST_PREAMBLE}${summaryBudgetDirective(cfg.summary_budget_chars)}\n\n${manifest}`)
+      const transcriptPath = getTranscriptPath(event)
+      const cache = event.sessionId ? loadSessionCache(event.sessionId) ?? undefined : undefined
+      const rollingDirective = getRollingCompactionDirective(getContextPressure(cache, transcriptPath))
+      const manifest = buildManifest(event.sessionId, getCwd(event), transcriptPath)
+      out = contextOutput(`${MANIFEST_PREAMBLE}${summaryBudgetDirective(cfg.summary_budget_chars)}\n\n${rollingDirective}\n\n${manifest}`)
     } else if (event.sessionId) {
       const recoveryManifest = buildRecoveryManifest(event.sessionId, getCwd(event), getTranscriptPath(event))
       // Trimmed here rather than left to the queue's own cap, which keeps the tail: the adaptive char bonus can push a manifest past MAX_PENDING_CONTEXT_BYTES, and a tail-keeping trim would drop the preamble saying what the block is while keeping the least important rows.

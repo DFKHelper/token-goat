@@ -2,6 +2,14 @@
 
 Dev environment notes specific to this repo. Shared conventions for agents and contributors live in [`AGENTS.md`](AGENTS.md); this file collects the rough edges around the local toolchain.
 
+## Windows Performance & Developer Setup
+
+When running `token-goat` on Windows 11 with large codebases or fast AI agent loops:
+
+- **Host on Dev Drive (ReFS):** Housing project worktrees and the `.token-goat` indexing cache on a ReFS Dev Drive volume (with PR4KB allocation and Copy-on-Write) significantly reduces metadata latency and file-lock contention during concurrent reads.
+- **EcoQoS on Worker Daemons:** On Intel hybrid CPUs (P-core / E-core architectures like Core Ultra), background token-goat indexing and worker daemons should run with Windows EcoQoS (Efficiency Mode / `PROCESS_POWER_THROTTLING_EXECUTION_SPEED`). This leaves Performance cores fully dedicated to the foreground interactive agent session and model streaming.
+- **PowerShell Profile Hygiene:** Avoid disk-scanning module imports (like `Get-Module -ListAvailable`) in PowerShell `$PROFILE`, as cold shell startups add latency to any fallback subshell execution.
+
 ## Setup
 
 ```bash

@@ -1,12 +1,27 @@
 /** `--batch-serve`: run many CLI invocations inside one already-started process. Every one of the suite's built-bundle tests spawns `node dist/token-goat.mjs <args>` and asserts on the real output, deliberately, so that no injected seam can hide a broken shipping path. The problem is what that costs. Measured on this repo: a bundle spawn that does nothing at all (`--version`) takes 259ms, and one that does real work (`todo .`) takes 258ms. The command is free; ~228ms of every such test is Node starting up and evaluating a 3.3 MB bundle. Across the ~534 tests in that shape it is about 122 seconds of the suite's 452 seconds of test time. So this serves invocations from a process that has already paid that cost once. What it deliberately does NOT change is anything the tests are actually asserting about: it is the real built artifact, the real `run(argv)` entrypoint, the real commander parse, and the real command implementations. Only the process boundary is amortised. What a shared process does change is state, and that is the whole risk. Between requests this restores the working directory, restores the environment key by key, resets `process.exitCode`, and calls `clearModuleCaches()` (the same reset registry the in-process tests already rely on). A module-level cache that no reset covers would make a batched run disagree with a spawned one -- which is why tests/batch_serve_equivalence.test.ts runs a sample of commands both ways and compares stdout, stderr and exit status byte for byte. Batching is only as trustworthy as that guard, so the guard is not optional. Protocol, newline-delimited JSON over stdin, replies on stdout prefixed with a caller-supplied random token: `<token> {"id":N,...}`. The token exists because a command's own output is captured in-process but a stray async write is not, and a reply stream that a test's own output could be mistaken for would be worse than no speedup at all. The caller generates the token, so nothing in a fixture can predict it. */
 import { _resetDataDirCacheForTesting } from './constants.js'
 import { clearModuleCaches } from './reset.js'
+import {
+  isBatchQueryCommand,
+  normalizeBatchQueryOperation,
+  type BatchQueryCommand,
+  type BatchQueryOperation,
+} from './cli_commands.js'
 
 export interface BatchRequest {
   id: number
-  argv: string[]
+  argv?: string[]
+  operations?: readonly BatchQueryOperation[]
   cwd?: string
   env?: Record<string, string>
+}
+
+export interface BatchOperationResult {
+  id: string | number
+  command: BatchQueryCommand | null
+  status: number
+  stdout: string
+  stderr: string
 }
 
 export interface BatchResponse {
@@ -14,6 +29,7 @@ export interface BatchResponse {
   status: number
   stdout: string
   stderr: string
+  results?: BatchOperationResult[]
 }
 
 /** Apply `next` as the whole environment, returning a restore function. Applied key by key rather than by replacing `process.env`, which Node does not fully honour. */
@@ -25,6 +41,67 @@ export function swapEnv(next: Record<string, string>): () => void {
     for (const key of Object.keys(process.env)) if (!(key in before)) delete process.env[key]
     for (const [key, value] of Object.entries(before)) process.env[key] = value
   }
+}
+
+async function serveQueries(
+  req: BatchRequest & { operations: readonly BatchQueryOperation[] },
+  runFn: (argv: string[]) => Promise<void>,
+  reset: () => void,
+): Promise<BatchResponse> {
+  const results: BatchOperationResult[] = []
+  for (const [index, rawOperation] of req.operations.entries()) {
+    const operationId = batchOperationId(rawOperation, index)
+    let operation
+    try {
+      operation = normalizeBatchQueryOperation(rawOperation)
+    } catch (e) {
+      results.push({
+        id: operationId,
+        command: batchOperationCommand(rawOperation),
+        status: 2,
+        stdout: '',
+        stderr: String(e instanceof Error ? e.message : e),
+      })
+      continue
+    }
+    const response = await serveOne(
+      {
+        id: index,
+        argv: [operation.command, ...(operation.args ?? [])],
+        ...(req.cwd !== undefined ? { cwd: req.cwd } : {}),
+        ...(req.env !== undefined ? { env: req.env } : {}),
+      },
+      runFn,
+      reset,
+    )
+    results.push({
+      id: operation.id ?? index,
+      command: operation.command,
+      status: response.status,
+      stdout: response.stdout,
+      stderr: response.stderr,
+    })
+  }
+  const failure = results.find((result) => result.status !== 0)
+  return {
+    id: req.id,
+    status: failure?.status ?? 0,
+    stdout: '',
+    stderr: '',
+    results,
+  }
+}
+
+function batchOperationId(value: unknown, fallback: number): string | number {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return fallback
+  const id = (value as Record<string, unknown>)['id']
+  return typeof id === 'string' || typeof id === 'number' ? id : fallback
+}
+
+function batchOperationCommand(value: unknown): BatchQueryCommand | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const command = (value as Record<string, unknown>)['command']
+  return typeof command === 'string' && isBatchQueryCommand(command) ? command : null
 }
 
 /** Capture everything written to stdout and stderr for the duration of one request. */
@@ -58,6 +135,18 @@ export async function serveOne(
   runFn: (argv: string[]) => Promise<void>,
   reset: () => void = clearModuleCaches,
 ): Promise<BatchResponse> {
+  if (req.operations !== undefined) {
+    if (req.argv !== undefined) {
+      return { id: req.id, status: 2, stdout: '', stderr: 'Specify either argv or operations, not both' }
+    }
+    if (!Array.isArray(req.operations)) {
+      return { id: req.id, status: 2, stdout: '', stderr: 'Batch operations must be an array' }
+    }
+    return serveQueries(req as BatchRequest & { operations: readonly BatchQueryOperation[] }, runFn, reset)
+  }
+  if (!Array.isArray(req.argv)) {
+    return { id: req.id, status: 2, stdout: '', stderr: 'Batch request must contain argv or operations' }
+  }
   const cwdBefore = process.cwd()
   // Snapshot even when the request brings no environment of its own. A request that omits `env` still runs commands that write to process.env -- `--harness` sets TOKEN_GOAT_HARNESS_OVERRIDE (cli.ts) and the config layer sets keys the same way -- and with no snapshot taken there was nothing to undo them, so the override survived into every later request in this process. A separate CLI process would have dropped it on exit, and byte-identical equivalence with that is the whole contract of this mode. Passing the current environment back to swapEnv makes it a pure save-and-restore.
   const restoreEnv = swapEnv(req.env ?? ({ ...process.env } as Record<string, string>))

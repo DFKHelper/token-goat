@@ -2,7 +2,13 @@
 
 import { SYMBOL_BODY_CHAR_CAP as MAX_SYMBOL_BODY_CHARS } from './constants.js'
 import { precedingDocComment, type DocCommentStyle } from './doc_comment.js'
-import type { TsNode } from './parser_ts_types.js'
+import type {
+  TsNode,
+  TsSignatureInfo,
+  TsTypeDefinition,
+  TsTypeDefinitionKind,
+  TsTypeImportBinding,
+} from './parser_ts_types.js'
 import type { SymbolEntry } from './parser_types.js'
 // TS/JS node types that name a top-level or nested definition, mapped to the `kind` stored in the index.
 const TSJS_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
@@ -23,6 +29,25 @@ const TSJS_KIND_BY_TYPE: ReadonlyMap<string, string> = new Map([
   // `namespace Foo { ... }` (and the legacy `module Foo { ... }` synonym) parses as `internal_module`; `declare module "some-string" { ... }` (an ambient module declaration, common in .d.ts files) parses as `module` -- a distinct node type from either. Neither had a kind-map entry, so the namespace/module declaration itself was silently invisible to `symbol`/`outline`/`skeleton`/`read`, even though everything nested inside it still indexed fine (the walk recurses into every node's children regardless of the parent's kind-map membership) -- the same container-drop shape already fixed for C++ `namespace_definition` and Rust `mod_item`. Both node types expose their name on the standard `name` field (an identifier, nested_identifier, or string), so `nodeName` resolves it without special-casing.
   ['internal_module', 'namespace'],
   ['module', 'namespace'],
+])
+
+const TSJS_TYPE_DEFINITION_TYPES: ReadonlyMap<string, TsTypeDefinitionKind> = new Map([
+  ['interface_declaration', 'interface'],
+  ['type_alias_declaration', 'type'],
+  ['class_declaration', 'class'],
+  ['abstract_class_declaration', 'class'],
+  ['enum_declaration', 'enum'],
+])
+
+const TSJS_SIGNATURE_TYPES: ReadonlySet<string> = new Set([
+  'function_declaration',
+  'generator_function_declaration',
+  'function_signature',
+  'method_definition',
+  'method_signature',
+  'abstract_method_signature',
+  'arrow_function',
+  'function_expression',
 ])
 
 /** TS/JS node types that name a member of a type rather than a value. tree-sitter uses the same node types for an interface's members and for the members of an anonymous type literal written inline, so {@link isNamedTypeMember} decides which of the two a given node is. */
@@ -164,6 +189,288 @@ const TSJS_FN_SCOPE_TYPES: ReadonlySet<string> = new Set([
   'function_declaration', 'function_expression', 'arrow_function',
   'method_definition', 'generator_function', 'generator_function_declaration',
 ])
+
+function typeParameterNames(node: TsNode): string[] {
+  const parameters = node.childForFieldName('type_parameters')
+  if (parameters === null) return []
+  return parameters.namedChildren.flatMap((parameter) => {
+    const name = parameter.childForFieldName('name')
+    return name === null ? [] : [name.text]
+  })
+}
+
+function collectTsTypeReferences(
+  node: TsNode,
+  declarationName: TsNode | null = null,
+  inheritedTypeParameters: ReadonlySet<string> = new Set(),
+): string[] {
+  const references = new Set<string>()
+  const visit = (current: TsNode, inheritedTypeParameters: ReadonlySet<string>): void => {
+    let typeParameters = inheritedTypeParameters
+    const parameters =
+      current.type === 'type_parameters' ? current : current.childForFieldName('type_parameters')
+    if (parameters !== null) {
+      const names = parameters.namedChildren.flatMap((parameter) => {
+        const name = parameter.childForFieldName('name')
+        return name === null ? [] : [name.text]
+      })
+      if (names.length > 0) typeParameters = new Set([...inheritedTypeParameters, ...names])
+    }
+
+    if (current.type === 'nested_type_identifier') {
+      const name = current.text.replace(/\s+/g, '')
+      if (name !== '') references.add(name)
+      return
+    }
+    if (current.type === 'type_identifier') {
+      if (current !== declarationName && !typeParameters.has(current.text)) references.add(current.text)
+      return
+    }
+
+    const name = current.childForFieldName('name')
+    for (const child of current.namedChildren) {
+      if (child === declarationName) continue
+      if ((current.type === 'type_parameter' || current.type === 'infer_type') && child === name) continue
+      visit(child, typeParameters)
+    }
+  }
+  visit(node, inheritedTypeParameters)
+  return [...references]
+}
+
+function collectParameterTypeReferences(
+  parameters: TsNode,
+  inheritedTypeParameters: ReadonlySet<string>,
+): string[] {
+  const references = new Set<string>()
+  const visit = (node: TsNode): void => {
+    if (node.type === 'type_annotation') {
+      for (const reference of collectTsTypeReferences(node, null, inheritedTypeParameters)) references.add(reference)
+      return
+    }
+    for (const child of node.namedChildren) visit(child)
+  }
+  visit(parameters)
+  return [...references]
+}
+
+function signatureTypeReferences(
+  node: TsNode,
+  owner: TsNode = node,
+  inheritedTypeParameters: ReadonlySet<string> = new Set(),
+): string[] {
+  const references = new Set<string>()
+  const scopedTypeParameters = new Set([...inheritedTypeParameters, ...typeParameterNames(node)])
+  const typeParameters = node.childForFieldName('type_parameters')
+  if (typeParameters !== null) {
+    for (const reference of collectTsTypeReferences(typeParameters, null, scopedTypeParameters)) references.add(reference)
+  }
+  const parameters = node.childForFieldName('parameters')
+  if (parameters !== null) {
+    for (const reference of collectParameterTypeReferences(parameters, scopedTypeParameters)) references.add(reference)
+  }
+  for (const field of ['return_type', 'type']) {
+    const typeNode = node.childForFieldName(field)
+    if (typeNode !== null) {
+      for (const reference of collectTsTypeReferences(typeNode, null, scopedTypeParameters)) references.add(reference)
+    }
+  }
+  if (owner !== node) {
+    const ownerType = owner.childForFieldName('type')
+    if (ownerType !== null) {
+      for (const reference of collectTsTypeReferences(ownerType, null, scopedTypeParameters)) references.add(reference)
+    }
+  }
+  return [...references]
+}
+
+function typeDefinitionReferences(node: TsNode): string[] {
+  if (node.type !== 'class_declaration' && node.type !== 'abstract_class_declaration') {
+    return collectTsTypeReferences(node, node.childForFieldName('name'))
+  }
+
+  const references = new Set<string>()
+  const classTypeParameters = new Set(typeParameterNames(node))
+  const typeParameters = node.childForFieldName('type_parameters')
+  if (typeParameters !== null) {
+    for (const reference of collectTsTypeReferences(typeParameters, null, classTypeParameters)) references.add(reference)
+  }
+  for (const child of node.namedChildren) {
+    if (child.type === 'class_heritage') {
+      for (const reference of collectTsTypeReferences(child, null, classTypeParameters)) references.add(reference)
+    } else if (child.type === 'class_body' || child.type === 'class_implements_clause') {
+      for (const member of child.namedChildren) {
+        if (TSJS_SIGNATURE_TYPES.has(member.type)) {
+          for (const reference of signatureTypeReferences(member, member, classTypeParameters)) references.add(reference)
+        } else if (member.type === 'public_field_definition') {
+          const typeNode = member.childForFieldName('type')
+          if (typeNode !== null) {
+            for (const reference of collectTsTypeReferences(typeNode, null, classTypeParameters)) references.add(reference)
+          }
+        }
+      }
+    }
+  }
+  return [...references]
+}
+
+function declarationText(node: TsNode): string {
+  return widenToDeclaration(node).text
+}
+
+function typeImportSpecifier(node: TsNode): string {
+  const text = node.text
+  return text.length >= 2 ? text.slice(1, -1).replace(/\\(['"\\])/g, '$1') : text
+}
+
+/** Collect named TypeScript declarations and the type names they depend on. */
+export function extractTsTypeDefinitions(root: TsNode, filePath: string): TsTypeDefinition[] {
+  const definitions: TsTypeDefinition[] = []
+  const visit = (node: TsNode): void => {
+    const kind = TSJS_TYPE_DEFINITION_TYPES.get(node.type)
+    if (kind !== undefined) {
+      const name = node.childForFieldName('name')
+      if (name !== null && name.text !== '') {
+        const source = declarationText(node)
+        const prefix = source.trimStart()
+        const parameters = node.childForFieldName('type_parameters')
+        const defaultExport = /^export\s+default\b/.test(prefix)
+        definitions.push({
+          name: name.text,
+          kind,
+          filePath,
+          source,
+          references: typeDefinitionReferences(node),
+          exported: /^(?:export\b|declare\s+export\b)/.test(prefix) && !defaultExport,
+          defaultExport,
+          typeParameters: parameters?.text ?? '',
+          typeParameterNames: typeParameterNames(node),
+        })
+      }
+    }
+    for (const child of node.namedChildren) visit(child)
+  }
+  visit(root)
+  return definitions
+}
+
+/** Collect ES module imports so type names can be resolved across parsed files. */
+export function extractTsTypeImports(root: TsNode, filePath: string): TsTypeImportBinding[] {
+  const imports: TsTypeImportBinding[] = []
+  const visit = (node: TsNode): void => {
+    if (node.type === 'import_statement') {
+      const source = node.childForFieldName('source')
+      const clause = node.namedChildren.find((child) => child.type === 'import_clause') ?? null
+      if (source !== null && clause !== null) {
+        const moduleSpecifier = typeImportSpecifier(source)
+        for (const child of clause.namedChildren) {
+          if (child.type === 'identifier') {
+            imports.push({ filePath, moduleSpecifier, localName: child.text, importedName: 'default', namespace: false })
+          } else if (child.type === 'namespace_import') {
+            const name = child.childForFieldName('name') ?? child.namedChildren[0]
+            if (name !== undefined) {
+              imports.push({ filePath, moduleSpecifier, localName: name.text, importedName: '*', namespace: true })
+            }
+          } else if (child.type === 'named_imports') {
+            for (const specifier of child.namedChildren) {
+              if (specifier.type !== 'import_specifier') continue
+              const imported = specifier.childForFieldName('name')
+              const alias = specifier.childForFieldName('alias')
+              if (imported !== null) {
+                imports.push({
+                  filePath,
+                  moduleSpecifier,
+                  localName: alias?.text ?? imported.text,
+                  importedName: imported.text,
+                  namespace: false,
+                })
+              }
+            }
+          }
+        }
+      }
+    }
+    for (const child of node.namedChildren) visit(child)
+  }
+  visit(root)
+  return imports
+}
+
+function signatureOwner(node: TsNode): TsNode {
+  if (node.type !== 'arrow_function' && node.type !== 'function_expression') return node
+  let parent = node.parent
+  while (parent !== null && (parent.type === 'parenthesized_expression' || parent.type === 'as_expression')) {
+    parent = parent.parent
+  }
+  return parent?.type === 'variable_declarator' || parent?.type === 'public_field_definition' ? parent : node
+}
+
+function signatureName(node: TsNode, owner: TsNode): string | null {
+  if (owner !== node) {
+    const ownerName = nodeName(owner)
+    if (ownerName !== null) return ownerName
+  }
+  return nodeName(node)
+}
+
+function enclosingTypeName(node: TsNode): string | null {
+  let parent = node.parent
+  while (parent !== null) {
+    if (
+      parent.type === 'class_declaration' ||
+      parent.type === 'abstract_class_declaration' ||
+      parent.type === 'interface_declaration' ||
+      parent.type === 'type_alias_declaration'
+    ) {
+      return nodeName(parent)
+    }
+    if (TSJS_FN_SCOPE_TYPES.has(parent.type)) return null
+    parent = parent.parent
+  }
+  return null
+}
+
+function signatureHeader(declaration: string, body: TsNode | null): string {
+  if (body === null) return declaration
+  const bodyStart = declaration.lastIndexOf(body.text)
+  return bodyStart < 0 ? declaration : declaration.slice(0, bodyStart).trimEnd()
+}
+
+/** Collect callable TypeScript declarations and only the types in their signatures. */
+export function extractTsSignatureInfos(root: TsNode, symbolName?: string): TsSignatureInfo[] {
+  const signatures: TsSignatureInfo[] = []
+  const visit = (node: TsNode, insideFunction: boolean): void => {
+    if (TSJS_SIGNATURE_TYPES.has(node.type) && !insideFunction) {
+      const owner = signatureOwner(node)
+      const name = signatureName(node, owner)
+      if (name !== null) {
+        const parentName = enclosingTypeName(node)
+        const qualifiedName = parentName === null ? name : `${parentName}.${name}`
+        if (symbolName === undefined || symbolName === name || symbolName === qualifiedName) {
+          const declaration = declarationText(owner)
+          const body = node.childForFieldName('body')
+          signatures.push({
+            name,
+            qualifiedName,
+            kind:
+              node.type === 'method_definition' ||
+              node.type === 'method_signature' ||
+              node.type === 'abstract_method_signature'
+                ? 'method'
+                : 'function',
+            declaration,
+            signature: signatureHeader(declaration, body),
+            references: signatureTypeReferences(node, owner),
+          })
+        }
+      }
+    }
+    const childInsideFunction = insideFunction || TSJS_FN_SCOPE_TYPES.has(node.type)
+    for (const child of node.namedChildren) visit(child, childInsideFunction)
+  }
+  visit(root, false)
+  return signatures
+}
 
 // tree-sitter node bindings can hand back a fresh wrapper object per accessor call, so `===` between two accesses of what is structurally the same node is unreliable; compare position and type instead.
 function sameNode(a: TsNode | null, b: TsNode | null): boolean {

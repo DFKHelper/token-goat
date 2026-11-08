@@ -1,5 +1,10 @@
-/** Pure checks behind the Write/Edit pre-hook's partial-view guard (hooks_write.ts): a placeholder standing in for content the model did not write, and a whole-file Write that deletes lines the session never saw. Nothing here reads the disk or the session; the caller supplies old text, new text and the ranges served. */
+/** Content checks behind the Write/Edit pre-hook (hooks_write.ts): syntax, safety, and partial-view guards. No file or session state is read here; Python source is parsed with the standard-library AST over stdin. */
 
+import { spawnSync } from 'node:child_process'
+import * as path from 'node:path'
+
+import type * as tsType from 'typescript'
+import { loadTs } from './ts_compiler.js'
 import { splitLines } from './line_diff.js'
 import { displaySafePath } from './paths.js'
 import { echoedValue, fencedCommand, fileSubject, quotedArg } from './hint_suggestion_guard.js'
@@ -183,4 +188,294 @@ export function blindDropMessage(filePath: string, runs: ReadonlyArray<readonly 
   const commands = named.map(([s, e]) => fencedCommand('token-goat read ' + quotedArg(`${shownPath}@${s}-${e}`)))
   return `This Write would delete ${total} lines of ${fileSubject(commands.join(' '), shownPath, filePath)} that this session never read in full (lines ${named.map(([s, e]) => (s === e ? String(s) : `${s}-${e}`)).join(', ')}). ` +
     `Read them first with ${commands.join(' or ')}, or change only what you mean to with \`Edit\` or \`token-goat replace\`. If dropping them is intended, repeat the identical call and it goes through.`
+}
+
+export interface SyntaxIssue {
+  line: number
+  column: number
+  token: string
+  message: string
+}
+
+function positionAtOffset(content: string, offset: number): { line: number; column: number } {
+  const before = content.slice(0, Math.max(0, Math.min(offset, content.length)))
+  const lines = before.split(/\r\n|\r|\n/)
+  return { line: lines.length, column: lines[lines.length - 1]!.length + 1 }
+}
+
+function tokenAtOffset(content: string, offset: number, length = 1): string {
+  let start = Math.max(0, Math.min(offset, content.length))
+  while (start < content.length && /\s/u.test(content[start]!)) start++
+  if (start >= content.length) return '<eof>'
+  return content.slice(start, start + Math.max(1, length)).trim() || content[start]!
+}
+
+function syntaxIssueAt(content: string, offset: number, message: string, length?: number): SyntaxIssue {
+  const position = positionAtOffset(content, offset)
+  return {
+    ...position,
+    token: tokenAtOffset(content, offset, length),
+    message,
+  }
+}
+
+function jsonSyntaxIssue(content: string): SyntaxIssue | null {
+  try {
+    JSON.parse(content)
+    return null
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Invalid JSON'
+    const ts = loadTs()
+    if (ts !== null) {
+      const sourceFile = ts.parseJsonText('input.json', content)
+      const diagnostic = (sourceFile as tsType.JsonSourceFile & {
+        parseDiagnostics?: readonly tsType.Diagnostic[]
+      }).parseDiagnostics?.[0]
+      if (diagnostic !== undefined) {
+        return syntaxIssueAt(
+          content,
+          diagnostic.start ?? content.length,
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, ' '),
+          diagnostic.length,
+        )
+      }
+    }
+    const position = /\bposition\s+(\d+)\b/i.exec(message)
+    const lineColumn = /\bline\s+(\d+)\s+column\s+(\d+)\b/i.exec(message)
+    let offset = content.length
+    if (position !== null) {
+      offset = Number(position[1])
+    } else if (lineColumn !== null) {
+      const targetLine = Number(lineColumn[1])
+      const targetColumn = Number(lineColumn[2])
+      const lines = content.split(/\r\n|\r|\n/)
+      offset = 0
+      for (let i = 0; i < targetLine - 1 && i < lines.length; i++) offset += lines[i]!.length + 1
+      offset += targetColumn - 1
+    }
+    return syntaxIssueAt(content, offset, message)
+  }
+}
+
+const PYTHON_AST_SCRIPT = [
+  'import ast, json, sys',
+  'try:',
+  '    ast.parse(sys.stdin.read())',
+  'except SyntaxError as error:',
+  '    text = error.text or ""',
+  '    column = error.offset or 1',
+  '    token = text[column - 1] if column <= len(text) else "<eof>"',
+  '    print(json.dumps({"line": error.lineno or 1, "column": column, "token": token, "message": error.msg}))',
+  '    raise SystemExit(1)',
+].join('\n')
+
+function pythonSyntaxIssue(content: string): SyntaxIssue | null {
+  const commands = process.platform === 'win32' ? ['python', 'python3', 'py'] : ['python3', 'python']
+  for (const command of commands) {
+    const result = spawnSync(command, ['-I', '-c', PYTHON_AST_SCRIPT], {
+      encoding: 'utf8',
+      input: content,
+      maxBuffer: 1024 * 1024,
+      timeout: 5000,
+      windowsHide: true,
+    })
+    if (result.error !== undefined) {
+      if ((result.error as NodeJS.ErrnoException).code === 'ENOENT') continue
+      return null
+    }
+    if (result.status === 0) return null
+    try {
+      const issue = JSON.parse(result.stdout.trim()) as Partial<SyntaxIssue>
+      if (
+        typeof issue.line === 'number' &&
+        typeof issue.column === 'number' &&
+        typeof issue.token === 'string' &&
+        typeof issue.message === 'string'
+      ) {
+        return issue as SyntaxIssue
+      }
+    } catch {
+      // Try the next interpreter when the executable is a launcher with incompatible arguments.
+    }
+  }
+  return null
+}
+
+/** Return the first immediate syntax error for a supported source extension. */
+export function findSyntaxError(filePath: string, content: string): SyntaxIssue | null {
+  const extension = path.extname(filePath).toLowerCase()
+  if (extension === '.json') return jsonSyntaxIssue(content)
+  if (extension === '.py') return pythonSyntaxIssue(content)
+  const javascript = ['.js', '.jsx', '.mjs', '.cjs'].includes(extension)
+  const typescript = ['.ts', '.tsx', '.mts', '.cts'].includes(extension)
+  if (!javascript && !typescript) return null
+
+  const ts = loadTs()
+  if (ts === null) return null
+  const scriptKind = extension === '.tsx'
+    ? ts.ScriptKind.TSX
+    : extension === '.jsx'
+      ? ts.ScriptKind.JSX
+      : javascript
+        ? ts.ScriptKind.JS
+        : ts.ScriptKind.TS
+  const sourceFile = ts.createSourceFile(filePath, content, ts.ScriptTarget.Latest, true, scriptKind)
+  const diagnostics = (sourceFile as tsType.SourceFile & {
+    parseDiagnostics?: readonly tsType.Diagnostic[]
+  }).parseDiagnostics
+  const diagnostic = diagnostics?.find((entry) => entry.category === ts.DiagnosticCategory.Error)
+  if (diagnostic === undefined) return null
+  const offset = diagnostic.start ?? content.length
+  return syntaxIssueAt(
+    content,
+    offset,
+    ts.flattenDiagnosticMessageText(diagnostic.messageText, ' '),
+    diagnostic.length,
+  )
+}
+
+export interface SafetyViolation {
+  rule: string
+  line: number
+  column: number
+  token: string
+  message: string
+}
+
+const MOCK_CREDENTIAL_ASSIGNMENT = /\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?[_-]?token|client[_-]?secret|secret|password)\b\s*(?:=|:)\s*(['"`])\s*(?:mock|fake|dummy|sample|placeholder|test)[a-z0-9_.-]*\1/i
+// eslint-disable-next-line regexp/no-super-linear-backtracking
+const MOCK_DATA_DECLARATION = /^\s*(?:export\s+)?(?:const|let|var)\s+(?:mock|fake|dummy|sample)[a-z0-9_]*(?:\s*:[^=\r\n]+)?\s*=/i
+const MODEL_IDENTIFIER = /\b(?:gpt-(?:\d+(?:\.\d+)?|[a-z0-9]+)(?:-[a-z0-9.]+)*|claude-(?:\d+(?:\.\d+)?|[a-z][a-z0-9]*)(?:-[a-z0-9.]+)*|gemini-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|grok-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|kimi-[a-z0-9]+(?:-[a-z0-9.]+)*|llama-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|mistral-[a-z0-9]+(?:-[a-z0-9.]+)*|qwen-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|deepseek-(?:r|v)?\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|hydrafusion(?:-[a-z0-9.]+)*|mai-code-[a-z0-9.]+)\b/i
+const GIT_COMMIT_INVOCATION = /\bgit(?:\.exe)?(?:(?:\s+-[cC]\s+\S+)|(?:\s+--[a-z-]+(?:=\S+)?))*\s+commit\b/i
+const GIT_MESSAGE_ARGUMENT = /(?:^|\s)(?:-m|--message)(?:=|\s+)(?:"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'|([^\s;&|]+))/gi
+const DANGEROUS_SHELL_PATTERNS: ReadonlyArray<{
+  rule: string
+  pattern: RegExp
+  token: string
+  message: string
+}> = [
+  {
+    rule: 'remote-shell-pipeline',
+    pattern: /\b(?:curl|wget|iwr|invoke-webrequest)\b[^\r\n;]*?\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|pwsh|powershell|iex|invoke-expression)\b/i,
+    token: 'downloaded content | shell',
+    message: 'Piping downloaded content directly into a shell is blocked.',
+  },
+  {
+    rule: 'root-recursive-delete',
+    pattern: /\b(?:sudo\s+)?rm\s+(?=[^\s]*r)(?=[^\s]*f)-[^\s]+\s+(?:--no-preserve-root\s+)?(?:\/(?=\s|$)|~\/?(?=\s|$)|\$\{?HOME\}?(?:\/)?(?=\s|$))/i,
+    token: 'rm -rf /',
+    message: 'Recursive deletion of a filesystem root is blocked.',
+  },
+  {
+    rule: 'destructive-git-reset',
+    pattern: /\bgit(?:\.exe)?(?:\s+-[cC]\s+\S+)*\s+reset\s+--hard(?:\s|$)/i,
+    token: 'git reset --hard',
+    message: 'git reset --hard can discard uncommitted changes and is blocked.',
+  },
+  {
+    rule: 'destructive-git-clean',
+    pattern: /\bgit(?:\.exe)?(?:\s+-[cC]\s+\S+)*\s+clean\s+(?=[^\s]*f)(?=[^\s]*d)(?=[^\s]*x)-[^\s]+(?:\s|$)/i,
+    token: 'git clean -fdx',
+    message: 'git clean -fdx can permanently remove untracked files and is blocked.',
+  },
+]
+
+function safetyViolation(
+  rule: string,
+  message: string,
+  content: string,
+  offset: number,
+  token: string,
+): SafetyViolation {
+  return { rule, ...positionAtOffset(content, offset), token, message }
+}
+
+function isTestOrFixturePath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/')
+  return /(?:^|\/)(?:__tests__|tests?|fixtures?)(?:\/|$)|\.(?:test|spec)\.[^/]+$/i.test(normalized)
+}
+
+function firstModelIdentifier(message: string): RegExpExecArray | null {
+  return MODEL_IDENTIFIER.exec(message)
+}
+
+/** Find new mock data markers in a production file, excluding test and fixture paths. */
+export function findWriteSafetyViolation(filePath: string, content: string): SafetyViolation | null {
+  if (isTestOrFixturePath(filePath) || /[\\/]write_guards(?:_hooks)?\.ts$/i.test(filePath)) return null
+
+  if (/\.git[\\/](?:COMMIT_EDITMSG|MERGE_MSG)$/i.test(filePath)) {
+    const model = firstModelIdentifier(content)
+    if (model !== null) {
+      return safetyViolation(
+        'model-name-in-commit',
+        'Git commit messages must not mention model identifiers.',
+        content,
+        model.index ?? 0,
+        model[0],
+      )
+    }
+  }
+
+  const lines = content.split(/\r\n|\r|\n/)
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!
+    const credential = MOCK_CREDENTIAL_ASSIGNMENT.exec(line)
+    if (credential !== null) {
+      const token = line.slice(0, credential.index ?? 0).trim().split(/\s+/).pop() || 'credential'
+      return {
+        rule: 'mock-data-leak',
+        line: index + 1,
+        column: (credential.index ?? 0) + 1,
+        token,
+        message: 'Mock or placeholder credential values must not be written into production files.',
+      }
+    }
+    const declaration = MOCK_DATA_DECLARATION.exec(line)
+    if (declaration !== null) {
+      const token = /\b(?:mock|fake|dummy|sample)[a-z0-9_]*/i.exec(line)?.[0] ?? 'mock-data'
+      return {
+        rule: 'mock-data-leak',
+        line: index + 1,
+        column: (declaration.index ?? 0) + 1,
+        token,
+        message: 'Mock data declarations must not be written into production files.',
+      }
+    }
+  }
+  return null
+}
+
+/** Find a model identifier in an explicit `git commit -m/--message` argument. */
+export function findCommitMessageViolation(command: string): SafetyViolation | null {
+  const invocation = GIT_COMMIT_INVOCATION.exec(command)
+  if (invocation === null) return null
+  const argsStart = (invocation.index ?? 0) + invocation[0].length
+  const args = command.slice(argsStart)
+  for (const match of args.matchAll(GIT_MESSAGE_ARGUMENT)) {
+    const message = match[1] ?? match[2] ?? match[3]
+    if (message === undefined) continue
+    const model = firstModelIdentifier(message)
+    if (model === null) continue
+    const messageStart = match[0].indexOf(message)
+    const offset = argsStart + (match.index ?? 0) + Math.max(0, messageStart) + (model.index ?? 0)
+    return safetyViolation(
+      'model-name-in-commit',
+      'Git commit messages must not mention model identifiers.',
+      command,
+      offset,
+      model[0],
+    )
+  }
+  return null
+}
+
+/** Return the first high-confidence shell or commit-message safety violation. */
+export function findShellSafetyViolation(command: string): SafetyViolation | null {
+  for (const rule of DANGEROUS_SHELL_PATTERNS) {
+    const match = rule.pattern.exec(command)
+    if (match !== null) {
+      return safetyViolation(rule.rule, rule.message, command, match.index ?? 0, rule.token)
+    }
+  }
+  return findCommitMessageViolation(command)
 }

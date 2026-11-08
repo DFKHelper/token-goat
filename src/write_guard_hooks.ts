@@ -1,4 +1,4 @@
-/** The checks behind the Write/Edit pre-hook's partial-view guard and sibling-copy advice, with the session and config reads they need. Loaded on demand by hooks_write.ts so the hook entry's eager set does not carry them. */
+/** The Write/Edit pre-hook's syntax and content-safety preflight, partial-view guard and sibling-copy advice. Loaded on demand by hooks_write.ts so the hook entry's eager set does not carry them. */
 
 import { fingerprintContent } from './fingerprint.js'
 import type { HookEvent } from './hook_registry.js'
@@ -9,14 +9,15 @@ import { recordStat } from './stats.js'
 import { loadConfig } from './config.js'
 import { lcsLength, splitLines } from './line_diff.js'
 import { canonicalize } from './path_containment.js'
-import { normalizePath } from './paths.js'
+import { displaySafePath, normalizePath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { readShapeOf } from './read_shape.js'
 import { dropFileLineRangesIfChanged, getFileLineRanges, wasFileFullyReadThisSession, markHintShown, wasHintShown } from './session.js'
 import { siblingCandidates, siblingCopyExcluded, siblingCopyMessage } from './sibling_copy.js'
 import { isWithinQuietHours } from './util.js'
 import { MAX_LINES_FOR_DIFF, readKnownText } from './write_target.js'
-import { BLIND_DROP_MIN_LINES, blindDropMessage, countRunLines, findNewElisionLine, patchAddedLines, placeholderMessage, placeholdersMessage, unseenRemovedRuns } from './write_guards.js'
+import { BLIND_DROP_MIN_LINES, blindDropMessage, countRunLines, findNewElisionLine, findSyntaxError, findWriteSafetyViolation, patchAddedLines, placeholderMessage, placeholdersMessage, unseenRemovedRuns } from './write_guards.js'
+import type { SafetyViolation, SyntaxIssue } from './write_guards.js'
 import type { HookOutput } from './types.js'
 
 /** The verdict for a flagged call, shared by both checks: `hints.write_blind_drop` picks deny, note or silence, quiet hours silence only the note (a refusal stays in force, as every other deny here does), and a call already flagged once under `key` passes, so repeating the identical call is the way through. Books the stat only when the verdict is actually delivered. */
@@ -85,8 +86,102 @@ export function siblingCopyGuard(event: HookEvent, filePath: string, newContent:
 /** The most distinct files a multi-edit call is read against for placeholders; entries past the cap on further files are left unchecked, so a hostile list cannot make the hook read without bound. */
 const MAX_EDIT_FILES_CHECKED = 20
 
+function syntaxIssueOutput(filePath: string, issue: SyntaxIssue): HookOutput {
+  return denyOutput(
+    `Syntax error in ${displaySafePath(filePath)} at line ${issue.line}, column ${issue.column}, token ${JSON.stringify(issue.token)}: ${issue.message}`,
+  )
+}
+
+function safetyViolationOutput(filePath: string, violation: SafetyViolation): HookOutput {
+  return denyOutput(
+    `Safety violation (${violation.rule}) in ${displaySafePath(filePath)} at line ${violation.line}, column ${violation.column}, token ${JSON.stringify(violation.token)}: ${violation.message}`,
+  )
+}
+
+export function preWriteContentGuard(filePath: string, content: string): HookOutput {
+  const violation = findWriteSafetyViolation(filePath, content)
+  if (violation !== null) return safetyViolationOutput(filePath, violation)
+  const issue = findSyntaxError(filePath, content)
+  return issue === null ? passOutput() : syntaxIssueOutput(filePath, issue)
+}
+
+type ContentReplacement = {
+  oldText: string
+  newText: string
+  replaceAll: boolean
+}
+
+function preEditContentGuard(event: HookEvent): HookOutput {
+  const input = getToolInput(event)
+  const replacements: Array<{ path: string | undefined; replacement: ContentReplacement }> = []
+  if (Array.isArray(input['replacements'])) {
+    for (const raw of input['replacements'] as unknown[]) {
+      if (raw === null || typeof raw !== 'object') continue
+      const edit = raw as Record<string, unknown>
+      const namedPath = edit['filePath'] ?? edit['file_path'] ?? edit['path']
+      const oldText = edit['old_string'] ?? edit['oldString']
+      const newText = edit['new_string'] ?? edit['newString']
+      if (typeof oldText !== 'string' || typeof newText !== 'string') continue
+      replacements.push({
+        path: typeof namedPath === 'string' && namedPath !== '' ? resolveEventPath(event, namedPath) : undefined,
+        replacement: { oldText, newText, replaceAll: edit['replace_all'] === true || edit['replaceAll'] === true },
+      })
+    }
+  } else {
+    const filePath = getFilePath(event)
+    const edits = Array.isArray(input['edits']) ? input['edits'] as unknown[] : [input]
+    for (const raw of edits) {
+      if (raw === null || typeof raw !== 'object') continue
+      const edit = raw as Record<string, unknown>
+      const oldText = edit['old_string'] ?? edit['oldString']
+      const newText = edit['new_string'] ?? edit['newString']
+      if (typeof oldText !== 'string' || typeof newText !== 'string') continue
+      replacements.push({
+        path: filePath,
+        replacement: { oldText, newText, replaceAll: edit['replace_all'] === true || edit['replaceAll'] === true },
+      })
+    }
+  }
+
+  const grouped = new Map<string, ContentReplacement[]>()
+  for (const { path, replacement } of replacements) {
+    if (path === undefined || preToolPathDeclined(event, path)) continue
+    let edits = grouped.get(path)
+    if (edits === undefined) {
+      if (grouped.size >= MAX_EDIT_FILES_CHECKED) continue
+      edits = []
+      grouped.set(path, edits)
+    }
+    edits.push(replacement)
+  }
+
+  for (const [filePath, edits] of grouped) {
+    let content = readKnownText(filePath)
+    let applicable = true
+    for (const edit of edits) {
+      if (edit.oldText === edit.newText) continue
+      const index = content.indexOf(edit.oldText)
+      if (index < 0) {
+        applicable = false
+        break
+      }
+      if (edit.replaceAll && edit.oldText !== '') {
+        content = content.split(edit.oldText).join(edit.newText)
+      } else {
+        content = content.slice(0, index) + edit.newText + content.slice(index + edit.oldText.length)
+      }
+    }
+    if (!applicable) continue
+    const output = preWriteContentGuard(filePath, content)
+    if (output.hookType !== 'pass') return output
+  }
+  return passOutput()
+}
+
 /** The placeholder check for an Edit, a MultiEdit (each edit's `new_string`), a Codex `apply_patch` or a VS Code `apply_patch` (the `+` lines of each file it adds or updates; the patch sits under `command` for Codex and `input` for VS Code) and a VS Code `multi_replace_string_in_file` (each of its `replacements`, which name their own file). A line counts only when neither the file now nor the text being replaced holds it. VS Code's `insert_edit_into_file` is left out on purpose: its `code` is written with `// ...existing code...` markers by the tool's own contract. */
 export function preEditPlaceholderGuard(event: HookEvent): HookOutput {
+  const contentGuard = preEditContentGuard(event)
+  if (contentGuard.hookType !== 'pass') return contentGuard
   if (loadConfig().hints.write_blind_drop === 'off') return passOutput()
   const input = getToolInput(event)
   const patch = typeof input['command'] === 'string' ? input['command'] : input['input']

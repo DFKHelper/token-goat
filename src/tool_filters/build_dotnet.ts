@@ -2,6 +2,7 @@
 
 import { ToolFilter } from './base.js'
 import { ERROR_SIGNAL_RE, maybeNote, pathStem, pathName, positionalArgs, dedupeCombinedOutput } from './helpers.js'
+import { externalStackFrameNote, isExternalStackTraceFrame } from './stack_trace.js'
 
 // --------------------------------------------------------------------------- MSBuildFilter ---------------------------------------------------------------------------
 
@@ -233,27 +234,42 @@ export class DotnetFilter extends ToolFilter {
     let passCount = 0
     let droppedNoise = 0
     let inFailBlock = false
+    let externalFramesHidden = 0
+
+    const flushExternalFrames = (): void => {
+      if (externalFramesHidden) kept.push(externalStackFrameNote(externalFramesHidden))
+      externalFramesHidden = 0
+    }
 
     for (const line of lines) {
       if (DOTNET_TEST_SUMMARY_RE.test(line)) {
+        flushExternalFrames()
         kept.push(line)
         inFailBlock = false
         continue
       }
       if (DOTNET_TEST_FAIL_RE.test(line)) {
+        flushExternalFrames()
         kept.push(line)
         inFailBlock = true
         continue
       }
       if (DOTNET_TEST_PASS_RE.test(line)) {
+        flushExternalFrames()
         passCount++
         inFailBlock = false
         continue
       }
       if (inFailBlock && (line.startsWith(' ') || line.startsWith('\t') || !line.trim())) {
+        if (isExternalStackTraceFrame(line)) {
+          externalFramesHidden += 1
+          continue
+        }
+        flushExternalFrames()
         kept.push(line)
         continue
       }
+      flushExternalFrames()
       inFailBlock = false
       if (
         DOTNET_MSBUILD_NOISE_RE.test(line) ||
@@ -269,6 +285,7 @@ export class DotnetFilter extends ToolFilter {
       kept.push(line)
     }
 
+    flushExternalFrames()
     const notes: string[] = []
     maybeNote(notes, passCount, `collapsed ${passCount} passed test lines`)
     maybeNote(notes, droppedNoise, `dropped ${droppedNoise} noise lines`)

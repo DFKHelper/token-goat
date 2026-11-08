@@ -1,8 +1,13 @@
 /** Core graph traversal, scope analysis, and cycle detection primitives. Implements pure and DB-backed graph helpers: enclosingSymbol, looksLikeTypeClass, bfsCallChains, isDeadSymbol, resolveCallers, ancestry dispatch resolution, symbol kind classifications, and Tarjan SCC cycle detection. */
 
+import { globalDbPath } from './constants.js'
+import { getReadDb } from './db.js'
 import { querySymbols, queryRefs, queryRefsByContext } from './index_reader.js'
+import { ownProjectScope } from './nested_worktrees.js'
+import { normalizePath } from './paths.js'
 import { resolveProjectRoot } from './project.js'
 import { findSpecSeparator } from './read_commands.js'
+import { pathEqClause as pathEq } from './sql_path.js'
 import { foldPath } from './util.js'
 import { resolveQualifiedSpec, type SymbolResolution } from './read_spec.js'
 import { isTsPath, resolveTypedRefs, resolveTypedRefsBatch, type ResolveTypedRefsInput, type TypedRefsSession } from './ts_refs.js'
@@ -185,6 +190,64 @@ export interface CallerEntry {
   line: number
 }
 
+/** A bounded, ordered caller lookup over the indexed caller/callee matrix. */
+export function queryCallGraphCallers(
+  opts: {
+    name: string
+    filePath?: string
+    limit?: number
+    rootDir?: string
+  },
+  dbPath: string = globalDbPath(),
+): CallerEntry[] {
+  const where: string[] = ['r.name = ?']
+  const params: (string | number)[] = [opts.name]
+  if (opts.filePath !== undefined) {
+    where.push(pathEq('r.file_path'))
+    params.push(foldPath(normalizePath(opts.filePath)))
+  }
+  if (opts.rootDir !== undefined) {
+    const scope = ownProjectScope('r.file_path', normalizePath(opts.rootDir))
+    where.push(scope.clause)
+    params.push(...scope.params)
+  }
+  const limit = opts.limit ?? DEFAULT_REF_QUERY_LIMIT
+  const sql = `
+    SELECT
+      COALESCE(caller_symbol.name, '(module scope)') AS caller,
+      COALESCE(caller_symbol.kind, '') AS kind,
+      r.file_path AS file,
+      r.line AS line
+    FROM refs AS r
+    LEFT JOIN symbols AS caller_symbol ON caller_symbol.id = COALESCE(
+      (
+        SELECT scoped_symbol.id
+        FROM symbols AS scoped_symbol
+        WHERE TG_LOWER(scoped_symbol.file_path) = TG_LOWER(r.file_path)
+          AND scoped_symbol.name = r.context
+          AND scoped_symbol.line_start <= r.line
+          AND scoped_symbol.line_end >= r.line
+        ORDER BY scoped_symbol.line_start DESC, scoped_symbol.id ASC
+        LIMIT 1
+      ),
+      (
+        SELECT enclosing_symbol.id
+        FROM symbols AS enclosing_symbol
+        WHERE TG_LOWER(enclosing_symbol.file_path) = TG_LOWER(r.file_path)
+          AND enclosing_symbol.line_start <= r.line
+          AND enclosing_symbol.line_end >= r.line
+        ORDER BY enclosing_symbol.line_start DESC, enclosing_symbol.id ASC
+        LIMIT 1
+      )
+    )
+    WHERE ${where.join(' AND ')}
+    ORDER BY r.file_path, r.line, r.col, r.context, r.id
+    LIMIT ?
+  `
+  const db = getReadDb(dbPath)
+  return db.prepare(sql).all(...params, limit) as CallerEntry[]
+}
+
 /** True when `fp` has its own symbol definition named `name`. */
 export function fileDefinesName(fp: string, name: string, getSyms: (fp: string) => SymbolEntry[]): boolean {
   return getSyms(fp).some((s) => s.name === name)
@@ -249,6 +312,9 @@ function soleDefinitionIn(name: string, filePath: string): SymbolEntry | undefin
 export function resolveCallers(name: string, limit?: number, filePath?: string, rootDir?: string, excludeTests?: boolean, def?: SymbolEntry): CallerEntry[] {
   const resolvedRootDir = rootDir ?? resolveProjectRoot({ project: process.cwd() })
   const queryLimit = excludeTests === true ? UNBOUNDED_REF_LIMIT : (limit ?? 500)
+  if (filePath === undefined && def === undefined) {
+    return queryCallGraphCallers({ name, limit: queryLimit, rootDir: resolvedRootDir })
+  }
   const refs = queryRefs({ name, limit: queryLimit, rootDir: resolvedRootDir })
   const getSyms = buildFileSymCache()
   const scoped = filePath === undefined ? narrowRefsToDef(refs, def) : scopeRefsToDefinition(refs, name, filePath, getSyms, def)

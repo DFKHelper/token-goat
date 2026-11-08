@@ -6,6 +6,7 @@
 
 import { ToolFilter } from './base.js'
 import { trimRepeatedPrefix } from './helpers.js'
+import { externalStackFrameNote, isExternalStackTraceFrame } from './stack_trace.js'
 import { stripAnsiEscapes } from '../render/ansi.js'
 
 // pytest-xdist worker prefix: `[gw0]`, `[gw1] [ 50%]`, … — noise on every line.
@@ -55,6 +56,8 @@ export class PytestFilter extends ToolFilter {
     let passedCount = 0
     let inFailures = false
     let inErrors = false
+    let inErrorDetails = false
+    let externalFramesHidden = 0
     let inSlowSection = false
     let inWarningsSection = false
     let slowKept = 0
@@ -90,12 +93,18 @@ export class PytestFilter extends ToolFilter {
         }
         inFailures = line.includes('FAILURES')
         inErrors = line.includes('ERRORS') || line.includes('short test summary')
+        inErrorDetails = line.includes('ERRORS')
         inSlowSection = line.includes('slowest') && line.includes('durations')
         inWarningsSection = line.includes('warnings summary')
         inCovTable = false
         // Drop the constant `= test session starts =` header — no signal. All other section headers are preserved verbatim.
         if (line.includes('test session starts')) continue
         kept.push(line)
+        continue
+      }
+
+      if ((inFailures || inErrorDetails) && isExternalStackTraceFrame(line)) {
+        externalFramesHidden += 1
         continue
       }
 
@@ -247,6 +256,7 @@ export class PytestFilter extends ToolFilter {
       kept.push(`[token-goat: collapsed ${covTableRowsDropped} coverage table rows]`)
     // Flush a still-pending warnings-section node-id header (message never arrived, e.g. EOF).
     if (pendingWarnHeader !== null) kept.push(pendingWarnHeader)
+    if (externalFramesHidden) kept.push(externalStackFrameNote(externalFramesHidden))
     // Trim collected-files spam to first three.
     kept = trimRepeatedPrefix(kept, COLLECT_RE, 3)
     if (passedCount) kept.push(`[token-goat: collapsed ${passedCount} PASSED lines]`)

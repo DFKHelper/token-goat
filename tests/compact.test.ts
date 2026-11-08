@@ -32,6 +32,7 @@ import {
   findLatestSessionId,
   getAutoTriggerMultiplier,
   getContextPressure,
+  getRollingCompactionDirective,
   isNoisePath,
   loadSessionCache,
   measurePromptTokens,
@@ -102,6 +103,46 @@ describe('compact', () => {
       expect(tierForFraction(CONTEXT_TIER_CRITICAL)).toBe('critical')
       expect(tierForFraction(1.0)).toBe('critical')
       expect(tierForFraction(1.5)).toBe('critical')
+    })
+  })
+
+  describe('getRollingCompactionDirective', () => {
+    it('retains recent caches at cool pressure and preserves durable task state', () => {
+      const directive = getRollingCompactionDirective({ fillFraction: 0.25, tier: 'cool' })
+
+      expect(directive).toContain('expired tool stdout receipts')
+      expect(directive).toContain('cache TTL')
+      expect(directive).not.toContain('discard raw stdout')
+      expect(directive).toContain('core findings')
+      expect(directive).toContain('notes')
+      expect(directive).toContain('active task state')
+      expect(directive).toContain('next steps')
+    })
+
+    it('summarizes successful test logs and collapses unchanged rereads as pressure rises', () => {
+      const directive = getRollingCompactionDirective({ fillFraction: 0.6, tier: 'warm' })
+
+      expect(directive).toContain('successful test logs')
+      expect(directive).toContain('latest unchanged whole-file read')
+      expect(directive).toContain('failure diagnostics')
+    })
+
+    it('keeps a concise latest test result and collapses reads at hot pressure', () => {
+      const directive = getRollingCompactionDirective({ fillFraction: 0.75, tier: 'hot' })
+
+      expect(directive).toContain('concise latest result per test command')
+      expect(directive).toContain('unresolved failures')
+      expect(directive).toContain('latest unchanged whole-file read')
+    })
+
+    it('drops raw output at critical pressure only after retaining actionable failure evidence', () => {
+      const directive = getRollingCompactionDirective({ fillFraction: 0.9, tier: 'critical' })
+
+      expect(directive).toContain('discard raw test logs and stdout')
+      expect(directive).toContain('unresolved failure evidence')
+      expect(directive).toContain('core findings')
+      expect(directive).toContain('notes')
+      expect(directive).toContain('active task state')
     })
   })
 
