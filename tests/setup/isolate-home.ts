@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
+import { installGitNoFsmonitor } from '../helpers/git-no-fsmonitor.js'
 import { scrubClaudeSessionEnv } from '../helpers/harness-env.js'
 import { scrubTokenGoatUserEnv } from '../helpers/token-goat-env.js'
 
@@ -110,6 +111,9 @@ process.on('exit', () => {
 //
 // Deleting them is not an escape hatch: nothing is skipped and no assertion is relaxed. It makes every git call in the suite find its repository from its own working directory and read that repository's real index, which is the question the guards mean to ask, and it stops the suite mutating the repository git is about to commit to.
 scrubRepoLocalGitEnv(process.env)
+
+// Every git a test starts runs with core.fsmonitor=false in its environment (tests/helpers/git-no-fsmonitor.ts), so a host that enables fsmonitor globally does not start one daemon per fixture repository.
+installGitNoFsmonitor()
 
 // A token-goat setting exported in the launching shell reaches the product under test the same way: with bash output compression switched off in the shell to read raw output, three guards failed locally that pass in CI. So every token-goat variable goes except the ones tooling sets on purpose (tests/helpers/token-goat-env.ts), and it goes before the pins below, which also clears what an earlier file left in a reused fork.
 scrubTokenGoatUserEnv(process.env)
