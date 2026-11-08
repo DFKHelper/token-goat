@@ -37,6 +37,40 @@ const CACHED_IDS_LISTED = 3
 /** Longest command text shown beside a cached id; the full command is one recall away. */
 const CACHED_COMMAND_PREVIEW_CHARS = 60
 
+/** Briefing project map cache: avoiding repeated recursive directory traversal across subagent spawns. */
+const PROJECT_MAP_BRIEFING_TTL_MS = 300_000
+const PROJECT_MAP_BRIEFING_CACHE_MAX = 16
+const projectMapBriefingCache = new Map<string, { createdAt: number; text: string }>()
+
+function cachedProjectMapBriefing(projectRoot: string): string {
+  const root = path.resolve(projectRoot)
+  const now = Date.now()
+  for (const [key, value] of projectMapBriefingCache) {
+    if (now - value.createdAt >= PROJECT_MAP_BRIEFING_TTL_MS) projectMapBriefingCache.delete(key)
+  }
+
+  const hit = projectMapBriefingCache.get(root)
+  if (hit !== undefined) {
+    projectMapBriefingCache.delete(root)
+    projectMapBriefingCache.set(root, hit)
+    return hit.text
+  }
+
+  const map = buildProjectMap(root, { compact: true })
+  const text = formatProjectMap(map, map.compact)
+  projectMapBriefingCache.set(root, { createdAt: Date.now(), text })
+  while (projectMapBriefingCache.size > PROJECT_MAP_BRIEFING_CACHE_MAX) {
+    const oldest = projectMapBriefingCache.keys().next().value
+    if (oldest === undefined) break
+    projectMapBriefingCache.delete(oldest)
+  }
+  return text
+}
+
+export function resetProjectMapBriefingCache(): void {
+  projectMapBriefingCache.clear()
+}
+
 /** " (~2KB, 12m ago, `git status`)": size, age and a one-line preview of the command, so a subagent can tell which id answers its question. The command was redacted when it was stored (bash_output_cache.ts); it is flattened to one line and defanged here because it lands in a prompt. */
 function describeCachedOutput(entry: { command: string; output: string; storedAt: number }): string {
   const ageMin = Math.max(0, Math.round((Date.now() - entry.storedAt) / 60_000))
@@ -56,8 +90,7 @@ function buildSubagentBriefing(projectRoot: string | null): string {
     // 1. Project map summary
     try {
       if (projectRoot === null) throw new Error('no project root')
-      const map = buildProjectMap(projectRoot, { compact: true })
-      const mapText = formatProjectMap(map, map.compact)
+      const mapText = cachedProjectMapBriefing(projectRoot)
       head.push(mapText)
     } catch {
       // Project map unavailable — skip it and continue with cached ids/reminder

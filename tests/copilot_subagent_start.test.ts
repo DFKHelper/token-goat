@@ -145,6 +145,15 @@ describe('Copilot CLI subagentStart (CAPTURE C4a)', () => {
     const out = runInstalledShim(dir, 'SubagentStart', copilotCapture('C4a-005-subagentStart', { proj }), proj)
     expect(out).toEqual({})
   })
+
+  it('reuses the cached project map on repeated subagentStart calls for the same workspace', () => {
+    const proj = mkWorkspace()
+    const dir = mkHooksDir(['copilot'])
+    const out1 = runInstalledShim(dir, 'subagentStart', copilotCapture('C4a-005-subagentStart', { proj }), proj)
+    const out2 = runInstalledShim(dir, 'subagentStart', copilotCapture('C4a-005-subagentStart', { proj }), proj)
+    expect(out1['additionalContext']).toBeDefined()
+    expect(out2['additionalContext']).toEqual(out1['additionalContext'])
+  })
 })
 
 describe('VS Code SubagentStart (FORMAT-DERIVED 1.137)', () => {

@@ -297,10 +297,10 @@ async function maybeElideServedGenericOutput(
   if (!loadConfig().bash_compress.elide_served_shell_output) return null
   // A failed command's output is an error message, not content a later run should be matched against or have withheld from it.
   if (exitCode !== null && exitCode !== 0) return null
-  // storeBashOutput redacts before writing to the served-output list, so a later call's un-elided rows would be compared against a REDACTED prior body: a live secret in an unmatched row (the match starts after it, or never starts at all) would then ship raw inside a rewrite this function composed, same class of bug foldShellReadBodies/foldShellReadStructure above already decline for. Declining outright, rather than only skipping the parts that touch a secret, keeps this consistent with those: a plain, untouched command result is never less safe than one this function partially reassembles.
-  if (redactSecrets(output).count > 0) return null
   const originalBytes = Buffer.byteLength(output, 'utf-8')
   if (originalBytes < cacheMinBytes) return null
+  // storeBashOutput redacts before writing to the served-output list, so a later call's un-elided rows would be compared against a REDACTED prior body: a live secret in an unmatched row (the match starts after it, or never starts at all) would then ship raw inside a rewrite this function composed, same class of bug foldShellReadBodies/foldShellReadStructure above already decline for. Declining outright, rather than only skipping the parts that touch a secret, keeps this consistent with those: a plain, untouched command result is never less safe than one this function partially reassembles.
+  if (redactSecrets(output).count > 0) return null
 
   // Excludes a prior run of this SAME command: an identical rerun of, say, `npm test` is the finding, not redundancy -- collapsing it away deletes the one piece of information a rerun carries, that the result did not change. bash_identical_read_collapse.test.ts pins exactly this for maybeCollapseIdenticalRead's own file-read case; a same-command rerun reaching this generic path must not quietly reintroduce the same collapse through a different door. A stretch shared with a DIFFERENT command's earlier output carries no such signal, so it is still fair game.
   const allOutputs = getFileServedOutputs(GENERIC_SERVED_OUTPUT_KEY)
