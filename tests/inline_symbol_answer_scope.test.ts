@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import * as os from 'node:os'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ScanModule from '../src/inline_grep_scan.js'
 import { invalidateConfigCache } from '../src/config.js'
@@ -39,10 +39,25 @@ function setOn(on: boolean): void {
   invalidateConfigCache()
 }
 
+let templateRoot = ''
+/** The .git directory of one real `git init`, made once per file and copied into each fixture: a git process per row cost seconds on a loaded host, and a copied directory is the same empty repository (no commits, maintenance off). */
+function gitDirTemplate(): string {
+  if (templateRoot === '') {
+    templateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-scope-gitdir-'))
+    execFileSync('git', ['-c', 'init.defaultBranch=main', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', 'init', '-q'], { cwd: templateRoot, stdio: 'ignore' })
+  }
+  return path.join(templateRoot, '.git')
+}
+
+afterAll(() => {
+  if (templateRoot !== '') fs.rmSync(templateRoot, { recursive: true, force: true })
+  templateRoot = ''
+})
+
 /** A fresh git work tree with the given files written and indexed; maintenance is off so no detached git process outlives the test. */
 function project(files: Record<string, string>, indexed: readonly string[] = Object.keys(files)): string {
   const dir = indexableDir()
-  execFileSync('git', ['-c', 'init.defaultBranch=main', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', 'init', '-q'], { cwd: dir, stdio: 'ignore' })
+  fs.cpSync(gitDirTemplate(), path.join(dir, '.git'), { recursive: true })
   for (const [name, text] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true })
     fs.writeFileSync(path.join(dir, name), text, 'utf8')
