@@ -42,12 +42,16 @@ const REAP_GRACE_S = ((): number => {
   return n
 })()
 const CLEANUP_WAIT_S = REAP_GRACE_S + 10
-const cleanupRunning = (pid: number): boolean => {
+const pidAlive = (pid: number): boolean => {
   try {
     process.kill(pid, 0)
+    return true
   } catch {
     return false
   }
+}
+const cleanupRunning = (pid: number): boolean => {
+  if (!pidAlive(pid)) return false
   const q = queryProcessCommandLine(pid)
   return q.status === 'failed' || (q.status !== 'gone' && /prepush-reaper/.test(q.commandLine))
 }
@@ -58,13 +62,22 @@ function awaitCleanupGone(sandbox: string): void {
   expect(m, 'the cleanup process left no record naming its pid').not.toBeNull()
   const pid = Number(m?.[1])
   const until = Date.now() + CLEANUP_WAIT_S * 1000
-  while (cleanupRunning(pid) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
+  // The wait polls the pid with a signal-0 probe, which starts no process; the command-line query is a PowerShell CIM call of 1 to 2 s on an idle host and many times that on a loaded one, so it is made only once the wait ends (cleanupRunning below), never per poll.
+  while (pidAlive(pid) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
   if (cleanupRunning(pid)) killIfCommandLine(pid, (c) => /prepush-reaper/.test(c), { tree: true })
   expect(cleanupRunning(pid), `the cleanup process ${pid} was still running when the row ended, so it would write into the sandbox being removed`).toBe(false)
 }
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' }).trim()
+}
+
+/** The commit HEAD names, read from the loose ref git just wrote for a fresh commit, so it costs no git process; falls back to rev-parse when the ref is not a loose file. */
+function looseHead(root: string): string {
+  const ref = /^ref: (.+)$/m.exec(readFileSync(path.join(root, '.git/HEAD'), 'utf8'))?.[1]?.trim()
+  const loose = ref === undefined ? '' : path.join(root, '.git', ref)
+  const sha = loose !== '' && existsSync(loose) ? readFileSync(loose, 'utf8').trim() : ''
+  return /^[0-9a-f]{40}$/.test(sha) ? sha : git(root, 'rev-parse', 'HEAD')
 }
 
 function write(root: string, rel: string, text: string): void {
@@ -130,7 +143,8 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
   for (const [rel, text] of Object.entries(change)) write(root, rel, text)
   git(root, 'add', '-A')
   git(root, 'commit', '-q', '--allow-empty', '-m', 'two')
-  const head = git(root, 'rev-parse', 'HEAD')
+  const head = looseHead(root)
+  // PREPUSH_FAILED_STORE names the store the row sets below anyway, so the sourced script does not fork a git rev-parse for a default path that is then overwritten (each fork costs seconds on a loaded host)
   const script = [
     `ROOT_DIR='${posix(root)}'`,
     `LOG_DIR='${posix(dir)}'`,
@@ -144,7 +158,7 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
     'echo "DEFERRED_BEGIN"',
     'echo "$FOCUS_DEFERRED"',
   ].join('\n')
-  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...inheritedEnv(), ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
+  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...inheritedEnv(), PREPUSH_FAILED_STORE: posix(store), ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
   awaitCleanupGone(dir)
   const note = /^NOTE=(.*)$/m.exec(out)?.[1] ?? ''
   const file = /^FILE=(.*)$/m.exec(out)?.[1]?.trim() ?? ''
@@ -475,7 +489,10 @@ function runPlanned(o: { floor: string[]; fill: string[]; deadlineMs: number; cu
     mkdirSync(path.join(root, 'scripts'))
     writeFileSync(path.join(root, 'node_modules/vitest/vitest.mjs'), PLAN_SHIM)
     for (const f of ['prepush-deadline.mjs', 'is-main-module.mjs']) copyFileSync(path.join(REPO, 'scripts', f), path.join(root, 'scripts', f))
-    execFileSync('git', ['init', '-q', root])
+    // The script only asks git for the work tree's top (rev-parse --show-toplevel); git accepts HEAD, objects and refs as a repository, so no git init process is forked for it
+    mkdirSync(path.join(root, '.git/objects'), { recursive: true })
+    mkdirSync(path.join(root, '.git/refs'))
+    writeFileSync(path.join(root, '.git/HEAD'), 'ref: refs/heads/main\n')
     const focus = path.join(dir, 'focus.txt')
     const plan = path.join(dir, 'plan.txt')
     const log = path.join(dir, 'calls.log')
