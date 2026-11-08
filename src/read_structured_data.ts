@@ -641,6 +641,7 @@ export interface HtmlQueryCliOptions {
   json?: boolean
   text?: boolean
   attr?: string
+  content?: boolean
 }
 
 export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
@@ -659,8 +660,21 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
   }
 
   try {
+    if (opts.content === true && (opts.text === true || opts.attr !== undefined)) {
+      throw new Error('--content cannot be combined with --text or --attr')
+    }
+
     const querySelector = opts.attr ? `${opts.selector}@${opts.attr}` : opts.selector
     const result = queryHtml(text, querySelector)
+    if (opts.content === true && result.attributeValues !== undefined) {
+      throw new Error('--content cannot be combined with attribute selectors')
+    }
+    if (
+      opts.content === true
+      && result.elements.some((node) => node.tag !== 'script' && node.tag !== 'style')
+    ) {
+      throw new Error('--content only supports script or style elements')
+    }
     const fullSourceBytes = sumFileSizes([opts.file])
 
     if (result.attributeValues !== undefined) {
@@ -712,19 +726,34 @@ export function runHtmlQuery(opts: HtmlQueryCliOptions): number {
     const headTruncated = limited.length < totalCount
 
     if (opts.json === true) {
-      const jsonItems = limited.map((n) => fenceJsonStrings({
-        tag: n.tag,
-        attributes: n.attributes,
-        text: extractNodeText(n, text),
-        line: n.line,
-        endLine: n.endLine,
-      }, fenceHtmlFieldIfMatched))
+      const jsonItems = limited.map((n) =>
+        fenceJsonStrings(
+          opts.content === true
+            ? {
+                tag: n.tag,
+                attributes: n.attributes,
+                content: n.text,
+                line: n.line,
+                endLine: n.endLine,
+              }
+            : {
+                tag: n.tag,
+                attributes: n.attributes,
+                text: extractNodeText(n, text),
+                line: n.line,
+                endLine: n.endLine,
+              },
+          fenceHtmlFieldIfMatched,
+        ),
+      )
       const capped = guardJsonRows(jsonItems)
       const jsonText = displaySafeJson({ items: capped.items, truncated: capped.truncated || headTruncated, totalCount })
       emit(jsonText)
       recordReadStat('html_query', fullSourceBytes, jsonText, opts.file)
-    } else if (opts.text === true) {
-      const textLines = limited.map((n) => extractNodeText(n, text)).filter(Boolean)
+    } else if (opts.content === true || opts.text === true) {
+      const textLines = limited
+        .map((n) => (opts.content === true ? n.text : extractNodeText(n, text)))
+        .filter(Boolean)
       if (headTruncated) {
         textLines.push(headElidedNotice(totalCount - limited.length, 'element'))
       }

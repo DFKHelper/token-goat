@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { globalDbPath } from '../src/constants.js'
 import { closeAllDbs } from '../src/db.js'
-import { indexFileSync } from '../src/parser.js'
+import { indexFileSync, MAX_SYMBOL_BODY_CHARS } from '../src/parser.js'
 import { normalizePath } from '../src/paths.js'
-import { runSkeleton } from '../src/read_outline.js'
+import { runOutline, runSkeleton } from '../src/read_outline.js'
 import { firstBodyLine } from '../src/read_suggest.js'
 import { executeParallelSearch, symbolPreview } from '../src/search/parallel_search.js'
 
@@ -20,6 +20,20 @@ function skeletonOf(name: string, source: string): string {
     writeFileSync(file, source)
     indexFileSync(normalizePath(file))
     const { text, code } = runSkeleton({ file })
+    expect(code).toBe(0)
+    return text
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+function outlineOf(name: string, source: string, grep: string): string {
+  const root = mkdtempSync(join(tmpdir(), 'tg-outline-anno-'))
+  try {
+    const file = join(root, name)
+    writeFileSync(file, source)
+    indexFileSync(normalizePath(file))
+    const { text, code } = runOutline({ file, grep })
     expect(code).toBe(0)
     return text
   } finally {
@@ -76,6 +90,50 @@ describe('skeleton shows the signature of a decorated declaration (real index)',
     expect(out).toContain('Outer  public class Outer {')
     expect(out).toContain('toString  public String toString() {')
     expect(out).not.toMatch(/@Deprecated|@Override/)
+  })
+})
+
+describe('outline --grep searches Java declaration signatures', () => {
+  it('finds @ConditionalOnProperty declarations, not body-only mentions', () => {
+    const out = outlineOf(
+      'SecurityFlags.java',
+      [
+        '@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "security.enabled", havingValue = "true")',
+        'class SecurityConfiguration {',
+        '  @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "route.enabled")',
+        '  void conditionalRoute() {}',
+        '  void bodyOnlyMention() {',
+        '    String text = "ConditionalOnProperty";',
+        '  }',
+        '}',
+        'class UnconditionalConfiguration {',
+        '  void ordinaryRoute() {}',
+        '}',
+        '',
+      ].join('\n'),
+      'ConditionalOnProperty',
+    )
+    expect(out).toContain('SecurityConfiguration')
+    expect(out).toContain('conditionalRoute')
+    expect(out).not.toContain('bodyOnlyMention')
+    expect(out).not.toContain('UnconditionalConfiguration')
+    expect(out).not.toContain('ordinaryRoute')
+  })
+
+  it('finds annotations when an oversized symbol body was elided from the index', () => {
+    const padding = 'x'.repeat(MAX_SYMBOL_BODY_CHARS)
+    const out = outlineOf(
+      'LargeSecurityConfiguration.java',
+      [
+        '@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "security.enabled", havingValue = "true")',
+        'class LargeSecurityConfiguration {',
+        `  /*${padding}*/`,
+        '}',
+        '',
+      ].join('\n'),
+      'ConditionalOnProperty',
+    )
+    expect(out).toContain('LargeSecurityConfiguration')
   })
 })
 

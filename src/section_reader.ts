@@ -1,8 +1,9 @@
-/** Named-section extraction from text files. Unlike the Python `read_section` (which queries a tree-sitter-built `sections` index in SQLite), this layer parses sections directly from text so it works before the Layer 7 index exists. It recognises markdown headings, TOML/INI tables, Python class/function bodies (via regex), and generic `key = value` / `key:` blocks, choosing the parser by what the text looks like. A section spans from its own header line up to (but not including) the next header at the same or shallower level — exactly the slice a reader means when they ask for "the Install section" or "the [tool.ruff] table". */
+/** Named-section extraction from text files. Unlike the Python `read_section` (which queries a tree-sitter-built `sections` index in SQLite), this layer parses sections directly from text so it works before the Layer 7 index exists. It recognises markdown/HTML headings, TOML/INI tables, Python class/function bodies, C#/VB regions, shell banners, and generic `key = value` / `key:` blocks. A section spans from its own header line up to (but not including) the next header at the same or shallower level — exactly the slice a reader means when they ask for "the Install section" or "the [tool.ruff] table". */
 
 import { readFileSync } from 'node:fs'
 
 import { redactIfDotenv } from './dotenv_redact.js'
+import { findCsharpRegionHeaders, findVbRegionHeaders } from './section_regions.js'
 import { buildLineIndex, offsetToLine, findHtmlHeadingMatches } from './languages/common.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { ATX_CLASS_BREAK_RE, matchAtxHeading, matchRuleBannerTitle, matchTableHeaderName } from './line_matchers.js'
@@ -31,12 +32,12 @@ interface SectionHeader {
   readonly level: number
   /** 0-based index of the header line. */
   readonly index: number
-  /** 0-based exclusive end, for a header whose section closes with an explicit end line (a Visual Basic `#End Region`) rather than at the next header. */
+  /** 0-based exclusive end for a C# `#endregion` or Visual Basic `#End Region`, rather than the next header. */
   readonly endIndex?: number
 }
 
 /** Kind of header finder that produced the headers. */
-// 'table-toml' uses dotted-name nesting (tableSectionEndIndex): a later table only ends the current section if it is NOT a strict dotted descendant, matching TOML's real nesting convention (e.g. [tool.ruff] legitimately absorbs [tool.ruff.lint]). 'table-flat' is INI and the unknown-language table sniff, where a `.` in a section name (e.g. [server.pool] or [mysqld:replica]) is just a name, never a nesting operator, so every [header] must end strictly at the next header line regardless of dotted-prefix overlap. 'region' is Visual Basic `#Region "name"` ... `#End Region`, nestable, each header carrying its own endIndex. 'banner' is Shell script comment banner headings (e.g. `# -- Section --`, `## Section`, `# [Section]`), ending at the next banner or EOF.
+// 'table-toml' uses dotted-name nesting (tableSectionEndIndex): a later table only ends the current section if it is NOT a strict dotted descendant, matching TOML's real nesting convention (e.g. [tool.ruff] legitimately absorbs [tool.ruff.lint]). 'table-flat' is INI and the unknown-language table sniff, where a `.` in a section name (e.g. [server.pool] or [mysqld:replica]) is just a name, never a nesting operator, so every [header] must end strictly at the next header line regardless of dotted-prefix overlap. 'region' covers C# `#region` ... `#endregion` and Visual Basic `#Region "name"` ... `#End Region`; both are nestable and carry their own endIndex. 'banner' is Shell script comment banner headings (e.g. `# -- Section --`, `## Section`, `# [Section]`), ending at the next banner or EOF.
 type HeaderKind = 'markdown' | 'table-toml' | 'table-flat' | 'keyvalue' | 'python' | 'region' | 'banner'
 
 /** Split a heading spec into its base text and optional 1-based ordinal. `"Setup#2"` → `{ base: "Setup", ordinal: 2 }`; `"Setup"` → `{ base: "Setup", ordinal: null }`. Only a trailing `#<digits>` is treated as an ordinal so a heading that legitimately contains `#` mid-text is left intact. */
@@ -172,9 +173,6 @@ function findTableHeaders(lines: readonly string[], isToml: boolean): SectionHea
 }
 
 /** Locate Python `def`/`class` headers, using indentation as nesting level. A top-level def/class is level 1; one indent step deeper is level 2, etc. Nesting is tracked with a stack of indent widths (the same relative-comparison approach Python's own lexer uses for blocks) rather than dividing the raw column count by a fixed 4-space unit - a fixed divisor mis-levels every def/class in a 2-space or 3-space indented file (both indent widths floor-divide to the SAME level as their enclosing class), which truncates the class's section at its very first method instead of spanning the whole body. Tabs are normalised to 4 spaces before comparison so a file mixing tabs and spaces at the same nesting depth still resolves consistently. */
-const VB_REGION_RE = /^\s*#\s*Region\s+"((?:[^"]|"")*)"/i
-const VB_END_REGION_RE = /^\s*#\s*End\s+Region\b/i
-
 /** Shell script comment banner patterns: 1. Markdown-style comment headers: `## Section Name` or `### Sub-section` 2. Box / rule banners: `# ---------------------------------`, `# -- Section Name --`, `# === Check 1 ===` 3. Bracketed step banners: `# [1. Check Git Status]`, `# [Setup]` 4. Region tags: `# REGION: Name` */
 export function extractShellBannerHeading(line: string): { heading: string; level: number } | null {
   const trimmed = line.trim()
@@ -229,27 +227,6 @@ export function findShellBannerHeaders(lines: readonly string[]): SectionHeader[
     const banner = extractShellBannerHeading(line)
     if (banner !== null) {
       headers.push({ heading: banner.heading, level: banner.level, index: i })
-    }
-  }
-  return headers
-}
-
-/** Visual Basic `#Region "name"` blocks as sections (https://learn.microsoft.com/en-us/dotnet/visual-basic/language-reference/directives/region-directive): nestable, each ending at its own `#End Region` line (included), or at end of file when it never closes. A stray `#End Region` with nothing open is ignored. */
-function findVbRegionHeaders(lines: readonly string[]): SectionHeader[] {
-  const headers: SectionHeader[] = []
-  const open: number[] = []
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? ''
-    const m = VB_REGION_RE.exec(line)
-    if (m !== null) {
-      open.push(headers.length)
-      headers.push({ heading: (m[1] ?? '').replace(/""/g, '"'), level: open.length, index: i })
-      continue
-    }
-    if (VB_END_REGION_RE.test(line)) {
-      const pos = open.pop()
-      const h = pos === undefined ? undefined : headers[pos]
-      if (pos !== undefined && h !== undefined) headers[pos] = { ...h, endIndex: i + 1 }
     }
   }
   return headers
@@ -335,7 +312,7 @@ function findHtmlHeaders(text: string): SectionHeader[] {
   return headers
 }
 
-/** Choose the right header finder for `text` given a language hint. Markdown and table/INI are detected by their characteristic header lines even when the language hint is `unknown` (so a raw `.txt` of TOML still parses). Python uses the def/class finder; everything else falls back to key-value. Returns both the headers and the kind of finder that produced them so termination rules can be tuned per kind (e.g. table headers use prefix-based termination instead of level-based). */
+/** Choose the right header finder for `text` given a language hint. Markdown and table/INI are detected by their characteristic header lines even when the language hint is `unknown` (so a raw `.txt` of TOML still parses). Python uses the def/class finder; C# and VB use region directives. Everything else falls back to key-value. Returns both the headers and the kind of finder that produced them so termination rules can be tuned per kind (e.g. table headers use prefix-based termination instead of level-based). */
 function findHeaders(text: string, language: string): { headers: SectionHeader[]; kind: HeaderKind } {
   const lines = text.split('\n')
 
@@ -348,6 +325,8 @@ function findHeaders(text: string, language: string): { headers: SectionHeader[]
     const banners = findShellBannerHeaders(lines)
     if (banners.length > 0) return { headers: banners, kind: 'banner' }
   }
+  // C# source: `#region` blocks are the named sections; masking strings and comments prevents directive-like text from becoming a section.
+  if (language === 'csharp') return { headers: findCsharpRegionHeaders(lines), kind: 'region' }
   // Visual Basic source: only `#Region` blocks are sections; the markdown/table/key-value sniff below would read code lines as headings.
   if (language === 'vb') return { headers: findVbRegionHeaders(lines), kind: 'region' }
   // INI groups under [section] headers like TOML; route to the table finder so a leading `#`/`;` comment line is not mistaken for a markdown heading. Unlike TOML, a `.` in an INI section name is never a nesting operator (see the HeaderKind doc comment above), so this is 'table-flat', not 'table-toml'.

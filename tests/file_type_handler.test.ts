@@ -72,6 +72,9 @@ describe('handleHtml', () => {
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('h1')
     expect(result.message).toContain('Main Title')
+    expect(result.message).toContain('token-goat html-outline "/path/to/page.html"')
+    expect(result.message).toContain('token-goat html-query "/path/to/page.html" script --content')
+    expect(result.message).toContain('token-goat html-query "/path/to/page.html" style --content')
   })
 
   it('does not report a heading that is inside an HTML comment (regression: the hand-rolled heading regex scanned raw unmasked content instead of going through the shared findHtmlHeadingMatches/maskHtmlNoise helper, so a commented-out <h1> was reported as a live heading)', () => {
@@ -95,6 +98,8 @@ describe('handleHtml', () => {
     const result = handleHtml('/path/to/min.html', content)
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('minified')
+    expect(result.message).toContain('token-goat html-outline "/path/to/min.html"')
+    expect(result.message).toContain('token-goat html-query "/path/to/min.html" script --content')
   })
 
   it('includes title in message when present', () => {
@@ -141,11 +146,13 @@ describe('handleHtml', () => {
 
   it('regression: reports the real size via contentLengthHint, not "0 B", when content is empty because the caller skipped reading an oversized file', () => {
     // hooks_read.ts passes content: '' for files above its own scan cap, with the real file size as contentLengthHint -- content.length must never be mistaken for "the file is 0 bytes" in that case.
-    const result = handleHtml('/path/to/huge.html', '', 5_000_000)
+    const result = handleHtml('/path/to/huge page.html', '', 5_000_000)
     expect(result.shouldBlock).toBe(true)
     expect(result.message).not.toContain('0 B')
     expect(result.message).toContain('4.8 MB')
     expect(result.message).not.toContain('appears minified')
+    expect(result.message).toContain('token-goat html-outline "/path/to/huge page.html"')
+    expect(result.message).toContain('token-goat html-query "/path/to/huge page.html" script --content')
   })
 })
 

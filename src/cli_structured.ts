@@ -105,7 +105,7 @@ export function cmdHtmlOutline(file: string, opts: { json?: boolean }): void {
 export function cmdHtmlQuery(
   file: string,
   selector: string,
-  opts: { head?: string; json?: boolean; text?: boolean; attr?: string },
+  opts: { head?: string; json?: boolean; text?: boolean; attr?: string; content?: boolean },
 ): void {
   process.exitCode = runHtmlQuery({ file, selector, ...opts })
 }

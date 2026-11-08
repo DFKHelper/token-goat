@@ -265,7 +265,7 @@ export function registerInspectCommands(program: Command, guard: GuardFn, handle
       .description(description)
       .option('-j, --json', 'output as JSON')
       .option('--min-lines <n>', 'only show symbols at least N lines long')
-      .option('--grep <pattern>', 'only show symbols whose name matches this regex (literal substring if it is not valid regex)')
+      .option('--grep <pattern>', 'match symbol names and Java declaration signatures, including annotations (literal substring if it is not valid regex)')
       .option('--force-refresh', 'reparse file from disk before querying (ignore stale index)')
       .option('--stats', 'add per-symbol reference count and doc-coverage flag')
       .action(
