@@ -172,8 +172,7 @@ export function curatedRepo(): string {
       expect(engine(dir, '--write').status).toBe(0)
       const doc = path.join(dir, 'ARCH.md')
       fs.writeFileSync(doc, fs.readFileSync(doc, 'utf8').replace('Rest module: b.ts', BETA_ROLE))
-      gitOut(dir, ['add', '.'])
-      gitOut(dir, ['commit', '-q', '-m', 'base'])
+      gitOut(dir, ['commit', '-q', '-a', '-m', 'base'])
     },
     scratchDir,
   )

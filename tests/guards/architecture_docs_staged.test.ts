@@ -12,12 +12,17 @@ import { A_TS, BETA_ROLE, gitOut, scratchDirs, engineWithEnv, engine, scratchRep
 useArchDocFixtures()
 
 describe('sync-arch-docs --check --staged', () => {
-  it('carries a curated role across a staged rename and reports it as a warning', () => {
+  it('reports a staged rename as a warning', () => {
     const dir = curatedRepo()
     gitOut(dir, ['mv', 'src/b.ts', 'src/bb.ts'])
     const result = engine(dir, '--check', '--staged')
     expect(result.status).toBe(1)
     expect(result.stderr).toBe('error: src/bb.ts: undocumented module, run --write\nwarning: rename: src/b.ts -> src/bb.ts\n')
+  })
+
+  it('carries a curated role across a staged rename', () => {
+    const dir = curatedRepo()
+    gitOut(dir, ['mv', 'src/b.ts', 'src/bb.ts'])
     const written = engine(dir, '--write')
     expect(written.status).toBe(0)
     expect(written.stderr).toContain('info: rename: src/b.ts -> src/bb.ts\n')
@@ -47,12 +52,18 @@ describe('sync-arch-docs --check --staged', () => {
     expect(parseNameStatus(data)).toEqual([{ from: 'src/b.ts', to: 'src/bb.ts' }])
   })
 
-  it('lets an unstaged edit neither cause drift nor hide it', () => {
+  // The next two rows are one scenario split in two, so each pays about half of the git starts (a start costs 1 s or more on a loaded Windows host) and stays well under the row timeout.
+  it('lets an unstaged edit cause no drift in the staged check', () => {
     const dir = curatedRepo()
     fs.appendFileSync(path.join(dir, 'src', 'a.ts'), 'export const omega = 3\n')
     const caused = { staged: engine(dir, '--check', '--staged'), worktree: engine(dir, '--check') }
     expect({ status: caused.staged.status, stderr: caused.staged.stderr }).toEqual({ status: 0, stderr: '' })
     expect(caused.worktree.stderr).toBe('error: src/a.ts: stale entry, run --write\n')
+  })
+
+  it('lets an unstaged revert not hide a staged edit', () => {
+    const dir = curatedRepo()
+    fs.appendFileSync(path.join(dir, 'src', 'a.ts'), 'export const omega = 3\n')
     gitOut(dir, ['add', 'src/a.ts'])
     fs.writeFileSync(path.join(dir, 'src', 'a.ts'), A_TS)
     const hidden = { staged: engine(dir, '--check', '--staged'), worktree: engine(dir, '--check') }
