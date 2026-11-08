@@ -21,7 +21,8 @@ import { parse, stringify } from 'smol-toml'
 import { codexConfigPath, codexHookScriptPath, computeCodexHookHash, installCodex, isCodexInstalled, wiredCodexHookWords } from '../src/bridges/codex_install.js'
 import { copilotCliConfigPath, copilotCliScriptPath, installCopilotCli, wiredCopilotHookWords } from '../src/bridges/copilot_cli_install.js'
 import { grokConfigPath, grokHookScriptPath, installGrok, wiredGrokHookWords } from '../src/bridges/grok_install.js'
-import { checkNativeHooks } from '../src/cli_doctor_native.js'
+import { checkNativeHookWiring, checkNativeHooks, type NativeAvailability, type NativeWiring } from '../src/cli_doctor_native.js'
+import type { NativeHookCounts } from '../src/hook_latency.js'
 
 /** Hook entries the previous build wrote on Windows read back as not current, which doctor's native rows report as outdated rather than as missing or fine, and a reinstall rewrites every one of them in place. FORMAT-DERIVED: the old command lines are the formulas of commit 0c01d686 (`git show 0c01d686:src/bridges/codex_install.ts` codexHookCommandFor, `:src/bridges/grok_install.ts` grokHookCommandFor, `:src/bridges/copilot_cli_install.ts` hookPowershellCommandFor, `:src/util.ts` hookCommandFor and hookPowershellCommand), typed out here rather than produced by today's source: Codex `& "node" "shim" event "entry"`, Grok's cmd-style `"node" "shim" event "entry"`, which PowerShell rejects as a ParserError, and Copilot's `powershell` field `& 'node' 'shim' event 'entry'` with no exit suffix. */
 
@@ -61,6 +62,41 @@ afterEach(() => {
   Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
   vi.unstubAllEnvs()
   fs.rmSync(TMP, { recursive: true, force: true })
+})
+
+describe('native hook doctor validates foreign executables without running them', () => {
+  it('resolves a project hook from PATH but self-tests only this build’s native binary', () => {
+    const binDir = path.join(TMP, 'bin')
+    const foreign = path.join(binDir, 'tg-hook.EXE')
+    const expected = path.join(TMP, 'installed', 'tg-hook.exe')
+    fs.mkdirSync(binDir)
+    fs.writeFileSync(foreign, '')
+    vi.stubEnv('PATH', binDir)
+    vi.stubEnv('PATHEXT', '.EXE')
+
+    const wiring: NativeWiring = {
+      label: 'Copilot CLI (project)',
+      install: 'token-goat install --copilot --local',
+      harnesses: ['copilot_cli'],
+      entries: [{ words: ['tg-hook', '--'], current: true }],
+    }
+    const availability: NativeAvailability = {
+      enabled: true,
+      target: 'win32-x64',
+      packaged: expected,
+      expected,
+      copyStale: false,
+    }
+    const selftest = vi.fn((_bin: string) => ({ ok: true }))
+    const counts: ReadonlyMap<string, NativeHookCounts> = new Map()
+
+    const row = checkNativeHookWiring(wiring, availability, counts, selftest)
+
+    expect(row?.status).toBe('warn')
+    expect(row?.message.toLowerCase()).toContain(foreign.toLowerCase())
+    expect(row?.message).not.toContain('self-test passed')
+    expect(selftest).not.toHaveBeenCalled()
+  })
 })
 
 describe('hook entries an older build wrote are rewritten by a reinstall', () => {

@@ -16,6 +16,37 @@ export interface TsNode {
   childForFieldName(field: string): TsNode | null
 }
 
+export type TsTypeDefinitionKind = 'interface' | 'type' | 'class' | 'enum'
+
+export interface TsTypeDefinition {
+  readonly name: string
+  readonly kind: TsTypeDefinitionKind
+  readonly filePath: string
+  readonly source: string
+  readonly references: readonly string[]
+  readonly exported: boolean
+  readonly defaultExport: boolean
+  readonly typeParameters: string
+  readonly typeParameterNames: readonly string[]
+}
+
+export interface TsTypeImportBinding {
+  readonly filePath: string
+  readonly moduleSpecifier: string
+  readonly localName: string
+  readonly importedName: string
+  readonly namespace: boolean
+}
+
+export interface TsSignatureInfo {
+  readonly name: string
+  readonly qualifiedName: string
+  readonly kind: 'function' | 'method'
+  readonly declaration: string
+  readonly signature: string
+  readonly references: readonly string[]
+}
+
 export interface TsTree {
   readonly rootNode: TsNode
 }

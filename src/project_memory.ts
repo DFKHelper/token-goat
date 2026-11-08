@@ -8,6 +8,7 @@ import { findProject } from './project.js';
 import { fenceUntrustedFileContent } from './injection_scan.js';
 import { formatAge } from './skill_cache.js';
 import { atomicWriteText, countNoun, ensureDirSync, LOCK_WAIT_MS_HARDENED, sleepSync, withFileLock, withRetryOnLock } from './util.js';
+import { getSharedMemoryDb, redactSharedMemoryText, sharedMemoryDigest } from './shared_memory_db.js';
 
 export const MAX_ENTRIES = 30;
 const MAX_VALUE_LEN = 300;
@@ -306,6 +307,7 @@ export function clearAll(projectHash: string): void {
     return true;
   };
   underNotesLock(p, doClear);
+  clearSymbolDiscoveries(projectHash);
 }
 
 /** Build a compact Markdown block of memory entries for session-start injection. Returns null when no entries stored. With the project `root` and a `statusOf` resolver, an anchored note whose symbol has changed or gone since it was set carries a marker saying so. */
@@ -355,4 +357,247 @@ export function projectNotesFor(cwd: string | undefined, statusOf?: AnchorStatus
   } catch {
     return null;
   }
+}
+
+const MAX_DISCOVERY_PROJECT_HASH_CHARS = 256;
+const MAX_DISCOVERY_FILE_CHARS = 2048;
+const MAX_DISCOVERY_SYMBOL_CHARS = 512;
+const MAX_DISCOVERY_SUMMARY_CHARS = 32_000;
+const MAX_DISCOVERY_DEPENDENCIES = 256;
+const MAX_DISCOVERY_DEPENDENCY_CHARS = 512;
+const MAX_DISCOVERY_QUERY_CHARS = 512;
+const MAX_DISCOVERY_LIMIT = 500;
+
+export interface SymbolDiscoveryInput {
+  /** Project-relative source path. Backslashes are normalized to forward slashes. */
+  file: string;
+  symbol: string;
+  /** Concise facts or an API shape recorded for later turns. */
+  summary: string;
+  dependencies?: readonly string[];
+}
+
+export interface SymbolDiscovery {
+  file: string;
+  symbol: string;
+  summary: string;
+  dependencies: string[];
+  updatedAt: string;
+}
+
+interface SymbolDiscoveryRow {
+  file_display: string;
+  symbol_display: string;
+  summary: string;
+  dependencies_json: string;
+  updated_at: string;
+}
+
+function discoveryProjectHash(projectHash: string): string {
+  if (
+    typeof projectHash !== 'string'
+    || projectHash.trim().length === 0
+    || projectHash.length > MAX_DISCOVERY_PROJECT_HASH_CHARS
+    || projectHash.includes('\0')
+  ) {
+    throw new Error(`projectHash must be a non-empty string of at most ${MAX_DISCOVERY_PROJECT_HASH_CHARS} characters`);
+  }
+  return projectHash;
+}
+
+function discoveryFile(file: string): string {
+  if (typeof file !== 'string' || file.trim().length === 0 || file.length > MAX_DISCOVERY_FILE_CHARS || file.includes('\0')) {
+    throw new Error(`file must be a non-empty project-relative path of at most ${MAX_DISCOVERY_FILE_CHARS} characters`);
+  }
+  const normalized = path.posix.normalize(file.trim().replace(/\\/g, '/'));
+  if (normalized === '.' || normalized === '..' || normalized.startsWith('../') || normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
+    throw new Error('file must be a project-relative path');
+  }
+  return normalized;
+}
+
+function discoverySymbol(symbol: string): string {
+  if (typeof symbol !== 'string' || symbol.trim().length === 0 || symbol.length > MAX_DISCOVERY_SYMBOL_CHARS || symbol.includes('\0')) {
+    throw new Error(`symbol must be a non-empty string of at most ${MAX_DISCOVERY_SYMBOL_CHARS} characters`);
+  }
+  return symbol.trim();
+}
+
+function discoveryText(value: string, label: string, maxLength: number): string {
+  if (typeof value !== 'string' || value.trim().length === 0 || value.includes('\0')) {
+    throw new Error(`${label} must be a non-empty string without NUL characters`);
+  }
+  const safeValue = redactSharedMemoryText(value);
+  if (safeValue.length > maxLength) throw new Error(`${label} must be at most ${maxLength} characters after redaction`);
+  return safeValue;
+}
+
+function discoveryDependencies(dependencies: readonly string[] | undefined): string[] {
+  if (dependencies === undefined) return [];
+  if (!Array.isArray(dependencies) || dependencies.length > MAX_DISCOVERY_DEPENDENCIES) {
+    throw new Error(`dependencies must contain at most ${MAX_DISCOVERY_DEPENDENCIES} strings`);
+  }
+  return [...new Set(dependencies.map((dependency) => {
+    if (typeof dependency !== 'string' || dependency.trim().length === 0 || dependency.length > MAX_DISCOVERY_DEPENDENCY_CHARS || dependency.includes('\0')) {
+      throw new Error(`each dependency must be a non-empty string of at most ${MAX_DISCOVERY_DEPENDENCY_CHARS} characters`);
+    }
+    return discoveryText(dependency.trim(), 'dependency', MAX_DISCOVERY_DEPENDENCY_CHARS);
+  }))];
+}
+
+function discoveryLimit(limit: number | undefined, fallback = 100): number {
+  const resolved = limit ?? fallback;
+  if (!Number.isInteger(resolved) || resolved < 1 || resolved > MAX_DISCOVERY_LIMIT) {
+    throw new Error(`limit must be an integer from 1 to ${MAX_DISCOVERY_LIMIT}`);
+  }
+  return resolved;
+}
+
+function stringArrayFromJson(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function symbolDiscoveryRow(row: SymbolDiscoveryRow): SymbolDiscovery {
+  return {
+    file: row.file_display,
+    symbol: row.symbol_display,
+    summary: row.summary,
+    dependencies: stringArrayFromJson(row.dependencies_json),
+    updatedAt: row.updated_at,
+  };
+}
+
+const SYMBOL_DISCOVERY_SELECT = `
+  SELECT file_display, symbol_display, summary, dependencies_json, updated_at
+  FROM project_symbol_discoveries
+`;
+
+/** Publish a redacted project-level finding keyed by its source file and symbol. */
+export function recordSymbolDiscovery(projectHash: string, discovery: SymbolDiscoveryInput): SymbolDiscovery {
+  if (typeof discovery !== 'object' || discovery === null) throw new Error('discovery must be an object');
+  const normalizedProjectHash = discoveryProjectHash(projectHash);
+  const file = discoveryFile(discovery.file);
+  const symbol = discoverySymbol(discovery.symbol);
+  const summary = discoveryText(discovery.summary, 'summary', MAX_DISCOVERY_SUMMARY_CHARS);
+  const dependencies = discoveryDependencies(discovery.dependencies);
+  const fileDisplay = redactSharedMemoryText(file);
+  const symbolDisplay = redactSharedMemoryText(symbol);
+  const updatedAt = new Date().toISOString();
+  getSharedMemoryDb().prepare(`
+    INSERT INTO project_symbol_discoveries (
+      project_hash, file_hash, symbol_hash, file_display, symbol_display, summary, dependencies_json, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (project_hash, file_hash, symbol_hash) DO UPDATE SET
+      file_display = excluded.file_display,
+      symbol_display = excluded.symbol_display,
+      summary = excluded.summary,
+      dependencies_json = excluded.dependencies_json,
+      updated_at = excluded.updated_at
+  `).run(
+    sharedMemoryDigest(normalizedProjectHash),
+    sharedMemoryDigest(file),
+    sharedMemoryDigest(symbol),
+    fileDisplay,
+    symbolDisplay,
+    summary,
+    JSON.stringify(dependencies),
+    updatedAt,
+  );
+  return { file: fileDisplay, symbol: symbolDisplay, summary, dependencies, updatedAt };
+}
+
+/** Return the finding for one file/symbol pair, or null when it has not been recorded. */
+export function getSymbolDiscovery(projectHash: string, file: string, symbol: string): SymbolDiscovery | null {
+  const row = getSharedMemoryDb().prepare(`
+    ${SYMBOL_DISCOVERY_SELECT}
+    WHERE project_hash = ? AND file_hash = ? AND symbol_hash = ?
+  `).get(
+    sharedMemoryDigest(discoveryProjectHash(projectHash)),
+    sharedMemoryDigest(discoveryFile(file)),
+    sharedMemoryDigest(discoverySymbol(symbol)),
+  ) as SymbolDiscoveryRow | undefined;
+  return row === undefined ? null : symbolDiscoveryRow(row);
+}
+
+/** Find exact symbol-name matches across the project's recorded source files. */
+export function findSymbolDiscoveries(projectHash: string, symbol: string, limit?: number): SymbolDiscovery[] {
+  const rows = getSharedMemoryDb().prepare(`
+    ${SYMBOL_DISCOVERY_SELECT}
+    WHERE project_hash = ? AND symbol_hash = ?
+    ORDER BY updated_at DESC, file_display COLLATE NOCASE ASC, file_hash ASC
+    LIMIT ?
+  `).all(
+    sharedMemoryDigest(discoveryProjectHash(projectHash)),
+    sharedMemoryDigest(discoverySymbol(symbol)),
+    discoveryLimit(limit),
+  ) as SymbolDiscoveryRow[];
+  return rows.map(symbolDiscoveryRow);
+}
+
+/** Search this project's recorded symbol names, paths, summaries, and dependencies. */
+export function searchSymbolDiscoveries(projectHash: string, query: string, limit?: number): SymbolDiscovery[] {
+  if (typeof query !== 'string' || query.trim().length === 0 || query.length > MAX_DISCOVERY_QUERY_CHARS || query.includes('\0')) {
+    throw new Error(`query must be a non-empty string of at most ${MAX_DISCOVERY_QUERY_CHARS} characters`);
+  }
+  const safeQuery = redactSharedMemoryText(query.trim());
+  const rows = getSharedMemoryDb().prepare(`
+    ${SYMBOL_DISCOVERY_SELECT}
+    WHERE project_hash = ?
+      AND (
+        instr(lower(file_display), lower(?)) > 0
+        OR instr(lower(symbol_display), lower(?)) > 0
+        OR instr(lower(summary), lower(?)) > 0
+        OR instr(lower(dependencies_json), lower(?)) > 0
+      )
+    ORDER BY updated_at DESC, file_display COLLATE NOCASE ASC, symbol_display COLLATE NOCASE ASC
+    LIMIT ?
+  `).all(
+    sharedMemoryDigest(discoveryProjectHash(projectHash)),
+    safeQuery,
+    safeQuery,
+    safeQuery,
+    safeQuery,
+    discoveryLimit(limit),
+  ) as SymbolDiscoveryRow[];
+  return rows.map(symbolDiscoveryRow);
+}
+
+/** List the project's most recently updated findings. */
+export function listSymbolDiscoveries(projectHash: string, limit?: number): SymbolDiscovery[] {
+  const rows = getSharedMemoryDb().prepare(`
+    ${SYMBOL_DISCOVERY_SELECT}
+    WHERE project_hash = ?
+    ORDER BY updated_at DESC, file_display COLLATE NOCASE ASC, symbol_display COLLATE NOCASE ASC
+    LIMIT ?
+  `).all(
+    sharedMemoryDigest(discoveryProjectHash(projectHash)),
+    discoveryLimit(limit),
+  ) as SymbolDiscoveryRow[];
+  return rows.map(symbolDiscoveryRow);
+}
+
+/** Remove one project-level finding. */
+export function deleteSymbolDiscovery(projectHash: string, file: string, symbol: string): boolean {
+  return getSharedMemoryDb().prepare(`
+    DELETE FROM project_symbol_discoveries
+    WHERE project_hash = ? AND file_hash = ? AND symbol_hash = ?
+  `).run(
+    sharedMemoryDigest(discoveryProjectHash(projectHash)),
+    sharedMemoryDigest(discoveryFile(file)),
+    sharedMemoryDigest(discoverySymbol(symbol)),
+  ).changes > 0;
+}
+
+/** Remove every discovery record for a project. */
+export function clearSymbolDiscoveries(projectHash: string): number {
+  return Number(getSharedMemoryDb().prepare(`
+    DELETE FROM project_symbol_discoveries
+    WHERE project_hash = ?
+  `).run(sharedMemoryDigest(discoveryProjectHash(projectHash))).changes);
 }

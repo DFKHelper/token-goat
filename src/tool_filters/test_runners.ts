@@ -1,4 +1,4 @@
-// Batch A — test-runner filters. Each is a thin config over the shared Node test-runner family (see families.ts); the loop lives there once. Faithful port of the Python `JestFilter` / `VitestFilter`.
+// Batch A — test-runner filters. Jest and Vitest are thin configs over the shared family loop; Node's built-in `--test` runner uses the same loop with its spec/TAP reporter shapes.
 //
 // Jest's binary set also covers Mocha / Ava / Tap — their reporters share Jest's PASS/FAIL header + summary shape, so one config serves all four.
 
@@ -37,5 +37,18 @@ export const vitestFilter: ToolFilter = makeNodeTestRunnerFilter({
   passFileNoun: 'passing file',
 })
 
+/** Node's built-in `node --test` runner (spec and TAP reporters). */
+export const nodeTestFilter: ToolFilter = makeNodeTestRunnerFilter({
+  name: 'node-test',
+  binaries: ['node'],
+  argvPredicate: (argv) => argv.slice(1).some((arg) => arg === '--test' || arg.startsWith('--test=')),
+  passFileRe: /^\s*✔\s+\S/,
+  failFileRe: /^\s*(?:✖|not ok)\s+\S/,
+  summaryRe: /^\s*(?:ℹ\s+(?:tests|suites|pass|fail|cancelled|skipped|todo|duration_ms)\b|#\s*(?:tests|pass|fail|duration_ms)\b|1\.\.\d+\s*$)/,
+  testTickRe: /^\s*ok\s+\d+\b/,
+  outputNoun: 'output',
+  passFileNoun: 'passing test',
+})
+
 /** Batch A registry slice, appended to TOOL_FILTERS in dispatch order. */
-export const TEST_RUNNER_FILTERS: readonly ToolFilter[] = [jestFilter, vitestFilter]
+export const TEST_RUNNER_FILTERS: readonly ToolFilter[] = [jestFilter, vitestFilter, nodeTestFilter]

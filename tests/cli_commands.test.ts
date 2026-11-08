@@ -12,6 +12,13 @@ describe('buildCommandManifest', () => {
     expect(worker?.subcommands.some((s) => s.name === 'help')).toBe(false)
   })
 
+  it('marks supported query commands in the machine-readable manifest', () => {
+    const manifest = buildCommandManifest(buildProgram())
+    const batchQueryCommands = manifest.filter((entry) => entry.supportsBatchQuery).map((entry) => entry.name)
+    expect(batchQueryCommands.sort()).toEqual(['brief', 'outline', 'read', 'refs', 'section', 'semantic', 'skeleton', 'symbol'])
+    expect(manifest.find((entry) => entry.name === 'note')?.supportsBatchQuery).toBe(false)
+  })
+
   it('gives every top-level entry a name, a description, and an options array', () => {
     const manifest = buildCommandManifest(buildProgram())
     expect(manifest.length).toBeGreaterThan(10)

@@ -10,6 +10,7 @@ import { SESSIONS_SUBDIR, sessionsDir } from './sessions_dir.js'
 import { redactSerializedJson } from './secret_redact.js'
 import { MAX_SEEN_IMAGE_HASHES, MAX_VERIFICATION_RUNS, MAX_BASH_START_CWDS, bashStartCwdsAtLoad, consumedBashStartCwdKeys, consumedCurlDownloadKeys, consumedFileLineRangeKeys, consumedFileServedOutputKeys, migrateCurlDownloadKey, migrateWebFetchKey, consumedOutstandingAgentSpawnKeys, consumedPendingLargeFileHintKeys, curlDownloadsAtLoad, exportSessionState, filesReadCountAtLoad, filesFullReadCountAtLoad, importSessionState, markCompacted, mergeEpochBase, MAX_OUTSTANDING_AGENT_SPAWNS, MAX_RANGES_PER_FILE, MAX_SERVED_OUTPUTS_PER_FILE, MAX_GENERIC_SERVED_OUTPUTS, GENERIC_SERVED_OUTPUT_KEY, outstandingAgentSpawnKey, outstandingAgentSpawnsAtLoad, pendingLargeFileHintsAtLoad, type FileEntry, type FileRangeIdentity, type SerializedSession, type VerificationRun } from './session.js'
 import { coerceReadRangeEvasion, mergeReadRangeEvasion } from './read_range_evasion.js'
+import { getSharedMemoryDb, redactSharedMemoryText, sharedMemoryDigest } from './shared_memory_db.js'
 
 /** Cap on tracked file entries kept per session; oldest by last-read are evicted. */
 const MAX_FILES = 500
@@ -640,4 +641,145 @@ export function saveSessionState(sessionId: string): void {
   } catch {
     // fail-soft: never let persistence break a hook
   }
+}
+
+const MAX_SHARED_SESSION_ID_CHARS = 4096
+const MAX_SHARED_SESSION_KEY_CHARS = 256
+const MAX_SHARED_SESSION_VALUE_CHARS = 32_000
+const MAX_SHARED_SESSION_LIST_LIMIT = 500
+
+export interface SharedSessionValue {
+  key: string
+  value: string
+  updatedAt: string
+}
+
+export interface SharedSessionValueListOptions {
+  prefix?: string
+  limit?: number
+}
+
+interface SharedSessionValueRow {
+  key_display: string
+  value: string
+  updated_at: string
+}
+
+function sharedSessionScope(sessionId: string): string {
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > MAX_SHARED_SESSION_ID_CHARS || sessionId.includes('\0')) {
+    throw new Error(`sessionId must be a non-empty string of at most ${MAX_SHARED_SESSION_ID_CHARS} characters`)
+  }
+  const separator = sessionId.indexOf(AGENT_SALT_SEPARATOR)
+  const scope = separator < 0 ? sessionId : sessionId.slice(0, separator)
+  if (scope.trim().length === 0) throw new Error('sessionId must have a non-empty parent session id')
+  return scope
+}
+
+function sharedSessionKey(key: string): string {
+  if (typeof key !== 'string' || key.trim().length === 0 || key.length > MAX_SHARED_SESSION_KEY_CHARS || key.includes('\0')) {
+    throw new Error(`key must be a non-empty string of at most ${MAX_SHARED_SESSION_KEY_CHARS} characters`)
+  }
+  return key.trim()
+}
+
+function sharedSessionValue(value: string): string {
+  if (typeof value !== 'string' || value.includes('\0')) throw new Error('value must be a string without NUL characters')
+  const safeValue = redactSharedMemoryText(value)
+  if (safeValue.length > MAX_SHARED_SESSION_VALUE_CHARS) {
+    throw new Error(`value must be at most ${MAX_SHARED_SESSION_VALUE_CHARS} characters after redaction`)
+  }
+  return safeValue
+}
+
+function sharedSessionLimit(limit: number | undefined): number {
+  const resolved = limit ?? 100
+  if (!Number.isInteger(resolved) || resolved < 1 || resolved > MAX_SHARED_SESSION_LIST_LIMIT) {
+    throw new Error(`limit must be an integer from 1 to ${MAX_SHARED_SESSION_LIST_LIMIT}`)
+  }
+  return resolved
+}
+
+function sharedSessionPrefix(prefix: string | undefined): string | undefined {
+  if (prefix === undefined) return undefined
+  if (typeof prefix !== 'string') throw new Error('prefix must be a string')
+  if (prefix.trim().length === 0) return undefined
+  return redactSharedMemoryText(sharedSessionKey(prefix))
+}
+
+function sharedSessionRow(row: SharedSessionValueRow): SharedSessionValue {
+  return { key: row.key_display, value: row.value, updatedAt: row.updated_at }
+}
+
+/** Store a redacted value shared by the parent session and all of its agent-salted children. */
+export function setSharedSessionValue(sessionId: string, key: string, value: string): SharedSessionValue {
+  const scopeHash = sharedMemoryDigest(sharedSessionScope(sessionId))
+  const normalizedKey = sharedSessionKey(key)
+  const keyHash = sharedMemoryDigest(normalizedKey)
+  const safeKey = redactSharedMemoryText(normalizedKey)
+  const safeValue = sharedSessionValue(value)
+  const updatedAt = new Date().toISOString()
+  getSharedMemoryDb().prepare(`
+    INSERT INTO shared_session_values (session_hash, key_hash, key_display, value, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (session_hash, key_hash) DO UPDATE SET
+      key_display = excluded.key_display,
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).run(scopeHash, keyHash, safeKey, safeValue, updatedAt)
+  return { key: safeKey, value: safeValue, updatedAt }
+}
+
+/** Look up a shared session value by its original key; returns null when absent. */
+export function getSharedSessionValue(sessionId: string, key: string): SharedSessionValue | null {
+  const scopeHash = sharedMemoryDigest(sharedSessionScope(sessionId))
+  const keyHash = sharedMemoryDigest(sharedSessionKey(key))
+  const row = getSharedMemoryDb().prepare(`
+    SELECT key_display, value, updated_at
+    FROM shared_session_values
+    WHERE session_hash = ? AND key_hash = ?
+  `).get(scopeHash, keyHash) as SharedSessionValueRow | undefined
+  return row === undefined ? null : sharedSessionRow(row)
+}
+
+/** List the most recently updated shared values, optionally filtered by a safe key prefix. */
+export function listSharedSessionValues(sessionId: string, options: SharedSessionValueListOptions = {}): SharedSessionValue[] {
+  const scopeHash = sharedMemoryDigest(sharedSessionScope(sessionId))
+  const limit = sharedSessionLimit(options.limit)
+  const prefix = sharedSessionPrefix(options.prefix)
+  const db = getSharedMemoryDb()
+  const rows = prefix === undefined
+    ? db.prepare(`
+      SELECT key_hash, key_display, value, updated_at
+      FROM shared_session_values
+      WHERE session_hash = ?
+      ORDER BY updated_at DESC, key_display COLLATE NOCASE ASC, key_hash ASC
+      LIMIT ?
+    `).all(scopeHash, limit) as SharedSessionValueRow[]
+    : db.prepare(`
+      SELECT key_hash, key_display, value, updated_at
+      FROM shared_session_values
+      WHERE session_hash = ? AND substr(key_display, 1, length(?)) = ?
+      ORDER BY updated_at DESC, key_display COLLATE NOCASE ASC, key_hash ASC
+      LIMIT ?
+    `).all(scopeHash, prefix, prefix, limit) as SharedSessionValueRow[]
+  return rows.map(sharedSessionRow)
+}
+
+/** Delete one shared value by its original key. */
+export function deleteSharedSessionValue(sessionId: string, key: string): boolean {
+  const scopeHash = sharedMemoryDigest(sharedSessionScope(sessionId))
+  const keyHash = sharedMemoryDigest(sharedSessionKey(key))
+  return getSharedMemoryDb().prepare(`
+    DELETE FROM shared_session_values
+    WHERE session_hash = ? AND key_hash = ?
+  `).run(scopeHash, keyHash).changes > 0
+}
+
+/** Delete every shared value for the parent session and its agent-salted children. */
+export function clearSharedSessionValues(sessionId: string): number {
+  const scopeHash = sharedMemoryDigest(sharedSessionScope(sessionId))
+  return Number(getSharedMemoryDb().prepare(`
+    DELETE FROM shared_session_values
+    WHERE session_hash = ?
+  `).run(scopeHash).changes)
 }

@@ -1,4 +1,4 @@
-/** Copilot CLI install/uninstall wiring. Copilot's hook config is a standalone JSON file, one file per hook registration (not a shared/merge-heavy config like Codex's config.toml), confirmed against https://docs.github.com/en/copilot/reference/hooks-reference and https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks: { "version": 1, "hooks": { "<eventName>": [{ "type": "command", "command": "..." }] } } written to `.github/hooks/token-goat.json` (project scope, confirmed) or `~/.copilot/hooks/token-goat.json` (user scope, confirmed). Because the file is entirely token-goat's own (no other tool writes to a file named exactly `token-goat.json` in that directory), this follows pi_install.ts's simpler whole-file overwrite-on-diff pattern rather than Codex's parse/merge pattern -- there is nothing to merge into. It does, however, still `.bak` the config before overwriting it (like Codex/Gemini/OpenClaw), because Copilot's hooks schema supports per-entry fields token-goat writes only some of (`timeoutSec` and `allowedEnvVars` -- see HOOK_TIMEOUT_SEC and ALLOWED_ENV_VARS below) and never touches others of (`cwd`, `env`, `matcher` -- https://docs.github.com/en/copilot/reference/hooks-reference) that a user could plausibly hand-tune; since install always regenerates the whole file from scratch, a hand-edit would otherwise be silently destroyed with no recovery path. */
+/** Copilot CLI install/uninstall wiring. Copilot's hook config is a standalone JSON file, one file per hook registration (not a shared/merge-heavy config like Codex's config.toml), confirmed against https://docs.github.com/en/copilot/reference/hooks-reference and https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks. Token-goat writes `{ "type": "command", "exec": "...", "args": [...] }` when a verified native client is available, and the shell-command fields `command`, `bash`, and `powershell` otherwise. The file is written to `.github/hooks/token-goat.json` (project scope) or `~/.copilot/hooks/token-goat.json` (user scope). Because the file is entirely token-goat's own (no other tool writes to a file named exactly `token-goat.json` in that directory), this follows pi_install.ts's simpler whole-file overwrite-on-diff pattern rather than Codex's parse/merge pattern -- there is nothing to merge into. It does, however, still `.bak` the config before overwriting it (like Codex/Gemini/OpenClaw), because Copilot's hooks schema supports per-entry fields token-goat writes only some of (`timeoutSec` and `allowedEnvVars` -- see HOOK_TIMEOUT_SEC and ALLOWED_ENV_VARS below) and never touches others of (`cwd`, `env`, `matcher` -- https://docs.github.com/en/copilot/reference/hooks-reference) that a user could plausibly hand-tune; since install always regenerates the whole file from scratch, a hand-edit would otherwise be silently destroyed with no recovery path. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -6,7 +6,7 @@ import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, 
 import { hookCommandFor, hookPowershellCommand, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
-import { nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
+import { nativeHookBinary, nativeHookCommandLine, nativeHookExecParts, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
@@ -44,14 +44,29 @@ const COPILOT_CLI_HOOK_EVENTS = [
 const VSCODE_ONLY_HOOK_EVENTS = ['SubagentStart'] as const
 type CopilotCliHookEvent = (typeof COPILOT_CLI_HOOK_EVENTS)[number] | (typeof VSCODE_ONLY_HOOK_EVENTS)[number]
 
-interface CopilotHookEntry {
+interface CopilotCommandHookEntry {
   type: 'command'
   command: string
   bash: string
   powershell: string
+  exec?: never
+  args?: never
   timeoutSec: number
   allowedEnvVars?: string[]
 }
+
+interface CopilotDirectExecHookEntry {
+  type: 'command'
+  exec: string
+  args: string[]
+  command?: never
+  bash?: never
+  powershell?: never
+  timeoutSec: number
+  allowedEnvVars?: string[]
+}
+
+type CopilotHookEntry = CopilotCommandHookEntry | CopilotDirectExecHookEntry
 
 interface CopilotCliConfig {
   version: 1
@@ -159,7 +174,7 @@ export function copilotHookCommandsFor(scriptPath: string, event: CopilotCliHook
   return { command: hookCommandFor(scriptPath, event), bash: hookCommandFor(scriptPath, event), powershell: hookPowershellCommandFor(scriptPath, event) }
 }
 
-/** Every entry in the Copilot CLI hook config token-goat owns at `opts`'s scope: the argv words of its `command` field, split the way that platform's default shell would (cmd.exe on Windows, sh elsewhere), since `command` is written for it, and whether all three of its command fields are what this build writes for its event. Empty when the file is absent or does not parse. */
+/** Every entry in the Copilot CLI hook config token-goat owns at `opts`'s scope: direct `exec`/`args` words, or a `command` field split as that platform's default shell would (cmd.exe on Windows, sh elsewhere), plus whether the entry matches what this build writes for its event. Empty when the file is absent or does not parse. */
 export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredHookEntry[] {
   let config: Partial<CopilotCliConfig>
   try {
@@ -171,8 +186,24 @@ export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredH
   const out: WiredHookEntry[] = []
   for (const [event, entries] of Object.entries(config?.hooks ?? {})) {
     const known = (COPILOT_CLI_HOOK_EVENTS as readonly string[]).includes(event) || (VSCODE_ONLY_HOOK_EVENTS as readonly string[]).includes(event)
-    const expected = known ? copilotHookCommandsFor(scriptPath, event as CopilotCliHookEvent, { sync: false }) : undefined
+    const hookEvent = known ? event as CopilotCliHookEvent : undefined
+    const expected = hookEvent === undefined ? undefined : copilotHookCommandsFor(scriptPath, hookEvent, { sync: false })
+    const nativeBin = hookEvent === undefined ? undefined : nativeHookBinary(process.argv[1], { sync: false })
+    const expectedExec = nativeBin === undefined || hookEvent === undefined ? undefined : nativeHookExecParts(nativeBin, 'copilot_cli', scriptPath, hookEvent)
     for (const h of Array.isArray(entries) ? entries : []) {
+      if (typeof h?.exec === 'string') {
+        const args = Array.isArray(h.args) && h.args.every((arg: unknown) => typeof arg === 'string') ? h.args : undefined
+        const hasShellFields = h.command !== undefined || h.bash !== undefined || h.powershell !== undefined
+        const current =
+          !hasShellFields &&
+          expectedExec !== undefined &&
+          args !== undefined &&
+          h.exec === expectedExec.command &&
+          args.length === expectedExec.args.length &&
+          args.every((arg, index) => arg === expectedExec.args[index])
+        out.push({ words: [h.exec, ...(args ?? [])], current })
+        continue
+      }
       if (typeof h?.command !== 'string') continue
       const current = expected !== undefined && h.command === expected.command && h.bash === expected.bash && h.powershell === expected.powershell
       out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'), current })
@@ -184,14 +215,24 @@ export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredH
 function buildConfig(scriptPath: string, owners: ReadonlySet<CopilotHooksOwner>): CopilotCliConfig {
   const hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>> = {}
   const events: readonly CopilotCliHookEvent[] = owners.has('vscode') ? [...COPILOT_CLI_HOOK_EVENTS, ...VSCODE_ONLY_HOOK_EVENTS] : COPILOT_CLI_HOOK_EVENTS
+  const nativeBin = nativeHookBinary(process.argv[1])
   for (const event of events) {
+    const parts = nativeBin === undefined ? undefined : nativeHookExecParts(nativeBin, 'copilot_cli', scriptPath, event)
     hooks[event] = [
-      {
-        type: 'command',
-        ...copilotHookCommandsFor(scriptPath, event),
-        timeoutSec: HOOK_TIMEOUT_SEC,
-        allowedEnvVars: [...ALLOWED_ENV_VARS],
-      },
+      parts === undefined
+        ? {
+            type: 'command',
+            ...copilotHookCommandsFor(scriptPath, event),
+            timeoutSec: HOOK_TIMEOUT_SEC,
+            allowedEnvVars: [...ALLOWED_ENV_VARS],
+          }
+        : {
+            type: 'command',
+            exec: parts.command,
+            args: parts.args,
+            timeoutSec: HOOK_TIMEOUT_SEC,
+            allowedEnvVars: [...ALLOWED_ENV_VARS],
+          },
     ]
   }
   return { version: 1, hooks }

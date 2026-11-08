@@ -1,8 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import * as path from 'node:path'
 import { bundleTg, makeBundleProject, type BundleProject } from './helpers/bundle.js'
-import { extractSignature } from '../src/read_signature.js'
+import type { TsNode, TsParserCtor } from '../src/parser_ts_types.js'
+import { extractSignature, extractSignatureWithTypeContext } from '../src/read_signature.js'
+
+const require = createRequire(import.meta.url)
+const TreeSitterParser = require('tree-sitter') as TsParserCtor
+const typescriptGrammar = (require('tree-sitter-typescript') as { typescript: unknown }).typescript
+
+function parseTypeScript(source: string): TsNode {
+  const parser = new TreeSitterParser()
+  parser.setLanguage(typescriptGrammar)
+  return parser.parse(source).rootNode
+}
 
 describe('extractSignature', () => {
   it('extracts TypeScript/JavaScript function signature', () => {
@@ -65,6 +77,111 @@ describe('extractSignature', () => {
     expect(res.code).toBe(0)
     expect(res.text).toContain('export function extractSignature(body: string')
     expect(res.text).not.toContain('let parenDepth = 0')
+  })
+})
+
+describe('extractSignatureWithTypeContext', () => {
+  it('resolves transitive type definitions used by a function and omits unrelated types', () => {
+    const filePath = 'src/service.ts'
+    const root = parseTypeScript([
+      'interface FetchOptions { result: User }',
+      'interface User { address: Address }',
+      'interface Address { city: string }',
+      'interface T { shadowed: string }',
+      'interface BodyOnly { ignored: boolean }',
+      'interface Unused { secret: string }',
+      'export function findUser<T extends FetchOptions>(options: T): Promise<User> { return Promise.resolve({} as BodyOnly) }',
+    ].join('\n'))
+
+    const context = extractSignatureWithTypeContext([{ filePath, root }], filePath, 'findUser')
+
+    expect(context).toContain('export function findUser<T extends FetchOptions>(options: T): Promise<User>')
+    expect(context).toContain('interface FetchOptions { result: User }')
+    expect(context).toContain('interface User { address: Address }')
+    expect(context).toContain('interface Address { city: string }')
+    expect(context).not.toContain('interface T')
+    expect(context).not.toContain('interface BodyOnly')
+    expect(context).not.toContain('interface Unused')
+  })
+
+  it('resolves aliased imports across files and terminates on recursive types', () => {
+    const servicePath = 'src/service.ts'
+    const typesPath = 'src/types.ts'
+    const context = extractSignatureWithTypeContext(
+      [
+        {
+          filePath: servicePath,
+          root: parseTypeScript([
+            `import type { Payload as ApiPayload } from './types'`,
+            'export function send<T extends string>(payload: ApiPayload<T>): ApiPayload<T> { return payload }',
+          ].join('\n')),
+        },
+        {
+          filePath: typesPath,
+          root: parseTypeScript([
+            'export interface Payload<T> { node?: Node<T> }',
+            'export interface Node<T> { payload?: Payload<T> }',
+            'export interface Unused { value: boolean }',
+          ].join('\n')),
+        },
+      ],
+      servicePath,
+      'send',
+    )
+
+    expect(context).toContain('export function send<T extends string>(payload: ApiPayload<T>): ApiPayload<T>')
+    expect(context).toContain('export interface Payload<T> { node?: Node<T> }')
+    expect(context).toContain('export interface Node<T> { payload?: Payload<T> }')
+    expect(context).toContain('type ApiPayload<T> = Payload<T>')
+    expect(context).not.toContain('interface Unused')
+  })
+
+  it('resolves default-imported declarations', () => {
+    const servicePath = 'src/service.ts'
+    const typesPath = 'src/default-types.ts'
+    const context = extractSignatureWithTypeContext(
+      [
+        {
+          filePath: servicePath,
+          root: parseTypeScript([
+            `import type ApiPayload from './default-types'`,
+            'export function send(payload: ApiPayload): ApiPayload { return payload }',
+          ].join('\n')),
+        },
+        {
+          filePath: typesPath,
+          root: parseTypeScript('export default interface Payload { value: string }'),
+        },
+      ],
+      servicePath,
+      'send',
+    )
+
+    expect(context).toContain('export default interface Payload { value: string }')
+    expect(context).toContain('type ApiPayload = Payload')
+  })
+
+  it('finds class methods by qualified name and collects all file signatures when no name is supplied', () => {
+    const filePath = 'src/store.ts'
+    const root = parseTypeScript([
+      'interface Query { id: string }',
+      'interface Result { value: number }',
+      'class Store { find(query: Query): Result { return { value: 1 } } }',
+      'export function health(): string { return "ok" }',
+      'export const parse = (query: Query): Result => ({ value: 1 })',
+    ].join('\n'))
+
+    const methodContext = extractSignatureWithTypeContext([{ filePath, root }], filePath, 'Store.find')
+    expect(methodContext).toContain('find(query: Query): Result')
+    expect(methodContext).toContain('interface Query')
+    expect(methodContext).toContain('interface Result')
+
+    const fileContext = extractSignatureWithTypeContext([{ filePath, root }], filePath)
+    expect(fileContext).toContain('find(query: Query): Result')
+    expect(fileContext).toContain('export function health(): string')
+    expect(fileContext).toContain('export const parse = (query: Query): Result =>')
+    expect(fileContext).toContain('interface Query')
+    expect(fileContext).toContain('interface Result')
   })
 })
 

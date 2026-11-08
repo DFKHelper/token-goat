@@ -67,6 +67,8 @@ CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_path);
 CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_file_folded ON symbols(TG_LOWER(file_path));
 CREATE INDEX IF NOT EXISTS idx_symbols_file_name_folded ON symbols(TG_LOWER(file_path), name);
+CREATE INDEX IF NOT EXISTS idx_symbols_call_graph_scope ON symbols(TG_LOWER(file_path), name, line_start DESC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_symbols_call_graph_enclosing ON symbols(TG_LOWER(file_path), line_start DESC, id ASC);
 -- Partial index backing checkSymbolBodySize (symbol_body_probe.ts), which every SessionStart hook runs.
 -- Its predicate cannot be served by any index above, so the check had to read the whole symbols
 -- table -- 226 MB / 231324 rows here, 229 ms per session start, and the early-exit LIMIT 1 never
@@ -93,6 +95,9 @@ CREATE INDEX IF NOT EXISTS idx_refs_name ON refs(name);
 CREATE INDEX IF NOT EXISTS idx_refs_file ON refs(file_path);
 CREATE INDEX IF NOT EXISTS idx_refs_file_folded ON refs(TG_LOWER(file_path));
 CREATE INDEX IF NOT EXISTS idx_refs_file_name_folded ON refs(TG_LOWER(file_path), name);
+-- name is the callee and context the caller for tree-sitter refs. These covering indexes are the two directions of the graph matrix; file/line/column ordering stays inside SQLite instead of triggering per-file symbol lookups.
+CREATE INDEX IF NOT EXISTS idx_refs_call_graph_callee ON refs(name, file_path, line, col, context);
+CREATE INDEX IF NOT EXISTS idx_refs_call_graph_caller ON refs(context, TG_LOWER(file_path), line, col, name);
 
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

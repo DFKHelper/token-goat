@@ -284,6 +284,7 @@ describe('large-source structural skeleton through the built bundle on stock def
     fs.writeFileSync(file, body)
     // The floor is measured on the delivered text, which on this payload shape is the file's own unnumbered bytes.
     expect(Buffer.byteLength(body, 'utf-8')).toBeGreaterThan(12_000)
+    expect(body.split('\n').length).toBeGreaterThan(250)
 
     const delivered = deliveredViaBundle('skel-bundle-default', file, body)
 

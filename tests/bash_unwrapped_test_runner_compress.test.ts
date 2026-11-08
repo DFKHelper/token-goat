@@ -26,14 +26,18 @@ afterEach(() => {
   else process.env['TOKEN_GOAT_HARNESS_OVERRIDE'] = savedHarness
 })
 
-function postEvent(command: string, output: string): HookEvent {
+function postEvent(command: string, output: string, exitCode?: number): HookEvent {
   return makeHookEvent({
     eventName: 'post_tool_use',
     toolName: 'Bash',
     toolInput: { command },
     sessionId: 'unwrapped-test-runner',
     agentId: undefined,
-    raw: { tool_name: 'Bash', tool_input: { command }, tool_response: output },
+    raw: {
+      tool_name: 'Bash',
+      tool_input: { command },
+      tool_response: exitCode === undefined ? output : { output, exit_code: exitCode },
+    },
   })
 }
 
@@ -49,6 +53,51 @@ describe('post-hook compression of unwrapped commands', () => {
     expect(id).not.toBeNull()
     expect(result.updatedOutput).toContain(`bash-output ${id!} --full`)
     expect(getBashOutput(id!)?.output).toBe(DOTNET_TEST)
+  })
+
+  it('compresses failed unwrapped test output and distills only external frames', async () => {
+    const cmd = 'jest --runInBand'
+    const output = [
+      ...Array.from({ length: 200 }, (_, i) => `PASS src/generated_${i}.test.ts`),
+      'FAIL src/service.test.ts',
+      '  Error: expected value',
+      '    at serviceFailure (src/service.ts:12:3)',
+      '    at runTest (C:\\repo\\node_modules\\jest-runner\\build\\index.js:20:5)',
+      '',
+      'Test Suites: 1 failed, 200 passed',
+      'Tests: 1 failed, 200 passed',
+    ].join('\n')
+
+    const result = await postBashHandler(postEvent(cmd, output, 1))
+
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType !== 'rewriteOutput') return
+    expect(result.updatedOutput).toContain('serviceFailure (src/service.ts:12:3)')
+    expect(result.updatedOutput).not.toContain('jest-runner')
+    expect(result.updatedOutput).toContain('collapsed 1 external stack frame')
+  })
+
+  it('recognizes and compresses a failed unwrapped node --test run', async () => {
+    const cmd = 'node --test'
+    const output = [
+      ...Array.from({ length: 200 }, (_, i) => `✔ passing test ${i}`),
+      '✖ test at tests/service.test.js:1:1',
+      'AssertionError: expected value',
+      '    at serviceFailure (file:///repo/src/service.js:12:3)',
+      '    at TestContext.<anonymous> (node:internal/test_runner/test:800:12)',
+      'ℹ tests 201',
+      'ℹ pass 200',
+      'ℹ fail 1',
+    ].join('\n')
+
+    const result = await postBashHandler(postEvent(cmd, output, 1))
+
+    expect(result.hookType).toBe('rewriteOutput')
+    if (result.hookType !== 'rewriteOutput') return
+    expect(result.updatedOutput).toContain('serviceFailure (file:///repo/src/service.js:12:3)')
+    expect(result.updatedOutput).not.toContain('node:internal')
+    expect(result.updatedOutput).toContain('collapsed 1 external stack frame')
+    expect(result.updatedOutput).toContain('ℹ fail 1')
   })
 
   it('leaves an unwrapped cargo build to the build cache instead of rewriting it', async () => {

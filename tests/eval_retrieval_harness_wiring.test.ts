@@ -11,6 +11,7 @@ import { toBaseline } from '../evals/retrieval/gate.js'
 import { splitOf } from '../evals/retrieval/metrics.js'
 import { assertRan, baselineRanks, findOnPath, fixtureHits, pairWithBaseline, parseConfiguredNumber, resolveBin, shimBundlePath } from '../scripts/eval-retrieval.js'
 import { endSurvivors, runOwned, selectSurvivors, SURVIVOR_QUERY_TIMEOUT_MS, type ProcRow, type SurvivorIo } from '../scripts/eval-run-owned.js'
+import { resolveOnPath } from '../src/process_util.js'
 
 const FAKE_BIN = `import { appendFileSync } from 'node:fs'
 const args = process.argv.slice(2)
@@ -117,7 +118,7 @@ describe('resolveBin', () => {
     expect(shimBundlePath('/opt/npm/tg', 'lib/tg.mjs', 'linux')).toBe('/opt/npm/lib/tg.mjs')
   })
 
-  it('finds a name that already carries a PATHEXT extension as written, through the real resolveOnPath fallback', () => {
+  it('resolves a PATHEXT-qualified executable as written through PATH lookup', () => {
     const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(root, 'bin-')))
     fs.writeFileSync(path.join(dir, 'tool.exe'), '')
     fs.writeFileSync(path.join(dir, 'plain.cmd'), '@ECHO off\r\ntool.exe %*\r\n')
@@ -125,6 +126,7 @@ describe('resolveBin', () => {
     process.env['PATH'] = dir
     process.env['PATHEXT'] = '.COM;.EXE;.BAT;.CMD;.exe;.cmd'
     try {
+      expect(resolveOnPath('tool.exe')).toBe(path.join(dir, 'tool.exe'))
       expect(findOnPath('tool.exe')).toBe(path.join(dir, 'tool.exe'))
       expect(resolveBin('tool.exe', 'win32')).toEqual({ command: path.join(dir, 'tool.exe'), prefix: [] })
       expect(() => resolveBin('plain.cmd', 'win32')).toThrow(/resolves to .*plain\.cmd, which names no existing \.mjs bundle/)

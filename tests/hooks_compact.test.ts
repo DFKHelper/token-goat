@@ -83,6 +83,17 @@ describe('preCompactHandler', () => {
       expect(result.context).toContain('Files edited:')
     }
   })
+
+  it('includes rolling pruning guidance in the summarizer context', () => {
+    const result = preCompactHandler(compactEvent)
+
+    expect(result.hookType).toBe('context')
+    if (result.hookType === 'context') {
+      expect(result.context).toContain('Rolling compaction')
+      expect(result.context).toContain('expired tool stdout receipts')
+      expect(result.context).toContain('active task state')
+    }
+  })
 })
 
 // Regression: compact_assist.enabled was defined, validated, persisted, exported, and even had an env-var override (TOKEN_GOAT_COMPACT_ASSIST) wired in config.ts, but preCompactHandler injected the manifest unconditionally -- nothing ever read the flag, so disabling it had zero effect on the actual pre_compact hook.

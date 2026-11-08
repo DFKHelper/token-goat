@@ -30,6 +30,8 @@ export async function preWriteRewriteHandler(event: HookEvent): Promise<HookOutp
     if (typeof newContent !== 'string') return passOutput()
 
     const guards = await loadGuards()
+    const contentGuard = guards.preWriteContentGuard(filePath, newContent)
+    if (contentGuard.hookType !== 'pass') return contentGuard
     const onDisk = inspectFile(filePath)
     if (onDisk.state === 'absent') {
       // Doesn't exist yet (or the path is otherwise unreachable) -- a brand-new-file Write has nothing to compare against for the rewrite hint, but a placeholder in it is still a placeholder.

@@ -323,7 +323,7 @@ export async function reconcileHeadMoves(cmd: string, runDir: string, startDir: 
 
 export const PIPELINE_PASSTHROUGH_HEADS = new Set(['head', 'tail', 'cat', 'tee', 'less', 'more'])
 
-const CI_FILTER_NAMES = /^(?:generic-ci|jest|vitest|pytest|go_test|cargo_test|cargo|go|make|cmake|gradle|maven|dotnet|turbo|nx|lerna|webpack|eslint|ruff|clippy|flake8|mypy|prettier|tsc)$/
+const CI_FILTER_NAMES = /^(?:generic-ci|jest|vitest|node-test|pytest|go_test|cargo_test|cargo|go|make|cmake|gradle|maven|dotnet|turbo|nx|lerna|webpack|eslint|ruff|clippy|flake8|mypy|prettier|tsc)$/
 
 function isCiBuildTestSegment(cleaned: string, cwd: string | null): boolean {
   if (isTestRunnerCommand(cleaned) || isBuildCommand(cleaned) || isTscCommand(cleaned)) return true

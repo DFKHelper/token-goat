@@ -360,7 +360,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
   // A config that still runs the .js forwarder (a session started before the rename caches it) fails every call once that file is gone, even with the .cjs it forwards to intact.
   if (named.legacy && !fs.existsSync(legacyPath)) return missingShimResult(name, legacyPath, harness, install)
 
-  let config: { hooks?: Partial<Record<string, Array<{ command?: string; timeoutSec?: unknown }>>> }
+  let config: { hooks?: Partial<Record<string, Array<{ command?: unknown; exec?: unknown; args?: unknown; timeoutSec?: unknown }>>> }
   try {
     config = JSON.parse(stripBom(fs.readFileSync(configPath, 'utf-8')))
   } catch (err) {
@@ -371,8 +371,31 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     }
   }
 
-  const preToolUseCommand = config.hooks?.['preToolUse']?.[0]?.command
-  if (typeof preToolUseCommand !== 'string' || preToolUseCommand === '') {
+  const preToolUseEntry = config.hooks?.['preToolUse']?.[0]
+  const hasDirectExec =
+    preToolUseEntry !== undefined &&
+    preToolUseEntry !== null &&
+    typeof preToolUseEntry === 'object' &&
+    Object.prototype.hasOwnProperty.call(preToolUseEntry, 'exec')
+  const execValue = preToolUseEntry?.exec
+  const argsValue = preToolUseEntry?.args
+  const directArgs = Array.isArray(argsValue) ? argsValue.filter((arg: unknown): arg is string => typeof arg === 'string') : []
+  const hasValidDirectArgs = Array.isArray(argsValue) && directArgs.length === argsValue.length
+  const directExec = hasDirectExec && typeof execValue === 'string' && execValue !== '' ? execValue : undefined
+  const commandValue = preToolUseEntry?.command
+  const preToolUseCommand = !hasDirectExec && typeof commandValue === 'string' && commandValue !== '' ? commandValue : undefined
+  const hasNulDirectEntry = hasDirectExec && (
+    directExec?.includes('\0') === true ||
+    directArgs.some((arg) => arg.includes('\0'))
+  )
+  if (hasNulDirectEntry) {
+    return {
+      name,
+      status: 'fail',
+      message: `hook config at ${configPath} has a preToolUse direct entry with a NUL character in exec or args; run: ${install}`,
+    }
+  }
+  if ((hasDirectExec && (directExec === undefined || !hasValidDirectArgs)) || (!hasDirectExec && preToolUseCommand === undefined)) {
     return {
       name,
       status: 'fail',
@@ -380,18 +403,33 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     }
   }
 
-  // The command's first word is the baked process.execPath (see hookCommandFor in copilot_cli_install.ts), or with the native client wired, that binary, and the baked node path is the first word of the command it wraps.
-  const words = splitHookCommand(preToolUseCommand, process.platform === 'win32' ? 'cmd' : 'sh')
+  const directEntry = directExec === undefined ? undefined : { exec: directExec, args: directArgs }
+  // A command entry's first word is the baked process.execPath (see hookCommandFor in copilot_cli_install.ts), or with the native client wired, that binary, and the baked node path is the first word after `--`. A direct exec entry already carries the same argv as separate fields.
+  const words = directEntry === undefined
+    ? splitHookCommand(preToolUseCommand ?? '', process.platform === 'win32' ? 'cmd' : 'sh')
+    : [directEntry.exec, ...directEntry.args]
   const native = parseNativeInvocation(words)
-  if (native !== undefined && !fs.existsSync(native.bin)) {
+  if (native !== undefined && !fs.existsSync(native.bin) && resolveOnPath(native.bin) === null) {
     return {
       name,
       status: 'fail',
       message: `hook points at a native hook client binary that no longer exists (${native.bin}), so ${harness} cannot start it. Recovery: run ${fencedCommand(install)}, then fully restart ${harness}.`,
     }
   }
-  const bakedExecPath = (native?.wrapped ?? words)[0]
-  if (bakedExecPath !== undefined && path.isAbsolute(bakedExecPath) && !fs.existsSync(bakedExecPath)) {
+  if (directEntry !== undefined && native === undefined && !fs.existsSync(directEntry.exec) && resolveOnPath(directEntry.exec) === null) {
+    return {
+      name,
+      status: 'fail',
+      message: `hook points at an executable that no longer exists (${directEntry.exec}). Recovery: run ${fencedCommand(install)}, then fully restart ${harness}.`,
+    }
+  }
+  const bakedExecPath = native === undefined ? (directEntry === undefined ? words[0] : undefined) : native.wrapped[0]
+  if (
+    bakedExecPath !== undefined &&
+    (path.isAbsolute(bakedExecPath) || directEntry !== undefined) &&
+    !fs.existsSync(bakedExecPath) &&
+    resolveOnPath(bakedExecPath) === null
+  ) {
     return {
       name,
       status: 'fail',
@@ -408,15 +446,25 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
     toolName: 'view',
     toolArgs: { path: 'doctor-check.txt' },
   })
-  // HOOK_PROBE_ENV keeps this call out of the hook stats: it is doctor's own, and the native hook client counts this same run reports would otherwise count it as one of Copilot's. preToolUseCommand is config.hooks.preToolUse[0].command: the exact string Copilot CLI runs itself on every tool call. Spawning it here reproduces that, to check it still launches. Anyone able to write that file already has execution through Copilot (for the project scope, only once the ledger check above has passed), so shell: true adds no reach; parsing the string instead would break a hook command a user customised by hand. nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
-  const res = spawnSync(preToolUseCommand, {
-    input: synthetic,
-    encoding: 'utf-8',
-    env: { ...process.env, [HOOK_PROBE_ENV]: '1' },
-    shell: true,
-    windowsHide: true,
-    timeout: probeBudgetMs,
-  })
+  // HOOK_PROBE_ENV keeps this call out of the hook stats: it is doctor's own, and the native hook client counts this same run reports would otherwise count it as one of Copilot's. The preToolUse entry is the exact executable and argv or command string Copilot runs. Direct exec entries are probed as argv; the legacy command form keeps shell:true so a hand-customized command retains its semantics. Project-scope configs reach this point only after the owner-ledger check above.
+  const probeEnv = { ...process.env, [HOOK_PROBE_ENV]: '1' }
+  // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
+  const res = directEntry === undefined
+    ? spawnSync(preToolUseCommand ?? '', {
+        input: synthetic,
+        encoding: 'utf-8',
+        env: probeEnv,
+        shell: true,
+        windowsHide: true,
+        timeout: probeBudgetMs,
+      })
+    : spawnSync(directEntry.exec, directEntry.args, {
+        input: synthetic,
+        encoding: 'utf8',
+        timeout: probeBudgetMs,
+        windowsHide: true,
+        env: probeEnv,
+      })
   if (res.error) {
     if ((res.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') {
       return {
