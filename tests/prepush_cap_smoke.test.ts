@@ -4,7 +4,7 @@ import { closeSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, op
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { HARD_STOP_DEFAULT_S, HARD_STOP_MAX_S, HOOK_LIMIT_S, STARTUP_RESERVE_S, STOP_CLEANUP_S, TERM_WAIT_S, hardStopOf, postStopOf } from '../scripts/prepush-budget.mjs'
 import { unfinishedFiles, writeOwed } from '../scripts/prepush-failed.mjs'
 import { killAllIfCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
@@ -227,6 +227,20 @@ describe('the watchdog and kill_tree, sourced alone', () => {
   })
 })
 
+// One real git init and empty commit, made once and copied into each hook row's directory: every row needs only a repository with a HEAD for the hook's rev-parse calls, and each git start costs seconds on this host.
+let hookGitDir = ''
+const hookGitTemplate = (): string => {
+  if (hookGitDir !== '') return hookGitDir
+  const tpl = mkdtempSync(path.join(tmpdir(), 'tg-prepush-hookgit-'))
+  expect(spawnSync('git', ['init', '-q'], { cwd: tpl, timeout: SPAWN_TIMEOUT_MS }).status).toBe(0)
+  expect(spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: tpl, timeout: SPAWN_TIMEOUT_MS }).status).toBe(0)
+  hookGitDir = path.join(tpl, '.git')
+  return hookGitDir
+}
+afterAll(() => {
+  if (hookGitDir !== '') rmSync(path.dirname(hookGitDir), { recursive: true, force: true })
+})
+
 // The hook's own stop path, run for real: a temp copy of .lefthook-scripts and scripts, with the four leg scripts replaced by stubs that sleep for a set time and record their pid. The seam is the copy; nothing in the hook is stubbed but the legs.
 describe('the hard stop ends the legs of a real hook run', () => {
   const bashAvailable = process.platform !== 'win32' || existsSync(GIT_BASH)
@@ -283,9 +297,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
     for (const leg of LEGS) {
       writeFileSync(path.join(dir, '.lefthook-scripts', leg.file), stubSource(leg, leg.leg === 'wsl-test'))
     }
-    expect(spawnSync('git', ['init', '-q'], { cwd: dir, timeout: SPAWN_TIMEOUT_MS }).status).toBe(0)
-    const commit = spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: dir, timeout: SPAWN_TIMEOUT_MS })
-    expect(commit.status).toBe(0)
+    cpSync(hookGitTemplate(), path.join(dir, '.git'), { recursive: true })
   })
 
   afterEach(() => {
