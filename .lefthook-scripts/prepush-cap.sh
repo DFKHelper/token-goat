@@ -8,7 +8,8 @@ HARD_STOP_DEFAULT_S=540
 REAP_DIR=""
 REAP_PID=""
 REAP_RECORD=""
-CAP_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The directory is cut off the path with parameter expansion: a dirname process is a fork and an exec on every source of this file (0.3 to 1.5 s each on a Windows host), and the hook sources it twice.
+if [[ "${BASH_SOURCE[0]}" == */* ]]; then CAP_SELF_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"; else CAP_SELF_DIR="$(pwd)"; fi
 CAP_BOUNDED_N=0
 
 # True when process $1 is alive and, where /proc has winpid and $2 is given, still carries Windows pid $2: a reused pid is not the process.
@@ -43,7 +44,7 @@ cap_reaper_start() {
   base="${TMP_BASE:-${TMPDIR:-/tmp}}"
   store="$base"
   if [[ -n "${FAILED_STORE:-}" ]]; then store="${FAILED_STORE%/*}"; fi
-  mkdir -p -- "$store" 2>/dev/null || true
+  [[ -d "$store" ]] || mkdir -p -- "$store" 2>/dev/null || true
   REAP_RECORD="$store/reaper-last.txt"
   # A record whose cleanup process is still alive belongs to a push running now: it is neither reported nor deleted, and this run's cleanup process appends to it.
   if [[ -r "$REAP_RECORD" ]] && ! cap_record_live; then
@@ -118,11 +119,12 @@ cap_reaper_notice() {
 # Reads HARD_STOP_S, HOOK_LIMIT_S, HARD_STOP_SRC, POST_STOP_S, TERM_WAIT_S and STOP_CLEANUP_S once, before any leg starts. A budget module that cannot be read fails the hook, since a run with no stop would be uncapped.
 cap_read_limits() {
   local out f p t=0 ok=1
-  f="$(mktemp)"
-  cap_reaper_start
+  f="${TMPDIR:-/tmp}/tg-limits.$$.$RANDOM$RANDOM"
+  # The read starts before the cleanup process does, so the node start and the cleanup process's start-up overlap instead of following each other; the pid joins PIDS at once (the exit trap ends it on every path) and is registered once the cleanup process is up.
   node "$ROOT_DIR/scripts/prepush-budget.mjs" hard-stop >"$f" 9<&- &
   p=$!
   PIDS+=("$p")
+  cap_reaper_start
   cap_register "$p"
   # No watchdog exists yet, so this one read is cut off at 20 s (a node start is seconds on a loaded host); the exit trap ends a node that is still running.
   while kill -0 "$p" 2>/dev/null && (( t < 20 )); do cap_tick; t=$((t + 1)); done
@@ -141,7 +143,8 @@ cap_read_limits() {
 cap_tick_open() {
   [[ -z "${CAP_TICK_OPEN:-}" ]] || return 0
   local fifo
-  fifo="$(mktemp -u)"
+  # A name built from the shell's own pid and two random numbers, not mktemp -u: that is a process start for a name only this shell uses once and removes at once.
+  fifo="${TMPDIR:-/tmp}/tg-tick.$$.$RANDOM$RANDOM"
   mkfifo "$fifo"
   exec 9<>"$fifo"
   rm -f -- "$fifo"
