@@ -1,7 +1,7 @@
 /** The narrow path of a head-moving git command in the post hook: when git answers, exactly the files the command changed reach the dirty queue and no reconcile request is left. tests/hooks_bash.test.ts accepts a reconcile request in place of the queue because its git reads share the loaded suite's 5 s budget; this file pins the other half, so a hook whose diff or top-level read always failed could not pass through that fallback. Every real git call here runs with a long budget (the product's 5 s is what the fallback tests inject), and the base the diff was taken against is asserted, which is what separates `ORIG_HEAD` from `HEAD@{1}`. PROVENANCE: the repositories are real git repositories built here; the expected files are HAND-DERIVED from what each command rewrote (git's own semantics: a checkout, reset or rebase changes the files that differ between the old and the new tip); the subdirectory case is HAND-DERIVED from git's output, which names changed files relative to the repository top-level and not to the working directory. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 import type * as GitAsyncModule from '../src/git_async.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -44,6 +44,25 @@ function commitFile(dir: string, name: string, body: string): void {
   git(dir, 'commit', '-qm', `write ${name}`)
 }
 
+/** The branch HEAD names, read from .git/HEAD: what `git symbolic-ref --short HEAD` prints for a branch, without starting a process. */
+function currentBranch(dir: string): string {
+  return fs.readFileSync(join(dir, '.git', 'HEAD'), 'utf8').trim().replace(/^ref: refs\/heads\//, '')
+}
+
+const fixtureTemplates = new Map<string, { root: string; info: unknown }>()
+
+/** Builds a fixture once per process under `key` and gives every caller its own copy of `root`, so a test that writes to its repositories never sees another test's writes and a fixture that costs a dozen git starts is paid for once, not once per row. A copy carries .git/logs, so the reflog a hook reads is the one the build left. `info` is what the build returns besides the directory (a branch name, a commit id). A build that throws leaves no template behind, so the next caller rebuilds and fails the same way. */
+function copiedFixture<Info>(key: string, build: () => { root: string; info: Info }): { root: string; info: Info } {
+  let template = fixtureTemplates.get(key)
+  if (template === undefined) {
+    template = build()
+    fixtureTemplates.set(key, template)
+  }
+  const root = indexableDir()
+  fs.cpSync(template.root, root, { recursive: true })
+  return { root, info: template.info as Info }
+}
+
 const dirty = (): string[] => getDirtyPaths().map(foldPath)
 const folded = (rel: string, root: string): string => foldPath(resolveIndexPath(rel, root))
 const requestFile = (): string => (fs.existsSync(reconcileRequestPathFor(dataDir())) ? fs.readFileSync(reconcileRequestPathFor(dataDir()), 'utf8') : '')
@@ -79,7 +98,7 @@ beforeEach(() => {
 describe('a head-moving git command whose git reads answer', () => {
   it('git checkout enqueues exactly the file that differs between the branches', async () => {
     const dir = gitRepoWithCommit()
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(dir)
     git(dir, 'checkout', '-qb', 'feature')
     commitFile(dir, 'a.txt', 'two\n')
     git(dir, 'checkout', '-q', original)
@@ -108,7 +127,7 @@ describe('a head-moving git command whose git reads answer', () => {
     git(dir, 'init', '-q')
     git(dir, 'add', '.')
     git(dir, 'commit', '-qm', 'init')
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(dir)
     git(dir, 'checkout', '-qb', 'feature')
     commitFile(dir, 'first.txt', 'first\n')
     commitFile(dir, 'second.txt', 'second\n')
@@ -126,7 +145,7 @@ describe('a head-moving git command whose git reads answer', () => {
 
   it('a reset right after a rebase enqueues what the reset reverted, not what the rebase moved', async () => {
     const dir = gitRepoWithCommit()
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(dir)
     git(dir, 'checkout', '-qb', 'feature')
     commitFile(dir, 'first.txt', 'first\n')
     commitFile(dir, 'second.txt', 'second\n')
@@ -148,7 +167,7 @@ describe('a head-moving git command whose git reads answer', () => {
   it('a cd prefix enqueues the file of the repository it moved into, not of the one the call started in', async () => {
     const start = gitRepoWithCommit()
     const other = gitRepoWithCommit()
-    const original = git(other, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(other)
     git(other, 'checkout', '-qb', 'feature')
     commitFile(other, 'a.txt', 'two\n')
     git(other, 'checkout', '-q', original)
@@ -165,7 +184,7 @@ describe('a head-moving git command whose git reads answer', () => {
     git(dir, 'init', '-q')
     git(dir, 'add', '.')
     git(dir, 'commit', '-qm', 'init')
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(dir)
     git(dir, 'checkout', '-qb', 'feature')
     fs.writeFileSync(join(dir, 'sub', 'nested.txt'), 'two\n')
     git(dir, 'commit', '-qam', 'change nested.txt')
@@ -181,13 +200,16 @@ describe('a head-moving git command whose git reads answer', () => {
 describe('a head-moving git command in any segment of a compound command gets the reflog diff', () => {
   /** A repository whose `other` branch changes o.txt, with HEAD back on the original branch: the state a head-moving command starts from. */
   function branchChangingOtxt(): { dir: string; original: string } {
-    const dir = gitRepoWithCommit()
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
-    commitFile(dir, 'o.txt', 'one\n')
-    git(dir, 'checkout', '-qb', 'other')
-    commitFile(dir, 'o.txt', 'two\n')
-    git(dir, 'checkout', '-q', original)
-    return { dir, original }
+    const { root, info } = copiedFixture('branchChangingOtxt', () => {
+      const dir = gitRepoWithCommit()
+      const original = currentBranch(dir)
+      commitFile(dir, 'o.txt', 'one\n')
+      git(dir, 'checkout', '-qb', 'other')
+      commitFile(dir, 'o.txt', 'two\n')
+      git(dir, 'checkout', '-q', original)
+      return { root: dir, info: { original } }
+    })
+    return { dir: root, original: info.original }
   }
 
   it.each([
@@ -231,7 +253,7 @@ function gitStatus(cwd: string, ...args: string[]): number | null {
 describe('a command that moves HEAD more than once, or replays several commits, asks for a reconcile', () => {
   it('git checkout other && git checkout - reconciles, and still queues the file the reflog diff finds', async () => {
     const dir = gitRepoWithCommit()
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(dir)
     commitFile(dir, 'o.txt', 'one\n')
     git(dir, 'checkout', '-qb', 'other')
     commitFile(dir, 'o.txt', 'two\n')
@@ -247,7 +269,7 @@ describe('a command that moves HEAD more than once, or replays several commits, 
 
   it('git rebase --continue after a conflict reconciles, since HEAD@{1} covers only the replayed step', async () => {
     const dir = gitRepoWithCommit()
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(dir)
     commitFile(dir, 'a.txt', 'base\n')
     git(dir, 'checkout', '-qb', 'feature')
     commitFile(dir, 'a.txt', 'feature\n')
@@ -267,7 +289,7 @@ describe('a command that moves HEAD more than once, or replays several commits, 
 
   it('git cherry-pick naming two commits reconciles, since HEAD@{1} covers only the last one', async () => {
     const dir = gitRepoWithCommit()
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(dir)
     git(dir, 'checkout', '-qb', 'feature')
     commitFile(dir, 'a.txt', 'first\n')
     commitFile(dir, 'c.txt', 'second\n')
@@ -280,15 +302,18 @@ describe('a command that moves HEAD more than once, or replays several commits, 
   })
 
   it('git merge --continue after a conflict is covered by the reflog diff, which lists every file the merge brought in', async () => {
-    const dir = gitRepoWithCommit()
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
-    commitFile(dir, 'a.txt', 'base\n')
-    git(dir, 'checkout', '-qb', 'other')
-    commitFile(dir, 'a.txt', 'other\n')
-    commitFile(dir, 'n.txt', 'new\n')
-    git(dir, 'checkout', '-q', original)
-    commitFile(dir, 'a.txt', 'mainline\n')
-    expect(gitStatus(dir, 'merge', 'other'), 'calibration: the merge stops on a.txt').not.toBe(0)
+    const { root: dir } = copiedFixture('mergeStoppedOnAConflict', () => {
+      const built = gitRepoWithCommit()
+      const original = currentBranch(built)
+      commitFile(built, 'a.txt', 'base\n')
+      git(built, 'checkout', '-qb', 'other')
+      commitFile(built, 'a.txt', 'other\n')
+      commitFile(built, 'n.txt', 'new\n')
+      git(built, 'checkout', '-q', original)
+      commitFile(built, 'a.txt', 'mainline\n')
+      expect(gitStatus(built, 'merge', 'other'), 'calibration: the merge stops on a.txt').not.toBe(0)
+      return { root: built, info: null }
+    })
     fs.writeFileSync(join(dir, 'a.txt'), 'resolved\n')
     git(dir, 'add', 'a.txt')
     expect(gitStatus(dir, 'merge', '--continue'), 'calibration: the continue commits the merge').toBe(0)
@@ -299,12 +324,15 @@ describe('a command that moves HEAD more than once, or replays several commits, 
   })
 
   it('git cherry-pick naming one commit keeps the reflog diff and asks for no reconcile', async () => {
-    const dir = gitRepoWithCommit()
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
-    git(dir, 'checkout', '-qb', 'feature')
-    commitFile(dir, 'a.txt', 'first\n')
-    commitFile(dir, 'c.txt', 'second\n')
-    git(dir, 'checkout', '-q', original)
+    const { root: dir } = copiedFixture('featureWithTwoCommitsOffBase', () => {
+      const built = gitRepoWithCommit()
+      const original = currentBranch(built)
+      git(built, 'checkout', '-qb', 'feature')
+      commitFile(built, 'a.txt', 'first\n')
+      commitFile(built, 'c.txt', 'second\n')
+      git(built, 'checkout', '-q', original)
+      return { root: built, info: null }
+    })
     git(dir, 'cherry-pick', 'feature')
 
     await postBash('git cherry-pick feature', dir)
@@ -316,20 +344,23 @@ describe('a command that moves HEAD more than once, or replays several commits, 
 
 /** A feature branch with two commits, off a base that gained mainline.txt after them. Returns with `feature` checked out, ready for a rebase that replays it. */
 function replayFixture(): { dir: string; original: string; base: string } {
-  const dir = indexableDir()
-  fs.writeFileSync(join(dir, 'base.txt'), 'base\n')
-  git(dir, 'init', '-q')
-  git(dir, 'add', '.')
-  git(dir, 'commit', '-qm', 'init')
-  const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
-  git(dir, 'checkout', '-qb', 'feature')
-  commitFile(dir, 'first.txt', 'first\n')
-  commitFile(dir, 'second.txt', 'second\n')
-  git(dir, 'checkout', '-q', original)
-  const base = git(dir, 'rev-parse', 'HEAD')
-  commitFile(dir, 'mainline.txt', 'mainline\n')
-  git(dir, 'checkout', '-q', 'feature')
-  return { dir, original, base }
+  const { root, info } = copiedFixture('replayFixture', () => {
+    const dir = indexableDir()
+    fs.writeFileSync(join(dir, 'base.txt'), 'base\n')
+    git(dir, 'init', '-q')
+    git(dir, 'add', '.')
+    git(dir, 'commit', '-qm', 'init')
+    const original = currentBranch(dir)
+    git(dir, 'checkout', '-qb', 'feature')
+    commitFile(dir, 'first.txt', 'first\n')
+    commitFile(dir, 'second.txt', 'second\n')
+    git(dir, 'checkout', '-q', original)
+    const base = git(dir, 'rev-parse', 'HEAD')
+    commitFile(dir, 'mainline.txt', 'mainline\n')
+    git(dir, 'checkout', '-q', 'feature')
+    return { root: dir, info: { original, base } }
+  })
+  return { dir: root, ...info }
 }
 
 describe('a rebase that replays several commits is covered by ORIG_HEAD, and enqueues only the mainline file', () => {
@@ -355,7 +386,7 @@ describe('a rebase that replays several commits is covered by ORIG_HEAD, and enq
 
 /** Leaves `git am` stopped on a.txt, with the patch's new file n.txt still to write: the patch and its resolution are both real git. */
 function amStoppedOnConflict(dir: string): void {
-  const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
+  const original = currentBranch(dir)
   commitFile(dir, 'a.txt', 'base\n')
   git(dir, 'checkout', '-qb', 'feature')
   fs.writeFileSync(join(dir, 'a.txt'), 'feature\n')
@@ -369,19 +400,31 @@ function amStoppedOnConflict(dir: string): void {
   expect(gitStatus(dir, 'am', mbox), 'calibration: the am stops on a.txt').not.toBe(0)
 }
 
+/** A fresh repository with `git am` stopped on a conflict, built once per process: the stopped state is the files under .git/rebase-apply and the conflicted worktree, none of which names a path. */
+function repoWithAmStopped(): string {
+  return copiedFixture('amStoppedOnConflict', () => {
+    const dir = gitRepoWithCommit()
+    amStoppedOnConflict(dir)
+    return { root: dir, info: null }
+  }).root
+}
+
 describe('git am asks for a reconcile in every form, since no reflog diff covers the patch it applies or its --continue', () => {
   it('a clean git am <mbox> reconciles, although the patch adds a file and changes another', async () => {
-    const dir = gitRepoWithCommit()
-    const original = git(dir, 'symbolic-ref', '--short', 'HEAD')
-    commitFile(dir, 'a.txt', 'base\n')
-    git(dir, 'checkout', '-qb', 'feature')
-    commitFile(dir, 'a.txt', 'feature\n')
-    fs.writeFileSync(join(dir, 'n.txt'), 'new\n')
-    git(dir, 'add', 'n.txt')
-    git(dir, 'commit', '-qm', 'feature adds n.txt')
+    const { root: dir } = copiedFixture('cleanAmPatchesOffBase', () => {
+      const built = gitRepoWithCommit()
+      const original = currentBranch(built)
+      commitFile(built, 'a.txt', 'base\n')
+      git(built, 'checkout', '-qb', 'feature')
+      commitFile(built, 'a.txt', 'feature\n')
+      fs.writeFileSync(join(built, 'n.txt'), 'new\n')
+      git(built, 'add', 'n.txt')
+      git(built, 'commit', '-qm', 'feature adds n.txt')
+      fs.writeFileSync(join(built, '.git', 'clean.mbox'), `${git(built, 'format-patch', '-2', '--stdout', 'HEAD')}\n`)
+      git(built, 'checkout', '-q', original)
+      return { root: built, info: null }
+    })
     const mbox = join(dir, '.git', 'clean.mbox')
-    fs.writeFileSync(mbox, `${git(dir, 'format-patch', '-2', '--stdout', 'HEAD')}\n`)
-    git(dir, 'checkout', '-q', original)
     expect(gitStatus(dir, 'am', mbox), 'calibration: the am applies both patches').toBe(0)
 
     await postBash(`git am ${mbox}`, dir)
@@ -390,8 +433,7 @@ describe('git am asks for a reconcile in every form, since no reflog diff covers
   })
 
   it.each([['--continue'], ['--cont'], ['--resolved'], ['-r']])('git am %s after a real conflict reconciles, since the new file is written by hand', async (flag) => {
-    const dir = gitRepoWithCommit()
-    amStoppedOnConflict(dir)
+    const dir = repoWithAmStopped()
     fs.writeFileSync(join(dir, 'a.txt'), 'resolved\n')
     fs.writeFileSync(join(dir, 'n.txt'), 'new\n')
     git(dir, 'add', 'a.txt', 'n.txt')
@@ -405,13 +447,15 @@ describe('git am asks for a reconcile in every form, since no reflog diff covers
 
 describe('git revert asks for a reconcile in every form, with real git, since its files are in no reflog diff the hook takes', () => {
   it.each([['git revert --no-edit HEAD', ['--no-edit']], ['git revert --no-commit HEAD', ['--no-commit']]])('%s changes a.txt and n.txt and reconciles', async (command, options) => {
-    const dir = gitRepoWithCommit()
-    commitFile(dir, 'a.txt', 'base\n')
-    fs.writeFileSync(join(dir, 'a.txt'), 'changed\n')
-    fs.writeFileSync(join(dir, 'n.txt'), 'new\n')
-    git(dir, 'add', 'a.txt', 'n.txt')
-    git(dir, 'commit', '-qm', 'change a.txt and add n.txt')
-    const head = git(dir, 'rev-parse', 'HEAD')
+    const { root: dir, info: head } = copiedFixture('revertsAChangeAndAnAddition', () => {
+      const built = gitRepoWithCommit()
+      commitFile(built, 'a.txt', 'base\n')
+      fs.writeFileSync(join(built, 'a.txt'), 'changed\n')
+      fs.writeFileSync(join(built, 'n.txt'), 'new\n')
+      git(built, 'add', 'a.txt', 'n.txt')
+      git(built, 'commit', '-qm', 'change a.txt and add n.txt')
+      return { root: built, info: git(built, 'rev-parse', 'HEAD') }
+    })
 
     expect(gitStatus(dir, 'revert', ...options, 'HEAD'), 'calibration: the revert runs').toBe(0)
     expect(git(dir, 'rev-parse', 'HEAD') === head, 'calibration: a revert moves HEAD only without --no-commit').toBe(options[0] === '--no-commit')
@@ -424,17 +468,20 @@ describe('git revert asks for a reconcile in every form, with real git, since it
 
 /** `other` and the base have diverged: `other` rewrites a.txt, adds o.txt and sub/a.txt, the base gains m.txt, and `third` names the first commit. Returns on the base branch. */
 function divergedBranches(): { dir: string; base: string } {
-  const dir = gitRepoWithCommit()
-  const base = git(dir, 'symbolic-ref', '--short', 'HEAD')
-  git(dir, 'branch', 'third')
-  git(dir, 'checkout', '-qb', 'other')
-  commitFile(dir, 'a.txt', 'other\n')
-  commitFile(dir, 'o.txt', 'o\n')
-  fs.mkdirSync(join(dir, 'sub'))
-  commitFile(dir, 'sub/a.txt', 'sub\n')
-  git(dir, 'checkout', '-q', base)
-  commitFile(dir, 'm.txt', 'm\n')
-  return { dir, base }
+  const { root, info } = copiedFixture('divergedBranches', () => {
+    const dir = gitRepoWithCommit()
+    const base = currentBranch(dir)
+    git(dir, 'branch', 'third')
+    git(dir, 'checkout', '-qb', 'other')
+    commitFile(dir, 'a.txt', 'other\n')
+    commitFile(dir, 'o.txt', 'o\n')
+    fs.mkdirSync(join(dir, 'sub'))
+    commitFile(dir, 'sub/a.txt', 'sub\n')
+    git(dir, 'checkout', '-q', base)
+    commitFile(dir, 'm.txt', 'm\n')
+    return { root: dir, info: { base } }
+  })
+  return { dir: root, base: info.base }
 }
 
 describe('a rebase that names a branch reconciles, since git checks that branch out before the reflog diff can see its files', () => {
@@ -474,18 +521,19 @@ describe('a rebase that names a branch reconciles, since git checks that branch 
 
 /** Two sibling repositories `a` and `b` under one indexable root, each with an `other` branch: `a` is where the command runs, `b` is the repository it names with -C, --git-dir, --work-tree or GIT_DIR. */
 function siblingRepos(): { a: string; b: string } {
-  const root = indexableDir()
-  const a = join(root, 'a')
-  const b = join(root, 'b')
-  for (const dir of [a, b]) {
-    fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(join(dir, 'base.txt'), 'base\n')
-    git(dir, 'init', '-q')
-    git(dir, 'add', '.')
-    git(dir, 'commit', '-qm', 'init')
-    git(dir, 'branch', 'other')
-  }
-  return { a, b }
+  const { root } = copiedFixture('siblingRepos', () => {
+    const built = indexableDir()
+    for (const dir of [join(built, 'a'), join(built, 'b')]) {
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(join(dir, 'base.txt'), 'base\n')
+      git(dir, 'init', '-q')
+      git(dir, 'add', '.')
+      git(dir, 'commit', '-qm', 'init')
+      git(dir, 'branch', 'other')
+    }
+    return { root: built, info: null }
+  })
+  return { a: join(root, 'a'), b: join(root, 'b') }
 }
 
 /** The repositories the reconcile requests name, folded and sorted, one entry per request line as written (duplicates kept). */
@@ -577,7 +625,7 @@ describe('a git command aimed at another repository reconciles that repository',
 
   it('git rebase <base> other queues no m.txt and still writes the reconcile request', async () => {
     const { a } = siblingRepos()
-    const original = git(a, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(a)
     commitFile(a, 'o.txt', 'o\n')
     git(a, 'checkout', '-q', original)
     git(a, 'checkout', '-q', 'other')
@@ -594,7 +642,7 @@ describe('a git command aimed at another repository reconciles that repository',
 
   it('git merge --squash queues no path from the stale reflog base and reconciles', async () => {
     const { a } = siblingRepos()
-    const original = git(a, 'symbolic-ref', '--short', 'HEAD')
+    const original = currentBranch(a)
     git(a, 'checkout', '-qb', 'z')
     commitFile(a, 'z.txt', 'z\n')
     git(a, 'checkout', '-q', original)
@@ -684,7 +732,7 @@ describe('round 12d: a git verb that runs no program, or runs one through a subc
     fs.writeFileSync(script, `git -C ${target} checkout -q other\n`)
     const run = spawnSync(POWERSHELL!, ['-NoProfile', '-File', script], { cwd: a, encoding: 'utf8' })
     expect(run.status, run.stderr).toBe(0)
-    expect(git(b, 'symbolic-ref', '--short', 'HEAD')).toBe('other')
+    expect(currentBranch(b)).toBe('other')
 
     await postBash(`git -C ${target} checkout other`, a)
 
@@ -877,13 +925,16 @@ describe('round 13b: an environment assignment before a command leaves the comma
 
 /** Sibling repositories where `a` has just checked out `other`, so a reflog diff taken in `a` would name `o.txt`: a hook that reads the wrong repository's reflog queues `a/o.txt` for a command that ran somewhere else. */
 function siblingReposWithMovedHead(): { a: string; b: string } {
-  const { a, b } = siblingRepos()
-  const original = git(a, 'symbolic-ref', '--short', 'HEAD')
-  git(a, 'checkout', '-q', 'other')
-  commitFile(a, 'o.txt', 'o\n')
-  git(a, 'checkout', '-q', original)
-  git(a, 'checkout', '-q', 'other')
-  return { a, b }
+  const { root } = copiedFixture('siblingReposWithMovedHead', () => {
+    const { a } = siblingRepos()
+    const original = currentBranch(a)
+    git(a, 'checkout', '-q', 'other')
+    commitFile(a, 'o.txt', 'o\n')
+    git(a, 'checkout', '-q', original)
+    git(a, 'checkout', '-q', 'other')
+    return { root: dirname(a), info: null }
+  })
+  return { a: join(root, 'a'), b: join(root, 'b') }
 }
 
 // Provenance: HAND-DERIVED. The cd targets are the forms named in the round-13c brief; a shell resolves each at run time (`cd -` the previous directory, `~` the home, `$X` a variable, `$(pwd)/../b` a substitution), so the text cannot name the repository the git write lands in.
@@ -947,7 +998,7 @@ describe('round 13c: a PowerShell location cmdlet before a git write moves the r
     const target = process.platform === 'win32' ? '..\\b' : '../b'
     const run = spawnSync(POWERSHELL!, ['-NoProfile', '-Command', `cd ${target}; git checkout -q other`], { cwd: a, encoding: 'utf8' })
     expect(run.status, run.stderr).toBe(0)
-    expect(git(b, 'symbolic-ref', '--short', 'HEAD')).toBe('other')
+    expect(currentBranch(b)).toBe('other')
 
     await postBash(`pwsh -Command "cd ${target}; git checkout other"`, a)
 

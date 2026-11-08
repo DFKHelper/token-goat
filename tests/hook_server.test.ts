@@ -31,6 +31,7 @@ import {
 } from '../src/hook_ipc.js'
 import Database from '../src/sqlite_driver.js'
 import { BUNDLE, ROOT } from './helpers/bundle.js'
+import { gitInitInto } from './helpers/git-repo.js'
 import { isHookServerCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { busyTrace } from './helpers/sqlite_busy_trace.js'
 
@@ -501,7 +502,9 @@ describe('warm CLI', () => {
       "import { scaleValue } from './helper'\n\nexport interface CalcOptions {\n  factor: number\n}\n\nexport function computeTotal(values: number[], opts: CalcOptions): number {\n  let total = 0\n  for (const v of values) total += scaleValue(v, opts.factor)\n  return total\n}\n\nexport function reportTotal(values: number[]): string {\n  return String(computeTotal(values, { factor: 2 }))\n}\n",
     )
     fs.writeFileSync(path.join(sb.proj, 'tests', 'calc.test.ts'), "import { computeTotal } from '../src/calc'\n\nexport function checkComputeTotal(): boolean {\n  return computeTotal([1], { factor: 1 }) === 1\n}\n")
-    for (const args of [['init', '-q'], ['add', '-A']]) expect(spawnSync('git', args, { cwd: sb.proj }).status).toBe(0)
+    gitInitInto(sb.proj)
+    expect(fs.existsSync(path.join(sb.proj, '.git', 'HEAD')), 'the project is a git repository').toBe(true)
+    expect(spawnSync('git', ['add', '-A'], { cwd: sb.proj }).status).toBe(0)
     const indexed = cold(sb, ['index', '.'])
     expect(indexed.status, indexed.stderr).toBe(0)
     // Each case with a line its cold run must print, so a pair of empty answers cannot pass as equal.

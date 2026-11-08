@@ -14,6 +14,7 @@ import type { buildEvent as BuildEventFn } from '../src/relay.js'
 
 import { checkChangeClaim, parkAgentReceipt, receiptLines, takeAgentReceipt, waitAgentReceipts } from '../src/agent_receipt.js'
 import { clearModuleCaches } from '../src/reset.js'
+import { gitInitInto } from './helpers/git-repo.js'
 import { redactSecrets } from '../src/secret_redact.js'
 import { recordFileEdit, recordVerificationRun } from '../src/session.js'
 import { loadSessionState, saveSessionState, sessionSidecarPath } from '../src/session_store.js'
@@ -240,7 +241,7 @@ describe('the receipt through the real hook registry', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(T0)
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-receipt-repo-'))
-    spawnSync('git', ['init', '-q'], { cwd: repo })
+    gitInitInto(repo)
   })
   afterEach(() => {
     vi.useRealTimers()
@@ -751,7 +752,8 @@ describe('the built hook entry, per host', () => {
     ['codex', { session_id: 'e2e-nb-cx', turn_id: 'turn-1', agent_id: 'thread-a', agent_type: 'default', hook_event_name: 'SubagentStop', stop_hook_active: false, transcript_path: null, last_assistant_message: 'I fixed the parser bug in widget.ts.' }],
     ['vscode', { session_id: 'e2e-nb-vs', agent_id: 'sub-vs', agent_type: 'Explore', hook_event_name: 'SubagentStop', stop_hook_active: false }],
   ] as const)('%s: a change claim on a clean tree never re-prompts the stopped subagent', (harness, payload) => {
-    expect(spawnSync('git', ['init', '-q'], { cwd: project }).status).toBe(0)
+    gitInitInto(project)
+    expect(fs.existsSync(path.join(project, '.git', 'HEAD')), 'the project is a git repository').toBe(true)
     const res = hookRun('subagent_stop', harness, payload)
     expect(res.status).toBe(0)
     const parsed = JSON.parse(res.stdout) as Record<string, unknown>

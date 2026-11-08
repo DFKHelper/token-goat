@@ -40,6 +40,18 @@ export function gitRepoWithCommit(): string {
   return dir
 }
 
+let initTemplate: string | null = null
+
+/** Makes `dir` a git repository the way `git init -q` run in it would, by copying the `.git` of a template initialised once per process. A file that starts a repository per test pays for one `init` instead of one per test; the copy is what the module docblock measured as not worth it for a single spawn on a fast host, and a git start on a loaded Windows host costs far more than the copy of one fresh `.git`. A failed `git init` throws from the first call, as it would from the test's own setup, and leaves no template behind for the next. */
+export function gitInitInto(dir: string): void {
+  if (initTemplate === null) {
+    const built = indexableDir()
+    git(built, ['init', '-q'])
+    initTemplate = built
+  }
+  fs.cpSync(path.join(initTemplate, '.git'), path.join(dir, '.git'), { recursive: true })
+}
+
 let subCommitTemplate: string | null = null
 
 /** A fresh repository holding {@link gitRepoWithCommit}'s commit plus a second one that adds `sub/a.txt` (`two\n`) and `café.ts` (`export const c = 1\n`), so a row that needs two commits of history, or a nested directory and a non-ASCII name, pays for the extra add and commit once per process rather than once per row. */
