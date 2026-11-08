@@ -8,6 +8,14 @@ FAILED_STORE="${PREPUSH_FAILED_STORE:-$(git rev-parse --path-format=absolute --g
 FAILED_TOOL="$ROOT_DIR/scripts/prepush-failed.mjs"
 SELECT_TOOL="$ROOT_DIR/scripts/prepush-select.mjs"
 
+# Sets REPLY to the content of file $1 with its trailing newlines cut, as $(cat file) gives, with no process: a cat is a fork and an exec, seconds on a loaded Windows host, and this runs on every push.
+focus_slurp() {
+  local nl=$'\n'
+  REPLY=""
+  IFS= read -r -d '' REPLY <"$1" || true
+  REPLY="${REPLY%"${REPLY##*[!$nl]}"}"
+}
+
 # $1: leg (win or wsl). Sets FOCUS_FILE to the list of test files to run, or "" for the full leg, FOCUS_NOTE to the one line that says which and why, FOCUS_DEFERRED to the report of the files the time budget cut (empty when none), and FOCUS_PLAN to the plan file of a focused leg (first line the wall-clock deadline in epoch ms, then the fill files in priority order; every other focus file is the floor), "" for the full leg, which has no deadline.
 focus_decide() {
   local leg=$1 sel nl first rc=0
@@ -24,7 +32,7 @@ focus_decide() {
   if [[ "$rc" -ne 0 ]]; then
     FOCUS_NOTE="$leg leg full: the selection tool failed"; return 0
   fi
-  sel="$(cat "$LOG_DIR/select-$leg.out")"
+  focus_slurp "$LOG_DIR/select-$leg.out"; sel="$REPLY"
   # Plain parameter expansion rather than head and tail on a here-string: no process, no temp file, so nothing for a BSD userland to differ on.
   nl=$'\n'
   first="${sel%%"$nl"*}"
@@ -34,7 +42,7 @@ focus_decide() {
       printf '%s\n' "${sel#*"$nl"}" >"$FOCUS_FILE"
       FOCUS_NOTE="${first#FOCUS$'\t'}"
       if [[ -s "$LOG_DIR/plan-$leg.txt" ]]; then FOCUS_PLAN="$LOG_DIR/plan-$leg.txt"; fi
-      if [[ -s "$LOG_DIR/deferred-$leg.txt" ]]; then FOCUS_DEFERRED="$(cat "$LOG_DIR/deferred-$leg.txt")"; fi ;;
+      if [[ -s "$LOG_DIR/deferred-$leg.txt" ]]; then focus_slurp "$LOG_DIR/deferred-$leg.txt"; FOCUS_DEFERRED="$REPLY"; fi ;;
     FULL$'\t'*) FOCUS_NOTE="${first#FULL$'\t'}" ;;
     *) FOCUS_NOTE="$leg leg full: the selection tool printed nothing usable" ;;
   esac

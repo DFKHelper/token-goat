@@ -86,7 +86,7 @@ function write(root: string, rel: string, text: string): void {
 }
 
 /** seed: files committed with the first commit; truncatedStore: the failure record is cut off mid-way after it is written; newBranch: the remote has no such branch; originMain: origin/main exists and points at the first commit */
-type DecideOpts = { seed?: Record<string, string>; truncatedStore?: boolean; newBranch?: boolean; originMain?: boolean }
+type DecideOpts = { seed?: Record<string, string>; truncatedStore?: boolean; newBranch?: boolean; originMain?: boolean; xtrace?: boolean }
 
 const templates = new Map<string, { dir: string; base: string }>()
 afterAll(() => {
@@ -127,7 +127,7 @@ function firstCommitTemplate(seed: Record<string, string>): { dir: string; base:
 const inheritedEnv = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(?:TG_)?PREPUSH_/.test(k)))
 
 /** A sandbox repo with one recorded failing test, then the given files changed in a second commit. Returns the decision note and the focus list. */
-function decide(change: Record<string, string>, env: Record<string, string> = {}, opts: DecideOpts = {}): { note: string; focus: string[]; deferred: string } {
+function decide(change: Record<string, string>, env: Record<string, string> = {}, opts: DecideOpts = {}): { note: string; focus: string[]; deferred: string; trace: string } {
   // The sandbox is reached through a symlink, as every macOS temp directory is (/var points into /private): a script that mistakes a symlinked path for a different file does nothing here
   realDir = mkdtempSync(path.join(tmpdir(), 'tg-focus-'))
   dir = `${realDir}-link`
@@ -152,7 +152,10 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
     `PUSH_STDIN="refs/heads/feat ${head} refs/heads/feat ${opts.newBranch ? '0'.repeat(40) : base}"$'\\n'`,
     `source '${posix(path.join(REPO, '.lefthook-scripts/prepush-focus.sh'))}'`,
     `FAILED_STORE='${posix(store)}'`,
+    // xtrace goes to its own file (BASH_XTRACEFD), each line led by its script and line, so a test can name every command focus_decide ran itself
+    ...(opts.xtrace ? [`exec 7>'${posix(path.join(dir, 'xtrace.txt'))}'`, 'BASH_XTRACEFD=7', `PS4='+@\${BASH_SOURCE##*/}:\${LINENO}: '`, 'set -x'] : []),
     'focus_decide win',
+    ...(opts.xtrace ? ['set +x'] : []),
     'echo "NOTE=$FOCUS_NOTE"',
     'echo "FILE=$FOCUS_FILE"',
     'echo "DEFERRED_BEGIN"',
@@ -163,7 +166,8 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
   const note = /^NOTE=(.*)$/m.exec(out)?.[1] ?? ''
   const file = /^FILE=(.*)$/m.exec(out)?.[1]?.trim() ?? ''
   const deferred = out.slice(out.indexOf('DEFERRED_BEGIN') + 'DEFERRED_BEGIN'.length).trim()
-  return { note, focus: file ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [], deferred }
+  const tracePath = path.join(dir, 'xtrace.txt')
+  return { note, focus: file ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [], deferred, trace: opts.xtrace && existsSync(tracePath) ? readFileSync(tracePath, 'utf8') : '' }
 }
 
 describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => {
@@ -182,9 +186,13 @@ describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => 
   })
 
   it('prints the files a tiny budget cut, and still runs the guards and the matrix', () => {
-    const r = decide({ 'src/a.ts': 'export const a = 2\n' }, { PREPUSH_BUDGET_S: '1' })
+    const r = decide({ 'src/a.ts': 'export const a = 2\n' }, { PREPUSH_BUDGET_S: '1' }, { xtrace: true })
     expect(r.focus).toEqual(['tests/command_matrix_e2e.1.test.ts', 'tests/guards/tree.test.ts'])
     expect(r.deferred).toMatch(/^deferred to CI: 3 files \(~\d+ s\)\n {2}tests\/a\.test\.ts\n {2}tests\/near\.test\.ts\n {2}tests\/far\.test\.ts$/)
+    // The script reads its own selection and deferred files with builtins: a cat is a process start, seconds on a loaded Windows host, on every push. The trace must show the script ran (a line from it) so an empty trace cannot pass.
+    const own = r.trace.split('\n').filter((l) => /^\++@prepush-focus\.sh:/.test(l))
+    expect(own.length, r.trace).toBeGreaterThan(5)
+    expect(own.filter((l) => /: (cat|head|tail|sed|awk|tr|cut)( |$)/.test(l)), 'prepush-focus.sh started a process to read a file it can read with a builtin').toEqual([])
   })
 
   it('a test-only change runs the test and every guard, no matrix', () => {
