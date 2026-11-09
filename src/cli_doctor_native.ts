@@ -41,6 +41,8 @@ export interface NativeAvailability {
   readonly expected: string | undefined
   /** Windows only: the copy an install runs is missing or differs from the packaged binary. */
   readonly copyStale: boolean
+  /** Windows only, with native hooks on: the data-directory copy the entries run, current or not, so the doctor can self-test it. */
+  readonly copy?: string
   /** The packaged binary's self-test, when an install would have to run it to decide. */
   readonly selftest?: NativeSelftest
 }
@@ -54,7 +56,8 @@ export function nativeAvailability(entry: string | undefined = process.argv[1]):
   const expected = nativeHookBinary(entry, { sync: false })
   // A current copy (or a Linux binary) that still yields no decision failed its self-test, and that failure is the reason an install writes the Node form.
   const selftest = enabled && packaged !== undefined && !copyStale && expected === undefined ? nativeSelftest(process.platform === 'win32' && entry !== undefined ? nativeCopyPath(entry) : packaged) : undefined
-  return { enabled, target, packaged, expected, copyStale, ...(selftest === undefined ? {} : { selftest }) }
+  const copy = process.platform === 'win32' && enabled && packaged !== undefined && entry !== undefined ? nativeCopyPath(entry) : undefined
+  return { enabled, target, packaged, expected, copyStale, ...(copy === undefined ? {} : { copy }), ...(selftest === undefined ? {} : { selftest }) }
 }
 
 /** Every harness scope an installer can wire the native client into, read back from its config. */
@@ -132,9 +135,11 @@ export function checkNativeHookWiring(wiring: NativeWiring, avail: NativeAvailab
     return row('fail', `${broken} of ${total} hook entries run the native hook client at ${missing.map(displaySafeText).join(', ')}, which no longer exists, so those events fail instead of falling back to Node; ${run} to rewrite them`)
   }
   const selfTested = new Set<string>()
+  // Every binary this build owns is self-tested: the one an install wires now, the one it ships, and the Windows copy, which can be stale or broken.
+  const ownBins = [avail.expected, avail.packaged, avail.copy].filter((own): own is string => avail.enabled && own !== undefined)
   for (const bin of wiredBins) {
     const resolved = resolvedBins.get(bin)
-    if (resolved === undefined || avail.expected === undefined || !samePath(resolved, avail.expected)) continue
+    if (resolved === undefined || !ownBins.some((own) => samePath(resolved, own))) continue
     const test = selftest(resolved)
     if (!test.ok) return row('fail', `the native hook client at ${displaySafeText(resolved)} fails its self-test (${displaySafeText(test.reason ?? 'unknown')}); ${run} to rewrite the entries as Node commands`)
     selfTested.add(bin)
