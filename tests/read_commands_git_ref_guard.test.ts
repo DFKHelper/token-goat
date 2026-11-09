@@ -108,6 +108,18 @@ describe('git ref guard: a ref starting with "-" is refused, not handed to git',
     expect(code).toBe(0)
   })
 
+  it('suggests path filtering when a file path is passed as the changed baseline', () => {
+    const { root } = makeRepo()
+
+    const { stderr, code } = capture(() => runChanged({ projectRoot: root, ref: 'a.ts' }))
+
+    expect(code).toBe(1)
+    expect(stderr).toContain('changed` expects a Git ref, not a path')
+    expect(stderr).toContain('--grep <pattern>')
+    expect(stderr).toContain('--since <ref>')
+    expect(stderr).not.toContain('does not exist')
+  })
+
   // A bare `-` is not an option to git, but it is also not a revision, and allowing it would mean the guard tested only the prefix of a longer string.
   it('refuses a bare dash', () => {
     const { root } = makeRepo()

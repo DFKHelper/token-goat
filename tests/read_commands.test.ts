@@ -6111,6 +6111,24 @@ describe('read_commands', () => {
       expect(stdout).toContain('b.ts')
     })
 
+    it('does not treat an unrelated revision error containing option-order words as a path', () => {
+      mockRunGit
+        .mockReturnValueOnce({
+          exitCode: 1,
+          stdout: '',
+          stderr: "fatal: bad revision 'missing must come before non-option arguments'",
+          unfinished: false,
+        })
+        .mockReturnValueOnce({ exitCode: 1, stdout: '', stderr: '', unfinished: false })
+
+      let code: number | undefined
+      const { stderr } = capture(() => { code = runChanged({ ref: 'missing must come before non-option arguments' }) })
+
+      expect(code).toBe(1)
+      expect(stderr).not.toContain('changed` expects a Git ref, not a path')
+      expect(mockRunGit).toHaveBeenCalledTimes(2)
+    })
+
     // CAPTURE: the five rows are the literal output of `git diff HEAD~1 --name-status -M` described above; the diff reply is one that adds the renamed file whole (`--- /dev/null`), which is what sends `changed` back for the old path.
     it('lists a rename by its new name and retries the diff with the old path from the same listing', () => {
       const listing = 'M\tbin.dat\nD\tdeleted.ts\nA\tfresh.ts\nR089\told_name.ts\tnew_name.ts\nM\tsp ace.ts\n'

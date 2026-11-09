@@ -10,6 +10,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - `sqlite-query session` resolves the active Copilot session database; COBOL outlines expose nested data items and level-88 conditions.
 - Tree-sitter parsing reuses one native parser per grammar, reducing repeated AST extraction setup; the parser fingerprint changed, so existing indexes reindex after upgrade.
 - The TypeScript signature-context API resolves transitively referenced interfaces and type aliases across supplied parsed files; the parser fingerprint change reindexes existing indexes on upgrade.
+- `changed` now recognizes the exact Git `--name-status` option-order error when a path is used as the baseline, guides CLI callers to `--since` or `--grep` and MCP callers to pass a ref rather than a path filter, and does not misclassify unrelated revision errors with similar wording.
 
 ## [2.9.34] - 2026-11-02
 
