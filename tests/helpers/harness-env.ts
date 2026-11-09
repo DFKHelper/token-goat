@@ -28,6 +28,13 @@ export function scrubClaudeSessionEnv(env: NodeJS.ProcessEnv): void {
   if (env['TERM_PROGRAM'] === 'claude-code') delete env['TERM_PROGRAM']
 }
 
+/** Drop every Copilot CLI variable so a test run from a Copilot session behaves like CI. */
+export function scrubCopilotEnv(env: NodeJS.ProcessEnv): void {
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('COPILOT_')) delete env[key]
+  }
+}
+
 /** Run `fn` with `TOKEN_GOAT_HARNESS_OVERRIDE` set to `harness`, restoring the prior value (or its absence) afterwards even when `fn` throws. */
 export async function withHarnessOverride<T>(harness: string, fn: () => Promise<T>): Promise<T> {
   const prior = process.env['TOKEN_GOAT_HARNESS_OVERRIDE']

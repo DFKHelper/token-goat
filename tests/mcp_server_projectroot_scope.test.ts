@@ -17,6 +17,7 @@ import { resolveIndexPath } from '../src/paths.js'
 import { resolveProjectRoot } from '../src/project.js'
 import type * as SectionReaderModule from '../src/section_reader.js'
 import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+import { neutralizeMcpHarnessSignals } from './helpers/mcp_test_harness.js'
 
 // These cases call tools that are opt-in by default; name them all so the server registers them.
 process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
@@ -67,6 +68,7 @@ describe('mcp read/symbol/skeleton/outline/section tools accept projectRoot', ()
   let resolvedScratchRoot: string
 
   beforeEach(() => {
+    neutralizeMcpHarnessSignals()
     vi.clearAllMocks()
     scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-root-scope-'))
     // The MCP layer resolves the root once and hands the RESOLVED value to the run* handler, so that -- not the raw argument spelling -- is what the assertions below expect.

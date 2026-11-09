@@ -4008,7 +4008,7 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
 
       expect(result.hookType).toBe('deny')
       if (result.hookType === 'deny') {
-        expect(result.message).toContain(`token-goat section "${normalizePath(p)}::Indexed Heading"`)
+        expect(result.message).toContain(`token-goat section "${normalizePath(p)}" "Indexed Heading"`)
       }
     })
 
@@ -4028,7 +4028,7 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
         expect(result.context).not.toContain('[tg]')
         expect(result.context).not.toContain('[token-goat:')
         expect(result.context).not.toContain('&#91;')
-        expect(result.context).toContain('::1-80')
+        expect(result.context).toContain(`token-goat read "${normalizePath(p)}" "1-80"`)
       }
     })
 
@@ -4049,7 +4049,7 @@ describe('multi-harness ranged reads (view_range, lines, range, start_line/end_l
       expect(quoted).not.toContain('\\"')
       const backtick = hintFor('Use `x')
       expect(backtick).not.toContain('Use `x')
-      expect(backtick).toContain('::1-80')
+      expect(backtick).toContain('"1-80"')
     })
 
     // Regression (cap-before-predicate): surgicalHint's index-backed branches queried `limit: 3` and only then dropped the names escapeHintName refuses, so the cap decided which symbols the drop could ever consider. Three unusable labels at the top of a file exhausted the window and the hint fell back to the generic `::SymbolName` placeholder even though the file went on to hold perfectly good ones. The sibling branch -- the one that runs when the file's content is already in hand -- filters first and slices to 3 after; the two are meant to produce the same hint from the same file. Terraform is the fixture for the same reason as the test below: `.tf` reaches the generic `else` branch with no outline branch ahead of it, and a resource label is a real vector for a marker character. HAND-DERIVED: three marker-bearing labels is one more than the retired cap could see past, computed from that cap's own value rather than from this fix's output.

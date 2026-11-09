@@ -6,7 +6,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
-import { scrubClaudeSessionEnv } from '../helpers/harness-env.js'
+import { scrubClaudeSessionEnv, scrubCopilotEnv } from '../helpers/harness-env.js'
 import { scrubTokenGoatUserEnv } from '../helpers/token-goat-env.js'
 
 // Test workers run at low priority so test execution never monopolizes CPU or overloads the system.
@@ -71,6 +71,8 @@ delete process.env['CODEX_HOME']
 delete process.env['COPILOT_HOME']
 // COPILOT_CACHE_HOME replaces Copilot CLI's cache root, and an inherited one would read the developer's MCP tool-definition cache; a test that wants it sets its own.
 delete process.env['COPILOT_CACHE_HOME']
+// Copilot CLI exports additional session and behavior variables (for example COPILOT_AGENT_SESSION_ID and COPILOT_CLI); none should make a test depend on its parent shell.
+scrubCopilotEnv(process.env)
 // KIMI_CODE_HOME replaces Kimi Code's data root, and an inherited one would install the bridge into the developer's own Kimi tree; a test that wants it sets its own.
 delete process.env['KIMI_CODE_HOME']
 // XDG_CACHE_HOME replaces the cache root Copilot CLI uses on Linux, and an inherited one would read the developer's MCP tool-definition cache; a test that wants it sets its own.
