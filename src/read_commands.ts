@@ -11,6 +11,7 @@ import { expandSpecPath, resolveSpecPath } from './spec_path.js'
 import { boundSymbolDocstring, indexFileSync, precedingDocComment, type DocCommentStyle } from './parser.js'
 import { parserFingerprintForLanguage } from './parser_stamp.js'
 import { compileGuardedRegex } from './regex_guard.js'
+import { scanGrepText } from './grep_scan.js'
 import { enqueueDirtyPathSafe } from './hooks_index.js'
 import { dataDir, globalDbPath } from './constants.js'
 import { recordKnownRootThrottled } from './known_roots.js'
@@ -1189,27 +1190,23 @@ export function runGrep(opts: GrepOptions): number {
   const regex = guarded.re
 
   const hits: GrepHit[] = []
+  let totalHits = 0
 
   function searchFile(filePath: string): void {
     try {
       // Pin-aware: consults `activePins` when this exact path was validated and pinned by the MCP confinement gate (see readFileText), so an explicitly-requested `path` argument gets the same swap-between-validate-and-read protection every other surgical-read command gets. Files discovered by searchDir's own recursion below were never individually pinned by the gate -- their protection is the realpath boundary check in searchDir, not this identity check, which only fires for paths the gate itself validated.
       const text = readFileText(filePath)
       if (text === null) return
-      const lines = text.split(/\r?\n/)
-      lines.forEach((lineText, idx) => {
-        if (regex.test(lineText)) {
-          const hit: GrepHit = { file: filePath, line: idx + 1, text: lineText }
-          if (contextLines > 0) {
-            const start = Math.max(0, idx - contextLines)
-            const end = Math.min(lines.length - 1, idx + contextLines)
-            hit.context = []
-            for (let i = start; i <= end; i++) {
-              hit.context.push({ line: i + 1, text: lines[i] ?? '' })
-            }
-          }
-          hits.push(hit)
-        }
-      })
+      const scanned = scanGrepText(text, regex, maxLines - hits.length, contextLines)
+      totalHits += scanned.totalCount
+      for (const match of scanned.hits) {
+        hits.push({
+          file: filePath,
+          line: match.line,
+          text: match.text,
+          ...(match.context !== undefined ? { context: match.context } : {}),
+        })
+      }
     } catch (err) {
       if (err instanceof ConfinementIdentityError) throw err
       // skip unreadable files
@@ -1316,7 +1313,7 @@ export function runGrep(opts: GrepOptions): number {
     }
   }
 
-  if (hits.length === 0) {
+  if (totalHits === 0) {
     const singleTargetFile = searchPaths.length === 1 && fileExists(searchPaths[0] as string) ? (searchPaths[0] as string) : undefined
     const isCaseSensitive = !opts.pattern.startsWith('(?i)')
     const hasUpper = /[A-Z]/.test(opts.pattern)
@@ -1332,12 +1329,10 @@ export function runGrep(opts: GrepOptions): number {
     return 1
   }
 
-  const truncated = hits.slice(0, maxLines)
-
   if (opts.symbol === true) {
     // Memoize querySymbols per file so N hits in the same file cost one DB query, not N.
     const symbolsByFile = new Map<string, ReturnType<typeof querySymbols>>()
-    for (const hit of truncated) {
+    for (const hit of hits) {
       let syms = symbolsByFile.get(hit.file)
       if (syms === undefined) {
         syms = querySymbols({ filePath: resolveSpecPath(hit.file), limit: ALL_SYMBOLS_IN_FILE_LIMIT })
@@ -1348,19 +1343,19 @@ export function runGrep(opts: GrepOptions): number {
       hit.symbol = enc === null ? null : { name: enc.name, kind: enc.kind, lineStart: enc.lineStart, lineEnd: enc.lineEnd }
     }
     // One line per affected file rather than a tag on every hit: a notebook with fifty matches would otherwise repeat the same sentence fifty times.
-    for (const file of new Set(truncated.map((h) => h.file).filter(isVirtualIndexedPath))) {
+    for (const file of new Set(hits.map((h) => h.file).filter(isVirtualIndexedPath))) {
       emit(virtualIndexedScopeNote(displaySafeText(file), 'a match in it cannot be attributed to a symbol and these hits carry no label'))
     }
   }
 
   if (opts.json === true) {
     // Same {items, truncated, totalCount} envelope guardJsonRows uses for symbol/refs/skeleton/ outline's --json mode -- a bare truncated array here would silently hand a JSON consumer fewer hits than actually matched with no way to tell "capped by --max-lines" apart from "there just weren't more".
-    const payload: JsonRowCapResult<GrepHit> = { items: truncated, truncated: hits.length > maxLines, totalCount: hits.length }
+    const payload: JsonRowCapResult<GrepHit> = { items: hits, truncated: totalHits > maxLines, totalCount: totalHits }
     emit(displaySafeJson(payload))
     return 0
   }
 
-  for (const hit of truncated) {
+  for (const hit of hits) {
     const symbolTag = opts.symbol === true && hit.symbol != null ? ` [${displaySafeText(hit.symbol.name)} (${displaySafeText(hit.symbol.kind)})]` : ''
     if (hit.context !== undefined) {
       // Same renderer `refs`/`callers` `-C` use, so the three cannot drift into different dialects.
@@ -1371,8 +1366,8 @@ export function runGrep(opts: GrepOptions): number {
     }
   }
 
-  if (hits.length > maxLines) {
-    emitErr(`... (${countNoun(hits.length - maxLines, 'more line')} omitted)`)
+  if (totalHits > maxLines) {
+    emitErr(`... (${countNoun(totalHits - maxLines, 'more line')} omitted)`)
     emitErr(`Tip: To avoid broad grepping and reduce token expenditure, locate specific symbols with:`)
     emitErr(`  token-goat symbol <name>`)
     emitErr(`  token-goat locate <name>`)

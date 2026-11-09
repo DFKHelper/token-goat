@@ -1,10 +1,11 @@
 /** Resolves the real name a deny or read hint's suggested command carries -- a heading, symbol, key or table the file actually holds -- so the command it leads with runs as printed, and sharpens a deny the same call already received once. Measured over 3,692 local Claude Code transcripts, the most frequent token-goat denies named a literal placeholder (`section "file::SectionHeading"`, `config-get "file" KEY_NAME`, `read "file::SymbolName"`), which exits 1 when run verbatim, and after a deny the next call was the named command only 4 times in 39 sampled. A placeholder is still the answer when nothing better is found: the claim is "this command runs", never "this is the part you wanted". */
 import { countNoun } from './util.js'
-import { openSync, readSync, closeSync, statSync } from 'node:fs'
+import { openSync, readSync, closeSync, statSync, type Stats } from 'node:fs'
 
 import { resolveIndexPath, displaySafeText, hostPathOfIndexKey } from './paths.js'
 import { querySymbols } from './index_reader.js'
-import { indexMatchesDisk } from './index_freshness.js'
+import { matchingFileEntry } from './index_freshness.js'
+import { getHintTargetCandidates, setHintTargetCandidates, type HintTargetCandidate } from './hint_target_cache.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
@@ -206,15 +207,38 @@ function readHead(onDisk: string): string {
 }
 
 /** Index-held names for this slice, in line order, or null when the index cannot vouch for the file as it is on disk (a stale name would print a command that runs and returns the wrong thing). */
-function indexedCandidates(resolved: string, onDisk: string, slice: HintSlice): Array<{ name: string; level: number }> | null {
-  if (!indexMatchesDisk(resolved)) return null
+function indexedCandidates(
+  resolved: string,
+  onDisk: string,
+  slice: HintSlice,
+  fileStat: Stats,
+): HintTargetCandidate[] | null {
+  const entry = matchingFileEntry(resolved)
+  if (entry === null) return null
+  const cacheKey = JSON.stringify([
+    resolved,
+    slice,
+    entry.sha,
+    entry.parserSha ?? '',
+    entry.language,
+    fileStat.dev,
+    fileStat.ino,
+    fileStat.size,
+    fileStat.mtimeMs,
+    fileStat.ctimeMs,
+  ])
+  const cached = getHintTargetCandidates(cacheKey)
+  if (cached !== undefined) return cached
+
   const kinds = slice === 'symbol' ? null : SLICE_KINDS[slice]
   const rows = querySymbols({ filePath: resolved, limit: HINT_TARGET_INDEX_ROWS }).filter((s) => kinds === null || kinds.has(s.kind))
   // Only a dash-underlined heading can be a front matter line, so the file is read for the block's extent only when the index holds one.
   const metaEnd = slice === 'section' && rows.some((s) => SETEXT_DASH_RE.test(s.body)) ? frontMatterEnd(readHead(onDisk)) : 0
-  return rows
+  const candidates = rows
     .filter((s) => s.lineStart > metaEnd)
     .map((s) => ({ name: s.name, level: s.kind === 'heading' ? headingLevel(s.body) : 0 }))
+  setHintTargetCandidates(cacheKey, candidates)
+  return candidates
 }
 
 const MORE_HEADINGS_LINE_RE = /^ {2}\.\.\. \(\d+ more headings\)$/
@@ -249,8 +273,9 @@ export function hintTarget(filePath: string, slice: HintSlice, source: HintTarge
       if (source.cwd !== undefined && !commandPathIsTouchable(filePath, source.event)) return null
       const resolved = source.cwd !== undefined ? resolveIndexPath(filePath, source.cwd) : filePath
       const onDisk = hostPathOfIndexKey(resolved)
-      if (!statSync(onDisk).isFile()) return null
-      const indexed = indexedCandidates(resolved, onDisk, slice)
+      const fileStat = statSync(onDisk)
+      if (!fileStat.isFile()) return null
+      const indexed = indexedCandidates(resolved, onDisk, slice, fileStat)
       const byPattern = (c: Array<{ name: string; level: number }>): string | null => source.pattern === undefined || (slice !== 'symbol' && slice !== 'section') ? null : pickForPattern(c, source.pattern, slice)
       const fromIndex = indexed === null ? null : byPattern(indexed) ?? pick(indexed, slice)
       if (fromIndex !== null) return fromIndex

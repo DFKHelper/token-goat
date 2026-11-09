@@ -120,7 +120,7 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
 
   program
     .command('grep <pattern> [paths...]')
-    .description('regex search over files, caching nothing (session-aware grep)')
+    .description('regex search over files; use --max-lines to bound printed matches')
     .option('-j, --json', 'output as JSON')
     .option('--max-lines <n>', 'max matching lines to print')
     .option('--no-recursive', 'do not descend into subdirectories')

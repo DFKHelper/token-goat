@@ -74,6 +74,12 @@ Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of thi
 | `/token-goat`, or any other argument | The gate above applies. There is no separate procedure to run. |
 | `/token-goat audit` | Session retrospective and Maintainer Feedback Card — below. |
 
+### Keep command output surgical
+
+- For searches, set the match budget you can use: `token-goat grep 'pattern' src --max-lines 20`. Add `-C 2` only when nearby lines matter; add `--symbol` only when you need the enclosing declaration.
+- For a long document, read a bounded section: `token-goat section "docs/guide.md::Install" --max-lines 40`. Add `--grep 'pattern'` to keep matching body lines with their nearest sub-heading.
+- To locate a heading without reading its body, use `token-goat section docs/guide.md --list --grep 'Install'`.
+
 ### audit — session retrospective
 
 Reviews the session it is invoked in for token-goat optimisation opportunities and reports to the maintainer, with no proprietary data or PII.
