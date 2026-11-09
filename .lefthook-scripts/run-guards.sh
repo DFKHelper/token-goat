@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Pre-commit guard suite, silent on success.
 #
-# `npm run test:guards` passes ~530 tests in a couple of seconds, but the
+# `npm run test:guards` runs about 2900 tests in about 220 files and takes minutes, not seconds (360 s wall at --maxWorkers=4 on a quiet host, 2026-11-09; the slowest files spawn a process per row). The
 # commands those guards exercise print their own stdout as they run, so a clean
 # run still emits ~150 lines nobody reads. Switching vitest reporters does not
 # fix it -- roughly half that output is the tests' own console writes, which
