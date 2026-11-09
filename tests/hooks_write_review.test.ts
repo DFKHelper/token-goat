@@ -53,7 +53,8 @@ afterEach(() => {
 })
 
 let counter = 0
-const fresh = (ext = 'ts'): string => path.join(FILES_DIR, `r${++counter}.${ext}`)
+// The guards under test (placeholder, blind drop, sibling copy) read lines and names, never a language. A `.ts`, `.py` or `.json` target would also meet the syntax preflight of preWriteContentGuard, which denies text that does not parse (findSyntaxError, pinned in tests/write_guards.test.ts), so fixture files here use `.txt`, an extension findSyntaxError skips.
+const fresh = (ext = 'txt'): string => path.join(FILES_DIR, `r${++counter}.${ext}`)
 
 describe('the "shown once" mark is keyed on the text, not only the marker', () => {
   // HAND-DERIVED: two different bodies carrying the same marker line.
@@ -180,7 +181,7 @@ describe('a whole-file token-goat read counts as the whole file seen', () => {
   })
 
   it('counts a ranged read whose quoted path holds an operator character', async () => {
-    const target = fresh().replace('.ts', ';x.ts')
+    const target = fresh().replace('.txt', ';x.txt')
     fs.writeFileSync(target, body)
     recordFileRead(target, false)
     recordFileLineRange(target, 1, 100)
@@ -245,16 +246,16 @@ describe('the sibling-copy series directories are read below the project root', 
     for (const above of ['v2', 'fixtures']) {
       const { root } = project(above, 'app')
       fs.mkdirSync(path.join(root, 'src'), { recursive: true })
-      fs.writeFileSync(path.join(root, 'src', 'solver.py'), body)
-      expect((await preWriteRewriteHandler(writeEvent(path.join(root, 'src', 'solver_v2.py'), copy, root))).hookType).toBe('context')
+      fs.writeFileSync(path.join(root, 'src', 'solver.txt'), body)
+      expect((await preWriteRewriteHandler(writeEvent(path.join(root, 'src', 'solver_v2.txt'), copy, root))).hookType).toBe('context')
     }
   })
 
   it('stays silent for a file in a migrations directory below the root', async () => {
     const { root } = project('app')
     fs.mkdirSync(path.join(root, 'db', 'migrations', 'sql'), { recursive: true })
-    fs.writeFileSync(path.join(root, 'db', 'migrations', 'sql', 'solver.py'), body)
-    expect((await preWriteRewriteHandler(writeEvent(path.join(root, 'db', 'migrations', 'sql', 'solver_v2.py'), copy, root))).hookType).toBe('pass')
+    fs.writeFileSync(path.join(root, 'db', 'migrations', 'sql', 'solver.txt'), body)
+    expect((await preWriteRewriteHandler(writeEvent(path.join(root, 'db', 'migrations', 'sql', 'solver_v2.txt'), copy, root))).hookType).toBe('pass')
   })
 })
 
@@ -263,16 +264,16 @@ describe('the sibling-copy exclusions with no project root', () => {
   it('stays silent for a file whose migrations directory is above its own directory', async () => {
     const dir = path.join(fs.mkdtempSync(path.join(FILES_DIR, 'noroot-')), 'db', 'migrations', 'sql')
     fs.mkdirSync(dir, { recursive: true })
-    fs.writeFileSync(path.join(dir, 'solver.py'), lines(50))
-    expect((await preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.py'), lines(49) + 'changed last line\n'))).hookType).toBe('pass')
+    fs.writeFileSync(path.join(dir, 'solver.txt'), lines(50))
+    expect((await preWriteRewriteHandler(writeEvent(path.join(dir, 'solver_v2.txt'), lines(49) + 'changed last line\n'))).hookType).toBe('pass')
   })
 })
 
 describe('VS Code edit tools are checked, except the one whose contract is partial code', () => {
   // FORMAT-DERIVED: VS Code 1.137.0 resources/app/extensions/copilot/dist/extension.js, the shapes pinned in tests/hooks_cli.test.ts (vscode harness): apply_patch {input, explanation}, multi_replace_string_in_file {explanation, replacements[{filePath, oldString, newString}]}, insert_edit_into_file {explanation, filePath, code}.
   const ws = fs.mkdtempSync(path.join(FILES_DIR, 'ws-'))
-  const file = path.join(ws, 'a.ts')
-  const other = path.join(ws, 'b.ts')
+  const file = path.join(ws, 'a.txt')
+  const other = path.join(ws, 'b.txt')
   const marker = '// ... existing code ...'
 
   function vscode(tool: string, input: Record<string, unknown>): HookEvent {
@@ -349,7 +350,8 @@ describe('line endings', () => {
 })
 
 describe('a read that ran elsewhere or printed less than the lines is not recorded as seen (final review round)', () => {
-  const body = lines(200)
+  // Comment lines keep the body valid TypeScript, since the target is a `.ts` file and the syntax preflight would otherwise deny every Write here before the blind-drop guard is reached.
+  const body = lines(200, '//')
   const dropped = body.split('\n').slice(0, 120).concat(body.split('\n').slice(140)).join('\n') + 'edited\n'
   const project = path.join(FILES_DIR, 'proj-r6')
   const other = path.join(FILES_DIR, 'other-r6')
@@ -560,7 +562,7 @@ describe('removedLineIndexes keeps its answer without the full table', () => {
   })
 
   it('still refuses a Write that drops unseen lines from a file longer than the span bound', async () => {
-    const big = path.join(FILES_DIR, 'big-span.ts')
+    const big = path.join(FILES_DIR, 'big-span.txt')
     const oldText = lines(3 * MAX_DIFF_SPAN)
     fs.writeFileSync(big, oldText)
     recordFileRead(big, false)
@@ -581,8 +583,8 @@ describe('a project reached through a Windows short name', () => {
   it.skipIf(short === null)('still stays silent for a migrations file when the path is spelled short and the root is not', async () => {
     fs.mkdirSync(path.join(base, '.git'), { recursive: true })
     fs.mkdirSync(path.join(base, 'db', 'migrations', 'sql'), { recursive: true })
-    fs.writeFileSync(path.join(base, 'db', 'migrations', 'sql', 'solver.py'), lines(50))
-    const target = path.join(short ?? base, 'db', 'migrations', 'sql', 'solver_v2.py')
+    fs.writeFileSync(path.join(base, 'db', 'migrations', 'sql', 'solver.txt'), lines(50))
+    const target = path.join(short ?? base, 'db', 'migrations', 'sql', 'solver_v2.txt')
     expect((await preWriteRewriteHandler(writeEvent(target, lines(49) + 'changed last line\n', short ?? base))).hookType).toBe('pass')
   })
 })
