@@ -10,6 +10,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { invalidateConfigCache } from '../src/config.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
+
+useGenericMcpHarness()
 
 // The refusal is the same text for every tool, so the cases below can call opt-in tools too.
 process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV

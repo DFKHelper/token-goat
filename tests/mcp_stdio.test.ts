@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { JsonRpcMessage } from '../src/mcp_jsonrpc.js'
 import { STDIO_MAX_BUFFER_BYTES, StdioServerTransport } from '../src/mcp_stdio.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
 
 interface Harness {
   stdin: PassThrough
@@ -28,6 +29,8 @@ async function harness(): Promise<Harness> {
   await transport.start()
   return { stdin, stdout, transport, received, errors, written: () => Buffer.concat(chunks).toString('utf8') }
 }
+
+useGenericMcpHarness()
 
 const REQUEST = { jsonrpc: '2.0' as const, id: 1, method: 'tools/list' }
 

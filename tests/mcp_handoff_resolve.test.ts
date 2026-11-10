@@ -14,6 +14,9 @@ import { createMcpServer } from '../src/mcp_server.js'
 import { canonicalize } from '../src/path_containment.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { runTeardown } from './helpers/strict_teardown.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
+
+useGenericMcpHarness()
 
 const isWin = process.platform === 'win32'
 

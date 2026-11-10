@@ -13,6 +13,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { invalidateConfigCache } from '../src/config.js'
 import { createMcpServer } from '../src/mcp_server.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
+
+useGenericMcpHarness()
 
 const SECRET = 'SECRET-MARKER-DO-NOT-LEAK'
 const IN_ROOT = 'IN-ROOT-MARKER'

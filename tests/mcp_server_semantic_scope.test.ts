@@ -14,6 +14,9 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import type * as EmbeddingsModule from '../src/embeddings.js'
 import type { SearchHit } from '../src/embeddings.js'
 import { resolveProjectRoot } from '../src/project.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
+
+useGenericMcpHarness()
 
 const searchSemanticMock = vi.fn()
 

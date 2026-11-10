@@ -17,6 +17,9 @@ import { createMcpServer } from '../src/mcp_server.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { BUNDLE } from './helpers/bundle.js'
 import { runTeardown } from './helpers/strict_teardown.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
+
+useGenericMcpHarness()
 
 const isWin = process.platform === 'win32'
 const DAY_MS = 24 * 3600 * 1000

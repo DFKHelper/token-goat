@@ -10,7 +10,10 @@ import { buildVisualStudioGuidanceBlock } from '../../src/bridges/visualstudio_i
 import { CANONICAL_SKILL_MD } from '../../src/canonical_skill.js'
 import { answeringMcpToolCall, mcpFriendlyText } from '../../src/mcp_client_text.js'
 import { ALL_MCP_TOOLS } from '../helpers/mcp_all_tools.js'
+import { useGenericMcpHarness } from '../helpers/mcp_test_harness.js'
 import { pinnedPopulation } from './population.js'
+
+useGenericMcpHarness()
 
 const { DEFAULT_MCP_TOOLS } = await import('../../src/mcp_server.js')
 

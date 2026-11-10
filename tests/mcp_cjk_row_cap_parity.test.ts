@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { afterAll, describe, expect, it } from 'vitest'
+import { genericMcpHarnessEnv } from './helpers/mcp_test_harness.js'
 
 const bundle = path.join(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'), 'dist', 'token-goat.mjs')
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-mcp-cjk-'))
@@ -40,7 +41,7 @@ function cliOutline(): Capped {
 }
 
 async function mcpOutline(): Promise<Capped> {
-  const child = spawn(process.execPath, [bundle, 'mcp-serve'], { cwd: project, env, stdio: ['pipe', 'pipe', 'ignore'] })
+  const child = spawn(process.execPath, [bundle, 'mcp-serve'], { cwd: project, env: genericMcpHarnessEnv(env), stdio: ['pipe', 'pipe', 'ignore'] })
   child.stdin.on('error', () => undefined)
   const pending = new Map<number, (m: { result?: { content?: Array<{ text?: string }> } }) => void>()
   let buf = ''

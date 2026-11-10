@@ -11,6 +11,9 @@ import { describe, expect, it } from 'vitest'
 
 import { runSemantic } from '../src/read_semantic.js'
 import { createMcpServer } from '../src/mcp_server.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
+
+useGenericMcpHarness()
 
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
   const server = await createMcpServer()

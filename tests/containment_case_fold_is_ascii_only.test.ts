@@ -8,6 +8,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { foldCase, foldCaseForContainment, isInsideRoot } from '../src/path_containment.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
+
+useGenericMcpHarness()
 
 const { createMcpServer } = await import('../src/mcp_server.js')
 const { invalidateConfigCache } = await import('../src/config.js')

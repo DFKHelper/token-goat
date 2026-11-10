@@ -13,6 +13,9 @@ import { closeAllDbs } from '../src/db.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { indexFileSync } from '../src/parser.js'
 import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
+
+useGenericMcpHarness()
 
 // These cases call tools that are opt-in by default; name them all so the server registers them.
 process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV

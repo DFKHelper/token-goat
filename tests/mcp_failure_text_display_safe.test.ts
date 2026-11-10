@@ -5,6 +5,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as IndexReaderModule from '../src/index_reader.js'
 import type { SymbolEntry } from '../src/parser_types.js'
+import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
+
+useGenericMcpHarness()
 
 const querySymbolsMock = vi.fn()
 
