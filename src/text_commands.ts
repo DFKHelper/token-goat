@@ -35,7 +35,7 @@ function splitLines(text: string): string[] {
 
 // ── lockdeps ─────────────────────────────────────────────────────────────────
 
-interface DepEntry {
+export interface DepEntry {
   name: string
   version: string
   kind: 'direct' | 'transitive' | 'unknown'
@@ -51,7 +51,7 @@ const LOCK_PRIORITY = [
   'Cargo.lock',
 ] as const
 
-function findLockfile(startPath: string): { file: string; others: string[] } | null {
+export function findLockfile(startPath: string): { file: string; others: string[] } | null {
   const stat = fs.statSync(startPath, { throwIfNoEntry: false })
   if (stat !== undefined && stat.isFile()) {
     // An explicit lockfile path is the caller's actual choice -- honor it directly instead of falling through to a directory-based priority search, which would silently discard it in favor of whatever LOCK_PRIORITY picks from its containing directory.
@@ -318,7 +318,7 @@ function parsePnpmLock(content: string): DepEntry[] {
   return deps
 }
 
-function parseLockFile(filePath: string): { deps: DepEntry[]; format: string } {
+export function parseLockFile(filePath: string): { deps: DepEntry[]; format: string } {
   const base = path.basename(filePath)
   const content = fs.readFileSync(filePath, 'utf8')
   if (base === 'package-lock.json') return { format: 'npm', deps: parsePackageLockJson(content) }

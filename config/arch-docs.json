@@ -991,6 +991,10 @@
       "Specialized Subsystems"
     ],
     [
+      "src/manifest_sweep.ts",
+      "Specialized Subsystems"
+    ],
+    [
       "src/describe_sqlite.ts",
       "Specialized Subsystems"
     ],

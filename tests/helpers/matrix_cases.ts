@@ -2871,6 +2871,34 @@ export const cases: Record<string, () => void | Promise<void>> = {
     expect(r.stdout).toContain('commander')
     expect(r.stdout).toContain('package-lock.json')
   },
+  'manifest-sweep': () => {
+    const r = run(['manifest-sweep', '--json'], { cwd: ROOT })
+    expect(r.status, r.stderr).toBe(0)
+    const report = JSON.parse(r.stdout) as {
+      manifests: Array<{ path: string; lockfiles: Array<{ path: string }> }>
+    }
+    expect(report.manifests.some((manifest) => manifest.path === 'package.json')).toBe(true)
+    expect(report.manifests.some((manifest) => manifest.path === 'vscode-extension/package.json')).toBe(true)
+    expect(
+      report.manifests.some(
+        (manifest) =>
+          manifest.path === 'package.json' &&
+          manifest.lockfiles.some((lockfile) => lockfile.path === 'package-lock.json'),
+      ),
+    ).toBe(true)
+
+    const filtered = run(['manifest-sweep', '--package', 'jsonc-parser', '--json'], { cwd: ROOT })
+    expect(filtered.status, filtered.stderr).toBe(0)
+    const filteredReport = JSON.parse(filtered.stdout) as {
+      manifests: Array<{ path: string; dependencies: Array<{ name: string }> }>
+    }
+    expect(filteredReport.manifests).toContainEqual(
+      expect.objectContaining({
+        path: 'package.json',
+        dependencies: expect.arrayContaining([expect.objectContaining({ name: 'jsonc-parser' })]),
+      }),
+    )
+  },
   'dep-docs': () => {
     // token-goat depends on commander directly (see package.json); run against the repo root so package.json/README/types resolution all hit the real installed package.
     const r = run(['dep-docs', 'commander', '--json'], { cwd: ROOT })
