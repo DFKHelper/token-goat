@@ -242,6 +242,22 @@ describe('what an existing query means', () => {
     expect(parseJsonPath('items[tag=<b>]')[1]).toEqual({ kind: 'filter', field: 'tag', value: '<b>' })
   })
 
+  it('accepts spaced equality and a leading filter marker with a boolean value', () => {
+    const data = {
+      items: [
+        { id: 1, eligible: true },
+        { id: 2, eligible: false },
+        { id: 3, eligible: 'true' },
+      ],
+    }
+    const filter = { kind: 'filter', field: 'eligible', value: 'true' }
+
+    expect(parseJsonPath('items[eligible == true]')[1]).toEqual(filter)
+    expect(parseJsonPath('items[?eligible==true]')[1]).toEqual(filter)
+    expect(queryJson(data, 'items[eligible == true].id').items).toEqual([1, 3])
+    expect(queryJson(data, 'items[?eligible==true].id').items).toEqual([1, 3])
+  })
+
   it('still matches by the text of the value', () => {
     expect(names('[status=active]')).toEqual(['Alpha', 'bravo'])
     expect(names('[price=5]')).toEqual(['Alpha'])

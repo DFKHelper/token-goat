@@ -62,7 +62,7 @@ import { echoedValue } from './hint_suggestion_guard.js'
 
 /** The filter half of the json-query and yaml-query path grammar, the one copy of it, so the two help texts cannot drift. docs/cli.md only points here. */
 const FILTER_HELP =
-  'Filters go in one bracket. [field=value] with an unquoted value is plain text equality up to the closing bracket ([x=1] matches 1 and "1", [x=true] matches true and "true", and [run=npm ci && npm test] looks for that text); && and || combine tests only when each piece has its own operator or !, and quoting a value always uses the filters below. ' +
+  'Filters go in one bracket. [field=value] with an unquoted value is plain text equality up to the closing bracket ([x=1] matches 1 and "1", [x=true] matches true and "true", and [run=npm ci && npm test] looks for that text); == is an alias for =, so [eligible == true] and [?eligible==true] match true and "true"; && and || combine tests only when each piece has its own operator or !, and quoting a value always uses the filters below. Quote the whole path argument when it contains brackets or spaces so your shell passes it unchanged. ' +
   '!= < <= > >= compare as numbers when both sides are numbers (a numeric string such as "100" counts) and as text otherwise, so ISO dates order; a quoted value is always text. ' +
   '*= contains, ^= starts with, $= ends with, and an i after a quoted value ignores case: [name*="bob" i]. ' +
   '[field] keeps elements that have the key (a null value counts) and [!field] those that lack it; a name with punctuation goes in quotes: [@."first-name"]. ' +
