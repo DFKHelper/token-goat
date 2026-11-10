@@ -16,6 +16,7 @@ import {
   type JsonRpcMessage,
   type McpTransport,
 } from '../src/mcp_jsonrpc.js'
+import { HARNESS_DETECTION_ENV_KEYS } from './helpers/harness-env.js'
 import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
 import { neutralizeMcpHarnessSignals } from './helpers/mcp_test_harness.js'
 
@@ -370,6 +371,51 @@ describe('mcp_jsonrpc protocol handling', () => {
       expect((sent[2] as any).result.tools).toEqual([])
     } finally {
       await server.close()
+    }
+  })
+
+  it('decides hooks-present from the real signals in both directions: absent serves, present refuses, the suite default serves', async () => {
+    // Provenance: FORMAT-DERIVED from src/mcp_jsonrpc.ts::hooksDisableMcpTools (the signals it reads) and src/bridges/registry.ts::detectHarness; the CI refusal text is CAPTURE from the first red CI run of this suite (every mcp_* file read 'token-goat MCP tools are disabled because hooks are available for this harness'). No callback is injected: the server runs the shipping decision.
+    const session = async (): Promise<{ tools: string[]; callError: boolean }> => {
+      const { transport, sent, deliver, whenSent } = rawTransport()
+      const server = new McpServer({ name: 't', version: '1' })
+      server.registerTool('probe', {}, () => textResult('ran'))
+      await server.connect(transport)
+      try {
+        deliver({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'generic-test-client', version: '1' } } })
+        deliver({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+        deliver({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'probe' } })
+        await whenSent(3)
+        return {
+          tools: (sent[1] as any).result.tools.map((tool: { name: string }) => tool.name),
+          callError: (sent[2] as any).result.isError === true,
+        }
+      } finally {
+        await server.close()
+      }
+    }
+
+    // The suite default: the setup file pins the harness to claudecode and the opt-out to 1, and no row stubs anything. The shipped CI failure was this session refusing.
+    vi.unstubAllEnvs()
+    expect(await session(), 'suite default env').toEqual({ tools: ['probe'], callError: false })
+
+    // Absent: no harness signal of any kind and no opt-out, which is a host without hooks.
+    for (const key of HARNESS_DETECTION_ENV_KEYS) vi.stubEnv(key, undefined)
+    vi.stubEnv('COPILOT_HOME', undefined)
+    vi.stubEnv('TOKEN_GOAT_MCP_WITH_HOOKS', undefined)
+    expect(await session(), 'no hooks signal').toEqual({ tools: ['probe'], callError: false })
+
+    // Present: the same bare environment plus one real hooks signal, each of which must close the gate.
+    for (const [name, value] of [
+      ['TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode'],
+      ['TOKEN_GOAT_HARNESS_OVERRIDE', 'copilot_cli'],
+      ['CLAUDE_CODE_SESSION_ID', 'session'],
+      ['TERM_PROGRAM', 'claude-code'],
+      ['COPILOT_HOME', 'C:\\copilot'],
+    ] as const) {
+      vi.stubEnv(name, value)
+      expect(await session(), `${name}=${value}`).toEqual({ tools: [], callError: true })
+      vi.stubEnv(name, undefined)
     }
   })
 

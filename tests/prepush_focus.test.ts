@@ -10,11 +10,20 @@ import { queryProcessCommandLine } from '../src/resident_process.js'
 import { resolveWindowsBash } from '../src/shell.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
+import { reaperRecordPid } from './helpers/reaper_record.js'
 
 const REPO = process.cwd().replace(/\\/g, '/')
 const posix = (p: string): string => p.replace(/\\/g, '/')
 // Git Bash on Windows, never the WSL launcher that a bare bash resolves to there; null skips the suite where no bash exists
 const BASH = process.platform === 'win32' ? resolveWindowsBash() : '/bin/bash'
+// The pre-push command of lefthook.yml, read from the file: the hook is started as `sh <wrapper> <script> {1}`, and the wrapper picks the bash (5.1 or later) that runs the script.
+const HOOK_WRAPPER = ((): string => {
+  const m = /^ {6}run: sh (\.lefthook-scripts\/run-with-bash-5\.sh) \.lefthook-scripts\/run-all-checks\.sh \{1\}$/m.exec(readFileSync(path.join(REPO, 'lefthook.yml'), 'utf8'))
+  if (m === null) throw new Error('the pre-push command of lefthook.yml no longer runs run-all-checks.sh through run-with-bash-5.sh')
+  return path.join(REPO, m[1] ?? '')
+})()
+// The sh the hook's `sh` is: the one beside Git Bash on Windows, /bin/sh elsewhere.
+const SH = process.platform === 'win32' && BASH !== null ? path.join(path.dirname(BASH), 'sh.exe') : '/bin/sh'
 let dir = ''
 let realDir = ''
 afterEach(() => {
@@ -58,9 +67,9 @@ const cleanupRunning = (pid: number): boolean => {
 /** Waits for the cleanup process the script started to exit, and fails by name when it does not; the record names its Windows pid. */
 function awaitCleanupGone(sandbox: string): void {
   const record = path.join(sandbox, 'reaper-last.txt')
-  const m = existsSync(record) ? /^reaper: pid=\d+ winpid=(\d+)/m.exec(readFileSync(record, 'utf8')) : null
-  expect(m, 'the cleanup process left no record naming its pid').not.toBeNull()
-  const pid = Number(m?.[1])
+  const named = existsSync(record) ? reaperRecordPid(readFileSync(record, 'utf8')) : null
+  expect(named, 'the cleanup process left no record naming its pid').not.toBeNull()
+  const pid = Number(named)
   const until = Date.now() + CLEANUP_WAIT_S * 1000
   // The wait polls the pid with a signal-0 probe, which starts no process; the command-line query is a PowerShell CIM call of 1 to 2 s on an idle host and many times that on a loaded one, so it is made only once the wait ends (cleanupRunning below), never per poll.
   while (pidAlive(pid) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
@@ -99,6 +108,15 @@ function firstCommitTemplate(seed: Record<string, string>): { dir: string; base:
   const have = templates.get(key)
   if (have) return have
   const tpl = mkdtempSync(path.join(tmpdir(), 'tg-focus-tpl-'))
+  try {
+    return buildFirstCommit(tpl, key, seed)
+  } catch (e) {
+    // A build that failed part-way is not in the map, so the afterAll below would never remove its directory.
+    rmSync(tpl, { recursive: true, force: true })
+    throw e
+  }
+}
+function buildFirstCommit(tpl: string, key: string, seed: Record<string, string>): { dir: string; base: string } {
   const root = path.join(tpl, 'repo')
   mkdirSync(path.join(root, 'scripts'), { recursive: true })
   for (const f of ['prepush-failed.mjs', 'test-durations.mjs', 'prepush-budget.mjs', 'prepush-graph.mjs', 'prepush-readers.mjs', 'prepush-select.mjs', 'is-main-module.mjs']) copyFileSync(path.join(REPO, 'scripts', f), path.join(root, 'scripts', f))
@@ -161,7 +179,9 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
     'echo "DEFERRED_BEGIN"',
     'echo "$FOCUS_DEFERRED"',
   ].join('\n')
-  const out = execFileSync(BASH ?? 'bash', ['-c', script], { cwd: root, encoding: 'utf8', env: { ...inheritedEnv(), PREPUSH_FAILED_STORE: posix(store), ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
+  const scriptFile = path.join(dir, 'focus-run.sh')
+  writeFileSync(scriptFile, `${script}\n`)
+  const out = execFileSync(SH, [posix(HOOK_WRAPPER), posix(scriptFile)], { cwd: root, encoding: 'utf8', env: { ...inheritedEnv(), PREPUSH_FAILED_STORE: posix(store), ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
   awaitCleanupGone(dir)
   const note = /^NOTE=(.*)$/m.exec(out)?.[1] ?? ''
   const file = /^FILE=(.*)$/m.exec(out)?.[1]?.trim() ?? ''
@@ -176,6 +196,19 @@ describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => 
   const wholeSrcSeed = { 'tests/whole_src.test.ts': "import fs from 'node:fs'\nfs.readdirSync('src')\n", 'tests/spawner.test.ts': "import { bundleTg } from './helpers/bundle.js'\nbundleTg()\n", 'tests/helpers/bundle.ts': 'export const bundleTg = () => 1\n' }
   beforeAll(() => {
     for (const seed of [{}, changelogSeed, wholeSrcSeed]) firstCommitTemplate(seed)
+  })
+
+  // The wrapper is the only thing that prints this refusal: a script started any other way (bash -c, bash <file>) ignores TG_PREPUSH_BASH and runs.
+  it('is started through run-with-bash-5.sh, as lefthook.yml starts the hook', () => {
+    let failure: { status?: number; stderr?: unknown } | undefined
+    try {
+      decide({ 'src/a.ts': 'export const a = 2\n' }, { TG_PREPUSH_BASH: '/no/such/bash' })
+    } catch (e) {
+      failure = e as { status?: number; stderr?: unknown }
+    }
+    expect(failure, 'the decision ran although the wrapper was told to use a bash that does not exist, so it did not go through run-with-bash-5.sh').toBeDefined()
+    expect(failure?.status).toBe(2)
+    expect(String(failure?.stderr)).toContain('TG_PREPUSH_BASH must name Bash 5.1 or later')
   })
 
   it('a src change runs the guards, the matrix and the tests that import the module', () => {
@@ -265,6 +298,26 @@ const DEADLINE_AT = 1_800_000_000_000
 type FakeModule = { moduleId: string; state: () => string; children: { allTests: () => { result: () => { state: string; note?: string } }[] } }
 const fakeModule = (file: string, state: string, tests: { state: string; note?: string }[]): FakeModule => ({ moduleId: `/root/${file}`, state: () => state, children: { allTests: () => tests.map((t) => ({ result: () => t })) } })
 const ABORT_NOTE = 'The test run was aborted by the user.'
+
+// Provenance: FORMAT-DERIVED from .lefthook-scripts/prepush-reaper.sh, the `rec "reaper: pid=$$ winpid=$W owner=$OWNER life=$LIFE grace=$GRACE"` line; the winpid is empty where /proc has no winpid file (the CI Linux runners), where the old pattern matched no pid and failed with "left no record naming its pid".
+describe('the pid a cleanup record names', () => {
+  it('is the Windows pid where Git Bash gave one', () => {
+    expect(reaperRecordPid('reaper: pid=1234 winpid=5678 owner=99 life=630 grace=30\nhook gone: 41\n')).toBe(5678)
+  })
+
+  it('is the plain pid where the record has no Windows pid off Windows', () => {
+    expect(reaperRecordPid('reaper: pid=1234 winpid= owner=99 life=630 grace=30\nhook gone: 41\n', 'linux')).toBe(1234)
+    expect(reaperRecordPid('reaper: pid=1234 winpid= owner=99 life=630 grace=30\nhook gone: 41\n', 'darwin')).toBe(1234)
+  })
+
+  it('is null on Windows when the record has no Windows pid', () => {
+    expect(reaperRecordPid('reaper: pid=1234 winpid= owner=99 life=630 grace=30\nhook gone: 41\n', 'win32')).toBeNull()
+  })
+
+  it('is null for a record with no reaper line', () => {
+    expect(reaperRecordPid('hook gone: 41\nexit: 53\n')).toBeNull()
+  })
+})
 
 describe('prepush deadline: what one file amounts to', () => {
   it.each([

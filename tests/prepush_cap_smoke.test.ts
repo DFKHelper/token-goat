@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { HARD_STOP_DEFAULT_S, HARD_STOP_MAX_S, HOOK_LIMIT_S, STARTUP_RESERVE_S, STOP_CLEANUP_S, TERM_WAIT_S, hardStopOf, postStopOf } from '../scripts/prepush-budget.mjs'
 import { unfinishedFiles, writeOwed } from '../scripts/prepush-failed.mjs'
 import { killAllIfCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { reaperRecordPid } from './helpers/reaper_record.js'
 
 // Bound on every spawned hook or bash run in this file; a run that reaches it is killed and fails the row.
 const SPAWN_TIMEOUT_MS = 60_000
@@ -232,8 +233,14 @@ let hookGitDir = ''
 const hookGitTemplate = (): string => {
   if (hookGitDir !== '') return hookGitDir
   const tpl = mkdtempSync(path.join(tmpdir(), 'tg-prepush-hookgit-'))
-  expect(spawnSync('git', ['init', '-q'], { cwd: tpl, timeout: SPAWN_TIMEOUT_MS }).status).toBe(0)
-  expect(spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: tpl, timeout: SPAWN_TIMEOUT_MS }).status).toBe(0)
+  try {
+    expect(spawnSync('git', ['init', '-q'], { cwd: tpl, timeout: SPAWN_TIMEOUT_MS }).status).toBe(0)
+    expect(spawnSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: tpl, timeout: SPAWN_TIMEOUT_MS }).status).toBe(0)
+  } catch (e) {
+    // A failed init or commit leaves hookGitDir unset, so the afterAll below would never remove this directory.
+    rmSync(tpl, { recursive: true, force: true })
+    throw e
+  }
   hookGitDir = path.join(tpl, '.git')
   return hookGitDir
 }
@@ -593,11 +600,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
   }, true)
 
   // The Windows pid of the cleanup process, from the first line of its record beside the failed-store.
-  const reaperWinpid = (): number => {
-    const record = path.join(dir, 'store', 'reaper-last.txt')
-    const m = existsSync(record) ? /^reaper: pid=\d+ winpid=(\d+)/m.exec(readFileSync(record, 'utf8')) : null
-    return m === null ? 0 : Number(m[1])
-  }
+  const reaperWinpid = (): number => reaperRecordPid(reaperRecord()) ?? 0
   const reaperRecord = (): string => {
     const record = path.join(dir, 'store', 'reaper-last.txt')
     return existsSync(record) ? readFileSync(record, 'utf8') : ''
