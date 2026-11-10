@@ -163,16 +163,26 @@ export function scratchRepo(): string {
 
 /** A committed repo whose table is written and whose src/b.ts row carries a curated role. */
 export function curatedRepo(): string {
+  return fromTemplate('curated', buildCurated, scratchDir)
+}
+
+function buildCurated(dir: string): void {
+  writeModules(dir, DEFAULT_DOC)
+  gitOut(dir, ['init', '-q'])
+  gitOut(dir, ['add', '.'])
+  expect(engine(dir, '--write').status).toBe(0)
+  const doc = path.join(dir, 'ARCH.md')
+  fs.writeFileSync(doc, fs.readFileSync(doc, 'utf8').replace('Rest module: b.ts', BETA_ROLE))
+  gitOut(dir, ['commit', '-q', '-a', '-m', 'base'])
+}
+
+/** curatedRepo with src/b.ts already renamed to src/bb.ts in the index. The rows that start from a staged rename share it, so the one `git mv` is a start paid once per file and not once per row. */
+export function renamedCuratedRepo(): string {
   return fromTemplate(
-    'curated',
+    'curated-renamed',
     (dir) => {
-      writeModules(dir, DEFAULT_DOC)
-      gitOut(dir, ['init', '-q'])
-      gitOut(dir, ['add', '.'])
-      expect(engine(dir, '--write').status).toBe(0)
-      const doc = path.join(dir, 'ARCH.md')
-      fs.writeFileSync(doc, fs.readFileSync(doc, 'utf8').replace('Rest module: b.ts', BETA_ROLE))
-      gitOut(dir, ['commit', '-q', '-a', '-m', 'base'])
+      fs.cpSync(curatedRepo(), dir, { recursive: true })
+      gitOut(dir, ['mv', 'src/b.ts', 'src/bb.ts'])
     },
     scratchDir,
   )

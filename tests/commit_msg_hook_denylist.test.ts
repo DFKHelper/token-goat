@@ -78,4 +78,18 @@ describe('commit-msg hook: confidential denylist', () => {
     expect(r.status).toBe(1)
     expect(r.stderr).toMatch(/grep exited 2/)
   })
+
+  // HAND-DERIVED: an unclosed group is not a valid extended regular expression, so bash's `[[ =~ ]]` returns 2 for it; an `if` would read that as "no match" and pass the message unchecked.
+  it.skipIf(!hasBash)('refuses the commit when the model-name pattern cannot be applied instead of reading the failure as no match', () => {
+    const copy = path.join(tmp, 'hook')
+    fs.mkdirSync(copy)
+    fs.copyFileSync(SCRIPT, path.join(copy, 'check-commit-msg.sh'))
+    fs.writeFileSync(path.join(copy, 'model-name-pattern.txt'), '(unclosed\n')
+    const msg = path.join(tmp, 'COMMIT_EDITMSG')
+    fs.writeFileSync(msg, 'feat: wire the importer for the new ledger\n')
+    const env: NodeJS.ProcessEnv = { ...process.env, TOKEN_GOAT_CONFIDENTIAL_NAMES: slash(path.join(tmp, 'none.txt')), HOME: slash(tmp), USERPROFILE: tmp }
+    const r = spawnSync(BASH as string, [slash(path.join(copy, 'check-commit-msg.sh')), slash(msg)], { env, encoding: 'utf8' })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/failed to apply/)
+  })
 })

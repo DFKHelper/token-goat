@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { START, END, DOC_HEAD, DOC_TAIL, gitOut, scratchDirs, engine, scratchRepo, curatedRepo, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
+import { START, END, DOC_HEAD, DOC_TAIL, gitOut, scratchDirs, engine, scratchRepo, curatedRepo, renamedCuratedRepo, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
 
 useArchDocFixtures()
 
@@ -35,8 +35,7 @@ describe('sync-arch-docs --check --format=json', () => {
   })
 
   it('fills curated_at_risk with the rename note and keeps the exit code of the text format', () => {
-    const dir = curatedRepo()
-    gitOut(dir, ['mv', 'src/b.ts', 'src/bb.ts'])
+    const dir = renamedCuratedRepo()
     const json = engine(dir, '--check', '--format=json')
     expect({ status: json.status, stdout: json.stdout, stderr: json.stderr }).toEqual({ status: 1, stdout: GOLDEN_RENAME, stderr: '' })
     expect(engine(dir, '--check').status).toBe(1)

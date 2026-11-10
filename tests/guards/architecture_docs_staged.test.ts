@@ -7,22 +7,20 @@ import { describe, expect, it } from 'vitest'
 
 import { resolveRenames } from '../../scripts/arch-docs/curated.mjs'
 import { parseNameStatus } from '../../scripts/arch-docs/source.mjs'
-import { A_TS, BETA_ROLE, gitOut, scratchDirs, engineWithEnv, engine, scratchRepo, curatedRepo, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
+import { A_TS, BETA_ROLE, gitOut, scratchDirs, engineWithEnv, engine, scratchRepo, curatedRepo, renamedCuratedRepo, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
 
 useArchDocFixtures()
 
 describe('sync-arch-docs --check --staged', () => {
   it('reports a staged rename as a warning', () => {
-    const dir = curatedRepo()
-    gitOut(dir, ['mv', 'src/b.ts', 'src/bb.ts'])
+    const dir = renamedCuratedRepo()
     const result = engine(dir, '--check', '--staged')
     expect(result.status).toBe(1)
     expect(result.stderr).toBe('error: src/bb.ts: undocumented module, run --write\nwarning: rename: src/b.ts -> src/bb.ts\n')
   })
 
   it('carries a curated role across a staged rename', () => {
-    const dir = curatedRepo()
-    gitOut(dir, ['mv', 'src/b.ts', 'src/bb.ts'])
+    const dir = renamedCuratedRepo()
     const written = engine(dir, '--write')
     expect(written.status).toBe(0)
     expect(written.stderr).toContain('info: rename: src/b.ts -> src/bb.ts\n')
