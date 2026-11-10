@@ -11,6 +11,11 @@ describe('text-based consecutive-line deduplication', () => {
     expect(dedupeConsecutiveText('')).toBe('')
   })
 
+  it('leaves a single line alone unless minRun explicitly includes singletons', () => {
+    expect(dedupeConsecutiveText('one')).toBe('one')
+    expect(dedupeConsecutiveText('one', { minRun: 1 })).toBe('one  (×1)')
+  })
+
   it('deduplicates repeated stdout and stderr independently', () => {
     expect(compressBashOutput('out\nout', 'err\nerr')).toBe('out  (×2)\n---\nerr  (×2)')
   })

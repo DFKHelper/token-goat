@@ -357,6 +357,10 @@ export function dedupeConsecutiveText(
   text: string,
   opts: { minRun?: number; fmt?: (line: string, count: number) => string; entropyBypass?: boolean } = {},
 ): string {
+  // Single-line output cannot contain a repeated run. Keep the common case
+  // allocation-free while preserving the explicit minRun=1 behavior.
+  if ((opts.minRun ?? 2) > 1 && text.indexOf('\n') === -1) return text
+
   function* lines(): IterableIterator<string> {
     let start = 0
     while (start <= text.length) {
