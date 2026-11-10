@@ -352,6 +352,26 @@ export function dedupeConsecutive(
   return out
 }
 
+/** Collapse repeated lines in text without allocating the intermediate array that `text.split('\n')` would create. */
+export function dedupeConsecutiveText(
+  text: string,
+  opts: { minRun?: number; fmt?: (line: string, count: number) => string; entropyBypass?: boolean } = {},
+): string {
+  function* lines(): IterableIterator<string> {
+    let start = 0
+    while (start <= text.length) {
+      const newline = text.indexOf('\n', start)
+      if (newline === -1) {
+        yield text.slice(start)
+        return
+      }
+      yield text.slice(start, newline)
+      start = newline + 1
+    }
+  }
+  return dedupeConsecutive(lines(), opts).join('\n')
+}
+
 /** Collapse runs of lines that are identical after normalising digit runs to a placeholder — e.g. repeated diff line numbers or per-item counters that differ only in their numeric component. */
 export function dedupeNumericRuns(
   lines: Iterable<string>,
@@ -1082,9 +1102,9 @@ export function fallbackTruncate(stdout: string, stderr: string, maxLines: numbe
 
 /** Dedupe consecutive lines in each stream when normalisation alone sufficed. */
 export function compressBashOutput(stdout: string, stderr: string): string {
-  let body = dedupeConsecutive(stdout.split('\n'), { entropyBypass: true }).join('\n')
+  let body = dedupeConsecutiveText(stdout, { entropyBypass: true })
   if (stderr.trim()) {
-    const err = dedupeConsecutive(stderr.split('\n'), { entropyBypass: true }).join('\n')
+    const err = dedupeConsecutiveText(stderr, { entropyBypass: true })
     body = `${body.replace(/\s+$/, '')}\n---\n${err.replace(/\s+$/, '')}`
   }
   return body
@@ -1092,7 +1112,7 @@ export function compressBashOutput(stdout: string, stderr: string): string {
 
 /** Dedupe + squeeze blank lines on combined text (git/cargo/ruby fallback). */
 export function dedupeCombinedOutput(text: string): string {
-  return squeezeBlankLines(dedupeConsecutive(text.split('\n')).join('\n'))
+  return squeezeBlankLines(dedupeConsecutiveText(text))
 }
 
 /** Numeric-run dedupe + middle truncation for structured test/diff output. */

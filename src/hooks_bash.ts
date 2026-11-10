@@ -307,6 +307,26 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     }
   }
 
+  // `find` interception runs after the safety checks but before unrelated output-file probes, keeping the hook path for a slow filesystem walk short.
+  const findResult = extractFindCommand(cmd)
+  if (findResult !== null) {
+    const { extGlob, isXargsGrepL } = findResult
+    recordStat('session_hint', 0, 0)
+    if (isXargsGrepL) {
+      return denyOutput(
+        '`find | xargs grep -l` is a slow symbol search. ' +
+        'Use `token-goat refs <symbol>` or `rg -l <symbol>` for faster symbol-file discovery.',
+      )
+    }
+    const fdHint = extGlob
+      ? 'Use `fd -g ' + quotedArg(extGlob) + '` for faster file discovery (respects .gitignore).'
+      : 'Use `fd` for faster file discovery (respects .gitignore).'
+    return contextOutput(
+      '`find` is slow and ignores .gitignore. ' + fdHint +
+      ' For symbol definitions, use `token-goat symbol <Name>`.',
+    )
+  }
+
   // Item 3: task output file — already cached, recall with bash-output
   const taskOutput = extractTasksOutput(cmd)
   if (taskOutput !== null) {
@@ -332,26 +352,6 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const recall = 'token-goat bash-output --file ' + quotedArg(outPath)
     return contextOutput(
       sentenceStart(fileSubject(recall, outPath)) + ' is a plain-text tool-output artifact. Use `' + recall + '` to read it with surgical narrowing via `--grep PATTERN` or `--tail N`, instead of reading the whole file.',
-    )
-  }
-
-  // find interception — fd is faster and .gitignore-aware; xargs grep -l is a symbol-search anti-pattern
-  const findResult = extractFindCommand(cmd)
-  if (findResult !== null) {
-    const { extGlob, isXargsGrepL } = findResult
-    recordStat('session_hint', 0, 0)
-    if (isXargsGrepL) {
-      return denyOutput(
-        '`find | xargs grep -l` is a slow symbol search. ' +
-        'Use `token-goat refs <symbol>` or `rg -l <symbol>` for faster symbol-file discovery.',
-      )
-    }
-    const fdHint = extGlob
-      ? 'Use `fd -g ' + quotedArg(extGlob) + '` for faster file discovery (respects .gitignore).'
-      : 'Use `fd` for faster file discovery (respects .gitignore).'
-    return contextOutput(
-      '`find` is slow and ignores .gitignore. ' + fdHint +
-      ' For symbol definitions, use `token-goat symbol <Name>`.',
     )
   }
 

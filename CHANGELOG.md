@@ -12,6 +12,8 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - Tree-sitter parsing reuses one native parser per grammar, reducing repeated AST extraction setup; the parser fingerprint changed, so existing indexes reindex after upgrade.
 - The TypeScript signature-context API resolves transitively referenced interfaces and type aliases across supplied parsed files; the parser fingerprint change reindexes existing indexes on upgrade.
 - `changed` now recognizes the exact Git `--name-status` option-order error when a path is used as the baseline, guides CLI callers to `--since` or `--grep` and MCP callers to pass a ref rather than a path filter, and does not misclassify unrelated revision errors with similar wording.
+- `grep` falls back to literal substring matching for malformed regex syntax while retaining refusals for overlong or potentially stalling patterns.
+- Shell/task-output line deduplication avoids an intermediate split-line array; direct `find` results stop collecting unused fuzzy names, and the Bash hook handles `find` before unrelated output-file probes.
 
 ## [2.9.34] - 2026-11-02
 

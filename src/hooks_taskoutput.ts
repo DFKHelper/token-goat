@@ -4,11 +4,11 @@ import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { getToolName, getToolInput, passOutput, extractToolResultText } from './hooks_common.js'
 import { rewritePoll, type PollTool } from './hooks_bashoutput.js'
-import { dedupeConsecutive } from './tool_filters/helpers.js'
+import { dedupeConsecutiveText } from './tool_filters/helpers.js'
 
-/** Collapse runs of identical consecutive lines in `text` via the shared `dedupeConsecutive` helper (tool_filters/helpers.ts) -- reused rather than hand-rolled per this repo's DRY convention. */
+/** Collapse runs of identical consecutive lines via the shared streaming text helper (tool_filters/helpers.ts). */
 function collapseRepeatedLines(text: string): string {
-  return dedupeConsecutive(text.split('\n')).join('\n')
+  return dedupeConsecutiveText(text)
 }
 
 /** TaskOutput's tool_input `task_id` field (per Claude Code's documented TaskOutput schema). Returns undefined for anything missing/non-string/empty. */

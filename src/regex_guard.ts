@@ -470,10 +470,10 @@ const MAX_PATTERN_LENGTH = 4096
 /** Which of the four measurements inside {@link climbsPastBudget} produced a refusal, so a test can assert on the cause instead of approximating it with its own wall-clock timings, which a loaded machine can disagree with. */
 export type RefusalCause = 'over-budget' | 'ratio' | 'projection' | 'unfalsifiable'
 
-/** A compiled pattern, or the reason it was refused -- phrased to complete "the pattern ...". `cause` is set only when the refusal came from a measurement inside {@link growsExponentially}; the two refusals before measurement (too long, does not compile) leave it undefined. */
+/** A compiled pattern, or the reason it was refused -- phrased to complete "the pattern ...". `cause` is set only when the refusal came from a measurement inside {@link growsExponentially}; `syntaxError` is set only when the RegExp constructor rejects the pattern, not when it is too long or unsafe to run. */
 export type GuardedRegex =
   | { readonly ok: true; readonly re: RegExp }
-  | { readonly ok: false; readonly reason: string; readonly cause?: RefusalCause }
+  | { readonly ok: false; readonly reason: string; readonly cause?: RefusalCause; readonly syntaxError?: true }
 
 /** Compiles a search pattern, refusing one that will not compile or that can stall the process. The single entry point every surface that takes a pattern from a model or a command line uses, so a new one cannot pick up the unguarded `new RegExp` by copying its neighbour. The reason is a sentence fragment, so a caller can prefix its own subject ("--filter ...", "the grep pattern ...") without the message reading twice. */
 export function compileGuardedRegex(pattern: string, flags = ''): GuardedRegex {
@@ -498,7 +498,7 @@ export function compileGuardedRegex(pattern: string, flags = ''): GuardedRegex {
   try {
     re = new RegExp(cleanPattern, activeFlags)
   } catch (e) {
-    return { ok: false, reason: e instanceof Error ? e.message : 'is not a valid regular expression' }
+    return { ok: false, reason: e instanceof Error ? e.message : 'is not a valid regular expression', syntaxError: true }
   }
   // Nothing to measure: with no repetition and no alternation there is exactly one way to match from each starting position, so the cost is linear by construction. Timing such a pattern anyway was the risk, not the safeguard: a single scheduler stall spanning a probe run and its re-measurement refused `e` and `rogue` on a loaded CI runner. Alternation is excluded even without a quantifier because `^(a|a)(a|a)...$` doubles its paths with every group.
   if (!LINEAR_BY_CONSTRUCTION_EXCLUDES.test(pattern)) return { ok: true, re }

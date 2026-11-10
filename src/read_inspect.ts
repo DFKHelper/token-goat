@@ -860,12 +860,20 @@ export function runFind(opts: FindOptions): number {
 
   const rootDir = resolveProjectRoot({ project: process.cwd() })
   const patternLower = opts.pattern.toLowerCase()
-  // Walk the whole scope rather than one capped page: the name test is a JS substring match with no SQL equivalent, so a cap applied ahead of it drops every match that sorted past it -- and that miss falls straight into the near-name branch below, which answers a symbol that IS indexed with a confident list of unrelated files. Only file paths and names are kept, both bounded by the project rather than by its symbol count.
+  // Walk the whole scope rather than one capped page: the name test is a JS substring match with no SQL equivalent, so a cap applied ahead of it drops every match that sorted past it -- and that miss falls straight into the near-name branch below, which answers a symbol that IS indexed with a confident list of unrelated files. Direct matches need only file paths; unique names are retained only until a match appears or for the fuzzy fallback.
   const matchedFiles = new Set<string>()
   const allNames = new Set<string>()
+  let hasSubstringMatch = false
   forEachSymbol({ rootDir }, (s: SymbolHead) => {
-    allNames.add(s.name)
-    if (s.name.toLowerCase().includes(patternLower)) matchedFiles.add(s.filePath)
+    if (s.name.toLowerCase().includes(patternLower)) {
+      if (!hasSubstringMatch) {
+        allNames.clear()
+        hasSubstringMatch = true
+      }
+      matchedFiles.add(s.filePath)
+    } else if (!hasSubstringMatch) {
+      allNames.add(s.name)
+    }
   })
 
   let fuzzyNames: string[] = []

@@ -19,10 +19,11 @@ interface PendingContext {
 
 /**
  * Scan one file without materializing every split line or every hit.
+ * A string matcher means a literal substring search; RegExp keeps regex semantics.
  * The hit list is capped at the rows the caller can print; totalCount still
  * counts the complete search so truncation remains truthful.
  */
-export function scanGrepText(text: string, regex: RegExp, maxHits: number, contextLines: number): GrepScanResult {
+export function scanGrepText(text: string, matcher: RegExp | string, maxHits: number, contextLines: number): GrepScanResult {
   const hitLimit = Math.max(0, Math.trunc(maxHits))
   const contextLimit = Math.max(0, Math.trunc(contextLines))
   const hits: GrepScanHit[] = []
@@ -48,8 +49,9 @@ export function scanGrepText(text: string, regex: RegExp, maxHits: number, conte
       if (item.remaining === 0) pending.splice(i, 1)
     }
 
-    if (regex.global || regex.sticky) regex.lastIndex = 0
-    if (regex.test(current.text)) {
+    if (matcher instanceof RegExp && (matcher.global || matcher.sticky)) matcher.lastIndex = 0
+    const matches = typeof matcher === 'string' ? current.text.includes(matcher) : matcher.test(current.text)
+    if (matches) {
       totalCount++
       if (hits.length < hitLimit) {
         const hit: GrepScanHit = { line: current.line, text: current.text }
