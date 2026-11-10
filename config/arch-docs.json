@@ -320,6 +320,7 @@
     ["src/listing_size.ts","Specialized Subsystems"],
     ["src/manifest.ts","Specialized Subsystems"],
     ["src/manifest_fit.ts","Specialized Subsystems"],
+    ["src/manifest_sweep.ts","Specialized Subsystems"],
     ["src/markdown_frontmatter.ts","Specialized Subsystems"],
     ["src/markdown_lines.ts","Specialized Subsystems"],
     ["src/mcp_client_text.ts","Specialized Subsystems"],

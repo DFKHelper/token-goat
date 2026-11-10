@@ -4057,9 +4057,28 @@ describe('read_commands', () => {
   // ---- runGrep ------------------------------------------------------------
 
   describe('runGrep', () => {
-    it('returns 1 for invalid regex', () => {
-      const code = runGrep({ pattern: '[invalid(', path: tempDir })
+    it.each(['Id.get(', 'addText(', '[unclosed'])('uses literal substring matching for invalid regex syntax: %s', (pattern) => {
+      const f = path.join(tempDir, 'literal.txt')
+      fs.writeFileSync(f, 'Id.get() and addText(\nIdXget(\n[unclosed')
+      let code = 1
+      const { stdout, stderr } = capture(() => {
+        code = runGrep({ pattern, path: f })
+      })
+      expect(code).toBe(0)
+      expect(stdout).toContain(pattern)
+      expect(stderr).toContain('searching for literal text')
+      if (pattern === 'Id.get(') expect(stdout).not.toContain('IdXget(')
+    })
+
+    it('still refuses patterns that exceed the regex guard limit', () => {
+      const f = path.join(tempDir, 'overlong.txt')
+      fs.writeFileSync(f, 'ordinary text')
+      let code = 0
+      const { stderr } = capture(() => {
+        code = runGrep({ pattern: 'x'.repeat(10_000), path: f })
+      })
       expect(code).toBe(1)
+      expect(stderr).toContain('longer than')
     })
 
     it('finds matches in files', () => {

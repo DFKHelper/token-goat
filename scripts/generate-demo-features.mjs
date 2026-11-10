@@ -20,7 +20,7 @@ const categoryByCommand = new Map([
   ["budget", "Measure and reduce context"], ["compress-text", "Measure and reduce context"], ["retrieve", "Measure and reduce context"],
   ["compress", "Measure and reduce context"], ["compact-doc", "Measure and reduce context"], ["compact-hint", "Measure and reduce context"], ["cost", "Measure and reduce context"],
   ["failures", "Debug and review"], ["todo", "Debug and review"], ["trace", "Debug and review"],
-  ["logfold", "Debug and review"], ["lockdeps", "Debug and review"], ["dep-docs", "Debug and review"],
+  ["logfold", "Debug and review"], ["lockdeps", "Debug and review"], ["manifest-sweep", "Debug and review"], ["dep-docs", "Debug and review"],
   ["coverage-report-gaps", "Debug and review"], ["conflicts", "Debug and review"],
   ["index", "Run and maintain Token-Goat"], ["worker", "Run and maintain Token-Goat"], ["install", "Run and maintain Token-Goat"],
   ["uninstall", "Run and maintain Token-Goat"], ["doctor", "Run and maintain Token-Goat"], ["config", "Run and maintain Token-Goat"],

@@ -103,6 +103,7 @@ const OMISSIONS: readonly Omission[] = [
   { command: 'trace', reason: ANALYSIS_REASON },
   { command: 'logfold', reason: ANALYSIS_REASON },
   { command: 'lockdeps', reason: ANALYSIS_REASON },
+  { command: 'manifest-sweep', reason: ANALYSIS_REASON },
   { command: 'dep-docs', reason: ANALYSIS_REASON },
   { command: 'hot', reason: ANALYSIS_REASON },
   { command: 'recent', reason: ANALYSIS_REASON },

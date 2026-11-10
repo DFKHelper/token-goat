@@ -1182,13 +1182,14 @@ export function runGrep(opts: GrepOptions): number {
   const maxLines = opts.maxLines ?? GREP_MAX_LINES
   const contextLines = opts.context ?? 0
 
-  // Refused, not merely reported: an unbounded backtracking pattern cannot be interrupted once `test` has started, and the MCP server that reaches here is single-threaded, so one line of ordinary-looking text would take every other tool down with it. See regex_guard.ts.
+  // An unclosed group or bracket is usually an attempted literal (e.g. `addText(`), so syntax errors fall back to a safe substring scan. Other refusals remain refusals: an unbounded backtracking pattern cannot be interrupted once `test` has started, and the MCP server that reaches here is single-threaded. See regex_guard.ts.
   const guarded = compileGuardedRegex(opts.pattern)
-  if (!guarded.ok) {
+  if (!guarded.ok && guarded.syntaxError !== true) {
     emitErr(formatCommandError(`Invalid regex: ${opts.pattern} -- ${guarded.reason}`))
     return 1
   }
-  const regex = guarded.re
+  const matcher: RegExp | string = guarded.ok ? guarded.re : opts.pattern
+  if (!guarded.ok) emitErr('Invalid regex syntax; searching for literal text instead.')
 
   const hits: GrepHit[] = []
   let totalHits = 0
@@ -1198,7 +1199,7 @@ export function runGrep(opts: GrepOptions): number {
       // Pin-aware: consults `activePins` when this exact path was validated and pinned by the MCP confinement gate (see readFileText), so an explicitly-requested `path` argument gets the same swap-between-validate-and-read protection every other surgical-read command gets. Files discovered by searchDir's own recursion below were never individually pinned by the gate -- their protection is the realpath boundary check in searchDir, not this identity check, which only fires for paths the gate itself validated.
       const text = readFileText(filePath)
       if (text === null) return
-      const scanned = scanGrepText(text, regex, maxLines - hits.length, contextLines)
+      const scanned = scanGrepText(text, matcher, maxLines - hits.length, contextLines)
       totalHits += scanned.totalCount
       for (const match of scanned.hits) {
         hits.push({

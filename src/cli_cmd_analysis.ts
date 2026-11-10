@@ -36,6 +36,7 @@ import {
   cmdLogfold,
   cmdLockdeps,
 } from './text_commands.js'
+import { cmdManifestSweep } from './manifest_sweep.js'
 import {
   cmdHistory,
 } from './config_commands.js'
@@ -466,6 +467,21 @@ export function registerAnalysisCommands(program: Command, guard: GuardFn): void
     .option('--package <name>', 'query one package only: its resolved version, direct dependencies, and which direct project dependencies depend on it (npm lockfiles only expose the dependency graph)')
     .action((filePath: string | undefined, opts: { json?: boolean; package?: string }) =>
       guard(() => cmdLockdeps(filePath, opts))(),
+    )
+
+  program
+    .command('manifest-sweep [root]')
+    .description('summarize nested package.json manifests and nearby lockfile coordinates')
+    .option('-j, --json', 'output as JSON')
+    .option('--package <name>', 'show one exact package name across manifests and lockfiles')
+    .action((root: string | undefined, opts: { json?: boolean; package?: string }) =>
+      guard(() =>
+        cmdManifestSweep({
+          ...(root === undefined ? {} : { root }),
+          ...(opts.package === undefined ? {} : { packageName: opts.package }),
+          output: opts.json === true ? 'json' : 'text',
+        }),
+      )(),
     )
 
   program
