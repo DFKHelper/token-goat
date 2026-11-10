@@ -109,9 +109,9 @@ function dedupTabContext(text: string): { text: string; changed: boolean } {
 
 export async function postBrowserImageHandler(event: HookEvent): Promise<HookOutput> {
   try {
-    if (!loadConfig().image_shrink.enabled) return passOutput()
     const toolName = getToolName(event)
     if (!toolName || !BROWSER_TOOL_RE.test(toolName)) return passOutput()
+    if (!loadConfig().image_shrink.enabled) return passOutput()
 
     const blocks = getResponseContentBlocks(event.raw)
     if (blocks === null || blocks.length === 0) return passOutput()

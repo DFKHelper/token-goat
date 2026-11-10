@@ -7,10 +7,12 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 ### Changed
 
 - **`symbol` prints the whole body up to about 12 KB, shared fairly across matches; each match still shows at least 5 lines, none longer than 2,400 bytes.** A body past the budget is cut at a line and names the `read` command that returns the rest.
+- Repeated Markdown section hints now advance after a served range and unchanged-file fingerprint confirm a section read; when no selectable section remains, the hint points to the outline command.
 - The canonical skill now treats whole-file/range denials and the >80%-indexed warning as a per-file circuit breaker, directing reads and edits to surgical token-goat commands.
 - `sqlite-query session` resolves the active Copilot session database; COBOL outlines expose nested data items and level-88 conditions.
 - Tree-sitter parsing reuses one native parser per grammar, reducing repeated AST extraction setup; the parser fingerprint changed, so existing indexes reindex after upgrade.
 - The TypeScript signature-context API resolves transitively referenced interfaces and type aliases across supplied parsed files; the parser fingerprint change reindexes existing indexes on upgrade.
+- `changed` now recognizes the exact Git `--name-status` option-order error when a path is used as the baseline, guides CLI callers to `--since` or `--grep` and MCP callers to pass a ref rather than a path filter, and does not misclassify unrelated revision errors with similar wording.
 
 ## [2.9.34] - 2026-11-02
 

@@ -743,6 +743,43 @@ export function rangeContentVerdict(filePath: string, hashNow?: CurrentFileHash)
   return now === recorded.fp ? 'same' : 'changed'
 }
 
+const SERVED_SECTION_TARGET_PREFIX = 'served-section::'
+
+/** Record a section target against the fingerprint of its served range. */
+export function recordServedSectionTarget(filePath: string, target: string): void {
+  const normalized = normalizePath(filePath)
+  if (target === '' || getFileLineRanges(normalized).length === 0) return
+  const fingerprint = getFileLineRangeIdentity(normalized)?.fp
+  if (fingerprint === undefined) return
+  _cliReads.add(`${SERVED_SECTION_TARGET_PREFIX}${normalized}::${JSON.stringify([target, fingerprint])}`)
+}
+
+/** Section targets whose own served-range fingerprint is still current. */
+export function getConsumedSectionTargets(filePath: string): ReadonlySet<string> {
+  const normalized = normalizePath(filePath)
+  const fingerprint = getFileLineRangeIdentity(normalized)?.fp
+  if (getFileLineRanges(normalized).length === 0 || fingerprint === undefined || rangeContentVerdict(normalized) !== 'same') return new Set()
+
+  const prefix = `${SERVED_SECTION_TARGET_PREFIX}${normalized}::`
+  const consumed = new Set<string>()
+  for (const cliReadKey of _cliReads) {
+    if (!cliReadKey.startsWith(prefix)) continue
+    let decoded: unknown
+    try {
+      decoded = JSON.parse(cliReadKey.slice(prefix.length))
+    } catch {
+      // Invalid persisted marker data cannot prove that a target was served.
+      continue
+    }
+    if (!Array.isArray(decoded) || decoded.length !== 2) continue
+    const target: unknown = decoded[0]
+    const servedFingerprint: unknown = decoded[1]
+    if (typeof target !== 'string' || target === '' || servedFingerprint !== fingerprint) continue
+    consumed.add(target)
+  }
+  return consumed
+}
+
 /** Drop `filePath`'s recorded line ranges when the file no longer has the size and mtime it had when they were recorded, or holds different bytes than the hash taken then (see {@link rangeContentVerdict}), and return its current identity (undefined when it cannot be stat'd). The Bash pre hook calls this before it measures a `sed -n`/`head` read against those ranges, as {@link recordFileLineRange} does before it adds one: measured first, a re-read of lines changed outside the session was told to recall them from earlier output. With `requireProof`, ranges the bytes cannot vouch for go too -- no hash on record (a file past {@link RANGE_FINGERPRINT_MAX_BYTES}, or a session recorded before the hash existed) or no identity on record at all -- for a caller that answers "you already read this" from them: a matching stat is not proof, and unknown is read through. A caller that only counts ranges (paging) leaves it off and keeps them. */
 export function dropFileLineRangesIfChanged(filePath: string, requireProof = false, hashNow?: CurrentFileHash): { size: number; mtimeMs: number } | undefined {
   const normalized = normalizePath(filePath)

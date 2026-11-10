@@ -5,7 +5,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { indexedSourceText } from './indexed_source.js'
 import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
-import { querySymbols, countSymbols, queryRefCounts } from './index_reader.js'
+import { querySymbols, countSymbols, queryRefCounts, getFileEntry } from './index_reader.js'
 import { SKELETON_SYMBOL_CAP, globalDbPath } from './constants.js'
 import { compileGrepMatcher, countContentLines, countNoun } from './util.js'
 import { filtersFilteredToEmptyNotice } from './filter_notice.js'
@@ -18,6 +18,7 @@ import { noSymbolsMessage, formatStatsSuffix, hasRealDocstring } from './read_me
 import { firstBodyLine } from './read_suggest.js'
 import { parseMultiFileSpec, fileConfinementRefusal } from './read_spec.js'
 import { extractSignature } from './read_signature.js'
+import { getOutlineListingCache, setOutlineListingCache, type OutlineListingCacheValue } from './read_outline_cache.js'
 
 export interface SkeletonOptions {
   file: string
@@ -37,6 +38,40 @@ export type OutlineOptions = SkeletonOptions
 
 /** Character cap for the per-symbol doc annotation in `outline`'s text mode. */
 const DOC_SUMMARY_MAX_CHARS = 140
+const OUTLINE_CACHE_MAX_GREP_CHARS = 256
+
+function outlineCacheKey(
+  resolved: string,
+  opts: { minLines?: number; grep?: string; stats?: boolean; projectRoot?: string },
+): string | null {
+  if (opts.stats === true || (opts.grep?.length ?? 0) > OUTLINE_CACHE_MAX_GREP_CHARS) return null
+
+  let stat: fs.Stats
+  try {
+    stat = fs.statSync(resolved)
+    if (!stat.isFile()) return null
+  } catch {
+    return null
+  }
+
+  const entry = getFileEntry(resolved)
+  if (entry === null || entry.sha === '') return null
+  return JSON.stringify([
+    globalDbPath(),
+    resolved,
+    entry.sha,
+    entry.parserSha ?? '',
+    entry.language,
+    stat.dev,
+    stat.ino,
+    stat.size,
+    stat.mtimeMs,
+    stat.ctimeMs,
+    opts.minLines ?? null,
+    opts.grep ?? null,
+    opts.projectRoot ?? process.cwd(),
+  ])
+}
 
 /** Shortest prefix of a doc line that is a complete sentence, or `null` when it has no usable sentence end. */
 function firstSentenceEnd(line: string): number | null {
@@ -96,6 +131,11 @@ export function prepareSymbolListing(
   } else {
     healStaleIndex(resolved)
   }
+  const cacheKey = outlineCacheKey(resolved, opts)
+  if (cacheKey !== null && opts.forceRefresh !== true) {
+    const cached = getOutlineListingCache(cacheKey)
+    if (cached !== undefined) return { kind: 'ok', ...cached }
+  }
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
   const matches = (s: SymbolEntry): boolean => {
     if (opts.minLines !== undefined && s.lineEnd - s.lineStart + 1 < opts.minLines) return false
@@ -137,9 +177,19 @@ export function prepareSymbolListing(
       ? queryRefCounts(filtered.map((s) => s.name), globalDbPath(), resolveProjectRoot({ project: opts.projectRoot ?? process.cwd() }))
       : undefined
 
-  const fullSourceBytes = sumFileSizes([resolved])
-
-  return { kind: 'ok', resolved, displayRoot: getDisplayRoot(opts.projectRoot), filtered, preFilterCount: scanned, refCounts, fullSourceBytes, symbolsTruncated, trueSymbolCount, totalLines: fileLineCount(resolved, totalLines) }
+  const listing: OutlineListingCacheValue = {
+    resolved,
+    displayRoot: getDisplayRoot(opts.projectRoot),
+    filtered,
+    preFilterCount: scanned,
+    refCounts,
+    fullSourceBytes: sumFileSizes([resolved]),
+    symbolsTruncated,
+    trueSymbolCount,
+    totalLines: fileLineCount(resolved, totalLines),
+  }
+  if (cacheKey !== null) setOutlineListingCache(cacheKey, listing)
+  return { kind: 'ok', ...listing }
 }
 
 export function runPerFileListing(

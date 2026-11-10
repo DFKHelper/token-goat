@@ -4,9 +4,11 @@ import { bodyFoldNotice } from './fold_delivery.js'
 import { loadConfig } from './config.js'
 import { extractMarkdownHeadings, type MarkdownHeading } from './hints/markdown_hints.js'
 import { fenceNumberedFileContent, fenceUntrustedFileContent } from './injection_scan.js'
-import { headingTreeParts, hintTarget } from './hint_target.js'
+import { headingTreeParts, hintTarget, sliceCommand } from './hint_target.js'
 import { displaySafeText } from './paths.js'
 import { canQuoteArg, echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
+import { getConsumedSectionTargets } from './session.js'
+import { addSectionReadReceipt } from './served_extent.js'
 import { isTreeSitterAvailable, parseSourceSymbolsTreeSitterOnly } from './parser.js'
 import { detectLanguage } from './parser_types.js'
 import type { SymbolEntry } from './parser_types.js'
@@ -75,16 +77,25 @@ export function planMarkdownOutline(rows: readonly FoldRow[], normalizedPath: st
 
   // headings.length is a floor, not a total: extractMarkdownHeadings caps display extraction at 40 entries and H1-H3 only, so a document with more headings or deeper nesting reports fewer than it actually has. Disclosed as "at least" for that reason, never as an exact count. The lead-in clause is worded from what the rewrite actually kept: claiming "its lead-in" when leadInRows came back empty would be a claim the output does not support.
   const headingCount = `at least ${headings.length} heading${headings.length === 1 ? '' : 's'} found`
-  const heading = hintTarget(normalizedPath, 'section', { headings, content: fileText, placeholder: '<Heading>' }).name
+  const consumedSections = getConsumedSectionTargets(normalizedPath)
+  const target = hintTarget(normalizedPath, 'section', { headings, content: fileText, placeholder: '<Heading>', consumedSections })
+  const navigationHint =
+    !target.real && consumedSections.size > 0
+      ? `Run token-goat outline ${quotedArg(shownPath)} to navigate the document.`
+      : `Run ${
+          target.real
+            ? addSectionReadReceipt(sliceCommand(shownPath, target))
+            : `token-goat section ${quotedArg(`${shownPath}::${target.name}`)}`
+        } to read one section verbatim.`
   if (layout === 'aligned') {
     const body = fenceNumberedFileContent([...leadInNumbered, ...planOutlineAlignedRows(rows, headings, leadInNumbered.length, shownPath, normalizedPath)].join('\n'), ALIGNED_LAYOUT_NOTE)
-    const alignedNotice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was cut down to ${leadInRows.length > 0 ? 'its lead-in and ' : ''}its headings (${headingCount}), each on its real line, with the text under each heading withheld behind a pointer. Run token-goat section ${quotedArg(`${shownPath}::${heading}`)} to read one section verbatim.`
+    const alignedNotice = `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was cut down to ${leadInRows.length > 0 ? 'its lead-in and ' : ''}its headings (${headingCount}), each on its real line, with the text under each heading withheld behind a pointer. ${navigationHint}`
     return { numbered: [body.body], raw: leadInRaw, kind: 'read:markdown_outline', detail: shownPath, ratioCap: OUTLINE_MAX_REPLACEMENT_RATIO, context: `${body.preamble}\n${alignedNotice}` }
   }
   const notice =
     leadInRows.length > 0
-      ? `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was replaced with its lead-in (the content before its first section) and a heading tree (${headingCount}). Run token-goat section ${quotedArg(`${shownPath}::${heading}`)} to read one section verbatim.`
-      : `Partial view: this ${originalBytes.toLocaleString('en-US')} B document has no lead-in before its first section, so it was replaced with a heading tree alone (${headingCount}). Run token-goat section ${quotedArg(`${shownPath}::${heading}`)} to read one section verbatim.`
+      ? `Partial view: this ${originalBytes.toLocaleString('en-US')} B document was replaced with its lead-in (the content before its first section) and a heading tree (${headingCount}). ${navigationHint}`
+      : `Partial view: this ${originalBytes.toLocaleString('en-US')} B document has no lead-in before its first section, so it was replaced with a heading tree alone (${headingCount}). ${navigationHint}`
 
   return {
     // The notice leads so that token-goat speaks first: emitting the lead-in above it let a document open with forged `[token-goat: ...]` or `[tg]` lines that read as this rewrite's own preamble. The lead-in is file bytes like the heading tree, so it gets its own fence rather than riding in the tree's; both fences are part of `numbered`, so their cost is priced by the ratioCap gate below along with everything else.

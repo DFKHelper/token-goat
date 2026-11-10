@@ -240,6 +240,34 @@ Some changes here
     expect(hint).toContain('/CHANGELOG.md')
   })
 
+  it('skips a consumed dated heading and points at the next available version', () => {
+    const content = `## [Unreleased]
+
+## [1.2.3] - 2024-01-15
+
+Some changes here
+
+## [1.2.2] - 2023-12-01`
+    const hint = extractChangelogVersionHint(content, '/CHANGELOG.md', {
+      consumedSections: new Set(['[1.2.3] - 2024-01-15']),
+    })
+    expect(hint).toContain('[1.2.2]')
+    expect(hint).not.toContain('[1.2.3]')
+  })
+
+  it('skips a consumed dated heading when there is no Unreleased section', () => {
+    const content = `## [1.2.3] - 2024-01-15
+
+Some changes here
+
+## [1.2.2] - 2023-12-01`
+    const hint = extractChangelogVersionHint(content, '/CHANGELOG.md', {
+      consumedSections: new Set(['[1.2.3] - 2024-01-15']),
+    })
+    expect(hint).toContain('[1.2.2]')
+    expect(hint).not.toContain('[1.2.3]')
+  })
+
   it('handles version without brackets', () => {
     const content = `## [Unreleased]
 

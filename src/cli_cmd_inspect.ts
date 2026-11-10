@@ -1,4 +1,4 @@
-import type { Command } from 'commander'
+import { Option, type Command } from 'commander'
 import { resolveProjectRoot } from './project.js'
 import {
   emitExtraFileArgsNote,
@@ -15,6 +15,12 @@ import { runOutline, runSkeleton, type SkeletonOptions } from './read_outline.js
 import { fileExists, runPeek, runRead } from './read_commands.js'
 import { runRefs } from './read_refs.js'
 import { runSection } from './read_section.js'
+import {
+  isSectionReadReceiptNonce,
+  isSectionReadReceiptSessionKey,
+  writeSectionReadReceipt,
+  type SectionReadEvidence,
+} from './served_extent.js'
 import { runSymbol } from './read_symbol.js'
 
 type GuardFn = (fn: (...a: never[]) => void | Promise<void>) => (...args: unknown[]) => Promise<void>
@@ -185,6 +191,8 @@ export function registerInspectCommands(program: Command, guard: GuardFn, handle
 
   program
     .command('section <spec> [more...]')
+    .addOption(new Option('--_section-read-receipt <nonce>').hideHelp())
+    .addOption(new Option('--_section-read-session-key <key>').hideHelp())
     .description(
       'read one section from a file (preferred: separate file and heading arguments, e.g. `section "docs/guide.md" "Lesson 16"`; also accepts legacy `file::heading` specs and comma-separated headings in one selector), or list all sections with --list',
     )
@@ -193,7 +201,26 @@ export function registerInspectCommands(program: Command, guard: GuardFn, handle
     .option('--grep <pattern>', 'with --list, filter headings to this regex; otherwise keep only the matching body lines of each section under their nearest sub-heading (literal substring if it is not valid regex)')
     .option('--max-lines <n>', 'limit returned section content to at most N lines from the top')
     .option('--head <n>', 'alias for --max-lines')
-    .action((spec: string, more: string[], opts: { json?: boolean; list?: boolean; grep?: string; maxLines?: string; head?: string }) => {
+    .action((spec: string, more: string[], opts: { json?: boolean; list?: boolean; grep?: string; maxLines?: string; head?: string; _sectionReadReceipt?: string; _sectionReadSessionKey?: string }) => {
+      const receiptNonce =
+        opts._sectionReadReceipt !== undefined && isSectionReadReceiptNonce(opts._sectionReadReceipt)
+          ? opts._sectionReadReceipt
+          : null
+      const receiptSessionKey =
+        opts._sectionReadSessionKey !== undefined
+          ? isSectionReadReceiptSessionKey(opts._sectionReadSessionKey)
+            ? opts._sectionReadSessionKey
+            : null
+          : process.env['CLAUDE_CODE_SESSION_ID'] || null
+      let servedSectionEvidence: SectionReadEvidence | null = null
+      const onStdoutPayload =
+        receiptNonce === null || receiptSessionKey === null
+          ? undefined
+          : (payload: string) => {
+              if (servedSectionEvidence === null) return
+              // If the optional receipt cannot be persisted, the section still prints and the next hint remains eligible.
+              if (!writeSectionReadReceipt(receiptSessionKey, receiptNonce, servedSectionEvidence, payload)) return
+            }
       const maxLinesRaw = opts.maxLines ?? opts.head
       const maxLines = maxLinesRaw !== undefined ? requireNonNegativeInt('--max-lines', maxLinesRaw) : undefined
       return opts.list === true
@@ -219,6 +246,13 @@ export function registerInspectCommands(program: Command, guard: GuardFn, handle
                 ...(opts.json === true ? { json: true } : {}),
                 ...(maxLines !== undefined ? { maxLines } : {}),
                 ...(opts.grep !== undefined ? { grep: opts.grep } : {}),
+                ...(receiptNonce === null || receiptSessionKey === null
+                  ? {}
+                  : {
+                      onServedSection: (evidence: SectionReadEvidence) => {
+                        servedSectionEvidence = evidence
+                      },
+                    }),
               })
             if (positionalSpec !== undefined) return execute(positionalSpec)
             return noteExtraFileArgs(
@@ -228,7 +262,7 @@ export function registerInspectCommands(program: Command, guard: GuardFn, handle
               () => execute(spec),
               { noun: 'spec', mergeable: namedSpecsMergeable([spec, ...more]) },
             )
-          })
+          }, onStdoutPayload)
     })
 
   program

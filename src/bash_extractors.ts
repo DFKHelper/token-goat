@@ -1314,7 +1314,10 @@ export function extractCurlUrl(cmd: string): string | null {
 }
 
 /** Match a `token-goat symbol|read|section|skill-body|skill-compact|map <spec>` invocation. `spec` mirrors read_commands.ts's `file::target` split for read/section; skill-body/skill-compact/map dedup on the raw remainder (map's remainder is just an optional `--compact` flag, or empty). `stats` is intentionally excluded -- its output changes as the session progresses, so deduping it would suppress a legitimately different result. `cwd` is the bash command's working directory (from the hook event), used to resolve a relative file path the same way the CLI itself would. */
-export function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: string; spec: string; filePath: string | null } | null {
+export function extractTgSurgicalRead(
+  cmd: string,
+  cwd: string | null,
+): { sub: string; spec: string; filePath: string | null; sectionReceiptNonce?: string; sectionReadSessionKey?: string } | null {
   const m = /^(?:token-goat|tg)\s+(symbol|read|section|skill-body|skill-compact|map)(?:\s+(.*))?$/.exec(cmd)
   if (!m) return null
   const sub = m[1]!
@@ -1338,8 +1341,51 @@ export function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: s
     return { sub, spec: rest, filePath: null }
   }
 
-  const specMatch = /^(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(rest)
-  const rawSpec = specMatch?.[1] ?? specMatch?.[2] ?? specMatch?.[3] ?? null
+  let sectionReceiptNonce: string | undefined
+  let sectionReadSessionKey: string | undefined
+  let hasSectionReadSessionKey = false
+  let rawSpec: string | null
+  if (sub === 'section') {
+    const positional: string[] = []
+    const words = splitCommandWords(rest)
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i]!
+      if (word === '--_section-read-session-key') {
+        hasSectionReadSessionKey = true
+        sectionReadSessionKey = words[i + 1] ?? ''
+        if (words[i + 1] !== undefined) i++
+      } else if (word.startsWith('--_section-read-session-key=')) {
+        hasSectionReadSessionKey = true
+        sectionReadSessionKey = word.slice('--_section-read-session-key='.length)
+      } else if (word === '--_section-read-receipt') {
+        sectionReceiptNonce = words[i + 1]
+        if (sectionReceiptNonce !== undefined) i++
+      } else if (word.startsWith('--_section-read-receipt=')) {
+        sectionReceiptNonce = word.slice('--_section-read-receipt='.length)
+      } else if (word === '--grep' || word === '--max-lines' || word === '--head') {
+        i++
+      } else if (
+        word === '-j' ||
+        word === '--json' ||
+        word === '--list' ||
+        word.startsWith('--grep=') ||
+        word.startsWith('--max-lines=') ||
+        word.startsWith('--head=') ||
+        word.startsWith('-')
+      ) {
+        continue
+      } else {
+        positional.push(word)
+      }
+    }
+    rawSpec =
+      positional.length === 2 && !positional[0]!.includes('::') && !positional[1]!.includes('::')
+        ? `${positional[0]}::${positional[1]}`
+        : positional[0] ?? null
+  } else {
+    const specMatch = /^(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(rest)
+    rawSpec = specMatch?.[1] ?? specMatch?.[2] ?? specMatch?.[3] ?? null
+  }
   if (rawSpec === null) return null
   let filePath: string | null = null
   let spec = rawSpec
@@ -1354,7 +1400,13 @@ export function extractTgSurgicalRead(cmd: string, cwd: string | null): { sub: s
     filePath = resolveIndexPath(rawFilePath, cwd ?? process.cwd())
     spec = (colonIdx === -1 ? filePath : filePath + specWithoutRange.slice(colonIdx)) + rangeSuffix
   }
-  return { sub, spec, filePath }
+  return {
+    sub,
+    spec,
+    filePath,
+    ...(sectionReceiptNonce !== undefined ? { sectionReceiptNonce } : {}),
+    ...(hasSectionReadSessionKey ? { sectionReadSessionKey: sectionReadSessionKey ?? '' } : {}),
+  }
 }
 
 /** Returns true when `cmd` carries an explicit non-GET method, a request-body flag, or auth credentials -- the three curl-unsafe-to-cache conditions shared by {@link isCurlGetCommand} and {@link extractCurlDownload}. Callers still check `^curl\b` themselves since only they know whether to return `false` or `null` on mismatch. */

@@ -5,7 +5,7 @@ import * as path from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { CLAUDE_SESSION_ENV_KEYS, scrubClaudeSessionEnv } from '../helpers/harness-env.js'
+import { CLAUDE_SESSION_ENV_KEYS, scrubClaudeSessionEnv, scrubCopilotEnv } from '../helpers/harness-env.js'
 import { removeProbe, writeProbe } from '../helpers/vitest-probe.js'
 import { pinnedPopulation } from './population.js'
 
@@ -52,6 +52,24 @@ describe('the test process inherits no Claude Code session', () => {
     expect(other).toEqual({ TERM_PROGRAM: 'vscode', PATH: '/usr/bin' })
   })
 
+  it('scrubs all Copilot CLI variables and keeps unrelated variables', () => {
+    const env: NodeJS.ProcessEnv = {
+      COPILOT_AGENT_SESSION_ID: 'session',
+      COPILOT_CLI: '1',
+      COPILOT_CLI_PATH: 'cli-path',
+      COPILOT_ALLOW_ALL: 'true',
+      COPILOT_PROXY_TOKEN: 'placeholder',
+      NOT_COPILOT: 'keep',
+    }
+    scrubCopilotEnv(env)
+    expect(env).toEqual({ NOT_COPILOT: 'keep' })
+  })
+
+  it('has no COPILOT_* variables inherited from the shell', () => {
+    const leaked = Object.keys(process.env).filter((key) => key.startsWith('COPILOT_'))
+    expect(leaked).toEqual([])
+  })
+
   it('covers every Claude Code variable src reads', () => {
     // FORMAT-DERIVED: read live from src/, so a new read of a session variable fails here until the scrub list names it.
     const read = pinnedPopulation({ what: 'Claude Code variable names quoted in src', items: claudeNamesReadBySrc(), floor: 5, mustIncludeExact: ['CLAUDE_PID', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID'] })
@@ -59,22 +77,24 @@ describe('the test process inherits no Claude Code session', () => {
     expect(read.filter((name) => !covered.includes(name))).toEqual([])
   })
 
-  it('a test run launched from a Claude Code Bash call sees none of the session', () => {
+  it('a test run launched from Claude Code or Copilot CLI sees no harness session', () => {
     probe = writeProbe(PROBE_NAME, [
       "import { expect, it } from 'vitest'",
-      "it('generated probe: the inherited Claude Code session is gone', () => {",
+      "it('generated probe: inherited harness sessions are gone', () => {",
       ...CLAUDE_SESSION_ENV_KEYS.map((key) => `  expect(process.env['${key}']).toBeUndefined()`),
       "  expect(process.env['TERM_PROGRAM']).toBeUndefined()",
+      "  expect(Object.keys(process.env).filter((key) => key.startsWith('COPILOT_'))).toEqual([])",
       "  expect(process.env['TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD']).toBe('1')",
       '})',
       '',
     ])
     // CAPTURE: CLAUDECODE, CLAUDE_CODE_ENTRYPOINT and CLAUDE_CODE_SESSION_ATTENDED as a Claude Code 2.1.x Bash call on Windows carried them (2026-10-06; session id and pid replaced by same-shaped stand-ins). FORMAT-DERIVED: CLAUDE_CODE_VERSION and TERM_PROGRAM=claude-code, which that call did not carry, from src/bridges/registry.ts::detectHarness, which reads them.
     const session = { CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: '2ab49bbf-0000-4000-8000-000000000000', CLAUDE_PID: '4242', CLAUDE_CODE_ENTRYPOINT: 'cli', CLAUDE_CODE_VERSION: '2.1.289', CLAUDE_CODE_SESSION_ATTENDED: '1', TERM_PROGRAM: 'claude-code' }
+    const copilot = { COPILOT_AGENT_SESSION_ID: 'session', COPILOT_CLI: '1', COPILOT_CLI_PATH: 'cli-path', COPILOT_ALLOW_ALL: 'true' }
     const res = spawnSync(process.execPath, [path.resolve('node_modules', 'vitest', 'vitest.mjs'), 'run', probe], {
       encoding: 'utf8',
       // The bundle build this config runs in globalSetup would race the outer run's readers of the same artifact.
-      env: { ...process.env, CI: '', ...session, TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD: '1' },
+      env: { ...process.env, CI: '', ...session, ...copilot, TOKEN_GOAT_TEST_SKIP_BUNDLE_BUILD: '1' },
     })
     const combined = `${res.stdout ?? ''}${res.stderr ?? ''}`
     expect(res.status, combined.slice(-2000)).toBe(0)

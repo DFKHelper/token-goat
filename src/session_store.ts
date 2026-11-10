@@ -47,6 +47,13 @@ function sessionPath(sessionId: string): string | null {
   return sessionSidecarPath(sessionId, '.json')
 }
 
+/** Ensure the private directory shared by a session state file and its sidecars. */
+export function ensureSessionDirectory(sessionId: string): void {
+  const p = sessionPath(sessionId)
+  if (p === null) return
+  ensureDirSync(path.dirname(p))
+}
+
 /** Resolve the on-disk path for a session-scoped file, or null when the id is empty, sanitizes to empty, or would escape the sessions dir (traversal guard). `suffix` selects which file: `.json` is the session state itself, and any other suffix is a sidecar sharing the same salted stem. Exported so a caller needing per-session state of its own gets this sanitization and traversal guard rather than rebuilding either -- and so that state can live beside the session instead of inside its JSON, which would mean adding a field to the serialize, deserialize, validate and merge paths where omitting one half silently does nothing. See {@link sessionFileStem} for how salted keys are spelled. */
 export function sessionSidecarPath(sessionId: string, suffix: string): string | null {
   if (!sessionId) return null
@@ -615,8 +622,7 @@ export function saveSessionState(sessionId: string): void {
   const p = sessionPath(sessionId)
   if (!p) return
   try {
-    const dir = path.dirname(p)
-    if (!fs.existsSync(dir)) ensureDirSync(dir)
+    ensureSessionDirectory(sessionId)
     const mem = exportSessionState()
     // saveSessionState is the actual race: every hook call is a fresh OS process, and two concurrent processes for the same session can each read the pre-update disk state, merge it with their own view, and write -- whichever write lands last silently clobbers the other's update, with no error. A short-lived lockfile around just this read-merge-write section serializes concurrent savers, so each one's disk read reflects every write that already landed.
     const writeMerged = (): true => {

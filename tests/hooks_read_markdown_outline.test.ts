@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/util.js'
-import { getFileServedOutputs } from '../src/session.js'
+import { getFileServedOutputs, recordCliRead, recordFileLineRange, recordServedSectionTarget } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { getDb } from '../src/db.js'
 import { globalDbPath } from '../src/constants.js'
@@ -115,9 +115,39 @@ describe('large-markdown outline replacement on the real Read hook path', () => 
     // The section filler does not survive: that is the whole point of the replacement.
     expect(text).not.toContain('pad the section body well past the byte floor')
     // The continuation command is exact and runs as printed. HAND-DERIVED: the first section heading in bigMarkdownDoc is `## Introduction`.
-    expect(text).toContain(`token-goat section "${normalizePath(file)}::Introduction"`)
+    expect(text).toContain(`token-goat section "${normalizePath(file)}" "Introduction"`)
     // The view is disclosed as partial.
     expect(text).toContain('Partial view')
+  })
+
+  it('points to the next section after a confirmed section read', () => {
+    const body = bigMarkdownDoc()
+    const file = writeMd(body)
+    const normalized = normalizePath(file)
+    recordFileLineRange(normalized, 7, 9)
+    recordCliRead(`section::${normalized}::Introduction`)
+    recordServedSectionTarget(normalized, 'Introduction')
+
+    const text = rewrittenText(postReadHandler(postEvent(file, body)))
+    expect(text).toContain(`token-goat section "${normalized}" "Getting Started"`)
+    expect(text).not.toContain(`token-goat section "${normalized}" "Introduction"`)
+  })
+
+  it('suggests the outline when every section target has been consumed', () => {
+    const body = bigMarkdownDoc()
+    const file = writeMd(body)
+    const normalized = normalizePath(file)
+    recordFileLineRange(normalized, 7, 9)
+    for (const heading of HEADINGS) {
+      recordCliRead(`section::${normalized}::${heading}`)
+    }
+    for (const heading of HEADINGS) {
+      recordServedSectionTarget(normalized, heading)
+    }
+
+    const text = rewrittenText(postReadHandler(postEvent(file, body)))
+    expect(text).toContain(`token-goat outline "${normalized}"`)
+    expect(text).not.toContain(`token-goat section "${normalized}" "Introduction"`)
   })
 
   // Regression: the lead-in used to be emitted first and unfenced, so a document could open with forged token-goat markers that reached the model as this rewrite's own preamble. Both halves matter independently: fencing alone would still leave file bytes sitting above token-goat's narration, and reordering alone would still deliver them unmarked.

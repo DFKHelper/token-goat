@@ -158,26 +158,41 @@ export function getWellKnownSections(basename: string): string[] {
 }
 
 /** Extract the most recent versioned heading from CHANGELOG.md content. Returns a section command string for the most recent version after Unreleased, or empty string if none found. A changelog is not guaranteed to carry the Keep-a-Changelog "## [Unreleased]" placeholder -- many projects omit it once there's nothing pending, or never adopted the convention at all. Requiring it as a precondition meant a changelog with real version headings but no Unreleased section always returned '', silently disabling this hint. If no Unreleased header is ever seen, fall back to the first version heading found -- the intent is "point at the most recent real version", not "require the Unreleased placeholder to exist". */
-export function extractChangelogVersionHint(content: string, filePath: string): string {
-  const lines = content.split('\n')
-  let foundUnreleased = false
-  let firstVersion: string | null = null
+export interface ChangelogVersionHintOptions {
+  readonly consumedSections?: ReadonlySet<string>
+  readonly sectionCommand?: (target: string) => string
+}
 
-  for (const line of lines) {
+export function extractChangelogVersionHint(
+  content: string,
+  filePath: string,
+  options: ChangelogVersionHintOptions = {},
+): string {
+  const lines = content.split('\n')
+  const headingsByLine = new Map(
+    extractMarkdownHeadings(content, Infinity).map((heading) => [heading.lineNumber, heading.text.trim()] as const),
+  )
+  let foundUnreleased = false
+  let firstAvailableVersion: string | null = null
+  const isAvailable = (version: string, heading: string | undefined): boolean =>
+    options.consumedSections?.has(version) !== true &&
+    (heading === undefined || options.consumedSections?.has(heading) !== true)
+  const sectionCommand =
+    options.sectionCommand ?? ((target: string) => `token-goat section ${quotedArg(`${filePath}::${target}`)}`)
+  for (const [index, line] of lines.entries()) {
     const m = /^##\s+(\[?[\d]+\.[\d]+\.[\d]+\]?)/.exec(line)
     if (m) {
-      if (foundUnreleased) {
-        const ver = m[1]
-        return ` | token-goat section ${quotedArg(`${filePath}::${ver}`)}`
-      }
-      if (firstVersion === null) firstVersion = m[1] as string
+      const version = m[1] as string
+      const heading = headingsByLine.get(index + 1)
+      if (firstAvailableVersion === null && isAvailable(version, heading)) firstAvailableVersion = version
+      if (foundUnreleased && isAvailable(version, heading)) return ` | ${sectionCommand(version)}`
     }
     if (/^##\s+\[?unreleased\]?/i.test(line)) {
       foundUnreleased = true
     }
   }
-  if (!foundUnreleased && firstVersion !== null) {
-    return ` | token-goat section ${quotedArg(`${filePath}::${firstVersion}`)}`
+  if (!foundUnreleased && firstAvailableVersion !== null) {
+    return ` | ${sectionCommand(firstAvailableVersion)}`
   }
   return ''
 }

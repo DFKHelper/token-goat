@@ -7,6 +7,8 @@ import { extractToolResponseField, OUTPUT_FIRST_TOOL_RESPONSE_KEYS, resolveToolR
 import { displaySafePath, hostPathOfIndexKey } from './paths.js'
 import { fencedCommand, leadWithCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
 import { hintTarget, sliceCommand, sliceForPath } from './hint_target.js'
+import { getConsumedSectionTargets } from './session.js'
+import { addSectionReadReceipt } from './served_extent.js'
 import { countNoun, decodeSource, statSize, toKB } from './util.js'
 import { TIMESTAMP_TICK_SEC } from './fingerprint.js'
 import { load as snapshotLoad } from './snapshots.js'
@@ -433,10 +435,20 @@ export function truncatedReadDenyMessage(rawPath: string): string {
   const normalized = displaySafePath(rawPath)
   const reason = 'File was truncated on last read (>33K tokens).'
   const skeleton = 'token-goat skeleton ' + quotedArg(normalized)
-  const target = hintTarget(rawPath, sliceForPath(rawPath))
-  return target.real
-    ? leadWithCommand(sliceCommand(normalized, target), 'for one part, or ' + fencedCommand(skeleton) + ' for structure', reason)
-    : leadWithCommand(skeleton, 'for structure, or ' + fencedCommand('token-goat read ' + quotedArg(normalized) + ' ' + quotedArg('SymbolName')) + ' for one function', reason)
+  const slice = sliceForPath(rawPath)
+  const markdownFile = slice === 'section' && /\.(md|mdx|markdown|rst)$/i.test(rawPath)
+  const consumedSections = markdownFile ? getConsumedSectionTargets(rawPath) : new Set<string>()
+  const target = hintTarget(rawPath, slice, { consumedSections })
+  if (!target.real && markdownFile && consumedSections.size > 0) {
+    return leadWithCommand(`token-goat outline ${quotedArg(normalized)}`, 'to navigate the document', reason)
+  }
+  if (target.real) {
+    const command = slice === 'section' && markdownFile
+      ? addSectionReadReceipt(sliceCommand(normalized, target))
+      : sliceCommand(normalized, target)
+    return leadWithCommand(command, 'for one part, or ' + fencedCommand(skeleton) + ' for structure', reason)
+  }
+  return leadWithCommand(skeleton, 'for structure, or ' + fencedCommand('token-goat read ' + quotedArg(normalized) + ' ' + quotedArg('SymbolName')) + ' for one function', reason)
 }
 
 /** Slices window text directly from disk. */

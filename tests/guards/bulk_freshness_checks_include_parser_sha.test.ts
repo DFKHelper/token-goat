@@ -198,11 +198,11 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
-    'indexMatchesDisk',
+    'matchingFileEntry',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
       reason:
-        'index_freshness.ts holds the one copy of the four-line check its three hook-tier callers ' +
+        'index_freshness.ts matchingFileEntry (which indexMatchesDisk wraps as a boolean) holds the one copy of the four-line check its three hook-tier callers ' +
         'used to each carry inline -- detectStructuralIndexRewrite (bash_structural_index.ts), ' +
         'rangeSubstituteFor (bash_range_savings.ts) and hintTarget (hint_target.ts). ' +
         'Every one of them checks the single file an rg/sed/cat command already named, against a ' +
@@ -249,6 +249,15 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
         'for reindexing by something else, so there is no "looks unchanged, skip it forever" ' +
         'decision being made; fingerprintFileWithBytes here carries the content hash for the queued ' +
         'path, not a parser-freshness gate.',
+    },
+  ],
+  [
+    'postBashHandler',
+    {
+      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
+      reason:
+        'hooks_bash_post.ts re-fingerprints the one file named by the completed section command to ' +
+        'validate its one-use receipt; it does not skip or reuse a bulk index candidate.',
     },
   ],
   [
@@ -319,7 +328,7 @@ function unrelatedComputedCall() { values[Symbol.iterator]() }
       what: 'top-level functions in src/**/*.ts that call fingerprintFile() or fingerprintFileWithBytes()',
       items: found,
       floor: 6,
-      mustInclude: ['reconcileProjectWith', 'fingerprintFile', 'processDirtyBatch'],
+      mustInclude: ['reconcileProjectWith', 'fingerprintFile', 'processDirtyBatch', 'postBashHandler'],
     })
   })
 

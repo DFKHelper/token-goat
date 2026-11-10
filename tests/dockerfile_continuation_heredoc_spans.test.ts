@@ -30,6 +30,21 @@ describe('Dockerfile continued instructions', () => {
     ])
   })
 
+  it('keeps long FROM image references intact for quick version checks', () => {
+    const image = 'registry.example.com/engineering/platform/application:2026.11.09'
+    expect(spans([`FROM ${image} AS build`])).toEqual([[`FROM ${image} AS build`, 1, 1]])
+  })
+
+  it('joins a continued FROM instruction before naming its base image', () => {
+    expect(
+      spans([
+        'FROM --platform=$BUILDPLATFORM \\',
+        '# note between continued lines',
+        'registry.example.com/application:2026.11.09 AS build',
+      ]),
+    ).toEqual([['FROM --platform=$BUILDPLATFORM registry.example.com/application:2026.11.09 AS build', 1, 3]])
+  })
+
   it('stores the whole instruction as the body', () => {
     const [sym] = extractDockerfileSymbols(['RUN a \\', '  && b'].join('\n'), 'Dockerfile')
     expect(sym?.body).toBe('RUN a \\\n  && b')

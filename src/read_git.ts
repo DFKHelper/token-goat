@@ -340,6 +340,14 @@ export function runChanged(opts: ChangedOptions = {}): number {
     const result = runGit(['diff', ref, '--name-status'], { cwd })
     if (result.exitCode !== 0) {
       emitErr(formatGitFailure('diff', result.stderr))
+      if (/^fatal: option '--name-status' must come before non-option arguments\r?$/m.test(result.stderr)) {
+        emitErr(
+          formatCommandError(
+            'Hint: `changed` expects a Git ref, not a path. On the CLI, use --since <ref> to choose the base or --grep <pattern> to filter paths; the MCP changed tool accepts a ref, not a path filter.',
+          ),
+        )
+        return 1
+      }
       const hint = buildChangedRefHint(cwd, ref)
       if (hint !== null) {
         emitErr(formatCommandError(hint))

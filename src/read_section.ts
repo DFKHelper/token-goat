@@ -5,10 +5,12 @@ import { ATX_CLASS_BREAK_RE, matchAtxHeading } from './line_matchers.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
 import { displaySafeJson } from './paths.js'
+import { fingerprintContent } from './fingerprint.js'
 import { guardText, healStaleIndex, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
 import { stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
 import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
 import { listSections, readSection, type SectionResult } from './section_reader.js'
+import type { SectionReadEvidence } from './served_extent.js'
 import { compileGrepMatcher, countNoun } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
@@ -39,6 +41,8 @@ export interface SectionOptions {
   maxLines?: number
   /** Keep only the section body lines matching this pattern (regex, literal substring when invalid), each under its nearest sub-heading. */
   grep?: string
+  /** Internal: capture read-time evidence for the hidden section-read receipt option. */
+  onServedSection?: (evidence: SectionReadEvidence) => void
 }
 
 // Keeps the section's own first line plus each matching line, preceded once by the nearest heading line above it, so a surviving line stays attributable to its sub-section.
@@ -106,7 +110,21 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     if (multiHeadings.length > 1) return runSectionMulti(specFilePath, filePath, multiHeadings, opts)
   }
 
-  const result = readSection(filePath, heading, readFileText) ?? htmlIdSectionFallback(filePath, heading)
+  let rawSourceSha: string | null = null
+  let rawSourceStable = true
+  const sectionReader =
+    opts.onServedSection === undefined
+      ? readFileText
+      : (p: string) =>
+          readFileText(p, {
+            onRawBuffer: (bytes) => {
+              const nextSha = fingerprintContent(bytes)
+              if (rawSourceSha === null) rawSourceSha = nextSha
+              else if (rawSourceSha !== nextSha) rawSourceStable = false
+            },
+          })
+  const sectionResult = readSection(filePath, heading, sectionReader)
+  const result = sectionResult ?? htmlIdSectionFallback(filePath, heading)
   if (result === null) {
     if (!fs.existsSync(filePath)) {
       return { text: fileNotFoundError(filePath).message, code: 1 }
@@ -202,6 +220,25 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     'heading',
   )
   if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
+  if (
+    sectionResult !== null &&
+    opts.onServedSection !== undefined &&
+    rawSourceStable &&
+    rawSourceSha !== null &&
+    opts.grep === undefined &&
+    opts.maxLines === undefined &&
+    opts.suppressStat !== true &&
+    result.occurrences === undefined &&
+    result.redirectedFrom === undefined
+  ) {
+    opts.onServedSection({
+      filePath,
+      target: heading,
+      start: result.lineStart,
+      end: lineEnd,
+      sourceSha: rawSourceSha,
+    })
+  }
   return { text, code: 0 }
 }
 

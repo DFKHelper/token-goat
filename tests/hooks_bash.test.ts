@@ -69,7 +69,7 @@ import {
 import { extractTgSurgicalRead } from '../src/bash_extractors.js'
 import { bashRecallKey, cdPrefixCwd, GIT_PREFIX_RE_SRC, isHeadMovingGitCommand, ORIG_HEAD_ELIGIBLE_GIT_RE, resolveBashCall, stripCommandPrefix, stripExportPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
-import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
+import { getBashOutputId, getConsumedSectionTargets, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, recordFileRead, wasFileReadThisSession, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { resolveIndexPath, normalizePath } from '../src/paths.js'
@@ -151,6 +151,39 @@ describe('postBashHandler', () => {
     expect(result.hookType).toBe('pass')
     // No output cached for echo
     expect(getBashOutputId('anything')).toBeNull()
+  })
+
+  it('records the ordinary range without consuming an untagged section target', async () => {
+    const cwd = projectWith('served-section.md')
+    const file = join(cwd, 'served-section.md')
+    writeFileSync(file, '# Guide\n\n## Introduction\n\nIntro body.\n\n## Usage\n\nUsage body.\n')
+    const normalized = normalizePath(file)
+
+    await postBashHandler(makePostBashEvent(
+      `token-goat section "${normalized}::Introduction"`,
+      '## Introduction\n\nIntro body.\n',
+      cwd,
+    ))
+
+    expect(getFileLineRanges(normalized)).toEqual([[3, 5]])
+    expect(getConsumedSectionTargets(normalized)).toEqual(new Set())
+  })
+
+  it('does not consume a capped section when only an older unrelated range is on record', async () => {
+    const cwd = projectWith('capped-section.md')
+    const file = join(cwd, 'capped-section.md')
+    writeFileSync(file, '# Guide\n\n## Introduction\n\nIntro body.\n\n## Usage\n\nUsage body.\n')
+    const normalized = normalizePath(file)
+    recordFileLineRange(normalized, 7, 9)
+
+    await postBashHandler(makePostBashEvent(
+      `token-goat section "${normalized}::Introduction"`,
+      '[token-goat: output capped at ~2 KB]',
+      cwd,
+    ))
+
+    expect(getFileLineRanges(normalized)).toEqual([[7, 9]])
+    expect(getConsumedSectionTargets(normalized)).toEqual(new Set())
   })
 
   it('emits an advisory compress hint when vscode harness runs a command with >=4KB uncompressed output', async () => {
