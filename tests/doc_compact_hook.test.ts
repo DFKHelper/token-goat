@@ -140,7 +140,11 @@ describe('preReadHandler — stable-doc compact serving', () => {
     expect(first.hookType).toBe('deny')
     expect(second.hookType).toBe('deny')
     if (first.hookType === 'deny' && second.hookType === 'deny') {
-      expect(second.message).toBe(first.message)
+      // Each message carries its own single-use section read receipt nonce (src/served_extent.ts), so the two differ in that one token and nothing else.
+      expect(first.message).toMatch(/--_section-read-receipt [0-9a-f]{32}/)
+      expect(second.message.replace(/--_section-read-receipt [0-9a-f]{32}/g, '--_section-read-receipt <nonce>')).toBe(
+        first.message.replace(/--_section-read-receipt [0-9a-f]{32}/g, '--_section-read-receipt <nonce>'),
+      )
     }
   })
 

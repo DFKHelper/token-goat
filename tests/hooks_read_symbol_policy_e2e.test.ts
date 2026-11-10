@@ -207,7 +207,7 @@ describe('first-read symbol policy on a large markdown file', () => {
     if (out.hookType !== 'deny') return
     const relayed = stripUnsafeSuggestions(out.message)
     expect(relayed).toContain('Whole-file first read denied by first_read_symbol_policy')
-    expect(relayed).toMatch(/Run `token-goat section '[^']*notes\$v2\.md::[^']+'` to read surgically\./)
+    expect(relayed).toMatch(/Run `token-goat section '[^']*notes\$v2\.md' "[^"]+" --_section-read-receipt [0-9a-f]{32}` to read surgically\./)
     expect(relayed).toMatch(/Use `token-goat outline '[^']*notes\$v2\.md'` to map sections/)
   })
 
