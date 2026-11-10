@@ -3,7 +3,7 @@
 import * as fs from 'node:fs'
 import { extractErrorMessage } from './util.js'
 import { extraFileArgsNote } from './read_spec.js'
-import { out, err, CliError } from './cli.js'
+import { out, outWithPayload, err, CliError } from './cli.js'
 import { formatCommandError, formatFailedResultText } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
@@ -30,10 +30,13 @@ export function runExit(fn: () => number): void {
 }
 
 /** Same adapter as `runExit`, but for the `run*` handlers that return `{ text, code }` instead of printing directly. Writes `text` to stdout on success (code 0), or to stderr as a command error otherwise, then maps `code` onto `process.exitCode` — preserving which stream each handler's message goes to (these handlers only ever write to one stream per call). */
-export function runExitText(fn: () => { text: string; code: number }): void {
+export function runExitText(fn: () => { text: string; code: number }, onStdoutPayload?: (payload: string) => void): void {
   try {
     const { text, code } = fn()
-    if (code === 0) out(text)
+    if (code === 0) {
+      if (onStdoutPayload === undefined) out(text)
+      else outWithPayload(text, onStdoutPayload)
+    }
     else err(formatFailedResultText(text))
     process.exitCode = code
   } catch (e) {

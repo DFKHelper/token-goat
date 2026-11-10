@@ -69,6 +69,30 @@ describe('structured query stdin (json/yaml/xml with - argument)', () => {
     expect(result.out.trim()).toContain('text')
   })
 
+  it('xml-query batches Maven dependency blocks from a default-namespace POM', () => {
+    const pom = [
+      '<project xmlns="http://maven.apache.org/POM/4.0.0">',
+      '<dependencies>',
+      '<dependency><groupId>org.example</groupId><artifactId>core</artifactId><version>1.2.3</version></dependency>',
+      '<dependency><groupId>org.example</groupId><artifactId>api</artifactId><version>${project.version}</version></dependency>',
+      '</dependencies>',
+      '</project>',
+    ].join('')
+    const result = run(['xml-query', '-', '--xpath', '//dependency', '--json'], pom)
+    expect(result.code).toBe(0)
+    const parsed = JSON.parse(result.out) as {
+      items: Array<{ artifactId: string; groupId: string; version: string }>
+      totalCount: number
+      truncated: boolean
+    }
+    expect(parsed.totalCount).toBe(2)
+    expect(parsed.truncated).toBe(false)
+    expect(parsed.items).toEqual([
+      { groupId: 'org.example', artifactId: 'core', version: '1.2.3' },
+      { groupId: 'org.example', artifactId: 'api', version: '${project.version}' },
+    ])
+  })
+
   it('json-query with a real file path still works', () => {
     // This ensures we didn't break the normal file-path case. Since we have no fixture dir, we just verify the error is about reading the file, not about stdin handling.
     const result = run(['json-query', '/nonexistent/file.json', 'a.b'])

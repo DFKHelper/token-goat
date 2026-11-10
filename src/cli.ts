@@ -86,9 +86,19 @@ import { CliError, clearCliInvocation, formatCommandError, formatFailedResultTex
 // Defined in a leaf so command modules cli.ts imports can render an error the same way without importing cli.ts back; re-exported here for the many modules that already take CliError from cli.js.
 export { CliError, formatCommandError }
 
-export function out(text: string): void {
+function stdoutPayload(text: string): string {
   const payload = colorStdout() ? text : stripAnsiEscapes(text)
-  process.stdout.write(ensureNewline(payload))
+  return ensureNewline(payload)
+}
+
+export function out(text: string): void {
+  process.stdout.write(stdoutPayload(text))
+}
+
+export function outWithPayload(text: string, observe: (payload: string) => void): void {
+  const payload = stdoutPayload(text)
+  observe(payload)
+  process.stdout.write(payload)
 }
 
 export function err(text: string): void {

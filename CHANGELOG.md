@@ -6,6 +6,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- Repeated Markdown section hints now advance after a served range and unchanged-file fingerprint confirm a section read; when no selectable section remains, the hint points to the outline command.
 - The canonical skill now treats whole-file/range denials and the >80%-indexed warning as a per-file circuit breaker, directing reads and edits to surgical token-goat commands.
 - `sqlite-query session` resolves the active Copilot session database; COBOL outlines expose nested data items and level-88 conditions.
 - Tree-sitter parsing reuses one native parser per grammar, reducing repeated AST extraction setup; the parser fingerprint changed, so existing indexes reindex after upgrade.

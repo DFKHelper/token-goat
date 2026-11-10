@@ -58,7 +58,7 @@ function isStderrWrite(node: ts.Node): node is ts.CallExpression {
 function isStdoutWrite(node: ts.Node): node is ts.CallExpression {
   if (!ts.isCallExpression(node)) return false
   const callee = node.expression
-  if (ts.isIdentifier(callee)) return callee.text === 'out' || callee.text === 'emit' || callee.text === 'emitGuarded'
+  if (ts.isIdentifier(callee)) return callee.text === 'out' || callee.text === 'emit' || callee.text === 'emitGuarded' || callee.text === 'outWithPayload'
   if (ts.isPropertyAccessExpression(callee)) {
     const name = callee.getText()
     return name === 'process.stdout.write' || name === 'console.log'
@@ -227,6 +227,14 @@ const conditionalLabel = (s: ConditionalSite): string => `${s.file}:${s.line} ${
 const reportFor = (s: ConditionalSite): Report | undefined => REPORTS.find((r) => r.file === s.file && s.prose && s.exit === r.exit)
 
 describe('command errors carry the token-goat prefix', () => {
+  it('recognizes the payload-observing stdout helper by its exact name', () => {
+    const probe = ts.createSourceFile('probe.ts', 'outWithPayload("text", observe); notOutWithPayload("text");', ts.ScriptTarget.Latest, true)
+    const stdout = probe.statements[0]
+    const other = probe.statements[1]
+    expect(stdout !== undefined && ts.isExpressionStatement(stdout) && isStdoutWrite(stdout.expression)).toBe(true)
+    expect(other !== undefined && ts.isExpressionStatement(other) && isStdoutWrite(other.expression)).toBe(false)
+  })
+
   it('opens every error written beside a non-zero exit with formatCommandError', () => {
     pinnedPopulation({
       what: 'first stderr writes beside a non-zero exit in src/',

@@ -69,7 +69,7 @@ import {
 import { extractTgSurgicalRead } from '../src/bash_extractors.js'
 import { bashRecallKey, cdPrefixCwd, GIT_PREFIX_RE_SRC, isHeadMovingGitCommand, ORIG_HEAD_ELIGIBLE_GIT_RE, resolveBashCall, stripCommandPrefix, stripExportPrefix, stripSubshellGroup } from '../src/hooks_bash_commands.js'
 import { UNTRUSTED_TOOL_TAG } from '../src/injection_scan.js'
-import { getBashOutputId, recordFileRead, getCurlDownloadPath, wasFileReadThisSession, getFileLineRanges, wasFileTruncatedThisSession } from '../src/session.js'
+import { getBashOutputId, getConsumedSectionTargets, getCurlDownloadPath, getFileLineRanges, recordFileLineRange, recordFileRead, wasFileReadThisSession, wasFileTruncatedThisSession } from '../src/session.js'
 import { getBashOutput } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { resolveIndexPath, normalizePath } from '../src/paths.js'
@@ -151,6 +151,39 @@ describe('postBashHandler', () => {
     expect(result.hookType).toBe('pass')
     // No output cached for echo
     expect(getBashOutputId('anything')).toBeNull()
+  })
+
+  it('records the ordinary range without consuming an untagged section target', async () => {
+    const cwd = projectWith('served-section.md')
+    const file = join(cwd, 'served-section.md')
+    writeFileSync(file, '# Guide\n\n## Introduction\n\nIntro body.\n\n## Usage\n\nUsage body.\n')
+    const normalized = normalizePath(file)
+
+    await postBashHandler(makePostBashEvent(
+      `token-goat section "${normalized}::Introduction"`,
+      '## Introduction\n\nIntro body.\n',
+      cwd,
+    ))
+
+    expect(getFileLineRanges(normalized)).toEqual([[3, 5]])
+    expect(getConsumedSectionTargets(normalized)).toEqual(new Set())
+  })
+
+  it('does not consume a capped section when only an older unrelated range is on record', async () => {
+    const cwd = projectWith('capped-section.md')
+    const file = join(cwd, 'capped-section.md')
+    writeFileSync(file, '# Guide\n\n## Introduction\n\nIntro body.\n\n## Usage\n\nUsage body.\n')
+    const normalized = normalizePath(file)
+    recordFileLineRange(normalized, 7, 9)
+
+    await postBashHandler(makePostBashEvent(
+      `token-goat section "${normalized}::Introduction"`,
+      '[token-goat: output capped at ~2 KB]',
+      cwd,
+    ))
+
+    expect(getFileLineRanges(normalized)).toEqual([[7, 9]])
+    expect(getConsumedSectionTargets(normalized)).toEqual(new Set())
   })
 
   it('emits an advisory compress hint when vscode harness runs a command with >=4KB uncompressed output', async () => {
@@ -4299,7 +4332,7 @@ describe('preBashHandler — powershell-wrapped Get-Content recall (wiring)', ()
     const result = preBashHandler(makeBashEvent(`pwsh -c "gc README.md"`))
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') {
-      expect(result.message).toContain('token-goat section "README.md::')
+      expect(result.message).toContain('token-goat section "README.md" "')
     }
   })
 })
@@ -5218,7 +5251,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat docs/loop46_memory.md 2>/dev/null'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('Run `token-goat section "docs/loop46_memory.md::SectionHeading"` to read one section, or `token-goat outline "docs/loop46_memory.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
+      expect(result.context).toBe('Run `token-goat section "docs/loop46_memory.md" "SectionHeading"` to read one section, or `token-goat outline "docs/loop46_memory.md"` for every heading with line ranges.\n`cat` loads the entire file into context.')
     }
   })
 
@@ -5242,7 +5275,7 @@ describe('preBashHandler — stderr-redirect and cat-piped read spellings (loop-
     const result = preBashHandler(makeBashEvent('cat -n README_loop46.md 2>/dev/null | tail -60'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toBe('Run `token-goat section "README_loop46.md::SectionHeading"` to read one section, or `token-goat outline "README_loop46.md"` for every heading with line ranges.\n`tail` bypasses read hooks.')
+      expect(result.context).toBe('Run `token-goat section "README_loop46.md" "SectionHeading"` to read one section, or `token-goat outline "README_loop46.md"` for every heading with line ranges.\n`tail` bypasses read hooks.')
     }
   })
 
@@ -5441,7 +5474,7 @@ describe('preBashHandler — PowerShell [IO.File]::ReadAllText interception', ()
   it('denies a doc .NET file read with section hint', () => {
     const result = preBashHandler(makeBashEvent(`[IO.File]::ReadAllText('README.md')`))
     expect(interceptedReadHint(result)).not.toBeNull()
-    expect(interceptedReadHint(result)).toContain('token-goat section "README.md::')
+    expect(interceptedReadHint(result)).toContain('token-goat section "README.md" "')
   })
 
   it('emits advisory contextOutput for SQL .NET file read', () => {

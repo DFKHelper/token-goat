@@ -8,9 +8,11 @@ import { UNTRUSTED_TOOL_TAG, type FenceSpan } from './injection_scan.js'
 import { type HookOutput } from './types.js'
 import { sweepStaleRepairScripts } from './bash_backslash_repair.js'
 import { mayBeVerificationCommand } from './hooks_verification.js'
-import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordSymbolRead, takeBashStartCwd, takePendingLargeFileHint, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
+import { getFileServedOutputs, recordFileServedOutput, recordBashOutput, recordBashRerun, recordCurlDownload, recordFileLineRange, resetFileLineRanges, recordFileRead, markFileTruncated, wasHintShown, markHintShown, recordCliRead, recordServedSectionTarget, recordSymbolRead, takeBashStartCwd, takePendingLargeFileHint, getSessionId, GENERIC_SERVED_OUTPUT_KEY } from './session.js'
 import { resolveIndexPath, toDisplayPath, displaySafePath, displaySafeText, dirAtIndexKey, hostPathOfIndexKey, hostPathOfTypedPath, isFileAtIndexKey } from './paths.js'
-import { shortFingerprint } from './fingerprint.js'
+import { decodeSource } from './encoding.js'
+import { fingerprintFileWithBytes, shortFingerprint } from './fingerprint.js'
+import type { SectionReadReceipt } from './served_extent.js'
 import { isBuildCommand, getMonitoringRecallHint, isTestRunnerCommand } from './hints/lang_patterns.js'
 import { storeBashOutput, getBashOutput, isScopedGitStatusOrDiffStatCommand, commandHash, bashOutputIdSync, summarizeOutputDelta } from './bash_output_cache.js'
 import { recordStat } from './stats.js'
@@ -754,6 +756,21 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     let tgRead = extractTgSurgicalRead(cmd, runDir)
     // The shim skips the pre hook for token-goat's own command (bridges/shim_common.ts::SHIM_OWN_COMMAND_BYPASS), so no start directory is held for it and, on Claude Code's main thread, runDir applies the cd a second time to a cwd it already moved. When the target is missing there, this hook's cwd is where the cd landed; a file under runDir keeps runDir, which is right wherever the shell did not move.
     if (heldStartCwd === null && cwd !== null && tgRead?.filePath != null && !isFileAtIndexKey(tgRead.filePath)) tgRead = extractTgSurgicalRead(cmd, cwd)
+    let sectionReceipt: SectionReadReceipt | null = null
+    if (tgRead?.sub === 'section' && tgRead.sectionReceiptNonce !== undefined) {
+      try {
+        const { isSectionReadReceiptSessionKey, sectionReadReceiptSessionKey, takeSectionReadReceipt } = await import('./served_extent.js')
+        const sessionId = getSessionId()
+        const sessionKey = tgRead.sectionReadSessionKey
+        if (sessionKey === undefined) {
+          sectionReceipt = takeSectionReadReceipt(sessionId, tgRead.sectionReceiptNonce)
+        } else if (isSectionReadReceiptSessionKey(sessionKey) && sessionKey === sectionReadReceiptSessionKey(sessionId)) {
+          sectionReceipt = takeSectionReadReceipt(sessionKey, tgRead.sectionReceiptNonce)
+        }
+      } catch {
+        // A missing or unreadable receipt leaves the target eligible for a later hint.
+      }
+    }
     if (tgRead !== null && (exitCode === null || exitCode === 0)) {
       recordCliRead(tgRead.sub + '::' + tgRead.spec)
       // Record a surgical (symbol/section/range-scoped) read against the file's session entry so compact.ts's symbolsBonus can reward narrowly-engaged files. `spec` for read/section is `filePath` + a narrowing suffix (`::symbol`, `::heading`, and/or `@line-range`); an empty suffix means a whole-file `token-goat read <file>`, which is not symbol-scoped and is left out. `symbol`/`skill-*` subcommands carry no filePath and are skipped.
@@ -764,12 +781,52 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
       // A `cd` the shell could not follow (`cd missing`, `cd -`, `cd $VAR`) leaves a path no file sits at, and nothing was shown from it.
       if (tgRead.filePath !== null && isFileAtIndexKey(tgRead.filePath)) {
         try {
-          const { servedExtents, isWholeFileRead } = await import('./served_extent.js')
+          const { servedExtents, isWholeFileRead, sectionReadReceiptMatches } = await import('./served_extent.js')
           const { isCappedOutput } = await import('./overflow_guard.js')
           // A persisted result reached the model as a 2 KB preview and a capped one stops short of its last lines, so neither shows the lines the command named.
           if (!persisted && !isCappedOutput(output)) {
-            for (const extent of await servedExtents(tgRead.sub, tgRead.spec, cmd, runDir)) recordFileLineRange(extent.filePath, extent.start, extent.end)
-            if (isWholeFileRead(tgRead.sub, tgRead.spec, tgRead.filePath, cmd)) recordFileRead(tgRead.filePath, true)
+            if (tgRead.sub === 'section') {
+              const sectionPrefix = [tgRead.filePath, ''].join('::')
+              const target = tgRead.spec.startsWith(sectionPrefix) ? tgRead.spec.slice(sectionPrefix.length) : ''
+              const current = sectionReceipt !== null ? fingerprintFileWithBytes(tgRead.filePath) : null
+              let canonicalTarget = ''
+              if (current !== null && target !== '') {
+                const { readSection } = await import('./section_reader.js')
+                const resolved = readSection(tgRead.filePath, target, () => decodeSource(current.bytes))
+                if (resolved !== null && resolved.occurrences === undefined && resolved.redirectedFrom === undefined) {
+                  canonicalTarget = resolved.heading
+                }
+              }
+              const extents = await servedExtents(tgRead.sub, tgRead.spec, cmd, runDir)
+              const rangeHash =
+                current !== null && sectionReceipt?.sourceSha === current.sha ? () => current.sha : undefined
+              for (const extent of extents) {
+                recordFileLineRange(extent.filePath, extent.start, extent.end, rangeHash)
+              }
+              const hasMatchingServedExtent =
+                sectionReceipt !== null &&
+                extents.some(
+                  (extent) =>
+                    extent.filePath === tgRead.filePath &&
+                    extent.start === sectionReceipt.start &&
+                    extent.end === sectionReceipt.end,
+                )
+              if (
+                sectionReceipt !== null &&
+                current !== null &&
+                target !== '' &&
+                canonicalTarget !== '' &&
+                hasMatchingServedExtent &&
+                sectionReceipt.sourceSha === current.sha &&
+                sectionReadReceiptMatches(sectionReceipt, tgRead.filePath, target, output)
+              ) {
+                recordServedSectionTarget(tgRead.filePath, canonicalTarget)
+              }
+            } else {
+              const extents = await servedExtents(tgRead.sub, tgRead.spec, cmd, runDir)
+              for (const extent of extents) recordFileLineRange(extent.filePath, extent.start, extent.end)
+              if (isWholeFileRead(tgRead.sub, tgRead.spec, tgRead.filePath, cmd)) recordFileRead(tgRead.filePath, true)
+            }
           }
         } catch {
           // Best-effort bookkeeping: an index that cannot answer leaves the ledger as it was.

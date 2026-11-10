@@ -235,7 +235,7 @@ export function indexFileSyncPinned(resolvedPath: string, dbPath: string): void 
 }
 
 /** Read a file's text for display. Every read command that prints file content comes through here, which is why the dotenv redaction sits at this seam rather than in each command: `read`, `symbol` and the rest print a slice of a live disk read, and the symbol table they slice against stores env keys with empty bodies precisely because the values are not the model's business. A future read command gets the same protection without having to remember it. Nothing here writes back to disk, so redacting the returned text cannot corrupt a file. See dotenv_redact.ts. */
-export function readFileText(p: string): string | null {
+export function readFileText(p: string, options: { onRawBuffer?: (bytes: Buffer) => void } = {}): string | null {
   const pinned = activePins?.get(pinKey(path.resolve(p)))
   try {
     if (pinned === ABSENT_PIN) {
@@ -243,8 +243,9 @@ export function readFileText(p: string): string | null {
       return null
     }
     // decodeSource, not a plain utf-8 read: a UTF-16 file (what PowerShell 5.1 writes by default) decodes to NUL-interleaved mojibake that is twice the size and useless to a reader.
-    if (pinned !== undefined) return redactIfDotenv(p, decodeSource(readPinnedBytes(p, pinned)))
-    return redactIfDotenv(p, decodeSource(fs.readFileSync(p)))
+    const bytes = pinned !== undefined ? readPinnedBytes(p, pinned) : fs.readFileSync(p)
+    options.onRawBuffer?.(bytes)
+    return redactIfDotenv(p, decodeSource(bytes))
   } catch (err) {
     if (err instanceof ConfinementIdentityError) throw err
     return null

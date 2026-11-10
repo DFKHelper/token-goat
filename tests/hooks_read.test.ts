@@ -22,7 +22,7 @@ import { postReadHandler } from '../src/hooks_read_post.js'
 import { buildLineDiff, readRequestedSliceWindow } from '../src/hooks_read_slice.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
-import { recordFileRead, wasFileReadThisSession, getSessionId, importSessionState, markCompacted } from '../src/session.js'
+import { RANGE_FINGERPRINT_MAX_BYTES, recordFileRead, recordCliRead, recordFileLineRange, recordServedSectionTarget, wasFileReadThisSession, getSessionId, importSessionState, markCompacted } from '../src/session.js'
 import { saveSessionState, SESSIONS_SUBDIR } from '../src/session_store.js'
 import { tokenGoatHome } from '../src/disk_cache.js'
 import { storeCompact, setSkillOutputsDirForTesting, contentHash } from '../src/skill_cache.js'
@@ -1569,6 +1569,109 @@ Examples here`
     }
   })
 
+  it('advances the Markdown re-read hint after a confirmed section read', () => {
+    pinProtectRecentReadsToZero()
+    const content = '# Guide\n\n## Introduction\n\nIntro body.\n\n## Usage\n\nUsage body.\n\n## Reference\n\nReference body.\n'
+    const p = _makeTmpMdFile(content)
+    const normalized = normalizePath(p)
+    const event = readEvent(p)
+    recordFileRead(normalized)
+    recordFileLineRange(normalized, 3, 5)
+    recordCliRead(`section::${normalized}::Introduction`)
+    recordServedSectionTarget(normalized, 'Introduction')
+
+    const result = preReadHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('"Usage"')
+      expect(result.message).not.toContain('"Introduction"')
+    }
+  })
+
+  it('keeps the first Markdown target after a same-size edit and a new unrelated range', () => {
+    pinProtectRecentReadsToZero()
+    const content = '# Guide\n\n## Introduction\n\nIntro body.\n\n## Usage\n\nUsage body.\n\n## Reference\n\nReference body.\n'
+    const p = _makeTmpMdFile(content)
+    const normalized = normalizePath(p)
+    const event = readEvent(p)
+    recordFileRead(normalized)
+    recordFileLineRange(normalized, 3, 5)
+    recordCliRead(`section::${normalized}::Introduction`)
+    recordServedSectionTarget(normalized, 'Introduction')
+    const originalStat = fs.statSync(p)
+    const changed = content.replace('Intro body.', 'Edit body!.')
+    expect(Buffer.byteLength(changed)).toBe(Buffer.byteLength(content))
+    fs.writeFileSync(p, changed)
+    fs.utimesSync(p, originalStat.atime, originalStat.mtime)
+    recordFileLineRange(normalized, 7, 9)
+
+    const result = preReadHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('"Introduction"')
+      expect(result.message).not.toContain('"Usage"')
+    }
+  })
+
+  it('does not suppress the first Markdown target when no served range proves a section read', () => {
+    pinProtectRecentReadsToZero()
+    const p = _makeTmpMdFile('# Guide\n\n## Introduction\n\nIntro body.\n\n## Usage\n\nUsage body.\n')
+    const normalized = normalizePath(p)
+    const event = readEvent(p)
+    recordFileRead(normalized)
+    recordCliRead(`section::${normalized}::Introduction`)
+
+    const result = preReadHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('"Introduction"')
+      expect(result.message).not.toContain('"Usage"')
+    }
+  })
+
+  it('does not suppress the first target when the section read cannot be fingerprinted', () => {
+    pinProtectRecentReadsToZero()
+    const content = '# Guide\n\n## Introduction\n\nIntro body.\n\n## Usage\n\nUsage body.\n\n## Reference\n\nReference body.\n' +
+      'x'.repeat(RANGE_FINGERPRINT_MAX_BYTES + 1)
+    const p = _makeTmpMdFile(content)
+    const normalized = normalizePath(p)
+    const event = readEvent(p)
+    recordFileRead(normalized)
+    recordFileLineRange(normalized, 3, 5)
+    recordCliRead(`section::${normalized}::Introduction`)
+    recordServedSectionTarget(normalized, 'Introduction')
+
+    const result = preReadHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain('"Introduction"')
+      expect(result.message).not.toContain('"Usage"')
+    }
+  })
+
+  it('suggests the outline after every section target has been consumed', () => {
+    pinProtectRecentReadsToZero()
+    const content = '# Guide\n\n## Introduction\n\nIntro body.\n\n## Usage\n\nUsage body.\n\n## Reference\n\nReference body.\n'
+    const p = _makeTmpMdFile(content)
+    const normalized = normalizePath(p)
+    const event = readEvent(p)
+    recordFileRead(normalized)
+    for (const heading of ['Introduction', 'Usage', 'Reference']) {
+      recordCliRead(`section::${normalized}::${heading}`)
+    }
+    recordFileLineRange(normalized, 3, 5)
+    for (const heading of ['Introduction', 'Usage', 'Reference']) {
+      recordServedSectionTarget(normalized, heading)
+    }
+
+    const result = preReadHandler(event)
+    expect(result.hookType).toBe('deny')
+    if (result.hookType === 'deny') {
+      expect(result.message).toContain(`token-goat outline "${normalized}"`)
+      expect(result.message).not.toContain('"Introduction"')
+    }
+  })
+
   it('gives a section-only large-file hint for .md files', () => {
     const p = _makeTmpMdFile('x'.repeat(150 * 1024))
 
@@ -2038,11 +2141,11 @@ Some content that makes the file large enough`
       expect(result.message).toContain('Installation')
       expect(result.message).toContain('License')
       // None of the hardcoded, nonexistent well-known sections should appear as a `token-goat section` suggestion.
-      expect(result.message).not.toContain('::Install"')
-      expect(result.message).not.toContain('::Usage"')
-      expect(result.message).not.toContain('::API"')
-      expect(result.message).not.toContain('::Configuration"')
-      expect(result.message).not.toContain('::Getting Started"')
+      expect(result.message).not.toContain('"Install"')
+      expect(result.message).not.toContain('"Usage"')
+      expect(result.message).not.toContain('"API"')
+      expect(result.message).not.toContain('"Configuration"')
+      expect(result.message).not.toContain('"Getting Started"')
     }
   })
 

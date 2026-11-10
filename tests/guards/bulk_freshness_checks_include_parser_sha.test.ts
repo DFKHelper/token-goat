@@ -252,6 +252,15 @@ const CLASSIFICATION: ReadonlyMap<string, Classification> = new Map([
     },
   ],
   [
+    'postBashHandler',
+    {
+      bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
+      reason:
+        'hooks_bash_post.ts re-fingerprints the one file named by the completed section command to ' +
+        'validate its one-use receipt; it does not skip or reuse a bulk index candidate.',
+    },
+  ],
+  [
     'onceCurrentFileHash',
     {
       bucket: 'explicit-single-file-path-not-a-bulk-skip-sweep',
@@ -319,7 +328,7 @@ function unrelatedComputedCall() { values[Symbol.iterator]() }
       what: 'top-level functions in src/**/*.ts that call fingerprintFile() or fingerprintFileWithBytes()',
       items: found,
       floor: 6,
-      mustInclude: ['reconcileProjectWith', 'fingerprintFile', 'processDirtyBatch'],
+      mustInclude: ['reconcileProjectWith', 'fingerprintFile', 'processDirtyBatch', 'postBashHandler'],
     })
   })
 

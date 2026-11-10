@@ -13,12 +13,13 @@ import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
 import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart } from './hint_suggestion_guard.js'
 import { escapeHintName, headingTreeParts, hintTarget, sectionOrRangeCommand, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
+import { addSectionReadReceipt } from './served_extent.js'
 import { isNodeModulesPath } from './path_containment.js'
 import { displaySafePath, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHARS } from './paths.js'
 import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun, isSequentialPagingChain } from './util.js'
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
-import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
+import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getConsumedSectionTargets, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
 import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordReadRangeLockRefusal, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
@@ -296,21 +297,31 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
     return fileQueryHint(filePath, '', 'pattern')
   } else if (isDocFile) {
     // The lead name comes from hintTarget, which passes over a document's lone title (its section is the whole file just refused); the list after it is the first headings in file order, as before.
+    const markdownFile = /\.(md|mdx|markdown|rst)$/i.test(basename)
+    const consumedSections = markdownFile ? getConsumedSectionTargets(filePath) : new Set<string>()
     let top: string[] = []
     if (fileContent !== undefined && /\.(md|mdx)$/i.test(basename)) {
       top = extractMarkdownHeadings(fileContent)
         .map((h) => escapeHintName(h.text.trim()))
-        .filter((name) => name !== '')
+        .filter((name) => name !== '' && !consumedSections.has(name))
         .slice(0, HINT_NAME_COUNT)
     } else if (fileContent === undefined) {
       try {
-        top = indexedHintNames({ filePath, kind: 'heading' })
+        top = indexedHintNames({ filePath, kind: 'heading' }).filter((name) => !consumedSections.has(name))
       } catch {
         // The index is advisory; retain the clean fallback when it is unavailable.
       }
     }
-    const heading = hintTarget(filePath, 'section', { content: fileContent })
-    return leadWithCommand(sectionOrRangeCommand(filePath, heading), (top.length > 0 ? `(or sections: ${top.join(', ')}) ` : '') + 'to extract a part')
+    const heading = hintTarget(filePath, 'section', { content: fileContent, consumedSections })
+    const exhausted = markdownFile && !heading.real && consumedSections.size > 0
+    const command = exhausted
+      ? `token-goat outline ${quotedArg(filePath)}`
+      : sectionOrRangeCommand(filePath, heading)
+    const nextStep = heading.real && markdownFile ? addSectionReadReceipt(command) : command
+    return leadWithCommand(
+      nextStep,
+      exhausted ? 'to navigate the document' : (top.length > 0 ? `(or sections: ${top.join(', ')}) ` : '') + 'to extract a part',
+    )
   } else if (isJsonFile || isYamlFile) {
     const fmt = isJsonFile ? 'json' : 'yaml'
     const key = hintTarget(filePath, 'key', { content: fileContent })
@@ -767,6 +778,14 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         const fullSize = statSize(onDisk) ?? 0
         const savedBytes = counterfactualCredit(fullSize, compactBody.length)
         recordStat('session_hint', savedBytes, savedTokensFromBytes(savedBytes), undefined, 'stable-doc-compact')
+        const consumedSections = getConsumedSectionTargets(normalized)
+        const compactTarget = hintTarget(normalized, 'section', { placeholder: 'Heading', consumedSections })
+        const compactExhausted = !compactTarget.real && consumedSections.size > 0
+        const compactSectionCommand = compactExhausted
+          ? `token-goat outline ${quotedArg(shown)}`
+          : compactTarget.real
+            ? addSectionReadReceipt(sliceCommand(shown, compactTarget))
+            : `token-goat section ${quotedArg(`${shown}::${compactTarget.name}`)}`
         return denyOutput(
           'Serving the extractive compact sidecar in place of the full file ' +
           '(source unchanged since the last `compact-doc` build):\n\n' +
@@ -775,7 +794,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           'the first heading are dropped entirely, each section is cut to its opening ' +
           'sentences, and long code fences are truncated. If you need content it left out, ' +
           're-read with offset/limit for a line window, or ' +
-          '`token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'Heading' }).name) + '` for one section in full. ' +
+          '`' + compactSectionCommand + '` ' + (compactExhausted ? 'to navigate the document. ' : 'for one section in full. ') +
           'Use `token-goat compact-doc ' + quotedArg(shown) + ' --force` to rebuild it, ' +
           'or `token-goat compact-doc ' + quotedArg(shown) + ' --show` to view it directly. ' +
           editAnywayHint(normalized),
@@ -828,24 +847,40 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const headings = extractMarkdownHeadings(fileContent)
       if (headings.length >= 3) {
         const alreadyRead = wasFileFullyReadThisSession(normalized)
+      const consumedSections = getConsumedSectionTargets(normalized)
         const { guidance, sectionsList } = headingTreeParts(headings, normalized, fileContent)
         // Filter the hardcoded per-basename shortcut list down to headings that actually exist in this file — otherwise a README missing e.g. 'API' or 'Getting Started' gets a hint recommending a `section` command that will just 404.
         const headingTextsLower = new Set(headings.map((h) => h.text.trim().toLowerCase()))
-        const wellKnown = getWellKnownSections(basename).filter((s) => headingTextsLower.has(s.trim().toLowerCase()))
+      const wellKnown = getWellKnownSections(basename).filter((s) => {
+        if (!headingTextsLower.has(s.trim().toLowerCase()) || consumedSections.has(s)) return false
+        const actualHeading = headings.find((h) => h.text.trim().toLowerCase() === s.trim().toLowerCase())?.text.trim()
+        return actualHeading === undefined || !consumedSections.has(actualHeading)
+      })
         const wellKnownText =
           wellKnown.length > 0
             ? '\nQuick access: ' +
-              wellKnown
-                .map(s => 'token-goat section ' + quotedArg(shown + '::' + s))
+            wellKnown
+              .map((s) => addSectionReadReceipt(sliceCommand(shown, { name: s, real: true, slice: 'section' })))
                 .join(' | ')
             : ''
         const changelogExtra = basename.toLowerCase() === 'changelog.md'
-          ? extractChangelogVersionHint(fileContent, normalized)
+        ? extractChangelogVersionHint(fileContent, normalized, {
+            consumedSections,
+            sectionCommand: (target) =>
+              addSectionReadReceipt(sliceCommand(shown, { name: target, real: true, slice: 'section' })),
+          })
           : ''
         // guidance is token-goat's own authored instruction text (the "use token-goat section" preamble plus the "Sections:" label) and stays OUTSIDE the fence, same as wellKnownText below. sectionsList (the actual heading text) and changelogExtra (version headings) are verbatim bytes from the file, so they are fenced as untrusted data before being spliced into a message the harness attributes to token-goat. wellKnownText is not fenced either: it is built from token-goat's own hardcoded shortcut list plus the file path, with no file-derived bytes, so fencing it would spend markers on nothing. formatHeadingTreeParts' example line names a literal "Heading Name", which `section` cannot find; with a real heading in hand a command naming it leads and that line is dropped. The swap happens here because markdown_hints.ts is an embedding-fingerprinted source.
-        const headingTarget = hintTarget(normalized, 'section', { headings, content: fileContent })
-        const treeLead = headingTarget.real ? leadWithCommand('token-goat section ' + quotedArg(shown + '::' + headingTarget.name), 'to read one section') + '\n' : ''
-        const treeGuidance = headingTarget.real ? guidance.split('\n').filter((line) => !line.includes('::Heading Name"')).join('\n') : guidance
+        const headingTarget = hintTarget(normalized, 'section', { headings, content: fileContent, consumedSections })
+        const treeLead = headingTarget.real
+          ? leadWithCommand(addSectionReadReceipt(sliceCommand(shown, headingTarget)), 'to read one section') + '\n'
+          : consumedSections.size > 0
+            ? leadWithCommand(`token-goat outline ${quotedArg(shown)}`, 'to navigate the document') + '\n'
+            : ''
+        const treeGuidance =
+          headingTarget.real || consumedSections.size > 0
+            ? guidance.split('\n').filter((line) => !line.includes('::Heading Name"')).join('\n')
+            : guidance
         let message = treeLead + treeGuidance + '\n' + fenceUntrustedFileContent(sectionsList + changelogExtra) + wellKnownText
         // A re-read is always hard-denied. A first read is also hard-denied when the file is at or above the generic large-file deny threshold: this branch returns before the size-based deny further below ever runs, so it must enforce that gate itself. A genuine, bounded offset/limit request gates on the requested slice's size instead of the whole file's, same as the generic large-file gate and the file-type dispatcher further below — a small window into a huge markdown file should be let through rather than hard-denied.
         const slice = estimateRequestedSlice(event, normalized)
@@ -872,8 +907,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             const explanation =
               `This file is large (${formatKb(markdownSize ?? 0)}KB with ${countNoun(policyHeadingCount, 'heading')}). Whole-file first read denied by first_read_symbol_policy. ` +
               `Use ${fencedCommand('token-goat outline ' + quotedArg(shown))} to map sections, or re-read with offset/limit for a specific section.`
+            const safeSectionCommand = safeHeading === null ? null : addSectionReadReceipt(sliceCommand(shown, headingTarget))
             return denyOutput(
-              (safeHeading ? leadWithCommand('token-goat section ' + quotedArg(`${shown}::${safeHeading}`), 'to read surgically', explanation) : explanation) +
+                (safeSectionCommand !== null ? leadWithCommand(safeSectionCommand, 'to read surgically', explanation) : explanation) +
               '\n' + editAnywayHint(normalized)
             )
           }
@@ -1269,8 +1305,16 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', rereadCredit, savedTokensFromBytes(rereadCredit), undefined, 'reread-doc-deny')
         bookDenyIdentity('doc')
         // No editAnywayHint here: this branch only fires inside the wasFileReadThisSession block above, so a prior real Read already satisfied Read/Edit's precondition -- a plain Edit works fine.
+        const consumedSections = getConsumedSectionTargets(normalized)
+        const target = hintTarget(normalized, 'section', { consumedSections })
+        const nextStep =
+          !target.real && consumedSections.size > 0
+            ? `token-goat outline ${quotedArg(shown)}`
+            : target.real
+              ? addSectionReadReceipt(sectionOrRangeCommand(shown, target))
+              : sectionOrRangeCommand(shown, target)
         return denyOutput(leadWithCommand(
-          sectionOrRangeCommand(shown, hintTarget(normalized, 'section')),
+          nextStep,
           'to read one section',
           'Markdown file already read this session.' + priorOutputRecallHint(normalized),
         ))
@@ -1329,11 +1373,24 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         recordStat('session_hint', 0, 0)
       }
       recordActualSlice(event, normalized, hashNow)
-      const sectionCommand = _isDocFile(normalized) ? 'token-goat section ' + quotedArg(shown + '::' + hintTarget(normalized, 'section', { placeholder: 'SectionName' }).name) : ''
+      const markdownSectionPath = /\.(md|mdx|markdown|rst)$/i.test(basename)
+      const consumedSections = markdownSectionPath ? getConsumedSectionTargets(normalized) : new Set<string>()
+      const sectionTarget = _isDocFile(normalized)
+        ? hintTarget(normalized, 'section', { placeholder: 'SectionName', consumedSections })
+        : null
+      const sectionExhausted = markdownSectionPath && sectionTarget !== null && !sectionTarget.real && consumedSections.size > 0
+      const sectionCommand =
+        sectionTarget === null
+          ? ''
+          : sectionExhausted
+            ? `token-goat outline ${quotedArg(shown)}`
+            : sectionTarget.real
+              ? addSectionReadReceipt(sliceCommand(shown, sectionTarget))
+              : 'token-goat section ' + quotedArg(shown + '::' + sectionTarget.name)
       const rereadNote = 'Note: ' + readSubject(normalized, sectionCommand + pagingNote) + ' was already read this session (' + reads + ' ' + plural + ').'
       return quietContextOutput(
         (sectionCommand !== ''
-          ? leadWithCommand(sectionCommand, 'to read one section', rereadNote)
+          ? leadWithCommand(sectionCommand, sectionExhausted ? 'to navigate the document' : 'to read one section', rereadNote)
           : rereadNote + ' Use token-goat read/section/symbol to re-read surgically.') + pagingNote,
         [shown],
       )
@@ -1471,10 +1528,22 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       recordActualSlice(event, normalized, hashNow)
       recordStat('session_hint', 0, 0)
       const isTestFile = /\.(tests|test)\.(ps1|[jt]sx?|py)$/i.test(basename)
+      let docSectionCommand = ''
+      let docSectionExhausted = false
+      if (isDocNudge) {
+        const consumedSections = getConsumedSectionTargets(normalized)
+        const target = hintTarget(normalized, 'section', { consumedSections })
+        docSectionExhausted = !target.real && consumedSections.size > 0
+        docSectionCommand = docSectionExhausted
+          ? `token-goat outline ${quotedArg(shown)}`
+          : target.real
+            ? addSectionReadReceipt(sectionOrRangeCommand(shown, target))
+            : sectionOrRangeCommand(shown, target)
+      }
       const nudge = isXmlNudge
         ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline ${quotedArg(shown)}\` or \`token-goat xml-query ${quotedArgs(shown, '<selector>').join(' ')}\``
         : isDocNudge
-        ? `Note: token-goat available for this file type, consider section first: \`${sectionOrRangeCommand(shown, hintTarget(normalized, 'section'))}\``
+        ? `Note: token-goat available for this file type, consider ${docSectionExhausted ? 'outline' : 'section'} first: \`${docSectionCommand}\``
         : isTestFile
         ? `Note: token-goat available for this test file, consider surgical read first: \`token-goat read ${quotedArg(`${shown}::${hintTarget(normalized, 'symbol', { placeholder: 'DescribeBlockName' }).name}`)}\` or \`token-goat skeleton ${quotedArg(shown)}\``
         : isScriptNudge

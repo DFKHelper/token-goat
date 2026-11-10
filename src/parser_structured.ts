@@ -711,6 +711,17 @@ function dockerfileHeredocEnd(lines: readonly string[], i: number, end: number):
   return cursor
 }
 
+function dockerfileFromArgument(lines: readonly string[], start: number, end: number, firstLineArgument: string): string {
+  if (start === end) return firstLineArgument
+  return lines
+    .slice(start, end + 1)
+    .filter((line, index) => index === 0 || !line.trim().startsWith('#'))
+    .map((line) => line.trim().replace(/\\\s*$/, '').trim())
+    .join(' ')
+    .replace(/^\s*FROM\s+/i, '')
+    .trim()
+}
+
 export function extractDockerfileSymbols(content: string, filePath: string): SymbolEntry[] {
   const out: SymbolEntry[] = []
   const lines = content.split(/\r?\n/)
@@ -731,7 +742,10 @@ export function extractDockerfileSymbols(content: string, filePath: string): Sym
     if (match !== null && match[1] !== undefined) {
       const cmd = match[1]
       if (/^(?:RUN|COPY|ADD)$/i.test(cmd)) end = dockerfileHeredocEnd(lines, i, end)
-      const arg = (match[2] ?? '').substring(0, 40)
+      const firstLineArgument = match[2] ?? ''
+      const arg = /^FROM$/i.test(cmd)
+        ? dockerfileFromArgument(lines, i, end, firstLineArgument)
+        : firstLineArgument.substring(0, 40)
       const name = `${cmd} ${arg}`.trim()
       out.push({
         filePath,

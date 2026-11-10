@@ -2,8 +2,11 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 
+import * as fs from 'node:fs'
+import * as path from 'node:path'
+
 import { allCommandNames } from './registry.js'
-import { afterEachHeartbeatMitigation, cases, cleanupMatrixFixture, setupMatrixFixture, shardKeys, SHARD_COUNT } from './helpers/matrix_cases.js'
+import { afterEachHeartbeatMitigation, cases, cleanupMatrixFixture, mkIsolated, run, setupMatrixFixture, shardKeys, SHARD_COUNT, tgEnv } from './helpers/matrix_cases.js'
 
 beforeAll(setupMatrixFixture, 120000)
 afterAll(cleanupMatrixFixture)
@@ -33,4 +36,19 @@ describe('built bundle command matrix (shard 1/4)', () => {
   for (const name of shardKeys(0)) {
     it(`'${name}' produces correct output from the built bundle`, cases[name], 120000)
   }
+
+  it('outline preserves a full Dockerfile base-image reference in the built bundle', () => {
+    const project = mkIsolated('tg-matrix-dockerfile-repo-')
+    const dataDir = mkIsolated('tg-matrix-dockerfile-data-')
+    const image = 'registry.example.com/engineering/platform/application:2026.11.09'
+    fs.writeFileSync(path.join(project, 'Dockerfile'), `FROM ${image} AS build\n`)
+
+    const env = tgEnv(dataDir)
+    const indexed = run(['index', '.', '--walk'], { cwd: project, env })
+    expect(indexed.status, indexed.stderr).toBe(0)
+
+    const outlined = run(['outline', 'Dockerfile'], { cwd: project, env })
+    expect(outlined.status, outlined.stderr).toBe(0)
+    expect(outlined.stdout).toContain(`FROM ${image} AS build`)
+  })
 })

@@ -34,6 +34,7 @@ export interface HintTargetSource {
   readonly event?: HookEvent
   readonly content?: string | undefined
   readonly headings?: readonly MarkdownHeading[]
+  readonly consumedSections?: ReadonlySet<string>
   readonly placeholder?: string
   /** The regex or text a Grep call searched for: a symbol slice then prefers the symbol that pattern names over the file's first one. */
   readonly pattern?: string
@@ -145,7 +146,7 @@ function pickForPattern(candidates: ReadonlyArray<{ name: string; level: number 
 }
 
 /** First usable name in line order. For sections, a heading that occurs twice is skipped (`section` refuses an ambiguous one) and a lone top-level title is passed over for the heading after it, since the title's section is the whole document the deny just refused. */
-function pick(candidates: ReadonlyArray<{ name: string; level: number }>, slice: HintSlice): string | null {
+function pick(candidates: ReadonlyArray<{ name: string; level: number }>, slice: HintSlice, consumedSections?: ReadonlySet<string>): string | null {
   const usable = candidates.flatMap((c) => {
     const name = quotable(c.name, slice)
     return name === null ? [] : [{ name, level: c.level }]
@@ -158,7 +159,8 @@ function pick(candidates: ReadonlyArray<{ name: string; level: number }>, slice:
   if (first === undefined) return null
   const top = Math.min(...unique.map((c) => c.level))
   const loneTitle = first.level === top && unique.filter((c) => c.level === top).length === 1
-  return loneTitle && unique.length > 1 ? unique[1]!.name : first.name
+  const selectable = loneTitle && unique.length > 1 ? unique.slice(1) : unique
+  return selectable.find((c) => consumedSections === undefined || !consumedSections.has(c.name))?.name ?? null
 }
 
 /** Candidate names read out of `text` for this slice and file type, in file order. */
@@ -266,10 +268,9 @@ export function hintTarget(filePath: string, slice: HintSlice, source: HintTarge
     try {
       if (source.headings !== undefined && slice === 'section') {
         const metaEnd = frontMatterEnd(source.content ?? '')
-        const name = pick(source.headings.filter((h) => h.lineNumber > metaEnd).map((h) => ({ name: h.text, level: h.level })), slice)
-        if (name !== null) return name
+        return pick(source.headings.filter((h) => h.lineNumber > metaEnd).map((h) => ({ name: h.text, level: h.level })), slice, source.consumedSections)
       }
-      if (source.content !== undefined) return pick(scanText(source.content, filePath, slice), slice)
+      if (source.content !== undefined) return pick(scanText(source.content, filePath, slice), slice, source.consumedSections)
       if (source.cwd !== undefined && !commandPathIsTouchable(filePath, source.event)) return null
       const resolved = source.cwd !== undefined ? resolveIndexPath(filePath, source.cwd) : filePath
       const onDisk = hostPathOfIndexKey(resolved)
@@ -277,10 +278,10 @@ export function hintTarget(filePath: string, slice: HintSlice, source: HintTarge
       if (!fileStat.isFile()) return null
       const indexed = indexedCandidates(resolved, onDisk, slice, fileStat)
       const byPattern = (c: Array<{ name: string; level: number }>): string | null => source.pattern === undefined || (slice !== 'symbol' && slice !== 'section') ? null : pickForPattern(c, source.pattern, slice)
-      const fromIndex = indexed === null ? null : byPattern(indexed) ?? pick(indexed, slice)
+      const fromIndex = indexed === null ? null : byPattern(indexed) ?? pick(indexed, slice, source.consumedSections)
       if (fromIndex !== null) return fromIndex
       const scanned = scanText(readHead(onDisk), resolved, slice)
-      return byPattern(scanned) ?? pick(scanned, slice)
+      return byPattern(scanned) ?? pick(scanned, slice, source.consumedSections)
     } catch {
       // A name that cannot be resolved is a reason to keep the placeholder, never to guess one.
       return null
