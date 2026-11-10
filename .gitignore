@@ -189,6 +189,7 @@ coverage/
 
 # Local agent tasks, session mining, transcripts, and scratchpads
 tasks/
+.scratch/
 
 vscode-extension/*.vsix
 
