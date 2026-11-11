@@ -176,7 +176,8 @@ jobs:
     env:
       JSIGN_URL: https://github.com/ebourg/jsign/releases/download/7.5/jsign-7.5.jar
       JSIGN_SHA256: 602a51c3545a6dc4fb99bd2ea7152b26d1345916d0c93ddfbd5936cb735af91c
-      OSSLSIGNCODE_URL: https://archive.ubuntu.com/ubuntu/pool/universe/o/osslsigncode/osslsigncode_2.8-2_amd64.deb
+      # The same .deb from two hosts, tried in order under the one sha256 below, so one unresolvable host cannot fail a publish (archive.ubuntu.com did not resolve for run 43052808452).
+      OSSLSIGNCODE_URLS: https://azure.archive.ubuntu.com/ubuntu/pool/universe/o/osslsigncode/osslsigncode_2.8-2_amd64.deb https://archive.ubuntu.com/ubuntu/pool/universe/o/osslsigncode/osslsigncode_2.8-2_amd64.deb
       OSSLSIGNCODE_SHA256: 1aee7be603102633e80b4c67cd939bba2e16a62813e4a3035696727783f632b0
     steps:
       - name: Require the signing configuration
@@ -237,7 +238,11 @@ jobs:
           set -euo pipefail
           curl -sSfL -o "$RUNNER_TEMP/jsign.jar" "$JSIGN_URL"
           echo "$JSIGN_SHA256  $RUNNER_TEMP/jsign.jar" | sha256sum -c -
-          curl -sSfL -o "$RUNNER_TEMP/osslsigncode.deb" "$OSSLSIGNCODE_URL"
+          for url in $OSSLSIGNCODE_URLS; do
+            curl -sSfL --max-time 60 -o "$RUNNER_TEMP/osslsigncode.deb" "$url" || continue
+            echo "$OSSLSIGNCODE_SHA256  $RUNNER_TEMP/osslsigncode.deb" | sha256sum -c - && break
+          done
+          # Fails closed: after the loop the file must still match the pin, whichever source it came from.
           echo "$OSSLSIGNCODE_SHA256  $RUNNER_TEMP/osslsigncode.deb" | sha256sum -c -
           # Unpacked rather than installed, so no package maintainer script runs.
           dpkg-deb -x "$RUNNER_TEMP/osslsigncode.deb" "$RUNNER_TEMP/osslsigncode"

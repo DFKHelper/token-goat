@@ -95,17 +95,21 @@ function downloadsAreHashPinned(doc: Workflow): string[] {
       const lines = (step.run ?? '').split('\n')
       lines.forEach((line, i) => {
         if (!/\b(curl|wget)\b/.test(line)) return
-        const m = /\bcurl\b[^\n]*\s-o\s+"([^"]+)"\s+"\$(\w+)"\s*$/.exec(line)
+        const m = /\bcurl\b[^\n]*\s-o\s+"([^"]+)"\s+"\$(\w+)"(?:\s*\|\|\s*continue)?\s*$/.exec(line)
         if (m === null) {
           problems.push(`${name}: cannot tell what this download writes or where it comes from: ${line.trim()}`)
           return
         }
         downloads++
         const [, file, urlVar] = m as unknown as [string, string, string]
-        const url = { ...j.env, ...step.env }[urlVar] ?? ''
-        if (!/^https:\/\/\S+\/[^/]*\d[^/]*$/.test(url) || /latest/.test(url)) problems.push(`${name}: ${urlVar} is not a versioned https URL: ${JSON.stringify(url)}`)
+        // A mirror loop (`for url in $LIST;`) names a list of sources for one file; each must be a versioned https URL, and the one pinned sha256 below covers whichever is used.
+        const env = { ...j.env, ...step.env }
+        const loop = lines.slice(0, i).reverse().map((l) => new RegExp(`^\\s*for ${urlVar} in \\$(\\w+); do\\s*$`).exec(l)).find((x) => x !== null)
+        const sources = loop === undefined || loop === null ? [env[urlVar] ?? ''] : (env[loop[1]!] ?? '').split(/\s+/).filter((s) => s !== '')
+        if (sources.length === 0) problems.push(`${name}: ${urlVar} names no source`)
+        for (const url of sources) if (!/^https:\/\/\S+\/[^/]*\d[^/]*$/.test(url) || /latest/.test(url)) problems.push(`${name}: ${urlVar} is not a versioned https URL: ${JSON.stringify(url)}`)
         const next = lines.slice(i + 1).find((l) => l.includes(file))
-        const check = next === undefined ? null : /^\s*echo "\$(\w+) {2}(.+)" \| sha256sum -c -\s*$/.exec(next)
+        const check = next === undefined ? null : /^\s*echo "\$(\w+) {2}(.+)" \| sha256sum -c -(?:\s*&&\s*break)?\s*$/.exec(next)
         if (check === null || check[2] !== file) {
           problems.push(`${name}: ${file} is not checked against a pinned sha256 before its next use`)
           return
@@ -277,6 +281,15 @@ const CHECKS: ReadonlyArray<readonly [string, (doc: Workflow) => string[], (doc:
       install.run = install.run!.replace(/^.*jsign\.jar" \| sha256sum -c -\n/m, '')
     },
     `${SIGN_JOB}: $RUNNER_TEMP/jsign.jar is not checked against a pinned sha256 before its next use`,
+  ],
+  [
+    'every mirror a download loop may use is a versioned https URL',
+    downloadsAreHashPinned,
+    (doc) => {
+      const env = doc.jobs[SIGN_JOB]!.env!
+      env['OSSLSIGNCODE_URLS'] = `${env['OSSLSIGNCODE_URLS']!} http://mirror.example/pool/osslsigncode_2.8-2_amd64.deb`
+    },
+    `${SIGN_JOB}: url is not a versioned https URL: "http://mirror.example/pool/osslsigncode_2.8-2_amd64.deb"`,
   ],
   [
     'every action is pinned to a full commit SHA',
