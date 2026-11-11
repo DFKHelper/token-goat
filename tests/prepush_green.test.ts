@@ -1,8 +1,8 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { keyParts, MAX_ENTRIES, readEntries, recordGreen, runChecked, splitGreen, STATIC_LEG, treeId } from '../scripts/prepush-green.mjs'
 
 const REPO = process.cwd()
@@ -35,6 +35,32 @@ function counterCmd(extra = ''): string[] {
 
 const runs = (): number => (existsSync(path.join(root, 'ran.txt')) ? readFileSync(path.join(root, 'ran.txt'), 'utf8').split('\n').filter(Boolean).length : 0)
 
+// The seeded repository is built once, by the four git starts it takes, and every row starts from a copy of its files: a git start costs a fifth of a second on a slow host and the rows each used to pay four of them before their first assertion.
+let seed = ''
+
+beforeAll(() => {
+  for (const k of GIT_VARS) {
+    saved[k] = process.env[k]
+    delete process.env[k]
+  }
+  seed = mkdtempSync(path.join(tmpdir(), 'tg-green-seed-'))
+  root = seed
+  git('init', '-q')
+  write('.gitignore', 'ran.txt\nignored.txt\n.green-store/\n')
+  write('src/a.ts', 'export const a = 1\n')
+  git('add', '-A')
+  git('commit', '-q', '-m', 'seed')
+  root = ''
+  for (const k of GIT_VARS) {
+    if (saved[k] === undefined) delete process.env[k]
+    else process.env[k] = saved[k]
+  }
+})
+
+afterAll(() => {
+  rmSync(seed, { recursive: true, force: true })
+})
+
 beforeEach(() => {
   for (const k of GIT_VARS) {
     saved[k] = process.env[k]
@@ -42,11 +68,7 @@ beforeEach(() => {
   }
   root = mkdtempSync(path.join(tmpdir(), 'tg-green-'))
   store = path.join(root, '.green-store', 'green.json')
-  git('init', '-q')
-  write('.gitignore', 'ran.txt\nignored.txt\n.green-store/\n')
-  write('src/a.ts', 'export const a = 1\n')
-  git('add', '-A')
-  git('commit', '-q', '-m', 'seed')
+  cpSync(seed, root, { recursive: true })
 })
 
 afterEach(() => {
@@ -154,18 +176,16 @@ describe('runChecked', () => {
     expect(runs()).toBe(5)
   })
 
-  it('treats a corrupt record file as empty and replaces it with a sound one', () => {
+  // HAND-DERIVED: four unusable store contents, each a distinct way the file can be wrong: truncated JSON, a JSON null, an entry of the wrong shape, an empty file.
+  it.each(['{"entries": [', 'null', '{"entries": [{"tree": 1}]}', ''])('treats the corrupt record file %j as empty and replaces it with a sound one', (bad) => {
     mkdirSync(path.dirname(store), { recursive: true })
-    for (const bad of ['{"entries": [', 'null', '{"entries": [{"tree": 1}]}', '']) {
-      writeFileSync(store, bad)
-      rmSync(path.join(root, 'ran.txt'), { force: true })
-      const cmd = counterCmd()
-      runChecked(root, 'lint', STATIC_LEG, cmd, envWith())
-      expect(runs()).toBe(1)
-      expect(readEntries(store)).toHaveLength(1)
-      runChecked(root, 'lint', STATIC_LEG, cmd, envWith())
-      expect(runs()).toBe(1)
-    }
+    writeFileSync(store, bad)
+    const cmd = counterCmd()
+    runChecked(root, 'lint', STATIC_LEG, cmd, envWith())
+    expect(runs()).toBe(1)
+    expect(readEntries(store)).toHaveLength(1)
+    runChecked(root, 'lint', STATIC_LEG, cmd, envWith())
+    expect(runs()).toBe(1)
   })
 
   it('a changed env knob, node version or dependency record changes the key', () => {
