@@ -553,6 +553,8 @@ describe('the hard stop ends the legs of a real hook run', () => {
         'exec "$REAL_NODE" "$@"',
         '',
       ].join('\n'),
+      // Executable, or PATH lookup skips the stub on POSIX and the real node runs.
+      { mode: 0o755 },
     )
     // A gated taskkill ends nothing until the hung node stub has started (the file real-kill), so the stop's own kill leaves the legs alive and only the later kills end them.
     if (gatedKill) {
@@ -729,6 +731,19 @@ describe('the hard stop ends the legs of a real hook run', () => {
 // Regression: a pid a stub recorded goes stale (Windows hands a freed pid to the next process it starts, and a forked bash that execs changes its winpid), and the afterEach cleanup ended whatever bash then held the number, another session's bash included; a run of this file ended silently right after the hook-killed-outright row that way.
 describe('the cleanup of recorded stub pids', () => {
   const bashAvailable = process.platform !== 'win32' || existsSync(GIT_BASH)
+  // A killed child stays a zombie until this process reaps it, and the reap is an event this synchronous wait never lets run, so kill(pid, 0) still succeeds on it: a process in state Z is gone for this purpose (field 3 of /proc/<pid>/stat on Linux, `ps -o stat=` on macOS).
+  const isZombie = (pid: number): boolean => {
+    if (process.platform === 'win32') return false
+    const statFile = `/proc/${pid}/stat`
+    if (existsSync(statFile)) {
+      try {
+        return /^\d+ \(.*\) [ZX]/s.test(readFileSync(statFile, 'utf8'))
+      } catch {
+        return true
+      }
+    }
+    return spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim().startsWith('Z')
+  }
   const gone = (child: ChildProcess): boolean => {
     for (let i = 0; i < 25 && child.exitCode === null; i++) {
       try {
@@ -736,6 +751,7 @@ describe('the cleanup of recorded stub pids', () => {
       } catch {
         return true
       }
+      if (isZombie(child.pid ?? 0)) return true
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200)
     }
     return child.exitCode !== null

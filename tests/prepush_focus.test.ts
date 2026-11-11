@@ -24,6 +24,11 @@ const HOOK_WRAPPER = ((): string => {
 })()
 // The sh the hook's `sh` is: the one beside Git Bash on Windows, /bin/sh elsewhere.
 const SH = process.platform === 'win32' && BASH !== null ? path.join(path.dirname(BASH), 'sh.exe') : '/bin/sh'
+// Whether the hook's wrapper finds a bash 5.1 or later on this host (the wrapper refuses on an older one on purpose, so a row that drives the hook through it cannot run there). Windows names Git Bash directly.
+const HOOK_BASH_FOUND = ((): boolean => {
+  if (process.platform === 'win32' || BASH === null) return true
+  return spawnSync(SH, [HOOK_WRAPPER, '/dev/null'], { encoding: 'utf8', env: { ...process.env, TG_PREPUSH_BASH: '' } }).status === 0
+})()
 let dir = ''
 let realDir = ''
 afterEach(() => {
@@ -245,11 +250,7 @@ function runDecision(change: Record<string, string>, env: Record<string, string>
   return { note, focus: file ? readFileSync(file, 'utf8').split('\n').filter(Boolean) : [], deferred, trace: opts.xtrace && existsSync(tracePath) ? readFileSync(tracePath, 'utf8') : '' }
 }
 
-describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => {
-  // One decision per row: each runs the real script, and two in one row doubled the row's cost. The sandboxes are built lazily, by the first row that needs each, never together in one hook: a hook has one 60 s deadline for all of them, and each build is several process starts.
-  const changelogSeed = { 'tests/reads_changelog.test.ts': "import fs from 'node:fs'\nfs.readFileSync('CHANGELOG.md')\n", 'CHANGELOG.md': 'one\n' }
-  const wholeSrcSeed = { 'tests/whole_src.test.ts': "import fs from 'node:fs'\nfs.readdirSync('src')\n", 'tests/spawner.test.ts': "import { bundleTg } from './helpers/bundle.js'\nbundleTg()\n", 'tests/helpers/bundle.ts': 'export const bundleTg = () => 1\n' }
-
+describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus wrapper', () => {
   // The wrapper is the only thing that prints this refusal: a script started any other way (bash -c, bash <file>) ignores TG_PREPUSH_BASH and runs.
   it('is started through run-with-bash-5.sh, as lefthook.yml starts the hook', () => {
     let failure: { status?: number; stderr?: unknown } | undefined
@@ -262,6 +263,19 @@ describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => 
     expect(failure?.status).toBe(2)
     expect(String(failure?.stderr)).toContain('TG_PREPUSH_BASH must name Bash 5.1 or later')
   })
+
+  // Only where the host has no bash 5.1 or later: the decision rows are skipped there, and this row pins that the hook refuses rather than running on the old bash.
+  it.skipIf(HOOK_BASH_FOUND)('refuses on a host whose bash is older than 5.1 and TG_PREPUSH_BASH is unset', () => {
+    const r = spawnSync(SH, [HOOK_WRAPPER, '/dev/null'], { encoding: 'utf8', env: { ...process.env, TG_PREPUSH_BASH: '' } })
+    expect(r.status).toBe(2)
+    expect(r.stderr).toContain('Bash 5.1 or later is required')
+  })
+})
+
+describe.skipIf(BASH === null || !CAN_JUNCTION || !HOOK_BASH_FOUND)('prepush focus decision', () => {
+  // One decision per row: each runs the real script, and two in one row doubled the row's cost. The sandboxes are built lazily, by the first row that needs each, never together in one hook: a hook has one 60 s deadline for all of them, and each build is several process starts.
+  const changelogSeed = { 'tests/reads_changelog.test.ts': "import fs from 'node:fs'\nfs.readFileSync('CHANGELOG.md')\n", 'CHANGELOG.md': 'one\n' }
+  const wholeSrcSeed = { 'tests/whole_src.test.ts': "import fs from 'node:fs'\nfs.readdirSync('src')\n", 'tests/spawner.test.ts': "import { bundleTg } from './helpers/bundle.js'\nbundleTg()\n", 'tests/helpers/bundle.ts': 'export const bundleTg = () => 1\n' }
 
   it('a src change runs the guards, the matrix and the tests that import the module', () => {
     const r = decide({ 'src/a.ts': 'export const a = 2\n' })
