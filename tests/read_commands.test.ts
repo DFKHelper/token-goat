@@ -115,6 +115,7 @@ import { runBrief } from '../src/read_brief.js'
 import { extractImports, importsExtensionFor, extractExportNames } from '../src/import_export_extract.js'
 import { runRefs } from '../src/read_refs.js'
 import { querySymbols, countSymbols, queryRefs, countRefs, queryRefCounts, getFileEntry } from '../src/index_reader.js'
+import { GREP_MAX_LINE_CHARS } from '../src/tool_filters/helpers.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 import { runGit } from '../src/util.js'
 import { UNBOUNDED_QUERY_LIMIT } from '../src/query_limits.js'
@@ -4095,6 +4096,23 @@ describe('read_commands', () => {
       expect(stdout).toContain('hello world')
     })
 
+    it('clips an over-long matching line around the match in text and JSON output', () => {
+      const f = path.join(tempDir, 'long-line.txt')
+      const line = `${'a'.repeat(GREP_MAX_LINE_CHARS)}needle${'b'.repeat(GREP_MAX_LINE_CHARS)}`
+      fs.writeFileSync(f, line)
+
+      const { stdout: textOutput } = capture(() => { runGrep({ pattern: 'needle', path: f }) })
+      expect(textOutput).toContain('needle')
+      expect(textOutput).toContain('chars elided')
+      expect(textOutput.length).toBeLessThan(line.length)
+
+      const { stdout: jsonOutput } = capture(() => { runGrep({ pattern: 'needle', path: f, json: true }) })
+      const parsed = JSON.parse(jsonOutput) as { items: Array<{ text: string }> }
+      expect(parsed.items[0]?.text).toContain('needle')
+      expect(parsed.items[0]?.text).toContain('chars elided')
+      expect(parsed.items[0]?.text.length).toBeLessThan(line.length)
+    })
+
     it('supports inline flags like (?i) in pattern', () => {
       const f = path.join(tempDir, 'case.txt')
       fs.writeFileSync(f, 'Hello World')
@@ -4863,6 +4881,46 @@ describe('read_commands', () => {
       expect(parsed.items).toEqual([1])
       expect(parsed.totalCount).toBe(3)
       expect(parsed.truncated).toBe(true)
+    })
+
+    it('caps an array-valued non-fanned result to --head with an elision notice', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items', head: '1' }) })
+      expect(stdout).toContain('"id":1')
+      expect(stdout).not.toContain('"id":2')
+      expect(stdout).toContain('2 more items elided')
+    })
+
+    it('emits the standard JSON envelope for a truncated non-fanned array result', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+      const { stdout } = capture(() => { runJsonQuery({ file: f, path: 'items', head: '1', json: true }) })
+      const parsed = JSON.parse(stdout)
+      expect(parsed.items).toEqual([{ id: 1, name: 'Alice', status: 'active' }])
+      expect(parsed.totalCount).toBe(3)
+      expect(parsed.truncated).toBe(true)
+    })
+
+    it('handles zero and exact-length --head values for non-fanned arrays', () => {
+      const f = path.join(tempDir, 'people.json')
+      fs.writeFileSync(f, PEOPLE)
+
+      const { stdout: zeroText } = capture(() => { runJsonQuery({ file: f, path: 'items', head: '0' }) })
+      expect(zeroText).not.toContain('Alice')
+      expect(zeroText).toContain('3 more items elided')
+
+      const { stdout: zeroJson } = capture(() => { runJsonQuery({ file: f, path: 'items', head: '0', json: true }) })
+      const parsedZero = JSON.parse(zeroJson)
+      expect(parsedZero.items).toEqual([])
+      expect(parsedZero.totalCount).toBe(3)
+      expect(parsedZero.truncated).toBe(true)
+
+      const { stdout: fullText } = capture(() => { runJsonQuery({ file: f, path: 'items', head: '3' }) })
+      expect(fullText).toContain('Alice')
+      expect(fullText).toContain('Bob')
+      expect(fullText).toContain('Carol')
+      expect(fullText).not.toContain('elided')
     })
 
     it('caps an oversized text-mode fanned result at overflow_guard.max_tokens', () => {

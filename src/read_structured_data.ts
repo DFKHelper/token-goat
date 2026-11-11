@@ -257,6 +257,25 @@ function runQueryCommand(
 
     if (!result.fanned) {
       const value = result.items[0]
+      if (Array.isArray(value) && head !== undefined && value.length > head) {
+        const limited = value.slice(0, head)
+        if (opts.json === true) {
+          const capped = guardJsonRows(limited)
+          const jsonText = displaySafeJson(
+            { items: capped.items, truncated: capped.truncated || limited.length < value.length, totalCount: value.length },
+            0,
+          )
+          emit(jsonText)
+          recordReadStat(kind, fullSourceBytes, jsonText, detail)
+        } else {
+          const lines = limited.map((item) => displaySafeJson(item, 0))
+          lines.push(headElidedNotice(value.length - limited.length, 'item'))
+          const plainText = lines.join('\n')
+          emitGuarded(plainText, guardTag)
+          recordReadStat(kind, fullSourceBytes, plainText, detail)
+        }
+        return 0
+      }
       const valueText = opts.json === true ? displaySafeJson(value, 0) : displaySafeJson(value)
       emit(valueText)
       recordReadStat(kind, fullSourceBytes, valueText, detail)
