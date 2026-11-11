@@ -335,6 +335,11 @@ describe('installed wiring', () => {
   })
 })
 
+/** A section hint carries a single-use random receipt nonce and a digest of the caller's session id (src/served_extent.ts); each run here has its own session, so two correct answers differ in those two tokens, and masking them keeps every other byte compared. */
+function withoutReceiptNonce(stdout: string): string {
+  return stdout.replace(/--_section-read-receipt [0-9a-f]{32}/g, '--_section-read-receipt <nonce>').replace(/--_section-read-session-key [0-9a-f]{64}/g, '--_section-read-session-key <key>')
+}
+
 describe('a v2 request answers exactly as the installed shim', () => {
   let n = 0
   for (const c of HARNESS_HOOK_PAYLOADS) {
@@ -359,7 +364,7 @@ describe('a v2 request answers exactly as the installed shim', () => {
         shim = await runShim(c, `ref-${c.harness}-${id}`)
         await waitIdle(endpoint)
         const v2 = await runV2(c, `v2-${c.harness}-${id}`)
-        expect({ call, stdout: v2.out.join('') + v2.stdout, exit: v2.exit }, shim.stderr).toEqual({ call, stdout: shim.stdout, exit: shim.exit })
+        expect({ call, stdout: withoutReceiptNonce(v2.out.join('') + v2.stdout), exit: v2.exit }, shim.stderr).toEqual({ call, stdout: withoutReceiptNonce(shim.stdout), exit: shim.exit })
         expect(v2.out).toEqual(shim.stdout.startsWith(ASYNC_LINE) ? [ASYNC_LINE] : [])
         // Behind the tripwire a fallback cannot pass for a served call; behind the wired Node command is the exact command line an installer writes.
         for (const label of ['tripwire', 'wired'] as const) {
@@ -369,7 +374,7 @@ describe('a v2 request answers exactly as the installed shim', () => {
           const native = await runNative(c, `nat-${label}-${c.harness}-${id}`, nativeArgs(c, label))
           await waitIdle(endpoint)
           const after = (await slotStatus(endpoint, key))?.served
-          expect({ label, call, stdout: native.stdout, exit: native.exit }, native.stderr).toEqual({ label, call, stdout: shim.stdout, exit: shim.exit })
+          expect({ label, call, stdout: withoutReceiptNonce(native.stdout), exit: native.exit }, native.stderr).toEqual({ label, call, stdout: withoutReceiptNonce(shim.stdout), exit: shim.exit })
           expect(after, `${label}: unexpected native dispatch`).toBe((before ?? NaN) + 1)
           if (native.stderr !== shim.stderr) stderrDiffs.push({ id: `${c.harness}|${c.name}|${label}|${call}`, shim: shim.stderr, native: native.stderr })
         }

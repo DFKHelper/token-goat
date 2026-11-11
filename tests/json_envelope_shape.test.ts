@@ -37,7 +37,7 @@ const NON_ENVELOPE_JSON_COMMANDS = [
   'recall', 'hint-stats', 'statusline', 'exports', 'imports', 'importers', 'peek', 'find', 'grep', 'skill-list',
   'skill-history', 'call-chain', 'impact', 'deps', 'scope', 'similar', 'context-for', 'search',
   'coverage-gaps', 'arch', 'blame', 'ask', 'tokens', 'budget', 'failures', 'todo', 'trace',
-  'logfold', 'lockdeps', 'dep-docs', 'note', 'hot', 'recent', 'ignores', 'bash-history',
+  'logfold', 'lockdeps', 'manifest-sweep', 'dep-docs', 'note', 'hot', 'recent', 'ignores', 'bash-history',
   'web-history', 'mcp-history', 'reclaim-index', 'clean-cache', 'prune-cache', 'cache-audit',
   'resume', 'compact-hint', 'session-summary', 'cost', 'baseline', 'config', 'project',
   'affected', 'reconcile',

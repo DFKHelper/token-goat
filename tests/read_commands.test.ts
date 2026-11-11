@@ -6,16 +6,23 @@ import Database from '../src/sqlite_driver.js'
 import { CAN_SYMLINK } from './helpers/can-symlink.js'
 
 // Stub the DB-layer imports so tests don't need a real SQLite DB
-vi.mock('../src/index_reader.js', () => ({
-  querySymbols: vi.fn(() => []),
-  countSymbols: vi.fn(() => 0),
-  queryRefs: vi.fn(() => []),
-  countRefs: vi.fn(() => 0),
-  getFileEntry: vi.fn(() => null),
-  queryRefCounts: vi.fn(() => new Map()),
-  // Not a function to stub but a plain constant the module under test reads, so it has to be mirrored here or the import resolves to undefined and every window-fullness comparison silently answers false. FORMAT-DERIVED: value read off its declaration in src/index_reader.js, which is also the only place it is defined.
-  DEFAULT_QUERY_LIMIT: 100,
-}))
+vi.mock('../src/index_reader.js', () => {
+  const querySymbols = vi.fn((_opts?: unknown): unknown[] => [])
+  return {
+    querySymbols,
+    // The outline and skeleton listing reads one file's symbols through this id-carrying variant, so it answers from the same per-test querySymbols stub, which keeps every row a test queues visible to both. The ids are positional because no test reads them. FORMAT-DERIVED: signature read off queryFileSymbolsWithIds in src/index_reader.ts.
+    queryFileSymbolsWithIds: vi.fn((opts: { filePath: string; limit?: number; offset?: number }) =>
+      querySymbols({ filePath: opts.filePath, limit: opts.limit, offset: opts.offset }).map((symbol, index) => ({ id: index + 1, symbol })),
+    ),
+    countSymbols: vi.fn(() => 0),
+    queryRefs: vi.fn(() => []),
+    countRefs: vi.fn(() => 0),
+    getFileEntry: vi.fn(() => null),
+    queryRefCounts: vi.fn(() => new Map()),
+    // Not a function to stub but a plain constant the module under test reads, so it has to be mirrored here or the import resolves to undefined and every window-fullness comparison silently answers false. FORMAT-DERIVED: value read off its declaration in src/index_reader.js, which is also the only place it is defined.
+    DEFAULT_QUERY_LIMIT: 100,
+  }
+})
 
 // Stubbed for the same reason as the index_reader stub above: the empty-index check is a real DB count, and these tests drive the query layer through mocks, so without this every miss would look like an unindexed project.
 vi.mock('../src/index_health.js', () => ({

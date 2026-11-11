@@ -30,7 +30,7 @@ const EXEMPT_COMMANDS: Record<string, string> = (() => {
         'pptx-text', 'docx-outline', 'docx-tables', 'docx-text', 'zip-list', 'zip-read', 'json-outline',
         'json-query', 'yaml-outline', 'yaml-query', 'xml-outline', 'xml-query', 'html-outline', 'html-query', 'html-lint', 'php-lint', 'openapi-op', 'openapi-outline',
         'sqlite-query', 'sqlite-schema', 'sqlite-tables', 'coverage-report-gaps', 'transcript',
-        'transcript-outline', 'video-chapters', 'logfold', 'trace', 'todo', 'lockdeps',
+        'transcript-outline', 'video-chapters', 'logfold', 'trace', 'todo', 'lockdeps', 'manifest-sweep',
         'gdrive-sections', 'dep-docs', 'compress', 'compress-text', 'pack', 'bench', 'xlsx-columns'],
     'parent command with no output of its own -- every leaf is a subcommand classified separately':
       ['note'],

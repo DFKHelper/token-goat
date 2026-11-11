@@ -45,6 +45,8 @@ const DISCLOSED_TABLES = [
   'indexed_roots',
   'known_roots',
   'notes',
+  // Holds a SHA-256 cache key and a JSON payload of symbol row ids and counts (symbol total, source byte size, line total) so a repeated outline or skeleton skips its scan -- no file content, nothing but ids that point back into `symbols`, which the README already discloses.
+  'outline_listing_cache',
   // Holds a file path (the resume point for a budget-truncated reconcile sweep) and a timestamp -- no file content -- same judgement as known_roots just above, which is the same shape of table.
   'reconcile_cursor',
   'refs',

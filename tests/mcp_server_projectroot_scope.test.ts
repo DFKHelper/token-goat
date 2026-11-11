@@ -31,6 +31,9 @@ vi.mock('../src/index_reader.js', async (importOriginal) => {
   return {
     ...actual,
     querySymbols: (...args: Parameters<typeof actual.querySymbols>) => querySymbolsMock(...args) as SymbolEntry[],
+    // Skeleton and outline read one file's symbols through this id-carrying variant, so it answers from the same querySymbols mock; the ids are positional because nothing here reads them. FORMAT-DERIVED: signature read off queryFileSymbolsWithIds in src/index_reader.ts.
+    queryFileSymbolsWithIds: (opts: { filePath: string; limit?: number; offset?: number }) =>
+      (querySymbolsMock({ filePath: opts.filePath, limit: opts.limit, offset: opts.offset }) as SymbolEntry[]).map((symbol, index) => ({ id: index + 1, symbol })),
   }
 })
 

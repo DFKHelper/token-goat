@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { detectHarness } from '../src/bridges/registry.js'
 import { sharpenRepeatedDeny } from '../src/hint_target.js'
 import { preReadHandler } from '../src/hooks_read.js'
+import { normalizePath } from '../src/paths.js'
 import { escalateRepeatedFileTypeDeny, readOverridesLargeFileDeny } from '../src/hooks_read_override.js'
 import type { HookEvent } from '../src/hook_registry.js'
 import type { HookOutput } from '../src/types.js'
@@ -86,7 +87,8 @@ describe('the large-text deny names a runnable next call', () => {
     const file = writeText('notes.txt')
     const text = denyText(preReadHandler(claudeRead(file)))
     expect(text).toContain('Read with offset 1 and limit 200')
-    expect(text.toLowerCase()).toContain(('`token-goat read "' + file.split(path.sep).join('/') + '@1-200"`').toLowerCase())
+    // The hook names the file by its normalized spelling (an 8.3 short name expanded, a macOS /var alias made /private/var), which differs from the raw temp path on the CI runners, so the expectation is that same spelling and not the path as written here.
+    expect(text.toLowerCase()).toContain(('`token-goat read "' + normalizePath(file) + '@1-200"`').toLowerCase())
     expect(text).not.toContain('Use Read with offset and limit params to sample')
   })
 
