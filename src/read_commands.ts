@@ -33,6 +33,7 @@ import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
 import { expandGlobs } from './cli_diagnostics.js'
 import { extractSignature } from './read_signature.js'
+import { clipLongMatchLine, GREP_MAX_LINE_CHARS } from './tool_filters/helpers.js'
 import {
   isGhAvailable,
   isGhAuthenticated,
@@ -1350,14 +1351,27 @@ export function runGrep(opts: GrepOptions): number {
     }
   }
 
+  const renderedHits: GrepHit[] = hits.map((hit) => {
+    const text =
+      hit.text.length > GREP_MAX_LINE_CHARS
+        ? clipLongMatchLine(hit.text, opts.pattern, GREP_MAX_LINE_CHARS)
+        : hit.text
+    if (hit.context === undefined) return { ...hit, text }
+    return {
+      ...hit,
+      text,
+      context: hit.context.map((line) => (line.line === hit.line ? { ...line, text } : line)),
+    }
+  })
+
   if (opts.json === true) {
     // Same {items, truncated, totalCount} envelope guardJsonRows uses for symbol/refs/skeleton/ outline's --json mode -- a bare truncated array here would silently hand a JSON consumer fewer hits than actually matched with no way to tell "capped by --max-lines" apart from "there just weren't more".
-    const payload: JsonRowCapResult<GrepHit> = { items: hits, truncated: totalHits > maxLines, totalCount: totalHits }
+    const payload: JsonRowCapResult<GrepHit> = { items: renderedHits, truncated: totalHits > maxLines, totalCount: totalHits }
     emit(displaySafeJson(payload))
     return 0
   }
 
-  for (const hit of hits) {
+  for (const hit of renderedHits) {
     const symbolTag = opts.symbol === true && hit.symbol != null ? ` [${displaySafeText(hit.symbol.name)} (${displaySafeText(hit.symbol.kind)})]` : ''
     if (hit.context !== undefined) {
       // Same renderer `refs`/`callers` `-C` use, so the three cannot drift into different dialects.

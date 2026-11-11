@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **`json-query` and `yaml-query` honor `--head` for array-valued properties, and `grep` clips over-long matching lines around the match.**
+
 ## [2.9.35] - 2026-11-10
 
 ### Added
