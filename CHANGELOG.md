@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Fixed
+
+- **The pre-push cleanup process can no longer spin on a core or outlive its bounds.** Two `prepush-reaper.sh` processes kept one core each busy for about 7 hours after their hook was gone, far past their 630 s life limit. Its one-second tick is a timed read on a descriptor; a read that fails at once (a closed or broken descriptor) returned immediately and turned the loop into a busy spin, so the tick now takes its second with `sleep` unless the read timed out. The reaper's own bounds (life limit, or the grace after the hook's death, plus the kill window and slack) are also checked inside every loop, so a pass that never reaches the main loop's tests still ends the process. Two rows in `tests/prepush_reaper.test.ts` fail on the old script.
+
 ## [2.9.35] - 2026-11-10
 
 ### Added

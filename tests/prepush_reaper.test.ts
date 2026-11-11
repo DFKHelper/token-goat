@@ -394,6 +394,25 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     expect(got.reused, 'a pid now answered by another process was taken for the hook').toBe('gone')
   })
 
+  // Two cleanup processes spun one core each for about 7 hours after their hook was gone (2026-11-11), far past their 630 s life limit. A tick whose timed read returns at once (a closed or broken descriptor, an EOF) turns the loop into a busy spin, so a tick that did not time out must still take its second.
+  it.skipIf(!bashAvailable)('takes its second per tick even when the timed read returns at once, so the loop cannot spin', () => {
+    const got = runLib(['exec 9<&-', 't0=${EPOCHREALTIME/./}', 'tick; tick; tick', 't1=${EPOCHREALTIME/./}', 'echo tickms=$(( (t1 - t0) / 1000 ))'])
+    expect(Number(got.tickms), 'three ticks with a broken descriptor took under 2.5 s, so each returned at once and the loop would spin').toBeGreaterThanOrEqual(2500)
+  })
+
+  // The stated bounds hold from inside any loop: a pass that never reaches the main loop's life and grace tests still ends the process once the life limit plus grace plus kill window is over, or the grace plus kill window after the hook's death.
+  it.skipIf(!bashAvailable)('ends itself from inside a loop once its life limit or its grace after the hook is gone is far past', () => {
+    const got = runLib([
+      'K_N=1; K_PID[0]=1; K_GONE[0]=""',
+      '( START=$((SECONDS - 1000)); LIFE=10; GRACE=30; WIN=5; ent_alive 0; echo life=survived )',
+      '( GONE_AT=$((SECONDS - 1000)); GRACE=30; WIN=5; ent_alive 0; echo gone=survived )',
+      '( START=$((SECONDS - 1000)); LIFE=0; ent_alive 0; echo nolimit=survived )',
+    ])
+    expect(got.life, 'a process far past its life limit kept running inside a loop').toBeUndefined()
+    expect(got.gone, 'a process far past its grace after the hook was gone kept running inside a loop').toBeUndefined()
+    expect(got.nolimit, 'a run with no life limit and a live hook must not stop itself').toBe('survived')
+  })
+
   // Each bounded call replays its own output file: a shared file let a call that ran nothing replay the previous call's output.
   it.skipIf(!bashAvailable)('gives every bounded call its own output file', () => {
     writeFileSync(

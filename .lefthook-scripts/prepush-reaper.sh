@@ -32,6 +32,7 @@ FINISHED=""
 SEL=" "
 F=""
 W=""
+START=$SECONDS
 
 rec() { printf '%s\n' "$*" >>"$RECORD" 2>/dev/null || true; }
 
@@ -40,17 +41,33 @@ winpid_of() {
   if [[ -r "/proc/$1/winpid" ]]; then read -r W <"/proc/$1/winpid" 2>/dev/null || W=""; fi
 }
 
-# One second with no fork: a timed read on a fifo that is never written and that no child inherits (every child starts with 9<&-).
+# One second with no fork: a timed read on a fifo that is never written and that no child inherits (every child starts with 9<&-). Only a timeout (status above 128) means a second passed: a read that returns at once (a closed or broken descriptor, an EOF) would make the loop spin on one core, so any other status sleeps the second instead.
 tick_open() {
   local fifo="$DIR/tick"
   mkfifo "$fifo" 2>/dev/null || return 1
   exec 9<>"$fifo" || return 1
   rm -f -- "$fifo"
 }
-tick() { read -r -t 1 -u 9 _ || true; }
+tick() {
+  local rc=0
+  backstop
+  read -r -t 1 -u 9 _ 2>/dev/null || rc=$?
+  (( rc > 128 )) || sleep 1 </dev/null 9<&- 2>/dev/null || true
+}
+
+# The reaper's own bounds, checked inside every loop and not only at the top of the main one: a pass that never reaches the main loop's life and grace tests (a stuck or runaway inner loop) must still end this process. The bound is the life limit plus the grace and the kill window plus slack, or, once the hook is gone, the grace plus the kill window plus slack from the stamp of its death.
+backstop() {
+  [[ -z "$FINISHED" && -n "$START" ]] || return 0
+  if [[ -n "$GONE_AT" ]]; then
+    (( SECONDS - GONE_AT < GRACE + WIN + 5 )) || exit 0
+  elif (( LIFE > 0 )); then
+    (( SECONDS - START < LIFE + GRACE + WIN + 5 )) || exit 0
+  fi
+}
 
 ent_alive() {
   local i=$1
+  backstop
   [[ -z "${K_GONE[$i]}" ]] || return 1
   if kill -0 "${K_PID[$i]}" 2>/dev/null; then return 0; fi
   K_GONE[$i]=1
@@ -150,6 +167,7 @@ ingest() {
     if ent_alive "$i"; then set+="${K_PID[$i]} "; fi
   done
   while (( changed )); do
+    backstop
     changed=0
     for (( j = 0; j < np; j++ )); do
       case "$set" in *" ${RP[$j]} "*) continue ;; esac
