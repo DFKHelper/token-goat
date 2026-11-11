@@ -196,10 +196,12 @@ describe('the daemon loop retires on its own', () => {
   it('exits after the idle period with an empty queue', async () => {
     const dir = scratch('tg-retire-idle-')
     fs.writeFileSync(workerPidPath(dir), `${process.pid}\n`)
+    const startedAt = Date.now()
     const loop = runWorkerLoop(dir, 5, () => false, { pidFileGraceMs: 60_000, idleExitMs: 400 })
 
-    expect(await outcomeWithin(loop, 100)).toBe('running')
-    expect(await outcomeWithin(loop, 4000)).toBe('stopped')
+    // The loop leaves on its own (a hang fails on the test timeout), and not before the idle period has run from its start. The elapsed time is read off the clock the loop itself uses, so a slow machine that checks late cannot see an early exit that never happened, which a poll at a fixed 100 ms mark could.
+    await loop
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(400)
   })
 
   it('does not count a cycle that drained work as idle', async () => {
