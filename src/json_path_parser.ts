@@ -501,6 +501,9 @@ export function parseJsonPath(spec: string): PathOp[] {
           let expr = inner.trim()
           if (expr.startsWith('?(') && expr.endsWith(')')) {
             expr = expr.slice(2, -1).trim()
+          } else if (expr.startsWith('?')) {
+            const predicate = expr.slice(1).trim()
+            if (isFilterExpression(predicate)) expr = predicate
           }
           if (expr.startsWith('@.')) {
             expr = expr.slice(2).trim()

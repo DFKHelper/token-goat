@@ -5,7 +5,7 @@ import type { SymbolEntry } from './parser_types.js'
 import { indexedSourceText } from './indexed_source.js'
 import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
 import { resolveSpecPath } from './spec_path.js'
-import { querySymbols, countSymbols, queryRefCounts, getFileEntry } from './index_reader.js'
+import { queryFileSymbolsWithIds, countSymbols, queryRefCounts, getFileEntry } from './index_reader.js'
 import { SKELETON_SYMBOL_CAP, globalDbPath } from './constants.js'
 import { compileGrepMatcher, countContentLines, countNoun } from './util.js'
 import { filtersFilteredToEmptyNotice } from './filter_notice.js'
@@ -36,6 +36,11 @@ export interface SkeletonOptions {
 
 export type OutlineOptions = SkeletonOptions
 
+interface OutlineCacheIdentity {
+  key: string
+  filePath: string
+}
+
 /** Character cap for the per-symbol doc annotation in `outline`'s text mode. */
 const DOC_SUMMARY_MAX_CHARS = 140
 const OUTLINE_CACHE_MAX_GREP_CHARS = 256
@@ -43,7 +48,7 @@ const OUTLINE_CACHE_MAX_GREP_CHARS = 256
 function outlineCacheKey(
   resolved: string,
   opts: { minLines?: number; grep?: string; stats?: boolean; projectRoot?: string },
-): string | null {
+): OutlineCacheIdentity | null {
   if (opts.stats === true || (opts.grep?.length ?? 0) > OUTLINE_CACHE_MAX_GREP_CHARS) return null
 
   let stat: fs.Stats
@@ -56,21 +61,24 @@ function outlineCacheKey(
 
   const entry = getFileEntry(resolved)
   if (entry === null || entry.sha === '') return null
-  return JSON.stringify([
-    globalDbPath(),
-    resolved,
-    entry.sha,
-    entry.parserSha ?? '',
-    entry.language,
-    stat.dev,
-    stat.ino,
-    stat.size,
-    stat.mtimeMs,
-    stat.ctimeMs,
-    opts.minLines ?? null,
-    opts.grep ?? null,
-    opts.projectRoot ?? process.cwd(),
-  ])
+  return {
+    key: JSON.stringify([
+      globalDbPath(),
+      resolved,
+      entry.sha,
+      entry.parserSha ?? '',
+      entry.language,
+      stat.dev,
+      stat.ino,
+      stat.size,
+      stat.mtimeMs,
+      stat.ctimeMs,
+      opts.minLines ?? null,
+      opts.grep ?? null,
+      opts.projectRoot ?? process.cwd(),
+    ]),
+    filePath: entry.filePath,
+  }
 }
 
 /** Shortest prefix of a doc line that is a complete sentence, or `null` when it has no usable sentence end. */
@@ -131,9 +139,11 @@ export function prepareSymbolListing(
   } else {
     healStaleIndex(resolved)
   }
-  const cacheKey = outlineCacheKey(resolved, opts)
-  if (cacheKey !== null && opts.forceRefresh !== true) {
-    const cached = getOutlineListingCache(cacheKey)
+  const cache = outlineCacheKey(resolved, opts)
+  const cacheKey = cache?.key ?? null
+  const displayRoot = getDisplayRoot(opts.projectRoot)
+  if (cache !== null && opts.forceRefresh !== true) {
+    const cached = getOutlineListingCache(cache.key, { dbPath: globalDbPath(), resolved, filePath: cache.filePath, displayRoot })
     if (cached !== undefined) return { kind: 'ok', ...cached }
   }
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
@@ -147,19 +157,21 @@ export function prepareSymbolListing(
 
   // Page the scan rather than filtering one capped window: `--grep` compiles to a JS matcher (a guarded regex, or a substring fallback when the pattern is refused), so no SQL clause can express it, and applying it after `LIMIT SKELETON_SYMBOL_CAP` meant a symbol past the 5000th in source order was cut before the predicate ever saw it -- an empty result byte-identical to an honest no-match, under a notice blaming a filter that never ran. The cap now bounds the *matches* and stops the walk as soon as it has that many, so the common case still costs one query. There is deliberately no second cap on how far the walk may go: `isParseSkipEligible` already refuses to index a file larger than `indexing.large_file_skip_kb`, which bounds how many symbols one file can contribute, and peak memory here is one page plus the matches either way, since bodies for non-matching rows are dropped with the page.
   const filtered: SymbolEntry[] = []
+  const symbolIds: number[] = []
   let scanned = 0
   let matchesTruncated = false
   let totalLines = 0
   for (let offset = 0; ; offset += SKELETON_SYMBOL_CAP) {
-    const page = querySymbols({ filePath: resolved, limit: SKELETON_SYMBOL_CAP, offset })
+    const page = queryFileSymbolsWithIds({ filePath: resolved, limit: SKELETON_SYMBOL_CAP, offset })
     if (page.length === 0) break
     scanned += page.length
-    for (const s of page) {
+    for (const { id, symbol: s } of page) {
       // `totalLines` measures the file, not the listing: it is the extent the header names beside the symbol count, and it is taken over every row examined rather than only the ones a cap or filter kept, so a cap no longer shrinks the file's reported size along with the listing.
       if (s.lineEnd > totalLines) totalLines = s.lineEnd
       if (!matches(s)) continue
       if (filtered.length === SKELETON_SYMBOL_CAP) { matchesTruncated = true; break }
       filtered.push(s)
+      symbolIds.push(id)
     }
     if (matchesTruncated || page.length < SKELETON_SYMBOL_CAP) break
   }
@@ -179,8 +191,9 @@ export function prepareSymbolListing(
 
   const listing: OutlineListingCacheValue = {
     resolved,
-    displayRoot: getDisplayRoot(opts.projectRoot),
+    displayRoot,
     filtered,
+    symbolIds,
     preFilterCount: scanned,
     refCounts,
     fullSourceBytes: sumFileSizes([resolved]),
