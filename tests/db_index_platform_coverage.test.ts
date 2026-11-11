@@ -59,6 +59,26 @@ function explainUsesIndex(sql: string, params: unknown[], indexName: string): bo
   return rows.some((r) => re.test(r.detail))
 }
 
+/** The first key of an index as declared in sqlite_master, e.g. `TG_LOWER(file_path)` for idx_symbols_file_folded and for every composite that starts with it. Provenance: FORMAT-DERIVED from the CREATE INDEX text SQLite stores in sqlite_master (https://www.sqlite.org/schematab.html), read with the same db the planner queries. */
+function leadingKey(indexName: string): string {
+  const db = getDb(dbPath)
+  const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`).get(indexName) as { sql: string } | undefined
+  const key = row?.sql.match(/\bON\s+\w+\s*\(\s*(.+?)\s*(?:,|\)\s*(?:WHERE\b.*)?$)/is)?.[1]
+  expect(key, `could not read the first key of ${indexName} from sqlite_master`).toBeTruthy()
+  return key!
+}
+
+/** True when a path-equality query on `table` is served by `declaredIndex`: the planner picks it, or the planner picks a wider index on the same table that STARTS with the same first key (symbols carries idx_symbols_call_graph_scope and idx_symbols_call_graph_enclosing, db.ts, which share idx_symbols_file_folded's first key, so the planner is free to prefer either) AND `declaredIndex` itself still accepts the query when pinned with INDEXED BY, which SQLite refuses ("no query solution") for an index that cannot serve the clause. A path that matches neither (a scan, or an index on another key) is not served. */
+function pathLookupServedBy(table: string, clause: string, value: string, declaredIndex: string): boolean {
+  const sql = `SELECT * FROM ${table} WHERE ${clause}`
+  if (explainUsesIndex(sql, [value], declaredIndex)) return true
+  const db = getDb(dbPath)
+  const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(value) as { detail: string }[]
+  const chosen = plan.map((r) => r.detail.match(/USING (?:COVERING )?INDEX (\w+)/)?.[1]).find((n): n is string => n !== undefined)
+  if (chosen === undefined || leadingKey(chosen) !== leadingKey(declaredIndex)) return false
+  return explainUsesIndex(`SELECT * FROM ${table} INDEXED BY ${declaredIndex} WHERE ${clause}`, [value], declaredIndex)
+}
+
 describe('idx_*_file / idx_*_file_folded pairs stay real, planner-chosen paths on both platform shapes', () => {
   it('discovers at least one file-path index pair (population-emptiness guard: a silently-emptied population would make every assertion below vacuously pass)', () => {
     const pairs = discoverFileIndexPairs()
@@ -71,7 +91,7 @@ describe('idx_*_file / idx_*_file_folded pairs stay real, planner-chosen paths o
     for (const { table, plainIndex } of pairs) {
       const clause = pathEqClause('file_path')
       const value = foldPath('src/example.ts')
-      const used = explainUsesIndex(`SELECT * FROM ${table} WHERE ${clause}`, [value], plainIndex)
+      const used = pathLookupServedBy(table, clause, value, plainIndex)
       expect(used, `expected ${table}'s case-sensitive query to use ${plainIndex}`).toBe(true)
     }
   })
@@ -82,7 +102,7 @@ describe('idx_*_file / idx_*_file_folded pairs stay real, planner-chosen paths o
     for (const { table, foldedIndex } of pairs) {
       const clause = pathEqClause('file_path')
       const value = foldPath('src/example.ts')
-      const used = explainUsesIndex(`SELECT * FROM ${table} WHERE ${clause}`, [value], foldedIndex)
+      const used = pathLookupServedBy(table, clause, value, foldedIndex)
       expect(used, `expected ${table}'s case-insensitive query to use ${foldedIndex}`).toBe(true)
     }
   })
