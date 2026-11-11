@@ -27,6 +27,8 @@ export interface CannedGit {
   status: string
   served: number
   repository: boolean
+  /** The repository root `rev-parse --show-toplevel` prints, for a row that runs the command in a subfolder; unset, the call's own cwd stands for it. */
+  root?: string
 }
 
 export function cannedGit(): CannedGit {
@@ -44,7 +46,7 @@ export function cannedFingerprintAnswer(state: CannedGit, cwd: string | undefine
   if (argv === 'rev-parse --show-toplevel HEAD') {
     state.served += 1
     if (!state.repository) return NOT_A_REPOSITORY
-    return { stdout: `${cwd ?? ''}\n${state.head}\n`, stderr: '', unfinished: false, exitCode: 0 }
+    return { stdout: `${state.root ?? cwd ?? ''}\n${state.head}\n`, stderr: '', unfinished: false, exitCode: 0 }
   }
   if (argv === 'status --porcelain -z --untracked-files=all') {
     state.served += 1

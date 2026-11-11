@@ -613,22 +613,27 @@ describe('gitStateFingerprintSync — uncommitted working-tree changes (M45 regr
     }
   })
 
-  // HAND-DERIVED: each change leaves `git status --porcelain` byte-identical (a.txt stays ` M a.txt`, an untracked folder stays `lib/`), so only the content of the listed files tells the two trees apart; the second write differs in size, so the check holds whatever the filesystem's mtime granularity.
+  // HAND-DERIVED: the porcelain each row's git answers with is what `git status --porcelain -z --untracked-files=all` prints for the files the row writes (the entry shape is the CAPTURE recorded in tests/helpers/canned_git.ts; tracked changes list before `??` entries). Rows 1, 3 and 4 leave it byte-identical, so only the content of the listed files tells the two trees apart; the second write differs in size, so the check holds whatever the filesystem's mtime granularity. Row 2 lists the second file, as the `=all` listing does. The two calls the fingerprint makes are answered from the canned state (a real git killed at GIT_STATE_TIMEOUT_MS reads as 'unknown', so as stale, which failed these rows on a loaded machine); the files are real and are stat'd for real.
   it.each([
-    { name: 'an already-modified file is edited again', runIn: '.', before: (d: string) => fs.writeFileSync(path.join(d, 'a.txt'), 'two\n'), change: (d: string) => fs.writeFileSync(path.join(d, 'a.txt'), 'three three\n') },
-    { name: 'a second file lands in an already-untracked folder', runIn: '.', before: (d: string) => { fs.mkdirSync(path.join(d, 'lib')); fs.writeFileSync(path.join(d, 'lib', 'one.ts'), 'export const one = 1\n') }, change: (d: string) => fs.writeFileSync(path.join(d, 'lib', 'two.ts'), 'export const two = 2\n') },
-    { name: 'a file in an already-untracked folder is edited again', runIn: '.', before: (d: string) => { fs.mkdirSync(path.join(d, 'lib')); fs.writeFileSync(path.join(d, 'lib', 'one.ts'), 'export const one = 1\n') }, change: (d: string) => fs.writeFileSync(path.join(d, 'lib', 'one.ts'), 'export const one = 11111\n') },
-    { name: 'an already-modified file at the repository root is edited again while the command ran in a subfolder', runIn: 'sub', before: (d: string) => { fs.mkdirSync(path.join(d, 'sub')); fs.writeFileSync(path.join(d, 'sub', 'keep.txt'), 'k\n'); fs.writeFileSync(path.join(d, 'a.txt'), 'two\n') }, change: (d: string) => fs.writeFileSync(path.join(d, 'a.txt'), 'three three\n') },
-  ])('flags a cached run of `npm test` as stale when $name', async ({ runIn, before, change }) => {
+    { name: 'an already-modified file is edited again', runIn: '.', status: ' M a.txt\0', statusAfter: ' M a.txt\0', before: (d: string) => fs.writeFileSync(path.join(d, 'a.txt'), 'two\n'), change: (d: string) => fs.writeFileSync(path.join(d, 'a.txt'), 'three three\n') },
+    { name: 'a second file lands in an already-untracked folder', runIn: '.', status: '?? lib/one.ts\0', statusAfter: '?? lib/one.ts\0?? lib/two.ts\0', before: (d: string) => { fs.mkdirSync(path.join(d, 'lib')); fs.writeFileSync(path.join(d, 'lib', 'one.ts'), 'export const one = 1\n') }, change: (d: string) => fs.writeFileSync(path.join(d, 'lib', 'two.ts'), 'export const two = 2\n') },
+    { name: 'a file in an already-untracked folder is edited again', runIn: '.', status: '?? lib/one.ts\0', statusAfter: '?? lib/one.ts\0', before: (d: string) => { fs.mkdirSync(path.join(d, 'lib')); fs.writeFileSync(path.join(d, 'lib', 'one.ts'), 'export const one = 1\n') }, change: (d: string) => fs.writeFileSync(path.join(d, 'lib', 'one.ts'), 'export const one = 11111\n') },
+    { name: 'an already-modified file at the repository root is edited again while the command ran in a subfolder', runIn: 'sub', status: ' M a.txt\0?? sub/keep.txt\0', statusAfter: ' M a.txt\0?? sub/keep.txt\0', before: (d: string) => { fs.mkdirSync(path.join(d, 'sub')); fs.writeFileSync(path.join(d, 'sub', 'keep.txt'), 'k\n'); fs.writeFileSync(path.join(d, 'a.txt'), 'two\n') }, change: (d: string) => fs.writeFileSync(path.join(d, 'a.txt'), 'three three\n') },
+  ])('flags a cached run of `npm test` as stale when $name', async ({ runIn, status, statusAfter, before, change }) => {
     const tmpDir = initGitRepoWithFile('tg-fp-gitwt-content-')
+    const git = installCanned(cannedGit())
+    git.root = tmpDir
     try {
       before(tmpDir)
+      git.status = status
       const cwd = path.join(tmpDir, runIn)
       const id = await storeBashOutput('npm test', 'ok', 0, cwd)
       const entry = getBashOutput(id)
+      expect(git.served, 'the canned git was never asked, so the row ran a real git').toBeGreaterThan(0)
       expect(isBashEntryStale(entry!, 'npm test', cwd)).toBe(false)
 
       change(tmpDir)
+      git.status = statusAfter
 
       expect(isBashEntryStale(entry!, 'npm test', cwd)).toBe(true)
     } finally {
