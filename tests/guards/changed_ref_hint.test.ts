@@ -6,7 +6,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 
 import { BUNDLE, type RunResult } from '../helpers/bundle.js'
 
@@ -22,7 +22,7 @@ afterAll(() => {
   }
 })
 
-// A process start costs seconds on a slow or busy machine, so the work is cut two ways: each fixture repo is three git starts however many commits it holds, and every bundle run a row needs is started together with the others in beforeAll, so the file waits for the longest chain of starts and not for their sum. Each run ends on its own timeout (execFile kills the child).
+// A process start costs seconds on a slow or busy machine, so the work is cut three ways: each fixture repo is three git starts however many commits it holds, the bundle runs one row needs are started together, and each piece is built the first time a row asks for it and shared by every later row (a memoized promise, never a repeat start). A row therefore waits only for the starts it reads, so no single deadline covers the whole file's processes, and a slow machine cannot spend one row's budget on another row's fixture. Each run ends on its own timeout (execFile kills the child).
 const RUN_TIMEOUT_MS = 50000
 
 function run(file: string, args: string[], opts: { cwd?: string; input?: string }): Promise<RunResult> {
@@ -78,34 +78,45 @@ async function buildRepo(commitCount: number): Promise<string> {
   return dir
 }
 
-interface Fixture {
-  readonly dir: string
-  /** The bare `token-goat changed` run, which resolves the default HEAD~5. */
-  readonly bare: RunResult
-  /** `changed --since <ref>` with the ref the bare run's hint suggested, or null when it suggested none. */
-  readonly follow: RunResult | null
-  readonly suggestedRef: string | null
-  /** The positional-ref runs, made in the 3-commit repo only. */
-  readonly positional: Positional | null
-}
-
-async function buildFixture(commitCount: number): Promise<Fixture> {
-  const dir = await buildRepo(commitCount)
-  // The 3-commit repo also serves the positional rows, whose runs start beside the bare run.
-  const positionalRuns = commitCount === 3 ? buildPositional(dir) : Promise.resolve(null)
-  const bare = await bundle(['changed'], dir)
-  const suggestedRef = /token-goat changed --since (\S+)/.exec(bare.stderr)?.[1] ?? null
-  const follow = suggestedRef === null ? null : await bundle(['changed', '--since', suggestedRef], dir)
-  return { dir, bare, follow, suggestedRef, positional: await positionalRuns }
-}
-
 interface Positional {
   readonly head1: RunResult
   readonly sinceA: RunResult
   readonly sinceB: RunResult
 }
 
-async function buildPositional(dir: string): Promise<Positional> {
+/** The bare `token-goat changed` run in the repo of `commitCount` commits, which resolves the default HEAD~5, and `changed --since <ref>` with the ref its hint suggested (null when it suggested none). */
+interface Hinted {
+  readonly bare: RunResult
+  readonly follow: RunResult | null
+  readonly suggestedRef: string | null
+}
+
+/** Memoizes `make` per key: the first ask starts the work, every later ask shares its promise, so nothing is ever started twice and nothing starts before a row needs it. */
+function memoized<K, V>(make: (key: K) => Promise<V>): (key: K) => Promise<V> {
+  const cache = new Map<K, Promise<V>>()
+  return (key) => {
+    let pending = cache.get(key)
+    if (pending === undefined) {
+      pending = make(key)
+      cache.set(key, pending)
+    }
+    return pending
+  }
+}
+
+const repoOf = memoized((commitCount: number) => buildRepo(commitCount))
+
+const hintedOf = memoized(async (commitCount: number): Promise<Hinted> => {
+  const dir = await repoOf(commitCount)
+  const bare = await bundle(['changed'], dir)
+  const suggestedRef = /token-goat changed --since (\S+)/.exec(bare.stderr)?.[1] ?? null
+  const follow = suggestedRef === null ? null : await bundle(['changed', '--since', suggestedRef], dir)
+  return { bare, follow, suggestedRef }
+})
+
+/** The positional-ref runs, made in the 3-commit repo only and started together. */
+const positionalOf = memoized(async (_: 'three'): Promise<Positional> => {
+  const dir = await repoOf(3)
   const [head1, sinceA, sinceB] = await Promise.all([
     bundle(['changed', 'HEAD~1'], dir),
     // HEAD~1 vs --since HEAD~2 -> --since wins -> 2 files changed (f2.ts, f3.ts)
@@ -114,32 +125,19 @@ async function buildPositional(dir: string): Promise<Positional> {
     bundle(['changed', 'HEAD~2', '--since', 'HEAD~1'], dir),
   ])
   return { head1, sinceA, sinceB }
-}
-
-let fixtures: ReadonlyMap<number, Fixture>
-let positional: Positional
-
-// Every start runs here, together, so a row only asserts on a finished run: the hook carries the wait for the longest chain of starts, and a slow machine cannot spend one row's budget on another row's fixture.
-beforeAll(async () => {
-  const sizes = [1, 3, 6]
-  const built = await Promise.all(sizes.map((count) => buildFixture(count)))
-  fixtures = new Map(sizes.map((count, i) => [count, built[i] as Fixture] as const))
-  positional = (fixtures.get(3) as Fixture).positional as Positional
 })
 
-const fixtureOf = (count: number): Fixture => fixtures.get(count) as Fixture
-
 describe('changed [ref] positional wiring (exact-count)', () => {
-  it('changed HEAD~1 resolves the positional ref, not the ignored-argument default path', () => {
-    const r = positional.head1
+  it('changed HEAD~1 resolves the positional ref, not the ignored-argument default path', async () => {
+    const r = (await positionalOf('three')).head1
     expect(r.status, r.stderr).toBe(0)
     expect(r.stderr).not.toContain('git diff failed')
     const lines = r.stdout.trim().split(/\r?\n/).filter(Boolean)
     expect(lines).toEqual(['f3.ts'])
   })
 
-  it('--since takes precedence over the positional ref in both directions', () => {
-    const { sinceA: a, sinceB: b } = positional
+  it('--since takes precedence over the positional ref in both directions', async () => {
+    const { sinceA: a, sinceB: b } = await positionalOf('three')
     expect(a.status, a.stderr).toBe(0)
     const aFiles = a.stdout.trim().split(/\r?\n/).filter(Boolean)
     expect(aFiles.sort()).toEqual(['f2.ts', 'f3.ts'])
@@ -153,23 +151,23 @@ describe('changed [ref] positional wiring (exact-count)', () => {
 })
 
 describe('changed default-ref hint on shallow repos (not a constant)', () => {
-  it('a 3-commit repo names "3 commits" in the hint', () => {
-    const r = fixtureOf(3).bare
+  it('a 3-commit repo names "3 commits" in the hint', async () => {
+    const r = (await hintedOf(3)).bare
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('git diff failed: fatal: ambiguous argument')
     expect(r.stderr).toContain('3 commits')
   })
 
-  it('a 1-commit repo names "1 commit" (singular) in the hint, not "1 commits"', () => {
-    const r = fixtureOf(1).bare
+  it('a 1-commit repo names "1 commit" (singular) in the hint, not "1 commits"', async () => {
+    const r = (await hintedOf(1)).bare
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('git diff failed: fatal: ambiguous argument')
     expect(r.stderr).toContain('1 commit')
     expect(r.stderr).not.toContain('1 commits')
   })
 
-  it.each([1, 3])('the suggested --since ref in the hint resolves and runs cleanly in a %i-commit repo (executable-suggestion guard)', (count) => {
-    const { bare, follow, suggestedRef } = fixtureOf(count)
+  it.each([1, 3])('the suggested --since ref in the hint resolves and runs cleanly in a %i-commit repo (executable-suggestion guard)', async (count) => {
+    const { bare, follow, suggestedRef } = await hintedOf(count)
     expect(bare.status).toBe(1)
     expect(suggestedRef, `no suggested-ref line found in stderr:\n${bare.stderr}`).not.toBeNull()
     expect(follow?.status, follow?.stderr).toBe(0)
@@ -177,8 +175,8 @@ describe('changed default-ref hint on shallow repos (not a constant)', () => {
 })
 
 describe('changed bare default in a deep repo stays untouched (byte-identical sanity)', () => {
-  it('a 6-commit repo resolves HEAD~5 without a hint appended', () => {
-    const r = fixtureOf(6).bare
+  it('a 6-commit repo resolves HEAD~5 without a hint appended', async () => {
+    const r = (await hintedOf(6)).bare
     expect(r.status, r.stderr).toBe(0)
     expect(r.stderr).not.toContain('Hint:')
   })
