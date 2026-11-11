@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { DeadlineReporter, optionsFromEnv } from '../scripts/prepush-deadline-reporter.mjs'
 import { DEADLINE_REASON, cutReport, isRealError, legVerdict, moduleOutcome, parseOut, splitPlan, summarize } from '../scripts/prepush-deadline.mjs'
 import { queryProcessCommandLine } from '../src/resident_process.js'
@@ -95,12 +95,15 @@ function write(root: string, rel: string, text: string): void {
 }
 
 /** seed: files committed with the first commit; truncatedStore: the failure record is cut off mid-way after it is written; newBranch: the remote has no such branch; originMain: origin/main exists and points at the first commit */
-type DecideOpts = { seed?: Record<string, string>; truncatedStore?: boolean; newBranch?: boolean; originMain?: boolean; xtrace?: boolean }
+type DecideOpts = { seed?: Record<string, string>; truncatedStore?: boolean; newBranch?: boolean; originMain?: boolean; xtrace?: boolean; viaWrapper?: boolean }
 
 const templates = new Map<string, { dir: string; base: string }>()
+// The second commit of a sandbox, by seed and changed files: rows that push the same change share one, so git add and git commit run once for them instead of once per row.
+const pushed = new Map<string, { dir: string; base: string; head: string }>()
 afterAll(() => {
-  for (const t of templates.values()) rmSync(t.dir, { recursive: true, force: true })
+  for (const t of [...templates.values(), ...pushed.values()]) rmSync(t.dir, { recursive: true, force: true })
   templates.clear()
+  pushed.clear()
 })
 /** A directory holding a sandbox repo with its first commit and the recorded failing test, built once per seed; the second commit and the pushed range are each row's own. */
 function firstCommitTemplate(seed: Record<string, string>): { dir: string; base: string } {
@@ -132,7 +135,7 @@ function buildFirstCommit(tpl: string, key: string, seed: Record<string, string>
   git(tpl, 'init', '-q', 'repo')
   git(root, 'add', '-A')
   git(root, 'commit', '-q', '-m', 'one')
-  const base = git(root, 'rev-parse', 'HEAD')
+  const base = looseHead(root)
   const log = path.join(tpl, 'tests.log')
   writeFileSync(log, ' FAIL  tests/a.test.ts > a > fails\n Test Files  1 failed | 4 passed (5)\n')
   execFileSync(process.execPath, [path.join(root, 'scripts/prepush-failed.mjs'), 'record', path.join(tpl, 'store.json'), 'win', base, log])
@@ -141,27 +144,78 @@ function buildFirstCommit(tpl: string, key: string, seed: Record<string, string>
   return made
 }
 
+/** The first-commit template with the given files changed in a second commit, built once per seed and change; the pushed range base..head is the same for every row that uses it. */
+function pushedTemplate(seed: Record<string, string>, change: Record<string, string>): { dir: string; base: string; head: string } {
+  const key = JSON.stringify([seed, change])
+  const have = pushed.get(key)
+  if (have) return have
+  const first = firstCommitTemplate(seed)
+  const tpl = mkdtempSync(path.join(tmpdir(), 'tg-focus-two-'))
+  try {
+    cpSync(first.dir, tpl, { recursive: true })
+    const root = path.join(tpl, 'repo')
+    for (const [rel, text] of Object.entries(change)) write(root, rel, text)
+    git(root, 'add', '-A')
+    git(root, 'commit', '-q', '--allow-empty', '-m', 'two')
+    const made = { dir: tpl, base: first.base, head: looseHead(root) }
+    pushed.set(key, made)
+    return made
+  } catch (e) {
+    // A build that failed part-way is not in the map, so the afterAll above would never remove its directory.
+    rmSync(tpl, { recursive: true, force: true })
+    throw e
+  }
+}
+
+// The bash the hook's wrapper picks, found once by running the wrapper itself on a script that prints it; rows other than the wrapper's own start that bash directly, which spares each of them the wrapper's sh and its version-check bash. Windows names it from BASH, since the wrapper there prints an MSYS path node cannot start.
+let hookBashPath: string | null = null
+function hookBash(): string {
+  if (hookBashPath !== null) return hookBashPath
+  if (process.platform === 'win32') {
+    hookBashPath = BASH ?? ''
+    return hookBashPath
+  }
+  const probeDir = mkdtempSync(path.join(tmpdir(), 'tg-focus-bash-'))
+  try {
+    const probe = path.join(probeDir, 'which-bash.sh')
+    writeFileSync(probe, 'printf %s "$BASH"\n')
+    hookBashPath = execFileSync(SH, [HOOK_WRAPPER, probe], { encoding: 'utf8' }).trim()
+    return hookBashPath
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true })
+  }
+}
+
 // The caller's environment without the PREPUSH_ and TG_PREPUSH_ knobs (PREPUSH_FULL, the budgets, the elapsed seconds), so only what a test sets reaches the script.
 const inheritedEnv = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(?:TG_)?PREPUSH_/.test(k)))
 
+type Decision = { note: string; focus: string[]; deferred: string; trace: string }
+const decisions = new Map<string, Decision>()
+/** The decision of one real script run, shared by rows that ask for exactly the same one: the same inputs give the same output, and each row still asserts on its own part of it. */
+function decide(change: Record<string, string>, env: Record<string, string> = {}, opts: DecideOpts = {}): Decision {
+  const key = JSON.stringify([change, env, opts])
+  const have = decisions.get(key)
+  if (have) return have
+  const made = runDecision(change, env, opts)
+  decisions.set(key, made)
+  return made
+}
+
 /** A sandbox repo with one recorded failing test, then the given files changed in a second commit. Returns the decision note and the focus list. */
-function decide(change: Record<string, string>, env: Record<string, string> = {}, opts: DecideOpts = {}): { note: string; focus: string[]; deferred: string; trace: string } {
+function runDecision(change: Record<string, string>, env: Record<string, string>, opts: DecideOpts): Decision {
   // The sandbox is reached through a symlink, as every macOS temp directory is (/var points into /private): a script that mistakes a symlinked path for a different file does nothing here
   realDir = mkdtempSync(path.join(tmpdir(), 'tg-focus-'))
   dir = `${realDir}-link`
   symlinkSync(realDir, dir, 'junction')
   const root = path.join(dir, 'repo')
-  // The first commit and the recorded failure are the same for every row with the same seed, so they are built once per seed and copied: each spawn costs a fraction of a second on a loaded host, and a row paid for them again every time
-  const template = firstCommitTemplate(opts.seed ?? {})
+  // The first commit and the recorded failure are the same for every row with the same seed, so they are built once per seed and copied: each spawn costs a fraction of a second on a loaded host, and a row paid for them again every time. The second commit is built once per seed and change too (pushedTemplate), so a row starts no git process of its own before the script runs
+  const template = pushedTemplate(opts.seed ?? {}, change)
   cpSync(template.dir, realDir, { recursive: true })
   const base = template.base
   const store = path.join(dir, 'store.json')
   if (opts.truncatedStore) writeFileSync(store, readFileSync(store, 'utf8').slice(0, 20))
   if (opts.originMain) write(root, '.git/refs/remotes/origin/main', `${base}\n`)
-  for (const [rel, text] of Object.entries(change)) write(root, rel, text)
-  git(root, 'add', '-A')
-  git(root, 'commit', '-q', '--allow-empty', '-m', 'two')
-  const head = looseHead(root)
+  const head = template.head
   // PREPUSH_FAILED_STORE names the store the row sets below anyway, so the sourced script does not fork a git rev-parse for a default path that is then overwritten (each fork costs seconds on a loaded host)
   const script = [
     `ROOT_DIR='${posix(root)}'`,
@@ -181,7 +235,8 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
   ].join('\n')
   const scriptFile = path.join(dir, 'focus-run.sh')
   writeFileSync(scriptFile, `${script}\n`)
-  const out = execFileSync(SH, [posix(HOOK_WRAPPER), posix(scriptFile)], { cwd: root, encoding: 'utf8', env: { ...inheritedEnv(), PREPUSH_FAILED_STORE: posix(store), ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
+  const [starter, starterArgs] = opts.viaWrapper ? [SH, [posix(HOOK_WRAPPER), posix(scriptFile)]] : [hookBash(), [posix(scriptFile)]]
+  const out = execFileSync(starter, starterArgs, { cwd: root, encoding: 'utf8', env: { ...inheritedEnv(), PREPUSH_FAILED_STORE: posix(store), ...env, PATH: `${path.dirname(BASH ?? '')}${path.delimiter}${process.env['PATH'] ?? ''}` } })
   awaitCleanupGone(dir)
   const note = /^NOTE=(.*)$/m.exec(out)?.[1] ?? ''
   const file = /^FILE=(.*)$/m.exec(out)?.[1]?.trim() ?? ''
@@ -191,18 +246,15 @@ function decide(change: Record<string, string>, env: Record<string, string> = {}
 }
 
 describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus decision', () => {
-  // One decision per row: each runs the real script, and two in one row doubled the row's cost. The first-commit sandboxes are built in the hook, which has its own budget, so no row pays for them.
+  // One decision per row: each runs the real script, and two in one row doubled the row's cost. The sandboxes are built lazily, by the first row that needs each, never together in one hook: a hook has one 60 s deadline for all of them, and each build is several process starts.
   const changelogSeed = { 'tests/reads_changelog.test.ts': "import fs from 'node:fs'\nfs.readFileSync('CHANGELOG.md')\n", 'CHANGELOG.md': 'one\n' }
   const wholeSrcSeed = { 'tests/whole_src.test.ts': "import fs from 'node:fs'\nfs.readdirSync('src')\n", 'tests/spawner.test.ts': "import { bundleTg } from './helpers/bundle.js'\nbundleTg()\n", 'tests/helpers/bundle.ts': 'export const bundleTg = () => 1\n' }
-  beforeAll(() => {
-    for (const seed of [{}, changelogSeed, wholeSrcSeed]) firstCommitTemplate(seed)
-  })
 
   // The wrapper is the only thing that prints this refusal: a script started any other way (bash -c, bash <file>) ignores TG_PREPUSH_BASH and runs.
   it('is started through run-with-bash-5.sh, as lefthook.yml starts the hook', () => {
     let failure: { status?: number; stderr?: unknown } | undefined
     try {
-      decide({ 'src/a.ts': 'export const a = 2\n' }, { TG_PREPUSH_BASH: '/no/such/bash' })
+      decide({ 'src/a.ts': 'export const a = 2\n' }, { TG_PREPUSH_BASH: '/no/such/bash' }, { viaWrapper: true })
     } catch (e) {
       failure = e as { status?: number; stderr?: unknown }
     }
