@@ -3,6 +3,7 @@ import { ensureDirSync } from './util.js';
 import * as path from 'node:path';
 
 import { dataDir } from './constants.js';
+import { registerReset } from './reset.js';
 import { redactSecrets } from './secret_redact.js';
 import Database from './sqlite_driver.js';
 
@@ -36,6 +37,18 @@ CREATE INDEX IF NOT EXISTS idx_project_symbol_discoveries_recent
 `;
 
 const connections = new Map<string, Database>();
+
+// A process that serves many invocations in turn (--batch-serve) clears its module caches between them; without this the handle opened for one invocation's data directory stays open after it, and on Windows that held file stops the directory being deleted.
+registerReset(() => {
+  for (const db of connections.values()) {
+    try {
+      db.close();
+    } catch {
+      // A handle that will not close must not stop the others, or the cache clear that called this.
+    }
+  }
+  connections.clear();
+});
 
 export function getSharedMemoryDb(): Database {
   const dbPath = path.resolve(dataDir(), 'shared-memory.sqlite3');
