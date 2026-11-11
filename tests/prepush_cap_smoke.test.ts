@@ -99,6 +99,8 @@ describe('writeOwed', () => {
 
 // Git Bash on Windows: a bare `bash` may be WSL's, so the Windows path is spelled out.
 const GIT_BASH = process.platform === 'win32' ? 'C:/Program Files/Git/bin/bash.exe' : 'bash'
+// Whether GIT_BASH has associative arrays, which run-all-checks.sh declares at its top (`declare -A`): macOS ships bash 3.2, where the hook stops on that line. Windows names Git Bash directly.
+const HOOK_BASH_HAS_ASSOC = process.platform === 'win32' || spawnSync(GIT_BASH, ['-c', 'declare -A probe'], { encoding: 'utf8' }).status === 0
 const CAP_SCRIPT = fileURLToPath(new URL('../.lefthook-scripts/prepush-cap.sh', import.meta.url))
 const slash = (p: string): string => p.replace(/\\/g, '/')
 // How long after the hook's exit the cleanup process may keep ending legs, read from the script so a change to the constant cannot pass unnoticed.
@@ -250,7 +252,16 @@ afterAll(() => {
 
 // The hook's own stop path, run for real: a temp copy of .lefthook-scripts and scripts, with the four leg scripts replaced by stubs that sleep for a set time and record their pid. The seam is the copy; nothing in the hook is stubbed but the legs.
 describe('the hard stop ends the legs of a real hook run', () => {
-  const bashAvailable = process.platform !== 'win32' || existsSync(GIT_BASH)
+  // The rows below are gated on HOOK_BASH_HAS_ASSOC: the hook cannot start on a bash without associative arrays.
+  const bashAvailable = (process.platform !== 'win32' || existsSync(GIT_BASH)) && HOOK_BASH_HAS_ASSOC
+
+  // Only where GIT_BASH is older than 4.0: the rows below are skipped there, and this row pins the reason (the hook's `declare -A` is refused). CAPTURE: the `invalid option` text is from the macOS CI log of run 43028369623, job 130548734108.
+  it.skipIf(HOOK_BASH_HAS_ASSOC)('the bash on this host has no associative arrays, which the hook declares at its top', () => {
+    const r = spawnSync(GIT_BASH, ['-c', 'declare -A probe'], { encoding: 'utf8' })
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('invalid option')
+  })
+
   const REPO = fileURLToPath(new URL('..', import.meta.url))
   // The stop fires as an event, not on the clock. The hook's start-up and planning are about 25 process starts before the first leg, 0.1 s each on a quiet host and 2 to 3 s each on this loaded Windows one (a stop timed against that start-up fired before any leg began, 2026-10-27), so a stub leg ends the watchdog by TERM once it has started: the watchdog's own TERM trap exits it, which wait_legs reads as the stop. HOOK_STOP_S is only the watchdog's own deadline, set past anything a row reaches.
   const HOOK_STOP_S = 300

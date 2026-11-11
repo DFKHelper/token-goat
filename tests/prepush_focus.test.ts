@@ -344,7 +344,7 @@ describe.skipIf(BASH === null || !CAN_JUNCTION || !HOOK_BASH_FOUND)('prepush foc
   })
 })
 
-describe.skipIf(BASH === null || !CAN_JUNCTION)('prepush focus note', () => {
+describe.skipIf(BASH === null || !CAN_JUNCTION || !HOOK_BASH_FOUND)('prepush focus note', () => {
   it('an empty range is a doubt that still runs the guards', () => {
     const r = decide({})
     expect(r.note).toContain('win leg focused')
