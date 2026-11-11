@@ -1892,6 +1892,8 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
       expect(result.context).toContain('token-goat json-query "data.json"')
+      expect(result.context).toContain('token-goat json-query "data.json" "items[*].id" --head 20')
+      expect(result.context).toContain('arrays and objects included')
     }
   })
 
@@ -1917,7 +1919,7 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     const result = preBashHandler(makeBashEvent('Get-Content payload.json.bak | ConvertFrom-Json'))
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
-      expect(result.context).toContain('token-goat json-query <file>')
+      expect(result.context).toContain('token-goat json-query "file.json" "items[*].id" --head 20')
     }
   })
 
@@ -1931,7 +1933,8 @@ describe('preBashHandler — PowerShell ConvertFrom-Json pipeline interception',
     expect(result.hookType).toBe('context')
     if (result.hookType === 'context') {
       expect(result.context).toContain('ConvertFrom-Json')
-      expect(result.context).toContain('token-goat json-query <file>')
+      expect(result.context).toContain('token-goat json-query "file.json" "items[*].id" --head 20')
+      expect(result.context).toContain('token-goat web-output')
     }
   })
 })

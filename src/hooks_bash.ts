@@ -2,7 +2,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { leadWithCommand, docSectionHint, fileSubject, nameSubject, quotedArg, quotedArgs, sentenceStart, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { leadWithCommand, docSectionHint, fileSubject, nameSubject, quotedArg, quotedArgs, sentenceStart, stripUnsafeSuggestions, jsonQueryExample, xmlQueryExamples } from './hint_suggestion_guard.js'
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
@@ -377,8 +377,9 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, toolOrScript } = terminalXml
     recordStat('session_hint', 0, 0)
     const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : '<file>'
+    const queries = xmlQueryExamples(target)
     return pathHint(filePath ? [target] : [],
-      `token-goat available for this file type, consider \`token-goat xml-query ${quotedArgs(target, '<xpath>').join(' ')}\` or \`token-goat xml-outline ${quotedArg(target)}\` first instead of terminal XML parsing (${nameSubject('tool', toolOrScript)}).`,
+      `token-goat available for this file type. Use \`${queries.outline}\` to inspect structure, then \`${queries.path}\` for a dot path or \`${queries.xpath}\` for XPath instead of terminal XML parsing (${nameSubject('tool', toolOrScript)}).`,
     )
   }
 
@@ -478,11 +479,11 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     if (psJsonPipe.filePath) {
       const hintPath = displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, psJsonPipe.filePath, hintCwd) : psJsonPipe.filePath)
       return pathHint(hintPath,
-        'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query ' + quotedArgs(hintPath, '<selector>').join(' ') + '` to extract fields directly without shell conversion scripts.',
+        'PowerShell `ConvertFrom-Json` pipeline detected. Use `' + jsonQueryExample(hintPath) + '` to select and print JSON values directly (arrays and objects included) without PowerShell conversion scripts.',
       )
     }
     return contextOutput(
-      'PowerShell `ConvertFrom-Json` pipeline detected. Use `token-goat json-query <file> "<selector>"` or `token-goat web-output` to extract fields directly.',
+      'PowerShell `ConvertFrom-Json` pipeline detected. For a file, use `' + jsonQueryExample('file.json') + '` to select and print JSON values directly (arrays and objects included); use `token-goat web-output` for browser results.',
     )
   }
 

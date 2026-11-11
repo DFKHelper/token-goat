@@ -72,11 +72,13 @@ describe('XML, DTSX, AMPKG, XAML runtime recognition & terminal XML interception
       const noTarget = { name: HINT_PLACEHOLDERS.section, real: false, slice: 'section' } as const
       const hint = surgicalHintFor('Package.dtsx', false, false, false, true, noTarget)
       expect(hint).toContain('token-goat xml-outline "Package.dtsx"')
-      expect(hint).toContain('token-goat xml-query "Package.dtsx" "<selector>"')
+      expect(hint).toContain('token-goat xml-query "Package.dtsx" "root.child"')
+      expect(hint).toContain('token-goat xml-query "Package.dtsx" --xpath "//root/child"')
 
       const cfgHint = surgicalHintForConfigDoc('Workflow.ampkg', false, false, false, true, noTarget)
       expect(cfgHint).toContain('token-goat xml-outline "Workflow.ampkg"')
-      expect(cfgHint).toContain('token-goat xml-query "Workflow.ampkg" "<selector>"')
+      expect(cfgHint).toContain('token-goat xml-query "Workflow.ampkg" "root.child"')
+      expect(cfgHint).toContain('token-goat xml-query "Workflow.ampkg" --xpath "//root/child"')
     })
   })
 
@@ -132,7 +134,8 @@ describe('XML, DTSX, AMPKG, XAML runtime recognition & terminal XML interception
       const out = preBashHandler(event)
       expectHookType(out, 'context')
       expect(out.context).toContain('token-goat available for this file type')
-      expect(out.context).toContain('token-goat xml-query "package.dtsx" "<xpath>"')
+      expect(out.context).toContain('token-goat xml-query "package.dtsx" "root.child"')
+      expect(out.context).toContain('token-goat xml-query "package.dtsx" --xpath "//root/child"')
       expect(out.context).toContain('token-goat xml-outline "package.dtsx"')
       expect(out.context).toContain('(tool "Select-Xml")')
     })
@@ -145,7 +148,8 @@ describe('XML, DTSX, AMPKG, XAML runtime recognition & terminal XML interception
       const out = preBashHandler(event)
       expectHookType(out, 'context')
       expect(out.context).toContain('token-goat available for this file type')
-      expect(out.context).toContain('token-goat xml-query "exported_workflows.ampkg" "<xpath>"')
+      expect(out.context).toContain('token-goat xml-query "exported_workflows.ampkg" "root.child"')
+      expect(out.context).toContain('token-goat xml-query "exported_workflows.ampkg" --xpath "//root/child"')
     })
   })
 
@@ -191,9 +195,10 @@ describe('XML, DTSX, AMPKG, XAML runtime recognition & terminal XML interception
       })
       const out = preReadHandler(event)
       expectHookType(out, 'context')
-      expect(out.context).toContain('token-goat available for this file type, consider xml-query/xml-outline first')
+      expect(out.context).toContain('Note: token-goat available for this file type.')
       expect(out.context).toContain('token-goat xml-outline')
-      expect(out.context).toContain('token-goat xml-query')
+      expect(out.context).toContain('"root.child"')
+      expect(out.context).toContain('--xpath "//root/child"')
     })
 
     it('emits pre-read runtime nudge on moderate-sized markdown reads', () => {

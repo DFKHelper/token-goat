@@ -752,7 +752,7 @@ describe('handleSvg', () => {
     expect(result.message).toContain('header-group')
     expect(result.message).toContain('main-flow')
     expect(result.message).toContain('xml-outline')
-    expect(result.message).toContain('xml-query')
+    expect(result.message).toContain('token-goat xml-query "/path/to/diagram.svg" --xpath "//g[@id]"')
   })
 })
 
@@ -768,7 +768,8 @@ describe('handleXml', () => {
     const result = handleXml('/path/to/catalog.xml', content)
     expect(result.shouldBlock).toBe(true)
     expect(result.message).toContain('xml-outline')
-    expect(result.message).toContain('xml-query')
+    expect(result.message).toContain('token-goat xml-query "/path/to/catalog.xml" "root.child"')
+    expect(result.message).toContain('token-goat xml-query "/path/to/catalog.xml" --xpath "//root/child"')
   })
 })
 

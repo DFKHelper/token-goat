@@ -11,7 +11,7 @@ import { applyHintTracking, classifyReadHint, logSuppressedDetection, meetsSavin
 import { preToolPathDeclined } from './vscode_path_gate.js'
 import { detectHarness } from './bridges/registry.js'
 import { readHintCrossesRule } from './rewrite_permission.js'
-import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart } from './hint_suggestion_guard.js'
+import { leadWithCommand, docNavigation, fencedCommand, fileSubject, nameSubject, quotedArg, quotedArgs, configGetCommand, sentenceStart, xmlQueryHint } from './hint_suggestion_guard.js'
 import { escapeHintName, headingTreeParts, hintTarget, sectionOrRangeCommand, sliceCommand, sliceForPath, fileQueryHint, HINT_PLACEHOLDERS } from './hint_target.js'
 import { addSectionReadReceipt } from './served_extent.js'
 import { isNodeModulesPath } from './path_containment.js'
@@ -292,7 +292,7 @@ function surgicalHint(filePath: string, basename: string, lineCount: number, fil
   const isXmlFile = /\.(xml|dtsx|ampkg|xaml)$/i.test(basename) && !basename.toLowerCase().endsWith('-meta.xml')
 
   if (isXmlFile) {
-    return leadWithCommand(`token-goat xml-outline ${quotedArg(filePath)}`, `for structure, or \`token-goat xml-query ${quotedArgs(filePath, '<selector>').join(' ')}\` for nodes`)
+    return xmlQueryHint(filePath)
   } else if (isDocFile && !docNavigation(filePath).section) {
     // A .txt file has no headings, so `section` exits 1 on it; grep is the command that runs.
     return fileQueryHint(filePath, '', 'pattern')
@@ -1547,7 +1547,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
             : sectionOrRangeCommand(shown, target)
       }
       const nudge = isXmlNudge
-        ? `Note: token-goat available for this file type, consider xml-query/xml-outline first: \`token-goat xml-outline ${quotedArg(shown)}\` or \`token-goat xml-query ${quotedArgs(shown, '<selector>').join(' ')}\``
+        ? `Note: token-goat available for this file type. ${xmlQueryHint(shown)}`
         : isDocNudge
         ? `Note: token-goat available for this file type, consider ${docSectionExhausted ? 'outline' : 'section'} first: \`${docSectionCommand}\``
         : isTestFile

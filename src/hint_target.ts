@@ -9,7 +9,7 @@ import { getHintTargetCandidates, setHintTargetCandidates, type HintTargetCandid
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
-import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint, configGetCommand, quotedArg, quotedArgs } from './hint_suggestion_guard.js'
+import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint, configGetCommand, quotedArg, quotedArgs, xmlQueryHint } from './hint_suggestion_guard.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
@@ -337,7 +337,7 @@ export function fileQueryHint(shownPath: string, reason = '', grepSubject = 'pat
     return leadWithCommand('token-goat ' + format + '-outline ' + quotedArg(shownPath), 'to list the top-level keys, then `token-goat ' + format + '-query ' + quotedArgs(shownPath, '<key>').join(' ') + '` to read one value', reason)
   }
   if (/\.(toml|ini|cfg)$/i.test(shownPath)) return leadWithCommand(configGetCommand(shownPath, '<key>'),'to read one value', reason)
-  if (/\.(xml|csproj)$/i.test(shownPath)) return leadWithCommand('token-goat xml-outline ' + quotedArg(shownPath), 'to see the element structure, then `token-goat xml-query ' + quotedArgs(shownPath, '<path>').join(' ') + '` to read one element', reason)
+  if (/\.(xml|csproj)$/i.test(shownPath)) return xmlQueryHint(shownPath, reason)
   return grepLinesHint('<' + grepSubject + '>', shownPath, reason)
 }
 

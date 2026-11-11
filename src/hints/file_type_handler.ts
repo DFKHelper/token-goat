@@ -4,7 +4,7 @@ import { findHtmlHeadingMatches } from '../languages/common.js'
 import { fenceUntrustedFileContent } from '../injection_scan.js'
 import { loadConfig } from '../config.js'
 import { redactSecrets } from '../secret_redact.js'
-import { canQuoteArg, fencedCommand, quotedArg, quotedArgs } from '../hint_suggestion_guard.js'
+import { canQuoteArg, fencedCommand, quotedArg, quotedArgs, xmlQueryExamples, xmlXPathQueryCommand } from '../hint_suggestion_guard.js'
 import { displaySafePath } from '../paths.js'
 
 export interface FileTypeResult {
@@ -270,6 +270,7 @@ export function handleTxt(filePath: string, content: string, contentLengthHint?:
 export function handleSvg(filePath: string, content: string, contentLengthHint?: number): FileTypeResult {
   const length = contentLengthHint ?? content.length
   if (length < FILE_TYPE_THRESHOLDS.svg) return { shouldBlock: false, message: '' }
+  const groupQuery = xmlXPathQueryCommand(filePath, '//g[@id]')
 
   if (previewUnavailable(content, length)) {
     return {
@@ -277,7 +278,7 @@ export function handleSvg(filePath: string, content: string, contentLengthHint?:
       message: [
         `Large SVG file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
         `Inspect structure: token-goat xml-outline ${quotedArg(filePath)}`,
-        `Query layers/elements: token-goat xml-query ${quotedArgs(filePath, '//g[@id]').join(' ')}`,
+        `Query layers/elements with XPath: ${groupQuery}`,
       ].join('\n'),
     }
   }
@@ -304,7 +305,7 @@ export function handleSvg(filePath: string, content: string, contentLengthHint?:
       `Large SVG/diagram file (${formatBytes(length)}) — raw coordinate paths flood context.`,
       preview ? fenceUntrustedFileContent(preview) : '',
       `Inspect structure: token-goat xml-outline ${quotedArg(filePath)}`,
-      `Query elements: token-goat xml-query ${quotedArgs(filePath, '//g[@id]').join(' ')}`,
+      `Query elements with XPath: ${groupQuery}`,
       `Search text labels: token-goat grep ${labelPattern} --glob ${labelGlob}`,
     ].filter(Boolean).join('\n'),
   }
@@ -317,6 +318,7 @@ export function handleXml(filePath: string, content: string, contentLengthHint?:
   const threshold = ext === 'dtsx' || ext === 'ampkg' || ext === 'xaml' ? FILE_TYPE_THRESHOLDS[ext] : FILE_TYPE_THRESHOLDS.xml
   if (length < threshold) return { shouldBlock: false, message: '' }
 
+  const queries = xmlQueryExamples(filePath)
   const typeLabel = ext === 'dtsx' ? 'SSIS package XML (.dtsx)' : ext === 'ampkg' ? 'workflow package XML (.ampkg)' : ext === 'xaml' ? 'XAML (.xaml)' : 'XML'
 
   if (previewUnavailable(content, length)) {
@@ -324,8 +326,8 @@ export function handleXml(filePath: string, content: string, contentLengthHint?:
       shouldBlock: true,
       message: [
         `Large ${typeLabel} file (${formatBytes(length)}) — too large to preview (exceeds the in-hook scan cap).`,
-        `Inspect structure: token-goat xml-outline ${quotedArg(filePath)}`,
-        `Query nodes: token-goat xml-query ${quotedArgs(filePath, '<selector>').join(' ')}`,
+        `Inspect structure: ${queries.outline}`,
+        `Query nodes: ${queries.path} (dot path) or ${queries.xpath} (XPath)`,
       ].join('\n'),
     }
   }
@@ -334,8 +336,8 @@ export function handleXml(filePath: string, content: string, contentLengthHint?:
     shouldBlock: true,
     message: [
       `Large ${typeLabel} file (${formatBytes(length)}).`,
-      `Inspect hierarchy: token-goat xml-outline ${quotedArg(filePath)}`,
-      `Query specific elements: token-goat xml-query ${quotedArgs(filePath, '<selector>').join(' ')}`,
+      `Inspect hierarchy: ${queries.outline}`,
+      `Query specific elements: ${queries.path} (dot path) or ${queries.xpath} (XPath)`,
     ].join('\n'),
   }
 }

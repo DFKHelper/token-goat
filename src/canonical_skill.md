@@ -76,6 +76,7 @@ Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of thi
 
 ### Keep command output surgical
 
+- For JSON and XML, inspect structure with `token-goat json-outline file` or `token-goat xml-outline file`, then query narrowly: `token-goat json-query file 'items[*].id' --head 20` or `token-goat xml-query file 'root.child'`. XPath goes in `--xpath`, for example `token-goat xml-query file --xpath '//root/child'`. JSON queries print arrays and objects directly, so PowerShell `ConvertFrom-Json` wrappers are unnecessary; use `token-goat web-output` for browser results.
 - For searches, set the match budget you can use: `token-goat grep 'pattern' src --max-lines 20`. Patterns are regexes; invalid regex syntax (such as an unfinished `addText(`) falls back to literal substring matching, while overlong or potentially stalling patterns are refused. Add `-C 2` only when nearby lines matter; add `--symbol` only when you need the enclosing declaration.
 - For a long document, read a bounded section: `token-goat section "README.md::Install" --max-lines 40`. Add `--grep 'pattern'` to keep matching body lines with their nearest sub-heading.
 - To locate a heading without reading its body, use `token-goat section README.md --list --grep 'Install'`.

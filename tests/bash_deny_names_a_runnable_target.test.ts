@@ -196,10 +196,11 @@ describe('surgicalHintFor with a resolved target', () => {
     )
   })
 
-  it('leaves the xml selector a placeholder: it is an XPath expression, not a name the index holds', () => {
+  it('shows runnable XML path and XPath query examples', () => {
     const xml = surgicalHintFor('a.xml', false, false, false, true, real('root', 'section'))
     expect(xml.startsWith('Run `token-goat xml-outline "a.xml"`')).toBe(true)
-    expect(xml).toContain('<selector>')
+    expect(xml).toContain('token-goat xml-query "a.xml" "root.child"')
+    expect(xml).toContain('token-goat xml-query "a.xml" --xpath "//root/child"')
   })
 })
 

@@ -294,6 +294,32 @@ export function configGetCommand(shownPath: string, key: string): string {
   return 'token-goat config-get ' + quotedArgs(shownPath, key).join(' ')
 }
 
+/** A runnable json-query example that caps a nested array projection to 20 results. */
+export function jsonQueryExample(shownPath: string): string {
+  return 'token-goat json-query ' + quotedArgs(shownPath, 'items[*].id').join(' ') + ' --head 20'
+}
+
+/** A runnable XPath query, keeping the file and expression under one safe quote mark. */
+export function xmlXPathQueryCommand(shownPath: string, expression: string): string {
+  const [fileArg, expressionArg] = quotedArgs(shownPath, expression)
+  return 'token-goat xml-query ' + fileArg + ' --xpath ' + expressionArg
+}
+
+/** Runnable XML structure, dot-path, and XPath commands for one file. */
+export function xmlQueryExamples(shownPath: string): { outline: string; path: string; xpath: string } {
+  return {
+    outline: 'token-goat xml-outline ' + quotedArg(shownPath),
+    path: 'token-goat xml-query ' + quotedArgs(shownPath, 'root.child').join(' '),
+    xpath: xmlXPathQueryCommand(shownPath, '//root/child'),
+  }
+}
+
+/** A shared XML read hint with accurate dot-path and XPath syntax. */
+export function xmlQueryHint(shownPath: string, reason = ''): string {
+  const examples = xmlQueryExamples(shownPath)
+  return leadWithCommand(examples.outline, `to inspect the element structure, then \`${examples.path}\` for a dot path or \`${examples.xpath}\` for XPath`, reason)
+}
+
 /** The hint for one section of a prose document: `section` with the `outline` alternative only where it runs, and a plain grep for a file type neither serves. */
 export function docSectionHint(shownPath: string, heading: string, reason = ''): string {
   const nav = docNavigation(shownPath)

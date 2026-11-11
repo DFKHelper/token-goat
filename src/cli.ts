@@ -75,7 +75,6 @@ import { COMPRESSION_PROFILES, parseCompressionProfile } from './config_types.js
 import { applyIndexingPriority } from './process_priority.js'
 import { runStats } from './cli_stats.js'
 import { runDoctorAndExit, runDoctorChecks } from './cli_doctor.js'
-import { fetchDoc, getDocSections, formatSections, getSectionContent } from './gdrive.js'
 import { runBenchCommand } from './cli_bench.js'
 import { expandGlobs } from './cli_diagnostics.js'
 export { expandGlobs }
@@ -866,6 +865,7 @@ async function cmdGdriveSections(fileId: string, opts: { heading?: string; fresh
   if (!loadConfig().gdrive.enabled) {
     throw new CliError('gdrive-sections is disabled by gdrive.enabled = false in this install')
   }
+  const { fetchDoc, getDocSections, formatSections, getSectionContent } = await import('./gdrive.js')
   const fetchOpts = { fresh: opts.fresh === true }
   // Fetch the whole doc once up front (honoring --fresh) so its raw byte size is available as the "full source" side of the bytes-saved calculation below, mirroring cmdSessionOutline/ cmdSessionSlice's convention. fetchDoc() always writes its result to the on-disk web-output cache before returning, so the getSectionContent/getDocSections calls below can safely pass `fresh: false` -- they read through to the entry this call just (re)populated, guaranteeing exactly one network fetch even with --fresh, instead of two.
   const text = await fetchDoc(fileId, fetchOpts)
