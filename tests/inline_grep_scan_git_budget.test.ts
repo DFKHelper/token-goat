@@ -83,16 +83,25 @@ describe('the git calls of one scope decision share one deadline', () => {
   })
 })
 
-// CAPTURE: git 2.53.0.windows.1, a scratch repo with a canary command (`echo x >> marker`) in each command-running config key: `git ls-files -z -co --exclude-standard`, `check-ignore -q`, `rev-parse --show-prefix` ran only the core.fsmonitor canary, and not even that under `-c core.fsmonitor=`. The row keeps that one in force on the real default path.
-describe('a repo-local config key that runs a command', () => {
+// CAPTURE: git 2.53.0.windows.1, a scratch repo with a canary command (`echo x >> marker`) in each command-running config key: `git ls-files -z -co --exclude-standard`, `check-ignore -q`, `rev-parse --show-prefix` ran only the core.fsmonitor canary, and not even that under `-c core.fsmonitor=`. The row keeps that one in force on the real default path. The suite hands every git start `core.fsmonitor=false` through GIT_CONFIG_COUNT (tests/helpers/git-no-fsmonitor.ts, installed by tests/setup/isolate-home.ts), and an environment entry outranks the repo-local config, so a repo-local canary never fires here, not even under a bare git. The wrapper keeps an environment that already names core.fsmonitor, so the canary rides in the environment: below the command line `-c core.fsmonitor=` the product passes, and above the repo-local scope a hostile repo can write. Dropping the product's `-c` therefore lets the canary run, where the injected `false` would have hidden it.
+describe('a config key that runs a command', () => {
   it('does not run during a scope read, while the same canary does run under a bare git', () => {
     const dir = project({ 'mod.py': 'def unique_loader(path):\n    return 1\n' })
     const marker = path.join(dir, '..', 'fsmonitor-' + path.basename(dir) + '.marker').replace(/\\/g, '/')
-    execFileSync('git', ['config', '--local', 'core.fsmonitor', 'echo x >> ' + marker], { cwd: dir })
-    execFileSync('git', ['-c', 'maintenance.auto=false', 'ls-files', '-z', '-co', '--exclude-standard', '--', '.'], { cwd: dir, stdio: 'ignore' })
+    const canary = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.fsmonitor', GIT_CONFIG_VALUE_0: 'echo x >> ' + marker }
+    execFileSync('git', ['-c', 'maintenance.auto=false', 'ls-files', '-z', '-co', '--exclude-standard', '--', '.'], { cwd: dir, stdio: 'ignore', env: { ...process.env, ...canary } })
     expect(fs.existsSync(marker), 'the canary can fire, so its absence below means something').toBe(true)
     fs.rmSync(marker)
-    readScopeDir(dir, dir)
+    const before = Object.fromEntries(Object.keys(canary).map((key) => [key, process.env[key]]))
+    Object.assign(process.env, canary)
+    try {
+      readScopeDir(dir, dir)
+    } finally {
+      for (const [key, value] of Object.entries(before)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
     expect(fs.existsSync(marker)).toBe(false)
   })
 })
