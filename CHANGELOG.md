@@ -4,6 +4,15 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+## [2.9.35] - 2026-11-10
+
+### Added
+
+- **`read` and `section` accept separate positional arguments, and hint suggestions quote safely in PowerShell.**
+- **`manifest-sweep` inspects the dependencies declared by nested package manifests in one command.**
+- **`--batch-serve` accepts a multi-query request.** A request may carry `operations` (`symbol`, `read`, `brief`, `section`, `semantic`, `skeleton`, `outline`, `refs`), which run in order and answer in one reply; the same release adds shared project memory, a stack-trace output filter and faster call-graph traversal.
+- **Outlines and reads cover more structure.** C# `#region` blocks are addressable as sections, `html-query --content` returns the raw content of script and style blocks, and `skeleton --grep` and `outline --grep` also match Java declaration signatures, including annotations; the parser fingerprint changed, so existing indexes reindex after upgrade.
+
 ### Changed
 
 - **`symbol` prints the whole body up to about 12 KB, shared fairly across matches; each match still shows at least 5 lines, none longer than 2,400 bytes.** A body past the budget is cut at a line and names the `read` command that returns the rest.
@@ -15,6 +24,32 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - `changed` now recognizes the exact Git `--name-status` option-order error when a path is used as the baseline, guides CLI callers to `--since` or `--grep` and MCP callers to pass a ref rather than a path filter, and does not misclassify unrelated revision errors with similar wording.
 - `grep` falls back to literal substring matching for malformed regex syntax while retaining refusals for overlong or potentially stalling patterns.
 - Shell/task-output line deduplication avoids an intermediate split-line array; direct `find` results stop collecting unused fuzzy names, and the Bash hook handles `find` before unrelated output-file probes.
+- Hooks deduplicate repeated CLI and file-covered advisories per session, so the same hint is not repeated within one session.
+- Hooks, search and the worker stall less, because their I/O blocks less.
+- The worker yields its background backlog and housekeeping while a foreground turn is active.
+- The worker daemon now exits after 30 minutes with nothing to index, down from 6 hours; `TG_WORKER_IDLE_EXIT_MS` still changes it, and the next edit or command starts a new one.
+- The browser image hook and the subagent briefing project map are cached or fast-gated before config loads.
+- `grep` scans through a shared scanner, and hint-target and outline lookups reuse bounded in-memory caches, so repeated hints on the same file cost less.
+- A repeated line-range read that is refused now gets a shorter message from its second refusal and a terse one from its third on, so the model is steered to the cached output rather than retrying.
+- The canonical skill's paging warning now points at the command named in the denial itself.
+- **The pre-push hook has a hard stop.** Every leg still running at 540 s (`PREPUSH_HARD_STOP_S` overrides it, can only lower it: a larger value is clamped to 540 s, which leaves a 10 s startup reserve, a 10 s TERM wait, a 20 s post-stop reap and 20 s of cleanup inside the 600 s hook limit) is ended with its process tree, including a test-file selection still in progress. A stopped lint or typecheck fails the push, since it was not verified. A stopped test leg passes with a notice listing the files it did not finish, which are recorded in `owed-<leg>.txt` beside the failed-test store. CI runs the full suite on pushes to main and on pull requests. `PREPUSH_FULL=1` runs without a stop.
+
+### Fixed
+
+- **Token-goat MCP tools are disabled when hooks are available, so the same work is not offered twice.**
+- **`doctor` self-tests the wired native copy when it is stale or broken.**
+- **`install` omits the matcher property on hook events that are not tool events.**
+- **Hooks pass a call through when its native arguments are missing, instead of failing.**
+- **Search ranks a whole-word name match above a token match.**
+- **`php-lint` counts failed files with the right singular or plural noun.**
+- **A worker that retires drops its queued embeds instead of waiting on them.**
+- **Repeated large-file Read calls no longer loop on deny messages.**
+- **`doctor` reads the Windows Defender exclusion list through the shared UTF-8 helper.**
+- **`@hono/node-server` is updated from 1.19.17 to 2.1.5, a major version bump, past GHSA-rmxm-3fg6-px4f.**
+- **`session-outline`, `session-slice` and `session-audit` handle redacted thinking blocks.** A transcript block of type `redacted_thinking` (the API's safety-redacted reasoning, whose `data` field is opaque) now renders as a placeholder that says the content is redacted, and a turn holding only one previews as `(redacted thinking)`. `session-audit` counts its bytes under assistant thinking instead of dropping them.
+- **The pre-push hook no longer kills anything itself; one cleanup process does.** The hook starts `prepush-reaper.sh`, registers each leg with it and sends it kill requests, so a hung or missing `taskkill`, a killed hook or a child that `taskkill /T` leaves behind (an MSYS `sleep`) can no longer keep a leg alive or hold the hook. A leftover leg can outlive the hook by up to 30 s while the cleanup process ends it; the next push reports any it could not end in `reaper-last.txt` beside the failed-test store. The hook waits for the cleanup process to say it is up, not for a fixed number of seconds, so a loaded computer no longer fails the push; the push fails at once, with a notice, if the cleanup process exits before it is up. It stays within its 30 s of the moment the hook is gone (it stamps both in its record), and the hook's closing notice says so when the cleanup process itself is not running; a tick is now reserved inside the hook's tail budget, so the whole hook ends under 600 s.
+- **`qs` is pinned to 6.16.1, past GHSA-6pq8-jhm2-2vcw.** The moderate advisory covers 6.7.0 through 6.16.0, a denial of service in `qs.stringify` with `arrayFormat: 'comma'`, and the root `overrides` entry held it at 6.16.0. The entry is now the exact `6.16.1`, the first release past the range, which was published on 2026-10-14. A range would have resolved to 6.16.2 or 6.17.0, both published inside the seven-day cooldown. This repository's own `npm audit` now reports only the body-parser finding that [SECURITY.md](SECURITY.md#dependency-advisories) already describes.
+- **Two Agent spawns with identical input keep their own cached reports when the host supplies a tool_use_id.** The recall id then includes that `tool_use_id`, so the second report no longer overwrites the first. A long plain-text report that quotes the background-launch markers near its start is cached again, and a plain-text launch acknowledgement is recognized by its opening sentence.
 
 ## [2.9.34] - 2026-11-02
 
@@ -44,15 +79,6 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **A folded Markdown Read in the numbered layout is no longer left unfolded when the file has a long path.** The layout note that rides with such a fold is shorter, so a two-paragraph fold on a long temp path (macOS) still clears the minimum saving and is delivered.
 - **A long misspelled symbol name now lists the real name first.** When the query was 8 to 64 characters and also contained shorter real names, the list showed fragments such as `get` and `read` and missed the name one edit away.
 - **A Markdown Read no longer prints a section pointer that would be stripped.** A folded paragraph under a heading that no quote mark can hold, such as one with both a backtick and an apostrophe, is now delivered whole instead of behind a "command omitted" line. A heading holding a backtick or `::` keeps its own pointer while the other headings still share one combined command, and a heading with an invisible variation selector or a command substitution is delivered whole.
-- **`session-outline`, `session-slice` and `session-audit` handle redacted thinking blocks.** A transcript block of type `redacted_thinking` (the API's safety-redacted reasoning, whose `data` field is opaque) now renders as a placeholder that says the content is redacted, and a turn holding only one previews as `(redacted thinking)`. `session-audit` counts its bytes under assistant thinking instead of dropping them.
-
-- **The pre-push hook has a hard stop.** Every leg still running at 540 s (`PREPUSH_HARD_STOP_S` overrides it, can only lower it: a larger value is clamped to 540 s, which leaves a 10 s startup reserve, a 10 s TERM wait, a 20 s post-stop reap and 20 s of cleanup inside the 600 s hook limit) is ended with its process tree, including a test-file selection still in progress. A stopped lint or typecheck fails the push, since it was not verified. A stopped test leg passes with a notice listing the files it did not finish, which are recorded in `owed-<leg>.txt` beside the failed-test store. CI runs the full suite on pushes to main and on pull requests. `PREPUSH_FULL=1` runs without a stop.
-
-### Fixed
-
-- **The pre-push hook no longer kills anything itself; one cleanup process does.** The hook starts `prepush-reaper.sh`, registers each leg with it and sends it kill requests, so a hung or missing `taskkill`, a killed hook or a child that `taskkill /T` leaves behind (an MSYS `sleep`) can no longer keep a leg alive or hold the hook. A leftover leg can outlive the hook by up to 30 s while the cleanup process ends it; the next push reports any it could not end in `reaper-last.txt` beside the failed-test store. The hook waits for the cleanup process to say it is up, not for a fixed number of seconds, so a loaded computer no longer fails the push; the push fails at once, with a notice, if the cleanup process exits before it is up. It stays within its 30 s of the moment the hook is gone (it stamps both in its record), and the hook's closing notice says so when the cleanup process itself is not running; a tick is now reserved inside the hook's tail budget, so the whole hook ends under 600 s.
-
-- **`qs` is pinned to 6.16.1, past GHSA-6pq8-jhm2-2vcw.** The moderate advisory covers 6.7.0 through 6.16.0, a denial of service in `qs.stringify` with `arrayFormat: 'comma'`, and the root `overrides` entry held it at 6.16.0. The entry is now the exact `6.16.1`, the first release past the range, which was published on 2026-10-14. A range would have resolved to 6.16.2 or 6.17.0, both published inside the seven-day cooldown. This repository's own `npm audit` now reports only the body-parser finding that [SECURITY.md](SECURITY.md#dependency-advisories) already describes.
 
 ## [2.9.33] - 2026-10-26
 
@@ -78,8 +104,6 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **A git killed by a signal reads as unknown, not as exit 1.** A git ended by a signal such as SIGKILL used to read as exit 1, so an inline Grep scope check read it as a negative answer, and the post-Bash hook took it for a git that never ran and asked for no reconcile. It now reads as exit -1 with the signal named, and each caller takes its unknown branch. Upgrading reindexes: the parser fingerprint changed because `src/util.ts` is a shared extraction source, so already-indexed files are reparsed once.
 - **HTML extraction ignores style-body markup without crossing document boundaries.** CSS contents no longer produce HTML headings or symbols, while style-shaped text inside comments, RCDATA elements, declarations, custom-element attributes, and self-closing SVG styles does not hide following markup. The parser fingerprint change triggers reindexing on upgrade.
 - **A Bash call that runs in the background, or sets its own long timeout, is no longer cut at the 600 s compress bound.** The compress wrapper took its `--timeout` only from `bash_compress.timeout_seconds`, so `run_in_background` calls and foreground calls with a longer `timeout` were killed at 600 s with exit 124. A background call now gets the config's 7200 s upper bound, and a foreground call gets its own timeout in seconds when that is larger than the configured value. Both stay within the bound, and the configured value still applies when neither field is set.
-
-- **Two Agent spawns with identical input keep their own cached reports when the host supplies a tool_use_id.** The recall id then includes that `tool_use_id`, so the second report no longer overwrites the first. A long plain-text report that quotes the background-launch markers near its start is cached again, and a plain-text launch acknowledgement is recognised by its opening sentence.
 
 - **The Stop advisory no longer fires on scratch edits or misses real checks.** It named throwaway probes in the harness scratchpad (outside the project, under the OS temp dir) as unverified work, and said "no test, lint, typecheck or build was run" after a session that ran its validator scripts. An edit outside the session's project root (the nearest project marker above the Stop event's working directory) no longer counts when it sits under the OS temp dir, and with no root known an edit under the OS temp dir does not count either; a sibling package, another repo or a sibling worktree outside the root still counts. A passing `python <dir>/run_*tests*.py`, `validate*.py`, `check_*.py` or `<script>.py ... --self-test` now counts as a check, but only with path or selector arguments: `--help`, `-h`, `--list`, `--version`, `--dry-run` and any other flag make it not a check. A `git commit` or `git push` is never counted, because a hook file existing does not prove it checks anything. The command is stored without any argument beyond the script path and `--self-test`. The advisory still speaks once per distinct state; it repeated only because each turn edited a new file.
 

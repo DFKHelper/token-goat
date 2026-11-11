@@ -286,7 +286,7 @@ const SITES: Site[] = [
   },
   {
     name: 'hooks_read.ts large-markdown heading-tree deny',
-    real: (h) => '::' + h + '"` to read one section.\n',
+    real: (h) => '" "' + h + '" --_section-read-receipt ',
     fallback: '::Heading Name"',
     guarded: true,
     fallbackHeadings: HOSTILE,
@@ -300,7 +300,7 @@ const SITES: Site[] = [
   },
   {
     name: 'hooks_read_slice.ts truncated-read deny',
-    real: (h) => '" "' + h + '"` for one part',
+    real: (h) => '" "' + h + '" --_section-read-receipt ',
     fallback: 'Run `token-goat skeleton "',
     guarded: true,
     fallbackHeadings: [],
@@ -362,7 +362,7 @@ const SITES: Site[] = [
   },
   {
     name: 'fold_structure.ts large-markdown outline notice',
-    real: (h) => 'Run token-goat section "guide.md::' + h + '"',
+    real: (h) => 'Run token-goat section "guide.md" "' + h + '" --_section-read-receipt ',
     fallback: 'Run token-goat section "guide.md::<Heading>"',
     guarded: false,
     fallbackHeadings: HOSTILE,

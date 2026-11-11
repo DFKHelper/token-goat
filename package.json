@@ -1,6 +1,6 @@
 {
   "name": "token-goat",
-  "version": "2.9.34",
+  "version": "2.9.35",
   "description": "Surgical companion for Claude Code and other AI coding agents that saves turns, context and tokens",
   "type": "module",
   "main": "./dist/token-goat.mjs",
