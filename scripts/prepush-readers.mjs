@@ -1,6 +1,6 @@
 // Finds the tests the import graph (scripts/prepush-graph.mjs) cannot see: a test that names a changed file as text (reads it, scans for it, or spawns it as a program), a test that scans src as text, and a test that spawns the built bundle. They are found by one static text scan of the tracked test files and come in three tiers, nearest first: the tests naming a changed path, then the tests that read src as text (only when src changed), then the tests that spawn the bundle (only when src changed). A scan is a superset on purpose: a test listed here that does not reach the change costs budget, never coverage. Built-in modules only.
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { compareCodeUnits, GIT_TIMEOUT_MS, relativeSpecifiers, resolveSpecifier, withoutImports } from './prepush-graph.mjs'
 
@@ -19,7 +19,7 @@ const REGEX_AFTER = /[(,=:[!&|?{};+\-*%<>~^]$/
 
 /** @param {string} root @returns {string[]} every tracked path under tests, listed with `git ls-files` so nothing walks the disk */
 function trackedUnderTests(root) {
-  return execFileSync('git', ['ls-files', '-z', 'tests'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).split('\0').filter((p) => p !== '')
+  return execFileSync('git', ['ls-files', '-z', 'tests'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).split('\0').filter((p) => p !== '' && existsSync(path.join(root, p)))
 }
 
 /** @param {string} root @returns {Map<string, string>} repo-relative path -> text of every tracked test file outside tests/fixtures, listed with `git ls-files` so nothing walks the disk */

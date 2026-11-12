@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Finds which test files import a changed module, nearest first. A static scan of the relative import specifiers in src, tests and scripts builds the importer graph; a walk from the changed modules over it gives each test file its distance (1 = imports the module itself). This replaces `vitest related`, which follows importers to any depth and so selects most of the suite whenever a widely imported module changes. Usage: node scripts/prepush-graph.mjs ROOT PATH... prints `<distance><TAB><test file>` per line. Built-in modules only.
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { isMainModule } from './is-main-module.mjs'
 
@@ -104,7 +104,8 @@ export function readSources(root) {
   const sources = new Map()
   const listed = execFileSync('git', ['-c', 'core.quotepath=false', 'ls-files', '-z', '--', ...ROOTS], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).split('\0')
   for (const p of listed) {
-    if (p !== '' && CODE_FILE.test(p)) sources.set(p, readFileSync(path.join(root, p), 'utf8'))
+    // git ls-files lists a file deleted from the working tree until the deletion is staged; it is not read.
+    if (p !== '' && CODE_FILE.test(p) && existsSync(path.join(root, p))) sources.set(p, readFileSync(path.join(root, p), 'utf8'))
   }
   return sources
 }

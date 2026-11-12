@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { readTrackedTests, textReaderTiers, withoutCommentsOrUrls } from '../scripts/prepush-readers.mjs'
+import { readTrackedSupport, readTrackedTests, textReaderTiers, withoutCommentsOrUrls } from '../scripts/prepush-readers.mjs'
 import { decideSelection } from '../scripts/prepush-select.mjs'
 
 // Fixture provenance. Test texts: HAND-DERIVED from the two shapes the repo's own tests take (tests/bridges_status.test.ts scans every file of src with readdirSync and readFileSync; tests/helpers/bundle.ts is imported by the files that spawn dist/token-goat.mjs), reduced to the lines the scan keys on. The shas are synthetic.
@@ -131,6 +131,21 @@ describe('prepush tracked test scan', () => {
     git('add', '-A')
     writeFileSync(path.join(dir, 'tests/untracked.test.ts'), 'u')
     expect([...readTrackedTests(dir).keys()].sort()).toEqual(['tests/a.test.ts', 'tests/guards/g.test.ts'])
+  })
+
+  it('skips a tracked test or support file deleted from the working tree, which git ls-files still lists', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'tg-readers-'))
+    for (const rel of ['tests/a.test.ts', 'tests/gone.test.ts', 'tests/helpers/gone.ts', 'tests/helpers/h.ts']) {
+      mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+      writeFileSync(path.join(dir, rel), 'export {}\n')
+    }
+    const git = (...args: string[]): string => execFileSync('git', ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'user.name=t', '-c', 'user.email=t@example.com', ...args], { cwd: dir, encoding: 'utf8' })
+    git('init', '-q')
+    git('add', '-A')
+    rmSync(path.join(dir, 'tests/gone.test.ts'))
+    rmSync(path.join(dir, 'tests/helpers/gone.ts'))
+    expect([...readTrackedTests(dir).keys()]).toEqual(['tests/a.test.ts'])
+    expect([...readTrackedSupport(dir).keys()]).toEqual(['tests/helpers/h.ts'])
   })
 })
 

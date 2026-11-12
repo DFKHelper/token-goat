@@ -129,6 +129,18 @@ describe('prepush graph: sources are the tracked files', () => {
     expect([...readSources(dir).keys()].sort()).toEqual(['src/a.ts', 'tests/a.test.ts'])
   })
 
+  it('skips a tracked file deleted from the working tree, which git ls-files still lists until the deletion is staged', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'tg-graph-'))
+    for (const rel of ['src/a.ts', 'tests/gone.test.ts']) {
+      mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+      writeFileSync(path.join(dir, rel), 'export {}\n')
+    }
+    git('init', '-q')
+    git('add', '-A')
+    rmSync(path.join(dir, 'tests/gone.test.ts'))
+    expect([...readSources(dir).keys()].sort()).toEqual(['src/a.ts'])
+  })
+
   it('throws when the root is not a git repository, so the selector falls back to the full leg', () => {
     dir = mkdtempSync(path.join(tmpdir(), 'tg-graph-'))
     for (const rel of ['src/a.ts', 'tests/a.test.ts', 'scripts/a.mjs']) {
