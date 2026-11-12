@@ -1586,7 +1586,9 @@ describe('note command', () => {
   })
 
   afterAll(async () => {
-    fs.rmSync(noteData, { recursive: true, force: true })
+    // The shared batch server holds this dir's database open: end it first, then retry while the handle closes.
+    stopBatchCli()
+    fs.rmSync(noteData, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   })
 
   it('set then get round-trips a value', async () => {

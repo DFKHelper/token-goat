@@ -829,6 +829,17 @@ describe('process behaviour', () => {
     expect(fallbackRuns()).toBe(runs)
   })
 
+  // HAND-DERIVED: main() in native/tg-hook/src/main.rs (f590b0646): a host that drops the hook's args array
+  // runs the bare command, and the client answers the valid no-op `{}` with exit 0, not a block.
+  it('no arguments at all fail open with the no-op response, running nothing', () => {
+    const runs = fallbackRuns()
+    const res = spawnSync(bin, [], { cwd: sb.proj, env: sb.env, input: '{}', encoding: 'utf8' })
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe('{}\n')
+    expect(res.stderr).toBe('')
+    expect(fallbackRuns()).toBe(runs)
+  })
+
   it.skipIf(process.platform === 'darwin')('killing the client kills the wrapped command it started (Windows job object, Linux parent-death signal; macOS has neither)', async () => {
     const pidFile = path.join(sb.base, `hang-${Date.now()}.pid`)
     let grandchild = 0

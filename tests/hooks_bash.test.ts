@@ -4780,24 +4780,20 @@ describe('postBashHandler — git-mutation staleness enqueue', () => {
         execFileSync('git', args, { cwd: dir, stdio: 'ignore' })
       }
       const gitEnv = ['-c', 'user.email=t@t.t', '-c', 'user.name=t', '-c', 'core.hooksPath=/dev/null']
-      writeFileSync(join(dir, 'base.txt'), 'base\n')
+      // One fast-import writes the whole history; a git spawn per step took over a minute on a loaded host.
+      const originalBranch = 'trunk'
+      let when = 1_700_000_000
+      const commit = (ref: string, message: string, file: string, body: string, from?: string): string =>
+        `commit refs/heads/${ref}\ncommitter t <t@t.t> ${when++} +0000\ndata ${message.length}\n${message}\n` +
+        (from === undefined ? '' : `from refs/heads/${from}\n`) +
+        `M 100644 inline ${file}\ndata ${body.length}\n${body}\n`
+      const history =
+        commit(originalBranch, 'init', 'base.txt', 'base\n') +
+        commit('feature', 'add first.txt', 'first.txt', 'first\n', originalBranch) +
+        commit('feature', 'add second.txt', 'second.txt', 'second\n') +
+        commit(originalBranch, 'unrelated mainline commit', 'mainline.txt', 'mainline\n')
       git(['init'])
-      git([...gitEnv, 'add', '.'])
-      git([...gitEnv, 'commit', '-m', 'init'])
-      const originalBranch = execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: dir }).toString().trim()
-
-      git(['checkout', '-b', 'feature'])
-      writeFileSync(join(dir, 'first.txt'), 'first\n')
-      git([...gitEnv, 'add', 'first.txt'])
-      git([...gitEnv, 'commit', '-m', 'add first.txt'])
-      writeFileSync(join(dir, 'second.txt'), 'second\n')
-      git([...gitEnv, 'add', 'second.txt'])
-      git([...gitEnv, 'commit', '-m', 'add second.txt'])
-
-      git(['checkout', originalBranch])
-      writeFileSync(join(dir, 'mainline.txt'), 'mainline\n')
-      git([...gitEnv, 'add', 'mainline.txt'])
-      git([...gitEnv, 'commit', '-m', 'unrelated mainline commit'])
+      execFileSync('git', ['fast-import', '--quiet'], { cwd: dir, input: history, stdio: ['pipe', 'ignore', 'ignore'] })
 
       git(['checkout', 'feature'])
       execFileSync('git', [...gitEnv, 'rebase', originalBranch], { cwd: dir, stdio: 'ignore' })
