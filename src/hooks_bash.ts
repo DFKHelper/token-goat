@@ -2,7 +2,7 @@
 
 import type { HookEvent } from './hook_registry.js'
 import { registerHook } from './hook_registry.js'
-import { leadWithCommand, docSectionHint, fileSubject, nameSubject, quotedArg, quotedArgs, sentenceStart, stripUnsafeSuggestions, jsonQueryExample, xmlQueryExamples } from './hint_suggestion_guard.js'
+import { leadWithCommand, docSectionHint, fileSubject, nameSubject, quotedArg, quotedArgs, sentenceStart, stripUnsafeSuggestions, jsonQueryExample, xmlXPathQueryCommand } from './hint_suggestion_guard.js'
 import { contextOutput, denyOutput, passOutput, getCwd } from './hooks_common.js'
 import { applyHintTracking, classifyBashHint, meetsSavingsFloor, logSuppressedDetection } from './hint_stats.js'
 import type { HookOutput } from './types.js'
@@ -377,9 +377,8 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
     const { filePath, toolOrScript } = terminalXml
     recordStat('session_hint', 0, 0)
     const target = filePath ? displaySafePath(cdStripped ? resolveCdHintPath(rawCmd, filePath, hintCwd) : filePath) : '<file>'
-    const queries = xmlQueryExamples(target)
     return pathHint(filePath ? [target] : [],
-      `token-goat available for this file type. Use \`${queries.outline}\` to inspect structure, then \`${queries.path}\` for a dot path or \`${queries.xpath}\` for XPath instead of terminal XML parsing (${nameSubject('tool', toolOrScript)}).`,
+      `token-goat available for this file type. Use \`token-goat xml-outline ${quotedArg(target)}\` to inspect structure, then \`token-goat xml-query ${quotedArgs(target, 'root.child').join(' ')}\` for a dot path or \`${xmlXPathQueryCommand(target, '//root/child')}\` for XPath instead of terminal XML parsing (${nameSubject('tool', toolOrScript)}).`,
     )
   }
 
