@@ -84,9 +84,8 @@ interface Positional {
   readonly sinceB: RunResult
 }
 
-/** The bare `token-goat changed` run in the repo of `commitCount` commits, which resolves the default HEAD~5, and `changed --since <ref>` with the ref its hint suggested (null when it suggested none). */
-interface Hinted {
-  readonly bare: RunResult
+/** The `changed --since <ref>` run with the ref the bare run's hint suggested (null when it suggested none). */
+interface Followed {
   readonly follow: RunResult | null
   readonly suggestedRef: string | null
 }
@@ -106,12 +105,15 @@ function memoized<K, V>(make: (key: K) => Promise<V>): (key: K) => Promise<V> {
 
 const repoOf = memoized((commitCount: number) => buildRepo(commitCount))
 
-const hintedOf = memoized(async (commitCount: number): Promise<Hinted> => {
-  const dir = await repoOf(commitCount)
-  const bare = await bundle(['changed'], dir)
+/** The bare `token-goat changed` run in the repo of `commitCount` commits, which resolves the default HEAD~5. A row that reads only this run waits for no other bundle start. */
+const bareOf = memoized(async (commitCount: number): Promise<RunResult> => bundle(['changed'], await repoOf(commitCount)))
+
+/** The follow-up run with the ref the bare run suggested, started only by a row that reads it. */
+const followedOf = memoized(async (commitCount: number): Promise<Followed> => {
+  const bare = await bareOf(commitCount)
   const suggestedRef = /token-goat changed --since (\S+)/.exec(bare.stderr)?.[1] ?? null
-  const follow = suggestedRef === null ? null : await bundle(['changed', '--since', suggestedRef], dir)
-  return { bare, follow, suggestedRef }
+  const follow = suggestedRef === null ? null : await bundle(['changed', '--since', suggestedRef], await repoOf(commitCount))
+  return { follow, suggestedRef }
 })
 
 /** The positional-ref runs, made in the 3-commit repo only and started together. */
@@ -152,14 +154,14 @@ describe('changed [ref] positional wiring (exact-count)', () => {
 
 describe('changed default-ref hint on shallow repos (not a constant)', () => {
   it('a 3-commit repo names "3 commits" in the hint', async () => {
-    const r = (await hintedOf(3)).bare
+    const r = await bareOf(3)
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('git diff failed: fatal: ambiguous argument')
     expect(r.stderr).toContain('3 commits')
   })
 
   it('a 1-commit repo names "1 commit" (singular) in the hint, not "1 commits"', async () => {
-    const r = (await hintedOf(1)).bare
+    const r = await bareOf(1)
     expect(r.status).toBe(1)
     expect(r.stderr).toContain('git diff failed: fatal: ambiguous argument')
     expect(r.stderr).toContain('1 commit')
@@ -167,7 +169,8 @@ describe('changed default-ref hint on shallow repos (not a constant)', () => {
   })
 
   it.each([1, 3])('the suggested --since ref in the hint resolves and runs cleanly in a %i-commit repo (executable-suggestion guard)', async (count) => {
-    const { bare, follow, suggestedRef } = await hintedOf(count)
+    const bare = await bareOf(count)
+    const { follow, suggestedRef } = await followedOf(count)
     expect(bare.status).toBe(1)
     expect(suggestedRef, `no suggested-ref line found in stderr:\n${bare.stderr}`).not.toBeNull()
     expect(follow?.status, follow?.stderr).toBe(0)
@@ -176,7 +179,7 @@ describe('changed default-ref hint on shallow repos (not a constant)', () => {
 
 describe('changed bare default in a deep repo stays untouched (byte-identical sanity)', () => {
   it('a 6-commit repo resolves HEAD~5 without a hint appended', async () => {
-    const r = (await hintedOf(6)).bare
+    const r = await bareOf(6)
     expect(r.status, r.stderr).toBe(0)
     expect(r.stderr).not.toContain('Hint:')
   })
