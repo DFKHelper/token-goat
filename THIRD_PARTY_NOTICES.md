@@ -447,7 +447,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## minimatch 10.2.5
+## minimatch 10.2.6
 
 License: BlueOak-1.0.0
 

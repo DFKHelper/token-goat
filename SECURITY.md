@@ -53,7 +53,7 @@ The failed commands token-goat learns fixes for are kept only as keyed digests, 
 
 | What you scan | Command | Result |
 | --- | --- | --- |
-| this repository | `npm audit` | 10 findings, development only, 9 moderate and one low: fast-xml-parser 5.11.2 GHSA-474x-hrwr-fgx4 (a direct development dependency); minimatch GHSA-g3hv-75wg-m249 and the 8 packages that depend on it (@eslint/config-array, @typescript-eslint/eslint-plugin, @typescript-eslint/parser, @typescript-eslint/type-utils, @typescript-eslint/typescript-estree, @typescript-eslint/utils, eslint, typescript-eslint); see below |
+| this repository | `npm audit` | 11 findings, development only, 10 moderate and one low: @hono/node-server GHSA-qv5m-9pm6-hqp3 / GHSA-jpvv-r467-5p4w (transitive development dependency via @modelcontextprotocol/sdk); fast-xml-parser 5.11.2 GHSA-474x-hrwr-fgx4 (a direct development dependency); minimatch GHSA-g3hv-75wg-m249 and the 8 packages that depend on it (@eslint/config-array, @typescript-eslint/eslint-plugin, @typescript-eslint/parser, @typescript-eslint/type-utils, @typescript-eslint/typescript-estree, @typescript-eslint/utils, eslint, typescript-eslint); see below |
 | an install without optional packages | `npm install --omit=optional token-goat` then `npm audit --omit=dev --omit=optional` | clean, 2 packages |
 | a default install | `npm install token-goat` then `npm audit --omit=dev` | clean, 62 packages |
 

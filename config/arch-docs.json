@@ -67,6 +67,7 @@
     ["src/hooks_bash.ts","Hook Subsystem"],
     ["src/hooks_bash_commands.ts","Hook Subsystem"],
     ["src/hooks_bash_post.ts","Hook Subsystem"],
+    ["src/spooled_output.ts","Hook Subsystem"],
     ["src/hooks_bashoutput.ts","Hook Subsystem"],
     ["src/hooks_browser_image.ts","Hook Subsystem"],
     ["src/hooks_cli.ts","Hook Subsystem"],
