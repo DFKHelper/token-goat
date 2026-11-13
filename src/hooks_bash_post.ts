@@ -36,6 +36,7 @@ import { dataDir, MAX_CAPTURE_BYTES } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
 import { isInsideRoot } from './path_containment.js'
 import { projectTranscriptsDir } from './claude_config_dir.js'
+import { readCopilotSpooledBashOutput, isCopilotSpooledNotice } from './spooled_output.js'
 import {
   stripCdPrefix,
   resolveCdHintPath,
@@ -497,7 +498,10 @@ function extractBashOutput(event: HookEvent): string {
     const persisted = readPersistedBashOutput(resp as Record<string, unknown>, getCwd(event) ?? null, event.sessionId)
     if (persisted !== null) return persisted
   }
-  return extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
+  const text = extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
+  const copilotSpooled = readCopilotSpooledBashOutput(text)
+  if (copilotSpooled !== null) return copilotSpooled
+  return text
 }
 
 /** Best-effort exit code from a Bash tool_response (absent on many harnesses). On Claude Code this is always null, and deliberately so. Measured over 186,335 recorded Bash results: not one carried `exit_code`, `exitCode`, `returncode` or `code`. The only status-shaped field the harness ever sends is `returnCodeInterpretation` (2,133 results), and its every observed value is a BENIGN non-zero exit -- "No matches found", "Files differ", "Some directories were inaccessible" -- never a genuine failure, and it never co-occurred with non-empty stderr. Treating it as "exit != 0" would fire the failing-test-runner advisory on a clean grep that matched nothing, so it is not consulted. Non-empty stderr is no better: plenty of green runs write to it. Every caller but the test-runner advisory reads null as success, so the rest of the handler is unaffected; that one advisory stays dormant on this harness until a real exit status is on the wire, which is the correct trade against a false "your test run failed" nudge on a passing run. */
@@ -688,7 +692,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
     const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
     const resp = event.raw['tool_response']
-    const persisted = resp !== null && typeof resp === 'object' && typeof (resp as Record<string, unknown>)['persistedOutputPath'] === 'string' && (resp as Record<string, unknown>)['persistedOutputPath'] !== ''
+    const persisted = (resp !== null && typeof resp === 'object' && typeof (resp as Record<string, unknown>)['persistedOutputPath'] === 'string' && (resp as Record<string, unknown>)['persistedOutputPath'] !== '') || isCopilotSpooledNotice(resp)
     // Decided once, from `rawCmd`: `cmd` has lost its leading assignments, a `TOKEN_GOAT_BASH_COMPRESS=0` prefix among them. Every pass below that compresses takes this rather than a command to decide it from, and the two lossless-looking ones need it too, since config folds the environment's opt-out into `bash_compress.enabled` but a prefix on the command itself never reaches config.
     const optedOut = compressionOptedOut(rawCmd)
 
