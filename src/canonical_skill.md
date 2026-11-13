@@ -13,17 +13,13 @@ allowed-tools:
 
 ## When to Use
 
-Always, before a file read — that is the point, and it is why this skill is a gate rather than a technique. There is no threshold to reach and no task size that exempts it: the question "is there a command that returns just what I need" costs nothing to ask and the answer is usually yes.
+Before every file read, ask whether token-goat can return just the needed slice; use it when available. Read directly only for a whole file under ~200 lines, an unindexed file, or an opaque binary. Narrow reads matter most when work revisits files.
 
-The exemptions are narrow and listed below rather than left to judgement, because a gate with discretionary exemptions is not a gate. A file under roughly 200 lines that you need whole, a file that was never indexed, and a genuinely opaque binary are the cases where a direct read is the right call.
+Related skills:
 
-Where it pays most is iterative work: a loop, a review pass, or a long session re-opens the same files repeatedly, and each re-read is charged again at full price against a budget the task itself needs.
-
-Neighbours that own a case outright:
-
-- **`agent-self-compaction`** — what survives a compaction, rather than what enters context in the first place. The other half of the same budget.
-- **`subagent-driven-development`** — a spawned agent starts blank and re-pays for everything its brief omitted, which is a briefing problem before it is a retrieval one.
-- **`semantic` (this skill's own command)** — when you are searching for a *concept* rather than a literal string, that is a command here, not a reason to fall back to a wide grep.
+- **`agent-self-compaction`** — preserves context across windows.
+- **`subagent-driven-development`** — briefs agents to avoid repeating reads.
+- **`semantic`** — use for concept search, not as a reason to fall back to broad grep.
 
 <!-- COMPACT_END -->
 
