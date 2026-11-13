@@ -10,6 +10,7 @@ import {
   readConfinedSpoolFile,
   readCopilotSpooledBashOutput,
 } from '../src/spooled_output.js'
+import { normalizePath } from '../src/paths.js'
 import { CAN_SYMLINK } from './helpers/can-symlink.js'
 
 describe('spooled_output', () => {
@@ -147,6 +148,29 @@ describe('spooled_output', () => {
     it('returns null if notice has invalid file path', () => {
       const notice = 'Output too large to read at once (10 KB). Saved to: /non/existent/path/copilot-tool-output.txt\nPreview...'
       expect(readCopilotSpooledBashOutput(notice, tempDir)).toBeNull()
+    })
+
+    it('rejects posix shell mount paths that escape outside root', () => {
+      // e.g. /c/windows/temp/copilot-tool-output.txt when root is tempDir
+      const notice = 'Output too large to read at once (10 KB). Saved to: /c/windows/system32/copilot-tool-output.txt\nPreview...'
+      expect(readCopilotSpooledBashOutput(notice, tempDir)).toBeNull()
+    })
+
+    it.skipIf(process.platform !== 'win32')('reads posix shell mount path when contained inside root on win32', () => {
+      const filePath = path.join(tempDir, '1794481520586-copilot-tool-output-3744-mount.txt')
+      fs.writeFileSync(filePath, 'mounted output', 'utf-8')
+      const drive = filePath[0]!.toLowerCase()
+      const posixMount = '/' + drive + normalizePath(filePath).slice(2)
+      const notice = `Output too large to read at once (10 KB). Saved to: ${posixMount}\nPreview...`
+      expect(readCopilotSpooledBashOutput(notice, tempDir)).toBe('mounted output')
+    })
+
+    it.skipIf(!CAN_SYMLINK)('rejects symbolic links even if pointing within temp directory', () => {
+      const realFile = path.join(tempDir, 'real-target.txt')
+      fs.writeFileSync(realFile, 'real content', 'utf-8')
+      const symlinkFile = path.join(tempDir, '1794481520586-copilot-tool-output-symlink.txt')
+      fs.symlinkSync(realFile, symlinkFile)
+      expect(readConfinedSpoolFile(symlinkFile, tempDir)).toBeNull()
     })
   })
 })
