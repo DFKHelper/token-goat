@@ -55,9 +55,12 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
     markFileTruncated(normalized, !readRequestedSliceWindow(event).isExplicitSlice)
   }
 
+  // Reuse one settings snapshot: loadConfig fingerprints both config files on every call.
+  const config = loadConfig()
+
   // Snapshot doc file content so the next re-read can inject a diff instead of the full file.
   const postBasename = path.basename(normalized)
-  const diffSourcesEnabled = loadConfig().hints.serve_diff_on_reread
+  const diffSourcesEnabled = config.hints.serve_diff_on_reread
   if (/\.(md|mdx|markdown|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized) || (diffSourcesEnabled && isDiffableSource(postBasename))) {
     try {
       const onDisk = hostPathOfIndexKey(normalized)
@@ -71,7 +74,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
     }
   }
 
-  if (loadConfig().hints.cross_session_read_dedup) {
+  if (config.hints.cross_session_read_dedup) {
     try {
       const cwd = getCwd(event) ?? process.cwd()
       const project = findProject(cwd) ?? makeProjectAt(cwd)
@@ -83,7 +86,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
   }
 
   // Cross-session manifest recording: write this session's reads for other sessions to discover
-  if (loadConfig().hints.cross_session_read_dedup) {
+  if (config.hints.cross_session_read_dedup) {
     try {
       const cwd = getCwd(event) ?? process.cwd()
       let project = findProject(cwd)
@@ -118,7 +121,7 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
       const sz = statSize(onDisk)
       if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
         const lineCount = countTextLines(fs.readFileSync(onDisk, 'utf8'))
-        const minLines = loadConfig().post_read_code_compress.min_lines
+        const minLines = config.post_read_code_compress.min_lines
         // Once per file per compaction epoch, like the edit hook's section hint: the text names the same commands on every read of the same file, so a second copy adds nothing while the first is still in context.
         const repeatKey = `read_structural_nav:${normalized}:${getCompactedAt()}`
         // A path no quote mark holds would print two placeholder commands that run nothing, so no hint is composed for it.

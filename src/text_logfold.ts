@@ -27,56 +27,50 @@ interface FoldedLine {
 const MAX_FOLD_REPEATS_KEYS = 20_000
 
 function applyFiltersAndFold(lines: string[], noNormalize: boolean, foldRepeats: boolean): FoldedLine[] {
-  const dropped: string[] = []
+  const folded: FoldedLine[] = []
+  const keyIndex = foldRepeats ? new Map<string, number>() : null
+  let prevKey: string | null = null
+  let lastText = ''
+  let count = 0
+
   for (const raw of lines) {
-    let cur: string | null = raw
+    let line: string | null = raw
     for (const filter of FILTERS) {
-      if (cur === null) break
-      if (filter.pattern !== null && !filter.pattern.test(cur)) continue
-      cur = filter.replacer(cur)
+      if (line === null) break
+      if (filter.pattern !== null && !filter.pattern.test(line)) continue
+      line = filter.replacer(line)
       break
     }
-    if (cur !== null) dropped.push(cur)
-  }
+    if (line === null) continue
 
-  const folded: FoldedLine[] = []
-
-  if (!foldRepeats) {
-    let prevKey: string | null = null
-    let lastText = ''
-    let count = 0
-    for (const line of dropped) {
-      const key = noNormalize ? line : normalizeVolatile(line)
-      if (key === prevKey) {
-        count++
-      } else {
-        if (prevKey !== null) folded.push({ text: lastText, count })
-        prevKey = key
-        lastText = line
-        count = 1
-      }
-    }
-    if (prevKey !== null) folded.push({ text: lastText, count })
-    return folded
-  }
-
-  const keyIndex = new Map<string, number>()
-  let prevKey: string | null = null
-  for (const line of dropped) {
     const key = noNormalize ? line : normalizeVolatile(line)
-    const seenIdx = keyIndex.get(key)
-    if (seenIdx !== undefined) {
-      const entry = folded[seenIdx]
-      if (entry !== undefined) entry.count++
-    } else if (key === prevKey && folded.length > 0) {
-      const entry = folded[folded.length - 1]
-      if (entry !== undefined) entry.count++
-    } else {
-      folded.push({ text: line, count: 1 })
-      if (keyIndex.size < MAX_FOLD_REPEATS_KEYS) keyIndex.set(key, folded.length - 1)
+    if (keyIndex !== null) {
+      const seenIdx = keyIndex.get(key)
+      if (seenIdx !== undefined) {
+        const entry = folded[seenIdx]
+        if (entry !== undefined) entry.count++
+      } else if (key === prevKey && folded.length > 0) {
+        const entry = folded[folded.length - 1]
+        if (entry !== undefined) entry.count++
+      } else {
+        folded.push({ text: line, count: 1 })
+        if (keyIndex.size < MAX_FOLD_REPEATS_KEYS) keyIndex.set(key, folded.length - 1)
+      }
+      prevKey = key
+      continue
     }
-    prevKey = key
+
+    if (key === prevKey) {
+      count++
+    } else {
+      if (prevKey !== null) folded.push({ text: lastText, count })
+      prevKey = key
+      lastText = line
+      count = 1
+    }
   }
+
+  if (keyIndex === null && prevKey !== null) folded.push({ text: lastText, count })
   return folded
 }
 

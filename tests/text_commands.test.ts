@@ -858,6 +858,13 @@ describe('logfold command', () => {
     expect(r.stdout).toContain('hello world')
   })
 
+  it('folds across lines removed by output filters', async () => {
+    const input = 'same line\nremote: Counting objects: 100% (1/1)\nsame line\n'
+    const r = await run(['logfold'], { input })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toBe('same line  (x2)\n')
+  })
+
   it('folds consecutive identical lines with (xN) count (fail-on-buggy: breaks when normalizeVolatile is neutralized)', async () => {
     // Two lines that differ only in a timestamp — normalize should make them identical, so they fold.
     const input = '[12:00:01] connection hit\n[12:00:02] connection hit\n'
