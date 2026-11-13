@@ -8,7 +8,7 @@ import { fingerprintFile, mtimeEqualsRow, mtimeProvesUnchanged, statIndexedFile,
 import { getProjectFileEntries } from './index_reader.js'
 import { normalizePath, resolveIndexPath, toDisplayPath, displaySafeJson } from './paths.js'
 import { indexedPathSpellingIsStale } from './parser.js'
-import { parserFingerprintForLanguage } from './parser_stamp.js'
+import { parserStampCurrent } from './stamp_authority.js'
 import { getDisplayRoot } from './project.js'
 import { listTrackedFiles, type TrackedFilesResult } from './repomap.js'
 import { writeSweepStamp } from './reconcile_stamp.js'
@@ -304,7 +304,7 @@ export function reconcileProjectWith(opts: ReconcileOptions, listing: TrackedFil
     }
 
     // Checked before the mtime shortcut below, and unconditionally: a parser upgrade changes what gets extracted from content that never moved, so the mtime/content diff below -- which only ever compares this file's bytes against themselves -- can never notice it. Without this, a file nobody edits after a parser bump keeps the old parser's rows forever (this is the same failure shape files.parser_sha exists to close on the per-file gates in worker.ts/cli.ts; reconcileProject is the sweep that is supposed to find drift nothing edited, so it is the one place a content-only key silently misses this bucket entirely). An empty parserSha is a row written before the column existed and is correctly stale, same as the per-file gates. The expected stamp is the one for the language the row itself records, so a fix to one adapter sweeps that language's files back into the queue and leaves every other language's rows alone.
-    if (entry.parserSha !== parserFingerprintForLanguage(entry.language)) {
+    if (!parserStampCurrent(dbPath, entry.parserSha, entry.language)) {
       changed.push(file)
       parserStale++
       continue

@@ -9,8 +9,6 @@ import {
   isCopilotSpooledNotice,
   readConfinedSpoolFile,
   readCopilotSpooledBashOutput,
-  COPILOT_SPOOLED_NOTICE_RE,
-  COPILOT_SPOOLED_FILENAME_RE,
 } from '../src/spooled_output.js'
 import { CAN_SYMLINK } from './helpers/can-symlink.js'
 

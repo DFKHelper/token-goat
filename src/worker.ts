@@ -7,7 +7,8 @@ import * as path from 'node:path'
 import { dataDir, globalDbPath } from './constants.js'
 import { fileIsAbsent, fingerprintFileWithBytes, indexedFileIsGone } from './fingerprint.js'
 import { assetEmbedSha, disabledStampCount, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
-import { parserFingerprintForLanguage } from './parser_stamp.js'
+import { parserStampCurrent } from './stamp_authority.js'
+import { DutyCycleThrottle, resolveBacklogMaxCores } from './duty_cycle.js'
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { getFileEntry } from './index_reader.js'
@@ -382,7 +383,7 @@ export function makeIndexer(dbPath: string): (absPath: string, sha: string, stam
       const spellingStale = entry !== null && indexedPathSpellingIsStale(entry.filePath, absPath)
       const parseUnchanged =
         entry?.sha === sha &&
-        entry.parserSha === parserFingerprintForLanguage(entry.language) &&
+        parserStampCurrent(dbPath, entry.parserSha, entry.language) &&
         !spellingStale
       const indexAndRestamp = () => {
         if (!parseUnchanged) {
@@ -834,6 +835,8 @@ export async function runWorkerLoop(
   const idleReclaimRefusals: IdleReclaimRefusals = { polls: 0 }
   let lastActiveMs = Date.now()
   let embedBacklogCursor: string | null = ''
+  // Caps the idle backlog walk's average CPU: inference runs on this thread and its native threads, and an uncapped walk held several cores for hours. See duty_cycle.ts.
+  const backlogThrottle = new DutyCycleThrottle(resolveBacklogMaxCores())
   let embeddingsWereReady = true
   let disabledStampsSeen = disabledStampCount()
   // Flips true the first time we see the pid file naming our own pid (the parent claims it shortly after spawning us, so early polls may see it empty). Once set, losing ownership means another daemon took over -- see the self-terminate check below.
@@ -897,6 +900,7 @@ export async function runWorkerLoop(
     }
     if (retiringNow()) break
     const foregroundBusy = hasRecentForegroundActivity()
+    backlogThrottle.sample()
     if (processed > 0) {
       lastActiveMs = Date.now()
       lastBusyMs = lastActiveMs
@@ -910,7 +914,8 @@ export async function runWorkerLoop(
         embeddingsWereReady = ready
         if (ready) disabledStampsSeen = stamps
         if (ready && embedBacklogCursor !== null) {
-          embedBacklogCursor = requeueStaleEmbeddings(dir, embedBacklogCursor)
+          // A walk that is resting between batches still counts as work, so the idle exit does not fire in the middle of it.
+          if (backlogThrottle.allowed()) embedBacklogCursor = requeueStaleEmbeddings(dir, embedBacklogCursor)
           // A walk that has not reached its end is work the next cycle continues.
           if (embedBacklogCursor !== null) lastBusyMs = Date.now()
         }

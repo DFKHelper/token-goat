@@ -111,12 +111,17 @@ describe('parser fingerprint freshness gate', () => {
 
   it('is consulted by every freshness gate, not just the one with behavioural coverage here', () => {
     // The tests above drive worker.ts's makeIndexer. `token-goat index` has its own copy of the same gate in cli.ts, and it is the one that printed "Skipped 1 unchanged file(s)" for a file whose rows were stale. reconcile.ts holds the third, the sweep that is supposed to find drift nothing edited. A missing clause on any of them is silent: the command still succeeds, it just never reparses. All three must also agree on the granularity -- comparing against the per-language stamp rather than one global digest -- or a gate left on the old comparison reparses files the other two spared. Structural, because the alternative is a second full CLI harness for one line.
-    for (const file of ['src/worker.ts', 'src/cli.ts', 'src/reconcile.ts']) {
+    // The comparison itself now lives in stamp_authority.ts's parserStampCurrent (own stamp always current, a foreign one only for a non-authority build), so each gate must route through it.
+    for (const file of ['src/worker.ts', 'src/cli.ts', 'src/reconcile.ts', 'src/read_commands.ts', 'src/fold_delivery.ts']) {
       const text = fs.readFileSync(path.join(process.cwd(), file), 'utf8')
       expect(
-        /parserSha [!=]== parserFingerprintForLanguage\(entry\.language\)/.test(text),
-        `${file} decides parse freshness and must compare parserSha against parserFingerprintForLanguage(entry.language), or a parser change stops invalidating anything on that path`,
+        /parserStampCurrent\([\s\S]{0,120}?entry\.parserSha,\s*entry\.language\)/.test(text),
+        `${file} decides parse freshness and must call parserStampCurrent(dbPath, entry.parserSha, entry.language), or a parser change stops invalidating anything on that path`,
       ).toBe(true)
+      expect(
+        /parserSha [!=]== parserFingerprintForLanguage/.test(text),
+        `${file} compares parserSha against the build's own stamp directly and bypasses the stamp-authority gate`,
+      ).toBe(false)
       expect(
         /parserSha [!=]== PARSER_FINGERPRINT\b/.test(text),
         `${file} still compares parserSha against the shared digest directly, which reparses every language on a one-adapter change`,

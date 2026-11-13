@@ -2,6 +2,7 @@
 import * as fs from 'fs'
 import { getReadDb } from './db.js'
 import { projectScopeClause } from './sql_path.js'
+import { foreignStampCurrent } from './stamp_authority.js'
 import { detectWalkMode } from './walk_mode.js'
 import { echoedValue, fencedCommand } from './hint_suggestion_guard.js'
 
@@ -57,7 +58,7 @@ export function getParserFreshness(
   for (const row of rows) {
     indexedFiles += row.c
     // `?? 'unknown'` matches how getFileEntry reads the same column, so the two resolve a language-less row to the same stamp.
-    if (row.parser_sha !== null && row.parser_sha === expectedFor(row.language ?? 'unknown')) currentFiles += row.c
+    if (row.parser_sha !== null && (row.parser_sha === expectedFor(row.language ?? 'unknown') || foreignStampCurrent(db, row.parser_sha))) currentFiles += row.c
   }
   return { indexedFiles, currentFiles }
 }

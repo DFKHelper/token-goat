@@ -18,6 +18,7 @@ import { pathEqClause } from './sql_path.js'
 import { foldPath } from './util.js'
 import { normalizeSourceText } from './source_text.js'
 import { registerReset } from './reset.js'
+import { holdsStampAuthority } from './stamp_authority.js'
 import { EMBED_FINGERPRINT, EMBED_KIND_FINGERPRINTS, PRE_KIND_EMBED_FINGERPRINT, SPLIT_EMBED_FINGERPRINT } from './embed_fingerprint.js'
 import { embedKindForPath } from './embed_stamp.js'
 import { MAX_SEQUENCE_TOKENS } from './embed_tokenizer.js'
@@ -1016,6 +1017,11 @@ export function ensureEmbeddingProvenance(
   }
 
   const keepVectors = stored !== undefined && vectorSpaceOf(stored) === vectorSpaceOf(current)
+  // A chunking-only difference recorded by a newer build is that build's to keep: re-marking its files stale from here made two builds on one database take turns re-embedding everything. See stamp_authority.ts.
+  if (keepVectors && !holdsStampAuthority(db)) {
+    _provenanceChecked.add(db)
+    return
+  }
   // The reset and the stamp commit together or not at all: a failure between them (SQLITE_BUSY past busy_timeout is the ordinary one, with the worker, the hooks and the CLI all writing this database) would otherwise discard vectors under a stamp that still names the old stack. The helpers' own transactions nest inside this one as savepoints.
   const cleared = db
     .transaction(() => {

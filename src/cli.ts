@@ -28,7 +28,7 @@ import { recordKnownRootThrottled } from './known_roots.js'
 import { fingerprintFile } from './fingerprint.js'
 import { readPreHashStamp, restampVerifiedUnchanged } from './reconcile.js'
 import { getFileEntry } from './index_reader.js'
-import { parserFingerprintForLanguage } from './parser_stamp.js'
+import { claimAuthorityForIndex, parserStampCurrent } from './stamp_authority.js'
 import { detectLanguageOfFile } from './parser_types.js'
 import { isEmbeddableDocument } from './doc_embed_extract.js'
 import { displaySafeText, hostPathOfTypedPath, resolveIndexPath, displaySafeJson } from './paths.js'
@@ -290,6 +290,8 @@ export async function cmdIndex(
   if (!fs.existsSync(root)) throw new CliError(`${echoedValue(pathArg ?? root)} does not exist.`)
   const dbPath = opts.dbPath ?? globalDbPath()
   const force = opts.force === true
+  // An explicit index takes the stamp authority (a version tie included; --force from any build) before any row is read, so this run reparses foreign stamps. See stamp_authority.ts.
+  claimAuthorityForIndex(getDb(dbPath), force)
   const useWalk = opts.walk === true || opts.forceWalk === true
   let files = requireTrackedFiles(root)
   if (files.length === 0) {
@@ -392,7 +394,7 @@ export async function cmdIndex(
       !spellingStale &&
       sha !== null &&
       entry?.sha === sha &&
-      entry.parserSha === parserFingerprintForLanguage(entry.language)
+      parserStampCurrent(dbPath, entry.parserSha, entry.language)
     // The hash just proved this file's bytes are the ones the row holds, so a racy row is stamped here as the worker's drain does; skipping the file without it left the row racy, and every later sweep hashed the file again.
     if (parseUnchanged && stamp !== undefined) restampVerifiedUnchanged(dbPath, [{ indexedPath: entry.filePath, sha, stamp }])
     // isEmbedFresh (parser.ts) is the shared read side of this gate, also used by worker.ts's makeIndexer: while embeddings are config-disabled, only the `disabled:` marker for this sha counts as fresh; while enabled, a bare sha match is fresh (the file was really embedded, or was empty / permanently policy-skipped -- e.g. profile-meta.xml, an oversized salesforce_metadata file -- with nothing to embed, both terminal regardless of deps); and an `unavailable:` marker is fresh only while the optional embedding deps stay uninstalled. Embed freshness is decided on its own inputs, never on parseUnchanged: files.parser_sha answers "which extractor wrote the symbol rows", which carries no information about whether the stored vectors match this content, so conjoining it made a parser-stamp bump re-embed the whole index (measured: a stamp-only reparse of 300 unchanged files cost 94% of indexing them from nothing) and made writeParseResult's embedShaToCarry dead for the waste it exists to prevent. isEmbedFresh already answers false for a new file (no stored embed_sha) and for moved content (the stored sha no longer matches), so the sha coupling was redundant -- except for spellingStale, which is kept by name: a case-only rename leaves the content byte-identical, so isEmbedFresh would say fresh, but `chunks` rows are keyed by file_path and would keep the old spelling forever.

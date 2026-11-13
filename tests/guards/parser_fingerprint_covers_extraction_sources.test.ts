@@ -69,6 +69,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/model_download_gate.ts': 'the failed-download record and hold behind pinned_fetch.ts, never reached by an extractor',
   'src/embed_fingerprint.ts': 'the generated EMBED_FINGERPRINT digest constant, folded into embeddingProvenance() by src/embeddings.ts; a files.embed_sha concern, not files.parser_sha',
   'src/embedding_boundaries.ts': 'buildEmbeddingBoundaries derives embedding chunk boundaries (files.embed_sha) from already-written symbol/heading rows; reached from parser.ts only via its re-export, never by indexFileSync\'s symbol/ref extraction. Hashed by EMBED_FINGERPRINT instead, see tests/guards/embed_fingerprint_covers_embedding_sources.test.ts',
+  'src/stamp_authority.ts': 'decides which build owns the shared index stamps and so whether a foreign stamp counts as current, a files.parser_sha bookkeeping concern; it reads no file content and extracts nothing, and it is deliberately unhashed so a stamp-ownership edit does not reparse every file on the machine',
   'src/embed_stamp.ts': 'resolves which EMBED_FINGERPRINT digest a path\'s extraction kind carries, so a re-embed can be scoped to one document format; a files.embed_sha concern that reads no source and extracts nothing',
   'src/embeddings.ts': 'chunk/vector storage for semantic search, gated by files.embed_sha, not files.parser_sha',
   'src/env.ts': 'generic env-var parsing helpers that feed runtime config values, same reasoning as src/config.ts',

@@ -36,7 +36,7 @@ describe('canonical skill source', () => {
     const compact = extractCompactFromMarker(CANONICAL_SKILL_MD)
     expect(compact).not.toBeNull()
     expect(Buffer.byteLength(compact ?? '', 'utf8')).toBeLessThanOrEqual(MAX_COMPACT_PREFIX_BYTES)
-    expect(compact).toContain('Always, before a file read')
+    expect(compact).toContain('Before every file read')
     expect(CANONICAL_SKILL_MD.split(COMPACT_END_MARKER)[1]).toMatch(/^\s*## token-goat/m)
   })
 
