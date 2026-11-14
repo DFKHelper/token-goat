@@ -70,6 +70,17 @@ Sub-agent briefs must carry this gate verbatim: a sub-agent inherits none of thi
 | `/token-goat`, or any other argument | The gate above applies. There is no separate procedure to run. |
 | `/token-goat audit` | Session retrospective and Maintainer Feedback Card — below. |
 
+### Pick the neighbor command
+
+<!-- COMMAND_CONTRAST:BEGIN -->
+- use `symbol` for finding where a name is defined, not its body once the file is known (use `read`)
+- use `read` for one symbol's full body once its file is known, not finding a name across the project (use `symbol`)
+- use `search` for a known name, heading or phrase across every channel, not a concept described in other words (use `semantic`)
+- use `semantic` for a concept when the exact name is unknown, not a literal name you already have (use `search`)
+- use `outline` for line ranges and docstrings to pick a read window, not signatures alone (use `skeleton`)
+- use `skeleton` for signatures of every symbol with bodies left out, not line ranges to read from (use `outline`)
+<!-- COMMAND_CONTRAST:END -->
+
 ### Keep command output surgical
 
 - For JSON and XML, inspect structure with `token-goat json-outline file` or `token-goat xml-outline file`, then query narrowly: `token-goat json-query file 'items[*].id' --head 20` or `token-goat xml-query file 'root.child'`. XPath goes in `--xpath`, for example `token-goat xml-query file --xpath '//root/child'`. JSON queries print arrays and objects directly, so PowerShell `ConvertFrom-Json` wrappers are unnecessary; use `token-goat web-output` for browser results.

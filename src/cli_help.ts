@@ -1,6 +1,28 @@
-/** Compact CLI help generation. */
+/** Compact CLI help generation. Also holds the neighbor-contrast rows the skill and read hints render from; tests/guards/command_contrast_coverage.test.ts checks them. */
+
+export interface ContrastRow {
+  readonly command: string
+  readonly useFor: string
+  readonly notFor: string
+  readonly neighbor: string
+}
+
+export const COMMAND_CONTRAST_ROWS: readonly ContrastRow[] = [
+  { command: 'symbol', useFor: 'finding where a name is defined', notFor: 'its body once the file is known', neighbor: 'read' },
+  { command: 'read', useFor: "one symbol's full body once its file is known", notFor: 'finding a name across the project', neighbor: 'symbol' },
+  { command: 'search', useFor: 'a known name, heading or phrase across every channel', notFor: 'a concept described in other words', neighbor: 'semantic' },
+  { command: 'semantic', useFor: 'a concept when the exact name is unknown', notFor: 'a literal name you already have', neighbor: 'search' },
+  { command: 'outline', useFor: 'line ranges and docstrings to pick a read window', notFor: 'signatures alone', neighbor: 'skeleton' },
+  { command: 'skeleton', useFor: 'signatures of every symbol with bodies left out', notFor: 'line ranges to read from', neighbor: 'outline' },
+]
+
+/** One rendered line for a row, without a list marker or indent. */
+export function renderContrastLine(row: ContrastRow): string {
+  return `use \`${row.command}\` for ${row.useFor}, not ${row.notFor} (use \`${row.neighbor}\`)`
+}
 
 export function generateCompactHelp(): string {
+  const contrastLines = COMMAND_CONTRAST_ROWS.map((row) => `  ${renderContrastLine(row)}`)
   const lines = [
     'Usage: token-goat [options] [command]',
     '',
@@ -54,6 +76,9 @@ export function generateCompactHelp(): string {
     '  conflicts, prune-cache',
     '',
     'Tip: look up one command instead of this whole list: `token-goat help <command>`, or `token-goat commands --grep <pattern>` anchored (\'^read$\' ~700B; bare \'read\' matches descriptions too, ~7KB).',
+    '',
+    '  Neighbor commands (use the one that matches the job):',
+    ...contrastLines,
     '',
   ]
   return lines.join('\n')
