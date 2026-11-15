@@ -36,10 +36,15 @@ describe('workspace evidence cache', () => {
     const project = path.join(testDataDir, 'project')
     const source = path.join(project, 'src', 'example.ts')
     const content = 'export const answer = 42\n'
+    const lazyRead = vi.fn(() => content)
+
+    expect(findVerifiedFileEvidence(project, source, lazyRead)).toBeNull()
+    expect(lazyRead).not.toHaveBeenCalled()
 
     recordEvidence({ projectRoot: project, source, representation: 'file', text: content })
 
-    expect(findVerifiedFileEvidence(project, source, content)?.source).toBe(normalizePath(source))
+    expect(findVerifiedFileEvidence(project, source, lazyRead)?.source).toBe(normalizePath(source))
+    expect(lazyRead).toHaveBeenCalledTimes(1)
     expect(findVerifiedFileEvidence(project, source, 'export const answer = 43\n')).toBeNull()
     expect(findVerifiedFileEvidence(path.join(testDataDir, 'other'), source, content)).toBeNull()
   })

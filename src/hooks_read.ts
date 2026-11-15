@@ -20,7 +20,7 @@ import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNT
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getConsumedSectionTargets, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
-import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordReadRangeLockRefusal, recordRecentReadRange } from './read_range_evasion.js'
+import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, hasReadRangeDenials, hasReadRangeHistory, lockReadRange, rangeLockMessage, recordReadRangeLockRefusal, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -658,15 +658,22 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const rangeKey = foldPath(normalized)
   let rangeIdentity: { size: number; mtimeMs: number } | undefined
   if (event.toolName !== 'Grep' && rangeSpan !== undefined && loadConfig().hints.reread_deny) {
-    // Identity changes invalidate the lock before any early-return hint or containing-range check.
-    rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
-    clearReadRangeIfChanged(rangeKey, rangeIdentity)
-    if (getReadRangeDenials(rangeKey).length > 0) {
-      // A range lock remains closed for this compaction epoch. Repeated denials must not reopen the raw Read/view path and turn the breaker into a bypass.
-      lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
-      const lockCount = recordReadRangeLockRefusal(rangeKey)
-      recordStat('session_hint', 0, 0)
-      return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end], lockCount))
+    // First-time ranged reads have no lock or served-range identity to validate. Avoid stat/hash work
+    // until this file has range history; changed-file invalidation still runs before every reuse.
+    const hasRangeHistory = hasReadRangeHistory(rangeKey) ||
+      getFileLineRanges(normalized).length > 0 ||
+      getFileLineRangeIdentity(normalized) !== undefined
+    if (hasRangeHistory) {
+      // Identity changes invalidate the lock before any early-return hint or containing-range check.
+      rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
+      clearReadRangeIfChanged(rangeKey, rangeIdentity)
+      if (hasReadRangeDenials(rangeKey)) {
+        // A range lock remains closed for this compaction epoch. Repeated denials must not reopen the raw Read/view path and turn the breaker into a bypass.
+        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        const lockCount = recordReadRangeLockRefusal(rangeKey)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end], lockCount))
+      }
     }
   }
 
@@ -681,14 +688,17 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     try {
       const cwd = getCwd(event) ?? process.cwd()
       const project = findProject(cwd) ?? makeProjectAt(cwd)
-      const current = readEvidenceFileText(normalized)
-      const evidence = current === null ? null : findVerifiedFileEvidence(project.root, normalized, current)
-      if (evidence !== null) {
-        recordStat('evidence_cache_hit', 0)
-        return quietContextOutput(
-          `Verified cross-session evidence exists for this unchanged file (${evidence.id}). ` +
-          'Use a narrow read instead of loading the full file again.',
-        )
+      // Outside-project files cannot have project-scoped evidence; for in-project files the lazy
+      // reader also avoids opening bytes when no cached evidence exists for this exact path.
+      if (relPathWithinRoot(project.root, normalized) !== null) {
+        const evidence = findVerifiedFileEvidence(project.root, normalized, () => readEvidenceFileText(normalized))
+        if (evidence !== null) {
+          recordStat('evidence_cache_hit', 0)
+          return quietContextOutput(
+            `Verified cross-session evidence exists for this unchanged file (${evidence.id}). ` +
+            'Use a narrow read instead of loading the full file again.',
+          )
+        }
       }
     } catch {
       // A cache miss or unreadable file must preserve the normal Read path.
@@ -1111,10 +1121,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         if (scanCrossSessionManifests(project.root, project.hash, normalized, ttlSecs)) {
           recordActualRead(event, normalized)
           const slice = hintTarget(normalized, sliceForPath(normalized))
+          const narrowCommand = slice.real
+            ? sliceCommand(shown, slice)
+            : 'token-goat outline ' + quotedArg(shown)
           return quietContextOutput(
             'This file may have already been read by another agent/session working in this project recently. ' +
-            'If you are a subagent continuing shared work, consider whether you already have this content from context, ' +
-            'or use `' + (slice.real ? sliceCommand(shown, slice) : 'token-goat read ' + quotedArg(shown + '::SymbolName')) + '` for a narrower slice instead of a full re-read.',
+            'If its content is already in your context, continue without another read; otherwise run `' + narrowCommand +
+            '` to find the specific content you still need.',
             [shown],
           )
         }

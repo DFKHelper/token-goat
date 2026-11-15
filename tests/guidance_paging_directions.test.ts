@@ -4,6 +4,15 @@ import { buildGuidanceBody } from '../src/bridges/guidance_block.js'
 import { CANONICAL_SKILL_MD } from '../src/canonical_skill.js'
 
 describe('paging recovery guidance', () => {
+  it('gives an executable command for ambiguous retrieval instead of inviting a follow-up', () => {
+    const body = buildGuidanceBody("Claude Code's own Read, Grep, and Glob preference rules")
+    const selector = body.split('\n').find((line) => line.includes('not knowing which command answers'))
+
+    expect(selector).toBeDefined()
+    expect(selector).toContain('`token-goat answer "<question>"`')
+    expect(selector).toContain('before asking for a command choice')
+  })
+
   it('names the surgical command for each paging recovery case once', () => {
     const body = buildGuidanceBody("Claude Code's own Read, Grep, and Glob preference rules")
     const paging = body.split('\n').find((line) => line.includes('range denial'))

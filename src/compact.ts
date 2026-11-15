@@ -388,6 +388,7 @@ export function writeSessionManifest(
   }
   const dest = path.join(sessionsDir, `${safeSessionId}.json`)
   atomicWriteText(dest, JSON.stringify(manifestJson))
+  manifestParseCache.delete(dest)
 }
 
 const MANIFEST_CACHE_MAX_ENTRIES = 100
@@ -396,6 +397,8 @@ const CLEANUP_THROTTLE_SECS = 300
 
 interface CachedManifestEntry {
   mtimeMs: number
+  ctimeMs: number
+  size: number
   data: Record<string, unknown> | null
 }
 
@@ -406,6 +409,15 @@ const lastCleanupTimeByProject = new Map<string, number>()
 export function _clearManifestParseCache(): void {
   manifestParseCache.clear()
   lastCleanupTimeByProject.clear()
+}
+
+function cacheManifest(fullPath: string, entry: CachedManifestEntry): void {
+  manifestParseCache.delete(fullPath)
+  if (manifestParseCache.size >= MANIFEST_CACHE_MAX_ENTRIES) {
+    const oldestKey = manifestParseCache.keys().next().value
+    if (oldestKey !== undefined) manifestParseCache.delete(oldestKey)
+  }
+  manifestParseCache.set(fullPath, entry)
 }
 
 /** Read all session manifest JSON files for projectHash, skipping stale and corrupt entries. */
@@ -432,9 +444,10 @@ export function readAllSessionManifests(
     }
 
     interface ManifestCandidate {
-      file: string
       fullPath: string
       mtimeMs: number
+      ctimeMs: number
+      size: number
     }
     const candidates: ManifestCandidate[] = []
 
@@ -454,7 +467,7 @@ export function readAllSessionManifests(
           }
           continue
         }
-        candidates.push({ file, fullPath, mtimeMs: stat.mtimeMs })
+        candidates.push({ fullPath, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, size: stat.size })
       } catch {
         // file unlinked or inaccessible
       }
@@ -464,9 +477,12 @@ export function readAllSessionManifests(
     const activeCandidates = candidates.slice(0, MAX_SESSIONS_READ)
 
     for (const candidate of activeCandidates) {
-      const { fullPath, mtimeMs } = candidate
+      const { fullPath, mtimeMs, ctimeMs, size } = candidate
       const cached = manifestParseCache.get(fullPath)
-      if (cached && cached.mtimeMs === mtimeMs) {
+      if (cached && cached.mtimeMs === mtimeMs && cached.ctimeMs === ctimeMs && cached.size === size) {
+        // Map insertion order is the LRU order; refresh hot manifests before a later eviction.
+        manifestParseCache.delete(fullPath)
+        manifestParseCache.set(fullPath, cached)
         if (cached.data !== null) {
           results.push(cached.data)
         }
@@ -477,19 +493,13 @@ export function readAllSessionManifests(
         const text = fs.readFileSync(fullPath, 'utf8')
         const data = JSON.parse(text)
         if (typeof data === 'object' && data !== null && 'files' in data) {
-          if (manifestParseCache.size >= MANIFEST_CACHE_MAX_ENTRIES) {
-            const oldestKey = manifestParseCache.keys().next().value
-            if (oldestKey !== undefined) {
-              manifestParseCache.delete(oldestKey)
-            }
-          }
-          manifestParseCache.set(fullPath, { mtimeMs, data })
+          cacheManifest(fullPath, { mtimeMs, ctimeMs, size, data })
           results.push(data)
         } else {
-          manifestParseCache.set(fullPath, { mtimeMs, data: null })
+          cacheManifest(fullPath, { mtimeMs, ctimeMs, size, data: null })
         }
       } catch {
-        manifestParseCache.set(fullPath, { mtimeMs, data: null })
+        cacheManifest(fullPath, { mtimeMs, ctimeMs, size, data: null })
       }
     }
   } catch {
