@@ -17,7 +17,7 @@ export const DEFAULT_MODEL = 'Xenova/bge-small-en-v1.5'
 export const DEFAULT_DIM = 384
 
 /** Mirrors `worker.embed_threads`'s default in config_defaults.ts, for callers that mock a partial config. */
-export const DEFAULT_EMBED_THREADS = 1
+export const DEFAULT_EMBED_THREADS = 4
 
 /** The immutable commit this model is pinned to, so a cold cache fetches known-good weights instead of trusting a branch that can move. Read from https://huggingface.co/api/models/Xenova/bge-small-en-v1.5 ("sha") on 2026-08-12; the model itself was last updated 2025-07-22. Bump deliberately, together with the digests below, and expect every index on the machine to rebuild itself once. */
 export const PINNED_MODEL_REVISION = 'ea104dacec62c0de699686887e3f920caeb4f3e3'

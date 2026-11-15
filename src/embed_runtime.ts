@@ -240,11 +240,25 @@ function webHost(): WebRuntimeHost {
   }
 }
 
+/** Ceiling on the thread count of every session this process creates; null leaves the configured count alone. */
+let _sessionThreadCap: number | null = null
+
+/** Caps the threads of sessions created from now on, for the daemon: the foreground CLI never calls this and keeps `worker.embed_threads`. */
+export function setSessionThreadLimit(cap: number | null): void {
+  _sessionThreadCap = cap
+}
+
+/** The thread count a session created now gets for a configured `threads`: the configured count, or the cap when one is set and lower. */
+export function effectiveSessionThreads(threads: number): number {
+  return _sessionThreadCap === null ? threads : Math.min(threads, _sessionThreadCap)
+}
+
 /** Create an inference session for the model at `modelPath` on the active runtime. Never create one bare. ONNX Runtime sizes its intra-op pool to the host when no count is given, and that pool is what every `run()` fans out across: measured on a 26-logical-core machine, `create()` with no options took the process from 13 OS threads to 30, while the same model with an explicit count added none. Indexing is background work -- a detached daemon draining a queue, or a bulk walk the user started and then went back to their editor -- so it takes a small, fixed share of the machine and finishes later, rather than most of the machine and finishes sooner. `interOpNumThreads` is 1 because the graph is run one sequence at a time (see EmbeddingModel.embed), so there are no parallel branches for a second scheduler to place. The WebAssembly build takes its count from `env.wasm.numThreads` instead, set to the same value when createWebSession in embed_runtime_web.ts starts it, since it runs its pool as worker threads started before any session exists. A failure of the WebAssembly build to get running is remembered (see {@link WEB_RETRY_AFTER_MS} and {@link START_FAILURE_HOLD_MS}), and while it is, this throws it without trying again. */
 export async function createInferenceSession(
   modelPath: string,
-  threads: number,
+  configuredThreads: number,
 ): Promise<{ session: OrtSession; Tensor: OrtTensorConstructor }> {
+  const threads = effectiveSessionThreads(configuredThreads)
   if (chooseRuntime() === 'onnxruntime-node') {
     const ort = _nodeOrt as OrtModule
     return { session: await ort.InferenceSession.create(modelPath, { intraOpNumThreads: threads, interOpNumThreads: 1 }), Tensor: ort.Tensor }
@@ -255,6 +269,7 @@ export async function createInferenceSession(
 }
 
 registerReset(() => {
+  _sessionThreadCap = null
   _chosen = null
   _nodeOrt = null
   _nodeError = null

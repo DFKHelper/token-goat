@@ -9,6 +9,10 @@ import { fileIsAbsent, fingerprintFileWithBytes, indexedFileIsGone } from './fin
 import { assetEmbedSha, disabledStampCount, indexFileSync, indexFileEmbeddings, indexedPathSpellingIsStale, isEmbedFresh, isParseSkipEligible, loadRegexExtractors, maxChunksEmbedSha } from './parser.js'
 import { parserStampCurrent } from './stamp_authority.js'
 import { DutyCycleThrottle, resolveBacklogMaxCores } from './duty_cycle.js'
+import { setSessionThreadLimit } from './embed_runtime.js'
+
+/** Threads the daemon's embed sessions may use, the ceiling over `worker.embed_threads`: inference runs in the background for hours, so it takes one core's worth. */
+export const DAEMON_EMBED_THREADS = 1
 import { deleteFileEmbeddings, embeddingsDepsAvailable, ensureEmbeddingProvenance } from './embeddings.js'
 import { pruneUnembeddableChunks } from './embed_backfill.js'
 import { getFileEntry } from './index_reader.js'
@@ -84,11 +88,30 @@ function embedBudgetAllows(): boolean {
   return daemonCpuThrottle.allowed()
 }
 
+/** Set by {@link abandonQueuedEmbeds}: a retiring daemon's resting embeds hand their slot back instead of waiting out the budget. Cleared by the reset below. */
+let embedsAbandoned = false
+
+/** Wake-ups for embeds currently resting, so an abandon ends the rest at once rather than at the next recheck. */
+const embedRestWakers = new Set<() => void>()
+
+/** Rests for one recheck interval, or until {@link abandonQueuedEmbeds} wakes it. */
+function restEmbed(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const wake = (): void => {
+      clearTimeout(timer)
+      embedRestWakers.delete(wake)
+      resolve()
+    }
+    const timer = setTimeout(wake, EMBED_BUDGET_RECHECK_MS)
+    embedRestWakers.add(wake)
+  })
+}
+
 /** Resolves once the budget allows an embed, or the daemon starts retiring; true when it is the budget that allowed it. */
 async function waitForEmbedBudget(): Promise<boolean> {
   while (!embedBudgetAllows()) {
-    if (drainShouldHandBack()) return false
-    await new Promise<void>((resolve) => setTimeout(resolve, EMBED_BUDGET_RECHECK_MS))
+    if (embedsAbandoned || drainShouldHandBack()) return false
+    await restEmbed()
   }
   return true
 }
@@ -230,6 +253,8 @@ const embedSlotWaiters: Array<{ start: () => void; abandon: () => void }> = []
 
 /** Settles every embed still queued for a slot without running it, for a daemon that is retiring. The exit waits (bounded) for embeds to settle, and a drain of thousands of files queues thousands behind the few that run, so waiting for the whole queue spent the entire settle bound after a retirement that had already waited out the startup grace. A file whose embed never started keeps its NULL embed_sha, which the backlog sweep embeds later, so nothing is lost; embeds already running are left to finish. */
 export function abandonQueuedEmbeds(): void {
+  embedsAbandoned = true
+  for (const wake of [...embedRestWakers]) wake()
   for (const waiter of embedSlotWaiters.splice(0)) waiter.abandon()
 }
 
@@ -252,6 +277,8 @@ registerReset(() => {
   embedSlotEpoch += 1
   activeEmbedSlots = 0
   daemonCpuThrottle = null
+  embedsAbandoned = false
+  embedRestWakers.clear()
   embedSlotWaiters.length = 0
   // inFlightEmbeddings has to go with them. A call that arrived while the cap was full returns a promise whose only way to settle is the closure sitting in embedSlotWaiters, so dropping that array orphans the promise for good: its `.finally` never runs, its map entry never clears, and pendingEmbeddings() -- which waits on exactly those values -- never resolves. Clearing the map is what makes the "clean slate" above true rather than only true for the counter.
   inFlightEmbeddings.clear()
@@ -876,6 +903,8 @@ export async function runWorkerLoop(
   let embedBacklogCursor: string | null = ''
   // Caps the idle backlog walk's average CPU: inference runs on this thread and its native threads, and an uncapped walk held several cores for hours. See duty_cycle.ts.
   const backlogThrottle = installDaemonCpuThrottle(new DutyCycleThrottle(resolveBacklogMaxCores()))
+  // The daemon runs its sessions on at most one thread however many the foreground CLI is configured to use; see DAEMON_EMBED_THREADS.
+  setSessionThreadLimit(DAEMON_EMBED_THREADS)
   let embeddingsWereReady = true
   let disabledStampsSeen = disabledStampCount()
   // Flips true the first time we see the pid file naming our own pid (the parent claims it shortly after spawning us, so early polls may see it empty). Once set, losing ownership means another daemon took over -- see the self-terminate check below.
