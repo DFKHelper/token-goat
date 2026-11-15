@@ -106,7 +106,7 @@ describe('negative-constraint and shell safety guards', () => {
   })
 })
 
-describe('mock-data declarations match whole identifier words', () => {
+describe('mock-data names and secret values match whole words', () => {
   it.each([
     ['mock', 'const mock = {}\n'],
     ['MOCK', 'const MOCK = []\n'],
@@ -116,7 +116,6 @@ describe('mock-data declarations match whole identifier words', () => {
     ['mock_user', 'const mock_user = {}\n'],
     ['MOCK_USERS', 'export const MOCK_USERS = [1, 2]\n'],
     ['fakeData', 'let fakeData: Foo = make()\n'],
-    ['sampleData', 'const sampleData = []\n'],
     ['dummy1', 'var dummy1 = 0\n'],
   ])('refuses a production declaration named %s', (_name, line) => {
     expect(findWriteSafetyViolation('src/data.ts', line)).toMatchObject({ rule: 'mock-data-leak', line: 1 })
@@ -124,12 +123,41 @@ describe('mock-data declarations match whole identifier words', () => {
 
   it.each([
     ['sampled', 'const sampled = Number(m[2])\n'],
+    ['sampleData', 'const sampleData = []\n'],
+    ['sampleRate', 'const sampleRate = 0.5\n'],
+    ['sampleSize', 'let sampleSize: number = 3\n'],
+    ['samples', 'const samples = []\n'],
     ['mocks', 'const mocks = load()\n'],
     ['mockups', 'const mockups = 3\n'],
     ['mockery', 'const mockery = 1\n'],
     ['xmock', 'const xmock = 1\n'],
   ])('allows a production declaration named %s', (_name, line) => {
     expect(findWriteSafetyViolation('src/cli_doctor.ts', line)).toBeNull()
+  })
+
+  it.each([
+    ['mock', 'const API_KEY = "mock"\n'],
+    ['test-key', 'const API_KEY = "test-key"\n'],
+    ['fake_token', 'const ACCESS_TOKEN = "fake_token"\n'],
+    ['placeholderKey', 'const PASSWORD = "placeholderKey"\n'],
+    ['sampleKey', 'const API_KEY = "sampleKey"\n'],
+  ])('refuses a secret assigned the mock value %s', (_value, line) => {
+    expect(findWriteSafetyViolation('src/config.ts', line)).toMatchObject({ rule: 'mock-data-leak', line: 1 })
+  })
+
+  it.each([
+    ['tested', 'const API_KEY = "tested"\n'],
+    ['samples', 'const API_KEY = "samples"\n'],
+    ['mockery', 'const API_KEY = "mockery"\n'],
+    ['testimony', 'const API_KEY = "testimony"\n'],
+  ])('allows a secret assigned the ordinary value %s', (_value, line) => {
+    expect(findWriteSafetyViolation('src/config.ts', line)).toBeNull()
+  })
+
+  it('refuses a mock secret that follows an ordinary one on the same line', () => {
+    const issue = findWriteSafetyViolation('src/config.ts', 'const API_KEY = "tested"; const secret = "mock"\n')
+
+    expect(issue).toMatchObject({ rule: 'mock-data-leak', line: 1 })
   })
 
   it('reports the declared identifier as the token', () => {

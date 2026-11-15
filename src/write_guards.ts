@@ -342,9 +342,10 @@ export interface SafetyViolation {
   message: string
 }
 
-const MOCK_CREDENTIAL_ASSIGNMENT = /\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?[_-]?token|client[_-]?secret|secret|password)\b\s*(?:=|:)\s*(['"`])\s*(?:mock|fake|dummy|sample|placeholder|test)[a-z0-9_.-]*\1/i
+const MOCK_CREDENTIAL_ASSIGNMENT = /\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?[_-]?token|client[_-]?secret|secret|password)\b\s*(?:=|:)\s*(['"`])\s*([a-z0-9_.-]*)\1/gi
+const MOCK_SECRET_VALUE = /^(?:[Mm]ock|MOCK|[Ff]ake|FAKE|[Dd]ummy|DUMMY|[Ss]ample|SAMPLE|[Pp]laceholder|PLACEHOLDER|[Tt]est|TEST)(?:$|[^A-Za-z]|[A-Z])/
 // eslint-disable-next-line regexp/no-super-linear-backtracking
-const MOCK_DATA_DECLARATION = /^\s*(?:export\s+)?(?:const|let|var)\s+((?:[Mm]ock|MOCK|[Ff]ake|FAKE|[Dd]ummy|DUMMY|[Ss]ample|SAMPLE)(?:[A-Z_\d][A-Za-z\d_]*)?)(?![A-Za-z\d_])(?:\s*:[^=\r\n]+)?\s*=/
+const MOCK_DATA_DECLARATION = /^\s*(?:export\s+)?(?:const|let|var)\s+((?:[Mm]ock|MOCK|[Ff]ake|FAKE|[Dd]ummy|DUMMY)(?:[A-Z_\d][A-Za-z\d_]*)?)(?![A-Za-z\d_])(?:\s*:[^=\r\n]+)?\s*=/
 const MODEL_IDENTIFIER = /\b(?:gpt-(?:\d+(?:\.\d+)?|[a-z0-9]+)(?:-[a-z0-9.]+)*|claude-(?:\d+(?:\.\d+)?|[a-z][a-z0-9]*)(?:-[a-z0-9.]+)*|gemini-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|grok-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|kimi-[a-z0-9]+(?:-[a-z0-9.]+)*|llama-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|mistral-[a-z0-9]+(?:-[a-z0-9.]+)*|qwen-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|deepseek-(?:r|v)?\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|hydrafusion(?:-[a-z0-9.]+)*|mai-code-[a-z0-9.]+)\b/i
 const GIT_COMMIT_INVOCATION = /\bgit(?:\.exe)?(?:(?:\s+-[cC]\s+\S+)|(?:\s+--[a-z-]+(?:=\S+)?))*\s+commit\b/i
 const GIT_MESSAGE_ARGUMENT = /(?:^|\s)(?:-m|--message)(?:=|\s+)(?:"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'|([^\s;&|]+))/gi
@@ -419,8 +420,8 @@ export function findWriteSafetyViolation(filePath: string, content: string): Saf
   const lines = content.split(/\r\n|\r|\n/)
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!
-    const credential = MOCK_CREDENTIAL_ASSIGNMENT.exec(line)
-    if (credential !== null) {
+    for (const credential of line.matchAll(MOCK_CREDENTIAL_ASSIGNMENT)) {
+      if (!MOCK_SECRET_VALUE.test(credential[2] ?? '')) continue
       const token = line.slice(0, credential.index ?? 0).trim().split(/\s+/).pop() || 'credential'
       return {
         rule: 'mock-data-leak',
