@@ -65,6 +65,34 @@ function drainShouldHandBack(): boolean {
   return retireCheckForDrain?.() ?? false
 }
 
+/** The CPU budget every embed this daemon runs is charged against, shared with the idle backlog walk so the daemon as a whole stays near its cap. Installed by {@link runWorkerLoop}; created on first use elsewhere, so the budget starts full rather than owing the CPU spent before the first embed. */
+let daemonCpuThrottle: DutyCycleThrottle | null = null
+
+/** Installs the budget the embed chokepoint ({@link embedFileSerialized}) draws on. */
+export function installDaemonCpuThrottle(throttle: DutyCycleThrottle): DutyCycleThrottle {
+  daemonCpuThrottle = throttle
+  return throttle
+}
+
+/** How long an embed rests before it asks the budget again. */
+const EMBED_BUDGET_RECHECK_MS = 250
+
+/** Settles the budget and says whether an embed may start now. */
+function embedBudgetAllows(): boolean {
+  daemonCpuThrottle ??= new DutyCycleThrottle(resolveBacklogMaxCores())
+  daemonCpuThrottle.sample()
+  return daemonCpuThrottle.allowed()
+}
+
+/** Resolves once the budget allows an embed, or the daemon starts retiring; true when it is the budget that allowed it. */
+async function waitForEmbedBudget(): Promise<boolean> {
+  while (!embedBudgetAllows()) {
+    if (drainShouldHandBack()) return false
+    await new Promise<void>((resolve) => setTimeout(resolve, EMBED_BUDGET_RECHECK_MS))
+  }
+  return true
+}
+
 /** Per-dataDir drain-cycle counters, so unrelated worker instances (distinct test dirs, or a future multi-dataDir setup) don't share a single global cadence. */
 const drainCycleCounts = new Map<string, number>()
 
@@ -223,6 +251,7 @@ function makeReleaseEmbedSlot(): () => void {
 registerReset(() => {
   embedSlotEpoch += 1
   activeEmbedSlots = 0
+  daemonCpuThrottle = null
   embedSlotWaiters.length = 0
   // inFlightEmbeddings has to go with them. A call that arrived while the cap was full returns a promise whose only way to settle is the closure sitting in embedSlotWaiters, so dropping that array orphans the promise for good: its `.finally` never runs, its map entry never clears, and pendingEmbeddings() -- which waits on exactly those values -- never resolves. Clearing the map is what makes the "clean slate" above true rather than only true for the counter.
   inFlightEmbeddings.clear()
@@ -255,6 +284,16 @@ function embedFileSerialized(absPath: string, dbPath: string, sha: string, confi
     if (modelDownloadHeld()) {
       makeReleaseEmbedSlot()()
       return Promise.resolve(undefined)
+    }
+    // Every embed the daemon runs, a dirty-queue edit or a backlog row, passes here, so this is the one place the CPU budget applies; the file keeps a NULL embed_sha when a retiring daemon skips it. The foreground CLI embeds through cli.ts and never reaches this.
+    if (!embedBudgetAllows()) {
+      return waitForEmbedBudget().then((allowed) => {
+        if (!allowed) {
+          makeReleaseEmbedSlot()()
+          return undefined
+        }
+        return dispatchEmbed()
+      })
     }
     // indexFileEmbeddings reads `indexing.embeddings_enabled` with no root to pass, as its first synchronous statement, so the file's project has to be the one loadConfig() resolves for that stretch.
     const result = withConfigProjectRoot(configRoot, () => indexFileEmbeddings(absPath, dbPath, sha, onEmbedError))
@@ -836,7 +875,7 @@ export async function runWorkerLoop(
   let lastActiveMs = Date.now()
   let embedBacklogCursor: string | null = ''
   // Caps the idle backlog walk's average CPU: inference runs on this thread and its native threads, and an uncapped walk held several cores for hours. See duty_cycle.ts.
-  const backlogThrottle = new DutyCycleThrottle(resolveBacklogMaxCores())
+  const backlogThrottle = installDaemonCpuThrottle(new DutyCycleThrottle(resolveBacklogMaxCores()))
   let embeddingsWereReady = true
   let disabledStampsSeen = disabledStampCount()
   // Flips true the first time we see the pid file naming our own pid (the parent claims it shortly after spawning us, so early polls may see it empty). Once set, losing ownership means another daemon took over -- see the self-terminate check below.
