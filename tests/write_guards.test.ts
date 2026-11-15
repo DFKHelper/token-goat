@@ -105,3 +105,37 @@ describe('negative-constraint and shell safety guards', () => {
     if (result.hookType === 'deny') expect(result.message).toMatch(/line 1, column \d+, token/)
   })
 })
+
+describe('mock-data declarations match whole identifier words', () => {
+  it.each([
+    ['mock', 'const mock = {}\n'],
+    ['MOCK', 'const MOCK = []\n'],
+    ['fake', 'let fake = 1\n'],
+    ['mockUser', 'const mockUser = { id: 1 }\n'],
+    ['MockUser', 'const MockUser = { id: 1 }\n'],
+    ['mock_user', 'const mock_user = {}\n'],
+    ['MOCK_USERS', 'export const MOCK_USERS = [1, 2]\n'],
+    ['fakeData', 'let fakeData: Foo = make()\n'],
+    ['sampleData', 'const sampleData = []\n'],
+    ['dummy1', 'var dummy1 = 0\n'],
+  ])('refuses a production declaration named %s', (_name, line) => {
+    expect(findWriteSafetyViolation('src/data.ts', line)).toMatchObject({ rule: 'mock-data-leak', line: 1 })
+  })
+
+  it.each([
+    ['sampled', 'const sampled = Number(m[2])\n'],
+    ['mocks', 'const mocks = load()\n'],
+    ['mockups', 'const mockups = 3\n'],
+    ['mockery', 'const mockery = 1\n'],
+    ['xmock', 'const xmock = 1\n'],
+  ])('allows a production declaration named %s', (_name, line) => {
+    expect(findWriteSafetyViolation('src/cli_doctor.ts', line)).toBeNull()
+  })
+
+  it('reports the declared identifier as the token', () => {
+    expect(findWriteSafetyViolation('src/data.ts', 'export const MOCK_USERS = [1, 2]\n'))
+      .toMatchObject({ token: 'MOCK_USERS' })
+    expect(findWriteSafetyViolation('src/data.ts', 'const mockUser = { id: 1 }\n'))
+      .toMatchObject({ token: 'mockUser' })
+  })
+})

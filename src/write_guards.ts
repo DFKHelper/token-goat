@@ -344,7 +344,7 @@ export interface SafetyViolation {
 
 const MOCK_CREDENTIAL_ASSIGNMENT = /\b(?:api[_-]?key|access[_-]?token|auth(?:orization)?[_-]?token|client[_-]?secret|secret|password)\b\s*(?:=|:)\s*(['"`])\s*(?:mock|fake|dummy|sample|placeholder|test)[a-z0-9_.-]*\1/i
 // eslint-disable-next-line regexp/no-super-linear-backtracking
-const MOCK_DATA_DECLARATION = /^\s*(?:export\s+)?(?:const|let|var)\s+(?:mock|fake|dummy|sample)[a-z0-9_]*(?:\s*:[^=\r\n]+)?\s*=/i
+const MOCK_DATA_DECLARATION = /^\s*(?:export\s+)?(?:const|let|var)\s+((?:[Mm]ock|MOCK|[Ff]ake|FAKE|[Dd]ummy|DUMMY|[Ss]ample|SAMPLE)(?:[A-Z_\d][A-Za-z\d_]*)?)(?![A-Za-z\d_])(?:\s*:[^=\r\n]+)?\s*=/
 const MODEL_IDENTIFIER = /\b(?:gpt-(?:\d+(?:\.\d+)?|[a-z0-9]+)(?:-[a-z0-9.]+)*|claude-(?:\d+(?:\.\d+)?|[a-z][a-z0-9]*)(?:-[a-z0-9.]+)*|gemini-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|grok-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|kimi-[a-z0-9]+(?:-[a-z0-9.]+)*|llama-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|mistral-[a-z0-9]+(?:-[a-z0-9.]+)*|qwen-\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|deepseek-(?:r|v)?\d+(?:\.\d+)?(?:-[a-z0-9.]+)*|hydrafusion(?:-[a-z0-9.]+)*|mai-code-[a-z0-9.]+)\b/i
 const GIT_COMMIT_INVOCATION = /\bgit(?:\.exe)?(?:(?:\s+-[cC]\s+\S+)|(?:\s+--[a-z-]+(?:=\S+)?))*\s+commit\b/i
 const GIT_MESSAGE_ARGUMENT = /(?:^|\s)(?:-m|--message)(?:=|\s+)(?:"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'|([^\s;&|]+))/gi
@@ -432,7 +432,7 @@ export function findWriteSafetyViolation(filePath: string, content: string): Saf
     }
     const declaration = MOCK_DATA_DECLARATION.exec(line)
     if (declaration !== null) {
-      const token = /\b(?:mock|fake|dummy|sample)[a-z0-9_]*/i.exec(line)?.[0] ?? 'mock-data'
+      const token = declaration[1] ?? 'mock-data'
       return {
         rule: 'mock-data-leak',
         line: index + 1,
