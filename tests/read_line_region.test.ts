@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 
 import { runRead } from '../src/read_commands.js'
-import { parseColonLineSpec, resolveLineRegions } from '../src/read_spec.js'
+import { parseColonLineSpec, parseLineRange, parseReadSpec, resolveLineRegions, specFilePart } from '../src/read_spec.js'
+import { resolveSpecPath } from '../src/spec_path.js'
 import type { SymbolEntry } from '../src/parser_types.js'
 
 // A 15-line file exercising all three region kinds: a preamble (1-3) above the first symbol, three top-level symbols, an inter-symbol gap, and a trailing gap running to EOF. CAPTURE: the symbol spans this file produces -- `variable TOP_CONST_9K` 4-4, `function alphaRegionFn9k` 6-8, `function betaRegionFn9k` 11-13, three symbols total -- are what the real indexer emitted for these exact bytes, read off a `runOutline` run over them rather than predicted from the parser's source. That distinction had already bitten this fixture once: an earlier draft assumed a top-level `const` was preamble text, when the indexer emits it as a `variable` symbol and so there was no preamble above it at all.
@@ -103,6 +104,46 @@ describe('parseColonLineSpec', () => {
   // `file::N:M` is an existing accepted range spelling (read_commands.test.ts, "accepts the colon separator form file::N:M"): its LAST colon is the range separator, so a split on it alone would capture the spec here with file = `src/answer_router.ts::200`.
   it('declines the `file::N:M` range spelling, whose last colon is a range separator', () => {
     expect(parseColonLineSpec('src/answer_router.ts::200:240')).toBeNull()
+  })
+})
+
+describe('Windows file selectors', () => {
+  const windowsPaths = [
+    'C:/tg-no-such-checkout-9k/src/answer_router.ts',
+    'C:\\tg-no-such-checkout-9k\\src\\answer_router.ts',
+  ]
+
+  it.each(windowsPaths)('keeps the drive-qualified path when splitting an @ range: %s', (file) => {
+    const spec = `${file}@110-140`
+    expect(parseLineRange(spec)).toEqual({ file, start: 110, end: 140 })
+    expect(specFilePart(spec)).toBe(file)
+  })
+
+  it.each(windowsPaths)('keeps the drive colon separate from the :: symbol separator: %s', (file) => {
+    const symbolSpec = `${file}::resolveSubject`
+    expect(parseReadSpec(symbolSpec)).toEqual({ file, symbol: 'resolveSubject' })
+    expect(specFilePart(symbolSpec)).toBe(file)
+
+    const symbolRangeSpec = `${file}::resolveSubject@110-140`
+    expect(parseLineRange(symbolRangeSpec)).toBeNull()
+    expect(specFilePart(symbolRangeSpec)).toBe(file)
+  })
+
+  it.each(windowsPaths)('normalizes drive paths without treating the drive colon as a selector: %s', (file) => {
+    const expected = file.replaceAll('\\', '/').replace(/^C:/, 'c:')
+    expect(resolveSpecPath(file)).toBe(expected)
+  })
+
+  it('reads slash and backslash range-qualified paths on Windows', () => {
+    if (process.platform !== 'win32') return
+    withSample((file) => {
+      const windowsSpellings = [file.replaceAll('\\', '/'), file]
+      for (const windowsFile of windowsSpellings) {
+        const { text, code } = runRead({ spec: `${windowsFile}@6-8` })
+        expect(code).toBe(0)
+        expect(text).toContain('function alphaRegionFn9k')
+      }
+    })
   })
 })
 

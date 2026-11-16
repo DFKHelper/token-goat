@@ -45,28 +45,45 @@ function keepsLineNumbers(original: string, rewritten: string): boolean {
 }
 
 /** post_tool_use handler for the Read tool. Detects truncation markers in the tool response and flags the file so the next pre_tool_use for the same file returns an immediate deny with a surgical-read hint instead of allowing another full (and expensive) read. */
-function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean): HookOutput {
+function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean, respText: string): HookOutput {
   const filePath = getFilePath(event)
   if (filePath === undefined) return passOutput()
   const normalized = normalizePath(filePath)
   const shown = displaySafePath(normalized)
-  const respText = extractReadOutput(event.raw)
   if (isTruncatedReadDelivery(event, respText)) {
     markFileTruncated(normalized, !readRequestedSliceWindow(event).isExplicitSlice)
   }
 
   // Reuse one settings snapshot: loadConfig fingerprints both config files on every call.
   const config = loadConfig()
+  let onDisk: string | undefined
+  const diskPath = (): string => {
+    if (onDisk === undefined) onDisk = hostPathOfIndexKey(normalized)
+    return onDisk
+  }
+  let cachedFileSize: number | undefined
+  const currentFileSize = (): number | null => {
+    if (cachedFileSize !== undefined) return cachedFileSize
+    const fileSize = statSize(diskPath())
+    if (fileSize !== null) {
+      cachedFileSize = fileSize
+    }
+    return fileSize
+  }
+  let preimage: Buffer | undefined
+  const readPreimage = (): Buffer => {
+    if (preimage === undefined) preimage = fs.readFileSync(diskPath())
+    return preimage
+  }
 
   // Snapshot doc file content so the next re-read can inject a diff instead of the full file.
   const postBasename = path.basename(normalized)
   const diffSourcesEnabled = config.hints.serve_diff_on_reread
   if (/\.(md|mdx|markdown|rst|txt)$/i.test(postBasename) || isSessionArtifactFile(normalized) || (diffSourcesEnabled && isDiffableSource(postBasename))) {
     try {
-      const onDisk = hostPathOfIndexKey(normalized)
-      const sz = statSize(onDisk)
+      const sz = currentFileSize()
       if (sz !== null && sz <= 256 * 1024) {
-        const content = fs.readFileSync(onDisk)
+        const content = readPreimage()
         snapshotStore(sessionStateKey(event), normalized, content)
       }
     } catch {
@@ -117,10 +134,9 @@ function postReadHandlerInner(event: HookEvent, suppressStructuralHint: boolean)
   // Post-read structural-navigation hint: once a just-read source file crosses post_read_code_compress.min_lines, nudge toward token-goat skeleton/outline instead of a future full re-read. Only fires for extensions with a tree-sitter language adapter (the sourceHints column of src/language_specs.ts), where skeleton/outline actually produce structure.
   if (isSourceExtension(postBasename)) {
     try {
-      const onDisk = hostPathOfIndexKey(normalized)
-      const sz = statSize(onDisk)
+      const sz = currentFileSize()
       if (sz !== null && sz <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-        const lineCount = countTextLines(fs.readFileSync(onDisk, 'utf8'))
+        const lineCount = countTextLines(readPreimage().toString('utf8'))
         const minLines = config.post_read_code_compress.min_lines
         // Once per file per compaction epoch, like the edit hook's section hint: the text names the same commands on every read of the same file, so a second copy adds nothing while the first is still in context.
         const repeatKey = `read_structural_nav:${normalized}:${getCompactedAt()}`
@@ -410,7 +426,7 @@ export function postReadHandler(event: HookEvent): HookOutput {
   const skeletoned = elided === null && outlined === null ? foldSourceSkeleton(event, respText) : null
   const folded = elided === null && outlined === null && skeletoned === null ? foldCodeBodies(event, respText) : null
   const rewrite = elided ?? outlined?.output ?? skeletoned?.output ?? folded?.output ?? null
-  const out = applyHintTracking(event, postReadHandlerInner(event, rewrite !== null), classifyReadHint)
+  const out = applyHintTracking(event, postReadHandlerInner(event, rewrite !== null, respText), classifyReadHint)
   const deliveredRaw = outlined?.deliveredRaw ?? skeletoned?.deliveredRaw ?? folded?.deliveredRaw ?? null
   if (deliveredRaw !== null) forgetFoldedWindow(event)
   recordReadAsServedOutput(event, deliveredRaw)

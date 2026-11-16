@@ -439,7 +439,7 @@ export function realSymbolReadHint(filePath: string, shown: string, range?: { st
   return '`token-goat read ' + quotedArg(shown + '::' + names[0]) + '`' + rest
 }
 
-function lineCountForSurgicalHint(filePath: string, fileStatSize?: number): number {
+function lineCountForSurgicalHint(filePath: string, fileStatSize?: number, readText?: () => string): number {
   try {
     const onDisk = hostPathOfIndexKey(filePath)
     if (fileStatSize !== undefined && fileStatSize > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
@@ -449,7 +449,7 @@ function lineCountForSurgicalHint(filePath: string, fileStatSize?: number): numb
     if (sz !== null && sz > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       return 0
     }
-    return countTextLines(fs.readFileSync(onDisk, 'utf8'))
+    return countTextLines(readText === undefined ? fs.readFileSync(onDisk, 'utf8') : readText())
   } catch {
     return 0
   }
@@ -653,6 +653,29 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const onDisk = hostPathOfIndexKey(normalized)
   // One read of the file's bytes serves every hash check and the range record in this hook call; the next call makes its own.
   const hashNow = onceCurrentFileHash(normalized)
+  // Several gates can inspect the same preimage during one hook decision. Keep a bounded raw-byte
+  // copy for the hash/type scan and a decoded view for later text checks, rather than reopening the
+  // file for every gate. Large files that were already read as bytes are not retained past this
+  // decision's existing scan cap.
+  let preimageBytes: Buffer | undefined
+  let preimageText: string | undefined
+  const readPreimageBytes = (): Buffer => {
+    if (preimageBytes === undefined) {
+      const bytes = fs.readFileSync(onDisk)
+      if (bytes.length <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+        preimageBytes = bytes
+        hashNow.adopt(bytes)
+      }
+      return bytes
+    }
+    return preimageBytes
+  }
+  const readPreimageText = (): string => {
+    if (preimageText === undefined) {
+      preimageText = preimageBytes?.toString('utf8') ?? fs.readFileSync(onDisk, 'utf8')
+    }
+    return preimageText
+  }
   const rangeWindow = readRequestedSliceWindow(event)
   const rangeSpan = rangeWindow.isExplicitSlice ? requestedSliceSpan(rangeWindow) : undefined
   const rangeKey = foldPath(normalized)
@@ -757,7 +780,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const skillName = detectSkillFile(normalized)
   if (skillName && basename === 'SKILL.md') {
     try {
-      const body = fs.readFileSync(onDisk, 'utf-8')
+      const body = readPreimageText()
       const bodySha = contentHash(body)
       const compact = getCompactAnySessionSync(skillName)
       const stale = isCompactStale(compact, skillName, bodySha)
@@ -818,7 +841,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Grep needs to search the notebook's actual content, not the output-stripped sidecar this intercept would serve instead — exempt it from this intercept (same rationale as the doc-compact exemption above).
   if (event.toolName !== 'Grep' && isNotebook) {
     try {
-      const rawBytes = fs.readFileSync(onDisk)
+      const rawBytes = readPreimageBytes()
       const [sidecarPath] = getOrCreateSidecar(rawBytes, dataDir())
       const sidecarContent = fs.readFileSync(sidecarPath, 'utf-8')
       const savedBytes = rawBytes.length - sidecarContent.length
@@ -848,7 +871,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const sz = statSize(onDisk)
       if (sz !== null && sz >= MARKDOWN_SIZE_THRESHOLD) {
         markdownSize = sz
-        fileContent = fs.readFileSync(onDisk, 'utf8')
+        fileContent = readPreimageText()
       }
     } catch {
       // best-effort
@@ -1481,10 +1504,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // Guarded the same way every other full-content fs.readFileSync in this file is (see SLICE_ESTIMATE_SCAN_CAP_BYTES's other call sites above) -- without this, a multi-GB .csv/.txt/.log/.html file (isKnownFileType is unconditional on size) would be read into a JS string in full on every single call, even a cheap bounded offset/limit request whose small ftEffectiveLength was always going to pass every handler's length-gate below without ever touching content.
     if (!BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       try {
-        ftBytes = fs.readFileSync(onDisk)
-        // The range record below hashes these same bytes instead of reading the file again.
-        hashNow.adopt(ftBytes)
-        ftContent = ftBytes.toString('utf8')
+        // The preimage reader adopts bounded raw bytes for the range hash as well as dispatch.
+        ftBytes = readPreimageBytes()
+        ftContent = readPreimageText()
       } catch {
         // best-effort — empty content will pass through
       }
@@ -1507,7 +1529,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Grep is exempt from pre-read nudges: it performs content searches, not reads.
   if (event.toolName !== 'Grep' && !BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && (!isKnownFileType || isXmlNudge)) {
     const reqWindow = readRequestedSliceWindow(event)
-    const lineCount = lineCountForSurgicalHint(normalized, fileStatSize)
+    const lineCount = lineCountForSurgicalHint(normalized, fileStatSize, readPreimageText)
     const isSubstantial = fileStatSize >= 5 * 1024 || lineCount >= 50
     const isSpanningOver80 = !reqWindow.isExplicitSlice ||
       (reqWindow.limit !== undefined && lineCount > 0 && reqWindow.limit / lineCount >= 0.8)
@@ -1527,7 +1549,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       try {
         let content = ''
         if (fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-          content = fs.readFileSync(onDisk, 'utf8')
+          content = readPreimageText()
         }
         const headings = extractMarkdownHeadings(content)
         if (headings.length < 3) {

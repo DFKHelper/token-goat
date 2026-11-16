@@ -54,6 +54,19 @@ function makeTmpCsv(totalBytes: number): string {
   return p
 }
 
+function makeTmpXml(totalBytes: number): string {
+  let content = '<root>\n'
+  let i = 0
+  while (Buffer.byteLength(content, 'utf8') < totalBytes) {
+    content += `  <entry id="${i++}">sample content for the read hook</entry>\n`
+  }
+  content += '</root>\n'
+  const p = path.join(os.tmpdir(), `tg-read-uft-${process.pid}-${Math.random().toString(36).slice(2)}.xml`)
+  fs.writeFileSync(p, content)
+  tmpFiles.push(p)
+  return p
+}
+
 describe('universal file-type handler readFileSync guard (regression)', () => {
   beforeEach(() => {
     clearModuleCaches()
@@ -88,5 +101,16 @@ describe('universal file-type handler readFileSync guard (regression)', () => {
     preReadHandler(readEventWithRange(p, 1, 50))
 
     expect(mockState.callCount).toBe(1)
+  })
+
+  it('reuses the XML preimage for the type scan and later line-count check', () => {
+    const p = makeTmpXml(50 * 1024)
+    mockState.watchedPath = normalizePath(p)
+
+    const output = preReadHandler(readEventWithRange(p, 1, 50))
+
+    expect(output.hookType).not.toBe('deny')
+    // One requested-window estimate plus one full preimage; the line-count nudge must not reopen it.
+    expect(mockState.callCount).toBe(2)
   })
 })
