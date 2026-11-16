@@ -23,6 +23,7 @@ import * as fs from 'node:fs'
 
 import type { HookEvent } from '../src/hook_registry.js'
 import { preReadHandler } from '../src/hooks_read.js'
+import { postReadHandler } from '../src/hooks_read_post.js'
 import { normalizePath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { makeHookEvent } from './helpers/hook-event.js'
@@ -62,6 +63,16 @@ function makeTmpXml(totalBytes: number): string {
   }
   content += '</root>\n'
   const p = path.join(os.tmpdir(), `tg-read-uft-${process.pid}-${Math.random().toString(36).slice(2)}.xml`)
+  fs.writeFileSync(p, content)
+  tmpFiles.push(p)
+  return p
+}
+
+function makeTmpSource(lineCount: number): string {
+  const content = Array.from({ length: lineCount }, (_, i) =>
+    `// synthetic source line ${i + 1}: enough content to clear the hint savings floor`,
+  ).join('\n') + '\n'
+  const p = path.join(os.tmpdir(), `tg-read-post-${process.pid}-${Math.random().toString(36).slice(2)}.ts`)
   fs.writeFileSync(p, content)
   tmpFiles.push(p)
   return p
@@ -110,7 +121,24 @@ describe('universal file-type handler readFileSync guard (regression)', () => {
     const output = preReadHandler(readEventWithRange(p, 1, 50))
 
     expect(output.hookType).not.toBe('deny')
-    // One requested-window estimate plus one full preimage; the line-count nudge must not reopen it.
-    expect(mockState.callCount).toBe(2)
+    // The type scan's bounded full preimage is shared with the line-count nudge.
+    expect(mockState.callCount).toBe(1)
+  })
+
+  it('reuses the source preimage for snapshot and structural-navigation checks after a Read', () => {
+    const p = makeTmpSource(250)
+    mockState.watchedPath = normalizePath(p)
+
+    postReadHandler(makeHookEvent({
+      eventName: 'post_tool_use',
+      toolName: 'Read',
+      toolInput: { file_path: p },
+      sessionId: `post-read-preimage-${process.pid}-${Math.random().toString(36).slice(2)}`,
+      raw: { tool_response: 'source read result' },
+    }))
+
+    // The fold scan and served-window reconciliation each read independently; the snapshot and
+    // structural-navigation gates share their single preimage.
+    expect(mockState.callCount).toBe(3)
   })
 })
