@@ -46,6 +46,7 @@ import { installPi, isPiInstalled } from './bridges/pi_install.js'
 import { installAntigravity, isAntigravityInstalled } from './bridges/antigravity_install.js'
 import { disableVscodeClaudeHooks, vscodeHooksInstalled, vscodeRunsTokenGoatClaudeHooks } from './bridges/vscode_install.js'
 import { VSCODE_CLAUDE_HOOKS_TURNED_OFF_TEXT } from './cli_doctor_platforms.js'
+import { assertHookEntryAllowed } from './install_entry.js'
 
 export function shimIsCurrent(scriptPath: string, expected: string): boolean {
   try {
@@ -127,6 +128,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
       const wired = wiredCopilotHookWords()
       const hasOutdatedEntries = wired.some((e) => e.current === false)
       if (isStaleShim || hasOutdatedEntries || wiringPointsAtMissingFile(wired)) {
+        assertHookEntryAllowed(process.argv[1], { dev: false })
         repairCopilotCliHooks()
         repairs.push('Repaired Copilot CLI (user) hooks and shim')
       }
@@ -148,6 +150,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
       // A cloned repository can commit this hooks file, so a missing file it names is only rewritten when this machine wrote the config.
       const pointsAtMissing = hasCreatedConfig(projConfig) && wiringPointsAtMissingFile(wired)
       if (isStaleShim || hasOutdatedEntries || pointsAtMissing) {
+        assertHookEntryAllowed(process.argv[1], { dev: false })
         repairCopilotCliHooks(copilotLocalOpts)
         repairs.push('Repaired Copilot CLI (project) hooks and shim')
       }
@@ -166,6 +169,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
       const wired = wiredCodexHookWords()
       const hasOutdatedEntries = wired.some((e) => e.current === false)
       if (isStaleShim || hasOutdatedEntries || wiringPointsAtMissingFile(wired)) {
+        assertHookEntryAllowed(process.argv[1], { dev: false })
         installCodex()
         repairs.push('Repaired Codex CLI hooks and shim')
       }
@@ -184,6 +188,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
       const wired = wiredGrokHookWords()
       const hasOutdatedEntries = wired.some((e) => e.current === false)
       if (isStaleShim || hasOutdatedEntries || wiringPointsAtMissingFile(wired)) {
+        assertHookEntryAllowed(process.argv[1], { dev: false })
         installGrok()
         repairs.push('Repaired Grok CLI hooks and shim')
       }
@@ -201,6 +206,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
       const wired = wiredKimiHookWords()
       const hasOutdatedEntries = wired.some((e) => e.current === false)
       if (hasOutdatedEntries || wiringPointsAtMissingFile(wired) || (fs.existsSync(kimiShim) && fs.statSync(kimiShim).size === 0)) {
+        assertHookEntryAllowed(process.argv[1], { dev: false })
         installKimi()
         repairs.push('Repaired Kimi Code hooks and shim')
       }
@@ -212,6 +218,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
   // 8. Gemini CLI
   try {
     if (isGeminiInstalled()) {
+      assertHookEntryAllowed(process.argv[1], { dev: false })
       const res = installGemini()
       if (!res.alreadyInstalled) repairs.push('Repaired Gemini CLI hooks')
     }
@@ -222,6 +229,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
   // 9. Qwen Code
   try {
     if (isQwenInstalled()) {
+      assertHookEntryAllowed(process.argv[1], { dev: false })
       const res = installQwen()
       if (!res.alreadyInstalled) repairs.push('Repaired Qwen Code hooks')
     }
@@ -232,6 +240,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
   // 10. Opencode
   try {
     if (isOpencodeInstalled()) {
+      assertHookEntryAllowed(process.argv[1], { dev: false })
       const res = installOpencode()
       if (!res.alreadyInstalled) repairs.push('Repaired opencode plugin')
     }
@@ -242,6 +251,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
   // 11. OpenClaw
   try {
     if (isOpenclawInstalled()) {
+      assertHookEntryAllowed(process.argv[1], { dev: false })
       const res = installOpenclaw()
       if (!res.alreadyInstalled) repairs.push('Repaired OpenClaw plugin')
     }
@@ -252,9 +262,11 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
   // 12. Pi
   try {
     if (isPiInstalled()) {
+      assertHookEntryAllowed(process.argv[1], { dev: false })
       const res = installPi()
       if (!res.alreadyInstalled) repairs.push('Repaired pi extension')
     } else if (isPiInstalled({ local: true })) {
+      assertHookEntryAllowed(process.argv[1], { dev: false })
       const res = installPi({ local: true })
       if (!res.alreadyInstalled) repairs.push('Repaired pi (project) extension')
     }
@@ -265,6 +277,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd()): HarnessRepa
   // 13. Antigravity CLI
   try {
     if (isAntigravityInstalled()) {
+      assertHookEntryAllowed(process.argv[1], { dev: false })
       const res = installAntigravity()
       if (!res.alreadyInstalled) repairs.push('Repaired Antigravity CLI integration')
     }

@@ -110,8 +110,8 @@ const TRANSIENT_NATIVE_FALLBACK = /wrote the Node form of the hooks, not the nat
 
 /** Install, and return what install printed on stderr. Install already tries the copy and the self-test twice in one process; on a machine starved enough that both attempts time out (the self-test's 5 s budget is production's and stays), the notice it prints says to install again, so this does, up to twice more, and only while that notice is the reason. Any other outcome, including the same notice after the last try, is left for the caller's assertions to fail on. */
 function install(sb: Sandbox, flags: string[], env: Env = {}, cwd?: string): string {
-  let res = cli(sb, ['install', ...flags], env, cwd)
-  for (let again = 0; again < 2 && res.status === 0 && TRANSIENT_NATIVE_FALLBACK.test(res.stderr); again++) res = cli(sb, ['install', ...flags], env, cwd)
+  let res = cli(sb, ['install', '--dev', ...flags], env, cwd)
+  for (let again = 0; again < 2 && res.status === 0 && TRANSIENT_NATIVE_FALLBACK.test(res.stderr); again++) res = cli(sb, ['install', '--dev', ...flags], env, cwd)
   expect(res.status, `install ${flags.join(' ')}: ${res.stderr}${res.stdout}`).toBe(0)
   return res.stderr
 }
@@ -601,7 +601,7 @@ describe('install refuses a hook path the harness rewrites before running it', (
   function refuses(dirName: string, flag: string, span: string, file: (sb: Sandbox) => string): void {
     const sb = makeSandbox(dirName)
     for (const native of ['1', '0']) {
-      const res = cli(sb, ['install', flag], { TOKEN_GOAT_NATIVE_HOOKS: native, x: 'expanded', y: 'expanded' })
+      const res = cli(sb, ['install', '--dev', flag], { TOKEN_GOAT_NATIVE_HOOKS: native, x: 'expanded', y: 'expanded' })
       expect(res.status, `${native}: ${res.stdout}${res.stderr}`).not.toBe(0)
       // A span holding $ is set in single quotes so a shell reading the message leaves it as written; any other span in double quotes.
       expect(res.stderr).toContain(`Move the path that contains ${span.includes('$') ? `'${span}'` : `"${span}"`}`)

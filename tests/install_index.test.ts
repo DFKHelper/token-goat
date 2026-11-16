@@ -221,7 +221,7 @@ describe('the built bundle', () => {
     }
     delete e['TOKEN_GOAT_INSTALL_INDEX']
     if (env['TOKEN_GOAT_INSTALL_INDEX'] !== undefined) e['TOKEN_GOAT_INSTALL_INDEX'] = env['TOKEN_GOAT_INSTALL_INDEX']
-    const r = spawnSync(process.execPath, [BUNDLE, 'install', ...extra], { cwd: dir, encoding: 'utf-8', env: e })
+    const r = spawnSync(process.execPath, [BUNDLE, 'install', '--dev', ...extra], { cwd: dir, encoding: 'utf-8', env: e })
     expect(r.status, `install exited ${r.status}\n${r.stderr}`).toBe(0)
     return { out: r.stdout, home }
   }

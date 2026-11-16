@@ -56,7 +56,7 @@ describe('install --vscode against a disposable HOME never touches the Claude Co
     expect(fs.existsSync(claudeMd)).toBe(false)
     expect(fs.existsSync(claudeSkill)).toBe(false)
 
-    const r = run(['install', '--project', '--vscode'], env, project)
+    const r = run(['install', '--dev', '--project', '--vscode'], env, project)
     expect(r.status, r.stderr).toBe(0)
 
     // Positive control: the run really did write VS Code's own files, so the "still absent" claims below are a scoping result, not a project-root or env-wiring failure that wrote nothing at all.
@@ -75,7 +75,7 @@ describe('install --vscode against a disposable HOME never touches the Claude Co
     const project = mkIsolated('tg-behav-bare-proj-')
     const env = envFor(home, dataDir)
 
-    const r = run(['install', '--project'], env, project)
+    const r = run(['install', '--dev', '--project'], env, project)
     expect(r.status, r.stderr).toBe(0)
 
     expect(fs.existsSync(path.join(project, '.claude', 'settings.json'))).toBe(true)

@@ -156,11 +156,11 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(proj, 'src', 'app.ts'), 'export function app(): number {\n  return 1\n}\n')
   sb = { base, proj, dataDir, env: sandboxEnv(base, dataDir), wired: {} as Sandbox['wired'], pids: new Set() }
   for (const h of HARNESSES) {
-    const res = cli(['install', ...INSTALL_FLAG[h]])
+    const res = cli(['install', '--dev', ...INSTALL_FLAG[h]])
     expect(res.status, `install ${h}: ${res.stderr}`).toBe(0)
     if (h === 'copilot_cli') {
       // VS Code shares this hooks file at user scope, and while it owns the file the installer adds the keys only VS Code reads (SubagentStart), which the VS Code payload cases drive.
-      const vs = cli(['install', '--vscode', '--user'])
+      const vs = cli(['install', '--dev', '--vscode', '--user'])
       expect(vs.status, `install --vscode --user: ${vs.stderr}`).toBe(0)
     }
     sb.wired[h] = wiredEvents(h)

@@ -59,7 +59,7 @@ describe('install backs up a real pre-existing config before overwriting it, wit
     const originalContent = JSON.stringify({ servers: { 'some-other-server': { type: 'stdio', command: 'other-tool', args: ['serve'] } } }, null, 2) + '\n'
     fs.writeFileSync(mcpPath, originalContent, 'utf8')
 
-    const r = run(['install', '--project', '--vscode'], env, project)
+    const r = run(['install', '--dev', '--project', '--vscode'], env, project)
     expect(r.status, r.stderr).toBe(0)
 
     // Positive control: the install really did rewrite the file (otherwise "a backup exists" would be vacuous).
@@ -90,7 +90,7 @@ describe('install backs up a real pre-existing config before overwriting it, wit
     const originalContent = JSON.stringify({ theme: 'One Dark', vim_mode: true, font_size: 14 }, null, 2) + '\n'
     fs.writeFileSync(settingsPath, originalContent, 'utf8')
 
-    const r = run(['install', '--zed'], env, project)
+    const r = run(['install', '--dev', '--zed'], env, project)
     expect(r.status, r.stderr).toBe(0)
 
     const rewritten = fs.readFileSync(settingsPath, 'utf8')

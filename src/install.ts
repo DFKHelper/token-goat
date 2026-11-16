@@ -9,6 +9,7 @@ import { buildGuidanceBlock } from './bridges/guidance_block.js'
 import { CANONICAL_SKILL_MD } from './canonical_skill.js'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { compareSemver } from './cli_upgrade.js'
+import { assertHookEntryAllowed } from './install_entry.js'
 import { loadConfig } from './config.js'
 import { nativeHookBinary, nativeHookCommandLine, nativeHookExecParts, parseNativeInvocation, splitHookCommand } from './native_hook.js'
 import { toolMatcherFor } from './hook_registry.js'
@@ -298,7 +299,8 @@ function groupHasTokenGoat(
 }
 
 /** Install token-goat hooks into the `scope` settings file. Reads the existing settings (creating an empty doc when absent), adds any missing current-format token-goat hook entries under each mapped event key, and writes the result atomically. A legacy-only entry for an event key (see {@link LEGACY_COMMAND_MARKERS}) does not count as already installed -- it is stripped and replaced with the current command, so an upgrade from a tokenwise/token_goat-era install ends up with exactly one, working, entry per event key rather than a dead leftover sitting next to a new one. `alreadyInstalled` is true when nothing had to change. */
-export function installHooks(scope: HookScope = 'user'): InstallResult {
+export function installHooks(scope: HookScope = 'user', opts: { dev?: boolean } = {}): InstallResult {
+  assertHookEntryAllowed(process.argv[1], { dev: opts.dev === true })
   return withInstallScope(hookScopeRoot(scope), () => installHooksScoped(scope))
 }
 

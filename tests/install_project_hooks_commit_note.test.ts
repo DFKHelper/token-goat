@@ -33,7 +33,7 @@ function install(args: string[]): { stdout: string; project: string } {
     TOKEN_GOAT_HOME: path.join(home, '.token-goat'),
     TOKEN_GOAT_EMBEDDINGS_ENABLED: '0',
   }
-  const r = spawnSync(process.execPath, [BUNDLE, 'install', ...args], { cwd: project, env, encoding: 'utf8', timeout: 120_000 })
+  const r = spawnSync(process.execPath, [BUNDLE, 'install', '--dev', ...args], { cwd: project, env, encoding: 'utf8', timeout: 120_000 })
   expect(r.status, r.stderr).toBe(0)
   return { stdout: r.stdout, project }
 }

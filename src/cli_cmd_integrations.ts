@@ -54,6 +54,7 @@ export function registerIntegrationCommands(
     .option('--auto', 'automatically install token-goat across all detected developer ecosystems')
     .option('--all', 'install token-goat across all supported IDE and coding agent environments')
     .option('--local', 'with --pi or --copilot, install the project-local config instead of the global one (<project>/.pi/extensions/token-goat.ts, <project>/.github/hooks/token-goat.json); the same as -p/--project')
+    .option('--dev', 'register a git checkout build as the hook entry; refused by default because a checkout-pinned hook drifts from the installed build')
     .option('--no-index', 'do not queue the project in the current directory for its first index (TOKEN_GOAT_INSTALL_INDEX=0 does the same)')
     .action(guard(handlers.cmdInstall))
 

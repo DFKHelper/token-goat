@@ -470,7 +470,7 @@ describe('the built bundle', () => {
   }
 
   it('install --visualstudio writes the two user files, prints the manual steps, and leaves the cwd empty; uninstall removes them', () => {
-    const install = run(project, ['install', '--visualstudio'])
+    const install = run(project, ['install', '--dev', '--visualstudio'])
     expect(install.status, install.stderr).toBe(0)
     expect(install.stdout).toContain('Installed token-goat Visual Studio MCP integration (user scope)')
     expect(install.stdout).toContain('Enable custom instructions to be loaded from .github/copilot-instructions.md files and added to requests')
@@ -494,7 +494,7 @@ describe('the built bundle', () => {
     const original = '{\n  "mcpServers": {\n    "mine": { "command": "npx", "args": ["-y", "my-mcp"] }\n  }\n}\n'
     const mcpPath = path.join(project, '.mcp.json')
     fs.writeFileSync(mcpPath, original)
-    const install = run(project, ['install', '-p', '--visualstudio'])
+    const install = run(project, ['install', '--dev', '-p', '--visualstudio'])
     expect(install.status, install.stderr).toBe(0)
     const note = /^Note: .*do not commit them: list them in \.git\/info\/exclude or \.gitignore\.$/m.exec(install.stdout)?.[0]
     expect(note).toContain(mcpPath)
@@ -515,8 +515,8 @@ describe('the built bundle', () => {
   it('install -p --visualstudio after --vscode -p writes a Claude-valid .mcp.json, prints the duplicate note, and mcp-status --visualstudio sees it', () => {
     const mcpPath = path.join(project, '.mcp.json')
     expect(JSON.parse(run(project, ['mcp-status', '--visualstudio', '--project']).stdout)).toEqual({ configured: false, checkedPaths: [path.join(home, '.mcp.json'), mcpPath] })
-    expect(run(project, ['install', '-p', '--vscode']).status).toBe(0)
-    const install = run(project, ['install', '-p', '--visualstudio'])
+    expect(run(project, ['install', '--dev', '-p', '--vscode']).status).toBe(0)
+    const install = run(project, ['install', '--dev', '-p', '--visualstudio'])
     expect(install.status, install.stderr).toBe(0)
     expect(install.stdout).toMatch(/^Note: Visual Studio reads .*more than once for this solution/m)
     expect(claudeCodeMcpJsonError(fs.readFileSync(mcpPath, 'utf8'))).toBeNull()

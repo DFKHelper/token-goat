@@ -77,15 +77,16 @@ interface Spec {
 
 /** One entry per project-confined install flag. `--vscode -p` leads because it is the IN-BAND CONTROL: it was already covered before the inversion, so a run where it does not refuse is a run whose other refusals mean nothing. `--codex`, `--kimi`, `--zed` and `--openclaw` are absent on evidence, not oversight: none of them constructs a project-relative path at all (no `projectRoot`, no `process.cwd()`, no local flag), so they are user-scope only and have no project target to poison. */
 const SPECS: readonly Spec[] = [
-  { label: 'vscode-p (in-band control)', rel: '.vscode/mcp.json', args: ['install', '--vscode', '-p'] },
-  { label: 'vscode-p github', rel: '.github/copilot-instructions.md', args: ['install', '--vscode', '-p'] },
-  { label: 'visualstudio-p', rel: '.mcp.json', args: ['install', '--visualstudio', '-p'] },
-  { label: 'visualstudio-p github', rel: '.github/copilot-instructions.md', args: ['install', '--visualstudio', '-p'] },
-  { label: 'copilot-local', rel: '.github/copilot-instructions.md', args: ['install', '--copilot', '--local'] },
-  { label: 'cursor-p', rel: '.cursor/mcp.json', args: ['install', '--cursor', '-p'] },
-  { label: 'pi-local', rel: '.pi/extensions/token-goat.ts', args: ['install', '--pi', '--local'] },
+  // Every row passes --dev: the bundle under test runs from a git checkout, which install refuses without it.
+  { label: 'vscode-p (in-band control)', rel: '.vscode/mcp.json', args: ['install', '--vscode', '-p', '--dev'] },
+  { label: 'vscode-p github', rel: '.github/copilot-instructions.md', args: ['install', '--vscode', '-p', '--dev'] },
+  { label: 'visualstudio-p', rel: '.mcp.json', args: ['install', '--visualstudio', '-p', '--dev'] },
+  { label: 'visualstudio-p github', rel: '.github/copilot-instructions.md', args: ['install', '--visualstudio', '-p', '--dev'] },
+  { label: 'copilot-local', rel: '.github/copilot-instructions.md', args: ['install', '--copilot', '--local', '--dev'] },
+  { label: 'cursor-p', rel: '.cursor/mcp.json', args: ['install', '--cursor', '-p', '--dev'] },
+  { label: 'pi-local', rel: '.pi/extensions/token-goat.ts', args: ['install', '--pi', '--local', '--dev'] },
   // Plain `install -p` writes project-scope Claude Code hooks. It is only safe to spawn here because HOME and USERPROFILE are redirected below: its CLAUDE.md upsert and skill write are USER scope and would otherwise land in the real `~/.claude`.
-  { label: 'claude-p', rel: '.claude/settings.json', args: ['install', '-p'] },
+  { label: 'claude-p', rel: '.claude/settings.json', args: ['install', '-p', '--dev'] },
 ]
 
 let BASE: string | null = null

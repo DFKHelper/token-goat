@@ -54,8 +54,8 @@ beforeAll(() => {
   project = path.join(root, 'proj')
   for (const d of [home, copilotHome, data, project]) fs.mkdirSync(d, { recursive: true })
   fs.writeFileSync(path.join(project, 'package.json'), '{"name":"hosts","version":"0.0.0"}\n')
-  expect(run(['install', '--codex']).status).toBe(0)
-  expect(run(['install', '--copilot']).status).toBe(0)
+  expect(run(['install', '--dev', '--codex']).status).toBe(0)
+  expect(run(['install', '--dev', '--copilot']).status).toBe(0)
   // Installing is a writer and may create the database; what is under test is what a read does afterwards.
   for (const f of globalDbFiles(data)) fs.rmSync(f, { force: true })
 }, 180_000)

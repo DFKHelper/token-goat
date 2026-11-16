@@ -6,6 +6,7 @@ import { getSessionId } from './session.js'
 import { displaySafePath, displaySafeText, displaySafeJson } from './paths.js'
 import { installHooks, isInstalled, uninstallHooks, installClaudeMd, uninstallClaudeMd, findStrayClaudeMdBlocks, installSkill, uninstallSkill, settingsPath } from './install.js'
 import type { HookScope } from './install.js'
+import { assertHookEntryAllowed } from './install_entry.js'
 import { installCodex, isCodexInstalled, uninstallCodex } from './bridges/codex_install.js'
 import { installGemini, isGeminiInstalled, uninstallGemini } from './bridges/gemini_install.js'
 import { installQwen, isQwenInstalled, uninstallQwen } from './bridges/qwen_install.js'
@@ -140,6 +141,8 @@ export async function cmdInstall(opts: {
   claudecode?: boolean
   local?: boolean
   user?: boolean
+  /** Registers a git checkout build as the hook entry; refused without it (see assertHookEntryAllowed). */
+  dev?: boolean
   /** Commander's negation of `--no-index`: false only when the user passed it. */
   index?: boolean
 }): Promise<void> {
@@ -166,6 +169,7 @@ export async function cmdInstall(opts: {
     }
     if (opts.auto !== true) return
   }
+  assertHookEntryAllowed(process.argv[1], { dev: opts.dev === true })
 
   if (opts.auto === true) {
     const detected = detectEcosystems({ projectRoot: process.cwd() })
@@ -233,7 +237,7 @@ export async function cmdInstall(opts: {
 
   // Base install: the Claude Code hooks, the CLAUDE.md routing block, and the token-goat skill, per README's "What gets installed?" table -- gated behind wantsClaudeCodeBase (see its doc comment) so a scoped harness flag like --vscode never silently rewrites a Claude Code file it does not need.
   if (wantsClaudeCodeBase(opts)) {
-    const result = installHooks(scope)
+    const result = installHooks(scope, { dev: opts.dev === true })
     // Report alreadyInstalled like every other harness branch below does. installHooks has always computed it; the base Claude Code path was the one caller that discarded it and claimed a fresh install on every run.
     out(
       result.alreadyInstalled

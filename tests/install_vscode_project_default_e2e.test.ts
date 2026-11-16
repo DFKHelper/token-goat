@@ -96,7 +96,7 @@ afterEach(() => {
 
 describe('install --vscode scope, against the built bundle', () => {
   it('writes the project install and touches nothing in the home directory by default', () => {
-    const r = tg(['install', '--vscode'])
+    const r = tg(['install', '--dev', '--vscode'])
     expect(r.status, r.stderr).toBe(0)
     expect(tree(project)).toEqual(PROJECT_FILES)
     // The whole point of the flip: no hooks file lands where VS Code would pin it to folders[0].
@@ -108,7 +108,7 @@ describe('install --vscode scope, against the built bundle', () => {
   })
 
   it('writes the user install, and only the user install, under --user', () => {
-    const r = tg(['install', '--vscode', '--user'])
+    const r = tg(['install', '--dev', '--vscode', '--user'])
     expect(r.status, r.stderr).toBe(0)
     expect(tree(home)).toEqual(USER_FILES)
     expect(tree(project)).toEqual([])
@@ -118,11 +118,11 @@ describe('install --vscode scope, against the built bundle', () => {
   })
 
   it('migrates an existing user-scope install to the project instead of double-firing beside it', () => {
-    expect(tg(['install', '--vscode', '--user']).status).toBe(0)
+    expect(tg(['install', '--dev', '--vscode', '--user']).status).toBe(0)
     expect(tree(home)).toEqual(USER_FILES)
 
     // The first post-upgrade run of the command every existing user already types.
-    const migrate = tg(['install', '--vscode'])
+    const migrate = tg(['install', '--dev', '--vscode'])
     expect(migrate.status, migrate.stderr).toBe(0)
     expect(migrate.stdout).toContain(VSCODE_USER_SCOPE_MIGRATED_NOTE)
 
@@ -138,9 +138,9 @@ describe('install --vscode scope, against the built bundle', () => {
   })
 
   it('leaves the shared ~/.copilot hooks in place when install --copilot still owns them', () => {
-    expect(tg(['install', '--copilot']).status).toBe(0)
-    expect(tg(['install', '--vscode', '--user']).status).toBe(0)
-    expect(tg(['install', '--vscode']).status).toBe(0)
+    expect(tg(['install', '--dev', '--copilot']).status).toBe(0)
+    expect(tg(['install', '--dev', '--vscode', '--user']).status).toBe(0)
+    expect(tg(['install', '--dev', '--vscode']).status).toBe(0)
     // Copilot CLI's own install is the other owner of ~/.copilot/hooks; migrating VS Code out of user scope releases token-goat's vscode claim, it does not uninstall Copilot CLI.
     expect(fs.existsSync(path.join(home, '.copilot', 'hooks', 'token-goat.json'))).toBe(true)
     expect(fs.readFileSync(path.join(home, '.copilot', 'hooks', 'token-goat.owners'), 'utf8').trim().split(/\r?\n/)).toEqual([
@@ -149,8 +149,8 @@ describe('install --vscode scope, against the built bundle', () => {
   })
 
   it('still refuses the user-scope install when the project one already exists', () => {
-    expect(tg(['install', '--vscode']).status).toBe(0)
-    const r = tg(['install', '--vscode', '--user'])
+    expect(tg(['install', '--dev', '--vscode']).status).toBe(0)
+    const r = tg(['install', '--dev', '--vscode', '--user'])
     // The error wall is relaxed in the user -> project direction only. The reverse still duplicates the server registration in this workspace, so it stays an error with a way out.
     expect(r.status).not.toBe(0)
     expect(`${r.stdout}${r.stderr}`).toContain('already registered in VS Code project scope')
@@ -158,19 +158,19 @@ describe('install --vscode scope, against the built bundle', () => {
   })
 
   it('surfaces a lingering user-scope install through doctor, and stops once it is migrated', () => {
-    expect(tg(['install', '--vscode', '--user']).status).toBe(0)
+    expect(tg(['install', '--dev', '--vscode', '--user']).status).toBe(0)
     const before = tg(['doctor'])
     // A check that runDoctor never calls is a check that never fires; only the real command proves the wiring, which is why this runs `doctor` rather than the exported function.
     expect(`${before.stdout}${before.stderr}`).toContain('VS Code hooks scope')
     expect(`${before.stdout}${before.stderr}`).toContain('FIRST folder')
 
-    expect(tg(['install', '--vscode']).status).toBe(0)
+    expect(tg(['install', '--dev', '--vscode']).status).toBe(0)
     const after = tg(['doctor'])
     expect(`${after.stdout}${after.stderr}`).not.toContain('VS Code hooks scope')
   })
 
   it('rejects -p and --user together rather than silently preferring one', () => {
-    const r = tg(['install', '--vscode', '--project', '--user'])
+    const r = tg(['install', '--dev', '--vscode', '--project', '--user'])
     expect(r.status).not.toBe(0)
     expect(`${r.stdout}${r.stderr}`).toContain('not both')
     expect(tree(project)).toEqual([])
@@ -178,12 +178,12 @@ describe('install --vscode scope, against the built bundle', () => {
   })
 
   it('uninstalls the project scope by default and the user scope under --user', () => {
-    expect(tg(['install', '--vscode']).status).toBe(0)
+    expect(tg(['install', '--dev', '--vscode']).status).toBe(0)
     expect(tg(['uninstall', '--vscode']).status).toBe(0)
     expect(tree(project)).not.toContain('.github/hooks/token-goat.json')
     expect(tree(project)).not.toContain('.vscode/mcp.json')
 
-    expect(tg(['install', '--vscode', '--user']).status).toBe(0)
+    expect(tg(['install', '--dev', '--vscode', '--user']).status).toBe(0)
     expect(tree(home)).toEqual(USER_FILES)
     expect(tg(['uninstall', '--vscode', '--user']).status).toBe(0)
     expect(tree(home)).not.toContain('.copilot/hooks/token-goat.json')

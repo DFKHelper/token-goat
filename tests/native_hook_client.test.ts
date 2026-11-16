@@ -377,7 +377,7 @@ describe('against a real hook server', () => {
   let endpoint = ''
 
   beforeAll(() => {
-    const res = cli(['install'])
+    const res = cli(['install', '--dev'])
     expect(res.status, res.stderr).toBe(0)
     // FORMAT-DERIVED from the settings.json the built installer writes here: an `args` array of shim, event, entry, or on a platform that writes one command string, the same three quoted.
     const settings = fs.readFileSync(path.join(sb.base, '.claude', 'settings.json'), 'utf8')

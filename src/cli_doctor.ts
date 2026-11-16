@@ -45,6 +45,7 @@ import { getDb } from './db.js'
 import { HOOK_PROBE_ENV, firstReceiptShownAt, readUnmappedTools, pruneStalePatternCoveredUnmappedTools } from './stats.js'
 import { claudeHookActivity, formatAgeSeconds, hookLatencyBreakdown, type HookLatencyRow } from './hook_latency.js'
 import { checkNativeHooks } from './cli_doctor_native.js'
+import { checkHookEntryBuild } from './cli_doctor_build.js'
 import { checkDbExists, checkSymbolCount, checkDirtyQueueHealth, checkEmbeddingCoverage, checkParserFreshness } from './cli_doctor_index.js'
 import { MCP_TOOL_PATTERN } from './mcp_tool_pattern.js'
 import type { DoctorResult } from './doctor_result.js'
@@ -843,6 +844,8 @@ export function runDoctor(dataDir?: string, configPath?: string, rootDir?: strin
   const claudeProjectOnly = hookEventGaps('user') === null && hookEventGaps('project') !== null
   const claudeShimResult = checkHookShim('Claude Code', claudeHookScriptPath(), CLAUDECODE_HOOK_SCRIPT, claudeProjectOnly || (!isInstalled('user') && isInstalled('project')) ? 'token-goat install --project' : 'token-goat install', [...wiredClaudeHookWords('user'), ...wiredClaudeHookWords('project')].flat())
   if (claudeShimResult) results.push(claudeShimResult)
+  const hookEntryBuildResult = checkHookEntryBuild([...wiredClaudeHookWords('user'), ...wiredClaudeHookWords('project')])
+  if (hookEntryBuildResult) results.push(hookEntryBuildResult)
   const claudeGaps = { user: hookEventGaps('user'), project: hookEventGaps('project') }
   const claudeEventsResult = checkClaudeHookEvents(claudeGaps)
   if (claudeEventsResult) results.push(claudeEventsResult)
