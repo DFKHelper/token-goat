@@ -37,5 +37,5 @@ export function assertHookEntryAllowed(entryPath: string | undefined, opts: { de
   if (opts.dev || !isDevCheckoutEntry(entryPath)) return
   const installed = (opts.globalEntry ?? globalEntryPath)()
   const instead = installed === null ? 'the npm global install (npm install -g token-goat)' : `node ${quotedArg(installed)} install`
-  throw new Error(`refusing to register ${entryPath} as the hook entry: it runs from a git checkout. Run ${instead} instead, or pass --dev to register this checkout on purpose.`)
+  throw new Error(`refusing to register ${entryPath} as the hook entry: it runs from a git checkout. Run ${instead} instead, or re-run token-goat install --dev to register this checkout on purpose.`)
 }

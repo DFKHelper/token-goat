@@ -513,7 +513,7 @@ export async function cmdInstall(opts: {
     try {
       const { repairHarnessHooks } = await import('./cli_doctor_hooks.js')
       const { repairInstructionGates } = await import('./cli_doctor_guidance.js')
-      const hookRepair = repairHarnessHooks(process.cwd())
+      const hookRepair = repairHarnessHooks(process.cwd(), { dev: opts.dev === true })
       for (const r of hookRepair.repairs) out(`  • Re-established hook: ${r}`)
       const gateRepair = repairInstructionGates(process.cwd())
       for (const r of gateRepair.repairs) out(`  • Refreshed instruction gate: ${r}`)

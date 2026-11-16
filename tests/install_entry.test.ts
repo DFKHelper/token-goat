@@ -19,6 +19,8 @@ let origUserProfile: string | undefined
 let origExecFormOverride: string | undefined
 let origAppData: string | undefined
 let origCodexHome: string | undefined
+let origClaudeConfigDir: string | undefined
+let origCopilotHome: string | undefined
 
 /** A git checkout laid out like the repo: dist/token-goat.mjs beside .git (a directory, or a file in a linked worktree). */
 function makeCheckout(name: string, gitIsFile: boolean): string {
@@ -58,6 +60,10 @@ beforeEach(() => {
   origCodexHome = process.env['CODEX_HOME']
   process.env['APPDATA'] = path.join(fakeHome, 'AppData', 'Roaming')
   process.env['CODEX_HOME'] = path.join(fakeHome, '.codex')
+  origClaudeConfigDir = process.env['CLAUDE_CONFIG_DIR']
+  origCopilotHome = process.env['COPILOT_HOME']
+  process.env['CLAUDE_CONFIG_DIR'] = path.join(fakeHome, '.claude')
+  process.env['COPILOT_HOME'] = path.join(fakeHome, '.copilot')
 })
 
 afterEach(() => {
@@ -66,6 +72,10 @@ afterEach(() => {
   else process.env['APPDATA'] = origAppData
   if (origCodexHome === undefined) delete process.env['CODEX_HOME']
   else process.env['CODEX_HOME'] = origCodexHome
+  if (origClaudeConfigDir === undefined) delete process.env['CLAUDE_CONFIG_DIR']
+  else process.env['CLAUDE_CONFIG_DIR'] = origClaudeConfigDir
+  if (origCopilotHome === undefined) delete process.env['COPILOT_HOME']
+  else process.env['COPILOT_HOME'] = origCopilotHome
   if (origHome === undefined) delete process.env['HOME']
   else process.env['HOME'] = origHome
   if (origUserProfile === undefined) delete process.env['USERPROFILE']
@@ -97,6 +107,13 @@ describe('isDevCheckoutEntry', () => {
 
   it('is false for an unset entry', () => {
     expect(isDevCheckoutEntry(undefined)).toBe(false)
+  })
+
+  it('is false for a package whose ancestor directory holds a .git, since only the package root counts', () => {
+    fs.mkdirSync(path.join(TMP, '.git'))
+    const entry = makeGlobalEntry()
+    expect(isDevCheckoutEntry(entry)).toBe(false)
+    expect(() => assertHookEntryAllowed(entry, { dev: false, globalEntry: () => null })).not.toThrow()
   })
 })
 
@@ -187,6 +204,29 @@ describe('repairHarnessHooks and the checkout guard', () => {
     expect(result.errors).toEqual([])
     expect(result.repairs).toContain('Repaired Codex CLI hooks and shim')
   })
+
+  it('still refuses a stale Codex shim from a checkout when dev is explicitly false, and writes nothing', () => {
+    const shim = codexHookScriptPath()
+    fs.mkdirSync(path.dirname(shim), { recursive: true })
+    fs.writeFileSync(shim, '// stale shim\n')
+    process.argv[1] = makeCheckout('repair-no-dev', false)
+    const result = repairHarnessHooks(TMP, { dev: false })
+    expect(result.repairs).toEqual([])
+    expect(result.errors.join('\n')).toContain('refusing to register')
+    expect(fs.readFileSync(shim, 'utf8')).toBe('// stale shim\n')
+    expect(fs.existsSync(settingsPath('user'))).toBe(false)
+  })
+
+  it('repairs a stale Codex shim from a checkout when dev is set', () => {
+    const shim = codexHookScriptPath()
+    fs.mkdirSync(path.dirname(shim), { recursive: true })
+    fs.writeFileSync(shim, '// stale shim\n')
+    process.argv[1] = makeCheckout('repair-dev', false)
+    const result = repairHarnessHooks(TMP, { dev: true })
+    expect(result.errors).toEqual([])
+    expect(result.repairs).toContain('Repaired Codex CLI hooks and shim')
+    expect(fs.readFileSync(shim, 'utf8')).not.toBe('// stale shim\n')
+  })
 })
 
 describe('cmdInstall and the checkout guard', () => {
@@ -198,6 +238,15 @@ describe('cmdInstall and the checkout guard', () => {
   it('still refuses install --auto from a checkout entry', async () => {
     process.argv[1] = makeCheckout('auto', false)
     await expect(cmdInstall({ auto: true })).rejects.toThrow('refusing to register')
+  })
+
+  it('install --dev from a checkout repairs a stale harness hook instead of refusing', async () => {
+    const shim = codexHookScriptPath()
+    fs.mkdirSync(path.dirname(shim), { recursive: true })
+    fs.writeFileSync(shim, '// stale shim\n')
+    process.argv[1] = makeCheckout('install-dev-repair', false)
+    await cmdInstall({ dev: true })
+    expect(fs.readFileSync(shim, 'utf8')).not.toBe('// stale shim\n')
   })
 })
 
