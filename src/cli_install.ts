@@ -758,6 +758,7 @@ export async function runPurge(): Promise<number> {
   const result = purgeDataDirectories()
   for (const root of result.absent) out(`Nothing to purge at ${displaySafePath(root)}.`)
   for (const removed of result.removed) out(`Purged ${displaySafePath(removed.path)} (${formatBytes(removed.bytes)} reclaimed).`)
+  for (const keep of result.kept ?? []) out(`Kept ${displaySafePath(keep.path)}: ${displaySafeText(keep.reason)}.`)
   // The reason is an OS error string, which quotes the offending path back inside it.
   for (const failure of result.failed) err(formatCommandError(`could not purge ${displaySafePath(failure.path)}: ${displaySafeText(failure.reason)}`))
   return result.failed.length > 0 ? 1 : 0

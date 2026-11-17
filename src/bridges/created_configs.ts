@@ -29,6 +29,24 @@ function readLedger(): string[] {
   }
 }
 
+/** The ledger's entries, with `error` set when the file exists but cannot be read or is not a list: unlike {@link readLedger}, a damaged ledger is not read as an empty one. */
+export function readCreatedLedgerStrict(): { entries: string[]; error?: string } {
+  let text: string
+  try {
+    text = fs.readFileSync(ledgerPath(), 'utf8')
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    return code === 'ENOENT' ? { entries: [] } : { entries: [], error: `could not be read (${code ?? 'unknown error'})` }
+  }
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (!Array.isArray(parsed)) return { entries: [], error: 'is not a list' }
+    return { entries: parsed.filter((entry): entry is string => typeof entry === 'string') }
+  } catch {
+    return { entries: [], error: 'is not valid JSON' }
+  }
+}
+
 function writeLedger(entries: readonly string[]): void {
   try {
     ensureDirSync(path.dirname(ledgerPath()))

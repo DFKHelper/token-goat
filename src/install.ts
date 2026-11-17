@@ -17,8 +17,9 @@ import { normalizeDarwinSystemAlias } from './paths.js'
 import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 import type { HookEventName } from './types.js'
 import { ensureDirRecordingCreation, recordCreatedBy, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, removeCreatedTree } from './bridges/created_configs.js'
+import { isReferenced, removeHookTargetFile } from './purge.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
-import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, removeFileInScope, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
+import { atomicWriteText, backupFile, ensureDirSync, escapeRegExp, extractErrorMessage, hookCommandFor, hookExecPartsFor, stripDelimitedBlock, stripOwnHooksFromMap, upsertDelimitedBlock, writeIfDifferent, writeJsonSettings } from './util.js'
 import { commandHookFields, isOwnHookEntry } from './util_config.js'
 import { stripBom } from './jsonc_text.js'
 import { echoedValue } from './hint_suggestion_guard.js'
@@ -178,20 +179,8 @@ function anyScopeReferencesShim(
   }
   // The scope being uninstalled is judged from the in-memory post-strip map only: its file on disk still holds the pre-strip entries, so re-reading it here would always find the shim "still referenced" and no uninstall would ever remove it.
   if (referencesIn(alreadyStripped)) return true
-  for (const scope of ['user', 'project'] as const) {
-    if (scope === currentScope) continue
-    let other: Settings
-    try {
-      other = readSettings(settingsPath(scope), { strict: true })
-    } catch (e) {
-      // A scope whose settings file is there but cannot be read or parsed may still name the shim, so it keeps it: deleting the shim leaves every hook such a file wires erroring on every tool call once the file is fixed, where keeping it leaves one generated file behind. Either way this uninstall goes on rather than abort on someone else's broken JSON.
-      if (e instanceof SettingsParseError) return true
-      throw e
-    }
-    // A scope with no settings file names nothing.
-    if (referencesIn(other.hooks)) return true
-  }
-  return false
+  // Every other config that can name the shim (the other scope, the project configs of the ledger, the other hosts) is read by the shared scan; a config it cannot read keeps the shim.
+  return scriptPaths.some((p) => isReferenced(p, { skipConfigs: [settingsPath(currentScope)] }))
 }
 
 /** Return the `~/.claude` (or `$CLAUDE_CONFIG_DIR`) or `<cwd>/.claude` settings path for `scope`. */
@@ -442,7 +431,7 @@ function uninstallHooksScoped(scope: HookScope): boolean {
   if (!anyScopeReferencesShim([scriptPath, claudeLegacyHookScriptPath()], scope, hooks)) {
     // Declared USER scope explicitly, exactly as the matching write in installHooksScoped is: the shim lives at `~/.claude/hooks/token-goat-shim.cjs` and is shared by both scopes, so under a project-scope uninstall the ambient confinement would refuse to remove it. Removal has to be symmetric with the write or `uninstall --project` leaves the file it installed behind -- which is what the built-bundle matrix caught the first time this was routed through the scope-checked helper without the wrapper. Already-absent is not an error, which is exactly removeFileInScope's contract.
     removedScript = withInstallScope(undefined, () => {
-      const removedAny = [scriptPath, claudeLegacyHookScriptPath()].map((p) => removeFileInScope(p)).some(Boolean)
+      const removedAny = [scriptPath, claudeLegacyHookScriptPath()].map((p) => removeHookTargetFile(p, { skipConfigs: [settingsPath(scope)] })).some(Boolean)
       removeCreatedIfEmpty(path.dirname(scriptPath))
       return removedAny
     })

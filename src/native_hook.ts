@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { nativeHooksEnabled } from './config.js'
 import { dataDir } from './constants.js'
 import { emitErr } from './emit.js'
+import { displaySafeText } from './paths.js'
 import { powershellHookLine, quotePowershellPath, quotePosixShellWord } from './process_util.js'
 import { registerReset } from './reset.js'
 import { withRetryOnLock } from './util.js'
@@ -53,29 +54,98 @@ export function nativeCopyPath(entryPath: string, home: string = dataDir()): str
   return path.join(home, 'native', id, exeName('win32'))
 }
 
-/** Leftovers of earlier replacements in the copy's directory: `.old` files that were running when they were moved aside, and `.new` files a crash left behind. */
-const LEFTOVER = /^tg-hook\.exe\.[0-9a-f]+\.(?:old|new)$/
+/** Leftovers of earlier replacements in the copy's directory: `.old` files that were running when they were moved aside, and `.new` files a crash left behind. The tag is the writing process's pid as 8 hex digits and 12 random ones; a 12-digit tag is an older build's and names no pid. */
+const LEFTOVER = /^tg-hook\.exe\.([0-9a-f]+)\.(?:old|new)$/
 
-/** Delete every leftover in `dir` that can be deleted; one still running stays until a later install. */
-function reclaimLeftovers(dir: string): void {
-  let names: string[]
+/** A staging directory under `native/.staging`, named by the same tag. */
+const STAGING_NAME = /^[0-9a-f]{20}$/
+
+/** How old a dead process's leftover must be before it is reclaimed: another install may be between its two renames, and a young file is never reclaimed. */
+const RECLAIM_MIN_AGE_MS = 10 * 60 * 1000
+
+/** What reclaiming needs from the machine, injectable so a test needs no real process or clock. */
+export interface ReclaimEnv {
+  /** True when `pid` names a running process, or when that cannot be told. */
+  readonly isAlive?: (pid: number) => boolean
+  readonly now?: () => number
+}
+
+/** Signal 0 asks the OS about a pid without sending anything. EPERM means it exists. Anything not a plain pid above 1 reads as alive, since a signal to 0 or 1 would reach a group or init. */
+function pidIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 1) return true
   try {
-    names = fs.readdirSync(dir)
-  } catch {
-    return
-  }
-  for (const name of names) {
-    if (!LEFTOVER.test(name)) continue
-    try {
-      fs.unlinkSync(path.join(dir, name))
-    } catch {
-      // still running, or locked by a scanner: the next install tries again
-    }
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== 'ESRCH'
   }
 }
 
-/** Make `dest` a byte-identical copy of `src`, returning false when it could not be. The new bytes are written beside `dest` and renamed over it. Windows refuses that rename while `dest` is running, but lets the running file itself be renamed, so it is moved aside to a `.old` name first, and a later install deletes it once nothing runs it. A hook starting in the gap between the two renames finds no binary and fails that one call; the gap is two renames long, because a scanner's hold on the new bytes is outwaited before the old copy moves. */
-export function syncNativeCopy(src: string, dest: string): boolean {
+/** A tag for one sync's files: this process's pid, then random digits, so a later install can tell whose they are. */
+function ownerTag(): string {
+  return `${process.pid.toString(16).padStart(8, '0').slice(-8)}${crypto.randomBytes(6).toString('hex')}`
+}
+
+/** True when the leftover or staging entry `tag` named at `full` may go: this process's own (a sync is synchronous, so none of its files is in flight), or one whose pid is dead and which is older than {@link RECLAIM_MIN_AGE_MS}. An older build's tag has no pid and goes by age alone. */
+function reclaimable(tag: string, full: string, env: ReclaimEnv): boolean {
+  const pid = tag.length === 20 ? Number.parseInt(tag.slice(0, 8), 16) : undefined
+  if (pid === process.pid) return true
+  if (pid !== undefined && (env.isAlive ?? pidIsAlive)(pid)) return false
+  try {
+    return (env.now ?? Date.now)() - fs.statSync(full).mtimeMs > RECLAIM_MIN_AGE_MS
+  } catch {
+    return false
+  }
+}
+
+/** Delete the leftovers in `dir`, and the staging directories beside it, that {@link reclaimable} allows; anything else, or anything still running, stays until a later install. */
+function reclaimLeftovers(dir: string, env: ReclaimEnv = {}): void {
+  const sweep = (parent: string, pattern: RegExp, remove: (full: string) => void): void => {
+    let names: string[]
+    try {
+      names = fs.readdirSync(parent)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      const tag = pattern === STAGING_NAME ? name : LEFTOVER.exec(name)?.[1]
+      if (tag === undefined || !pattern.test(name)) continue
+      const full = path.join(parent, name)
+      if (!reclaimable(tag, full, env)) continue
+      try {
+        remove(full)
+      } catch {
+        // still running, or locked by a scanner: the next install tries again
+      }
+    }
+  }
+  sweep(dir, LEFTOVER, (full) => fs.unlinkSync(full))
+  sweep(path.join(path.dirname(dir), '.staging'), STAGING_NAME, (full) => fs.rmSync(full, { recursive: true, force: true }))
+}
+
+/** Put the copy moved to `aside` back at `dest`: a rename, then a plain copy when the rename keeps failing. A destination missing here is what makes every hook that names it fail, so this is the last thing a failed swap does and its failure is said aloud. */
+function restoreDest(aside: string, dest: string): void {
+  try {
+    withRetryOnLock(() => fs.renameSync(aside, dest))
+    return
+  } catch {
+    // fall through to a copy: the aside image can be read even while it is running
+  }
+  try {
+    fs.copyFileSync(aside, dest, fs.constants.COPYFILE_EXCL)
+    fs.chmodSync(dest, 0o755)
+  } catch (e) {
+    try {
+      fs.rmSync(dest, { force: true })
+    } catch {
+      // a partial copy that cannot be removed stays for doctor to report
+    }
+    emitErr(`token-goat: could not put the previous native hook client back at ${dest} (${displaySafeText(e instanceof Error ? e.message : String(e))}); the copy is at ${aside}. Run \`token-goat install\` to rewrite it.`)
+  }
+}
+
+/** Make `dest` a byte-identical copy of `src`, returning false when it could not be. After any return a `dest` that existed before still exists and is a complete file. The new bytes are written to `native/.staging/<tag>/`, outside every hash directory, and only then is the hash directory created and the file renamed into it, so a failed write leaves no empty directory. Windows refuses that rename while `dest` is running, but lets the running file itself be renamed, so it is moved aside to a `.old` name first, and a later install deletes it once nothing runs it. A hook starting in the gap between the two renames finds no binary and fails that one call; the gap is two renames long, because a scanner's hold on the new bytes is outwaited before the old copy moves. A swap that fails after the move puts the old copy back, by copy if a rename will not do. */
+export function syncNativeCopy(src: string, dest: string, env: ReclaimEnv = {}): boolean {
   let want: Buffer
   try {
     want = fs.readFileSync(src)
@@ -88,28 +158,57 @@ export function syncNativeCopy(src: string, dest: string): boolean {
     // absent or unreadable: write it
   }
   const dir = path.dirname(dest)
-  const tag = crypto.randomBytes(6).toString('hex')
-  const staged = `${dest}.${tag}.new`
+  const tag = ownerTag()
+  const stagingDir = path.join(path.dirname(dir), '.staging', tag)
+  const staged = path.join(stagingDir, path.basename(dest))
+  let createdDir = false
+  const finish = (): void => {
+    try {
+      fs.rmSync(stagingDir, { recursive: true, force: true })
+    } catch {
+      // reclaimed by a later install
+    }
+    // Only an empty directory this call made goes; rmdir refuses one that holds anything.
+    if (createdDir) {
+      try {
+        fs.rmdirSync(dir)
+      } catch {
+        // not empty, which is the point
+      }
+    }
+  }
   try {
-    fs.mkdirSync(dir, { recursive: true })
-    reclaimLeftovers(dir)
+    reclaimLeftovers(dir, env)
+    fs.mkdirSync(stagingDir, { recursive: true })
     fs.writeFileSync(staged, want, { mode: 0o755 })
+    createdDir = !fs.existsSync(dir)
+    fs.mkdirSync(dir, { recursive: true })
   } catch {
-    discardStaged(staged)
+    finish()
+    return false
+  }
+  // The bytes move into the hash directory under a `.new` name first, so the direct rename below is the one an install always tried.
+  const first = `${dest}.${ownerTag()}.new`
+  try {
+    withRetryOnLock(() => fs.renameSync(staged, first))
+  } catch {
+    finish()
     return false
   }
   try {
-    fs.renameSync(staged, dest)
+    fs.renameSync(first, dest)
+    finish()
     return true
   } catch {
     // dest is running, or a scanner still holds the file just written
   }
-  // Outwait a scanner's hold on the staged file while dest is still in place: renaming it succeeds only once the hold is gone, so dest goes missing for no longer than the two renames below.
-  const ready = `${dest}.${crypto.randomBytes(6).toString('hex')}.new`
+  // Outwait a scanner's hold on the new file while dest is still in place: renaming it succeeds only once the hold is gone, so dest goes missing for no longer than the two renames below.
+  const ready = `${dest}.${ownerTag()}.new`
   try {
-    withRetryOnLock(() => fs.renameSync(staged, ready))
+    withRetryOnLock(() => fs.renameSync(first, ready))
   } catch {
-    discardStaged(staged)
+    discardStaged(first)
+    finish()
     return false
   }
   const aside = `${dest}.${tag}.old`
@@ -121,17 +220,12 @@ export function syncNativeCopy(src: string, dest: string): boolean {
       movedAside = true
     }
     withRetryOnLock(() => fs.renameSync(ready, dest))
+    finish()
     return true
   } catch {
-    // Put the old copy back so hooks already naming dest keep a binary to run; a failure here leaves it as a leftover the next install reclaims.
-    if (movedAside) {
-      try {
-        withRetryOnLock(() => fs.renameSync(aside, dest))
-      } catch {
-        // dest stays missing; doctor reports it and the next install rewrites it
-      }
-    }
+    if (movedAside && !fs.existsSync(dest)) restoreDest(aside, dest)
     discardStaged(ready)
+    finish()
     return false
   }
 }

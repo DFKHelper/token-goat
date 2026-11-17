@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 
 import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
+import { removeHookTargetFile } from '../purge.js'
 import { hookCommandFor, hookPowershellCommand, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
@@ -323,8 +324,8 @@ export function releaseCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwn
   if (!keepBackups) removeCreatedBackups(path.join(hooksDir, HOOKS_CONFIG_FILE))
   // And the ledger entry recorded at install: the file is gone, so "this machine put it there" must stop being true, or a repository could later drop its own file at that path and inherit the answer.
   takeCreatedConfig(path.join(hooksDir, HOOKS_CONFIG_FILE))
-  const scriptRemoved = removeFileInScope(path.join(hooksDir, HOOKS_SCRIPT_FILE))
-  const legacyScriptRemoved = removeFileInScope(path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE))
+  const scriptRemoved = removeHookTargetFile(path.join(hooksDir, HOOKS_SCRIPT_FILE))
+  const legacyScriptRemoved = removeHookTargetFile(path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE))
   const ownersRemoved = removeFileInScope(ownersPath)
   removeCreatedIfEmpty(hooksDir)
   return configRemoved || scriptRemoved || legacyScriptRemoved || ownersRemoved

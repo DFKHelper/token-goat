@@ -2,12 +2,12 @@
 
 import * as crypto from 'node:crypto'
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
+import { codexHomeDir, codexConfigPath, removeHookTargetFile } from '../purge.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, hookPowershellCommand, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, writeConfigText } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
 import { anchoredMarkerPattern } from '../install.js'
@@ -69,17 +69,7 @@ interface CodexConfig {
 /** Thrown by {@link installCodex}/{@link uninstallCodex} when `config.toml` exists but cannot be read or isn't parseable TOML. A caller about to write the file must let this propagate rather than silently proceeding as if the file were empty -- otherwise a single TOML typo in the user's config gets clobbered on write, or the hook shim and the file's backups are deleted while it still names them. */
 export class CodexConfigParseError extends Error {}
 
-/** Codex CLI's config directory: `$CODEX_HOME` when set and non-empty, else `~/.codex`. Codex itself resolves it the same way (`find_codex_home` in codex-rs/utils/home-dir/src/lib.rs, https://github.com/openai/codex), so an install that ignored the variable would write a valid config to a directory Codex never reads and every hook would silently never fire. Only an empty value counts as unset, as in Codex. */
-export function codexHomeDir(): string {
-  const override = process.env['CODEX_HOME']
-  if (override !== undefined && override !== '') return path.resolve(override)
-  return path.join(os.homedir(), '.codex')
-}
-
-/** Absolute path to `config.toml` in the Codex home. */
-export function codexConfigPath(): string {
-  return path.join(codexHomeDir(), 'config.toml')
-}
+export { codexHomeDir, codexConfigPath } from '../purge.js'
 
 /** Absolute path to `AGENTS.md` in the Codex home. */
 export function codexAgentsPath(): string {
@@ -532,12 +522,7 @@ export function uninstallCodex(): boolean {
   }
 
   for (const p of [scriptPath, codexLegacyHookScriptPath()]) {
-    try {
-      fs.unlinkSync(p)
-      removedAny = true
-    } catch {
-      // Already absent; nothing to remove.
-    }
+    if (removeHookTargetFile(p)) removedAny = true
   }
 
   // The timestamped backups of this config are token-goat's own litter, so they leave with it.
