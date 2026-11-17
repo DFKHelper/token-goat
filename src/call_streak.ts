@@ -29,6 +29,9 @@ export const MAX_BATCH_HINTS_PER_SESSION = 2
 /** Search brakes per agent per session, on the same reasoning as {@link MAX_BATCH_HINTS_PER_SESSION}. */
 export const MAX_SEARCH_BRAKES_PER_SESSION = 2
 
+/** How long a read-only pre may stay in flight with no post before it is treated as lost (a crashed or cancelled call). Generous on purpose: a false expiry counts a still-running call as serial and can speak a hint it should not, while a late one only withholds a hint. */
+export const IN_FLIGHT_EXPIRY_MS = 600_000
+
 const STREAK_SUFFIX = '.call-streak'
 
 /** token-goat's own search subcommands, the set the transcript census behind these constants counted as Bash searches. */
@@ -46,13 +49,18 @@ const WRITE_REDIRECT_RE = /\d?>>?(?!\s*(?:&\d|\/dev\/null\b))/
 /** Where a pending acted-on verdict for the batch hint stands: waiting for the first read-only call of a later turn, or for the call after it. */
 type BatchVerdict = 'none' | 'next_turn' | 'second_call'
 
+/** Whether a read-only pre is awaiting its post. */
+type CallPhase = 'idle' | 'in_flight'
+
 interface StreakState {
   /** The harness's `prompt_id` the counters belong to; a new user prompt starts every streak over. */
   promptId: string
   /** Unix ms of the latest read-only call's post (or failure), 0 when none since the last break. */
   lastReadPostAt: number
-  /** A read-only pre was seen and its post has not arrived. A pre that finds one in flight is treated as batched: calls run concurrently, or an async-detached post (shim_common.ts) has not written yet. */
-  inFlight: boolean
+  /** `in_flight` once a read-only pre was seen and its post has not arrived. A pre that finds one in flight is treated as batched: calls run concurrently, or an async-detached post (shim_common.ts) has not written yet. An `in_flight` older than {@link IN_FLIGHT_EXPIRY_MS} is lost, not running. */
+  phase: CallPhase
+  /** Unix ms of the pre that set `phase` to `in_flight`, 0 when idle. */
+  phaseAt: number
   serialRun: number
   batchShownInRun: boolean
   batchShown: number
@@ -65,7 +73,7 @@ interface StreakState {
 }
 
 function freshState(): StreakState {
-  return { promptId: '', lastReadPostAt: 0, inFlight: false, serialRun: 0, batchShownInRun: false, batchShown: 0, batchVerdict: 'none', zeroHits: 0, brakeShownInRun: false, brakeShown: 0, brakeVerdict: false }
+  return { promptId: '', lastReadPostAt: 0, phase: 'idle', phaseAt: 0, serialRun: 0, batchShownInRun: false, batchShown: 0, batchVerdict: 'none', zeroHits: 0, brakeShownInRun: false, brakeShown: 0, brakeVerdict: false }
 }
 
 function readState(target: string): StreakState {
@@ -78,6 +86,7 @@ function readState(target: string): StreakState {
       if (typeof p[key] === typeof state[key]) (state as unknown as Record<string, unknown>)[key] = p[key]
     }
     if (!['none', 'next_turn', 'second_call'].includes(state.batchVerdict)) state.batchVerdict = 'none'
+    if (!['idle', 'in_flight'].includes(state.phase)) Object.assign(state, { phase: 'idle', phaseAt: 0 })
   } catch {
     // Missing, unreadable or corrupt: a fresh state, which is the silent direction.
   }
@@ -166,12 +175,13 @@ function breakStreaks(event: HookEvent, state: StreakState): void {
     settleSelfScoredHints('read_batch', event, false)
     state.batchVerdict = 'none'
   }
-  Object.assign(state, { lastReadPostAt: 0, inFlight: false, serialRun: 0, batchShownInRun: false, zeroHits: 0, brakeShownInRun: false })
+  Object.assign(state, { lastReadPostAt: 0, phase: 'idle', phaseAt: 0, serialRun: 0, batchShownInRun: false, zeroHits: 0, brakeShownInRun: false })
 }
 
 function onReadOnlyPre(event: HookEvent, state: StreakState, kind: CallKind, now: number, canSpeak: boolean): string | null {
-  const serial = !state.inFlight && (state.lastReadPostAt === 0 || now - state.lastReadPostAt > SERIAL_GAP_MS)
-  state.inFlight = true
+  const inFlight = state.phase === 'in_flight' && now - state.phaseAt <= IN_FLIGHT_EXPIRY_MS
+  const serial = !inFlight && (state.lastReadPostAt === 0 || now - state.lastReadPostAt > SERIAL_GAP_MS)
+  Object.assign(state, { phase: 'in_flight', phaseAt: now })
   // Verdicts first, judged only on calls from a turn after the one the line was attached to: a call batched with that one was issued before the model could have read it.
   if (state.batchVerdict === 'second_call') {
     settleSelfScoredHints('read_batch', event, !serial)
@@ -210,7 +220,7 @@ function onSearchMiss(event: HookEvent, state: StreakState, canSpeak: boolean): 
 }
 
 function onReadOnlyPost(event: HookEvent, state: StreakState, kind: CallKind, now: number, canSpeak: boolean): string | null {
-  state.inFlight = false
+  Object.assign(state, { phase: 'idle', phaseAt: 0 })
   state.lastReadPostAt = now
   if (!kind.search) return null
   const count = searchResultCount(event)
@@ -274,7 +284,7 @@ export function callStreakAfterFailure(event: HookEvent, reason: string): HookOu
         breakStreaks(event, state)
         return null
       }
-      state.inFlight = false
+      Object.assign(state, { phase: 'idle', phaseAt: 0 })
       state.lastReadPostAt = Date.now()
       return reason === 'search_no_match' ? onSearchMiss(event, state, true) : null
     })
