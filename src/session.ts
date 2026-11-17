@@ -686,7 +686,7 @@ export function consumedFileServedOutputKeys(): string[] {
 export const MAX_RANGES_PER_FILE = 64
 
 /** Best-effort file identity (size + mtimeMs) for the repeated-range deny's no-snapshot fallback, or undefined when the file cannot be stat'd. */
-function statIdentity(absPath: string): { size: number; mtimeMs: number } | undefined {
+export function statIdentity(absPath: string): { size: number; mtimeMs: number } | undefined {
   try {
     const st = fs.statSync(hostPathOfIndexKey(absPath))
     return { size: st.size, mtimeMs: st.mtimeMs }

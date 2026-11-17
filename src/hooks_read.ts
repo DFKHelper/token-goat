@@ -19,7 +19,7 @@ import { displaySafePath, hostPathOfIndexKey, normalizePath, TOOL_RESULTS_ID_CHA
 import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNTERFACTUAL_CEILING, IDENTICAL_READ_MIN_BODY_BYTES, containsLineRun, isSequentialPagingChain } from './util.js'
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
-import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getConsumedSectionTargets, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
+import { statIdentity, recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getConsumedSectionTargets, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
 import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, hasReadRangeDenials, hasReadRangeHistory, lockReadRange, rangeLockMessage, recordReadRangeLockRefusal, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
@@ -681,8 +681,8 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const rangeKey = foldPath(normalized)
   let rangeIdentity: { size: number; mtimeMs: number } | undefined
   if (event.toolName !== 'Grep' && rangeSpan !== undefined && loadConfig().hints.reread_deny) {
-    // First-time ranged reads have no lock or served-range identity to validate. Avoid stat/hash work
-    // until this file has range history; changed-file invalidation still runs before every reuse.
+    // First-time ranged reads have no lock or served-range identity to validate, so skip stat/hash work until history exists.
+    // Lock sites fall back to statIdentity so a lock made without history still carries a fingerprint an edit can clear.
     const hasRangeHistory = hasReadRangeHistory(rangeKey) ||
       getFileLineRanges(normalized).length > 0 ||
       getFileLineRangeIdentity(normalized) !== undefined
@@ -1211,7 +1211,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       if (alreadyServed !== null && !fileAlreadyDenied) {
         markHintShown(fileRereadDenyKey)
         if (rangeSpan !== undefined) {
-          lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+          lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity ?? statIdentity(normalized))
         }
         // Credit the bytes this read would actually have delivered, not the whole file: a Read carrying offset/limit was only ever going to hand over its window, and crediting the file would book bytes nothing was ever going to spend.
         const blocked = counterfactualCredit(alreadyServed.bytes)
@@ -1236,7 +1236,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
           const snapDiff = loadSnapshotDiff(sessionStateKey(event), normalized, basename)
           const denyRangeReread = (): HookOutput => {
             markHintShown(fileRereadDenyKey)
-            lockReadRange(rangeKey, [start, end], rangeIdentity)
+            lockReadRange(rangeKey, [start, end], rangeIdentity ?? statIdentity(normalized))
             const blocked = counterfactualCredit(rereadCreditBasis)
             recordStat('read_served_deny', blocked, savedTokensFromBytes(blocked))
             recordStat('session_hint', 0, 0)
@@ -1284,7 +1284,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       // The chain is the slices already read plus the one being asked for: three contiguous slices followed by a jump elsewhere in the file are not paging.
       const isSequentialChain = pagingWindowSpan !== undefined && isSequentialPagingChain([...prevRanges, [pagingWindowSpan.start, pagingWindowSpan.end]], 4)
       if (isPagingTracked && window.isExplicitSlice && prevRanges.length >= 3 && isSequentialChain && pagingWindowSpan !== undefined) {
-        lockReadRange(rangeKey, [pagingWindowSpan.start, pagingWindowSpan.end], rangeIdentity)
+        lockReadRange(rangeKey, [pagingWindowSpan.start, pagingWindowSpan.end], rangeIdentity ?? statIdentity(normalized))
         recordStat('read_count_deny', rereadCredit, savedTokensFromBytes(rereadCredit))
         recordStat('session_hint', 0, 0)
         // Preserve the requested window, even inside a much larger symbol; never expand to its body.
@@ -1299,7 +1299,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       }
       const recentRanges = getRecentReadRanges(rangeKey)
       if (rangeSpan !== undefined && hasHighIouOverlap([rangeSpan.start, rangeSpan.end], recentRanges)) {
-        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity ?? statIdentity(normalized))
         recordStat('session_hint', 0, 0)
         return denyOutput(
           'deny: overlapping line-range paging detected. Use ' +
@@ -1310,7 +1310,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         span: [rangeSpan.start, rangeSpan.end], served: recentRanges,
         denied: getReadRangeDenials(rangeKey),
       }) !== null) {
-        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity ?? statIdentity(normalized))
         const lockCount = recordReadRangeLockRefusal(rangeKey)
         recordStat('session_hint', 0, 0)
         return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end], lockCount))
