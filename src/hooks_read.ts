@@ -20,7 +20,7 @@ import { countNoun, foldPath, isWithinQuietHours, statSize, toKB, PER_FILE_COUNT
 import { loadConfig } from './config.js'
 import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import { recordFileRead, unrecordRefusedRead, wasFileReadThisSession, wasFileFullyReadThisSession, getCompactedAt, epochReadCounts, getSessionFileEntry, getFileLineRangeIdentity, rangeContentVerdict, getConsumedSectionTargets, getSessionFiles, wasFileTruncatedThisSession, getSessionId, getTranscriptPath, recordLargeFileHintPending, takePendingLargeFileHint, markHintShown, wasHintShown, getFileServedOutputs, recordFileLineRange, getFileLineRanges, resetFileLineRanges, dropFileLineRangesIfChanged, onceCurrentFileHash, type CurrentFileHash } from './session.js'
-import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, lockReadRange, rangeLockMessage, recordReadRangeLockRefusal, recordRecentReadRange } from './read_range_evasion.js'
+import { clearReadRangeIfChanged, evaluateRangeEvasion, getReadRangeDenials, getRecentReadRanges, hasReadRangeDenials, hasReadRangeHistory, lockReadRange, rangeLockMessage, recordReadRangeLockRefusal, recordRecentReadRange } from './read_range_evasion.js'
 import { getBashOutput } from './bash_output_cache.js'
 import { readAllSessionManifests, loadSessionCache, getContextPressure } from './compact.js'
 import { contextOutput, passOutput, denyOutput } from './hooks_common.js'
@@ -439,7 +439,7 @@ export function realSymbolReadHint(filePath: string, shown: string, range?: { st
   return '`token-goat read ' + quotedArg(shown + '::' + names[0]) + '`' + rest
 }
 
-function lineCountForSurgicalHint(filePath: string, fileStatSize?: number): number {
+function lineCountForSurgicalHint(filePath: string, fileStatSize?: number, readText?: () => string): number {
   try {
     const onDisk = hostPathOfIndexKey(filePath)
     if (fileStatSize !== undefined && fileStatSize > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
@@ -449,7 +449,7 @@ function lineCountForSurgicalHint(filePath: string, fileStatSize?: number): numb
     if (sz !== null && sz > SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       return 0
     }
-    return countTextLines(fs.readFileSync(onDisk, 'utf8'))
+    return countTextLines(readText === undefined ? fs.readFileSync(onDisk, 'utf8') : readText())
   } catch {
     return 0
   }
@@ -653,20 +653,50 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const onDisk = hostPathOfIndexKey(normalized)
   // One read of the file's bytes serves every hash check and the range record in this hook call; the next call makes its own.
   const hashNow = onceCurrentFileHash(normalized)
+  // Several gates can inspect the same preimage during one hook decision. Keep a bounded raw-byte
+  // copy for the hash/type scan and a decoded view for later text checks, rather than reopening the
+  // file for every gate. Large files that were already read as bytes are not retained past this
+  // decision's existing scan cap.
+  let preimageBytes: Buffer | undefined
+  let preimageText: string | undefined
+  const readPreimageBytes = (): Buffer => {
+    if (preimageBytes === undefined) {
+      const bytes = fs.readFileSync(onDisk)
+      if (bytes.length <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
+        preimageBytes = bytes
+        hashNow.adopt(bytes)
+      }
+      return bytes
+    }
+    return preimageBytes
+  }
+  const readPreimageText = (): string => {
+    if (preimageText === undefined) {
+      preimageText = preimageBytes?.toString('utf8') ?? fs.readFileSync(onDisk, 'utf8')
+    }
+    return preimageText
+  }
   const rangeWindow = readRequestedSliceWindow(event)
   const rangeSpan = rangeWindow.isExplicitSlice ? requestedSliceSpan(rangeWindow) : undefined
   const rangeKey = foldPath(normalized)
   let rangeIdentity: { size: number; mtimeMs: number } | undefined
   if (event.toolName !== 'Grep' && rangeSpan !== undefined && loadConfig().hints.reread_deny) {
-    // Identity changes invalidate the lock before any early-return hint or containing-range check.
-    rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
-    clearReadRangeIfChanged(rangeKey, rangeIdentity)
-    if (getReadRangeDenials(rangeKey).length > 0) {
-      // A range lock remains closed for this compaction epoch. Repeated denials must not reopen the raw Read/view path and turn the breaker into a bypass.
-      lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
-      const lockCount = recordReadRangeLockRefusal(rangeKey)
-      recordStat('session_hint', 0, 0)
-      return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end], lockCount))
+    // First-time ranged reads have no lock or served-range identity to validate. Avoid stat/hash work
+    // until this file has range history; changed-file invalidation still runs before every reuse.
+    const hasRangeHistory = hasReadRangeHistory(rangeKey) ||
+      getFileLineRanges(normalized).length > 0 ||
+      getFileLineRangeIdentity(normalized) !== undefined
+    if (hasRangeHistory) {
+      // Identity changes invalidate the lock before any early-return hint or containing-range check.
+      rangeIdentity = dropFileLineRangesIfChanged(normalized, false, hashNow)
+      clearReadRangeIfChanged(rangeKey, rangeIdentity)
+      if (hasReadRangeDenials(rangeKey)) {
+        // A range lock remains closed for this compaction epoch. Repeated denials must not reopen the raw Read/view path and turn the breaker into a bypass.
+        lockReadRange(rangeKey, [rangeSpan.start, rangeSpan.end], rangeIdentity)
+        const lockCount = recordReadRangeLockRefusal(rangeKey)
+        recordStat('session_hint', 0, 0)
+        return denyOutput(rangeLockMessage(shown, [rangeSpan.start, rangeSpan.end], lockCount))
+      }
     }
   }
 
@@ -681,14 +711,17 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     try {
       const cwd = getCwd(event) ?? process.cwd()
       const project = findProject(cwd) ?? makeProjectAt(cwd)
-      const current = readEvidenceFileText(normalized)
-      const evidence = current === null ? null : findVerifiedFileEvidence(project.root, normalized, current)
-      if (evidence !== null) {
-        recordStat('evidence_cache_hit', 0)
-        return quietContextOutput(
-          `Verified cross-session evidence exists for this unchanged file (${evidence.id}). ` +
-          'Use a narrow read instead of loading the full file again.',
-        )
+      // Outside-project files cannot have project-scoped evidence; for in-project files the lazy
+      // reader also avoids opening bytes when no cached evidence exists for this exact path.
+      if (relPathWithinRoot(project.root, normalized) !== null) {
+        const evidence = findVerifiedFileEvidence(project.root, normalized, () => readEvidenceFileText(normalized))
+        if (evidence !== null) {
+          recordStat('evidence_cache_hit', 0)
+          return quietContextOutput(
+            `Verified cross-session evidence exists for this unchanged file (${evidence.id}). ` +
+            'Use a narrow read instead of loading the full file again.',
+          )
+        }
       }
     } catch {
       // A cache miss or unreadable file must preserve the normal Read path.
@@ -747,7 +780,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   const skillName = detectSkillFile(normalized)
   if (skillName && basename === 'SKILL.md') {
     try {
-      const body = fs.readFileSync(onDisk, 'utf-8')
+      const body = readPreimageText()
       const bodySha = contentHash(body)
       const compact = getCompactAnySessionSync(skillName)
       const stale = isCompactStale(compact, skillName, bodySha)
@@ -808,7 +841,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Grep needs to search the notebook's actual content, not the output-stripped sidecar this intercept would serve instead — exempt it from this intercept (same rationale as the doc-compact exemption above).
   if (event.toolName !== 'Grep' && isNotebook) {
     try {
-      const rawBytes = fs.readFileSync(onDisk)
+      const rawBytes = readPreimageBytes()
       const [sidecarPath] = getOrCreateSidecar(rawBytes, dataDir())
       const sidecarContent = fs.readFileSync(sidecarPath, 'utf-8')
       const savedBytes = rawBytes.length - sidecarContent.length
@@ -838,7 +871,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       const sz = statSize(onDisk)
       if (sz !== null && sz >= MARKDOWN_SIZE_THRESHOLD) {
         markdownSize = sz
-        fileContent = fs.readFileSync(onDisk, 'utf8')
+        fileContent = readPreimageText()
       }
     } catch {
       // best-effort
@@ -1111,10 +1144,13 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
         if (scanCrossSessionManifests(project.root, project.hash, normalized, ttlSecs)) {
           recordActualRead(event, normalized)
           const slice = hintTarget(normalized, sliceForPath(normalized))
+          const narrowCommand = slice.real
+            ? sliceCommand(shown, slice)
+            : 'token-goat outline ' + quotedArg(shown)
           return quietContextOutput(
             'This file may have already been read by another agent/session working in this project recently. ' +
-            'If you are a subagent continuing shared work, consider whether you already have this content from context, ' +
-            'or use `' + (slice.real ? sliceCommand(shown, slice) : 'token-goat read ' + quotedArg(shown + '::SymbolName')) + '` for a narrower slice instead of a full re-read.',
+            'If its content is already in your context, continue without another read; otherwise run `' + narrowCommand +
+            '` to find the specific content you still need.',
             [shown],
           )
         }
@@ -1468,10 +1504,9 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
     // Guarded the same way every other full-content fs.readFileSync in this file is (see SLICE_ESTIMATE_SCAN_CAP_BYTES's other call sites above) -- without this, a multi-GB .csv/.txt/.log/.html file (isKnownFileType is unconditional on size) would be read into a JS string in full on every single call, even a cheap bounded offset/limit request whose small ftEffectiveLength was always going to pass every handler's length-gate below without ever touching content.
     if (!BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
       try {
-        ftBytes = fs.readFileSync(onDisk)
-        // The range record below hashes these same bytes instead of reading the file again.
-        hashNow.adopt(ftBytes)
-        ftContent = ftBytes.toString('utf8')
+        // The preimage reader adopts bounded raw bytes for the range hash as well as dispatch.
+        ftBytes = readPreimageBytes()
+        ftContent = readPreimageText()
       } catch {
         // best-effort — empty content will pass through
       }
@@ -1494,7 +1529,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
   // Grep is exempt from pre-read nudges: it performs content searches, not reads.
   if (event.toolName !== 'Grep' && !BINARY_FILE_TYPE_EXTS.has(fileTypeExt) && (!isKnownFileType || isXmlNudge)) {
     const reqWindow = readRequestedSliceWindow(event)
-    const lineCount = lineCountForSurgicalHint(normalized, fileStatSize)
+    const lineCount = lineCountForSurgicalHint(normalized, fileStatSize, readPreimageText)
     const isSubstantial = fileStatSize >= 5 * 1024 || lineCount >= 50
     const isSpanningOver80 = !reqWindow.isExplicitSlice ||
       (reqWindow.limit !== undefined && lineCount > 0 && reqWindow.limit / lineCount >= 0.8)
@@ -1514,7 +1549,7 @@ function preReadHandlerInner(event: HookEvent): HookOutput {
       try {
         let content = ''
         if (fileStatSize <= SLICE_ESTIMATE_SCAN_CAP_BYTES) {
-          content = fs.readFileSync(onDisk, 'utf8')
+          content = readPreimageText()
         }
         const headings = extractMarkdownHeadings(content)
         if (headings.length < 3) {

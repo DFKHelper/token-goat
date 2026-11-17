@@ -172,6 +172,9 @@ describe('Cross-session read dedup', () => {
     const result = preReadHandler(event)
     expectHookType(result, 'context')
     expect(result.context).toMatch(/already been read by another agent/)
+    expect(result.context).toContain('If its content is already in your context')
+    expect(result.context).toContain('token-goat outline')
+    expect(result.context).not.toContain('::SymbolName')
   })
 
   it('ignores a sibling manifest entry with hit_count 0', () => {
@@ -388,6 +391,27 @@ describe('Cross-session read dedup', () => {
     expect(fs.existsSync(manifestPath)).toBe(true)
     const written = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
     expect(written).toEqual({ files: [{ rel_path: 'a.txt', hit_count: 2 }] })
+  })
+
+  it('refreshes a cached manifest after same-size replacement with the original mtime', () => {
+    const repoDir = makeRepo()
+    const project = makeProjectAt(repoDir)
+    const original = { files: [{ rel_path: 'a.txt', hit_count: 1 }] }
+    const replacement = { files: [{ rel_path: 'a.txt', hit_count: 2 }] }
+
+    writeSessionManifest(project.hash, 'cache-refresh-session', original)
+    const manifestPath = path.join(dataDir(), 'projects', project.hash, 'sessions', 'cache-refresh-session.json')
+    const fixedMtime = new Date(Date.now() - 10_000)
+    fs.utimesSync(manifestPath, fixedMtime, fixedMtime)
+    const before = fs.statSync(manifestPath)
+    expect(readAllSessionManifests(project.hash, 60)).toEqual([original])
+
+    fs.writeFileSync(manifestPath, JSON.stringify(replacement), 'utf8')
+    fs.utimesSync(manifestPath, fixedMtime, fixedMtime)
+
+    expect(fs.statSync(manifestPath).size).toBe(before.size)
+    expect(fs.statSync(manifestPath).mtimeMs).toBe(before.mtimeMs)
+    expect(readAllSessionManifests(project.hash, 60)).toEqual([replacement])
   })
 
   it('deletes an expired manifest file as opportunistic cleanup, but keeps a fresh sibling', () => {

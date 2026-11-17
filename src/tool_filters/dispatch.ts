@@ -121,10 +121,41 @@ function hasRedirect(argv: string[]): boolean {
   return argv.some((tok) => REDIRECT_TOKEN_RE.test(tok))
 }
 
-/** Parse a shell command string and return `{ filter, argv }`, or null when the command is empty/oversized, contains unquoted control operators (`&&`, `||`, `|`, `;`, `$()`, backticks), a bare `&` (background operator), an embedded newline, uses redirects, or matches no filter. The wrapper only intercepts a single command, so compounds/pipelines/backgrounded/multi-line commands are left untouched. */
+/** True when an unescaped `$(` or backtick would trigger shell substitution. Single quotes suppress both; double quotes do not. */
+function hasActiveCommandSubstitution(command: string): boolean {
+  let quote: "'" | '"' | null = null
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]
+    if (quote === "'") {
+      if (ch === "'") quote = null
+      continue
+    }
+    if (ch === '\\') {
+      i += 1
+      continue
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null
+      else if (ch === '`' || (ch === '$' && command[i + 1] === '(')) return true
+      continue
+    }
+    if (ch === "'") {
+      quote = "'"
+      continue
+    }
+    if (ch === '"') {
+      quote = '"'
+      continue
+    }
+    if (ch === '`' || (ch === '$' && command[i + 1] === '(')) return true
+  }
+  return false
+}
+
+/** Parse a shell command string and return `{ filter, argv }`, or null when the command is empty/oversized, contains active command substitutions (`$()` or backticks), unquoted control operators (`&&`, `||`, `|`, `;`), a bare `&` (background operator), an embedded newline, uses redirects, or matches no filter. The wrapper only intercepts a single command, so compounds/pipelines/backgrounded/multi-line commands are left untouched. */
 export function detectFromCommand(command: string, cwd?: string): { filter: ToolFilter; argv: string[] } | null {
   if (!command || command.length > 65536) return null
-  if (['$(', '`'].some((op) => command.includes(op))) return null
+  if (hasActiveCommandSubstitution(command)) return null
   // Quote-aware: a `|`/`;`/`&&`/`||` inside a quoted argument (`grep -E 'foo|bar'`) is literal text, not a control operator, and must not disqualify an otherwise-single command.
   if (hasUnquotedOperator(command, ['&&', '||', '|', ';'])) return null
   if (hasBareBackgroundOrNewline(command)) return null

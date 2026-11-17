@@ -36,7 +36,7 @@ import { dataDir, MAX_CAPTURE_BYTES } from './constants.js'
 import { appendWorkerErrorLog } from './worker_lifecycle.js'
 import { isInsideRoot } from './path_containment.js'
 import { projectTranscriptsDir } from './claude_config_dir.js'
-import { readCopilotSpooledBashOutput, isCopilotSpooledNotice } from './spooled_output.js'
+import { readCopilotSpooledBashOutput, isCopilotSpooledNotice, isCopilotHarness } from './spooled_output.js'
 import {
   stripCdPrefix,
   resolveCdHintPath,
@@ -490,7 +490,7 @@ export function readPersistedBashOutput(resp: Record<string, unknown>, cwd: stri
   }
 }
 
-/** Extract the tool response text from a post_tool_use event. Claude Code may send a string or an object with an output/content field. Prefers the on-disk persisted output over the payload's own (possibly head-truncated) field when one is present and confined to this session's tool-results directory. */
+/** Extract the tool response text from a post_tool_use event. Claude Code may send a string or an object with an output/content field. Prefers the on-disk persisted output over the payload's own (possibly head-truncated) field when one is present and confined to this session's tool-results directory. On Copilot CLI, checks for SDK large-output spooled file notice. */
 function extractBashOutput(event: HookEvent): string {
   const raw = event.raw
   const resp = raw['tool_response']
@@ -499,8 +499,10 @@ function extractBashOutput(event: HookEvent): string {
     if (persisted !== null) return persisted
   }
   const text = extractToolResponseField(raw, OUTPUT_FIRST_TOOL_RESPONSE_KEYS)
-  const copilotSpooled = readCopilotSpooledBashOutput(text)
-  if (copilotSpooled !== null) return copilotSpooled
+  if (isCopilotHarness(raw)) {
+    const copilotSpooled = readCopilotSpooledBashOutput(text)
+    if (copilotSpooled !== null) return copilotSpooled
+  }
   return text
 }
 
@@ -692,7 +694,7 @@ export async function postBashHandler(event: HookEvent): Promise<HookOutput> {
     // Matches MIN_CACHE_BYTES's old hardcoded value as the config default, so an untouched install sees identical behavior; a configured cache_min_bytes now actually moves the floor instead of being silently ignored.
     const cacheMinBytes = loadConfig().bash_compress.cache_min_bytes
     const resp = event.raw['tool_response']
-    const persisted = (resp !== null && typeof resp === 'object' && typeof (resp as Record<string, unknown>)['persistedOutputPath'] === 'string' && (resp as Record<string, unknown>)['persistedOutputPath'] !== '') || isCopilotSpooledNotice(resp)
+    const persisted = (resp !== null && typeof resp === 'object' && typeof (resp as Record<string, unknown>)['persistedOutputPath'] === 'string' && (resp as Record<string, unknown>)['persistedOutputPath'] !== '') || (isCopilotHarness(event.raw) && isCopilotSpooledNotice(resp))
     // Decided once, from `rawCmd`: `cmd` has lost its leading assignments, a `TOKEN_GOAT_BASH_COMPRESS=0` prefix among them. Every pass below that compresses takes this rather than a command to decide it from, and the two lossless-looking ones need it too, since config folds the environment's opt-out into `bash_compress.enabled` but a prefix on the command itself never reaches config.
     const optedOut = compressionOptedOut(rawCmd)
 

@@ -3,7 +3,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
-  clearAllReadRangeEvasion, clearReadRangeEvasion, coerceReadRangeEvasion, evaluateRangeEvasion, exportReadRangeEvasion, getReadRangeDenials, getReadRangeResetAt, importReadRangeEvasion, lockReadRange,
+  clearAllReadRangeEvasion, clearReadRangeEvasion, coerceReadRangeEvasion, evaluateRangeEvasion, exportReadRangeEvasion, getReadRangeDenials, getReadRangeResetAt, hasReadRangeDenials, hasReadRangeHistory, importReadRangeEvasion, lockReadRange,
   getRecentReadRanges, rangeLockMessage, recordReadRangeLockRefusal, recordRecentReadRange,
   type ReadRange,
 } from '../src/read_range_evasion.js'
@@ -16,6 +16,19 @@ import { foldPath } from '../src/util.js'
 beforeEach(() => clearModuleCaches())
 
 describe('recent explicit-range evasion decisions', () => {
+  it('checks cached range state without materializing spans', () => {
+    expect(hasReadRangeHistory('file')).toBe(false)
+    expect(hasReadRangeDenials('file')).toBe(false)
+
+    recordRecentReadRange('file', [1, 20])
+    expect(hasReadRangeHistory('file')).toBe(true)
+    expect(hasReadRangeDenials('file')).toBe(false)
+
+    lockReadRange('file', [21, 40])
+    expect(hasReadRangeHistory('file')).toBe(true)
+    expect(hasReadRangeDenials('file')).toBe(true)
+  })
+
   it('denies L1:2 after L1:1', () => {
     expect(evaluateRangeEvasion({ span: [1, 2], served: [[1, 1]] })).toBe('same_anchor')
   })

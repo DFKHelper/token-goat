@@ -106,16 +106,25 @@ export function recordEvidence(input: {
   return entry
 }
 
-export function findVerifiedFileEvidence(projectRoot: string, source: string, currentText: string): EvidenceEntry | null {
+export function findVerifiedFileEvidence(
+  projectRoot: string,
+  source: string,
+  currentText: string | (() => string | null),
+): EvidenceEntry | null {
   const normalizedRoot = normalizePath(projectRoot)
   const normalizedSource = normalizePath(source)
-  const currentHash = hash(currentText)
-  return load().find((entry) =>
+  const candidates = load().filter((entry) =>
     entry.projectRoot === normalizedRoot &&
     entry.source === normalizedSource &&
-    entry.representation === 'file' &&
-    entry.contentHash === currentHash,
-  ) ?? null
+    entry.representation === 'file',
+  )
+  if (candidates.length === 0) return null
+
+  // The hook can defer opening the file until the cache proves there is a matching path to verify.
+  const text = typeof currentText === 'function' ? currentText() : currentText
+  if (text === null) return null
+  const currentHash = hash(text)
+  return candidates.find((entry) => entry.contentHash === currentHash) ?? null
 }
 
 export function searchEvidence(projectRoot: string, query: string, limit = 10): EvidenceEntry[] {

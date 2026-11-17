@@ -61,6 +61,17 @@ export function getReadRangeDenials(key: string): ReadonlyArray<ReadRange> {
   return states.get(key)?.denied.map((v) => v.span) ?? []
 }
 
+/** O(1) predicates for hook fast paths that should not materialize span arrays. */
+export function hasReadRangeDenials(key: string): boolean {
+  return (states.get(key)?.denied.length ?? 0) > 0
+}
+
+export function hasReadRangeHistory(key: string): boolean {
+  const state = states.get(key)
+  return state !== undefined &&
+    (state.denied.length > 0 || state.recent.some((visit) => visit.resync !== true))
+}
+
 /** Generation counter for this key's range lock, incremented on reset. */
 export function getReadRangeResetAt(key: string): number {
   return states.get(key)?.resetAt ?? 0

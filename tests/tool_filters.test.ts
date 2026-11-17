@@ -423,6 +423,15 @@ describe('dispatch: detection + compound handling', () => {
     expect(detectFromCommand('mytool $(date)')).toBeNull()
   })
 
+  it('detectFromCommand distinguishes literal substitution markers from active shell substitutions', () => {
+    TOOL_FILTERS.push(new EchoFilter())
+    expect(detectFromCommand("mytool -m '$(date)'")?.filter.name).toBe('echo-test')
+    expect(detectFromCommand("mytool -m '`date`'")?.filter.name).toBe('echo-test')
+    expect(detectFromCommand('mytool -m \\$(date)')?.filter.name).toBe('echo-test')
+    expect(detectFromCommand('mytool -m "$(date)"')).toBeNull()
+    expect(detectFromCommand('mytool -m "`date`"')).toBeNull()
+  })
+
   it('detectFromCommand resolves a simple recognised command', () => {
     TOOL_FILTERS.push(new EchoFilter())
     const det = detectFromCommand('python -m mytool run')

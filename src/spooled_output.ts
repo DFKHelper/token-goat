@@ -4,6 +4,7 @@ import * as path from 'node:path'
 
 import { MAX_CAPTURE_BYTES } from './constants.js'
 import { isInsideRoot } from './path_containment.js'
+import { shellMountToWindowsPath } from './paths.js'
 
 /**
  * Notice header emitted by Copilot SDK/CLI when tool output exceeds its inline threshold.
@@ -26,6 +27,15 @@ export function isCopilotSpooledNotice(text: unknown): boolean {
 }
 
 /**
+ * Returns true if the hook event was dispatched from a Copilot CLI or VS Code Copilot harness.
+ */
+export function isCopilotHarness(raw: Record<string, unknown> | undefined): boolean {
+  if (!raw) return false
+  const harness = raw['_tg_harness']
+  return harness === 'copilot_cli' || harness === 'vscode'
+}
+
+/**
  * Extracts candidate file path from Copilot spooled output notice text.
  */
 export function extractCopilotSpooledPath(text: string): string | null {
@@ -38,9 +48,9 @@ export function extractCopilotSpooledPath(text: string): string | null {
 
 /**
  * Safely reads a spooled file from disk via descriptor-bounded I/O.
- * Validates link-aware containment in `rootDirectory`, matches basename against `filenamePattern`,
- * opens once with `openSync`, checks `fstatSync` for a regular file bounded to `maxBytes`,
- * and reads the full buffer.
+ * Normalizes candidate path to native OS format, validates link-aware containment in `rootDirectory`,
+ * matches basename against `filenamePattern`, opens non-blocking, checks `fstatSync` for a regular file
+ * bounded to `maxBytes`, re-verifies post-open containment, and reads the full buffer.
  */
 export function readConfinedSpoolFile(
   candidatePath: string,
@@ -53,23 +63,49 @@ export function readConfinedSpoolFile(
   const maxBytes = options?.maxBytes ?? MAX_CAPTURE_BYTES
   const filenamePattern = options?.filenamePattern ?? COPILOT_SPOOLED_FILENAME_RE
 
-  if (!isInsideRoot(candidatePath, rootDirectory)) return null
+  // Convert shell mount paths (e.g. /c/TEMP) to Windows native drive paths (C:/TEMP) on Windows
+  const nativeCandidate = process.platform === 'win32'
+    ? path.win32.normalize(shellMountToWindowsPath(candidatePath))
+    : path.resolve(candidatePath)
 
-  const base = path.basename(candidatePath)
+  if (!isInsideRoot(nativeCandidate, rootDirectory)) return null
+
+  const base = path.basename(nativeCandidate)
   if (!filenamePattern.test(base)) return null
 
   let fd: number | undefined
   try {
-    fd = fs.openSync(candidatePath, 'r')
-    const stat = fs.fstatSync(fd)
-    if (!stat.isFile() || stat.size === 0 || stat.size > maxBytes) {
+    // 1. Pre-open lstat: ensure the candidate path is a regular file, rejecting any symbolic link
+    const preLstat = fs.lstatSync(nativeCandidate, { bigint: true })
+    if (!preLstat.isFile() || preLstat.isSymbolicLink()) {
       return null
     }
 
-    const buf = Buffer.alloc(stat.size)
+    const flags = process.platform === 'win32' ? fs.constants.O_RDONLY : fs.constants.O_RDONLY | fs.constants.O_NONBLOCK
+    fd = fs.openSync(nativeCandidate, flags)
+    const stat = fs.fstatSync(fd, { bigint: true })
+    if (!stat.isFile() || stat.size === 0n || stat.size > BigInt(maxBytes)) {
+      return null
+    }
+
+    // 2. Post-open identity verification: ensure opened fd matches pre-open lstat identity across platforms
+    const preIdentity = `${preLstat.dev}:${preLstat.ino}`
+    const postIdentity = `${stat.dev}:${stat.ino}`
+    if (preIdentity !== postIdentity) {
+      return null
+    }
+
+    // 3. Post-open containment check: ensure canonical path is still inside rootDirectory
+    const openedPath = fs.realpathSync.native(nativeCandidate)
+    if (!isInsideRoot(openedPath, rootDirectory)) {
+      return null
+    }
+
+    const size = Number(stat.size)
+    const buf = Buffer.alloc(size)
     let bytesRead = 0
-    while (bytesRead < stat.size) {
-      const n = fs.readSync(fd, buf, bytesRead, stat.size - bytesRead, bytesRead)
+    while (bytesRead < size) {
+      const n = fs.readSync(fd, buf, bytesRead, size - bytesRead, bytesRead)
       if (n === 0) break
       bytesRead += n
     }
