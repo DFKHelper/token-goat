@@ -396,8 +396,9 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
 
   // Two cleanup processes spun one core each for about 7 hours after their hook was gone (2026-11-11), far past their 630 s life limit. A tick whose timed read returns at once (a closed or broken descriptor, an EOF) turns the loop into a busy spin, so a tick that did not time out must still take its second.
   it.skipIf(!bashAvailable)('takes its second per tick even when the timed read returns at once, so the loop cannot spin', () => {
-    const got = runLib(['exec 9<&-', 't0=${EPOCHREALTIME/./}', 'tick; tick; tick', 't1=${EPOCHREALTIME/./}', 'echo tickms=$(( (t1 - t0) / 1000 ))'])
-    expect(Number(got.tickms), 'three ticks with a broken descriptor took under 2.5 s, so each returned at once and the loop would spin').toBeGreaterThanOrEqual(2500)
+    // $SECONDS, not $EPOCHREALTIME (bash 5; empty on macOS bash 3.2): three ticks add at least 3, a spin adds at most 1.
+    const got = runLib(['exec 9<&-', 't0=$SECONDS', 'tick; tick; tick', 'echo ticksecs=$(( SECONDS - t0 ))'])
+    expect(Number(got.ticksecs), 'three ticks with a broken descriptor took under 3 s, so each returned at once and the loop would spin').toBeGreaterThanOrEqual(3)
   })
 
   // The stated bounds hold from inside any loop: a pass that never reaches the main loop's life and grace tests still ends the process once the life limit plus grace plus kill window is over, or the grace plus kill window after the hook's death.
