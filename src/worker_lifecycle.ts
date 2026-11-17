@@ -67,12 +67,49 @@ function hasFreshWorkerHeartbeat(dir: string, pid: number): boolean {
   }
 }
 
-function pidFileIsWithinStartupGrace(dir: string): boolean {
+/** Where the pid file stands against the startup grace: written less than the grace ago ('within', strict), older ('elapsed'), or not readable at all ('no-file'). */
+type StartupGrace = 'within' | 'elapsed' | 'no-file'
+
+function startupGraceOf(dir: string): StartupGrace {
   try {
-    return Date.now() - fs.statSync(workerPidPath(dir)).mtimeMs < WORKER_STARTUP_GRACE_MS
+    return Date.now() - fs.statSync(workerPidPath(dir)).mtimeMs < WORKER_STARTUP_GRACE_MS ? 'within' : 'elapsed'
   } catch {
-    return false
+    return 'no-file'
   }
+}
+
+/** What backs the pid a pid file names: nothing named ('none'), a process that is gone ('dead'), a live pid with a fresh heartbeat naming it ('heartbeat'), a live pid with no heartbeat yet inside the startup grace ('grace'), or a live pid with neither proof ('unproven', maybe a reused number). */
+type WorkerLease = 'none' | 'dead' | 'heartbeat' | 'grace' | 'unproven'
+
+/** Which proofs count: 'heartbeat-only' is the status question (no grace), 'with-grace' is the claim and stop question. */
+type LeaseProofs = 'heartbeat-only' | 'with-grace'
+
+function judgeWorkerLease(dir: string, pid: number | null, proofs: LeaseProofs): WorkerLease {
+  if (pid === null) return 'none'
+  if (!pidAlive(pid)) return 'dead'
+  if (hasFreshWorkerHeartbeat(dir, pid)) return 'heartbeat'
+  switch (proofs) {
+    case 'heartbeat-only':
+      return 'unproven'
+    case 'with-grace': {
+      const grace = startupGraceOf(dir)
+      switch (grace) {
+        case 'within':
+          return 'grace'
+        case 'elapsed':
+        case 'no-file':
+          return 'unproven'
+        default:
+          return assertNever(grace)
+      }
+    }
+    default:
+      return assertNever(proofs)
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled worker lease state: ${String(value)}`)
 }
 
 /** Absolute path to the worker pid file for `dir`. */
@@ -129,9 +166,18 @@ export function readPidFile(dir: string): number | null {
 
 /** Is a detached worker currently running for this project? True only when the pid file names a live process that has recently written a PID-bound heartbeat. This rejects a stale PID whose number was reused by an unrelated process. */
 export function isWorkerRunning(dir: string = dataDir()): boolean {
-  const pid = readPidFile(dir)
-  if (pid === null) return false
-  return pidAlive(pid) && hasFreshWorkerHeartbeat(dir, pid)
+  const lease = judgeWorkerLease(dir, readPidFile(dir), 'heartbeat-only')
+  switch (lease) {
+    case 'heartbeat':
+      return true
+    case 'none':
+    case 'dead':
+    case 'grace':
+    case 'unproven':
+      return false
+    default:
+      return assertNever(lease)
+  }
 }
 
 /** Absolute path to the auto-heal rate-limit marker for `dir`. */
@@ -243,6 +289,27 @@ export function stopWorker(dir: string = dataDir(), expectedPid?: number, opts: 
   return stopWorkerDetailed(dir, expectedPid, opts).stopped
 }
 
+/** What stopWorkerDetailed did with a pid: no live lease and nothing to end ('dead'), a live pid with no lease proof, left alone ('unproven'), a lease holder that is not this install's worker, left alone ('not-a-worker'), this process or its parent, refused ('refused'), the worker ended ('ended'), or the kill denied ('denied'). */
+type StopOutcome = 'unproven' | 'dead' | 'not-a-worker' | 'refused' | 'ended' | 'denied'
+
+/** The worker a lease proves, ended according to who the pid really is. */
+function endLeaseHolder(pid: number, opts: StopWorkerOptions): StopOutcome {
+  // Even a lease can name a reused pid (the daemon crashed inside the heartbeat window, or the pid file is a fresh claim over a dead one), so the command line decides, and only a confirmed worker loses its tree.
+  const identity = judgeDaemonIdentity(pid, opts)
+  // 'unknown' is the query itself failing (the program missing, ENOENT, as `ps` is on a minimal image; a timeout; or an unexpected exit status) or the system showing no command line for the process (an elevated worker asked from a normal shell), which proves nothing about who owns the pid. This point is reached only for a live pid with a lease proof (a fresh heartbeat naming it, or a pid file younger than the startup grace), so the stop ends that one process, with no tree: failing closed would make `worker stop` do nothing wherever `ps` is missing, and the tree kill is kept for a confirmed worker.
+  switch (identity) {
+    case 'worker':
+      return endDaemon(pid, 'tree')
+    case 'unknown':
+      return endDaemon(pid, 'single')
+    case 'other':
+    case 'gone':
+      return 'not-a-worker'
+    default:
+      return assertNever(identity)
+  }
+}
+
 /** {@link stopWorker} with the EPERM outcome reported, so a caller can say the worker was left running instead of that none was found. */
 export function stopWorkerDetailed(dir: string = dataDir(), expectedPid?: number, opts: StopWorkerOptions = {}): StopWorkerResult {
   const pid = readPidFile(dir)
@@ -250,20 +317,38 @@ export function stopWorkerDetailed(dir: string = dataDir(), expectedPid?: number
   // If the caller judged a specific pid mismatched/stale earlier and the pid file now names someone else, another hook already raced ahead of us (stopped it and spawned a replacement); do nothing rather than tearing down that replacement's pid file before it can prove itself alive.
   if (expectedPid !== undefined && pid !== expectedPid) return { stopped: false, leftRunning: null }
   // A daemon still inside its startup grace has written no heartbeat yet, so it is alive but not "running" by heartbeat alone; stop used to skip the kill and then remove its pid file anyway, which stranded it: running, invisible, and with nothing left naming it. The same two proofs reclaimStalePidFile trusts decide who is ours. A live pid with neither proof (a stale heartbeat, a reused pid) is left alone and so is its pid file: it retires itself once reclaimed, and removing the file here would only strand it.
-  const alive = pidAlive(pid)
+  const lease = judgeWorkerLease(dir, pid, 'with-grace')
   // A live pid that proves no lease (no fresh heartbeat naming it, pid file older than the grace) may be an unrelated process that reused the number: neither signalled nor unnamed.
-  const running = alive && (hasFreshWorkerHeartbeat(dir, pid) || pidFileIsWithinStartupGrace(dir))
-  if (alive && !running) return { stopped: false, leftRunning: null }
-  let outcome: ReturnType<typeof endDaemon> | null = null
-  if (running) {
-    // Even a lease can name a reused pid (the daemon crashed inside the heartbeat window, or the pid file is a fresh claim over a dead one), so the command line decides, and only a confirmed worker loses its tree.
-    const identity = judgeDaemonIdentity(pid, opts)
-    // 'unknown' is the query itself failing (the program missing, ENOENT, as `ps` is on a minimal image; a timeout; or an unexpected exit status) or the system showing no command line for the process (an elevated worker asked from a normal shell), which proves nothing about who owns the pid. This point is reached only for a live pid with a lease proof (a fresh heartbeat naming it, or a pid file younger than the startup grace), so the stop ends that one process, with no tree: failing closed would make `worker stop` do nothing wherever `ps` is missing, and the tree kill is kept for a confirmed worker.
-    if (identity === 'worker') outcome = endDaemon(pid, 'tree')
-    else if (identity === 'unknown') outcome = endDaemon(pid, 'single')
+  let outcome: StopOutcome
+  switch (lease) {
+    case 'unproven':
+      outcome = 'unproven'
+      break
+    case 'none':
+    case 'dead':
+      outcome = 'dead'
+      break
+    case 'heartbeat':
+    case 'grace':
+      outcome = endLeaseHolder(pid, opts)
+      break
+    default:
+      return assertNever(lease)
   }
   // A denied kill leaves a live worker: its pid file stays, since removing it would let the next start spawn a second worker beside it.
-  if (outcome === 'denied') return { stopped: false, leftRunning: pid }
+  switch (outcome) {
+    case 'denied':
+      return { stopped: false, leftRunning: pid }
+    case 'unproven':
+      return { stopped: false, leftRunning: null }
+    case 'dead':
+    case 'not-a-worker':
+    case 'refused':
+    case 'ended':
+      break
+    default:
+      return assertNever(outcome)
+  }
   // Only remove the pid file when it still names the pid we just killed -- never unconditionally. A concurrent `worker start` can observe the killed pid as dead and reclaim the slot (via claimWorkerPidFile) with a brand-new daemon's pid between our kill above and this cleanup; an unconditional rmSync here would delete that new daemon's pid file out from under it, orphaning it (no pid file left for a later stopWorker to find), which a subsequent `worker start` would then "fix" by spawning a third daemon -- two live daemons draining the same queue. Same guard style as the exit handler in worker.ts::runDetachedWorkerDaemon.
   if (readPidFile(dir) === pid) {
     try {
@@ -315,16 +400,32 @@ function discardSpawnedWorker(child: ChildProcess, pid: number): void {
   child.unref()
 }
 
+/** The outcome of an exclusive create of the pid file: this writer made it ('created'), or one already stood ('exists'). */
+type PidFileCreate = 'created' | 'exists'
+
+function createPidFileExclusive(pidPath: string, pid: number): PidFileCreate {
+  try {
+    fs.writeFileSync(pidPath, `${pid}\n`, { flag: 'wx' })
+    return 'created'
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+    return 'exists'
+  }
+}
+
 /** Atomically claim the worker pid file for `pid`, closing the TOCTOU race where two near-simultaneous `worker start` invocations could otherwise both pass an {@link isWorkerRunning} pre-check and then unconditionally overwrite each other's pid file -- orphaning whichever daemon lost, with no pid file left pointing at it for a later {@link stopWorker} to find. Uses exclusive-create (`wx`) so only one writer can ever create the file fresh; a losing writer sees `EEXIST` instead of silently clobbering the winner's entry, and then checks whether the pid already recorded there is a live process: - alive: refuse -- a real daemon already holds the slot. Returns false. - dead/stale/unreadable: safe to reclaim -- under a `worker.pid.reclaim` lock, remove the stale file and retry the exclusive create once; a claimer that finds the lock held refuses. Exported for tests; the boolean return lets {@link startDetachedWorker} decide whether to kill the child process it just spawned when it loses the race. */
 export function claimWorkerPidFile(dir: string, pid: number): boolean {
   const pidPath = workerPidPath(dir)
-  try {
-    fs.writeFileSync(pidPath, `${pid}\n`, { flag: 'wx' })
-    // No pid file existed, so a note left by an earlier claim names a daemon this claim did not displace.
-    removeDisplacedNote(dir)
-    return true
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+  const created = createPidFileExclusive(pidPath, pid)
+  switch (created) {
+    case 'created':
+      // No pid file existed, so a note left by an earlier claim names a daemon this claim did not displace.
+      removeDisplacedNote(dir)
+      return true
+    case 'exists':
+      break
+    default:
+      return assertNever(created)
   }
 
   // The judgement and the remove-and-recreate run under one lock: two claimers that both judged the same pid stale would otherwise each remove the file, and the second remove would land on the pid file the first had just written, so both would win and the loser's daemon, never having seen its own pid on disk, would never retire. A claimer that finds the lock held loses, since whoever holds it is reclaiming the same slot.
@@ -434,12 +535,17 @@ export function retireDisplacedWorker(dir: string, opts: DisplacedRetireOptions 
 function reclaimStalePidFile(dir: string, pid: number): boolean {
   const pidPath = workerPidPath(dir)
   const existingPid = readPidFile(dir)
-  if (
-    existingPid !== null
-    && pidAlive(existingPid)
-    && (hasFreshWorkerHeartbeat(dir, existingPid) || pidFileIsWithinStartupGrace(dir))
-  ) {
-    return false
+  const lease = judgeWorkerLease(dir, existingPid, 'with-grace')
+  switch (lease) {
+    case 'heartbeat':
+    case 'grace':
+      return false
+    case 'none':
+    case 'dead':
+    case 'unproven':
+      break
+    default:
+      return assertNever(lease)
   }
   // Stale, dead, or unreadable: reclaim the slot. Never signal the pid it names from here: this path is reached only when that pid proves no worker lease, which is what a daemon killed without its exit handler leaves behind once the OS reuses its pid, and this claim spawns no process-list query on the hook path it can run on (ensureWorkerAlive reaches it through startDetachedWorker); the one query on that path is stopWorker's, in the upgrade branch above. A 2.9.30 daemon whose slot was reclaimed this way never exited on its own and piled up, one per reclaim, so the claim leaves a note for the daemon it installs, which ends the old one once it owns the slot (see retireDisplacedWorker).
   try {
@@ -457,14 +563,22 @@ function reclaimStalePidFile(dir: string, pid: number): boolean {
   } catch {
     // best-effort
   }
+  let recreated: PidFileCreate
   try {
-    fs.writeFileSync(pidPath, `${pid}\n`, { flag: 'wx' })
-    return true
+    recreated = createPidFileExclusive(pidPath, pid)
   } catch (e2) {
-    // A first-time claimer's create, which takes no lock, landed between the remove and this create: report already-running rather than clobber it.
     removeDisplacedNote(dir)
-    if ((e2 as NodeJS.ErrnoException).code === 'EEXIST') return false
     throw e2
+  }
+  switch (recreated) {
+    case 'created':
+      return true
+    case 'exists':
+      // A first-time claimer's create, which takes no lock, landed between the remove and this create: report already-running rather than clobber it.
+      removeDisplacedNote(dir)
+      return false
+    default:
+      return assertNever(recreated)
   }
 }
 

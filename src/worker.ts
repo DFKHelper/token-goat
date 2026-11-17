@@ -61,6 +61,27 @@ const PRUNE_EVERY_N_DRAINS = 30
 /** How often a drain in progress re-reads the pid file to see whether its daemon must retire. A drain runs synchronously and can take far longer than the startup grace, so the retirement check has to happen inside it, not only between cycles; this bounds the reads to a few per second however many paths the batch holds. */
 const RETIRE_PROBE_INTERVAL_MS = 100
 
+/** Whose pid the pid file names, seen from a running daemon: this process ('own'), another process ('other'), or no readable pid ('unnamed': absent, empty mid-replacement, or malformed). */
+type PidSlot = 'own' | 'other' | 'unnamed'
+
+function classifyPidSlot(pidOwner: number | null): PidSlot {
+  if (pidOwner === null) return 'unnamed'
+  return pidOwner === process.pid ? 'own' : 'other'
+}
+
+/** Whether this daemon has yet seen the pid file name its own pid: the parent claims the slot shortly after spawning it, so a daemon starts 'never-owned' and only 'owned' ones retire on a pid file naming another process at once. */
+type SlotOwnership = 'never-owned' | 'owned'
+
+/** The pid file is there, or definitely absent (ENOENT) since the stated time. */
+type PidFilePresence = { readonly state: 'present' } | { readonly state: 'absent'; readonly sinceMs: number }
+
+/** Whether the mid-drain retire check may still ask the pid file ('open'), or has once said retire and keeps saying it ('latched'). */
+type RetireProbe = 'open' | 'latched'
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled worker retire state: ${String(value)}`)
+}
+
 /** The retirement check of the daemon loop running in this process, installed by {@link runWorkerLoop} for as long as the loop runs. Null outside a daemon loop, where nothing retires. Process state rather than a parameter: one daemon runs one loop, and a drain reaches the check through the call chain it already has. */
 let retireCheckForDrain: (() => boolean) | null = null
 
@@ -908,11 +929,11 @@ export async function runWorkerLoop(
   let embeddingsWereReady = true
   let disabledStampsSeen = disabledStampCount()
   // Flips true the first time we see the pid file naming our own pid (the parent claims it shortly after spawning us, so early polls may see it empty). Once set, losing ownership means another daemon took over -- see the self-terminate check below.
-  let ownedPidFile = false
+  let slotOwnership: SlotOwnership = 'never-owned'
   // When this loop started, for the grace a daemon gets to see its own pid before a pid file naming someone else retires it.
   const startedMs = Date.now()
-  // Since when the pid file has been definitely absent (ENOENT), or null while it is there.
-  let pidFileAbsentSinceMs: number | null = null
+  // Since when the pid file has been definitely absent (ENOENT), or 'present' while it is there.
+  let pidFilePresence: PidFilePresence = { state: 'present' }
   // The last time a cycle had anything to do: a drained batch, an embed in flight, or a backlog walk still going. Idle exit counts from here.
   let lastBusyMs = Date.now()
   // Ends each cycle's sleep early when a hook or command appends to the queue, so an edit is indexed within milliseconds rather than up to a poll interval later; the interval stays the fallback wherever the watch cannot run. See createQueueWaker. Every step of a cycle catches its own errors, so the loop leaves only through its exits below, each of which reaches the close.
@@ -920,31 +941,48 @@ export async function runWorkerLoop(
   // The retirement decision from the pid file, shared by the top of each cycle and by the work inside a cycle (see retiringNow). It takes the first-ownership step and the absence/grace bookkeeping, so it must be asked on every real check, not only once per cycle.
   const pidFileSaysRetire = (): boolean => {
     const pidOwner = readPidFile(dir)
-    if (pidOwner === process.pid) {
-      // First time this daemon owns the slot: end the daemon the claim displaced, off the hook path that spawned us.
-      if (!ownedPidFile) retireDisplacedWorker(dir)
-      ownedPidFile = true
-    } else if (ownedPidFile && pidOwner !== null) return true
+    const slot = classifyPidSlot(pidOwner)
+    switch (slot) {
+      case 'own':
+        // First time this daemon owns the slot: end the daemon the claim displaced, off the hook path that spawned us.
+        if (slotOwnership === 'never-owned') retireDisplacedWorker(dir)
+        slotOwnership = 'owned'
+        break
+      case 'other':
+        if (slotOwnership === 'owned') return true
+        break
+      case 'unnamed':
+        break
+      default:
+        return assertNever(slot)
+    }
     const nowMs = Date.now()
     if (pidFileIsAbsent(dir)) {
-      pidFileAbsentSinceMs ??= nowMs
-      if (nowMs - pidFileAbsentSinceMs >= pidFileGraceMs) return true
+      if (pidFilePresence.state === 'present') pidFilePresence = { state: 'absent', sinceMs: nowMs }
+      if (nowMs - pidFilePresence.sinceMs >= pidFileGraceMs) return true
     } else {
-      pidFileAbsentSinceMs = null
-      if (!ownedPidFile && pidOwner !== null && pidOwner !== process.pid && nowMs - startedMs >= pidFileGraceMs) return true
+      pidFilePresence = { state: 'present' }
+      if (slotOwnership === 'never-owned' && slot === 'other' && nowMs - startedMs >= pidFileGraceMs) return true
     }
     return false
   }
   // Asked from inside a drain, which can run far longer than the grace. Probed at most once per RETIRE_PROBE_INTERVAL_MS, and once it has said retire it stays so.
-  let retireLatched = false
+  let retireProbe: RetireProbe = 'open'
   let lastRetireProbeMs = 0
   const retiringNow = (): boolean => {
-    if (retireLatched) return true
-    const nowMs = Date.now()
-    if (nowMs - lastRetireProbeMs < RETIRE_PROBE_INTERVAL_MS) return false
-    lastRetireProbeMs = nowMs
-    retireLatched = pidFileSaysRetire()
-    return retireLatched
+    switch (retireProbe) {
+      case 'latched':
+        return true
+      case 'open': {
+        const nowMs = Date.now()
+        if (nowMs - lastRetireProbeMs < RETIRE_PROBE_INTERVAL_MS) return false
+        lastRetireProbeMs = nowMs
+        if (pidFileSaysRetire()) retireProbe = 'latched'
+        return retireProbe === 'latched'
+      }
+      default:
+        return assertNever(retireProbe)
+    }
   }
   retireCheckForDrain = retiringNow
   while (!shouldStop()) {
