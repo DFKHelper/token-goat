@@ -6,6 +6,7 @@ import { wiredCodexHookWords } from './bridges/codex_install.js'
 import { wiredCopilotHookWords } from './bridges/copilot_cli_install.js'
 import { wiredGrokHookWords } from './bridges/grok_install.js'
 import { wiredKimiHookWords } from './bridges/kimi_install.js'
+import { SHIM_FILE_WORD } from './cli_doctor_hooks.js'
 import { nativeHooksEnabled } from './config.js'
 import { getDb } from './db.js'
 import type { DoctorResult } from './doctor_result.js'
@@ -176,22 +177,28 @@ export function checkNativeHookWiring(wiring: NativeWiring, avail: NativeAvailab
   return settled(wiredText)
 }
 
-/** The FAIL row for native hook entries whose `--entry` bundle is gone, or null when none is missing. */
+/** The event and bundle of a Node-form hook (`node <shim> <event> <entry>`), or undefined for other shapes. */
+function nodeFormInvocation(words: readonly string[]): { event: string; entry: string } | undefined {
+  const [, shim, event, entry] = words
+  return words.length === 4 && shim !== undefined && SHIM_FILE_WORD.test(shim) && event !== undefined && entry !== undefined ? { event, entry } : undefined
+}
+
+/** The FAIL row for a hook whose bundle (native `--entry` or Node-form entry) is gone, or null if none is. */
 export function checkNativeEntryPaths(wiring: NativeWiring): DoctorResult | null {
   const eventsByEntry = new Map<string, string[]>()
   let broken = 0
   for (const { words } of wiring.entries) {
-    const native = parseNativeInvocation(words)
-    if (native?.entry === undefined || fs.existsSync(native.entry)) continue
+    const invoked = parseNativeInvocation(words) ?? nodeFormInvocation(words)
+    if (invoked?.entry === undefined || fs.existsSync(invoked.entry)) continue
     broken += 1
-    eventsByEntry.set(native.entry, [...(eventsByEntry.get(native.entry) ?? []), native.event ?? 'unknown event'])
+    eventsByEntry.set(invoked.entry, [...(eventsByEntry.get(invoked.entry) ?? []), invoked.event ?? 'unknown event'])
   }
   if (broken === 0) return null
   const named = [...eventsByEntry].map(([entry, events]) => `${displaySafeText(entry)} (${events.join(', ')})`).join('; ')
   return {
     name: `Native hook entry (${wiring.label})`,
     status: 'fail',
-    message: `${wiring.label}: ${broken} of ${wiring.entries.length} hook entries name a bundle that no longer exists, ${named}, which fails those events instead of falling back to Node; run ${fencedCommand(wiring.install)} to rewrite them`,
+    message: `${wiring.label}: ${broken} of ${wiring.entries.length} hook entries name a bundle that no longer exists, ${named}, which fails those events; run ${fencedCommand(wiring.install)} to rewrite them`,
   }
 }
 

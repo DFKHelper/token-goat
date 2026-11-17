@@ -27,13 +27,18 @@ function exeName(platform: NodeJS.Platform = process.platform): string {
   return platform === 'win32' ? 'tg-hook.exe' : 'tg-hook'
 }
 
+/** The packaged binary path for this platform beside `entryPath`, or undefined off a native target. */
+function packagedNativePath(entryPath: string): string | undefined {
+  const target = `${process.platform}-${process.arch}`
+  if (!NATIVE_TARGETS.has(target)) return undefined
+  return path.join(path.dirname(entryPath), 'native', target, exeName())
+}
+
 /** The binary shipped beside `entryPath` (dist/token-goat.mjs) for this platform, or undefined when this platform is not a native target or the package carries no binary for it. */
 export function packagedNativeBinary(entryPath: string | undefined = process.argv[1]): string | undefined {
   if (entryPath === undefined || entryPath === '') return undefined
-  const target = `${process.platform}-${process.arch}`
-  if (!NATIVE_TARGETS.has(target)) return undefined
-  const bin = path.join(path.dirname(entryPath), 'native', target, exeName())
-  return fs.existsSync(bin) ? bin : undefined
+  const bin = packagedNativePath(entryPath)
+  return bin !== undefined && fs.existsSync(bin) ? bin : undefined
 }
 
 /** Where a Windows install runs the binary from: a copy in the data directory, keyed by the bundle directory's real path so each install (global, a dev checkout) keeps one stable path that settings files can name across upgrades. The copy exists because Windows will not delete or replace an executable that is running: a harness mid-hook held the packaged binary open, and `npm install -g` then failed with EBUSY and left a half-upgraded tree (package.json of the new version, binary of the old). A copy outside the package is never in npm's way, and replacing it while it runs is handled by {@link syncNativeCopy}. */
@@ -218,6 +223,9 @@ export function nativeHookBinary(entryPath: string | undefined = process.argv[1]
         else why = `its self-test failed: ${test.reason ?? 'no reason given'}`
       }
     }
+  } else {
+    const expected = packagedNativePath(entryPath)
+    if (expected !== undefined) why = `the packaged binary ${expected} is missing (a dev checkout builds it with npm run build:native)`
   }
   if (bin === undefined && sync && why !== undefined && why !== COPY_STALE) emitErr(`token-goat: wrote the Node form of the hooks, not the native hook client, because ${why}. Run \`token-goat doctor --repair\` (or install again) to retry.`)
   _decisions.set(key, bin ?? null)

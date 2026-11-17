@@ -57,13 +57,13 @@ export function shimIsCurrent(scriptPath: string, expected: string): boolean {
 }
 
 /** A hook shim file name, current `.cjs` or pre-rename `.js`, under either path separator. */
-const SHIM_FILE_WORD = /(?:^|[\\/])token-goat-shim\.c?js$/
+export const SHIM_FILE_WORD = /(?:^|[\\/])token-goat-shim\.c?js$/
 
 /** Whether a wired hook entry runs a shim file that is no longer on disk, or a native hook client whose binary is gone: either way the harness cannot start the hook, so a rewrite is the only repair. A shim that exists but is stale is the caller's own check. */
 export function wiringPointsAtMissingFile(entries: readonly Pick<WiredHookEntry, 'words'>[]): boolean {
   return entries.some(({ words }) => {
     const native = parseNativeInvocation(words)
-    if (native !== undefined && !fs.existsSync(native.bin)) return true
+    if (native !== undefined && (!fs.existsSync(native.bin) || (native.entry !== undefined && !fs.existsSync(native.entry)))) return true
     return words.some((word) => SHIM_FILE_WORD.test(word) && !fs.existsSync(word))
   })
 }

@@ -96,10 +96,11 @@ describe.runIf(NATIVE)('nativeHookBinary when the first attempt fails for a tran
     expect(stderr.join('')).toContain('exit code 1')
   })
 
-  it('stays quiet for a build that ships no native client', () => {
+  it('names the missing packaged binary and the build command for a build that ships no native client', () => {
     fs.rmSync(path.join(root, 'dist', 'native'), { recursive: true })
     expect(nativeHookBinary(entry)).toBeUndefined()
-    expect(stderr.join('')).toBe('')
+    expect(stderr.join('')).toContain(path.join(root, 'dist', 'native', TARGET))
+    expect(stderr.join('')).toContain('npm run build:native')
   })
 
   it('does not write to stderr when doctor asks without syncing', () => {
