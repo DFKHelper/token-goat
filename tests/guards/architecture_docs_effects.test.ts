@@ -1,8 +1,11 @@
-/** The side-effect label and JSON analysis rows of the architecture documentation engine. Split from architecture_docs_analysis.test.ts so its rows run in a parallel worker; the fixtures are in tests/helpers/arch_docs_fixture.ts. */
+/** The side-effect label, JSON analysis and repository-root rows of the architecture documentation engine. Split from architecture_docs_analysis.test.ts so its rows run in a parallel worker; the fixtures are in tests/helpers/arch_docs_fixture.ts. */
 
+import * as fs from 'node:fs'
+import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { analysisRepo, engine, sideEffectsOf, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
+import { repoRoot } from '../../scripts/arch-docs/source.mjs'
+import { analysisRepo, engine, gitOut, initializedRepo, scratchDir, scratchDirs, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
 
 useArchDocFixtures()
 
@@ -19,7 +22,9 @@ describe('sync-arch-docs --check side effects', () => {
 
   it('labels each one-file module, in taxonomy order, and gives [Pure Domain] only to a module with no other label', () => {
     const dir = analysisRepo(FILES)
-    expect(sideEffectsOf(dir)).toEqual([
+    const result = engine(dir, '--check', '--format=json')
+    expect(result.status).toBe(0)
+    expect((JSON.parse(result.stdout) as { side_effects: unknown[] }).side_effects).toEqual([
       { module: 'src/core/both.ts', labels: ['[File / System I/O]', '[CLI / Runtime]'] },
       { module: 'src/core/cli.ts', labels: ['[CLI / Runtime]'] },
       { module: 'src/core/mutating.ts', labels: ['[Oracle Mutating]'] },
@@ -28,7 +33,6 @@ describe('sync-arch-docs --check side effects', () => {
       { module: 'src/core/system.ts', labels: ['[File / System I/O]'] },
       { module: 'src/ui/view.ts', labels: ['[UI / View]'] },
     ])
-    expect(engine(dir, '--check').status).toBe(0)
   })
 })
 
@@ -50,5 +54,43 @@ describe('sync-arch-docs --check --format=json analysis', () => {
     const second = engine(dir, '--check', '--format=json')
     expect({ status: first.status, stdout: first.stdout, stderr: first.stderr }).toEqual({ status: 1, stdout: GOLDEN, stderr: '' })
     expect(second).toEqual(first)
+  })
+})
+
+// HAND-DERIVED: each expected root is what `git rev-parse --show-toplevel` prints for the same repository, asked of the real git rather than computed from the engine's walk.
+describe('repository root without a git start', () => {
+  const gitRoot = (cwd: string): string => path.resolve(gitOut(cwd, ['rev-parse', '--show-toplevel']).trim())
+
+  it('finds the root of a plain repository from a nested directory, as git does', () => {
+    const dir = initializedRepo()
+    const nested = path.join(dir, 'src', 'core')
+    fs.mkdirSync(nested, { recursive: true })
+    expect(repoRoot(nested)).toBe(gitRoot(nested))
+  })
+
+  it('defers to git when core.worktree moves the work tree away from the .git directory', () => {
+    const dir = initializedRepo()
+    const elsewhere = scratchDir()
+    scratchDirs.push(elsewhere)
+    gitOut(dir, ['config', 'core.worktree', elsewhere])
+    expect(repoRoot(dir)).toBe(gitRoot(dir))
+    expect(repoRoot(dir)).not.toBe(path.resolve(dir))
+  })
+
+  it('defers to git when GIT_WORK_TREE names another work tree', () => {
+    const dir = initializedRepo()
+    const elsewhere = scratchDir()
+    scratchDirs.push(elsewhere)
+    const saved = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE }
+    process.env.GIT_DIR = path.join(dir, '.git')
+    process.env.GIT_WORK_TREE = elsewhere
+    try {
+      expect(repoRoot(dir)).toBe(path.resolve(elsewhere))
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
   })
 })

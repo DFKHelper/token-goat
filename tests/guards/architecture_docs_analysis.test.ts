@@ -4,10 +4,9 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { gitOut, engine, scratchRepo, curatedRepo, renamedCuratedRepo, useArchDocFixtures, warmTemplates } from '../helpers/arch_docs_fixture.js'
+import { gitOut, engine, scratchRepo, curatedRepo, renamedCuratedRepo, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
 
 useArchDocFixtures()
-warmTemplates(curatedRepo, renamedCuratedRepo, scratchRepo)
 
 describe('sync-arch-docs --check --format=json', () => {
   // src/b.ts carries a curated role, so removing it is also a drop note.

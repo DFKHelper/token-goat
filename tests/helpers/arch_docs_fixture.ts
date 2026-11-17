@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, afterEach, beforeAll, expect } from 'vitest'
+import { afterAll, afterEach, expect } from 'vitest'
 
 import { runCli } from '../../scripts/sync-arch-docs.mjs'
 import { scrubRepoLocalGitEnv } from './git-env.js'
@@ -73,9 +73,10 @@ export function buildRepo(dir: string, docText: string): void {
   git(dir, ['add', '.'])
 }
 
-/** A throwaway git repo with two modules, a config and an empty marker pair, all tracked. */
+/** A throwaway git repo with two modules, a config and the doc, all tracked; a doc other than the default replaces the file on disk after the copy, which the working-tree rows read, so it costs no git start. */
 export function makeRepo(docText = DEFAULT_DOC): Fixture {
-  const dir = fromTemplate(`makeRepo:${docText}`, (t) => buildRepo(t, docText), indexableDir)
+  const dir = fromTemplate('makeRepo', (t) => buildRepo(t, DEFAULT_DOC), indexableDir)
+  if (docText !== DEFAULT_DOC) fs.writeFileSync(path.join(dir, 'ARCH.md'), docText)
   return { dir, doc: path.join(dir, 'ARCH.md') }
 }
 
@@ -136,7 +137,7 @@ export function useArchDocFixtures(): void {
   afterEach(() => {
     for (const dir of scratchDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
   })
-  
+
   afterAll(() => {
     for (const dir of templateDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true })
     templates.clear()
@@ -183,30 +184,29 @@ export const LAYERED_CONFIG = JSON.stringify({
   layers: [['src/ui', 'Presentation'], ['src/core', 'Domain Core'], ['src/data', 'Data Persistence']],
 })
 
-/** A repo of the given modules under the OS temp dir with its table already written, so only the analysis can make `--check` report. */
+/** A copy of one initialised repo holding only the doc: no commit, no tracked file, no git start after the first call in a file. */
+export function initializedRepo(): string {
+  return fromTemplate(
+    'initialized',
+    (t) => {
+      fs.writeFileSync(path.join(t, 'ARCH.md'), DEFAULT_DOC)
+      gitOut(t, ['init', '-q'])
+    },
+    scratchDir,
+  )
+}
+
+/** A repo of the given modules under the OS temp dir with its table already written, so only the analysis can make `--check` report. It starts from a copy of one initialised repo, so each call starts `git add` and the engine and no `git init`. */
 export function analysisRepo(files: Record<string, string>, config = LAYERED_CONFIG): string {
-  const dir = scratchDir()
-  scratchDirs.push(dir)
+  const dir = initializedRepo()
   for (const [rel, text] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
     fs.writeFileSync(path.join(dir, rel), text)
   }
   fs.writeFileSync(path.join(dir, '.arch-doc-sync.json'), config)
-  fs.writeFileSync(path.join(dir, 'ARCH.md'), DEFAULT_DOC)
-  gitOut(dir, ['init', '-q'])
   gitOut(dir, ['add', '.'])
   expect(engine(dir, '--write').status).toBe(0)
   return dir
-}
-
-export const sideEffectsOf = (dir: string): { module: string; labels: string[] }[] =>
-  (JSON.parse(engine(dir, '--check', '--format=json').stdout) as { side_effects: { module: string; labels: string[] }[] }).side_effects
-
-/** Builds the named templates once, in a beforeAll: their git and engine starts then run under the hook's own timeout and are not charged to the first row that copies one (each row's timeout covers only the starts it makes itself). */
-export function warmTemplates(...builders: (() => string)[]): void {
-  beforeAll(() => {
-    for (const build of builders) build()
-  })
 }
 
 /** curatedRepo with src/b.ts already renamed to src/bb.ts in the index. The rows that start from a staged rename share it, so the one `git mv` is a start paid once per file and not once per row. */

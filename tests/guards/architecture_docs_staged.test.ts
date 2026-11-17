@@ -7,10 +7,9 @@ import { describe, expect, it } from 'vitest'
 
 import { resolveRenames } from '../../scripts/arch-docs/curated.mjs'
 import { parseNameStatus } from '../../scripts/arch-docs/source.mjs'
-import { A_TS, BETA_ROLE, gitOut, scratchDirs, engineWithEnv, engine, scratchRepo, curatedRepo, renamedCuratedRepo, useArchDocFixtures, warmTemplates } from '../helpers/arch_docs_fixture.js'
+import { A_TS, BETA_ROLE, gitOut, scratchDirs, engineWithEnv, engine, scratchRepo, curatedRepo, renamedCuratedRepo, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
 
 useArchDocFixtures()
-warmTemplates(curatedRepo, renamedCuratedRepo, scratchRepo)
 
 describe('sync-arch-docs --check --staged', () => {
   it('reports a staged rename as a warning', () => {
@@ -94,7 +93,7 @@ describe('sync-arch-docs --check --staged', () => {
 
   it('exits 2 on an unmerged path', () => {
     const dir = curatedRepo()
-    const main = gitOut(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim()
+    const main = fs.readFileSync(path.join(dir, '.git', 'HEAD'), 'utf8').trim().replace('ref: refs/heads/', '')
     gitOut(dir, ['checkout', '-q', '-b', 'side'])
     fs.appendFileSync(path.join(dir, 'src', 'a.ts'), 'export const side = 1\n')
     gitOut(dir, ['commit', '-q', '-am', 'side'])
@@ -105,8 +104,8 @@ describe('sync-arch-docs --check --staged', () => {
     expect(engine(dir, '--check', '--staged')).toMatchObject({ status: 2, stderr: 'error: src/a.ts: unmerged path; resolve the conflict before committing\n' })
   })
 
-  // HAND-DERIVED: 5 git starts = rev-parse, ls-tree HEAD, diff --cached, cat-file for the config, cat-file for the doc and modules; worked out from the read order, not read off the engine output.
-  it('starts five git processes for one --check --staged call on a committed, in-sync repo', () => {
+  // HAND-DERIVED: 4 git starts = ls-tree HEAD, diff --cached, cat-file for the config, cat-file for the doc and modules; the repository root of a plain repo is read from the filesystem, not by rev-parse. Worked out from the read order, not read off the engine output.
+  it('starts four git processes for one --check --staged call on a committed, in-sync repo', () => {
     const dir = curatedRepo()
     const traceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-archdoc-trace-'))
     scratchDirs.push(traceDir)
@@ -114,7 +113,7 @@ describe('sync-arch-docs --check --staged', () => {
     const result = engineWithEnv(dir, { GIT_TRACE2_EVENT: trace }, '--check', '--staged')
     expect({ status: result.status, stderr: result.stderr }).toEqual({ status: 0, stderr: '' })
     const starts = fs.readFileSync(trace, 'utf8').split('\n').filter((line) => line.includes('"event":"start"'))
-    expect(starts).toHaveLength(5)
+    expect(starts).toHaveLength(4)
   })
 
   it('accepts --staged only with --check', () => {

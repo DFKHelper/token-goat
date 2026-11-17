@@ -19,7 +19,39 @@ export function runGit(cwd, args, input) {
   return result.status === 0 && !result.error ? result.stdout : null
 }
 
+const GIT_LOCATION_ENV = /^GIT_(?:DIR|WORK_TREE|COMMON_DIR|CEILING_DIRECTORIES|DISCOVERY_ACROSS_FILESYSTEM|NAMESPACE|OBJECT_DIRECTORY|INDEX_FILE)$/i
+
+/** The work tree root of a plain repository (a `.git` directory with a HEAD and no core.worktree), read from the filesystem so it costs no git start; null whenever only git can answer (a GIT_* location variable, a `.git` file, a path inside .git, an unreadable layout). */
+function plainRepoRoot(cwd) {
+  if (Object.keys(process.env).some((name) => GIT_LOCATION_ENV.test(name))) return null
+  let dir = path.resolve(cwd)
+  if (dir.split(path.sep).some((part) => part.toLowerCase() === '.git')) return null
+  for (;;) {
+    const marker = path.join(dir, '.git')
+    let found
+    try {
+      found = fs.lstatSync(marker)
+    } catch (error) {
+      if (!error || (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')) return null
+    }
+    if (found !== undefined) {
+      try {
+        if (!found.isDirectory() || !fs.existsSync(path.join(marker, 'HEAD'))) return null
+        if (/^\s*worktree\s*=/im.test(fs.readFileSync(path.join(marker, 'config'), 'utf8'))) return null
+        return fs.realpathSync.native(dir)
+      } catch {
+        return null
+      }
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
 export function repoRoot(cwd) {
+  const plain = plainRepoRoot(cwd)
+  if (plain !== null) return plain
   const out = runGit(cwd, ['rev-parse', '--show-toplevel'])
   const root = out === null ? '' : out.toString('utf8').trim()
   if (root === '') throw new ArchDocError('not inside a git work tree')
