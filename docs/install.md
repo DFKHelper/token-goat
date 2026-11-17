@@ -338,6 +338,14 @@ To upgrade cleanly:
 
 **AI agents handling an upgrade:** complete all three steps in sequence. After step 3, confirm no `token_goat` entries remain in `settings.json` before reporting the upgrade done.
 
+### Claude Code Code Mode
+
+Claude Code's Code Mode (version 2.1.323 and later, enabled with `CLAUDE_CODE_EXPERIMENTAL_CODE_MODE`) gives the model one `REPL` tool that runs JavaScript, and that code calls the ordinary tools (`Read`, `Bash`, `Grep` and so on) from inside. Each of those inner calls goes through the `PreToolUse` hooks under its own tool name, so token-goat's hints for `Read`, `Bash` and the rest still apply to them. An inner `Bash` call gets the normal `Bash` handling, exactly as a direct `Bash` call does. The `REPL` call itself is deliberately left unmatched: its input is code, not a file or a command, so there is nothing for token-goat to hint on.
+
+Once a session has run Code Mode code, Claude Code refuses a tool call whenever a `PreToolUse` hook fails or times out, unless the hook entry says `"onFailure": "continue"`. token-goat's hooks are advisory, so `token-goat install` writes `"onFailure": "continue"` on every Claude Code hook entry it owns, and adds it to existing entries when you re-run `install` after upgrading. Entries you wrote yourself are never changed, and a value you set on a token-goat entry (for example `"block"`) is kept. The field needs Claude Code 2.1.295 or later; the Claude Code documentation does not say how older versions treat an unknown field. As a second layer, `token-goat hook <event>` ends with exit code 0 and `{}` for any failure, and prints the cause on stderr.
+
+To see exactly what Claude Code sends, set `TOKEN_GOAT_HOOK_CAPTURE` to an absolute directory path before starting Claude Code. Every hook payload token-goat receives is then appended as one line to `hook-payloads.jsonl` in that directory. Capture is off by default. The payloads are stored as received, so they can contain secrets from your prompts, commands and file contents: protect the directory, and delete the file when you are done. Capture stops at two bounds: a payload over 1 MiB is skipped, and no line is added once the file reaches 16 MiB. On Windows the file mode has no effect.
+
 ### Command auto-approval and permissions
 
 By default, `token-goat install` configures hook triggers only. It never writes permission entries into your environment. If your setup requires confirmation for shell commands, an approval prompt can appear whenever file names, line numbers, or arguments change.

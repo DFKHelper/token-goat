@@ -208,7 +208,12 @@ interface HookCommandEntry {
   command?: unknown
   /** Exec-form argv (Claude Code >= {@link CLAUDE_EXEC_FORM_MIN_VERSION}). Absent for a string-form entry. */
   args?: unknown
+  /** Whether the call goes ahead when this hook fails (Claude Code >= 2.1.295); token-goat writes `"continue"` on its own entries, see {@link HOOK_ON_FAILURE}. */
+  onFailure?: unknown
 }
+
+/** The `onFailure` value on every command hook token-goat wires into Claude Code. Its hooks only advise, so a crash or a timeout must never refuse the tool call, which Claude Code does for a hook that fails once a session has run Code Mode code. */
+export const HOOK_ON_FAILURE = 'continue'
 
 /** A matcher group: an optional matcher plus the list of hook commands. */
 interface HookMatcherGroup {
@@ -379,7 +384,16 @@ function installHooksScoped(scope: HookScope): InstallResult {
           }
         }
       }
-      if (strippedStale || renarrowed) {
+      // An entry an earlier build wrote has no `onFailure`; add it to token-goat's own entries only, and keep a value already there (a user who chose "block" on purpose).
+      let gainedOnFailure = false
+      for (let i = 0; i < groups.length; i++) {
+        const group = groups[i]
+        if (typeof group !== 'object' || group === null || !Array.isArray(group.hooks)) continue
+        if (!hooksOf(group).some((h) => h !== null && typeof h === 'object' && h.onFailure === undefined && isOwnHookEntry(h, isOurs))) continue
+        groups[i] = { ...group, hooks: hooksOf(group).map((h) => (h !== null && typeof h === 'object' && h.onFailure === undefined && isOwnHookEntry(h, isOurs) ? { ...h, onFailure: HOOK_ON_FAILURE } : h)) }
+        gainedOnFailure = true
+      }
+      if (strippedStale || renarrowed || gainedOnFailure) {
         hooks[eventKey] = groups
         settingsChanged = true
       }
@@ -388,7 +402,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
 
     // Narrow the matcher to the tools this event actually has handlers for. Claude Code spawns a process per matcher hit and ~90% of that cost is Node startup plus bundle evaluation, so a catch-all makes every unhandled tool pay full price twice (pre + post). toolMatcherFor returns null when narrowing would be unsafe -- a non-tool event, or a handler that really does want everything -- and the catch-all is the correct answer then (where matcher is omitted entirely, since Claude Code schema forbids empty string matchers).
     const matcher = toolMatcherFor(eventArg as HookEventName)
-    groups.push({ ...(matcher !== null ? { matcher } : {}), hooks: [{ type: 'command', command: expected.command, ...(expected.args !== undefined ? { args: expected.args } : {}) }] })
+    groups.push({ ...(matcher !== null ? { matcher } : {}), hooks: [{ type: 'command', command: expected.command, ...(expected.args !== undefined ? { args: expected.args } : {}), onFailure: HOOK_ON_FAILURE }] })
     hooks[eventKey] = groups
     settingsChanged = true
   }

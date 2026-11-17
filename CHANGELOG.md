@@ -4,6 +4,10 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ## [Unreleased]
 
+### Added
+
+- **token-goat is safe to run in Claude Code Code Mode sessions.** `token-goat install` now writes `"onFailure": "continue"` on every Claude Code hook entry it owns (re-running `install` adds it to existing entries; the field needs Claude Code 2.1.295 or later), so a slow or failing token-goat hook can no longer make Claude Code refuse a tool call once Code Mode code has run. `token-goat hook <event>` also ends with exit code 0 and `{}` for any failure, with the cause on stderr. Setting `TOKEN_GOAT_HOOK_CAPTURE` to an absolute directory records each hook payload as one line in `hook-payloads.jsonl` there, for inspecting what Claude Code sends; payloads are stored as received, so they can contain secrets from your prompts, commands and file contents; it is off by default, skips any payload over 1 MiB, and stops at 16 MiB. See "Claude Code Code Mode" in docs/install.md.
+
 ### Fixed
 
 - **The pre-push cleanup process can no longer spin on a core or outlive its bounds.** Two `prepush-reaper.sh` processes kept one core each busy for about 7 hours after their hook was gone, far past their 630 s life limit. Its one-second tick is a timed read on a descriptor; a read that fails at once (a closed or broken descriptor) returned immediately and turned the loop into a busy spin, so the tick now takes its second with `sleep` unless the read timed out. The reaper's own bounds (life limit, or the grace after the hook's death, plus the kill window and slack) are also checked inside every loop, so a pass that never reaches the main loop's tests still ends the process. Two rows in `tests/prepush_reaper.test.ts` fail on the old script.

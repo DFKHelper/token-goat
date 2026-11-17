@@ -1258,6 +1258,26 @@ describe('commandHookFields / isOwnHookEntry', () => {
     const groups = [{ matcher: 'Read', hooks: [ours, ...COMMANDLESS] }]
     expect(stripStaleGroupHooks(groups, (c) => c.includes('token-goat'))).toEqual([{ matcher: 'Read', hooks: COMMANDLESS }])
   })
+
+  // HAND-DERIVED: a hand-edited file can hold a null group or non-array `hooks`; uninstall keeps both as found.
+  it('stripOwnHooksFromMap and stripStaleGroupHooks skip a null group and a non-array hooks value', () => {
+    const ours = { type: 'command', command: 'token-goat hook pre_tool_use' }
+    const isOurs = (c: string): boolean => c.includes('token-goat')
+    const hooks = { PreToolUse: [null, { hooks: 'nope' }, { hooks: [ours] }] } as unknown as Record<string, Array<{ hooks?: Array<{ command?: unknown }> }>>
+    let removed = false
+    expect(() => {
+      removed = stripOwnHooksFromMap(hooks, isOurs)
+    }).not.toThrow()
+    expect(removed).toBe(true)
+    expect(hooks['PreToolUse']).toEqual([null, { hooks: 'nope' }])
+
+    const groups = [null, { matcher: 'Read', hooks: 'nope' }, { matcher: 'Read', hooks: [ours] }] as unknown as Array<{ matcher?: string; hooks?: Array<{ command?: unknown }> }>
+    let next: Array<{ matcher?: string; hooks?: Array<{ command?: unknown }> }> = []
+    expect(() => {
+      next = stripStaleGroupHooks(groups, isOurs)
+    }).not.toThrow()
+    expect(next).toEqual([null, { matcher: 'Read', hooks: 'nope' }])
+  })
 })
 
 describe('safeSlice', () => {

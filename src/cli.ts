@@ -1104,9 +1104,21 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     serveBatch(argv[3], (a) => run(a))
     return
   }
-  // Any command that reads or indexes a file can reach a synchronous parse, and the regex language adapters live behind a dynamic import so the hook path never compiles them (see loadRegexExtractors). Load them once here rather than at each of the call sites below it.
-  await loadRegexExtractors()
-  const program = buildProgram()
+  const isHookCommand = attemptedCommandName(argv) === 'hook'
+  const stdoutBytesAtStart = stdoutBytesWritten()
+  let program: Command
+  try {
+    // Any command that reads or indexes a file can reach a synchronous parse, and the regex language adapters live behind a dynamic import so the hook path never compiles them (see loadRegexExtractors). Load them once here rather than at each of the call sites below it.
+    await loadRegexExtractors()
+    program = buildProgram()
+  } catch (e) {
+    // A hook fails open to exit 0 and {} here too; any other command rethrows as before.
+    if (!isHookCommand) throw e
+    err(formatCommandError(e))
+    process.exitCode = 1
+    endHookFailOpen(stdoutBytesAtStart)
+    return
+  }
   // Commander's exitOverride lets us catch its internal exits (help, version, unknown command) instead of letting it call process.exit() mid-flush. Applied to every subcommand, not just the program. Commander copies the exit callback to a subcommand when that subcommand is CREATED (copyInheritedSettings, called from .command()), and buildProgram() has already created all of them by the time this runs -- so they each inherited "no callback" and `token-goat <subcommand> --help` called process.exit() for real, which is exactly what main.ts's docblock says this binary must never do, because an exit mid-flush can truncate output already written to a pipe.
   applyExitOverride(program)
   const intent = rewriteOptionIntent(argv)
@@ -1145,5 +1157,19 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     process.exitCode = 1
   } finally {
     clearCliInvocation()
+    if (isHookCommand) endHookFailOpen(stdoutBytesAtStart)
   }
+}
+
+function stdoutBytesWritten(): number {
+  return (process.stdout as { bytesWritten?: number }).bytesWritten ?? 0
+}
+
+/** `token-goat hook` is advisory, and Claude Code refuses the tool call when a hook ends non-zero (once a session has run Code Mode code), so whatever escaped the relay, a throw before it ran, a config or option error, ends as exit 0 and `{}`. One place for every failure the command can reach: guard maps a throw to exit 1 and commander rejects a bad invocation, and both land here. The cause stays on stderr. `{}` is added only when this call printed nothing (counted from its own start, since one process can serve many calls), so a reply already written is never doubled. */
+function endHookFailOpen(stdoutBytesAtStart: number): void {
+  const code = process.exitCode
+  if (code === undefined || code === 0) return
+  err(`token-goat: hook failed open: exit code ${String(code)} replaced with 0 so the tool call goes ahead`)
+  if (stdoutBytesWritten() === stdoutBytesAtStart) process.stdout.write('{}')
+  process.exitCode = 0
 }

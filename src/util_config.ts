@@ -38,6 +38,16 @@ export interface MatcherGroupWithMatcher<H extends HookEntryLike> extends Matche
   readonly matcher?: string
 }
 
+/** False for a matcher group that is not an object (a hand-edited file can hold null or a scalar); such a group is user data to keep untouched. */
+function isGroupObject<G>(group: G | null | undefined): group is G {
+  return typeof group === 'object' && group !== null
+}
+
+/** The hook entries of a matcher group, or none when `hooks` is not an array (a hand-edited file can hold anything). */
+function groupHooks<H extends HookEntryLike>(group: MatcherGroupLike<H>): readonly H[] {
+  return Array.isArray(group.hooks) ? (group.hooks as readonly H[]) : []
+}
+
 /** Shared by codex_install.ts's `uninstallCodex` and gemini_install.ts's `uninstallGemini` (both harnesses use the same `Record<eventKey, matcherGroup[]>` hooks shape): strip token-goat's own hook entries out of `hooks`, mutating it in place. A matcher group survives if it still has non-token-goat hooks left, OR if it started with zero hooks (an empty group is user data token-goat never wrote, so it's preserved rather than treated as "fully stripped"). An event key whose every group was removed entirely is deleted. Returns true if at least one hook entry was actually removed, so callers can skip writing the file back when nothing changed. */
 export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherGroupLike<H>>(
   hooks: Record<string, G[] | undefined>,
@@ -49,14 +59,19 @@ export function stripOwnHooksFromMap<H extends HookEntryLike, G extends MatcherG
     if (groups === undefined || !Array.isArray(groups)) continue
     const kept: G[] = []
     for (const group of groups) {
-      const keptHooks = (group.hooks ?? []).filter((h) => {
+      if (!isGroupObject(group)) {
+        kept.push(group)
+        continue
+      }
+      const existing = groupHooks<H>(group)
+      const keptHooks = existing.filter((h) => {
         const isOur = isOwnHookEntry(h, isOurs)
         if (isOur) removed = true
         return !isOur
       })
       if (keptHooks.length > 0) {
         kept.push({ ...group, hooks: keptHooks })
-      } else if ((group.hooks ?? []).length === 0) {
+      } else if (existing.length === 0) {
         kept.push(group)
       }
     }
@@ -78,14 +93,15 @@ export function stripStaleGroupHooks<H extends HookEntryLike, G extends MatcherG
   const list: readonly G[] = Array.isArray(groups) ? groups : []
   const next: G[] = []
   for (const group of list) {
-    if (matcherFilter !== undefined && group.matcher !== matcherFilter.matcher) {
+    if (!isGroupObject(group) || (matcherFilter !== undefined && group.matcher !== matcherFilter.matcher)) {
       next.push(group)
       continue
     }
-    const keptHooks = (group.hooks ?? []).filter((h) => !isOwnHookEntry(h, isOurs))
+    const existing = groupHooks<H>(group)
+    const keptHooks = existing.filter((h) => !isOwnHookEntry(h, isOurs))
     if (keptHooks.length > 0) {
       next.push({ ...group, hooks: keptHooks })
-    } else if ((group.hooks ?? []).length === 0) {
+    } else if (existing.length === 0) {
       next.push(group)
     }
   }

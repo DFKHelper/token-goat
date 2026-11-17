@@ -1,0 +1,13 @@
+{
+  "session_id": "cm-session-0001",
+  "prompt_id": "550e8400-e29b-41d4-a716-446655440000",
+  "transcript_path": "/home/user/.claude/projects/demo/transcript.jsonl",
+  "cwd": "/home/user/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "REPL",
+  "tool_input": {
+    "code": "const files = await tools.Glob({ pattern: 'src/**/*.ts' })\nreturn files.length"
+  },
+  "tool_use_id": "toolu_01CMREPL0001"
+}

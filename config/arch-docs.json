@@ -63,6 +63,7 @@
     ["src/project.ts","Paths, Filesystem, and Project Detection"],
     ["src/repomap.ts","Paths, Filesystem, and Project Detection"],
     ["src/code_fold.ts","Hook Subsystem"],
+    ["src/hook_capture.ts","Hook Subsystem"],
     ["src/hook_registry.ts","Hook Subsystem"],
     ["src/hooks_agent_spawn.ts","Hook Subsystem"],
     ["src/hooks_agent_spawn_register.ts","Hook Subsystem"],

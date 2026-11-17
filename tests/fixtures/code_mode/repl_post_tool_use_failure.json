@@ -1,0 +1,15 @@
+{
+  "session_id": "cm-session-0001",
+  "transcript_path": "/home/user/.claude/projects/demo/transcript.jsonl",
+  "cwd": "/home/user/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "REPL",
+  "tool_input": {
+    "code": "throw new Error('boom')"
+  },
+  "tool_use_id": "toolu_01CMREPL0003",
+  "error": "Error: boom",
+  "is_interrupt": false,
+  "duration_ms": 31
+}

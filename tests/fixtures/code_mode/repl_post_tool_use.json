@@ -1,0 +1,14 @@
+{
+  "session_id": "cm-session-0001",
+  "transcript_path": "/home/user/.claude/projects/demo/transcript.jsonl",
+  "cwd": "/home/user/my-project",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "REPL",
+  "tool_input": {
+    "code": "const files = await tools.Glob({ pattern: 'src/**/*.ts' })\nreturn files.length"
+  },
+  "tool_response": "42",
+  "tool_use_id": "toolu_01CMREPL0001",
+  "duration_ms": 12
+}

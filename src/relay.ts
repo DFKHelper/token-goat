@@ -6,6 +6,7 @@ import { MAX_DOCUMENT_WORK_MILLIS } from './document_refusal.js'
 import type { HookEvent } from './hook_registry.js'
 import { runHook, serializeOutput, sessionStateKey } from './hook_registry.js'
 import { echoedValue, stripUnsafeSuggestions } from './hint_suggestion_guard.js'
+import { captureHookPayload } from './hook_capture.js'
 import { sharpenRepeatedDeny } from './hint_target.js'
 import { normalizePayload, type Harness } from './hooks_cli.js'
 import { commitPendingContext } from './pending_context.js'
@@ -180,6 +181,8 @@ export function nativeFallbackDetail(env: NodeJS.ProcessEnv = process.env): stri
 export function relayInProcess(eventName: string, rawPayload: unknown, harnessWaitMs?: number, opts: RelayInProcessOptions = {}): Promise<string> {
   // When this event reached token-goat, before any handler time or wait behind an earlier call: call_streak.ts tells a batched call from a serial one by the gap between events.
   const receivedAt = Date.now()
+  // Off unless TOKEN_GOAT_HOOK_CAPTURE names a directory; not awaited, so a slow disk never holds the hook's answer.
+  void captureHookPayload(rawPayload)
   // Read now, under the caller's environment: a resident server swaps it in only for the duration of the request.
   const detail = opts.detail ?? nativeFallbackDetail()
   const probe = process.env[HOOK_PROBE_ENV] === '1'
