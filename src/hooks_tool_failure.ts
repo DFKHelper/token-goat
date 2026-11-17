@@ -275,16 +275,16 @@ function withExtraLines(base: HookOutput, lines: readonly string[]): HookOutput 
 }
 
 /** The failure handler's answer without the two lines that need a module of their own: the failed-command recovery line (recovery_pairs.ts) and the missing-path suggestion (path_miss.ts). {@link postToolUseFailureWithExtras}, the registered handler, adds both. */
-export function postToolUseFailureHandler(event: HookEvent): HookOutput {
-  return adviseOnFailure(event, newSlot())
+export function postToolUseFailureHandler(event: HookEvent, now: number = Date.now()): HookOutput {
+  return adviseOnFailure(event, newSlot(), now)
 }
 
 /** {@link postToolUseFailureHandler} plus the recovery line and the missing-path suggestion, each appended to whatever it says. {@link adviseOnFailure}, which knows the classification, records what each needs in `slot`; the modules are imported here only when asked for, because recovery_pairs.ts and path_miss.ts (with the index reader under it) would otherwise be parsed by the hook entry on every tool call. */
-export async function postToolUseFailureWithExtras(event: HookEvent): Promise<HookOutput> {
+export async function postToolUseFailureWithExtras(event: HookEvent, now: number = Date.now()): Promise<HookOutput> {
   const slot = newSlot()
   const toolName = getToolName(event)
   if (toolName !== undefined && /^(edit|multiedit|str_replace_editor)$/i.test(toolName)) await loadNearMiss()
-  const base = adviseOnFailure(event, slot)
+  const base = adviseOnFailure(event, slot, now)
   try {
     if (slot.recovery !== null) {
       const { recoveryAfterFailure } = await import('./recovery_pairs.js')
@@ -302,7 +302,7 @@ export async function postToolUseFailureWithExtras(event: HookEvent): Promise<Ho
   return withExtraLines(base, slot.lines)
 }
 
-function adviseOnFailure(event: HookEvent, slot: AdviceSlot): HookOutput {
+function adviseOnFailure(event: HookEvent, slot: AdviceSlot, now: number): HookOutput {
   try {
     const errorText = extractFailureText(event.raw)
     if (errorText === '') return passOutput()
@@ -314,7 +314,7 @@ function adviseOnFailure(event: HookEvent, slot: AdviceSlot): HookOutput {
     const verdict = classifyToolError(toolName, errorText, { isInterrupt: event.raw['is_interrupt'] === true, ...(typeof command === 'string' ? { command } : {}) })
     recordStat('tool_failure', 0, 0, undefined, `tool=${(toolName ?? 'unknown').replace(/\s+/g, '_')} class=${verdict.kind} reason=${verdict.reason}`)
     // Only a `search_no_match` can produce a line here, and that reason is exempt below, so the brake never competes with the repeat notice.
-    const streakLine = callStreakAfterFailure(event, verdict.reason)
+    const streakLine = callStreakAfterFailure(event, verdict.reason, now)
     if (toolName === 'Bash' && typeof command === 'string' && event.raw['is_interrupt'] !== true && !REPEAT_NOTICE_EXEMPT.has(verdict.reason) && !RECOVERY_SKIPPED.has(verdict.reason)) {
       slot.recovery = { toolName, errorText, command }
     }

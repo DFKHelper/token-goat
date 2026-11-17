@@ -1,7 +1,6 @@
 /** Settle marker for a session-start hook that may have missed its budget. The Copilot shim answers `{}` when the helper outruns its deadline, so the reminder, notes, drift sweep, capsule and update notice vanish with nothing to say so. The helper writes this marker as its last act and clears it as its first, so the first tool call of the session can tell a session start that finished in time from one that was cut off, and deliver what was owed. A marker written within {@link OWED_RESERVE_MS} of the deadline counts as owed too: the shim may have lost the race to publish it. Everything here is best-effort storage; a marker that cannot be read is no marker, which reads as owed. */
 
-import { randomUUID } from 'node:crypto'
-import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { sessionStateKey } from './hook_registry.js'
 import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
@@ -125,35 +124,89 @@ function writeClaimExclusive(target: string, now: number): boolean {
   }
 }
 
-/** Whether claim file text is stamped more than {@link OWED_CLAIM_STALE_MS} before `now`. Anything that is not a claim stamp, or a stamp in the future, is not stale: it is left alone. */
-function claimTextIsStale(text: string, now: number): boolean {
+/** Sidecar suffix, appended to the claim path, of the mutex that lets one taker at a time judge and replace a stale claim. */
+const TAKEOVER_SUFFIX = '.takeover'
+
+/** What a claim file holds: its text and when it was last written. */
+interface ClaimFile {
+  text: string
+  mtimeMs: number
+}
+
+function readClaimFile(target: string): ClaimFile | null {
   try {
-    const stamp = (JSON.parse(text) as { claimedAtMs?: unknown } | null)?.claimedAtMs
-    return typeof stamp === 'number' && Number.isFinite(stamp) && now - stamp > OWED_CLAIM_STALE_MS
+    return { text: readFileSync(target, 'utf8'), mtimeMs: statSync(target).mtimeMs }
+  } catch {
+    return null
+  }
+}
+
+/** Whether a claim belongs to a holder that died before delivering: stamped more than {@link OWED_CLAIM_STALE_MS} before `now`, or empty (a crash between the exclusive create and the write) and last written that long before `now`. A claim stamped delivered is never stale, because the delivery it guards happened. Anything else that is not a claim stamp, or a stamp in the future, is not stale: it is left alone. */
+function claimIsStale(claim: ClaimFile, now: number): boolean {
+  if (claim.text.trim() === '') return now - claim.mtimeMs > OWED_CLAIM_STALE_MS
+  try {
+    const stamp = JSON.parse(claim.text) as { claimedAtMs?: unknown; deliveredAtMs?: unknown } | null
+    if (typeof stamp?.deliveredAtMs === 'number') return false
+    const claimedAtMs = stamp?.claimedAtMs
+    return typeof claimedAtMs === 'number' && Number.isFinite(claimedAtMs) && now - claimedAtMs > OWED_CLAIM_STALE_MS
   } catch {
     return false
   }
 }
 
-/** Replace a stale claim with a fresh one for the caller. The stale file is first renamed to a private name, which one taker wins and the rest lose; the winner re-judges the file it holds and puts it back if it was not stale after all (another taker's fresh claim), then creates the claim exclusively. limit: a third caller can claim in the instant a put-back is pending revisit-when: duplicate owed starts are reported. */
-function takeOverStaleClaim(target: string, now: number): boolean {
+/** Create the takeover mutex exclusively. A mutex whose holder died is cleared once it is older than the bound, and the caller that clears it loses this round. limit: a holder killed mid-takeover blocks every takeover until its mutex ages out revisit-when: stuck owed starts are reported. */
+function acquireTakeover(mutex: string, now: number): boolean {
   try {
-    if (!claimTextIsStale(readFileSync(target, 'utf8'), now)) return false
-    const held = `${target}.${randomUUID()}.taken`
-    renameSync(target, held)
-    const text = readFileSync(held, 'utf8')
-    rmSync(held, { force: true })
-    if (!claimTextIsStale(text, now)) {
-      writeFileSync(target, text, { encoding: 'utf8', flag: 'wx' })
-      return false
+    writeFileSync(mutex, '', { encoding: 'utf8', flag: 'wx' })
+    return true
+  } catch {
+    try {
+      if (now - statSync(mutex).mtimeMs > OWED_CLAIM_STALE_MS) rmSync(mutex, { force: true })
+    } catch {
+      // Best-effort: a mutex that cannot be inspected or cleared stays, which errs toward no takeover.
     }
-    return writeClaimExclusive(target, now)
+    return false
+  }
+}
+
+/** Replace a stale claim with a fresh one for the caller. One taker at a time holds the takeover mutex; it re-judges the claim it finds, so a claim another taker just replaced is left alone, then overwrites the claim in place. The claim path is never absent, so no third caller can win it with an exclusive create in a gap. */
+function takeOverStaleClaim(target: string, now: number): boolean {
+  const mutex = `${target}${TAKEOVER_SUFFIX}`
+  try {
+    const seen = readClaimFile(target)
+    if (seen === null || !claimIsStale(seen, now)) return false
+    if (!acquireTakeover(mutex, now)) return false
+    try {
+      const held = readClaimFile(target)
+      if (held === null || !claimIsStale(held, now)) return false
+      writeFileSync(target, JSON.stringify({ claimedAtMs: now }), 'utf8')
+      return true
+    } finally {
+      try {
+        rmSync(mutex, { force: true })
+      } catch {
+        // A mutex that cannot be removed ages out; it must not turn a won takeover into a refusal.
+      }
+    }
   } catch {
     return false
   }
 }
 
-/** Take the one-time right to deliver the owed session start. An exclusive create, so of any number of concurrent callers exactly one gets true. A claim older than {@link OWED_CLAIM_STALE_MS} before `now` was left by a process that died before delivering, and is taken over once. False also when the claim cannot be stored: a lost delivery is better than a duplicated one. */
+/** Stamp the claim this caller holds as delivered, so it is never taken for a dead holder's and the start is not delivered again. Only a claim still stamped `now` is touched: one a new start removed and another caller re-created is not ours. Never throws. */
+export function markOwedSessionStartDelivered(event: HookEvent, now: number): void {
+  const target = sessionSidecarPath(sessionStateKey(event), OWED_CLAIM_SUFFIX)
+  if (target === null) return
+  try {
+    const held = readClaimFile(target)
+    if (held === null || (JSON.parse(held.text) as { claimedAtMs?: unknown } | null)?.claimedAtMs !== now) return
+    writeFileSync(target, JSON.stringify({ claimedAtMs: now, deliveredAtMs: now }), 'utf8')
+  } catch {
+    // Best-effort: an unstamped claim ages out as a dead holder's, which delivers again only after the bound.
+  }
+}
+
+/** Take the one-time right to deliver the owed session start. An exclusive create, so of any number of concurrent callers exactly one gets true. A claim older than {@link OWED_CLAIM_STALE_MS} before `now` that was never stamped delivered (see {@link markOwedSessionStartDelivered}) was left by a process that died before delivering, and is taken over once. False also when the claim cannot be stored: a lost delivery is better than a duplicated one. */
 export function claimOwedSessionStart(event: HookEvent, now: number = Date.now()): boolean {
   const target = sessionSidecarPath(sessionStateKey(event), OWED_CLAIM_SUFFIX)
   if (target === null) return false

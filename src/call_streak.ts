@@ -275,8 +275,8 @@ export function applyCallStreak(event: HookEvent, output: HookOutput, now: numbe
   }
 }
 
-/** Advance the streaks with a failed call, given the reason hooks_tool_failure.ts already classified it with; returns the brake line when a Bash search's empty exit completes a zero-hit streak. On Claude Code that exit only ever arrives here, never on PostToolUse. */
-export function callStreakAfterFailure(event: HookEvent, reason: string): HookOutput | null {
+/** Advance the streaks with a failed call, given the reason hooks_tool_failure.ts already classified it with; returns the brake line when a Bash search's empty exit completes a zero-hit streak, stamping the read at `now`. On Claude Code that exit only ever arrives here, never on PostToolUse. */
+export function callStreakAfterFailure(event: HookEvent, reason: string, now: number): HookOutput | null {
   try {
     const kind = callKind(event)
     const line = withStreakState(event, (state) => {
@@ -285,7 +285,7 @@ export function callStreakAfterFailure(event: HookEvent, reason: string): HookOu
         return null
       }
       Object.assign(state, { phase: 'idle', phaseAt: 0 })
-      state.lastReadPostAt = Date.now()
+      state.lastReadPostAt = now
       return reason === 'search_no_match' ? onSearchMiss(event, state, true) : null
     })
     return line === null ? null : contextOutput(line)

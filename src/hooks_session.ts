@@ -11,7 +11,7 @@ import { markHintShown, recordScheduledPrompt, wasHintShown } from './session.js
 import { peekPendingContext, peekPendingContextWith, queuePendingContext } from './pending_context.js';
 import { dropsPreCompactContext, dropsPromptSubmitContext, resumesCompactionOnPrompt, sessionStartMayBeDeferred } from './harness_channels.js';
 import { getHarnessName } from './bridges/registry.js';
-import { carriedOwedSessionStart, carryOwedSessionStart, claimOwedSessionStart, offerOwedSessionStart, readSessionStartRecord, releaseOwedSessionStart, sessionStartOwed } from './session_start_owed.js';
+import { carriedOwedSessionStart, carryOwedSessionStart, claimOwedSessionStart, markOwedSessionStartDelivered, offerOwedSessionStart, readSessionStartRecord, releaseOwedSessionStart, sessionStartOwed } from './session_start_owed.js';
 import { sessionStartOutput } from './hooks_session_start.js';
 import { recordStat } from './stats.js';
 import {
@@ -27,15 +27,18 @@ import {
 async function deliverOwedSessionStart(event: HookEvent): Promise<void> {
   try {
     if (event.agentId !== undefined || !sessionStartMayBeDeferred(getHarnessName())) return;
-    if (!sessionStartOwed(readSessionStartRecord(event), Date.now()) || !claimOwedSessionStart(event)) return;
+    const now = Date.now();
+    if (!sessionStartOwed(readSessionStartRecord(event), now) || !claimOwedSessionStart(event, now)) return;
     try {
       const owed = await sessionStartOutput(event, { skipRecovery: true });
       if (owed.hookType === 'context') carryOwedSessionStart(event, owed.context);
     } catch (error) {
-      // The claim is exclusive and never expires, so a failure after taking it would lose the text for good; give it back so a later hook process retries.
+      // A failure after taking the claim would lose the text for good; give it back so a later hook process retries.
       releaseOwedSessionStart(event);
       throw error;
     }
+    // Delivered from here on: the settle marker still reads owed, so only a claim stamped delivered keeps a later call from taking it for a dead holder's.
+    markOwedSessionStartDelivered(event, now);
     recordStat('session_start_deferred', 0, 0);
   } catch {
     // Advisory: a failed deferral costs the owed text, never the tool call.

@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { MAX_BATCH_HINTS_PER_SESSION, MAX_SEARCH_BRAKES_PER_SESSION, SERIAL_GAP_MS } from '../src/call_streak.js'
+import { callStreakAfterFailure } from '../src/call_streak.js'
+import type { HookEvent } from '../src/hook_registry.js'
 import { globalDbPath } from '../src/constants.js'
 import { getDb } from '../src/db.js'
 import { isHintCategory } from '../src/hint_stats.js'
@@ -438,5 +440,19 @@ describe('call streak on the shipping clock', () => {
 describe('hint categories', () => {
   it('knows the two streak categories and the two dedup categories', () => {
     for (const c of ['read_batch', 'search_brake', 'grep_dedup_hint', 'glob_dedup_hint']) expect(isHintCategory(c)).toBe(true)
+  })
+})
+
+// HAND-DERIVED: a Grep event built by hand and a fixed epoch literal passed in as `now`; the assertion is that the streak sidecar carries exactly that literal, which no real clock read can equal.
+describe('callStreakAfterFailure takes its clock from the caller', () => {
+  it('stamps the passed now, not the wall clock', () => {
+    const ctx = newSession()
+    const event: HookEvent = { eventName: 'post_tool_use_failure', toolName: 'Grep', toolInput: { pattern: 'a', path: 'src' }, sessionId: ctx.session_id, agentId: undefined, raw: {} }
+    const fixed = 1_700_000_000_000
+    callStreakAfterFailure(event, 'other', fixed)
+    const target = sessionSidecarPath(ctx.session_id, '.call-streak')
+    expect(target).not.toBeNull()
+    const state = JSON.parse(readFileSync(target!, 'utf8')) as { lastReadPostAt: number }
+    expect(state.lastReadPostAt).toBe(fixed)
   })
 })
