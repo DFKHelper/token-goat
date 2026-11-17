@@ -395,10 +395,9 @@ const MANIFEST_CACHE_MAX_ENTRIES = 100
 const MAX_SESSIONS_READ = 20
 const CLEANUP_THROTTLE_SECS = 300
 
+// Freshness is proven by the bytes: a stat fingerprint cannot see a same-size rewrite that restores the mtime within one filesystem timestamp tick.
 interface CachedManifestEntry {
-  mtimeMs: number
-  ctimeMs: number
-  size: number
+  text: string
   data: Record<string, unknown> | null
 }
 
@@ -446,8 +445,6 @@ export function readAllSessionManifests(
     interface ManifestCandidate {
       fullPath: string
       mtimeMs: number
-      ctimeMs: number
-      size: number
     }
     const candidates: ManifestCandidate[] = []
 
@@ -467,7 +464,7 @@ export function readAllSessionManifests(
           }
           continue
         }
-        candidates.push({ fullPath, mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, size: stat.size })
+        candidates.push({ fullPath, mtimeMs: stat.mtimeMs })
       } catch {
         // file unlinked or inaccessible
       }
@@ -477,9 +474,17 @@ export function readAllSessionManifests(
     const activeCandidates = candidates.slice(0, MAX_SESSIONS_READ)
 
     for (const candidate of activeCandidates) {
-      const { fullPath, mtimeMs, ctimeMs, size } = candidate
+      const { fullPath } = candidate
+      let text: string
+      try {
+        text = fs.readFileSync(fullPath, 'utf8')
+      } catch {
+        // file unlinked or inaccessible
+        manifestParseCache.delete(fullPath)
+        continue
+      }
       const cached = manifestParseCache.get(fullPath)
-      if (cached && cached.mtimeMs === mtimeMs && cached.ctimeMs === ctimeMs && cached.size === size) {
+      if (cached && cached.text === text) {
         // Map insertion order is the LRU order; refresh hot manifests before a later eviction.
         manifestParseCache.delete(fullPath)
         manifestParseCache.set(fullPath, cached)
@@ -490,16 +495,15 @@ export function readAllSessionManifests(
       }
 
       try {
-        const text = fs.readFileSync(fullPath, 'utf8')
         const data = JSON.parse(text)
         if (typeof data === 'object' && data !== null && 'files' in data) {
-          cacheManifest(fullPath, { mtimeMs, ctimeMs, size, data })
+          cacheManifest(fullPath, { text, data })
           results.push(data)
         } else {
-          cacheManifest(fullPath, { mtimeMs, ctimeMs, size, data: null })
+          cacheManifest(fullPath, { text, data: null })
         }
       } catch {
-        cacheManifest(fullPath, { mtimeMs, ctimeMs, size, data: null })
+        cacheManifest(fullPath, { text, data: null })
       }
     }
   } catch {
