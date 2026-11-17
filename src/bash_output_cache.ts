@@ -146,12 +146,9 @@ function gitStateFingerprintSync(cwd: string): string | null {
     if (headResult.exitCode !== 0) return null
     const [root = '', headSha = ''] = headResult.stdout.trim().split(/\r?\n/)
 
-    let statusHash = ''
     const statusResult = runGit(['status', '--porcelain', '-z', '--untracked-files=all'], { cwd, timeoutMs: GIT_STATE_TIMEOUT_MS })
-    if (statusResult.unfinished) return GIT_STATE_UNKNOWN
-    if (statusResult.exitCode === 0) {
-      statusHash = shortFingerprint(`${statusResult.stdout}\x00${statusPathStats(root, statusResult.stdout)}`)
-    }
+    if (statusResult.unfinished || statusResult.exitCode !== 0) return GIT_STATE_UNKNOWN
+    const statusHash = shortFingerprint(`${statusResult.stdout}\x00${statusPathStats(root, statusResult.stdout)}`)
 
     const key = `${headSha}\x00${statusHash}`
     return shortFingerprint(key)

@@ -11,12 +11,15 @@ import type { CannedGit } from './helpers/canned_git.js'
 
 // Seam over the git calls that fingerprint a repository (src/bash_output_cache.ts::gitStateFingerprintSync): the call named by `killed` is answered as killed at its time bound, every other fingerprint call from the known repository state in `canned` (tests/helpers/canned_git.ts), so no row waits on a real git finishing inside a bound. Any other git call runs for real under its default bound.
 const seam = vi.hoisted(() => ({ killed: null as string | null, killedBy: 'timeout' as 'timeout' | 'signal', canned: null as CannedGit | null }))
+// Provenance: HAND-DERIVED. A non-zero `git status` exit with no timeout; the exit code is the only signal.
+const failingStatus = vi.hoisted(() => ({ exitCode: null as number | null }))
 
 vi.mock('../src/util.js', async (importOriginal) => {
   const actual = await importOriginal<typeof UtilModule>()
   return {
     ...actual,
     runGit: (args: string[], opts?: Parameters<typeof actual.runGit>[1]) => {
+      if (args[0] === 'status' && failingStatus.exitCode !== null) return { stdout: '', stderr: 'fatal: index file corrupt\n', unfinished: false, exitCode: failingStatus.exitCode }
       if (args[0] === seam.killed) return seam.killedBy === 'signal' ? SIGNAL_KILLED_GIT : KILLED_GIT
       const answer = seam.canned === null ? null : cannedFingerprintAnswer(seam.canned, opts?.cwd, args)
       return answer ?? actual.runGit(args, opts)
@@ -27,6 +30,7 @@ vi.mock('../src/util.js', async (importOriginal) => {
 import { getBashOutput, isBashEntryStale, storeBashOutputSync } from '../src/bash_output_cache.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { gitRepoWithCommit } from './helpers/git-repo.js'
+import { cannedNoRepository } from './helpers/canned_git.js'
 
 beforeEach(() => {
   clearModuleCaches()
@@ -112,5 +116,28 @@ describe('a healthy fingerprint', () => {
     expect(isBashEntryStale(entry, cmd, dir)).toBe(false)
     cannedRepo().head = SECOND_HEAD
     expect(isBashEntryStale(entry, cmd, dir)).toBe(true)
+  })
+})
+
+describe('a git status that exits non-zero', () => {
+  afterEach(() => {
+    failingStatus.exitCode = null
+  })
+
+  it('is stale on the next fingerprint, where a failed status used to read as a clean known state', async () => {
+    const dir = gitRepoWithCommit()
+    failingStatus.exitCode = 128
+    const entry = await storedUnder(null, 'npm test', dir)
+    expect(isBashEntryStale(entry, 'npm test', dir)).toBe(true)
+  })
+})
+
+describe('a directory outside any repository', () => {
+  it('keeps the non-repository result: no git fingerprint, and the entry is not stale', async () => {
+    const dir = gitRepoWithCommit()
+    seam.canned = cannedNoRepository()
+    const entry = await storedUnder(null, 'npm test', dir)
+    expect(entry.fingerprints?.git).toBeUndefined()
+    expect(isBashEntryStale(entry, 'npm test', dir)).toBe(false)
   })
 })
