@@ -515,10 +515,12 @@ export async function cmdInstall(opts: {
       const { repairInstructionGates } = await import('./cli_doctor_guidance.js')
       const hookRepair = repairHarnessHooks(process.cwd(), { dev: opts.dev === true })
       for (const r of hookRepair.repairs) out(`  • Re-established hook: ${r}`)
+      for (const r of hookRepair.errors) err(formatCommandError(r))
       const gateRepair = repairInstructionGates(process.cwd())
       for (const r of gateRepair.repairs) out(`  • Refreshed instruction gate: ${r}`)
-    } catch {
-      // Non-fatal: base installation already succeeded
+    } catch (e) {
+      // Non-fatal: base installation already succeeded, but the refusal is still printed
+      err(formatCommandError(e))
     }
   }
 

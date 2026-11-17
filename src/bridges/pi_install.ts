@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedBy, removeCreatedTree } from './created_configs.js'
-import { installSingleFilePlugin, uninstallSingleFilePlugin } from '../util.js'
+import { installSingleFilePlugin, isSingleFilePluginStale, uninstallSingleFilePlugin } from '../util.js'
 import { PI_EXTENSION_SCRIPT } from './pi.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 
@@ -74,4 +74,9 @@ export function uninstallPi(opts: PiScopeOptions = {}): boolean {
 /** Is the pi extension currently present at the resolved path? Presence-only, mirroring how {@link isCodexInstalled} in `codex_install.ts` checks its own single-file shim script (`fs.existsSync`, not a content comparison) -- a present-but-outdated file still counts as installed, and {@link installPi} tops it up to the current template on the next call. */
 export function isPiInstalled(opts: PiScopeOptions = {}): boolean {
   return fs.existsSync(piExtensionPath(opts))
+}
+
+/** Is an installed pi extension out of date (template or sidecar) in this scope? Read-only. */
+export function isPiRewriteDue(opts: PiScopeOptions = {}): boolean {
+  return isPiInstalled(opts) && isSingleFilePluginStale(piExtensionPath(opts), piEntrySidecarPath(opts), PI_EXTENSION_SCRIPT)
 }

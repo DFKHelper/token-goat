@@ -330,6 +330,24 @@ export interface SingleFilePluginInstallResult {
   readonly alreadyInstalled: boolean
 }
 
+/** Read-only twin of {@link installSingleFilePlugin}: true if the file or its sidecar is stale. */
+export function isSingleFilePluginStale(filePath: string, sidecarPath: string, template: string): boolean {
+  let existing: string | undefined
+  try {
+    existing = readFileSync(filePath, 'utf8')
+  } catch {
+    existing = undefined
+  }
+  if (existing !== template) return true
+  let entryPath: unknown
+  try {
+    entryPath = (JSON.parse(readFileSync(sidecarPath, 'utf8')) as { entryPath?: unknown }).entryPath
+  } catch {
+    entryPath = undefined
+  }
+  return typeof entryPath !== 'string' || !existsSync(entryPath)
+}
+
 /** Install a single-file, no-merge-target plugin/extension (pi's extension, opencode's plugin): write `template` to `filePath` unless it's already byte-identical, and unconditionally refresh the `{entryPath: process.argv[1]}` sidecar next to it so a stale sidecar gets fixed even when the plugin file itself needs no update. */
 /** Generic single-file plugin installer for harnesses (Grok, Kimi, etc.) that load a plugin from a single path. Writes the template if missing, and writes a sidecar JSON recording the entryPath. Confined within projectRoot when writing project-scoped configs. */
 export function installSingleFilePlugin(filePath: string, sidecarPath: string, template: string): SingleFilePluginInstallResult {

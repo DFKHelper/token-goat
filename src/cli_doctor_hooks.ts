@@ -38,12 +38,12 @@ import {
   kimiHookScriptPath,
   wiredKimiHookWords,
 } from './bridges/kimi_install.js'
-import { installGemini, isGeminiInstalled } from './bridges/gemini_install.js'
-import { installQwen, isQwenInstalled } from './bridges/qwen_install.js'
-import { installOpencode, isOpencodeInstalled } from './bridges/opencode_install.js'
-import { installOpenclaw, isOpenclawInstalled } from './bridges/openclaw_install.js'
-import { installPi, isPiInstalled } from './bridges/pi_install.js'
-import { installAntigravity, isAntigravityInstalled } from './bridges/antigravity_install.js'
+import { installGemini, isGeminiRewriteDue } from './bridges/gemini_install.js'
+import { installQwen, isQwenRewriteDue } from './bridges/qwen_install.js'
+import { installOpencode, isOpencodeRewriteDue } from './bridges/opencode_install.js'
+import { installOpenclaw, isOpenclawRewriteDue } from './bridges/openclaw_install.js'
+import { installPi, isPiRewriteDue } from './bridges/pi_install.js'
+import { installAntigravity, isAntigravityRewriteDue } from './bridges/antigravity_install.js'
 import { disableVscodeClaudeHooks, vscodeHooksInstalled, vscodeRunsTokenGoatClaudeHooks } from './bridges/vscode_install.js'
 import { VSCODE_CLAUDE_HOOKS_TURNED_OFF_TEXT } from './cli_doctor_platforms.js'
 import { assertHookEntryAllowed } from './install_entry.js'
@@ -217,7 +217,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd(), opts: { dev?
 
   // 8. Gemini CLI
   try {
-    if (isGeminiInstalled()) {
+    if (isGeminiRewriteDue()) {
       assertHookEntryAllowed(process.argv[1], { dev: opts.dev === true })
       const res = installGemini()
       if (!res.alreadyInstalled) repairs.push('Repaired Gemini CLI hooks')
@@ -228,7 +228,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd(), opts: { dev?
 
   // 9. Qwen Code
   try {
-    if (isQwenInstalled()) {
+    if (isQwenRewriteDue()) {
       assertHookEntryAllowed(process.argv[1], { dev: opts.dev === true })
       const res = installQwen()
       if (!res.alreadyInstalled) repairs.push('Repaired Qwen Code hooks')
@@ -239,7 +239,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd(), opts: { dev?
 
   // 10. Opencode
   try {
-    if (isOpencodeInstalled()) {
+    if (isOpencodeRewriteDue()) {
       assertHookEntryAllowed(process.argv[1], { dev: opts.dev === true })
       const res = installOpencode()
       if (!res.alreadyInstalled) repairs.push('Repaired opencode plugin')
@@ -250,7 +250,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd(), opts: { dev?
 
   // 11. OpenClaw
   try {
-    if (isOpenclawInstalled()) {
+    if (isOpenclawRewriteDue()) {
       assertHookEntryAllowed(process.argv[1], { dev: opts.dev === true })
       const res = installOpenclaw()
       if (!res.alreadyInstalled) repairs.push('Repaired OpenClaw plugin')
@@ -261,11 +261,11 @@ export function repairHarnessHooks(rootDir: string = process.cwd(), opts: { dev?
 
   // 12. Pi
   try {
-    if (isPiInstalled()) {
+    if (isPiRewriteDue()) {
       assertHookEntryAllowed(process.argv[1], { dev: opts.dev === true })
       const res = installPi()
       if (!res.alreadyInstalled) repairs.push('Repaired pi extension')
-    } else if (isPiInstalled({ local: true })) {
+    } else if (isPiRewriteDue({ local: true })) {
       assertHookEntryAllowed(process.argv[1], { dev: opts.dev === true })
       const res = installPi({ local: true })
       if (!res.alreadyInstalled) repairs.push('Repaired pi (project) extension')
@@ -276,7 +276,7 @@ export function repairHarnessHooks(rootDir: string = process.cwd(), opts: { dev?
 
   // 13. Antigravity CLI
   try {
-    if (isAntigravityInstalled()) {
+    if (isAntigravityRewriteDue()) {
       assertHookEntryAllowed(process.argv[1], { dev: opts.dev === true })
       const res = installAntigravity()
       if (!res.alreadyInstalled) repairs.push('Repaired Antigravity CLI integration')

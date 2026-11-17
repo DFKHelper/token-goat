@@ -177,13 +177,13 @@ export function installGemini(): GeminiInstallResult {
     const command = geminiHookCommand(GEMINI_EVENT_ARG[event])
     // A hand-edited or foreign-tool-written settings.json can hold a scalar (e.g. a bare string) under a key this bridge's own hooks schema requires to be an array of matcher-group objects; spreading a scalar here would silently split a string into single-character garbage entries, so treat any non-array shape as absent rather than corrupting the write.
     const groups = Array.isArray(hooks[event]) ? [...hooks[event]] : []
+    // Sweep stale entries under every matcher: a legacy entry under a retired matcher would stay wired.
+    const swept = stripStaleGroupHooks(groups, (c) => isGeminiTokenGoatCommand(c) && !isCurrentGeminiTokenGoatCommand(c, command))
+    if (JSON.stringify(swept) !== JSON.stringify(groups)) changed = true
+    groups.length = 0
+    groups.push(...swept)
     for (const matcher of desiredMatchersFor(event)) {
       if (groupHasTokenGoat(groups, matcher, (c) => isCurrentGeminiTokenGoatCommand(c, command))) continue
-
-      // A stale entry (legacy bare command, or a same-shape command whose baked entry path is otherwise not current) is not "already installed" -- strip it before writing the current command, so a re-install upgrades in place instead of leaving a dead duplicate.
-      const nextGroups = stripStaleGroupHooks(groups, isGeminiTokenGoatCommand, { matcher })
-      groups.length = 0
-      groups.push(...nextGroups)
 
       const group: GeminiMatcherGroup =
         matcher === undefined ? { hooks: [{ type: 'command', command }] } : { matcher, hooks: [{ type: 'command', command }] }
@@ -211,6 +211,28 @@ export function uninstallGemini(): boolean {
   const result = finishHookUninstall(p, settings, removed, (file, next) => writeSettingsKeepingComments(file, next, { allowTrailingComma: false }))
   removeCreatedTree([p])
   return result
+}
+
+/** Is a wired token-goat Gemini hook one a rewrite would fix (legacy or missing bundle)? Read-only. */
+export function isGeminiRewriteDue(): boolean {
+  const hooks = readGeminiSettings(geminiSettingsPath()).hooks
+  if (hooks === undefined) return false
+  for (const event of GEMINI_HOOK_EVENTS) {
+    const groups = hooks[event]
+    if (!Array.isArray(groups)) continue
+    for (const group of groups) {
+      for (const hook of group.hooks ?? []) {
+        if (isGeminiTokenGoatCommand(hook.command) && isStaleGeminiCommand(hook.command)) return true
+      }
+    }
+  }
+  return false
+}
+
+/** True when `command` is the legacy bare form, or names an entry bundle that no longer exists. */
+function isStaleGeminiCommand(command: string): boolean {
+  const match = GEMINI_COMMAND_PATTERN.exec(command)
+  return match === null || !fs.existsSync(match[1] ?? '')
 }
 
 /** Is the Gemini CLI integration currently present? True only when every (event, matcher) pair {@link desiredMatchersFor} expects carries a token-goat hook entry. A partial install (e.g. one matcher group deleted by hand) reads as not installed, so {@link installGemini} will top up what's missing. */

@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedBy, removeCreatedTree } from './created_configs.js'
-import { installSingleFilePlugin, uninstallSingleFilePlugin } from '../util.js'
+import { installSingleFilePlugin, isSingleFilePluginStale, uninstallSingleFilePlugin } from '../util.js'
 import { OPENCODE_PLUGIN_SCRIPT } from './opencode.js'
 
 /** Resolves opencode's global config directory, matching `Global.Path.config` (see module doc comment). */
@@ -61,4 +61,9 @@ export function uninstallOpencode(): boolean {
 
 export function isOpencodeInstalled(): boolean {
   return fs.existsSync(opencodePluginPath())
+}
+
+/** Is an installed opencode plugin out of date (template or sidecar)? Read-only; false if absent. */
+export function isOpencodeRewriteDue(): boolean {
+  return isOpencodeInstalled() && isSingleFilePluginStale(opencodePluginPath(), opencodeEntrySidecarPath(), OPENCODE_PLUGIN_SCRIPT)
 }

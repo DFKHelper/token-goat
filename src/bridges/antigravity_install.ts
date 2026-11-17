@@ -212,3 +212,11 @@ export function isAntigravityInstalled(): boolean {
   if (hooksFile !== undefined && Object.prototype.hasOwnProperty.call(hooksFile, HOOK_NAME)) return true
   return readShim()?.includes(SHIM_MARKER) === true
 }
+
+/** Is an installed Antigravity integration incomplete (hook event or manifest missing)? Read-only. */
+export function isAntigravityRewriteDue(): boolean {
+  if (!isAntigravityInstalled()) return false
+  const wired = readJsonObject(antigravityHooksPath(), 'plugin hooks file')?.[HOOK_NAME] as Partial<Record<AntigravityHookEvent, unknown>> | undefined
+  const complete = ANTIGRAVITY_HOOK_EVENTS.every((event) => Array.isArray(wired?.[event]))
+  return !complete || readJsonObject(pluginManifestPath(), 'plugin manifest') === undefined
+}

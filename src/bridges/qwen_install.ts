@@ -154,6 +154,28 @@ export function uninstallQwen(): boolean {
   return result
 }
 
+/** Is a wired token-goat Qwen hook one a rewrite would fix (legacy or missing bundle)? Read-only. */
+export function isQwenRewriteDue(): boolean {
+  const hooks = readQwenSettings(qwenSettingsPath()).hooks
+  if (hooks === undefined) return false
+  for (const event of QWEN_HOOK_EVENTS) {
+    const groups = hooks[event]
+    if (!Array.isArray(groups)) continue
+    for (const group of groups) {
+      for (const hook of group.hooks ?? []) {
+        if (isQwenTokenGoatCommand(hook.command) && isStaleQwenCommand(hook.command)) return true
+      }
+    }
+  }
+  return false
+}
+
+/** True when `command` is the legacy bare form, or names an entry bundle that no longer exists. */
+function isStaleQwenCommand(command: string): boolean {
+  const match = QWEN_COMMAND_PATTERN.exec(command)
+  return match === null || !fs.existsSync(match[1] ?? '')
+}
+
 export function isQwenInstalled(): boolean {
   const settings = readQwenSettings(qwenSettingsPath())
   const hooks = settings.hooks

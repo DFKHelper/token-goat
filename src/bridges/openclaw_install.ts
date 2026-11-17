@@ -5,7 +5,7 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
-import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath } from '../util.js'
+import { atomicWriteText, ensureDirSync, extractErrorMessage, foldPath, isSingleFilePluginStale } from '../util.js'
 import { parseJsonOrJsonc } from '../jsonc_text.js'
 import { writeSettingsKeepingComments } from './commented_settings.js'
 import { OPENCLAW_PLUGIN_SCRIPT } from './openclaw.js'
@@ -231,4 +231,10 @@ export function isOpenclawInstalled(): boolean {
   const hasPath = (plugins.load?.paths ?? []).some((p) => foldPath(p) === targetFolded)
   const hasEntry = plugins.entries?.[OPENCLAW_PLUGIN_ID] !== undefined
   return hasPath && hasEntry
+}
+
+/** Is an installed openclaw plugin out of date (unwired, or file or sidecar stale)? Read-only. */
+export function isOpenclawRewriteDue(): boolean {
+  if (!fs.existsSync(openclawPluginPath())) return false
+  return !isOpenclawInstalled() || isSingleFilePluginStale(openclawPluginPath(), openclawEntrySidecarPath(), OPENCLAW_PLUGIN_SCRIPT)
 }
