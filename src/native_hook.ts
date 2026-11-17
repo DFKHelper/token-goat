@@ -337,6 +337,10 @@ export interface WiredHookEntry {
 export interface NativeInvocation {
   readonly bin: string
   readonly harness: string | undefined
+  /** The hook event named by `--event`, or undefined when absent. */
+  readonly event: string | undefined
+  /** The bundle named by `--entry`, or undefined when absent. */
+  readonly entry: string | undefined
   /** The Node command after `--`, which the client runs whenever the server cannot answer. */
   readonly wrapped: readonly string[]
 }
@@ -348,6 +352,9 @@ export function parseNativeInvocation(argv: readonly string[]): NativeInvocation
   const split = argv.indexOf('--')
   if (split < 0) return undefined
   const flags = argv.slice(1, split)
-  const h = flags.indexOf('--harness')
-  return { bin, harness: h >= 0 ? flags[h + 1] : undefined, wrapped: argv.slice(split + 1) }
+  const value = (name: string): string | undefined => {
+    const i = flags.indexOf(name)
+    return i >= 0 ? flags[i + 1] : undefined
+  }
+  return { bin, harness: value('--harness'), event: value('--event'), entry: value('--entry'), wrapped: argv.slice(split + 1) }
 }

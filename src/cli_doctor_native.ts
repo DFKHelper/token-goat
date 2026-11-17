@@ -176,6 +176,25 @@ export function checkNativeHookWiring(wiring: NativeWiring, avail: NativeAvailab
   return settled(wiredText)
 }
 
+/** The FAIL row for native hook entries whose `--entry` bundle is gone, or null when none is missing. */
+export function checkNativeEntryPaths(wiring: NativeWiring): DoctorResult | null {
+  const eventsByEntry = new Map<string, string[]>()
+  let broken = 0
+  for (const { words } of wiring.entries) {
+    const native = parseNativeInvocation(words)
+    if (native?.entry === undefined || fs.existsSync(native.entry)) continue
+    broken += 1
+    eventsByEntry.set(native.entry, [...(eventsByEntry.get(native.entry) ?? []), native.event ?? 'unknown event'])
+  }
+  if (broken === 0) return null
+  const named = [...eventsByEntry].map(([entry, events]) => `${displaySafeText(entry)} (${events.join(', ')})`).join('; ')
+  return {
+    name: `Native hook entry (${wiring.label})`,
+    status: 'fail',
+    message: `${wiring.label}: ${broken} of ${wiring.entries.length} hook entries name a bundle that no longer exists, ${named}, which fails those events instead of falling back to Node; run ${fencedCommand(wiring.install)} to rewrite them`,
+  }
+}
+
 /** The per-harness hook counts, or none when the stats database is missing or unreadable: a damaged global.db is the Database row's finding (`checkDbExists`), and must not stop doctor before it prints. */
 function readNativeHookCounts(dbPath: string): Map<string, NativeHookCounts> {
   if (!fs.existsSync(dbPath)) return new Map<string, NativeHookCounts>()
@@ -191,6 +210,6 @@ export function checkNativeHooks(dbPath: string): DoctorResult[] {
   const avail = nativeAvailability()
   const counts = readNativeHookCounts(dbPath)
   return nativeWirings()
-    .map((w) => checkNativeHookWiring(w, avail, counts))
+    .flatMap((w) => [checkNativeHookWiring(w, avail, counts), checkNativeEntryPaths(w)])
     .filter((r): r is DoctorResult => r !== null)
 }
