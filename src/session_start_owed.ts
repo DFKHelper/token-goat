@@ -1,6 +1,7 @@
 /** Settle marker for a session-start hook that may have missed its budget. The Copilot shim answers `{}` when the helper outruns its deadline, so the reminder, notes, drift sweep, capsule and update notice vanish with nothing to say so. The helper writes this marker as its last act and clears it as its first, so the first tool call of the session can tell a session start that finished in time from one that was cut off, and deliver what was owed. A marker written within {@link OWED_RESERVE_MS} of the deadline counts as owed too: the shim may have lost the race to publish it. Everything here is best-effort storage; a marker that cannot be read is no marker, which reads as owed. */
 
-import { readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { sessionStateKey } from './hook_registry.js'
 import { stripUnsafeSuggestions } from './hint_suggestion_guard.js'
@@ -111,17 +112,57 @@ export function sessionStartOwed(record: SessionStartMarker | 'begun' | null, _n
   return record.finishedAtMs > record.deadlineEpoch - OWED_RESERVE_MS
 }
 
-/** Take the one-time right to deliver the owed session start. An exclusive create, so of any number of concurrent callers exactly one gets true. False also when the claim cannot be stored: a lost delivery is better than a duplicated one. */
-export function claimOwedSessionStart(event: HookEvent): boolean {
-  const target = sessionSidecarPath(sessionStateKey(event), OWED_CLAIM_SUFFIX)
-  if (target === null) return false
+/** A claim older than this is taken to belong to a process that died before it delivered. Generous on purpose: a duplicated start costs more than a late one, and a live holder finishes in seconds. */
+export const OWED_CLAIM_STALE_MS = 15 * 60_000
+
+/** Exclusive create of the claim file stamped `now`; false when it exists or cannot be written. */
+function writeClaimExclusive(target: string, now: number): boolean {
   try {
-    ensureDirSync(dirname(target))
-    writeFileSync(target, JSON.stringify({ claimedAtMs: Date.now() }), { encoding: 'utf8', flag: 'wx' })
+    writeFileSync(target, JSON.stringify({ claimedAtMs: now }), { encoding: 'utf8', flag: 'wx' })
     return true
   } catch {
     return false
   }
+}
+
+/** Whether claim file text is stamped more than {@link OWED_CLAIM_STALE_MS} before `now`. Anything that is not a claim stamp, or a stamp in the future, is not stale: it is left alone. */
+function claimTextIsStale(text: string, now: number): boolean {
+  try {
+    const stamp = (JSON.parse(text) as { claimedAtMs?: unknown } | null)?.claimedAtMs
+    return typeof stamp === 'number' && Number.isFinite(stamp) && now - stamp > OWED_CLAIM_STALE_MS
+  } catch {
+    return false
+  }
+}
+
+/** Replace a stale claim with a fresh one for the caller. The stale file is first renamed to a private name, which one taker wins and the rest lose; the winner re-judges the file it holds and puts it back if it was not stale after all (another taker's fresh claim), then creates the claim exclusively. limit: a third caller can claim in the instant a put-back is pending revisit-when: duplicate owed starts are reported. */
+function takeOverStaleClaim(target: string, now: number): boolean {
+  try {
+    if (!claimTextIsStale(readFileSync(target, 'utf8'), now)) return false
+    const held = `${target}.${randomUUID()}.taken`
+    renameSync(target, held)
+    const text = readFileSync(held, 'utf8')
+    rmSync(held, { force: true })
+    if (!claimTextIsStale(text, now)) {
+      writeFileSync(target, text, { encoding: 'utf8', flag: 'wx' })
+      return false
+    }
+    return writeClaimExclusive(target, now)
+  } catch {
+    return false
+  }
+}
+
+/** Take the one-time right to deliver the owed session start. An exclusive create, so of any number of concurrent callers exactly one gets true. A claim older than {@link OWED_CLAIM_STALE_MS} before `now` was left by a process that died before delivering, and is taken over once. False also when the claim cannot be stored: a lost delivery is better than a duplicated one. */
+export function claimOwedSessionStart(event: HookEvent, now: number = Date.now()): boolean {
+  const target = sessionSidecarPath(sessionStateKey(event), OWED_CLAIM_SUFFIX)
+  if (target === null) return false
+  try {
+    ensureDirSync(dirname(target))
+  } catch {
+    return false
+  }
+  return writeClaimExclusive(target, now) || takeOverStaleClaim(target, now)
 }
 
 /** The owed text each claim winner holds between producing it and the relay proving it was emitted, keyed by the event object so no other call, in this process or another, can reach it. */
