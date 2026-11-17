@@ -7,9 +7,10 @@ import { describe, expect, it } from 'vitest'
 
 import { resolveRenames } from '../../scripts/arch-docs/curated.mjs'
 import { parseNameStatus } from '../../scripts/arch-docs/source.mjs'
-import { A_TS, BETA_ROLE, gitOut, scratchDirs, engineWithEnv, engine, scratchRepo, curatedRepo, renamedCuratedRepo, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
+import { A_TS, BETA_ROLE, gitOut, scratchDirs, engineWithEnv, engine, scratchRepo, curatedRepo, renamedCuratedRepo, useArchDocFixtures, warmTemplates } from '../helpers/arch_docs_fixture.js'
 
 useArchDocFixtures()
+warmTemplates(curatedRepo, renamedCuratedRepo, scratchRepo)
 
 describe('sync-arch-docs --check --staged', () => {
   it('reports a staged rename as a warning', () => {

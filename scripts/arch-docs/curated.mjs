@@ -41,6 +41,8 @@ function carriedRole(row, generated, newAutoRole) {
 /** Moves where the old key is gone and documented and the new key exists (documented or not). */
 function componentMoves(data) {
   const moves = new Map()
+  // A move needs a documented row whose module is gone; with none, the records (a lazy git diff on the working tree) are never read.
+  if (![...data.documented.keys()].some((key) => !data.current.has(key))) return []
   for (const { from, to } of data.records) {
     if (from === to || !data.isComponent(from) || !data.isComponent(to)) continue
     if (data.current.has(from) || !data.current.has(to)) continue

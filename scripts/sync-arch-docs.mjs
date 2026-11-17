@@ -69,7 +69,9 @@ function plan(config, source) {
   const resolution = resolveRenames({
     documented,
     current: new Set(described.keys()),
-    records: source.renames,
+    get records() {
+      return source.renames
+    },
     isComponent: (file) => isComponentFile(config, file),
     autoRole: (key) => described.get(key)?.autoRole ?? '',
     headAutoRole: headAutoRoles(source, config),

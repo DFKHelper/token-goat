@@ -8,9 +8,10 @@ import { describe, expect, it } from 'vitest'
 
 import { createRepoLocalExecutableDecoys } from '../helpers/repo_local_executable_decoys.js'
 import { scrubRepoLocalGitEnv } from '../helpers/git-env.js'
-import { ROOT, ENGINE, START, END, CONFIG, DOC_HEAD, DOC_TAIL, git, gitOut, scratchDirs, makeRepo, engineEnv, engineWithEnv, engine, synced, useArchDocFixtures } from '../helpers/arch_docs_fixture.js'
+import { ROOT, ENGINE, START, END, CONFIG, DOC_HEAD, DOC_TAIL, git, gitOut, scratchDirs, makeRepo, engineEnv, engineWithEnv, engine, synced, useArchDocFixtures, warmTemplates } from '../helpers/arch_docs_fixture.js'
 
 useArchDocFixtures()
+warmTemplates(() => synced().dir, () => makeRepo().dir)
 
 describe('Architecture documentation freshness and coverage', () => {
   it('has zero drift in this repository, checked as the command npm run docs:arch:check runs', () => {

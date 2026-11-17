@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, afterEach, expect } from 'vitest'
+import { afterAll, afterEach, beforeAll, expect } from 'vitest'
 
 import { runCli } from '../../scripts/sync-arch-docs.mjs'
 import { scrubRepoLocalGitEnv } from './git-env.js'
@@ -174,6 +174,39 @@ function buildCurated(dir: string): void {
   const doc = path.join(dir, 'ARCH.md')
   fs.writeFileSync(doc, fs.readFileSync(doc, 'utf8').replace('Rest module: b.ts', BETA_ROLE))
   gitOut(dir, ['commit', '-q', '-a', '-m', 'base'])
+}
+
+// FIXTURE PROVENANCE (architecture analysis). Every module source in the analysis files is HAND-DERIVED: written by hand so the expected finding follows from SKILL.md "Architectural Analysis Contract" (arch-doc-sync skill: "Side-Effect Taxonomy", "Inward-Only Layer Boundaries", "Static Circular Dependencies"), not read off the engine's output. The finding wording is FORMAT-DERIVED from SKILL.md "--check Output Contract" items 4 and 5, and the JSON golden from its JSON paragraph (key order, labels in taxonomy order, arrays sorted).
+export const LAYERED_CONFIG = JSON.stringify({
+  doc: 'ARCH.md',
+  roots: ['src'],
+  layers: [['src/ui', 'Presentation'], ['src/core', 'Domain Core'], ['src/data', 'Data Persistence']],
+})
+
+/** A repo of the given modules under the OS temp dir with its table already written, so only the analysis can make `--check` report. */
+export function analysisRepo(files: Record<string, string>, config = LAYERED_CONFIG): string {
+  const dir = scratchDir()
+  scratchDirs.push(dir)
+  for (const [rel, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true })
+    fs.writeFileSync(path.join(dir, rel), text)
+  }
+  fs.writeFileSync(path.join(dir, '.arch-doc-sync.json'), config)
+  fs.writeFileSync(path.join(dir, 'ARCH.md'), DEFAULT_DOC)
+  gitOut(dir, ['init', '-q'])
+  gitOut(dir, ['add', '.'])
+  expect(engine(dir, '--write').status).toBe(0)
+  return dir
+}
+
+export const sideEffectsOf = (dir: string): { module: string; labels: string[] }[] =>
+  (JSON.parse(engine(dir, '--check', '--format=json').stdout) as { side_effects: { module: string; labels: string[] }[] }).side_effects
+
+/** Builds the named templates once, in a beforeAll: their git and engine starts then run under the hook's own timeout and are not charged to the first row that copies one (each row's timeout covers only the starts it makes itself). */
+export function warmTemplates(...builders: (() => string)[]): void {
+  beforeAll(() => {
+    for (const build of builders) build()
+  })
 }
 
 /** curatedRepo with src/b.ts already renamed to src/bb.ts in the index. The rows that start from a staged rename share it, so the one `git mv` is a start paid once per file and not once per row. */

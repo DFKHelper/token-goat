@@ -177,13 +177,20 @@ export function headReader(root) {
 
 /** The working tree: tracked files, renames between HEAD and the tree (staged or not), and on-disk contents. */
 export function worktreeSource(root) {
-  const renames = runGit(root, ['diff', '--name-status', '-z', '-M', 'HEAD'])
   const headFiles = headReader(root)
+  let renames
   return {
     name: 'working tree',
     docMissingSuffix: '',
     files: listTracked(root),
-    renames: renames === null ? [] : parseNameStatus(renames),
+    // Read on first use: the diff is a git start that only a documented module gone from the tree can need.
+    get renames() {
+      if (renames === undefined) {
+        const out = runGit(root, ['diff', '--name-status', '-z', '-M', 'HEAD'])
+        renames = out === null ? [] : parseNameStatus(out)
+      }
+      return renames
+    },
     headText: (rel) => headFiles.text(rel),
     read: (rel) => readRegularFile(root, rel),
     readAll(wanted) {
