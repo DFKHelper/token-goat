@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { HARD_STOP_DEFAULT_S, HARD_STOP_MAX_S, HOOK_LIMIT_S, STARTUP_RESERVE_S, STOP_CLEANUP_S, TERM_WAIT_S, hardStopOf, postStopOf } from '../scripts/prepush-budget.mjs'
 import { unfinishedFiles, writeOwed } from '../scripts/prepush-failed.mjs'
-import { killAllIfCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { killAllIfCommandLine, killIfCommandLine, tiedToHandles } from './helpers/kill_if_command_line.js'
 import { reaperRecordPid } from './helpers/reaper_record.js'
 
 // Bound on every spawned hook or bash run in this file; a run that reaches it is killed and fails the row.
@@ -790,7 +790,7 @@ describe('the cleanup of recorded stub pids', () => {
 
   it.skipIf(!bashAvailable)('ends a bash under the row directory', () => {
     withBash(': @TAG@; read -t 60 _', (child, dir) => {
-      endRecordedTrees([path.join(dir, 'leg.pid')], dir)
+      endRecordedTrees([path.join(dir, 'leg.pid')], dir, [child])
       expect(gone(child), 'a bash under the row directory was left running by the recorded-pid cleanup').toBe(true)
     })
   })
@@ -806,12 +806,13 @@ function endTreesNamingDir(owner: string): void {
   killAllIfCommandLine(pids, (commandLine) => commandLine.includes(tag), { tree: true })
 }
 
-function endRecordedTrees(pidFiles: string[], owner: string): void {
+// `held` are children the row itself spawned: when the command-line query fails under load, the live handle proves identity.
+function endRecordedTrees(pidFiles: string[], owner: string, held: ChildProcess[] = []): void {
   const tag = path.basename(owner)
   for (const file of pidFiles) {
     if (!existsSync(file)) continue
     const pid = Number(readFileSync(file, 'utf8').trim())
     if (!Number.isInteger(pid)) continue
-    killIfCommandLine(pid, (commandLine) => /bash/i.test(commandLine) && commandLine.includes(tag), { tree: true })
+    killIfCommandLine(pid, (commandLine) => /bash/i.test(commandLine) && commandLine.includes(tag), { tree: true, tied: tiedToHandles(held) })
   }
 }
