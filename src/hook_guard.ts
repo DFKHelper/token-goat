@@ -1,16 +1,27 @@
-/** The guarded form of a registered hook command, and the one parser that reads it back. A host runs the registered string through a shell; the guard makes that shell, not the host, decide what happens when the native client is gone: run it when it exists, else run the Node shim with the same arguments, else print the host's safe answer and exit 0. Every path a registration names is read back through {@link parseGuardedCommand}. */
-/** The shells a guard can be written for. */
-export type GuardShell = 'sh' | 'powershell'
+/** Guarded hook command and its one parser: native client if present, else Node shim, else safe answer. */
+/** Shells a guard is written for; `cmd` is PowerShell encoded, read alike by cmd.exe, PowerShell and sh. */
+export type GuardShell = 'sh' | 'powershell' | 'cmd'
 
-/** Thrown by an installer, before it writes any hook config, when a command it would write contains text the harness rewrites before the command runs, so the hook would run something other than token-goat. */
-export class HookCommandRewriteError extends Error {}
+/** Thrown before any config write when a command holds text the harness rewrites, so it runs other code. */
+export class HookCommandRewriteError extends Error {
+  /** The command the install would have written, when the refusal comes from building it. */
+  readonly command: string | undefined
 
-/** The version token each guarded command starts with: a no-op statement, so a later build recognises both forms. */
+  constructor(message: string, command?: string) {
+    super(message)
+    this.command = command
+  }
+}
+
+/** Version token every guarded command starts with: a no-op, so a later build recognises both forms. */
 export const GUARD_VERSION = 1
 const SH_PREFIX = /^:\s+tg-guard-v(\d+)\s*;/
 const PS_PREFIX = /^'tg-guard-v(\d+)'\s*\|\s*Out-Null\s*;/
+const CMD_PREFIX = 'powershell -NoProfile -NonInteractive -Command "'
+const CMD_QUOTE = "'+[char]34+'"
+const CMD_FORM = /^powershell -NoProfile -NonInteractive -Command "([^"]*)"$/
 
-/** What a guarded command holds: the native client's argv (client, its flags, `--`, then the Node command it falls back to), the host's safe answer, and the notice file the guard writes when nothing could run. */
+/** Guarded command contents: native argv (client, flags, `--`, Node command), safe answer, notice file. */
 export interface GuardInput {
   readonly shell: GuardShell
   readonly native: readonly string[]
@@ -20,24 +31,38 @@ export interface GuardInput {
 
 /** The notice the guard leaves when only the safe answer could run, in the shape `readHookBroken` reads. */
 export function guardNoticeJson(nativeBin: string): string {
-  // Git Bash halves each run of backslashes in the command line it is started with, so a JSON escaped backslash is written as the unicode escape, whose lone backslash arrives as written.
+  // Git Bash halves backslash runs; a JSON backslash is written as a unicode escape, arriving as one.
   const json = JSON.stringify({
     schema: 1,
     first: 'unknown (written by the registered command)',
     last: 'unknown (written by the registered command)',
     count: 1,
-    events: [{ time: 'unknown', route: 'guard', path: nativeBin, error: 'the native client and the Node shim were both unusable' }],
+    events: [
+      {
+        time: 'unknown',
+        route: 'guard',
+        path: nativeBin,
+        error: 'the native client and the Node shim were both unusable',
+      },
+    ],
   })
   return json.split(BS + BS).join(BS + 'u005c')
 }
 
 const BS = String.fromCharCode(92)
 const PS_QUOTES = /['‘’‚‛]/g
+const UNC_BACKSLASHES = /^\\\\[^\\/]/
 
 function quoteWord(shell: GuardShell, text: string): string {
-  if (/[\0\r\n]/.test(text)) throw new HookCommandRewriteError(`a hook command cannot hold a NUL or line break (${JSON.stringify(text)})`)
+  if (/[\0\r\n]/.test(text)) {
+    throw new HookCommandRewriteError(
+      `a hook command cannot hold a NUL or line break (${JSON.stringify(text)})`,
+    )
+  }
+  // Git Bash halves the leading backslash pair of a UNC path; forward slashes reach it whole.
+  const word = shell === 'sh' && UNC_BACKSLASHES.test(text) ? text.split(BS).join('/') : text
   // PowerShell reads four typographic quotes as single quotes too, so each is doubled like the ASCII one.
-  return shell === 'sh' ? `'${text.replace(/'/g, "'\\''")}'` : `'${text.replace(PS_QUOTES, (q) => q + q)}'`
+  return shell === 'sh' ? `'${word.replace(/'/g, "'\\''")}'` : `'${text.replace(PS_QUOTES, (q) => q + q)}'`
 }
 
 const CASE_SH = 'case $? in 126|127) ;; *) exit $?;; esac'
@@ -48,7 +73,9 @@ function shRoute(test: string, argv: readonly string[]): string {
 
 function psRoute(test: string, argv: readonly string[]): string {
   const call = argv.map((w) => quoteWord('powershell', w)).join(' ')
-  return `if (${test}) { try { & ${call}; if ((Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore) -notin 126, 127) { exit (Get-Variable LASTEXITCODE -ValueOnly) } } catch { } }`
+  return `if (${test}) { try { & ${call}; ` +
+    `if ((Get-Variable LASTEXITCODE -ValueOnly -ErrorAction Ignore) -notin 126, 127) ` +
+    `{ exit (Get-Variable LASTEXITCODE -ValueOnly) } } catch { } }`
 }
 
 /** The part of a native argv after `--`: the Node command the client falls back to. */
@@ -57,15 +84,39 @@ export function wrappedNodeArgv(native: readonly string[]): string[] {
   return i < 0 ? [] : native.slice(i + 1)
 }
 
-/** The guarded command line for `input`. Throws when a word holds a NUL or line break. */
+/** Guarded command line for `input`; throws on NUL or line break. No `--`: Node alone, shim must exist. */
 export function buildGuardedCommand(input: GuardInput): string {
+  if (input.shell === 'cmd') {
+    const script = buildGuardedCommand({ ...input, shell: 'powershell' })
+    // A path word's double quote would end cmd.exe's quoting; safe answer and notice keep theirs in parens.
+    const bad = [...input.native, input.marker].find((w) => w.includes('"'))
+    if (bad !== undefined) {
+      throw new HookCommandRewriteError(
+        `a hook command run through cmd.exe cannot hold a double quote in a path (${JSON.stringify(bad)})`,
+      )
+    }
+    // cmd.exe expands %NAME% inside double quotes, so a word holding one can't reach PowerShell as written.
+    if (script.includes('%')) {
+      const at = script.indexOf('%')
+      throw new HookCommandRewriteError(
+        `a hook command run through cmd.exe cannot hold a percent sign ` +
+          `(${JSON.stringify(script.slice(at, at + 24))})`,
+        script,
+      )
+    }
+    return CMD_PREFIX + script.split('"').join(CMD_QUOTE) + '"'
+  }
   const q = (w: string): string => quoteWord(input.shell, w)
+  // Every word is quoted up front, so a word no route writes (Node-only) is still refused if unquotable.
+  for (const w of input.native) q(w)
   const bin = input.native[0]!
-  const node = wrappedNodeArgv(input.native)
+  const nodeOnly = !input.native.includes('--')
+  const node = nodeOnly ? input.native : wrappedNodeArgv(input.native)
   const shim = node[1]
   const notice = guardNoticeJson(bin)
   if (input.shell === 'sh') {
-    const parts = [': tg-guard-v1', shRoute(`[ -x ${q(bin)} ] && [ -s ${q(bin)} ]`, input.native)]
+    const parts = [': tg-guard-v1']
+    if (!nodeOnly) parts.push(shRoute(`[ -x ${q(bin)} ] && [ -s ${q(bin)} ]`, input.native))
     if (shim !== undefined) {
       parts.push(shRoute(`[ -f ${q(shim)} ] && [ -x ${q(node[0]!)} ]`, node))
       parts.push(shRoute(`[ -f ${q(shim)} ] && command -v node >/dev/null 2>&1`, ['node', ...node.slice(1)]))
@@ -75,12 +126,21 @@ export function buildGuardedCommand(input: GuardInput): string {
     return parts.join('; ')
   }
   const exists = (p: string): string => `Test-Path -LiteralPath ${q(p)} -PathType Leaf`
-  const parts = ["'tg-guard-v1' | Out-Null", psRoute(`(${exists(bin)}) -and ((Get-Item -LiteralPath ${q(bin)}).Length -gt 0)`, input.native)]
+  const parts = ["'tg-guard-v1' | Out-Null"]
+  if (!nodeOnly) {
+    parts.push(psRoute(`(${exists(bin)}) -and ((Get-Item -LiteralPath ${q(bin)}).Length -gt 0)`, input.native))
+  }
   if (shim !== undefined) {
     parts.push(psRoute(`${exists(shim)}`, node))
-    parts.push(psRoute(`(${exists(shim)}) -and (Get-Command node -ErrorAction Ignore)`, ['node', ...node.slice(1)]))
+    parts.push(
+      psRoute(`(${exists(shim)}) -and (Get-Command node -ErrorAction Ignore)`, ['node', ...node.slice(1)]),
+    )
   }
-  parts.push(`try { if (-not (Test-Path -LiteralPath ${q(input.marker)} )) { Set-Content -LiteralPath ${q(input.marker)} -Value ${q(notice)} -Encoding ascii -ErrorAction Stop } } catch { }`)
+  parts.push(
+    `try { if (-not (Test-Path -LiteralPath ${q(input.marker)} )) { ` +
+      `Set-Content -LiteralPath ${q(input.marker)} -Value (${q(notice)}) ` +
+        `-Encoding ascii -ErrorAction Stop } } catch { }`,
+  )
   parts.push(`[Console]::Out.Write( ${q(input.safe)} )`, 'exit 0')
   return parts.join('; ')
 }
@@ -90,7 +150,7 @@ interface Token {
   readonly quoted: boolean
 }
 
-/** Split `text` into statements of words: single quotes (`'\''` in sh, doubled quotes in PowerShell) group, an unquoted `;` ends a statement. Not a shell parser: it reads only what {@link buildGuardedCommand} writes. */
+/** Split `text` into words; unquoted `;` ends a statement. Reads only {@link buildGuardedCommand} output. */
 function statements(text: string, shell: GuardShell): Token[][] {
   const out: Token[][] = [[]]
   let cur = ''
@@ -143,19 +203,36 @@ function isPsQuote(c: string): boolean {
 
 /** How a command that starts like a guard reads back. */
 export type GuardedParse =
-  | { readonly kind: 'v1'; readonly shell: GuardShell; readonly native: string[]; readonly safe: string; readonly marker: string }
+  | {
+    readonly kind: 'v1'
+    readonly shell: GuardShell
+    readonly native: string[]
+    readonly safe: string
+    readonly marker: string
+  }
   | { readonly kind: 'newer'; readonly version: number }
   | { readonly kind: 'malformed' }
 
+/** The PowerShell guard inside a `cmd` form, or undefined when `command` is not one. */
+function decodeCmdForm(command: string): string | undefined {
+  const m = CMD_FORM.exec(command.trim())
+  return m === null ? undefined : m[1]!.split(CMD_QUOTE).join('"')
+}
+
 /** The guard version a command declares, or undefined when it is not a guarded command. */
 export function guardVersionOf(command: string): number | undefined {
-  const t = command.trimStart()
+  const t = decodeCmdForm(command) ?? command.trimStart()
   const m = SH_PREFIX.exec(t) ?? PS_PREFIX.exec(t)
   return m === null ? undefined : Number(m[1])
 }
 
-/** Read a guarded command back: the native argv it runs, the safe answer, and the notice path. undefined when `command` is not a guarded one; `newer` for a version this build does not know, which a reader leaves untouched. */
+/** Parse a guarded command: argv, safe answer, notice path; undefined if unguarded, `newer` if unknown. */
 export function parseGuardedCommand(command: string): GuardedParse | undefined {
+  const inner = decodeCmdForm(command)
+  if (inner !== undefined) {
+    const back = parseGuardedCommand(inner)
+    return back?.kind === 'v1' ? { ...back, shell: 'cmd' } : back
+  }
   const version = guardVersionOf(command)
   if (version === undefined) return undefined
   if (version !== GUARD_VERSION) return { kind: 'newer', version }
@@ -182,11 +259,13 @@ export function parseGuardedCommand(command: string): GuardedParse | undefined {
       if (t.includes('Set-Content')) marker = t[t.indexOf('-LiteralPath') + 1]
     }
   }
-  if (native === undefined || native.length === 0 || safe === undefined || marker === undefined) return { kind: 'malformed' }
+  if (native === undefined || native.length === 0 || safe === undefined || marker === undefined) {
+    return { kind: 'malformed' }
+  }
   return { kind: 'v1', shell, native, safe, marker }
 }
 
-/** The paths a guarded command names: the native client, the Node command's words that are absolute paths, and the notice file. */
+/** Paths a guarded command names: the native client, absolute Node-command words, and the notice file. */
 export function guardedPaths(parsed: GuardedParse): string[] {
   if (parsed.kind !== 'v1') return []
   return [...parsed.native.filter((w) => /^(?:[A-Za-z]:[\\/]|\/)/.test(w)), parsed.marker]

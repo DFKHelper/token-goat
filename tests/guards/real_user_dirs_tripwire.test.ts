@@ -185,6 +185,7 @@ const SANCTIONED_HOME_READS: Readonly<Record<string, number>> = {
   'src/hooks_bash_commands.ts': 2,
   'src/mcp_server.ts': 2,
   'src/purge.ts': 3,
+  'src/read_deny.ts': 2,
   'src/screenshot.ts': 3,
   'src/session_audit.ts': 2,
   'src/sharepoint_resolve.ts': 1,

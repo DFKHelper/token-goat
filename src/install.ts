@@ -12,9 +12,16 @@ import { claudeConfigDir } from './claude_config_dir.js'
 import { compareSemver } from './cli_upgrade.js'
 import { assertHookEntryAllowed } from './install_entry.js'
 import { loadConfig } from './config.js'
-import { guardVersionOf } from './hook_guard.js'
+import { GUARD_VERSION, guardVersionOf, parseGuardedCommand } from './hook_guard.js'
 import { assertRegisteredCommandsWork } from './hook_selftest.js'
-import { nativeHookBinary, nativeHookCommandLine, parseNativeInvocation, splitHookCommand, type WiredHookEntry } from './native_hook.js'
+import { claudeHookShell } from './claude_hook_shell.js'
+import {
+  nativeHookBinary,
+  nativeHookCommandLine,
+  parseNativeInvocation,
+  splitHookCommand,
+  type WiredHookEntry,
+} from './native_hook.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import { resolveOnPath, spawnResolvedSync } from './process_util.js'
@@ -115,11 +122,18 @@ export function execFormSupportedForVersionOutput(stdout: string): boolean {
 }
 
 /** The hook entry this build wires for `event`: exec-form when {@link claudeExecFormHooksSupported}, string-form otherwise, each with the native client in front of the Node command when {@link nativeHookBinary} names one. The native string form is quoted for a POSIX shell on every platform: Claude Code runs a string-form hook through Git Bash on Windows and /bin/sh elsewhere. */
-export function expectedHookEntryFor(scriptPath: string, event: string, opts: { sync?: boolean } = {}): { command: string; args?: string[] } {
+export function expectedHookEntryFor(
+  scriptPath: string,
+  event: string,
+  opts: { sync?: boolean } = {},
+): { command: string; args?: string[]; shell?: 'bash' | 'powershell' } {
   const bin = nativeHookBinary(process.argv[1], opts)
-  // The native client is always registered in the guarded string form: no host's exec form survives a missing binary, and a shell can.
-  const guarded = bin === undefined ? undefined : nativeHookCommandLine('sh', bin, 'claudecode', scriptPath, event)
-  if (guarded !== undefined) return { command: guarded }
+  // Always the guarded string form, with or without the native client; an exec form dies with its program.
+  const shell = claudeHookShell()
+  const guarded = nativeHookCommandLine(shell.guard, bin, 'claudecode', scriptPath, event)
+  if (guarded !== undefined) {
+    return { command: guarded, ...(shell.field !== undefined ? { shell: shell.field } : {}) }
+  }
   if (claudeExecFormHooksSupported()) return hookExecPartsFor(scriptPath, event)
   return { command: hookCommandFor(scriptPath, event) }
 }
@@ -146,14 +160,22 @@ function stringFormHookWords(command: string): string[] {
   return splitHookCommand(command, 'sh')
 }
 
+function guardShellOf(command: string): string | undefined {
+  const parsed = parseGuardedCommand(command)
+  return parsed?.kind === 'v1' ? parsed.shell : undefined
+}
+
 /** True when `command`/`args` is the hook `expected` describes -- the same words in the same order, never `command` alone: an exec-form entry's `command` is just `"node"`, shared by every event and by a stale entry whose `args` point at a deleted shim. A path word matches another spelling of the same existing file (see {@link sameHookWord}); a string-form entry never matches an exec-form expectation or the reverse, so `install` still upgrades one to the other. */
 function hookEntryMatches(command: string, args: readonly string[] | undefined, expected: { command: string; args?: string[] }): boolean {
   const execForm = expected.args !== undefined
   if (!execForm && args !== undefined && args.length > 0) return false
   const a = execForm ? [command, ...(args ?? [])] : stringFormHookWords(command)
   const b = execForm ? [expected.command, ...expected.args!] : stringFormHookWords(expected.command)
-  // The words of an old-form line and its guarded form are the same, so the guard itself is part of what must match.
-  if (!execForm && (guardVersionOf(command) === undefined) !== (guardVersionOf(expected.command) === undefined)) return false
+  // An old-form line and its guarded form share words, so the guard itself must match too.
+  if (!execForm && (guardVersionOf(command) === undefined)
+    !== (guardVersionOf(expected.command) === undefined)) return false
+  // A guard written for another shell is stale on a host that now runs the other one.
+  if (!execForm && guardShellOf(command) !== guardShellOf(expected.command)) return false
   return a.length === b.length && a.every((v, i) => sameHookWord(v, b[i]!))
 }
 
@@ -206,6 +228,8 @@ interface HookCommandEntry {
   command?: unknown
   /** Exec-form argv (Claude Code >= {@link CLAUDE_EXEC_FORM_MIN_VERSION}). Absent for a string-form entry. */
   args?: unknown
+  /** Shell running a string-form command (`bash` or `powershell`); token-goat states it on Windows. */
+  shell?: unknown
   /** Whether the call goes ahead when this hook fails (Claude Code >= 2.1.295); token-goat writes `"continue"` on its own entries, see {@link HOOK_ON_FAILURE}. */
   onFailure?: unknown
 }
@@ -271,12 +295,14 @@ export function wiredClaudeHookWords(scope: HookScope): string[][] {
   return wiredClaudeHookEntries(scope).map((e) => [...e.words])
 }
 
-/** The token-goat hook entries of the `scope` settings file, each with its argv words (read through the one parser), whether it is the command this build writes for its event, and whether it is the guarded form. */
+/** Token-goat hook entries in the `scope` file: argv words, whether current for the event, and guarded. */
 export function wiredClaudeHookEntries(scope: HookScope): WiredHookEntry[] {
   const out: WiredHookEntry[] = []
   const scriptPath = claudeHookScriptPath()
   const expectedByEvent = new Map<string, { command: string; args?: string[] }>()
-  for (const [eventKey, eventArg] of HOOK_EVENT_MAP) expectedByEvent.set(eventKey, expectedHookEntryFor(scriptPath, eventArg, { sync: false }))
+  for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
+    expectedByEvent.set(eventKey, expectedHookEntryFor(scriptPath, eventArg, { sync: false }))
+  }
   for (const [eventKey, groups] of Object.entries(readSettings(settingsPath(scope)).hooks ?? {})) {
     const expected = expectedByEvent.get(eventKey)
     for (const g of Array.isArray(groups) ? groups : []) {
@@ -286,7 +312,9 @@ export function wiredClaudeHookEntries(scope: HookScope): WiredHookEntry[] {
         const execForm = fields.args !== undefined && fields.args.length > 0
         out.push({
           words: execForm ? [fields.command, ...fields.args!] : stringFormHookWords(fields.command),
-          ...(expected === undefined ? {} : { current: hookEntryMatches(fields.command, fields.args, expected) }),
+          ...(expected === undefined
+            ? {}
+            : { current: hookEntryMatches(fields.command, fields.args, expected) }),
           guarded: !execForm && guardVersionOf(fields.command) !== undefined,
         })
       }
@@ -347,6 +375,19 @@ function installHooksScoped(scope: HookScope): InstallResult {
   const skippedEvents: string[] = []
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
     const expected = expectedHookEntryFor(scriptPath, eventArg)
+    // A newer build's guard is left as is: this build cannot read it, and neither strips nor duplicates it.
+    const newerGuard = (Array.isArray(hooks[eventKey]) ? hooks[eventKey]! : [])
+      .flatMap((g) => hooksOf(g))
+      .map((h) => commandHookFields(h)?.command)
+      .find((c) => c !== undefined && (guardVersionOf(c) ?? 0) > GUARD_VERSION)
+    if (newerGuard !== undefined) {
+      process.stderr.write(
+        `token-goat: left hooks.${eventKey} in ${p} as it was: its guard is version ` +
+          `${String(guardVersionOf(newerGuard))}, written by a newer token-goat than this one ` +
+          `(guard version ${String(GUARD_VERSION)}). Upgrade this install to change it.\n`,
+      )
+      continue
+    }
     registeredCommands.push(expected.command)
     // A non-array value (a string or an object) is the user's own and cannot be merged into; it is left byte-for-byte as it was and the event is skipped, as the settings file is reported at the end.
     const rawGroups: unknown = hooks[eventKey]
@@ -400,11 +441,23 @@ function installHooksScoped(scope: HookScope): InstallResult {
       }
       // An entry an earlier build wrote has no `onFailure`; add it to token-goat's own entries only, and keep a value already there (a user who chose "block" on purpose).
       let gainedOnFailure = false
+      const needsShell = (h: HookCommandEntry): boolean =>
+        expected.shell !== undefined && h.shell === undefined && isOwnHookEntry(h, isOurs)
       for (let i = 0; i < groups.length; i++) {
         const group = groups[i]
         if (typeof group !== 'object' || group === null || !Array.isArray(group.hooks)) continue
-        if (!hooksOf(group).some((h) => h !== null && typeof h === 'object' && h.onFailure === undefined && isOwnHookEntry(h, isOurs))) continue
-        groups[i] = { ...group, hooks: hooksOf(group).map((h) => (h !== null && typeof h === 'object' && h.onFailure === undefined && isOwnHookEntry(h, isOurs) ? { ...h, onFailure: HOOK_ON_FAILURE } : h)) }
+        if (!hooksOf(group).some((h) => h !== null && typeof h === 'object'
+          && ((h.onFailure === undefined && isOwnHookEntry(h, isOurs)) || needsShell(h)))) continue
+        groups[i] = {
+          ...group,
+          hooks: hooksOf(group).map((h) => (h !== null && typeof h === 'object'
+            ? {
+              ...h,
+              ...(h.onFailure === undefined && isOwnHookEntry(h, isOurs) ? { onFailure: HOOK_ON_FAILURE } : {}),
+              ...(needsShell(h) ? { shell: expected.shell } : {}),
+            }
+            : h)),
+        }
         gainedOnFailure = true
       }
       if (strippedStale || renarrowed || gainedOnFailure) {
@@ -416,7 +469,18 @@ function installHooksScoped(scope: HookScope): InstallResult {
 
     // Narrow the matcher to the tools this event actually has handlers for. Claude Code spawns a process per matcher hit and ~90% of that cost is Node startup plus bundle evaluation, so a catch-all makes every unhandled tool pay full price twice (pre + post). toolMatcherFor returns null when narrowing would be unsafe -- a non-tool event, or a handler that really does want everything -- and the catch-all is the correct answer then (where matcher is omitted entirely, since Claude Code schema forbids empty string matchers).
     const matcher = toolMatcherFor(eventArg as HookEventName)
-    groups.push({ ...(matcher !== null ? { matcher } : {}), hooks: [{ type: 'command', command: expected.command, ...(expected.args !== undefined ? { args: expected.args } : {}), onFailure: HOOK_ON_FAILURE }] })
+    groups.push({
+      ...(matcher !== null ? { matcher } : {}),
+      hooks: [
+        {
+          type: 'command',
+          command: expected.command,
+          ...(expected.args !== undefined ? { args: expected.args } : {}),
+          ...(expected.shell !== undefined ? { shell: expected.shell } : {}),
+          onFailure: HOOK_ON_FAILURE,
+        },
+      ],
+    })
     hooks[eventKey] = groups
     settingsChanged = true
   }
@@ -432,7 +496,7 @@ function installHooksScoped(scope: HookScope): InstallResult {
   // Only touch settings.json when its own content actually changed: a run that merely repaired the shim must not rewrite (and re-timestamp) a file the user may be watching or version-controlling.
   if (settingsChanged) {
     settings.hooks = hooks
-    // The commands are known before the file is written, so a failed self-test leaves the previous registration untouched without a restore.
+    // Commands are known before the write, so a failed self-test leaves the old registration untouched.
     assertRegisteredCommandsWork(registeredCommands, p)
     recordCreatedBy([p], () => writeJsonSettings(p, settings))
   }

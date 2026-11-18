@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs'
 import { redactReadText } from './fence_cap.js'
 import { indexedSourceText } from './indexed_source.js'
 import { displaySafeText } from './paths.js'
+import { assertReadAllowed } from './read_deny.js'
 
 /** One line of a source-context window: its 1-indexed line number and verbatim text. */
 export interface SourceContextLine {
@@ -17,6 +18,8 @@ export function buildContextWindow(absPath: string, line: number, contextLines: 
   if (!Number.isFinite(contextLines) || contextLines <= 0) return null
   let text: string
   try {
+    // A file the host denies, or a settings loader that throws, yields no window rather than its text.
+    assertReadAllowed(absPath)
     text = redactReadText(indexedSourceText(absPath, readFileSync(absPath, 'utf-8')))
   } catch {
     return null

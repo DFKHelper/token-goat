@@ -630,7 +630,7 @@ describe('begun stamp', () => {
   })
 })
 
-/** Every host and event the installers wire, run through the registered command in the host's shell with the client built by this run: the exe route as registered and the Node route with the client unresolvable. Rows come from what each installer writes, so a new event or host adds a row. */
+/** Each installer's events, run through the registered command in the host's shell: exe and Node routes. */
 const NATIVE_TARGET = WIN || process.platform === 'linux'
 
 describe.runIf(NATIVE_TARGET)('the registered command of every host and event', () => {
@@ -644,10 +644,11 @@ describe.runIf(NATIVE_TARGET)('the registered command of every host and event', 
     const { installCodex } = await import('../src/bridges/codex_install.js')
     const { installGrok } = await import('../src/bridges/grok_install.js')
     const { installKimi } = await import('../src/bridges/kimi_install.js')
-    const { copilotCliHooksDir, installCopilotHooksFile } = await import('../src/bridges/copilot_cli_install.js')
+    const { copilotCliHooksDir, installCopilotHooksFile } =
+      await import('../src/bridges/copilot_cli_install.js')
     const { HOOKS_CONFIG_FILE } = await import('../src/bridges/copilot_hooks_owners.js')
     const { codexConfigPath, grokConfigPath, kimiConfigPath } = await import('../src/purge.js')
-    const { guardedCommandsInText } = await import('../src/hook_selftest.js')
+    const { guardedCommandsInText, setHookSelftestRunnerForTesting } = await import('../src/hook_selftest.js')
     const { parseGuardedCommand } = await import('../src/hook_guard.js')
     registered = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-conf-registered-'))
     const bundle = path.join(registered, 'bundle')
@@ -657,14 +658,21 @@ describe.runIf(NATIVE_TARGET)('the registered command of every host and event', 
     fs.copyFileSync(bin, path.join(target, WIN ? 'tg-hook.exe' : 'tg-hook'))
     process.argv[1] = path.join(bundle, 'token-goat.mjs')
     process.env['TOKEN_GOAT_NATIVE_HOOKS'] = '1'
+    // The rows below run each command in its shell, so the install self-test is not repeated here.
+    setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
     const claudeDir = path.dirname(settingsPath('user'))
-    if (!claudeDir.startsWith(os.tmpdir())) throw new Error(`the Claude config dir is outside the test root: ${claudeDir}`)
+    if (!claudeDir.startsWith(os.tmpdir()))
+      throw new Error(`the Claude config dir is outside the test root: ${claudeDir}`)
     const hosts: Array<[string, () => unknown, () => string]> = [
       ['claude', () => installHooks('user', { dev: true }), () => settingsPath('user')],
       ['codex', installCodex, codexConfigPath],
       ['grok', installGrok, grokConfigPath],
       ['kimi', installKimi, kimiConfigPath],
-      ['copilot', () => installCopilotHooksFile(copilotCliHooksDir({}), 'copilot'), () => path.join(copilotCliHooksDir({}), HOOKS_CONFIG_FILE)],
+      [
+        'copilot',
+        () => installCopilotHooksFile(copilotCliHooksDir({}), 'copilot'),
+        () => path.join(copilotCliHooksDir({}), HOOKS_CONFIG_FILE),
+      ],
     ]
     for (const [host, install, config] of hosts) {
       fs.rmSync(path.dirname(config()), { recursive: true, force: true })
@@ -676,7 +684,8 @@ describe.runIf(NATIVE_TARGET)('the registered command of every host and event', 
         rows.push({ host, label: `${host} ${at('--harness')} ${at('--event')} ${parsed.shell}`, command })
       }
     }
-  }, 600_000)
+    setHookSelftestRunnerForTesting(undefined)
+  })
 
   afterAll(() => {
     process.argv[1] = realArgv1!
@@ -687,11 +696,11 @@ describe.runIf(NATIVE_TARGET)('the registered command of every host and event', 
 
   it('covers every host that runs hooks through a shell this platform can guard', () => {
     const hosts = new Set(rows.map((r) => r.host))
-    expect([...hosts].sort()).toEqual(WIN ? ['claude', 'codex', 'copilot', 'grok'] : ['claude', 'codex', 'copilot', 'grok', 'kimi'])
+    expect([...hosts].sort()).toEqual(['claude', 'codex', 'copilot', 'grok', 'kimi'])
     expect(rows.length).toBeGreaterThan(20)
   })
 
-  it('answers a valid hook answer and exits 0 on the exe route and on the Node route, for every row', async () => {
+  it('every row answers and exits 0 on the exe and Node routes', async () => {
     const { realShellRunner } = await import('../src/hook_selftest.js')
     const { buildGuardedCommand, parseGuardedCommand } = await import('../src/hook_guard.js')
     const problems: string[] = []
@@ -701,7 +710,12 @@ describe.runIf(NATIVE_TARGET)('the registered command of every host and event', 
       const event = parsed.native[parsed.native.indexOf('--event') + 1] ?? 'unknown'
       const input = JSON.stringify({ hook_event_name: event, session_id: 'tg-conformance' })
       const nowhere = path.join(registered, 'no-such-dir', path.basename(parsed.native[0]!))
-      const viaNode = buildGuardedCommand({ shell: parsed.shell, native: [nowhere, ...parsed.native.slice(1)], safe: parsed.safe, marker: path.join(registered, `marker-${problems.length}-${row.host}`) })
+      const viaNode = buildGuardedCommand({
+        shell: parsed.shell,
+        native: [nowhere, ...parsed.native.slice(1)],
+        safe: parsed.safe,
+        marker: path.join(registered, `marker-${problems.length}-${row.host}`),
+      })
       for (const [route, command] of [['exe', row.command], ['node', viaNode]] as const) {
         const run = realShellRunner(parsed.shell, command, input)
         if (run === null) continue
@@ -715,9 +729,12 @@ describe.runIf(NATIVE_TARGET)('the registered command of every host and event', 
           }
         })
         const answered = lines.length > 0 ? objects : row.host === 'kimi'
-        if (run.status !== 0 || !answered) problems.push(`${row.label} (${route}): exit ${String(run.status)}, stdout ${JSON.stringify(run.stdout.slice(0, 120))}`)
+        if (run.status !== 0 || !answered) {
+          const shown = JSON.stringify(run.stdout.slice(0, 120))
+          problems.push(`${row.label} (${route}): exit ${String(run.status)}, stdout ${shown}`)
+        }
       }
     }
     expect(problems).toEqual([])
-  }, 600_000)
+  })
 })

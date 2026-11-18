@@ -1,4 +1,4 @@
-/** The guarded hook command, run through the real shell each host uses (Git Bash or /bin/sh for the sh form, PowerShell for the other). Rows derive from the wirings: every harness and event the payload fixtures cover, in each shell form, with the safe answer and notice path the builder writes for it. The native client is a stand-in (a copy of node that prints its route), so the route taken is read off stdout; the real client behind the same registered line is driven by native_hook_conformance and native_hook_install_e2e. */
+/** Guarded hook command per host shell with a stand-in native client; conformance tests cover the real one. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -6,7 +6,14 @@ import * as path from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { buildGuardedCommand, GUARD_VERSION, guardedPaths, HookCommandRewriteError, parseGuardedCommand, type GuardShell } from '../src/hook_guard.js'
+import {
+  buildGuardedCommand,
+  GUARD_VERSION,
+  guardedPaths,
+  HookCommandRewriteError,
+  parseGuardedCommand,
+  type GuardShell,
+} from '../src/hook_guard.js'
 import { noopFor } from '../src/hook_adapters.js'
 import { nativeHookCommandLine, splitHookCommand } from '../src/native_hook.js'
 import { powerShellCommandArgs, resolvePowerShell, resolveWindowsBash } from '../src/shell.js'
@@ -24,7 +31,18 @@ process.stdout.write(JSON.stringify(code === 2 ? { route: 'node', decision: 'blo
 process.exitCode = code
 `
 
-function shellProgram(shell: GuardShell): { program: string; args: (command: string) => string[] } | null {
+function shellProgram(
+  shell: GuardShell,
+): { program: string; args: (command: string) => string[]; verbatim?: boolean } | null {
+  // cmd.exe /d /s /c "<command>": /s strips the outer quotes and keeps the inner ones, as a cmd host does.
+  if (shell === 'cmd')
+    return WIN
+      ? {
+          program: process.env['ComSpec'] ?? 'cmd.exe',
+          args: (c) => ['/d', '/s', '/c', `"${c}"`],
+          verbatim: true,
+        }
+      : null
   if (shell === 'sh') {
     const program = WIN ? resolveWindowsBash() : '/bin/sh'
     return program === null ? null : { program, args: (c) => ['-c', c] }
@@ -34,7 +52,10 @@ function shellProgram(shell: GuardShell): { program: string; args: (command: str
   return { program, args: powerShellCommandArgs }
 }
 
-const shells: GuardShell[] = (['sh', 'powershell'] as const).filter((s) => s === 'sh' || WIN || shellProgram(s) !== null)
+const shells: GuardShell[] = (['sh', 'powershell', 'cmd'] as const).filter(
+  (s) => s === 'sh' || shellProgram(s) !== null,
+)
+const CMD_SPECIAL_DIR = SPECIAL_DIR.replace('%z%', 'z')
 
 interface Row {
   harness: string
@@ -44,7 +65,9 @@ interface Row {
 
 const wiringRows: Row[] = []
 for (const c of HARNESS_HOOK_PAYLOADS) {
-  for (const shell of shells) if (!wiringRows.some((r) => r.harness === c.harness && r.event === c.event && r.shell === shell)) wiringRows.push({ harness: c.harness, event: c.event, shell })
+  for (const shell of shells)
+    if (!wiringRows.some((r) => r.harness === c.harness && r.event === c.event && r.shell === shell))
+      wiringRows.push({ harness: c.harness, event: c.event, shell })
 }
 
 type ExeState = 'ok' | 'missing' | 'empty' | 'not-executable' | 'garbage'
@@ -57,6 +80,8 @@ interface Layout {
   nodeOnPath: boolean
   dirName?: string
   exit?: 2
+  // Command paths name the same files through the administrative share of localhost.
+  unc?: true
 }
 
 let root = ''
@@ -83,35 +108,87 @@ interface Outcome {
 
 let counter = 0
 
+/** The administrative-share UNC spelling of a local drive path. */
+function uncOf(p: string): string {
+  return `\\\\localhost\\${p.slice(0, 1)}$${p.slice(2)}`
+}
+
 function run(row: Row, layout: Layout): Outcome {
   const prog = shellProgram(row.shell)
   if (prog === null) throw new Error(`no ${row.shell} shell on this machine`)
-  const dir = path.join(root, `case-${String(counter++)}`, layout.dirName ?? 'd')
+  const dirName =
+    row.shell === 'cmd' && layout.dirName === SPECIAL_DIR ? CMD_SPECIAL_DIR : (layout.dirName ?? 'd')
+  const dir = path.join(root, `case-${String(counter++)}`, dirName)
   fs.mkdirSync(dir, { recursive: true })
   const exePath = path.join(dir, WIN ? 'tg-hook.exe' : 'tg-hook')
+  const at = (p: string): string => (layout.unc === true ? uncOf(p) : p)
   const standExe = path.join(dir, 'stand_exe.cjs')
   const shim = path.join(dir, 'token-goat-shim.cjs')
   fs.writeFileSync(standExe, STAND_EXE)
   if (layout.shim) fs.writeFileSync(shim, STAND_SHIM)
   if (layout.exe === 'ok' || layout.exe === 'not-executable') fs.copyFileSync(nodeCopy, exePath)
   if (layout.exe === 'empty') fs.writeFileSync(exePath, '')
-  if (layout.exe === 'garbage') fs.writeFileSync(exePath, Buffer.from([0x7f, 0x00, 0x01, 0x02, 0xff, 0xfe, 0x80, 0x81, 0x90]))
+  if (layout.exe === 'garbage')
+    fs.writeFileSync(exePath, Buffer.from([0x7f, 0x00, 0x01, 0x02, 0xff, 0xfe, 0x80, 0x81, 0x90]))
   if (layout.exe === 'not-executable' && !WIN) fs.chmodSync(exePath, 0o644)
   if (layout.exe === 'garbage' && !WIN) fs.chmodSync(exePath, 0o755)
   const nodeAbs = layout.nodeAbs ? process.execPath : path.join(dir, 'no-such-node', WIN ? 'node.exe' : 'node')
-  const wired = nativeHookCommandLine(row.shell, exePath, row.harness as never, shim, row.event, path.join(dir, 'token-goat.mjs'))
+  const wired = nativeHookCommandLine(
+    row.shell,
+    at(exePath),
+    row.harness as never,
+    at(shim),
+    row.event,
+    at(path.join(dir, 'token-goat.mjs')),
+  )
   const parsed = wired === undefined ? undefined : parseGuardedCommand(wired)
-  if (parsed === undefined || parsed.kind !== 'v1') throw new Error(`the wiring row ${JSON.stringify(row)} did not produce a guarded command: ${String(wired)}`)
+  if (parsed === undefined || parsed.kind !== 'v1')
+    throw new Error(
+      `the wiring row ${JSON.stringify(row)} did not produce a guarded command: ${String(wired)}`,
+    )
   const marker = path.join(dir, 'hook-broken.json')
   const safe = noopFor(row.harness as never, row.event)
   expect(parsed.safe).toBe(safe)
-  const command = buildGuardedCommand({ shell: row.shell, native: [exePath, standExe, '--', nodeAbs, shim], safe, marker })
-  const pathEnv = layout.nodeOnPath ? [path.dirname(process.execPath), path.dirname(prog.program)].join(path.delimiter) : path.dirname(prog.program)
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: pathEnv, ...(layout.exit === 2 ? { TG_TEST_EXIT: '2' } : { TG_TEST_EXIT: '' }) }
-  const r = spawnSync(prog.program, prog.args(command), { env, encoding: 'utf8', timeout: 60_000, windowsHide: true, cwd: dir, input: '{}' })
+  const command = buildGuardedCommand({
+    shell: row.shell,
+    native: [at(exePath), at(standExe), '--', nodeAbs, at(shim)],
+    safe,
+    marker: at(marker),
+  })
+  // The cmd form starts `powershell`, which cmd.exe finds on PATH: keep that directory on PATH.
+  const shellDirs =
+    row.shell === 'cmd'
+      ? [
+          path.dirname(prog.program),
+          path.join(process.env['SystemRoot'] ?? 'C:/Windows', 'System32', 'WindowsPowerShell', 'v1.0'),
+        ]
+      : [path.dirname(prog.program)]
+  const pathEnv = (layout.nodeOnPath ? [path.dirname(process.execPath), ...shellDirs] : shellDirs).join(
+    path.delimiter,
+  )
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PATH: pathEnv,
+    ...(layout.exit === 2 ? { TG_TEST_EXIT: '2' } : { TG_TEST_EXIT: '' }),
+  }
+  const r = spawnSync(prog.program, prog.args(command), {
+    env,
+    encoding: 'utf8',
+    timeout: 60_000,
+    windowsHide: true,
+    cwd: dir,
+    input: '{}',
+    windowsVerbatimArguments: prog.verbatim === true,
+  })
   const out = r.stdout
   const route: Route = out.includes('"route":"exe"') ? 'exe' : out.includes('"route":"node"') ? 'node' : 'safe'
-  return { status: r.status, stdout: out, route, markerWritten: fs.existsSync(marker), notice: fs.existsSync(marker) ? parseNotice(fs.readFileSync(marker, 'utf8')) : undefined }
+  return {
+    status: r.status,
+    stdout: out,
+    route,
+    markerWritten: fs.existsSync(marker),
+    notice: fs.existsSync(marker) ? parseNotice(fs.readFileSync(marker, 'utf8')) : undefined,
+  }
 }
 
 function expectedRoute(l: Layout): Route {
@@ -129,11 +206,13 @@ const CASES: ReadonlyArray<readonly [string, Layout]> = [
 describe('the guarded command on every wiring row, in its own shell', () => {
   it('derives its rows from the wirings', () => {
     expect(wiringRows.length).toBeGreaterThan(10)
-    expect(new Set(wiringRows.map((r) => r.harness))).toEqual(new Set(HARNESS_HOOK_PAYLOADS.map((c) => c.harness)))
+    expect(new Set(wiringRows.map((r) => r.harness))).toEqual(
+      new Set(HARNESS_HOOK_PAYLOADS.map((c) => c.harness)),
+    )
   })
 
   for (const row of wiringRows) {
-    it(`${row.harness} ${row.event} through ${row.shell}: exe, then Node, then the safe answer, always exit 0`, () => {
+    it(`${row.harness} ${row.event} via ${row.shell}: exe, Node, then the safe answer, exit 0`, () => {
       for (const [name, layout] of CASES) {
         const o = run(row, layout)
         const want = expectedRoute(layout)
@@ -154,24 +233,45 @@ describe('the guard on the routes the wiring rows do not cross', () => {
   const rep = (shell: GuardShell): Row => ({ harness: 'claudecode', event: 'pre_tool_use', shell })
   const EXOTIC: ReadonlyArray<readonly [string, Layout]> = [
     ['exe of zero bytes', { exe: 'empty', shim: true, nodeAbs: true, nodeOnPath: false }],
-    ['exe not executable (or not a program on Windows)', { exe: WIN ? 'garbage' : 'not-executable', shim: true, nodeAbs: true, nodeOnPath: false }],
+    [
+      'exe not executable (or not a program on Windows)',
+      { exe: WIN ? 'garbage' : 'not-executable', shim: true, nodeAbs: true, nodeOnPath: false },
+    ],
     ['exe of garbage bytes', { exe: 'garbage', shim: true, nodeAbs: true, nodeOnPath: false }],
-    ['the registered node gone, node on PATH', { exe: 'missing', shim: true, nodeAbs: false, nodeOnPath: true }],
-    ['node missing from PATH and from its registered path', { exe: 'missing', shim: true, nodeAbs: false, nodeOnPath: false }],
-    ['special characters in every path, exe present', { exe: 'ok', shim: true, nodeAbs: true, nodeOnPath: false, dirName: SPECIAL_DIR }],
-    ['special characters in every path, exe missing', { exe: 'missing', shim: true, nodeAbs: true, nodeOnPath: false, dirName: SPECIAL_DIR }],
-    ['special characters in every path, nothing runs', { exe: 'missing', shim: false, nodeAbs: true, nodeOnPath: false, dirName: SPECIAL_DIR }],
+    [
+      'the registered node gone, node on PATH',
+      { exe: 'missing', shim: true, nodeAbs: false, nodeOnPath: true },
+    ],
+    [
+      'node missing from PATH and from its registered path',
+      { exe: 'missing', shim: true, nodeAbs: false, nodeOnPath: false },
+    ],
+    [
+      'special characters in every path, exe present',
+      { exe: 'ok', shim: true, nodeAbs: true, nodeOnPath: false, dirName: SPECIAL_DIR },
+    ],
+    [
+      'special characters in every path, exe missing',
+      { exe: 'missing', shim: true, nodeAbs: true, nodeOnPath: false, dirName: SPECIAL_DIR },
+    ],
+    ['UNC paths, exe present', { exe: 'ok', shim: true, nodeAbs: true, nodeOnPath: false, unc: true }],
+    ['UNC paths, exe missing', { exe: 'missing', shim: true, nodeAbs: true, nodeOnPath: false, unc: true }],
+    ['UNC paths, nothing runs', { exe: 'missing', shim: false, nodeAbs: true, nodeOnPath: false, unc: true }],
+    [
+      'special characters in every path, nothing runs',
+      { exe: 'missing', shim: false, nodeAbs: true, nodeOnPath: false, dirName: SPECIAL_DIR },
+    ],
   ]
   for (const shell of shells) {
     for (const [name, layout] of EXOTIC) {
-      it(`${name} through ${shell}`, () => {
+      it.skipIf(layout.unc === true && !WIN)(`${name} through ${shell}`, () => {
         const o = run(rep(shell), layout)
         expect(o.route, o.stdout).toBe(expectedRoute(layout))
         expect(o.status).toBe(0)
         if (o.route === 'safe') expect(o.markerWritten).toBe(true)
       })
     }
-    it(`an exit 2 block with its JSON still blocks through ${shell}, on the exe route and on the Node route`, () => {
+    it(`an exit 2 block with its JSON still blocks through ${shell}, on the exe and the Node route`, () => {
       const viaExe = run(rep(shell), { exe: 'ok', shim: true, nodeAbs: true, nodeOnPath: false, exit: 2 })
       expect(viaExe.status).toBe(2)
       expect(JSON.parse(viaExe.stdout)).toEqual({ route: 'exe', decision: 'block' })
@@ -203,32 +303,88 @@ describe('the parser reads back what the builder wrote', () => {
   for (const shell of shells) {
     it(`round-trips random words through ${shell}`, () => {
       for (let i = 0; i < 300; i++) {
-        const native = [word(), '--harness', word(), '--', word(), word(), word()]
-        const safe = word()
-        const marker = word()
+        // cmd.exe cannot carry a percent sign or double quote in a path word: the builder refuses it.
+        const w = (): string => (shell === 'cmd' ? word().replace(/["%]/g, '') : word())
+        const native = [w(), '--harness', w(), '--', w(), w(), w()]
+        const safe = word().replace(/%/g, '')
+        const marker = w()
         const line = buildGuardedCommand({ shell, native, safe, marker })
         const back = parseGuardedCommand(line)
-        expect(back, JSON.stringify({ native, safe, marker })).toEqual({ kind: 'v1', shell, native, safe, marker })
+        expect(back, JSON.stringify({ native, safe, marker })).toEqual({
+          kind: 'v1',
+          shell,
+          native,
+          safe,
+          marker,
+        })
       }
     })
   }
   it('round-trips the special-character path of every shell in both guard forms', () => {
-    for (const shell of ['sh', 'powershell'] as const) {
-      const bin = path.join(root || os.tmpdir(), SPECIAL_DIR, 'tg-hook.exe')
-      const line = buildGuardedCommand({ shell, native: [bin, '--', 'node', 'shim.cjs'], safe: '{"a":"it\'s"}', marker: bin + '.json' })
+    for (const shell of shells) {
+      const bin = path.join(root || os.tmpdir(), shell === 'cmd' ? CMD_SPECIAL_DIR : SPECIAL_DIR, 'tg-hook.exe')
+      const line = buildGuardedCommand({
+        shell,
+        native: [bin, '--', 'node', 'shim.cjs'],
+        safe: '{"a":"it\'s"}',
+        marker: bin + '.json',
+      })
       const back = parseGuardedCommand(line)
       expect(back?.kind).toBe('v1')
       if (back?.kind === 'v1') expect(guardedPaths(back)).toEqual([bin, bin + '.json'])
       expect(splitHookCommand(line, shell)[0]).toBe(bin)
     }
   })
-  it('refuses a word it cannot quote, and reads a newer version as newer and a damaged one as malformed', () => {
+  it('refuses an unquotable word; reads a newer version as newer and a damaged one as malformed', () => {
     for (const bad of ['a\nb', 'a\rb', 'a\0b']) {
-      expect(() => buildGuardedCommand({ shell: 'sh', native: [bad], safe: '{}', marker: 'm' })).toThrow(HookCommandRewriteError)
+      expect(() =>
+        buildGuardedCommand({ shell: 'sh', native: [bad], safe: '{}', marker: 'm' }),
+      ).toThrow(HookCommandRewriteError)
     }
-    expect(parseGuardedCommand(`: tg-guard-v${String(GUARD_VERSION + 1)}; whatever`)).toEqual({ kind: 'newer', version: GUARD_VERSION + 1 })
+    if (WIN) {
+      for (const bad of ['C:/a"b/tg-hook.exe', 'C:/%TEMP%/tg-hook.exe']) {
+        expect(
+          () =>
+            buildGuardedCommand({
+              shell: 'cmd',
+              native: [bad, '--', 'node', 's.cjs'],
+              safe: '{}',
+              marker: 'm',
+            }),
+          bad,
+        ).toThrow(HookCommandRewriteError)
+      }
+    }
+    expect(parseGuardedCommand(`: tg-guard-v${String(GUARD_VERSION + 1)}; whatever`)).toEqual({
+      kind: 'newer',
+      version: GUARD_VERSION + 1,
+    })
     expect(parseGuardedCommand(': tg-guard-v1; exit 0')?.kind).toBe('malformed')
     expect(parseGuardedCommand('token-goat hook x')).toBeUndefined()
+  })
+})
+
+describe('a UNC path in the sh form', () => {
+  const UNC_EXE = uncOf('C:\\tg dir\\native\\tg-hook.exe')
+  const input = (shell: GuardShell) => ({
+    shell,
+    native: [UNC_EXE, '--', 'node', 'C:\\s.cjs'],
+    safe: '{}',
+    marker: uncOf('C:\\tg dir\\m.json'),
+  })
+
+  it('is written with forward slashes, which Git Bash passes on whole, and has no backslash pair', () => {
+    const command = buildGuardedCommand(input('sh'))
+    expect(command).toContain(`'//localhost/C$/tg dir/native/tg-hook.exe'`)
+    expect(command).not.toContain('\\\\')
+    const parsed = parseGuardedCommand(command)
+    const client = parsed?.kind === 'v1' ? parsed.native[0] : undefined
+    expect(client).toBe('//localhost/C$/tg dir/native/tg-hook.exe')
+  })
+
+  it('stays a backslash UNC path in PowerShell, which keeps backslashes whole', () => {
+    const parsed = parseGuardedCommand(buildGuardedCommand(input('powershell')))
+    expect(parsed).toMatchObject({ kind: 'v1', native: [UNC_EXE, '--', 'node', 'C:\\s.cjs'] })
   })
 })
 

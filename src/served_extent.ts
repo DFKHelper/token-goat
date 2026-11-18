@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { fingerprintContent } from './fingerprint.js'
+import { ReadDeniedError } from './read_deny.js'
 import { redactSerializedJson } from './secret_redact.js'
 import { ensureSessionDirectory, sessionSidecarPath } from './session_store.js'
 import { atomicWriteText, withFileLock } from './util.js'
@@ -208,7 +209,15 @@ export async function servedExtents(sub: string, spec: string, cmd: string, proj
   if (symbol === undefined || symbol === '') return []
   if (sub === 'section') {
     const [{ readSection }, { readFileText }] = await Promise.all([import('./section_reader.js'), import('./read_commands.js')])
-    const hit = readSection(file, symbol, readFileText)
+    // A denied file served nothing: the hook records no extent rather than failing.
+    const hit = ((): ReturnType<typeof readSection> => {
+      try {
+        return readSection(file, symbol, readFileText)
+      } catch (err) {
+        if (err instanceof ReadDeniedError) return null
+        throw err
+      }
+    })()
     return hit !== null && hit.occurrences === undefined ? [{ filePath: file, start: hit.lineStart, end: hit.lineEnd }] : []
   }
   if (sub !== 'read') return []

@@ -171,19 +171,38 @@ export function installKimi(): KimiInstallResult {
   return verifiedInstall([kimiConfigPath()], () => recordCreatedBy(kimiArtifactPaths(), installKimiFiles))
 }
 
+function kimiRewriteRefusal(span: string, command: string): HookCommandRewriteError {
+  return new HookCommandRewriteError(
+    `Kimi Code runs hook commands through cmd.exe, which replaces ${span} with the value of the environment ` +
+      `variable of that name whenever one is set, before it reads any quotes, so the hook command token-goat ` +
+      `would write (${command}) would not run token-goat. Nothing was written. Move the path that contains ` +
+      `${echoedValue(span)} (the Kimi Code home, token-goat's install directory, or Node's) to one without a ` +
+      `%...% pair, then run \`token-goat install --kimi\` again.`,
+  )
+}
+
 function installKimiFiles(): KimiInstallResult {
   const configPath = kimiConfigPath()
   const agentsPath = kimiAgentsPath()
   const scriptPath = kimiHookScriptPath()
-  const desired: KimiHookEntry[] = KIMI_HOOK_EVENTS.map((event) => ({
-    event,
-    command: kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? ''),
-  }))
+  let desired: KimiHookEntry[]
+  try {
+    desired = KIMI_HOOK_EVENTS.map((event) => ({
+      event,
+      command: kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[event] ?? ''),
+    }))
+  } catch (err) {
+    // The guarded cmd form cannot be built around a %NAME% pair; name the path to move, as the Node form does.
+    const refused = err instanceof HookCommandRewriteError ? err.command : undefined
+    const refusedSpan = refused === undefined ? undefined : hookCommandRewrittenSpan(refused, 'cmd')
+    if (refused === undefined || refusedSpan === undefined) throw err
+    throw kimiRewriteRefusal(refusedSpan, refused)
+  }
   // Refused before anything is written: a hook whose paths cmd.exe rewrites would run some other path on every call.
   for (const { command } of process.platform === 'win32' ? desired : []) {
     const span = hookCommandRewrittenSpan(command, 'cmd')
     if (span !== undefined) {
-      throw new HookCommandRewriteError(`Kimi Code runs hook commands through cmd.exe, which replaces ${span} with the value of the environment variable of that name whenever one is set, before it reads any quotes, so the hook command token-goat would write (${command}) would not run token-goat. Nothing was written. Move the path that contains ${echoedValue(span)} (the Kimi Code home, token-goat's install directory, or Node's) to one without a %...% pair, then run \`token-goat install --kimi\` again.`)
+      throw kimiRewriteRefusal(span, command)
     }
   }
 
@@ -268,10 +287,16 @@ export function uninstallKimi(): boolean {
   return removed
 }
 
-/** The hook command for `eventArg`: the native client in front of the Node command when this install wires it, quoted for the shell Kimi Code runs a hook in (Node's `spawn(command, { shell: true })`: `cmd.exe /d /s /c` on Windows, `/bin/sh -c` elsewhere), else the Node command alone. */
+/** Kimi runs hooks by create_subprocess_shell (kimi-cli hooks/runner.py @9ab1286): cmd.exe on Windows. */
 export function kimiHookCommandFor(scriptPath: string, eventArg: string, opts: { sync?: boolean } = {}): string {
   const bin = nativeHookBinary(process.argv[1], opts)
-  const native = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'cmd' : 'sh', bin, 'kimi', scriptPath, eventArg)
+  const native = nativeHookCommandLine(
+    process.platform === 'win32' ? 'cmd' : 'sh',
+    bin,
+    'kimi',
+    scriptPath,
+    eventArg,
+  )
   return native ?? hookCommandFor(scriptPath, eventArg)
 }
 
@@ -281,7 +306,13 @@ export function wiredKimiHookWords(): WiredHookEntry[] {
   if (!Array.isArray(hooks)) return []
   const scriptPath = kimiHookScriptPath()
   const expected = new Set(KIMI_HOOK_EVENTS.map((e) => kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[e] ?? '', { sync: false })))
-  return hooks.filter((h) => isKimiTokenGoatCommand(h?.command)).map((h) => ({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'), current: expected.has(h.command), ...(process.platform === 'win32' ? {} : { guarded: guardVersionOf(h.command) !== undefined }) }))
+  return hooks
+    .filter((h) => isKimiTokenGoatCommand(h?.command))
+    .map((h) => ({
+      words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'),
+      current: expected.has(h.command),
+      guarded: guardVersionOf(h.command) !== undefined,
+    }))
 }
 
 /** Is the Kimi Code integration currently present and up to date? */

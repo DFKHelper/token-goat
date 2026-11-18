@@ -4,6 +4,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { SKIP_DIRS } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
+import { assertReadAllowed, ReadDeniedError } from './read_deny.js'
 import { querySymbols, queryRefCounts, getFileEntry } from './index_reader.js'
 import { indexedSourceText, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
 import { sourceLines } from './source_lines.js'
@@ -238,6 +239,7 @@ export function indexFileSyncPinned(resolvedPath: string, dbPath: string): void 
 
 /** Read a file's text for display. Every read command that prints file content comes through here, which is why the dotenv redaction sits at this seam rather than in each command: `read`, `symbol` and the rest print a slice of a live disk read, and the symbol table they slice against stores env keys with empty bodies precisely because the values are not the model's business. A future read command gets the same protection without having to remember it. Nothing here writes back to disk, so redacting the returned text cannot corrupt a file. See dotenv_redact.ts. */
 export function readFileText(p: string, options: { onRawBuffer?: (bytes: Buffer) => void } = {}): string | null {
+  assertReadAllowed(p)
   const pinned = activePins?.get(pinKey(path.resolve(p)))
   try {
     if (pinned === ABSENT_PIN) {
@@ -262,6 +264,7 @@ export function readRedactedFileText(p: string): string | null {
 
 /** Raw-bytes counterpart to {@link readFileText}, for binary formats (zip-format archives) that must never be decoded as UTF-8 before parsing -- decoding first would corrupt any byte sequence that isn't valid UTF-8, which is the common case for compressed/binary member data. The only callers are `zip-list`/`zip-read`, so the `MAX_ZIP_INPUT_BYTES` cap lives here rather than in a general-purpose helper: this file's ZIP entries get decompressed downstream, and DEFLATE's worst-case ~1032:1 ratio makes the on-disk (compressed) size the one lever available to bound before any decompression happens at all (see zip_bounds.ts for the decompressed-side bound). The unpinned path stats before reading, so an oversized file is never pulled into memory; the pinned path reads via the fd `readPinnedBytes` already opened for its identity check and rejects by the bytes actually returned; a compressed-input size cap does not carry the same unbounded-allocation risk decompression does, so reading up to the limit before rejecting on that path is an acceptable trade against duplicating `readPinnedBytes`'s fd handling. */
 export function readFileBytes(p: string): Buffer | null {
+  assertReadAllowed(p)
   const pinned = activePins?.get(pinKey(path.resolve(p)))
   try {
     if (pinned === ABSENT_PIN) {
@@ -1038,6 +1041,7 @@ export async function runImageMeta(file: string): Promise<ImageMeta> {
   if (!isImagePath(file)) {
     throw new Error(`Not an image file: ${file}`)
   }
+  assertReadAllowed(file)
   const data = fs.readFileSync(file)
   const bytes = data.length
   let probe: Awaited<ReturnType<typeof probeImageMeta>>
@@ -1098,6 +1102,7 @@ export async function runImageText(file: string, lang?: string): Promise<ImageTe
   if (!isImagePath(file)) {
     throw new Error(`Not an image file: ${file}`)
   }
+  assertReadAllowed(file)
   const data = fs.readFileSync(file)
   const ocr = await ocrImage(data, lang)
   if (ocr === null) {
@@ -1203,6 +1208,7 @@ export function runGrep(opts: GrepOptions): number {
 
   const hits: GrepHit[] = []
   let totalHits = 0
+  let deniedSkipped = 0
 
   function searchFile(filePath: string): void {
     try {
@@ -1225,7 +1231,7 @@ export function runGrep(opts: GrepOptions): number {
         })
       }
     } catch (err) {
-      if (err instanceof ConfinementIdentityError) throw err
+      if (err instanceof ConfinementIdentityError || err instanceof ReadDeniedError) throw err
       // skip unreadable files
     }
   }
@@ -1287,7 +1293,12 @@ export function runGrep(opts: GrepOptions): number {
           if (SKIP_DIRS.has(entry)) continue
           if (opts.recursive !== false) searchDir(target, boundaryReal)
         } else {
-          searchFile(target)
+          try {
+            searchFile(target)
+          } catch (err) {
+            if (!(err instanceof ReadDeniedError)) throw err
+            deniedSkipped++
+          }
         }
       }
     } catch (err) {
@@ -1328,6 +1339,10 @@ export function runGrep(opts: GrepOptions): number {
     } else {
       searchFile(searchPath)
     }
+  }
+
+  if (deniedSkipped > 0) {
+    emitErr(`[tg] ${countNoun(deniedSkipped, 'file')} skipped: denied by the host's Read rules`)
   }
 
   if (totalHits === 0) {

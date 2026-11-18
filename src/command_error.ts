@@ -6,6 +6,10 @@ import { extractErrorMessage } from './util.js'
 /** Thrown by command handlers for a clean exit-1 with a stderr message. Pass an array for a message of several lines: the stderr printer escapes each line on its own, so the breaks token-goat put between them survive while a newline inside a file-derived part stays escaped. */
 export class CliError extends Error {
   readonly lines: readonly string[] | undefined
+  /** The stderr label; a subclass whose line is a token-goat protocol line (`[tg] ...`) overrides it. */
+  readonly prefix: string = 'token-goat: '
+  /** True when a `--json` caller also gets `{ error }` on stdout, so its output still parses. */
+  readonly jsonEnvelope: boolean = false
   constructor(message: string | readonly string[]) {
     super(typeof message === 'string' ? message : message.join('\n'))
     this.lines = typeof message === 'string' ? undefined : message
@@ -30,10 +34,18 @@ export function cliInvocation(): readonly string[] {
   return invocation ?? process.argv.slice(2)
 }
 
+/** The stdout document a `--json` caller gets for a failure that asks for one (`jsonEnvelope`), else null. */
+export function commandFailureJson(e: unknown): string | null {
+  if (!(e instanceof CliError) || !e.jsonEnvelope) return null
+  if (!cliInvocation().some((a) => a === '--json' || a === '-j')) return null
+  return displaySafeJson({ error: e.message }, 0)
+}
+
 /** The stderr rendering of a command failure: one `token-goat:` line, then any further lines a CliError was built from. */
 export function formatCommandError(e: unknown): string {
-  if (e instanceof CliError && e.lines !== undefined) return 'token-goat: ' + e.lines.map(displaySafeText).join('\n')
-  return 'token-goat: ' + displaySafeText(extractErrorMessage(e))
+  const prefix = e instanceof CliError ? e.prefix : 'token-goat: '
+  if (e instanceof CliError && e.lines !== undefined) return prefix + e.lines.map(displaySafeText).join('\n')
+  return prefix + displaySafeText(extractErrorMessage(e))
 }
 
 /** A failed git call's stderr as one `token-goat:` error opening `git <command> failed: `. git ends its message in a line break and follows a refused argument with its whole usage text, so the stderr is trimmed and cut at the `usage:` line; a missing repository, which git words differently per subcommand and wraps in that usage text, is said in one line. */

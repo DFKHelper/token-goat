@@ -10,7 +10,12 @@ import { powershellHookLine } from '../process_util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
 import { guardVersionOf } from '../hook_guard.js'
 import { verifiedInstall } from '../hook_selftest.js'
-import { nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
+import {
+  nativeHookBinary,
+  nativeHookCommandLine,
+  splitHookCommand,
+  type WiredHookEntry,
+} from '../native_hook.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
@@ -50,7 +55,8 @@ type CopilotCliHookEvent = (typeof COPILOT_CLI_HOOK_EVENTS)[number] | (typeof VS
 
 interface CopilotCommandHookEntry {
   type: 'command'
-  command: string
+  /** Legacy field: the host uses it only if bash and powershell are absent, so a guarded pair hides it. */
+  command?: string
   bash: string
   powershell: string
   exec?: never
@@ -170,13 +176,16 @@ const ALLOWED_ENV_VARS = [
 ]
 
 /** The three command fields of one entry. With the native client wired, `bash` is quoted for the POSIX shell Copilot CLI and VS Code run it in off Windows, `powershell` for the PowerShell both run on Windows (VS Code: `powershell.exe -ExecutionPolicy Bypass -NoProfile -NoLogo -Command`), and `command`, the fallback older builds read and the string `doctor` launches with Node's `shell: true`, for that platform's default shell (cmd.exe on Windows), as the Node form's `command` already is. */
-export function copilotHookCommandsFor(scriptPath: string, event: CopilotCliHookEvent, opts: { sync?: boolean } = {}): { command: string; bash: string; powershell: string } {
+export function copilotHookCommandsFor(
+  scriptPath: string,
+  event: CopilotCliHookEvent,
+  opts: { sync?: boolean } = {},
+): { bash: string; powershell: string } {
   const bin = nativeHookBinary(process.argv[1], opts)
-  const command = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'cmd' : 'sh', bin, 'copilot_cli', scriptPath, event)
-  const sh = bin === undefined ? undefined : nativeHookCommandLine('sh', bin, 'copilot_cli', scriptPath, event)
-  const ps = bin === undefined ? undefined : nativeHookCommandLine('powershell', bin, 'copilot_cli', scriptPath, event)
-  if (command !== undefined && sh !== undefined && ps !== undefined) return { command, bash: sh, powershell: ps }
-  return { command: hookCommandFor(scriptPath, event), bash: hookCommandFor(scriptPath, event), powershell: hookPowershellCommandFor(scriptPath, event) }
+  const sh = nativeHookCommandLine('sh', bin, 'copilot_cli', scriptPath, event)
+  const ps = nativeHookCommandLine('powershell', bin, 'copilot_cli', scriptPath, event)
+  if (sh !== undefined && ps !== undefined) return { bash: sh, powershell: ps }
+  return { bash: hookCommandFor(scriptPath, event), powershell: hookPowershellCommandFor(scriptPath, event) }
 }
 
 /** Every entry in the Copilot CLI hook config token-goat owns at `opts`'s scope: direct `exec`/`args` words, or a `command` field split as that platform's default shell would (cmd.exe on Windows, sh elsewhere), plus whether the entry matches what this build writes for its event. Empty when the file is absent or does not parse. */
@@ -200,9 +209,20 @@ export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredH
         out.push({ words: [h.exec, ...(args ?? [])], current: false, guarded: false })
         continue
       }
-      if (typeof h?.command !== 'string') continue
-      const current = expected !== undefined && h.command === expected.command && h.bash === expected.bash && h.powershell === expected.powershell
-      out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'), current, guarded: [h.bash, h.powershell].every((c) => typeof c === 'string' && guardVersionOf(c) !== undefined) })
+      const own =
+        typeof h?.command === 'string' ? h.command : process.platform === 'win32' ? h?.powershell : h?.bash
+      if (typeof own !== 'string') continue
+      const current =
+        expected !== undefined && h.command === undefined && h.bash === expected.bash &&
+        h.powershell === expected.powershell
+      const shell = typeof h?.command === 'string'
+        ? (process.platform === 'win32' ? 'cmd' : 'sh')
+        : (process.platform === 'win32' ? 'powershell' : 'sh')
+      out.push({
+        words: splitHookCommand(own, shell),
+        current,
+        guarded: [h.bash, h.powershell].every((c) => typeof c === 'string' && guardVersionOf(c) !== undefined),
+      })
     }
   }
   return out
@@ -212,7 +232,14 @@ function buildConfig(scriptPath: string, owners: ReadonlySet<CopilotHooksOwner>)
   const hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>> = {}
   const events: readonly CopilotCliHookEvent[] = owners.has('vscode') ? [...COPILOT_CLI_HOOK_EVENTS, ...VSCODE_ONLY_HOOK_EVENTS] : COPILOT_CLI_HOOK_EVENTS
   for (const event of events) {
-    hooks[event] = [{ type: 'command', ...copilotHookCommandsFor(scriptPath, event), timeoutSec: HOOK_TIMEOUT_SEC, allowedEnvVars: [...ALLOWED_ENV_VARS] }]
+    hooks[event] = [
+      {
+        type: 'command',
+        ...copilotHookCommandsFor(scriptPath, event),
+        timeoutSec: HOOK_TIMEOUT_SEC,
+        allowedEnvVars: [...ALLOWED_ENV_VARS],
+      },
+    ]
   }
   return { version: 1, hooks }
 }
@@ -261,7 +288,10 @@ export interface CopilotHooksFileResult {
 
 /** Write the shared hooks config and shim into `hooksDir` and record `owner` as relying on them. */
 export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwner): CopilotHooksFileResult {
-  return verifiedInstall([path.join(hooksDir, HOOKS_CONFIG_FILE)], () => installCopilotHooksFileUnverified(hooksDir, owner))
+  return verifiedInstall(
+    [path.join(hooksDir, HOOKS_CONFIG_FILE)],
+    () => installCopilotHooksFileUnverified(hooksDir, owner),
+  )
 }
 
 function installCopilotHooksFileUnverified(hooksDir: string, owner: CopilotHooksOwner): CopilotHooksFileResult {

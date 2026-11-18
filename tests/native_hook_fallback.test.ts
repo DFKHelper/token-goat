@@ -53,7 +53,7 @@ beforeEach(() => {
   fs.mkdirSync(path.dirname(bin), { recursive: true })
   fs.writeFileSync(bin, 'binary-v1')
   fs.writeFileSync(entry, '')
-  // The copy lives at one path under the data directory for every install, so each test starts without the previous test's copy.
+  // One copy path under the data directory for every install: each test starts without the last copy.
   fs.rmSync(path.join(dataDir(), 'native'), { recursive: true, force: true })
   vi.stubEnv('TOKEN_GOAT_NATIVE_HOOKS', '1')
   faults.renames = 0

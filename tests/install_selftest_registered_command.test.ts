@@ -1,4 +1,4 @@
-/** The install self-test of the registered hook commands: after install writes the Claude settings, each registered command runs the way the host runs it, then again with the native client unresolvable, and a failure keeps the previous registration. The native client is the one this test run built, placed beside a stub bundle entry, so the sandbox install wires a real guarded command. */
+/** Runs each registered hook command as its host does, with and without the native client. */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -13,11 +13,18 @@ import { installKimi } from '../src/bridges/kimi_install.js'
 import { installHooks, settingsPath, SettingsParseError } from '../src/install.js'
 import { codexConfigPath, grokConfigPath, kimiConfigPath } from '../src/purge.js'
 import { parseGuardedCommand } from '../src/hook_guard.js'
-import { guardedCommandsInText, HookSelftestError, realShellRunner, selftestRegisteredCommands, setHookSelftestRunnerForTesting, type ShellRun } from '../src/hook_selftest.js'
+import {
+  guardedCommandsInText,
+  HookSelftestError,
+  realShellRunner,
+  selftestRegisteredCommands,
+  setHookSelftestRunnerForTesting,
+  type ShellRun,
+} from '../src/hook_selftest.js'
 import { buildNative } from './helpers/native_bin.js'
 
 const WIN = process.platform === 'win32'
-/** The platforms this build ships a native client for; elsewhere install writes the Node form, which has no guard to test. */
+/** Platforms this build ships a native client for; elsewhere install writes the Node form, with no guard. */
 const NATIVE = WIN || process.platform === 'linux'
 
 let built = ''
@@ -27,12 +34,13 @@ const realNativeFlag = process.env['TOKEN_GOAT_NATIVE_HOOKS']
 
 beforeAll(() => {
   if (NATIVE) built = buildNative()
-}, 600_000)
+})
 
 beforeEach(() => {
-  // The setup isolates the Claude config dir per file, not per test: start each test with none, and only ever inside the temp root.
+  // Setup isolates the Claude config dir per file: each test starts with none, inside the temp root only.
   const claudeDir = path.dirname(settingsPath('user'))
-  if (!claudeDir.startsWith(os.tmpdir())) throw new Error(`the Claude config dir is outside the test root: ${claudeDir}`)
+  if (!claudeDir.startsWith(os.tmpdir()))
+    throw new Error(`the Claude config dir is outside the test root: ${claudeDir}`)
   fs.rmSync(claudeDir, { recursive: true, force: true })
   root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'tg-selftest-install-')))
   const bundle = path.join(root, 'bundle')
@@ -68,7 +76,13 @@ function readSettings(): Settings {
 }
 
 function tokenGoatCommands(settings: Settings): string[] {
-  return Object.values(settings.hooks ?? {}).flatMap((groups) => groups.flatMap((g) => g.hooks.flatMap((h) => (h.command !== undefined && parseGuardedCommand(h.command) !== undefined ? [h.command] : []))))
+  return Object.values(settings.hooks ?? {}).flatMap((groups) =>
+    groups.flatMap((g) =>
+      g.hooks.flatMap((h) =>
+        (h.command !== undefined && parseGuardedCommand(h.command) !== undefined ? [h.command] : []),
+      ),
+    ),
+  )
 }
 
 /** The pre-guard string form of a registered command: the same words, quoted, no guard. */
@@ -94,7 +108,10 @@ describe.runIf(NATIVE)('the install self-test', () => {
     installHooks('user', { dev: true })
     const seeded = readSettings()
     for (const groups of Object.values(seeded.hooks ?? {})) {
-      for (const g of groups) for (const h of g.hooks) if (h.command !== undefined && parseGuardedCommand(h.command) !== undefined) h.command = oldForm(h.command)
+      for (const g of groups)
+        for (const h of g.hooks)
+          if (h.command !== undefined && parseGuardedCommand(h.command) !== undefined)
+            h.command = oldForm(h.command)
       groups.push({ hooks: [{ type: 'command', command: 'echo foreign' }] })
     }
     const before = JSON.stringify(seeded, null, 2) + '\n'
@@ -135,12 +152,17 @@ describe.runIf(NATIVE)('migration of an older registration', () => {
     }],
   ]
   for (const [name, toOld] of FORMS) {
-    it(`rewrites ${name} to the guarded form in place, keeps foreign hooks and key order, and a second run changes no byte`, () => {
+    it(`rewrites ${name} to guarded form in place, keeps foreign hooks, a rerun changes no byte`, () => {
       installHooks('user', { dev: true })
       const seeded = readSettings()
       const reordered: Settings = { theme: 'dark', ...seeded, zzz: { keep: [1, 2] } }
       for (const groups of Object.values(reordered.hooks ?? {})) {
-        for (const g of groups) g.hooks = g.hooks.map((h) => (h.command !== undefined && parseGuardedCommand(h.command) !== undefined ? { ...toOld(h.command), onFailure: 'continue' } : h))
+        for (const g of groups)
+          g.hooks = g.hooks.map((h) =>
+            (h.command !== undefined && parseGuardedCommand(h.command) !== undefined
+              ? { ...toOld(h.command), onFailure: 'continue' }
+              : h),
+          )
         groups.unshift({ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo foreign-first' }] })
       }
       fs.writeFileSync(settingsPath('user'), JSON.stringify(reordered, null, 2) + '\n')
@@ -152,7 +174,9 @@ describe.runIf(NATIVE)('migration of an older registration', () => {
       expect(after['zzz']).toEqual({ keep: [1, 2] })
       for (const [event, groups] of Object.entries(after.hooks ?? {})) {
         expect(groups[0]?.hooks[0]?.command, event).toBe('echo foreign-first')
-        const own = groups.flatMap((g) => g.hooks).filter((h) => h.command !== undefined && h.command !== 'echo foreign-first')
+        const own = groups
+          .flatMap((g) => g.hooks)
+          .filter((h) => h.command !== undefined && h.command !== 'echo foreign-first')
         expect(own.length, event).toBe(1)
         expect(parseGuardedCommand(own[0]!.command!)?.kind, event).toBe('v1')
         expect(own[0]!.args, event).toBeUndefined()
@@ -175,32 +199,35 @@ interface HostRow {
   name: string
   install: () => unknown
   config: () => string
-  /** Whether this host runs hooks through a shell token-goat can guard on this platform. */
-  guarded: boolean
 }
 
 const HOSTS: HostRow[] = [
-  { name: 'codex', install: installCodex, config: codexConfigPath, guarded: true },
-  { name: 'grok', install: installGrok, config: grokConfigPath, guarded: true },
+  { name: 'codex', install: installCodex, config: codexConfigPath },
+  { name: 'grok', install: installGrok, config: grokConfigPath },
   // Kimi Code runs hooks through cmd.exe on Windows, which has no guard (residual risk, doctor reports it).
-  { name: 'kimi', install: installKimi, config: kimiConfigPath, guarded: !WIN },
-  { name: 'copilot', install: () => installCopilotHooksFile(copilotCliHooksDir({}), 'copilot'), config: () => path.join(copilotCliHooksDir({}), HOOKS_CONFIG_FILE), guarded: true },
+  { name: 'kimi', install: installKimi, config: kimiConfigPath },
+  {
+    name: 'copilot',
+    install: () => installCopilotHooksFile(copilotCliHooksDir({}), 'copilot'),
+    config: () => path.join(copilotCliHooksDir({}), HOOKS_CONFIG_FILE),
+  },
 ]
 
 describe.runIf(NATIVE)('the other hosts: self-test, migration and rollback', () => {
   for (const host of HOSTS) {
-    it(`${host.name}: installs ${host.guarded ? 'guarded' : 'unguarded (no shell to guard)'} commands, migrates an old form in place, and a second run changes no byte`, () => {
+    it(`${host.name}: installs guarded commands, migrates old forms, a second run changes no byte`, () => {
       fs.rmSync(path.dirname(host.config()), { recursive: true, force: true })
       host.install()
       const first = fs.readFileSync(host.config(), 'utf8')
       const commands = guardedCommandsInText(first)
-      if (!host.guarded) {
-        expect(commands).toEqual([])
-        return
-      }
       expect(commands.length).toBeGreaterThan(0)
       let old = first
-      for (const c of new Set(commands)) old = old.split(JSON.stringify(c)).join(JSON.stringify(oldForm(c))).split(`'${c}'`).join(JSON.stringify(oldForm(c)))
+      for (const c of new Set(commands))
+        old = old
+          .split(JSON.stringify(c))
+          .join(JSON.stringify(oldForm(c)))
+          .split(`'${c}'`)
+          .join(JSON.stringify(oldForm(c)))
       expect(old).not.toBe(first)
       fs.writeFileSync(host.config(), old)
 

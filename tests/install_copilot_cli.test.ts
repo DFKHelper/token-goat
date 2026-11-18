@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { parseGuardedCommand } from '../src/hook_guard.js'
+import { HookSelftestError, setHookSelftestRunnerForTesting } from '../src/hook_selftest.js'
 
 import type * as NodeOs from 'node:os'
 
@@ -68,9 +69,12 @@ beforeEach(() => {
   // Project-scope install resolves against process.cwd() (mirrors install_pi.test.ts's handling of --local); chdir into an isolated project dir so `{ local: true }` writes under {TMP}/project/.github/hooks, never this repo's own .github/.
   fs.mkdirSync(path.join(TMP, 'project'), { recursive: true })
   process.chdir(path.join(TMP, 'project'))
+  // These rows prove what an install writes; the real-shell and failing-self-test rows cover the shells.
+  setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
 })
 
 afterEach(() => {
+  setHookSelftestRunnerForTesting(undefined)
   process.chdir(origCwd)
   if (origCopilotHome === undefined) delete process.env['COPILOT_HOME']
   else process.env['COPILOT_HOME'] = origCopilotHome
@@ -119,11 +123,23 @@ describe('installCopilotCli (user scope)', () => {
       expect(config.hooks[event]).toBeDefined()
       const entry = config.hooks[event]?.[0]
       expect(entry?.type).toBe('command')
-      const words = entry?.exec === undefined ? [entry?.command ?? ''] : [entry.exec, ...(entry.args ?? [])]
+      const shell = [entry?.bash ?? '', entry?.powershell ?? '']
+      const words = entry?.exec === undefined ? shell : [entry.exec, ...(entry.args ?? [])]
       expect(words.join(' ')).toContain(result.scriptPath)
     }
 
     expect(isCopilotCliInstalled()).toBe(true)
+  })
+
+  it('refuses hook commands that fail their self-test, in both shell forms, and writes no config', () => {
+    const seen: string[] = []
+    setHookSelftestRunnerForTesting((shell) => {
+      seen.push(shell)
+      return { status: 3, stdout: '', stderr: 'boom' }
+    })
+    expect(() => installCopilotCli()).toThrow(HookSelftestError)
+    expect(new Set(seen)).toEqual(new Set(['sh', 'powershell']))
+    expect(fs.existsSync(copilotCliConfigPath())).toBe(false)
   })
 
   it('uses the absolute Node binary path (process.execPath), not bare node, in every generated hook form (github/copilot-cli#4001 regression)', () => {
@@ -135,11 +151,14 @@ describe('installCopilotCli (user scope)', () => {
     if (entry?.exec !== undefined) {
       expect(entry.args).toContain(process.execPath)
     } else {
-      const command = entry?.command
-      expect(command).toBeDefined()
-      expect(command).toContain(process.execPath)
-      expect(command).not.toBe(`node "${result.scriptPath}" preToolUse`)
-      expect(command?.startsWith('node ')).toBe(false)
+      // The shell form is a guarded bash and powershell pair, no command field, naming the absolute Node path.
+      expect(entry).not.toHaveProperty('command')
+      for (const command of [entry?.bash, entry?.powershell]) {
+        expect(command).toBeDefined()
+        expect(command).toContain(process.execPath)
+        expect(command).toContain('tg-guard-v1')
+      }
+      expect(entry?.bash?.startsWith('node ')).toBe(false)
     }
   })
 
@@ -153,11 +172,14 @@ describe('installCopilotCli (user scope)', () => {
     if (entry?.exec !== undefined) {
       expect(entry.args).toContain(process.argv[1])
     } else {
-      const command = entry?.command
-      expect(command).toBeDefined()
-      expect(command).toContain(`"${process.argv[1]}"`)
-      // Ordering: execPath, then scriptPath, then event, then entryPath -- the shim reads the entry path from argv[3], so it must be the fourth quoted/bare token on the line.
-      expect(command).toBe(`"${process.execPath}" "${result.scriptPath}" preToolUse "${process.argv[1]}"`)
+      for (const command of [entry?.bash, entry?.powershell]) {
+        expect(command).toBeDefined()
+        // The Node fallback, the last occurrence of each word, runs execPath, scriptPath, event, entryPath.
+        const order = [process.execPath, result.scriptPath, 'preToolUse', process.argv[1] ?? '']
+        const at = order.map((word) => command?.lastIndexOf(word) ?? -1)
+        expect(at.every((i) => i >= 0)).toBe(true)
+        expect([...at].sort((a, b) => a - b)).toEqual(at)
+      }
     }
   })
 
@@ -176,16 +198,16 @@ describe('installCopilotCli (user scope)', () => {
       return
     }
     // A bare quoted-exe-then-quoted-args string (valid cmd.exe syntax) is a PowerShell parse error without a leading call operator -- two adjacent quoted string literals are not a valid expression/statement in PowerShell. Confirmed live via Copilot CLI's own logged ParserError: "Unexpected token '"...\token-goat-shim.js"' in expression or statement." Single-quoted, not double. PowerShell expands `$` inside double quotes, so a profile path holding one was rewritten before the hook ran, and a path holding a single quote closed the argument early. The `command` field keeps cmd.exe's double quotes, so the two now differ on purpose and this no longer asserts that powershell is command with a prefix.
-    expect(entry?.powershell?.startsWith("& '")).toBe(true)
-    expect(entry?.powershell).not.toContain('"')
+    expect(entry?.powershell).toContain("'tg-guard-v1' | Out-Null;")
+    expect(entry?.bash?.startsWith(': tg-guard-v1;')).toBe(true)
+    expect(entry).not.toHaveProperty('command')
     // Named independently of the builder: the same two paths the command field runs.
     expect(entry?.powershell).toContain(result.scriptPath)
     expect(entry?.powershell).toContain(process.execPath)
-    // bash doesn't need a call operator for a quoted path, so it matches command verbatim.
-    expect(entry?.bash).toBe(entry?.command)
+    expect(entry?.bash).toContain(process.execPath)
   })
 
-  it('writes guarded command strings for the native client and recognizes their argv without syncing during a wiring check', async () => {
+  it('writes guarded command strings, recognizes their argv, syncs nothing on a wiring check', async () => {
     const nativeBin = path.join(TMP, 'tg-hook.exe')
     const entryPath = process.argv[1]
     if (entryPath === undefined || entryPath === '') throw new Error('the test runner must provide its entry path')
@@ -203,16 +225,26 @@ describe('installCopilotCli (user scope)', () => {
         hooks: Record<string, GeneratedCopilotHookEntry[]>
       }
       const entry = config.hooks['preToolUse']?.[0] as Record<string, unknown> | undefined
-      expect(entry).toMatchObject({ type: 'command', timeoutSec: 60, allowedEnvVars: expect.arrayContaining(['COPILOT_HOME']) })
+      expect(entry).toMatchObject({
+        type: 'command',
+        timeoutSec: 60,
+        allowedEnvVars: expect.arrayContaining(['COPILOT_HOME']),
+      })
       expect(entry).not.toHaveProperty('exec')
       expect(entry).not.toHaveProperty('args')
       for (const field of ['bash', 'powershell']) {
         const parsed = parseGuardedCommand(String(entry?.[field]))
         expect(parsed?.kind, field).toBe('v1')
-        expect(parsed?.kind === 'v1' ? parsed.native.slice(1) : [], field).toEqual(expect.arrayContaining(expectedArgs.slice(0, 4)))
+        expect(parsed?.kind === 'v1' ? parsed.native.slice(1) : [], field).toEqual(
+          expect.arrayContaining(expectedArgs.slice(0, 4)),
+        )
       }
 
-      expect(wiredCopilotHookWords().some((w) => w.current && w.words[0] === nativeBin && expectedArgs.every((x) => w.words.includes(x)))).toBe(true)
+      expect(
+        wiredCopilotHookWords().some(
+          (w) => w.current && w.words[0] === nativeBin && expectedArgs.every((x) => w.words.includes(x)),
+        ),
+      ).toBe(true)
       expect(nativeHookBinaryMock).toHaveBeenCalledWith(entryPath, { sync: false })
     } finally {
       vi.doUnmock('../src/native_hook.js')

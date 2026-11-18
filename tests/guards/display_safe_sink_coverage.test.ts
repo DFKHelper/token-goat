@@ -965,7 +965,15 @@ describe('project-supplied text reaches no report sink unescaped', () => {
 
     // WRAPPING_NEUTRALIZERS exempts every interpolation inside formatCommandError's parentheses, so its body must still escape both the CliError lines and the plain-message branch; a wrapper that stopped escaping would exempt over a hundred error sites while they printed raw project paths.
     expect(
-      /function formatCommandError\(e: unknown\): string \{\s*if \(e instanceof CliError && e\.lines !== undefined\) return 'token-goat: ' \+ e\.lines\.map\(displaySafeText\)\.join\('\\n'\)\s*return 'token-goat: ' \+ displaySafeText\(extractErrorMessage\(e\)\)/.test(all),
+      new RegExp(
+        [
+          String.raw`function formatCommandError\(e: unknown\): string \{\s*`,
+          String.raw`const prefix = e instanceof CliError \? e\.prefix : 'token-goat: '\s*`,
+          String.raw`if \(e instanceof CliError && e\.lines !== undefined\) `,
+          String.raw`return prefix \+ e\.lines\.map\(displaySafeText\)\.join\('\\n'\)\s*`,
+          String.raw`return prefix \+ displaySafeText\(extractErrorMessage\(e\)\)`,
+        ].join(''),
+      ).test(all),
       'formatCommandError is listed in WRAPPING_NEUTRALIZERS because it maps everything it prints ' +
         'through displaySafeText, but its body no longer matches that shape. The guard would now be ' +
         'exempting every emitErr(formatCommandError(...)) site while it prints raw project text.',

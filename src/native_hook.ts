@@ -11,7 +11,7 @@ import { noopFor } from './hook_adapters.js'
 import { buildGuardedCommand, parseGuardedCommand, HookCommandRewriteError } from './hook_guard.js'
 import { clearHookBroken, hookBrokenPath, writeHookPointer } from './hook_pointer.js'
 import { displaySafeText } from './paths.js'
-import { quotePowershellPath, quotePosixShellWord } from './process_util.js'
+import { nativeBuildStamp, newerBuild } from './native_build_stamp.js'
 import { registerReset } from './reset.js'
 import { withRetryOnLock } from './util.js'
 
@@ -45,7 +45,7 @@ export function packagedNativeBinary(entryPath: string | undefined = process.arg
   return bin !== undefined && fs.existsSync(bin) ? bin : undefined
 }
 
-/** Where a Windows install runs the binary from: the one copy `<dataDir>/native/tg-hook.exe`, a path settings files can name across upgrades, dev checkouts and reinstalls, so a registration never names a directory that a later install replaces. The copy exists because Windows will not delete or replace an executable that is running: a harness mid-hook held the packaged binary open, and `npm install -g` then failed with EBUSY and left a half-upgraded tree. A copy outside the package is never in npm's way, and replacing it while it runs is handled by {@link syncNativeCopy}, which never leaves the path absent. Registrations written by earlier builds name `native/<hash>/tg-hook.exe`; those copies stay while any config references them. */
+/** Windows native client copy in dataDir: a running exe can't be replaced (EBUSY), see syncNativeCopy. */
 export function nativeCopyPath(home: string = dataDir()): string {
   return path.join(home, 'native', exeName('win32'))
 }
@@ -64,6 +64,8 @@ export interface ReclaimEnv {
   /** True when `pid` names a running process, or when that cannot be told. */
   readonly isAlive?: (pid: number) => boolean
   readonly now?: () => number
+  /** The build stamp of a client binary, undefined when it has none. */
+  readonly buildStamp?: (bin: string) => string | undefined
 }
 
 /** Signal 0 asks the OS about a pid without sending anything. EPERM means it exists. Anything not a plain pid above 1 reads as alive, since a signal to 0 or 1 would reach a group or init. */
@@ -153,6 +155,14 @@ export function syncNativeCopy(src: string, dest: string, env: ReclaimEnv = {}):
   } catch {
     // absent or unreadable: write it
   }
+  const newer = newerCopyBuild(src, dest, env.buildStamp)
+  if (newer !== undefined) {
+    emitErr(
+      `token-goat: kept the newer native hook client at ${dest} (build ${newer.kept}); ` +
+        `this install carries build ${newer.offered}. Install from the newer token-goat to change it.`,
+    )
+    return true
+  }
   const dir = path.dirname(dest)
   const tag = ownerTag()
   const stagingDir = path.join(path.dirname(dir), '.staging', tag)
@@ -235,10 +245,24 @@ function discardStaged(staged: string): void {
   }
 }
 
+/** Builds of `dest` and `src` when `dest` is newer, else undefined; never replace a newer client. */
+function newerCopyBuild(
+  src: string,
+  dest: string,
+  stamp: (bin: string) => string | undefined = nativeBuildStamp,
+): { kept: string; offered: string } | undefined {
+  const kept = stamp(dest)
+  if (kept === undefined) return undefined
+  const offered = stamp(src)
+  return offered === undefined || newerBuild(kept, offered)
+    ? { kept, offered: offered ?? 'unstamped' }
+    : undefined
+}
+
 /** True when the copy at `dest` holds exactly the packaged binary's bytes. */
 export function nativeCopyCurrent(src: string, dest: string): boolean {
   try {
-    return fs.readFileSync(dest).equals(fs.readFileSync(src))
+    return fs.readFileSync(dest).equals(fs.readFileSync(src)) || newerCopyBuild(src, dest) !== undefined
   } catch {
     return false
   }
@@ -352,19 +376,21 @@ function nativeWords(bin: string, harness: NativeHarness, scriptPath: string, ev
   return [{ text: bin, quote: true }, ...flagWords, { text: '--', quote: false }, { text: process.execPath, quote: true }, { text: scriptPath, quote: true }, { text: event, quote: false }, { text: entry, quote: true }]
 }
 
-/** Quote one path for `shell`. POSIX shells get single quotes, the only quoting in which nothing (`$`, a backtick, a backslash) is special. PowerShell gets its single quotes too, for the same reason. cmd.exe has no quoting that stops `%NAME%` expansion, so a path containing a defined variable's name between two percent signs cannot be written for it; Windows paths cannot contain the double quote that would end the word. */
-function quoteFor(shell: HookShell, text: string): string {
-  if (shell === 'sh') return quotePosixShellWord(text)
-  if (shell === 'powershell') return quotePowershellPath(text)
-  return `"${text}"`
-}
-
-/** The native command line for a harness that runs hooks through `shell`, or undefined when there is no entry path to name. A PowerShell one is powershellHookLine's, for the call operator and the hook's own exit code. */
-export function nativeHookCommandLine(shell: HookShell, bin: string, harness: NativeHarness, scriptPath: string, event: string, entry: string | undefined = process.argv[1]): string | undefined {
-  if (nodeHookArgv(scriptPath, event, entry) === undefined) return undefined
-  const words = nativeWords(bin, harness, scriptPath, event, entry!)
-  if (shell !== 'cmd') return buildGuardedCommand({ shell, native: words.map((w) => w.text), safe: noopFor(harness, event), marker: hookBrokenPath() })
-  return words.map((w) => (w.quote ? quoteFor(shell, w.text) : w.text)).join(' ')
+/** Guarded command line for `shell`; undefined without an entry path. `bin` leads, else Node alone. */
+export function nativeHookCommandLine(
+  shell: HookShell,
+  bin: string | undefined,
+  harness: NativeHarness,
+  scriptPath: string,
+  event: string,
+  entry: string | undefined = process.argv[1],
+): string | undefined {
+  const node = nodeHookArgv(scriptPath, event, entry)
+  if (node === undefined) return undefined
+  const native = bin === undefined
+    ? node
+    : nativeWords(bin, harness, scriptPath, event, entry!).map((w) => w.text)
+  return buildGuardedCommand({ shell, native, safe: noopFor(harness, event), marker: hookBrokenPath() })
 }
 
 /** The native exec-form entry (Claude Code >= 2.1.139): the binary as `command`, everything else as `args`, with no shell in between. */
@@ -432,7 +458,7 @@ export interface WiredHookEntry {
   readonly words: string[]
   /** Whether it is exactly a command this build writes for that harness now; undefined where the reader does not judge it. */
   readonly current?: boolean
-  /** Whether the registration is the guarded form, which survives a missing native client; undefined where the reader does not judge it. */
+  /** Guarded form? Survives a missing native client; undefined where the reader does not judge it. */
   readonly guarded?: boolean
 }
 

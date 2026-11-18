@@ -25,6 +25,7 @@ import { resolveProjectRoot } from './project.js'
 import { recordSemanticQuery } from './semantic_distances.js'
 import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from './semantic_relevance.js'
 import { guardJsonRows, guardText, largestFileSize, readFileText, recordReadStat, warnIfFilesStale } from './read_commands.js'
+import { ReadDeniedError } from './read_deny.js'
 import { previewLines } from './read_meta.js'
 import { resolveProjectConfinement } from './read_spec.js'
 import { ensureWorkerAlive } from './worker_lifecycle.js'
@@ -303,7 +304,15 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   const fileLines = new Map<string, readonly string[] | null>()
   const linesOf = (p: string): readonly string[] | null => {
     if (!fileLines.has(p)) {
-      const text = readFileText(p)
+      // A file the host denies has no snippet lines: the hit keeps its chunk range.
+      const text = ((): string | null => {
+        try {
+          return readFileText(p)
+        } catch (err) {
+          if (err instanceof ReadDeniedError) return null
+          throw err
+        }
+      })()
       fileLines.set(p, text === null ? null : sourceLines(text))
     }
     return fileLines.get(p) ?? null
