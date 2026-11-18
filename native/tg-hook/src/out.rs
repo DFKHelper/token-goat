@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 /// The harness and event of the call in flight, set once the flags are parsed; what a panic or a failure far from the parser answers for.
 static CONTEXT: Mutex<Option<(String, String)>> = Mutex::new(None);
@@ -31,22 +32,58 @@ pub fn safe_answer(harness: &str, event: &str) -> String {
     own.or(noop).unwrap_or("{}").to_string()
 }
 
+/// The call's deadline, set once by the entry point; a stdout write still unfinished then ends the process.
+static DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
+/// Whether a stdout write is in flight on the writer thread, which holds the stdout lock until it ends.
+static WRITING: AtomicBool = AtomicBool::new(false);
+
+/// How long a write may take once the deadline has passed, so a ready pipe is not mistaken for a blocked one.
+// limit: a pipe nobody reads ends the process this long after the deadline at the latest; revisit-when: never
+const WRITE_GRACE: Duration = Duration::from_millis(20);
+
+/// Records the deadline that bounds every write of an answer; `None` leaves writes unbounded (the self-tests).
+pub fn set_deadline(deadline: Option<Instant>) {
+    if let Ok(mut slot) = DEADLINE.lock() {
+        *slot = deadline;
+    }
+}
+
+fn write_now(data: &[u8]) {
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(data);
+    let _ = out.flush();
+}
+
+/// The one place bytes reach stdout; a write unfinished at the deadline (a host not reading) exits 0.
+fn write_bounded(data: &str) {
+    let Some(end) = DEADLINE.lock().ok().and_then(|slot| *slot) else { return write_now(data.as_bytes()) };
+    let bytes = data.as_bytes().to_vec();
+    let (tx, rx) = std::sync::mpsc::channel();
+    WRITING.store(true, Ordering::SeqCst);
+    // owner: this call; dies when the process exits, which a write still blocked at the deadline ends
+    std::thread::spawn(move || {
+        write_now(&bytes);
+        let _ = tx.send(());
+    });
+    let wait = end.saturating_duration_since(Instant::now()).max(WRITE_GRACE);
+    if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = rx.recv_timeout(wait) {
+        std::process::exit(0)
+    }
+    WRITING.store(false, Ordering::SeqCst);
+}
+
 /// Writes `data` to stdout at once and marks the call answered. A host that has stopped reading is not this client's failure to report, so a write error is dropped.
 pub fn emit(data: &str) {
     if data.is_empty() {
         return;
     }
     ANSWERED.store(true, Ordering::SeqCst);
-    let mut out = std::io::stdout().lock();
-    let _ = out.write_all(data.as_bytes());
-    let _ = out.flush();
+    write_bounded(data);
 }
 
 /// Writes a leading part of an answer (the async marker) that the final answer follows; does not mark the call answered.
 pub fn emit_partial(data: &str) {
-    let mut out = std::io::stdout().lock();
-    let _ = out.write_all(data.as_bytes());
-    let _ = out.flush();
+    write_bounded(data);
 }
 
 /// Whether a final answer has been written to stdout.
@@ -56,7 +93,10 @@ pub fn answered() -> bool {
 
 /// Flushes stdout and ends the process with `code`.
 pub fn finish(code: i32) -> ! {
-    let _ = std::io::stdout().flush();
+    // A writer thread blocked in a write holds the stdout lock, so a flush here would wait on it.
+    if !WRITING.load(Ordering::SeqCst) {
+        let _ = std::io::stdout().flush();
+    }
     std::process::exit(code)
 }
 

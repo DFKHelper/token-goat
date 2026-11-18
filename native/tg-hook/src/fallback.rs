@@ -80,6 +80,7 @@ fn budget(opts: &Opts) -> Option<Duration> {
 }
 
 /// What the first route may take: all that is left, or two thirds of it when a second route can follow.
+// At 3000 ms: 2850 left, route one 1900 plus a reap of 100, route two ends by 2850 plus its reap: right, kept.
 fn first_budget(opts: &Opts, second_follows: bool) -> Option<Duration> {
     budget(opts).map(|left| if opts.reserve_second && second_follows { left * 2 / 3 } else { left })
 }

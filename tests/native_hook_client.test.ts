@@ -938,6 +938,114 @@ describe('one deadline serves every route', () => {
     expect(text, 'the hanging route never wrote its pid').not.toBe('')
     expect(isAlive(Number(text)), `pid ${text} of the hanging route outlived the client`).toBe(false)
   })
+
+  it('at the 3000 ms limit the answer is out before the client exits, both before the limit', async () => {
+    // HAND-DERIVED: 3000 - 150 = 2850 left; route one takes 1900, route two starts near 2000, ends by 2850.
+    writePointer({ withShim: true })
+    const counter = path.join(sb.base, 'route2-margin')
+    const flags = ['--harness', 'grok', '--event', 'pre_tool_use', '--entry', sb.fakeEntry]
+    const argv = [...flags, '--script-dir', sb.base, '--', ...fbTail(0, 'hang', hangPid('margin'))]
+    const res = await runNative(argv, '{}', route2Env(counter, 'answer'), BOUND)
+    expect(res.signal, 'the client was still running at the kill bound').toBeNull()
+    expect(res.exit, res.stderr).toBe(0)
+    expect(['{"second":true}', '{"decision":"allow"}']).toContain(res.stdout.toString('utf8'))
+    expect(res.firstChunkMs, 'no answer reached stdout').toBeDefined()
+    expect(res.firstChunkMs ?? Infinity, 'the answer came after the exit').toBeLessThanOrEqual(res.exitMs)
+    expect(res.exitMs, 'the client ended after the 3000 ms limit').toBeLessThan(3000)
+  })
+})
+
+// A stdout pipe that is full or closed during the answer's write must not hold the client past its limit.
+describe('a stdout that stops being read', () => {
+  const ANSWER_BYTES = 4 << 20
+  const ENDS_BY = 15_000
+
+  interface Stalled {
+    exit: number | null
+    signal: NodeJS.Signals | null
+    /** Every byte that reached the pipe: read only after the client exited, or before the pipe was closed. */
+    bytes: Buffer
+    stderr: string
+  }
+
+  /** Runs the client against a fake that serves a large answer; `mode` says what the host does with stdout. */
+  type Mode = 'never-read' | 'stall-after-first-chunk' | 'close-after-first-chunk'
+  async function runStalled(mode: Mode): Promise<Stalled> {
+    const big = 'x'.repeat(ANSWER_BYTES)
+    let result: Stalled | undefined
+    await withFakes([serving((s) => [doneFrame(s, big, 0, 0)])], async () => {
+      const args = hookArgs(fbTail(2), { extra: ['--hook-limit-ms', '3000'] })
+      const child = spawn(bin, args, { cwd: sb.proj, env: sb.env, stdio: ['pipe', 'pipe', 'pipe'] })
+      const chunks: Buffer[] = []
+      let stderr = ''
+      child.stderr.on('data', (d: Buffer) => (stderr += d.toString('utf8')))
+      child.stdin.on('error', () => undefined)
+      child.stdin.end('{}')
+      // A client that outlives this bound is killed, so a failing case reports a signal and not a hang.
+      const bound = setTimeout(() => child.kill(), ENDS_BY)
+      try {
+        const closed = new Promise<void>((resolve) => child.stdout.once('close', () => resolve()))
+        const ended = new Promise<[number | null, NodeJS.Signals | null]>((resolve, reject) => {
+          child.once('error', reject)
+          child.once('exit', (code, signal) => resolve([code, signal]))
+        })
+        if (mode === 'never-read') {
+          child.stdout.pause()
+        } else {
+          await new Promise<void>((resolve) =>
+            child.stdout.once('data', (d: Buffer) => {
+              chunks.push(d)
+              if (mode === 'close-after-first-chunk') child.stdout.destroy()
+              else child.stdout.pause()
+              resolve()
+            }),
+          )
+        }
+        const [exit, signal] = await ended
+        if (mode !== 'close-after-first-chunk') {
+          child.stdout.on('data', (d: Buffer) => chunks.push(d))
+          child.stdout.resume()
+          await closed
+        }
+        result = { exit, signal, bytes: Buffer.concat(chunks), stderr }
+      } finally {
+        clearTimeout(bound)
+        if (child.exitCode === null && child.signalCode === null) child.kill()
+      }
+    })
+    return result as Stalled
+  }
+
+  /** Whatever reached the pipe is the served answer only: a second answer would put `{` or `}` in it. */
+  const onlyTheServedAnswer = (bytes: Buffer): void => {
+    expect(bytes.length).toBeLessThanOrEqual(ANSWER_BYTES)
+    expect(bytes.every((b) => b === 0x78), 'a byte other than the served answer was written').toBe(true)
+  }
+
+  it('a 4 MiB answer into a pipe nobody reads ends the client itself, exit 0, no second answer', async () => {
+    const run = await runStalled('never-read')
+    expect(run.signal, 'the client was still running at the kill bound').toBeNull()
+    expect(run.exit, run.stderr).toBe(0)
+    expect(run.bytes.length, 'the whole answer fit the pipe, so no write blocked').toBeLessThan(ANSWER_BYTES)
+    onlyTheServedAnswer(run.bytes)
+  })
+
+  it('a pipe read once and then left alone ends the client itself, exit 0, no second answer', async () => {
+    const run = await runStalled('stall-after-first-chunk')
+    expect(run.signal, 'the client was still running at the kill bound').toBeNull()
+    expect(run.exit, run.stderr).toBe(0)
+    expect(run.bytes.length, 'no byte of the answer was observed').toBeGreaterThan(0)
+    expect(run.bytes.length, 'the whole answer fit the pipe, so no write blocked').toBeLessThan(ANSWER_BYTES)
+    onlyTheServedAnswer(run.bytes)
+  })
+
+  it('a pipe the reader closes during a large write ends the client with exit 0', async () => {
+    const run = await runStalled('close-after-first-chunk')
+    expect(run.signal, 'the client was still running at the kill bound').toBeNull()
+    expect(run.exit, run.stderr).toBe(0)
+    expect(run.bytes.length, 'no byte of the answer was observed').toBeGreaterThan(0)
+    onlyTheServedAnswer(run.bytes)
+  })
 })
 
 // ---------- process behaviour ----------

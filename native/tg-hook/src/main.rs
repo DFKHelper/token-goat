@@ -102,6 +102,8 @@ fn run_hook(hook: HookArgs, main_start: Instant) -> i32 {
     if let Some(call) = &hook.call {
         out::set_context(&call.harness, &call.event);
     }
+    let host = hook.call.as_ref().map_or(("", ""), |c| (c.harness.as_str(), c.event.as_str()));
+    out::set_deadline(fallback::Opts::for_call(host.0, host.1, main_start, hook.limit).deadline);
     if let Some(call) = hook.call.as_ref().filter(|c| startup_entry::is_startup(c)) {
         return startup_entry::run(hook.fallback.clone(), main_start, call, hook.limit);
     }
