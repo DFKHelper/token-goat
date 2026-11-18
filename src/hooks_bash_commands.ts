@@ -91,15 +91,33 @@ const SCRIPT_PREFIXES = ['./', '../', '.\\', '..\\', '/', '~']
 /** First-word suffixes that name a script file. */
 const SCRIPT_SUFFIXES = ['.sh', '.ps1', '.bat', '.cmd', '.py', '.js', '.mjs', '.ts']
 const HEAD_MAX_LENGTH = 32
-const SAFE_HEAD = /^[a-z0-9._+-]+$/
+const SAFE_HEAD = /^[a-z][a-z-]{1,15}$/
+/** Tool names that carry a digit, dot, underscore or plus and so fail SAFE_HEAD; one sorted list. */
+const KNOWN_HEADS: ReadonlySet<string> = new Set([
+  '7z', 'c++', 'clang++', 'g++', 'k9s', 'pip3', 'python3', 's3cmd',
+])
+/** A head starting with one of these looks like a pasted credential, so it files as other. */
+const SECRET_HEAD = /^(?:sk-|gh[pos]|xox|akia|glpat|eyj)/
 
-/** Splits a command on unquoted whitespace, keeping quoted spans (quotes included) inside one word. */
+/** Splits on unquoted, unescaped whitespace; a backslash keeps its next character in the word. */
 function shellWords(cmd: string): string[] {
   const words: string[] = []
   let word = ''
   let inWord = false
   let quote: string | null = null
+  let escaped = false
   for (const ch of cmd) {
+    if (escaped) {
+      word += ch
+      escaped = false
+      continue
+    }
+    if (ch === '\\' && quote !== "'") {
+      word += ch
+      escaped = true
+      inWord = true
+      continue
+    }
     if (quote !== null) {
       word += ch
       if (ch === quote) quote = null
@@ -141,7 +159,8 @@ export function commandHead(cmd: string): string {
   }
   const basename = first.slice(Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\')) + 1)
   const head = basename.toLowerCase().slice(0, HEAD_MAX_LENGTH)
-  return SAFE_HEAD.test(head) ? head : 'other'
+  if (SECRET_HEAD.test(head)) return 'other'
+  return KNOWN_HEADS.has(head) || SAFE_HEAD.test(head) ? head : 'other'
 }
 
 export function hasTestRunScopeOrBudget(cmd: string): boolean {

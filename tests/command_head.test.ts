@@ -10,7 +10,6 @@ describe('commandHead', () => {
     ['FOO=a=b npm test', 'npm'],
     ['Kubectl get pods', 'kubectl'],
     ['npm test', 'npm'],
-    ['tool.exe run', 'tool.exe'],
     ['my\\tool run', 'tool'],
     ['node_modules/.bin/vitest run', 'vitest'],
     ['cargo build', 'cargo'],
@@ -50,9 +49,35 @@ describe('commandHead', () => {
     expect(commandHead(cmd)).toBe('other')
   })
 
-  it('cuts a 60-character head to 32 characters', () => {
+  it('files a 60-character head as other, since a head is at most 16 characters', () => {
     const long = 'a'.repeat(60)
-    expect(commandHead(`${long} run`)).toBe('a'.repeat(32))
+    expect(commandHead(`${long} run`)).toBe('other')
+  })
+
+  it.each([
+    ['sk-abc123def456 run', 'other'],
+    ['ghp_aB3xyz run', 'other'],
+    ['sk-abcdefgh run', 'other'],
+    ['ghpabcdef run', 'other'],
+    ['glpatabcdef run', 'other'],
+    ['eyjhbgcio run', 'other'],
+    ['a1b2c3d4e5f6 run', 'other'],
+    ['tool.exe run', 'other'],
+    ['terraform plan', 'terraform'],
+    ['docker-compose up', 'docker-compose'],
+    ['kubectl get pods', 'kubectl'],
+    ['python3 x', 'python3'],
+    ['g++ main.cpp', 'g++'],
+  ])('keeps only a known or plain-lowercase head: %j gives %j', (cmd, head) => {
+    expect(commandHead(cmd)).toBe(head)
+  })
+
+  it.each([
+    ['FOO=a\\ ghp_xxx cmd', 'cmd'],
+    ['FOO="a \\" ghp_xxx" cmd', 'cmd'],
+    ['FOO=a\\ ghp_xxx', 'other'],
+  ])('keeps an escaped space inside its word: %j gives %j', (cmd, head) => {
+    expect(commandHead(cmd)).toBe(head)
   })
 
   it('lowercases the head before the length cut', () => {
