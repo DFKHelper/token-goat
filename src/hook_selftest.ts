@@ -14,7 +14,6 @@ import {
   type GuardShell,
 } from './hook_guard.js'
 import { HOOK_PROBE_ENV } from './stats.js'
-import { hookBrokenPath } from './hook_pointer.js'
 import { resolveWindowsBash } from './shell.js'
 import { atomicWriteBytes } from './util.js'
 import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
@@ -241,26 +240,11 @@ function guardWroteNotice(marker: string): boolean {
   }
 }
 
-/** Puts the hook-broken notice back as `before` held it (absent, or its bytes); unreadable stays. */
-function restoreNotice(file: string, before: Buffer | undefined | null): void {
-  if (before === null) return
-  try {
-    const now = snapshot(file)
-    if (before === undefined) fs.rmSync(file, { force: true })
-    else if (now === undefined || now === null || !before.equals(now)) atomicWriteBytes(file, before)
-  } catch (e) {
-    process.stderr.write(`token-goat: could not put ${file} back after the hook self-test: ${String(e)}\n`)
-  }
-}
-
 /** Run guarded commands on the exe and Node routes (client unresolvable); report failures; skip unguarded. */
 export function selftestRegisteredCommands(commands: readonly string[]): SelftestOutcome {
   const failures: string[] = []
   const skipped: string[] = []
   let tested = 0
-  // The real client notes each route it leaves in the data dir; a probe's notes are not a live hook's.
-  const noticeFile = hookBrokenPath()
-  const noticeBefore = snapshot(noticeFile)
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-selftest-'))
   try {
     interface Plan {
@@ -356,7 +340,6 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
     }
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true })
-    restoreNotice(noticeFile, noticeBefore)
   }
   return { failures, tested, skipped }
 }

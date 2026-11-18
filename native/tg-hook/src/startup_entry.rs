@@ -113,8 +113,7 @@ fn fall_back(command: &[OsString], framed: &std::sync::Mutex<Option<Vec<u8>>>, d
 
 fn fail_open(reason: &str) -> i32 {
     eprintln!("tg-hook: SessionStart failed open: {reason}");
-    crate::notice::record_current("startup", "", reason);
-    crate::out::fail_open()
+    crate::out::fail_open_noting("startup", reason.to_string())
 }
 
 #[cfg(windows)]

@@ -28,11 +28,7 @@ const LIMITS: &str = include_str!("../hook_limits.json");
 pub fn harness_limit(harness: &str) -> Duration {
     let table: Option<serde_json::Value> = serde_json::from_str(LIMITS).ok();
     let ms = |v: &serde_json::Value| v.as_u64().filter(|n| *n > 0);
-    // VS Code runs the Copilot hooks that `copilot_cli` runs, so it takes that host's limit.
-    let harness = match harness {
-        "vscode" => "copilot_cli",
-        other => other,
-    };
+    let harness = out::table_harness(harness);
     let named = table.as_ref().and_then(|t| t.get(harness)).and_then(ms);
     let smallest = table.as_ref().and_then(|t| t.as_object()).and_then(|o| o.values().filter_map(ms).min());
     // limit: used only if the embedded table cannot be read, which a unit test rules out; revisit-when: never

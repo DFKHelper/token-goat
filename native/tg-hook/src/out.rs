@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 static CONTEXT: Mutex<Option<(String, String)>> = Mutex::new(None);
 /// Whether any byte of an answer has been written to stdout.
 static ANSWERED: AtomicBool = AtomicBool::new(false);
+/// Whether the leading async marker has been written to stdout.
+static MARKER_SENT: AtomicBool = AtomicBool::new(false);
 
 const TABLE: &str = include_str!("../safe_answers.json");
 
@@ -23,9 +25,18 @@ fn context() -> (String, String) {
     CONTEXT.try_lock().ok().and_then(|slot| slot.clone()).unwrap_or_default()
 }
 
+/// The harness whose rows in the safe-answer and limit tables serve `harness`: VS Code runs the Copilot hooks that `copilot_cli` runs.
+pub fn table_harness(harness: &str) -> &str {
+    match harness {
+        "vscode" => "copilot_cli",
+        other => other,
+    }
+}
+
 /// What `harness` is answered when nothing could run for `event`: its no-op, or the event's own where the harness distinguishes one (Grok `pre_tool_use` must be told to allow). An unknown harness gets `{}`. The table is `safe_answers.json`, which tests/native_hook_conformance.test.ts compares with `noopFor` in src/hook_adapters.ts.
 pub fn safe_answer(harness: &str, event: &str) -> String {
     let parsed: Option<serde_json::Value> = serde_json::from_str(TABLE).ok();
+    let harness = table_harness(harness);
     let entry = parsed.as_ref().and_then(|table| table.get(harness));
     let own = entry.and_then(|e| e.get("events")).and_then(|events| events.get(event)).and_then(|v| v.as_str());
     let noop = entry.and_then(|e| e.get("noop")).and_then(|v| v.as_str());
@@ -81,9 +92,16 @@ pub fn emit(data: &str) {
     write_bounded(data);
 }
 
-/// Writes a leading part of an answer (the async marker) that the final answer follows; does not mark the call answered.
+/// Writes a leading part of an answer (the async marker) that the final answer follows; does not mark the call answered. Only the first is written: a later route's marker would be a second one.
 pub fn emit_partial(data: &str) {
-    write_bounded(data);
+    if claim_marker(&MARKER_SENT) {
+        write_bounded(data);
+    }
+}
+
+/// Whether this is the first claim on `sent`; every later one is not.
+fn claim_marker(sent: &AtomicBool) -> bool {
+    !sent.swap(true, Ordering::SeqCst)
 }
 
 /// Whether a final answer has been written to stdout.
@@ -114,12 +132,42 @@ pub fn answer_safely() {
     }
 }
 
+/// Runs `record` on its own thread and waits for it only until `deadline`, so a stalled disk cannot hold the process past the call's limit. With no deadline (the self-tests) it waits for it.
+pub fn record_bounded(record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    // owner: this call; dies when the process exits, which a record still blocked at the deadline does not outlast
+    std::thread::spawn(move || {
+        record();
+        let _ = tx.send(());
+    });
+    match deadline {
+        Some(end) => {
+            let _ = rx.recv_timeout(end.saturating_duration_since(Instant::now()));
+        }
+        None => {
+            let _ = rx.recv();
+        }
+    }
+}
+
+/// Ends the process with the safe answer and exit 0, then notes `route` failed with `error`: the answer is out before any disk is touched.
+pub fn fail_open_noting(route: &'static str, error: String) -> ! {
+    let deadline = DEADLINE.lock().ok().and_then(|slot| *slot);
+    answer_then_record(answer_safely, move || crate::notice::record_current(route, "", &error), deadline);
+    finish(0)
+}
+
+/// Gives the answer first and only then starts `record`, so nothing a disk does can delay the host's answer.
+fn answer_then_record(answer: impl FnOnce(), record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) {
+    answer();
+    record_bounded(record, deadline);
+}
+
 /// Turns a panic anywhere, on any thread, into the safe answer and exit 0. Release builds abort on panic, which the host would see as a crash; this hook runs first and ends the process itself.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         let _ = writeln!(std::io::stderr(), "tg-hook: internal error, answering the safe no-op: {info}");
-        crate::notice::record_current("panic", "", &info.to_string());
-        fail_open()
+        fail_open_noting("panic", info.to_string())
     }));
 }
 
@@ -135,6 +183,66 @@ mod tests {
         assert_eq!(safe_answer("copilot_cli", "agentStop"), r#"{"decision":"allow"}"#);
         assert_eq!(safe_answer("copilot_cli", "preToolUse"), "{}");
         assert_eq!(safe_answer("kimi", "pre_tool_use"), "");
+    }
+
+    #[test]
+    fn only_the_first_async_marker_is_claimed() {
+        let sent = AtomicBool::new(false);
+        assert!(claim_marker(&sent), "the first marker must be written");
+        assert!(!claim_marker(&sent), "a second marker must not be written");
+    }
+
+    #[test]
+    fn a_record_that_never_returns_cannot_hold_the_caller_past_the_deadline() {
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let started = Instant::now();
+        record_bounded(
+            move || {
+                let _ = blocked.recv();
+            },
+            Some(started + Duration::from_millis(100)),
+        );
+        // The deadline passed with the record still blocked: the call returned on the deadline's account.
+        assert!(started.elapsed() >= Duration::from_millis(100), "returned before the deadline with the record still running");
+        assert!(release.send(()).is_ok(), "the record had already ended; it was not blocked");
+    }
+
+    #[test]
+    fn the_answer_is_given_before_the_record_starts_even_when_the_record_would_block() {
+        let order = std::sync::Arc::new(Mutex::new(Vec::<&'static str>::new()));
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (started, began) = std::sync::mpsc::channel::<()>();
+        let (answered_log, recorded_log) = (order.clone(), order.clone());
+        let deadline = Some(Instant::now() + Duration::from_millis(100));
+        answer_then_record(
+            move || answered_log.lock().unwrap().push("answer"),
+            move || {
+                recorded_log.lock().unwrap().push("record");
+                let _ = started.send(());
+                let _ = blocked.recv();
+            },
+            deadline,
+        );
+        // The record thread may not have run before the deadline on a loaded host: wait on its own event, not the clock.
+        began.recv_timeout(Duration::from_secs(60)).expect("the record never started");
+        assert_eq!(*order.lock().unwrap(), ["answer", "record"], "the answer must precede the record");
+        drop(release);
+    }
+
+    #[test]
+    fn a_record_that_returns_is_waited_for_without_a_deadline() {
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let seen = done.clone();
+        record_bounded(move || seen.store(true, Ordering::SeqCst), None);
+        assert!(done.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn vscode_is_answered_as_copilot_cli_for_every_event() {
+        for event in ["agentStop", "subagentStop", "preToolUse", "sessionStart", "nothing"] {
+            assert_eq!(safe_answer("vscode", event), safe_answer("copilot_cli", event), "{event}");
+        }
+        assert_eq!(safe_answer("vscode", "agentStop"), r#"{"decision":"allow"}"#);
     }
 
     #[test]

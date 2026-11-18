@@ -96,6 +96,12 @@ fn poll_within<T>(bound: Duration, mut probe: impl FnMut() -> Option<T>) -> Opti
     }
 }
 
+/// Kills `child` and waits up to `bound` for it to be reaped; the kill is issued before any wait.
+fn kill_and_reap(child: &mut std::process::Child, bound: Duration) {
+    let _ = child.kill();
+    let _ = poll_within(bound, || matches!(child.try_wait(), Ok(Some(_)) | Err(_)).then_some(()));
+}
+
 fn read_pipe(mut pipe: impl Read, done: mpsc::Sender<Vec<u8>>) {
     let mut all = Vec::new();
     let mut forwarded = 0;
@@ -146,10 +152,7 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
         None => drop(tx),
     }
     // Only the direct child is killed and reaped: the hook server it started detached must outlive the call.
-    let kill = |child: &mut std::process::Child| {
-        let _ = child.kill();
-        let _ = poll_within(REAP_BOUND, || matches!(child.try_wait(), Ok(Some(_)) | Err(_)).then_some(()));
-    };
+    let kill = |child: &mut std::process::Child| kill_and_reap(child, REAP_BOUND);
     let left = |end: Instant| end.saturating_duration_since(Instant::now());
     let held = match rx.recv_timeout(left(end)) {
         Ok(bytes) => bytes,
@@ -179,6 +182,9 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// How long a test waits on an event (a pidfile, a process ending); a cap that only a broken run reaches.
+    const BACKSTOP: Duration = Duration::from_secs(60);
 
     #[test]
     fn only_a_parseable_answer_from_an_ordinary_ending_is_served() {
@@ -218,11 +224,12 @@ mod tests {
 
     /// Hanging child for the next test: `--ignored --exact <this> pidfile=<path>` writes its pid, then hangs.
     #[test]
-    #[ignore = "only runs as the hanging child of a_hung_route_is_dead_and_reaped_before_exec_returns"]
+    #[ignore = "only runs as the hanging child of the kill tests below"]
     fn hang_child() {
         let Some(path) = std::env::args().find_map(|a| a.strip_prefix("pidfile=").map(String::from)) else { return };
         std::fs::write(path, std::process::id().to_string()).unwrap();
-        std::thread::sleep(Duration::from_secs(60));
+        // Outlives BACKSTOP, so an unkilled child fails the tests waiting on it.
+        std::thread::sleep(Duration::from_secs(120));
     }
 
     /// Whether no process, not even an unreaped zombie, answers to `pid`.
@@ -253,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hung_route_is_dead_and_reaped_before_exec_returns() {
+    fn a_hung_route_is_killed_when_exec_times_out() {
         let pidfile = std::env::temp_dir().join(format!("tg-cap-{}.pid", std::process::id()));
         let _ = std::fs::remove_file(&pidfile);
         let me = std::env::current_exe().unwrap().into_os_string();
@@ -264,9 +271,31 @@ mod tests {
         let took = started.elapsed();
         assert!(matches!(ended, Err(Failure::Timeout(_))), "the hung route must time out");
         assert!(took < limit + REAP_BOUND + Duration::from_secs(5), "exec outlived its bound: {took:?}");
-        let text = std::fs::read_to_string(&pidfile).unwrap_or_default();
+        let text = poll_within(BACKSTOP, || std::fs::read_to_string(&pidfile).ok().filter(|t| t.trim().parse::<u32>().is_ok())).unwrap_or_default();
         let _ = std::fs::remove_file(&pidfile);
         let pid: u32 = text.trim().parse().expect("the hung route never wrote its pid");
-        assert!(process_is_gone(pid), "pid {pid} of the hung route was still alive when exec returned");
+        // The kill was issued before exec returned; the wait here is on the process ending, not on the production reap bound.
+        assert!(poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some(), "pid {pid} of the hung route was still alive after exec returned");
+    }
+
+    #[test]
+    fn kill_and_reap_leaves_the_child_gone_when_it_returns_within_an_ample_bound() {
+        let pidfile = std::env::temp_dir().join(format!("tg-cap-reap-{}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&pidfile);
+        let me = std::env::current_exe().unwrap();
+        let mut child = Command::new(me).args(["--ignored", "--exact", "capture::tests::hang_child"]).arg(format!("pidfile={}", pidfile.display())).stdout(Stdio::null()).spawn().unwrap();
+        let started = poll_within(BACKSTOP, || pidfile.exists().then_some(()));
+        let pid = child.id();
+        if started.is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_file(&pidfile);
+        assert!(started.is_some(), "the hang child never wrote its pidfile");
+        kill_and_reap(&mut child, BACKSTOP);
+        let gone = process_is_gone(pid);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(gone, "kill_and_reap returned with pid {pid} still alive");
     }
 }

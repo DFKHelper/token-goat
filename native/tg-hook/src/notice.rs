@@ -46,7 +46,20 @@ fn merged(previous: Option<Value>, event: Value, now: &str) -> Value {
 
 /// Records that `route` could not be used because of `error` at `path` (empty when no one path is to blame).
 pub fn record(data_dir: &str, route: &str, path: &str, error: &str) {
-    let _ = try_record(data_dir, route, path, error);
+    if !probing() {
+        let _ = try_record(data_dir, route, path, error);
+    }
+}
+
+/// The variable the self-tests and `doctor` set on a probe run (`HOOK_PROBE_ENV` in src/stats.ts): a probe's failures are not a live hook's, so it neither writes nor clears the notice.
+const PROBE_ENV: &str = "TOKEN_GOAT_HOOK_PROBE";
+
+fn probing() -> bool {
+    is_probe(std::env::var(PROBE_ENV).ok().as_deref())
+}
+
+fn is_probe(value: Option<&str>) -> bool {
+    value == Some("1")
 }
 
 fn try_record(data_dir: &str, route: &str, path: &str, error: &str) -> std::io::Result<()> {
@@ -72,7 +85,9 @@ pub fn record_current(route: &str, path: &str, error: &str) {
 
 /// A route that needed nothing missing ran clean: the notice no longer describes anything.
 pub fn clear(data_dir: &str) {
-    let _ = std::fs::remove_file(Path::new(data_dir).join(FILE_NAME));
+    if !probing() {
+        let _ = std::fs::remove_file(Path::new(data_dir).join(FILE_NAME));
+    }
 }
 
 #[cfg(test)]
@@ -108,6 +123,14 @@ mod tests {
         clear(d);
         assert!(!dir.join(FILE_NAME).exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_value_one_marks_a_probe() {
+        assert!(is_probe(Some("1")));
+        for other in [None, Some(""), Some("0"), Some("true"), Some("11")] {
+            assert!(!is_probe(other), "{other:?}");
+        }
     }
 
     #[test]

@@ -15,15 +15,15 @@ const limits = JSON.parse(fs.readFileSync(LIMITS_FILE, 'utf8')) as Record<string
 const NATIVE_TO_SHIM: Record<string, keyof typeof SHIM_FALLBACK_TIMEOUT_MS> = { copilot_cli: 'copilot' }
 const shimName = (native: string): string => NATIVE_TO_SHIM[native] ?? native
 
-// Installer harness names: NativeHarness (src/native_hook.ts:19) plus vscode, aliased in fallback.rs.
+// Installer harness names: NativeHarness (src/native_hook.ts:19) plus vscode, aliased in out.rs.
 const INSTALLER_NATIVE_NAMES = ['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli', 'vscode']
-const RUST_FALLBACK = path.join(ROOT, 'native', 'tg-hook', 'src', 'fallback.rs')
+const RUST_OUT = path.join(ROOT, 'native', 'tg-hook', 'src', 'out.rs')
 
-// Aliases are read from the `"name" => "target"` arms of harness_limit: the Rust source is the only copy.
+// Aliases are read from the `"name" => "target"` arms of table_harness, shared by the limit and safe answer.
 function rustHarnessAliases(): Record<string, string> {
-  const src = fs.readFileSync(RUST_FALLBACK, 'utf8')
-  const start = src.indexOf('pub fn harness_limit')
-  expect(start, 'pub fn harness_limit in fallback.rs').toBeGreaterThan(-1)
+  const src = fs.readFileSync(RUST_OUT, 'utf8')
+  const start = src.indexOf('pub fn table_harness')
+  expect(start, 'pub fn table_harness in out.rs').toBeGreaterThan(-1)
   const body = src.slice(start, src.indexOf('\n}\n', start))
   return Object.fromEntries([...body.matchAll(/"(\w+)" => "(\w+)"/g)].map((m) => [m[1], m[2]]))
 }
@@ -32,6 +32,10 @@ describe('the native client limit table', () => {
   it('names every harness of the shim table with the same milliseconds', () => {
     const asShim = Object.fromEntries(Object.entries(limits).map(([name, ms]) => [shimName(name), ms]))
     expect(asShim).toEqual({ ...SHIM_FALLBACK_TIMEOUT_MS })
+  })
+
+  it('aliases vscode to copilot_cli, the one alias the limit and the safe answer both read', () => {
+    expect(rustHarnessAliases()['vscode'], 'table_harness lost the vscode alias').toBe('copilot_cli')
   })
 
   it('holds positive integers only, so a bad entry cannot become a zero or negative limit', () => {

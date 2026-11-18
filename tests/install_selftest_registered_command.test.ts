@@ -146,6 +146,23 @@ describe.runIf(NATIVE)('the install self-test', () => {
     expect(fs.existsSync(hookBrokenPath()), `notice left at ${hookBrokenPath()}`).toBe(false)
   })
 
+  it('a hook-broken notice that existed before a failing self-test is byte-identical after it', () => {
+    installHooks('user', { dev: true })
+    const commands = tokenGoatCommands(readSettings())
+    const before = Buffer.from('{"schema":1,"first":"t","last":"t","count":3,"events":[]}\n')
+    fs.mkdirSync(path.dirname(hookBrokenPath()), { recursive: true })
+    fs.writeFileSync(hookBrokenPath(), before)
+    try {
+      fs.writeFileSync(path.join(root, 'bundle', 'token-goat.mjs'), "process.stdout.write('not json')\n")
+      const outcome = selftestRegisteredCommands(commands)
+      expect(outcome.failures.length, 'the self-test should fail').toBeGreaterThan(0)
+      const after = fs.readFileSync(hookBrokenPath())
+      expect(after.equals(before), 'the self-test changed the existing notice').toBe(true)
+    } finally {
+      fs.rmSync(hookBrokenPath(), { force: true })
+    }
+  })
+
   it('does not run when nothing changed', () => {
     installHooks('user', { dev: true })
     setHookSelftestRunnerForTesting(() => ({ status: 9, stdout: '', stderr: 'must not run' }))

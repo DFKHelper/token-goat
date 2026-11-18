@@ -5,6 +5,7 @@ import * as fs from 'node:fs'
 import * as net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished } from 'vitest'
 
@@ -102,6 +103,16 @@ const FALLBACK_SCRIPT = [
   '}',
   '',
 ].join('\n')
+
+// Resolves true once `isAlive(pid, token)` is false, polling the process; the cap only backstops a broken run.
+async function waitGone(pid: number, token: string): Promise<boolean> {
+  const cap = Date.now() + 30_000
+  while (isAlive(pid, token)) {
+    if (Date.now() > cap) return false
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  return true
+}
 
 // Whether `pid` still names the process whose command line carried `token`: ESRCH is dead.
 // A readable line without the token is a stranger on a reused number, so the original is gone.
@@ -879,6 +890,7 @@ describe('one deadline serves every route', () => {
     const lines = [
       "import fs from 'node:fs'",
       "fs.appendFileSync(process.env.TG_ROUTE2_COUNTER, 'x')",
+      "if (process.env.TG_ROUTE2_MARKER) process.stdout.write('{\"async\":true}\\n')",
       "if (process.env.TG_ROUTE2_MODE === 'hang') setInterval(() => {}, 1000)",
       'else process.stdout.write(\'{"second":true}\')',
       '',
@@ -918,6 +930,64 @@ describe('one deadline serves every route', () => {
     expect(res.exit, res.stderr).toBe(0)
     expect(res.stdout.toString('utf8')).toBe('{"second":true}')
     expect(fs.readFileSync(counter).length).toBe(1)
+  })
+
+  it('a vscode call that no route can serve is answered as copilot_cli is, for every event', async () => {
+    // FORMAT-DERIVED from native/tg-hook/safe_answers.json, the table the client embeds.
+    const tableFile = fileURLToPath(new URL('../native/tg-hook/safe_answers.json', import.meta.url))
+    type Table = Record<string, { events: Record<string, string> }>
+    const table = JSON.parse(fs.readFileSync(tableFile, 'utf8')) as Table
+    const events = [...Object.keys(table['copilot_cli']?.events ?? {}), 'preToolUse']
+    expect(events.length, 'the copilot_cli table names no event').toBeGreaterThan(1)
+    const answerFor = async (harness: string, event: string): Promise<string> => {
+      const flags = ['--harness', harness, '--event', event, '--entry', sb.fakeEntry, '--script-dir', sb.base]
+      const args = [...flags, '--', ...fbTail(1)]
+      const res = await runNative(args, '{}', NO_SERVER, BOUND)
+      expect(res.exit, res.stderr).toBe(0)
+      return res.stdout.toString('utf8')
+    }
+    for (const event of events) {
+      expect(await answerFor('vscode', event), `vscode ${event}`).toBe(await answerFor('copilot_cli', event))
+    }
+    expect(await answerFor('vscode', 'agentStop'), 'vscode agentStop').toBe('{"decision":"allow"}')
+  })
+
+  describe('the hook-broken notice', () => {
+    const notice = (): string => path.join(sb.dataDir, 'hook-broken.json')
+    afterEach(() => fs.rmSync(notice(), { force: true }))
+    const failing = (env: Env): Promise<Run> =>
+      runNative(hookArgs(fbTail(1)), '{}', { ...NO_SERVER, ...env }, BOUND)
+
+    it('a failing route writes it', async () => {
+      fs.rmSync(notice(), { force: true })
+      endedOnItsOwn(await failing({}))
+      expect(fs.existsSync(notice()), `no notice at ${notice()}`).toBe(true)
+    })
+
+    it('a probe run neither writes it nor disturbs one that was there', async () => {
+      const probe = { TOKEN_GOAT_HOOK_PROBE: '1' }
+      fs.rmSync(notice(), { force: true })
+      endedOnItsOwn(await failing(probe))
+      expect(fs.existsSync(notice()), 'a probe run wrote a notice').toBe(false)
+      const before = '{"schema":1,"first":"t","last":"t","count":1,"events":[]}'
+      fs.writeFileSync(notice(), before)
+      endedOnItsOwn(await failing(probe))
+      expect(fs.readFileSync(notice(), 'utf8'), 'a probe run changed the notice').toBe(before)
+    })
+  })
+
+  // FORMAT-DERIVED from capture.rs ASYNC_MARKER, the line the Claude shim prints to detach the host.
+  it('the async marker of a failed first route and of the pointer route reaches the host once', async () => {
+    writePointer()
+    const counter = path.join(sb.base, 'route2-marker')
+    const marker = "process.stdout.write('{\"async\":true}\\n'); process.exitCode = 1"
+    const args = hookArgs([process.execPath, '-e', marker], { extra: SPLIT_ARGS })
+    const env = { ...route2Env(counter, 'answer'), TG_ROUTE2_MARKER: '1' }
+    const res = await runNative(args, '{}', env, { killAfterMs: 30_000 })
+    expect(res.exit, res.stderr).toBe(0)
+    expect(fs.readFileSync(counter).length, 'the pointer route did not run').toBe(1)
+    const held = res.stdout.toString('utf8')
+    expect(held, 'stdout must hold exactly one marker and one answer').toBe('{"async":true}\n{"second":true}')
   })
 
   it('both routes hanging end in the safe answer and exit 0 at the limit, each route run once', async () => {
@@ -987,14 +1057,16 @@ describe('one deadline serves every route', () => {
     expect(res.heldOpen).toBe(false)
   })
 
-  it('a first route that hangs is killed and reaped before the client exits', async () => {
+  it('a first route that hangs is killed by the time the client has ended', async () => {
     const pidFile = hangPid('reaped')
     const args = hookArgs(fbTail(0, 'hang', pidFile), { extra: ['--hook-limit-ms', '8000'] })
     endedOnItsOwn(await runNative(args, '{}', NO_SERVER, BOUND))
     const text = fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf8') : ''
     // No pid written means the route never started: that is unknown, not dead, so it fails here.
     expect(text, 'the hanging route never wrote its pid').not.toBe('')
-    expect(isAlive(Number(text), pidFile), `pid ${text} of the hanging route outlived the client`).toBe(false)
+    // The 100 ms reap bound is proved in capture.rs; here the wait is on the process ending, not the clock.
+    const gone = await waitGone(Number(text), pidFile)
+    expect(gone, `pid ${text} of the hanging route outlived the client`).toBe(true)
   })
 
   it('at the 3000 ms limit the answer is out before the client exits, both before the limit', async () => {
@@ -1054,10 +1126,13 @@ describe('one deadline serves every route', () => {
     endedOnItsOwn(await runNative(args('stubborn'), '{}', NO_SERVER, BOUND))
     expect(readPid(files[0] as string), 'the stubborn route never started').toBeGreaterThan(0)
     expect(readPid(files[1] as string), 'the grandchild holding the pipe never started').toBeGreaterThan(0)
+    const stubborn = readPid(files[0] as string)
+    const gone = await waitGone(stubborn, files[0] as string)
+    expect(gone, `stubborn route ${String(stubborn)} outlived the client`).toBe(true)
   })
 
   // POSIX only (unrun on Windows): a killed shell route is reaped, not left a zombie.
-  it.skipIf(WIN)('a killed shell route is reaped before the client exits, stdout held by a child', async () => {
+  it.skipIf(WIN)('a killed shell route is reaped, not left a zombie, stdout held by a child', async () => {
     const files = [hangPid('sh'), hangPid('sh-grand')]
     reapLater(files)
     const body = '"$1" -e "setInterval(() => {}, 1000)" "$3" & echo $$ > "$2"; echo $! > "$3"; wait'
@@ -1067,7 +1142,7 @@ describe('one deadline serves every route', () => {
     const pid = readPid(files[0] as string)
     expect(pid, 'the shell route never wrote its pid').toBeGreaterThan(0)
     expect(readPid(files[1] as string), 'the descendant never started').toBeGreaterThan(0)
-    expect(isAlive(pid, files[0] as string), `shell route ${String(pid)} outlived the client`).toBe(false)
+    expect(await waitGone(pid, files[0] as string), `shell route ${String(pid)} outlived the client`).toBe(true)
   })
 })
 
@@ -1167,6 +1242,22 @@ describe('a stdout that stops being read', () => {
 // ---------- process behaviour ----------
 
 describe('process behaviour', () => {
+  it('isAlive is true with its token, false with a stranger token, false once gone', async () => {
+    const token = `tg-alive-${crypto.randomBytes(8).toString('hex')}`
+    const stranger = `tg-other-${crypto.randomBytes(8).toString('hex')}`
+    const argv = ['-e', 'setInterval(() => {}, 1000)', token]
+    const child = spawn(process.execPath, argv, { stdio: 'ignore', windowsHide: true })
+    const pid = child.pid as number
+    try {
+      expect(pid, 'the sleeper never started').toBeGreaterThan(0)
+      expect(isAlive(pid, token), 'the live process carrying the token').toBe(true)
+      expect(isAlive(pid, stranger), 'a live process whose command line lacks the token').toBe(false)
+    } finally {
+      killIfCommandLine(pid, (cmd) => cmd.includes(token), { tree: true })
+    }
+    expect(await waitGone(pid, token), 'the sleeper outlived its tree kill').toBe(true)
+  })
+
   it('the environment and working directory it sends are what Node would read', () => {
     const extra: Env = { TG_UNICODE: 'caf\u00e9 \u65e5\u672c \u{1f600}', TG_EMPTY: '' }
     if (WIN) extra['=Z:'] = 'Z:\\'
