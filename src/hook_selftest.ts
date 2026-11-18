@@ -134,14 +134,14 @@ process.stdin.on('end', () => {
 })
 `
 
-interface Job {
+export interface Job {
   readonly shell: GuardShell
   readonly command: string
   readonly input: string
 }
 
 /** Each job's result in order: real shells in parallel through one helper, an injected runner one by one. */
-function runJobs(jobs: readonly Job[]): (ShellRun | null)[] {
+export function runJobs(jobs: readonly Job[]): (ShellRun | null)[] {
   const sequential = (): (ShellRun | null)[] => jobs.map((j) => runner(j.shell, j.command, j.input))
   if (runner !== realShellRunner || jobs.length < 2) return sequential()
   const specs = jobs.map((j) => shellSpawn(j.shell, j.command))

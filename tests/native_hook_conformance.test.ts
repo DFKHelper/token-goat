@@ -11,6 +11,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import type { Job } from '../src/hook_selftest.js'
 import { COPILOT_SESSION_START_HELPERS } from '../src/bridges/copilot_session_start.js'
 import { _resetDataDirCacheForTesting, dataDir } from '../src/constants.js'
 import { encodeFrame, endpointFor, frameFits, mac, macMatches, MAX_FRAME_BYTES, readFrames, readServerKey, resolveBundleDir, serverKeyPath } from '../src/hook_ipc.js'
@@ -701,10 +702,12 @@ describe.runIf(NATIVE_TARGET)('the registered command of every host and event', 
   })
 
   it('every row answers and exits 0 on the exe and Node routes', async () => {
-    const { realShellRunner } = await import('../src/hook_selftest.js')
+    const { runJobs } = await import('../src/hook_selftest.js')
     const { buildGuardedCommand, parseGuardedCommand } = await import('../src/hook_guard.js')
     const problems: string[] = []
-    for (const row of rows) {
+    const jobs: Job[] = []
+    const meta: Array<{ row: (typeof rows)[number]; route: string }> = []
+    for (const [index, row] of rows.entries()) {
       const parsed = parseGuardedCommand(row.command)
       if (parsed?.kind !== 'v1') throw new Error(`not a guarded command: ${row.label}`)
       const event = parsed.native[parsed.native.indexOf('--event') + 1] ?? 'unknown'
@@ -714,25 +717,31 @@ describe.runIf(NATIVE_TARGET)('the registered command of every host and event', 
         shell: parsed.shell,
         native: [nowhere, ...parsed.native.slice(1)],
         safe: parsed.safe,
-        marker: path.join(registered, `marker-${problems.length}-${row.host}`),
+        marker: path.join(registered, `marker-${index}-${row.host}`),
       })
       for (const [route, command] of [['exe', row.command], ['node', viaNode]] as const) {
-        const run = realShellRunner(parsed.shell, command, input)
-        if (run === null) continue
-        const lines = run.stdout.split(/\r?\n/).filter((l) => l.trim() !== '')
-        const objects = lines.every((l) => {
-          try {
-            const v: unknown = JSON.parse(l)
-            return v !== null && typeof v === 'object' && !Array.isArray(v)
-          } catch {
-            return false
-          }
-        })
-        const answered = lines.length > 0 ? objects : row.host === 'kimi'
-        if (run.status !== 0 || !answered) {
-          const shown = JSON.stringify(run.stdout.slice(0, 120))
-          problems.push(`${row.label} (${route}): exit ${String(run.status)}, stdout ${shown}`)
+        jobs.push({ shell: parsed.shell, command, input })
+        meta.push({ row, route })
+      }
+    }
+    // One helper process runs every launch a few at a time, so the row costs a fraction of a serial run.
+    const runs = runJobs(jobs)
+    for (const [k, run] of runs.entries()) {
+      const { row, route } = meta[k]!
+      if (run === null) continue
+      const lines = run.stdout.split(/\r?\n/).filter((l) => l.trim() !== '')
+      const objects = lines.every((l) => {
+        try {
+          const v: unknown = JSON.parse(l)
+          return v !== null && typeof v === 'object' && !Array.isArray(v)
+        } catch {
+          return false
         }
+      })
+      const answered = lines.length > 0 ? objects : row.host === 'kimi'
+      if (run.status !== 0 || !answered) {
+        const shown = JSON.stringify(run.stdout.slice(0, 120))
+        problems.push(`${row.label} (${route}): exit ${String(run.status)}, stdout ${shown}`)
       }
     }
     expect(problems).toEqual([])
