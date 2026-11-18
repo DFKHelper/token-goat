@@ -10,13 +10,13 @@ import { indexFileSync } from '../src/parser.js'
 import { clearModuleCaches } from '../src/reset.js'
 import type * as ScanModule from '../src/inline_grep_scan.js'
 import type * as SecretRedact from '../src/secret_redact.js'
-import { redactSecrets } from '../src/secret_redact.js'
+import { redactCutSecrets } from '../src/secret_redact.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 vi.mock('../src/secret_redact.js', async (importOriginal) => {
   const actual = await importOriginal<typeof SecretRedact>()
-  return { ...actual, redactSecrets: vi.fn(actual.redactSecrets) }
+  return { ...actual, redactCutSecrets: vi.fn(actual.redactCutSecrets) }
 })
 
 // These rows are about the listing cap, so the scope check runs under steadyScopeDeps: a git that missed its wall-clock bound on a loaded machine read as scope_unreadable. The real default git path of the scope check is driven by tests/inline_symbol_answer_scope_bundle.test.ts and its deadline by tests/inline_grep_scan_git_budget.test.ts.
@@ -31,6 +31,11 @@ const BARE = String.raw`\bunique_loader\b`
 
 function callers(count: number): string {
   return Array.from({ length: count }, (_, i) => `value_${i} = unique_loader("path-number-${i}.txt")`).join('\n') + '\n'
+}
+
+// The body read is redacted too, so only a call on the caller lines counts as redacting the listing.
+function listingRedactions(): number {
+  return vi.mocked(redactCutSecrets).mock.calls.filter(([text]) => text.includes('path-number-')).length
 }
 
 function project(files: Record<string, string>): string {
@@ -50,7 +55,7 @@ beforeEach(() => {
   clearModuleCaches()
   vi.stubEnv('TOKEN_GOAT_INLINE_SYMBOL_BODY', '1')
   invalidateConfigCache()
-  vi.mocked(redactSecrets).mockClear()
+  vi.mocked(redactCutSecrets).mockClear()
 })
 
 afterEach(() => {
@@ -65,13 +70,13 @@ describe('the match listing bound', () => {
     expect(callers(400).length).toBeGreaterThan(INLINE_SYMBOL_MAX_BYTES)
     expect(callers(400).length).toBeLessThan(4 * INLINE_SYMBOL_MAX_BYTES)
     expect(await answer(dir)).toEqual({ name: 'over_cap' })
-    expect(vi.mocked(redactSecrets).mock.calls.length, 'a listing under four caps is still redacted and then measured').toBeGreaterThan(0)
+    expect(listingRedactions(), 'a listing under four caps is redacted, then measured').toBeGreaterThan(0)
   })
 
   it('passes a listing past four caps through as over_cap without redacting any of it', async () => {
     const dir = project({ 'mod.py': MODULE, 'use.py': callers(1200) })
     expect(callers(1200).length).toBeGreaterThan(4 * INLINE_SYMBOL_MAX_BYTES)
     expect(await answer(dir)).toEqual({ name: 'over_cap' })
-    expect(vi.mocked(redactSecrets).mock.calls.length, 'redactSecrets calls for a listing past four caps').toBe(0)
+    expect(listingRedactions(), 'redaction calls on a listing past four caps').toBe(0)
   })
 })

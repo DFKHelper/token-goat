@@ -64,6 +64,8 @@ for (const key of ['LOCALAPPDATA', 'XDG_DATA_HOME', 'APPDATA', 'XDG_CONFIG_HOME'
 }
 
 // CLAUDE_CONFIG_DIR is Claude Code's own config-home override and it OUTRANKS the HOME/USERPROFILE redirection below, so an inherited one reopens exactly the escape that redirecting HOME closed -- for the installer's writes, not only for reads. Deleted rather than pointed at the sandbox because the suite's ~40 home-overriding tests build their expectations as `<their own fake home>/.claude`, which only holds while this variable is unset; the fallback through HOME is what keeps them isolated. A test that wants to exercise the variable assigns it itself, after this file runs, and still wins.
+// A host RIPGREP_CONFIG_PATH makes the directory Grep answer pass through, so scope rows would read it.
+delete process.env['RIPGREP_CONFIG_PATH']
 delete process.env['CLAUDE_CONFIG_DIR']
 // CLAUDE_PROJECT_DIR anchors rewrite_permission.ts's settings walk, and a suite started from a Claude Code hook inherits the developer's own project, so it is deleted too; a test that wants it sets its own.
 delete process.env['CLAUDE_PROJECT_DIR']

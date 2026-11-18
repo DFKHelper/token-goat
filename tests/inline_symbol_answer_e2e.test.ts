@@ -331,7 +331,9 @@ describe('inline symbol body in the Grep deny, on a really indexed file', () => 
     const delivered = Buffer.byteLength(fencedBody(out.message), 'utf8')
     expect(out.message).toContain(`symbol body (${delivered} bytes) is inlined below`)
     const printed = runRead({ spec: file + '::holds_secret', projectRoot: dir, suppressStat: true })
-    expect(delivered).not.toBe(Buffer.byteLength(printed.text, 'utf8'))
+    // The read prints the redacted text itself, so the delivered bytes are the bytes it prints.
+    expect(printed.text).not.toContain(secret)
+    expect(delivered).toBe(Buffer.byteLength(printed.text, 'utf8'))
   })
 
   // CAPTURE: ripgrep 15.1.0 (`rg --help` on --crlf, and a run): `rg -n 'foo$'` over the file "foo bar\r\nfoo\r\n" printed nothing and exited 1; with --crlf the pattern `foo bar$` matched line 1. Claude Code's Grep passes no --crlf (its argument list is in @anthropic-ai/claude-code 2.1.306's claude.exe: --hidden, --glob !.git..., --max-columns 500, --json, -n).

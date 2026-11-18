@@ -10,6 +10,7 @@ import { isInsideRoot } from './path_containment.js'
 import { resolveProjectRoot } from './project.js'
 import { getReadNavigationEvidence } from './read_navigation_evidence.js'
 import { redactOrWithhold } from './redact_or_withhold.js'
+import { countRedactionPlaceholders } from './secret_redact.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
@@ -126,10 +127,12 @@ type SymbolEntry = ReturnType<typeof querySymbols>[number]
 
 /** What `token-goat read "file::name"` prints for `row`, taken from the same runRead, plus whether the body it resolved is the very lines on disk at the index range. A print the overflow guard cut short fails the agreement too, since the deny would then carry less than the symbol. */
 async function readIndexedBody(row: SymbolEntry, cwd: string): Promise<InlineBody | null> {
-  const [{ readFileText, resolveBody, runRead }, { indexedSourceText }] = await Promise.all([import('./read_commands.js'), import('./indexed_source.js')])
+  const loaded = await Promise.all([import('./read_commands.js'), import('./indexed_source.js')])
+  const [reads, { indexedSourceText }] = loaded
+  const { readRedactedFileText, resolveBody, runRead } = reads
   const printed = runRead({ spec: row.filePath + '::' + row.name, projectRoot: cwd, suppressStat: true })
   if (printed.code !== 0) return null
-  const source = readFileText(row.filePath)
+  const source = readRedactedFileText(row.filePath)
   if (source === null) return null
   const onDisk = indexedSourceText(row.filePath, source).split(/\r?\n/).slice(Math.max(0, row.lineStart - 1), row.lineEnd).join('\n')
   const resolved = resolveBody(row)
@@ -170,10 +173,11 @@ function deliveredText(answer: { readonly inline: string; readonly matches?: rea
   const body = redactOrWithhold(answer.inline, true)
   const listingRaw = answer.matches === undefined ? null : answer.matches.join('\n')
   const listing = listingRaw === null ? null : redactOrWithhold(listingRaw, true)
-  const changed = (before: string | null, after: string | null): number => (before === after ? 0 : 1)
-  const count = changed(answer.inline, body) + changed(listingRaw, listing)
+  // The read already redacted the body, so the count is the placeholders the delivered text holds.
+  const count = countRedactionPlaceholders(body) + (listing === null ? 0 : countRedactionPlaceholders(listing))
   const bodyBytes = Buffer.byteLength(body, 'utf8')
-  return { listing, body, count, bodyBytes, cappedBytes: fencedBytes(body) + (listing === null ? 0 : fencedBytes(listing)) }
+  const cappedBytes = fencedBytes(body) + (listing === null ? 0 : fencedBytes(listing))
+  return { listing, body, count, bodyBytes, cappedBytes }
 }
 
 /** What a Grep scoped to a file or a directory searches, with a way to name each file. */

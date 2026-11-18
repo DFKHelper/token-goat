@@ -48,8 +48,8 @@ export interface BundleProject {
 }
 
 /** A scratch project under a fresh temp root plus the fully isolated env the *_bundle_e2e files spawn the shipped bundle with: TOKEN_GOAT_HOME, data dirs and a throwaway HOME (with its AppData/Roaming created) all under that root, embeddings off. The caller removes `root` when done. */
-export function makeBundleProject(prefix: string): BundleProject {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
+export function makeBundleProject(prefix: string, base: string = os.tmpdir()): BundleProject {
+  const root = fs.mkdtempSync(path.join(base, prefix))
   const project = path.join(root, 'project')
   const home = path.join(root, 'home')
   fs.mkdirSync(project, { recursive: true })

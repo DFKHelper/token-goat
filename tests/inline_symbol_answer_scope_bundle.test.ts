@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { bundleTg, makeBundleProject, ROOT, runBundle } from './helpers/bundle.js'
+import { indexableDir } from './helpers/temp-config.js'
 
 // The directory-scoped and bare-name inlined Grep answers through the shipped dist/token-goat.mjs: a real git work tree, a real `index --walk`, then the built `hook pre_tool_use` entry, with the isolated env makeBundleProject builds (every data dir under a scratch root).
 
@@ -31,7 +32,8 @@ let project: string
 let env: NodeJS.ProcessEnv
 
 beforeAll(() => {
-  ;({ root, project, env } = makeBundleProject('tg-inline-scope-'))
+  // Under the repo scratch root, not OS temp: a home-level .rgignore above temp makes the answer pass.
+  ;({ root, project, env } = makeBundleProject('tg-inline-scope-', indexableDir()))
   env = { ...env, TOKEN_GOAT_NO_WORKER_SPAWN: '1', TOKEN_GOAT_INLINE_SYMBOL_BODY: '1', TOKEN_GOAT_HOOK_SERVER: '0' }
   execFileSync('git', ['-c', 'maintenance.auto=false', '-c', 'gc.auto=0', 'init', '-q'], { cwd: project, stdio: 'ignore' })
   fs.appendFileSync(path.join(project, '.git', 'info', 'exclude'), 'skipped/\n', 'utf8')

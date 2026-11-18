@@ -190,7 +190,8 @@ describe('a redaction call named only in a comment does not count', () => {
   const CALL = ['redactOrWithhold(']
 
   it('counts a real call', () => {
-    expect(reachesInSource('function f(x: string) {\n  return redactOrWithhold(x, true)\n}', 'f', CALL)).toBe(true)
+    const source = 'function f(x: string) {\n  return redactOrWithhold(x, true)\n}'
+    expect(reachesInSource(source, 'f', CALL)).toBe(true)
   })
 
   it.each([
