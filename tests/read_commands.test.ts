@@ -1785,6 +1785,7 @@ describe('read_commands', () => {
         ])
         mockGetFileEntry.mockReturnValueOnce({
           filePath: f, sha: fingerprintContent(content), mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+          parserSha: parserFingerprintForLanguage('ts'),
         } as never)
         const { text: stdout } = runRead({ spec: `${f}::foo` })
         expect(stdout).not.toContain('STALE')
@@ -3102,6 +3103,7 @@ describe('read_commands', () => {
       const realSha = fingerprintContent(content)
       mockGetFileEntry.mockReturnValueOnce({
         filePath: f, sha: realSha, mtime: 0, language: 'ts', indexedAt: 0, embedSha: '',
+        parserSha: parserFingerprintForLanguage('ts'),
       } as never)
       const { text: stdout } = runSkeleton({ file: f })
       expect(stdout).not.toContain('STALE')

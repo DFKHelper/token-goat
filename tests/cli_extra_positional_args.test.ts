@@ -1,6 +1,5 @@
 // Regression: a single-argument read command silently dropped every extra space-separated positional. `read a.ts::x b.ts::y` returned only `x`, exit 0, no mention that the second spec was thrown away -- the shape an agent is most likely to type, because the merged form these commands advertise is comma-separated and space is the habit from every other CLI. A note for this existed and was wired to the four file-taking commands only, so `read`, `brief`, `section`, `refs` and `symbol` kept dropping in silence. Nothing tested the note at all, on any command, which is why the gap went unnoticed; this covers all nine.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { afterEach, beforeAll, afterAll, describe, expect, it } from 'vitest'
@@ -9,6 +8,7 @@ import { run } from '../src/cli.js'
 import { globalDbPath } from '../src/constants.js'
 import { resolveIndexPath } from '../src/paths.js'
 import { indexFileSync } from '../src/parser.js'
+import { indexableDir } from './helpers/temp-config.js'
 import { spyOnWrite, type WriteSpy } from './setup/spy-stdio.js'
 
 let TMP: string
@@ -20,7 +20,8 @@ let refA: string
 let refB: string
 
 beforeAll(() => {
-  TMP = mkdtempSync(join(tmpdir(), 'tg-extra-args-'))
+  // Inside the project root: refs scopes a file::symbol spec to the cwd project, so a fixture outside misses.
+  TMP = indexableDir()
   fileA = join(TMP, 'a.ts')
   fileB = join(TMP, 'b.ts')
   docA = join(TMP, 'a.md')

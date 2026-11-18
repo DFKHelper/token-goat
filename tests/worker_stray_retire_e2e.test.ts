@@ -170,7 +170,10 @@ function pidFile(): string {
 }
 
 function startDecoy(script: string, extraArgs: string[]): ChildProcess {
-  const child = spawn(process.execPath, [script, ...extraArgs], { stdio: 'ignore', windowsHide: true, env: ownedDecoyEnv() })
+  // The decoy leaves when its stdin ends, so stdin is a held pipe: 'ignore' is the null device, which ends it.
+  const stdio: ['pipe', 'ignore', 'ignore'] = ['pipe', 'ignore', 'ignore']
+  const env = ownedDecoyEnv()
+  const child = spawn(process.execPath, [script, ...extraArgs], { stdio, windowsHide: true, env })
   children.push(child)
   return child
 }
