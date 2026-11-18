@@ -35,7 +35,7 @@ describe('the shipped MCP defaults, with no TOKEN_GOAT_MCP_* env forcing', () =>
     fs.mkdirSync(projectRoot)
     fs.mkdirSync(outside)
     fs.writeFileSync(path.join(projectRoot, 'inside.ts'), 'export const inside = 1\n')
-    fs.writeFileSync(path.join(outside, 'secret.ts'), `export const secret = '${OUTSIDE_CANARY}'\n`)
+    fs.writeFileSync(path.join(outside, 'secret.ts'), `export const outsideValue = '${OUTSIDE_CANARY}'\n`)
     fs.writeFileSync(path.join(outside, 'notes.md'), `# Heading\n\n${OUTSIDE_CANARY}\n`)
     invalidateConfigCache()
   })
