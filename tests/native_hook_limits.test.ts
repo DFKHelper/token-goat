@@ -19,7 +19,7 @@ const shimName = (native: string): string => NATIVE_TO_SHIM[native] ?? native
 const INSTALLER_NATIVE_NAMES = ['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli', 'vscode']
 const RUST_FALLBACK = path.join(ROOT, 'native', 'tg-hook', 'src', 'fallback.rs')
 
-// The aliases are read from the `"name" => "target"` arms of harness_limit, so the Rust source is the only copy.
+// Aliases are read from the `"name" => "target"` arms of harness_limit: the Rust source is the only copy.
 function rustHarnessAliases(): Record<string, string> {
   const src = fs.readFileSync(RUST_FALLBACK, 'utf8')
   const start = src.indexOf('pub fn harness_limit')
