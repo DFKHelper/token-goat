@@ -14,7 +14,9 @@ import {
   type GuardShell,
 } from './hook_guard.js'
 import { HOOK_PROBE_ENV } from './stats.js'
+import { hookBrokenPath } from './hook_pointer.js'
 import { resolveWindowsBash } from './shell.js'
+import { atomicWriteBytes } from './util.js'
 import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
 
 /** Thrown by an install whose registered commands failed the self-test; the previous registration was kept. */
@@ -83,8 +85,23 @@ export const realShellRunner: ShellRunner = (shell, command, input) => {
 }
 
 /** Runs the JSON jobs on stdin `concurrency` at a time, each under its own timeout; prints results in order. */
-const PARALLEL_HELPER = `
-const { spawn } = require('node:child_process')
+export const PARALLEL_HELPER = `
+const { spawn, spawnSync } = require('node:child_process')
+const path = require('node:path')
+// Ends the job's whole tree: a child's own kill reaches only the shell, leaving what it forked running.
+const killTree = (child) => {
+  const pid = child.pid
+  if (Number.isInteger(pid) && pid > 1) {
+    if (process.platform === 'win32') {
+      const root = process.env.SystemRoot || process.env.windir || 'C:/Windows'
+      const taskkill = path.join(root, 'System32', 'taskkill.exe')
+      spawnSync(taskkill, ['/T', '/F', '/PID', String(pid)], { windowsHide: true, timeout: 10000 })
+    } else {
+      try { process.kill(-pid, 'SIGKILL') } catch {}
+    }
+  }
+  child.kill()
+}
 let raw = ''
 process.stdin.setEncoding('utf8')
 process.stdin.on('data', (d) => { raw += d })
@@ -114,11 +131,13 @@ process.stdin.on('end', () => {
       active--
       pump()
     }
-    const opts = { cwd, windowsHide: true, windowsVerbatimArguments: job.verbatim }
-    // owner: this helper; the child dies when it closes or the timeout below kills it
+    // POSIX: its own process group, so the timeout can signal the group; Windows has none and uses taskkill /T
+    const detached = process.platform !== 'win32'
+    const opts = { cwd, windowsHide: true, windowsVerbatimArguments: job.verbatim, detached }
+    // owner: this helper; the child dies when it closes or the timeout below ends its tree
     const child = spawn(job.program, job.args, opts)
     const timer = setTimeout(() => {
-      child.kill()
+      killTree(child)
       finish({ status: null, stdout, stderr: 'timed out after ' + timeout + ' ms' })
     }, timeout)
     child.stdout.setEncoding('utf8')
@@ -222,11 +241,26 @@ function guardWroteNotice(marker: string): boolean {
   }
 }
 
+/** Puts the hook-broken notice back as `before` held it (absent, or its bytes); unreadable stays. */
+function restoreNotice(file: string, before: Buffer | undefined | null): void {
+  if (before === null) return
+  try {
+    const now = snapshot(file)
+    if (before === undefined) fs.rmSync(file, { force: true })
+    else if (now === undefined || now === null || !before.equals(now)) atomicWriteBytes(file, before)
+  } catch (e) {
+    process.stderr.write(`token-goat: could not put ${file} back after the hook self-test: ${String(e)}\n`)
+  }
+}
+
 /** Run guarded commands on the exe and Node routes (client unresolvable); report failures; skip unguarded. */
 export function selftestRegisteredCommands(commands: readonly string[]): SelftestOutcome {
   const failures: string[] = []
   const skipped: string[] = []
   let tested = 0
+  // The real client notes each route it leaves in the data dir; a probe's notes are not a live hook's.
+  const noticeFile = hookBrokenPath()
+  const noticeBefore = snapshot(noticeFile)
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-selftest-'))
   try {
     interface Plan {
@@ -322,6 +356,7 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
     }
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true })
+    restoreNotice(noticeFile, noticeBefore)
   }
   return { failures, tested, skipped }
 }
@@ -373,7 +408,7 @@ export function verifiedInstall<T>(files: readonly string[], write: () => T): T 
     const newer = was === undefined || was === null ? undefined : newerGuardInText(was.toString('utf8'))
     if (newer === undefined || was === undefined || was === null
       || (after[i] !== undefined && after[i] !== null && was.equals(after[i]!))) return
-    fs.writeFileSync(f, was)
+    atomicWriteBytes(f, was)
     after[i] = was
     process.stderr.write(
       `token-goat: left ${f} as it was: its hooks carry guard version ${String(newer)}, ` +
@@ -389,7 +424,7 @@ export function verifiedInstall<T>(files: readonly string[], write: () => T): T 
     assertRegisteredCommandsWork(commands, files.join(', '))
   } catch (e) {
     files.forEach((f, i) => {
-      if (before[i] !== undefined && before[i] !== null) fs.writeFileSync(f, before[i]!)
+      if (before[i] !== undefined && before[i] !== null) atomicWriteBytes(f, before[i]!)
       else fs.rmSync(f, { force: true })
     })
     throw e

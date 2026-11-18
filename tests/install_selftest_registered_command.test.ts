@@ -13,6 +13,7 @@ import { installKimi } from '../src/bridges/kimi_install.js'
 import { installHooks, settingsPath, SettingsParseError } from '../src/install.js'
 import { codexConfigPath, grokConfigPath, kimiConfigPath } from '../src/purge.js'
 import { parseGuardedCommand } from '../src/hook_guard.js'
+import { hookBrokenPath } from '../src/hook_pointer.js'
 import {
   guardedCommandsInText,
   HookSelftestError,
@@ -134,6 +135,15 @@ describe.runIf(NATIVE)('the install self-test', () => {
     })
     expect(() => installHooks('user', { dev: true })).toThrow(/Node route/)
     expect(fs.existsSync(settingsPath('user'))).toBe(false)
+  })
+
+  it('a refused install leaves no hook-broken notice in the data dir', () => {
+    fs.rmSync(hookBrokenPath(), { force: true })
+    // Every command answers text no host accepts: the self-test runs both routes, then refuses.
+    fs.writeFileSync(path.join(root, 'bundle', 'token-goat.mjs'), "process.stdout.write('not json')\n")
+    expect(() => installHooks('user', { dev: true })).toThrow(HookSelftestError)
+    expect(fs.existsSync(settingsPath('user'))).toBe(false)
+    expect(fs.existsSync(hookBrokenPath()), `notice left at ${hookBrokenPath()}`).toBe(false)
   })
 
   it('does not run when nothing changed', () => {
