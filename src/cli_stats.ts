@@ -178,6 +178,7 @@ export function statsJsonPayload(summary: StatsSummary): Record<string, unknown>
     by_harness: summary.by_harness,
     by_pricing_version: summary.by_pricing_version,
     counts: summary.counts,
+    generic_heads: summary.generic_heads,
     window_days: summary.window_days,
   }
 }

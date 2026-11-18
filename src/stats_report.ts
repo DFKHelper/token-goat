@@ -19,6 +19,26 @@ function staleAnswersLine(summary: StatsSummary): string[] {
   return [`Stale answers:  ${changed + deleted} (${changed} changed on disk, ${deleted} deleted)`]
 }
 
+/** The ten most-run command heads on the generic bash filter, or nothing. Run counts, never savings. */
+function genericHeadsLines(summary: StatsSummary): string[] {
+  const top = Object.entries(summary.generic_heads)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 10)
+  if (top.length === 0) return []
+  return [
+    '',
+    '## Commands with no dedicated filter',
+    '  Counts of runs through the generic filter, not savings.',
+    ...top.map(([head, n]) => `  ${displaySafeText(head).padEnd(18)} ${n.toString().padStart(6)} runs`),
+  ]
+}
+
+/** The rich renderer has no slot for the section, so it follows the drawn report as plain lines. */
+function _printGenericHeads(summary: StatsSummary): void {
+  const lines = genericHeadsLines(summary)
+  if (lines.length > 0) console.log(lines.join('\n'))
+}
+
 /** True when the report must not show the summary's totals as numbers: they omit a source that could not be read (see StatsSummary.totals_unknown_reason). An absent database is not this case, because the empty-store message already says it. */
 function _totalsUnknown(summary: StatsSummary): boolean {
   return summary.totals_unknown_reason !== null && !summary.db_missing
@@ -67,6 +87,7 @@ function _printWriteFailures(summary: StatsSummary): void {
 function _renderShortTotals(summary: StatsSummary): void {
   const lines = [
     ..._totalsLines(summary),
+    ...genericHeadsLines(summary),
     '',
     "Run `token-goat stats --full` for the full breakdown (by source, by command, by day).",
   ]
@@ -130,6 +151,7 @@ function _plainTextStats(summary: StatsSummary): void {
     }
   }
 
+  lines.push(...genericHeadsLines(summary))
   console.log(lines.join('\n'))
 }
 
@@ -227,6 +249,7 @@ export function renderShortStats(opts?: { windowDays?: number; homeDir?: string;
 
   const statsData = _buildStatsData(summary, windowDays)
   process.stdout.write(richRenderStats(statsData, { short: true }) + '\n')
+  _printGenericHeads(summary)
   _printWriteFailures(summary)
 }
 
@@ -247,5 +270,6 @@ export function renderStats(opts?: { windowDays?: number; homeDir?: string }): v
 
   const statsData = _buildStatsData(summary, windowDays)
   process.stdout.write(richRenderStats(statsData) + '\n')
+  _printGenericHeads(summary)
   _printWriteFailures(summary)
 }

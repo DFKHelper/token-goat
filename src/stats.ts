@@ -47,6 +47,8 @@ export interface StatsSummary {
   by_harness: Record<string, StatsBucket>
   /** Totals for kinds whose recorded number is a count rather than a token quantity, keyed by kind. Reported here instead of in the token columns so a count is never summed into a token total; see {@link COUNT_ONLY_KINDS}. Absent kinds simply had no rows in the window. */
   counts: Record<string, number>
+  /** Generic bash filter runs by command head: counts, not savings, outside every event total. */
+  generic_heads: Record<string, number>
   /** Totals split by the `tg_version` that wrote each row, so a headline `total_tokens_saved` spanning rows priced under different pricing-formula eras (a divisor change, a new kind, a fixed baseline) is never presented as a single commensurable number without disclosure. Rows written before the `tg_version` column existed, or by a build where it failed to record, are bucketed under {@link PRICING_VERSION_UNRECORDED} rather than attributed to the version running now -- exactly the same reasoning `HARNESS_UNRECORDED` already applies to `by_harness`. `hasMixedPricingEras` reduces this to the one boolean callers actually need: whether the sum above is safe to show unqualified. */
   by_pricing_version: Record<string, StatsBucket>
   window_days: number
@@ -208,8 +210,6 @@ const KIND_TO_SOURCE: Record<string, string> = {
   // Cold first load of an oversized skill with no compact marker at all, where preSkillHandler inlined a heading tree in its reply instead of letting the whole body fall through. Same shape as skill_compact_inlined: real savings, bytesSaved is body minus the rendered tree.
   skill_heading_tree_inlined: SOURCE_SKILL,
   secret_redacted: SOURCE_OTHER,
-  // Event-only: a command head that fell to the generic bash filter; 0, 0 with the head in detail.
-  bash_generic_head: SOURCE_OTHER,
   // Fail-soft diagnostic counters from hooks_edit.ts: they record that a side task threw, never a byte saving, so "other" is the right home. Listed explicitly rather than left to kindToSource()'s fallback so the registration guard can tell a deliberate placement from an unregistered kind.
   dirty_queue_append_failed: SOURCE_OTHER,
   worker_healthcheck_failed: SOURCE_OTHER,
@@ -248,8 +248,12 @@ const KIND_TO_SOURCE: Record<string, string> = {
   handoff_resolve: SOURCE_CONTENT,
 }
 
+/** `bash_generic_head:<head>` counts one generic bash filter run; summarize reports it as generic_heads. */
+export const GENERIC_HEAD_KIND_PREFIX = 'bash_generic_head:'
+
 const KIND_PREFIX_TO_SOURCE: Array<[string, string]> = [
   ['bash_compress:', SOURCE_BASH],
+  [GENERIC_HEAD_KIND_PREFIX, SOURCE_OTHER],
   ['webfetch:', SOURCE_WEB],
   ['gdrive:', SOURCE_WEB],
   ['mcp:', SOURCE_MCP],
@@ -1063,11 +1067,19 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
 
   const tsToDateCache: Record<number, string> = {}
   const counts: Record<string, number> = {}
+  const genericHeads: Record<string, number> = {}
+  const tallyHead = (kind: string, n: number): boolean => {
+    if (!kind.startsWith(GENERIC_HEAD_KIND_PREFIX)) return false
+    const head = kind.slice(GENERIC_HEAD_KIND_PREFIX.length)
+    genericHeads[head] = (genericHeads[head] ?? 0) + n
+    return true
+  }
 
   for (const row of rows) {
     const bytesSaved = (row as { bytes_saved?: number }).bytes_saved ?? 0
     const recorded = (row as { tokens_saved?: number }).tokens_saved ?? 0
     const kind = (row as { kind: string }).kind
+    if (tallyHead(kind, 1)) continue
     // A count-only kind contributes its number to `counts` and zero tokens to everything else, so no aggregate below has to remember to exclude it. See COUNT_ONLY_KINDS for why.
     const isCount = COUNT_ONLY_KINDS.has(kind)
     if (isCount) counts[kind] = (counts[kind] ?? 0) + recorded
@@ -1136,6 +1148,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
       }
 
       for (const r of rollupRows) {
+        if (tallyHead(r.kind, r.events)) continue
         const isCount = COUNT_ONLY_KINDS.has(r.kind)
         if (isCount) counts[r.kind] = (counts[r.kind] ?? 0) + r.tokens_saved
         const tokensSaved = isCount ? 0 : r.tokens_saved
@@ -1211,6 +1224,7 @@ export function summarize(windowDays: number = 30, testDb?: SqliteDatabase, home
     by_harness: byHarness,
     by_pricing_version: byPricingVersion,
     counts,
+    generic_heads: genericHeads,
     by_command: Object.entries(byCommandDict)
       .map(([command, bucket]) => ({ ...bucket, command }))
       .filter((r) => r.events > 0),

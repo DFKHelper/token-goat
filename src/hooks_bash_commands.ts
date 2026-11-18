@@ -86,60 +86,17 @@ export function stripTrailingStderrRedirect(cmd: string): string {
 
 /** Assignment words a command may lead with (`FOO=1 BAR="a b" cmd`). */
 const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
-/** First-word prefixes that name a path, so the head is a script and its text stays out of the stats. */
-const SCRIPT_PREFIXES = ['./', '../', '.\\', '..\\', '/', '~']
-/** First-word suffixes that name a script file. */
-const SCRIPT_SUFFIXES = ['.sh', '.ps1', '.bat', '.cmd', '.py', '.js', '.mjs', '.ts']
-const HEAD_MAX_LENGTH = 32
+/** A first word that names a path, a drive or a script file, so the head is a script and its text stays out. */
+const SCRIPT_WORD = /^(?:\.{1,2}[\\/]|[/~]|[a-z]:)|\.(?:sh|ps1|bat|cmd|py|m?js|ts)$/i
 const SAFE_HEAD = /^[a-z][a-z-]{1,15}$/
 /** Tool names that carry a digit, dot, underscore or plus and so fail SAFE_HEAD; one sorted list. */
-const KNOWN_HEADS: ReadonlySet<string> = new Set([
-  '7z', 'c++', 'clang++', 'g++', 'k9s', 'pip3', 'python3', 's3cmd',
-])
+const KNOWN_HEADS = new Set('7z c++ clang++ g++ k9s pip3 python3 s3cmd'.split(' '))
 /** A head starting with one of these looks like a pasted credential, so it files as other. */
 const SECRET_HEAD = /^(?:sk-|gh[pos]|xox|akia|glpat|eyj)/
 
 /** Splits on unquoted, unescaped whitespace; a backslash keeps its next character in the word. */
 function shellWords(cmd: string): string[] {
-  const words: string[] = []
-  let word = ''
-  let inWord = false
-  let quote: string | null = null
-  let escaped = false
-  for (const ch of cmd) {
-    if (escaped) {
-      word += ch
-      escaped = false
-      continue
-    }
-    if (ch === '\\' && quote !== "'") {
-      word += ch
-      escaped = true
-      inWord = true
-      continue
-    }
-    if (quote !== null) {
-      word += ch
-      if (ch === quote) quote = null
-      continue
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch
-      word += ch
-      inWord = true
-      continue
-    }
-    if (/\s/.test(ch)) {
-      if (inWord) words.push(word)
-      word = ''
-      inWord = false
-      continue
-    }
-    word += ch
-    inWord = true
-  }
-  if (inWord) words.push(word)
-  return words
+  return cmd.match(/(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*(?:"|$)|'[^']*(?:'|$)|[^\s\\"'])+/g) ?? []
 }
 
 /** Lowercase basename of the first word past leading assignments, or `script` / `other`. */
@@ -149,16 +106,9 @@ export function commandHead(cmd: string): string {
   while (index < words.length && LEADING_ASSIGNMENT.test(words[index] ?? '')) index++
   const first = words[index]
   if (first === undefined || first === '') return 'other'
-  const lowerFirst = first.toLowerCase()
-  if (
-    SCRIPT_PREFIXES.some((prefix) => first.startsWith(prefix)) ||
-    /^[a-z]:/i.test(first) ||
-    SCRIPT_SUFFIXES.some((suffix) => lowerFirst.endsWith(suffix))
-  ) {
-    return 'script'
-  }
+  if (SCRIPT_WORD.test(first)) return 'script'
   const basename = first.slice(Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\')) + 1)
-  const head = basename.toLowerCase().slice(0, HEAD_MAX_LENGTH)
+  const head = basename.toLowerCase()
   if (SECRET_HEAD.test(head)) return 'other'
   return KNOWN_HEADS.has(head) || SAFE_HEAD.test(head) ? head : 'other'
 }

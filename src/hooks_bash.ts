@@ -149,6 +149,12 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
 
   // A specific filter (once the framework recognizes the command) wins over the generic catch-all. Either way the command must be a single pipe/redirect-free invocation: detectFromCommand enforces that for specific filters; the generic path requires it explicitly. The capped path is the exception: its output goes through untouched, so there is no filter to feed one command's output, and a multi-line `-c` script or a heredoc, the shape 198 of 217 measured interpreter reads arrived in, runs under it like any other. Only a detached job is declined, since the wrapper would wait on it.
   let filterName: string
+  let genericHead: string | null = null
+  // Books the head only for a rewrite that was produced, so a refused or disabled one leaves no row.
+  const counted = (out: HookOutput | null): HookOutput | null => {
+    if (out !== null && genericHead !== null) recordStat(`bash_generic_head:${genericHead}`)
+    return out
+  }
   if (cap !== undefined) {
     if (hasBareBackground(cmd)) return null
     filterName = 'passthrough'
@@ -160,7 +166,7 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
       filterName = detected.filter.name
     } else if (isCompressibleSingleCommand(gateCmd)) {
       filterName = 'generic'
-      recordStat('bash_generic_head', 0, 0, undefined, commandHead(gateCmd))
+      genericHead = commandHead(gateCmd)
     } else {
       return null
     }
@@ -177,13 +183,13 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
     // Guard against Windows CreateProcess 32,767 character command-line limit
     if (wrapped.length > 24000) return null
 
-    return shellRewrite(event, 'shell-wrap', rawCmd, wrapped)
+    return counted(shellRewrite(event, 'shell-wrap', rawCmd, wrapped))
   }
 
   const wrapped = `token-goat compress -f ${filterName} --timeout ${cfg.timeout_seconds}${capArgs} -c ${shellQuoteSingle(rawCmd)}`
   // A heredoc script can run to kilobytes, and single-quoting spends four characters on each quote it holds; past the same ceiling the pwsh branch keeps, the refusal is the safer answer than a command line Windows may cut.
   if (cap !== undefined && wrapped.length > 24000) return null
-  return shellRewrite(event, 'shell-wrap', rawCmd, wrapped)
+  return counted(shellRewrite(event, 'shell-wrap', rawCmd, wrapped))
 }
 
 /** The single range of a `sed`/`awk` line-range read when it runs from line 1 to the file's last line, on a file `cat` would be refused for, with the reason to give. Null for any other range, and for a file past SLICE_ESTIMATE_SCAN_CAP_BYTES or unreadable, since counting its lines means reading it. */

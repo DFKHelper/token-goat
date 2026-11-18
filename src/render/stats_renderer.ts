@@ -541,8 +541,8 @@ const _KIND_GROUPS: KindGroup[] = [
       'evidence_cache_hit',
     ]),
   },
-  // Only bash_generic_head is literal; other Bash kinds use the bash_compress: prefix branch.
-  { label: 'Bash', members: new Set<string>(['bash_generic_head']) },
+  // Empty: every live Bash kind arrives through _kindGroupLabel's prefix branch, not a literal name.
+  { label: 'Bash', members: new Set<string>() },
   {
     label: 'Web',
     members: new Set([
@@ -593,7 +593,7 @@ export function _renderedKindNames(): string[] {
 
 /** The "By kind" group heading a stat kind renders under, or 'Other' when no literal member set and no prefix branch claims it. Exported for guards/every_registered_stat_kind_is_grouped.test.ts, the fourth mirror in the stat-registry guard family: a kind stats.ts registers but the renderer groups nowhere falls to 'Other', so it prints away from its siblings and reads as uncategorised. */
 export function _kindGroupLabel(kind: string): string {
-  if (kind.startsWith('bash_compress:') || kind.startsWith('bashoutput:')) {
+  if (['bash_compress:', 'bashoutput:', 'bash_generic_head:'].some((prefix) => kind.startsWith(prefix))) {
     return 'Bash'
   }
   // Mirrors the bash_compress: special case above for stats.ts's other live colon-prefixed kind (webfetch:recall) -- KIND_PREFIX_TO_SOURCE maps it to SOURCE_WEB, but without this branch it fell through every literal _KIND_GROUPS member set to 'Other' instead of 'Web'.
