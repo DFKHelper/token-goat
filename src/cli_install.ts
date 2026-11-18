@@ -30,7 +30,7 @@ import { isWorkerRunning } from './worker_lifecycle.js'
 import { queryServers } from './hook_client.js'
 import { installVerificationNotice } from './bridges_status.js'
 import type { HarnessName } from './bridges/types.js'
-import { ensureDirSync } from './util.js'
+import { atomicWriteText, ensureDirSync } from './util.js'
 import { contentHash, extractCompactFromMarker, storeCompact, skillOutputsDir } from './skill_cache.js'
 import { formatBytes, purgeDataDirectories } from './purge.js'
 import { recordStat } from './stats.js'
@@ -114,6 +114,13 @@ function wantsClaudeCodeBase(opts: {
 
 /** Harnesses whose config lives only under the user's home: they have no project-scope form, so a project-scope uninstall must never remove them as part of `--all`. */
 const USER_ONLY_HARNESSES = ['codex', 'gemini', 'qwen', 'kimi', 'openclaw', 'opencode', 'grok', 'antigravity', 'zed'] as const
+
+/** Write `pregen.json` in `dir` with the skill names: owner-only, by atomic rename. */
+export function writePregenIndex(dir: string, names: readonly string[]): void {
+  ensureDirSync(dir)
+  const pregenData = { ts: Date.now(), names }
+  atomicWriteText(path.join(dir, 'pregen.json'), JSON.stringify(pregenData, null, 2))
+}
 
 export async function cmdInstall(opts: {
   project?: boolean
@@ -496,11 +503,7 @@ export async function cmdInstall(opts: {
 
       if (skillNames.length > 0) {
         // Write pregen.json with list of pre-generated skills.
-        const dir = skillOutputsDir()
-        ensureDirSync(dir)
-        const pregenPath = path.join(dir, 'pregen.json')
-        const pregenData = { ts: Date.now(), names: skillNames }
-        await fs.promises.writeFile(pregenPath, JSON.stringify(pregenData, null, 2))
+        writePregenIndex(skillOutputsDir(), skillNames)
         out(`Pre-generated ${skillNames.length} skill compacts.`)
       }
     }

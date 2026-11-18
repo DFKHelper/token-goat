@@ -1,10 +1,26 @@
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type * as NodeFs from 'node:fs'
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { installZed, isZedInstalled, uninstallZed, zedSettingsPath, zedShimPath } from '../src/bridges/zed_install.js'
 import { checkZed } from '../src/cli_doctor_platforms.js'
+
+const failUnlink = vi.hoisted(() => ({ path: '' }))
+
+// Fails only the unlink of the one path a row names; other cleanup unlinks are untouched.
+vi.mock('node:fs', async (importOriginal) => {
+  const real = await importOriginal<typeof NodeFs>()
+  const unlinkSync = ((...args: Parameters<typeof real.unlinkSync>) => {
+    if (failUnlink.path !== '' && args[0] === failUnlink.path) {
+      throw Object.assign(new Error('injected unlink failure'), { code: 'EPERM' })
+    }
+    return real.unlinkSync(...args)
+  }) as typeof real.unlinkSync
+  return { ...real, unlinkSync }
+})
 
 const savedAppData = process.env['APPDATA']
 const savedXdgConfig = process.env['XDG_CONFIG_HOME']
@@ -154,12 +170,13 @@ describe('Zed uninstall keeps a shim another host still names', () => {
   it('a failed shim delete does not throw out of uninstall', () => {
     installZed()
     const shimPath = zedShimPath()
-    // A directory at the shim path: unlink fails on every platform; uninstall must report it, not throw.
-    fs.rmSync(shimPath, { force: true })
-    fs.mkdirSync(shimPath, { recursive: true })
-    fs.writeFileSync(path.join(shimPath, 'occupant.txt'), 'x')
-    expect(() => uninstallZed()).not.toThrow()
-    expect(fs.existsSync(path.join(shimPath, 'occupant.txt'))).toBe(true)
+    failUnlink.path = shimPath
+    try {
+      expect(() => uninstallZed()).not.toThrow()
+      expect(fs.existsSync(shimPath)).toBe(true)
+    } finally {
+      failUnlink.path = ''
+    }
   })
 })
 

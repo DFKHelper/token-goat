@@ -30,7 +30,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 - **The injection scan flags more phrasings.** `ignore` and `disregard` are caught before `the previous`, `prior` or `above` followed by `instructions` or `directions`, so "ignore the above directions" is flagged.
 - **The pre-push hook keeps its time budget when a check fails.** A focused leg has a wall-clock deadline, a failed guard or matrix list runs the full leg, and a green check is reused when the bytes are unchanged.
 - **When a request is cancelled, the VS Code extension stops its token-goat and git calls** instead of waiting for them to finish.
-- **The parser fingerprint changed, so the index is rebuilt once after upgrading.** The extraction sources in `src/parser_refs.ts` changed; files whose stamp no longer matches are reparsed on first use.
+- **The parser fingerprint changed, so the index is rebuilt once after upgrading.** The extraction sources changed; files whose stamp no longer matches are reparsed on first use.
 - **`semantic`, `search` and `refs` (and `callers`, `impact`) say how much of the project is indexed when they find nothing.** The result gains one line such as `indexed 2 of 4 files in this project, 2 not indexed`, counted against the files `token-goat index` would take, so an empty answer can be told from a project that was never fully indexed.
 
 ### Removed
