@@ -416,7 +416,14 @@ export async function performUpgrade(onSyncHooks?: () => Promise<void>, npm: Npm
 
 /** The bundle npm just installed, found from `npm root -g`. Null when npm cannot say or the file is not there. Unbounded in time unless a caller passes `timeoutMs`: the install path waits on npm's install above, and a deadline there made a slow PC fall back to the old in-process sync without saying so. */
 export function installedLauncher(npm: NpmInvocation, opts: { timeoutMs?: number } = {}): string | null {
-  const res = spawnSync(npm.file, [...npm.prefix, 'root', '-g'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: opts.timeoutMs })
+  // No bound asked for means no `timeout` key at all, not an undefined one.
+  const bound = opts.timeoutMs === undefined ? {} : { timeout: opts.timeoutMs }
+  const res = spawnSync(npm.file, [...npm.prefix, 'root', '-g'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true,
+    ...bound,
+  })
   const root = res.status === 0 && typeof res.stdout === 'string' ? res.stdout.trim() : ''
   if (!root) return null
   const launcher = path.join(root, 'token-goat', 'dist', 'token-goat.mjs')
