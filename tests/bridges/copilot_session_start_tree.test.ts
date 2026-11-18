@@ -342,7 +342,8 @@ it.runIf(process.platform === 'win32')('rejects the actual owner argv in a built
   assertNoCanonical()
   expect(result.stdout).toBe('{}')
   await assertTreeDead(fixture)
-  if (!result.stderr.includes('native startup owner failed')) {
+  // The legacy binary fails open on unknown flags (exit 0), which the shim refuses as an incompatible protocol.
+  if (!/native startup owner (failed|incompatible protocol or unverified cleanup)/.test(result.stderr)) {
     expect(result.stderr).toMatch(DEADLINE_FAIL_OPEN)
     await ctx.annotate('branch: weak (the deadline fired before the legacy owner was refused)')
     await assertOwedDeliveredOnce(fixture, 'copilot_cli', 'owned-tree')

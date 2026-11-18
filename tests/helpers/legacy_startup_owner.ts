@@ -9,14 +9,15 @@ export function buildLegacyStartupOwner(root: string): string {
   const source = join(process.cwd(), 'native', 'tg-hook')
   const fixture = join(root, 'legacy-crate')
   mkdirSync(fixture)
-  for (const name of ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml']) {
+  for (const name of ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'rustfmt.toml', 'safe_answers.json']) {
     copyFileSync(join(source, name), join(fixture, name))
   }
   cpSync(join(source, 'src'), join(fixture, 'src'), { recursive: true })
   const main = join(fixture, 'src', 'main.rs')
   let text = readFileSync(main, 'utf8')
   const dispatch = '        #[cfg(windows)]\n        Some("--session-start-owner-v1") => startup_owner::run(&raw[1..]),\n'
-  const route = '    if hook.call.as_ref().is_some_and(startup_entry::is_startup) {\n        return startup_entry::run(hook.fallback, main_start);\n    }\n'
+  const route = '    if let Some(call) = hook.call.as_ref().filter(|c| startup_entry::is_startup(c)) {\n'
+    + '        return startup_entry::run(hook.fallback.clone(), main_start, call);\n    }\n'
   expect(text).toContain(dispatch)
   expect(text).toContain(route)
   text = text.replace(dispatch, '').replace(route, '')
