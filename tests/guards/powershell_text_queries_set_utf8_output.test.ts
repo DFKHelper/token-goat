@@ -54,7 +54,8 @@ function isLiteralLaunch(code: string): boolean {
 }
 const PROCESS_CMDLET = /\b(?:Get-CimInstance|Get-Process|Get-WmiObject)\b/
 const SPAWN_CALL = /\b(?:spawn|spawnSync|spawnOwned|execSync|execFile|execFileSync)\s*\(|(?<![.\w])exec\s*\(|\b(?:cp|child_process|childProcess)\.exec\s*\(/
-const TEXT_HELPER_IMPORT = /import\s*(?:type\s*)?\{[^}]*[{,]?\s*powerShellTextQueryArgs\s*(?:,|\})[^}]*\}\s*from\s*['"]\.\/windows_powershell\.js['"]/
+const TEXT_HELPER_IMPORT =
+  /import\s*(?:type\s*)?\{[^}]*\bpowerShellTextQueryArgs\b[^}]*\}\s*from\s*['"]\.\/windows_powershell\.js['"]/
 const TEXT_HELPER_ALIASED = /\bas\s+powerShellTextQueryArgs\b/
 
 const POWERSHELL_WORD = /\b(?:powershell|pwsh)(?:\.exe)?\b/i

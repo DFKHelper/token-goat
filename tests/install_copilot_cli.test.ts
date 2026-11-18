@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
 import { parseGuardedCommand } from '../src/hook_guard.js'
+import { HookSelftestError, setHookSelftestRunnerForTesting } from '../src/hook_selftest.js'
 
 import type * as NodeOs from 'node:os'
 
@@ -68,9 +69,12 @@ beforeEach(() => {
   // Project-scope install resolves against process.cwd() (mirrors install_pi.test.ts's handling of --local); chdir into an isolated project dir so `{ local: true }` writes under {TMP}/project/.github/hooks, never this repo's own .github/.
   fs.mkdirSync(path.join(TMP, 'project'), { recursive: true })
   process.chdir(path.join(TMP, 'project'))
+  // These rows prove what an install writes; the real-shell and failing-self-test rows cover the shells.
+  setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
 })
 
 afterEach(() => {
+  setHookSelftestRunnerForTesting(undefined)
   process.chdir(origCwd)
   if (origCopilotHome === undefined) delete process.env['COPILOT_HOME']
   else process.env['COPILOT_HOME'] = origCopilotHome
@@ -127,6 +131,17 @@ describe('installCopilotCli (user scope)', () => {
     expect(isCopilotCliInstalled()).toBe(true)
   })
 
+  it('refuses hook commands that fail their self-test, in both shell forms, and writes no config', () => {
+    const seen: string[] = []
+    setHookSelftestRunnerForTesting((shell) => {
+      seen.push(shell)
+      return { status: 3, stdout: '', stderr: 'boom' }
+    })
+    expect(() => installCopilotCli()).toThrow(HookSelftestError)
+    expect(new Set(seen)).toEqual(new Set(['sh', 'powershell']))
+    expect(fs.existsSync(copilotCliConfigPath())).toBe(false)
+  })
+
   it('uses the absolute Node binary path (process.execPath), not bare node, in every generated hook form (github/copilot-cli#4001 regression)', () => {
     const result = installCopilotCli()
     const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {
@@ -136,7 +151,7 @@ describe('installCopilotCli (user scope)', () => {
     if (entry?.exec !== undefined) {
       expect(entry.args).toContain(process.execPath)
     } else {
-      // The shell form is a guarded bash and powershell pair, no command field, naming the absolute Node binary.
+      // The shell form is a guarded bash and powershell pair, no command field, naming the absolute Node path.
       expect(entry).not.toHaveProperty('command')
       for (const command of [entry?.bash, entry?.powershell]) {
         expect(command).toBeDefined()

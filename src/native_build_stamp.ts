@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 
 const BUILD = /^(\d+)\.(\d+)\.(\d+)$/
 
-/** The `build` a binary's `--selftest` reports; undefined when it is absent, unstamped, or not a plain x.y.z. */
+/** The `build` a binary's `--selftest` reports; undefined if absent, unstamped, or not a plain x.y.z. */
 export function nativeBuildStamp(bin: string): string | undefined {
   if (!fs.existsSync(bin)) return undefined
   const res = spawnSync(bin, ['--selftest'], {

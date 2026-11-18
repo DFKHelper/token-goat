@@ -31,8 +31,14 @@ export type ShellRunner = (shell: GuardShell, command: string, input: string) =>
 
 const SELFTEST_TIMEOUT_MS = 60_000
 
-/** Host shell per form: Git Bash or `/bin/sh` (sh), cmd.exe (cmd), PowerShell 5.1 (other); null if absent. */
-export const realShellRunner: ShellRunner = (shell, command, input) => {
+interface ShellSpawn {
+  readonly program: string
+  readonly args: string[]
+  readonly verbatim: boolean
+}
+
+/** The host program and arguments for `command` in `shell`; null if that shell is absent. */
+function shellSpawn(shell: GuardShell, command: string): ShellSpawn | null {
   let program: string
   let args: string[]
   let verbatim = false
@@ -53,18 +59,121 @@ export const realShellRunner: ShellRunner = (shell, command, input) => {
     program = windowsPowerShellPath()
     args = powerShellTextQueryArgs(command)
   }
-  const r = spawnSync(program, args, {
+  return { program, args, verbatim }
+}
+
+const PROBE_ENV = (): NodeJS.ProcessEnv => ({ ...process.env, [HOOK_PROBE_ENV]: '1' })
+
+/** One run in the host shell for the form, as a host spawns a command; null if the shell is absent. */
+export const realShellRunner: ShellRunner = (shell, command, input) => {
+  const spec = shellSpawn(shell, command)
+  if (spec === null) return null
+  const r = spawnSync(spec.program, spec.args, {
     input,
     encoding: 'utf8',
-    env: { ...process.env, [HOOK_PROBE_ENV]: '1' },
+    env: PROBE_ENV(),
     timeout: SELFTEST_TIMEOUT_MS,
     windowsHide: true,
-    windowsVerbatimArguments: verbatim,
+    windowsVerbatimArguments: spec.verbatim,
     cwd: os.tmpdir(),
     maxBuffer: 8 * 1024 * 1024,
   })
   if (r.error !== undefined) return { status: null, stdout: '', stderr: String(r.error.message) }
   return { status: r.status, stdout: r.stdout, stderr: r.stderr }
+}
+
+/** Runs the JSON jobs on stdin `concurrency` at a time, each under its own timeout; prints results in order. */
+const PARALLEL_HELPER = `
+const { spawn } = require('node:child_process')
+let raw = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (d) => { raw += d })
+process.stdin.on('end', () => {
+  const { jobs, concurrency, timeout, cwd } = JSON.parse(raw)
+  const out = new Array(jobs.length)
+  let next = 0
+  let active = 0
+  const pump = () => {
+    while (active < concurrency && next < jobs.length) start(next++)
+    if (active === 0 && next >= jobs.length) {
+      const body = JSON.stringify(out)
+      process.stdout.write(body)
+    }
+  }
+  const start = (i) => {
+    active++
+    const job = jobs[i]
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+    const finish = (r) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      out[i] = r
+      active--
+      pump()
+    }
+    const opts = { cwd, windowsHide: true, windowsVerbatimArguments: job.verbatim }
+    // owner: this helper; the child dies when it closes or the timeout below kills it
+    const child = spawn(job.program, job.args, opts)
+    const timer = setTimeout(() => {
+      child.kill()
+      finish({ status: null, stdout, stderr: 'timed out after ' + timeout + ' ms' })
+    }, timeout)
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (d) => { stdout += d })
+    child.stderr.on('data', (d) => { stderr += d })
+    child.stdin.on('error', () => {})
+    child.on('error', (e) => finish({ status: null, stdout: '', stderr: String(e.message) }))
+    child.on('close', (code) => finish({ status: code, stdout, stderr }))
+    child.stdin.end(job.input)
+  }
+  pump()
+})
+`
+
+interface Job {
+  readonly shell: GuardShell
+  readonly command: string
+  readonly input: string
+}
+
+/** Each job's result in order: real shells in parallel through one helper, an injected runner one by one. */
+function runJobs(jobs: readonly Job[]): (ShellRun | null)[] {
+  const sequential = (): (ShellRun | null)[] => jobs.map((j) => runner(j.shell, j.command, j.input))
+  if (runner !== realShellRunner || jobs.length < 2) return sequential()
+  const specs = jobs.map((j) => shellSpawn(j.shell, j.command))
+  const live = specs.flatMap((spec, i) => (spec === null ? [] : [{ i, spec }]))
+  if (live.length < 2) return sequential()
+  const concurrency = Math.max(1, Math.min(8, os.availableParallelism()))
+  const rounds = Math.ceil(live.length / concurrency)
+  const helper = spawnSync(process.execPath, ['-e', PARALLEL_HELPER], {
+    input: JSON.stringify({
+      jobs: live.map(({ i, spec }) => ({ ...spec, input: jobs[i]!.input })),
+      concurrency,
+      timeout: SELFTEST_TIMEOUT_MS,
+      cwd: os.tmpdir(),
+    }),
+    encoding: 'utf8',
+    env: PROBE_ENV(),
+    timeout: SELFTEST_TIMEOUT_MS * rounds + 10_000,
+    windowsHide: true,
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  let results: ShellRun[] | undefined
+  try {
+    const parsed: unknown = helper.status === 0 ? JSON.parse(helper.stdout) : undefined
+    if (Array.isArray(parsed) && parsed.length === live.length) results = parsed as ShellRun[]
+  } catch {
+    results = undefined
+  }
+  // The helper itself failing is not a hook failing: run each job directly as before.
+  if (results === undefined) return sequential()
+  const out: (ShellRun | null)[] = jobs.map(() => null)
+  live.forEach(({ i }, k) => { out[i] = results[k]! })
+  return out
 }
 
 let runner: ShellRunner = realShellRunner
@@ -92,7 +201,7 @@ function validAnswer(harness: string | undefined, event: string, stdout: string,
   const lines = stdout.split(/\r?\n/).filter((l) => l.trim() !== '')
   // A harness whose own safe answer is empty (Kimi) accepts empty output, a Node-only command included.
   if (lines.length === 0) return harness === 'kimi' || safe === ''
-  // Claude Code reads a pre_compact hook's raw stdout as the summarizer's instructions, so plain text is its answer.
+  // Claude Code reads a pre_compact hook's raw stdout as the summarizer's instructions: plain text answers.
   if (event === 'pre_compact' && (harness === 'claudecode' || harness === undefined)) return true
   return lines.every((line) => {
     try {
@@ -120,6 +229,18 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
   let tested = 0
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-selftest-'))
   try {
+    interface Plan {
+      readonly parsed: Extract<ReturnType<typeof parseGuardedCommand>, { kind: 'v1' }>
+      readonly harness: string | undefined
+      readonly event: string
+      readonly label: string
+      readonly input: string
+      readonly markerBefore: boolean
+      readonly exe: Job
+      readonly nodeMarker: string
+      readonly node: Job | undefined
+    }
+    const plans: Plan[] = []
     for (const command of new Set(commands)) {
       const parsed = parseGuardedCommand(command)
       if (parsed === undefined || parsed.kind !== 'v1') {
@@ -130,9 +251,36 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
       const nodeArgv = parsed.native.includes('--') ? wrappedNodeArgv(parsed.native) : parsed.native
       const event = flagValue(parsed.native, '--event') ?? nodeArgv[2] ?? 'unknown'
       const input = JSON.stringify({ hook_event_name: event, session_id: 'tg-selftest' })
-      const label = `${harness ?? 'hook'} ${event}`
-      const markerBefore = fs.existsSync(parsed.marker)
-      const exe = runner(parsed.shell, command, input)
+      const nodeMarker = path.join(scratch, `marker-${String(plans.length)}`)
+      const unresolvable = path.join(scratch, 'no-such-dir', path.basename(parsed.native[0]!))
+      const viaNode = parsed.native.includes('--') && nodeArgv.length > 0
+        ? buildGuardedCommand({
+            shell: parsed.shell,
+            native: [unresolvable, ...parsed.native.slice(1)],
+            safe: parsed.safe,
+            marker: nodeMarker,
+          })
+        : undefined
+      plans.push({
+        parsed,
+        harness,
+        event,
+        label: `${harness ?? 'hook'} ${event}`,
+        input,
+        markerBefore: fs.existsSync(parsed.marker),
+        exe: { shell: parsed.shell, command, input },
+        nodeMarker,
+        node: viaNode === undefined ? undefined : { shell: parsed.shell, command: viaNode, input },
+      })
+    }
+    // Every route of every command runs at once: the runs share nothing but the shells they start in.
+    const jobs = plans.flatMap((plan) => (plan.node === undefined ? [plan.exe] : [plan.exe, plan.node]))
+    const results = runJobs(jobs)
+    let at = 0
+    for (const plan of plans) {
+      const { parsed, harness, event, label } = plan
+      const exe = results[at++]!
+      const node = plan.node === undefined ? undefined : results[at++]
       if (exe === null) {
         const shellName = parsed.shell === 'sh'
           ? 'POSIX shell (Git Bash)'
@@ -148,7 +296,7 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
             : `${label} (${route}): not a valid answer: ${run.stdout.trim().slice(0, 200)}`
       const exeProblem = problem(exe, 'native client')
       if (exeProblem !== undefined) failures.push(exeProblem)
-      else if (!markerBefore && guardWroteNotice(parsed.marker)) {
+      else if (!plan.markerBefore && guardWroteNotice(parsed.marker)) {
         failures.push(`${label}: nothing could run, so the command fell through to the safe answer`)
       }
 
@@ -157,23 +305,14 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
         tested++
         continue
       }
-      const marker = path.join(scratch, `marker-${String(tested)}`)
-      const unresolvable = path.join(scratch, 'no-such-dir', path.basename(parsed.native[0]!))
-      const viaNode = buildGuardedCommand({
-        shell: parsed.shell,
-        native: [unresolvable, ...parsed.native.slice(1)],
-        safe: parsed.safe,
-        marker,
-      })
-      if (wrappedNodeArgv(parsed.native).length === 0) {
+      if (plan.node === undefined) {
         skipped.push(`${label}: no Node route registered`)
         continue
       }
-      const node = runner(parsed.shell, viaNode, input)
-      if (node === null) continue
+      if (node === null || node === undefined) continue
       const nodeProblem = problem(node, 'Node route')
       if (nodeProblem !== undefined) failures.push(nodeProblem)
-      else if (fs.existsSync(marker)) {
+      else if (fs.existsSync(plan.nodeMarker)) {
         failures.push(
           `${label} (Node route): the Node shim could not run, ` +
             `so the command fell through to the safe answer`,

@@ -435,7 +435,13 @@ afterAll(async () => {
   expect(fs.existsSync(path.join(ROOT, 'package.json'))).toBe(true)
 }, 60_000)
 
-const SPLIT: Record<PayloadHarness, HookShell> = { claudecode: 'sh', codex: WIN ? 'powershell' : 'sh', grok: WIN ? 'powershell' : 'sh', kimi: WIN ? 'cmd' : 'sh', copilot_cli: WIN ? 'powershell' : 'sh' }
+const SPLIT: Record<PayloadHarness, HookShell> = {
+  claudecode: 'sh',
+  codex: WIN ? 'powershell' : 'sh',
+  grok: WIN ? 'powershell' : 'sh',
+  kimi: WIN ? 'cmd' : 'sh',
+  copilot_cli: WIN ? 'powershell' : 'sh',
+}
 
 describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli'] as const)('%s: native hook commands as installed', (harness) => {
   let sb: Sandbox
@@ -486,7 +492,8 @@ describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli
             const eventArg = eventOf(splitHookCommand(hookCommand, SPLIT.codex))
             const stateKey = Object.keys(cfg.hooks.state).find((k) => k.endsWith(`:${eventArg}:${gi}:${hi}`))
             expect(stateKey, `${event} ${gi}:${hi}`).toBeDefined()
-            expect(cfg.hooks.state[stateKey!]!.trusted_hash).toBe(computeCodexHookHash(eventArg, hookCommand, g.matcher))
+            const trusted = cfg.hooks.state[stateKey!]!.trusted_hash
+            expect(trusted).toBe(computeCodexHookHash(eventArg, hookCommand, g.matcher))
             checked++
           })
         })

@@ -563,7 +563,7 @@ const R = {
   sqlConst: 'SQL text around a table name or tokenizer token-goat fixes in a constant (DERIVED_TABLES, FTS_TOKENIZER)',
   generated: 'the source of a script or shim token-goat writes, around its own install paths or a fixed literal; never shown as a message',
   cmdLine: 'a command line handed to cmd.exe /s /c as one quoted string, each argument already quoted by windowsCmdQuoteArg',
-  guardedCmd: 'a guarded cmd form handed to cmd.exe /s /c as one string; the builder refuses a quote or percent',
+  guardedCmd: 'a guarded cmd form handed to cmd.exe /s /c as one string; the builder refuses a quote or %',
   regex: 'a regex matching SQL\'s own double-quoted identifier syntax around a name escapeRegExp already escaped',
   jsonPath: 'json-query bracket-key syntax inside a path the caller then quotes whole with quotedArg; a name holding a single quote is refused first',
   sedRewrite: 'an internal rewrite into the `sed -n` form extractSedRange parses, never shown; a path holding a double quote is refused first',

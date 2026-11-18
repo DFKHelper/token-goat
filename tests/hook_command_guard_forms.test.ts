@@ -378,7 +378,8 @@ describe('a UNC path in the sh form', () => {
     expect(command).toContain(`'//localhost/C$/tg dir/native/tg-hook.exe'`)
     expect(command).not.toContain('\\\\')
     const parsed = parseGuardedCommand(command)
-    expect(parsed?.kind === 'v1' ? parsed.native[0] : undefined).toBe('//localhost/C$/tg dir/native/tg-hook.exe')
+    const client = parsed?.kind === 'v1' ? parsed.native[0] : undefined
+    expect(client).toBe('//localhost/C$/tg dir/native/tg-hook.exe')
   })
 
   it('stays a backslash UNC path in PowerShell, which keeps backslashes whole', () => {

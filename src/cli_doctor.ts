@@ -27,7 +27,8 @@ import { hasCreatedConfig } from './bridges/created_configs.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
 import { claudeHookScriptPath, claudeHooksInstalledAnyScope, hookEventGaps, isInstalled, wiredClaudeHookWords } from './install.js'
 import { parseNativeInvocation, splitHookCommand } from './native_hook.js'
-import { powerShellCommandArgs, resolvePowerShell } from './shell.js' // tg-powershell-output-unread: runs the registered hook command, its output is not read as text
+import { resolvePowerShell } from './shell.js'
+import { powerShellTextQueryArgs } from './windows_powershell.js'
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
 import { codexHookScriptPath, wiredCodexHookWords } from './bridges/codex_install.js'
@@ -468,7 +469,7 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
   // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
   const res = directEntry === undefined
     ? commandRunsInPowershell
-      ? spawnSync(resolvePowerShell(), powerShellCommandArgs(preToolUseCommand ?? ''), { // tg-powershell-output-unread: runs the registered hook command, its output is not read as text
+      ? spawnSync(resolvePowerShell(), powerShellTextQueryArgs(preToolUseCommand ?? ''), {
         input: synthetic, encoding: 'utf-8', env: probeEnv, windowsHide: true, timeout: probeBudgetMs,
       })
       : spawnSync(preToolUseCommand ?? '', {

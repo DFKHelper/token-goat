@@ -1,4 +1,4 @@
-// Fixture provenance: FORMAT-DERIVED from src/hook_registry.ts EVENTS_WITH_RAW_STDOUT_CONTEXT (Claude Code reads pre_compact stdout raw).
+// Fixture provenance: FORMAT-DERIVED from src/hook_registry.ts EVENTS_WITH_RAW_STDOUT_CONTEXT (raw).
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'

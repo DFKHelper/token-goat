@@ -1,4 +1,4 @@
-/** Which shell Claude Code runs a string-form hook command in, so the guard is written in that shell's syntax. */
+/** The shell Claude Code runs a string-form hook command in, so the guard uses that shell's syntax. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -10,7 +10,7 @@ export const CLAUDE_HOOK_SHELL_FIELD: Readonly<Record<'sh' | 'powershell', 'bash
   powershell: 'powershell',
 }
 
-/** Whether Claude Code finds Git Bash: the file `CLAUDE_CODE_GIT_BASH_PATH` names, else bash.exe beside git.exe. */
+/** Whether Claude Code finds Git Bash: the file `CLAUDE_CODE_GIT_BASH_PATH` names, else bash.exe by git.exe. */
 export function claudeFindsGitBash(
   env: NodeJS.ProcessEnv = process.env,
   exists: (p: string) => boolean = fs.existsSync,
@@ -26,7 +26,7 @@ export function claudeFindsGitBash(
   return false
 }
 
-/** The guard syntax and `shell` field to register: sh except on Windows without Git Bash; no field off Windows. */
+/** The guard syntax and `shell` field to register: sh unless Windows lacks Git Bash; none off Windows. */
 export function claudeHookShell(
   platform: NodeJS.Platform = process.platform,
   gitBash: boolean = platform === 'win32' && claudeFindsGitBash(),
