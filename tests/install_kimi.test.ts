@@ -113,10 +113,11 @@ describe('installKimi', () => {
       const entry = hooks.find((h) => h.event === event)
       expect(entry, `no [[hooks]] entry for ${event}`).toBeDefined()
       const command = entry?.command ?? ''
-      expect(command).toContain(`"${process.execPath}"`)
+      // The guarded form single-quotes every word of the call.
+      expect(command).toContain(`'${process.execPath}'`)
       expect(command.startsWith('node ')).toBe(false)
-      expect(command).toContain(`"${kimiHookScriptPath()}"`)
-      expect(command).toContain(` ${KIMI_EVENT_ARG[event] ?? 'MISSING'}`)
+      expect(command).toContain(`'${kimiHookScriptPath()}'`)
+      expect(command).toContain(` '${KIMI_EVENT_ARG[event] ?? 'MISSING'}'`)
     }
   })
 

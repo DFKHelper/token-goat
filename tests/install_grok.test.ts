@@ -31,6 +31,7 @@ import {
   isGrokInstalled,
   uninstallGrok,
 } from '../src/bridges/grok_install.js'
+import { parseGuardedCommand } from '../src/hook_guard.js'
 import { HOOK_EVENTS } from '../src/types.js'
 
 let TMP: string
@@ -87,11 +88,10 @@ describe('installGrok', () => {
     const command = config.hooks['PreToolUse']?.[0]?.hooks?.[0]?.command
     expect(process.argv[1]).toBeDefined()
     // HAND-DERIVED: Grok runs a hook through PowerShell on Windows (grok-build xai-grok-config shell.rs `detect_windows_shell`, `-NoProfile -NonInteractive -Command`), which needs the call operator, reads single-quoted paths literally, and exits 1 for any native exit code unless the line exits with LASTEXITCODE itself; `sh -c` elsewhere.
-    expect(command).toBe(
-      process.platform === 'win32'
-        ? `& '${process.execPath}' '${result.hookScriptPath}' pre_tool_use '${process.argv[1]}'; if (Get-Variable LASTEXITCODE -ErrorAction Ignore) { exit (Get-Variable LASTEXITCODE -ValueOnly) }; exit 1`
-        : `"${process.execPath}" "${result.hookScriptPath}" pre_tool_use "${process.argv[1]}"`,
-    )
+    const parsed = parseGuardedCommand(command ?? '')
+    expect(parsed?.kind).toBe('v1')
+    if (parsed?.kind !== 'v1') return
+    expect(parsed.native).toEqual([process.execPath, result.hookScriptPath, 'pre_tool_use', process.argv[1]])
   })
 
   it('is idempotent: a second install reports alreadyInstalled and does not duplicate or alter entries', () => {

@@ -377,7 +377,8 @@ describe('against a real hook server', () => {
   let endpoint = ''
 
   beforeAll(() => {
-    const res = cli(['install', '--dev'])
+    // The installer's self-test runs the registered command, whose native client autostarts a server.
+    const res = cli(['install', '--dev'], { TOKEN_GOAT_HOOK_SERVER: '0' })
     expect(res.status, res.stderr).toBe(0)
     // FORMAT-DERIVED from the settings.json the built installer writes here: an `args` array of shim, event, entry, or on a platform that writes one command string, the same three quoted.
     const settings = fs.readFileSync(path.join(sb.base, '.claude', 'settings.json'), 'utf8')
@@ -386,7 +387,7 @@ describe('against a real hook server', () => {
         if (value.length === 3 && value[1] === 'pre_tool_use' && typeof value[0] === 'string' && value[0].endsWith('token-goat-shim.cjs')) [shim, , entry] = value as string[]
         else value.forEach(walk)
       } else if (typeof value === 'string') {
-        const m = /["']([^"']*token-goat-shim\.cjs)["']\s+"?pre_tool_use"?\s+["']([^"']+)["']/.exec(value)
+        const m = /["']([^"']*token-goat-shim\.cjs)["']\s+["']?pre_tool_use["']?\s+["']([^"']+)["']/.exec(value)
         if (m !== null) [shim, entry] = [m[1] as string, m[2] as string]
       } else if (value !== null && typeof value === 'object') Object.values(value).forEach(walk)
     }

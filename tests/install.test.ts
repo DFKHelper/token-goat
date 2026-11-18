@@ -9,7 +9,16 @@ import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
 import { runDoctor } from '../src/cli_doctor.js'
 import { checkClaudeHookEvents } from '../src/cli_doctor_platforms.js'
 import type { DoctorResult } from '../src/doctor_result.js'
-import { claudeHookScriptPath, hookEventGaps, installHooks, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
+import { claudeHookShell } from '../src/claude_hook_shell.js'
+import {
+  claudeHookScriptPath,
+  expectedHookEntryFor,
+  hookEventGaps,
+  installHooks,
+  isInstalled,
+  settingsPath,
+  uninstallHooks,
+} from '../src/install.js'
 import { normalizeDarwinSystemAlias } from '../src/paths.js'
 import { hookCommandFor } from '../src/util.js'
 
@@ -21,7 +30,7 @@ let origExecFormOverride: string | undefined
 
 /** The exact command installHooks is expected to wire for `eventArg`, derived rather than hard-coded: it bakes in this node binary, this shim path, and this entry path, none of which a literal string in a test can know. */
 function expectedCommand(eventArg: string): string {
-  return hookCommandFor(claudeHookScriptPath(), eventArg)
+  return expectedHookEntryFor(claudeHookScriptPath(), eventArg).command
 }
 
 /** Every Claude Code event key this build wires, with its event argument, in install order. */
@@ -228,14 +237,19 @@ describe('installHooks', () => {
     expect(checkClaudeHookEvents({ user: null, project: gaps })?.message).toContain('project scope lacks PreToolUse, PostToolUse,')
   })
 
-  it('an entry in string form where this build writes exec form is outdated, not missing, and install rewrites it', () => {
-    // HAND-DERIVED: this build's own string-form install checked by a build expecting exec form, the shape an install from before exec-form hooks leaves behind.
-    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '0'
+  it('an unguarded string-form entry is outdated, and install rewrites it', () => {
+    // HAND-DERIVED: the bare node command an install from before guarded hooks leaves behind.
     installHooks('project')
-    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
+    const p = settingsPath('project')
+    const hooks: Record<string, unknown> = {}
+    for (const [key, arg] of CLAUDE_HOOK_EVENTS) {
+      const command = hookCommandFor(claudeHookScriptPath(), arg)
+      hooks[key] = [{ matcher: '', hooks: [{ type: 'command', command }] }]
+    }
+    fs.writeFileSync(p, JSON.stringify({ hooks }))
     const gaps = hookEventGaps('project')
     expect(gaps?.missing).toEqual([])
-    expect(gaps?.outdated).toEqual(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PreCompact', 'PostCompact', 'UserPromptSubmit', 'Stop', 'SubagentStop', 'SessionStart'])
+    expect(gaps?.outdated).toEqual(CLAUDE_HOOK_EVENTS.map(([key]) => key))
     expect(isInstalled('project')).toBe(false)
     expect(installHooks('project').alreadyInstalled).toBe(false)
     expect(hookEventGaps('project')).toEqual({ missing: [], outdated: [], broken: [] })
@@ -618,10 +632,10 @@ describe('generated hook shim (the shipping wiring, not a standalone script test
     const command = commandsFor(settingsPath('project'), 'PreToolUse')[0]
     expect(command).toBeDefined()
 
-    // Re-parse the command exactly as a shell would, then execute it directly -- this drives the real installed wiring end to end rather than a hand-built invocation that could diverge from what installHooks wrote.
-    const parts = command!.match(/"[^"]*"|\S+/g)?.map((s) => s.replace(/^"|"$/g, '')) ?? []
-    expect(parts.length).toBeGreaterThanOrEqual(3)
-    const res = spawnSync(parts[0]!, parts.slice(1), {
+    // Run the exact installed command through the shell Claude Code hands it to, guard prelude included.
+    const sh = claudeHookShell().guard === 'sh'
+    const argv = sh ? ['sh', '-c', command!] : ['powershell', '-NoProfile', '-Command', command!]
+    const res = spawnSync(argv[0]!, argv.slice(1), {
       input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo hi' }, session_id: 'install-e2e' }),
       encoding: 'utf8',
       timeout: 60_000,

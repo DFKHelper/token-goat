@@ -115,7 +115,7 @@ function wiredEvents(harness: PayloadHarness): Map<string, Wiring> {
   const text = fs.readFileSync(file, 'utf8')
   const lines = file.endsWith('.json') ? commandLines(JSON.parse(text)) : [...text.matchAll(/^command\s*=\s*("(?:[^"\\]|\\.)*")\s*$/gm)].map((m) => JSON.parse(m[1] as string) as string)
   const found = new Map<string, Wiring>()
-  const re = /["']([^"']*token-goat-shim\.cjs)["']\s+"?([A-Za-z_]+)"?\s+["']([^"']+)["']/
+  const re = /["']([^"']*token-goat-shim\.cjs)["']\s+["']?([A-Za-z_]+)["']?\s+["']([^"']+)["']/
   for (const line of lines) {
     const m = re.exec(line)
     if (m) found.set(m[2] as string, { shim: m[1] as string, entry: m[3] as string })

@@ -156,15 +156,23 @@ describe('installer writes onFailure continue on token-goat entries', () => {
     expect(ownEntries(after).every((h) => h.onFailure === 'continue')).toBe(true)
   })
 
-  it('writes onFailure on exec-form entries, and a second install adds no copy', () => {
-    // beforeEach pins string form; the top-level afterEach restores the caller's value of this variable.
-    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
+  it('replaces a legacy exec-form install with guarded entries with onFailure, once', () => {
+    // HAND-DERIVED: an install from before guarded hooks wrote exec form; the guarded form replaces it.
     installHooks('user')
-    const first = execFormOwnEntries(readSettings())
+    const seeded = readSettings()
+    for (const g of Object.values(seeded.hooks).flat()) {
+      const legacy = { type: 'command', command: 'node', args: ['/old/token-goat-shim.cjs', 'x'] }
+      g.hooks = g.hooks.map((h) => (String(h.command).includes('token-goat-shim') ? legacy : h))
+    }
+    writeSettings(seeded)
+    expect(execFormOwnEntries(readSettings()).length).toBeGreaterThan(5)
+    installHooks('user')
+    const first = ownEntries(readSettings())
     expect(first.length).toBeGreaterThan(5)
+    expect(execFormOwnEntries(readSettings())).toHaveLength(0)
     for (const h of first) expect(h.onFailure, `entry ${String(h.command)}`).toBe('continue')
     installHooks('user')
-    expect(execFormOwnEntries(readSettings())).toHaveLength(first.length)
+    expect(ownEntries(readSettings())).toHaveLength(first.length)
   })
 })
 

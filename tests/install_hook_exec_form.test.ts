@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { claudeHookScriptPath, expectedHookEntryFor, installHooks, hookEventGaps, isInstalled, settingsPath, uninstallHooks } from '../src/install.js'
-import { hookCommandFor, hookExecPartsFor } from '../src/util.js'
+import { hookExecPartsFor } from '../src/util.js'
 
 let TMP: string
 let origCwd: string
@@ -54,25 +54,23 @@ afterEach(() => {
 })
 
 describe('exec-form hook registration', () => {
-  it('writes command/args (not a shell-quoted string) when exec form is available', () => {
+  it('writes the guarded string form, never exec form, even when exec form is available', () => {
     process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
     installHooks('project')
     const settings = readSettingsFile(settingsPath('project'))
     const entry = settings.hooks?.['PreToolUse']?.[0]?.hooks[0]
-    const expected = hookExecPartsFor(claudeHookScriptPath(), 'pre_tool_use')
-    expect(entry?.command).toBe(expected.command)
-    expect(entry?.args).toEqual(expected.args)
-    // No shell quoting anywhere in an exec-form entry -- there is no shell to parse it.
-    expect(entry?.command.includes('"')).toBe(false)
-    expect(entry?.args?.some((a) => a.includes('"'))).toBe(false)
+    // An exec-form entry dies with its program, so every registered command carries the guard prelude.
+    expect(entry?.command).toBe(expectedHookEntryFor(claudeHookScriptPath(), 'pre_tool_use').command)
+    expect(entry?.command.startsWith(': tg-guard-v1;')).toBe(true)
+    expect(entry?.args).toBeUndefined()
   })
 
-  it('falls back to the string form when exec form is unavailable', () => {
+  it('writes the same guarded string form when exec form is unavailable', () => {
     process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '0'
     installHooks('project')
     const settings = readSettingsFile(settingsPath('project'))
     const entry = settings.hooks?.['PreToolUse']?.[0]?.hooks[0]
-    expect(entry?.command).toBe(hookCommandFor(claudeHookScriptPath(), 'pre_tool_use'))
+    expect(entry?.command).toBe(expectedHookEntryFor(claudeHookScriptPath(), 'pre_tool_use').command)
     expect(entry?.args).toBeUndefined()
   })
 
@@ -88,27 +86,23 @@ describe('exec-form hook registration', () => {
     expect(isInstalled('project')).toBe(true)
   })
 
-  it('a stale exec-form entry (same command, different args) is replaced, not treated as already installed', () => {
+  it('a stale exec-form entry (same command, other args) is replaced by the guarded form, not kept', () => {
     process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
-    installHooks('project')
     const p = settingsPath('project')
-    const before = readSettingsFile(p)
-    const staleArgs = before.hooks?.['PreToolUse']?.[0]?.hooks[0]?.args
-    expect(staleArgs).toBeDefined()
-    // Simulate the shim having moved (reinstall elsewhere, node upgraded): same `command` ("node"), different `args`. A bare string compare on `command` alone would call this "already installed" and leave the hook pointing at a path that no longer exists.
-    const mutated = readSettingsFile(p)
-    const group = mutated.hooks?.['PreToolUse']?.[0]
-    // Still recognizable as a token-goat entry (the shim marker survives), but pointing at a path that no longer exists -- the exact "baked absolute path has moved" staleness shape.
-    if (group !== undefined) group.hooks[0]!.args = ['C:\\deleted\\token-goat-shim.js', 'pre_tool_use']
-    fs.writeFileSync(p, `${JSON.stringify(mutated, null, 2)}\n`)
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    // The shim moved (reinstall elsewhere, node upgraded): the shim marker survives but the baked path is gone.
+    const legacy = hookExecPartsFor(claudeHookScriptPath(), 'pre_tool_use')
+    const stale = { command: legacy.command, args: ['C:/deleted/token-goat-shim.js', 'pre_tool_use'] }
+    const group0 = { matcher: '', hooks: [{ type: 'command', ...stale }] }
+    fs.writeFileSync(p, JSON.stringify({ hooks: { PreToolUse: [group0] } }))
 
     const result = installHooks('project')
     expect(result.alreadyInstalled).toBe(false)
 
-    const after = readSettingsFile(p)
-    const group2 = after.hooks?.['PreToolUse']?.[0]
-    expect(group2?.hooks).toHaveLength(1)
-    expect(group2?.hooks[0]?.args).toEqual(staleArgs)
+    const group = readSettingsFile(p).hooks?.['PreToolUse']?.[0]
+    expect(group?.hooks).toHaveLength(1)
+    expect(group?.hooks[0]?.command).toBe(expectedHookEntryFor(claudeHookScriptPath(), 'pre_tool_use').command)
+    expect(group?.hooks[0]?.args).toBeUndefined()
   })
 
   it('a foreign entry (unrelated command/args) is left alone, not recognized as ours', () => {
@@ -134,16 +128,18 @@ describe('exec-form hook registration', () => {
     expect(allHooks.some((h) => h.command === expected.command && JSON.stringify(h.args) === JSON.stringify(expected.args))).toBe(true)
   })
 
-  it('upgrading from a string-form install to exec form replaces the entry instead of adding a second one', () => {
-    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '0'
-    installHooks('project')
-    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
+  it('a legacy exec-form install is replaced by the guarded form instead of gaining a second entry', () => {
+    const p = settingsPath('project')
+    fs.mkdirSync(path.dirname(p), { recursive: true })
+    const legacy = hookExecPartsFor(claudeHookScriptPath(), 'pre_tool_use')
+    const group0 = { matcher: '', hooks: [{ type: 'command', ...legacy }] }
+    fs.writeFileSync(p, JSON.stringify({ hooks: { PreToolUse: [group0] } }))
     installHooks('project')
 
-    const settings = readSettingsFile(settingsPath('project'))
-    const hooks = settings.hooks?.['PreToolUse']?.flatMap((g) => g.hooks) ?? []
+    const hooks = readSettingsFile(p).hooks?.['PreToolUse']?.flatMap((g) => g.hooks) ?? []
     expect(hooks).toHaveLength(1)
-    expect(hooks[0]?.args).toBeDefined()
+    expect(hooks[0]?.command).toBe(expectedHookEntryFor(claudeHookScriptPath(), 'pre_tool_use').command)
+    expect(hooks[0]?.args).toBeUndefined()
   })
 
   it('install, install, uninstall round-trips the settings file back to its pre-install bytes', () => {

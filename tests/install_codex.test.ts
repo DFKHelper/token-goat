@@ -30,6 +30,7 @@ import {
   uninstallCodex,
 } from '../src/bridges/codex_install.js'
 import { detectHarness } from '../src/bridges/registry.js'
+import { parseGuardedCommand } from '../src/hook_guard.js'
 
 interface CodexHookEntry {
   type: string
@@ -74,22 +75,27 @@ describe('codexHookCommandFor', () => {
     Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true })
   })
 
-  it('writes a PowerShell call on Windows (win32): the call operator (adjacent string literals are a ParserError), single-quoted paths (a double-quoted one expands a $ inside it), and the suffix that exits with the hook\'s own code', () => {
+  it('writes the guarded PowerShell call on Windows (win32), keeping the hook exit code', () => {
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true })
     const cmd = codexHookCommandFor('C:\\path\\to\\shim.js', 'pre_compact')
-    expect(cmd.startsWith('& ')).toBe(true)
-    expect(cmd).toContain("'C:\\path\\to\\shim.js' pre_compact")
-    expect(cmd).not.toContain('"')
-    // HAND-DERIVED: typed from what `powershell -Command` needs to exit with a native program's own code (LASTEXITCODE, guarded for a program that never started), not imported from the source.
-    expect(cmd.endsWith('; if (Get-Variable LASTEXITCODE -ErrorAction Ignore) { exit (Get-Variable LASTEXITCODE -ValueOnly) }; exit 1')).toBe(true)
+    const parsed = parseGuardedCommand(cmd)
+    expect(parsed?.kind).toBe('v1')
+    if (parsed?.kind !== 'v1') return
+    expect(parsed.shell).toBe('powershell')
+    expect(parsed.native.slice(1, 3)).toEqual(['C:\\path\\to\\shim.js', 'pre_compact'])
+    // HAND-DERIVED: what `powershell -Command` needs to exit with a native program's own code.
+    expect(cmd).toContain('exit (Get-Variable LASTEXITCODE -ValueOnly)')
   })
 
-  it('does not prefix with "& " on non-Windows (linux/darwin) so POSIX sh does not treat it as a background operator', () => {
+  it('writes the guarded POSIX form on non-Windows (linux/darwin), never a bare "& " call', () => {
     Object.defineProperty(process, 'platform', { value: 'linux', configurable: true })
     const cmd = codexHookCommandFor('/path/to/shim.js', 'pre_compact')
     expect(cmd.startsWith('& ')).toBe(false)
-    expect(cmd.startsWith('"')).toBe(true)
-    expect(cmd).toContain('pre_compact')
+    const parsed = parseGuardedCommand(cmd)
+    expect(parsed?.kind).toBe('v1')
+    if (parsed?.kind !== 'v1') return
+    expect(parsed.shell).toBe('sh')
+    expect(parsed.native.slice(1, 3)).toEqual(['/path/to/shim.js', 'pre_compact'])
   })
 })
 
@@ -213,10 +219,10 @@ describe('installCodex', () => {
         expect(g.matcher).toBeUndefined()
       }
     }
-    // Correct internal event arg is baked into each command.
-    expect(commandsFor(config, 'PreCompact').some((c) => c.includes(' pre_compact '))).toBe(true)
-    expect(commandsFor(config, 'UserPromptSubmit').some((c) => c.includes(' user_prompt_submit '))).toBe(true)
-    expect(commandsFor(config, 'SubagentStop').some((c) => c.includes(' subagent_stop '))).toBe(true)
+    // Correct internal event arg is baked into each command, single-quoted by the guarded form.
+    expect(commandsFor(config, 'PreCompact').some((c) => c.includes(" 'pre_compact'"))).toBe(true)
+    expect(commandsFor(config, 'UserPromptSubmit').some((c) => c.includes(" 'user_prompt_submit'"))).toBe(true)
+    expect(commandsFor(config, 'SubagentStop').some((c) => c.includes(" 'subagent_stop'"))).toBe(true)
   })
 
   it('is idempotent (second call reports alreadyInstalled and does not duplicate entries)', () => {
