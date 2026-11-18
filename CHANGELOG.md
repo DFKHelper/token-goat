@@ -13,6 +13,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Changed
 
+- **The README now says 255+ filter and interception rules, counted from the code.** The total was 210 against an advertised 205: four hand-typed counts had gone stale (one still counted a removed MEMORY.md rule, the rest had missed new ones) and the Grep, Glob, WebFetch, WebSearch, agent-spawn and image hooks were not counted at all. The real total is 259, every hand-listed rule now carries an anchor that a new guard checks against its source file, and the failure-runner count is read from the table the extractor dispatches through.
 - **Paging guidance names one command to run next.**
 - **The anti-paging read hook denies a third read of an overlapping range.** Overlap is measured by intersection over union (IoU): the lines both windows share, divided by all the lines they cover together. A same-anchor expansion of up to 20 lines is exempt, and a partly served window is denied too.
 - **Paging hints name real symbols and point to the diff of an edited file.**
