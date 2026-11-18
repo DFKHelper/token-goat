@@ -10,6 +10,7 @@ import { ATX_CLASS_BREAK_RE, matchAtxHeading, matchRuleBannerTitle, matchTableHe
 import { frontMatterEndIndex } from './markdown_frontmatter.js'
 import { detectLanguage, refineLanguageByContent } from './parser_types.js'
 import { decodeSource } from './util.js'
+import { normalizeSourceText } from './source_text.js'
 import { yamlOpenQuoteAfter, yamlLineClosesQuote, lineOpenDelimiterAfter, tomlBracketDelta, stripTomlComment } from './parser.js'
 import { _detectOpenQuote as envDetectOpenQuote, _lineClosesQuote as envLineClosesQuote } from './languages/ini_idx.js'
 
@@ -647,10 +648,8 @@ function readTextForSections(filePath: string, readFn?: (p: string) => string | 
     }
   }
 
-  // Strip UTF-8 BOM if present (U+FEFF); some editors save files with this prefix
-  if (text.charCodeAt(0) === 0xfeff) {
-    text = text.slice(1)
-  }
+  // The text the index numbered: a UTF-8 BOM (some editors save files with one) dropped and a lone CR read as a line break, so a CR-only file has the headings and line numbers the index recorded instead of one giant line.
+  text = normalizeSourceText(text)
   // A dotenv section is its key and its value, and the value is the secret. Applied here rather than only in the readFn branch so the plain CLI path (`token-goat section ".env::API_KEY"`, which passes no readFn) is covered too. Redacting after the BOM strip keeps both transforms in one place and line-for-line. See dotenv_redact.ts.
   return redactIfDotenv(filePath, text)
 }

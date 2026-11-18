@@ -72,6 +72,15 @@ describe('ignores reports the scope of .tokengoatignore', () => {
 
     expect((JSON.parse(written) as { packIgnorePatterns: number }).packIgnorePatterns).toBe(3)
   })
+
+  // Provenance: HAND-DERIVED, the ignore file is written byte by byte with a bare CR after a comment and each of three patterns (classic Mac line endings).
+  it('counts three patterns in a lone-CR ignore file', () => {
+    fs.writeFileSync(path.join(root, '.tokengoatignore'), ['# comment', 'a/**', 'b/**', 'c/**', ''].join(String.fromCharCode(13)))
+
+    cmdIgnores({ json: true })
+
+    expect((JSON.parse(written) as { packIgnorePatterns: number }).packIgnorePatterns).toBe(3)
+  })
 })
 
 // The correction lives wherever `.tokengoatignore` is described, which is the command reference -- that moved from README.md into docs/cli.md when the README was split. Both files are read, so the guarantee holds whichever one carries the prose, and the combined text is asserted non-empty first: a mistyped path would otherwise read as a clean pass on the negative check, with only the positive one noticing.

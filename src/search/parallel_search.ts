@@ -12,6 +12,8 @@ import { fuseChannelHits } from './rrf.js';
 import { bodyFromDeclaration } from '../read_suggest.js';
 import { pathPriorityWeight } from './path_weight.js';
 import { loadConfig } from '../config.js';
+import { redactReadText } from '../fence_cap.js';
+import { sourceLines } from '../source_lines.js';
 import { snippetAround } from '../snippet_window.js';
 import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from '../semantic_relevance.js';
 import { ALL_CHANNELS, type ChannelHit, type FusedSearchResult, type SearchChannel, type SearchExecutionSummary, type SearchLowConfidence, type SearchOptions } from './types.js';
@@ -30,8 +32,8 @@ interface SearchExecutionContext {
 
 /** A symbol hit's preview: its docstring, else the first 140 characters of its body from the declaration on, so a decorated symbol previews as `def area(...)` rather than `@property`. */
 export function symbolPreview(sym: { name: string; docstring?: string | null; body?: string | null }): string {
-  if (sym.docstring) return sym.docstring;
-  return sym.body ? bodyFromDeclaration(sym.body).slice(0, 140).trim() : `Symbol: ${sym.name}`;
+  if (sym.docstring) return redactReadText(sym.docstring);
+  return sym.body ? bodyFromDeclaration(redactReadText(sym.body)).slice(0, 140).trim() : `Symbol: ${sym.name}`;
 }
 
 /** A text hit's preview: a window of its line around the match, sized to fit the terminal's 120-character preview, so a match past the line's opening columns is still in what gets printed. */
@@ -138,13 +140,18 @@ async function searchTextChannel(query: string, limit: number, rootDir?: string,
           unreadableCount++;
           continue;
         }
-        const lines = content.split(/\r?\n/);
+        const lines = sourceLines(content);
         const found: { lines: Array<{ line: number; preview: string }>; count: number; filePath: string } = { lines: [], count: 0, filePath: fullPath };
+        // Matched on the text as stored, previewed from the text redacted whole, so the window cut around a match never splits a secret and a query naming one still finds its line.
+        let shownLines: string[] | null = null;
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
           if (line && line.toLowerCase().includes(lowerQuery)) {
             found.count++;
-            if (found.lines.length < PER_FILE_HITS) found.lines.push({ line: i + 1, preview: matchPreview(line, lowerQuery) });
+            if (found.lines.length < PER_FILE_HITS) {
+              shownLines ??= sourceLines(redactReadText(content));
+              found.lines.push({ line: i + 1, preview: matchPreview(shownLines[i] ?? '', lowerQuery) });
+            }
           }
         }
         if (found.count > 0) matched.push(found);
@@ -205,7 +212,7 @@ async function searchSemanticChannel(query: string, limit: number, rootDir?: str
       kind: hit.kind,
       lineStart: hit.startLine,
       lineEnd: hit.endLine,
-      preview: hit.text ? hit.text.slice(0, 140).trim() : `Match in ${hit.filePath}`,
+      preview: hit.text ? redactReadText(hit.text).slice(0, 140).trim() : `Match in ${hit.filePath}`,
       rawScore: hit.distance,
       rank: idx + 1,
     }));

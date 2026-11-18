@@ -97,8 +97,7 @@ const NOT_EXTRACTION: Record<string, string> = {
   'src/regex_guard.ts': 'ReDoS-safety guard for user-supplied CLI regex flags (grep/affected/secret-redact); reached in this closure only via util.ts, never by a language extractor\'s own pattern',
   'src/reset.ts': 'test/dev module-cache clearing utility, never runs in a production parse',
   'src/skip_scope.ts': 'decides which directory segments of an indexed path count against skip_dirs, i.e. whether a file is parsed at all, never what a parse yields',
-  'src/sql_path.ts': 'builds a SQL WHERE clause for path-equality lookups; a query-shaping helper, not an extraction decision',
-  'src/secret_redact.ts': 'credential redaction for the CLI search surfaces in pdf_extract.ts/pptx_extract.ts (locatePdfPages/pptxTextGrep), which redact page or slide text before clipping a snippet; no extractor parseContent reaches calls it',
+  'src/sql_path.ts':'builds a SQL WHERE clause for path-equality lookups; a query-shaping helper, not an extraction decision',
   'src/sqlite_driver.ts': 'sqlite driver initialization, infrastructure like src/db.ts',
   'src/types.ts': 'type-only shared declarations, erased at compile time',
   'src/util_config.ts': 'shared string-stripping helpers for uninstalling hooks from harness config files, not extraction',
@@ -138,6 +137,12 @@ describe('the parser fingerprint covers every source that decides extraction', (
       unclassified,
       `these files are reachable from src/parser.ts but are neither hashed by extractionSources() nor exempted in NOT_EXTRACTION: ${unclassified.join(', ')}. Add each to extractionSources() in scripts/parser-fingerprint.mjs if it decides what a parse extracts, or add it to NOT_EXTRACTION in this test with a one-line reason why an edit there cannot change extraction output.`,
     ).toEqual([])
+  })
+
+  it('hashes src/secret_redact.ts, because boundSymbolDocstring stores a docstring redacted with its patterns', () => {
+    const hashed = extractionSources().map((f: string) => path.relative(ROOT, f).split(path.sep).join('/'))
+    expect(hashed, 'src/secret_redact.ts decides the stored text of an over-cap doc comment (src/parser.ts::boundSymbolDocstring calls redactSecrets), so it belongs in DECISION_SOURCES in scripts/parser-fingerprint.mjs').toContain('src/secret_redact.ts')
+    expect(Object.prototype.hasOwnProperty.call(NOT_EXTRACTION, 'src/secret_redact.ts')).toBe(false)
   })
 
   it('never exempts a file that has actually been hashed, or the exemption list is lying about coverage', () => {

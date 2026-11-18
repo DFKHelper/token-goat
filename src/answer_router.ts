@@ -18,6 +18,7 @@ import { emit, emitErr } from './emit.js'
 import { type AnswerRoute, recordStat } from './stats.js'
 import { formatCommandError } from './command_error.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
+import { redactReadText } from './fence_cap.js'
 
 export interface AnswerOptions {
   question: string
@@ -250,9 +251,11 @@ const FILE_INTENT_PHRASE: Readonly<Partial<Record<AnswerIntent, string>>> = { te
 /** Refuses a symbol question whose subject has several definitions, naming each as the `file::Parent.name` (or `@line`) spelling that re-asks it for exactly that definition. */
 function refuseAmbiguousDefs(subject: string, picks: DefinitionPick[], rootDir: string, command: 'brief' | 'callers' | 'impact'): number {
   const specs = picks.map((p) => `${toDisplayPath(rootDir, p.file)}::${p.qualifier}`)
-  const shown = specs.slice(0, 5)
+  // A container's name is stored file text and can be a credential: it is redacted where it is listed, and the command offered is the first pick that needed no redaction, else an outline of the first pick's file, since a spec naming a placeholder resolves to nothing.
+  const runnable = specs.find((spec) => redactReadText(spec) === spec)
+  const shown = specs.slice(0, 5).map((spec) => redactReadText(spec))
   const more = specs.length - shown.length
-  return refuse('ambiguous', `${echoedValue(subject)} has ${specs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, `token-goat ${command} ${quotedArg(specs[0] ?? '')}`)
+  return refuse('ambiguous', `${echoedValue(subject)} has ${specs.length} definitions in this project (${shown.join(', ')}${more > 0 ? `, +${more} more` : ''})`, runnable !== undefined ? `token-goat ${command} ${quotedArg(runnable)}` : `token-goat outline ${viaArg(toDisplayPath(rootDir, picks[0]?.file ?? ''))}`)
 }
 
 /** The bare name's definitions as pickable specs. */

@@ -260,7 +260,7 @@ describe('runConflicts (CLI handler)', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-conflicts-cmds-'))
     vi.clearAllMocks()
     mockLoadConfig.mockReturnValue({
-      overflow_guard: { enabled: true, max_tokens: 25000 },
+      redaction: { custom_patterns: [], strict: false }, overflow_guard: { enabled: true, max_tokens: 25000 },
       indexing: { skip_dirs: [] },
     } as unknown as ReturnType<typeof loadConfig>)
   })

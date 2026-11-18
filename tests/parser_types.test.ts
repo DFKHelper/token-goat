@@ -38,6 +38,15 @@ describe('Visual Basic language routing', () => {
     expect(isVb6ClassModule('VERSION 1.0 CLASS\0')).toBe(false)
   })
 
+  it('reads a lone carriage return as a line break, so a classic Mac VBA class module is still VB6 (the Attribute line is its own line)', () => {
+    // HAND-DERIVED: a VBA-exported class with no VERSION block, written with CR-only line endings; the Attribute line is the third line, so only a cut at the lone CR can see it start a line.
+    const macVba = 'Option Compare Database\rOption Explicit\rAttribute VB_Name = "Sheet1"\rPublic Sub A()\rEnd Sub\r'
+    expect(isVb6ClassModule(macVba)).toBe(true)
+    expect(refineLanguageByContent('C:/p/Sheet1.cls', 'apex', macVba)).toBe('vb')
+    // HAND-DERIVED: CR-only Apex whose comment mentions the header text stays Apex.
+    expect(isVb6ClassModule('public class Foo {\r  // Attribute VB_Name = "x"\r}\r')).toBe(false)
+  })
+
   it('refines a LaTeX .cls (a document class file) to unknown rather than misclaiming it as Apex', () => {
     // FORMAT-DERIVED: the LaTeX2e kernel requires a .cls to self-identify with \ProvidesClass{name}[...] near its head; https://www.latex-project.org/help/documentation/clsguide.pdf section 2.
     const latexCls = '\\NeedsTeXFormat{LaTeX2e}\n\\ProvidesClass{myclass}[2024/01/01 my custom class]\n\\LoadClass{article}\n'

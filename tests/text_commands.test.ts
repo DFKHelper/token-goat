@@ -1089,6 +1089,16 @@ describe('lockdeps command', () => {
     expect(names).toEqual(['requests', 'requests-oauthlib', 'numpy'])
   })
 
+  it('reads every requirement of a requirements.txt written with lone carriage returns (old Mac line endings)', async () => {
+    // HAND-DERIVED: three requirement lines separated by a lone CR; a cut on LF alone sees one line and reports only the first package.
+    const req = path.join(tmpDir, 'requirements.txt')
+    fs.writeFileSync(req, 'requests==2.31.0\rnumpy>=1.24.0\rflask~=3.0\r', 'utf8')
+    const r = await run(['lockdeps', req, '--json'])
+    expect(r.status, r.stderr).toBe(0)
+    const parsed = JSON.parse(r.stdout) as { deps: Array<{ name: string; version: string }> }
+    expect(parsed.deps.map((d) => `${d.name}@${d.version}`)).toEqual(['requests@2.31.0', 'numpy@1.24.0', 'flask@3.0'])
+  })
+
   it('does not fabricate a dependency from a "#egg=" fragment mentioned inside a comment line (regression: the #104 VCS-fragment recovery ran unconditionally on every raw line, so a doc comment giving a VCS-install example was parsed as a real dependency)', async () => {
     const req = path.join(tmpDir, 'requirements.txt')
     fs.writeFileSync(

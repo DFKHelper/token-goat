@@ -10,6 +10,7 @@ import { commandPathIsTouchable } from './vscode_path_gate.js'
 import { extractMarkdownHeadings, formatHeadingTreeParts, type MarkdownHeading } from './hints/markdown_hints.js'
 import { extractQuickSymbolSamples } from './hooks_read.js'
 import { stripUnsafeSuggestions, leadWithCommand, grepLinesHint, configGetCommand, quotedArg, quotedArgs, xmlQueryHint } from './hint_suggestion_guard.js'
+import { redactReadText } from './fence_cap.js'
 import { getCompactedAt, markHintShown, wasHintShown } from './session.js'
 import { shortFingerprint } from './fingerprint.js'
 import { sessionStateKey, type HookEvent } from './hook_registry.js'
@@ -17,6 +18,7 @@ import { DELIVERS_CONTENT_RE } from './delivering_deny.js'
 import { RANGE_LOCK_MESSAGE_PREFIX } from './read_range_evasion.js'
 import { contextOutput } from './hooks_common.js'
 import type { HookOutput } from './types.js'
+import { sourceLines } from './source_lines.js'
 
 /** What a suggested command slices out of a file: a markdown/TOML/INI section, a code symbol, a config key, or a SQL CREATE block. */
 export type HintSlice = 'section' | 'symbol' | 'key' | 'table'
@@ -100,6 +102,8 @@ export function sliceForPath(filePath: string): HintSlice {
 export function escapeHintName(name: string): string {
   const trimmed = name.trim()
   if (trimmed === '' || displaySafeText(trimmed) !== trimmed) return ''
+  // A stored name is file text, so a table, key, heading or identifier can itself be a credential; a name the redactor would rewrite is dropped like a forged marker, because a placeholder in a command resolves to nothing and the caller falls through to the next safe name.
+  if (redactReadText(trimmed) !== trimmed) return ''
   const probe = 'token-goat read ' + quotedArg(trimmed)
   return stripUnsafeSuggestions(probe) === probe ? trimmed : ''
 }
@@ -190,8 +194,9 @@ function scanText(text: string, filePath: string, slice: HintSlice): Array<{ nam
 
 /** The 1-based line closing a YAML front matter block that opens `text`, or 0 when there is none. The heading scan, and the index built from the same scan, read the block's last `key: value` line as a setext heading over the closing `---` (README.md here indexes `permalink: /` as its first heading), so `section` runs on that name and returns two lines of metadata. */
 function frontMatterEnd(text: string): number {
-  if (!/^---\r?\n/.test(text)) return 0
-  const close = text.split(/\r?\n/).findIndex((line, i) => i > 0 && /^(?:---|\.\.\.)\s*$/.test(line))
+  const lines = sourceLines(text)
+  if (lines.length < 2 || lines[0] !== '---') return 0
+  const close = lines.findIndex((line, i) => i > 0 && /^(?:---|\.\.\.)\s*$/.test(line))
   return close === -1 ? 0 : close + 1
 }
 
@@ -247,7 +252,8 @@ const MORE_HEADINGS_LINE_RE = /^ {2}\.\.\. \(\d+ more headings\)$/
 
 /** formatHeadingTreeParts over a heading list the display extraction cut short: when `content` holds more H1-H3 headings than `headings`, the guidance says it shows the first N of the true total and the list ends with a count of the rest, instead of presenting the cut list as the whole file. (markdown_hints.ts is an embedding-fingerprinted source, so the true count is applied here.) */
 export function headingTreeParts(headings: MarkdownHeading[], filePath: string, content: string): { guidance: string; sectionsList: string } {
-  const parts = formatHeadingTreeParts(headings, filePath)
+  const tree = formatHeadingTreeParts(headings, filePath)
+  const parts = { guidance: tree.guidance, sectionsList: redactReadText(tree.sectionsList) }
   const total = extractMarkdownHeadings(content, Number.MAX_SAFE_INTEGER).length
   if (total <= headings.length) return parts
   const guidance = parts.guidance.replace(`Large markdown file (${headings.length} headings)`, () => `Large markdown file (showing the first ${headings.length} of ${total} headings)`)

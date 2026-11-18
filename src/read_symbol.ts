@@ -6,6 +6,7 @@ import { querySymbols, queryRefCounts, countSymbols, distinctSymbolKinds, DEFAUL
 import { CORE_SYMBOL_KINDS } from './graph_traversal.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
+import { redactReadJson } from './fence_cap.js'
 import { resolveSpecPath } from './spec_path.js'
 import { globalDbPath, INLINE_SYMBOL_MAX_BYTES } from './constants.js'
 import { compileGrepMatcher, excludeTestsHiddenNote, countNoun, isTestFile } from './util.js'
@@ -338,7 +339,7 @@ export function runSymbol(opts: SymbolOptions): { text: string; code: number } {
     }))
     const payload = { items, truncated: truncatedFlag, totalCount: trueTotal }
     if (opts.file !== undefined) recordStaleServed('symbol', indexFreshness(resolveSpecPath(opts.file, opts.projectRoot ?? process.cwd())))
-    const text = displaySafeJson(payload)
+    const text = redactReadJson(payload)
     recordReadStat('symbol_lookup', fullSourceBytes, text, opts.name ?? opts.file ?? opts.grep)
     return { text, code: 0 }
   }

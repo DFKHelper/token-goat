@@ -12,7 +12,7 @@ import {
   serializeHtmlNode,
 } from './html_query.js'
 import { UNTRUSTED_HTML_TAG } from './injection_scan.js'
-import { formatJsonOutline, noMatchMessage, outlineJson, queryJson } from './json_query.js'
+import { formatJsonOutline, noMatchMessage, outlineJson, parseJsonPath, queryJson } from './json_query.js'
 import { parseJsonOrJsonc } from './jsonc_text.js'
 import {
   extractOperations,
@@ -23,7 +23,7 @@ import {
   parseOpenApiSpec,
 } from './openapi_query.js'
 import { emitGuarded, guardJsonRows, readFileText, recordReadStat, sumFileSizes } from './read_commands.js'
-import { guardAndFenceFileText, guardRedactAndFence } from './fence_cap.js'
+import { guardAndFenceFileText, guardRedactAndFence, redactReadTree } from './fence_cap.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { emit, emitErr } from './emit.js'
@@ -219,6 +219,22 @@ function readQueryInput(file: string): string | null {
   return readFileText(file)
 }
 
+/** The property name a query ends at, which the queried value sits under in the file: `.api_key` and `servers[0].api_key` name `api_key`, and a projection or an unparseable path names nothing. The key-anchored redaction patterns need it, since the value alone carries no name. */
+function queriedKey(spec: string): string {
+  let ops: ReturnType<typeof parseJsonPath>
+  try {
+    ops = parseJsonPath(spec)
+  } catch {
+    return ''
+  }
+  for (let i = ops.length - 1; i >= 0; i--) {
+    const op = ops[i]
+    if (op?.kind === 'key' || op?.kind === 'recursive_key') return op.name
+    if (op?.kind === 'project_list' || op?.kind === 'project_object') return ''
+  }
+  return ''
+}
+
 function runQueryCommand(
   opts: JsonQueryCliOptions,
   parse: (text: string) => unknown,
@@ -252,11 +268,12 @@ function runQueryCommand(
 
   try {
     const result = queryJson(data, opts.path)
+    const key = queriedKey(opts.path)
     const fullSourceBytes = opts.file === '-' ? Buffer.byteLength(text) : sumFileSizes([opts.file])
     const detail = opts.file === '-' ? '<stdin>' : opts.file
 
     if (!result.fanned) {
-      const value = result.items[0]
+      const value = redactReadTree(result.items[0], key)
       if (Array.isArray(value) && head !== undefined && value.length > head) {
         const limited = value.slice(0, head)
         if (opts.json === true) {
@@ -293,7 +310,7 @@ function runQueryCommand(
       emitErr(formatCommandError(noMatchMessage(opts.path, result)))
       return 1
     }
-    const limited = head !== undefined ? result.items.slice(0, head) : result.items
+    const limited = (head !== undefined ? result.items.slice(0, head) : result.items).map((item) => redactReadTree(item, key))
     const headTruncated = limited.length < totalCount
 
     if (opts.json === true) {

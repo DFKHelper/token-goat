@@ -172,7 +172,8 @@ describe('the hint heading extractor', () => {
   }
 
   it('agrees with the parent commit on every short line', () => {
-    const inputs = everyString(['#', ' ', 'a', '\r', '\t'], 8).filter((s) => s !== '')
+    // A CR with a character after it is a line break now (src/source_lines.ts), which the one-line oracle does not model, so only a CR that ends the input is kept: it meets the appended LF as a CRLF.
+    const inputs = everyString(['#', ' ', 'a', '\r', '\t'], 8).filter((s) => s !== '' && !/\r./s.test(s))
     expect(firstDifference(inputs, oldHeadings, (s) => extractMarkdownHeadings(s + '\n===', Infinity))).toBeNull()
   })
 

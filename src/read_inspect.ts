@@ -25,7 +25,7 @@ import { parseJsonOrJsonc } from './jsonc_text.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { parseYamlDocument, parseYamlDocumentAsWritten } from './read_structured_data.js'
 import { DELETED_TAG, emitGuarded, fileExists, fileIsGone, guardJsonRows, healStaleIndex, isValidUtf8, readFileBytes, readFileText, recordReadStat, resolveAgainstProjectRoot, sinkGoneRows, sumFileSizes, healStaleResultFiles, warnIfFilesStale } from './read_commands.js'
-import { capListField, guardAndFenceFileText } from './fence_cap.js'
+import { capListField, guardAndFenceFileText, redactKeyedValue, redactReadJson, redactReadText } from './fence_cap.js'
 import { didYouMean, rankSimilarNames } from './read_suggest.js'
 import { emit, emitErr } from './emit.js'
 import { fileConfinementRefusal } from './read_spec.js'
@@ -52,6 +52,7 @@ import { ZipInputTooLargeError, ZipOutputTooLargeError } from './zip_bounds.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { couldNotReadError } from './could_not_read.js'
+import { sourceLines } from './source_lines.js'
 
 export interface ZipListCliOptions {
   file: string
@@ -391,8 +392,10 @@ export function runConfigGet(opts: ConfigGetOptions): number {
     emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
+  // The value alone carries no name, and the key-anchored redaction patterns read a name and then a value.
+  const leafKey = opts.key.split('.').at(-1) ?? opts.key
 
-  const frontmatterLines = extractFrontmatter(text.split(/\r?\n/))
+  const frontmatterLines = extractFrontmatter(sourceLines(text))
   if (frontmatterLines !== null) {
     const value = lookupYaml(frontmatterLines.join('\n'), opts.key)
     if (value === undefined) {
@@ -403,7 +406,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${echoedValue(opts.file)}`))
       return 1
     }
-    emit(value)
+    emit(redactKeyedValue(leafKey, value))
     return 0
   }
 
@@ -424,7 +427,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
           return 1
         }
       }
-      emit(displaySafeJson(obj, 0))
+      emit(redactReadJson(obj, 0, leafKey))
       return 0
     } catch {
       emitErr(formatCommandError(`Failed to parse JSON: ${echoedValue(opts.file)}`))
@@ -442,7 +445,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
       emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${echoedValue(opts.file)}`))
       return 1
     }
-    emit(value)
+    emit(redactKeyedValue(leafKey, value))
     return 0
   }
 
@@ -453,13 +456,13 @@ export function runConfigGet(opts: ConfigGetOptions): number {
         emitErr(formatCommandError(`Key ${echoedValue(opts.key)} not found in ${echoedValue(opts.file)}`))
         return 1
       }
-      emit(toml)
+      emit(redactKeyedValue(leafKey, toml))
       return 0
     }
   }
 
   const flavour = flatKeyFlavour(opts.file)
-  const lines = text.split('\n')
+  const lines = sourceLines(text)
   // A flat key such as `spring.datasource.url` is looked up whole first, since a .properties or .env file has no sections; the section split is the INI/TOML reading of the same dots.
   const keyParts = opts.key.split('.')
   const attempts = [{ section: '', leaf: opts.key }]
@@ -472,7 +475,7 @@ export function runConfigGet(opts: ConfigGetOptions): number {
         emitErr(formatCommandError(`Key ${echoedValue(opts.key)} in ${echoedValue(opts.file)} spans several lines and the file is not valid TOML, so it cannot be read whole`))
         return 1
       }
-      emit(value)
+      emit(redactKeyedValue(leafKey, value))
       return 0
     }
   }
@@ -646,7 +649,7 @@ export function runExports(opts: ImportsExportsOptions): number {
 
   const preFilterCount = names.length
   const matchesGrep = opts.grep !== undefined ? compileGrepMatcher(opts.grep) : undefined
-  const filteredNames = matchesGrep !== undefined ? names.filter((n) => matchesGrep(n)) : names
+  const filteredNames = matchesGrep !== undefined ? names.filter((n) => matchesGrep(redactReadText(n))) : names
   const fullSourceBytes = sumFileSizes([diskPath])
 
   if (filteredNames.length === 0) {
@@ -666,7 +669,7 @@ export function runExports(opts: ImportsExportsOptions): number {
     const jsonText = displaySafeJson(
       filteredNames.map((n) => {
         const loc = locOf(n)
-        return { name: n, kind: kindOf(n), lineStart: loc?.lineStart ?? null, lineEnd: loc?.lineEnd ?? null }
+        return { name: redactReadText(n), kind: kindOf(n), lineStart: loc?.lineStart ?? null, lineEnd: loc?.lineEnd ?? null }
       }))
     emit(jsonText)
     recordReadStat('exports', fullSourceBytes, jsonText, opts.file)
@@ -676,7 +679,7 @@ export function runExports(opts: ImportsExportsOptions): number {
   const outLines = filteredNames.map((n) => {
     const loc = locOf(n)
     const locSuffix = loc === null ? '' : ` (${loc.lineStart}-${loc.lineEnd})`
-    return `${kindOf(n).padEnd(10)} ${displaySafeText(n)}${locSuffix}`
+    return `${kindOf(n).padEnd(10)} ${displaySafeText(redactReadText(n))}${locSuffix}`
   })
   for (const line of outLines) {
     emit(line)
@@ -695,7 +698,7 @@ export function runImports(opts: ImportsExportsOptions): number {
     emitErr(formatCommandError(couldNotReadError(opts.file)))
     return 1
   }
-  const imports = extractImports(text, importsExtensionFor(opts.file))
+  const imports = extractImports(text, importsExtensionFor(opts.file)).map(redactReadText)
 
   if (imports.length === 0) {
     emit(`No imports found in ${echoedValue(opts.file)}`)
@@ -1030,7 +1033,7 @@ export function runLocate(opts: LocateOptions): number {
   }))
 
   if (opts.json === true) {
-    emit(displaySafeJson({
+    emit(redactReadJson({
       items: hits,
       totalCount: matchCount,
       truncated: matchCount > limit,
@@ -1040,11 +1043,11 @@ export function runLocate(opts: LocateOptions): number {
   }
 
   if (fuzzyNames.length > 0) {
-    emitErr(`No exact landmark for ${echoedValue(targetSpec)}; nearest matches: ${fuzzyNames.map(displaySafeText).join(', ')}`)
+    emitErr(`No exact landmark for ${echoedValue(targetSpec)}; nearest matches: ${fuzzyNames.map((n) => displaySafeText(redactReadText(n))).join(', ')}`)
   }
 
   for (const hit of hits) {
-    emit(`${displaySafeText(hit.filePath)}:${hit.span} [${displaySafeText(hit.kind)}] ${displaySafeText(hit.name)}${hit.deleted === true ? `  ${DELETED_TAG}` : ''}`)
+    emit(redactReadText(`${displaySafeText(hit.filePath)}:${hit.span} [${displaySafeText(hit.kind)}] ${displaySafeText(hit.name)}${hit.deleted === true ? `  ${DELETED_TAG}` : ''}`))
   }
 
   if (matchCount > limit) {

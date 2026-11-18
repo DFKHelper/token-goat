@@ -133,3 +133,46 @@ describe('insert-section separates the inserted text from the heading below it',
     expect(fs.readFileSync(b64File, 'utf8')).toBe(fs.readFileSync(fromFile, 'utf8'))
   })
 })
+
+// Provenance: HAND-DERIVED, each file is written byte by byte with a bare CR as every line ending (classic Mac OS), and each expected file is the input with the inserted lines spliced in after the named section's last line, ending in CR. Before the fix the walk looked for LF, found none, and appended at the end of the file with an LF.
+describe('insert-section on a lone-CR file', () => {
+  it('splices after the named section and ends every inserted line with a bare CR', () => {
+    const file = path.join(dir, 'cr.md')
+    fs.writeFileSync(file, '# Doc\r\r## One\ralpha\r\r## Two\rbeta\r')
+    insert(file, 'One', 'inserted\nmore\n')
+    expect(fs.readFileSync(file, 'latin1')).toBe('# Doc\r\r## One\ralpha\rinserted\rmore\r\r## Two\rbeta\r')
+  })
+
+  it('keeps a last line with no trailing break unterminated and joins the new line with a bare CR', () => {
+    const file = path.join(dir, 'cr-tail.md')
+    fs.writeFileSync(file, '# Doc\r## Last\rend')
+    insert(file, 'Last', 'tail\n')
+    expect(fs.readFileSync(file, 'latin1')).toBe('# Doc\r## Last\rend\rtail')
+  })
+
+  it('reads content that is itself lone-CR as lines, so it adds no blank line between them', () => {
+    const file = path.join(dir, 'cr-content.md')
+    fs.writeFileSync(file, '# Doc\r\r## One\ralpha\r\r## Two\rbeta\r')
+    insert(file, 'One', 'inserted\rmore\r')
+    expect(fs.readFileSync(file, 'latin1')).toBe('# Doc\r\r## One\ralpha\rinserted\rmore\r\r## Two\rbeta\r')
+  })
+
+  it('separates an inserted heading and the heading below with a blank line made of bare CRs', () => {
+    const file = path.join(dir, 'cr-heading.md')
+    fs.writeFileSync(file, '## Lesson 1\rfirst\r## Lesson 2\rsecond\r')
+    insert(file, 'Lesson 1', '## Lesson 1.5\nnew\n')
+    expect(fs.readFileSync(file, 'latin1')).toBe('## Lesson 1\rfirst\r\r## Lesson 1.5\rnew\r\r## Lesson 2\rsecond\r')
+  })
+})
+
+// Provenance: HAND-DERIVED, the file is built with Buffer.from as two UTF-8 byte order marks (EF BB BF twice) and then the text; decodeSource drops one mark and keeps the other as a U+FEFF at the head of the text, which the index's line numbering drops too, so offsets in the decoded text sit one character past the numbered ones. The expected file is the input with the inserted line spliced in after the named section's last line.
+describe('insert-section on a file with two byte order marks', () => {
+  it('lands after the named section and keeps both marks', () => {
+    const file = path.join(dir, 'two-marks.md')
+    const mark = Buffer.from([0xef, 0xbb, 0xbf])
+    fs.writeFileSync(file, Buffer.concat([mark, mark, Buffer.from('# Doc\n\n## One\nalpha\n\n## Two\nbeta\n', 'utf8')]))
+    insert(file, 'One', 'inserted\n')
+    const expected = Buffer.concat([mark, mark, Buffer.from('# Doc\n\n## One\nalpha\ninserted\n\n## Two\nbeta\n', 'utf8')])
+    expect(fs.readFileSync(file).toString('hex')).toBe(expected.toString('hex'))
+  })
+})

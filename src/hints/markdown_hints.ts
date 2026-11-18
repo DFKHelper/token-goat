@@ -5,6 +5,7 @@ import { eachUnfencedLine } from '../markdown_lines.js'
 import { frontMatterEndIndex } from '../markdown_frontmatter.js'
 import { displaySafeText } from '../paths.js'
 import { quotedArg } from '../hint_suggestion_guard.js'
+import { sourceLines } from '../source_lines.js'
 
 /** Extract markdown headings (H1-H3 by default; H1-H6 when `limit` is Infinity) with their byte offsets */
 export interface MarkdownHeading {
@@ -25,7 +26,7 @@ const MAX_OUTPUT_LINES = 60
 /** Extract markdown headings. Parses ATX headings (# through ######) only — no setext style. Skips headings inside fenced code blocks (``` or ~~~ fences). @param limit Maximum number of headings to extract. Defaults to MAX_HEADINGS (40) for display hints, which also restricts extraction to H1-H3 for a readable outline. Pass Infinity for indexing/embedding to capture all headings, H1 through H6. */
 export function extractMarkdownHeadings(content: string, limit: number = MAX_HEADINGS): MarkdownHeading[] {
   const headings: MarkdownHeading[] = []
-  const lines = content.split('\n')
+  const lines = sourceLines(content)
   // Front matter is metadata, not prose: start after it so its closing fence cannot underline a key as a setext heading.
   const fmEnd = frontMatterEndIndex(lines)
   const unfenced = Array.from(eachUnfencedLine(lines)).filter(([i]) => i >= fmEnd)
@@ -168,7 +169,7 @@ export function extractChangelogVersionHint(
   filePath: string,
   options: ChangelogVersionHintOptions = {},
 ): string {
-  const lines = content.split('\n')
+  const lines = sourceLines(content)
   const headingsByLine = new Map(
     extractMarkdownHeadings(content, Infinity).map((heading) => [heading.lineNumber, heading.text.trim()] as const),
   )

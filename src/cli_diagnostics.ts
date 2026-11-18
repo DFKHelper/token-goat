@@ -20,6 +20,7 @@ import {
   formatFailureDeltaText,
 } from './failures.js'
 import { findProject } from './project.js'
+import { sourceLines } from './source_lines.js'
 import { DEFAULT_FAILURES_STATE_KEY, loadFailureSnapshot, saveFailureSnapshot } from './failures_state.js'
 
 export function cmdCoverageReportGaps(file: string, opts: { file?: string; json?: boolean }): void {
@@ -84,8 +85,7 @@ export function readIgnoreFile(root: string): string[] | undefined {
   } catch {
     return undefined
   }
-  const patterns = raw
-    .split('\n')
+  const patterns = sourceLines(raw)
     .map((ln) => ln.trim())
     .filter((ln) => ln.length > 0 && !ln.startsWith('#'))
   return patterns.length > 0 ? patterns : undefined

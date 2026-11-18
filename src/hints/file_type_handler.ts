@@ -2,10 +2,17 @@
 
 import { findHtmlHeadingMatches } from '../languages/common.js'
 import { fenceUntrustedFileContent } from '../injection_scan.js'
+import { redactReadText } from '../fence_cap.js'
 import { loadConfig } from '../config.js'
 import { redactSecrets } from '../secret_redact.js'
 import { canQuoteArg, fencedCommand, quotedArg, quotedArgs, xmlQueryExamples, xmlXPathQueryCommand } from '../hint_suggestion_guard.js'
 import { displaySafePath } from '../paths.js'
+import { sourceLines } from '../source_lines.js'
+
+// A name or line listed from the file (a JSON key, a CSV header, a speaker, a heading) can itself be a credential, so it is redacted before it is fenced; none of these is ever put in a command, so a placeholder cannot break one.
+function fenceListed(text: string): string {
+  return fenceUntrustedFileContent(redactReadText(text))
+}
 
 export interface FileTypeResult {
   shouldBlock: boolean
@@ -118,7 +125,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
     })
     .filter(Boolean)
 
-  const isMinified = !content.includes('\n') || (content.length > 50_000 && content.split('\n').length < 10)
+  const isMinified = sourceLines(content).length < 2 || (content.length > 50_000 && sourceLines(content).length < 10)
 
   if (isMinified) {
     return {
@@ -133,7 +140,7 @@ export function handleHtml(filePath: string, content: string, contentLengthHint?
       // Title and headings are verbatim file bytes spliced into a message the harness attributes to token-goat, so they are fenced as untrusted data.
       `Large HTML file (${formatBytes(length)}).`,
       title || headings.length > 0
-        ? fenceUntrustedFileContent(
+        ? fenceListed(
             [title ? `Title: ${title}` : '', headings.length > 0 ? `Headings:\n${headings.join('\n')}` : '']
               .filter(Boolean)
               .join('\n'),
@@ -303,7 +310,7 @@ export function handleSvg(filePath: string, content: string, contentLengthHint?:
     shouldBlock: true,
     message: [
       `Large SVG/diagram file (${formatBytes(length)}) — raw coordinate paths flood context.`,
-      preview ? fenceUntrustedFileContent(preview) : '',
+      preview ? fenceListed(preview) : '',
       `Inspect structure: token-goat xml-outline ${quotedArg(filePath)}`,
       `Query elements with XPath: ${groupQuery}`,
       `Search text labels: token-goat grep ${labelPattern} --glob ${labelGlob}`,
@@ -464,6 +471,8 @@ function csvHeaderColumns(headers: string, sep: string, colCount: number): strin
   if (names.some((n) => !SAFE_COLUMN_NAME.test(n))) return null
   const columns = names.join(',')
   if (columns.length > MAX_COLUMNS_ARG_LENGTH) return null
+  // A header that is itself a credential is never printed in the command; the command then reads every column.
+  if (redactReadText(columns) !== columns) return null
   return canQuoteArg(columns) ? columns : null
 }
 
@@ -490,7 +499,7 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
     }
   }
 
-  const lines = content.split('\n').filter(l => l.trim())
+  const lines = sourceLines(content).filter(l => l.trim())
   const headers = lines[0] ?? ''
   const sampleRows = lines.slice(1, 4)
   // Case-insensitive: dispatchFileTypeHandler routes .csv/.tsv by a lowercased extension but passes the original-case filePath through, so an uppercase .TSV must still be recognized here or it silently gets the wrong separator.
@@ -505,7 +514,7 @@ export function handleCsv(filePath: string, content: string, contentLengthHint?:
     message: [
       `Large CSV file (${formatBytes(length)}, ~${lines.length.toLocaleString()} rows, ${colCount} ${colCount === 1 ? 'column' : 'columns'}).`,
       // Header row and sample rows are verbatim file bytes, so they are fenced as untrusted data.
-      fenceUntrustedFileContent(`Columns: ${headers}\nSample rows:\n${sampleRows.join('\n')}`),
+      fenceListed(`Columns: ${headers}\nSample rows:\n${sampleRows.join('\n')}`),
       `Use ${csvQueryCommand(filePath, columns)} to query narrow slices.`,
     ].join('\n'),
   }
@@ -537,7 +546,7 @@ export function handleTranscript(filePath: string, content: string, contentLengt
     message: [
       // Speaker names are verbatim file bytes, so they are fenced as untrusted data.
       `Transcript file (${formatBytes(length)}, ~${cueCount} cues).`,
-      speakers.length > 0 ? fenceUntrustedFileContent(`Speakers: ${speakers.join(', ')}`) : '',
+      speakers.length > 0 ? fenceListed(`Speakers: ${speakers.join(', ')}`) : '',
       `See structure: token-goat transcript-outline ${quotedArg(filePath)}`,
       `Slice by speaker/time/pattern: token-goat transcript ${quoted} --speaker ${speaker} --from 00:05:00 --to 00:10:00 --grep pattern`,
     ].filter(Boolean).join('\n'),
@@ -620,7 +629,7 @@ export function handleJson(filePath: string, content: string, contentLengthHint?
     shouldBlock: true,
     message: [
       spillHeader,
-      summary ? fenceUntrustedFileContent(summary) : '',
+      summary ? fenceListed(summary) : '',
       `See structure: token-goat json-outline ${quotedArg(filePath)}`,
       `Query subtree: token-goat json-query ${quoted} ${query}`,
       isSpill ? `Slice spill: token-goat mcp-output --file ${quoted} --json-query ${query}` : '',
@@ -655,7 +664,7 @@ export function handleJsonl(filePath: string, content: string, contentLengthHint
     }
   }
 
-  const lines = content.split(/\r?\n/).filter((l) => l.trim().length > 0)
+  const lines = sourceLines(content).filter((l) => l.trim().length > 0)
   let schema = ''
   if (lines.length > 0) {
     try {
@@ -673,7 +682,7 @@ export function handleJsonl(filePath: string, content: string, contentLengthHint
     shouldBlock: true,
     message: [
       `Large JSON Lines file (${formatBytes(length)}, ~${lines.length} records).`,
-      schema ? fenceUntrustedFileContent(schema) : '',
+      schema ? fenceListed(schema) : '',
       `Slice records with Read using offset and limit (each line is a single JSON record), e.g. offset=1, limit=5.`,
     ].filter(Boolean).join('\n'),
   }

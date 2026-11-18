@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 
 import { querySymbols, queryRefs, countRefs, searchSymbolsFts } from './index_reader.js'
 import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
@@ -176,7 +177,7 @@ export function runCallers(opts: CallersOptions): number {
     const capped = guardJsonRows(rows)
     const limitTruncated = entries.length < filtered.length || sqlTruncated
     const hiddenByGrep = preGrepCount - filtered.length
-    emit(displaySafeJson({
+    emit(redactReadJson({
       items: capped.items,
       truncated: capped.truncated || limitTruncated,
       totalCount: filtered.length,
@@ -199,7 +200,7 @@ export function runCallers(opts: CallersOptions): number {
 
   for (const e of entries) {
     const displayPath = toDisplayPath(rootDir, e.file)
-    emit(`${displaySafeText(e.caller)}\t${displaySafeText(displayPath)}:${e.line}`)
+    emit(redactReadText(`${displaySafeText(e.caller)}\t${displaySafeText(displayPath)}:${e.line}`))
     const window = buildContextWindow(e.file, e.line, contextLines)
     if (window !== null) for (const l of renderContextWindow(displayPath, e.line, window, '', '    ')) emit(l)
   }
@@ -299,7 +300,7 @@ export function runCallChain(opts: CallChainOptions): number {
     const refBlindKinds = noCallers ? refBlindRootKinds().blindKinds : []
     const blindRootPath = noCallers ? refBlindRootPath() : undefined
     const refBlindLanguage = blindRootPath !== undefined ? { language: detectLanguageOfFile(blindRootPath), definedIn: toDisplayPath(rootDir, blindRootPath) } : undefined
-    emit(displaySafeJson({
+    emit(redactReadJson({
       chains: filteredChains,
       ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}),
       ...(hiddenByExcludeTests > 0 ? { hiddenByExcludeTests } : {}),
@@ -337,7 +338,7 @@ export function runCallChain(opts: CallChainOptions): number {
   }
 
   for (const chain of filteredChains) {
-    emit(chain.join(' -> '))
+    emit(redactReadText(chain.join(' -> ')))
   }
   return 0
 }
@@ -519,7 +520,7 @@ export function runImpact(opts: ImpactOptions): number {
   }
 
   if (opts.json === true) {
-    emit(displaySafeJson(sorted.map(([symbol, h]) => ({ symbol, hops: h }))))
+    emit(redactReadJson(sorted.map(([symbol, h]) => ({ symbol, hops: h }))))
     return 0
   }
 
@@ -528,7 +529,7 @@ export function runImpact(opts: ImpactOptions): number {
     const displaySymbol = symbol.startsWith(MODULE_SCOPE_PREFIX)
       ? MODULE_SCOPE_PREFIX + toDisplayPath(rootDir, symbol.slice(MODULE_SCOPE_PREFIX.length))
       : symbol
-    emit(`${displaySymbol}\t(hops: ${h})`)
+    emit(redactReadText(`${displaySymbol}\t(hops: ${h})`))
   }
   return 0
 }
@@ -564,12 +565,12 @@ export function runAsk(opts: AskOptions): number {
 
   const degrade = (reason: string, extraNote?: string): number => {
     if (opts.json === true) {
-      emit(displaySafeJson({ degraded: true, note: reason, ...(extraNote !== undefined ? { hint: extraNote } : {}), context: entries }))
+      emit(redactReadJson({ degraded: true, note: reason, ...(extraNote !== undefined ? { hint: extraNote } : {}), context: entries }))
       return 0
     }
     emit(`[degraded mode - ${reason}]`)
     if (extraNote !== undefined) emit(extraNote)
-    for (const e of entries) emit(`token-goat read ${quotedArg(`${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}`)}`)
+    for (const e of entries) emit(redactReadText(`token-goat read ${quotedArg(`${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}`)}`))
     return 0
   }
 
@@ -609,7 +610,7 @@ export function runAsk(opts: AskOptions): number {
     }
     if (answer) {
       if (opts.json === true) {
-        emit(displaySafeJson({ answer, context: entries }))
+        emit(redactReadJson({ answer, context: entries }))
       } else {
         emit(answer)
       }

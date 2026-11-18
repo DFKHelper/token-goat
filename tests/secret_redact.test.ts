@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { redactSecrets, redactSerializedJson } from '../src/secret_redact.js'
+import type { SearchHit } from '../src/embeddings.js'
+import { redactCutSecrets, redactSecrets, redactSerializedJson } from '../src/secret_redact.js'
+import { mergeNearbyHits } from '../src/semantic_merge.js'
 
 describe('redactSecrets — per-pattern detection', () => {
   it('redacts an AWS access key (AWS documented example key)', () => {
@@ -729,5 +731,140 @@ describe('redactSerializedJson', () => {
   it('reads an escaped backslash before n as a backslash, not a line break', () => {
     const { text } = redactSerializedJson(JSON.stringify({ stdout: 'SECRET_FILE=C:\\new\\service.json' }))
     expect(JSON.parse(text)).toEqual({ stdout: 'SECRET_FILE=[REDACTED:generic_secret_assignment]' })
+  })
+})
+
+// Provenance: HAND-DERIVED. Each expected string below is computed from the input by hand (one placeholder per non-empty line, every line break kept); none is read off the redactor. The marker lines are written the way the PEM spec (RFC 7468) spells them.
+describe('redactCutSecrets: text that is a cut of a larger file', () => {
+  const tag = '[REDACTED:private_key_block]'
+  const begin = '-----BEGIN RSA PRIVATE ' + 'KEY-----'
+  const end = '-----END RSA PRIVATE ' + 'KEY-----'
+  const body = (name: string, n: number): string[] => Array.from({ length: n }, (_, i) => `${name}${i}`.padEnd(64, 'A'))
+
+  it('hides the BEGIN half from the marker to the end of the cut, keeping the line before it', () => {
+    const cut = ['keep_before', begin, ...body('HALFONE', 3)].join('\n')
+    const { text, count } = redactCutSecrets(cut)
+    expect(text).toBe(['keep_before', tag, tag, tag, tag].join('\n'))
+    expect(count).toBe(1)
+  })
+
+  it('hides the END half from the start of the cut to the marker, keeping the line after it', () => {
+    const cut = [...body('HALFTWO', 3), end, 'keep_after'].join('\n')
+    const { text, count } = redactCutSecrets(cut)
+    expect(text).toBe([tag, tag, tag, tag, 'keep_after'].join('\n'))
+    expect(count).toBe(1)
+  })
+
+  it('hides a cut that is only key body lines, neither marker present', () => {
+    const cut = body('MIDDLE', 4).join('\n')
+    const { text, count } = redactCutSecrets(cut)
+    expect(text).toBe([tag, tag, tag, tag].join('\n'))
+    expect(count).toBe(1)
+  })
+
+  it('leaves a short base64 line next to prose alone: a line under 40 characters is not key body', () => {
+    const cut = ['plain prose here', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'].join('\n')
+    expect(redactCutSecrets(cut)).toEqual({ text: cut, count: 0 })
+  })
+
+  it('treats a block wholly inside the cut exactly as redactSecrets with keepLineCount does', () => {
+    const cut = ['before', begin, ...body('INSIDE', 2), end, 'after'].join('\n')
+    const paired = redactSecrets(cut, undefined, { keepLineCount: true })
+    const { text, count } = redactCutSecrets(cut)
+    expect(text).toBe(['before', tag, tag, tag, tag, 'after'].join('\n'))
+    expect(text).toBe(paired.text)
+    expect(count).toBe(paired.count)
+  })
+
+  it('hides two whole blocks and keeps the text between them', () => {
+    const cut = [begin, ...body('FIRST', 1), end, 'between', begin, ...body('SECOND', 1), end].join('\n')
+    const { text } = redactCutSecrets(cut)
+    expect(text).toBe([tag, tag, tag, 'between', tag, tag, tag].join('\n'))
+  })
+
+  it('hides an END half, a whole block and a BEGIN half in one cut, keeping the text between them', () => {
+    const cut = [...body('TAILOFONE', 1), end, 'gap_one', begin, ...body('WHOLE', 1), end, 'gap_two', begin, ...body('HEADOFTWO', 1)].join('\n')
+    const { text } = redactCutSecrets(cut)
+    expect(text).not.toMatch(/TAILOFONE|WHOLE|HEADOFTWO|PRIVATE KEY/)
+    expect(text.split('\n')).toHaveLength(cut.split('\n').length)
+  })
+
+  it('returns text with no marker and no key body unchanged, count 0', () => {
+    const cut = ['# Notes', 'nothing secret here', ''].join('\n')
+    expect(redactCutSecrets(cut)).toEqual({ text: cut, count: 0 })
+  })
+
+  it('does not hide a CERTIFICATE block, which is not a private key', () => {
+    const cut = ['-----BEGIN CERTIFICATE-----', ...body('CERTLINE', 1), '-----END CERTIFICATE-----'].join('\n')
+    const { text, count } = redactCutSecrets(cut)
+    expect(text).toBe(cut)
+    expect(count).toBe(0)
+  })
+
+  it.each([
+    ['', ''],
+    ['RSA ', ''],
+    ['DSA ', ''],
+    ['EC ', ''],
+    ['OPENSSH ', ''],
+    ['ENCRYPTED ', ''],
+    ['PGP ', ' BLOCK'],
+  ])('hides an unpaired BEGIN %sPRIVATE KEY%s marker and what follows it', (kind, suffix) => {
+    const marker = `-----BEGIN ${kind}PRIVATE KEY${suffix}-----`
+    const { text } = redactCutSecrets(['head', marker, ...body('KINDBODY', 2)].join('\n'))
+    expect(text).toBe(['head', tag, tag, tag].join('\n'))
+    expect(text).not.toContain('KINDBODY')
+  })
+
+  it.each([
+    ['CRLF', '\r\n'],
+    ['LF', '\n'],
+  ])('keeps every %s line break when it hides a half', (_name, nl) => {
+    const lines = ['keep_before', begin, ...body('CRBODY', 3)]
+    const { text } = redactCutSecrets(lines.join(nl))
+    expect(text).toBe(['keep_before', tag, tag, tag, tag].join(nl))
+    expect(text).not.toContain('CRBODY')
+  })
+
+  it('keeps every line break of a CR-only cut, which redactSecrets alone would collapse', () => {
+    const lines = [...body('CRONLY', 3), end, 'keep_after']
+    const { text } = redactCutSecrets(lines.join('\r'))
+    expect(text).toBe([tag, tag, tag, tag, 'keep_after'].join('\r'))
+    expect(text.split('\r')).toHaveLength(lines.length)
+    expect(text).not.toContain('CRONLY')
+  })
+
+  it('redacts a CR-only BEGIN half too', () => {
+    const cut = ['keep_before', begin, ...body('CRBEGIN', 2)].join('\r')
+    expect(redactCutSecrets(cut).text).toBe(['keep_before', tag, tag, tag].join('\r'))
+  })
+})
+
+describe('mergeNearbyHits hides a key cut in half in every hit it returns', () => {
+  const tag = '[REDACTED:private_key_block]'
+  const begin = '-----BEGIN RSA PRIVATE ' + 'KEY-----'
+  const end = '-----END RSA PRIVATE ' + 'KEY-----'
+  const row = (text: string, startLine: number, endLine: number, distance: number): SearchHit => ({ filePath: 'k.md', startLine, endLine, kind: 'window', distance, text })
+  const keyLine = (name: string): string => name.padEnd(64, 'A')
+
+  it('redacts un-merged halves from different files and a lone hit', () => {
+    const beginHalf = row(['top', begin, keyLine('BEGINHALF')].join('\n'), 1, 3, 0.1)
+    const endHalf: SearchHit = { ...row([keyLine('ENDHALF'), end, 'bottom'].join('\n'), 200, 202, 0.2), filePath: 'other.md' }
+    const out = mergeNearbyHits([beginHalf, endHalf])
+    expect(out.map((h) => h.text).sort()).toEqual([['top', tag, tag].join('\n'), [tag, tag, 'bottom'].join('\n')].sort())
+    expect(mergeNearbyHits([beginHalf])[0]?.text).toBe(['top', tag, tag].join('\n'))
+    expect(mergeNearbyHits([])).toEqual([])
+  })
+
+  it('redacts each member of a merged hit before the texts are joined', () => {
+    const first = row(['intro', begin, keyLine('MERGEDA')].join('\n'), 1, 3, 0.1)
+    const second = row([keyLine('MERGEDB'), end, 'outro'].join('\n'), 4, 6, 0.2)
+    const [merged, ...rest] = mergeNearbyHits([first, second])
+    expect(rest).toHaveLength(0)
+    expect(merged?.text).not.toMatch(/MERGED[AB]|PRIVATE KEY/)
+    expect(merged?.text).toContain('intro')
+    expect(merged?.text).toContain('outro')
+    expect(merged?.startLine).toBe(1)
+    expect(merged?.endLine).toBe(6)
   })
 })

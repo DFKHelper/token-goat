@@ -1,8 +1,10 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import { walkProject } from './baseline.js'
+import { redactReadText } from './fence_cap.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { pushAll, decodeSource, escapeRegExp } from './util.js'
+import { sourceLines } from './source_lines.js'
 
 const DEFAULT_KINDS = ['TODO', 'FIXME', 'HACK', 'XXX', 'NOTE']
 
@@ -11,10 +13,6 @@ interface TodoItem {
   line: number
   kind: string
   text: string
-}
-
-function splitLines(text: string): string[] {
-  return text.split(/\r?\n/)
 }
 
 function countUnescapedQuotes(text: string, quoteChar: string): number {
@@ -49,10 +47,16 @@ function scanFileForTodos(filePath: string, kindSet: Set<string>): TodoItem[] {
   } catch {
     return []
   }
+  const found = scanTextForTodos(filePath, text, kindSet)
+  // A file with a marker is scanned again from its text redacted whole, so a secret on the marker line (or a key block it opens) prints as the placeholder; redacting only those files keeps the walk over the rest of the tree as cheap as it was, and the placeholders keep every line break, so the line numbers do not move.
+  return found.length === 0 ? found : scanTextForTodos(filePath, redactReadText(text), kindSet)
+}
+
+function scanTextForTodos(filePath: string, text: string, kindSet: Set<string>): TodoItem[] {
   const kindPattern = [...kindSet].map(escapeRegExp).join('|')
   const re = new RegExp(`\\b(${kindPattern})\\b(\\s*:)?\\s*(.*)`, 'gi')
   const items: TodoItem[] = []
-  const lines = splitLines(text)
+  const lines = sourceLines(text)
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? ''
     // Every occurrence on the line is a candidate, not just the first: judging the line by its first kind word dropped `// Note that this is a hack; FIXME: replace` (prose "Note" rejected, the FIXME after it never looked at) and `label = "Note" // TODO: localize` (quoted "Note" rejected, same loss). The trailing `(.*)` swallows the rest of the line, so lastIndex is put back just past the word to keep scanning.

@@ -1,0 +1,112 @@
+/** Module-level check that redaction keeps the line count of a private-key block whose lines are separated by a lone CR, the way it does for LF and CRLF, so the lines after the block keep their positions in what a read command prints. Fixture provenance: HAND-DERIVED. The key block is made-up filler: a BEGIN and END marker pair around lines of 'CRBODY' plus an index, the layout the private_key_block pattern in src/secret_redact.ts matches; the expected text is computed from the input line by line, one placeholder per line the block covered, never read off the redactor. */
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+
+import { redactReadLines, redactReadText } from '../src/fence_cap.js'
+import { runRead } from '../src/read_commands.js'
+import { runLineRange } from '../src/read_spec.js'
+import { redactSecrets } from '../src/secret_redact.js'
+
+const BEGIN = '-----BEGIN RSA PRIVATE KEY-----'
+const END = '-----END RSA PRIVATE KEY-----'
+const TAG = '[REDACTED:private_key_block]'
+const BODY = Array.from({ length: 3 }, (_, i) => `CRBODY${String(i + 1).padStart(2, '0')}AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`)
+const LINES = ['lead_line', BEGIN, ...BODY, END, 'tail_line', 'last_line']
+const EXPECTED = ['lead_line', TAG, TAG, TAG, TAG, TAG, 'tail_line', 'last_line']
+
+let dir: string
+
+beforeAll(() => {
+  dir = mkdtempSync(path.join(os.tmpdir(), 'tg-cr-redact-'))
+})
+
+afterAll(() => {
+  rmSync(dir, { recursive: true, force: true })
+})
+
+describe.each([
+  ['LF', '\n'],
+  ['CRLF', '\r\n'],
+  ['CR', '\r'],
+])('a private-key block in %s text', (_name, nl) => {
+  it('redactSecrets with keepLineCount leaves one placeholder per line and every line break', () => {
+    const { text, count } = redactSecrets(LINES.join(nl), undefined, { keepLineCount: true })
+    expect(text).toBe(EXPECTED.join(nl))
+    expect(count).toBe(1)
+    expect(text).not.toContain('CRBODY')
+  })
+
+  it('redactReadText keeps the position of every line after the block', () => {
+    const text = redactReadText(LINES.join(nl) + nl)
+    expect(text).toBe(EXPECTED.join(nl) + nl)
+    expect(text.split(nl).indexOf('tail_line')).toBe(LINES.indexOf('tail_line'))
+  })
+})
+
+describe('the CR handling leaves the default collapse and the rest of the text alone', () => {
+  it('redactSecrets without keepLineCount still collapses the block to one placeholder', () => {
+    expect(redactSecrets(LINES.join('\r')).text).toBe(['lead_line', TAG, 'tail_line', 'last_line'].join('\r'))
+  })
+
+  it('a CR-only text with no secret is returned as written', () => {
+    const plain = ['one', 'two', 'three'].join('\r')
+    expect(redactReadText(plain)).toBe(plain)
+  })
+
+  it('redactReadLines keeps a block spanning several list elements one placeholder per element', () => {
+    expect(redactReadLines(LINES)).toEqual(EXPECTED)
+  })
+})
+
+describe('read --lines on a file with CR-only line endings', () => {
+  it('prints the key block as one placeholder per line, so the lines after it keep their place', () => {
+    const file = path.join(dir, 'crkey.txt')
+    writeFileSync(file, LINES.join('\r') + '\r', 'utf-8')
+    const { text, code } = runLineRange({ file, start: 1, end: LINES.length }, { spec: `${file}@1-${LINES.length}`, projectRoot: dir })
+    expect(code).toBe(0)
+    expect(text).not.toContain('CRBODY')
+    const printed = text.slice(text.indexOf('\n') + 1).split('\n')
+    expect(printed).toEqual(EXPECTED)
+    expect(printed.indexOf('tail_line')).toBe(LINES.indexOf('tail_line'))
+  })
+
+  // Fixture provenance: HAND-DERIVED. Four plain lines joined by a lone CR; the expected lines are the second and third, counted by hand, the numbering the index gives a CR-only file (src/source_text.ts reads a lone CR as a line break).
+  it('numbers lines as the index does: 2-3 prints the second and third line, not the whole file', () => {
+    const file = path.join(dir, 'crlines.txt')
+    writeFileSync(file, ['alpha_line', 'beta_line', 'gamma_line', 'delta_line'].join('\r') + '\r', 'utf-8')
+    const opts = { spec: `${file}@2-3`, projectRoot: dir }
+    const { text, code } = runLineRange({ file, start: 2, end: 3 }, opts)
+    expect(code).toBe(0)
+    expect(text.split('\n')[0]).toContain('# lines 2-3 of 4')
+    expect(text.split('\n').slice(1)).toEqual(['beta_line', 'gamma_line'])
+    const json = JSON.parse(runLineRange({ file, start: 2, end: 3 }, { ...opts, json: true }).text) as { lines: string[] }
+    expect(json.lines).toEqual(['beta_line', 'gamma_line'])
+    const past = runLineRange({ file, start: 5, end: 6 }, opts)
+    expect(past.code).toBe(1)
+    expect(past.text).toContain('past end of file (4 lines)')
+  })
+
+  // Fixture provenance: HAND-DERIVED. Two functions of three lines joined by a lone CR: crA is lines 1-3 and crB lines 4-6, counted by hand as the index counts them.
+  it('resolves a bare line number to the function holding it, as the index numbers it', () => {
+    const file = path.join(dir, 'crregion.ts')
+    writeFileSync(file, ['export function crA(): number {', '  return 1', '}', 'export function crB(): number {', '  return 2', '}'].join('\r') + '\r', 'utf-8')
+    const { text, code } = runRead({ spec: `${file}:5`, projectRoot: dir })
+    expect(code).toBe(0)
+    expect(text).toContain('function crB  lines 4-6 of 6')
+    expect(text).toContain('  return 2')
+    expect(text).not.toContain('past end of file')
+    expect(text).not.toContain('crA')
+  })
+
+  it('leaves an LF file and a CRLF file numbered as before', () => {
+    for (const [name, nl] of [['lf.txt', '\n'], ['crlf.txt', '\r\n']] as const) {
+      const file = path.join(dir, name)
+      writeFileSync(file, ['one', 'two', 'three'].join(nl) + nl, 'utf-8')
+      const { text } = runLineRange({ file, start: 2, end: 3 }, { spec: `${file}@2-3`, projectRoot: dir })
+      expect(text.split('\n').slice(1)).toEqual(['two', 'three'])
+    }
+  })
+})

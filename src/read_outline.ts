@@ -3,7 +3,8 @@
 import * as fs from 'node:fs'
 import type { SymbolEntry } from './parser_types.js'
 import { indexedSourceText } from './indexed_source.js'
-import { toDisplayPath, displaySafeJson, displaySafeText } from './paths.js'
+import { toDisplayPath, displaySafeText } from './paths.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
 import { resolveSpecPath } from './spec_path.js'
 import { queryFileSymbolsWithIds, countSymbols, queryRefCounts, getFileEntry } from './index_reader.js'
 import { SKELETON_SYMBOL_CAP, globalDbPath } from './constants.js'
@@ -108,7 +109,7 @@ function fileLineCount(resolved: string, symbolExtent: number): number {
 
 /** A doc comment's first line, clipped for the outline, ending in an ellipsis whenever the doc says more than the hint shows: a later sentence on that line, or a later non-blank line. */
 function clipDocSummary(docstring: string): string {
-  const [firstLine = '', ...rest] = docstring.split('\n')
+  const [firstLine = '', ...rest] = redactReadText(docstring).split('\n')
   const more = rest.some((l) => l.trim() !== '') ? '…' : ''
   const sentence = firstSentenceEnd(firstLine)
   if (sentence !== null && sentence <= DOC_SUMMARY_MAX_CHARS) {
@@ -243,7 +244,7 @@ export function mergeListingJson(files: string[], blocks: string[], anyOk: boole
     totalCount += parsed.totalCount ?? parsed.items.length
   }
   const payload = { items, truncated, totalCount, ...(errors.length > 0 ? { errors } : {}) }
-  return { text: displaySafeJson(payload), code: anyOk ? 0 : 1 }
+  return { text: redactReadJson(payload), code: anyOk ? 0 : 1 }
 }
 
 function symbolCountLabel(shown: number, truncated: boolean, trueCount: number | undefined): string {
@@ -279,7 +280,7 @@ export function runSkeleton(opts: SkeletonOptions): { text: string; code: number
       totalCount: symbolsTruncated ? Math.max(trueSymbolCount ?? 0, capped.totalCount) : capped.totalCount,
       ...(fileIsGone(resolved) ? { deleted: true } : {}),
     }
-    const text = displaySafeJson(payload)
+    const text = redactReadJson(payload)
     recordStaleServed('skeleton', indexFreshness(resolved))
     recordReadStat('stub_view', fullSourceBytes, text, opts.file)
     return { text, code: 0 }
@@ -325,7 +326,7 @@ export function runOutline(opts: OutlineOptions): { text: string; code: number }
       totalCount: symbolsTruncated ? Math.max(trueSymbolCount ?? 0, capped.totalCount) : capped.totalCount,
       ...(fileIsGone(resolved) ? { deleted: true } : {}),
     }
-    const text = displaySafeJson(payload)
+    const text = redactReadJson(payload)
     recordStaleServed('outline', indexFreshness(resolved))
     recordReadStat('outline', fullSourceBytes, text, opts.file)
     return { text, code: 0 }

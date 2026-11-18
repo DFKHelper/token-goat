@@ -24,6 +24,7 @@ beforeEach(() => {
   vi.mocked(loadConfig).mockReturnValue({
     repomap: { exclude_tests: false, compact_file_threshold: 50 },
     indexing: { skip_dirs: [] },
+    redaction: { custom_patterns: [], strict: false },
   } as unknown as ReturnType<typeof loadConfig>)
 })
 

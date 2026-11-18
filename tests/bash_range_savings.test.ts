@@ -1,6 +1,7 @@
 /** A line-range hint may only spend context when its own proposal is measurably cheaper than the read it objects to. FIXTURE PROVENANCE The standing reason for the gate is CAPTURE, from the shipped global binary on 2026-09-20 in this repository: sed -n '1,30p' CHANGELOG.md | wc -c                   -> 10572 token-goat section "CHANGELOG.md::Unreleased" | wc -c  -> 15150 The proposal the old hint made was 43% larger than the read it objected to. Those two numbers are a measurement of one day's CHANGELOG.md and are recorded here rather than asserted: the file is rewritten at every release, so pinning its byte count would fail on the edit rather than on the defect, and re-capturing it each time turns the check into a rubber stamp. What the tests below assert instead is the invariant the capture was evidence for, which holds at any file size: the gate's own accounting of the requested window matches the bytes on disk, and the regions it would substitute cost more than the window they replace. SED_WINDOW_LINES is CAPTURE: the mean `sed -n 'N,Mp'` window across 50,033 range reads mined from 3,525 real Claude Code transcripts on this machine (191,710 Bash tool_use commands) was 47.2 lines, p50 30, p90 100. 43 is the concrete window from the session that prompted this work. The region-span comparisons are HAND-DERIVED: computed here from the file on disk and the index's own line spans, independently of the gate's arithmetic. */
 
 import * as fs from 'node:fs'
+import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { beforeEach, afterEach, describe, expect, it } from 'vitest'
@@ -144,5 +145,22 @@ describe('a range hint must price its own replacement', () => {
 
   it('declines to price an unindexed file rather than guessing', () => {
     expect(rangeSubstituteFor('no/such/file/anywhere.ts', process.cwd(), [[1, 10]])).toBeNull()
+  })
+
+  it('prices the window of a file written with lone carriage returns by the lines the index numbered', () => {
+    // HAND-DERIVED: seven CR-separated lines; lines 5 to 7 are "export function beta(): number {" (32 characters), "  return 2" (10) and "}" (1), each priced at its length plus one newline: 33 + 11 + 2 = 46.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-range-cr-'))
+    try {
+      const file = path.join(dir, 'mac.ts')
+      fs.writeFileSync(file, 'export function alpha(): number {\r  return 1\r}\r\rexport function beta(): number {\r  return 2\r}\r', 'utf8')
+      const resolved = resolveIndexPath(file, REPO)
+      indexFileSync(resolved, globalDbPath())
+      expect(querySymbols({ filePath: resolved, limit: -1 }).length).toBeGreaterThan(0)
+      const sub = rangeSubstituteFor(file, REPO, [[5, 7]])
+      expect(sub).not.toBeNull()
+      expect(sub!.requestedBytes).toBe(46)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

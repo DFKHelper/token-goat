@@ -204,7 +204,7 @@ export function redactSecrets(text: string, config: Config = loadConfig(), opts:
   let count = 0
   let out = text
   // With keepLineCount a match spanning lines (a PEM private-key block, a custom pattern) leaves one placeholder per line it covered and keeps each line break, so a caller that numbers lines (`bash-output --file -n`, `--lines A-B`) stays aligned with the original text after it; the default collapses the match to one placeholder.
-  const placeholder = (tag: string, match: string): string => (opts.keepLineCount === true ? match.split(/(\r?\n)/).map((part, i) => (i % 2 === 1 ? part : tag)).join('') : tag)
+  const placeholder = (tag: string, match: string): string => (opts.keepLineCount === true ? match.split(ANY_LINE_BREAK).map((part, i) => (i % 2 === 1 ? part : tag)).join('') : tag)
   for (const [kind, pattern] of SECRET_PATTERNS) {
     out = out.replace(pattern, (match) => {
       count++
@@ -229,6 +229,58 @@ export function redactSecrets(text: string, config: Config = loadConfig(), opts:
     })
   }
 
+  return { text: out, count }
+}
+
+/** A BEGIN or END line of a private-key block of any kind. Wider than the kinds the paired pattern lists on purpose: a cut meets a marker without its partner, so a miss prints key bytes while a match that is not a key only hides a little more of the cut. */
+const PEM_BEGIN_MARKER = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z0-9 ]{0,10}-----/g
+const PEM_END_MARKER = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z0-9 ]{0,10}-----/g
+
+/** One line of the base64 body of a key, 40 or more characters long (a PEM body line is 64, an OpenSSH one 70, an armored PGP one 76). */
+const KEY_BODY_LINE = /^[A-Za-z0-9+/]{40,}={0,2}$/
+
+/** Every spelling of a line break, kept apart from the text between them. */
+const ANY_LINE_BREAK = /(\r\n|\n|\r)/
+
+const KEY_BLOCK_PLACEHOLDER = '[REDACTED:private_key_block]'
+
+/** `text` with `[from, to)` replaced by one placeholder per non-empty line it covered, every line break kept. */
+function blankSpan(text: string, from: number, to: number): string {
+  const covered = text
+    .slice(from, to)
+    .split(ANY_LINE_BREAK)
+    .map((part, i) => (i % 2 === 1 || part === '' ? part : KEY_BLOCK_PLACEHOLDER))
+    .join('')
+  return text.slice(0, from) + covered + text.slice(to)
+}
+
+/** Whether every non-blank line of `text` has the shape of a key body line, which is all a stored chunk wholly inside a key block holds. */
+function isKeyBodyOnly(text: string): boolean {
+  const lines = text.split(ANY_LINE_BREAK).filter((part, i) => i % 2 === 0 && part.trim() !== '')
+  return lines.length > 0 && lines.every((line) => KEY_BODY_LINE.test(line.trim()))
+}
+
+/** {@link redactSecrets} with line breaks kept, for text that is a cut of a larger file, such as a chunk the semantic index stored. The PEM pattern needs both markers, and a cut holds only one of them when a key block straddles it, so what that pattern cannot pair is handled as cut: a BEGIN marker left over hides from the marker to the end of the text, an END marker left over hides from the start of the text to the marker, and text that is nothing but key body lines (a cut wholly inside a block, with neither marker) is hidden whole. Over-hides rather than under-hides: a lone marker named in prose hides the rest of the cut. */
+export function redactCutSecrets(text: string, config: Config = loadConfig()): RedactResult {
+  if (isKeyBodyOnly(text)) return { text: blankSpan(text, 0, text.length), count: 1 }
+  const paired = redactSecrets(text, config, { keepLineCount: true })
+  let out = paired.text
+  let count = paired.count
+  const beginAt = [...out.matchAll(PEM_BEGIN_MARKER)][0]?.index
+  const lastEnd = [...out.matchAll(PEM_END_MARKER)].at(-1)
+  const endTo = lastEnd?.index === undefined ? undefined : lastEnd.index + lastEnd[0].length
+  if (beginAt !== undefined && endTo !== undefined && beginAt < endTo) {
+    count++
+    return { text: blankSpan(out, 0, out.length), count }
+  }
+  if (beginAt !== undefined) {
+    count++
+    out = blankSpan(out, beginAt, out.length)
+  }
+  if (endTo !== undefined) {
+    count++
+    out = blankSpan(out, 0, endTo)
+  }
   return { text: out, count }
 }
 

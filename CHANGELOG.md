@@ -30,6 +30,7 @@ All notable changes to Token-Goat are documented in this file. Format follows Ke
 
 ### Fixed
 
+- **Read commands no longer print a secret-shaped value from a file or from stored names.** The text a `read`, `grep`, `section`, `lines`, structured-data query, search result or large-file hint prints is redacted whole before it is cut into lines or fenced, so a key whose BEGIN and END fall on either side of a cut is still seen, and a matching line, its context, a heading, a CSV header and a `--columns` value show no credential. Lines end at a lone carriage return the way the index counts them.
 - **The pre-push cleanup process can no longer spin on a core or outlive its bounds.** Two `prepush-reaper.sh` processes kept one core each busy for about 7 hours after their hook was gone, far past their 630 s life limit. Its one-second tick is a timed read on a descriptor; a read that fails at once (a closed or broken descriptor) returned immediately and turned the loop into a busy spin, so the tick now takes its second with `sleep` unless the read timed out. The reaper's own bounds (life limit, or the grace after the hook's death, plus the kill window and slack) are also checked inside every loop, so a pass that never reaches the main loop's tests still ends the process. Two rows in `tests/prepush_reaper.test.ts` fail on the old script.
 - **`json-query` and `yaml-query` honor `--head` for array-valued properties, and `grep` clips over-long matching lines around the match.**
 - **The guidance commands line now lists `outline`.**

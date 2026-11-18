@@ -960,6 +960,24 @@ describe('token-goat CLI', () => {
     })
   })
 
+  describe('replace on a lone-CR file', () => {
+    it('reports the closest-match line of a file written with lone carriage returns, not line 1', async () => {
+      // HAND-DERIVED: five lines joined by a lone CR; the searched text matches lines 2 and 3 and misses on the third, so the closest window starts at line 2.
+      const tmp = path.join(os.tmpdir(), `tg-rpl-closest-cr-${Date.now()}.txt`)
+      fs.writeFileSync(tmp, 'one\rtwo\rthree\rfour\rfive\r', 'utf8')
+      const oldB64 = Buffer.from('two\nthree\nSIX', 'utf8').toString('base64')
+      const newB64 = Buffer.from('replacement', 'utf8').toString('base64')
+      try {
+        const r = await run(['replace', tmp, '--old-b64', oldB64, '--new-b64', newB64])
+        expect(r.status).toBe(1)
+        expect(r.stderr).toContain('closest match at line 2')
+        expect(fs.readFileSync(tmp, 'utf8')).toBe('one\rtwo\rthree\rfour\rfive\r')
+      } finally {
+        fs.rmSync(tmp, { force: true })
+      }
+    })
+  })
+
   describe('insert-section', () => {
     it('insert-section --help exits 0', async () => {
       const r = await run(['insert-section', '--help'])

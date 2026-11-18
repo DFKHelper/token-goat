@@ -8,6 +8,7 @@ import { isIndexEmptyForProject, emptyIndexMessage, indexCoverageLine } from './
 import { querySymbols, queryRefs, countRefs, DEFAULT_QUERY_LIMIT } from './index_reader.js'
 import { detectLanguageOfFile, type RefEntry, type SymbolEntry } from './parser_types.js'
 import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
+import { redactReadJson } from './fence_cap.js'
 import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { UNBOUNDED_QUERY_LIMIT } from './query_limits.js'
@@ -271,7 +272,7 @@ function renderRefsTargets(targets: RefsTarget[], opts: RefsOptions): number {
   warnIfFilesStale(refRows.map((r) => r.filePath), 'refs')
   const fullSourceBytes = refsSearchBaselineBytes(refRows)
   if (opts.json === true) {
-    const text = displaySafeJson(jsonOut)
+    const text = redactReadJson(jsonOut)
     emit(text)
     if (anyFound) recordReadStat('symbol_read', fullSourceBytes, text, opts.spec)
     return anyFound || anyFilteredByGrep ? 0 : 1
@@ -421,7 +422,7 @@ function runRefsSingle(opts: RefsOptions): number {
     }
     // Same omit-when-zero `hiddenByGrep` as the filtered-to-empty branch above, so a partially filtered page carries the count too rather than only the fully emptied one. Spread onto the emitted object rather than into `payload` so both `--top` and per-reference envelopes get it without either shape's interface growing an optional field the other never sets.
     const hiddenByGrep = opts.grep !== undefined ? preGrepCount - (filteredTotal ?? results.length) : 0
-    const text = displaySafeJson({ ...payload, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) })
+    const text = redactReadJson({ ...payload, ...(hiddenByGrep > 0 ? { hiddenByGrep } : {}) })
     emit(text)
     recordReadStat('symbol_read', fullSourceBytes, text, symName)
     return 0

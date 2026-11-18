@@ -3,6 +3,7 @@ import * as path from 'path'
 import { ALL_SYMBOLS_IN_FILE_LIMIT, enclosingSymbol } from './graph_commands.js'
 import { querySymbols } from './index_reader.js'
 import { displaySafeText, normalizeDarwinSystemAlias, resolveIndexPath, displaySafeJson } from './paths.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
 import { canonicalize } from './project.js'
 import { resolveBody, warnIfFilesStale } from './read_commands.js'
 import { formatSymbolLocation } from './indexed_source.js'
@@ -278,7 +279,8 @@ function formatFrameBody(frame: TraceFrame, projectRoot: string, seen: Map<strin
   if (resolved === null) {
     return [`    # body: No symbols enclosing line ${frame.lineNo} in ${echoedValue(frame.file)}`]
   }
-  const header = `    # body: ${resolved.name}  ${resolved.kind}  ${formatSymbolLocation(resolved.filePath, resolved.lineStart, resolved.lineEnd)}`
+  // The symbol's name is stored file text, so it is redacted here: resolveBody redacts the body, not the name beside it.
+  const header = redactReadText(`    # body: ${resolved.name}  ${resolved.kind}  ${formatSymbolLocation(resolved.filePath, resolved.lineStart, resolved.lineEnd)}`)
   if (seen.has(resolved.key)) {
     return [`${header} (same as above)`]
   }
@@ -287,7 +289,8 @@ function formatFrameBody(frame: TraceFrame, projectRoot: string, seen: Map<strin
 }
 
 export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: boolean; bodies?: boolean }): void {
-  const text = readInput(src)
+  // Redacted whole before parsing, so a frame's source context and the exception message (text and --json alike) carry the placeholder, never a secret the traceback quoted; --bodies text is redacted by resolveBody.
+  const text = redactReadText(readInput(src))
   const blocks = parseTracebacks(text)
   if (blocks.length === 0) {
     process.stderr.write('token-goat: no traceback found\n')
@@ -329,7 +332,7 @@ export function cmdTrace(src: string | undefined, opts: { keep?: string; json?: 
         }
       }),
     }))
-    process.stdout.write(displaySafeJson({ tracebacks: withBodies }) + '\n')
+    process.stdout.write(redactReadJson({ tracebacks: withBodies }) + '\n')
     return
   }
 

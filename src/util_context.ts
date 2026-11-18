@@ -2,6 +2,7 @@
 
 import { readFileSync } from 'node:fs'
 
+import { redactReadText } from './fence_cap.js'
 import { indexedSourceText } from './indexed_source.js'
 import { displaySafeText } from './paths.js'
 
@@ -11,12 +12,12 @@ export interface SourceContextLine {
   readonly text: string
 }
 
-/** Read an inclusive window of `contextLines` source lines either side of `line` (1-indexed) out of `absPath`. Returns null when `contextLines` is not positive, the file cannot be read, or `line` falls outside the file. */
+/** Read an inclusive window of `contextLines` source lines either side of `line` (1-indexed) out of `absPath`, from the file redacted whole so a window cut inside a key block shows no part of it. Returns null when `contextLines` is not positive, the file cannot be read, or `line` falls outside the file. */
 export function buildContextWindow(absPath: string, line: number, contextLines: number): SourceContextLine[] | null {
   if (!Number.isFinite(contextLines) || contextLines <= 0) return null
   let text: string
   try {
-    text = indexedSourceText(absPath, readFileSync(absPath, 'utf-8'))
+    text = redactReadText(indexedSourceText(absPath, readFileSync(absPath, 'utf-8')))
   } catch {
     return null
   }

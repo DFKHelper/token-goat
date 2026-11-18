@@ -5,6 +5,7 @@ import * as path from 'node:path'
 
 import { querySymbols, queryRefs, distinctSymbolKinds } from './index_reader.js'
 import { displaySafeText, normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
 import { resolveSpecPath } from './spec_path.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
 import { REF_BLIND_KIND_REASON, isRefIndexedFile } from './ref_blindness.js'
@@ -148,7 +149,7 @@ export function runDead(opts: DeadOptions): number {
     }))
     const topTruncated = sliced.length < grepped.length
     const hiddenByGrep = preGrepCount - grepped.length
-    emit(displaySafeJson({
+    emit(redactReadJson({
       items: capped.items,
       truncated: capped.truncated || topTruncated,
       totalCount: grepped.length,
@@ -179,7 +180,7 @@ export function runDead(opts: DeadOptions): number {
   }
 
   for (const r of sliced) {
-    emit(`${displaySafeText(r.name)}\t${displaySafeText(toDisplayPath(rootDir, r.file))}:${r.line}`)
+    emit(redactReadText(`${displaySafeText(r.name)}\t${displaySafeText(toDisplayPath(rootDir, r.file))}:${r.line}`))
   }
   return 0
 }
@@ -421,7 +422,7 @@ export function runTypes(opts: TypesOptions): number {
   if (opts.json === true) {
     const capped = guardJsonRows(filtered.map((r) => ({ ...r, filePath: toDisplayPath(rootDir, r.filePath) })))
     const hiddenByGrep = preFilterCount - eligibleCount
-    emit(displaySafeJson({
+    emit(redactReadJson({
       items: capped.items,
       truncated: capped.truncated || cappedOut > 0,
       totalCount: eligibleCount,
@@ -436,7 +437,7 @@ export function runTypes(opts: TypesOptions): number {
   }
 
   for (const r of filtered) {
-    emit(`${displaySafeText(r.name)}\t${displaySafeText(r.kind)}\t${formatSymbolLocation(displaySafeText(toDisplayPath(rootDir, r.filePath)), r.lineStart)}`)
+    emit(redactReadText(`${displaySafeText(r.name)}\t${displaySafeText(r.kind)}\t${formatSymbolLocation(displaySafeText(toDisplayPath(rootDir, r.filePath)), r.lineStart)}`))
   }
   if (cappedOut > 0) {
     emitErr(`Showing ${filtered.length} of ${eligibleCount} type declarations (--limit is per kind; raise it to see the rest).`)
@@ -502,14 +503,14 @@ export function runScope(opts: ScopeOptions): number {
 
   if (opts.json === true) {
     emit(
-      displaySafeJson(
+      redactReadJson(
         enclosing.map((s) => ({ ...s, filePath: toDisplayPath(scopeDisplayRoot, s.filePath) }))),
     )
     return 0
   }
 
   for (const s of enclosing) {
-    emit(`${displaySafeText(s.name)}\t${displaySafeText(s.kind)}\t${formatSymbolLocation(displaySafeText(toDisplayPath(scopeDisplayRoot, s.filePath)), s.lineStart, s.lineEnd)}`)
+    emit(redactReadText(`${displaySafeText(s.name)}\t${displaySafeText(s.kind)}\t${formatSymbolLocation(displaySafeText(toDisplayPath(scopeDisplayRoot, s.filePath)), s.lineStart, s.lineEnd)}`))
   }
   return 0
 }

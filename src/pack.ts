@@ -10,6 +10,7 @@ import { estimateTokens } from './overflow_guard.js'
 import { detectLanguage } from './parser_types.js'
 import { fenceFor } from './language_specs.js'
 import { matchGroovySlashy } from './languages/common.js'
+import { sourceLines } from './source_lines.js'
 
 
 export interface PackFile {
@@ -321,7 +322,7 @@ export function scanSecrets(files: PackFile[]): SecretHit[] {
     if (SAFE_EXTS.has(path.extname(pf.path).toLowerCase())) {
       continue
     }
-    for (const [lineno, line] of pf.content.split('\n').entries()) {
+    for (const [lineno, line] of sourceLines(pf.content).entries()) {
       for (const [kind, pattern] of SECRET_PATTERNS) {
         if (pattern.test(line)) {
           const snip = line.trim().slice(0, 80)
@@ -381,7 +382,7 @@ export function collectFiles(
       }
 
       seen.add(p)
-      const lines = content === '' ? 0 : content.split('\n').length - (content.endsWith('\n') ? 1 : 0)
+      const lines = content === '' ? 0 : sourceLines(content).length - (content.endsWith('\n') || content.endsWith('\r') ? 1 : 0)
       const tokens = estimateTokens(content)
       const pf: PackFile = {
         path: p,
@@ -418,7 +419,7 @@ export function collectFromStdin(
 }
 
 function addLineNumbers(content: string): string {
-  const lines = content.split('\n')
+  const lines = sourceLines(content)
   const width = String(lines.length).length
   return lines.map((line, i) => `${String(i + 1).padStart(width, ' ')}  ${line}`).join('\n')
 }

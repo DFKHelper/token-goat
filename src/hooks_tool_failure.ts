@@ -22,6 +22,7 @@ import { diagnoseSqlFailure } from './session_store_schema.js'
 import { recordStat } from './stats.js'
 import { classifyToolError } from './tool_error_class.js'
 import type { HookOutput } from './types.js'
+import { sourceLines } from './source_lines.js'
 
 const FAILURE_SUFFIX = '.tool-failures'
 
@@ -221,7 +222,7 @@ export function diagnoseEditFailure(event: HookEvent, errorText: string): string
 
       const firstLine = oldString.split(/\r?\n/)[0]?.trim() ?? ''
       if (firstLine.length >= 10) {
-        const fileLines = fileContent.split('\n')
+        const fileLines = sourceLines(fileContent)
         const similarLines: number[] = []
         for (let i = 0; i < fileLines.length; i++) {
           const lineText = fileLines[i]

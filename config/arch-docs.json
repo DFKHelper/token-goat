@@ -398,6 +398,7 @@
     ["src/skill_version_drift.ts","Specialized Subsystems"],
     ["src/skip_scope.ts","Specialized Subsystems"],
     ["src/snippet_window.ts","Specialized Subsystems"],
+    ["src/source_lines.ts","Specialized Subsystems"],
     ["src/source_text.ts","Specialized Subsystems"],
     ["src/spec_path.ts","Specialized Subsystems"],
     ["src/sql_path.ts","Specialized Subsystems"],

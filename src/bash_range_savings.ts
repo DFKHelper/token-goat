@@ -6,6 +6,7 @@ import { querySymbols } from './index_reader.js'
 import { indexMatchesDisk } from './index_freshness.js'
 import { resolveLineRegions } from './line_regions.js'
 import { quotedArg } from './hint_suggestion_guard.js'
+import { sourceLines } from './source_lines.js'
 
 /** Every symbol in one file, never a page of them: a partial answer here silently shrinks the replacement and biases the gate toward emitting. SQLite reads -1 as unlimited, the same sentinel graph_traversal.ts uses for its own whole-file lookups. */
 const ALL_SYMBOLS_IN_FILE = -1
@@ -36,7 +37,7 @@ export function rangeSubstituteFor(
     // Never price against an index that has drifted from disk: stale line spans would compare a window of today's file against regions of yesterday's.
     if (!indexMatchesDisk(resolved)) return null
 
-    const lines = readFileSync(onDisk, 'utf8').split('\n')
+    const lines = sourceLines(readFileSync(onDisk, 'utf8'))
     const symbols = querySymbols({ filePath: resolved, limit: ALL_SYMBOLS_IN_FILE })
     if (symbols.length === 0) return null
 

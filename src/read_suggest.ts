@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 
 import { querySymbols } from './index_reader.js'
 import { displaySafeText, toDisplayPath } from './paths.js'
+import { redactReadText } from './fence_cap.js'
 import { resolveSpecPath } from './spec_path.js'
 import { resolveProjectRoot } from './project.js'
 import { fileIsGone, healStaleResultFiles, readFileText } from './read_commands.js'
@@ -122,7 +123,8 @@ export function didYouMeanLines(candidates: string[]): string[] {
   if (unique.length === 0) return []
   const lines = ['Did you mean:']
   for (const c of unique.slice(0, DIDYOUMEAN_LIMIT)) {
-    lines.push(`  - ${c}`)
+    // A candidate is a stored symbol name or a heading, which is file text: a TOML table or a JSON key can be a credential.
+    lines.push(`  - ${redactReadText(c)}`)
   }
   if (unique.length > DIDYOUMEAN_LIMIT) {
     lines.push(`  (${unique.length - DIDYOUMEAN_LIMIT} more not shown)`)

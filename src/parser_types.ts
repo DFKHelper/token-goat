@@ -5,6 +5,7 @@ import * as path from 'node:path'
 
 import { isAblSource, isLatexClassFile, isMatlabSource, isObjcHeader, isObjcSource, isPascalSource, isPerlSource, isPrologSource } from './languages/sniff.js'
 import { EXACT_FILENAME_LANGUAGE, EXTENSION_LANGUAGE, FILENAME_LANGUAGE, LANGUAGE_SPECS, type Language } from './language_specs.js'
+import { sourceLines } from './source_lines.js'
 
 /** One extracted definition: function, class, method, type, variable, etc. */
 export interface SymbolEntry {
@@ -53,7 +54,7 @@ const VB6_HEADER_SCAN_LINES = 40
 /** True when `content` is a VB6 class module: after an optional BOM and blank lines it opens with `VERSION 1.0 CLASS`, or its header carries an `Attribute VB_Name = "..."` line. Neither form is valid Apex, so an Apex class never matches. */
 export function isVb6ClassModule(content: string): boolean {
   if (content.includes('\0')) return false
-  const lines = (content.charCodeAt(0) === 0xfeff ? content.slice(1) : content).split(/\r?\n/, VB6_HEADER_SCAN_LINES)
+  const lines = sourceLines(content).slice(0, VB6_HEADER_SCAN_LINES)
   const first = lines.find((l) => l.trim() !== '')
   if (first !== undefined && /^VERSION\s+1\.0\s+CLASS\b/i.test(first.trim())) return true
   return lines.some((l) => /^Attribute\s+VB_Name\s*=\s*"/i.test(l.trim()))

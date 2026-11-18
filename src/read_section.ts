@@ -4,13 +4,14 @@ import { querySymbols } from './index_reader.js'
 import { ATX_CLASS_BREAK_RE, matchAtxHeading } from './line_matchers.js'
 import { eachUnfencedLine } from './markdown_lines.js'
 import { detectLanguage } from './parser_types.js'
-import { displaySafeJson } from './paths.js'
 import { fingerprintContent } from './fingerprint.js'
-import { guardText, healStaleIndex, readFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
+import { guardText, healStaleIndex, readFileText, readRedactedFileText, recordReadStat, resolveAgainstProjectRoot, sumFileSizes } from './read_commands.js'
 import { stripHtmlIdSpelling, parseCrossFileMultiSpec } from './read_spec.js'
 import { didYouMean, filterSimilarHeadings } from './read_suggest.js'
 import { listSections, readSection, type SectionResult } from './section_reader.js'
 import type { SectionReadEvidence } from './served_extent.js'
+import { sourceLines } from './source_lines.js'
 import { compileGrepMatcher, countNoun } from './util.js'
 import { grepFilteredToEmptyNotice } from './filter_notice.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
@@ -22,9 +23,9 @@ function htmlIdSectionFallback(filePath: string, heading: string): SectionResult
   healStaleIndex(filePath)
   const hit = querySymbols({ name: stripHtmlIdSpelling(heading, filePath), filePath, kind: 'html_id', limit: 1 })[0]
   if (hit === undefined) return null
-  const text = readFileText(filePath)
+  const text = readRedactedFileText(filePath)
   if (text === null) return null
-  const lines = text.split('\n')
+  const lines = sourceLines(text)
   return { heading: hit.name, content: lines.slice(hit.lineStart - 1, hit.lineEnd).join('\n'), lineStart: hit.lineStart, lineEnd: hit.lineEnd }
 }
 
@@ -72,7 +73,7 @@ export function literalHeadingExists(filePath: string, heading: string): boolean
   const ordinalMatch = /^([^#\r\n]+)#(\d+)$/.exec(heading)
   const base = (ordinalMatch?.[1] ?? heading).trim().toLowerCase()
   if (base.length === 0) return false
-  return listSections(filePath, readFileText).some((h) => h.trim().toLowerCase() === base)
+  return listSections(filePath, readRedactedFileText).some((h) => h.trim().toLowerCase() === base)
 }
 
 /** Where the file part of a `section` spec ends. The last `::` wins when the file it leaves exists (the long-standing rule, kept for a POSIX file whose own name holds `::`); otherwise each `::` is tried from the first, so `api.md::Foo::bar()` reads heading `Foo::bar()` of `api.md` instead of failing on a file called `api.md::Foo`. When no split names a file, the last one is returned and the caller reports it as before. A drive letter holds one colon, so it never reads as a separator. Returns -1 when the spec holds no `::`. */
@@ -114,15 +115,17 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
   let rawSourceStable = true
   const sectionReader =
     opts.onServedSection === undefined
-      ? readFileText
-      : (p: string) =>
-          readFileText(p, {
+      ? readRedactedFileText
+      : (p: string) => {
+          const text = readFileText(p, {
             onRawBuffer: (bytes) => {
               const nextSha = fingerprintContent(bytes)
               if (rawSourceSha === null) rawSourceSha = nextSha
               else if (rawSourceSha !== nextSha) rawSourceStable = false
             },
           })
+          return text === null ? null : redactReadText(text)
+        }
   const sectionResult = readSection(filePath, heading, sectionReader)
   const result = sectionResult ?? htmlIdSectionFallback(filePath, heading)
   if (result === null) {
@@ -132,7 +135,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
     const ordSpec = /^(.*?)#(\d+)$/.exec(heading)
     const ordBase = ordSpec?.[1]?.trim()
     if (ordBase !== undefined && ordBase.length > 0) {
-      const baseResult = readSection(filePath, ordBase, readFileText)
+      const baseResult = readSection(filePath, ordBase, readRedactedFileText)
       if (baseResult !== null) {
         const total = baseResult.occurrences?.length ?? 1
         return {
@@ -144,7 +147,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
       }
     }
     const messages = [`Section ${quotedArg(heading)} not found in ${quotedArg(filePath)}`]
-    const allHeadings = listSections(filePath, readFileText)
+    const allHeadings = listSections(filePath, readRedactedFileText)
     const available = filterSimilarHeadings(allHeadings, heading)
     if (available.length > 0) messages.push(didYouMean(available))
     else if (allHeadings.length === 0) messages.push(`${quotedArg(specFilePath)} has no headings`)
@@ -208,7 +211,7 @@ export function runSection(opts: SectionOptions): { text: string; code: number }
           }
         : {}),
     }
-    const text = displaySafeJson(jsonPayload)
+    const text = redactReadJson(jsonPayload)
     if (opts.suppressStat !== true) recordReadStat(kind, fullSourceBytes, text, heading)
     return { text, code: 0 }
   }
@@ -254,7 +257,7 @@ export function runSectionMulti(
   const includedSections: { heading: string; lineStart: number; lineEnd: number }[] = []
 
   for (const heading of headings) {
-    const sectionResult = readSection(resolvedFilePath, heading, readFileText)
+    const sectionResult = readSection(resolvedFilePath, heading, readRedactedFileText)
     if (sectionResult !== null) {
       const parent = includedSections.find(
         (p) => sectionResult.lineStart >= p.lineStart && sectionResult.lineEnd <= p.lineEnd,
@@ -294,7 +297,7 @@ export function runSectionMulti(
   }
 
   const fullSourceBytes = sumFileSizes([resolvedFilePath])
-  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
+  const text = opts.json === true ? redactReadJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('section_read', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }
 }
@@ -311,7 +314,7 @@ export function runSectionCrossFile(pairs: { file: string; symbol: string }[], o
 
   for (const { file, symbol: heading } of pairs) {
     const resolved = resolveAgainstProjectRoot(file, opts.projectRoot)
-    const sectionResult = readSection(resolved, heading, readFileText)
+    const sectionResult = readSection(resolved, heading, readRedactedFileText)
     const key = keyFor({ file, symbol: heading })
     const fileIncluded = includedByFile.get(resolved) ?? []
 
@@ -354,7 +357,7 @@ export function runSectionCrossFile(pairs: { file: string; symbol: string }[], o
     textBlocks.push(`${key}:\n${sub.text}`)
   }
 
-  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
+  const text = opts.json === true ? redactReadJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) {
     const fullSourceBytes = sumFileSizes(Array.from(distinctFiles, (f) => resolveAgainstProjectRoot(f, opts.projectRoot)))
     recordReadStat('section_read', fullSourceBytes, text, opts.spec)

@@ -1,4 +1,5 @@
-import { displaySafeJson, displaySafeText, toDisplayPath } from './paths.js'
+import { displaySafeText, toDisplayPath } from './paths.js'
+import { redactReadJson } from './fence_cap.js'
 import { resolveSpecPath } from './spec_path.js'
 import {
   compileGrepMatcher,
@@ -18,7 +19,7 @@ import { isIndexEmptyForProject, emptyIndexMessage } from './index_health.js'
 import { findContainingSection, type SectionResult } from './section_reader.js'
 import { formatSymbolLocation } from './indexed_source.js'
 import type { SymbolEntry } from './parser_types.js'
-import { fileIsGone, findSpecSeparator, guardText, indexFreshness, readFileText, recordReadStat, recordStaleServed, resolveBody, staleWarning, sumFileSizes } from './read_commands.js'
+import { fileIsGone, findSpecSeparator, guardText, indexFreshness, readRedactedFileText, recordReadStat, recordStaleServed, resolveBody, staleWarning, sumFileSizes } from './read_commands.js'
 import { emit, emitErr } from './emit.js'
 import { formatAmbiguity, parseCrossFileMultiSpec, parseReadSpec, resolveSymbolSpec, specScopeRoot } from './read_spec.js'
 import { formatBareNameSpecError, trimBlankLines } from './read_suggest.js'
@@ -102,7 +103,7 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
   const hiddenByGrep = matchesGrep !== undefined ? preGrepCount - callers.length : 0
   // The unbounded scan above IS the complete in-project, definition-scoped set, so its post-filter length is the true total: it counts exactly the rows that can appear in the list below, which is what the "Callers (N)" header and the "...(N more elided)" tail both describe.
   const totalCallers = callers.length
-  const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd, readFileText)
+  const section = findContainingSection(match.filePath, match.lineStart, match.lineEnd, readRedactedFileText)
   const limit = opts.limit ?? 20
   const shown = callers.slice(0, limit)
   const truncated = totalCallers > shown.length
@@ -125,7 +126,7 @@ export function runBriefCore(opts: BriefOptions): { text: string; code: number }
       ...(fileIsGone(match.filePath) ? { deleted: true } : {}),
       section,
     }
-    const jsonText = displaySafeJson(result)
+    const jsonText = redactReadJson(result)
     recordStaleServed('brief', indexFreshness(match.filePath))
     if (opts.suppressStat !== true) recordReadStat('brief_view', fullSourceBytes, jsonText, opts.spec)
     return { text: jsonText, code: 0 }
@@ -194,7 +195,7 @@ export function runBriefMulti(file: string, symbols: string[], opts: BriefOption
 
   // Count the file's on-disk size once for the whole multi-symbol call, not once per symbol -- each sub-call already skipped its own recordReadStat via suppressStat for exactly this reason (see BriefOptions.suppressStat).
   const fullSourceBytes = sumFileSizes([resolveSpecPath(file, opts.projectRoot ?? process.cwd())])
-  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
+  const text = opts.json === true ? redactReadJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }
 }
@@ -220,7 +221,7 @@ export function runBriefCrossFile(pairs: { file: string; symbol: string }[], opt
   }
 
   const fullSourceBytes = sumFileSizes([...distinctFiles].map((f) => resolveSpecPath(f, opts.projectRoot ?? process.cwd())))
-  const text = opts.json === true ? displaySafeJson(jsonOut) : textBlocks.join('\n\n')
+  const text = opts.json === true ? redactReadJson(jsonOut) : textBlocks.join('\n\n')
   if (anyFound) recordReadStat('brief_view', fullSourceBytes, text, opts.spec)
   return { text, code: anyFound ? 0 : 1 }
 }

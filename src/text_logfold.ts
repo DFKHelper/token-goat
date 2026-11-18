@@ -1,4 +1,5 @@
 import * as fs from 'fs'
+import { redactReadText } from './fence_cap.js'
 import { FILTERS } from './filters.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { requireNonNegativeStrictInt } from './util.js'
@@ -87,7 +88,8 @@ export function cmdLogfold(
   src: string | undefined,
   opts: { tail?: string | undefined; noNormalize?: boolean; foldRepeats?: boolean | undefined; json?: boolean | undefined },
 ): void {
-  const text = readInput(src)
+  // Redacted whole before the --tail window and the fold, so a key block the window would cut in half still matches and the folded lines (and the --json payload built from them) carry the placeholder, never the secret.
+  const text = redactReadText(readInput(src))
   const rawLines = splitLines(text)
   const allLines = rawLines.length > 1 && rawLines[rawLines.length - 1] === '' ? rawLines.slice(0, -1) : rawLines
   let lines = allLines

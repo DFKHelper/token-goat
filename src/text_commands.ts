@@ -22,14 +22,15 @@ import { detectWalkMode } from './walk_mode.js'
 import { cmdTodo } from './text_todo.js'
 import { cmdTrace, isPathUnderRoot } from './text_trace.js'
 import { cmdLogfold } from './text_logfold.js'
+import { sourceLines } from './source_lines.js'
 
 export { cmdTodo, cmdTrace, cmdLogfold }
 
 // ── Shared utilities ────────────────────────────────────────────────────────
 
-/** Split text into lines, normalizing CRLF. */
+/** Split a lock file's text into lines, reading CRLF and a lone CR as line breaks. */
 function splitLines(text: string): string[] {
-  return text.split(/\r?\n/)
+  return sourceLines(text)
 }
 
 
@@ -765,9 +766,7 @@ export function cmdIgnores(opts: { json?: boolean }): void {
 /** Counts the pattern lines in a project's .tokengoatignore, matching cmdPack's own parse: blank and #-comment lines are not patterns. */
 function countPackIgnorePatterns(root: string): number {
   try {
-    return fs
-      .readFileSync(path.join(root, '.tokengoatignore'), 'utf8')
-      .split('\n')
+    return sourceLines(fs.readFileSync(path.join(root, '.tokengoatignore'), 'utf8'))
       .map((ln) => ln.trim())
       .filter((ln) => ln.length > 0 && !ln.startsWith('#')).length
   } catch {

@@ -2,6 +2,7 @@ import { nearSymbolNames } from '../read_suggest.js';
 import { executeParallelSearch } from './parallel_search.js';
 import { ALL_CHANNELS, type FusedSearchResult, type SearchChannel, type SearchExecutionSummary, type SearchOptions } from './types.js';
 import { displaySafeJson, displaySafeText } from '../paths.js';
+import { redactReadJson, redactReadText } from '../fence_cap.js';
 import { DELETED_TAG } from '../read_commands.js';
 import { resolveProjectConfinement } from '../read_spec.js';
 import { globalDbPath } from '../constants.js';
@@ -36,7 +37,7 @@ function formatTerminalHit(hit: FusedSearchResult, rank: number): string {
   // A one-line hit shows its text match too: the fused preview is the longest of its channels' previews, and a semantic chunk's opening outlengths a line windowed on the match.
   const shownPreview = hit.matchPreview && (showMatch || hit.matchLine === hit.lineStart) ? hit.matchPreview : hit.preview;
   if (shownPreview) {
-    const cleanPreview = shownPreview.replace(/\r?\n/g, ' ').slice(0, 120).trim();
+    const cleanPreview = redactReadText(shownPreview).replace(/\r?\n/g, ' ').slice(0, 120).trim();
     if (cleanPreview) lines.push(`   ${cleanPreview}`);
   }
 
@@ -137,7 +138,7 @@ export async function runParallelSearch(options: SearchOptions): Promise<{ text:
   if (options.json) {
     const retryFields = { ...(answeredFrom !== null ? { answeredFrom } : {}), ...(retries > 0 ? { retries } : {}) };
     return {
-      text: displaySafeJson(Object.keys(retryFields).length === 0 ? summary : { ...summary, ...retryFields }),
+      text: redactReadJson(Object.keys(retryFields).length === 0 ? summary : { ...summary, ...retryFields }),
       code: 0,
     };
   }
@@ -147,5 +148,5 @@ export async function runParallelSearch(options: SearchOptions): Promise<{ text:
   // A miss says how much of the project it searched; only paid when nothing matched.
   const coverageLine = summary.totalHits === 0 ? indexCoverageLine(globalDbPath(), options.projectRoot ?? resolveProjectRoot({ project: process.cwd() })) : undefined;
   const coverage = coverageLine === undefined ? '' : `\n${coverageLine}`;
-  return { text: note + formatSearchText(summary, options.channels !== undefined, { limit: options.limit, projectRoot: options.projectRoot, minScore: options.minScore }) + coverage, code: 0 };
+  return { text: redactReadText(note + formatSearchText(summary, options.channels !== undefined, { limit: options.limit, projectRoot: options.projectRoot, minScore: options.minScore }) + coverage), code: 0 };
 }

@@ -152,6 +152,22 @@ describe('pack command', () => {
       expect(r.stdout).toContain('keep')
       expect(r.stdout).toContain('AKIAIOSFODNN7EXAMPLE')
     })
+
+    // Provenance: HAND-DERIVED, the ignore file is written byte by byte with a bare CR after each of three patterns and a comment line first (classic Mac line endings); each excluded file holds a marker string no other file holds.
+    it('reads a lone-CR .tokengoatignore as one pattern per line', async () => {
+      const crDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-pack-ignore-cr-'))
+      try {
+        fs.writeFileSync(path.join(crDir, 'keep.ts'), 'export const keepMarker = 1\n')
+        for (const name of ['one', 'two', 'three']) fs.writeFileSync(path.join(crDir, `${name}.ts`), `export const ${name}Marker = 1\n`)
+        fs.writeFileSync(path.join(crDir, '.tokengoatignore'), ['# comment', 'one.ts', 'two.ts', 'three.ts', ''].join(String.fromCharCode(13)))
+        const r = await run(['pack', 'keep.ts', 'one.ts', 'two.ts', 'three.ts'], { cwd: crDir })
+        expect(r.status, r.stderr).toBe(0)
+        expect(r.stdout).toContain('keepMarker')
+        for (const name of ['one', 'two', 'three']) expect(r.stdout, `${name}.ts is excluded`).not.toContain(`${name}Marker`)
+      } finally {
+        fs.rmSync(crDir, { recursive: true, force: true })
+      }
+    })
   })
 })
 

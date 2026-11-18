@@ -21,7 +21,10 @@ import { findSpecSeparator, healStaleIndex } from './read_commands.js'
 import { AMBIGUOUS_HEADING_LIMIT } from './read_section.js'
 import { didYouMeanLines, filterSimilarHeadings, rankSimilarNames } from './read_suggest.js'
 import { listSections, readSection } from './section_reader.js'
+import { sourceLines } from './source_lines.js'
+import { normalizeSourceText } from './source_text.js'
 import { recordStat } from './stats.js'
+import { redactReadText } from './fence_cap.js'
 import {
   countNoun,
   decodeSource,
@@ -213,7 +216,12 @@ function requireSymbolMatch(resolvedPath: string, file: string, name: string, fl
     const retry = (qualified: string): string => (flag === '--anchor' ? `--anchor ${quotedArg(`${file}::${qualified}`)}` : `--symbol ${quotedArg(qualified)}`)
     throw new CliError([
       `Ambiguous symbol ${echoedValue(match.symbol)} in ${echoedValue(file)}: ${countNoun(match.candidates.length, 'declaration')} match, and a note binds to one. Retry with its qualified name:`,
-      ...match.candidates.map((c) => `  - ${displaySafeText(c.qualifiedName)} (line ${c.entry.lineStart})  ->  ${displaySafeText(retry(c.qualifiedName))}`),
+      // A container's name is stored file text and can be a credential: a candidate whose qualified name the redactor would rewrite is listed redacted with its line and no retry command, since a command naming a placeholder resolves to nothing.
+      ...match.candidates.map((c) => {
+        const label = displaySafeText(c.qualifiedName)
+        const redacted = redactReadText(label)
+        return redacted === label ? `  - ${label} (line ${c.entry.lineStart})  ->  ${displaySafeText(retry(c.qualifiedName))}` : `  - ${redacted} (line ${c.entry.lineStart})`
+      }),
     ])
   }
   const messages = [`No symbol named ${echoedValue(name)} is indexed in ${echoedValue(file)}`]
@@ -502,10 +510,8 @@ function writeReplacedBuffer(file: string, replacedBuf: Buffer, preWriteStat: fs
 const MAX_CLOSEST_MATCH_COMPARISONS = 2_000_000
 
 function findClosestLineWindow(targetText: string, oldText: string): { lineStart: number; region: string } | undefined {
-  const normTarget = targetText.replace(/\r\n/g, '\n')
-  const normOld = oldText.replace(/\r\n/g, '\n')
-  const targetLines = normTarget.split('\n')
-  const oldLines = normOld.split('\n')
+  const targetLines = sourceLines(targetText)
+  const oldLines = sourceLines(oldText)
   const windowSize = oldLines.length
   if (windowSize === 0 || windowSize > targetLines.length) return undefined
   if ((targetLines.length - windowSize + 1) * windowSize > MAX_CLOSEST_MATCH_COMPARISONS) return undefined
@@ -683,33 +689,38 @@ export function cmdInsertSection(file: string, opts: { after: string; contentFro
   const rawText = decodeSource(rawBytes)
 
   const insertAt = result.lineEnd
-  // Splice into the original text at the end of line `insertAt` so every untouched line keeps its own terminator; only the inserted lines take the local EOL.
+  // Splice into the original text at the end of line `insertAt` so every untouched line keeps its own terminator; only the inserted lines take the local EOL. Line breaks are found in the text the index numbered (a lone CR read as a break), so `insertAt` lands on the line the section reader named; `lead` carries a stray extra leading mark that text drops back to rawText offsets.
+  const lineText = normalizeSourceText(rawText)
+  const lead = rawText.length - lineText.length
   let offset = 0
   for (let seen = 0; seen < insertAt; seen++) {
-    const nl = rawText.indexOf('\n', offset)
+    const nl = lineText.indexOf('\n', offset)
     if (nl < 0) {
-      offset = rawText.length
+      offset = lineText.length
       break
     }
     offset = nl + 1
   }
-  const prevLineStart = offset > 0 ? rawText.lastIndexOf('\n', offset - 2) + 1 : 0
-  const prevLine = Buffer.from(rawText.slice(prevLineStart, offset), 'utf8')
-  const eol = localEolStyle(prevLine, { start: 0, end: prevLine.length }, Buffer.from(rawText, 'utf8'))
+  const prevLineStart = offset > 0 ? lineText.lastIndexOf('\n', offset - 2) + 1 : 0
+  const prevLineRaw = rawText.slice(prevLineStart + lead, offset + lead)
+  const prevLine = Buffer.from(prevLineRaw, 'utf8')
+  // A lone-CR file ends its lines with a bare CR, which the LF-and-CRLF count cannot name, so the splice takes CR too and the file is never turned into LF.
+  const loneCr = prevLineRaw.endsWith('\r') || (!rawText.includes('\n') && rawText.includes('\r'))
+  const eol = loneCr ? '\r' : localEolStyle(prevLine, { start: 0, end: prevLine.length }, Buffer.from(rawText, 'utf8'))
 
-  const insertedLines = contentBytes.toString('utf8').replace(/\r\n/g, '\n').split('\n')
+  const insertedLines = contentBytes.toString('utf8').replace(/\r\n?/g, '\n').split('\n')
   if (insertedLines.length > 0 && insertedLines[insertedLines.length - 1] === '') insertedLines.pop()
 
   const insertedText = insertedLines.join(eol)
   // A final line with no terminator gets one before the insert and none after, so the file still ends the way it did.
-  const endsUnterminated = offset > 0 && rawText[offset - 1] !== '\n'
+  const endsUnterminated = offset > 0 && lineText[offset - 1] !== '\n'
   // An inserted heading right under the section's last line of text read `second\n## New`: a blank line keeps the new section apart from the body it follows, as every other heading in the file is.
-  const blankBefore = /^ {0,3}#{1,6}(?:[ \t]|$)/.test(insertedLines[0] ?? '') && rawText.slice(prevLineStart, offset).trim() !== '' ? eol : ''
+  const blankBefore = /^ {0,3}#{1,6}(?:[ \t]|$)/.test(insertedLines[0] ?? '') && prevLineRaw.trim() !== '' ? eol : ''
   // The line after a section is the next heading whenever it holds text, and the section's own blank line before it stays above the insert (or, when it holds only spaces, counts as the section's last line), so inserted text ending on a text line sat directly on that heading: `new\n## Lesson 2`, or a paragraph a setext underline turned into a heading.
-  const nextLineEnd = rawText.indexOf('\n', offset)
-  const nextLine = rawText.slice(offset, nextLineEnd < 0 ? rawText.length : nextLineEnd)
+  const nextLineEnd = lineText.indexOf('\n', offset)
+  const nextLine = lineText.slice(offset, nextLineEnd < 0 ? lineText.length : nextLineEnd)
   const blankAfter = nextLine.trim() !== '' && (insertedLines[insertedLines.length - 1] ?? '').trim() !== '' ? eol : ''
-  const mergedText = rawText.slice(0, offset) + (endsUnterminated ? eol + blankBefore + insertedText : blankBefore + insertedText + eol + blankAfter) + rawText.slice(offset)
+  const mergedText = rawText.slice(0, offset + lead) + (endsUnterminated ? eol + blankBefore + insertedText : blankBefore + insertedText + eol + blankAfter) + rawText.slice(offset + lead)
 
   if (preWriteStat !== undefined) {
     let preRenameStat: fs.Stats | undefined

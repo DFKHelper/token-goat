@@ -6,9 +6,10 @@ import { SKIP_DIRS } from './baseline.js'
 import { redactIfDotenv } from './dotenv_redact.js'
 import { querySymbols, queryRefCounts, getFileEntry } from './index_reader.js'
 import { indexedSourceText, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
+import { sourceLines } from './source_lines.js'
 import { displaySafeText, normalizePath, displaySafeJson } from './paths.js'
 import { expandSpecPath, resolveSpecPath } from './spec_path.js'
-import { boundSymbolDocstring, indexFileSync, precedingDocComment, type DocCommentStyle } from './parser.js'
+import { indexFileSync, precedingDocComment, storedDocstringBoundsDoc, type DocCommentStyle } from './parser.js'
 import { parserStampCurrent } from './stamp_authority.js'
 import { compileGuardedRegex } from './regex_guard.js'
 import { scanGrepText } from './grep_scan.js'
@@ -27,7 +28,7 @@ import { loadConfig } from './config.js'
 import { UNTRUSTED_GITHUB_TAG } from './injection_scan.js'
 import { redactSecrets } from './secret_redact.js'
 import { fenceIfScanMatched } from './untrusted_fence.js'
-import { guardThenFence } from './fence_cap.js'
+import { guardThenFence, redactReadJson, redactReadLines, redactReadText } from './fence_cap.js'
 import { trimToBudget, capJsonRows, type JsonRowCapResult } from './overflow_guard.js'
 import { enclosingSymbol, ALL_SYMBOLS_IN_FILE_LIMIT } from './graph_commands.js'
 import { MAX_ZIP_INPUT_BYTES, ZipInputTooLargeError } from './zip_bounds.js'
@@ -253,6 +254,12 @@ export function readFileText(p: string, options: { onRawBuffer?: (bytes: Buffer)
   }
 }
 
+/** {@link readFileText} with the secret-shaped values replaced in the whole text and every line break kept. For a command that prints a slice of the file (a line range, a section, a context window): cutting first would leave a key block without its END line and a token split in two, and neither fragment matches a pattern. */
+export function readRedactedFileText(p: string): string | null {
+  const text = readFileText(p)
+  return text === null ? null : redactReadText(text)
+}
+
 /** Raw-bytes counterpart to {@link readFileText}, for binary formats (zip-format archives) that must never be decoded as UTF-8 before parsing -- decoding first would corrupt any byte sequence that isn't valid UTF-8, which is the common case for compressed/binary member data. The only callers are `zip-list`/`zip-read`, so the `MAX_ZIP_INPUT_BYTES` cap lives here rather than in a general-purpose helper: this file's ZIP entries get decompressed downstream, and DEFLATE's worst-case ~1032:1 ratio makes the on-disk (compressed) size the one lever available to bound before any decompression happens at all (see zip_bounds.ts for the decompressed-side bound). The unpinned path stats before reading, so an oversized file is never pulled into memory; the pinned path reads via the fd `readPinnedBytes` already opened for its identity check and rejects by the bytes actually returned; a compressed-input size cap does not carry the same unbounded-allocation risk decompression does, so reading up to the limit before rejecting on that path is an acceptable trade against duplicating `readPinnedBytes`'s fd handling. */
 export function readFileBytes(p: string): Buffer | null {
   const pinned = activePins?.get(pinKey(path.resolve(p)))
@@ -285,13 +292,13 @@ function withFileIndent(entry: { filePath: string; lineStart: number }, storedLi
   const first = storedLines[0]!
   if (/^[ \t]/.test(first)) return stored
   const source = readFileText(entry.filePath)
-  const diskLine = source === null ? undefined : indexedSourceText(entry.filePath, source).split(/\r?\n/)[entry.lineStart - 1]
+  const diskLine = source === null ? undefined : sourceLines(indexedSourceText(entry.filePath, source))[entry.lineStart - 1]
   const indent = diskLine?.match(/^[ \t]+/)?.[0]
   if (diskLine === undefined || indent === undefined || !diskLine.startsWith(first, indent.length)) return stored
   return [indent + first, ...storedLines.slice(1)].join('\n')
 }
 
-/** Symbols indexed with an empty stored `body` (e.g. HTML/Liquid heading symbols produced by `sectionsToHeadingSymbols`, which store `body: ''`) need their content re-read from disk by line range instead of rendering blank. Markdown heading symbols span their whole section but store only the heading line (hint_target.ts parses its level from it), so they are re-read the same way, provided the file still has that heading line at lineStart -- an edited file keeps the stored line rather than splicing in unrelated text. Shared by runSymbol, runRead, and runBrief so all three read surfaces resolve these symbols the same way. */
+/** Symbols indexed with an empty stored `body` (e.g. HTML/Liquid heading symbols produced by `sectionsToHeadingSymbols`, which store `body: ''`) need their content re-read from disk by line range instead of rendering blank. Markdown heading symbols span their whole section but store only the heading line (hint_target.ts parses its level from it), so they are re-read the same way, provided the file still has that heading line at lineStart -- an edited file keeps the stored line rather than splicing in unrelated text. Shared by runSymbol, runRead, and runBrief so all three read surfaces resolve these symbols the same way. The body comes back redacted whole, because a caller that previews or caps it would otherwise cut a secret short of the pattern that recognises it. */
 export function resolveBody(entry: { body: string; filePath: string; lineStart: number; lineEnd: number; kind?: string }): string {
   const storedLines = entry.body.split(/\r?\n/)
   // A CRLF file's stored body keeps its carriage returns, while the disk slice below and an `@N-M` range read both rejoin lines with `\n`; the stored text is rejoined the same way so every read of the same lines prints the same bytes.
@@ -299,12 +306,12 @@ export function resolveBody(entry: { body: string; filePath: string; lineStart: 
   const storedFirstLine = storedLines[0]!
   const storedLineCount = entry.body === '' ? 0 : storedLines.length
   const widenedHeading = entry.kind === 'heading' && storedLineCount > 0 && storedLineCount < entry.lineEnd - entry.lineStart + 1
-  if (entry.body !== '' && !widenedHeading) return withFileIndent(entry, storedLines, stored)
+  if (entry.body !== '' && !widenedHeading) return redactReadText(withFileIndent(entry, storedLines, stored))
   const source = readFileText(entry.filePath)
-  if (source === null) return stored
-  const diskLines = indexedSourceText(entry.filePath, source).split(/\r?\n/)
-  if (widenedHeading && diskLines[entry.lineStart - 1]?.trim() !== storedFirstLine.trim()) return stored
-  return diskLines.slice(Math.max(0, entry.lineStart - 1), entry.lineEnd).join('\n')
+  if (source === null) return redactReadText(stored)
+  const diskLines = sourceLines(indexedSourceText(entry.filePath, source))
+  if (widenedHeading && diskLines[entry.lineStart - 1]?.trim() !== storedFirstLine.trim()) return redactReadText(stored)
+  return redactReadText(diskLines.slice(Math.max(0, entry.lineStart - 1), entry.lineEnd).join('\n'))
 }
 
 /** The source lines of the doc comment the parser read off the lines directly above a symbol, verbatim, so a text read shows the doc outline's hint stands in for. Empty when the symbol has none, when its doc lives inside the body (a Python docstring), or when the comment on disk no longer yields the docstring the index stored. */
@@ -312,17 +319,17 @@ export function docCommentLines(entry: { docstring: string; filePath: string; li
   if (entry.lineStart < 2 || !hasRealDocstring(entry.docstring)) return []
   const source = readFileText(entry.filePath)
   if (source === null) return []
-  const lines = indexedSourceText(entry.filePath, source).split(/\r?\n/)
+  const lines = sourceLines(indexedSourceText(entry.filePath, source))
   for (const style of DOC_COMMENT_STYLES) {
     const doc = precedingDocComment(lines, entry.lineStart, style)
-    if (doc === '' || boundSymbolDocstring(doc) !== entry.docstring) continue
+    if (doc === '' || !storedDocstringBoundsDoc(entry.docstring, doc)) continue
     // Widen upward one line at a time until the lines kept read as the whole doc: the comment's first line is where a shorter slice stops yielding it.
     let start = entry.lineStart - 2
     while (start > 0 && precedingDocComment(lines.slice(start), entry.lineStart - start, style) !== doc) start--
     // A bare marker line (`//`, `#`, `'''`) atop a line-comment run adds only whitespace the doc trims away, so the loop above stops one line short of it; any marker line still above `start` is such a line, since one with text would have changed the doc. Widen over them while the run itself is line comments: a `/** */` block's top line is `/*`, so a stray `//` above a block is never taken.
     const marker = DOC_LINE_MARKERS[style]
     while (start > 0 && (lines[start] ?? '').trim().startsWith(marker) && (lines[start - 1] ?? '').trim().startsWith(marker)) start--
-    return lines.slice(start, entry.lineStart - 1)
+    return redactReadLines(lines.slice(start, entry.lineStart - 1))
   }
   return []
 }
@@ -487,9 +494,11 @@ export function emitGuarded(text: string, command: string): void {
   emit(guardText(text, command))
 }
 
+/** Text a read command prints, redacted and then capped: the secret pass runs first so the cap cannot cut a credential short of the length its pattern needs. Every text-mode read command prints through here, from the stored index body or a live disk slice alike. */
 export function guardText(text: string, command: string): string {
   const cfg = loadConfig()
-  return cfg.overflow_guard.enabled ? trimToBudget(text, cfg.overflow_guard.max_tokens, command) : text
+  const redacted = redactReadText(text)
+  return cfg.overflow_guard.enabled ? trimToBudget(redacted, cfg.overflow_guard.max_tokens, command) : redacted
 }
 
 /** Cap `text` and fence it under {@link UNTRUSTED_GITHUB_TAG}. A PR's title, description, review comments, and diff are all authorable by anyone who opened the PR or left the comment, so the fence follows that provenance and not the scan result. The scan still runs, purely to name matched pattern(s) in the notice and record the stat. Used by every printed `pr-slice` emit site, each of which has already redacted its text. The `--json` sites use {@link fenceGithubFieldIfMatched} instead -- see the note there. */
@@ -1200,14 +1209,19 @@ export function runGrep(opts: GrepOptions): number {
       // Pin-aware: consults `activePins` when this exact path was validated and pinned by the MCP confinement gate (see readFileText), so an explicitly-requested `path` argument gets the same swap-between-validate-and-read protection every other surgical-read command gets. Files discovered by searchDir's own recursion below were never individually pinned by the gate -- their protection is the realpath boundary check in searchDir, not this identity check, which only fires for paths the gate itself validated.
       const text = readFileText(filePath)
       if (text === null) return
-      const scanned = scanGrepText(text, matcher, maxLines - hits.length, contextLines)
+      // A lone CR ends a line for the index and the readers, so it is made a line feed before the scan and before the redacted view is cut, keeping both line numberings the index's.
+      const scanText = /\r(?!\n)/.test(text) ? text.replace(/\r(?!\n)/g, '\n') : text
+      const scanned = scanGrepText(scanText, matcher, maxLines - hits.length, contextLines)
       totalHits += scanned.totalCount
+      // Matched on the text as stored and printed from the text redacted whole (line breaks kept, so the indexes agree), so a pattern can still find a line holding a secret while the line it prints, and the context around it, show none.
+      const shown = scanned.hits.length === 0 ? [] : redactReadText(scanText).split('\n').map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l))
+      const shownAt = (line: number): string => shown[line - 1] ?? ''
       for (const match of scanned.hits) {
         hits.push({
           file: filePath,
           line: match.line,
-          text: match.text,
-          ...(match.context !== undefined ? { context: match.context } : {}),
+          text: shownAt(match.line),
+          ...(match.context !== undefined ? { context: match.context.map((c) => ({ line: c.line, text: shownAt(c.line) })) } : {}),
         })
       }
     } catch (err) {
@@ -1367,12 +1381,12 @@ export function runGrep(opts: GrepOptions): number {
   if (opts.json === true) {
     // Same {items, truncated, totalCount} envelope guardJsonRows uses for symbol/refs/skeleton/ outline's --json mode -- a bare truncated array here would silently hand a JSON consumer fewer hits than actually matched with no way to tell "capped by --max-lines" apart from "there just weren't more".
     const payload: JsonRowCapResult<GrepHit> = { items: renderedHits, truncated: totalHits > maxLines, totalCount: totalHits }
-    emit(displaySafeJson(payload))
+    emit(redactReadJson(payload))
     return 0
   }
 
   for (const hit of renderedHits) {
-    const symbolTag = opts.symbol === true && hit.symbol != null ? ` [${displaySafeText(hit.symbol.name)} (${displaySafeText(hit.symbol.kind)})]` : ''
+    const symbolTag = opts.symbol === true && hit.symbol != null ? ` [${displaySafeText(redactReadText(hit.symbol.name))} (${displaySafeText(hit.symbol.kind)})]` : ''
     if (hit.context !== undefined) {
       // Same renderer `refs`/`callers` `-C` use, so the three cannot drift into different dialects.
       for (const line of renderContextWindow(displaySafeText(hit.file), hit.line, hit.context, symbolTag)) emit(line)

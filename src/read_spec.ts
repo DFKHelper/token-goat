@@ -7,10 +7,11 @@ import { detectLanguage } from './parser_types.js'
 import type { SymbolEntry } from './parser_types.js'
 import { resolveLineRegions, type LineRegion } from './line_regions.js'
 export { resolveLineRegions, type LineRegion } from './line_regions.js'
-import { displaySafeJson, displaySafeText, normalizePath, toDisplayPath } from './paths.js'
+import { displaySafeText, normalizePath, toDisplayPath } from './paths.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
 import { expandSpecPath, resolveSpecPath } from './spec_path.js'
 import { findProject, getDisplayRoot, isInsideRoot, resolveProjectRoot } from './project.js'
-import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, indexFreshness, readFileText, recordStaleServed, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
+import { fileExists, findSpecSeparator, guardText, healStaleIndex, indexFileSyncPinned, indexFreshness, readFileText, readRedactedFileText, recordStaleServed, resolveAgainstProjectRoot, staleWarning, type ReadOptions } from './read_commands.js'
 import { emitErr } from './emit.js'
 import { FIND_SCAN_LIMIT } from './query_limits.js'
 import {
@@ -23,6 +24,8 @@ import { countNoun, foldPath } from './util.js'
 import { CliError, formatCommandError } from './command_error.js'
 import { echoedValue, fencedCommand, quotedArg } from './hint_suggestion_guard.js'
 import { couldNotReadError } from './could_not_read.js'
+import { indexedSourceText, isVirtualIndexedPath } from './indexed_source.js'
+import { sourceLines } from './source_lines.js'
 
 const PARENT_IDENTIFIER_RE = /^[\w$]+$/
 
@@ -159,11 +162,12 @@ export function runLineRange(
   if (end < start) {
     return { text: `Invalid line range: end (${end}) is before start (${start})`, code: 1 }
   }
-  const text = readFileText(diskPath)
+  const text = readRedactedFileText(diskPath)
   if (text === null) {
     return { text: couldNotReadError(file).message, code: 1 }
   }
-  const allLines = text.split(/\r?\n/)
+  // A lone CR ends a line here as it does in the index, so `@2-3` on a CR-only file names the lines a symbol range counts.
+  const allLines = sourceLines(text)
   if (allLines.length > 1 && allLines[allLines.length - 1] === '') allLines.pop()
   if (start > allLines.length) {
     return { text: `Line ${start} is past end of file (${countNoun(allLines.length, 'line')}): ${file}`, code: 1 }
@@ -171,7 +175,7 @@ export function runLineRange(
   const clampedEnd = Math.min(end, allLines.length)
   const slice = allLines.slice(start - 1, clampedEnd)
   if (opts.json === true) {
-    return { text: displaySafeJson({ file, start, end: clampedEnd, lines: slice }), code: 0 }
+    return { text: redactReadJson({ file, start, end: clampedEnd, lines: slice }), code: 0 }
   }
   const tok = Math.ceil(slice.join('\n').length / 4)
   return {
@@ -194,9 +198,14 @@ export function runLineRegion(
   const resolved = resolveSpecPath(file, opts.projectRoot ?? process.cwd())
   const confined = fileConfinementRefusal('This file', file, opts.projectRoot)
   if (confined !== null) return { text: confined, code: 1 }
-  const text = readFileText(resolveAgainstProjectRoot(file, opts.projectRoot))
-  if (text === null) return { text: couldNotReadError(file).message, code: 1 }
-  const allLines = text.split(/\r?\n/)
+  const raw = readFileText(resolveAgainstProjectRoot(file, opts.projectRoot))
+  if (raw === null) return { text: couldNotReadError(file).message, code: 1 }
+  // The document the stored symbol ranges below were counted on: a notebook is its flattened cell source, not its JSON, and redaction runs on that document so a placeholder never breaks the notebook's JSON.
+  const document = indexedSourceText(resolved, raw)
+  if (document === '' && isVirtualIndexedPath(resolved)) {
+    return { text: `${file} has no indexed cell text (not a Python notebook, or not readable as one), so line ${start} cannot be resolved.`, code: 1 }
+  }
+  const allLines = sourceLines(redactReadText(document))
   if (allLines.length > 1 && allLines[allLines.length - 1] === '') allLines.pop()
   if (start > allLines.length) {
     return { text: `Line ${start} is past end of file (${countNoun(allLines.length, 'line')}): ${file}`, code: 1 }
@@ -223,7 +232,7 @@ export function runLineRegion(
     const freshness = indexFreshness(resolved)
     recordStaleServed('read', freshness)
     return {
-      text: displaySafeJson({
+      text: redactReadJson({
         file,
         requested: { start, end },
         regions: regions.map((r) => ({

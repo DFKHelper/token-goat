@@ -45,6 +45,7 @@ describe('the embed fingerprint partition', () => {
       'src/markdown_frontmatter.ts',
       'src/markdown_lines.ts',
       'src/parser_types.ts',
+      'src/source_lines.ts',
       'src/source_text.ts',
     ])
     const owned = kindOwned()

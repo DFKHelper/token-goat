@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { extractImports, importsExtensionFor } from './import_export_extract.js'
 import { querySymbols, queryRefs, searchSymbolsFts } from './index_reader.js'
 import { displaySafeText, normalizePath, toDisplayPath, displaySafeJson } from './paths.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
 import { echoedValue, quotedArg } from './hint_suggestion_guard.js'
 import { couldNotReadError } from './could_not_read.js'
 import { resolveSpecPath } from './spec_path.js'
@@ -71,10 +72,10 @@ export function runSimilar(opts: SimilarOptions): number {
   }
 
   if (opts.json === true) {
-    emit(displaySafeJson(results.map((h) => ({ name: h.name, kind: h.kind, file: h.filePath, line: h.lineStart }))))
+    emit(redactReadJson(results.map((h) => ({ name: h.name, kind: h.kind, file: h.filePath, line: h.lineStart }))))
     return 0
   }
-  for (const h of results) emit(`${displaySafeText(h.name)}\t${displaySafeText(h.kind)}\t${formatSymbolLocation(displaySafeText(toDisplayPath(rootDir, h.filePath)), h.lineStart)}`)
+  for (const h of results) emit(redactReadText(`${displaySafeText(h.name)}\t${displaySafeText(h.kind)}\t${formatSymbolLocation(displaySafeText(toDisplayPath(rootDir, h.filePath)), h.lineStart)}`))
   return 0
 }
 
@@ -129,10 +130,10 @@ export function runContextFor(opts: ContextForOptions): number {
   for (const n of notices) emitErr(n)
 
   if (opts.json === true) {
-    emit(displaySafeJson(entries))
+    emit(redactReadJson(entries))
     return 0
   }
-  for (const e of entries) emit(`token-goat read ${quotedArg(`${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}`)}`)
+  for (const e of entries) emit(redactReadText(`token-goat read ${quotedArg(`${displaySafeText(toDisplayPath(rootDir, e.file))}::${displaySafeText(e.symbol)}@${e.line}`)}`))
   return 0
 }
 
@@ -214,7 +215,7 @@ export function runTestFor(opts: TestForOptions): number {
 
   if (opts.json === true) {
     const capped = guardJsonRows(results.map((r) => ({ ...r, testFile: toDisplayPath(rootDir, r.testFile) })))
-    emit(displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
+    emit(redactReadJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount }))
     return 0
   }
   if (results.length === 0) {
@@ -223,7 +224,7 @@ export function runTestFor(opts: TestForOptions): number {
   }
   for (const r of results) {
     emit(toDisplayPath(rootDir, r.testFile))
-    for (const fn of r.testFunctions) emit(`  ${fn}`)
+    for (const fn of r.testFunctions) emit(redactReadText(`  ${fn}`))
   }
   return 0
 }
@@ -264,7 +265,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
   }
 
   if (opts.json === true) {
-    emit(displaySafeJson(sliced))
+    emit(redactReadJson(sliced))
     return 0
   }
   if (sliced.length === 0) {
@@ -272,7 +273,7 @@ export function runCoverageGaps(opts: CoverageGapsOptions): number {
     if (isIndexEmptyForProject(globalDbPath(), rootDir)) emit(emptyIndexMessage(rootDir))
     return 0
   }
-  for (const g of sliced) emit(`${displaySafeText(g.name)}\t${displaySafeText(g.kind)}\t${displaySafeText(toDisplayPath(rootDir, g.file))}:${g.line}`)
+  for (const g of sliced) emit(redactReadText(`${displaySafeText(g.name)}\t${displaySafeText(g.kind)}\t${displaySafeText(toDisplayPath(rootDir, g.file))}:${g.line}`))
   return 0
 }
 
@@ -366,12 +367,12 @@ export function runBlame(opts: BlameOptions): number {
       if (!m) return { raw: l }
       return { commit: m[2], boundary: m[1] === '^', author: (m[3] ?? '').trim(), date: (m[4] ?? '').trim(), line: Number.parseInt(m[5] ?? '0', 10), content: m[6] }
     })
-    emit(displaySafeJson({ symbol: sym.name, file: filePath, lines }))
+    emit(redactReadJson({ symbol: sym.name, file: filePath, lines }))
     return 0
   }
 
-  emit(`${displaySafeText(sym.name)}\t${displaySafeText(toDisplayPath(getDisplayRoot(opts.cwd), filePath))}:${start}-${end}`)
-  emit(fenceUntrusted(raw.trim(), UNTRUSTED_FILE_TAG))
+  emit(redactReadText(`${displaySafeText(sym.name)}\t${displaySafeText(toDisplayPath(getDisplayRoot(opts.cwd), filePath))}:${start}-${end}`))
+  emit(fenceUntrusted(redactReadText(raw.trim()), UNTRUSTED_FILE_TAG))
   return 0
 }
 

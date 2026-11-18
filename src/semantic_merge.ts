@@ -1,5 +1,6 @@
 /** Merges semantic search hits from the same file around the best-matching chunk, kept out of embeddings.ts so an edit here does not move EMBED_FINGERPRINT and re-embed every index. */
 import type { SearchHit } from './embeddings.js'
+import { redactCutSecrets } from './secret_redact.js'
 
 /** Chunk kinds that are one distinct unit each (one symbol, one heading section): neighbours of these are different things, so only lines they truly share may fuse them. */
 const STRUCTURAL_CHUNK_KINDS: ReadonlySet<string> = new Set(['symbol', 'section'])
@@ -9,12 +10,14 @@ export function mergeNearbyHits(
   hits: SearchHit[],
   proximity: number = 20,
 ): SearchHit[] {
-  if (hits.length <= 1) {
-    return hits
+  // Every hit's text is a stored chunk, a cut of its file, so each one is redacted as a cut before its text is joined with another's or printed by either caller; a key block cut by the chunk boundary shows no half on either side. This is the one place both callers' hits pass through.
+  const cut = hits.map((hit) => ({ ...hit, text: redactCutSecrets(hit.text).text }))
+  if (cut.length <= 1) {
+    return cut
   }
 
   const byFile = new Map<string, SearchHit[]>()
-  for (const hit of hits) {
+  for (const hit of cut) {
     const fileHits = byFile.get(hit.filePath)
     if (fileHits) {
       fileHits.push(hit)

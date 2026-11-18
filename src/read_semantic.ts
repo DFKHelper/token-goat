@@ -19,6 +19,8 @@ import { isIndexEmptyForProject, emptyIndexMessage, getEmbeddingCoverage, indexC
 import { querySymbols, searchSymbolsFts } from './index_reader.js'
 import type { SymbolEntry } from './parser_types.js'
 import { displaySafeJson, toDisplayPath } from './paths.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
+import { sourceLines } from './source_lines.js'
 import { resolveProjectRoot } from './project.js'
 import { recordSemanticQuery } from './semantic_distances.js'
 import { assessDenseRelevance, floorEmptiedPhrase, weakMatchPhrase } from './semantic_relevance.js'
@@ -302,7 +304,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
   const linesOf = (p: string): readonly string[] | null => {
     if (!fileLines.has(p)) {
       const text = readFileText(p)
-      fileLines.set(p, text === null ? null : text.split(/\r?\n/))
+      fileLines.set(p, text === null ? null : sourceLines(text))
     }
     return fileLines.get(p) ?? null
   }
@@ -318,7 +320,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       name: enclosing?.name ?? null,
       kind: enclosing?.kind ?? null,
       distance: h.distance,
-      previewText: h.text,
+      previewText: redactReadText(h.text),
       rrf: 1 / (RRF_K + denseRank),
       inDense: true,
       inLexical: false,
@@ -339,7 +341,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
         name: s.name,
         kind: s.kind,
         distance: null,
-        previewText: s.body,
+        previewText: redactReadText(s.body),
         rrf: 1 / (RRF_K + ftsRank),
         inDense: false,
         inLexical: true,
@@ -395,7 +397,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       const capped = guardJsonRows(items)
       // Two independent losses -- the --limit slice above and the overflow guard inside guardJsonRows -- so `truncated` is the OR of both, and `totalCount` is the count before either ran. `totalCountIsFloor` is set only when the candidate over-fetch was itself at its bound, so a consumer can tell an exact total from a lower bound instead of being handed a number that quietly means different things on different runs.
       const limitTruncated = hits.length < eligibleCount
-      const text = displaySafeJson({
+      const text = redactReadJson({
         source,
         ...capped,
         truncated: capped.truncated || limitTruncated,
@@ -462,17 +464,17 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
         const items = evidenceHits.map((entry) => ({
           source: toDisplayPath(rootDir, entry.source),
           representation: entry.representation,
-          preview: previewLines(entry.text, 3),
+          preview: previewLines(redactReadText(entry.text), 3),
           cachedAt: entry.createdAt,
         }))
         const capped = guardJsonRows(items)
-        const text = displaySafeJson({ source: 'workspace-evidence', ...capped })
+        const text = redactReadJson({ source: 'workspace-evidence', ...capped })
         recordReadStat('semantic_search', evidenceFullBytes, text, query)
         return { text, code: 0 }
       }
       const text = guardText(
         evidenceHits
-          .map((entry) => `# cached ${entry.representation} evidence — ${toDisplayPath(rootDir, entry.source)}\n${previewLines(entry.text, 3)}`)
+          .map((entry) => `# cached ${entry.representation} evidence — ${toDisplayPath(rootDir, entry.source)}\n${previewLines(redactReadText(entry.text), 3)}`)
           .join('\n\n'),
         'semantic',
       )
@@ -520,7 +522,7 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
               }
             : {}),
         }
-    const text = displaySafeJson(payload)
+    const text = redactReadJson(payload)
     return { text, code: 1 }
   }
   let text = indexEmpty

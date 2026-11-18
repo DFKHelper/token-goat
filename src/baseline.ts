@@ -16,6 +16,7 @@ import { suggestedIndexCommand } from './index_health.js'
 import { projectScopeClause } from './sql_path.js'
 import { foldPath, isCaseInsensitiveFs, isTestFile } from './util.js'
 import { displaySafeText, normalizePath, toDisplayPath, displaySafePath } from './paths.js'
+import { redactReadText } from './fence_cap.js'
 import { quotedArg, fencedCommand } from './hint_suggestion_guard.js'
 import { findClaudeMdFiles } from './cli_context_stats.js'
 import { hasSkipSegmentBelowRoot } from './skip_scope.js'
@@ -461,7 +462,7 @@ export function formatProjectMap(map: ProjectMap, compact = false): string {
     // Name the file in BOTH modes. Compact used to omit it entirely, and since repomap.compact_file_threshold defaults to 50, compact is what every real project actually renders -- so in practice a top symbol was never addressable without a follow-up `symbol` call, which is worst for exactly the generic names this list surfaces (`out`, `file`, `matches`). Full mode named only path.basename(), which is ambiguous across directories (every project has several index.ts) and is not a resolvable spec. A root-relative display path is, so `- normalizePath (function) — src/paths.ts:12-23` can be fed straight back in as `read "src/paths.ts::normalizePath"`. Costs ~10 tokens a line and saves a round trip each.
     for (const s of map.topSymbols) {
       const loc = formatSymbolLocation(displaySafeText(toDisplayPath(map.rootDir, s.filePath)), s.lineStart, s.lineEnd)
-      lines.push(`- ${displaySafeText(s.name)} (${displaySafeText(s.kind)}) — ${loc}`)
+      lines.push(redactReadText(`- ${displaySafeText(s.name)} (${displaySafeText(s.kind)}) — ${loc}`))
     }
   } else {
     // Reuses checkSymbolCount's wording (cli_doctor_index.ts) for the same empty-index condition, so a `map` against an unindexed project says so instead of silently omitting the whole section -- otherwise the missing heading reads as "this project has no notable symbols" rather than "this project has never been indexed". The command is built by suggestedIndexCommand rather than hardcoded: a bare `token-goat index .` refuses outright in a non-git folder, which is exactly the case this branch fires in most, so the hardcoded form printed a command that could not run as shown.

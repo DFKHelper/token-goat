@@ -1,6 +1,7 @@
 /** Unresolved git merge-conflict marker extraction (`token-goat conflicts`). Parses two-way (`<<<<<<< / ======= / >>>>>>>`) and diff3 three-way (`<<<<<<< / ||||||| / ======= / >>>>>>>`) conflict markers out of a file's text, plus the labels git writes on the marker lines themselves (branch names, `merged common ancestors`, etc). Mirrors coverage_query.ts / openapi_query.ts's shape: pure parse/extract/format functions, no file IO -- callers (read_commands.ts's runConflicts) own reading files off disk and walking directories. */
 
 import { displaySafeText } from './paths.js'
+import { sourceLines } from './source_lines.js'
 
 const OURS_RE = /^<{7}(?:\s+(.*))?$/
 const BASE_RE = /^\|{7}(?:\s+(.*))?$/
@@ -48,7 +49,7 @@ export interface FileConflicts {
 
 /** Parse every conflict region (and any malformed marker sequence) out of one file's text. */
 export function parseConflicts(filePath: string, text: string, contextLines = 3): FileConflicts {
-  const lines = text.split(/\r?\n/)
+  const lines = sourceLines(text)
   const regions: ConflictRegion[] = []
   const warnings: ConflictWarning[] = []
 

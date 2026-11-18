@@ -312,7 +312,7 @@ describe('runOpenApiOutline / runOpenApiOp', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-openapi-cmds-'))
     vi.clearAllMocks()
     mockLoadConfig.mockReturnValue({
-      overflow_guard: { enabled: true, max_tokens: 25000 },
+      redaction: { custom_patterns: [], strict: false }, overflow_guard: { enabled: true, max_tokens: 25000 },
     } as unknown as ReturnType<typeof loadConfig>)
   })
 

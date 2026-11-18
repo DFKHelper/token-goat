@@ -124,7 +124,7 @@ function conditionalExit(stmt: ts.Statement): boolean {
   return ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.EqualsToken && e.left.getText() === 'process.exitCode' && (isConditionalExitCode(e.right) || isVariableExitCode(e.right))
 }
 
-const JSON_RENDER = /^(?:displaySafeJson|JSON\.stringify)\(/
+const JSON_RENDER = /^(?:displaySafeJson|redactReadJson|JSON\.stringify)\(/
 
 /** Whether a stdout write's argument is a JSON rendering, directly or through a `const` the same statement list initialised with one: a --json body is the answer a failure still owes its caller on stdout. */
 function writesJson(call: ts.CallExpression, stmts: ts.NodeArray<ts.Statement>, before: number): boolean {

@@ -11,6 +11,7 @@ import type { SqliteDatabase } from './sqlite_driver.js'
 import { loadConfig } from './config.js'
 import type { IndexingConfig } from './config.js'
 import { redactIfDotenv } from './dotenv_redact.js'
+import { redactSecrets } from './secret_redact.js'
 import { chunkFile, deleteFileEmbeddings, indexFile as embedIndexFile } from './embeddings.js'
 import { buildEmbeddingBoundaries } from './embedding_boundaries.js'
 import { isEmbeddableDocument, extractEmbeddableDocumentText, isDocumentRefusal, isTransientDocumentRefusal } from './doc_embed_extract.js'
@@ -167,6 +168,10 @@ const DOCSTRING_TRUNCATION_MARKER = '\n[... docstring truncated by token-goat ..
 /** Bound a stored docstring, **truncating** rather than eliding it. This is deliberately the opposite of {@link boundSymbolBody}, for a reason specific to the column. An over-cap *body* is stored empty because read_commands.ts's resolveBody can rebuild it exactly from `[line_start, line_end]` -- eliding costs nothing. No such range is recorded for a docstring, so eliding one destroys it: `outline`'s documented/undocumented flag would flip to "undocumented" for the most heavily documented symbols in a file, which is worse than a visibly-cut docstring. Nothing treats this column as complete source the way `read` treats `body` -- consumers display its first line (read_commands.ts), test it for emptiness, or split it into words (graph_commands.ts) -- so a marked truncation is honest and lossless enough. Python's extractor (`pythonDocstring`) and {@link precedingDocComment}'s callers (TS/JS, Rust, Go, Ruby, Java, C/C++, and the regex fallback) are the only ones that populate `docstring` -- every other extractor still sets `''`. The column is derived from a *region near* a symbol, which is precisely the shared-region shape that made `body` grow quadratically: a file-level doc comment attributed to every symbol in the file reproduces that bug exactly. Bounding it at the same choke point closes the hole before a future extractor opens it. */
 export function boundSymbolDocstring(docstring: string): string {
   if (docstring.length <= MAX_SYMBOL_DOCSTRING_CHARS) return docstring
+  // Redact the whole docstring before cutting it: a private key block whose BEGIN sits before the cut and whose END sits after it loses its END in the stored text, so no read command's redactor could match what is left and the key lines would print.
+  const redacted = redactSecrets(docstring, loadConfig(), { keepLineCount: true }).text
+  if (redacted.length <= MAX_SYMBOL_DOCSTRING_CHARS) return redacted
+  docstring = redacted
   // Budget the marker inside the cap, not on top of it: appending it to a full-length slice would make the stored value exceed the very bound this constant declares, which quietly turns a hard storage limit into an approximate one.
   let end = MAX_SYMBOL_DOCSTRING_CHARS - DOCSTRING_TRUNCATION_MARKER.length
   // Never cut between the halves of a surrogate pair -- that stores a lone surrogate, which is not valid text and can surface as a replacement character or upset consumers downstream.
@@ -174,6 +179,44 @@ export function boundSymbolDocstring(docstring: string): string {
     end > 0 && docstring.charCodeAt(end - 1) >= 0xd800 && docstring.charCodeAt(end - 1) <= 0xdbff
   if (cutsSurrogatePair) end -= 1
   return docstring.slice(0, Math.max(0, end)) + DOCSTRING_TRUNCATION_MARKER
+}
+
+const REDACTION_PLACEHOLDER = /\[REDACTED:[a-z0-9_]+\]/
+const REDACTION_PLACEHOLDER_OPEN = '[REDACTED:'
+
+/** Whether one stored docstring line is `live` as an earlier build redacted it. A placeholder stands for whatever text the pattern of that build matched, so it matches any run of characters; `cut` is the last stored line, which the cap may have ended anywhere, even inside a placeholder. */
+function storedLineMatchesLive(stored: string, live: string, cut: boolean): boolean {
+  let line = stored
+  if (cut) {
+    const tail = /\[REDACTED:[a-z0-9_]*$/.exec(line)
+    if (tail !== null) line = line.slice(0, tail.index)
+    else for (let k = REDACTION_PLACEHOLDER_OPEN.length - 1; k > 0; k--) if (line.endsWith(REDACTION_PLACEHOLDER_OPEN.slice(0, k))) { line = line.slice(0, -k); break }
+  }
+  const parts = line.split(REDACTION_PLACEHOLDER)
+  if (parts.length === 1) return cut ? live.startsWith(line) : line === live
+  const first = parts[0] as string
+  if (!live.startsWith(first)) return false
+  let at = first.length
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i] as string
+    if (i === parts.length - 1 && !cut) return live.length - part.length >= at && live.endsWith(part)
+    const found = live.indexOf(part, at)
+    if (found < 0) return false
+    at = found + part.length
+  }
+  return true
+}
+
+/** Whether `stored`, a row's docstring, is what some build bound `doc`, the doc comment now on disk, to. The current build's own bound is the first answer. An over-cap doc is stored redacted with the patterns configured when the file was indexed, so a changed `redaction.custom_patterns` or `redaction.strict` makes that bound differ from the row without the file having changed; the row is then matched line by line, a placeholder standing for any text, because redaction keeps every line break and the row's line count therefore still lines up with the file. An under-cap doc is stored as written, so a mismatch there is a stale row. */
+export function storedDocstringBoundsDoc(stored: string, doc: string): boolean {
+  if (boundSymbolDocstring(doc) === stored) return true
+  if (doc.length <= MAX_SYMBOL_DOCSTRING_CHARS) return false
+  const cutAtMarker = stored.endsWith(DOCSTRING_TRUNCATION_MARKER)
+  const head = cutAtMarker ? stored.slice(0, -DOCSTRING_TRUNCATION_MARKER.length) : stored
+  const storedLines = head.split(/\r\n|\n|\r/)
+  const liveLines = doc.split(/\r\n|\n|\r/)
+  if (cutAtMarker ? storedLines.length > liveLines.length : storedLines.length !== liveLines.length) return false
+  return storedLines.every((line, i) => storedLineMatchesLive(line, liveLines[i] as string, cutAtMarker && i === storedLines.length - 1))
 }
 
 /** Ceiling on a stored `refs.context`. A ref's context is one display line -- every consumer renders it as `path:line: context` -- so anything past a couple of KB is already unreadable where it is shown. */

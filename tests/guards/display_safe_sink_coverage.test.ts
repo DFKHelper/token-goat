@@ -163,6 +163,8 @@ const NEUTRALIZERS: readonly string[] = [
   'renderValue(',
   // The `--json` counterpart: it walks the value and neutralizes the leaf strings and keys BEFORE serializing, so the escape lands inside a JSON string where it survives a round-trip intact. Escaping the serialized text instead would corrupt the document, which is why the rule is stated as "serialize through this helper" rather than "escape the output of JSON.stringify".
   'displaySafeJson(',
+  // fence_cap.ts's redactReadJson serializes through displaySafeJson(value, 0) over the whole value before it redacts, so the leaf escaping is the same one.
+  'redactReadJson(',
   // A module-local wrapper in cli_install.ts, listed on the same reasoning as the fence wrappers below: it escapes every path it interpolates, so a call site handing it a project-derived path is covered by it. Pinned to that shape by an assertion further down, because a wrapper listed here that stopped escaping would exempt its call sites while printing raw paths.
   'projectHooksCommitNote(',
   // filter_notice.ts's notices, which escape the filter values they quote; filteredToEmptyNotice in read_outline.ts hands its `--grep` to the second. Pinned to that shape further down.

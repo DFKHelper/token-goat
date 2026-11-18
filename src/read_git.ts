@@ -4,6 +4,7 @@ import * as path from 'node:path'
 import { formatConflicts, formatConflictSummaries, parseConflicts, summarizeFileConflicts } from './conflict_query.js'
 import { querySymbols } from './index_reader.js'
 import { displaySafeJson, displaySafeText, resolveIndexPath, toDisplayPath } from './paths.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
 import { formatSymbolLocation, isVirtualIndexedPath, virtualIndexedScopeNote } from './indexed_source.js'
 import type { SymbolEntry } from './parser_types.js'
 import { getDisplayRoot, resolveProjectRoot } from './project.js'
@@ -62,7 +63,7 @@ export function runConflicts(opts: ConflictsCliOptions): number {
   const fullSourceBytes = sumFileSizes(files)
   const detail = opts.path ?? '.'
   if (opts.json === true) {
-    const jsonText = displaySafeJson(opts.summary === true ? results.map(summarizeFileConflicts) : results, 0)
+    const jsonText = redactReadJson(opts.summary === true ? results.map(summarizeFileConflicts) : results, 0)
     emit(jsonText)
     recordReadStat('conflicts', fullSourceBytes, jsonText, detail)
   } else if (opts.summary === true) {
@@ -440,14 +441,15 @@ export function runChanged(opts: ChangedOptions = {}): number {
     const symbolFullBytes = symbolDiffBaselineBytes
     if (opts.json === true) {
       const capped = guardJsonRows(allSymbols)
-      const text = displaySafeJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
+      const text = redactReadJson({ items: capped.items, truncated: capped.truncated, totalCount: capped.totalCount })
       emit(text)
       recordReadStat('changed_lookup', symbolFullBytes, text, ref)
       return 0
     }
     const symbolText = allSymbols.map((s) => `${s.name} (${s.kind}) — ${formatSymbolLocation(toDisplayPath(projectRoot, s.filePath), s.lineStart)}`).join('\n')
     for (const s of allSymbols) {
-      emit(`${displaySafeText(s.name)} (${displaySafeText(s.kind)}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(projectRoot, s.filePath)), s.lineStart)}`)
+      // A symbol's name is file text (a TOML table or a JSON key can be a credential), so the line is redacted like the --json rows above.
+      emit(redactReadText(`${displaySafeText(s.name)} (${displaySafeText(s.kind)}) — ${formatSymbolLocation(displaySafeText(toDisplayPath(projectRoot, s.filePath)), s.lineStart)}`))
     }
     recordReadStat('changed_lookup', symbolFullBytes, symbolText, ref)
     return 0
@@ -652,7 +654,7 @@ export function runDiff(opts: DiffOptions): number {
     return 0
   }
 
-  const { hunks } = splitDiffHunks(diffResult.stdout)
+  const { hunks } = splitDiffHunks(redactReadText(diffResult.stdout))
   const diffFileScoped = isVirtualIndexedPath(match.filePath)
   const overlapping = diffFileScoped ? hunks : hunks.filter((h) => h.start <= match.lineEnd && h.end >= match.lineStart)
 
@@ -664,7 +666,7 @@ export function runDiff(opts: DiffOptions): number {
   if (opts.json === true) {
     const capped = guardJsonRows(overlapping.map((h) => ({ start: h.start, end: h.end, text: h.text })))
     emit(
-      displaySafeJson(
+      redactReadJson(
         {
           symbol: match.name,
           file: match.filePath,
@@ -779,9 +781,9 @@ export function runLog(opts: LogOptions): number {
   }
 
   if (opts.json === true) {
-    const capped = guardJsonRows(parseLogDashLOutput(logResult.stdout))
+    const capped = guardJsonRows(parseLogDashLOutput(redactReadText(logResult.stdout)))
     emit(
-      displaySafeJson(
+      redactReadJson(
         {
           symbol: match.name,
           file: match.filePath,
