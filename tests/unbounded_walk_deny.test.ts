@@ -400,6 +400,10 @@ describe('detectUnboundedWalk -- nesting, obscured command words and indirection
     ['echo / | xargs -0 -n1 find -name x', 'xargs'],
     ['echo / | xargs -I{} find / -name {}', 'find'],
     ['echo / | xargs du', 'xargs'],
+    // a find with a start path of its own under xargs (allowed here before Ruling 49)
+    ['echo a | xargs find . -maxdepth 1', 'xargs'],
+    ['echo a | xargs find . -name x', 'xargs'],
+    ['echo a | xargs -0 -I{} find {} -maxdepth 1', 'xargs'],
     ['echo / | xargs bash -c "find / -name x"', 'find'],
   ])('refuses %s', (command, expected) => {
     expect(form(command, POSIX)).toBe(expected)
@@ -413,10 +417,7 @@ describe('detectUnboundedWalk -- nesting, obscured command words and indirection
     ['eval ls'],
     ['echo a | xargs grep -l x'],
     ['git ls-files | xargs rg x'],
-    ['echo a | xargs find . -maxdepth 1'],
-    ['echo a | xargs find . -name x'],
     ['echo a | xargs find -maxdepth 1 -name x'],
-    ['echo a | xargs -0 -I{} find {} -maxdepth 1'],
     ['echo a | xargs du -sh'],
     ['echo a | xargs'],
     ['cmd /c dir'],
@@ -474,16 +475,16 @@ describe('detectUnboundedWalk -- xargs fed by a bounded lister or by an unknown 
     ['rg --files src | xargs du -h'],
     ['fd . src | xargs du -h'],
     ['find src -name x | xargs du'],
-    ['find /tmp/proj -name x | xargs tree'],
+    ['find src/proj -name x | xargs tree'],
     ['ls src | xargs du -h'],
     ['echo a b | xargs du -h'],
-    ['printf "a\\nb\\n" | xargs ls -R'],
+    ['printf "%s\\n" src | xargs ls -R'],
     ['git ls-files | xargs du -ah'],
-    ['git ls-files | xargs -n1 du -h'],
-    ['git ls-files | xargs -0n 1 du'],
-    ['git ls-files | xargs -P4 -I{} du {}'],
+    ['git ls-files | xargs -n 1 du -h'],
+    ['git ls-files | xargs -0 -n 1 du'],
+    ['git ls-files | xargs -P 4 du'],
     ['find . -maxdepth 1 | xargs du'],
-    ["printf 'a\\nb\\n' | xargs du"],
+    ["printf '%s\\n' a b | xargs du"],
     ['du /usr/../home/proj'],
     ['du ./src/..'],
   ])('lets %s through', (command) => {
@@ -492,6 +493,13 @@ describe('detectUnboundedWalk -- xargs fed by a bounded lister or by an unknown 
   })
 
   it.each([
+    // the spellings the allow rows above used before the allowance became default-deny
+    ['find /tmp/proj -name x | xargs tree', 'xargs'],
+    ['printf "a\\nb\\n" | xargs ls -R', 'xargs'],
+    ["printf 'a\\nb\\n' | xargs du", 'xargs'],
+    ['git ls-files | xargs -n1 du -h', 'xargs'],
+    ['git ls-files | xargs -0n 1 du', 'xargs'],
+    ['git ls-files | xargs -P4 -I{} du {}', 'xargs'],
     ['echo ~ | xargs du', 'xargs'],
     ['echo C:/ | xargs tree', 'xargs'],
     ["printf '/\\n' | xargs ls -R", 'xargs'],
