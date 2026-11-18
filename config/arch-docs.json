@@ -216,6 +216,7 @@
     ["src/change_claim.ts","Specialized Subsystems"],
     ["src/claude_config_dir.ts","Specialized Subsystems"],
     ["src/claude_hidden_rules.ts","Specialized Subsystems"],
+    ["src/read_deny.ts","Specialized Subsystems"],
     ["src/cli_audit.ts","Specialized Subsystems"],
     ["src/cli_bench.ts","Specialized Subsystems"],
     ["src/cli_bootstrap_audit.ts","Specialized Subsystems"],

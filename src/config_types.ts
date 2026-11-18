@@ -263,6 +263,12 @@ export interface InjectionConfig {
   enabled: boolean
 }
 
+/** Config for the read commands (read, section, grep, outline, json-query, image-text, ...). */
+export interface ReadsConfig {
+  // Whether those commands refuse a file the host's settings deny with a `Read(...)` rule (read_deny.ts). Off only for an operator who accepts that a denied file's text reaches the model through token-goat.
+  honor_host_deny: boolean
+}
+
 /** Config for the MCP server's filesystem admission gate (mcp_server.ts). */
 export interface McpConfig {
   confine_reads_to_project_root: boolean
@@ -309,6 +315,7 @@ export interface Config {
   compression: CompressionConfig
   context: ContextConfig
   injection: InjectionConfig
+  reads: ReadsConfig
   gdrive: GdriveConfig
   redaction: RedactionConfig
   network: NetworkConfig

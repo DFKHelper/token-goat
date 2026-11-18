@@ -9,6 +9,7 @@ import { displaySafePath, resolveIndexPath } from './paths.js'
 import { isInsideRoot } from './path_containment.js'
 import { resolveProjectRoot } from './project.js'
 import { getReadNavigationEvidence } from './read_navigation_evidence.js'
+import { ReadDeniedError } from './read_deny.js'
 import { redactSecrets } from './secret_redact.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import type { HookEvent } from './hook_registry.js'
@@ -212,7 +213,12 @@ export async function inlineSymbolAnswer(args: InlineAnswerArgs): Promise<Inline
     staleness,
     readBody: async (candidate) => {
       const row = rows.find((r) => r.name === candidate.name && r.filePath === candidate.file)
-      return row === undefined ? null : await readIndexedBody(row, args.cwd)
+      if (row === undefined) return null
+      // A file the host denies is no inline answer: the hook answers nothing instead of failing.
+      return await readIndexedBody(row, args.cwd).catch((err: unknown) => {
+        if (err instanceof ReadDeniedError) return null
+        throw err
+      })
     },
   })
   if (!('inline' in decision)) return decision

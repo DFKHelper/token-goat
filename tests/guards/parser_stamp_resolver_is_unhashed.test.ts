@@ -31,7 +31,7 @@ function srcTypeScriptFiles(): readonly string[] {
     what: 'TypeScript modules under src/',
     items: found.sort(),
     floor: 540,
-    ceiling: 575,
+    ceiling: 576,
     mustIncludeExact: ['src/parser_types.ts'],
   })
 }

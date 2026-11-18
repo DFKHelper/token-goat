@@ -36,6 +36,7 @@ import type {
   CompressionConfig,
   ContextConfig,
   InjectionConfig,
+  ReadsConfig,
   GdriveConfig,
   RedactionConfig,
   NetworkConfig,
@@ -299,6 +300,7 @@ const ENV_KEYS = [
   'TOKEN_GOAT_COMPRESS_PROFILE',
   'TOKEN_GOAT_MODEL_WINDOW_TOKENS',
   'TOKEN_GOAT_INJECTION_ENABLED',
+  'TOKEN_GOAT_READS_HONOR_HOST_DENY',
   'TOKEN_GOAT_MCP_CONFINE_READS',
   'TOKEN_GOAT_SERVE_DIFF_ON_REREAD',
   'TOKEN_GOAT_ELIDE_SERVED_LINES',
@@ -886,6 +888,11 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
   inj.enabled = validatedBool(inj_raw['enabled'], inj.enabled)
   inj.enabled = envBool('TOKEN_GOAT_INJECTION_ENABLED', inj.enabled)
 
+  const rd_raw = section(raw, 'reads')
+  const rd = getDefaultConfig('reads') as ReadsConfig
+  rd.honor_host_deny = validatedBool(rd_raw['honor_host_deny'], rd.honor_host_deny)
+  rd.honor_host_deny = envBool('TOKEN_GOAT_READS_HONOR_HOST_DENY', rd.honor_host_deny)
+
   const gd_raw = section(raw, 'gdrive')
   const gd = getDefaultConfig('gdrive') as GdriveConfig
   gd.enabled = validatedBool(gd_raw['enabled'], gd.enabled)
@@ -948,6 +955,7 @@ function _buildConfig(raw: Record<string, unknown>, projectRaw: Record<string, u
     compression: cpr,
     context: ctx,
     injection: inj,
+    reads: rd,
     gdrive: gd,
     redaction: red,
     network: net,
@@ -1038,6 +1046,7 @@ export const CONFIG_KEY_ENV_OVERRIDES: Readonly<Record<string, readonly string[]
   'context.model_window_tokens': ['TOKEN_GOAT_MODEL_WINDOW_TOKENS'],
   'indexing.cross_project_symbols': ['TOKEN_GOAT_CROSS_PROJECT_SYMBOLS'],
   'injection.enabled': ['TOKEN_GOAT_INJECTION_ENABLED'],
+  'reads.honor_host_deny': ['TOKEN_GOAT_READS_HONOR_HOST_DENY'],
   'gdrive.enabled': ['TOKEN_GOAT_GDRIVE_ENABLED'],
   'redaction.custom_patterns': ['TOKEN_GOAT_REDACTION_CUSTOM_PATTERNS'],
   'redaction.strict': ['TOKEN_GOAT_REDACTION_STRICT'],
@@ -1246,6 +1255,9 @@ export function saveConfig(config: Config, explicitKeys: readonly string[] = [])
     },
     injection: {
       enabled: config.injection.enabled,
+    },
+    reads: {
+      honor_host_deny: config.reads.honor_host_deny,
     },
     gdrive: {
       enabled: config.gdrive.enabled,

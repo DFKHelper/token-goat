@@ -23,6 +23,7 @@ import type {
   CompressionConfig,
   ContextConfig,
   InjectionConfig,
+  ReadsConfig,
   GdriveConfig,
   RedactionConfig,
   NetworkConfig,
@@ -219,6 +220,9 @@ export const CONFIG_DEFAULTS: Record<string, object> = {
   injection: {
     enabled: true,
   },
+  reads: {
+    honor_host_deny: true,
+  },
   gdrive: {
     enabled: true,
   },
@@ -274,6 +278,7 @@ export function defaultConfig(): Config {
     compression: getDefaultConfig('compression') as CompressionConfig,
     context: getDefaultConfig('context') as ContextConfig,
     injection: getDefaultConfig('injection') as InjectionConfig,
+    reads: getDefaultConfig('reads') as ReadsConfig,
     gdrive: getDefaultConfig('gdrive') as GdriveConfig,
     redaction: getDefaultConfig('redaction') as RedactionConfig,
     network: getDefaultConfig('network') as NetworkConfig,

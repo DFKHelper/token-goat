@@ -42,6 +42,7 @@ const COUNT_WORDS: Record<number, string> = {
   24: 'twenty-four',
   25: 'twenty-five',
   26: 'twenty-six',
+  27: 'twenty-seven',
 }
 
 describe('the project-locked section list in docs/security.md', () => {

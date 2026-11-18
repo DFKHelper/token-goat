@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import { extractErrorMessage } from './util.js'
 import { extraFileArgsNote } from './read_spec.js'
 import { out, outWithPayload, err, CliError } from './cli.js'
-import { formatCommandError, formatFailedResultText } from './command_error.js'
+import { commandFailureJson, formatCommandError, formatFailedResultText } from './command_error.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 
 export function readStdinPaths(): string[] {
@@ -24,6 +24,8 @@ export function runExit(fn: () => number): void {
   try {
     process.exitCode = fn()
   } catch (e) {
+    const body = commandFailureJson(e)
+    if (body !== null) out(body)
     err(formatCommandError(e))
     process.exitCode = 1
   }
@@ -40,6 +42,8 @@ export function runExitText(fn: () => { text: string; code: number }, onStdoutPa
     else err(formatFailedResultText(text))
     process.exitCode = code
   } catch (e) {
+    const body = commandFailureJson(e)
+    if (body !== null) out(body)
     err(formatCommandError(e))
     process.exitCode = 1
   }
