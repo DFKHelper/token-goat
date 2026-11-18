@@ -461,6 +461,66 @@ describe('detectUnboundedWalk -- nesting, obscured command words and indirection
   })
 })
 
+// HAND-DERIVED: written from what each left side prints; only a bounded lister may feed an xargs walker.
+describe('detectUnboundedWalk -- xargs fed by a bounded lister or by an unknown source', () => {
+  it.each([
+    ['git ls-files | xargs du'],
+    ['git ls-files | xargs du -h'],
+    ['git ls-files | xargs tree'],
+    ['git ls-files | xargs find -name x'],
+    ['git ls-files | xargs find -type f'],
+    ['git ls-files | xargs ls -R'],
+    ['git diff --name-only | xargs du -h'],
+    ['rg --files src | xargs du -h'],
+    ['fd . src | xargs du -h'],
+    ['find src -name x | xargs du'],
+    ['find /tmp/proj -name x | xargs tree'],
+    ['ls src | xargs du -h'],
+    ['echo a b | xargs du -h'],
+    ['printf "a\\nb\\n" | xargs ls -R'],
+    ['git ls-files | xargs du -ah'],
+    ['git ls-files | xargs -n1 du -h'],
+  ])('lets %s through', (command) => {
+    expect(form(command, POSIX)).toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it.each([
+    ['echo ~ | xargs du', 'xargs'],
+    ['echo C:/ | xargs tree', 'xargs'],
+    ["printf '/\\n' | xargs ls -R", 'xargs'],
+    ['echo $HOME | xargs du', 'xargs'],
+    ['echo / /tmp | xargs du', 'xargs'],
+    ['cat list | xargs du -h', 'xargs'],
+    ['xargs du -h', 'xargs'],
+    ['xargs tree', 'xargs'],
+    ['xargs find -name x', 'xargs'],
+    ['xargs du -h < list', 'xargs'],
+    ['git ls-files | xargs -a list du -h', 'xargs'],
+    ['git ls-files | xargs --arg-file=list du -h', 'xargs'],
+    ['find / -maxdepth 1 | xargs du', 'xargs'],
+    ['find / -maxdepth 1 | xargs find -name x', 'xargs'],
+    ['git ls-files | xargs -I{} find / -name {}', 'find'],
+    ['git ls-files $(echo /) | xargs du', 'xargs'],
+    ['L=x; $L | xargs du -h', 'obscured'],
+    ['(git ls-files) | xargs du -h', 'xargs'],
+    ['cd / && git ls-files | xargs du -h', 'xargs'],
+    ['git status | xargs du -h', 'xargs'],
+    ['git diff | xargs du -h', 'xargs'],
+    ['git ls-files; xargs du -h', 'xargs'],
+    ['git ls-files | grep x | xargs du -h', 'xargs'],
+  ])('refuses %s', (command, expected) => {
+    expect(form(command, POSIX)).toBe(expected)
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBe(expected)
+  })
+
+  it('names the bounded alternative when it refuses', () => {
+    const refusal = detectUnboundedWalk('xargs du -h', POSIX)
+    expect(refusal?.message).toContain('pipe a bounded lister')
+    expect(refusal?.message).toContain('git ls-files | xargs du -h')
+  })
+})
+
 describe('detectUnboundedWalk -- the refusal text', () => {
   const samples: ReadonlyArray<readonly [string, WalkContext, string]> = [
     ['find / -name x', POSIX, 'find'],

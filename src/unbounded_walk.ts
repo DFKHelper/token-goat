@@ -62,7 +62,7 @@ const FORMS = {
   xargs: walkMessage(
     'xargs',
     'takes its start paths from standard input, which can be a filesystem root, with no depth bound',
-    'Name the directory and add a depth bound.',
+    'Name the directory and add a depth bound, or pipe a bounded lister in (`git ls-files | xargs du -h`).',
   ),
   'find-stdin':
     "This is the Windows `find.exe` text search, and with no file argument and no piped input it waits on standard input forever. A hung `find` is left running when its shell is killed, starving every other shell. Give it a file (`find \"text\" file.txt`), pipe text into it (`type file.txt | find \"text\"`), or use `rg \"text\" file.txt`. If a search timed out with no output, narrow the scope or change the tool; do not rerun a reworded variant.",
@@ -525,13 +525,45 @@ function atNestingLimit(script: string): WalkRefusal | null {
 const XARGS_VALUED = /^(-[aIdELnPs]|--(arg-file|delimiter|max-args|max-procs))$/
 const STDIN_ROOT: Word = { text: '/', quoted: false }
 
-/** `xargs <command>`: inspected as written (`xargs find /`, `xargs bash -c`), then with a root on stdin. */
+const GIT_LISTERS = new Set(['ls-files', 'diff'])
+
+/** True for a command known to print a bounded list; what cannot be read statically is not. */
+function isBoundedLister(seg: Segment, ctx: WalkContext, depth: number): boolean {
+  const at = commandIndex(seg.words)
+  const head = seg.words[at]
+  if (head === undefined || seg.redirectedIn) return false
+  const { name } = commandName(head.text)
+  const args = seg.words.slice(at + 1)
+  if (args.some((w) => /[$`*?[{]/.test(w.text)) || head.text.includes('$')) return false
+  if (name === 'echo' || name === 'printf') {
+    const words = args.flatMap((w) => w.text.split(/\\[nt0]|\s+/))
+    const tokens = words.filter((t) => t !== '' && !t.startsWith('-'))
+    return !tokens.some((t) => isRoot(t))
+  }
+  if (name === 'git') {
+    const sub = args[0]?.text ?? ''
+    return GIT_LISTERS.has(sub) && (sub === 'ls-files' || args.some((w) => w.text === '--name-only'))
+  }
+  if (inspectSegment(seg, ctx, depth + 1, false) !== null) return false
+  if (name === 'fd' || name === 'fdfind' || name === 'ls') return true
+  if (name === 'rg') return args.some((w) => w.text === '--files')
+  const start = args[0]?.text
+  if (name === 'find') return start !== undefined && !/^(-|!|\\?\()/.test(start) && !isRoot(start)
+  return false
+}
+
+/** True when `xargs` reads its list from a file (`-a FILE`, `--arg-file`), not standard input. */
+const ARG_FILE = /^(-a|--arg-file(=.*)?)$/
+const readsArgFile = (args: readonly Word[]): boolean => args.some((w) => ARG_FILE.test(w.text))
+
+/** `xargs <command>`: checked as written, then with a root on stdin unless a bounded lister feeds it. */
 function inspectXargs(
   args: readonly Word[],
   seg: Segment,
   ctx: WalkContext,
   depth: number,
   fromRoot: boolean,
+  prev: Segment | undefined,
 ): WalkRefusal | null {
   let i = 0
   while (i < args.length && args[i]!.text.startsWith('-')) {
@@ -556,7 +588,11 @@ function inspectXargs(
     : own.some((w) => !w.text.startsWith('-'))
   if (hasOwnStart) return null
   const walkArgs = name === 'find' ? [STDIN_ROOT, ...own] : [...own, STDIN_ROOT]
-  return inspectWalker(name, '', walkArgs, seg, ctx, false) === null ? null : refuse('xargs')
+  if (inspectWalker(name, '', walkArgs, seg, ctx, false) === null) return null
+  // Unknown stdin is not safe: only a bounded lister on the left, same group, shell not at a root, lifts it.
+  const piped = seg.pipedIn && !seg.redirectedIn && !readsArgFile(args.slice(0, i))
+  const left = prev !== undefined && prev.group === seg.group ? prev : undefined
+  return piped && !fromRoot && left !== undefined && isBoundedLister(left, ctx, depth) ? null : refuse('xargs')
 }
 
 function inspectSegment(
@@ -565,6 +601,7 @@ function inspectSegment(
   depth: number,
   fromRoot: boolean,
   next?: Segment,
+  prev?: Segment,
 ): WalkRefusal | null {
   const at = commandIndex(seg.words)
   const head = seg.words[at]
@@ -583,7 +620,7 @@ function inspectSegment(
   if (script !== null) {
     return depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1, fromRoot) : atNestingLimit(script)
   }
-  if (name === 'xargs') return inspectXargs(args, seg, ctx, depth, fromRoot)
+  if (name === 'xargs') return inspectXargs(args, seg, ctx, depth, fromRoot, prev)
   return inspectWalker(name, dir, args, seg, ctx, fromRoot)
 }
 
@@ -642,7 +679,7 @@ function walkScan(
   for (const [n, seg] of segments.entries()) {
     if (!atRoot.has(seg.group)) atRoot.set(seg.group, atRoot.get(seg.parentGroup) ?? startsAtRoot)
     const fromRoot = atRoot.get(seg.group)!
-    const hit = inspectSegment(seg, ctx, depth, fromRoot, segments[n + 1])
+    const hit = inspectSegment(seg, ctx, depth, fromRoot, segments[n + 1], segments[n - 1])
     if (hit !== null) return hit
     // A `cd` piped to or from another command, or sent to the background, runs in its own process and leaves the shell where it was; one followed by `||` leaves what follows to run only after it failed.
     const landed = seg.pipedIn || seg.endOp !== '' ? null : cdLandsAtRoot(seg, fromRoot, ctx)
