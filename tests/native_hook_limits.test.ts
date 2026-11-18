@@ -17,7 +17,16 @@ const shimName = (native: string): string => NATIVE_TO_SHIM[native] ?? native
 
 // Installer harness names: NativeHarness (src/native_hook.ts:19) plus vscode, aliased in fallback.rs.
 const INSTALLER_NATIVE_NAMES = ['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli', 'vscode']
-const NATIVE_ALIAS: Record<string, string> = { vscode: 'copilot_cli' }
+const RUST_FALLBACK = path.join(ROOT, 'native', 'tg-hook', 'src', 'fallback.rs')
+
+// The aliases are read from the `"name" => "target"` arms of harness_limit, so the Rust source is the only copy.
+function rustHarnessAliases(): Record<string, string> {
+  const src = fs.readFileSync(RUST_FALLBACK, 'utf8')
+  const start = src.indexOf('pub fn harness_limit')
+  expect(start, 'pub fn harness_limit in fallback.rs').toBeGreaterThan(-1)
+  const body = src.slice(start, src.indexOf('\n}\n', start))
+  return Object.fromEntries([...body.matchAll(/"(\w+)" => "(\w+)"/g)].map((m) => [m[1], m[2]]))
+}
 
 describe('the native client limit table', () => {
   it('names every harness of the shim table with the same milliseconds', () => {
@@ -32,8 +41,9 @@ describe('the native client limit table', () => {
   })
 
   it('gives every harness an installer passes a named limit or an alias to one', () => {
+    const aliases = rustHarnessAliases()
     for (const name of INSTALLER_NATIVE_NAMES) {
-      const key = NATIVE_ALIAS[name] ?? name
+      const key = aliases[name] ?? name
       expect(Object.keys(limits), `${name} -> ${key}`).toContain(key)
     }
   })

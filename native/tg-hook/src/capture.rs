@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(third, Some(3));
     }
 
-    /// The next test's hanging child, run as `--ignored --exact <this> pidfile=<path>`: writes its pid and hangs.
+    /// Hanging child for the next test: `--ignored --exact <this> pidfile=<path>` writes its pid, then hangs.
     #[test]
     #[ignore = "only runs as the hanging child of a_hung_route_is_dead_and_reaped_before_exec_returns"]
     fn hang_child() {

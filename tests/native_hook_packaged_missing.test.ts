@@ -30,6 +30,7 @@ function bundleIn(dir: string): string {
 }
 
 describe('nativeHookBinary with no packaged binary beside the bundle', () => {
+  // Runs only where a packaged binary ships: the missing-binary message is for those targets.
   it.skipIf(!supported)('names the missing packaged path and the build command on stderr, and answers undefined', () => {
     const write = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
     const entry = bundleIn(path.join(TMP, 'dist'))
@@ -39,6 +40,7 @@ describe('nativeHookBinary with no packaged binary beside the bundle', () => {
     expect(text).toContain('npm run build:native')
   })
 
+  // Same gate: only a packaged-binary target has a missing-binary path to probe.
   it.skipIf(!supported)('stays silent for the read-only doctor probe (sync false)', () => {
     const write = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
     const entry = bundleIn(path.join(TMP, 'probe'))
@@ -46,6 +48,7 @@ describe('nativeHookBinary with no packaged binary beside the bundle', () => {
     expect(write).not.toHaveBeenCalled()
   })
 
+  // Skipped on the packaged targets: they ship a binary, so the no-binary silence cannot be reached.
   it.skipIf(supported)('stays silent on a platform that ships no packaged binary', () => {
     const write = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
     const entry = bundleIn(path.join(TMP, 'unsupported'))

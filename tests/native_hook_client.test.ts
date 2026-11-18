@@ -156,7 +156,13 @@ function runNative(
   args: readonly string[],
   input: Buffer | string,
   env: Env = {},
-  opts: { cwd?: string; onSpawn?: (child: ChildProcess) => void; powershell?: boolean; killAfterMs?: number; holdStdin?: boolean } = {},
+  opts: {
+    cwd?: string
+    onSpawn?: (child: ChildProcess) => void
+    powershell?: boolean
+    killAfterMs?: number
+    holdStdin?: boolean
+  } = {},
 ): Promise<Run> {
   return new Promise((resolve, reject) => {
     const started = performance.now()
@@ -666,6 +672,7 @@ describe('falls back when nothing was dispatched', () => {
     }
   })
 
+  // POSIX mode bits only: Windows keeps the key private by the data directory ACL, not by mode bits.
   it.skipIf(WIN)('a key other users can read (POSIX mode bits; Windows keeps the key private by the data directory ACL, which the Node client does not check either)', async () => {
     const keyPath = serverKeyPath(sb.dataDir)
     fs.chmodSync(keyPath, 0o644)
@@ -877,7 +884,7 @@ describe('one deadline serves every route', () => {
       '',
     ]
     fs.writeFileSync(entry, lines.join('\n'))
-    // A harness with no direct entry is rebuilt as `node <shim> <event> <entry>`; this shim acts like the entry.
+    // With no direct entry a harness runs `node <shim> <event> <entry>`; this shim acts as the entry.
     const shim = path.join(dir, 'token-goat-shim.cjs')
     const shimLines = [
       "require('node:fs').appendFileSync(process.env.TG_ROUTE2_COUNTER, 'x')",
@@ -888,7 +895,13 @@ describe('one deadline serves every route', () => {
     fs.writeFileSync(shim, shimLines.join('\n'))
     const slashed = (p: string): string => p.split(path.sep).join('/')
     const nativeBin = `${slashed(dir)}/tg-hook${WIN ? '.exe' : ''}`
-    const base = { schema: 1, version: '1', writtenAt: 't', shim: opts.withShim === true ? slashed(shim) : null, nativeBin }
+    const base = {
+      schema: 1,
+      version: '1',
+      writtenAt: 't',
+      shim: opts.withShim === true ? slashed(shim) : null,
+      nativeBin,
+    }
     const pointer = { ...base, entry: slashed(entry), bundleDir: slashed(dir), node: slashed(process.execPath) }
     fs.writeFileSync(path.join(sb.dataDir, 'hook-entry.json'), JSON.stringify(pointer))
   }
@@ -955,17 +968,19 @@ describe('one deadline serves every route', () => {
     endedOnItsOwn(await runNative(args, '', NO_SERVER, { ...BOUND, holdStdin: true }))
   })
 
-  it('a host that sends more than a frame and then keeps stdin open still ends the call at the limit', async () => {
+  it('a host that sends more than a frame and keeps stdin open still ends the call at the limit', async () => {
     // The rest of the payload never arrives: reading it must be bounded by the call's deadline, not by EOF.
     const args = hookArgs(fbTail(0, 'hang', hangPid('rest')), { extra: LIMIT_ARGS })
-    endedOnItsOwn(await runNative(args, Buffer.alloc(MAX_FRAME_BYTES + 100, 0x61), NO_SERVER, { ...BOUND, holdStdin: true }))
+    const input = Buffer.alloc(MAX_FRAME_BYTES + 100, 0x61)
+    endedOnItsOwn(await runNative(args, input, NO_SERVER, { ...BOUND, holdStdin: true }))
   })
 
-  it('at the smallest harness limit a hung first route leaves the second its answer or the safe answer, and the call ends itself', async () => {
+  it("at the smallest limit a hung first route yields the second route's answer or the safe one", async () => {
     writePointer({ withShim: true })
     const counter = path.join(sb.base, 'route2-small')
     const flags = ['--harness', 'grok', '--event', 'pre_tool_use', '--entry', sb.fakeEntry, '--script-dir', sb.base]
-    const res = await runNative([...flags, '--', ...fbTail(0, 'hang', hangPid('small'))], '{}', route2Env(counter, 'answer'), BOUND)
+    const argv = [...flags, '--', ...fbTail(0, 'hang', hangPid('small'))]
+    const res = await runNative(argv, '{}', route2Env(counter, 'answer'), BOUND)
     expect(res.signal, 'the client was still running at the kill bound').toBeNull()
     expect(res.exit, res.stderr).toBe(0)
     expect(['{"second":true}', '{"decision":"allow"}']).toContain(res.stdout.toString('utf8'))
@@ -1179,6 +1194,7 @@ describe('process behaviour', () => {
     expect(res.stdout.toString('utf8')).toBe('{}')
   })
 
+  // Signal kill is POSIX only: Windows has no signal that ends a wrapped command.
   it.skipIf(WIN)('a wrapped command killed by a signal is answered with the safe no-op and exit 0 (POSIX only)', async () => {
     const res = await runNative(hookArgs(fbTail(0, 'signal')), '{}', { TOKEN_GOAT_HOOK_SERVER: '0' })
     expect(res.signal).toBeNull()
@@ -1221,6 +1237,7 @@ describe('process behaviour', () => {
     expect(fallbackRuns()).toBe(runs)
   })
 
+  // macOS has neither a Windows job object nor a Linux parent-death signal to end the wrapped command.
   it.skipIf(process.platform === 'darwin')('killing the client kills the wrapped command it started (Windows job object, Linux parent-death signal; macOS has neither)', async () => {
     const pidFile = path.join(sb.base, `hang-${Date.now()}.pid`)
     let grandchild = 0

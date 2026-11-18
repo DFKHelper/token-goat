@@ -1,4 +1,4 @@
-// HAND-DERIVED: every expected count is the number of rows the test inserts, computed by hand, never read from summarize.
+// HAND-DERIVED: each expected count is the rows the test inserts, counted by hand, never read from summarize.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -26,10 +26,11 @@ describe('generic bash head rows in the stats summary', () => {
   })
 
   const insert = (kind: string, ts: number, bytes = 0, tokens = 0): void => {
-    db.prepare('INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, ?, ?)').run(ts, kind, bytes, tokens)
+    db.prepare('INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, ?, ?)')
+      .run(ts, kind, bytes, tokens)
   }
 
-  it('leaves total, by-day, by-source and by-kind events as they were without the rows, and tallies the heads', () => {
+  it('leaves total, by-day, by-source and by-kind as they were without the rows, and tallies the heads', () => {
     const now = Math.floor(Date.now() / 1000)
     insert('image_shrink', now, 4000, 1000)
     const before = summarize(30, db)
@@ -55,7 +56,9 @@ describe('generic bash head rows in the stats summary', () => {
     insert('bash_generic_head:npm', now)
     rollupAndPruneStats(db, 1)
 
-    const raw = db.prepare("SELECT COUNT(*) AS n FROM stats WHERE kind LIKE 'bash_generic_head:%'").get() as { n: number }
+    const raw = db
+      .prepare("SELECT COUNT(*) AS n FROM stats WHERE kind LIKE 'bash_generic_head:%'")
+      .get() as { n: number }
     expect(raw.n).toBe(1)
     const summary = summarize(30, db)
     expect(summary.generic_heads).toEqual({ npm: 3 })
@@ -80,7 +83,9 @@ describe('the Commands with no dedicated filter section', () => {
     const now = Math.floor(Date.now() / 1000)
     const global = getGlobalDb()
     const add = global.prepare('INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, 0, 0)')
-    global.prepare('INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, 100, 25)').run(now, 'image_shrink')
+    global
+      .prepare('INSERT INTO stats (ts, kind, bytes_saved, tokens_saved) VALUES (?, ?, 100, 25)')
+      .run(now, 'image_shrink')
     for (let i = 1; i <= 12; i++) {
       for (let n = 0; n < i; n++) add.run(now, `bash_generic_head:tgsec${String.fromCharCode(96 + i)}`)
     }

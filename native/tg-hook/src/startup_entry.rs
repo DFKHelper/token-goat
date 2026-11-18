@@ -99,35 +99,16 @@ pub fn run(mut command: Vec<OsString>, started: Instant, call: &Call, limit: Opt
 
 /// Relay failed after framing: the same route as other hooks (Node argv, pointer, safe answer).
 #[cfg(windows)]
-fn fall_back(
-    command: &[OsString],
-    framed: &std::sync::Mutex<Option<Vec<u8>>>,
-    deadline: Instant,
-    call: &Call,
-    reason: &str,
-) -> i32 {
+fn fall_back(command: &[OsString], framed: &std::sync::Mutex<Option<Vec<u8>>>, deadline: Instant, call: &Call, reason: &str) -> i32 {
     // A spent relay budget leaves no room for a second route: the first tool call delivers that start.
-    if deadline.saturating_duration_since(Instant::now())
-        <= Duration::from_millis(crate::startup_owner::RESERVE_MS)
-    {
+    if deadline.saturating_duration_since(Instant::now()) <= Duration::from_millis(crate::startup_owner::RESERVE_MS) {
         return fail_open(reason);
     }
     eprintln!("tg-hook: SessionStart relay failed ({reason}); trying the Node route");
     let Some(bytes) = framed.lock().ok().and_then(|mut slot| slot.take()) else { return fail_open(reason) };
     let extra = command[command.len() - 1..].to_vec();
-    let opts = crate::fallback::Opts {
-        harness: call.harness.clone(),
-        event: Some(call.event.clone()),
-        deadline: Some(deadline),
-        extra,
-        ..crate::fallback::Opts::bare()
-    };
-    crate::fallback::run(
-        command,
-        crate::fallback::Input::Read { bytes, more: false },
-        "startup-relay-failed",
-        &opts,
-    )
+    let opts = crate::fallback::Opts { harness: call.harness.clone(), event: Some(call.event.clone()), deadline: Some(deadline), extra, ..crate::fallback::Opts::bare() };
+    crate::fallback::run(command, crate::fallback::Input::Read { bytes, more: false }, "startup-relay-failed", &opts)
 }
 
 fn fail_open(reason: &str) -> i32 {
@@ -159,12 +140,7 @@ fn frame(mut input: impl std::io::Read) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(windows)]
-fn execute(
-    command: &[OsString],
-    epoch: u64,
-    deadline: Instant,
-    framed: &std::sync::Mutex<Option<Vec<u8>>>,
-) -> Result<(serde_json::Value, Vec<u8>, bool), String> {
+fn execute(command: &[OsString], epoch: u64, deadline: Instant, framed: &std::sync::Mutex<Option<Vec<u8>>>) -> Result<(serde_json::Value, Vec<u8>, bool), String> {
     use crate::startup_owner::{MAX_BYTES, RESERVE_MS, reader};
     use crate::startup_process::{Child, Job};
     use std::io::Write;
@@ -292,18 +268,10 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_failed_relay_replays_the_framed_payload_through_the_node_route() {
-        let call = Call {
-            harness: "copilot_cli".into(),
-            event: "sessionStart".into(),
-            entry: String::new(),
-            script_dir: None,
-            response_timeout: Duration::ZERO,
-            deadline: None,
-        };
+        let call = Call { harness: "copilot_cli".into(), event: "sessionStart".into(), entry: String::new(), script_dir: None, response_timeout: Duration::ZERO, deadline: None };
         let deadline = Instant::now() + Duration::from_secs(30);
         // Exit 2 proves the Node route answered; unframed, the safe answer exits, so it is not asserted here.
-        let node_route: Vec<OsString> =
-            ["cmd.exe", "/D", "/C", "echo {}& exit 2"].iter().map(OsString::from).collect();
+        let node_route: Vec<OsString> = ["cmd.exe", "/D", "/C", "echo {}& exit 2"].iter().map(OsString::from).collect();
         let framed = std::sync::Mutex::new(Some(b"{}".to_vec()));
         assert_eq!(fall_back(&node_route, &framed, deadline, &call, "relay died"), 2);
         assert!(framed.lock().unwrap().is_none(), "the payload is taken once");
