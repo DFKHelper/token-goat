@@ -7,6 +7,7 @@ import { buildStats } from './cli_context_stats.js'
 import { resolveProjectRoot } from './project.js'
 import { displaySafeText, displaySafeJson } from './paths.js'
 import { formatCommandError } from './command_error.js'
+import { buildHostLimitReport, PROJECT_CONFIG_TRUST_NOTE, type HostLimitReport } from './host_file_limits.js'
 
 export interface BootstrapAuditOptions {
   project?: string
@@ -49,6 +50,7 @@ export interface BootstrapAuditResult {
   largestTotal: number
   largestTruncated: boolean
   diagnostics: Diagnostic[]
+  host_limits: HostLimitReport
   budgets: {
     warn_tokens: number | null
     fail_tokens: number | null
@@ -252,6 +254,8 @@ export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Pro
   if (failTokens !== null && totalTokens > failTokens) failures.push(`estimated tokens ${totalTokens} exceed failure budget ${failTokens}`)
   if (warnBytes !== null && metadataBytes > warnBytes) warnings.push(`metadata bytes ${metadataBytes} exceed warning budget ${warnBytes}`)
   if (failBytes !== null && metadataBytes > failBytes) failures.push(`metadata bytes ${metadataBytes} exceed failure budget ${failBytes}`)
+  const hostLimits = buildHostLimitReport({ home, project, claudeMdPaths: context.claude_md_rows.map((row) => row.path), memoryPath: context.memory_md_path })
+  diagnostics.push(...hostLimits.diagnostics)
   diagnostics.sort((a, b) => a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason))
   return {
     project,
@@ -267,7 +271,27 @@ export async function buildBootstrapAudit(opts: BootstrapAuditOptions = {}): Pro
     largestTotal,
     largestTruncated: largest.length < largestTotal,
     diagnostics,
+    host_limits: hostLimits,
     budgets: { warn_tokens: warnTokens, fail_tokens: failTokens, warn_bytes: warnBytes, fail_bytes: failBytes, warnings, failures },
+  }
+}
+
+function writeHostLimits(report: HostLimitReport): void {
+  const out = process.stdout
+  out.write("\nHost always-on files (limits come from each host's docs and are reported, never enforced here):\n")
+  if (report.findings.length === 0) out.write('  none found\n')
+  for (const f of report.findings) {
+    out.write(`  [${f.host}] ${f.kind}: ${f.bytes} bytes, ~${f.estimated_tokens} tok${f.lines === null ? '' : `, ${f.lines} lines`}, ${f.outcome}\n`)
+    out.write(`      ${displaySafeText(f.path)}\n`)
+    out.write(`      limit: ${f.limit}\n`)
+    out.write(`      ${f.verdict}\n`)
+  }
+  out.write(`  Codex budget: ${report.codex.budget_bytes} bytes (${report.codex.budget_source}${report.codex.budget_source === 'project config' ? `, ${PROJECT_CONFIG_TRUST_NOTE}` : ''}); project AGENTS.md total ${report.codex.project_total_bytes} bytes\n`)
+  for (const u of report.unknown) out.write(`  [${u.host}] ${u.what}: ${u.limit}\n`)
+  const advice = report.findings.filter((f) => f.advice !== null)
+  if (advice.length > 0) {
+    out.write('Advice, biggest loss or cost first:\n')
+    for (const f of advice) out.write(`  - ${displaySafeText(f.advice ?? '')}\n`)
   }
 }
 
@@ -288,6 +312,7 @@ export async function runBootstrapAudit(opts: BootstrapAuditOptions = {}): Promi
     // These paths come from whatever is installed under ~/.claude/agents and ~/.claude/skills, which is third-party content: an agent directory named after one of token-goat's markers would otherwise print as token-goat's own line.
     for (const entry of result.largest) process.stdout.write(`  ${entry.metadata_bytes.toString().padStart(7)} bytes  [${entry.scope}] ${displaySafeText(entry.path)}\n`)
     if (result.largestTruncated) process.stdout.write(`  ...and ${result.largestTotal - result.largest.length} more (raise --top to see them).\n`)
+    writeHostLimits(result.host_limits)
     for (const diagnostic of result.diagnostics) process.stderr.write(`token-goat: bootstrap-audit: skipped ${displaySafeText(diagnostic.path)} (${displaySafeText(diagnostic.reason)})\n`)
     for (const warning of result.budgets.warnings) process.stderr.write(`token-goat: bootstrap-audit: warning: ${warning}\n`)
     for (const failure of result.budgets.failures) process.stderr.write(formatCommandError(`bootstrap-audit: failure: ${failure}`) + '\n')

@@ -1,0 +1,6 @@
+# set 2026-10-19T14:40:59.813Z
+deploy-order = "Run migrations before the worker restarts"
+# set 2026-10-19T14:41:02.748Z
+plain-lesson = "bundle size is checked in a clean tree"
+# set 2026-10-19T14:41:01.462Z
+quoted = "say \"hi\" then C:/tmp"

@@ -68,6 +68,7 @@
     ["src/hook_guard.ts","Hook Subsystem"],
     ["src/hook_selftest.ts","Hook Subsystem"],
     ["src/hook_registry.ts","Hook Subsystem"],
+    ["src/host_file_limits.ts","Specialized Subsystems"],
     ["src/hooks_agent_spawn.ts","Hook Subsystem"],
     ["src/hooks_agent_spawn_register.ts","Hook Subsystem"],
     ["src/hooks_bash.ts","Hook Subsystem"],

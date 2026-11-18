@@ -8,12 +8,13 @@ import { load as loadYaml } from 'js-yaml'
 import { SKIP_DIRS } from './baseline.js'
 import { loadConfig } from './config.js'
 import { tokenGoatHome } from './disk_cache.js'
+import { emitErr } from './emit.js'
 import { ownGet } from './own_lookup.js'
 import { displaySafeText, toDisplayPath, displaySafeJson } from './paths.js'
 import { autoNoteAnchor, resolveNoteAnchor } from './cli_file_ops.js'
 import { anchorStatus } from './note_anchor.js'
 import { findProject, getDisplayRoot, type Project } from './project.js'
-import { anchorLabel, clearAll, loadDatedEntries, loadEntries, MAX_ENTRIES as MAX_NOTE_ENTRIES, noteAgeLabel, oneLineNoteValue, setEntry, unsetEntry } from './project_memory.js'
+import { anchorLabel, clearAll, detailsLabel, loadDatedEntries, MAX_ENTRIES as MAX_NOTE_ENTRIES, noteAgeLabel, normalizeNoteDetails, oneLineNoteValue, setEntry, unsetEntry, type NoteDetailsInput, type NoteEntry } from './project_memory.js'
 import { getSessionFiles } from './session.js'
 import { echoedValue } from './hint_suggestion_guard.js'
 import { foldPath, requirePositiveStrictInt } from './util.js'
@@ -496,20 +497,29 @@ function noteValueForDisplay(value: string): string {
   return displaySafeText(oneLineNoteValue(value))
 }
 
+/** The `note list --json` view of a note: its lesson alone, as before, unless it carries a cue, evidence or verdict, when the lesson and those fields together. A note without evidence stays a bare string, so a consumer written before notes carried evidence reads every note it knew exactly as it did. */
+function noteJsonView(note: NoteEntry): string | Record<string, string> {
+  const { cue, evidence, verdict } = note
+  if (cue === undefined && evidence === undefined && verdict === undefined) return note.value
+  return { value: note.value, ...(cue === undefined ? {} : { cue }), ...(evidence === undefined ? {} : { evidence }), ...(verdict === undefined ? {} : { verdict }) }
+}
+
 export function cmdNote(
   action: string,
   key: string | undefined,
   value: string | undefined,
-  opts: { json?: boolean; anchor?: string },
+  opts: { json?: boolean; anchor?: string } & NoteDetailsInput,
 ): void {
   const act = action.toLowerCase()
-  if (opts.anchor !== undefined && act !== 'set') throw new Error('--anchor applies to note set only')
+  for (const flag of ['anchor', 'cue', 'evidence', 'verdict'] as const) {
+    if (opts[flag] !== undefined && act !== 'set') throw new Error(`--${flag} applies to note set only`)
+  }
 
   if (act === 'list') {
     const project = resolveProject()
     const hash = project.hash
     if (opts.json === true) {
-      process.stdout.write(displaySafeJson(loadEntries(hash)) + '\n')
+      process.stdout.write(displaySafeJson(Object.fromEntries(Object.entries(loadDatedEntries(hash)).map(([k, note]) => [k, noteJsonView(note)]))) + '\n')
     } else {
       const pairs = Object.entries(loadDatedEntries(hash))
       if (pairs.length === 0) {
@@ -518,7 +528,7 @@ export function cmdNote(
         const now = Date.now()
         for (const [k, note] of pairs) {
           const flag = note.anchor === undefined ? '' : anchorLabel(anchorStatus(project.root, note.anchor))
-          process.stdout.write(`${k}${noteAgeLabel(note, now)}${flag} = ${noteValueForDisplay(note.value)}\n`)
+          process.stdout.write(`${k}${noteAgeLabel(note, now)}${flag}${displaySafeText(detailsLabel(note))} = ${noteValueForDisplay(note.value)}\n`)
         }
       }
     }
@@ -535,10 +545,12 @@ export function cmdNote(
   if (act === 'get') {
     if (key === undefined) throw new Error('note get requires a key')
     const hash = resolveProjectHash()
-    const entries = loadEntries(hash)
-    const v = ownGet(entries, key)
-    if (v === undefined) throw new Error(`Key not found: ${echoedValue(key)}`)
-    process.stdout.write(v + '\n')
+    const note = ownGet(loadDatedEntries(hash), key)
+    if (note === undefined) throw new Error(`Key not found: ${echoedValue(key)}`)
+    process.stdout.write(note.value + '\n')
+    // On stderr so stdout stays exactly the value for scripts; a person at a terminal still sees the marker the session-start block shows.
+    const marker = detailsLabel(note).trim()
+    if (marker !== '') emitErr(displaySafeText(`Note ${marker}`))
     return
   }
 
@@ -553,11 +565,15 @@ export function cmdNote(
   if (act === 'set') {
     if (key === undefined) throw new Error('note set requires a key')
     if (value === undefined) throw new Error('note set requires a value')
+    const details = normalizeNoteDetails(opts)
     const project = resolveProject()
     // An explicit anchor that does not resolve is an error; one found in the note's own text is a convenience, and the note is set either way.
     const anchor = opts.anchor !== undefined ? resolveNoteAnchor(opts.anchor, project.root) : autoNoteAnchor(value, project.root) ?? undefined
-    const { previous, evicted } = setEntry(project.hash, key, value, anchor)
+    const { previous, evicted } = setEntry(project.hash, key, value, anchor, details)
     process.stdout.write(`Set: ${key} = ${noteValueForDisplay(value)}\n`)
+    if (details.cue !== undefined) process.stdout.write(`Cue: ${noteValueForDisplay(details.cue)}\n`)
+    if (details.evidence !== undefined) process.stdout.write(`Evidence: ${noteValueForDisplay(details.evidence)}\n`)
+    if (details.verdict !== undefined) process.stdout.write(`Verdict: ${details.verdict}\n`)
     if (anchor !== undefined) process.stdout.write(`Anchored to ${displaySafeText(anchor.file)}::${displaySafeText(anchor.symbol)}; the note is flagged once that symbol changes\n`)
     // A note set overwrites without asking, so say what it overwrote: the old finding is otherwise gone with no trace.
     if (previous !== undefined && previous !== value) process.stdout.write(`Replaced the previous value: ${noteValueForDisplay(previous)}\n`)

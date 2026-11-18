@@ -118,13 +118,13 @@ describe('anchored project notes', () => {
   describe('buildInjection', () => {
     it('marks a note whose anchored symbol changed', () => {
       setEntry('p', 'k', 'v', ANCHOR)
-      expect(buildInjection('p', '/root', statusOf)).toContain('(changed since note): v')
+      expect(buildInjection('p', '/root', statusOf)).toContain('(changed since note) [unverified]: v')
     })
 
     it('marks a note whose anchored symbol is gone', () => {
       status.value = 'gone'
       setEntry('p', 'k', 'v', ANCHOR)
-      expect(buildInjection('p', '/root', statusOf)).toContain('(anchored symbol gone): v')
+      expect(buildInjection('p', '/root', statusOf)).toContain('(anchored symbol gone) [unverified]: v')
     })
 
     it('adds nothing while the symbol is current or its status unknown', () => {

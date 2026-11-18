@@ -18,6 +18,16 @@ const KEY_RE = /^[A-Za-z0-9_-]{1,80}$/;
 const SET_AT_RE = /^#\s*set\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)$/;
 // An anchored note's symbol is a comment for the same reason. The file is matched greedily and the symbol cannot hold `:` or `@`, so a path containing either still splits on the last `::` and the last `@`.
 const ANCHOR_RE = /^#\s*anchor:\s*(\S.*)::([^:@\s]+)@([0-9a-f]{64})$/;
+/** The verdicts a note may carry on whether acting on its lesson helped. */
+export const NOTE_VERDICTS = ['helped', 'hurt', 'no effect', 'confounded'] as const;
+export type NoteVerdict = (typeof NOTE_VERDICTS)[number];
+// What triggered a note, the evidence behind it and its verdict are comments too, for the same reason: an older binary skips them, while one more key = "value" line shape would make it refuse every update. `.` stops at a line break, so a field is read back only if it is one line, which {@link normalizeNoteDetails} guarantees.
+const CUE_RE = /^#\s*cue:\s*(\S.*)$/;
+const EVIDENCE_RE = /^#\s*evidence:\s*(\S.*)$/;
+const VERDICT_RE = new RegExp(`^#\\s*verdict:\\s*(${NOTE_VERDICTS.join('|')})$`);
+// Neither field is longer than MAX_VALUE_LEN, the longest a note's lesson is shown; the cue is shorter because the session-start block prints it on every note line.
+const MAX_CUE_LEN = 200;
+const MAX_EVIDENCE_LEN = MAX_VALUE_LEN;
 
 /** The indexed symbol a note describes: its file relative to the project root with forward slashes, its name, and the fingerprint of its body when the note was set. */
 export interface NoteAnchor {
@@ -26,11 +36,68 @@ export interface NoteAnchor {
   sha: string;
 }
 
-/** A note's value and, when its file records one, the ISO 8601 UTC time setEntry last wrote it and the symbol it is anchored to. A note written before notes carried a time, or saved since by a binary that drops the comment, has none; the same goes for an anchor. */
-export interface NoteEntry {
+/** What a note records beside its lesson: the situation that triggered it, the evidence behind it, and whether acting on it helped. A note with no evidence is shown as unverified. */
+export interface NoteDetails {
+  cue?: string;
+  evidence?: string;
+  verdict?: NoteVerdict;
+}
+
+/** {@link NoteDetails} as a caller hands it over, the verdict still an unchecked string. */
+export interface NoteDetailsInput {
+  cue?: string;
+  evidence?: string;
+  verdict?: string;
+}
+
+/** A note's value and, when its file records one, the ISO 8601 UTC time setEntry last wrote it, the symbol it is anchored to and its {@link NoteDetails}. A note written before notes carried a time, or saved since by a binary that drops the comment, has none; the same goes for an anchor and for details. */
+export interface NoteEntry extends NoteDetails {
   value: string;
   setAt?: string;
   anchor?: NoteAnchor;
+}
+
+/** A note's details with each field as one line, trimmed and within its cap, or an error naming the field. A line break (CRLF, CR, LF, NEL, LS, PS) becomes the visible two-character `\n` the note's value uses, because a raw one would write a line the older reader cannot parse and every update by an older binary would then refuse. A blank field is no field. */
+export function normalizeNoteDetails(input: NoteDetailsInput): NoteDetails {
+  const details: NoteDetails = {};
+  for (const [field, max] of [['cue', MAX_CUE_LEN], ['evidence', MAX_EVIDENCE_LEN]] as const) {
+    const raw = input[field];
+    if (raw === undefined) continue;
+    // Trimmed before folding, so line breaks around the text are dropped rather than kept as a visible `\n`, and a field of nothing else is no field.
+    const text = oneLineNoteValue(raw.trim());
+    if (text.length === 0) continue;
+    if (text.length > max) throw new Error(`Invalid ${field}: ${text.length} characters, over the ${max}-character limit`);
+    details[field] = text;
+  }
+  const verdict = input.verdict?.trim();
+  if (verdict !== undefined && verdict.length > 0) {
+    const known = NOTE_VERDICTS.find((v) => v === verdict);
+    if (known === undefined) throw new Error(`Invalid verdict ${JSON.stringify(verdict)}: use one of ${NOTE_VERDICTS.join(', ')}`);
+    details.verdict = known;
+  }
+  return details;
+}
+
+/** The comment lines that record `details`, in the order the reader expects them before the note's entry. */
+function detailLines(details: NoteDetails): string[] {
+  const lines: string[] = [];
+  if (details.cue !== undefined) lines.push(`# cue: ${details.cue}`);
+  if (details.evidence !== undefined) lines.push(`# evidence: ${details.evidence}`);
+  if (details.verdict !== undefined) lines.push(`# verdict: ${details.verdict}`);
+  return lines;
+}
+
+/** The bracketed marker after a note's age in the session-start block: `[helped; cue: deploy failed]`, or `[unverified]` first when the note has no evidence, so a guess is never read as a finding. Empty for a note that has evidence and neither a verdict nor a cue. */
+export function detailsLabel(note: NoteEntry): string {
+  const parts: string[] = [];
+  if (note.evidence === undefined) parts.push('unverified');
+  if (note.verdict !== undefined) parts.push(note.verdict);
+  if (note.cue !== undefined) {
+    // A hand-edited notes file can hold a line break the set path would have folded, and it must not start a line of its own in the block.
+    const cue = oneLineNoteValue(note.cue);
+    parts.push(`cue: ${cue.length <= MAX_CUE_LEN ? cue : cue.slice(0, MAX_CUE_LEN) + '…'}`);
+  }
+  return parts.length === 0 ? '' : ` [${parts.join('; ')}]`;
 }
 
 /** Whether an anchored note's symbol still has the body it had when the note was set. `unknown` makes no claim: the file is not indexed, or the index could not be read. */
@@ -77,11 +144,12 @@ function validateKey(key: string): void {
   }
 }
 
-/** Simple TOML parser for key=value format (no nested tables). The 1-based number of every line that is neither blank, a comment, nor an entry is pushed onto `unparsed`. A `# set <ISO time>` comment dates the next entry line only, recorded in `setAt`; an entry with none, or with a time that does not parse, is undated there. A `# anchor: file::symbol@sha` comment anchors the next entry line the same way, recorded in `anchors`, whichever order the two comments come in. */
-function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<string, string>(), anchors = new Map<string, NoteAnchor>()): Record<string, string> {
+/** Simple TOML parser for key=value format (no nested tables). The 1-based number of every line that is neither blank, a comment, nor an entry is pushed onto `unparsed`. A `# set <ISO time>` comment dates the next entry line only, recorded in `setAt`; an entry with none, or with a time that does not parse, is undated there. A `# anchor: file::symbol@sha` comment anchors the next entry line the same way, recorded in `anchors`, whichever order the two comments come in. The `# cue:`, `# evidence:` and `# verdict:` comments do the same, recorded in `details`; a verdict outside the four known is ignored. */
+function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<string, string>(), anchors = new Map<string, NoteAnchor>(), details = new Map<string, NoteDetails>()): Record<string, string> {
   const result = noteMap<string>();
   let pendingSetAt: string | undefined;
   let pendingAnchor: NoteAnchor | undefined;
+  let pendingDetails: NoteDetails = {};
   for (const [i, line] of content.split('\n').entries()) {
     const trimmed = line.trim();
     if (!trimmed) {
@@ -92,12 +160,20 @@ function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<str
       if (time !== undefined && !Number.isNaN(Date.parse(time))) pendingSetAt = time;
       const anchor = ANCHOR_RE.exec(trimmed);
       if (anchor !== null) pendingAnchor = { file: anchor[1] as string, symbol: anchor[2] as string, sha: anchor[3] as string };
+      const cue = CUE_RE.exec(trimmed)?.[1];
+      if (cue !== undefined) pendingDetails.cue = cue;
+      const evidence = EVIDENCE_RE.exec(trimmed)?.[1];
+      if (evidence !== undefined) pendingDetails.evidence = evidence;
+      const verdict = NOTE_VERDICTS.find((v) => v === VERDICT_RE.exec(trimmed)?.[1]);
+      if (verdict !== undefined) pendingDetails.verdict = verdict;
       continue;
     }
     const entrySetAt = pendingSetAt;
     const entryAnchor = pendingAnchor;
+    const entryDetails = pendingDetails;
     pendingSetAt = undefined;
     pendingAnchor = undefined;
+    pendingDetails = {};
     // The `s` flag lets `.` cross U+2028/U+2029, which older versions wrote raw inside a value and which would otherwise leave that line unreadable and every later update refused.
     const match = trimmed.match(/^([A-Za-z0-9_-]+)\s*=\s*"(.*)"\s*$/s);
     if (match) {
@@ -120,6 +196,8 @@ function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<str
         else setAt.set(key, entrySetAt);
         if (entryAnchor === undefined) anchors.delete(key);
         else anchors.set(key, entryAnchor);
+        if (Object.keys(entryDetails).length === 0) details.delete(key);
+        else details.set(key, entryDetails);
       }
     } else {
       unparsed.push(i + 1);
@@ -129,7 +207,7 @@ function parseTOML(content: string, unparsed: number[] = [], setAt = new Map<str
 }
 
 /** Read and parse the TOML file. An absent file is no entries; a read that fails any other way throws, because setEntry and unsetEntry save what this returns, and answering "no entries" to a scanner briefly holding a just-written file made them replace every note with the one they were changing. That brief lock is retried first. For the same reason `forUpdate` refuses a file with a line the parser cannot read, such as a value a hand edit continued onto a second line: a read skips it, and a save of what was read would delete it. */
-function loadRaw(filePath: string, forUpdate = false, setAt?: Map<string, string>, anchors?: Map<string, NoteAnchor>): Record<string, string> {
+function loadRaw(filePath: string, forUpdate = false, setAt?: Map<string, string>, anchors?: Map<string, NoteAnchor>, details?: Map<string, NoteDetails>): Record<string, string> {
   let content = '';
   try {
     withRetryOnLock(() => {
@@ -140,7 +218,7 @@ function loadRaw(filePath: string, forUpdate = false, setAt?: Map<string, string
     throw err;
   }
   const unparsed: number[] = [];
-  const entries = parseTOML(content, unparsed, setAt, anchors);
+  const entries = parseTOML(content, unparsed, setAt, anchors, details);
   if (forUpdate && unparsed.length > 0) {
     const one = unparsed.length === 1;
     throw new Error(`Not updating ${filePath}: ${one ? 'line' : 'lines'} ${unparsed.join(', ')} ${one ? 'is' : 'are'} not in the key = "value" form, and saving would drop ${one ? 'it' : 'them'}. Fix or remove ${one ? 'it' : 'them'}, then try again.`);
@@ -148,8 +226,8 @@ function loadRaw(filePath: string, forUpdate = false, setAt?: Map<string, string
   return entries;
 }
 
-/** Serialize entries to TOML and write atomically, each dated entry preceded by its `# set <ISO time>` comment and each anchored one by its `# anchor:` comment. */
-function save(filePath: string, entries: Record<string, string>, setAt = new Map<string, string>(), anchors = new Map<string, NoteAnchor>()): void {
+/** Serialize entries to TOML and write atomically, each dated entry preceded by its `# set <ISO time>` comment, each anchored one by its `# anchor:` comment, and each with details by their `# cue:`, `# evidence:` and `# verdict:` comments. */
+function save(filePath: string, entries: Record<string, string>, setAt = new Map<string, string>(), anchors = new Map<string, NoteAnchor>(), details = new Map<string, NoteDetails>()): void {
   const lines: string[] = [];
   const sorted = Object.entries(entries).sort(([a], [b]) => ordinal(a, b));
   for (const [k, v] of sorted) {
@@ -165,6 +243,8 @@ function save(filePath: string, entries: Record<string, string>, setAt = new Map
     const anchor = anchors.get(k);
     const anchored = anchor === undefined ? null : anchorLine(anchor);
     if (anchored !== null) lines.push(anchored);
+    const noteDetails = details.get(k);
+    if (noteDetails !== undefined) lines.push(...detailLines(noteDetails));
     lines.push(`${k} = "${escaped}"`);
   }
 
@@ -185,7 +265,8 @@ export function loadEntries(projectHash: string): Record<string, string> {
 export function loadDatedEntries(projectHash: string): Record<string, NoteEntry> {
   const setAt = new Map<string, string>();
   const anchors = new Map<string, NoteAnchor>();
-  const entries = loadRaw(memoryPath(projectHash), false, setAt, anchors);
+  const details = new Map<string, NoteDetails>();
+  const entries = loadRaw(memoryPath(projectHash), false, setAt, anchors, details);
   const result = noteMap<NoteEntry>();
   for (const [key, value] of Object.entries(entries)) {
     const note: NoteEntry = { value };
@@ -193,6 +274,7 @@ export function loadDatedEntries(projectHash: string): Record<string, NoteEntry>
     if (time !== undefined) note.setAt = time;
     const anchor = anchors.get(key);
     if (anchor !== undefined) note.anchor = anchor;
+    Object.assign(note, details.get(key));
     result[key] = note;
   }
   return result;
@@ -222,9 +304,11 @@ export interface SetResult {
   evicted: string[];
 }
 
-/** Set key to value in this project's memory, stamped with the current time. Enforces MAX_ENTRIES by evicting the oldest-set entries to make room for new entries; undated entries count as older than any dated one, and among them the alphabetically last goes first. */
-export function setEntry(projectHash: string, key: string, value: string, anchor?: NoteAnchor): SetResult {
+/** Set key to value in this project's memory, stamped with the current time, with the cue, evidence and verdict in `noteDetails` when given (see {@link normalizeNoteDetails}; a refused field throws before anything is written). Enforces MAX_ENTRIES by evicting the oldest-set entries to make room for new entries; undated entries count as older than any dated one, and among them the alphabetically last goes first. */
+export function setEntry(projectHash: string, key: string, value: string, anchor?: NoteAnchor, noteDetails?: NoteDetailsInput): SetResult {
   validateKey(key);
+  // Before the lock and the directory, so a refused field leaves the file untouched.
+  const newDetails = normalizeNoteDetails(noteDetails ?? {});
   const p = memoryPath(projectHash);
   const dir = path.dirname(p);
   ensureDirSync(dir);
@@ -234,7 +318,8 @@ export function setEntry(projectHash: string, key: string, value: string, anchor
   const doSet = (): true => {
     const setAt = new Map<string, string>();
     const anchors = new Map<string, NoteAnchor>();
-    const entries = loadRaw(p, true, setAt, anchors);
+    const details = new Map<string, NoteDetails>();
+    const entries = loadRaw(p, true, setAt, anchors, details);
     // Read under the lock, so the value reported as replaced is the one this write actually overwrote, even when another process set the key a moment earlier.
     const old = Object.hasOwn(entries, key) ? entries[key] : undefined;
     if (old !== undefined) result.previous = old;
@@ -249,6 +334,7 @@ export function setEntry(projectHash: string, key: string, value: string, anchor
         delete entries[k];
         setAt.delete(k);
         anchors.delete(k);
+        details.delete(k);
       }
     }
 
@@ -257,7 +343,10 @@ export function setEntry(projectHash: string, key: string, value: string, anchor
     // A note set again without an anchor loses the old one: the anchor describes the value it was set with, not the key.
     if (anchor === undefined) anchors.delete(key);
     else anchors.set(key, anchor);
-    save(p, entries, setAt, anchors);
+    // Details, like the anchor, describe the value they were set with, so a note set again without them has none.
+    if (Object.keys(newDetails).length === 0) details.delete(key);
+    else details.set(key, newDetails);
+    save(p, entries, setAt, anchors, details);
     return true;
   };
   underNotesLock(p, doSet);
@@ -285,10 +374,11 @@ export function unsetEntry(projectHash: string, key: string): boolean {
   const doUnset = (): true => {
     const setAt = new Map<string, string>();
     const anchors = new Map<string, NoteAnchor>();
-    const entries = loadRaw(p, true, setAt, anchors);
+    const details = new Map<string, NoteDetails>();
+    const entries = loadRaw(p, true, setAt, anchors, details);
     if (Object.hasOwn(entries, key)) {
       delete entries[key];
-      save(p, entries, setAt, anchors);
+      save(p, entries, setAt, anchors, details);
       removed = true;
     }
     return true;
@@ -310,7 +400,7 @@ export function clearAll(projectHash: string): void {
   clearSymbolDiscoveries(projectHash);
 }
 
-/** Build a compact Markdown block of memory entries for session-start injection. Returns null when no entries stored. With the project `root` and a `statusOf` resolver, an anchored note whose symbol has changed or gone since it was set carries a marker saying so. */
+/** Build a compact Markdown block of memory entries for session-start injection. Returns null when no entries stored. A note without evidence carries `[unverified]`. With the project `root` and a `statusOf` resolver, an anchored note whose symbol has changed or gone since it was set carries a marker saying so. */
 export function buildInjection(projectHash: string, root?: string, statusOf?: AnchorStatusOf): string | null {
   try {
     const entries = loadDatedEntries(projectHash);
@@ -328,7 +418,7 @@ export function buildInjection(projectHash: string, root?: string, statusOf?: An
       return parts.join('\n');
     };
 
-    // Newest-set first, undated after in ordinal order, so the size cap below omits the oldest notes, the ones setEntry evicts first. An explicit sort, not raw Object.entries() order: JS engines enumerate canonical-integer-string keys (e.g. "9", "10") in ascending numeric order regardless of insertion order. The age marker is part of each line, so the cap counts it.
+    // Newest-set first, undated after in ordinal order, so the size cap below omits the oldest notes, the ones setEntry evicts first. An explicit sort, not raw Object.entries() order: JS engines enumerate canonical-integer-string keys (e.g. "9", "10") in ascending numeric order regardless of insertion order. The age marker and the details marker are part of each line, so the cap counts them; the evidence text itself is never printed here.
     const entries_list = Object.entries(entries).sort(([a, na], [b, nb]) => byRecency(a, na.setAt, b, nb.setAt));
     // Stop at the first note that does not fit rather than skipping it for a shorter one further down, which would show an older note in place of a newer one. Everything not shown, including notes past the first MAX_ENTRIES of a hand-edited file, is counted in the trailer. Each candidate is measured as the block that would be returned if it were the last note shown -- fence, whatever neutralizing the fence does to a note, and the trailer counting the rest -- so the block returned below is always one already measured against the cap.
     const shown: string[] = [];
@@ -337,7 +427,7 @@ export function buildInjection(projectHash: string, root?: string, statusOf?: An
       const display = val.length <= MAX_VALUE_LEN ? val : val.slice(0, MAX_VALUE_LEN) + '…';
       // The anchor marker is part of the line too, so the cap counts it. Without the project root there is nothing to resolve the anchored file against, and without a resolver nothing to ask, and the note shows unmarked.
       const flag = root === undefined || statusOf === undefined || note.anchor === undefined ? '' : anchorLabel(statusOf(root, note.anchor));
-      const line = `- **${key}**${noteAgeLabel(note, now)}${flag}: ${oneLineNoteValue(display)}`;
+      const line = `- **${key}**${noteAgeLabel(note, now)}${flag}${detailsLabel(note)}: ${oneLineNoteValue(display)}`;
       if (render([...shown, line], entries_list.length - shown.length - 1).length > MAX_TOTAL_CHARS) break;
       shown.push(line);
     }

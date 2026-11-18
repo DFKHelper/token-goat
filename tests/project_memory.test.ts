@@ -313,8 +313,9 @@ describe('project_memory', () => {
       const longValue = 'x'.repeat(500);
       setEntry('test', 'key', longValue);
       const result = buildInjection('test');
-      expect(result).toContain('…');
-      expect(result?.length).toBeLessThan(500);
+      // HAND-DERIVED: the value is shown cut at MAX_VALUE_LEN, 300 characters, and one ellipsis follows them.
+      expect(result).toContain('x'.repeat(300) + '…');
+      expect(result).not.toContain('x'.repeat(301));
     });
 
     it('should limit total size', () => {
@@ -338,7 +339,7 @@ describe('project_memory', () => {
       expect(result!.length).toBeLessThanOrEqual(4000);
     });
 
-    // HAND-DERIVED: the bound is 4000 characters and a note line is `- **kNN**: ` plus its value. Sweeping every value length from 1 to 300 over 40 notes lands the last note shown at every distance from the cap, including the ones where the fence or the trailer is what tips the block over. A single calibrated length stops landing there the moment either changes width. The floor keeps an over-eager cap from passing by showing nothing: when notes are omitted, the next one did not fit, so the block is within one note line and a trailer digit of the bound. Short notes are cut by the 30-note limit instead, where no floor applies.
+    // HAND-DERIVED: the bound is 4000 characters and a note line is `- **kNN** [unverified]: ` plus its value. Sweeping every value length from 1 to 300 over 40 notes lands the last note shown at every distance from the cap, including the ones where the fence or the trailer is what tips the block over. A single calibrated length stops landing there the moment either changes width. The floor keeps an over-eager cap from passing by showing nothing: when notes are omitted, the next one did not fit, so the block is within one note line and a trailer digit of the bound. Short notes are cut by the 30-note limit instead, where no floor applies.
     it('stays within 4000 characters at every note length, fence and trailer counted, without showing fewer notes than fit', () => {
       const p = memoryPath('test');
       fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -351,7 +352,7 @@ describe('project_memory', () => {
         expect(result.length, at).toBeLessThanOrEqual(4000);
         expect(result, at).toContain('</untrusted-file-content>');
         const shownCount = result.split('\n').filter((l) => l.startsWith('- **')).length;
-        if (shownCount < Math.min(30, count)) expect(result.length, at).toBeGreaterThan(4000 - (len + 20));
+        if (shownCount < Math.min(30, count)) expect(result.length, at).toBeGreaterThan(4000 - (len + 33));
         return result;
       };
       for (let len = 1; len <= 300; len++) {
@@ -504,7 +505,7 @@ describe('project_memory', () => {
       setEntry('shown', 'registry', 'two ids, one brand');
       lockedReads.path = memoryPath('shown');
       lockedReads.remaining = 1;
-      expect(buildInjection('shown')).toMatch(/^- \*\*registry\*\* \(set \d+s ago\): two ids, one brand$/m);
+      expect(buildInjection('shown')).toMatch(/^- \*\*registry\*\* \(set \d+s ago\) \[unverified\]: two ids, one brand$/m);
     });
   });
 
@@ -549,7 +550,7 @@ describe('project_memory', () => {
       expect(Object.hasOwn(entries, '__proto__')).toBe(true);
       expect(entries['__proto__']).toBe('kept');
       expect(Object.keys(entries).sort()).toEqual(['__proto__', 'other']);
-      expect(buildInjection('proto')).toMatch(/^- \*\*__proto__\*\* \(set \d+s ago\): kept$/m);
+      expect(buildInjection('proto')).toMatch(/^- \*\*__proto__\*\* \(set \d+s ago\) \[unverified\]: kept$/m);
       unsetEntry('proto', '__proto__');
       expect(loadEntries('proto')).toEqual({ other: 'also kept' });
       expect(Object.hasOwn(loadEntries('proto'), '__proto__')).toBe(false);
@@ -640,8 +641,8 @@ describe('project_memory', () => {
       expect(injection!.length).toBeLessThanOrEqual(4000);
       expect(injection).toContain('omitted');
       const lines = noteLines(injection);
-      expect(lines[0]).toMatch(/^- \*\*zz-recent\*\* \(set 1m ago\): x+$/);
-      expect(lines[1]).toMatch(/^- \*\*b17\*\* \(set 2m ago\): x+$/);
+      expect(lines[0]).toMatch(/^- \*\*zz-recent\*\* \(set 1m ago\) \[unverified\]: x+$/);
+      expect(lines[1]).toMatch(/^- \*\*b17\*\* \(set 2m ago\) \[unverified\]: x+$/);
       expect(injection).not.toContain('**a-old**');
     });
 
@@ -652,9 +653,9 @@ describe('project_memory', () => {
       at(T0 + 2 * 60 * MINUTE);
       setEntry('age', 'j', 'w');
       at(T0 + 2 * 60 * MINUTE + 2 * 24 * 60 * MINUTE);
-      expect(noteLines(buildInjection('age'))).toEqual(['- **j** (set 2d ago): w', '- **k** (set 2d ago): v']);
+      expect(noteLines(buildInjection('age'))).toEqual(['- **j** (set 2d ago) [unverified]: w', '- **k** (set 2d ago) [unverified]: v']);
       at(T0 + (3 * 60 + 5) * MINUTE);
-      expect(noteLines(buildInjection('age'))).toEqual(['- **j** (set 1h ago): w', '- **k** (set 3h ago): v']);
+      expect(noteLines(buildInjection('age'))).toEqual(['- **j** (set 1h ago) [unverified]: w', '- **k** (set 3h ago) [unverified]: v']);
     });
 
     it('keeps the cap with age markers present, counting them in the total', () => {
@@ -674,7 +675,7 @@ describe('project_memory', () => {
       // HAND-DERIVED: the legacy shape, one key = "value" line per note with no comments, written out of order.
       writeRaw('legacy', 'b = "two"\na = "one"\nc = "three"\n');
       expect(loadEntries('legacy')).toEqual({ a: 'one', b: 'two', c: 'three' });
-      expect(noteLines(buildInjection('legacy'))).toEqual(['- **a**: one', '- **b**: two', '- **c**: three']);
+      expect(noteLines(buildInjection('legacy'))).toEqual(['- **a** [unverified]: one', '- **b** [unverified]: two', '- **c** [unverified]: three']);
     });
 
     it('evicts the alphabetically last undated note from a legacy file at capacity, as before', () => {
@@ -704,7 +705,7 @@ describe('project_memory', () => {
       // HAND-DERIVED: a is dated; b follows a with no comment of its own; c's comment is not a date; d's comment is some other remark.
       writeRaw('scope', '# set 2026-01-01T00:00:00.000Z\na = "1"\nb = "2"\n# set not-a-date\nc = "3"\n# a remark\nd = "4"\n');
       at(T0 + 5 * MINUTE);
-      expect(noteLines(buildInjection('scope'))).toEqual(['- **a** (set 5m ago): 1', '- **b**: 2', '- **c**: 3', '- **d**: 4']);
+      expect(noteLines(buildInjection('scope'))).toEqual(['- **a** (set 5m ago) [unverified]: 1', '- **b** [unverified]: 2', '- **c** [unverified]: 3', '- **d** [unverified]: 4']);
     });
 
     it('writes only lines an older binary parses: comments and key = "value" entries', () => {
@@ -715,8 +716,10 @@ describe('project_memory', () => {
       setEntry('compat', 'quoted', 'say "hi"');
       setEntry('compat', 'path', 'C:\\Users\\name');
       setEntry('compat', 'multi', 'line1\nline2\r\nline3');
+      setEntry('compat', 'evidenced', 'say "ok"', undefined, { cue: 'it broke', evidence: 'two\nlines', verdict: 'no effect' });
       const lines = readRaw('compat').split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
-      expect(lines.filter((l) => l.startsWith('# set '))).toHaveLength(4);
+      expect(lines.filter((l) => l.startsWith('# set '))).toHaveLength(5);
+      expect(lines.filter((l) => /^# (cue|evidence|verdict): \S/.test(l))).toHaveLength(3);
       for (const line of lines) {
         expect(line.startsWith('#') || OLD_ENTRY.test(line), line).toBe(true);
       }
@@ -732,14 +735,14 @@ describe('project_memory', () => {
     });
 
     it('stops at the first note that does not fit, so no older note is shown in place of a newer one', () => {
-      // HAND-DERIVED: every note is injected 1d old, so each line is `- **<key>** (set 1d ago): <value>`. The header is 59 characters and the fence around the notes adds 58 (the data notice), 24 (the opening tag) and 25 (the closing tag), with one newline after each of the header, notice and opening tag and one before the closing tag: 170. f00..f11 have 3-character keys and 286-character values: 24 + 286 = 310 characters, 3,731 for twelve joined by newlines, 3,901 in all, leaving 99 of the 4,000. `long` (4 + 4 + 2 + 13 + 2 + 300 = 325, 326 with the newline) does not fit. `short` (27, 28 with the newline) would, but it is older than `long`, so it must not be shown. The trailer for the 2 notes left out is 34 characters, 35 with the newline, and fits in the 99 without removing any line.
+      // HAND-DERIVED: every note is injected 1d old, so each line is `- **<key>** (set 1d ago) [unverified]: <value>`. The header is 59 characters and the fence around the notes adds 58 (the data notice), 24 (the opening tag) and 25 (the closing tag), with one newline after each of the header, notice and opening tag and one before the closing tag: 170. f00..f11 have 3-character keys and 273-character values: 24 + 13 (the marker) + 273 = 310 characters, 3,731 for twelve joined by newlines, 3,901 in all, leaving 99 of the 4,000. `long` (4 + 4 + 2 + 13 + 13 + 2 + 300 = 338, 339 with the newline) does not fit. `short` (40, 41 with the newline) would, but it is older than `long`, so it must not be shown. The trailer for the 2 notes left out is 34 characters, 35 with the newline, and fits in the 99 without removing any line.
       at(T0);
       setEntry('stop', 'short', 's');
       at(T0 + MINUTE);
       setEntry('stop', 'long', 'y'.repeat(300));
       for (let i = 0; i < 12; i++) {
         at(T0 + (i + 2) * MINUTE);
-        setEntry('stop', `f${String(i).padStart(2, '0')}`, 'x'.repeat(286));
+        setEntry('stop', `f${String(i).padStart(2, '0')}`, 'x'.repeat(273));
       }
       at(T0 + (24 * 60 + 20) * MINUTE);
       const injection = buildInjection('stop')!;
@@ -759,7 +762,7 @@ describe('project_memory', () => {
       writeRaw('over-cap', Array.from({ length: 35 }, (_, i) => `u${String(i).padStart(2, '0')} = "v"`).join('\n') + '\n');
       const lines = (buildInjection('over-cap') ?? '').split('\n');
       expect(noteLines(lines.join('\n'))).toHaveLength(30);
-      expect(lines[32]).toBe('- **u29**: v');
+      expect(lines[32]).toBe('- **u29** [unverified]: v');
       expect(lines[33]).toBe('</untrusted-file-content>');
       expect(lines[34]).toBe('- (+5 more memory entries omitted)');
     });
