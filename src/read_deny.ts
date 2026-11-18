@@ -1,4 +1,4 @@
-/** Whether the host's `Read(...)` deny rules cover a file a token-goat read is about to print, and the one chokepoint, assertReadAllowed, every read command calls to refuse it */
+/** Whether the host's `Read(...)` deny rules cover a file a read is about to print, via assertReadAllowed */
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -7,7 +7,7 @@ import { loadConfig } from './config.js'
 import { loadPermissionSnapshotOrThrow, ruleToolIs } from './rewrite_permission.js'
 import type { PermissionRule, PermissionSnapshot } from './rewrite_permission.js'
 
-/** Refusal to print a file the host denies with a `Read(...)` rule: a CliError, so exit 1 plus a stderr line. */
+/** Refusal to print a file the host denies with a `Read(...)` rule: a CliError (exit 1, one stderr line). */
 export class ReadDeniedError extends CliError {
   override readonly prefix = '[tg] '
   override readonly jsonEnvelope = true
@@ -82,7 +82,7 @@ function escapeRegex(c: string): string {
   return c.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
 }
 
-/** An absolute lowercase posix glob as a regex matching a whole path; a backslash escapes when `escapes` is set. */
+/** An absolute lowercase posix glob as a whole-path regex; a backslash escapes when `escapes` is set. */
 function globToRegex(glob: string, escapes: boolean): RegExp {
   let g = glob
   if (g.length > 1 && g.endsWith('/')) g = g.slice(0, -1)
@@ -136,7 +136,7 @@ function sourceRoots(source: string | undefined, cwd: string): string[] {
   return path.basename(dir).toLowerCase() === '.claude' ? [dir, path.dirname(dir)] : [dir, cwd]
 }
 
-/** The absolute posix globs a rule's content can mean; ambiguity adds a reading, and any reading matching denies. */
+/** The absolute posix globs a rule's content can mean; ambiguity adds a reading, any match denies. */
 function anchoredGlobs(
   content: string,
   source: string | undefined,
@@ -216,7 +216,7 @@ function ruleMatches(rule: CompiledRule, posixPath: string): boolean {
   return rule.matchAll || rule.regexes.some((re) => re.test(posixPath))
 }
 
-/** The rule ignoring this path or a parent directory within one source: last match wins, an ignored parent stays. */
+/** The rule ignoring this path or a parent directory in one source: last match wins, a denied parent stays. */
 function ignoredBy(rules: readonly CompiledRule[], posixPath: string): CompiledRule | null {
   const parts = posixPath.split('/')
   for (let i = 2; i <= parts.length; i++) {
@@ -228,7 +228,7 @@ function ignoredBy(rules: readonly CompiledRule[], posixPath: string): CompiledR
   return null
 }
 
-/** The first deny rule covering any of `candidates` (absolute paths), or null; throws on an unparseable rule. */
+/** The first deny rule covering any of `candidates` (absolute paths), or null; throws on a bad rule. */
 export function findReadDeny(
   snapshot: PermissionSnapshot,
   candidates: readonly string[],
@@ -285,12 +285,16 @@ function load(
 ): Compiled {
   const now = (ctx.now ?? Date.now)()
   const key = JSON.stringify([cwd, projectDir, home, bases, ctx.loadSnapshot === undefined])
-  // limit: rules are re-read at most once a second per process revisit-when: a deny edit must bite within a second
+  // limit: rules re-read once a second per process revisit-when: a deny edit must bite sooner
   const fresh = cache !== undefined && cache.key === key && now - cache.at < CACHE_TTL_MS
   if (ctx.loadSnapshot === undefined && fresh && cache !== undefined) return cache.compiled
   let compiled: Compiled
   try {
-    const snapshot = (ctx.loadSnapshot ?? loadPermissionSnapshotOrThrow)(cwd, projectDir)
+    const load =
+      ctx.loadSnapshot ??
+      ((c: string, p: string | undefined) =>
+        loadPermissionSnapshotOrThrow(c, p, { outsideProject: 'project-only' }))
+    const snapshot = load(cwd, projectDir)
     compiled = compileSnapshot(snapshot, bases, home)
   } catch (err) {
     compiled = { groups: [], failure: `could not read the host permission settings: ${(err as Error).message}` }
@@ -299,7 +303,7 @@ function load(
   return compiled
 }
 
-/** Returns when the host's settings do not deny reading `target`, else throws ReadDeniedError naming file and rule; fails closed on an unreadable settings file or unparseable Read rule. */
+/** Returns unless the host denies `target`, else throws ReadDeniedError; bad settings or rules refuse too. */
 export function assertReadAllowed(target: string, ctx: ReadDenyContext = {}): void {
   const enabled = ctx.enabled ?? loadConfig().reads?.honor_host_deny !== false
   if (!enabled) return

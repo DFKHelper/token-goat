@@ -1327,7 +1327,9 @@ export function runGrep(opts: GrepOptions): number {
     }
   }
 
-  if (deniedSkipped > 0) emitErr(`[tg] ${countNoun(deniedSkipped, 'file')} skipped: denied by the host's Read rules`)
+  if (deniedSkipped > 0) {
+    emitErr(`[tg] ${countNoun(deniedSkipped, 'file')} skipped: denied by the host's Read rules`)
+  }
 
   if (totalHits === 0) {
     const singleTargetFile = searchPaths.length === 1 && fileExists(searchPaths[0] as string) ? (searchPaths[0] as string) : undefined

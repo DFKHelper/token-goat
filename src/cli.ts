@@ -80,7 +80,15 @@ import { expandGlobs } from './cli_diagnostics.js'
 export { expandGlobs }
 import { emitErr } from './emit.js'
 import { compressText, createHandoff, describeContentNamedByHandoff, describeMissingHandoff, describeUnreadableContent, isContentExpired, namedContentNotes, olderCopyNote, resolveHandoffDetailed, retrieveText, unreadableRecordNote, CONTENT_MAX_INPUT_CHARS } from './content_store.js'
-import { CliError, clearCliInvocation, commandFailureJson, formatCommandError, formatFailedResultText, formatParseError, setCliInvocation } from './command_error.js'
+import {
+  CliError,
+  clearCliInvocation,
+  commandFailureJson,
+  formatCommandError,
+  formatFailedResultText,
+  formatParseError,
+  setCliInvocation,
+} from './command_error.js'
 
 // Defined in a leaf so command modules cli.ts imports can render an error the same way without importing cli.ts back; re-exported here for the many modules that already take CliError from cli.js.
 export { CliError, formatCommandError }

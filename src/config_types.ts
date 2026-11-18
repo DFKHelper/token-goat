@@ -265,7 +265,7 @@ export interface InjectionConfig {
 
 /** Config for the read commands (read, section, grep, outline, json-query, image-text, ...). */
 export interface ReadsConfig {
-  // Whether those commands refuse a file the host's settings deny with a `Read(...)` rule (read_deny.ts). Off only for an operator who accepts that a denied file's text reaches the model through token-goat.
+  // Whether reads refuse a file a host `Read(...)` deny rule covers (read_deny.ts); off lets it through.
   honor_host_deny: boolean
 }
 

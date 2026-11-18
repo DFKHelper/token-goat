@@ -1,4 +1,4 @@
-// Every token-goat command that prints file text honors the host's Read deny rules; each row runs the built CLI.
+// Every token-goat command printing file text honors the host's Read deny rules; each row runs the built CLI.
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -133,7 +133,8 @@ describe('failure policy', () => {
   it('TOKEN_GOAT_READS_HONOR_HOST_DENY=0 turns the check off', () => {
     const env: NodeJS.ProcessEnv = { ...process.env, TOKEN_GOAT_READS_HONOR_HOST_DENY: '0' }
     delete env['CLAUDE_PROJECT_DIR']
-    const run = spawnSync(process.execPath, [BUNDLE, 'read', 'secrets/a.ts'], { cwd: proj, env, encoding: 'utf8' })
+    const args = [BUNDLE, 'read', 'secrets/a.ts']
+    const run = spawnSync(process.execPath, args, { cwd: proj, env, encoding: 'utf8' })
     expect(run.status).toBe(0)
     expect(run.stdout).toContain(SECRET)
   })

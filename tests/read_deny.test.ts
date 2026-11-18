@@ -1,4 +1,4 @@
-// Host Read(...) deny rules gate token-goat's reads; rows follow the rule table in the Claude Code permissions docs.
+// Host Read(...) deny rules gate token-goat's reads; rows follow the Claude Code permissions docs rule table.
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -6,7 +6,12 @@ import * as path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { normalizePath } from '../src/paths.js'
-import { assertReadAllowed,ReadDeniedError, resetReadDenyCache, type ReadDenyContext } from '../src/read_deny.js'
+import {
+  assertReadAllowed,
+  ReadDeniedError,
+  resetReadDenyCache,
+  type ReadDenyContext,
+} from '../src/read_deny.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { CAN_JUNCTION } from './helpers/can-symlink.js'
 
@@ -37,7 +42,8 @@ function settingsJson(s: Settings): string {
 function check(proj: string, target: string, extra: Partial<ReadDenyContext> = {}): string | null {
   resetReadDenyCache()
   try {
-    assertReadAllowed(target, { cwd: proj, projectDir: proj, home: path.join(proj, 'home'), enabled: true, ...extra })
+    const home = path.join(proj, 'home')
+    assertReadAllowed(target, { cwd: proj, projectDir: proj, home, enabled: true, ...extra })
     return null
   } catch (err) {
     expect(err).toBeInstanceOf(ReadDeniedError)
@@ -138,7 +144,8 @@ describe('rule forms', () => {
     const drive = path.parse(os.tmpdir()).root.slice(0, 1).toLowerCase()
     const rule = (d: string): Settings => ({ deny: [`Read(//${d}/**/.env)`] })
     expect(verdict(rule(drive), (p) => path.join(p, '.env'))).toContain('.env')
-    expect(verdict(rule(drive), (p) => path.join(p, '.env').replace(/^./, drive.toUpperCase()))).toContain('.env')
+    const upper = (p: string): string => path.join(p, '.env').replace(/^./, drive.toUpperCase())
+    expect(verdict(rule(drive), upper)).toContain('.env')
     expect(verdict(rule(drive), (p) => path.join(p, '.env').replace(/^./, drive))).toContain('.env')
     expect(verdict(rule(drive === 'c' ? 'd' : 'c'), (p) => path.join(p, '.env'))).toBeNull()
   })
@@ -182,7 +189,8 @@ describe('precedence', () => {
   })
 
   it('a ! negation in one source does not reach a rule of another source', () => {
-    const msg = verdict({ deny: ['Read(.env)'] }, (p) => path.join(p, '.env'), () => ({}), { deny: ['Read(!.env)'] })
+    const envFile = (p: string): string => path.join(p, '.env')
+    const msg = verdict({ deny: ['Read(.env)'] }, envFile, () => ({}), { deny: ['Read(!.env)'] })
     expect(msg).toContain('settings.json')
   })
 })
@@ -230,7 +238,7 @@ describe('failure policy', () => {
     expect(check(proj, path.join(proj, 'a.txt'))).toContain('settings.json')
   })
 
-  it.each([['Read(foo'], ['Read()'], ['Read(!)']])('the unparseable deny entry %s refuses every read', (entry) => {
+  it.each([['Read(foo'], ['Read()'], ['Read(!)']])('unparseable deny entry %s refuses every read', (entry) => {
     const msg = verdict({ deny: [entry] }, (p) => path.join(p, 'unrelated.txt'))
     expect(msg).toContain('refused')
     expect(msg).toContain(entry)
@@ -270,5 +278,72 @@ describe('failure policy', () => {
       },
     })
     expect(verdict({ deny: [] }, (p) => path.join(p, 'a.txt'), throwing)).toContain('boom from the loader')
+  })
+})
+
+describe('a working directory outside the project, or no project directory', () => {
+  interface Layout {
+    proj: string
+    elsewhere: string
+    home: string
+  }
+
+  /** A project, a separate cwd that is not inside it, and a user config directory holding `userDeny`. */
+  function layout(userDeny: unknown[], projectDeny: unknown[] = []): Layout {
+    const proj = tmp()
+    const cfg = path.join(tmp(), '.claude')
+    process.env['CLAUDE_CONFIG_DIR'] = cfg
+    put(path.join(cfg, 'settings.json'), settingsJson({ deny: userDeny }))
+    put(path.join(proj, '.claude', 'settings.json'), settingsJson({ deny: projectDeny }))
+    return { proj, elsewhere: tmp(), home: tmp() }
+  }
+
+  function ask(target: string, ctx: ReadDenyContext): string | null {
+    resetReadDenyCache()
+    try {
+      assertReadAllowed(target, { enabled: true, ...ctx })
+      return null
+    } catch (err) {
+      expect(err).toBeInstanceOf(ReadDeniedError)
+      return (err as Error).message
+    }
+  }
+
+  const outside = (l: Layout, target: string): string | null =>
+    ask(target, { cwd: l.elsewhere, projectDir: l.proj, home: l.home })
+
+  it('reads normally when no rule denies the file', () => {
+    const l = layout([])
+    expect(outside(l, path.join(l.elsewhere, 'a.txt'))).toBeNull()
+    expect(outside(l, path.join(l.proj, 'a.txt'))).toBeNull()
+  })
+
+  it('a user-level ~/ deny refuses that file only', () => {
+    const l = layout(['Read(~/secret.txt)'])
+    expect(outside(l, path.join(l.home, 'secret.txt'))).toContain('settings.json')
+    expect(outside(l, path.join(l.home, 'other.txt'))).toBeNull()
+    expect(outside(l, path.join(l.elsewhere, 'secret.txt'))).toBeNull()
+  })
+
+  it('the project settings still apply to the project directory', () => {
+    const l = layout([], ['Read(/secrets/*)'])
+    const settingsFile = path.join(l.proj, '.claude', 'settings.json')
+    expect(outside(l, path.join(l.proj, 'secrets', 'x'))).toContain(settingsFile)
+    expect(outside(l, path.join(l.proj, 'public', 'x'))).toBeNull()
+  })
+
+  it('an unset CLAUDE_PROJECT_DIR reads normally and still honors the cwd project and user rules', () => {
+    const l = layout(['Read(~/secret.txt)'])
+    put(path.join(l.elsewhere, '.claude', 'settings.json'), settingsJson({ deny: ['Read(secrets/**)'] }))
+    const saved = process.env['CLAUDE_PROJECT_DIR']
+    delete process.env['CLAUDE_PROJECT_DIR']
+    try {
+      const here = (target: string): string | null => ask(target, { cwd: l.elsewhere, home: l.home })
+      expect(here(path.join(l.elsewhere, 'a.txt'))).toBeNull()
+      expect(here(path.join(l.elsewhere, 'secrets', 'x'))).toContain('Read(secrets/**)')
+      expect(here(path.join(l.home, 'secret.txt'))).toContain('Read(~/secret.txt)')
+    } finally {
+      if (saved !== undefined) process.env['CLAUDE_PROJECT_DIR'] = saved
+    }
   })
 })

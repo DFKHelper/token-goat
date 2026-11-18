@@ -114,7 +114,9 @@ function normalizedMode(mode: unknown): string | null {
 /** Split `Tool(content)` the way a settings file writes a rule. */
 export function parseRule(raw: unknown, trustedAllow: boolean, source?: string): PermissionRule {
   const src = source === undefined ? {} : { source }
-  if (typeof raw !== 'string') return { raw: String(raw), tool: undefined, content: undefined, trustedAllow: false, ...src }
+  if (typeof raw !== 'string') {
+    return { raw: String(raw), tool: undefined, content: undefined, trustedAllow: false, ...src }
+  }
   const m = /^([A-Za-z0-9_*.-]+)(?:\(([\s\S]*)\))?$/.exec(raw.trim())
   if (m === null) return { raw, tool: undefined, content: undefined, trustedAllow: false, ...src }
   return { raw, tool: m[1], content: m[2], trustedAllow, ...src }
@@ -430,7 +432,9 @@ export function snapshotFromDocs(docs: readonly SettingsDoc[]): PermissionSnapsh
     for (const [key, list] of [['allow', allow], ['deny', deny], ['ask', ask]] as const) {
       const entries = perms[key]
       if (entries === undefined) continue
-      if (!Array.isArray(entries)) throw new Error(`${doc.file ?? 'a settings file'}: permissions.${key} is not an array`)
+      if (!Array.isArray(entries)) {
+        throw new Error(`${doc.file ?? 'a settings file'}: permissions.${key} is not an array`)
+      }
       // An ancestor directory's settings are not ones Claude Code applies to this session, so only their restrictions count.
       if (key === 'allow' && doc.role === 'ancestor') continue
       for (const entry of entries) list.push(parseRule(entry, key === 'allow' && trusted, doc.file))
@@ -549,7 +553,10 @@ function managedDocs(registry?: { readonly keys: string[]; readonly values: (Rec
     const keys = registry?.keys ?? policyKeys()
     const values = registry?.values ?? readRegistrySettings(keys)
     values.forEach((json, i) => {
-      if (json !== undefined) out.push({ role: 'managed', json, managedGroup: (keys[i] as string).slice(0, 4).toLowerCase(), file: `registry:${keys[i] as string}` })
+      if (json !== undefined) {
+        const managedGroup = (keys[i] as string).slice(0, 4).toLowerCase()
+        out.push({ role: 'managed', json, managedGroup, file: `registry:${keys[i] as string}` })
+      }
     })
   } else if (process.platform === 'darwin') {
     for (const plist of ['/Library/Managed Preferences/com.anthropic.claudecode.plist', path.join('/Library/Managed Preferences', os.userInfo().username, 'com.anthropic.claudecode.plist')]) {
@@ -563,7 +570,9 @@ function managedDocs(registry?: { readonly keys: string[]; readonly values: (Rec
   }
   const remoteFile = path.join(claudeConfigDir(), 'remote-settings.json')
   const remote = readSettingsFile(remoteFile)
-  if (remote !== undefined && Object.keys(remote).length > 0) out.push({ role: 'managed', json: remote, managedGroup: 'remote', file: remoteFile })
+  if (remote !== undefined && Object.keys(remote).length > 0) {
+    out.push({ role: 'managed', json: remote, managedGroup: 'remote', file: remoteFile })
+  }
   return out
 }
 
@@ -653,40 +662,61 @@ export function loadPermissionSnapshot(cwd: string, projectDir: string | undefin
   }
 }
 
-/** {@link loadPermissionSnapshot}, except that a source it cannot read, or a working directory outside the project, throws an Error naming the file or the reason, for a caller that must refuse rather than skip. */
-export function loadPermissionSnapshotOrThrow(cwd: string, projectDir: string | undefined = process.env['CLAUDE_PROJECT_DIR']): PermissionSnapshot {
+/** {@link loadPermissionSnapshot}, but an unreadable source (or a cwd outside the project) throws. */
+export function loadPermissionSnapshotOrThrow(
+  cwd: string,
+  projectDir: string | undefined = process.env['CLAUDE_PROJECT_DIR'],
+  options: { readonly outsideProject?: 'throw' | 'project-only' } = {},
+): PermissionSnapshot {
   const here = path.resolve(cwd)
   const project = projectDir !== undefined && path.isAbsolute(projectDir) ? path.resolve(projectDir) : undefined
-  // Claude Code loads the project's settings from where the session started, not from the shell's cwd, so a cwd outside it may be under rules this walk would never find.
-  if (project !== undefined && !isInsideRoot(here, project)) throw new Error(`the working directory ${here} is outside the project ${project}`)
+  const outside = project !== undefined && !isInsideRoot(here, project)
+  // Project settings load from where the session started, so a cwd outside it may have unseen rules.
+  if (outside && options.outsideProject !== 'project-only') {
+    throw new Error(`the working directory ${here} is outside the project ${project}`)
+  }
   const start = project ?? here
   const mainRoot = gitMainRoot(start)
-  // Claude Code reads settings.local.json from the starting directory on Windows and in older versions, and from the main checkout's root elsewhere; its allow rules count only where both agree and the cwd is that directory, since a session moved with /cd reads the new directory's file instead.
-  const localDir = samePath(here, start) && (process.platform === 'win32' || mainRoot === undefined || samePath(mainRoot, start)) ? start : undefined
+  // settings.local.json comes from the start dir on Windows, else the main checkout root; allows need both.
+  const localAgrees = process.platform === 'win32' || mainRoot === undefined || samePath(mainRoot, start)
+  const localDir = samePath(here, start) && localAgrees ? start : undefined
   const now = Date.now()
   managedUsedAt = now
-  if (managedCache === undefined || now - managedCache.at > MANAGED_CACHE_MS) managedCache = { at: now, docs: managedDocs() }
+  if (managedCache === undefined || now - managedCache.at > MANAGED_CACHE_MS) {
+    managedCache = { at: now, docs: managedDocs() }
+  }
   const docs: SettingsDoc[] = [...managedCache.docs]
   const user = readSettingsFile(path.join(claudeConfigDir(), 'settings.json'))
-  if (user !== undefined) docs.push({ role: 'user', json: user, file: path.join(claudeConfigDir(), 'settings.json') })
+  if (user !== undefined) {
+    docs.push({ role: 'user', json: user, file: path.join(claudeConfigDir(), 'settings.json') })
+  }
   const userLocalFile = path.join(claudeConfigDir(), 'settings.local.json')
   const userLocal = readSettingsFile(userLocalFile)
   if (userLocal !== undefined) docs.push({ role: 'ancestor', json: userLocal, file: userLocalFile })
-  // Deny and ask rules count from every directory any of those three could be: the cwd, the project and the main checkout, and each of their ancestors.
+  // Deny and ask rules count from the cwd, the project and the main checkout, and each of their ancestors.
   const seen = new Set<string>()
-  for (const dir of [here, start, ...(mainRoot === undefined ? [] : [mainRoot])].flatMap(selfAndAncestors)) {
+  const roots = [...(outside ? [] : [here]), start, ...(mainRoot === undefined ? [] : [mainRoot])]
+  for (const dir of roots.flatMap(selfAndAncestors)) {
     const key = process.platform === 'win32' ? dir.toLowerCase() : dir
     if (seen.has(key)) continue
     seen.add(key)
     const projectFile = path.join(dir, '.claude', 'settings.json')
     const projectSettings = readSettingsFile(projectFile)
-    if (projectSettings !== undefined) docs.push({ role: samePath(dir, start) ? 'project' : 'ancestor', json: projectSettings, file: projectFile })
+    if (projectSettings !== undefined) {
+      const role = samePath(dir, start) ? 'project' : 'ancestor'
+      docs.push({ role, json: projectSettings, file: projectFile })
+    }
     const localFile = path.join(dir, '.claude', 'settings.local.json')
     const local = readSettingsFile(localFile)
     if (local !== undefined) {
       const perms = asObject(local['permissions'])
       const hasAllow = Array.isArray(perms?.['allow']) && (perms['allow'] as unknown[]).length > 0
-      docs.push(localDir !== undefined && samePath(dir, localDir) ? { role: 'local', json: local, localTrusted: hasAllow && localFileTrusted(localFile), file: localFile } : { role: 'ancestor', json: local, file: localFile })
+      if (localDir !== undefined && samePath(dir, localDir)) {
+        const localTrusted = hasAllow && localFileTrusted(localFile)
+        docs.push({ role: 'local', json: local, localTrusted, file: localFile })
+      } else {
+        docs.push({ role: 'ancestor', json: local, file: localFile })
+      }
     }
   }
   return snapshotFromDocs(docs)
