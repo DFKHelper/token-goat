@@ -541,8 +541,8 @@ const _KIND_GROUPS: KindGroup[] = [
       'evidence_cache_hit',
     ]),
   },
-  // Empty for the same reason as MCP below: every live Bash kind arrives through _kindGroupLabel's `bash_compress:` prefix branch, not through a literal name. The fifteen literal names this set used to carry (bash_output_cached, bash_dedup_hint, env_probe_cache_hit and the rest) came over with the Python port and were never recorded or registered anywhere in this tree, so they grouped rows that could not exist.
-  { label: 'Bash', members: new Set<string>() },
+  // Only bash_generic_head is literal; other Bash kinds use the bash_compress: prefix branch.
+  { label: 'Bash', members: new Set<string>(['bash_generic_head']) },
   {
     label: 'Web',
     members: new Set([

@@ -208,6 +208,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   // Cold first load of an oversized skill with no compact marker at all, where preSkillHandler inlined a heading tree in its reply instead of letting the whole body fall through. Same shape as skill_compact_inlined: real savings, bytesSaved is body minus the rendered tree.
   skill_heading_tree_inlined: SOURCE_SKILL,
   secret_redacted: SOURCE_OTHER,
+  // Event-only: a command head that fell to the generic bash filter; 0, 0 with the head in detail.
+  bash_generic_head: SOURCE_OTHER,
   // Fail-soft diagnostic counters from hooks_edit.ts: they record that a side task threw, never a byte saving, so "other" is the right home. Listed explicitly rather than left to kindToSource()'s fallback so the registration guard can tell a deliberate placement from an unregistered kind.
   dirty_queue_append_failed: SOURCE_OTHER,
   worker_healthcheck_failed: SOURCE_OTHER,

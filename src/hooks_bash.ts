@@ -39,6 +39,7 @@ import {
   cachedRunCoversCommand,
   extractCommand,
   detectUnbalancedShellSyntax,
+  commandHead,
 } from './hooks_bash_commands.js'
 
 import {
@@ -159,6 +160,7 @@ function maybeCompressRewrite(event: HookEvent, rawCmd: string, cmd: string, cap
       filterName = detected.filter.name
     } else if (isCompressibleSingleCommand(gateCmd)) {
       filterName = 'generic'
+      recordStat('bash_generic_head', 0, 0, undefined, commandHead(gateCmd))
     } else {
       return null
     }

@@ -84,6 +84,66 @@ export function stripTrailingStderrRedirect(cmd: string): string {
   return stripped.trim() || cmd
 }
 
+/** Assignment words a command may lead with (`FOO=1 BAR="a b" cmd`). */
+const LEADING_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+/** First-word prefixes that name a path, so the head is a script and its text stays out of the stats. */
+const SCRIPT_PREFIXES = ['./', '../', '.\\', '..\\', '/', '~']
+/** First-word suffixes that name a script file. */
+const SCRIPT_SUFFIXES = ['.sh', '.ps1', '.bat', '.cmd', '.py', '.js', '.mjs', '.ts']
+const HEAD_MAX_LENGTH = 32
+const SAFE_HEAD = /^[a-z0-9._+-]+$/
+
+/** Splits a command on unquoted whitespace, keeping quoted spans (quotes included) inside one word. */
+function shellWords(cmd: string): string[] {
+  const words: string[] = []
+  let word = ''
+  let inWord = false
+  let quote: string | null = null
+  for (const ch of cmd) {
+    if (quote !== null) {
+      word += ch
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch
+      word += ch
+      inWord = true
+      continue
+    }
+    if (/\s/.test(ch)) {
+      if (inWord) words.push(word)
+      word = ''
+      inWord = false
+      continue
+    }
+    word += ch
+    inWord = true
+  }
+  if (inWord) words.push(word)
+  return words
+}
+
+/** Lowercase basename of the first word past leading assignments, or `script` / `other`. */
+export function commandHead(cmd: string): string {
+  const words = shellWords(cmd)
+  let index = 0
+  while (index < words.length && LEADING_ASSIGNMENT.test(words[index] ?? '')) index++
+  const first = words[index]
+  if (first === undefined || first === '') return 'other'
+  const lowerFirst = first.toLowerCase()
+  if (
+    SCRIPT_PREFIXES.some((prefix) => first.startsWith(prefix)) ||
+    /^[a-z]:/i.test(first) ||
+    SCRIPT_SUFFIXES.some((suffix) => lowerFirst.endsWith(suffix))
+  ) {
+    return 'script'
+  }
+  const basename = first.slice(Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\')) + 1)
+  const head = basename.toLowerCase().slice(0, HEAD_MAX_LENGTH)
+  return SAFE_HEAD.test(head) ? head : 'other'
+}
+
 export function hasTestRunScopeOrBudget(cmd: string): boolean {
   const hasTimeout = /(?:^|\s)(?:timeout(?:\.exe)?\s+\S+|--(?:test)?timeout(?:=|\s)\S+)/i.test(cmd)
   const hasSelector = /(?:\s::\S+|\s(?:-k|-t|-run|--(?:testNamePattern|last-failed|test|project))(?:=|\s)|\b(?:tests?|spec)\S*\.(?:[cm]?[jt]sx?|py|go|rs)\b|(?:^|\s)\.\/\S+)/i.test(cmd)
