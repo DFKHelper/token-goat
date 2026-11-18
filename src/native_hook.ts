@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { nativeHooksEnabled } from './config.js'
 import { dataDir } from './constants.js'
 import { emitErr } from './emit.js'
+import { clearHookBroken, writeHookPointer } from './hook_pointer.js'
 import { displaySafeText } from './paths.js'
 import { powershellHookLine, quotePowershellPath, quotePosixShellWord } from './process_util.js'
 import { registerReset } from './reset.js'
@@ -322,6 +323,7 @@ export function nativeHookBinary(entryPath: string | undefined = process.argv[1]
     if (expected !== undefined) why = `the packaged binary ${expected} is missing (a dev checkout builds it with npm run build:native)`
   }
   if (bin === undefined && sync && why !== undefined && why !== COPY_STALE) emitErr(`token-goat: wrote the Node form of the hooks, not the native hook client, because ${why}. Run \`token-goat doctor --repair\` (or install again) to retry.`)
+  if (sync && writeHookPointer(entryPath, bin ?? packagedNativePath(entryPath) ?? path.join(path.dirname(entryPath), 'native', exeName()))) clearHookBroken()
   _decisions.set(key, bin ?? null)
   if (sync) _decisions.set(`false\0${entryPath}`, bin ?? null)
   return bin

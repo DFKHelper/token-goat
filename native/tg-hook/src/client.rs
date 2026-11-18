@@ -1,6 +1,6 @@
 //! The relay: `callServer` and `relayViaServer` from src/hook_client.ts, speaking the harness-aware protocol (`HARNESS_PROTOCOL_VERSION`, src/hook_server.ts `serveConnection`) so this client carries no harness logic. Every outcome maps to one of two endings: the server answered (its bytes are printed and its exit code returned), or nothing was dispatched and the caller runs the wrapped Node command. A request lost after it was handed over prints the harness's no-op instead, because running a hook twice is worse than failing it open.
 
-use std::io::Write;
+use crate::out::emit;
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
@@ -117,13 +117,6 @@ fn challenge_noops(msg: &Map<String, Value>) -> Option<(String, Vec<(String, Str
         })
         .collect::<Option<Vec<_>>>()?;
     Some((noop, noops))
-}
-
-/// Writes `data` to stdout at once. A harness that has stopped reading is not this client's failure to report.
-fn emit(data: &str) {
-    let mut out = std::io::stdout().lock();
-    let _ = out.write_all(data.as_bytes());
-    let _ = out.flush();
 }
 
 /// One attempt against `slot`: connect, hello, verified challenge, request, then the `out` frames (each printed as it arrives) and the `done` frame.

@@ -94,7 +94,7 @@ const FALLBACK_SCRIPT = [
   "  process.stdin.on('data', (c) => chunks.push(c))",
   "  process.stdin.on('end', () => {",
   '    const b = Buffer.concat(chunks)',
-  "    process.stdout.write('FALLBACK ' + b.length + ' ' + crypto.createHash('sha256').update(b).digest('hex'))",
+  "    process.stdout.write(JSON.stringify({ fallback: b.length + ' ' + crypto.createHash('sha256').update(b).digest('hex') }))",
   "    if (mode === 'signal') process.kill(process.pid, 'SIGTERM')",
   '    else process.exitCode = Number(code)',
   '  })',
@@ -114,7 +114,7 @@ function fallbackRuns(): number {
   }
 }
 
-const fallbackOutput = (input: Buffer): string => `FALLBACK ${input.length} ${sha256(input)}`
+const fallbackOutput = (input: Buffer): string => JSON.stringify({ fallback: `${String(input.length)} ${sha256(input)}` })
 
 function cli(args: string[], env: Env = {}): { status: number | null; stdout: string; stderr: string } {
   const res = spawnSync(process.execPath, [BUNDLE, ...args], { cwd: sb.base, env: { ...sb.env, ...env }, encoding: 'utf8', timeout: 120_000 })
@@ -541,9 +541,9 @@ describe('falls back when nothing was dispatched', () => {
     await withFakes(fakes, async (started) => {
       const runs = fallbackRuns()
       const input = opts.input ?? Buffer.from('{"tool_name":"Bash"}')
-      const res = await runNative(opts.args ?? hookArgs(fbTail(5)), input, opts.env)
+      const res = await runNative(opts.args ?? hookArgs(fbTail(2)), input, opts.env)
       expect(res.stdout.toString('utf8')).toBe(fallbackOutput(input))
-      expect(res.exit, res.stderr).toBe(5)
+      expect(res.exit, res.stderr).toBe(2)
       expect(fallbackRuns()).toBe(runs + 1)
       if (opts.hellos !== undefined) expect(started.map((f) => f?.hellos ?? 0)).toEqual(opts.hellos)
       for (const f of started) expect(f?.requests ?? []).toEqual([])
@@ -669,7 +669,7 @@ describe('falls back when nothing was dispatched', () => {
   })
 
   it('incomplete or malformed flags run the wrapped command with stdin untouched', async () => {
-    const tail = fbTail(5)
+    const tail = fbTail(2)
     for (const args of [
       ['--harness', 'claudecode', '--event', 'pre_tool_use', '--', ...tail],
       ['--harness', 'claudecode', '--event', 'pre_tool_use', '--entry', sb.fakeEntry, '--response-timeout-ms', 'soon', '--', ...tail],
@@ -688,7 +688,7 @@ describe('prints the no-op, and never runs the call again, once the request was 
     let run: Run | undefined
     await withFakes([script, SERVED], async ([f, next]) => {
       const runs = fallbackRuns()
-      run = await runNative(hookArgs(fbTail(5), { event: opts.event, extra: opts.extra }), '{}')
+      run = await runNative(hookArgs(fbTail(2), { event: opts.event, extra: opts.extra }), '{}')
       expect(run.stdout.toString('utf8')).toBe((opts.prefix ?? '') + (opts.noop ?? NOOP))
       expect(run.exit, run.stderr).toBe(0)
       expect(fallbackRuns()).toBe(runs)
@@ -794,29 +794,32 @@ describe('process behaviour', () => {
     }
   })
 
-  it("passes the wrapped command's exit code through", async () => {
+  // Changed by the fail-open runtime: a wrapped command that exits non-zero is a failed route, so the host gets the safe answer and exit 0.
+  it("a wrapped command's crash exit is answered with the safe no-op and exit 0", async () => {
     const res = await runNative(hookArgs(fbTail(7)), '{}', { TOKEN_GOAT_HOOK_SERVER: '0' })
-    expect(res.exit).toBe(7)
+    expect(res.exit).toBe(0)
+    expect(res.stdout.toString('utf8')).toBe('{}')
   })
 
-  it.skipIf(WIN)('dies of the signal the wrapped command died of (POSIX only: Windows has no signal exits)', async () => {
+  it.skipIf(WIN)('a wrapped command killed by a signal is answered with the safe no-op and exit 0 (POSIX only)', async () => {
     const res = await runNative(hookArgs(fbTail(0, 'signal')), '{}', { TOKEN_GOAT_HOOK_SERVER: '0' })
-    expect(res.signal).toBe('SIGTERM')
-    expect(res.exit).toBeNull()
+    expect(res.signal).toBeNull()
+    expect(res.exit).toBe(0)
+    expect(res.stdout.toString('utf8')).toBe('{}')
   })
 
-  it('a wrapped command that cannot be started exits 127 with a message', async () => {
+  it('a wrapped command that cannot be started is answered with the safe no-op and exit 0, never 127', async () => {
     const res = await runNative(hookArgs([path.join(sb.base, 'no-such-program')]), '{}', { TOKEN_GOAT_HOOK_SERVER: '0' })
-    expect(res.exit).toBe(127)
-    expect(res.stderr).toMatch(/^tg-hook: cannot run /)
+    expect(res.exit).toBe(0)
+    expect(res.stdout.toString('utf8')).toBe('{}')
   })
 
-  it('usage errors exit 2 without running anything', () => {
+  it('usage errors answer the safe no-op and exit 0 without running anything', () => {
     const runs = fallbackRuns()
     for (const args of [['--harness', 'claudecode'], ['--']]) {
       const res = spawnSync(bin, args, { cwd: sb.proj, env: sb.env, input: '{}', encoding: 'utf8' })
-      expect(res.status, JSON.stringify(args)).toBe(2)
-      expect(res.stderr).toMatch(/usage: tg-hook/)
+      expect(res.status, JSON.stringify(args)).toBe(0)
+      expect(res.stdout, JSON.stringify(args)).toBe('{}')
     }
     expect(fallbackRuns()).toBe(runs)
   })
@@ -835,7 +838,7 @@ describe('process behaviour', () => {
     const runs = fallbackRuns()
     const res = spawnSync(bin, [], { cwd: sb.proj, env: sb.env, input: '{}', encoding: 'utf8' })
     expect(res.status).toBe(0)
-    expect(res.stdout).toBe('{}\n')
+    expect(res.stdout).toBe('{}')
     expect(res.stderr).toBe('')
     expect(fallbackRuns()).toBe(runs)
   })

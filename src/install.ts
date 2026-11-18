@@ -1,5 +1,6 @@
 /** Install / uninstall token-goat's hooks in Claude Code settings. Ports the `patch_settings_json` / `unpatch_settings_json` slice of `install.py` to TypeScript. Claude Code reads hook wiring from `~/.claude/settings.json` (user scope) or `<project>/.claude/settings.json` (project scope). Each token-goat hook is a `{ type: "command", command: ... }` entry under the matching event key, where the command invokes the generated shim at {@link claudeHookScriptPath} via {@link hookCommandFor} — `"<node>" "<shim>" <event> "<entry>"`. Going through the shim rather than the bare `token-goat hook <event>` PATH lookup buys two things: the shim's in-process fast path imports `dist/token-goat-hook.mjs` and calls `relayInProcess` directly instead of spawning a second process, and naming the node binary explicitly skips the npm bin wrapper (on Windows, a `cmd.exe` layer) that a PATH lookup would pay for on every single hook. Measured at ~480ms → ~324ms per invocation. Writes go through {@link atomicWriteText}; an absent settings file is created with only the hooks section. Installation is idempotent — re-running never duplicates an entry — and uninstall removes only token-goat's own entries plus the generated shim, leaving any user-authored hooks intact. */
 
+import { registerHookShim } from './hook_pointer.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -153,6 +154,7 @@ function hookEntryMatches(command: string, args: readonly string[] | undefined, 
 export function claudeHookScriptPath(): string {
   return path.join(claudeConfigDir(), 'hooks', SHIM_FILE)
 }
+registerHookShim('claudecode', claudeHookScriptPath)
 
 /** The shim's pre-`.cjs` path, now a forwarder to it (see {@link LEGACY_SHIM_FILE}). */
 function claudeLegacyHookScriptPath(): string {

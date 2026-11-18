@@ -119,6 +119,16 @@ const EXEMPT: readonly Exemption[] = [
     table: 'TOOLS',
     reason: 'Derived from VSCODE_TOOL_NAME_MAP in src/hooks_cli.ts. This same file asserts TOOLS equals the hardcoded list of the canonical tool names, so an emptied or drifted map fails that equality first.',
   },
+  {
+    file: 'tests/hook_fail_open_runtime.test.ts',
+    table: 'ROWS',
+    reason: 'Derived from ADAPTER_HARNESSES and the safe-answer table. The describe named the rows are derived, not listed by hand, in this file asserts ADAPTER_HARNESSES has at least five members and ROWS has at least one per harness plus two, so an emptied source fails there first.',
+  },
+  {
+    file: 'tests/hook_fail_open_runtime.test.ts',
+    table: 'ADAPTER_HARNESSES',
+    reason: 'Derived from ADAPTER_HARNESSES in src/hook_adapters.ts. The describe named the rows are derived, not listed by hand, in this file asserts ADAPTER_HARNESSES has at least five members, so an emptied list fails there first.',
+  },
 ] as const
 
 /** Floors: a sweep that found no files, or implausibly few parameterized blocks, must fail rather than pass empty. */

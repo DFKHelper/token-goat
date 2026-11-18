@@ -1106,6 +1106,7 @@ export async function run(argv: string[] = process.argv): Promise<void> {
   }
   const isHookCommand = attemptedCommandName(argv) === 'hook'
   const stdoutBytesAtStart = stdoutBytesWritten()
+  if (isHookCommand) installHookFailOpenHandlers(stdoutBytesAtStart)
   let program: Command
   try {
     // Any command that reads or indexes a file can reach a synchronous parse, and the regex language adapters live behind a dynamic import so the hook path never compiles them (see loadRegexExtractors). Load them once here rather than at each of the call sites below it.
@@ -1159,6 +1160,25 @@ export async function run(argv: string[] = process.argv): Promise<void> {
     clearCliInvocation()
     if (isHookCommand) endHookFailOpen(stdoutBytesAtStart)
   }
+}
+
+/** The last line of defence for `token-goat hook`: an exception or rejection nothing caught, or a host that closed the pipe, ends as the safe `{}` answer (when no answer has been written yet) and exit 0, never as a crash code the host reads as a refusal. */
+function installHookFailOpenHandlers(stdoutBytesAtStart: number): void {
+  const escape = (e: unknown): void => {
+    try {
+      err(`token-goat: hook failed open: ${formatCommandError(e)}`)
+      if (stdoutBytesWritten() === stdoutBytesAtStart) {
+        process.stdout.write('{}', () => process.exit(0))
+        return
+      }
+    } catch {
+      // stderr or stdout is gone; the exit below is all that is left to do.
+    }
+    process.exit(0)
+  }
+  process.on('uncaughtException', escape)
+  process.on('unhandledRejection', escape)
+  process.stdout.on('error', () => process.exit(0))
 }
 
 function stdoutBytesWritten(): number {

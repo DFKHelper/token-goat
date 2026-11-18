@@ -11,6 +11,7 @@ import { nativeHooksEnabled } from './config.js'
 import { getDb } from './db.js'
 import type { DoctorResult } from './doctor_result.js'
 import { nativeHookCounts, type NativeHookCounts } from './hook_latency.js'
+import { HOOK_BROKEN_FILE, readHookBroken } from './hook_pointer.js'
 import { wiredClaudeHookWords } from './install.js'
 import { nativeCopyCurrent, nativeCopyPath, nativeHookBinary, nativeSelftest, packagedNativeBinary, parseNativeInvocation, type NativeSelftest, type WiredHookEntry } from './native_hook.js'
 import { displaySafeText } from './paths.js'
@@ -202,6 +203,19 @@ export function checkNativeEntryPaths(wiring: NativeWiring): DoctorResult | null
   }
 }
 
+/** FAIL when the native client had to leave its first route (a missing node, shim or bundle entry, a crash) and answered from a fallback route or the safe no-op: the hooks still ran or failed open, but something an install should have kept in place is gone. `install` clears the notice. */
+export function checkHookBroken(home: string): DoctorResult | null {
+  const notice = readHookBroken(home)
+  if (notice === undefined) return null
+  const last = notice.events[notice.events.length - 1]
+  const what = last === undefined ? 'an unknown piece' : `${last.route}${last.path === '' ? '' : ` ${displaySafeText(last.path)}`}: ${displaySafeText(last.error)}`
+  return {
+    name: 'Hook fallback',
+    status: 'fail',
+    message: `hook calls left their first route ${String(notice.count)} time${notice.count === 1 ? '' : 's'} between ${notice.first} and ${notice.last}; last: ${what} (${HOOK_BROKEN_FILE}); run ${fencedCommand('token-goat install')} to repair it`,
+  }
+}
+
 /** The per-harness hook counts, or none when the stats database is missing or unreadable: a damaged global.db is the Database row's finding (`checkDbExists`), and must not stop doctor before it prints. */
 function readNativeHookCounts(dbPath: string): Map<string, NativeHookCounts> {
   if (!fs.existsSync(dbPath)) return new Map<string, NativeHookCounts>()
@@ -216,7 +230,9 @@ function readNativeHookCounts(dbPath: string): Map<string, NativeHookCounts> {
 export function checkNativeHooks(dbPath: string): DoctorResult[] {
   const avail = nativeAvailability()
   const counts = readNativeHookCounts(dbPath)
-  return nativeWirings()
+  const broken = checkHookBroken(path.dirname(dbPath))
+  const wiringRows = nativeWirings()
     .flatMap((w) => [checkNativeHookWiring(w, avail, counts), checkNativeEntryPaths(w)])
     .filter((r): r is DoctorResult => r !== null)
+  return broken === null ? wiringRows : [broken, ...wiringRows]
 }

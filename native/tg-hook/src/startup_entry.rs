@@ -28,7 +28,8 @@ pub fn is_startup(call: &Call) -> bool {
     matches!(call.harness.as_str(), "copilot_cli" | "vscode") && matches!(call.event.as_str(), "sessionStart" | "SessionStart" | "session_start")
 }
 
-pub fn run(mut command: Vec<OsString>, started: Instant) -> i32 {
+#[cfg_attr(windows, allow(unused_variables))]
+pub fn run(mut command: Vec<OsString>, started: Instant, call: &Call) -> i32 {
     if command.len() < 4 {
         return fail_open("installed startup command unavailable");
     }
@@ -45,7 +46,9 @@ pub fn run(mut command: Vec<OsString>, started: Instant) -> i32 {
     {
         // The existing POSIX shim owns a detached group. Inherit stdin directly,
         // and pass the original native deadline rather than waiting for EOF.
-        crate::fallback::run(&command, crate::fallback::Input::Untouched, "bounded-startup")
+        let extra = command[command.len() - 1..].to_vec();
+        let opts = crate::fallback::Opts { harness: call.harness.clone(), event: Some(call.event.clone()), deadline: Some(deadline), extra, ..crate::fallback::Opts::bare() };
+        crate::fallback::run(&command, crate::fallback::Input::Untouched, "bounded-startup", &opts)
     }
     #[cfg(windows)]
     {
@@ -72,7 +75,7 @@ pub fn run(mut command: Vec<OsString>, started: Instant) -> i32 {
             match rx.try_recv() {
                 Ok(Ok((candidate, diagnostics))) => {
                     eprint!("{}", String::from_utf8_lossy(&diagnostics));
-                    print!("{candidate}");
+                    crate::out::emit(&candidate.to_string());
                     return 0;
                 }
                 Ok(Err(error)) => return fail_open(&error),
@@ -86,8 +89,8 @@ pub fn run(mut command: Vec<OsString>, started: Instant) -> i32 {
 
 fn fail_open(reason: &str) -> i32 {
     eprintln!("tg-hook: SessionStart failed open: {reason}");
-    print!("{{}}");
-    0
+    crate::notice::record_current("startup", "", reason);
+    crate::out::fail_open()
 }
 
 #[cfg(windows)]

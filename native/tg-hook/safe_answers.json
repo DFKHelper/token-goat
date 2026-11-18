@@ -1,0 +1,1 @@
+{"claudecode":{"noop":"{}","events":{}},"codex":{"noop":"{}","events":{}},"grok":{"noop":"{}","events":{"pre_tool_use":"{\"decision\":\"allow\"}"}},"kimi":{"noop":"","events":{}},"copilot_cli":{"noop":"{}","events":{"agentStop":"{\"decision\":\"allow\"}","subagentStop":"{\"decision\":\"allow\"}"}}}

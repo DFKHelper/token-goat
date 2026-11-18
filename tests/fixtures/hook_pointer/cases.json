@@ -1,0 +1,572 @@
+{
+ "cases": [
+  {
+   "name": "valid",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": true,
+    "node": true,
+    "shim": true
+   }
+  },
+  {
+   "name": "valid with unknown extra field",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z",
+    "extra": "ignored"
+   },
+   "expect": {
+    "usable": true,
+    "node": true,
+    "shim": true
+   }
+  },
+  {
+   "name": "null node and shim",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": null,
+    "shim": null,
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": true,
+    "node": false,
+    "shim": false
+   }
+  },
+  {
+   "name": "absent node and shim keys",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": true,
+    "node": false,
+    "shim": false
+   }
+  },
+  {
+   "name": "node file missing",
+   "files": [
+    "bundle/token-goat.mjs",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": true,
+    "node": false,
+    "shim": true
+   }
+  },
+  {
+   "name": "shim file missing",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": true,
+    "node": true,
+    "shim": false
+   }
+  },
+  {
+   "name": "entry file missing",
+   "files": [
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false,
+    "node": false,
+    "shim": false
+   }
+  },
+  {
+   "name": "wrong schema number",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 2,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "schema as string",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": "1",
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "schema missing",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "version missing",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "entry missing key",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "relative entry",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "entry with parent reference",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/../bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "entry on a UNC share",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "//server/share/bundle",
+    "entry": "//server/share/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "entry in a device namespace",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "\\\\?\\{ROOT}/bundle",
+    "entry": "\\\\?\\{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "entry with another basename",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}",
+    "bundle/evil.mjs"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/evil.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "bundleDir that is not the entry directory",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/hooks",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "node with another basename",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}",
+    "bin/evil{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/evil{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "shim with another basename",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}",
+    "hooks/evil.cjs"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/evil.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "relative node",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "node as a number",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": 7,
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/tg-hook{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "nativeBin with another basename",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "pointer": {
+    "schema": 1,
+    "version": "9.9.9",
+    "bundleDir": "{ROOT}/bundle",
+    "entry": "{ROOT}/bundle/token-goat.mjs",
+    "node": "{ROOT}/bin/node{EXE}",
+    "shim": "{ROOT}/hooks/token-goat-shim.cjs",
+    "nativeBin": "{ROOT}/native/other{EXE}",
+    "writtenAt": "2026-01-01T00:00:00.000Z"
+   },
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "truncated file",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "raw": "{\"schema\":1,\"version\":\"9.9.9\",\"bundleDir\":\"{ROOT}/bun",
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "empty file",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "raw": "",
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "array instead of object",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "raw": "[]",
+   "expect": {
+    "usable": false
+   }
+  },
+  {
+   "name": "oversize file",
+   "files": [
+    "bundle/token-goat.mjs",
+    "bin/node{EXE}",
+    "hooks/token-goat-shim.cjs",
+    "native/tg-hook{EXE}"
+   ],
+   "rawBytes": 5000,
+   "expect": {
+    "usable": false
+   }
+  }
+ ]
+}

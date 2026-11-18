@@ -4,12 +4,16 @@
 //!
 //! It relays the call to token-goat's resident hook server and prints the answer; whenever nothing could be dispatched it runs the command after `--`, unchanged, with the same stdin. The flags carry what the relay needs explicitly rather than having it parse the wrapped command, whose shape differs by harness (a PowerShell string for Codex on Windows, Copilot CLI's own event names): `--harness` selects the server's adapter, `--event` is the event argument the shim is run with (argv[2] of the wrapped command, in the harness's own spelling), `--entry` is the bundle entry the shim names (argv[3]), which locates the server, and `--script-dir` is the shim's directory, which the Copilot CLI adapter hands to VS Code's duplicate-hook guard.
 
+mod capture;
 mod client;
 mod conn;
 mod fallback;
 mod jsstr;
 mod nodepath;
+mod notice;
+mod out;
 mod paths;
+mod pointer;
 mod protocol;
 mod selftest;
 mod session_begun;
@@ -85,32 +89,33 @@ fn parse_hook_args(args: &[OsString]) -> Option<HookArgs> {
 
 /// A hook call: relay it, or run the wrapped command.
 fn run_hook(hook: HookArgs, main_start: Instant) -> i32 {
-    if hook.call.as_ref().is_some_and(startup_entry::is_startup) {
-        return startup_entry::run(hook.fallback, main_start);
+    if let Some(call) = &hook.call {
+        out::set_context(&call.harness, &call.event);
     }
-    if hook.fallback.is_empty() {
-        eprintln!("tg-hook: no command after --\n{USAGE}");
-        return 2;
+    if let Some(call) = hook.call.as_ref().filter(|c| startup_entry::is_startup(c)) {
+        return startup_entry::run(hook.fallback.clone(), main_start, call);
     }
-    let Some(call) = hook.call else { return fallback::run(&hook.fallback, fallback::Input::Untouched, "bad-flags") };
+    let Some(call) = hook.call else { return fallback::run(&hook.fallback, fallback::Input::Untouched, "bad-flags", &fallback::Opts::bare()) };
+    let opts = fallback::Opts { harness: call.harness.clone(), event: Some(call.event.clone()), ..fallback::Opts::bare() };
     let input = fallback::read_stdin(protocol::MAX_FRAME_BYTES);
     let fallback::Input::Read { bytes, more: false } = input else {
         let reason = if matches!(input, fallback::Input::Untouched) { "stdin-error" } else { "stdin-too-large" };
-        return fallback::run(&hook.fallback, input, reason);
+        return fallback::run(&hook.fallback, input, reason, &opts);
     };
     // Node would decode invalid UTF-8 with replacement characters; the command it wraps still gets the bytes exactly as they came.
     let text = match String::from_utf8(bytes) {
         Ok(text) => text,
-        Err(e) => return fallback::run(&hook.fallback, fallback::Input::Read { bytes: e.into_bytes(), more: false }, "stdin-not-utf8"),
+        Err(e) => return fallback::run(&hook.fallback, fallback::Input::Read { bytes: e.into_bytes(), more: false }, "stdin-not-utf8", &opts),
     };
     match client::relay(&call, &text, main_start) {
         client::Ending::Served(code) => code,
-        client::Ending::Fallback(reason) => fallback::run(&hook.fallback, fallback::Input::Read { bytes: text.into_bytes(), more: false }, reason),
+        client::Ending::Fallback(reason) => fallback::run(&hook.fallback, fallback::Input::Read { bytes: text.into_bytes(), more: false }, reason, &opts),
     }
 }
 
 fn main() {
     let main_start = Instant::now();
+    out::install_panic_hook();
     let raw: Vec<OsString> = std::env::args_os().skip(1).collect();
     let code = match raw.first().and_then(|a| a.to_str()) {
         #[cfg(windows)]
@@ -122,6 +127,11 @@ fn main() {
             );
             0
         }
+        Some("--selftest-panic") => {
+            // A hidden mode for tests: panics after setting the context, to prove a panic answers fail-open.
+            out::set_context(raw.get(1).and_then(|a| a.to_str()).unwrap_or(""), raw.get(2).and_then(|a| a.to_str()).unwrap_or(""));
+            panic!("selftest panic");
+        }
         Some("--selftest-vectors") => selftest::run_vectors(),
         Some("--selftest-real") => selftest::run_real(&raw[1..].iter().map(|a| jsstr::os_to_js(a)).collect::<Vec<_>>()),
         Some("--selftest-env") => selftest::run_env(),
@@ -129,16 +139,15 @@ fn main() {
             Some(hook) => run_hook(hook, main_start),
             None if raw.is_empty() => {
                 // Some hosts execute a hook's `command` but drop its separate `args` array. With no event or command to run, fail open with the valid no-op response so one foreign hook config cannot block every tool call.
-                println!("{{}}");
-                0
+                out::fail_open()
             }
             None => {
                 eprintln!("{USAGE}");
-                2
+                out::fail_open()
             }
         },
     };
-    std::process::exit(code);
+    out::finish(code);
 }
 
 #[cfg(test)]

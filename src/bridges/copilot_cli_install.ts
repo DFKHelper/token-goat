@@ -1,4 +1,5 @@
 /** Copilot CLI install/uninstall wiring. Copilot's hook config is a standalone JSON file, one file per hook registration (not a shared/merge-heavy config like Codex's config.toml), confirmed against https://docs.github.com/en/copilot/reference/hooks-reference and https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks. Token-goat writes `{ "type": "command", "exec": "...", "args": [...] }` when a verified native client is available, and the shell-command fields `command`, `bash`, and `powershell` otherwise. The file is written to `.github/hooks/token-goat.json` (project scope) or `~/.copilot/hooks/token-goat.json` (user scope). Because the file is entirely token-goat's own (no other tool writes to a file named exactly `token-goat.json` in that directory), this follows pi_install.ts's simpler whole-file overwrite-on-diff pattern rather than Codex's parse/merge pattern -- there is nothing to merge into. It does, however, still `.bak` the config before overwriting it (like Codex/Gemini/OpenClaw), because Copilot's hooks schema supports per-entry fields token-goat writes only some of (`timeoutSec` and `allowedEnvVars` -- see HOOK_TIMEOUT_SEC and ALLOWED_ENV_VARS below) and never touches others of (`cwd`, `env`, `matcher` -- https://docs.github.com/en/copilot/reference/hooks-reference) that a user could plausibly hand-tune; since install always regenerates the whole file from scratch, a hand-edit would otherwise be silently destroyed with no recovery path. */
+import { registerHookShim } from '../hook_pointer.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -101,6 +102,7 @@ export function copilotCliConfigPath(opts: CopilotCliScopeOptions = {}): string 
 export function copilotCliScriptPath(opts: CopilotCliScopeOptions = {}): string {
   return path.join(copilotCliHooksDir(opts), HOOKS_SCRIPT_FILE)
 }
+registerHookShim('copilot_cli', () => copilotCliScriptPath())
 
 // Copilot CLI reads custom instructions from `~/.copilot/copilot-instructions.md` (user scope) and `<repo>/.github/copilot-instructions.md` (project scope) -- the same repository-custom-instructions filename GitHub Copilot uses across its surfaces. The instructions file therefore lives one directory up from the scope's hooks dir: `~/.copilot/hooks` -> `~/.copilot/copilot-instructions.md`, and `<cwd>/.github/hooks` -> `<cwd>/.github/copilot-instructions.md`, so the existing `local` scope selector applies to it unchanged.
 export function copilotCliInstructionsPath(opts: CopilotCliScopeOptions = {}): string {
