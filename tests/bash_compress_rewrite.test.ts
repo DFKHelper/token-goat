@@ -239,6 +239,7 @@ describe('preBashHandler: compression rewrite', () => {
     expect(result.hookType).toBe('rewriteInput')
     if (result.hookType === 'rewriteInput') {
       expect(result.updatedInput['command']).toContain('token-goat compress')
+      expect(result.updatedInput['command']).toContain(`-c '${command}'`)
     }
   })
 
@@ -293,6 +294,10 @@ describe('preBashHandler: compression rewrite', () => {
 describe('stripTrailingStderrRedirect', () => {
   it('strips a trailing 2>&1', () => {
     expect(stripTrailingStderrRedirect('npm test 2>&1')).toBe('npm test')
+  })
+
+  it('strips a 2>&1 with no whitespace before it, as it does today', () => {
+    expect(stripTrailingStderrRedirect('npm test2>&1')).toBe('npm test')
   })
 
   it('leaves a command with no trailing 2>&1 unchanged', () => {
