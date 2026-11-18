@@ -128,6 +128,7 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
         }
         None => drop(tx),
     }
+    // Only the direct child is killed and reaped: the hook server it started detached must outlive the call.
     let kill = |child: &mut std::process::Child| {
         let _ = child.kill();
         let _ = child.wait();

@@ -14,6 +14,8 @@ pub enum Input {
     Untouched,
     /// These bytes were read; `more` says stdin was not exhausted, so the rest is read in before the first route starts.
     Read { bytes: Vec<u8>, more: bool },
+    /// The call's deadline passed with stdin still open: no route can run, so the call ends in the safe answer.
+    TimedOut,
 }
 
 /// Names, on the wrapped command's environment, why this call was not served. The Node hook path records it with the call's latency row (`stats.detail`, as `native-fallback:<reason>`), which is how `doctor` counts served and fallen-back calls per harness; the answer on stdout is untouched.
@@ -53,9 +55,10 @@ impl Opts {
         Opts { harness: String::new(), event: None, deadline: None, reserve_second: false, extra: Vec::new() }
     }
 
-    /// A hook call that began at `start`; `limit`, a test seam, replaces the harness's own limit.
+    /// A hook call that began at `start`; `limit`, a test seam, can only shorten the harness's own limit.
     pub fn for_call(harness: &str, event: &str, start: Instant, limit: Option<Duration>) -> Opts {
-        let deadline = Some(start + limit.unwrap_or_else(|| harness_limit(harness)));
+        let table = harness_limit(harness);
+        let deadline = Some(start + limit.map_or(table, |l| l.min(table)));
         let (harness, event) = (harness.to_string(), Some(event.to_string()));
         Opts { harness, event, deadline, reserve_second: true, ..Opts::bare() }
     }
@@ -67,9 +70,9 @@ fn budget(opts: &Opts) -> Option<Duration> {
     (!left.is_zero()).then_some(left)
 }
 
-/// What the first route may take: all that is left, or two thirds of it when a second route is to follow.
-fn first_budget(opts: &Opts) -> Option<Duration> {
-    budget(opts).map(|left| if opts.reserve_second { left * 2 / 3 } else { left })
+/// What the first route may take: all that is left, or two thirds of it when a second route can follow.
+fn first_budget(opts: &Opts, second_follows: bool) -> Option<Duration> {
+    budget(opts).map(|left| if opts.reserve_second && second_follows { left * 2 / 3 } else { left })
 }
 
 /// The first part of `argv` that names a file which is not there: what to blame in the notice.
@@ -93,18 +96,33 @@ fn rebuilt(opts: &Opts, data_dir: &str) -> Result<Vec<OsString>, String> {
     Ok(argv)
 }
 
-fn read_rest(first: Vec<u8>) -> Vec<u8> {
-    let mut bytes = first;
-    let _ = std::io::stdin().lock().take(MAX_STDIN_BYTES).read_to_end(&mut bytes);
-    bytes
+/// Reads stdin onto `bytes` up to `cap` more, and whether the read failed; `None` if `deadline` passed first.
+// A blocked stdin read cannot be cancelled portably, so a deadline read runs on a thread the caller abandons.
+fn read_stdin_by(mut bytes: Vec<u8>, cap: u64, deadline: Option<Instant>) -> Option<(Vec<u8>, bool)> {
+    let read = move || {
+        let result = std::io::stdin().lock().take(cap).read_to_end(&mut bytes);
+        (bytes, result.is_err())
+    };
+    let Some(end) = deadline else { return Some(read()) };
+    let (tx, rx) = std::sync::mpsc::channel();
+    // owner: this call; dies when the process exits, which every path out of a timed-out read does
+    std::thread::spawn(move || {
+        let _ = tx.send(read());
+    });
+    rx.recv_timeout(end.saturating_duration_since(Instant::now())).ok()
+}
+
+fn read_rest(first: Vec<u8>, deadline: Option<Instant>) -> Option<Vec<u8>> {
+    read_stdin_by(first, MAX_STDIN_BYTES, deadline).map(|(bytes, _)| bytes)
 }
 
 /// Runs the routes and returns the code to leave with. Never returns a code that would block the call on this process's own account: 0, or 2 only when a command ran and deliberately said so.
 pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
+    // A timed-out read leaves no stdin for any route; the deadline has passed, so none starts.
     let bytes = match input {
-        Input::Untouched => None,
+        Input::Untouched | Input::TimedOut => None,
         Input::Read { bytes, more: false } => Some(bytes),
-        Input::Read { bytes, more: true } => Some(read_rest(bytes)),
+        Input::Read { bytes, more: true } => read_rest(bytes, opts.deadline),
     };
     let first_in = || bytes.as_deref().map_or(Stdin::Inherit, Stdin::Bytes);
     let later_in = || bytes.as_deref().map_or(Stdin::Null, Stdin::Bytes);
@@ -115,7 +133,9 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
         }
     };
     let mut failed_argv: Option<Vec<OsString>> = None;
-    if let Some(timeout) = first_budget(opts) {
+    let second = data_dir.as_ref().map(|dir| rebuilt(opts, dir));
+    let second_follows = matches!(&second, Some(Ok(s)) if s.as_slice() != argv);
+    if let Some(timeout) = first_budget(opts, second_follows) {
         match capture::exec(argv, first_in(), reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or("")) {
             Ok(done) => {
                 if let Some(dir) = &data_dir {
@@ -129,8 +149,8 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
             }
         }
     }
-    if let Some(dir) = &data_dir {
-        match rebuilt(opts, dir) {
+    if let (Some(dir), Some(second)) = (&data_dir, second) {
+        match second {
             Ok(second) if failed_argv.as_deref() != Some(second.as_slice()) => {
                 if let Some(timeout) = budget(opts) {
                     match capture::exec(&second, later_in(), "pointer-route", timeout, &opts.harness, opts.event.as_deref().unwrap_or("")) {
@@ -155,15 +175,14 @@ fn finish(done: Outcome) -> i32 {
     }
 }
 
-/// Reads stdin until EOF or until more than `limit` bytes have arrived.
-pub fn read_stdin(limit: usize) -> Input {
-    let mut bytes = Vec::new();
-    let result = std::io::stdin().lock().take(limit as u64 + 1).read_to_end(&mut bytes);
-    match result {
-        Err(_) if bytes.is_empty() => Input::Untouched,
+/// Reads stdin until EOF, more than `limit` bytes, or `deadline` with stdin still open.
+pub fn read_stdin(limit: usize, deadline: Option<Instant>) -> Input {
+    let Some((bytes, failed)) = read_stdin_by(Vec::new(), limit as u64 + 1, deadline) else { return Input::TimedOut };
+    match failed {
+        true if bytes.is_empty() => Input::Untouched,
         // A read error mid-stream leaves the rest for the child to find, exactly as it would have.
-        Err(_) => Input::Read { bytes, more: true },
-        Ok(_) => {
+        true => Input::Read { bytes, more: true },
+        false => {
             let more = bytes.len() > limit;
             Input::Read { bytes, more }
         }
@@ -247,8 +266,31 @@ mod tests {
         assert!(budget(&fresh).unwrap() <= Duration::from_millis(45_000));
         let seam = Opts::for_call("codex", "pre_tool_use", Instant::now(), Some(Duration::from_millis(500)));
         assert!(budget(&seam).unwrap() <= Duration::from_millis(500));
-        assert!(first_budget(&seam).unwrap() < budget(&seam).unwrap(), "no share kept for the second route");
-        let whole = first_budget(&Opts::bare()).unwrap();
+        assert!(first_budget(&seam, true).unwrap() < budget(&seam).unwrap(), "no share kept for the second route");
+        let whole = first_budget(&Opts::bare(), true).unwrap();
         assert!(whole > Duration::from_millis(2_000), "a startup call keeps its whole deadline");
+    }
+
+    #[test]
+    fn the_first_route_keeps_a_share_only_when_a_second_route_can_follow() {
+        let opts = Opts::for_call("codex", "pre_tool_use", Instant::now(), None);
+        let (alone, shared) = (first_budget(&opts, false).unwrap(), first_budget(&opts, true).unwrap());
+        assert!(shared < alone, "a second route follows: {shared:?} must be under {alone:?}");
+        assert!(alone > Duration::from_millis(40_000), "no second route: the first gets the whole limit, got {alone:?}");
+    }
+
+    #[test]
+    fn a_limit_override_can_only_lower_the_harness_limit() {
+        let table = harness_limit("codex");
+        let span = |limit: Option<Duration>| {
+            let start = Instant::now();
+            Opts::for_call("codex", "e", start, limit).deadline.unwrap().duration_since(start)
+        };
+        assert_eq!(span(None), table);
+        assert_eq!(span(Some(Duration::from_millis(500))), Duration::from_millis(500));
+        assert_eq!(span(Some(Duration::ZERO)), Duration::ZERO);
+        assert_eq!(span(Some(table + Duration::from_millis(1))), table, "one past the table must not raise it");
+        assert_eq!(span(Some(Duration::from_millis(u64::MAX))), table, "a huge value must not raise or panic");
+        assert_eq!(span(Some(Duration::MAX)), table);
     }
 }

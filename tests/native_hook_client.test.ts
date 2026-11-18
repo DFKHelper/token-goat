@@ -102,6 +102,19 @@ const FALLBACK_SCRIPT = [
   '',
 ].join('\n')
 
+/** Whether `pid` names a live process: ESRCH is dead, EPERM is alive, anything else is not an answer. */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    if (code === 'ESRCH') return false
+    if (code === 'EPERM') return true
+    throw e
+  }
+}
+
 function fbTail(code = 0, mode = 'echo', pidFile = ''): string[] {
   return [process.execPath, sb.fb, sb.counter, String(code), mode, pidFile]
 }
@@ -135,7 +148,7 @@ interface Run {
 }
 
 /** `powershell` runs the client the way Copilot CLI runs a hook command on Windows: as `& '<client>' <args>` in `powershell -Command` (FORMAT-DERIVED from the `powershell` key `install --copilot` writes to its hooks file). */
-function runNative(args: readonly string[], input: Buffer | string, env: Env = {}, opts: { cwd?: string; onSpawn?: (child: ChildProcess) => void; powershell?: boolean } = {}): Promise<Run> {
+function runNative(args: readonly string[], input: Buffer | string, env: Env = {}, opts: { cwd?: string; onSpawn?: (child: ChildProcess) => void; powershell?: boolean; killAfterMs?: number; holdStdin?: boolean } = {}): Promise<Run> {
   return new Promise((resolve, reject) => {
     const started = performance.now()
     const quote = (s: string): string => `'${s.split("'").join("''")}'`
@@ -162,13 +175,16 @@ function runNative(args: readonly string[], input: Buffer | string, env: Env = {
         child.stderr.destroy()
       }, 3000).unref()
     })
+    // A client that has not ended on its own by then is killed, so the caller sees a signal, not a hang.
+    const bound = opts.killAfterMs === undefined ? undefined : setTimeout(() => child.kill(), opts.killAfterMs)
     child.on('close', (exit, signal) => {
+      clearTimeout(bound)
       settled = true
       resolve({ stdout: Buffer.concat(out), stderr, exit, signal, firstChunkMs, firstChunk: out[0], exitMs, heldOpen })
     })
     // A client that stopped reading stdin early would fail this write with EPIPE; that is not what these cases test.
     child.stdin.on('error', () => undefined)
-    child.stdin.end(input)
+    if (opts.holdStdin !== true) child.stdin.end(input)
     opts.onSpawn?.(child)
   })
 }
@@ -685,11 +701,11 @@ describe('falls back when nothing was dispatched', () => {
 // ---------- fake servers: lost after dispatch ----------
 
 describe('prints the no-op, and never runs the call again, once the request was handed over', () => {
-  const expectNoop = async (script: Script, opts: { event?: string; noop?: string; extra?: string[]; prefix?: string } = {}): Promise<Run> => {
+  const expectNoop = async (script: Script, opts: { event?: string; noop?: string; extra?: string[]; prefix?: string; killAfterMs?: number } = {}): Promise<Run> => {
     let run: Run | undefined
     await withFakes([script, SERVED], async ([f, next]) => {
       const runs = fallbackRuns()
-      run = await runNative(hookArgs(fbTail(2), { event: opts.event, extra: opts.extra }), '{}')
+      run = await runNative(hookArgs(fbTail(2), { event: opts.event, extra: opts.extra }), '{}', {}, { killAfterMs: opts.killAfterMs })
       expect(run.stdout.toString('utf8')).toBe((opts.prefix ?? '') + (opts.noop ?? NOOP))
       expect(run.exit, run.stderr).toBe(0)
       expect(fallbackRuns()).toBe(runs)
@@ -731,6 +747,16 @@ describe('prints the no-op, and never runs the call again, once the request was 
     )
     expect(run.exitMs).toBeGreaterThanOrEqual(450)
     expect(run.exitMs).toBeLessThan(10_000)
+  })
+
+  // The response wait is inside the one deadline: the default 120 s response timeout cannot outlast it.
+  it('a daemon that never answers is cut off by the hook limit, not the response timeout', async () => {
+    const run = await expectNoop(
+      afterRequest(() => undefined, true),
+      { extra: ['--hook-limit-ms', '1500'], killAfterMs: 15_000 },
+    )
+    expect(run.signal, 'the client had to be killed: it waited past its limit').toBeNull()
+    expect(run.exit).toBe(0)
   })
 
   it('an out frame with a bad MAC, after a good one already printed', async () => {
@@ -776,6 +802,8 @@ describe('prints the no-op, and never runs the call again, once the request was 
 
 describe('one deadline serves every route', () => {
   const LIMIT_ARGS = ['--hook-limit-ms', '1500']
+  // The second route gets a third of this (4 s), so a busy machine starting Node does not decide the verdict.
+  const SPLIT_ARGS = ['--hook-limit-ms', '12000']
   const NO_SERVER: Env = { TOKEN_GOAT_HOOK_SERVER: '0' }
   const route2Env = (counter: string, mode: string): Env => ({
     ...NO_SERVER,
@@ -811,8 +839,8 @@ describe('one deadline serves every route', () => {
   it('a first route that hangs leaves the second route time to answer inside the one limit', async () => {
     writePointer()
     const counter = path.join(sb.base, 'route2-answer')
-    const args = hookArgs(fbTail(0, 'hang', hangPid('first')), { extra: LIMIT_ARGS })
-    const res = await runNative(args, '{}', route2Env(counter, 'answer'))
+    const args = hookArgs(fbTail(0, 'hang', hangPid('first')), { extra: SPLIT_ARGS })
+    const res = await runNative(args, '{}', route2Env(counter, 'answer'), { killAfterMs: 30_000 })
     expect(res.exit, res.stderr).toBe(0)
     expect(res.stdout.toString('utf8')).toBe('{"second":true}')
     expect(fs.readFileSync(counter).length).toBe(1)
@@ -821,33 +849,57 @@ describe('one deadline serves every route', () => {
   it('both routes hanging end in the safe answer and exit 0 at the limit, each route run once', async () => {
     writePointer()
     const counter = path.join(sb.base, 'route2-hang')
-    const args = hookArgs(fbTail(0, 'hang', hangPid('both')), { extra: LIMIT_ARGS })
-    const res = await runNative(args, '{}', route2Env(counter, 'hang'))
+    const args = hookArgs(fbTail(0, 'hang', hangPid('both')), { extra: SPLIT_ARGS })
+    const res = await runNative(args, '{}', route2Env(counter, 'hang'), { killAfterMs: 30_000 })
     expect(res.exit, res.stderr).toBe(0)
     expect(res.stdout.toString('utf8')).toBe('{}')
     expect(fs.readFileSync(counter).length).toBe(1)
     expect(res.heldOpen).toBe(false)
   })
 
+  // The client must end on its own inside this bound: past every limit used here, far under a hang.
+  const BOUND: { killAfterMs: number } = { killAfterMs: 15_000 }
+  const endedOnItsOwn = (res: Run, safe = '{}'): void => {
+    expect(res.signal, 'the client was still running at the kill bound').toBeNull()
+    expect(res.exit, res.stderr).toBe(0)
+    expect(res.stdout.toString('utf8')).toBe(safe)
+  }
+
   it('a limit already spent answers the safe no-op and exits 0', async () => {
     const args = hookArgs(fbTail(0, 'hang', hangPid('spent')), { extra: ['--hook-limit-ms', '1'] })
-    const res = await runNative(args, '{}', NO_SERVER)
-    expect(res.exit, res.stderr).toBe(0)
-    expect(res.stdout.toString('utf8')).toBe('{}')
+    endedOnItsOwn(await runNative(args, '{}', NO_SERVER, BOUND))
+  })
+
+  it('a limit above the harness limit does not raise it', async () => {
+    // grok's table limit is 3 s: a flag of 10 min must end the call by that, not by the flag.
+    const args = ['--harness', 'grok', '--event', 'pre_tool_use', '--entry', sb.fakeEntry, '--hook-limit-ms', '600000']
+    const res = await runNative([...args, '--', ...fbTail(0, 'hang', hangPid('raise'))], '{}', NO_SERVER, BOUND)
+    endedOnItsOwn(res, '{"decision":"allow"}')
   })
 
   it('a call with no --harness still ends by the smallest table limit with the safe no-op', async () => {
     const args = ['--event', 'pre_tool_use', '--', ...fbTail(0, 'hang', hangPid('bare'))]
-    const res = await runNative(args, '{}', NO_SERVER)
-    expect(res.exit, res.stderr).toBe(0)
-    expect(res.stdout.toString('utf8')).toBe('{}')
+    endedOnItsOwn(await runNative(args, '{}', NO_SERVER, BOUND))
   })
 
   it('an unknown harness takes the smallest limit, not the largest', async () => {
     const flags = ['--harness', 'no-such-host', '--event', 'pre_tool_use', '--entry', sb.fakeEntry]
-    const res = await runNative([...flags, '--', ...fbTail(0, 'hang', hangPid('unknown'))], '{}', NO_SERVER)
-    expect(res.exit, res.stderr).toBe(0)
-    expect(res.stdout.toString('utf8')).toBe('{}')
+    endedOnItsOwn(await runNative([...flags, '--', ...fbTail(0, 'hang', hangPid('unknown'))], '{}', NO_SERVER, BOUND))
+  })
+
+  it('a host that never closes stdin ends the call at the limit with the safe no-op', async () => {
+    const args = hookArgs(fbTail(0, 'hang', hangPid('stdin')), { extra: LIMIT_ARGS })
+    endedOnItsOwn(await runNative(args, '', NO_SERVER, { ...BOUND, holdStdin: true }))
+  })
+
+  it('a first route that hangs is killed and reaped before the client exits', async () => {
+    const pidFile = hangPid('reaped')
+    const args = hookArgs(fbTail(0, 'hang', pidFile), { extra: ['--hook-limit-ms', '8000'] })
+    endedOnItsOwn(await runNative(args, '{}', NO_SERVER, BOUND))
+    const text = fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf8') : ''
+    // No pid written means the route never started: that is unknown, not dead, so it fails here.
+    expect(text, 'the hanging route never wrote its pid').not.toBe('')
+    expect(isAlive(Number(text)), `pid ${text} of the hanging route outlived the client`).toBe(false)
   })
 })
 

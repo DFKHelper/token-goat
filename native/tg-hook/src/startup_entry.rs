@@ -267,7 +267,7 @@ mod tests {
     fn startup_aliases_are_routed_without_changing_other_hooks() {
         for harness in ["copilot_cli", "vscode", "claudecode"] {
             for event in ["sessionStart", "SessionStart", "session_start", "preToolUse"] {
-                let call = Call { harness: harness.into(), event: event.into(), entry: String::new(), script_dir: None, response_timeout: Duration::ZERO };
+                let call = Call { harness: harness.into(), event: event.into(), entry: String::new(), script_dir: None, response_timeout: Duration::ZERO, deadline: None };
                 assert_eq!(is_startup(&call), harness != "claudecode" && event != "preToolUse");
             }
         }
@@ -291,6 +291,7 @@ mod tests {
             entry: String::new(),
             script_dir: None,
             response_timeout: Duration::ZERO,
+            deadline: None,
         };
         let deadline = Instant::now() + Duration::from_secs(30);
         // Exit 2 proves the Node route answered; unframed, the safe answer exits, so it is not asserted here.

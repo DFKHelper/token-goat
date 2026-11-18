@@ -26,6 +26,8 @@ pub struct Call {
     pub entry: String,
     pub script_dir: Option<String>,
     pub response_timeout: Duration,
+    /// The call's one deadline: no connect, handshake or response wait runs past it.
+    pub deadline: Option<Instant>,
 }
 
 /// How a call ended.
@@ -122,7 +124,8 @@ fn challenge_noops(msg: &Map<String, Value>) -> Option<(String, Vec<(String, Str
 /// One attempt against `slot`: connect, hello, verified challenge, request, then the `out` frames (each printed as it arrives) and the `done` frame.
 fn attempt(endpoint: &str, key: &[u8], call: &Call, body: &str) -> Outcome {
     let started = Instant::now();
-    let handshake_deadline = started + HANDSHAKE_TIMEOUT;
+    let cap = |t: Instant| call.deadline.map_or(t, |d| t.min(d));
+    let handshake_deadline = cap(started + HANDSHAKE_TIMEOUT);
     let conn = match Conn::connect(endpoint, handshake_deadline) {
         Ok(conn) => conn,
         Err(ConnectError::Absent) => return Outcome::Absent,
@@ -162,7 +165,8 @@ fn attempt(endpoint: &str, key: &[u8], call: &Call, body: &str) -> Outcome {
     if !protocol::frame_fits(&request) {
         return Outcome::NoSlotWill;
     }
-    let response_deadline = Instant::now() + call.response_timeout;
+    // An absurd response timeout (u64::MAX ms) overflows Instant; a day is past every host limit.
+    let response_deadline = cap(Instant::now().checked_add(call.response_timeout).unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400)));
     // A request not written whole never reached the server's handler, which reads the complete frame before it acts, so running it here instead cannot run it twice.
     if conn.send(&request, response_deadline).is_err() {
         return Outcome::Refused;
@@ -226,7 +230,8 @@ pub fn relay(call: &Call, input: &str, main_start: Instant) -> Ending {
         request["scriptDir"] = Value::String(dir.clone());
     }
     let body = request.to_string();
-    let deadline = Instant::now() + FIND_BUDGET;
+    let find_end = Instant::now() + FIND_BUDGET;
+    let deadline = call.deadline.map_or(find_end, |d| find_end.min(d));
     for slot in 0..SERVER_SLOTS {
         if Instant::now() >= deadline {
             break;

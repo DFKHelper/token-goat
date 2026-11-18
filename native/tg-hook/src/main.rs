@@ -88,7 +88,7 @@ fn parse_hook_args(args: &[OsString]) -> Option<HookArgs> {
         }
     }
     let call = match (ok, harness, event, entry) {
-        (true, Some(harness), Some(event), Some(entry)) => Some(client::Call { harness, event, entry, script_dir, response_timeout }),
+        (true, Some(harness), Some(event), Some(entry)) => Some(client::Call { harness, event, entry, script_dir, response_timeout, deadline: None }),
         _ => None,
     };
     Some(HookArgs { call, limit, fallback })
@@ -107,9 +107,13 @@ fn run_hook(hook: HookArgs, main_start: Instant) -> i32 {
         return fallback::run(&hook.fallback, fallback::Input::Untouched, "bad-flags", &opts);
     };
     let opts = fallback::Opts::for_call(&call.harness, &call.event, main_start, hook.limit);
-    let input = fallback::read_stdin(protocol::MAX_FRAME_BYTES);
+    let input = fallback::read_stdin(protocol::MAX_FRAME_BYTES, opts.deadline);
     let fallback::Input::Read { bytes, more: false } = input else {
-        let reason = if matches!(input, fallback::Input::Untouched) { "stdin-error" } else { "stdin-too-large" };
+        let reason = match input {
+            fallback::Input::Untouched => "stdin-error",
+            fallback::Input::TimedOut => "stdin-timeout",
+            fallback::Input::Read { .. } => "stdin-too-large",
+        };
         return fallback::run(&hook.fallback, input, reason, &opts);
     };
     // Node would decode invalid UTF-8 with replacement characters; the command it wraps still gets the bytes exactly as they came.
@@ -117,6 +121,8 @@ fn run_hook(hook: HookArgs, main_start: Instant) -> i32 {
         Ok(text) => text,
         Err(e) => return fallback::run(&hook.fallback, fallback::Input::Read { bytes: e.into_bytes(), more: false }, "stdin-not-utf8", &opts),
     };
+    // The relay may not outlast the call's one deadline, whatever the response timeout says.
+    let call = client::Call { deadline: opts.deadline, ..call };
     match client::relay(&call, &text, main_start) {
         client::Ending::Served(code) => code,
         client::Ending::Fallback(reason) => fallback::run(&hook.fallback, fallback::Input::Read { bytes: text.into_bytes(), more: false }, reason, &opts),
@@ -197,6 +203,18 @@ mod tests {
     fn the_test_knob_sets_the_response_timeout() {
         let hook = parse_hook_args(&args(&["--harness", "kimi", "--event", "e", "--entry", "x", "--response-timeout-ms", "500", "--", "n"])).unwrap();
         assert_eq!(hook.call.unwrap().response_timeout, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_hook_limit_flag_parses_to_a_duration_or_leaves_the_wrapped_command_alone() {
+        let with = |v: &str| parse_hook_args(&args(&["--harness", "kimi", "--event", "e", "--entry", "x", "--hook-limit-ms", v, "--", "n"])).unwrap();
+        assert_eq!(with("300").limit, Some(Duration::from_millis(300)));
+        assert_eq!(with("18446744073709551615").limit, Some(Duration::from_millis(u64::MAX)));
+        for bad in ["0", "-5", "abc", "", "1.5", "18446744073709551616"] {
+            let hook = with(bad);
+            assert!(hook.call.is_none() && hook.limit.is_none(), "{bad:?} must not set a limit");
+            assert_eq!(hook.fallback, args(&["n"]));
+        }
     }
 
     #[test]
