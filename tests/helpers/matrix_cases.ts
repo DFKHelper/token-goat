@@ -9,6 +9,7 @@ import { expect, onTestFinished } from 'vitest'
 import { zipSync, strToU8 } from 'fflate'
 import sharp from 'sharp'
 
+import { HINT_CATEGORIES } from '../../src/hint_stats.js'
 import { BUNDLE, ROOT } from './bundle.js'
 import { isWorkerDaemonCommandLine, killIfCommandLine } from './kill_if_command_line.js'
 import { buildDocxFixture, buildDocxWithTableFixture, buildPptxFixture } from './ooxml_fixtures.js'
@@ -1940,23 +1941,9 @@ export const cases: Record<string, () => void | Promise<void>> = {
       manualEffective: number
       manualIneffective: number
     }>
-    expect(rows.length).toBe(13)
+    expect(rows.length).toBe(HINT_CATEGORIES.length)
     expect(rows.every((row) => row.emitted === 0 && row.suppressed === false)).toBe(true)
-    expect(rows.map((row) => row.category).sort()).toEqual([
-      'bash_recall',
-      'bash_redirect',
-      'edit_near_miss',
-      'edit_reread_suggest',
-      'glob_dedup_hint',
-      'grep_dedup_hint',
-      'path_miss',
-      'read_batch',
-      'read_reread_dedup',
-      'read_structural_nav',
-      'recovery_pair',
-      'repeat_failure',
-      'search_brake',
-    ])
+    expect(rows.map((row) => row.category).sort()).toEqual([...HINT_CATEGORIES].sort())
 
     const r = run(['hint-stats'])
     expect(r.status, r.stderr).toBe(0)
@@ -2122,12 +2109,12 @@ export const cases: Record<string, () => void | Promise<void>> = {
   install: () => {
     const proj = mkIsolated('tg-matrix-proj-')
     // A bare `install --project` installs the Claude Code hooks; a scoped `--vscode` install run alongside it is additive rather than implied by it (see cli_install.ts's wantsClaudeCodeBase) -- so this exercises both, one call each, matching how a caller who wants both would run them.
-    const r = run(['install', '--project'], { cwd: proj })
+    const r = run(['install', '--project', '--dev'], { cwd: proj })
     expect(r.status, r.stderr).toBe(0)
     expect(r.stdout).toMatch(/Installed token-goat hooks \(project\)/)
     const settingsFile = path.join(proj, '.claude', 'settings.json')
     expect(fs.existsSync(settingsFile)).toBe(true)
-    const vscodeResult = run(['install', '--project', '--vscode'], { cwd: proj })
+    const vscodeResult = run(['install', '--project', '--vscode', '--dev'], { cwd: proj })
     expect(vscodeResult.status, vscodeResult.stderr).toBe(0)
     expect(fs.existsSync(path.join(proj, '.vscode', 'mcp.json'))).toBe(true)
 
@@ -2138,7 +2125,9 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const preHook = settings.hooks['PreToolUse']?.[0]?.hooks?.[0]
     const preCommand = preHook?.command ?? ''
     // Exec form (Claude Code >= 2.1.139, gated on the real `claude --version`) carries the shim path in `args`, not the quoted `command` string that string form uses -- whichever the machine running this suite triggers, the shim itself must still be wired and exist on disk.
-    const shimPath = preHook?.args?.find((a) => a.includes('token-goat-shim.cjs')) ?? preCommand.match(/"([^"]*token-goat-shim\.cjs)"/)?.[1]
+    const shimRe = /["']([^"']*token-goat-shim\.cjs)["']/
+    const shimPath = preHook?.args?.find((a) => a.includes('token-goat-shim.cjs')) ??
+      shimRe.exec(preCommand)?.[1]
     expect(shimPath, `no shim path wired (string or exec form): command=${preCommand} args=${JSON.stringify(preHook?.args)}`).toBeDefined()
     expect(fs.existsSync(shimPath!)).toBe(true)
 
@@ -2158,7 +2147,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const before = run(['mcp-status', '--vscode', '--project'], { cwd: proj })
     expect(before.status, before.stderr).toBe(0)
     expect((JSON.parse(before.stdout) as { configured: boolean }).configured).toBe(false)
-    const installed = run(['install', '--project', '--vscode'], { cwd: proj })
+    const installed = run(['install', '--project', '--vscode', '--dev'], { cwd: proj })
     expect(installed.status, installed.stderr).toBe(0)
     const after = run(['mcp-status', '--vscode', '--project'], { cwd: proj })
     expect(after.status, after.stderr).toBe(0)
@@ -2166,7 +2155,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     const vsBefore = run(['mcp-status', '--visualstudio', '--project'], { cwd: proj })
     expect(vsBefore.status, vsBefore.stderr).toBe(0)
     expect((JSON.parse(vsBefore.stdout) as { configured: boolean }).configured).toBe(false)
-    const vsInstalled = run(['install', '--project', '--visualstudio'], { cwd: proj })
+    const vsInstalled = run(['install', '--project', '--visualstudio', '--dev'], { cwd: proj })
     expect(vsInstalled.status, vsInstalled.stderr).toBe(0)
     const vsAfter = run(['mcp-status', '--visualstudio', '--project'], { cwd: proj })
     expect(vsAfter.status, vsAfter.stderr).toBe(0)
@@ -2175,9 +2164,9 @@ export const cases: Record<string, () => void | Promise<void>> = {
   uninstall: () => {
     // Install first so uninstall has something to remove and emits the "Removed ..." path rather than the no-op message. A bare `install --project` for the Claude Code hooks, and a separate `--vscode` install: scoped harness flags no longer imply the Claude Code base (see cli_install.ts's wantsClaudeCodeBase).
     const proj = mkIsolated('tg-matrix-uninstall-')
-    const installed = run(['install', '--project'], { cwd: proj })
+    const installed = run(['install', '--project', '--dev'], { cwd: proj })
     expect(installed.status, installed.stderr).toBe(0)
-    const installedVscode = run(['install', '--project', '--vscode'], { cwd: proj })
+    const installedVscode = run(['install', '--project', '--vscode', '--dev'], { cwd: proj })
     expect(installedVscode.status, installedVscode.stderr).toBe(0)
     // uninstall --project --vscode is scoped to VS Code only now (see cli_install.ts's wantsClaudeCodeBase); it must not also strip the Claude Code hooks the caller installed separately above.
     const vscodeUninstall = run(['uninstall', '--project', '--vscode'], { cwd: proj })

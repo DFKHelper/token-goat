@@ -97,7 +97,7 @@ describe('leftoverIntegrations', () => {
 
 describe('uninstall through the built bundle', () => {
   it('names the Codex integration it is leaving behind, and the command that removes it', () => {
-    expect(runOut(['install', '--codex']).status).toBe(0)
+    expect(runOut(['install', '--codex', '--dev']).status).toBe(0)
 
     const { status, out } = runOut(['uninstall'])
 
@@ -109,7 +109,7 @@ describe('uninstall through the built bundle', () => {
   })
 
   it('says nothing when the flag was passed, because there is nothing left to warn about', () => {
-    expect(runOut(['install', '--codex']).status).toBe(0)
+    expect(runOut(['install', '--codex', '--dev']).status).toBe(0)
 
     const { status, out } = runOut(['uninstall', '--codex'])
 
@@ -119,7 +119,7 @@ describe('uninstall through the built bundle', () => {
   })
 
   it('says nothing for a Claude-Code-only install, so the notice cannot cry wolf', () => {
-    expect(runOut(['install']).status).toBe(0)
+    expect(runOut(['install', '--dev']).status).toBe(0)
 
     const { status, out } = runOut(['uninstall'])
 

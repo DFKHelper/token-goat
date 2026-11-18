@@ -211,7 +211,7 @@ describe('token-goat uninstall through the built bundle', () => {
     const p = settingsPath('user')
     fs.mkdirSync(path.dirname(p), { recursive: true })
     fs.writeFileSync(p, `${JSON.stringify({ theme: 'dark' }, null, 2)}\n`)
-    expect(run(['install']).status).toBe(0)
+    expect(run(['install', '--dev']).status).toBe(0)
     const backups = backupsOf(p)
     expect(backups.length).toBeGreaterThan(0)
     const broken = withTrailingComma(fs.readFileSync(p, 'utf8'))

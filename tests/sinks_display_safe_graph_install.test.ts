@@ -62,7 +62,8 @@ describe('callers and install escape the names they print', () => {
   it('install --user escapes a bidi override in the Claude config directory it reports', () => {
     const cfg = path.join(home, `cl${RLO}aude`)
     fs.mkdirSync(cfg, { recursive: true })
-    const r = runBundle(['install', '--user'], { cwd: proj, env: env({ CLAUDE_CONFIG_DIR: cfg }), timeout: 90_000 })
+    const opts = { cwd: proj, env: env({ CLAUDE_CONFIG_DIR: cfg }), timeout: 90_000 }
+    const r = runBundle(['install', '--user', '--dev'], opts)
     const out = `${r.stdout}\n${r.stderr}`
     const reported = out.split('\n').filter((l) => l.includes('→'))
     expect(reported.length, out).toBeGreaterThanOrEqual(3)
