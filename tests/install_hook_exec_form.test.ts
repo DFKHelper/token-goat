@@ -54,25 +54,19 @@ afterEach(() => {
 })
 
 describe('exec-form hook registration', () => {
-  it('writes the guarded string form, never exec form, even when exec form is available', () => {
-    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'
-    installHooks('project')
-    const settings = readSettingsFile(settingsPath('project'))
-    const entry = settings.hooks?.['PreToolUse']?.[0]?.hooks[0]
-    // An exec-form entry dies with its program, so every registered command carries the guard prelude.
-    expect(entry?.command).toBe(expectedHookEntryFor(claudeHookScriptPath(), 'pre_tool_use').command)
-    expect(entry?.command.startsWith(': tg-guard-v1;')).toBe(true)
-    expect(entry?.args).toBeUndefined()
-  })
-
-  it('writes the same guarded string form when exec form is unavailable', () => {
-    process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '0'
-    installHooks('project')
-    const settings = readSettingsFile(settingsPath('project'))
-    const entry = settings.hooks?.['PreToolUse']?.[0]?.hooks[0]
-    expect(entry?.command).toBe(expectedHookEntryFor(claudeHookScriptPath(), 'pre_tool_use').command)
-    expect(entry?.args).toBeUndefined()
-  })
+  // Merged: both overrides assert the same literal, so one row covers both.
+  for (const form of ['1', '0'] as const) {
+    it(`writes the guarded string form, never exec form, for override '${form}'`, () => {
+      process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = form
+      installHooks('project')
+      const settings = readSettingsFile(settingsPath('project'))
+      const entry = settings.hooks?.['PreToolUse']?.[0]?.hooks[0]
+      // An exec-form entry dies with its program, so every registered command carries the guard prelude.
+      expect(entry?.command.startsWith(': tg-guard-v1;')).toBe(true)
+      expect(entry?.command).toContain(path.join(TMP, 'home', '.claude', 'hooks', 'token-goat-shim.cjs'))
+      expect(entry?.args).toBeUndefined()
+    })
+  }
 
   it('isInstalled recognizes our own exec-form entry', () => {
     process.env['TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS'] = '1'

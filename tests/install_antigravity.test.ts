@@ -2,9 +2,24 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
+import type * as NodeFs from 'node:fs'
 import type * as NodeOs from 'node:os'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const failUnlink = vi.hoisted(() => ({ path: '' }))
+
+// Fails only the unlink of the one path a row names; other cleanup unlinks are untouched.
+vi.mock('node:fs', async (importOriginal) => {
+  const real = await importOriginal<typeof NodeFs>()
+  const unlinkSync = ((...args: Parameters<typeof real.unlinkSync>) => {
+    if (failUnlink.path !== '' && args[0] === failUnlink.path) {
+      throw Object.assign(new Error('injected unlink failure'), { code: 'EPERM' })
+    }
+    return real.unlinkSync(...args)
+  }) as typeof real.unlinkSync
+  return { ...real, unlinkSync }
+})
 
 // vi.mock is hoisted: homedir delegates to the real one by default and each test points it at a temp directory, so nothing here can touch a real ~/.gemini.
 vi.mock('node:os', async (importOriginal) => {
@@ -244,6 +259,38 @@ describe('uninstallAntigravity', () => {
 
     expect(() => uninstallAntigravity()).toThrow(/Uninstall left it and its backups untouched/)
     expect(fs.readFileSync(antigravityHooksPath(), 'utf8')).toBe('{ broken')
+  })
+
+  it('keeps a shim another host config still names, and still removes the plugin entry', () => {
+    installAntigravity()
+    const otherHostConfig = path.join(TMP, '.claude', 'settings.json')
+    fs.mkdirSync(path.dirname(otherHostConfig), { recursive: true })
+    const hookEntry = { type: 'command', command: `"${shimPath()}"` }
+    const hostHooks = { hooks: { PreToolUse: [{ matcher: '', hooks: [hookEntry] }] } }
+    fs.writeFileSync(otherHostConfig, JSON.stringify(hostHooks))
+
+    expect(uninstallAntigravity()).toBe(true)
+    expect(fs.existsSync(shimPath()), 'uninstall deleted a shim another host config still names').toBe(true)
+    expect(fs.existsSync(antigravityHooksPath())).toBe(false)
+  })
+
+  it('removes the shim when no host config references it', () => {
+    installAntigravity()
+    expect(fs.existsSync(shimPath())).toBe(true)
+
+    expect(uninstallAntigravity()).toBe(true)
+    expect(fs.existsSync(shimPath()), 'uninstall kept an unreferenced shim').toBe(false)
+  })
+
+  it('a failed shim delete does not throw out of uninstall', () => {
+    installAntigravity()
+    failUnlink.path = shimPath()
+    try {
+      expect(() => uninstallAntigravity()).not.toThrow()
+      expect(fs.existsSync(shimPath())).toBe(true)
+    } finally {
+      failUnlink.path = ''
+    }
   })
 })
 

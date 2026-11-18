@@ -129,6 +129,40 @@ describe('Zed uninstall leaves no residue when token-goat created the file', () 
   })
 })
 
+describe('Zed uninstall keeps a shim another host still names', () => {
+  // Another host's settings.json names the shim; deleting it would break that host's hooks.
+  it('keeps the shim while another host config references it, and still removes the Zed entry', () => {
+    installZed()
+    const shimPath = zedShimPath()
+    const otherHostConfig = path.join(userDir, '.claude', 'settings.json')
+    fs.mkdirSync(path.dirname(otherHostConfig), { recursive: true })
+    const hookEntry = { type: 'command', command: `"${shimPath}"` }
+    const hostHooks = { hooks: { PreToolUse: [{ matcher: '', hooks: [hookEntry] }] } }
+    fs.writeFileSync(otherHostConfig, JSON.stringify(hostHooks))
+    expect(uninstallZed()).toBe(true)
+    expect(fs.existsSync(shimPath), 'uninstall deleted a shim another host config still names').toBe(true)
+    expect(fs.existsSync(zedSettingsPath())).toBe(false)
+  })
+
+  it('removes the shim when no host config references it', () => {
+    installZed()
+    const shimPath = zedShimPath()
+    expect(uninstallZed()).toBe(true)
+    expect(fs.existsSync(shimPath), 'uninstall kept an unreferenced shim').toBe(false)
+  })
+
+  it('a failed shim delete does not throw out of uninstall', () => {
+    installZed()
+    const shimPath = zedShimPath()
+    // A directory at the shim path: unlink fails on every platform; uninstall must report it, not throw.
+    fs.rmSync(shimPath, { force: true })
+    fs.mkdirSync(shimPath, { recursive: true })
+    fs.writeFileSync(path.join(shimPath, 'occupant.txt'), 'x')
+    expect(() => uninstallZed()).not.toThrow()
+    expect(fs.existsSync(path.join(shimPath, 'occupant.txt'))).toBe(true)
+  })
+})
+
 describe('checkZed doctor report', () => {
   it('reports null when nothing is installed', () => {
     expect(checkZed(zedSettingsPath())).toBeNull()

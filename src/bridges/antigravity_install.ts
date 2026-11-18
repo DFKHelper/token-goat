@@ -7,6 +7,7 @@ import * as path from 'node:path'
 import { atomicWriteText, extractErrorMessage, quoteShellPath, writeJsonSettings } from '../util.js'
 
 import { ensureDirRecordingCreation, hasCreatedConfig, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
+import { removeHookTargetFile } from '../purge.js'
 import { stripBom } from '../jsonc_text.js'
 import { echoedValue } from '../hint_suggestion_guard.js'
 
@@ -187,8 +188,7 @@ export function uninstallAntigravity(): boolean {
   removeCreatedBackups(hooksPath)
 
   const shim = readShim()
-  if (shim?.includes(SHIM_MARKER) === true) {
-    fs.unlinkSync(shimPath())
+  if (shim?.includes(SHIM_MARKER) === true && removeHookTargetFile(shimPath(), { skipConfigs: [hooksPath] })) {
     takeCreatedConfig(shimPath())
     removed = true
   }

@@ -91,6 +91,26 @@ describe('isHintCategory', () => {
     expect(isHintCategory('not_a_category')).toBe(false)
     expect(isHintCategory('')).toBe(false)
   })
+
+  it('pins the exact kind list, so adding or dropping one fails by name', () => {
+    expect([...HINT_CATEGORIES].sort()).toEqual([
+      'bash_recall',
+      'bash_redirect',
+      'duplicate_function',
+      'edit_callers_tests',
+      'edit_near_miss',
+      'edit_reread_suggest',
+      'glob_dedup_hint',
+      'grep_dedup_hint',
+      'path_miss',
+      'read_batch',
+      'read_reread_dedup',
+      'read_structural_nav',
+      'recovery_pair',
+      'repeat_failure',
+      'search_brake',
+    ])
+  })
 })
 
 describe('extractPathCorrelator', () => {

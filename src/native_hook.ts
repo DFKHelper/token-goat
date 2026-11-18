@@ -187,8 +187,8 @@ export function syncNativeCopy(src: string, dest: string, env: ReclaimEnv = {}):
     reclaimLeftovers(dir, env)
     fs.mkdirSync(stagingDir, { recursive: true })
     fs.writeFileSync(staged, want, { mode: 0o755 })
-    createdDir = !fs.existsSync(dir)
-    fs.mkdirSync(dir, { recursive: true })
+    // mkdir reports the first directory it made, so no existsSync check sits in front of it.
+    createdDir = fs.mkdirSync(dir, { recursive: true, mode: 0o700 }) !== undefined
   } catch {
     finish()
     return false

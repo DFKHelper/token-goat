@@ -121,14 +121,14 @@ export function execFormSupportedForVersionOutput(stdout: string): boolean {
   return compareSemver(m[1]!, CLAUDE_EXEC_FORM_MIN_VERSION) >= 0
 }
 
-/** The hook entry this build wires for `event`: exec-form when {@link claudeExecFormHooksSupported}, string-form otherwise, each with the native client in front of the Node command when {@link nativeHookBinary} names one. The native string form is quoted for a POSIX shell on every platform: Claude Code runs a string-form hook through Git Bash on Windows and /bin/sh elsewhere. */
+/** The guarded string form for `event`, with the native client in front when one is named. */
 export function expectedHookEntryFor(
   scriptPath: string,
   event: string,
   opts: { sync?: boolean } = {},
 ): { command: string; args?: string[]; shell?: 'bash' | 'powershell' } {
   const bin = nativeHookBinary(process.argv[1], opts)
-  // Always the guarded string form, with or without the native client; an exec form dies with its program.
+  // Guarded string form whenever a Node command can be built; exec and plain string are fallbacks.
   const shell = claudeHookShell()
   const guarded = nativeHookCommandLine(shell.guard, bin, 'claudecode', scriptPath, event)
   if (guarded !== undefined) {

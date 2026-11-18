@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
+import { removeHookTargetFile } from '../purge.js'
 import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, takeCreatedConfig } from './created_configs.js'
 import { bundledCliPath, dropEmptyServers, hasManagedServer, managedServerEntry, noteRootKeyCreation, readServersJson, serversOf, setTokenGoatServer } from './mcp_servers_json.js'
 import { atomicWriteBytes, backupFile, writeConfigText, writeIfDifferent } from '../util.js'
@@ -134,7 +135,7 @@ function snapshotShim(shimPath: string): ShimSnapshot {
 // The install chmods the shim to 0755 even when its content was already current, so the mode goes back whether or not the bytes changed.
 function restoreShim(shimPath: string, prior: ShimSnapshot, shimChanged: boolean): void {
   if (!prior.existed) {
-    fs.rmSync(shimPath, { force: true })
+    removeHookTargetFile(shimPath, { skipConfigs: [zedSettingsPath()] })
     return
   }
   if (shimChanged && prior.bytes !== undefined) atomicWriteBytes(shimPath, prior.bytes)
@@ -166,8 +167,7 @@ export function uninstallZed(): boolean {
     }
   } finally {
     // The shim is token-goat's own file, so a settings.json that will not parse (the error still propagates) must not strand it.
-    shimRemoved = fs.existsSync(shimPath)
-    if (shimRemoved) fs.rmSync(shimPath, { force: true })
+    shimRemoved = removeHookTargetFile(shimPath, { skipConfigs: [settingsPath] })
     removeCreatedTree([settingsPath, shimPath])
   }
 
