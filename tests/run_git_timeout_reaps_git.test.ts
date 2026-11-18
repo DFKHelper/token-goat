@@ -5,7 +5,8 @@ import * as path from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
+import { killAllIfCommandLine, type KillOptions } from './helpers/kill_if_command_line.js'
+import { spawnOwnedDecoy } from './helpers/owner_tied_decoy.js'
 import { resolveOnPath, sleepSync } from '../src/process_util.js'
 import { runGit } from '../src/util.js'
 
@@ -32,6 +33,23 @@ function alive(pid: number): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'EPERM'
   }
+}
+
+/** The pids whose git reported finishing in the trace file: a git that ran `exit` is gone, so a live process holding its number is a stranger. */
+function exitedPids(): Set<number> {
+  const pids = new Set<number>()
+  if (!existsSync(tracePath)) return pids
+  for (const line of readFileSync(tracePath, 'utf8').split('\n')) {
+    const match = /"event":"exit","sid":"[^"]*-P([0-9a-f]+)"/.exec(line)
+    if (match !== null) pids.add(parseInt(match[1] as string, 16))
+  }
+  return pids
+}
+
+/** Ends the gits this run announced. A command line that reads back empty (Windows hides some) says nothing about whose process it is, so a pid this run's own trace announced and never reported as exited stands in for it; a line that reads back and is not git's is still a stranger, and an unreadable pid the trace reports as exited is not tied, so it throws instead of being killed. */
+function endStartedGits(opts: KillOptions = {}): void {
+  const exited = exitedPids()
+  killAllIfCommandLine(startedPids, isGitCommandLine, { ...opts, tied: (pid) => startedPids.has(pid) && !exited.has(pid) })
 }
 
 /** Every pid a git of this test announced in its trace file (the sid ends in -P<pid in hex>). */
@@ -64,7 +82,7 @@ afterEach(() => {
   try {
     // A passing run leaves these pids dead, and the OS may have given a number to a new process since (on Windows a killed stranger exits with code 1, as a vitest worker did): only a process whose command line is still git is signalled. A pid whose command line cannot be read throws, after every other pid was tried.
     const live = [...startedPids].filter(alive)
-    killAllIfCommandLine(startedPids, isGitCommandLine)
+    endStartedGits()
     // The kill is asked for, not done: wait (bounded) until the processes are gone, since a live one still holds the directory open.
     for (const pid of live) {
       for (let waited = 0; waited < 100 && alive(pid); waited++) sleepSync(50)
@@ -105,6 +123,36 @@ describe('runGit timeout', () => {
     expect(observed.length, 'git never wrote its trace, so there was no process to check').toBeGreaterThan(0)
     expect(observed.filter(alive)).toEqual([])
   }, TEST_BUDGET_MS)
+
+  // CAPTURE: the trace line a finished git writes, from git 2.53.0.windows.1 run with GIT_TRACE2_EVENT=<file> on `git rev-parse --git-dir`: {"event":"exit","sid":"20261019T031616.726603Z-H55886333-P00026b84","thread":"main",...,"code":0}; the sid's P part is the pid in hex (here 0x26b84).
+  const traceLine = (event: string, pid: number): string => `{"event":"${event}","sid":"20261019T031616.726603Z-H55886333-P${pid.toString(16).padStart(8, '0')}","thread":"main"}\n`
+  const unreadable: KillOptions = { readCommandLine: () => null }
+
+  it('ends a recorded git whose command line reads back empty while the trace has it running', async () => {
+    const stand = spawnOwnedDecoy(['--rungit-stand-in'])
+    try {
+      const gone = new Promise<void>((resolve) => stand.once('exit', () => resolve()))
+      startedPids.add(stand.pid as number)
+      writeFileSync(tracePath, traceLine('start', stand.pid as number))
+      expect(() => endStartedGits(unreadable)).not.toThrow()
+      await gone
+    } finally {
+      if (stand.exitCode === null && stand.signalCode === null) stand.kill('SIGKILL')
+    }
+  })
+
+  it('leaves a recorded pid alone, and throws, once the trace reports that git exited', () => {
+    const stand = spawnOwnedDecoy(['--rungit-stand-in'])
+    try {
+      startedPids.add(stand.pid as number)
+      writeFileSync(tracePath, traceLine('start', stand.pid as number) + traceLine('exit', stand.pid as number))
+      expect(() => endStartedGits(unreadable)).toThrow()
+      expect(stand.exitCode === null && stand.signalCode === null, 'a process the trace reported as exited was signalled').toBe(true)
+    } finally {
+      startedPids.delete(stand.pid as number)
+      if (stand.exitCode === null && stand.signalCode === null) stand.kill('SIGKILL')
+    }
+  })
 
   it('still returns a finished command whole when the timeout was not reached', () => {
     const result = runGit(['rev-parse', '--git-dir'], { cwd: repo, timeoutMs: 60_000 })

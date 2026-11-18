@@ -32,7 +32,7 @@ import {
 import Database from '../src/sqlite_driver.js'
 import { BUNDLE, ROOT } from './helpers/bundle.js'
 import { gitInitInto } from './helpers/git-repo.js'
-import { isHookServerCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
+import { isHookServerCommandLine, killAllIfCommandLine, tiedToHandles } from './helpers/kill_if_command_line.js'
 import { busyTrace } from './helpers/sqlite_busy_trace.js'
 
 type Env = Record<string, string>
@@ -104,6 +104,13 @@ afterEach(async () => {
   while (sandboxes.length > 0) {
     const sb = sandboxes.pop() as Sandbox
     for (const release of sb.releases) release()
+    // Servers that answer this sandbox's own status, asked before the stop: a pid reported over its authenticated endpoint is the sandbox's, which stays true when the OS command-line query fails.
+    const answering = new Set<number>()
+    try {
+      for (const s of statuses(sb)) answering.add(s.pid)
+    } catch {
+      // nothing answers: the stop and the handles below still run
+    }
     try {
       cli(sb, ['hook-server', 'stop'])
     } catch {
@@ -114,7 +121,7 @@ afterEach(async () => {
       while (pidAlive(pid) && Date.now() < deadline) await sleep(50)
     }
     try {
-      killAllIfCommandLine(sb.pids, isHookServerCommandLine, { signal: 'SIGTERM' })
+      killAllIfCommandLine(sb.pids, isHookServerCommandLine, { signal: 'SIGTERM', tied: (pid) => answering.has(pid) || tiedToHandles(sb.children)(pid) })
     } catch (err) {
       unreadable ??= err
     }

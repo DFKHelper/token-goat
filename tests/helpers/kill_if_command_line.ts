@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process'
+
 import { type CommandLineQuery, commandLineOf, queryProcessCommandLine, terminateProcessTree } from '../../src/resident_process.js'
 
 /** The command line of a token-goat worker daemon: `node <launcher> --worker-daemon`, the flag as its own argument. Looser than isResidentOfInstall on purpose, so a daemon whose launcher is spelled another way (realpath, 8.3 name) is still found; no vitest worker or test child carries the flag. */
@@ -11,6 +13,14 @@ export interface KillOptions {
   signal?: NodeJS.Signals
   tree?: boolean
   readCommandLine?: (pid: number) => string | null
+  /** Evidence from outside the command line that `pid` is ours (see tiedToHandles). It stands in only for a command line that could not be read: a line that reads back and is not `isOurs` is still a stranger. */
+  tied?: (pid: number) => boolean
+}
+
+/** A `tied` predicate for pids this test spawned: true while a handle still holds that pid and has neither exited nor been signalled. A handle cannot name a reused number, so it is proof the command-line read is not. */
+export const tiedToHandles = (children: Iterable<ChildProcess>): ((pid: number) => boolean) => {
+  const held = [...children]
+  return (pid) => held.some((c) => c.pid === pid && c.exitCode === null && c.signalCode === null)
 }
 
 /** Stands a test's `readCommandLine` seam in for the query: a line is a found process, and a null is a failed query, since the seam cannot report a gone process. */
@@ -18,7 +28,7 @@ function seamQuery(line: string | null): CommandLineQuery {
   return line === null ? { status: 'failed' } : { status: 'found', commandLine: line }
 }
 
-/** Ends `pid` only while its command line, read right now, satisfies `isOurs`; returns whether it signalled. SIGKILL by default, or `signal`; with `tree` the whole tree goes (taskkill /T /F on Windows, the process group elsewhere). A recorded pid is a claim, not proof: the OS hands a freed number to the next process it starts, and on Windows a kill is TerminateProcess(handle, 1), so an unchecked kill of a pid that has already exited ends whatever holds the number now (a freshly forked vitest worker reports "Worker exited unexpectedly with exit code 1"). A process that is gone is left alone. A failed query (a spawn error, a nonzero exit, a timeout, empty output) is not a gone process: when the pid still answers a signal-0 probe this throws instead of leaving a live process behind: a false failure is loud, an orphan is silent. For a child this test spawned itself, call kill() on its ChildProcess handle instead: that signals the process the handle holds, never a number. */
+/** Ends `pid` only while its command line, read right now, satisfies `isOurs`; returns whether it signalled. SIGKILL by default, or `signal`; with `tree` the whole tree goes (taskkill /T /F on Windows, the process group elsewhere). A recorded pid is a claim, not proof: the OS hands a freed number to the next process it starts, and on Windows a kill is TerminateProcess(handle, 1), so an unchecked kill of a pid that has already exited ends whatever holds the number now (a freshly forked vitest worker reports "Worker exited unexpectedly with exit code 1"). A process that is gone has no command line and is left alone. A null read also means the query failed (a spawn error, a nonzero exit, a timeout, empty output), which says nothing about whose process it is: when the pid still answers a signal-0 probe and `tied` vouches for it from outside the command line it is ended anyway, and otherwise this throws instead of leaving a live process behind (a false failure is loud, an orphan is silent), never signalling a pid nothing ties to the caller. For a child this test spawned itself, call kill() on its ChildProcess handle instead: that signals the process the handle holds, never a number. */
 export function killIfCommandLine(pid: number, isOurs: (commandLine: string) => boolean, opts: KillOptions = {}): boolean {
   if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return false
   const query = opts.readCommandLine === undefined ? queryProcessCommandLine(pid) : seamQuery(opts.readCommandLine(pid))
@@ -26,9 +36,8 @@ export function killIfCommandLine(pid: number, isOurs: (commandLine: string) => 
   const commandLine = commandLineOf(query)
   if (commandLine === null) {
     if (isGone(pid)) return false
-    throw new Error(`pid ${pid}: its command line could not be read and the process is still alive, so it cannot be told from ours and was left running`)
-  }
-  if (!isOurs(commandLine)) return false
+    if (opts.tied?.(pid) !== true) throw new Error(`pid ${pid}: its command line could not be read and the process is still alive, so it cannot be told from ours and was left running`)
+  } else if (!isOurs(commandLine)) return false
   // A window remains between the read above and the signal below: the process can exit and its number be reused in it; only a ChildProcess handle closes that.
   if (opts.tree === true) return terminateProcessTree(pid, opts.signal !== 'SIGTERM')
   try {

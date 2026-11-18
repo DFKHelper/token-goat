@@ -3,7 +3,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { isHookServerCommandLine, isWorkerDaemonCommandLine, killAllIfCommandLine, killIfCommandLine } from './helpers/kill_if_command_line.js'
+import { isHookServerCommandLine, isWorkerDaemonCommandLine, killAllIfCommandLine, killIfCommandLine, tiedToHandles } from './helpers/kill_if_command_line.js'
 
 const children: ChildProcess[] = []
 // Pids of grandchildren a test started through a parent it then killed, ended here when the kill under test did not.
@@ -114,6 +114,42 @@ describe('killIfCommandLine when the command line cannot be read', () => {
   it('returns false for a process that is gone', () => {
     const done = spawnSync(process.execPath, ['-e', '0'])
     expect(killIfCommandLine(done.pid as number, () => true, { readCommandLine: () => null })).toBe(false)
+  })
+
+  it('ends a live process nothing in its command line vouches for when the caller holds its handle, and does not throw', async () => {
+    const held = sleeper('tg-kill-held-unreadable')
+    let signalled: boolean | undefined
+    expect(() => {
+      signalled = killIfCommandLine(held.pid as number, () => false, { readCommandLine: () => null, tied: tiedToHandles([held]) })
+    }).not.toThrow()
+    expect(signalled).toBe(true)
+    await exited(held)
+    expect(held.exitCode !== null || held.signalCode !== null).toBe(true)
+  })
+
+  it('still throws for an unreadable pid that the tie does not name, and leaves it unsignalled', () => {
+    const held = sleeper('tg-kill-held-other')
+    const other = sleeper('tg-kill-not-held')
+    expect(() => killIfCommandLine(other.pid as number, () => true, { readCommandLine: () => null, tied: tiedToHandles([held]) })).toThrow('its command line could not be read')
+    expect(other.exitCode).toBeNull()
+    expect(other.signalCode).toBeNull()
+  })
+
+  it('does not let a tie override a command line that reads back as a stranger', () => {
+    const held = sleeper('tg-kill-held-stranger')
+    expect(killIfCommandLine(held.pid as number, (line) => line.includes('tg-kill-expected'), { tied: tiedToHandles([held]) })).toBe(false)
+    expect(held.exitCode).toBeNull()
+    expect(held.signalCode).toBeNull()
+  })
+
+  it('tiedToHandles names a pid only while its handle is running', async () => {
+    const held = sleeper('tg-kill-handle-state')
+    const tied = tiedToHandles([held])
+    expect(tied(held.pid as number)).toBe(true)
+    expect(tied(process.pid)).toBe(false)
+    held.kill('SIGKILL')
+    await exited(held)
+    expect(tied(held.pid as number)).toBe(false)
   })
 
   it('killAllIfCommandLine signals every pid it can read, then throws for the one it could not', async () => {

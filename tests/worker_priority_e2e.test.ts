@@ -1,5 +1,5 @@
 /** The built bundle's real worker daemon must run below normal CPU priority, on the default path: no injected callback, no stubbed lifecycle. The daemon is background work nobody is waiting on, and at normal priority it competes with the user's own programs for as long as it lives. Two ways it is started are driven here: `worker start` (the CLI launcher, which the hooks reach through ensureWorkerAlive) and the argv the Copilot session-start shim spawns directly (`--worker-daemon --claim-worker`, src/bridges/copilot_session_start.ts). Provenance: HAND-DERIVED. The expected value comes from Node's documented priority scale (os.constants.priority: a larger number is a lower priority), not from the code under test. */
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -7,7 +7,7 @@ import * as path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { BUNDLE, runBundle, tgIsolatedEnv } from './helpers/bundle.js'
-import { isWorkerDaemonCommandLine, killAllIfCommandLine } from './helpers/kill_if_command_line.js'
+import { isWorkerDaemonCommandLine, killAllIfCommandLine, tiedToHandles } from './helpers/kill_if_command_line.js'
 
 // tg-no-regex-preload
 
@@ -32,6 +32,8 @@ function heartbeatNames(dataBase: string, pid: number): boolean {
 
 const tempDirs: string[] = []
 const startedPids: number[] = []
+// The daemons this file spawned itself: a handle names its process when the command-line query fails, which a `worker start` pid read off stdout cannot.
+const spawnedChildren: ChildProcess[] = []
 function mkIsolated(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
   tempDirs.push(dir)
@@ -48,7 +50,7 @@ afterEach(() => {
     }
   }
   try {
-    killAllIfCommandLine(startedPids.splice(0), isWorkerDaemonCommandLine, { tree: true })
+    killAllIfCommandLine(startedPids.splice(0), isWorkerDaemonCommandLine, { tree: true, tied: tiedToHandles(spawnedChildren.splice(0)) })
   } finally {
     for (const d of tempDirs.splice(0)) {
       try {
@@ -112,6 +114,7 @@ describe('the built worker daemon runs below normal priority', () => {
       // The suite pins TOKEN_GOAT_NO_WORKER_SPAWN=1 in this process, and a daemon that claims its own slot checks it and leaves at once; the shim only spawns it when the variable is not 1.
       delete env['TOKEN_GOAT_NO_WORKER_SPAWN']
       const child = spawn(process.execPath, [BUNDLE, '--worker-daemon', '--claim-worker'], { cwd: os.tmpdir(), env, stdio: 'ignore', windowsHide: true })
+      spawnedChildren.push(child)
       const pid = child.pid as number
       expect(pid, 'spawning the bundle produced no pid').toBeDefined()
       startedPids.push(pid)
