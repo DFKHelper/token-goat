@@ -15,7 +15,7 @@ const ENV_KEY = 'TOKEN_GOAT_MCP_TOOLS'
 const savedEnv: string | undefined = process.env[ENV_KEY]
 let closeServer: (() => Promise<void>) | undefined
 
-beforeEach(() => neutralizeMcpHarnessSignals())
+beforeEach(neutralizeMcpHarnessSignals)
 
 afterEach(async () => {
   if (closeServer !== undefined) await closeServer()

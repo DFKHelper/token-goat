@@ -13,7 +13,7 @@ import { neutralizeMcpHarnessSignals } from './helpers/mcp_test_harness.js'
 const { createMcpServer, DEFAULT_MCP_TOOLS } = await import('../src/mcp_server.js')
 
 const ENV_KEY = 'TOKEN_GOAT_MCP_TOOLS'
-beforeEach(() => neutralizeMcpHarnessSignals())
+beforeEach(neutralizeMcpHarnessSignals)
 afterEach(() => vi.unstubAllEnvs())
 /** Every tool the default list leaves out, derived so a tool added to the server or dropped from the default is covered without editing this file. */
 const OPT_IN_TOOLS: readonly string[] = ALL_MCP_TOOLS.filter((t) => !DEFAULT_MCP_TOOLS.includes(t))

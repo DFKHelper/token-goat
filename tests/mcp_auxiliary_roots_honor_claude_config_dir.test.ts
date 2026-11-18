@@ -10,9 +10,6 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { rmInSandbox } from './helpers/sandbox-rm.js'
 import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
-import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
-
-useGenericMcpHarness()
 
 // These cases call tools that are opt-in by default; name them all so the server registers them.
 process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV

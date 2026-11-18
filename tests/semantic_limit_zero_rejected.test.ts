@@ -6,9 +6,6 @@ import { createMcpServer } from '../src/mcp_server.js'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
-
-useGenericMcpHarness()
 
 async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
   const server = await createMcpServer()

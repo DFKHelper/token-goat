@@ -12,9 +12,6 @@ import { compressText } from '../src/content_store.js'
 import { createMcpServer } from '../src/mcp_server.js'
 import { clearModuleCaches } from '../src/reset.js'
 import { runTeardown } from './helpers/strict_teardown.js'
-import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
-
-useGenericMcpHarness()
 
 const isWin = process.platform === 'win32'
 

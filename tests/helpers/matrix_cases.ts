@@ -11,7 +11,6 @@ import sharp from 'sharp'
 
 import { BUNDLE, ROOT } from './bundle.js'
 import { isWorkerDaemonCommandLine, killIfCommandLine } from './kill_if_command_line.js'
-import { genericMcpHarnessEnv } from './mcp_test_harness.js'
 import { buildDocxFixture, buildDocxWithTableFixture, buildPptxFixture } from './ooxml_fixtures.js'
 
 export let repo: string // indexed fixture; default cwd for read commands
@@ -2312,7 +2311,7 @@ export const cases: Record<string, () => void | Promise<void>> = {
     // mcp-serve is a long-running stdio server, not a one-shot command, so it can't go through the shared spawnSync-based run() helper (spawnSync writes stdin, closes it, and waits for exit -- but this process never exits on its own). Spawn it directly, write one real tools/list JSON-RPC request, read stdout until a response with a matching id arrives (or a bounded timeout elapses), then always kill the child so a broken response can't hang the suite.
     const child = spawn(process.execPath, [BUNDLE, 'mcp-serve'], {
       cwd: repo,
-      env: genericMcpHarnessEnv(tgEnv(dataBase)),
+      env: { ...tgEnv(dataBase), TOKEN_GOAT_HARNESS_OVERRIDE: 'generic' },
     })
     let stderr = ''
     child.stderr.on('data', (chunk: Buffer) => {

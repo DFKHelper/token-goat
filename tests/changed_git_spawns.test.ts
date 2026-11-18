@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url'
 
 import { afterAll, describe, expect, it } from 'vitest'
 import { ALL_MCP_TOOLS_ENV } from './helpers/mcp_all_tools.js'
-import { genericMcpHarnessEnv } from './helpers/mcp_test_harness.js'
 import { indexableDir } from './helpers/temp-config.js'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -128,7 +127,7 @@ function cliOk(dir: string, name: string, args: string[]): { stdout: string; git
 
 async function mcpChanged(dir: string, name: string, args: Record<string, unknown> = {}): Promise<{ text: string; git: string[][] }> {
   const { env, log } = envFor(name)
-  const child = spawn(process.execPath, [bundle, 'mcp-serve'], { cwd: dir, env: genericMcpHarnessEnv(env), stdio: ['pipe', 'pipe', 'ignore'] })
+  const child = spawn(process.execPath, [bundle, 'mcp-serve'], { cwd: dir, env, stdio: ['pipe', 'pipe', 'ignore'] })
   child.stdin.on('error', () => undefined)
   const pending = new Map<number, (m: { result?: { content?: Array<{ text?: string }> } }) => void>()
   let buf = ''

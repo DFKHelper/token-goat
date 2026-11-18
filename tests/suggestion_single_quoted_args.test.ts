@@ -23,9 +23,6 @@ import { normalizePath } from '../src/paths.js'
 import { runSymbol } from '../src/read_symbol.js'
 import { captureStdout } from './helpers/capture-stdout.js'
 import { POSIX_SH, POWERSHELL, powershellArgv, powershellRunAll, shArgv, shRunAll } from './helpers/shell_argv.js'
-import { useGenericMcpHarness } from './helpers/mcp_test_harness.js'
-
-useGenericMcpHarness()
 
 /** Values a suggestion carries: a plain path, a spaced path, and the ones a shell would rewrite inside double quotes. */
 const ROUND_TRIP_VALUES = ['src/a.ts', 'my dir/big file.ts::Sym', '$zzRef', '$(whoami)', '${HOME}', 'a`b', 'what does "src dir/x.ts" export', 'it"s', 'a\u201Db', 'C:\\dir\\', 'a\\\\b', 'C:\\x\\y.ts']

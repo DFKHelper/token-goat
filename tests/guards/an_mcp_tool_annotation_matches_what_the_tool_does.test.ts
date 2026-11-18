@@ -18,7 +18,7 @@ import { neutralizeMcpHarnessSignals } from '../helpers/mcp_test_harness.js'
 
 // These cases call tools that are opt-in by default; name them all so the server registers them.
 process.env['TOKEN_GOAT_MCP_TOOLS'] = ALL_MCP_TOOLS_ENV
-beforeEach(() => neutralizeMcpHarnessSignals())
+beforeEach(neutralizeMcpHarnessSignals)
 afterEach(() => vi.unstubAllEnvs())
 
 const { createMcpServer } = await import('../../src/mcp_server.js')
