@@ -1643,11 +1643,11 @@ describe('note command', () => {
   })
 
   it('list shows how long ago each note was set', async () => {
-    // HAND-DERIVED: a note set moments before the list reads as some seconds old; the spawned binary runs on the real clock, so the count itself is not pinned. FORMAT-DERIVED: a note set with no --evidence is listed with [unverified] after its age, per src/project_memory.ts::detailsLabel.
+    // HAND-DERIVED: a note set moments before the list reads as some seconds old; the spawned binary runs on the real clock, so the count itself is not pinned.
     await run(['note', 'set', 'aged', 'just now'], { env: noteEnv, cwd: ROOT })
     const r = await run(['note', 'list'], { env: noteEnv, cwd: ROOT })
     expect(r.status, r.stderr).toBe(0)
-    expect(r.stdout).toMatch(/^aged \(set \d+s ago\) \[unverified\] = just now$/m)
+    expect(r.stdout).toMatch(/^aged \(set \d+s ago\) = just now$/m)
   })
 
   it('sets, gets and lists a note keyed __proto__', async () => {
@@ -1658,7 +1658,7 @@ describe('note command', () => {
     expect(rGet.status, rGet.stderr).toBe(0)
     expect(rGet.stdout).toBe('kept\n')
     const rList = await run(['note', 'list'], { env: noteEnv, cwd: ROOT })
-    expect(rList.stdout).toMatch(/^__proto__ \(set \d+s ago\) \[unverified\] = kept$/m)
+    expect(rList.stdout).toMatch(/^__proto__ \(set \d+s ago\) = kept$/m)
     const rJson = await run(['note', 'list', '--json'], { env: noteEnv, cwd: ROOT })
     const parsed = JSON.parse(rJson.stdout) as Record<string, string>
     expect(Object.hasOwn(parsed, '__proto__')).toBe(true)
@@ -1707,7 +1707,7 @@ describe('note command', () => {
     expect(rReplace.stdout).toBe(`Set: esc-value = plain\nReplaced the previous value: ${shown}\n`)
     await run(['note', 'set', 'esc-value', value], { env: noteEnv, cwd: ROOT })
     const rList = await run(['note', 'list'], { env: noteEnv, cwd: ROOT })
-    expect(/^esc-value \(set \d+s ago\) \[unverified\] = (.*)$/m.exec(rList.stdout)?.[1]).toBe(shown)
+    expect(/^esc-value \(set \d+s ago\) = (.*)$/m.exec(rList.stdout)?.[1]).toBe(shown)
     expect(rList.stdout).not.toContain('\u001b')
     const rGet = await run(['note', 'get', 'esc-value'], { env: noteEnv, cwd: ROOT })
     expect(rGet.stdout).toBe(`${value}\n`)
