@@ -505,7 +505,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
     writeFileSync(preload, "if (/taskkill\\.exe$/i.test(process.execPath)) { require('node:fs').appendFileSync(process.env.STUB_DIR + '/hung-taskkill.pids', process.pid + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300000) }\n")
     const pidFile = path.join(stubs, 'hung-taskkill.pids')
     try {
-      const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60', PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}`, NODE_OPTIONS: `--require ${slash(preload)}` })
+      const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60', PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}`, NODE_OPTIONS: [process.env['NODE_OPTIONS'], `--require ${slash(preload)}`].filter(Boolean).join(' ') })
       // The legs survive the stub kills by design, so the afterEach ends them by their recorded pids.
       leftLegs = true
       expect(existsSync(pidFile), r.out).toBe(true)
@@ -591,7 +591,7 @@ describe('the hard stop ends the legs of a real hook run', () => {
       }
     }
     try {
-      const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60', PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}`, NODE_OPTIONS: `--require ${slash(preload)}` })
+      const r = runHook({ STUB_FIRE_STOP: 'tests', STUB_TESTS_S: '60', PATH: `${slash(bin)}${path.delimiter}${process.env.PATH ?? ''}`, NODE_OPTIONS: [process.env['NODE_OPTIONS'], `--require ${slash(preload)}`].filter(Boolean).join(' ') })
       leftLegs = true
       expect(r.timedOut, r.out).toBe(false)
       expect(r.tailS, r.out).not.toBeNull()
