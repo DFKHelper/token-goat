@@ -545,7 +545,9 @@ function inspectSegment(seg: Segment, ctx: WalkContext, depth: number, fromRoot:
   const args = seg.words.slice(at + 1)
   const script = nestedScript(name, args)
   // A command word that is a variable (`$F /`) cannot be read statically. A lone `$` is what is left of a `$(` substitution; under PowerShell a `$x` inside a group, with a property access or with nothing to run is an expression.
-  if (name.includes('$') && name !== '$' && !(ctx.powershell && (seg.group !== 0 || /[.[(]/.test(name) || args.every((w) => w.text === '}'))) && !(args.length === 0 && seg.endOp === '|' && /^([%?]|[A-Z][A-Za-z]+-[A-Z][A-Za-z]+)$/.test(next?.words[commandIndex(next.words)]?.text ?? ''))) return refuse('obscured')
+  // A variable head word is refused only when its arguments could make it a walk: none to read, a root or home start, or a relative start after a cd to a root.
+  const headVariable = name.includes('$') && name !== '$' && !(ctx.powershell && (seg.group !== 0 || /[.[(]/.test(name) || args.every((w) => w.text === '}'))) && !(args.length === 0 && seg.endOp === '|' && /^([%?]|[A-Z][A-Za-z]+-[A-Z][A-Za-z]+)$/.test(next?.words[commandIndex(next.words)]?.text ?? ''))
+  if (headVariable && (args.length === 0 || anyRoot(args) || (fromRoot && args.some((w) => isRelativeStart(w.text))))) return refuse('obscured')
   if (script !== null) return depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1, fromRoot) : atNestingLimit(script)
   if (name === 'xargs') return inspectXargs(args, seg, ctx, depth, fromRoot)
   return inspectWalker(name, dir, args, seg, ctx, fromRoot)

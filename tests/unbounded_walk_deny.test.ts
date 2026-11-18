@@ -391,6 +391,8 @@ describe('detectUnboundedWalk -- nesting, obscured command words and indirection
     ["F='find / -name x'; $F | head", 'obscured'],
     ["F='find / -name x'; $F", 'obscured'],
     ['${F} / -name x', 'obscured'],
+    ['F=find; $F ~', 'obscured'],
+    ['F=find; $F "$HOME"', 'obscured'],
     ['eval "find / -name x"', 'find'],
     ['eval find / -name x', 'find'],
     ['eval "bash -c \'find / -name x\'"', 'find'],
@@ -426,6 +428,11 @@ describe('detectUnboundedWalk -- nesting, obscured command words and indirection
     ['$items | ForEach-Object { $_ }'],
     ['ls $HOME/project'],
     ['$HOME/bin/tool /'],
+    ['$EDITOR file.ts'],
+    ['${EDITOR} f'],
+    ['"$CC" -o x x.c'],
+    ['$CMD --version'],
+    ['$RUNNER test ./src'],
     ['bash -c ls'],
     ["bash -c 'ls'"],
     ["bash -c \"bash -c 'ls'\""],
@@ -447,6 +454,8 @@ describe('detectUnboundedWalk -- nesting, obscured command words and indirection
 
   it('treats an obscured command word under PowerShell as unknown too, but not a property access', () => {
     expect(form('& $F C:\\', POWERSHELL)).toBe('obscured')
+    expect(form('& $F C:\\ -Recurse', POWERSHELL)).toBe('obscured')
+    expect(form('& $tool .\\src', POWERSHELL)).toBeNull()
     expect(form('foreach ($f in $list) { $f.Name }', POWERSHELL)).toBeNull()
     expect(form('if ($x -eq 1) { $x }', POWERSHELL)).toBeNull()
   })
