@@ -80,6 +80,26 @@ describe('commandHead', () => {
     expect(commandHead(cmd)).toBe(head)
   })
 
+  it.each([
+    ['FOO=$(echo hello world) npm test', 'npm'],
+    ['FOO=$(echo "a b" | tr a c) terraform plan', 'terraform'],
+    ['FOO=`echo hi there` npm test', 'npm'],
+    ['FOO=$(echo $(echo a b) c d) cargo build', 'cargo'],
+    ['$(echo git) status', 'other'],
+    ['$(pwd)/run.sh now', 'other'],
+    ['`echo git` status', 'other'],
+    ['npm$(echo x) test', 'other'],
+    ['FOO=$(echo unterminated npm test', 'other'],
+  ])('keeps a substitution out of the head: %j gives %j', (cmd, head) => {
+    expect(commandHead(cmd)).toBe(head)
+  })
+
+  it('returns for a single 2 MB word, plain and inside an open quote', () => {
+    const word = 'a'.repeat(2 * 1024 * 1024)
+    expect(commandHead(word)).toBe('other')
+    expect(commandHead(`"${word}`)).toBe('other')
+  })
+
   it('lowercases the head before the length cut', () => {
     expect(commandHead('NPM test')).toBe('npm')
   })

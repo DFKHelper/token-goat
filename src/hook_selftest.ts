@@ -65,10 +65,8 @@ function shellSpawn(shell: GuardShell, command: string): ShellSpawn | null {
 
 const PROBE_ENV = (): NodeJS.ProcessEnv => ({ ...process.env, [HOOK_PROBE_ENV]: '1' })
 
-/** One run in the host shell for the form, as a host spawns a command; null if the shell is absent. */
-export const realShellRunner: ShellRunner = (shell, command, input) => {
-  const spec = shellSpawn(shell, command)
-  if (spec === null) return null
+/** One direct run in the host shell; a timeout ends only the shell: the fallback if the helper fails. */
+function directShellRun(spec: ShellSpawn, input: string): ShellRun {
   const r = spawnSync(spec.program, spec.args, {
     input,
     encoding: 'utf8',
@@ -83,13 +81,23 @@ export const realShellRunner: ShellRunner = (shell, command, input) => {
   return { status: r.status, stdout: r.stdout, stderr: r.stderr }
 }
 
+/** One run in the host shell for the form, as a host spawns a command; null if the shell is absent. */
+export const realShellRunner: ShellRunner = (shell, command, input) => {
+  const spec = shellSpawn(shell, command)
+  if (spec === null) return null
+  return runInHelper([{ ...spec, input }], 1, SELFTEST_TIMEOUT_MS)?.[0] ?? directShellRun(spec, input)
+}
+
 /** Runs the JSON jobs on stdin `concurrency` at a time, each under its own timeout; prints results in order. */
 export const PARALLEL_HELPER = `
 const { spawn, spawnSync } = require('node:child_process')
 const path = require('node:path')
+const running = new Map()
 // Ends the job's whole tree: a child's own kill reaches only the shell, leaving what it forked running.
 const killTree = (child) => {
   const pid = child.pid
+  // An exited child's pid may be a stranger's by now: nothing to end, and nothing to signal.
+  if (child.exitCode !== null || child.signalCode !== null) return
   if (Number.isInteger(pid) && pid > 1) {
     if (process.platform === 'win32') {
       const root = process.env.SystemRoot || process.env.windir || 'C:/Windows'
@@ -107,6 +115,14 @@ process.stdin.on('data', (d) => { raw += d })
 process.stdin.on('end', () => {
   const { jobs, concurrency, timeout, cwd } = JSON.parse(raw)
   const out = new Array(jobs.length)
+  // An owner's abort message ends the running jobs' trees; its SIGTERM (a timeout) ends them and this helper.
+  process.on('message', () => {
+    for (const [child, abort] of [...running]) { killTree(child); abort('aborted by the owner') }
+  })
+  process.on('SIGTERM', () => {
+    for (const child of running.keys()) killTree(child)
+    process.exit(143)
+  })
   let next = 0
   let active = 0
   const pump = () => {
@@ -126,6 +142,7 @@ process.stdin.on('end', () => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      running.delete(child)
       out[i] = r
       active--
       pump()
@@ -135,6 +152,7 @@ process.stdin.on('end', () => {
     const opts = { cwd, windowsHide: true, windowsVerbatimArguments: job.verbatim, detached }
     // owner: this helper; the child dies when it closes or the timeout below ends its tree
     const child = spawn(job.program, job.args, opts)
+    running.set(child, (why) => finish({ status: null, stdout, stderr: why }))
     const timer = setTimeout(() => {
       killTree(child)
       finish({ status: null, stdout, stderr: 'timed out after ' + timeout + ' ms' })
@@ -152,6 +170,27 @@ process.stdin.on('end', () => {
 })
 `
 
+type HelperJob = ShellSpawn & { readonly input: string }
+
+/** The jobs' results through one helper (a timeout ends each job's tree), or undefined if the helper failed. */
+function runInHelper(jobs: readonly HelperJob[], concurrency: number, timeout: number): ShellRun[] | undefined {
+  const rounds = Math.ceil(jobs.length / concurrency)
+  const helper = spawnSync(process.execPath, ['-e', PARALLEL_HELPER], {
+    input: JSON.stringify({ jobs, concurrency, timeout, cwd: os.tmpdir() }),
+    encoding: 'utf8',
+    env: PROBE_ENV(),
+    timeout: timeout * rounds + 10_000,
+    windowsHide: true,
+    maxBuffer: 64 * 1024 * 1024,
+  })
+  try {
+    const parsed: unknown = helper.status === 0 ? JSON.parse(helper.stdout) : undefined
+    return Array.isArray(parsed) && parsed.length === jobs.length ? (parsed as ShellRun[]) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export interface Job {
   readonly shell: GuardShell
   readonly command: string
@@ -166,27 +205,11 @@ export function runJobs(jobs: readonly Job[]): (ShellRun | null)[] {
   const live = specs.flatMap((spec, i) => (spec === null ? [] : [{ i, spec }]))
   if (live.length < 2) return sequential()
   const concurrency = Math.max(1, Math.min(8, os.availableParallelism()))
-  const rounds = Math.ceil(live.length / concurrency)
-  const helper = spawnSync(process.execPath, ['-e', PARALLEL_HELPER], {
-    input: JSON.stringify({
-      jobs: live.map(({ i, spec }) => ({ ...spec, input: jobs[i]!.input })),
-      concurrency,
-      timeout: SELFTEST_TIMEOUT_MS,
-      cwd: os.tmpdir(),
-    }),
-    encoding: 'utf8',
-    env: PROBE_ENV(),
-    timeout: SELFTEST_TIMEOUT_MS * rounds + 10_000,
-    windowsHide: true,
-    maxBuffer: 64 * 1024 * 1024,
-  })
-  let results: ShellRun[] | undefined
-  try {
-    const parsed: unknown = helper.status === 0 ? JSON.parse(helper.stdout) : undefined
-    if (Array.isArray(parsed) && parsed.length === live.length) results = parsed as ShellRun[]
-  } catch {
-    results = undefined
-  }
+  const results = runInHelper(
+    live.map(({ i, spec }) => ({ ...spec, input: jobs[i]!.input })),
+    concurrency,
+    SELFTEST_TIMEOUT_MS,
+  )
   // The helper itself failing is not a hook failing: run each job directly as before.
   if (results === undefined) return sequential()
   const out: (ShellRun | null)[] = jobs.map(() => null)

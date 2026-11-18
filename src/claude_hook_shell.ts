@@ -16,13 +16,14 @@ function isBashName(p: string): boolean {
   return /^(?:bash|sh)(?:\.exe)?$/.test(process.platform === 'win32' ? base.toLowerCase() : base)
 }
 
-/** Whether Claude Code finds Git Bash: the bash or sh `CLAUDE_CODE_GIT_BASH_PATH` names, else by git.exe. */
+/** Whether Claude Code finds Git Bash: the file `CLAUDE_CODE_GIT_BASH_PATH` names if set, else by git.exe. */
 export function claudeFindsGitBash(
   env: NodeJS.ProcessEnv = process.env,
   exists: (p: string) => boolean = fs.existsSync,
 ): boolean {
   const named = env['CLAUDE_CODE_GIT_BASH_PATH']
-  if (named !== undefined && isBashName(named) && exists(named)) return true
+  // Claude Code uses the named path and nothing else: a missing or non-bash file there is no Git Bash.
+  if (named !== undefined && named.trim() !== '') return isBashName(named) && exists(named)
   for (const dir of (env['PATH'] ?? '').split(path.delimiter)) {
     if (dir === '' || !exists(path.join(dir, 'git.exe'))) continue
     const root = path.dirname(dir)

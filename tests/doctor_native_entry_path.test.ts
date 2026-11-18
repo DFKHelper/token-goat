@@ -127,6 +127,29 @@ const SCOPES: Record<string, ScopeFixture> = {
   },
 }
 
+interface PointerExtras {
+  readonly shims?: Record<string, string>
+  readonly noBin?: boolean
+}
+
+/** HAND-DERIVED from validateHookPointer in src/hook_pointer.ts: schema 1, token-goat.mjs entry, tg-hook. */
+function withPointerTo(entry: string, run: () => void, extra: PointerExtras = {}): void {
+  const file = hookPointerPath(dataDir())
+  const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
+  const nativeBin = path.join(TMP, 'tg-hook')
+  if (extra.noBin !== true) writeText(nativeBin, '')
+  const base = { schema: 1, version: '0', node: null, shim: null, writtenAt: 'now' }
+  const shims = extra.shims === undefined ? {} : { shims: extra.shims }
+  const pointer = { ...base, bundleDir: path.dirname(entry), entry, nativeBin, ...shims }
+  try {
+    writeText(file, JSON.stringify(pointer))
+    run()
+  } finally {
+    if (before === null) fs.rmSync(file, { force: true })
+    else fs.writeFileSync(file, before)
+  }
+}
+
 describe('checkNativeEntryPaths', () => {
   it('fails naming the host, the hook event and the missing bundle, with the install fix hint', () => {
     const missing = path.join(TMP, 'gone', 'token-goat.mjs')
@@ -227,23 +250,6 @@ describe('checkNativeEntryPaths on a guarded entry', () => {
     entries: [{ words: nativeWords('PreToolUse', entry), guarded: true }],
   })
 
-  /** HAND-DERIVED from validateHookPointer in src/hook_pointer.ts: schema 1, token-goat.mjs entry, tg-hook. */
-  function withPointerTo(entry: string, run: () => void): void {
-    const file = hookPointerPath(dataDir())
-    const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
-    const nativeBin = path.join(TMP, 'tg-hook')
-    const bundleDir = path.dirname(entry)
-    const base = { schema: 1, version: '0', node: null, shim: null, writtenAt: 'now' }
-    const pointer = { ...base, bundleDir, entry, nativeBin }
-    try {
-      writeText(file, JSON.stringify(pointer))
-      run()
-    } finally {
-      if (before === null) fs.rmSync(file, { force: true })
-      else fs.writeFileSync(file, before)
-    }
-  }
-
   it('passes a guarded entry whose --entry is gone while the hook pointer names a live bundle', () => {
     const live = path.join(TMP, 'live', 'token-goat.mjs')
     writeText(live, '')
@@ -268,6 +274,59 @@ describe('checkNativeEntryPaths on a guarded entry', () => {
     withPointerTo(live, () => {
       expect(checkNativeEntryPaths(wiringOf(nativeWords('PreToolUse', gone)))?.status).toBe('fail')
     })
+  })
+})
+
+describe('checkNativeEntryPaths needs the pointer route to be whole, not only the pointer file', () => {
+  const codexWiring = (entry: string): NativeWiring => ({
+    label: 'Codex',
+    install: 'token-goat install --codex',
+    harnesses: ['codex'],
+    entries: [{ words: nativeWords('PreToolUse', entry), guarded: true }],
+  })
+  const live = (): string => {
+    const file = path.join(TMP, 'live', 'token-goat.mjs')
+    writeText(file, '')
+    return file
+  }
+  const gone = (): string => path.join(TMP, 'gone', 'token-goat.mjs')
+  /** HAND-DERIVED from validateHookPointer in src/hook_pointer.ts: a shim must be named token-goat-shim.cjs. */
+  const shimFile = (): string => {
+    const file = path.join(TMP, 'shims', 'token-goat-shim.cjs')
+    writeText(file, '')
+    return file
+  }
+
+  it('fails a Codex entry when the pointer names no shim for codex', () => {
+    withPointerTo(live(), () => {
+      const row = checkNativeEntryPaths(codexWiring(gone()))
+      expect(row?.status).toBe('fail')
+    }, {})
+  })
+
+  it('fails a Codex entry when the pointer names a shim that is missing from disk', () => {
+    withPointerTo(live(), () => {
+      expect(checkNativeEntryPaths(codexWiring(gone()))?.status).toBe('fail')
+    }, { shims: { codex: path.join(TMP, 'shims', 'token-goat-shim.cjs') } })
+  })
+
+  it('fails when the pointer names a native client that is missing', () => {
+    withPointerTo(live(), () => {
+      expect(checkNativeEntryPaths(codexWiring(gone()))?.status).toBe('fail')
+    }, { shims: { codex: shimFile() }, noBin: true })
+  })
+
+  it('passes a Codex entry when the pointer names its shim, the native client and a live bundle', () => {
+    withPointerTo(live(), () => {
+      expect(checkNativeEntryPaths(codexWiring(gone()))).toBeNull()
+    }, { shims: { codex: shimFile() } })
+  })
+
+  it('fails a Claude Code entry when the native client is missing', () => {
+    withPointerTo(live(), () => {
+      const entries = [{ words: nativeWords('PreToolUse', gone()), guarded: true }]
+      expect(checkNativeEntryPaths({ ...wiringOf(), entries })?.status).toBe('fail')
+    }, { noBin: true })
   })
 })
 

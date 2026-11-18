@@ -11,7 +11,7 @@ import { nativeHooksEnabled } from './config.js'
 import { getDb } from './db.js'
 import type { DoctorResult } from './doctor_result.js'
 import { nativeHookCounts, type NativeHookCounts } from './hook_latency.js'
-import { HOOK_BROKEN_FILE, readHookBroken, readHookPointer } from './hook_pointer.js'
+import { HOOK_BROKEN_FILE, hookPointerPath, readHookBroken, readHookPointer } from './hook_pointer.js'
 import { wiredClaudeHookEntries } from './install.js'
 import { nativeCopyCurrent, nativeCopyPath, nativeHookBinary, nativeSelftest, packagedNativeBinary, parseNativeInvocation, type NativeSelftest, type WiredHookEntry } from './native_hook.js'
 import { displaySafeText } from './paths.js'
@@ -221,6 +221,20 @@ function nodeFormInvocation(words: readonly string[]): { event: string; entry: s
   return words.length === 4 && shim !== undefined && SHIM_FILE_WORD.test(shim) && event !== undefined && entry !== undefined ? { event, entry } : undefined
 }
 
+/** Whether the pointer's fallback route works for `harnesses`: a valid pointer, its shim and client exist. */
+function pointerRouteLive(harnesses: readonly string[]): boolean {
+  const read = readHookPointer()
+  if (!read.ok) return false
+  const harness = harnesses.find((h) => h !== 'claudecode')
+  if (harness !== undefined && (read.pointer.shims[harness] ?? read.pointer.shim) === undefined) return false
+  try {
+    const bin = (JSON.parse(fs.readFileSync(hookPointerPath(), 'utf8')) as { nativeBin?: unknown }).nativeBin
+    return typeof bin === 'string' && fs.existsSync(bin)
+  } catch {
+    return false
+  }
+}
+
 /** The FAIL row for a hook whose bundle (native `--entry` or Node-form entry) is gone, or null if none is. */
 export function checkNativeEntryPaths(wiring: NativeWiring): DoctorResult | null {
   const eventsByEntry = new Map<string, string[]>()
@@ -231,7 +245,7 @@ export function checkNativeEntryPaths(wiring: NativeWiring): DoctorResult | null
     if (invoked?.entry === undefined || fs.existsSync(invoked.entry)) continue
     // A guarded entry with --entry gone still runs: the native client reads the pointer to the live bundle.
     if (guarded === true) {
-      pointerLive ??= readHookPointer().ok
+      pointerLive ??= pointerRouteLive(wiring.harnesses)
       if (pointerLive) continue
     }
     broken += 1

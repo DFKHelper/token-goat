@@ -32,6 +32,13 @@ function preEvent(command: string, raw: Record<string, unknown> = {}): HookEvent
   })
 }
 
+/** The secret the command carries, as the model typed it (a synthetic value). */
+const SECRET = 'sk-123'
+
+function leaksSecret(calls: unknown[][]): boolean {
+  return JSON.stringify(calls).includes(SECRET)
+}
+
 function headCalls(): unknown[][] {
   return vi.mocked(recordStat).mock.calls.filter((call) => String(call[0]).startsWith('bash_generic_head'))
 }
@@ -44,11 +51,16 @@ describe('bash_generic_head stat', () => {
   })
 
   it('records one row per command, naming the head and not the secret assignment before it', () => {
-    preBashHandler(preEvent('API_KEY=[REDACTED:generic_secret_assignment] rollup -c'))
+    const command = `API_KEY=${SECRET} rollup -c`
+    preBashHandler(preEvent(command))
     const calls = headCalls()
     expect(calls).toHaveLength(1)
     expect(calls[0]).toEqual(['bash_generic_head:rollup'])
-    expect(JSON.stringify(vi.mocked(recordStat).mock.calls)).not.toContain('sk-123')
+    expect(leaksSecret(vi.mocked(recordStat).mock.calls)).toBe(false)
+  })
+
+  it('the secret check fails on a label built from the raw command, so its pass above is not vacuous', () => {
+    expect(leaksSecret([[`bash_generic_head:API_KEY=${SECRET} rollup -c`]])).toBe(true)
   })
 
   it('records nothing for a command the generic filter never sees', () => {
@@ -62,6 +74,12 @@ describe('bash_generic_head stat', () => {
     const result = preBashHandler(preEvent('rollup -c'))
     expect(result.hookType).toBe('pass')
     expect(headCalls()).toHaveLength(0)
+  })
+
+  it('records the head for a short command on the harness whose long one is refused', () => {
+    const result = preBashHandler(preEvent('rollup -c', { _tg_harness: 'copilot_cli' }))
+    expect(result.hookType).not.toBe('pass')
+    expect(headCalls()).toEqual([['bash_generic_head:rollup']])
   })
 
   it.skipIf(process.platform !== 'win32')('records nothing when the rewrite is refused as too long', () => {

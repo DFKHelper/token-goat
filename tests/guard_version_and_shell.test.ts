@@ -59,9 +59,24 @@ describe('the shell Claude Code runs a hook in', () => {
     git(root)
     expect(claudeFindsGitBash({ PATH: path.join(root, 'cmd') })).toBe(true)
     const viaGit = { CLAUDE_CODE_GIT_BASH_PATH: lookalike, PATH: path.join(root, 'cmd') }
-    expect(claudeFindsGitBash(viaGit)).toBe(true)
+    expect(claudeFindsGitBash(viaGit)).toBe(false)
     expect(claudeFindsGitBash({ PATH: path.join(root, 'bin') })).toBe(false)
     expect(claudeFindsGitBash({ PATH: '' })).toBe(false)
+  })
+
+  it('answers by the named bash file alone when set, by git.exe on PATH when unset or blank', () => {
+    git(root)
+    const onPath = path.join(root, 'cmd')
+    const named = path.join(root, 'bash.exe')
+    fs.writeFileSync(named, '')
+    const missing = path.join(root, 'gone-bash.exe')
+    const setMissing = { CLAUDE_CODE_GIT_BASH_PATH: missing, PATH: onPath }
+    expect(claudeFindsGitBash(setMissing), 'set but missing, bash on PATH').toBe(false)
+    const setValid = { CLAUDE_CODE_GIT_BASH_PATH: named, PATH: '' }
+    expect(claudeFindsGitBash(setValid), 'set and valid, nothing on PATH').toBe(true)
+    expect(claudeFindsGitBash({ CLAUDE_CODE_GIT_BASH_PATH: '', PATH: onPath }), 'blank falls back').toBe(true)
+    const spaces = { CLAUDE_CODE_GIT_BASH_PATH: '  ', PATH: onPath }
+    expect(claudeFindsGitBash(spaces), 'whitespace falls back').toBe(true)
   })
 
   it('registers sh with a bash shell field with Git Bash, PowerShell without, no field off Windows', () => {
@@ -77,7 +92,7 @@ describe('the shell Claude Code runs a hook in', () => {
   ])('writes each own entry %s in that shell, reads it back, removes it', (_name, bashPath, guard, field) => {
     const bash = path.join(root, bashPath)
     if (guard === 'sh') fs.writeFileSync(bash, '')
-    // A rejected configured path falls back to git.exe on PATH, so the no-Git-Bash row hides the real PATH.
+    // A configured path naming no file is not Git Bash; PATH is hidden too, so the row ignores the host.
     else vi.stubEnv('PATH', path.join(root, 'empty'))
     vi.stubEnv('CLAUDE_CODE_GIT_BASH_PATH', bash)
     installHooks('user', { dev: true })

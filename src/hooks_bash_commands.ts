@@ -94,9 +94,59 @@ const KNOWN_HEADS = new Set('7z c++ clang++ g++ k9s pip3 python3 s3cmd'.split(' 
 /** A head starting with one of these looks like a pasted credential, so it files as other. */
 const SECRET_HEAD = /^(?:sk-|gh[pos]|xox|akia|glpat|eyj)/
 
-/** Splits on unquoted, unescaped whitespace; a backslash keeps its next character in the word. */
+/** The index past the quote, backtick or `$(` span starting at `at`; an unterminated span runs to the end. */
+function spanEnd(cmd: string, at: number): number {
+  const n = cmd.length
+  const open = cmd[at]
+  if (open === "'") {
+    const close = cmd.indexOf("'", at + 1)
+    return close < 0 ? n : close + 1
+  }
+  if (open === '"' || open === '`') {
+    let j = at + 1
+    while (j < n && cmd[j] !== open) j += cmd[j] === '\\' ? 2 : 1
+    return Math.min(j + 1, n)
+  }
+  let depth = 0
+  for (let j = at + 1; j < n; ) {
+    const c = cmd[j]
+    if (c === '\\') j += 2
+    else if (c === "'" || c === '"' || c === '`') j = spanEnd(cmd, j)
+    else {
+      if (c === '(') depth++
+      else if (c === ')' && --depth === 0) return j + 1
+      j++
+    }
+  }
+  return n
+}
+
+/** Splits on unquoted, unescaped whitespace outside `$(...)` and backticks; a backslash keeps its next char. */
 function shellWords(cmd: string): string[] {
-  return cmd.match(/(?:\\[\s\S]|"(?:\\[\s\S]|[^"\\])*(?:"|$)|'[^']*(?:'|$)|[^\s\\"'])+/g) ?? []
+  const words: string[] = []
+  const n = cmd.length
+  for (let i = 0; i < n; ) {
+    if (/\s/.test(cmd[i]!)) {
+      i++
+      continue
+    }
+    const start = i
+    let end = i
+    while (i < n && !/\s/.test(cmd[i]!)) {
+      const c = cmd[i]
+      // A lone trailing backslash escapes nothing and belongs to no word.
+      if (c === '\\' && i + 1 >= n) {
+        i = n
+        break
+      }
+      if (c === '\\') i += 2
+      else if (c === '"' || c === "'" || c === '`' || (c === '$' && cmd[i + 1] === '(')) i = spanEnd(cmd, i)
+      else i++
+      end = Math.min(i, n)
+    }
+    if (end > start) words.push(cmd.slice(start, end))
+  }
+  return words
 }
 
 /** Lowercase basename of the first word past leading assignments, or `script` / `other`. */
@@ -106,6 +156,8 @@ export function commandHead(cmd: string): string {
   while (index < words.length && LEADING_ASSIGNMENT.test(words[index] ?? '')) index++
   const first = words[index]
   if (first === undefined || first === '') return 'other'
+  // A substitution can print any head, so a head word holding one is unknowable.
+  if (first.includes('$(') || first.includes('`')) return 'other'
   if (SCRIPT_WORD.test(first)) return 'script'
   const basename = first.slice(Math.max(first.lastIndexOf('/'), first.lastIndexOf('\\')) + 1)
   const head = basename.toLowerCase()
