@@ -78,8 +78,9 @@ export function stripCommandPrefix(rawCmd: string): string {
   return stripLeadingAssignments(stripExportPrefix(stripCdPrefix(stripGroupAndExports(rawCmd))))
 }
 
+/** Drops a trailing 2>&1 or whitespace-preceded 2>/dev/null before the gate reads the command. */
 export function stripTrailingStderrRedirect(cmd: string): string {
-  const stripped = cmd.replace(/\s*2>&1\s*$/, '')
+  const stripped = cmd.replace(/\s*2>&1\s*$/, '').replace(/(?<=\s)2>\s*\/dev\/null\s*$/, '')
   return stripped.trim() || cmd
 }
 

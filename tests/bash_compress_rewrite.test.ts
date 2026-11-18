@@ -231,8 +231,24 @@ describe('preBashHandler: compression rewrite', () => {
     expect(result.hookType).toBe('pass')
   })
 
-  it('does not wrap a non-trailing stderr redirect (2>/dev/null)', () => {
-    const result = preBashHandler(preEvent({ command: 'npm test 2>/dev/null' }))
+  it.each([
+    'npm test 2>/dev/null',
+    'npm test 2> /dev/null',
+  ])('wraps a trailing 2>/dev/null: %s', (command) => {
+    const result = preBashHandler(preEvent({ command }))
+    expect(result.hookType).toBe('rewriteInput')
+    if (result.hookType === 'rewriteInput') {
+      expect(result.updatedInput['command']).toContain('token-goat compress')
+    }
+  })
+
+  it.each([
+    'npm test 2>out.txt',
+    'npm test 2>/dev/nullx',
+    'npm test 2>/dev/null | head',
+    'npm test >/dev/null 2>&1',
+  ])('does not wrap an unstripped redirect: %s', (command) => {
+    const result = preBashHandler(preEvent({ command }))
     expect(result.hookType).toBe('pass')
   })
 
@@ -285,6 +301,18 @@ describe('stripTrailingStderrRedirect', () => {
 
   it('falls back to the original string when stripping would empty it', () => {
     expect(stripTrailingStderrRedirect('2>&1')).toBe('2>&1')
+  })
+
+  it.each([
+    ['npm test 2>/dev/null', 'npm test'],
+    ['npm test 2> /dev/null', 'npm test'],
+    ['npm test 2>out.txt', 'npm test 2>out.txt'],
+    ['npm test 2>/dev/nullx', 'npm test 2>/dev/nullx'],
+    ['npm test2>/dev/null', 'npm test2>/dev/null'],
+    ['echo "x 2>/dev/null"', 'echo "x 2>/dev/null"'],
+    ['echo "a 2>&1"', 'echo "a 2>&1"'],
+  ])('strips only a whitespace-preceded trailing 2>/dev/null: %s', (cmd, expected) => {
+    expect(stripTrailingStderrRedirect(cmd)).toBe(expected)
   })
 })
 
