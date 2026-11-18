@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
@@ -31,6 +32,7 @@ import {
 } from '../src/bridges/codex_install.js'
 import { detectHarness } from '../src/bridges/registry.js'
 import { parseGuardedCommand } from '../src/hook_guard.js'
+import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 interface CodexHookEntry {
   type: string
@@ -85,6 +87,26 @@ describe('codexHookCommandFor', () => {
     expect(parsed.native.slice(1, 3)).toEqual(['C:\\path\\to\\shim.js', 'pre_compact'])
     // HAND-DERIVED: what `powershell -Command` needs to exit with a native program's own code.
     expect(cmd).toContain('exit (Get-Variable LASTEXITCODE -ValueOnly)')
+  })
+
+  // Windows only: the real powershell.exe runs the command, as the host does, against a stub that exits 3.
+  it.skipIf(process.platform !== 'win32')('the Windows command exits with its hook status', () => {
+    const stub = path.join(TMP, 'exit-three.js')
+    fs.writeFileSync(stub, 'process.exit(3)\n')
+    const cmd = codexHookCommandFor(stub, 'pre_compact', { sync: false })
+    const parsed = parseGuardedCommand(cmd)
+    expect(parsed?.kind === 'v1' ? parsed.shell : undefined, cmd).toBe('powershell')
+
+    const argv = ['-NoProfile', '-NonInteractive', '-Command', cmd]
+    const res = spawnSync('powershell.exe', argv, { encoding: 'utf8', timeout: 60_000, windowsHide: true })
+    try {
+      expect(res.error, 'the command did not end on its own').toBeUndefined()
+      expect(res.status, `${res.stdout}${res.stderr}`).toBe(3)
+    } finally {
+      if (res.error !== undefined && res.pid !== undefined) {
+        killIfCommandLine(res.pid, (commandLine) => commandLine.includes(stub), { tree: true })
+      }
+    }
   })
 
   it('writes the guarded POSIX form on non-Windows (linux/darwin), never a bare "& " call', () => {

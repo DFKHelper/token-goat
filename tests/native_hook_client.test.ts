@@ -158,6 +158,8 @@ interface Run {
   firstChunkMs?: number
   firstChunk?: Buffer
   exitMs: number
+  /** Whether stdout had delivered a chunk when `exit` fired: an order of events, read off no clock. */
+  answeredBeforeExit: boolean
   /** Whether stdout or stderr was still open 3 s after the client exited: some process it left behind holds the harness's pipe, and a harness reading to end of output would wait for that process rather than the hook. */
   heldOpen: boolean
 }
@@ -184,6 +186,7 @@ function runNative(
     let stderr = ''
     let firstChunkMs: number | undefined
     let exitMs = NaN
+    let answeredBeforeExit = false
     let heldOpen = false
     let settled = false
     child.stdout.on('data', (d: Buffer) => {
@@ -194,6 +197,7 @@ function runNative(
     child.on('error', reject)
     child.on('exit', () => {
       exitMs = performance.now() - started
+      answeredBeforeExit = out.length > 0
       setTimeout(() => {
         if (settled) return
         heldOpen = true
@@ -206,7 +210,9 @@ function runNative(
     child.on('close', (exit, signal) => {
       clearTimeout(bound)
       settled = true
-      resolve({ stdout: Buffer.concat(out), stderr, exit, signal, firstChunkMs, firstChunk: out[0], exitMs, heldOpen })
+      const stdout = Buffer.concat(out)
+      const firstChunk = out[0]
+      resolve({ stdout, stderr, exit, signal, firstChunkMs, firstChunk, exitMs, answeredBeforeExit, heldOpen })
     })
     // A client that stopped reading stdin early would fail this write with EPIPE; that is not what these cases test.
     child.stdin.on('error', () => undefined)
@@ -530,7 +536,9 @@ describe('served by a fake server', () => {
     await withFakes([serving((s) => [outFrame(s, 0, 'EARLY\n'), doneFrame(s, 'LATE\n', 2, 1)])], async ([f]) => {
       const runs = fallbackRuns()
       const input = '{"tool_name":"Bash","ok":"\u00e9\u65e5"}'
+      const spawnedAt = performance.now()
       const res = await runNative(hookArgs(fbTail()), input, { TG_PROBE: 'probe \u00e9\u65e5' })
+      const sinceSpawn = performance.now() - spawnedAt
       expect(res.stdout.toString('utf8')).toBe('EARLY\nLATE\n')
       expect(res.exit).toBe(2)
       expect(fallbackRuns()).toBe(runs)
@@ -540,16 +548,40 @@ describe('served by a fake server', () => {
       expect((body['env'] as Env)['TG_PROBE']).toBe('probe \u00e9\u65e5')
       expect(typeof body['elapsedMs']).toBe('number')
       expect(body['elapsedMs'] as number).toBeGreaterThanOrEqual(0)
-      expect(body['elapsedMs'] as number).toBeLessThan(10_000)
+      // No threshold: the client's elapsed time cannot exceed the time since this test spawned it.
+      expect(body['elapsedMs'] as number).toBeLessThanOrEqual(sinceSpawn)
     })
   })
 
   it('streams the early frame before the server has finished (async detach)', async () => {
-    await withFakes([serving((s) => [outFrame(s, 0, 'EARLY\n'), doneFrame(s, '', 0, 1)], 400)], async () => {
-      const res = await runNative(hookArgs(fbTail()), '{}')
-      expect(res.stdout.toString('utf8')).toBe('EARLY\n')
-      expect(res.firstChunk?.toString('utf8')).toBe('EARLY\n')
-      expect(res.exitMs - (res.firstChunkMs ?? Infinity)).toBeGreaterThanOrEqual(250)
+    // The server holds its done frame until the test sees the early frame on stdout: order decides, no clock.
+    const order: string[] = []
+    let release: () => void = () => undefined
+    const released = new Promise<void>((resolve) => (release = resolve))
+    const gated: Script = async (c, f) => {
+      const s = await handshake(c, f)
+      if (s === undefined || !(await request(c, f, s))) return
+      c.send(outFrame(s, 0, 'EARLY\n'))
+      await released
+      order.push('done frame sent')
+      c.send(doneFrame(s, '', 0, 1))
+    }
+    await withFakes([gated], async () => {
+      const onSpawn = (child: ChildProcess): void => {
+        child.stdout?.once('data', () => {
+          order.push('early frame on stdout')
+          release()
+        })
+      }
+      try {
+        const res = await runNative(hookArgs(fbTail()), '{}', {}, { killAfterMs: 15_000, onSpawn })
+        expect(res.signal, 'the client held the early frame until the server finished').toBeNull()
+        expect(res.stdout.toString('utf8')).toBe('EARLY\n')
+        expect(res.firstChunk?.toString('utf8')).toBe('EARLY\n')
+        expect(order).toEqual(['early frame on stdout', 'done frame sent'])
+      } finally {
+        release()
+      }
     })
   })
 
@@ -772,12 +804,10 @@ describe('prints the no-op, and never runs the call again, once the request was 
   })
 
   it('no response within the response timeout', async () => {
-    const run = await expectNoop(
-      afterRequest(() => undefined, true),
-      { extra: ['--response-timeout-ms', '500'] },
-    )
-    expect(run.exitMs).toBeGreaterThanOrEqual(450)
-    expect(run.exitMs).toBeLessThan(10_000)
+    // The server holds the connection open and silent; the client ending alone with the no-op is the verdict.
+    // Waiting the full timeout first: Rust row an_installed_command_line_waits_the_shipping_response_timeout.
+    const extra = ['--response-timeout-ms', '500']
+    await expectNoop(afterRequest(() => undefined, true), { extra, killAfterMs: 15_000 })
   })
 
   // The response wait is inside the one deadline: the default 120 s response timeout cannot outlast it.
@@ -1079,9 +1109,9 @@ describe('one deadline serves every route', () => {
     expect(res.signal, 'the client was still running at the kill bound').toBeNull()
     expect(res.exit, res.stderr).toBe(0)
     expect(['{"second":true}', '{"decision":"allow"}']).toContain(res.stdout.toString('utf8'))
-    expect(res.firstChunkMs, 'no answer reached stdout').toBeDefined()
-    expect(res.firstChunkMs ?? Infinity, 'the answer came after the exit').toBeLessThanOrEqual(res.exitMs)
-    expect(res.exitMs, 'the client ended after the 3000 ms limit').toBeLessThan(3000)
+    expect(res.firstChunk, 'no answer reached stdout').toBeDefined()
+    expect(res.answeredBeforeExit, 'the answer came after the exit').toBe(true)
+    // The client reports no elapsed time, so the in-limit exit is proved by the Rust rows in fallback.rs.
   })
 
   // A route that shrugs off SIGTERM and leaves a grandchild holding the stdout pipe the client reads.

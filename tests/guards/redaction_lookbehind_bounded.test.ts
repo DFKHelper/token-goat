@@ -1,11 +1,9 @@
-/** The redaction pass runs over every command output and every cached blob before either reaches the model, so its cost is paid on the hot path. Its patterns looked safe by the usual rule -- no nested or overlapping quantifier, so no single match can backtrack catastrophically -- and the module header said so. That rule misses the case that actually bit: a variable-length lookbehind is re-evaluated at every start position, so an unbounded run inside one makes the whole pass quadratic in the input even though no individual match ever backtracks. `generic_secret_assignment` held `\s*` on both sides of its separator. The input `'password' + ' '.repeat(n) + '=!'` took 108 ms at n=20000 and 1726 ms at n=80000: four times the work for twice the input. Bounding the runs made the same inputs 0.5 ms and 2.2 ms. The timing assertion below is the symptom and is deliberately loose. This structural check is the invariant, and it is what fails immediately and without a stopwatch if an unbounded quantifier is ever put back inside a lookbehind. */
+/** The redaction pass runs over every command output and every cached blob before either reaches the model, so its cost is paid on the hot path. Its patterns looked safe by the usual rule -- no nested or overlapping quantifier, so no single match can backtrack catastrophically -- and the module header said so. That rule misses the case that actually bit: a variable-length lookbehind is re-evaluated at every start position, so an unbounded run inside one makes the whole pass quadratic in the input even though no individual match ever backtracks. `generic_secret_assignment` held `\s*` on both sides of its separator. The input `'password' + ' '.repeat(n) + '=!'` took 108 ms at n=20000 and 1726 ms at n=80000: four times the work for twice the input. Bounding the runs made the same inputs 0.5 ms and 2.2 ms. No stopwatch decides here, because a clock verdict fails on a busy machine and passes on a slow one: the structural checks below are the invariant, and they fail immediately if an unbounded quantifier is ever put back inside a lookbehind, whether written inline or inside a shared constant. The look-back width is also capped, so the work per start position is bounded and the whole pass stays linear in the input. */
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
-
-import { redactSecrets } from '../../src/secret_redact.js'
 
 const source = fs.readFileSync(
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'secret_redact.ts'),
@@ -64,6 +62,102 @@ function unboundedQuantifiers(body: string): string[] {
   return found
 }
 
+/** Each `const NAME = String.raw` declaration (pieces joined by `+`, maybe an arrow head) as name -> text. */
+function templateConstants(text: string): Map<string, string> {
+  const constants = new Map<string, string>()
+  const head = /const (\w+)(?::[^=\n]+)? =\s*(?:\([^)]*\)(?:: \w+)? =>\s*)?/.source
+  const declaration = new RegExp(`${head}((?:String\\.raw\`[^\`]*\`\\s*\\+?\\s*)+)`, 'g')
+  for (const m of text.matchAll(declaration)) {
+    const pieces = [...(m[2] ?? '').matchAll(/String\.raw`([^`]*)`/g)]
+    constants.set(m[1] ?? '', pieces.map((x) => x[1] ?? '').join(''))
+  }
+  return constants
+}
+
+/** A lookbehind body with its `${NAME}` references replaced; `${quote}` forks in both quotes, unknown stays. */
+function expandTemplates(body: string, constants: ReadonlyMap<string, string>, depth = 0): string[] {
+  const from = (text: string, pos: number): string[] => {
+    const m = /\$\{(\w+)\}/.exec(text.slice(pos))
+    if (!m) return [text]
+    const at = pos + m.index
+    const known = depth < 20 ? (m[1] === 'quote' ? ['"', "'"] : [constants.get(m[1] ?? '')]) : [undefined]
+    return known.flatMap((value) =>
+      value === undefined
+        ? from(text, at + m[0].length)
+        : expandTemplates(text.slice(0, at) + value + text.slice(at + m[0].length), constants, depth + 1),
+    )
+  }
+  return from(body, 0)
+}
+
+// limit: a lookbehind wider than this fails revisit-when: a legitimate pattern needs a longer look back
+const MAX_LOOKBEHIND_WIDTH = 256
+
+/** The most characters a pattern can consume, `Infinity` if unbounded; reads groups, classes, `{n,m}`. */
+function maxWidth(pattern: string): number {
+  const bs = String.fromCharCode(92)
+  let pos = 0
+  const atom = (): number => {
+    const c = pattern[pos]
+    if (c === '(') {
+      const zeroWidth = /^\(\?<?[=!]/.exec(pattern.slice(pos))
+      pos += zeroWidth ? zeroWidth[0].length : pattern.startsWith('(?:', pos) ? 3 : 1
+      const inner = alternation()
+      pos += 1
+      return zeroWidth ? 0 : inner
+    }
+    if (c === '[') {
+      pos += 1
+      while (pos < pattern.length && pattern[pos] !== ']') pos += pattern[pos] === bs ? 2 : 1
+      pos += 1
+      return 1
+    }
+    if (c === bs) {
+      pos += 2
+      return pattern[pos - 1] === 'b' || pattern[pos - 1] === 'B' ? 0 : 1
+    }
+    pos += 1
+    return c === '^' || c === '$' ? 0 : 1
+  }
+  const quantified = (): number => {
+    const width = atom()
+    const c = pattern[pos]
+    let times = 1
+    let quantifier = false
+    if (c === '*' || c === '+') {
+      pos += 1
+      times = Infinity
+      quantifier = true
+    } else if (c === '?') {
+      pos += 1
+      quantifier = true
+    } else if (c === '{') {
+      const m = /^\{(\d+)(,(\d*))?\}/.exec(pattern.slice(pos))
+      if (m) {
+        pos += m[0].length
+        times = m[2] === undefined ? Number(m[1]) : m[3] === '' ? Infinity : Number(m[3])
+        quantifier = true
+      }
+    }
+    if (quantifier && pattern[pos] === '?') pos += 1
+    return width === 0 ? 0 : width * times
+  }
+  const sequence = (): number => {
+    let total = 0
+    while (pos < pattern.length && pattern[pos] !== '|' && pattern[pos] !== ')') total += quantified()
+    return total
+  }
+  const alternation = (): number => {
+    let best = sequence()
+    while (pattern[pos] === '|') {
+      pos += 1
+      best = Math.max(best, sequence())
+    }
+    return best
+  }
+  return alternation()
+}
+
 describe('lookbehind quantifiers stay bounded', () => {
   const bodies = lookbehindBodies(source)
 
@@ -95,13 +189,41 @@ describe('lookbehind quantifiers stay bounded', () => {
     expect(offenders, 'each of these makes the whole pass quadratic in input size').toEqual([])
   })
 
-  // The symptom the invariant above exists to prevent. The budget is ~400x the measured cost and ~5x below the pre-fix cost, so it is not a benchmark and should not flake on a loaded machine.
-  it('stays fast on a long whitespace run after a keyword', () => {
-    const input = `password${' '.repeat(80_000)}=!`
+  // Lookbehinds are partly spelled through shared constants, so read them with those substituted in.
+  it('has no unbounded quantifier in any lookbehind once the shared constants are substituted in', () => {
+    const expanded = bodies.flatMap((b) => expandTemplates(b, templateConstants(source)))
 
-    const started = performance.now()
-    expect(redactSecrets(input).count).toBe(0)
+    expect(expanded.length).toBeGreaterThanOrEqual(bodies.length)
+    expect(expanded.filter((b) => b.includes('${')), 'a constant the expansion could not resolve').toEqual([])
+    const offenders = expanded
+      .map((b) => ({ body: b, quantifiers: unboundedQuantifiers(b) }))
+      .filter((o) => o.quantifiers.length > 0)
+      .map((o) => `${o.quantifiers.join(' ')} in (?<=${o.body})`)
 
-    expect(performance.now() - started).toBeLessThan(400)
+    expect(offenders, 'each of these makes the whole pass quadratic in input size').toEqual([])
+  })
+
+  it('reads an unbounded run through a constant, and forks on the quote placeholder', () => {
+    const synthetic = [
+      'const GAP = String.raw`x*`',
+      'const KEY = String.raw`k${GAP}`',
+      'const sep = (quote: string): string =>',
+      '  String.raw`(?<=${KEY}${quote})v`',
+    ].join('\n')
+    const constants = templateConstants(synthetic)
+    const expanded = lookbehindBodies(synthetic).flatMap((b) => expandTemplates(b, constants))
+
+    expect(expanded).toEqual(['kx*"', "kx*'"])
+    expect(expanded.flatMap(unboundedQuantifiers)).toEqual(['*', '*'])
+  })
+
+  it('has a bounded width in every expanded lookbehind, so the work per start position is capped', () => {
+    const widths = bodies
+      .flatMap((b) => expandTemplates(b, templateConstants(source)))
+      .map((b) => ({ body: b, width: maxWidth(b) }))
+
+    expect(widths.filter((w) => !Number.isFinite(w.width) || w.width > MAX_LOOKBEHIND_WIDTH)).toEqual([])
+    expect(maxWidth('a{0,8}[bc]{1,3}(?:x|yz)\\s')).toBe(8 + 3 + 2 + 1)
+    expect(maxWidth('a+')).toBe(Infinity)
   })
 })
