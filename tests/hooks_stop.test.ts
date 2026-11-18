@@ -705,3 +705,57 @@ describe('the command the advisory names', () => {
     expect(evaluateVerification(sid).runs[0]?.command).toBe('pytest tests/a.test.ts ~/x/b.py @scope/pkg/c.ts')
   })
 })
+
+describe('a check named only inside a heredoc body is text, not a run', () => {
+  // CAPTURE shape: a Bash call writing a brief via `cat > file <<'EOF'`, body quoting vitest, `Exit code 2`.
+  const brief = [
+    'mkdir -p "$S/d1"; cat > "$S/brief-d1.md" <<\'EOF\'',
+    '## Done when',
+    '`( cd C:/tgwt/int && npx vitest run tests/a.test.ts tests/b.test.ts )` reports 0 failed',
+    'npx vitest run tests/a.test.ts',
+    'EOF',
+  ].join('\n')
+  const failingCheck = 'npx vitest run tests/a.test.ts'
+  const syntaxError = "Exit code 2\n/usr/bin/bash: -c: line 51: unexpected EOF while looking for matching `''"
+
+  it('a failed heredoc write that quotes a check records no failed check', () => {
+    const sid = newSession()
+    inSession(sid, () => {
+      recordFileEdit('C:/proj/src/a.ts')
+      recordVerificationRun('npx vitest run tests/a.test.ts', 0, T0 + 1000)
+      noteFailedVerificationRun(brief, syntaxError, false)
+    })
+    const state = evaluateVerification(sid)
+    expect(state.failingUnresolved).toBe(false)
+    expect(state.runs).toHaveLength(1)
+  })
+
+  it('a real failing check after the heredoc still blocks', () => {
+    const sid = newSession()
+    inSession(sid, () => {
+      recordFileEdit('C:/proj/src/a.ts')
+      noteFailedVerificationRun(`${brief}\n${failingCheck}`, 'Exit code 1\nFAIL tests/a.test.ts', false)
+    })
+    const state = evaluateVerification(sid)
+    expect(state.failingUnresolved).toBe(true)
+    expect(stopAdvisoryText(state)).toContain('the last check failed')
+  })
+
+  it('a heredoc fed to a shell runs its body, so a failing check in it still blocks', () => {
+    const sid = newSession()
+    const shellFed = `bash <<'EOF'\n${failingCheck}\nEOF`
+    inSession(sid, () => noteFailedVerificationRun(shellFed, 'Exit code 1', false))
+    expect(evaluateVerification(sid).failingUnresolved).toBe(true)
+  })
+
+  it('a passing heredoc write does not clear an earlier failure', () => {
+    vi.stubEnv('TOKEN_GOAT_HARNESS_OVERRIDE', 'claudecode')
+    const sid = newSession()
+    inSession(sid, () => {
+      recordVerificationRun('npm test', 1, T0 + 1000)
+      noteVerificationRun(brief, 0, false)
+    })
+    expect(evaluateVerification(sid).failingUnresolved).toBe(true)
+    vi.unstubAllEnvs()
+  })
+})

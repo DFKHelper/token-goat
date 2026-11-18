@@ -126,9 +126,28 @@ function isDocumentOnlyFailure(command: string): boolean {
   return exitStatusIsCheckVerdict(command, isFailureCheckSegment) && command.split(COMMAND_SEPARATOR).some((part, i) => i % 2 === 0 && isDocumentOnlyScriptCheckSegment(part.trim().replace(ENV_ASSIGNMENT_PREFIX, '')))
 }
 
+// A heredoc into `cat` or `tee` (not piped on to a shell) only writes its body to a file.
+const FILE_HEREDOC_OPENER = /^(?!.*\|\s*(?:ba|z|da)?sh\b)(?:.*[;&|(]\s*)?(?:cat|tee)\b.*<<-?\s*(['"]?)(\w+)\1/
+
+/** The command minus file-writing heredoc bodies: quoting `vitest run` runs no check. Shell-fed ones stay. */
+function withoutFileHeredocBodies(command: string): string {
+  const kept: string[] = []
+  let terminator: string | null = null
+  for (const line of command.split('\n')) {
+    if (terminator !== null) {
+      if (line.trim() === terminator) terminator = null
+      continue
+    }
+    kept.push(line)
+    terminator = FILE_HEREDOC_OPENER.exec(line)?.[2] ?? null
+  }
+  return kept.join('\n')
+}
+
 /** Record a finished Bash call if it was a verification command. A background launch has not finished, so it is not a verdict, and neither is a call whose exit status something around the check decided ({@link exitStatusIsCheckVerdict}): that call is left unrecorded, so it neither clears the edits made since the last pass nor counts as a failure. An unknown status is not recorded as null here because evaluateVerification reads null as a pass. A failing document-only check is recorded too ({@link isDocumentOnlyFailure}). */
-export function noteVerificationRun(command: string, exitCode: number | null, runInBackground: boolean): void {
+export function noteVerificationRun(typed: string, exitCode: number | null, runInBackground: boolean): void {
   if (runInBackground) return
+  const command = withoutFileHeredocBodies(typed)
   if (isVerificationCommand(command) && exitStatusIsCheckVerdict(command)) {
     recordVerificationRun(storedCommand(command), exitCode ?? (successImpliedWithoutStatus() ? 0 : null))
     return
@@ -139,7 +158,8 @@ export function noteVerificationRun(command: string, exitCode: number | null, ru
 const EXIT_CODE_IN_ERROR = /^Exit code (\d+)/
 
 /** Record a Bash call that failed, from the failure event's error text (Claude Code opens it with `Exit code N`; the status is 1 when the text carries none). An interrupt has no verdict. */
-export function noteFailedVerificationRun(command: string, errorText: string, isInterrupt: boolean): void {
+export function noteFailedVerificationRun(typed: string, errorText: string, isInterrupt: boolean): void {
+  const command = withoutFileHeredocBodies(typed)
   if (isInterrupt || !(isVerificationCommand(command) || isDocumentOnlyFailure(command))) return
   const status = EXIT_CODE_IN_ERROR.exec(errorText)
   const exitCode = status !== null && Number(status[1]) !== 0 ? Number(status[1]) : 1
