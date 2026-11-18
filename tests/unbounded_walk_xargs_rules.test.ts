@@ -1,4 +1,5 @@
-// Provenance: HAND-DERIVED from the five rules of the default-deny xargs allowance in src/unbounded_walk.ts and from the second review of that guard; each command is a shell line whose meaning follows from the tool's documented options (GNU findutils xargs and find, fd, ripgrep, git ls-files and git diff). No wire format is claimed.
+// Provenance: HAND-DERIVED from the xargs rules in src/unbounded_walk.ts and the reviews of that guard.
+// Each command is a shell line whose meaning follows from GNU findutils xargs, grep, ls and du, fd, rg, git.
 import { describe, expect, it } from 'vitest'
 import { detectUnboundedWalk, type WalkContext } from '../src/unbounded_walk.js'
 

@@ -293,7 +293,8 @@ function isRoot(text: string, glob = false, winOptions = false): boolean {
 
 const hasDotSegment = (text: string): boolean => /(^|[\\/])\.\.?([\\/]|$)/.test(text)
 
-const HOME_PREFIX = String.raw`~[A-Za-z0-9_.-]*|\$\{?HOME\}?|\$(?:env:)?(?:USERPROFILE|HOME)|%USERPROFILE%|[A-Za-z]:`
+const HOME_PREFIX =
+  String.raw`~[A-Za-z0-9_.-]*|~[+]|\$\{?HOME\}?|\$(?:env:)?(?:USERPROFILE|HOME)|%USERPROFILE%|[A-Za-z]:`
 const DOTTED_PATH = new RegExp(String.raw`^(?:(/)(.*)|(${HOME_PREFIX})(?:[\\/](.*))?)$`, 'i')
 
 /** A path naming a root once `.` and `..` are resolved (`/.`, `/usr/..`, `~/..`); `..` above home counts. */
@@ -312,10 +313,21 @@ function isRootAfterDots(text: string, glob: boolean): boolean {
 }
 
 function isRootSpelling(text: string, glob: boolean): boolean {
-  if (/^\/+\*?$/.test(text) || /^\/[A-Za-z]\/*$/.test(text) || /^\/(mnt|cygdrive)\/+[A-Za-z]\/*$/i.test(text)) return true
+  if (/^\/+\*?$/.test(text) || /^\/[A-Za-z]\/*$/.test(text)) return true
+  if (/^\/(mnt|cygdrive)\/+[A-Za-z]\/*$/i.test(text)) return true
   // `/mnt` and `/cygdrive` hold every drive; a UNC share and `//?/C:/` name a volume; `C:.` is a drive dir.
   if (/^\/(mnt|cygdrive)\/*$/i.test(text) || /^[\\/]{2}[?.][\\/]+[A-Za-z]:[\\/]*$/.test(text)) return true
-  if (/^[\\/]{2}[^\\/?.][^\\/]*[\\/]+[^\\/]+[\\/]*$/.test(text) || /^[A-Za-z]:(\.{1,2})?[\\/]*$/.test(text)) return true
+  if (/^[\\/]{2}[^\\/?.][^\\/]*[\\/]+[^\\/]+[\\/]*$/.test(text) || /^[A-Za-z]:(\.{1,2})?[\\/]*$/.test(text)) {
+    return true
+  }
+  // `/proc/<pid>/root` is the root itself, `//?/UNC/host/share` a share, `/mnt/wsl` and `/Volumes` mounts.
+  if (/^\/proc\/+(self|thread-self|[0-9]+)\/+root\/*$/i.test(text)) return true
+  if (/^\/mnt\/+wsl\/*$/i.test(text)) return true
+  if (/^\/Volumes(\/+[^/]+)?\/*$/i.test(text)) return true
+  return /^[\\/]{2}[?.][\\/]+UNC[\\/]+[^\\/]+[\\/]+[^\\/]+[\\/]*$/i.test(text) || isHomeOrGlobRoot(text, glob)
+}
+
+function isHomeOrGlobRoot(text: string, glob: boolean): boolean {
   // `~` is home and `~name` is that user's home, which the shell expands before the tool sees it.
   if (/^~[A-Za-z0-9_.-]*[\\/]*$/.test(text) || /^\$\{?HOME\}?[\\/]*$/.test(text)) return true
   if (/^\$(env:)?(USERPROFILE|HOME)[\\/]*$/i.test(text) || /^%USERPROFILE%[\\/]*$/i.test(text)) return true
@@ -477,11 +489,36 @@ function inspectRg(args: readonly Word[]): WalkRefusal | null {
   return anyRoot(patternGiven ? pos : pos.slice(1)) ? refuse('rg') : null
 }
 
+/** GNU getopt takes any unique prefix of a long option; a word of `min` or more characters that is one. */
+const abbreviates = (word: string, full: string, min: number): boolean => {
+  const name = word.includes('=') ? word.slice(0, word.indexOf('=')) : word
+  return name.length >= min && full.startsWith(name)
+}
+
+/** The `-d` / `--directories` action `recurse`, or any abbreviation of it, which GNU grep accepts. */
+const RECURSE_ACTION = /^r(e(c(u(r(se?)?)?)?)?)?$/
+
+/** Whether GNU grep recurses: `-r`, `-R`, an abbreviated `--recursive`, or `-d recurse` in any spelling. */
+function grepRecurses(t: readonly string[]): boolean {
+  return t.some((x, i) => {
+    if (x === '--recursive' || x === '--dereference-recursive' || clusterHas(x, 'rR')) return true
+    if (abbreviates(x, '--recursive', 3) || abbreviates(x, '--dereference-recursive', 4)) return true
+    const next = t[i + 1] ?? ''
+    if (abbreviates(x, '--directories', 3)) {
+      return RECURSE_ACTION.test(x.includes('=') ? x.slice(x.indexOf('=') + 1) : next)
+    }
+    const dAt = x.startsWith('-') && !x.startsWith('--') ? x.indexOf('d') : -1
+    if (dAt < 1) return false
+    const attached = x.slice(dAt + 1).replace(/^=/, '')
+    return RECURSE_ACTION.test(attached === '' ? next : attached)
+  })
+}
+
 function inspectGrep(args: readonly Word[]): WalkRefusal | null {
   const t = texts(args)
-  const recursive = t.some((x) => x === '--recursive' || x === '--dereference-recursive' || clusterHas(x, 'rR'))
-  if (!recursive) return null
-  const patternGiven = t.some((x) => x === '-e' || x === '--regexp' || x === '-f' || x === '--file' || /^--(regexp|file)=/.test(x) || /^-[A-Za-z]*[ef]$/.test(x))
+  if (!grepRecurses(t)) return null
+  const patternGiven = t.some((x) => x === '-e' || x === '-f' || /^-[A-Za-z]*[ef]$/.test(x)
+    || abbreviates(x, '--regexp', 4) || abbreviates(x, '--file', 4))
   const pos = positionals(args, GREP_VALUED)
   return anyRoot(patternGiven ? pos : pos.slice(1)) ? refuse('grep') : null
 }
@@ -502,7 +539,8 @@ function inspectListing(name: string, args: readonly Word[], ctx: WalkContext): 
   const t = texts(args)
   const psFlavor = name === 'gci' || name === 'get-childitem' || (ctx.powershell && (name === 'ls' || name === 'dir'))
   const psRecurse = psFlavor && t.some((x) => /^-r(e(c(u(r(se?)?)?)?)?)?(:.*)?$/i.test(x))
-  const posixRecurse = (name === 'ls' || name === 'dir') && t.some((x) => x === '--recursive' || clusterHas(x, 'R'))
+  const posixRecurse = (name === 'ls' || name === 'dir')
+    && t.some((x) => abbreviates(x, '--recursive', 3) || clusterHas(x, 'R'))
   const cmdRecurse = name === 'dir' && ctx.windows && t.some((x) => /^\/s$/i.test(x))
   if (!psRecurse && !posixRecurse && !cmdRecurse) return null
   if (psRecurse && t.some((x) => /^-de(p(t(h)?)?)?(:.*)?$/i.test(x))) return null
@@ -568,10 +606,18 @@ interface ListerSpec {
 }
 
 const LISTERS: ReadonlyMap<string, ListerSpec> = new Map<string, ListerSpec>([
-  ['fd', { bare: ['-0', '-H'], valued: new Map([['-e', NAME_VALUE], ['-t', TYPE_LETTER], ['-d', DIGITS]]), dot: true }],
+  ['fd', {
+    bare: ['-0', '-H'],
+    valued: new Map([['-e', NAME_VALUE], ['-t', TYPE_LETTER], ['-d', DIGITS]]),
+    dot: true,
+  }],
   ['rg', { bare: ['--files', '-0'], valued: new Map([['--max-depth', DIGITS]]), dot: true }],
-  ['find', { bare: ['-print', '-print0'], valued: new Map([['-maxdepth', DIGITS], ['-type', TYPE_LETTER], ['-name', NAME_VALUE]]), dot: true }],
-  ['ls', { bare: ['-1', '-a', '-A', '-d'], valued: new Map(), dot: true }],
+  ['find', {
+    bare: ['-print', '-print0'],
+    valued: new Map([['-maxdepth', DIGITS], ['-type', TYPE_LETTER], ['-name', NAME_VALUE]]),
+    dot: true,
+  }],
+  ['ls', { bare: ['-1', '-A', '-d'], valued: new Map(), dot: true }],
   ['echo', { bare: [], valued: new Map(), dot: false }],
 ])
 
@@ -607,7 +653,9 @@ function isBoundedLister(left: Segment): boolean {
     case 'git': {
       if (args[0]?.text === 'ls-files') return args.slice(1).every((w) => GIT_LS_FILES_FLAGS.includes(w.text))
       if (args[0]?.text !== 'diff' || !args.some((w) => w.text === '--name-only')) return false
-      return args.slice(1).every((w) => GIT_DIFF_FLAGS.includes(w.text) || (!w.text.startsWith('-') && GIT_REVISION.test(w.text)))
+      return args.slice(1).every(
+        (w) => GIT_DIFF_FLAGS.includes(w.text) || (!w.text.startsWith('-') && GIT_REVISION.test(w.text)),
+      )
     }
     case 'printf': {
       const format = args[0]?.text
@@ -636,73 +684,155 @@ function xargsCommand(args: readonly Word[]): readonly Word[] | null {
   return args.slice(i)
 }
 
-const XARGS_WALKER_NAMES = new Set(['find', 'fd', 'fdfind', 'du', 'tree', 'ls', 'dir', 'gci', 'get-childitem', 'findstr', 'rg', 'grep', 'egrep', 'fgrep'])
+/** The command names the direct-form guard (`inspectWalker`) treats as a walker, plus `vdir`. */
+const WALKER_NAMES = [
+  'find', 'fd', 'fdfind', 'du', 'tree', 'ls', 'dir', 'vdir', 'gci', 'get-childitem', 'findstr',
+  'rg', 'grep', 'egrep', 'fgrep',
+]
+/** Shells and wrappers that run another command, so a walker can hide behind them, whatever the script says. */
+const WRAPPER_NAMES = [
+  'sh', 'ash', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish', 'pwsh', 'powershell', 'cmd', 'env',
+  'nice', 'time', 'command', 'busybox', 'sudo', 'doas', 'nohup', 'timeout', 'xargs', 'eval', 'exec',
+  'builtin', 'setsid', 'stdbuf', 'ionice', 'wsl', 'call',
+]
+const WALKER_FAMILY: ReadonlySet<string> = new Set([...WALKER_NAMES, ...WRAPPER_NAMES])
 const XARGS_SHELL_NAMES = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'eval', 'cmd', 'powershell', 'pwsh'])
-const XARGS_SEARCHERS = /^(rg|[ef]?grep)$/
+/** An xargs option that reads the list from a file: `-a`, `-a<file>`, a cluster with it, or any `--a...`. */
+const XARGS_FILE_OPTION = /^(-[A-Za-z0-9]*a|-a.*|--a.*)$/
+const PLAIN_COMMAND = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/
+const PLAIN_COMMAND_DIR = /^[A-Za-z0-9_.+/:~-]*$/
 
-/** Whether a walker among the xargs words would walk a root on stdin; each is tried as the command. */
-// A `find` and an `rg` always count: an own start path is no proof, since stdin words may add start paths.
-function xargsStdinWalks(args: readonly Word[], seg: Segment, ctx: WalkContext, command: readonly Word[] | null): boolean {
-  // A valid option list names the command, so `grep find` is a grep; otherwise every word is tried.
-  const only = command !== null && XARGS_SEARCHERS.test(commandName(command[0]?.text ?? '').name)
+/** Class C only: whether a walker word among the xargs words would walk a root on stdin; each is tried. */
+function xargsStdinWalks(args: readonly Word[], seg: Segment, ctx: WalkContext): boolean {
   for (let j = 0; j < args.length; j++) {
-    if (only && args[j] !== command?.[0]) continue
     const { name } = commandName(args[j]!.text)
     const own = args.slice(j + 1)
-    if (XARGS_SHELL_NAMES.has(name) && WALKER_WORD.test(own.map((w) => w.text).join(' ').replace(/[\\'"]/g, ''))) return true
-    if (!XARGS_WALKER_NAMES.has(name)) continue
+    const script = own.map((w) => w.text).join(' ').replace(/[\\'"]/g, '')
+    if (XARGS_SHELL_NAMES.has(name) && WALKER_WORD.test(script)) return true
+    if (!WALKER_NAMES.includes(name)) continue
+    // A `find` and an `rg` always count: an own start path is no proof, stdin words may add start paths.
     if (name === 'find' || name === 'rg') return true
-    if (inspectWalker(name, '', [...own, STDIN_ROOT], seg, ctx, false) !== null) return true
+    if (inspectWalker(name, '', [...own, STDIN_ROOT, STDIN_ROOT], seg, ctx, false) !== null) return true
   }
   return false
 }
 
-/** What a walker may carry under xargs: exact flags, valued flags, a cluster pattern, pattern word count. */
+/** What a walker may carry under xargs behind a proven lister: exact flags, valued flags, cluster letters. */
 interface WalkerSpec {
   readonly bare: readonly string[]
   readonly valued: ReadonlyMap<string, RegExp>
-  /** Any flag of this shape is allowed (not a value-taking one). */
-  readonly flags: RegExp | null
+  /** A short cluster (`-rn`) is allowed when every letter is one of these. */
+  readonly letters: string
   /** Pattern words allowed when no `--files` or `-e` already gives the pattern. */
   readonly words: number
 }
 
-const OPEN_FLAGS = /^(-[A-Za-z0-9]+|--[a-z][a-z0-9-]*)$/
 const PATTERN_WORD = /^[A-Za-z0-9_.+][A-Za-z0-9_. +-]*$/
-const CONTEXT_FLAGS: ReadonlyArray<readonly [string, RegExp]> = [['-m', DIGITS], ['-A', DIGITS], ['-B', DIGITS], ['-C', DIGITS], ['-e', PATTERN_WORD]]
+const CONTEXT_FLAGS: ReadonlyArray<readonly [string, RegExp]> = [
+  ['-m', DIGITS], ['-A', DIGITS], ['-B', DIGITS], ['-C', DIGITS], ['-e', PATTERN_WORD],
+]
+const GREP_SPEC: WalkerSpec = {
+  bare: ['--recursive'], valued: new Map(CONTEXT_FLAGS), letters: 'rRnilwFvcHhIEsq', words: 1,
+}
 
-const XARGS_WALKER_FLAGS: ReadonlyMap<string, WalkerSpec> = new Map<string, WalkerSpec>([
-  ['find', { bare: ['-print', '-print0', '-empty'], valued: new Map([['-maxdepth', DIGITS], ['-mindepth', DIGITS], ['-type', TYPE_LETTER], ['-name', NAME_VALUE], ['-iname', NAME_VALUE]]), flags: null, words: 0 }],
-  ['du', { bare: [], valued: new Map([['-d', DIGITS], ['--max-depth', DIGITS], ['-B', PLAIN_VALUE], ['--block-size', PLAIN_VALUE], ['-t', PLAIN_VALUE], ['--threshold', PLAIN_VALUE]]), flags: OPEN_FLAGS, words: 0 }],
-  ['tree', { bare: [], valued: new Map([['-L', DIGITS], ['--filelimit', DIGITS]]), flags: OPEN_FLAGS, words: 0 }],
-  ['ls', { bare: [], valued: new Map(), flags: OPEN_FLAGS, words: 0 }],
-  ['rg', { bare: ['--files', '-0', '--no-heading'], valued: new Map([...CONTEXT_FLAGS, ['--max-depth', DIGITS], ['-t', NAME_VALUE]]), flags: /^-[lniwFcHIsSvq]+$/, words: 1 }],
-  ['grep', { bare: ['-r', '-R', '--recursive'], valued: new Map(CONTEXT_FLAGS), flags: /^-[rRnilwFvcHhIEsq]+$/, words: 1 }],
+const XARGS_WALKERS: ReadonlyMap<string, WalkerSpec> = new Map<string, WalkerSpec>([
+  ['find', {
+    bare: ['-print', '-print0', '-empty'],
+    valued: new Map([
+      ['-maxdepth', DIGITS], ['-mindepth', DIGITS], ['-type', TYPE_LETTER], ['-name', NAME_VALUE],
+      ['-iname', NAME_VALUE],
+    ]),
+    letters: '',
+    words: 0,
+  }],
+  ['du', {
+    bare: ['--summarize', '--human-readable', '--total', '--all', '--apparent-size', '--si', '--bytes'],
+    valued: new Map([
+      ['-d', DIGITS], ['--max-depth', DIGITS], ['-B', PLAIN_VALUE], ['--block-size', PLAIN_VALUE],
+      ['-t', PLAIN_VALUE], ['--threshold', PLAIN_VALUE],
+    ]),
+    letters: 'shcakmbxS0',
+    words: 0,
+  }],
+  ['tree', {
+    bare: ['--noreport', '--dirsfirst'],
+    valued: new Map([['-L', DIGITS], ['--filelimit', DIGITS]]),
+    letters: 'adfipsughDFQrtvxnC',
+    words: 0,
+  }],
+  ['ls', {
+    bare: ['--all', '--almost-all', '--human-readable', '--directory', '--recursive'],
+    valued: new Map(),
+    letters: 'laA1dhtSFRrsin',
+    words: 0,
+  }],
+  ['rg', {
+    bare: ['--files', '-0', '--no-heading'],
+    valued: new Map([...CONTEXT_FLAGS, ['--max-depth', DIGITS], ['-t', NAME_VALUE]]),
+    letters: 'lniwFcHIsSvq',
+    words: 1,
+  }],
+  ['grep', GREP_SPEC],
+  ['egrep', GREP_SPEC],
+  ['fgrep', GREP_SPEC],
 ])
-const LIST_FROM_FILE = new Set(['--files0-from', '--fromfile'])
 
-/** Rule 4: the command is a bare walker name with flags (and their values) only: no path, no placeholder. */
-function walkerWithFlagsOnly(command: readonly Word[]): boolean {
-  const spec = XARGS_WALKER_FLAGS.get(command[0]?.text ?? '')
-  if (spec === undefined) return false
+/** Whether a short cluster (`-rn`) is made only of the given single letters. */
+const clusterOf = (t: string, letters: string): boolean =>
+  /^-[A-Za-z0-9]+$/.test(t) && [...t.slice(1)].every((c) => letters.includes(c))
+
+/** Rule 4: a bare walker name with exact flags (and their values) only: no path, no placeholder. */
+function walkerWithFlagsOnly(command: readonly Word[], spec: WalkerSpec): boolean {
   let words = 0
   let patternGiven = false
   for (let i = 1; i < command.length; i++) {
     const t = command[i]!.text
-    const value = spec.valued.get(t)
+    const eq = t.startsWith('--') ? t.indexOf('=') : -1
+    const key = eq > 0 ? t.slice(0, eq) : t
+    const value = spec.valued.get(key)
     if (value !== undefined) {
-      const v = command[++i]?.text
+      const v = eq > 0 ? t.slice(eq + 1) : command[++i]?.text
       if (v === undefined || !value.test(v)) return false
-      if (t === '-e') patternGiven = true
+      if (key === '-e') patternGiven = true
     } else if (spec.bare.includes(t)) patternGiven ||= t === '--files'
     else if (t.startsWith('-')) {
-      if (spec.flags === null || LIST_FROM_FILE.has(t) || !spec.flags.test(t)) return false
+      if (!clusterOf(t, spec.letters)) return false
     } else if (!PATTERN_WORD.test(t) || ++words > spec.words) return false
   }
   return !(patternGiven && words > 0)
 }
 
-/** `xargs <command>`: checked as written, then a walker is allowed only under the five default-deny rules. */
+const GREP_SAFE_LETTERS = 'nilcHhvwEFqso'
+const LS_SAFE_LETTERS = 'laA1dhtSF'
+
+/** The two walker-family commands that stay allowed with an unproven lister, since neither can recurse. */
+function nonRecursiveUnderUnprovenLister(command: readonly Word[]): boolean {
+  const name = command[0]!.text
+  if (name === 'ls') return command.slice(1).every((w) => clusterOf(w.text, LS_SAFE_LETTERS))
+  if (name !== 'grep' && name !== 'egrep' && name !== 'fgrep') return false
+  let words = 0
+  let patternGiven = false
+  for (let i = 1; i < command.length; i++) {
+    const t = command[i]!.text
+    if (t === '-e') {
+      const v = command[++i]?.text
+      if (v === undefined || !PATTERN_WORD.test(v) || patternGiven) return false
+      patternGiven = true
+    } else if (t.startsWith('-')) {
+      if (!clusterOf(t, GREP_SAFE_LETTERS)) return false
+    } else if (!PATTERN_WORD.test(t) || ++words > 1) return false
+  }
+  return patternGiven ? words === 0 : words === 1
+}
+
+/** Rules 1, 2 and 5: stdin is one plain bounded lister of this group, the shell is not at a root, no `<`. */
+function listerProven(seg: Segment, prev: Segment | undefined, fromRoot: boolean): boolean {
+  if (!seg.pipedIn || fromRoot || seg.redirectedIn) return false
+  if (prev === undefined || prev.group !== seg.group) return false
+  return !seg.words.some((w) => !w.quoted && /</.test(w.text)) && isBoundedLister(prev)
+}
+
+/** `xargs <command>`: A obscured or unknown word, B walker family, C any other plain word; see Ruling 50. */
 function inspectXargs(
   args: readonly Word[],
   seg: Segment,
@@ -720,19 +850,32 @@ function inspectXargs(
     i += XARGS_VALUED.test(args[i]!.text) ? 2 : 1
   }
   const rest = args.slice(i)
-  if (rest.length === 0) return null
+  // No command word: a bare `xargs` runs echo, but the scanner also splits a backtick command off its segment.
+  if (rest.length === 0) return listerProven(seg, prev, fromRoot) ? null : refuse('xargs')
+  // A list read from a file is not the lister's output, so no lister can vouch for it.
+  if (args.slice(0, i).some((w) => XARGS_FILE_OPTION.test(w.text))) return refuse('xargs')
   const inner: Segment = { ...seg, words: rest, pipedIn: true }
   const hit = inspectSegment(inner, ctx, depth + 1, fromRoot)
   if (hit !== null) return hit
+  const proven = listerProven(seg, prev, fromRoot)
   const command = xargsCommand(args)
-  if (!xargsStdinWalks(args, seg, ctx, command)) return null
-  // Rule 3 and rule 4: the options and the command are written out exactly.
-  if (command === null || !walkerWithFlagsOnly(command)) return refuse('xargs')
-  // Rule 5: nothing reads the list from a file or a here-string.
-  if (seg.redirectedIn || seg.words.some((w) => !w.quoted && /</.test(w.text))) return refuse('xargs')
-  // Rule 1: stdin comes from one plain bounded lister in this group, with the shell not at a root.
-  const left = prev !== undefined && prev.group === seg.group ? prev : undefined
-  return seg.pipedIn && !fromRoot && left !== undefined && isBoundedLister(left) ? null : refuse('xargs')
+  if (command === null || command.length === 0) {
+    // The options do not parse, so the command word is unknown: refuse when any word names the family.
+    if (args.some((w) => WALKER_FAMILY.has(commandName(w.text).name))) return refuse('xargs')
+    return proven ? null : refuse('xargs')
+  }
+  const head = command[0]!
+  const { name, dir } = commandName(head.text)
+  if (WALKER_FAMILY.has(name)) {
+    const spec = head.text === name && !head.quoted ? XARGS_WALKERS.get(name) : undefined
+    if (spec === undefined) return refuse('xargs')
+    return (proven ? walkerWithFlagsOnly(command, spec) : nonRecursiveUnderUnprovenLister(command))
+      ? null
+      : refuse('xargs')
+  }
+  const plain = !head.quoted && PLAIN_COMMAND.test(name) && PLAIN_COMMAND_DIR.test(dir)
+  if (!plain) return proven ? null : refuse('xargs')
+  return xargsStdinWalks(args, seg, ctx) ? refuse('xargs') : null
 }
 
 function inspectSegment(
@@ -800,8 +943,13 @@ function inspectWalker(
   }
 }
 
+/** An xargs stage holding a backtick or `$(`, refused whatever the lister. */
+const XARGS_SUBSTITUTION = /(?:^|[\s;&|(])xargs(?=\s)[^|;&\n]*(?:`|\$\()/
+
 /** The refusal for a command that starts an unbounded walk of a filesystem root or the home directory, in any pipeline stage, chain or subshell, or null when it does not. A `find` with no path or a `.`-relative one is refused after a `cd` to a root or the home directory; `startsAtRoot` carries that state into a nested `bash -c` script. */
 export function detectUnboundedWalk(command: string, ctx: WalkContext, depth = 0, startsAtRoot = false): WalkRefusal | null {
+  // The scanner cuts a segment at a backtick or `$(`, so a substituted xargs command word is only visible here.
+  if (XARGS_SUBSTITUTION.test(command)) return refuse('xargs')
   // Read twice: backslashes literal (Windows path) and as POSIX escapes (`f\ind`); refused if either walks.
   return walkScan(command, ctx, depth, startsAtRoot, false) ?? walkScan(command, ctx, depth, startsAtRoot, true)
 }
