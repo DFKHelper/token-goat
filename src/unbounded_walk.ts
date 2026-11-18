@@ -288,6 +288,30 @@ function withoutRedirects(words: readonly Word[]): Word[] {
 /** True for a filesystem root or the home directory as a start path. A wildcard directly under a drive root (`C:\*.log`) counts when `glob` is set, because `dir /s` and `findstr /s` take it as a search spec. A lone `/x` is a Windows option, not an MSYS drive root, when `winOptions` is set. */
 function isRoot(text: string, glob = false, winOptions = false): boolean {
   if (winOptions && /^\/[A-Za-z]$/.test(text)) return false
+  return isRootSpelling(text, glob) || (hasDotSegment(text) && isRootAfterDots(text, glob))
+}
+
+const hasDotSegment = (text: string): boolean => /(^|[\\/])\.\.?([\\/]|$)/.test(text)
+
+const HOME_PREFIX = String.raw`~|\$\{?HOME\}?|\$(?:env:)?(?:USERPROFILE|HOME)|%USERPROFILE%|[A-Za-z]:`
+const DOTTED_PATH = new RegExp(String.raw`^(?:(/)(.*)|(${HOME_PREFIX})(?:[\\/](.*))?)$`, 'i')
+
+/** A path naming a root once `.` and `..` are resolved (`/.`, `/usr/..`, `~/..`); `..` above home counts. */
+function isRootAfterDots(text: string, glob: boolean): boolean {
+  const m = DOTTED_PATH.exec(text)
+  if (m === null) return false
+  const prefix = m[1] ?? m[3]!
+  const kept: string[] = []
+  for (const part of (m[2] ?? m[4] ?? '').split(/[\\/]+/)) {
+    if (part === '' || part === '.') continue
+    if (part !== '..') kept.push(part)
+    else if (kept.length > 0) kept.pop()
+    else if (prefix !== '/' && !/^[A-Za-z]:$/.test(prefix)) return true
+  }
+  return isRootSpelling(prefix === '/' ? '/' + kept.join('/') : prefix + '/' + kept.join('/'), glob)
+}
+
+function isRootSpelling(text: string, glob: boolean): boolean {
   if (/^\/+\*?$/.test(text) || /^\/[A-Za-z]\/*$/.test(text) || /^\/mnt\/[A-Za-z]\/*$/i.test(text)) return true
   if (/^[A-Za-z]:[\\/]*$/.test(text)) return true
   if (/^~[\\/]*$/.test(text) || /^\$\{?HOME\}?[\\/]*$/.test(text)) return true
@@ -522,7 +546,7 @@ function atNestingLimit(script: string): WalkRefusal | null {
   return /[$`]/.test(script) || WALKER_WORD.test(script.replace(/[\\'"]/g, '')) ? refuse('nesting') : null
 }
 
-const XARGS_VALUED = /^(-[aIdELnPs]|--(arg-file|delimiter|max-args|max-procs))$/
+const XARGS_VALUED = /^(-[A-Za-z0-9]*[aIdELnPs]|--(arg-file|delimiter|max-args|max-procs))$/
 const STDIN_ROOT: Word = { text: '/', quoted: false }
 
 const GIT_LISTERS = new Set(['ls-files', 'diff'])
@@ -535,8 +559,13 @@ function isBoundedLister(seg: Segment, ctx: WalkContext, depth: number): boolean
   const { name } = commandName(head.text)
   const args = seg.words.slice(at + 1)
   if (args.some((w) => /[$`*?[{]/.test(w.text)) || head.text.includes('$')) return false
+  // A lister that names a root, or runs under a git environment variable, can print the paths of a root.
+  if (anyRoot(args) || seg.words.slice(0, at).some((w) => /^GIT_\w*=/i.test(w.text))) return false
   if (name === 'echo' || name === 'printf') {
-    const words = args.flatMap((w) => w.text.split(/\\[nt0]|\s+/))
+    // An escape other than \n and \t, or a printf conversion, can build a root the text does not show.
+    // An escape other than \n and \t, or a printf conversion, can build a root the text does not show.
+    if (args.some((w) => /\\(?![nt])/.test(w.text) || (name === 'printf' && w.text.includes('%')))) return false
+    const words = args.flatMap((w) => w.text.split(/\\[nt]|\s+/))
     const tokens = words.filter((t) => t !== '' && !t.startsWith('-'))
     return !tokens.some((t) => isRoot(t))
   }
@@ -553,7 +582,7 @@ function isBoundedLister(seg: Segment, ctx: WalkContext, depth: number): boolean
 }
 
 /** True when `xargs` reads its list from a file (`-a FILE`, `--arg-file`), not standard input. */
-const ARG_FILE = /^(-a|--arg-file(=.*)?)$/
+const ARG_FILE = /^(?:-[A-Za-z0-9]*a|--arg-file(?:=|$))/
 const readsArgFile = (args: readonly Word[]): boolean => args.some((w) => ARG_FILE.test(w.text))
 
 /** `xargs <command>`: checked as written, then with a root on stdin unless a bounded lister feeds it. */
@@ -586,11 +615,14 @@ function inspectXargs(
   const hasOwnStart = name === 'find'
     ? own[0] !== undefined && !/^(-|!|\\?\()/.test(own[0].text)
     : own.some((w) => !w.text.startsWith('-'))
-  if (hasOwnStart) return null
   const walkArgs = name === 'find' ? [STDIN_ROOT, ...own] : [...own, STDIN_ROOT]
-  if (inspectWalker(name, '', walkArgs, seg, ctx, false) === null) return null
+  const stdinWalks = inspectWalker(name, '', walkArgs, seg, ctx, false) !== null
+  // `-a FILE` reads a list nobody inspected, so a walker fed that way is refused with or without a lister.
+  const listFile = readsArgFile(args.slice(0, i))
+  if (listFile && stdinWalks) return refuse('xargs')
+  if (hasOwnStart || !stdinWalks) return null
   // Unknown stdin is not safe: only a bounded lister on the left, same group, shell not at a root, lifts it.
-  const piped = seg.pipedIn && !seg.redirectedIn && !readsArgFile(args.slice(0, i))
+  const piped = seg.pipedIn && !seg.redirectedIn && !listFile
   const left = prev !== undefined && prev.group === seg.group ? prev : undefined
   return piped && !fromRoot && left !== undefined && isBoundedLister(left, ctx, depth) ? null : refuse('xargs')
 }

@@ -480,6 +480,12 @@ describe('detectUnboundedWalk -- xargs fed by a bounded lister or by an unknown 
     ['printf "a\\nb\\n" | xargs ls -R'],
     ['git ls-files | xargs du -ah'],
     ['git ls-files | xargs -n1 du -h'],
+    ['git ls-files | xargs -0n 1 du'],
+    ['git ls-files | xargs -P4 -I{} du {}'],
+    ['find . -maxdepth 1 | xargs du'],
+    ["printf 'a\\nb\\n' | xargs du"],
+    ['du /usr/../home/proj'],
+    ['du ./src/..'],
   ])('lets %s through', (command) => {
     expect(form(command, POSIX)).toBeNull()
     expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
@@ -509,6 +515,58 @@ describe('detectUnboundedWalk -- xargs fed by a bounded lister or by an unknown 
     ['git diff | xargs du -h', 'xargs'],
     ['git ls-files; xargs du -h', 'xargs'],
     ['git ls-files | grep x | xargs du -h', 'xargs'],
+    // a lister that names a root prints root paths whatever depth flag it carries
+    ['ls -d / | xargs du', 'xargs'],
+    ['ls -d ~ | xargs du', 'xargs'],
+    ['ls -d C:/ | xargs tree', 'xargs'],
+    ['ls / | xargs du', 'xargs'],
+    ['ls ~ | xargs du -h', 'xargs'],
+    ['find src / -maxdepth 1 | xargs du', 'xargs'],
+    ['find /usr/.. -maxdepth 1 | xargs du', 'xargs'],
+    ['fd -d1 . / | xargs du', 'xargs'],
+    ['rg --files --max-depth 1 / | xargs du', 'xargs'],
+    ['fd . / | xargs du', 'fd'],
+    ['rg --files / | xargs du', 'rg'],
+    // text that builds a root through an escape or a conversion
+    ["printf '\\057' | xargs du", 'xargs'],
+    ["echo -e '\\x2f' | xargs du", 'xargs'],
+    ["printf '\\x2f\\n' | xargs du", 'xargs'],
+    ["printf '%.0s/' x | xargs du", 'xargs'],
+    // xargs reading its list from a file, in every spelling
+    ['git ls-files | xargs -arootlist du', 'xargs'],
+    ['git ls-files | xargs -0a rootlist du', 'xargs'],
+    ['git ls-files | xargs --arg-file rootlist du', 'xargs'],
+    ['xargs -0a rootlist du', 'xargs'],
+    ['xargs -arootlist du', 'xargs'],
+    ['xargs --arg-file=rootlist tree', 'xargs'],
+    // a list of root spellings and a git environment that points elsewhere
+    ['echo /. | xargs du', 'xargs'],
+    ['echo /.. | xargs du', 'xargs'],
+    ['echo // | xargs du', 'xargs'],
+    ['echo /./ | xargs du', 'xargs'],
+    ['echo ~/. | xargs du', 'xargs'],
+    ['echo ~/.. | xargs du', 'xargs'],
+    ['GIT_WORK_TREE=/ GIT_DIR=x git ls-files -o | xargs du', 'xargs'],
+    ['env GIT_DIR=x git ls-files | xargs du', 'xargs'],
+    ['git -C / ls-files | xargs du', 'xargs'],
+    ['git --work-tree=/ ls-files | xargs du', 'xargs'],
+    // other left sides that are not a plain bounded lister
+    ['(echo /; git ls-files) | xargs du', 'xargs'],
+    ['{ echo /; git ls-files; } | xargs du', 'xargs'],
+    ['{ git ls-files; } | xargs du', 'xargs'],
+    ['git ls-files | (xargs du)', 'xargs'],
+    ["git ls-files | sed 's|.*|/|' | xargs du", 'xargs'],
+    ["git ls-files | awk '{print \"/\"}' | xargs du", 'xargs'],
+    ['git ls-files | xargs dirname | xargs du', 'xargs'],
+    ['git ls-files | cat - rootlist | xargs du', 'xargs'],
+    ['git ls-files |& xargs du', 'xargs'],
+    ['git ls-files | xargs du < rootlist', 'xargs'],
+    ['git ls-files | xargs du <<< /', 'du'],
+    // a start path that is a root once its dot segments are resolved
+    ['du /.', 'du'],
+    ['du /usr/..', 'du'],
+    ['du ~/proj/..', 'du'],
+    ['find /. -name x', 'find'],
   ])('refuses %s', (command, expected) => {
     expect(form(command, POSIX)).toBe(expected)
     expect(form(command, GIT_BASH_ON_WINDOWS)).toBe(expected)
