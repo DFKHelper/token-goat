@@ -3,7 +3,7 @@ import { loadConfig } from './config.js'
 import { fenceUntrustedContent, scanForInjectionPatterns, UNTRUSTED_FILE_TAG } from './injection_scan.js'
 import type { FenceSpan } from './injection_scan.js'
 import { displaySafeText } from './paths.js'
-import { redactSecrets } from './secret_redact.js'
+import { redactOrWithhold } from './redact_or_withhold.js'
 import { recordStat } from './stats.js'
 
 /** Whether the injection subsystem is on. False only when the user set `injection.enabled=false`. */
@@ -52,7 +52,7 @@ export function scanAndRecord(text: string): string[] {
 
 /** Text from a file the user named rather than wrote (a document, a spreadsheet, an archive member, a database row), redacted and then fenced under the file tag. A path given on the command line says where the bytes are, not who wrote them. */
 export function fenceFileText(text: string): string {
-  return fenceUntrusted(redactSecrets(text).text, UNTRUSTED_FILE_TAG)
+  return fenceUntrusted(redactOrWithhold(text, false), UNTRUSTED_FILE_TAG)
 }
 
 /** `text` fenced under `tag` when the scan flags it, else `text` as given: the per-field gate a `--json` envelope uses, since a fence around a whole envelope would stop it being JSON. The caller redacts first when its text was not redacted upstream. */
@@ -64,7 +64,7 @@ export function fenceIfScanMatched(text: string, tag: string): string {
 
 /** One string of a `--json` envelope from a source the user named rather than wrote: redacted, then fenced under `tag` only when the scan flags it, and escaped for display when it does not. */
 export function fenceFieldIfMatched(text: string, tag: string): string {
-  const redacted = redactSecrets(text).text
+  const redacted = redactOrWithhold(text, false)
   const fenced = fenceIfScanMatched(redacted, tag)
   return fenced === redacted ? displaySafeText(redacted) : fenced
 }

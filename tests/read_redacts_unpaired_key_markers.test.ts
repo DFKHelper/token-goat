@@ -1,4 +1,4 @@
-/** Read-path redaction of a private key block whose BEGIN or END marker is missing from the text a read prints. Fixture provenance: HAND-DERIVED, the body lines are `VAULTBODY` plus a run of `A`, never a real key. */
+/** Read-path redaction of a key block with no BEGIN or END marker. Fixture provenance: HAND-DERIVED. */
 import { describe, expect, it } from 'vitest'
 
 import { guardRedactAndFence, redactReadJson, redactReadLines, redactReadText } from '../src/fence_cap.js'

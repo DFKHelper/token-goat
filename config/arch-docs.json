@@ -387,6 +387,7 @@
     ["src/search/rrf.ts","Specialized Subsystems"],
     ["src/search/search_cli.ts","Specialized Subsystems"],
     ["src/search/symbol_fts.ts","Specialized Subsystems"],
+    ["src/redact_or_withhold.ts","Specialized Subsystems"],
     ["src/secret_file_names.ts","Specialized Subsystems"],
     ["src/secret_redact.ts","Specialized Subsystems"],
     ["src/served_extent.ts","Specialized Subsystems"],

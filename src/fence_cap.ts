@@ -3,7 +3,7 @@ import { scanForInjectionPatterns, UNTRUSTED_FILE_TAG } from './injection_scan.j
 import { estimateTokens, trimToBudget } from './overflow_guard.js'
 import { GUARD_UNITS_PER_TOKEN, guardUnits } from './token_estimate.js'
 import { displaySafeJson } from './paths.js'
-import { redactCutSecrets } from './secret_redact.js'
+import { redactOrWithhold, WITHHELD_PLACEHOLDER } from './redact_or_withhold.js'
 import { fenceUntrusted, fenceWithMatches } from './untrusted_fence.js'
 
 /** {@link guardText}, then a fence under `tag` around what the cap kept, with the cap's marker below the closing tag. The cap keeps leading lines only, so fencing first lets it cut the closing tag off and leaves token-goat's marker inside the fence. */
@@ -44,18 +44,7 @@ export function guardRedactAndFence(text: string, command: string, tag: string):
   return guardThenFence(redactOrWithhold(text, false), command, tag)
 }
 
-/** What a read prints in place of text whose redaction threw: the text is withheld whole, never returned raw, so a redactor that fails (a bad custom pattern, a regex engine error) cannot become a way to print a secret. */
-export const WITHHELD_PLACEHOLDER = '[REDACTED:withheld]'
-
-/** {@link redactCutSecrets} for text a read command prints, so a private-key block cut by the window (a BEGIN with no END, an END with no BEGIN, body lines alone) is hidden as well as a whole one. Never throws: on any failure it returns {@link WITHHELD_PLACEHOLDER}, which a hook caller reads as text it must not show, so it answers with nothing to add rather than failing the tool call. */
-function redactOrWithhold(text: string, keepLineCount: boolean): string {
-  try {
-    const redacted = redactCutSecrets(text, loadConfig(), { keepLineCount }).text
-    return typeof redacted === 'string' ? redacted : WITHHELD_PLACEHOLDER
-  } catch {
-    return WITHHELD_PLACEHOLDER
-  }
-}
+export { WITHHELD_PLACEHOLDER }
 
 /** The text of an indexed file a read command is about to print, with secret-shaped values replaced and every line break kept, so the `-n` numbering and line ranges a reader quotes still point at the same lines. The index stores file text whole and answers from any project, so a stored body is as unvetted as the file it was cut from. */
 export function redactReadText(text: string): string {

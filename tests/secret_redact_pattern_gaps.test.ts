@@ -1,4 +1,4 @@
-/** Redaction of a quoted value with spaces, the keywords `token`, `auth_token`, `private_key` and `credential`, and the token shapes ASIA, glpat-, hf_, SG. and xoxe. Fixture provenance: HAND-DERIVED, every vendor-prefixed value is joined at run time from fragments so no realistic token shape sits in the file. */
+/** Redaction of quoted values, more key keywords and more token shapes. Fixture provenance: HAND-DERIVED. */
 import { describe, expect, it } from 'vitest'
 
 import { redactSecrets } from '../src/secret_redact.js'
@@ -88,7 +88,8 @@ describe('the keywords token, auth_token, private_key and credential', () => {
 })
 
 describe('the new token shapes', () => {
-  const tail = (n: number, alphabet = 'AB12CD34EF56GH78IJ90KL'): string => alphabet.repeat(Math.ceil(n / alphabet.length)).slice(0, n)
+  const tail = (n: number, alphabet = 'AB12CD34EF56GH78IJ90KL'): string =>
+    alphabet.repeat(Math.ceil(n / alphabet.length)).slice(0, n)
   const lower = (n: number): string => tail(n, 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7')
 
   it('redacts an ASIA temporary access key id and leaves a near miss', () => {

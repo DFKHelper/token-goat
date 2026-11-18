@@ -1,4 +1,4 @@
-/** A redactor that throws must withhold the text it was given, and a hook that meets the throw must still answer with valid JSON. The redactor is replaced by one that throws on every call, so the only way the marker text below reaches an output is through a path that skips redaction. */
+/** A redactor that throws must withhold its text, and a hook that meets it must still answer valid JSON. */
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -15,7 +15,13 @@ vi.mock('../src/secret_redact.js', async (importOriginal) => {
   return { ...actual, redactSecrets: fail, redactCutSecrets: fail, redactSerializedJson: fail }
 })
 
-import { guardRedactAndFence, redactReadJson, redactReadLines, redactReadText, WITHHELD_PLACEHOLDER } from '../src/fence_cap.js'
+import {
+  guardRedactAndFence,
+  redactReadJson,
+  redactReadLines,
+  redactReadText,
+  WITHHELD_PLACEHOLDER,
+} from '../src/fence_cap.js'
 import { escapeHintName } from '../src/hint_target.js'
 import { relayInProcess } from '../src/relay.js'
 import { guardText } from '../src/read_commands.js'
@@ -78,14 +84,24 @@ describe('a hook that meets the failure still answers with valid JSON', () => {
   })
 
   it('a Bash result', async () => {
-    const out = await relayInProcess('post_tool_use', { ...base('Bash'), tool_input: { command: 'ls' }, tool_response: { stdout: `${RAW}\n`.repeat(300), stderr: '', interrupted: false } })
+    const response = { stdout: `${RAW}\n`.repeat(300), stderr: '', interrupted: false }
+    const out = await relayInProcess('post_tool_use', {
+      ...base('Bash'),
+      tool_input: { command: 'ls' },
+      tool_response: response,
+    })
     expect(() => JSON.parse(out)).not.toThrow()
     expect(out).not.toContain(RAW)
   })
 
   it('a Grep content result', async () => {
     const lines = Array.from({ length: 20 }, (_, i) => `src/a.ts:${i + 1}:${RAW}`).join('\n')
-    const out = await relayInProcess('post_tool_use', { ...base('Grep'), tool_input: { pattern: 'x', output_mode: 'content' }, tool_response: { mode: 'content', content: lines, numLines: 20 } })
+    const response = { mode: 'content', content: lines, numLines: 20 }
+    const out = await relayInProcess('post_tool_use', {
+      ...base('Grep'),
+      tool_input: { pattern: 'x', output_mode: 'content' },
+      tool_response: response,
+    })
     expect(() => JSON.parse(out)).not.toThrow()
     expect(out).not.toContain(RAW)
   })

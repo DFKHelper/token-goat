@@ -8,6 +8,7 @@ import { parse } from 'smol-toml'
 
 import { readConfigSource, loadConfig, loadPersistedConfig, saveConfig, invalidateConfigCache, defaultConfig, CONFIG_KEY_ENV_OVERRIDES, validateNumericField, validateEnumField, getLastConfigParseError, getProjectConfigInfo, readConfigToml, resolveConfigKeyLayer, buildPersistedConfig, globalValueRejection } from './config.js'
 import type { ConfigKeyLayer } from './config.js'
+import { redactReadJson, redactReadText } from './fence_cap.js'
 import { compactDoc, compactPathFor, isCompactFresh, readCompactBody, buildExtractiveCompact, writeCompact } from './doc_compact.js'
 import { shrinkImage } from './image_shrink.js'
 import { findProject } from './project.js'
@@ -620,13 +621,14 @@ export function cmdCompactDoc(opts: {
     }
     const legacyFullBytes = fs.statSync(resolved).size
     if (opts.json === true) {
-      const jsonText = displaySafeJson({ path: resolved, compact: result })
+      const jsonText = redactReadJson({ path: resolved, compact: result })
       emit(jsonText)
       recordCompactDocStat(legacyFullBytes, jsonText, resolved)
       return
     }
-    emit(result)
-    recordCompactDocStat(legacyFullBytes, result, resolved)
+    const shown = redactReadText(result)
+    emit(shown)
+    recordCompactDocStat(legacyFullBytes, shown, resolved)
     return
   }
 
@@ -666,15 +668,16 @@ export function cmdCompactDoc(opts: {
   const extractiveFullBytes = fs.statSync(resolved).size
 
   if (opts.json === true) {
-    const jsonText = displaySafeJson({ path: resolved, compactPath, rebuilt, compact: body })
+    const jsonText = redactReadJson({ path: resolved, compactPath, rebuilt, compact: body })
     emit(jsonText)
     recordCompactDocStat(extractiveFullBytes, jsonText, resolved)
     return
   }
 
   if (opts.show === true) {
-    emit(body)
-    recordCompactDocStat(extractiveFullBytes, body, resolved)
+    const shown = redactReadText(body)
+    emit(shown)
+    recordCompactDocStat(extractiveFullBytes, shown, resolved)
     return
   }
 

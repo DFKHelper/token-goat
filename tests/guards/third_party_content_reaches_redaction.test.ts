@@ -125,8 +125,49 @@ describe('every function reaching third-party content is adjudicated for redacti
     const notRedacting = REDACTING_FENCE_HELPERS.filter(({ file, fn }) => {
       const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, file), 'utf8'))
       const helper = fns.find((f) => f.name === fn)
-      return helper === undefined || !reaches(helper, functionMap(fns), (body) => body.includes('redactSecrets(') || body.includes('redactCutSecrets('))
+      return helper === undefined || !reaches(helper, functionMap(fns), isRedactionCall)
     })
     expect(notRedacting.map((h) => `${h.file}::${h.fn}`), 'a helper listed in REDACTING_FENCE_HELPERS no longer redacts, or no longer exists').toEqual([])
+  })
+
+  it('redactOrWithhold reaches redactCutSecrets in its own file', () => {
+    expect(reachesIn('redact_or_withhold.ts', 'redactOrWithhold', ['redactCutSecrets('])).toBe(true)
+  })
+})
+
+const REDACTION_CALLS = ['redactSecrets(', 'redactCutSecrets(', 'redactOrWithhold('] as const
+
+/** Whether a function body calls any redaction entry point. */
+function isRedactionCall(body: string): boolean {
+  return REDACTION_CALLS.some((call) => body.includes(call))
+}
+
+/** Whether `fn` in `file` reaches any of `terminals` through same-file calls. */
+function reachesIn(file: string, fn: string, terminals: readonly string[]): boolean {
+  const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, file), 'utf8'))
+  const found = fns.find((f) => f.name === fn)
+  if (found === undefined) return false
+  return reaches(found, functionMap(fns), (body) => terminals.some((t) => body.includes(t)))
+}
+
+/** Output paths for file or image text that no third-party call leads to; rows name their redaction calls. */
+const FILE_TEXT_OUTPUT_PATHS: ReadonlyArray<{ file: string; fn: string; terminals: readonly string[] }> = [
+  { file: 'config_commands.ts', fn: 'cmdCompactDoc', terminals: ['redactReadText(', 'redactReadJson('] },
+  { file: 'cli_cmd_formats.ts', fn: 'fenceOcrText', terminals: ['redactOrWithhold('] },
+  { file: 'injection_scan.ts', fn: 'fenceUntrustedOcrText', terminals: ['redactOrWithhold('] },
+  { file: 'injection_scan.ts', fn: 'fenceUntrustedFileContent', terminals: ['redactOrWithhold('] },
+  { file: 'injection_scan.ts', fn: 'fenceNumberedFileContent', terminals: ['redactOrWithhold('] },
+]
+
+describe('file and image text outputs reach redaction', () => {
+  it.each(FILE_TEXT_OUTPUT_PATHS)('$file::$fn reaches a redaction call', ({ file, fn, terminals }) => {
+    const why = `${file}::${fn} no longer reaches ${terminals.join(' or ')}`
+    expect(reachesIn(file, fn, terminals), why).toBe(true)
+  })
+
+  it('fenceOcrText redacts on the path that skips the fence, not only through it', () => {
+    const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'cli_cmd_formats.ts'), 'utf8'))
+    const body = fns.find((f) => f.name === 'fenceOcrText')?.body ?? ''
+    expect(body).toMatch(/injectionFencingEnabled\(\)\)\s*return redactOrWithhold\(/)
   })
 })

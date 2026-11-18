@@ -3,11 +3,32 @@
 import { loadConfig, type Config } from './config.js'
 import { growsExponentially, hasNestedQuantifier } from './regex_guard.js'
 
-/** The names that make a following value a credential. A keyword may be a prefix of a longer key name (`DB_PASSWORD_HASH`), so most carry the trailing identifier class; bare `token` does not, because `token_count`, `tokens` and `max_tokens` are ordinary names that would otherwise lose their values. Every quantifier is bounded, which a lookbehind needs. */
-const SECRET_KEY_NAME = String.raw`(?:(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|private[_-]?key|credential)[a-z0-9_-]{0,64}|token)`
+/** Names that make a following value a credential; most allow an identifier tail, bare `token` does not. */
+const SECRET_KEY_NAME_LONG =
+  String.raw`(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|` +
+  String.raw`auth[_-]?token|private[_-]?key|credential)[a-z0-9_-]{0,64}`
+const SECRET_KEY_NAME = String.raw`(?:${SECRET_KEY_NAME_LONG}|token)`
 
-/** The separator between a key name and its value: optional quotes around the colon or equals sign and a bounded gap, as the header and Azure patterns spell theirs. */
+/** An unquoted value ends at whitespace, a structural character, or a separator before the next `key=`. */
+const UNQUOTED_VALUE =
+  String.raw`(?:\\[^\n]|[^\s\\&;#,:'"[\]{}]|` +
+  String.raw`[&;#,:](?![ \t]*[A-Za-z_][A-Za-z0-9_.-]*[ \t]*[:=])){4,}`
+
+/** A bare `token` value is hidden unless it is a call (`lexer.next()`) or the type `Token`. */
+const BARE_TOKEN_NOT_SOURCE = String.raw`(?!\S*[()])(?!token(?![A-Za-z0-9_]))`
+
+/** Separator between a key name and its value: optional quotes around `:` or `=` and a bounded gap. */
 const SECRET_SEPARATOR = String.raw`["']?[ \t]{0,8}[:=][ \t]{0,8}`
+
+/** A value in `quote` after a key name, hidden to the closing quote; a `[REDACTED:` placeholder is refused. */
+const quotedValue = (quote: string): string =>
+  String.raw`(?<=${SECRET_KEY_NAME}${SECRET_SEPARATOR}${quote})(?!\[REDACTED:)(?:\\[^\n]|[^${quote}\\\n]){4,}`
+
+/** A value after a long key name: an optional quote, then the unquoted value. */
+const LONG_NAME_VALUE = String.raw`(?<=${SECRET_KEY_NAME_LONG}${SECRET_SEPARATOR}["']?)${UNQUOTED_VALUE}`
+
+/** A value after the bare `token` keyword, excluding source-shaped values. */
+const BARE_TOKEN_VALUE = String.raw`(?<=token${SECRET_SEPARATOR})${BARE_TOKEN_NOT_SOURCE}${UNQUOTED_VALUE}`
 
 const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // Anthropic keys share OpenAI's "sk-" prefix but are more specific ("sk-ant-"), so they're matched first — the generic OpenAI pattern's negative lookahead below is defense in depth, not the sole guard.
@@ -15,14 +36,14 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // Modern (post-2024, now the default) OpenAI project keys: "sk-proj-" followed by a long base64url-ish body that legitimately contains '-' and '_' -- the generic pattern below deliberately excludes those characters (hyphenated prose would false-fire), so this needs its own entry with the more specific prefix matched first, like sk-ant- above.
   ['openai_project_key', /sk-proj-[A-Za-z0-9_-]{20,}/g],
   ['openai_api_key', /sk-(?!ant-|proj-)[A-Za-z0-9]{20,}/g],
-  // ASIA is the prefix of a temporary (STS) access key id, a credential in its own right; it shares AKIA's fixed 16-character tail.
+  // ASIA prefixes a temporary (STS) access key id; it shares AKIA's fixed 16-character tail.
   ['aws_access_key', /(?:AKIA|ASIA)[0-9A-Z]{16}/g],
   ['gitlab_token', /glpat-[A-Za-z0-9_-]{20,}/g],
-  // The word boundary keeps hf_ from matching inside a longer identifier; the 34-character floor is the length of a real token, so a short name such as hf_model_dir never reaches it.
+  // The word boundary keeps hf_ out of longer identifiers; the 34-character floor skips hf_model_dir.
   ['huggingface_token', /\bhf_[A-Za-z0-9]{34,}/g],
-  // SendGrid keys are SG.<22>.<43> exactly; both segments are fixed-width and the dot between them is outside their class.
+  // SendGrid keys are SG.<22>.<43>: both segments are fixed-width and the dot is outside their class.
   ['sendgrid_api_key', /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}/g],
-  // xoxe is Slack's configuration and rotating-refresh token (`xoxe-1-...` or `xoxe.xoxp-1-...`); it runs before the xox[baprs]- entry so the whole `xoxe.xoxp-` form is consumed as one match.
+  // xoxe is Slack's config and refresh token (`xoxe-1-...`, `xoxe.xoxp-1-...`); it runs before xox[baprs]-.
   ['slack_token', /xoxe(?:\.xox[bp])?-[A-Za-z0-9-]{10,}/g],
   // Fine-grained PATs ("github_pat_...") are matched before the classic gh[oprsu]_ pattern so the full token is always consumed as one match -- a fine-grained token's own body can contain '_' and could otherwise partially match the classic pattern.
   ['github_token', /github_pat_[A-Za-z0-9_]{22,}/g],
@@ -48,10 +69,11 @@ const SECRET_PATTERNS: Array<[string, RegExp]> = [
   // Azure storage account connection strings (`DefaultEndpointsProtocol=https;AccountName=...; AccountKey=<base64>==;EndpointSuffix=core.windows.net`) carry a full read/write key to the account in the AccountKey field, and none of the generic patterns above catch it: generic_secret_assignment's keyword list (password|passwd|secret|api[_-]?key| access[_-]?token|refresh[_-]?token|id[_-]?token) has nothing that matches "AccountKey", and an unanchored base64-shape pattern was deliberately rejected -- this module's header already warns that a bare high-entropy-blob heuristic false-fires on ordinary code, JSON and log output, and an 88-char base64 value is exactly the shape a hash, a compiled asset digest or a generated id can also take. Anchoring on the literal `AccountKey=` field name instead keeps the match specific to this one connection-string field. The value class is base64 proper (letters, digits, `+`, `/`, trailing `=` padding) and none of those characters include `;`, so the match terminates on its own at the `;` that starts the next `Name=` field -- unlike generic_secret_assignment's separator characters (`& ; # , :`), which double as ordinary credential characters and need a lookahead to tell the two roles apart, `;` is never valid base64 and needs no such lookahead here. The lookbehind keeps `AccountKey=` itself in the output, matching auth_bearer_token and presigned_signature above, so `;EndpointSuffix=core.windows.net` after it stays fully readable too. `SharedAccessKey` is the same credential one Azure service over: Service Bus, Event Hubs and Relay spell it that way (`Endpoint=sb://ns.servicebus.windows.net/;SharedAccessKeyName=Root; SharedAccessKey=<base64>`) and it carries the same authority over that namespace that AccountKey does over a storage account. `SharedAccessKeyName` is a plain identifier rather than a secret, and never matches: the separator in the lookbehind sits directly against the key name, so the `Name` in between stops it dead. The separator is spelled the way auth_bearer_token above spells its own, for the same reasons that comment records having learned the hard way. Optional quotes on either side of it, so the JSON and YAML forms a logged MCP result or api response actually arrives in are matched rather than stopped dead at the opening quote. A bounded gap rather than exactly one space, so a hand-aligned or reformatted `AccountKey = ...` in an appsettings file is not the single variant that defeats the whole pattern. Case-insensitive for the same reason presigned_signature is. The leading word boundary is what keeps the widened name from reaching into the middle of a longer identifier such as `myaccountkey=`.
   ['azure_storage_key', /(?<=\b(?:AccountKey|SharedAccessKey)["']?[ \t]{0,8}[:=][ \t]{0,8}["']?)[A-Za-z0-9+/]{40,}=*/gi],
   // Generic key=value assignments in .env-file and connection-string/query-string shape. The lookbehind again redacts only the value, and the value's character class deliberately excludes whitespace, '&', ';', '#', quote characters, and '[' ']' ':' -- that exclusion is what stops this from swallowing the rest of the line (a trailing comment or the next key=value pair) or the remainder of a query string past the matched parameter, which is exactly the kind of over-eager match this module's own design note above warns broad heuristics produce. The '[' ']' ':' exclusion also matters because this pattern runs last: an earlier pattern's own "OPENAI_API_KEY=[REDACTED:openai_project_key]" replacement text contains "API_KEY=" too, and without excluding those characters this pattern would re-match and double-redact its own placeholder. The length has a lower bound only (no upper bound): capping it at 64 used to leave the tail of any longer secret unredacted in plain text, which is worse than no redaction because it looks handled. A single negated-class quantifier like this cannot backtrack catastrophically -- there is no nested or overlapping quantifier for the engine to explore multiple ways of matching, so removing the upper bound does not introduce a ReDoS risk. Quotes are permitted around the separator, but never inside the value class. A quoted value is the ordinary way secrets are written -- .env files, JSON, YAML, TOML all quote by default -- and the lookbehind used to stop dead at the opening quote, so `API_KEY="..."` passed through in full while the bare `API_KEY=...` was caught. The closing quote of the key name blocked it from the other side too, which is what kept every JSON body unredacted. Keeping quotes out of the value class is still what stops the match running past the closing quote. The keyword may be a prefix of a longer key name rather than the whole of it, so the trailing identifier class below is load-bearing: without it the lookbehind required the keyword to sit immediately before the separator, and AWS_SECRET_ACCESS_KEY=, SECRET_KEY=, and DB_PASSWORD_HASH= all passed through in full. That class matches identifier characters only, so prose that merely mentions a keyword still never reaches a separator and stays unredacted. api[_-]?key covers the apikey and api-key spellings too. `& ; # , :` play two incompatible roles. They separate one field from the next (a query string, a cookie header, an inline env list), and they are also perfectly ordinary credential characters. Rejecting them outright got the first role right and the second badly wrong: the match stopped at the first one and left everything after it in plain text, so `password=corr&horse&battery` redacted four characters and printed the rest, and `DB_PASSWORD=Aa1:xyz` matched nothing at all because the run before the `:` was under the four-character floor. A tail left sitting in the open is the outcome this module's header calls worse than no redaction, because it reads as handled. So the separator role is decided by what follows rather than assumed: one of these characters ends the value only when the next thing along is another `name=` / `name:` pair, which is what an actual field separator is always followed by. `,OTHER=public` and `; other=1` still end it; the `&` in the middle of a passphrase does not. Whitespace, quotes and brackets are unchanged -- they end a value unconditionally, which is also what keeps this pattern from re-matching the `[REDACTED:...]` placeholder it just wrote.
-  // A value written in double or single quotes is redacted to its closing quote, spaces included: the entry below ends a value at whitespace, which left `password: "correct horse battery"` showing everything after the first word. No closing-quote assertion follows the run, so a missing quote cannot make the engine retry the run from every shorter length; the run ends at the quote because the class excludes it. The negative lookahead refuses an earlier pattern's own `[REDACTED:` placeholder, as the `[` exclusion below does for the bare form. Both share the kind name of the entry below, so hasPreciseSecret stands down from all three together.
-  ['generic_secret_assignment', new RegExp(String.raw`(?<=${SECRET_KEY_NAME}${SECRET_SEPARATOR}")(?!\[REDACTED:)(?:\\[^\n]|[^"\\\n]){4,}`, 'gi')],
-  ['generic_secret_assignment', new RegExp(String.raw`(?<=${SECRET_KEY_NAME}${SECRET_SEPARATOR}')(?!\[REDACTED:)(?:\\[^\n]|[^'\\\n]){4,}`, 'gi')],
-  ['generic_secret_assignment', new RegExp(String.raw`(?<=${SECRET_KEY_NAME}${SECRET_SEPARATOR}["']?)(?:\\[^\n]|[^\s\\&;#,:'"[\]{}]|[&;#,:](?![ \t]*[A-Za-z_][A-Za-z0-9_.-]*[ \t]*[:=])){4,}`, 'gi')],
+  // A quoted value is hidden to its closing quote, spaces included; the bare entry below stops at whitespace.
+  ['generic_secret_assignment', new RegExp(quotedValue('"'), 'gi')],
+  ['generic_secret_assignment', new RegExp(quotedValue("'"), 'gi')],
+  ['generic_secret_assignment', new RegExp(LONG_NAME_VALUE, 'gi')],
+  ['generic_secret_assignment', new RegExp(BARE_TOKEN_VALUE, 'gi')],
 ]
 
 export interface RedactResult {
@@ -256,7 +278,13 @@ const PEM_END_MARKER = /-----END [A-Z0-9 ]{0,40}PRIVATE KEY[A-Z0-9 ]{0,10}-----/
 /** One line of the base64 body of a key, 40 or more characters long (a PEM body line is 64, an OpenSSH one 70, an armored PGP one 76). */
 const KEY_BODY_LINE = /^[A-Za-z0-9+/]{40,}={0,2}$/
 
-/** The fewest distinct characters text must draw on to be taken for key body lines: base64 of random bytes uses dozens per line, so a run of one repeated character (padding, a minified filler line) is not key material and is shown. */
+/** A short line that can end a key body: a partly filled last base64 line or a PGP `=xxxx` checksum. */
+const KEY_TAIL_LINE = /^=?[A-Za-z0-9+/]{4,39}={0,2}$/
+
+/** At most the last body line and the checksum, so a short line mid-window is never taken for key. */
+const MAX_KEY_TAIL_LINES = 2
+
+/** The fewest distinct characters for key body lines: one repeated character is not key material. */
 const MIN_KEY_BODY_DISTINCT_CHARACTERS = 8
 
 /** Every spelling of a line break, kept apart from the text between them. */
@@ -276,12 +304,23 @@ function blankSpan(text: string, from: number, to: number): string {
 
 /** Whether every non-blank line of `text` has the shape of a key body line, which is all a stored chunk wholly inside a key block holds. */
 function isKeyBodyOnly(text: string): boolean {
-  const lines = text.split(ANY_LINE_BREAK).filter((part, i) => i % 2 === 0 && part.trim() !== '')
-  return lines.length > 0 && lines.every((line) => KEY_BODY_LINE.test(line.trim())) && new Set(lines.join('')).size >= MIN_KEY_BODY_DISTINCT_CHARACTERS
+  const lines = text
+    .split(ANY_LINE_BREAK)
+    .filter((part, i) => i % 2 === 0 && part.trim() !== '')
+    .map((line) => line.trim())
+  let long = lines.length
+  const isTail = (n: number): boolean => KEY_TAIL_LINE.test(lines[n - 1] as string)
+  while (long > 0 && lines.length - long < MAX_KEY_TAIL_LINES && isTail(long)) long--
+  if (long === 0 || !lines.slice(0, long).every((line) => KEY_BODY_LINE.test(line))) return false
+  return new Set(lines.join('')).size >= MIN_KEY_BODY_DISTINCT_CHARACTERS
 }
 
-/** {@link redactSecrets} with line breaks kept, for text that is a cut of a larger file, such as a chunk the semantic index stored or a window a read command prints, a read command's text being cut at either end by what the caller asked for. `opts.keepLineCount` defaults to true; false collapses a paired match to one placeholder as {@link redactSecrets} does by default. The PEM pattern needs both markers, and a cut holds only one of them when a key block straddles it, so what that pattern cannot pair is handled as cut: a BEGIN marker left over hides from the marker to the end of the text, an END marker left over hides from the start of the text to the marker, and text that is nothing but key body lines (a cut wholly inside a block, with neither marker) is hidden whole. Over-hides rather than under-hides: a lone marker named in prose hides the rest of the cut. */
-export function redactCutSecrets(text: string, config: Config = loadConfig(), opts: { keepLineCount?: boolean } = { keepLineCount: true }): RedactResult {
+/** {@link redactSecrets} for a cut of a file: keeps line breaks and hides a key block cut at either end. */
+export function redactCutSecrets(
+  text: string,
+  config: Config = loadConfig(),
+  opts: { keepLineCount?: boolean } = { keepLineCount: true },
+): RedactResult {
   if (isKeyBodyOnly(text)) return { text: blankSpan(text, 0, text.length), count: 1 }
   const paired = redactSecrets(text, config, opts)
   let out = paired.text

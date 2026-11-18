@@ -10,6 +10,7 @@ import { runImageMeta, runImageText, sliceImage, diffImages } from './read_comma
 import { runConfigGet, runSqliteTables, runSqliteSchema, runSqliteQuery } from './read_inspect.js'
 import { isSupportedOcrLang, SUPPORTED_OCR_LANG_CODES } from './ocr_languages.js'
 import { fenceUntrustedOcrText } from './injection_scan.js'
+import { redactOrWithhold } from './redact_or_withhold.js'
 import { scanAndRecord, injectionFencingEnabled } from './untrusted_fence.js'
 import { out, CliError } from './cli.js'
 import { runExit } from './cli_dispatch.js'
@@ -75,7 +76,7 @@ const NO_HEADER_DESCRIPTION = 'treat the first row as data, not a header (column
 export type GuardFn = (fn: (...a: never[]) => void | Promise<void>) => (...args: unknown[]) => Promise<void>
 
 export function fenceOcrText(text: string): string {
-  if (!injectionFencingEnabled()) return text
+  if (!injectionFencingEnabled()) return redactOrWithhold(text, true)
   scanAndRecord(text)
   return fenceUntrustedOcrText(text)
 }
