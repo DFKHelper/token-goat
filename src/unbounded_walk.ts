@@ -125,7 +125,7 @@ function inspectXargs(
   const inner: Segment = { ...seg, words: rest, pipedIn: true, stdin: [], subs: [] }
   const hit = inspectSegment(inner, ctx, depth + 1, false)
   if (hit !== null) return hit
-  const proven = listerProven(seg, prev, fromRoot)
+  const proven = listerProven(seg, prev, fromRoot, rest.length === 1)
   const parsed = xargsCommand(args)
   // A replace string (`-I{}`) is understood only for grep behind a proven lister; otherwise it is unparsed.
   const replaceOk = parsed?.replace == null

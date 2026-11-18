@@ -202,3 +202,62 @@ describe('walk guard -- more root spellings', () => {
     expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
   })
 })
+
+describe('xargs gate -- a name lister (glob, rg -l) vouches for operands, not for a root', () => {
+  it.each([
+    ["find . -name '*.ts' | xargs rg foo"],
+    ['ls *.ts | xargs du -ch'],
+    ['rg -l foo | xargs rg bar'],
+    ['ls *.ts | xargs grep -rn foo'],
+    ['rg -l foo src | xargs grep -rn foo'],
+  ])('lets %s through', (command) => {
+    expect(form(command, POSIX)).toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it.each([
+    ["find . -name '*.ts' | xargs rg foo /"],
+    ['ls *.ts | xargs du -ch /'],
+    ['rg -l foo | xargs rg bar /'],
+    ['rg -l foo | xargs rg bar ~'],
+    ['ls *.ts | xargs rg foo ~'],
+    ["find / -name '*.ts' | xargs rg foo"],
+    ["find ~ -maxdepth 1 -name '*' | xargs du -ch"],
+    ['ls /*.ts | xargs du -ch'],
+    ['ls -d / | xargs du -ch'],
+    ['ls ~/*.ts | xargs rg foo'],
+    ['ls ../*.ts | xargs rg foo'],
+    ['ls .* | xargs rg foo'],
+    ['find .. -name x | xargs rg foo'],
+    ['find . -name *.ts | xargs rg foo'],
+    ['rg -l foo / | xargs rg bar'],
+    ['echo / | xargs rg foo'],
+    ['cd / && ls *.ts | xargs du -ch'],
+    ['cd / && rg -l foo | xargs rg bar'],
+    ['ls *.ts | xargs -I{} du -ch {}'],
+    ['rg -l foo | xargs -I{} rg bar / {}'],
+    ['ls *.ts | xargs -a x rg foo'],
+    ['ls *.ts | xargs fd x'],
+    ['ls *.ts | xargs find / -name x'],
+  ])('refuses %s', (command) => {
+    expect(form(command, POSIX)).not.toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).not.toBeNull()
+  })
+
+  it('does not vouch for a bare walker behind a name lister', () => {
+    expect(form('ls *.ts | xargs du', POSIX)).not.toBeNull()
+    expect(form('rg -l x | xargs du', POSIX)).not.toBeNull()
+    expect(form('ls s*c | xargs rg foo', POSIX)).not.toBeNull()
+  })
+})
+
+describe('xargs gate -- a tracked symlink to the root (a1 NIT)', () => {
+  // limit: a tracked symlink to / is not seen, the guard reads text; revisit-when: a hook can stat paths
+  it('lets the lister through, as GNU grep -r follows a command-line symlink the text cannot show', () => {
+    expect(form('git ls-files | xargs grep -r x', POSIX)).toBeNull()
+  })
+
+  it('refuses the same walker once a root operand is spelled', () => {
+    expect(form('git ls-files | xargs grep -r x /', POSIX)).not.toBeNull()
+  })
+})

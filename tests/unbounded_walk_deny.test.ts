@@ -760,3 +760,57 @@ describe('the pre_tool_use hook entry', () => {
     expect(denied(await relayInProcess('pre_tool_use', claudePayload('find "text"')))).toBe(false)
   })
 })
+
+describe('detectUnboundedWalk -- home parents, the system drive and the rows named in review E3c', () => {
+  it.each([
+    ['find /home'],
+    ['find /home/'],
+    ['find /Users'],
+    ['rg x /home'],
+    ['fd . /Users'],
+    ['grep -r x /home'],
+    ['find /c/Users'],
+    ['find C:/Users'],
+    ['find /mnt/c/Users'],
+    ['find %HOMEDRIVE%'],
+    ['du -a %HOMEDRIVE%/'],
+    ['find %HOMEDRIVE%%HOMEPATH%'],
+    ['du -a %HOMEDRIVE%%HOMEPATH%'],
+    ['find %HOMEPATH%'],
+    ['find %HOMEDRIVE%/..'],
+    ['find $HOMEDRIVE$HOMEPATH'],
+    ['find $env:HOMEDRIVE$env:HOMEPATH'],
+    // `/a` is spelled like an MSYS drive root (`/c`), which stays refused; no spelling tells the two apart.
+    ['grep -r x /a'],
+    ['grep -r x /'],
+  ])('refuses %s', (command) => {
+    expect(form(command, POSIX)).not.toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).not.toBeNull()
+  })
+
+  it.each([
+    ['find /home/me/project'],
+    ['find /c/Users/me/project'],
+    ['find home'],
+    ['find ./home'],
+    ['find %HOMEDRIVE%/src'],
+    ['grep -r x /a/b'],
+    ['grep -r x /tmp'],
+    ['grep -r x /var/log'],
+    // Guard rows: this one was already allowed on HEAD 6aa86c833, because the payload runs as `du -s /tmp`.
+    ['find /tmp -maxdepth 1 -exec du -s {} +'],
+    ['find /tmp -maxdepth 1 -exec du -s {} \\;'],
+  ])('lets %s through', (command) => {
+    expect(form(command, POSIX)).toBeNull()
+    expect(form(command, GIT_BASH_ON_WINDOWS)).toBeNull()
+  })
+
+  it.each([
+    ['find / -maxdepth 1 -exec du -s {} +'],
+    ['find ~ -maxdepth 1 -exec du -s {} +'],
+    ['find /tmp -maxdepth 1 -exec du -s / {} +'],
+    ['find /tmp -maxdepth 1 -exec find / {} +'],
+  ])('refuses the unbounded sibling %s', (command) => {
+    expect(form(command, POSIX)).not.toBeNull()
+  })
+})

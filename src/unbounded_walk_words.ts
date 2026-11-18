@@ -10,7 +10,9 @@ export function isRoot(text: string, glob = false, winOptions = false): boolean 
 const hasDotSegment = (text: string): boolean => /(^|[\\/])\.\.?([\\/]|$)/.test(text)
 
 const HOME_PREFIX =
-  String.raw`~[A-Za-z0-9_.-]*|~[+]|\$\{?HOME\}?|\$(?:env:)?(?:USERPROFILE|HOME)|%USERPROFILE%|[A-Za-z]:`
+  String.raw`~[A-Za-z0-9_.-]*|~[+]|\$\{?HOME\}?|\$(?:env:)?(?:USERPROFILE|HOME)|%USERPROFILE%|` +
+  String.raw`%HOME(?:DRIVE|PATH)%(?:%HOMEPATH%)?|\$(?:env:)?HOME(?:DRIVE|PATH)(?:\$(?:env:)?HOMEPATH)?|` +
+  String.raw`[A-Za-z]:`
 const DOTTED_PATH = new RegExp(String.raw`^(?:(/)(.*)|(${HOME_PREFIX})(?:[\\/](.*))?)$`, 'i')
 
 /** A path naming a root once `.` and `..` are resolved (`/.`, `/usr/..`, `~/..`); `..` above home counts. */
@@ -40,6 +42,10 @@ function isRootSpelling(text: string, glob: boolean): boolean {
   if (/^\/proc\/+(self|thread-self|[0-9]+)\/+root\/*$/i.test(text)) return true
   if (/^\/mnt\/+wsl\/*$/i.test(text)) return true
   if (/^\/Volumes(\/+[^/]+)?\/*$/i.test(text)) return true
+  // `/home` and `/Users` (also under a drive) hold every user's home directory.
+  if (/^\/+(home|Users)\/*$/i.test(text)) return true
+  const drive = String.raw`(?:[A-Za-z]:|\/(?:mnt|cygdrive)\/+[A-Za-z]|\/[A-Za-z])`
+  if (new RegExp(drive + String.raw`[\\/]+(home|Users)[\\/]*$`, 'i').test(text)) return true
   return /^[\\/]{2}[?.][\\/]+UNC[\\/]+[^\\/]+[\\/]+[^\\/]+[\\/]*$/i.test(text) || isHomeOrGlobRoot(text, glob)
 }
 
@@ -47,6 +53,9 @@ function isHomeOrGlobRoot(text: string, glob: boolean): boolean {
   // `~` is home and `~name` is that user's home, which the shell expands before the tool sees it.
   if (/^~[A-Za-z0-9_.-]*[\\/]*$/.test(text) || /^\$\{?HOME\}?[\\/]*$/.test(text)) return true
   if (/^\$(env:)?(USERPROFILE|HOME)[\\/]*$/i.test(text) || /^%USERPROFILE%[\\/]*$/i.test(text)) return true
+  // The system drive, the profile path, and the two together.
+  if (/^%HOME(DRIVE|PATH)%(%HOMEPATH%)?[\\/]*$/i.test(text)) return true
+  if (/^\$(env:)?HOME(DRIVE|PATH)(\$(env:)?HOMEPATH)?[\\/]*$/i.test(text)) return true
   return glob && /^[A-Za-z]:[\\/]+[^\\/*?]*[*?][^\\/]*$/.test(text)
 }
 

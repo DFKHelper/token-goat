@@ -11,6 +11,9 @@ const PLAIN_PATH = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*(\/[A-Za-z0-9_][A-Za-z0-9_.+-]*
 const PLAIN_VALUE = /^[A-Za-z0-9_+][A-Za-z0-9_.+-]*$/
 const TYPE_LETTER = /^[a-z]$/
 const NAME_VALUE = /^[A-Za-z0-9_.+-]+$/
+/** An extension glob (`*.ts`): it expands only to names in the working directory. */
+const GLOB_WORD = /^\*\.[A-Za-z0-9]+$/
+const GLOB_NAME = /^(?:[A-Za-z0-9_.+-]+|\*\.[A-Za-z0-9]+)$/
 
 /** The flags a bounded lister may carry: exact words, none naming a directory; values match a pattern. */
 interface ListerSpec {
@@ -18,6 +21,8 @@ interface ListerSpec {
   readonly valued: ReadonlyMap<string, RegExp>
   /** Whether a lone `.` (the project directory) is a path. */
   readonly dot: boolean
+  /** Whether an unquoted glob word (`*.ts`) is a path; it expands to names in the working directory. */
+  readonly glob?: boolean
 }
 
 const LISTERS: ReadonlyMap<string, ListerSpec> = new Map<string, ListerSpec>([
@@ -26,13 +31,17 @@ const LISTERS: ReadonlyMap<string, ListerSpec> = new Map<string, ListerSpec>([
     valued: new Map([['-e', NAME_VALUE], ['-t', TYPE_LETTER], ['-d', DIGITS]]),
     dot: true,
   }],
-  ['rg', { bare: ['--files', '-0'], valued: new Map([['--max-depth', DIGITS]]), dot: true }],
-  ['find', {
-    bare: ['-print', '-print0'],
-    valued: new Map([['-maxdepth', DIGITS], ['-type', TYPE_LETTER], ['-name', NAME_VALUE]]),
+  ['rg', {
+    bare: ['--files', '-0', '-l', '--files-with-matches'],
+    valued: new Map([['--max-depth', DIGITS]]),
     dot: true,
   }],
-  ['ls', { bare: ['-1', '-A', '-d'], valued: new Map(), dot: true }],
+  ['find', {
+    bare: ['-print', '-print0'],
+    valued: new Map([['-maxdepth', DIGITS], ['-type', TYPE_LETTER], ['-name', GLOB_NAME]]),
+    dot: true,
+  }],
+  ['ls', { bare: ['-1', '-A', '-d'], valued: new Map(), dot: true, glob: true }],
   ['echo', { bare: [], valued: new Map(), dot: false }],
 ])
 
@@ -50,7 +59,9 @@ function listerWordsOk(args: readonly Word[], spec: ListerSpec): boolean {
         const v = args[++i]?.text
         if (v === undefined || !value.test(v)) return false
       } else if (!spec.bare.includes(t)) return false
-    } else if (!PLAIN_PATH.test(t) && !(spec.dot && t === '.')) return false
+    } else if (PLAIN_PATH.test(t) || (spec.dot && t === '.') || (spec.glob === true && GLOB_WORD.test(t))) {
+      continue
+    } else return false
   }
   return true
 }
@@ -63,7 +74,11 @@ function isBoundedLister(left: Segment): boolean {
   const args = left.words.slice(1)
   // The one backslash allowed is the printf format `%s\n`, checked below as a whole word.
   const read = head.text === 'printf' ? args.slice(1) : args
-  if (read.some((w) => /[$`*?[\]{}\\<>&|;()]/.test(w.text))) return false
+  // A glob is read only as an unquoted `ls` word or a quoted `find -name` value, where it names no root.
+  const globOk = (i: number): boolean => head.text === 'ls'
+    ? !read[i]!.quoted && GLOB_WORD.test(read[i]!.text)
+    : head.text === 'find' && read[i]!.quoted && read[i - 1]?.text === '-name' && GLOB_NAME.test(read[i]!.text)
+  if (read.some((w, i) => /[$`*?[\]{}\\<>&|;()]/.test(w.text) && !globOk(i))) return false
   switch (head.text) {
     case 'git': {
       if (args[0]?.text === 'ls-files') return args.slice(1).every((w) => GIT_LS_FILES_FLAGS.includes(w.text))
@@ -77,7 +92,8 @@ function isBoundedLister(left: Segment): boolean {
       return (format === '%s\\n' || format === '%s\\0') && args.slice(1).every((w) => PLAIN_PATH.test(w.text))
     }
     case 'rg':
-      return args.some((w) => w.text === '--files') && listerWordsOk(args, LISTERS.get('rg')!)
+      return args.some((w) => ['--files', '-l', '--files-with-matches'].includes(w.text))
+        && listerWordsOk(args, LISTERS.get('rg')!)
     default: {
       const spec = LISTERS.get(head.text)
       return spec !== undefined && listerWordsOk(args, spec)
@@ -242,8 +258,20 @@ export function nonRecursiveUnderUnprovenLister(command: readonly Word[]): boole
 }
 
 /** Rules 1, 2 and 5: stdin is one plain bounded lister of this group, the shell is not at a root, no `<`. */
-export function listerProven(seg: Segment, prev: Segment | undefined, fromRoot: boolean): boolean {
+export function listerProven(
+  seg: Segment,
+  prev: Segment | undefined,
+  fromRoot: boolean,
+  bareCommand = false,
+): boolean {
   if (!seg.pipedIn || fromRoot || seg.redirectedIn) return false
   if (prev === undefined || prev.group !== seg.group) return false
+  if (bareCommand && isNameLister(prev)) return false
   return !seg.words.some((w) => !w.quoted && /</.test(w.text)) && isBoundedLister(prev)
+}
+
+/** A lister naming files by glob or content (`ls *.ts`, `rg -l`); a bare walker stays refused behind it. */
+function isNameLister(left: Segment): boolean {
+  const listsByName = (t: string): boolean => /[*?]/.test(t) || t === '-l' || t === '--files-with-matches'
+  return left.words.slice(1).some((w) => listsByName(w.text))
 }

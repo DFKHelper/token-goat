@@ -842,8 +842,19 @@ export const WALK_PREFILTER = new RegExp(`${PREFILTER_CHARS}|${PREFILTER_WORD}`,
 export async function walkRefusal(event: HookEvent): Promise<HookOutput | null> {
   const rawCmd = extractCommand(event)
   if (rawCmd === undefined || !WALK_PREFILTER.test(rawCmd)) return null
+  const loadGuard = () => import('./unbounded_walk.js')
+  let detectUnboundedWalk: Awaited<ReturnType<typeof loadGuard>>['detectUnboundedWalk']
   try {
-    const { detectUnboundedWalk } = await import('./unbounded_walk.js')
+    ;({ detectUnboundedWalk } = await loadGuard())
+  } catch {
+    try {
+      recordStat('walk_guard_load_failed', 0, 0)
+    } catch {
+      // A hook never breaks: a stat that cannot be written leaves the allow answer as it is.
+    }
+    return null
+  }
+  try {
     const walk = detectUnboundedWalk(rawCmd, {
       windows: process.platform === 'win32',
       powershell: isPwshHarness(event),

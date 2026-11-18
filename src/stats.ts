@@ -108,6 +108,8 @@ const KIND_TO_SOURCE: Record<string, string> = {
   gdrive_image: SOURCE_IMAGE,
   session_hint: SOURCE_HINT,
   session_hint_suppressed: SOURCE_HINT,
+  // The deferred walk guard failed to load, so a hook allowed every walk; SOURCE_OTHER since nothing was saved.
+  walk_guard_load_failed: SOURCE_OTHER,
   // A guessed flag that option_intent.ts ran as the real one or answered with the corrected command (detail: command and the guessed flags).
   cli_option_alias: SOURCE_HINT,
   // The evidence receipt appended to a subagent report that carries a red flag (agent_receipt.ts), recorded at (0, 0): it saves nothing and is an advisory, so it counts as a hint fired.

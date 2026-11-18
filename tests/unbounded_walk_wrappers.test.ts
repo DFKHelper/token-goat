@@ -1,7 +1,9 @@
 // Provenance: HAND-DERIVED from A1 walk-audit strings or their siblings; every command is data, none was run.
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { WALK_PREFILTER, walkRefusal } from '../src/hooks_bash.js'
+import { preBashHandler, WALK_PREFILTER, walkRefusal } from '../src/hooks_bash.js'
+import { runHook } from '../src/hook_registry.js'
 import { detectUnboundedWalk, WALK_TRIGGER_NAMES, type WalkContext } from '../src/unbounded_walk.js'
+import { WALKER_NAMES, WRAPPER_NAMES, XARGS_WALKERS } from '../src/unbounded_walk_xargs.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 
 const POSIX: WalkContext = { windows: false, powershell: false }
@@ -396,6 +398,23 @@ describe('walk guard load prefilter in hooks_bash.ts', () => {
     expect(names.filter(missed)).toEqual([])
   })
 
+  it('holds the prefilter and WALK_TRIGGER_NAMES to a superset of every walker, wrapper and xargs name', () => {
+    const named = [...WALKER_NAMES, ...WRAPPER_NAMES, ...XARGS_WALKERS.keys()]
+    expect(named.length).toBeGreaterThan(40)
+    expect(named.filter((n) => !WALK_TRIGGER_NAMES.includes(n))).toEqual([])
+    const missed = (n: string) =>
+      !WALK_PREFILTER.test(n + ' x') || !WALK_PREFILTER.test('/usr/bin/' + n + '.exe x')
+    expect(named.filter(missed)).toEqual([])
+  })
+
+  it('refuses a walk the pre-bash rewrite would also have wrapped, because the guard runs first', async () => {
+    const command = 'rg -n foo /'
+    const ev = makeHookEvent({ toolName: 'Bash', toolInput: { command }, sessionId: 'order-row', raw: {} })
+    expect(preBashHandler(ev).hookType).toBe('rewriteInput')
+    const out = await runHook(ev)
+    expect(out.hookType).toBe('deny')
+  })
+
   it('does not load the guard for a command with no walker word, quote, or expansion', async () => {
     expect(WALK_PREFILTER.test('git status')).toBe(false)
     expect(WALK_PREFILTER.test('npm run build')).toBe(false)
@@ -414,5 +433,46 @@ describe('walk guard load prefilter in hooks_bash.ts', () => {
     })
     const fresh = await import('../src/hooks_bash.js')
     expect(await fresh.walkRefusal(event('find / -name x'))).toBeNull()
+  })
+})
+
+describe('walk guard fd and rg depth options: only what the tools accept is a bound', () => {
+  // Provenance: CAPTURE of `fd 10.5.0` and `rg 15.2.0` run on a scratch dir; the first group was accepted.
+  it.each<readonly [WalkContext, string]>([
+    [POSIX, 'fd -d3 x /'],
+    [POSIX, 'fd -d 3 x /'],
+    [POSIX, 'fd -d=3 x /'],
+    [POSIX, 'fd --max-depth 3 x /'],
+    [POSIX, 'fd --max-depth=3 x /'],
+    [POSIX, 'fd --maxdepth 3 x /'],
+    [POSIX, 'fd --maxdepth=3 x /'],
+    [POSIX, 'fd --exact-depth 3 x /'],
+    [POSIX, 'rg -d3 x /'],
+    [POSIX, 'rg -d=3 x /'],
+    [POSIX, 'rg --max-depth=3 x /'],
+    [POSIX, 'rg --maxdepth 3 x /'],
+    [POSIX, 'rg --maxdepth=3 x /'],
+  ])('lets %#: %s through', (ctx, command) => {
+    expect(detectUnboundedWalk(command, ctx)).toBeNull()
+  })
+
+  it.each<readonly [WalkContext, string]>([
+    [POSIX, 'fd --max-depth3 x /'],
+    [POSIX, 'fd --maxdepth3 x /'],
+    [POSIX, 'fd --exact-depth3 x /'],
+    [POSIX, 'fd --max-dep 3 x /'],
+    [POSIX, 'fd --maxd 3 x /'],
+    [POSIX, 'fd -d 3x x /'],
+    [POSIX, 'fd x / -d'],
+    [POSIX, 'fd x / -d='],
+    [POSIX, 'rg --max-depth3 x /'],
+    [POSIX, 'rg --maxdepth3 x /'],
+    [POSIX, 'rg --max-dep 3 x /'],
+    [POSIX, 'rg --exact-depth 3 x /'],
+    [POSIX, 'rg --exact-depth=3 x /'],
+    [POSIX, 'rg x / -d abc'],
+  ])('refuses %#: %s', (ctx, command) => {
+    expect(detectUnboundedWalk(command, ctx)).not.toBeNull()
+    expect(WALK_PREFILTER.test(command)).toBe(true)
   })
 })

@@ -13,7 +13,10 @@ const rootOperand = (pos: readonly Word[], fromRoot: boolean, glob = false, winO
 
 export const DIGITS = /^[0-9]+$/
 // A depth bound is `-d N`, `--max-depth N`, `-LN` or `-Depth N` with ASCII digits; other values are no bound.
-const FD_DEPTH = /^(?:-d|--max-?depth|--exact-depth)(?:=(.*)|([0-9]+))?$/
+// fd 10.5.0 and rg 15.2.0 (real runs): `-d N`, `-dN`, `-d=N`, `--max-depth`, `--maxdepth`; no abbreviations.
+// A long value is never attached without `=`, and only fd has `--exact-depth`.
+const FD_DEPTH = /^(?:-d(?:=?([0-9]+))?|--(?:max-?depth|exact-depth)(?:=(.*))?)$/
+const RG_DEPTH = /^(?:-d(?:=?([0-9]+))?|--max-?depth(?:=(.*))?)$/
 const TREE_DEPTH = /^-[A-Za-z]*L([0-9]+)?$/
 const PS_DEPTH = /^-de(?:p(?:t(?:h)?)?)?(?::(.*))?$/i
 /** Valued options minus the depth ones: with no valid bound, a depth flag's value is a path operand. */
@@ -40,7 +43,7 @@ export function inspectFd(args: readonly Word[], fromRoot: boolean): WalkRefusal
 export function inspectRg(args: readonly Word[], fromRoot: boolean): WalkRefusal | null {
   // Policy: `--pre` and `--pre-glob` run a command on every file that this check cannot read; refused.
   if (args.some((w) => /^--pre(-glob)?(=|$)/.test(w.text))) return refuse('rg-pre')
-  if (depthBounded(args, FD_DEPTH)) return null
+  if (depthBounded(args, RG_DEPTH)) return null
   const t = texts(args)
   const patternGiven = t.some((x) => x === '--files' || x === '-e' || x === '--regexp' || x === '-f' || x === '--file' || /^--(regexp|file)=/.test(x))
   const pos = positionals(args, RG_FREE)
