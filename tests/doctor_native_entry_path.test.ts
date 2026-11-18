@@ -20,6 +20,8 @@ import { codexConfigPath } from '../src/bridges/codex_install.js'
 import { copilotCliConfigPath } from '../src/bridges/copilot_cli_install.js'
 import { grokConfigPath } from '../src/bridges/grok_install.js'
 import { kimiConfigPath } from '../src/bridges/kimi_install.js'
+import { dataDir } from '../src/constants.js'
+import { hookPointerPath } from '../src/hook_pointer.js'
 import { settingsPath } from '../src/install.js'
 import { wiringPointsAtMissingFile } from '../src/cli_doctor_hooks.js'
 import { checkNativeEntryPaths, checkNativeHooks, nativeWirings, type NativeWiring } from '../src/cli_doctor_native.js'
@@ -216,6 +218,56 @@ describe('wiringPointsAtMissingFile on a native wiring', () => {
     const line = nativeHookCommandLine('sh', bin, 'claudecode', shim, 'PreToolUse', entry)
     if (line === undefined) throw new Error('no native command line')
     expect(wiringPointsAtMissingFile([{ words: splitHookCommand(line, 'sh') }])).toBe(false)
+  })
+})
+
+describe('checkNativeEntryPaths on a guarded entry', () => {
+  const guardedWiring = (entry: string): NativeWiring => ({
+    ...wiringOf(nativeWords('PreToolUse', entry)),
+    entries: [{ words: nativeWords('PreToolUse', entry), guarded: true }],
+  })
+
+  /** HAND-DERIVED from validateHookPointer in src/hook_pointer.ts: schema 1, token-goat.mjs entry, tg-hook. */
+  function withPointerTo(entry: string, run: () => void): void {
+    const file = hookPointerPath(dataDir())
+    const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
+    const nativeBin = path.join(TMP, 'tg-hook')
+    const bundleDir = path.dirname(entry)
+    const base = { schema: 1, version: '0', node: null, shim: null, writtenAt: 'now' }
+    const pointer = { ...base, bundleDir, entry, nativeBin }
+    try {
+      writeText(file, JSON.stringify(pointer))
+      run()
+    } finally {
+      if (before === null) fs.rmSync(file, { force: true })
+      else fs.writeFileSync(file, before)
+    }
+  }
+
+  it('passes a guarded entry whose --entry is gone while the hook pointer names a live bundle', () => {
+    const live = path.join(TMP, 'live', 'token-goat.mjs')
+    writeText(live, '')
+    withPointerTo(live, () => {
+      expect(checkNativeEntryPaths(guardedWiring(path.join(TMP, 'gone', 'token-goat.mjs')))).toBeNull()
+    })
+  })
+
+  it('still fails a guarded entry when the pointer names a bundle that is missing', () => {
+    const gone = path.join(TMP, 'gone', 'token-goat.mjs')
+    withPointerTo(path.join(TMP, 'dead', 'token-goat.mjs'), () => {
+      const row = checkNativeEntryPaths(guardedWiring(gone))
+      expect(row?.status).toBe('fail')
+      expect(row?.message).toContain(gone)
+    })
+  })
+
+  it('still fails an unguarded entry even when the pointer names a live bundle', () => {
+    const live = path.join(TMP, 'live', 'token-goat.mjs')
+    const gone = path.join(TMP, 'gone', 'token-goat.mjs')
+    writeText(live, '')
+    withPointerTo(live, () => {
+      expect(checkNativeEntryPaths(wiringOf(nativeWords('PreToolUse', gone)))?.status).toBe('fail')
+    })
   })
 })
 

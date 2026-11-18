@@ -3,7 +3,25 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type * as NodeFs from 'node:fs'
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// A running exe is EPERM or EBUSY on Windows, not portable to provoke: rmSync refuses the paths in this set.
+const refused = vi.hoisted(() => new Set<string>())
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof NodeFs>()
+  return {
+    ...original,
+    rmSync: (...args: Parameters<typeof original.rmSync>) => {
+      if (refused.has(String(args[0]))) {
+        const busy = new Error(`EBUSY: resource busy or locked, unlink '${String(args[0])}'`)
+        throw Object.assign(busy, { code: 'EBUSY' })
+      }
+      return original.rmSync(...args)
+    },
+  }
+})
 
 import { dataDir } from '../src/constants.js'
 import { purgeDataDirectories } from '../src/purge.js'
@@ -29,6 +47,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
+  refused.clear()
   process.chdir(origCwd)
   for (const k of ENV_KEYS) {
     if (saved[k] === undefined) delete process.env[k]
@@ -80,6 +99,19 @@ describe('purge and the hook targets configs name', () => {
     expect(fs.existsSync(index)).toBe(false)
     expect(result.kept!.map((k) => k.path).sort()).toEqual([named, unnamed].sort())
     expect(result.kept![0]!.reason).toContain('could not be checked')
+  })
+
+  it('finishes the purge and names the file when rmSync refuses a running exe (EBUSY)', () => {
+    const { named, unnamed, index } = seedData()
+    const command = `"${named}" --harness claudecode`
+    writeUserSettings(JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command }] }] } }))
+    refused.add(unnamed)
+    const result = purgeDataDirectories()
+    expect(result.failed.map((f) => f.path)).toEqual([unnamed])
+    expect(result.failed[0]!.reason).toContain('EBUSY')
+    expect(fs.existsSync(unnamed)).toBe(true)
+    expect(fs.existsSync(index)).toBe(false)
+    expect(fs.existsSync(named)).toBe(true)
   })
 
   it('removes the whole data directory when no config names anything in it', () => {

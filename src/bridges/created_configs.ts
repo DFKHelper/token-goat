@@ -4,7 +4,14 @@ import * as path from 'path'
 
 import { dataDir } from '../constants.js'
 import { normalizePath } from '../paths.js'
-import { atomicWriteText, ensureDirSync, foldPath, removeEmptyDirInScope, removeFileInScope } from '../util.js'
+import {
+  atomicWriteText,
+  ensureDirSync,
+  foldPath,
+  removeEmptyDirInScope,
+  removeFileInScope,
+  withFileLock,
+} from '../util.js'
 
 function ledgerPath(): string {
   return path.join(dataDir(), 'created-configs.json')
@@ -56,12 +63,30 @@ function writeLedger(entries: readonly string[]): void {
   }
 }
 
+/** Run `work` under a cross-process ledger lock (bounded wait, stale lock stolen); no lock, run it bare. */
+function withLedgerLock<T>(work: () => T): T {
+  let ran = false
+  let result: T | undefined
+  try {
+    // limit: a first write before the data dir exists runs unlocked revisit-when: a lost entry shows up
+    withFileLock(`${ledgerPath()}.lock`, () => {
+      ran = true
+      result = work()
+    })
+  } catch (err) {
+    if (ran) throw err
+  }
+  return ran ? (result as T) : work()
+}
+
 /** Remember that token-goat created `filePath`. */
 export function recordCreatedConfig(filePath: string): void {
   const key = keyOf(filePath)
-  const entries = readLedger()
-  if (entries.some((entry) => foldKey(entry) === foldKey(key))) return
-  writeLedger([...entries, key])
+  withLedgerLock(() => {
+    const entries = readLedger()
+    if (entries.some((entry) => foldKey(entry) === foldKey(key))) return
+    writeLedger([...entries, key])
+  })
 }
 
 /** True when token-goat on THIS machine created `filePath`, without forgetting it. Separate from {@link takeCreatedConfig} because the two questions differ: uninstall asks once and must not be able to answer twice, while a hook asks on every invocation and must keep getting the same answer. Same failure direction as everything else here -- an unreadable or purged ledger answers "not ours". */
@@ -73,10 +98,12 @@ export function hasCreatedConfig(filePath: string): boolean {
 /** True when token-goat created `filePath` itself, forgetting it in the same step so the answer is not reused. */
 export function takeCreatedConfig(filePath: string): boolean {
   const key = foldKey(keyOf(filePath))
-  const entries = readLedger()
-  if (!entries.some((entry) => foldKey(entry) === key)) return false
-  writeLedger(entries.filter((entry) => foldKey(entry) !== key))
-  return true
+  return withLedgerLock(() => {
+    const entries = readLedger()
+    if (!entries.some((entry) => foldKey(entry) === key)) return false
+    writeLedger(entries.filter((entry) => foldKey(entry) !== key))
+    return true
+  })
 }
 
 /** The ledger key for "this install added the `rootKey` object to `filePath`": the file's own key plus a marker, so it can never equal a real path or a backup entry. */
@@ -129,6 +156,10 @@ export function createdBackupsFor(configPath: string): string[] {
 
 /** Delete the backups token-goat created for `configPath`, and nothing else. Returns how many went. The candidate set is the ledger, not the directory: a user's own `settings.json.bak.keep` was never recorded, so it is never even considered. A missing or unreadable ledger therefore removes nothing, which leaves litter rather than deleting a file nobody can get back -- the direction every other failure in this module is read in. */
 export function removeCreatedBackups(configPath: string): number {
+  return withLedgerLock(() => removeCreatedBackupsLocked(configPath))
+}
+
+function removeCreatedBackupsLocked(configPath: string): number {
   const prefix = foldKey(`${keyOf(configPath)}.bak.`)
   const entries = readLedger()
   const ours = entries.filter((entry) => foldKey(entry).startsWith(prefix))
@@ -139,9 +170,7 @@ export function removeCreatedBackups(configPath: string): number {
   for (const target of ours) {
     // The entry itself, not a name rebuilt out of the folded match key: rebuilding is what dropped the ISO stamp's `T` and `Z` and made every unlink miss on a case-sensitive filesystem.
     try {
-      if (fs.existsSync(target) && removeFileInScope(target)) {
-        removed++
-      }
+      if (removeFileInScope(target)) removed++
     } catch {
       failed.add(target)
     }

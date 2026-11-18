@@ -48,13 +48,18 @@ describe('the shell Claude Code runs a hook in', () => {
   }
 
   it('finds Git Bash by the named path, else beside git.exe on PATH, else not at all', () => {
-    const named = path.join(root, 'my-bash.exe')
+    const named = path.join(root, 'bash.exe')
     fs.writeFileSync(named, '')
     expect(claudeFindsGitBash({ CLAUDE_CODE_GIT_BASH_PATH: named })).toBe(true)
+    const lookalike = path.join(root, 'my-bash.exe')
+    fs.writeFileSync(lookalike, '')
+    expect(claudeFindsGitBash({ CLAUDE_CODE_GIT_BASH_PATH: lookalike, PATH: '' })).toBe(false)
     const gone = { CLAUDE_CODE_GIT_BASH_PATH: path.join(root, 'gone.exe'), PATH: path.join(root, 'cmd') }
     expect(claudeFindsGitBash(gone)).toBe(false)
     git(root)
     expect(claudeFindsGitBash({ PATH: path.join(root, 'cmd') })).toBe(true)
+    const viaGit = { CLAUDE_CODE_GIT_BASH_PATH: lookalike, PATH: path.join(root, 'cmd') }
+    expect(claudeFindsGitBash(viaGit)).toBe(true)
     expect(claudeFindsGitBash({ PATH: path.join(root, 'bin') })).toBe(false)
     expect(claudeFindsGitBash({ PATH: '' })).toBe(false)
   })
@@ -67,10 +72,13 @@ describe('the shell Claude Code runs a hook in', () => {
   })
 
   it.runIf(WIN).each([
-    ['with Git Bash', process.execPath, 'sh', 'bash'],
+    ['with Git Bash', 'bash.exe', 'sh', 'bash'],
     ['without Git Bash', 'no-such-bash.exe', 'powershell', 'powershell'],
   ])('writes each own entry %s in that shell, reads it back, removes it', (_name, bashPath, guard, field) => {
-    const bash = bashPath === process.execPath ? bashPath : path.join(root, bashPath)
+    const bash = path.join(root, bashPath)
+    if (guard === 'sh') fs.writeFileSync(bash, '')
+    // A rejected configured path falls back to git.exe on PATH, so the no-Git-Bash row hides the real PATH.
+    else vi.stubEnv('PATH', path.join(root, 'empty'))
     vi.stubEnv('CLAUDE_CODE_GIT_BASH_PATH', bash)
     installHooks('user', { dev: true })
     const first = fs.readFileSync(settingsPath('user'), 'utf8')

@@ -66,7 +66,13 @@ function insideOrSame(parent: string, child: string): boolean {
 }
 
 /** Delete `target` (a file or directory) except for the files under it that `scan` says a config still names; each kept one goes to `kept`. Returns true when `target` itself is gone. */
-function removeUnlessReferenced(target: string, nativeDir: string, scan: ReferenceScan, kept: Array<{ path: string; reason: string }>): boolean {
+function removeUnlessReferenced(
+  target: string,
+  nativeDir: string,
+  scan: ReferenceScan,
+  kept: Array<{ path: string; reason: string }>,
+  failed: PurgeResult['failed'],
+): boolean {
   let isDir: boolean
   try {
     isDir = fs.lstatSync(target).isDirectory()
@@ -80,15 +86,24 @@ function removeUnlessReferenced(target: string, nativeDir: string, scan: Referen
       kept.push({ path: target, reason: why })
       return false
     }
-    fs.rmSync(target, { force: true })
-    return true
+    return tryRemove(target, { force: true }, failed)
   }
   let allGone = true
   for (const name of fs.readdirSync(target)) {
-    if (!removeUnlessReferenced(path.join(target, name), nativeDir, scan, kept)) allGone = false
+    if (!removeUnlessReferenced(path.join(target, name), nativeDir, scan, kept, failed)) allGone = false
   }
-  if (allGone) fs.rmSync(target, { recursive: true, force: true })
-  return allGone
+  return allGone && tryRemove(target, { recursive: true, force: true }, failed)
+}
+
+/** `rmSync`, but a refusal (a running exe, EPERM or EBUSY) goes to `failed` and answers false, not a throw. */
+function tryRemove(target: string, options: fs.RmOptions, failed: PurgeResult['failed']): boolean {
+  try {
+    fs.rmSync(target, options)
+    return true
+  } catch (e) {
+    failed.push({ path: target, reason: e instanceof Error ? e.message : String(e) })
+    return false
+  }
 }
 
 /** Deletes every root in {@link purgeRoots}, except the hook targets under `<dataDir>/native` that a host config still names, or that cannot be ruled out (an unreadable config keeps them all). Reports what went, what was already gone, what was kept and why, and what would not delete. `scan` is read before anything is deleted, because the ledger it reads lives in the directory being purged. */
@@ -107,9 +122,14 @@ export function purgeDataDirectories(scan: ReferenceScan = scanReferences()): Pu
       if (insideOrSame(root, nativeDir) && referencedBy(nativeDir, scan) !== undefined) {
         // Everything but the hook targets goes; those are walked file by file so an unreferenced one still leaves.
         const keptBefore = kept.length
-        removeUnlessReferenced(root, nativeDir, scan, kept)
-        if (kept.length === keptBefore) result.removed.push({ path: root, bytes })
-        else result.removed.push({ path: root, bytes: bytes - kept.slice(keptBefore).reduce((n, k) => n + directorySize(k.path), 0) })
+        const failedBefore = result.failed.length
+        removeUnlessReferenced(root, nativeDir, scan, kept, result.failed)
+        const left = [...kept.slice(keptBefore), ...result.failed.slice(failedBefore)]
+        if (left.length === 0) result.removed.push({ path: root, bytes })
+        else {
+          const leftBytes = left.reduce((n, k) => n + directorySize(k.path), 0)
+          result.removed.push({ path: root, bytes: bytes - leftBytes })
+        }
       } else {
         fs.rmSync(root, { recursive: true, force: true })
         result.removed.push({ path: root, bytes })

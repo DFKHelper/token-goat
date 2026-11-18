@@ -10,13 +10,19 @@ export const CLAUDE_HOOK_SHELL_FIELD: Readonly<Record<'sh' | 'powershell', 'bash
   powershell: 'powershell',
 }
 
-/** Whether Claude Code finds Git Bash: the file `CLAUDE_CODE_GIT_BASH_PATH` names, else bash.exe by git.exe. */
+/** Whether the basename alone is bash or sh, so `my-bash.exe` is no match; case-insensitive on Windows. */
+function isBashName(p: string): boolean {
+  const base = path.basename(p.replace(/\\/g, '/'))
+  return /^(?:bash|sh)(?:\.exe)?$/.test(process.platform === 'win32' ? base.toLowerCase() : base)
+}
+
+/** Whether Claude Code finds Git Bash: the bash or sh `CLAUDE_CODE_GIT_BASH_PATH` names, else by git.exe. */
 export function claudeFindsGitBash(
   env: NodeJS.ProcessEnv = process.env,
   exists: (p: string) => boolean = fs.existsSync,
 ): boolean {
   const named = env['CLAUDE_CODE_GIT_BASH_PATH']
-  if (named !== undefined && named !== '') return exists(named)
+  if (named !== undefined && isBashName(named) && exists(named)) return true
   for (const dir of (env['PATH'] ?? '').split(path.delimiter)) {
     if (dir === '' || !exists(path.join(dir, 'git.exe'))) continue
     const root = path.dirname(dir)

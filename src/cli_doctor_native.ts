@@ -11,7 +11,7 @@ import { nativeHooksEnabled } from './config.js'
 import { getDb } from './db.js'
 import type { DoctorResult } from './doctor_result.js'
 import { nativeHookCounts, type NativeHookCounts } from './hook_latency.js'
-import { HOOK_BROKEN_FILE, readHookBroken } from './hook_pointer.js'
+import { HOOK_BROKEN_FILE, readHookBroken, readHookPointer } from './hook_pointer.js'
 import { wiredClaudeHookEntries } from './install.js'
 import { nativeCopyCurrent, nativeCopyPath, nativeHookBinary, nativeSelftest, packagedNativeBinary, parseNativeInvocation, type NativeSelftest, type WiredHookEntry } from './native_hook.js'
 import { displaySafeText } from './paths.js'
@@ -225,9 +225,15 @@ function nodeFormInvocation(words: readonly string[]): { event: string; entry: s
 export function checkNativeEntryPaths(wiring: NativeWiring): DoctorResult | null {
   const eventsByEntry = new Map<string, string[]>()
   let broken = 0
-  for (const { words } of wiring.entries) {
+  let pointerLive: boolean | undefined
+  for (const { words, guarded } of wiring.entries) {
     const invoked = parseNativeInvocation(words) ?? nodeFormInvocation(words)
     if (invoked?.entry === undefined || fs.existsSync(invoked.entry)) continue
+    // A guarded entry with --entry gone still runs: the native client reads the pointer to the live bundle.
+    if (guarded === true) {
+      pointerLive ??= readHookPointer().ok
+      if (pointerLive) continue
+    }
     broken += 1
     eventsByEntry.set(invoked.entry, [...(eventsByEntry.get(invoked.entry) ?? []), invoked.event ?? 'unknown event'])
   }
