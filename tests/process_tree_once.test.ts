@@ -7,8 +7,7 @@ import * as path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { killAllIfCommandLine, type KillOptions } from './helpers/kill_if_command_line.js'
-import { spawnOwnedDecoy } from './helpers/owner_tied_decoy.js'
+import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 
 const passes = vi.hoisted(() => [] as string[])
 
@@ -76,21 +75,14 @@ describe('the tree of an owned child is ended at most once', () => {
 })
 
 // A running process is one ps lists whose state is not Z (a zombie is dead, merely not reaped yet).
-function listLiveWithArgs(args: string): Array<{ pid: number; ppid: number }> {
-  const listing = execFileSync('ps', ['-A', '-o', 'pid=,ppid=,stat=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
-  const found: Array<{ pid: number; ppid: number }> = []
+function liveWithArgs(args: string): number[] {
+  const listing = execFileSync('ps', ['-A', '-o', 'pid=,stat=,args='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  const found: number[] = []
   for (const line of listing.split('\n')) {
-    const match = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/.exec(line)
-    if (match !== null && !match[3]!.startsWith('Z') && match[4]!.trim() === args) found.push({ pid: Number(match[1]), ppid: Number(match[2]) })
+    const match = /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(line)
+    if (match !== null && !match[2]!.startsWith('Z') && match[3]!.trim() === args) found.push(Number(match[1]))
   }
   return found
-}
-
-const liveWithArgs = (args: string): number[] => listLiveWithArgs(args).map((p) => p.pid)
-
-/** Ends the processes whose command line is `marker`. A command line that reads back empty says nothing about whose process it is, so a pid this run saw as a direct child of its own shell (`sighted`) stands in for it; a line that reads back and is not the marker is still a stranger, and an unreadable pid nobody saw as ours throws instead of being killed. */
-function endMarked(pids: Iterable<number>, marker: string, sighted: ReadonlySet<number>, opts: KillOptions = {}): void {
-  killAllIfCommandLine(pids, (cmd) => cmd.includes(marker), { ...opts, tied: (pid) => sighted.has(pid) })
 }
 
 describe.skipIf(process.platform === 'win32')('a tree that is forking while it is ended is frozen before anything is killed', () => {
@@ -118,18 +110,11 @@ describe.skipIf(process.platform === 'win32')('a tree that is forking while it i
     const loop = `i=0; while [ $i -lt 20000 ]; do ${marker} & i=$((i+1)); done; wait`
     const owned = spawnOwned('sh', ['-c', loop], { stdio: 'ignore' })
     children.push(owned.child)
-    // Every sleep seen as a direct child of the shell this run started; the loop forks them itself, so each one is ours whatever its command line reads back as.
-    const sighted = new Set<number>()
     cleanups.push(() => {
-      endMarked(liveWithArgs(marker), marker, sighted)
+      killAllIfCommandLine(liveWithArgs(marker), (cmd) => cmd.includes(marker))
     })
     // Only a kill that lands while the loop is still forking is the case under test.
-    for (;;) {
-      const live = listLiveWithArgs(marker)
-      for (const p of live) if (p.ppid === owned.child.pid) sighted.add(p.pid)
-      if (live.length >= 30) break
-      await new Promise<void>((resolve) => setImmediate(resolve))
-    }
+    while (liveWithArgs(marker).length < 30) await new Promise<void>((resolve) => setImmediate(resolve))
     owned.kill()
     while (liveWithArgs(marker).length > 0) await new Promise<void>((resolve) => setImmediate(resolve))
     expect(liveWithArgs(marker)).toEqual([])
@@ -148,31 +133,5 @@ describe.skipIf(process.platform !== 'win32')('a failed taskkill is reported, no
     expect(result.ok, 'taskkill of a pid that is gone reported success').toBe(false)
     expect(result.note).toMatch(/taskkill/)
     expect(signalled, 'the failure was papered over with a bare process.kill').toBe(0)
-  })
-})
-
-// The unreadable-line path of the cleanup above, which the POSIX rows cannot reach on a machine whose ps always prints the arguments: a stand-in plays a sleep and the command line read is replaced by a failed one, as Windows gives for a process it hides. HAND-DERIVED from the rule in endMarked.
-describe('the marked-process cleanup when a command line reads back empty', () => {
-  const unreadable: KillOptions = { readCommandLine: () => null }
-
-  it('ends a process this run saw as a child of its shell', async () => {
-    const stand = spawnOwnedDecoy(['--sleep-stand-in'])
-    try {
-      const gone = new Promise<void>((resolve) => stand.once('exit', () => resolve()))
-      expect(() => endMarked([stand.pid as number], 'sleep 1', new Set([stand.pid as number]), unreadable)).not.toThrow()
-      await gone
-    } finally {
-      if (stand.exitCode === null && stand.signalCode === null) stand.kill('SIGKILL')
-    }
-  })
-
-  it('leaves an unreadable pid nobody saw as ours alone, and throws', () => {
-    const stand = spawnOwnedDecoy(['--sleep-stand-in'])
-    try {
-      expect(() => endMarked([stand.pid as number], 'sleep 1', new Set(), unreadable)).toThrow()
-      expect(stand.exitCode === null && stand.signalCode === null, 'a pid never seen as ours was signalled').toBe(true)
-    } finally {
-      if (stand.exitCode === null && stand.signalCode === null) stand.kill('SIGKILL')
-    }
   })
 })

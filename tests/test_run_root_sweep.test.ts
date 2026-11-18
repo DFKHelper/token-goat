@@ -7,8 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { killAllIfCommandLine, type KillOptions } from './helpers/kill_if_command_line.js'
-import { spawnOwnedDecoy } from './helpers/owner_tied_decoy.js'
+import { killAllIfCommandLine } from './helpers/kill_if_command_line.js'
 import { killDaemonsUnder, sweepStaleRunRoots } from './setup/build-bundle.js'
 
 // HAND-DERIVED: the directory names and ages are constructed here from the sweep's own contract (a `tg-run-` prefix and an mtime older than 6h), independently of the implementation's code. No wire format is involved.
@@ -88,23 +87,14 @@ ${OWNER_LIVENESS_SOURCE}
 `
 
   const spawned: ChildProcess[] = []
-  // Processes a stand-in daemon started itself, reaped by afterEach when the sweep under test did not end them, each with the stand-in whose stdout pipe it holds.
-  const grandchildren: Array<{ pid: number; holder: Started }> = []
+  // Pids of processes a stand-in daemon started itself, reaped by afterEach when the sweep under test did not end them.
+  const grandchildPids: number[] = []
   afterEach(() => {
     // Through the handle, which signals the process it holds and never a number the OS may have given away since.
     for (const c of spawned.splice(0)) c.kill('SIGKILL')
-    endGrandchildren()
+    // The sweep under test ends these on a passing run, so their numbers may belong to new processes (a killed vitest worker exits with code 1): only one still running the stand-in's liveness poll is signalled.
+    killAllIfCommandLine(grandchildPids.splice(0), (commandLine) => commandLine.includes(OWNER_PID_ENV))
   })
-
-  /** Ends the stand-ins' children. The sweep under test ends these on a passing run, so their numbers may belong to new processes (a killed vitest worker exits with code 1): only one still running the stand-in's liveness poll is signalled. A command line that reads back empty says nothing either way, so the pipe stands in for it: the child inherited its stand-in's stdout, which closes only when every holder is gone, so while it is open the child still runs and its number is its own; once it has closed the number may be anyone's and an unreadable one is left alone (and throws). */
-  function endGrandchildren(opts: KillOptions = {}): void {
-    const recorded = grandchildren.splice(0)
-    killAllIfCommandLine(
-      recorded.map((g) => g.pid),
-      (commandLine) => commandLine.includes(OWNER_PID_ENV),
-      { ...opts, tied: (pid) => recorded.some((g) => g.pid === pid && !g.holder.isClosed()) },
-    )
-  }
 
   interface Started {
     pid: number
@@ -114,8 +104,6 @@ ${OWNER_LIVENESS_SOURCE}
     exited: Promise<void>
     /** Resolves when the process has exited and every holder of its stdout pipe has closed it, a process it started and passed the pipe to included. */
     closed: Promise<void>
-    /** Whether `closed` has resolved. */
-    isClosed: () => boolean
     /** Everything the process has printed so far. */
     output: () => string
   }
@@ -136,14 +124,8 @@ ${OWNER_LIVENESS_SOURCE}
     // A stand-in killed by the test itself, or by afterEach, must not surface as an unhandled rejection.
     ready.catch(() => undefined)
     const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
-    let isClosed = false
-    const closed = new Promise<void>((resolve) =>
-      child.once('close', () => {
-        isClosed = true
-        resolve()
-      }),
-    )
-    return { pid: child.pid as number, ready, exited, closed, isClosed: () => isClosed, output: () => printed }
+    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()))
+    return { pid: child.pid as number, ready, exited, closed, output: () => printed }
   }
 
   /** A script a stand-in daemon runs as its launcher, in a directory removed after the test. */
@@ -213,35 +195,6 @@ ${OWNER_LIVENESS_SOURCE}
     expect(isAlive(reusedPid.pid), 'a process that is not a worker daemon was killed because a heartbeat named its pid').toBe(true)
   })
 
-  it("ends a stand-in's child whose command line reads back empty while the pipe it shares is open", async () => {
-    const holder = start([launcherScript('tie-open'), WORKER_DAEMON_FLAG])
-    await holder.ready
-    const child = spawnOwnedDecoy(['--tied-child'])
-    try {
-      const gone = new Promise<void>((resolve) => child.once('exit', () => resolve()))
-      grandchildren.push({ pid: child.pid as number, holder })
-      expect(() => endGrandchildren({ readCommandLine: () => null })).not.toThrow()
-      await gone
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
-    }
-  })
-
-  it('leaves an unreadable pid alone, and throws, once the pipe its stand-in held has closed', async () => {
-    const holder = start([launcherScript('tie-closed'), WORKER_DAEMON_FLAG])
-    await holder.ready
-    const child = spawnOwnedDecoy(['--tied-child'])
-    try {
-      spawned[spawned.length - 1]!.kill('SIGKILL')
-      await holder.closed
-      grandchildren.push({ pid: child.pid as number, holder })
-      expect(() => endGrandchildren({ readCommandLine: () => null })).toThrow()
-      expect(child.exitCode === null && child.signalCode === null, 'a process whose pipe had closed was signalled').toBe(true)
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
-    }
-  })
-
   it('leaves a worker daemon of another launcher alone', async () => {
     const launcher = launcherScript('c')
     const otherLauncher = launcherScript('c-other')
@@ -264,7 +217,7 @@ ${OWNER_LIVENESS_SOURCE}
     await daemon.ready
     const childPid = Number(/ready (\d+) /.exec(daemon.output())?.[1])
     expect(Number.isInteger(childPid) && childPid > 0, `the daemon did not print its child's pid: ${daemon.output()}`).toBe(true)
-    grandchildren.push({ pid: childPid, holder: daemon })
+    grandchildPids.push(childPid)
 
     killDaemonsUnder(root, launcher)
     await daemon.exited
