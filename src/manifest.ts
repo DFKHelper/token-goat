@@ -7,6 +7,7 @@ import { resolveOnPath, spawnResolvedSync } from './process_util.js'
 
 import { WEB_FETCH_KEY_SEP, epochReadCounts, getSessionFiles, getSessionWebFetches, getSessionBashOutputs, getSessionBashReruns, mergeEpochBase, wasEditedSinceCompaction } from './session.js'
 import type { FileEntry, SerializedSession } from './session.js'
+import { HOOK_PROBE_ENV } from './stats.js'
 import { listSiblingSessionStates } from './session_store.js'
 import { foldPath, toKB } from './util.js'
 import { gitFindings } from './git_hint.js'
@@ -328,6 +329,8 @@ function buildSafeToDiscardSection(files: FileEntry[]): FitSection[] {
 /** Fold `mem epoch` (token-goat-mem's monotonic counter, when the `mem` binary is on PATH) into the compaction manifest, so a resumed session can tell whether mem's fact store has advanced since this transcript was captured. FINDING (searched for at implementation time): this codebase has no existing tracking of a "current live TGMEM block" anywhere -- no `TGMEM` marker, no in-session summary of facts mem currently holds. `hooks_compact.ts`'s manifest tracks only file reads/edits/web fetches/bash-output caching (see {@link buildManifest}); nothing here shadows mem's own state. Per spec, that gap is reported rather than papered over with a fabricated block-tracking mechanism: this section folds in `mem epoch`'s bare integer alone, with an explicit note that no live TGMEM block is tracked in this session. Must fail open: `mem` may be absent from PATH, may error, or may hang. `mem` is resolved on PATH and launched through `spawnResolvedSync`, because an npm or cargo install leaves a `.cmd` shim on Windows that a bare `spawnSync('mem')` cannot start; the timeout bounds the wait to {@link MEM_EPOCH_TIMEOUT_MS} and any failure -- not on PATH, non-zero exit, timeout kill, unparsable stdout -- silently omits the section. No error is ever surfaced and compaction never blocks or fails because of this. */
 export function buildMemEpochSection(timeoutMs: number = MEM_EPOCH_TIMEOUT_MS): FitSection[] {
   let result: ReturnType<typeof spawnResolvedSync>
+  // A diagnostic call (the install self-test) must not run a foreign mem that writes state under the home.
+  if (process.env[HOOK_PROBE_ENV] === '1') return []
   try {
     const resolved = resolveOnPath('mem')
     if (resolved === null) return []

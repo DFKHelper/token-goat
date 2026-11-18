@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { SHIM_FALLBACK_TIMEOUT_MS } from '../src/bridges/shim_common.js'
 import { buildManifest, buildMemEpochSection, MEM_EPOCH_TIMEOUT_MS } from '../src/manifest.js'
+import { HOOK_PROBE_ENV } from '../src/stats.js'
 
 // Provenance: HAND-DERIVED. The shim is a stand-in for the npm/cargo-installed `mem` launcher, which is a `.cmd` file on Windows (Node's spawnSync cannot run those without cmd.exe) and an executable script elsewhere; the printed 7 is an arbitrary epoch. No child_process mock: this exercises the real PATH resolution.
 describe('buildManifest mem epoch section with a real PATH shim', () => {
@@ -56,6 +57,26 @@ describe('buildManifest mem epoch section with a real PATH shim', () => {
   it('keeps the default limit above the measured stalls and well inside the shim fallback budget', () => {
     expect(MEM_EPOCH_TIMEOUT_MS).toBeGreaterThan(1043)
     expect(MEM_EPOCH_TIMEOUT_MS).toBeLessThanOrEqual(SHIM_FALLBACK_TIMEOUT_MS.claudecode / 4)
+  })
+
+  it('never runs the launcher for a diagnostic probe call, which must leave no state of mem behind', () => {
+    const marker = path.join(dir, 'ran')
+    const cmdBody = `@echo off\r\necho x> "${marker}"\r\necho 7\r\n`
+    if (process.platform === 'win32') fs.writeFileSync(path.join(dir, 'mem.cmd'), cmdBody)
+    else fs.writeFileSync(path.join(dir, 'mem'), `#!/bin/sh\necho x > '${marker}'\necho 7\n`, { mode: 0o755 })
+    process.env['PATH'] = dir + path.delimiter + (savedPath ?? '')
+    const savedProbe = process.env[HOOK_PROBE_ENV]
+    process.env[HOOK_PROBE_ENV] = '1'
+    try {
+      expect(buildMemEpochSection(60_000)).toEqual([])
+      expect(fs.existsSync(marker)).toBe(false)
+    } finally {
+      if (savedProbe === undefined) delete process.env[HOOK_PROBE_ENV]
+      else process.env[HOOK_PROBE_ENV] = savedProbe
+    }
+    // The same launcher outside a probe is run, so the row above cannot pass by the launcher being broken.
+    expect(buildMemEpochSection(60_000).flatMap((s) => s.header).join('\n')).toContain('mem epoch: 7')
+    expect(fs.existsSync(marker)).toBe(true)
   })
 
   it('omits the section when no mem launcher is on PATH', () => {
