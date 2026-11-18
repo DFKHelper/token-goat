@@ -10,6 +10,8 @@ import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './crea
 import { kimiHome, kimiConfigPath, removeHookTargetFile } from '../purge.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeConfigText, writeIfDifferent } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
+import { guardVersionOf } from '../hook_guard.js'
+import { verifiedInstall } from '../hook_selftest.js'
 import { nativeHookBinary, nativeHookCommandLine, HookCommandRewriteError, hookCommandRewrittenSpan, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { KIMI_HOOK_SCRIPT } from './kimi.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
@@ -166,7 +168,7 @@ function kimiArtifactPaths(): string[] {
 
 /** Install the Kimi Code CLI integration. */
 export function installKimi(): KimiInstallResult {
-  return recordCreatedBy(kimiArtifactPaths(), installKimiFiles)
+  return verifiedInstall([kimiConfigPath()], () => recordCreatedBy(kimiArtifactPaths(), installKimiFiles))
 }
 
 function installKimiFiles(): KimiInstallResult {
@@ -279,7 +281,7 @@ export function wiredKimiHookWords(): WiredHookEntry[] {
   if (!Array.isArray(hooks)) return []
   const scriptPath = kimiHookScriptPath()
   const expected = new Set(KIMI_HOOK_EVENTS.map((e) => kimiHookCommandFor(scriptPath, KIMI_EVENT_ARG[e] ?? '', { sync: false })))
-  return hooks.filter((h) => isKimiTokenGoatCommand(h?.command)).map((h) => ({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'), current: expected.has(h.command) }))
+  return hooks.filter((h) => isKimiTokenGoatCommand(h?.command)).map((h) => ({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'), current: expected.has(h.command), ...(process.platform === 'win32' ? {} : { guarded: guardVersionOf(h.command) !== undefined }) }))
 }
 
 /** Is the Kimi Code integration currently present and up to date? */

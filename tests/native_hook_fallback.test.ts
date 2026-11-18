@@ -34,6 +34,7 @@ vi.mock('node:child_process', async (importOriginal) => {
   return { ...original, spawnSync, default: { ...original, spawnSync } }
 })
 
+import { dataDir } from '../src/constants.js'
 import { nativeHookBinary } from '../src/native_hook.js'
 import { clearModuleCaches } from '../src/reset.js'
 
@@ -52,6 +53,8 @@ beforeEach(() => {
   fs.mkdirSync(path.dirname(bin), { recursive: true })
   fs.writeFileSync(bin, 'binary-v1')
   fs.writeFileSync(entry, '')
+  // The copy lives at one path under the data directory for every install, so each test starts without the previous test's copy.
+  fs.rmSync(path.join(dataDir(), 'native'), { recursive: true, force: true })
   vi.stubEnv('TOKEN_GOAT_NATIVE_HOOKS', '1')
   faults.renames = 0
   faults.selftests = []

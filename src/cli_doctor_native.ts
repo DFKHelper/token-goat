@@ -12,7 +12,7 @@ import { getDb } from './db.js'
 import type { DoctorResult } from './doctor_result.js'
 import { nativeHookCounts, type NativeHookCounts } from './hook_latency.js'
 import { HOOK_BROKEN_FILE, readHookBroken } from './hook_pointer.js'
-import { wiredClaudeHookWords } from './install.js'
+import { wiredClaudeHookEntries } from './install.js'
 import { nativeCopyCurrent, nativeCopyPath, nativeHookBinary, nativeSelftest, packagedNativeBinary, parseNativeInvocation, type NativeSelftest, type WiredHookEntry } from './native_hook.js'
 import { displaySafeText } from './paths.js'
 import { resolveOnPath } from './process_util.js'
@@ -54,19 +54,19 @@ export function nativeAvailability(entry: string | undefined = process.argv[1]):
   const enabled = nativeHooksEnabled()
   const target = `${process.platform}-${process.arch}`
   const packaged = packagedNativeBinary(entry)
-  const copyStale = process.platform === 'win32' && packaged !== undefined && entry !== undefined && !nativeCopyCurrent(packaged, nativeCopyPath(entry))
+  const copyStale = process.platform === 'win32' && packaged !== undefined && entry !== undefined && !nativeCopyCurrent(packaged, nativeCopyPath())
   const expected = nativeHookBinary(entry, { sync: false })
   // A current copy (or a Linux binary) that still yields no decision failed its self-test, and that failure is the reason an install writes the Node form.
-  const selftest = enabled && packaged !== undefined && !copyStale && expected === undefined ? nativeSelftest(process.platform === 'win32' && entry !== undefined ? nativeCopyPath(entry) : packaged) : undefined
-  const copy = process.platform === 'win32' && enabled && packaged !== undefined && entry !== undefined ? nativeCopyPath(entry) : undefined
+  const selftest = enabled && packaged !== undefined && !copyStale && expected === undefined ? nativeSelftest(process.platform === 'win32' && entry !== undefined ? nativeCopyPath() : packaged) : undefined
+  const copy = process.platform === 'win32' && enabled && packaged !== undefined && entry !== undefined ? nativeCopyPath() : undefined
   return { enabled, target, packaged, expected, copyStale, ...(copy === undefined ? {} : { copy }), ...(selftest === undefined ? {} : { selftest }) }
 }
 
 /** Every harness scope an installer can wire the native client into, read back from its config. */
 export function nativeWirings(): NativeWiring[] {
   return [
-    { label: 'Claude Code (user)', install: 'token-goat install', harnesses: ['claudecode'], entries: wiredClaudeHookWords('user').map((words) => ({ words })) },
-    { label: 'Claude Code (project)', install: 'token-goat install --project', harnesses: ['claudecode'], entries: wiredClaudeHookWords('project').map((words) => ({ words })) },
+    { label: 'Claude Code (user)', install: 'token-goat install', harnesses: ['claudecode'], entries: wiredClaudeHookEntries('user') },
+    { label: 'Claude Code (project)', install: 'token-goat install --project', harnesses: ['claudecode'], entries: wiredClaudeHookEntries('project') },
     { label: 'Codex', install: 'token-goat install --codex', harnesses: ['codex'], entries: wiredCodexHookWords() },
     { label: 'Grok CLI', install: 'token-goat install --grok', harnesses: ['grok'], entries: wiredGrokHookWords() },
     { label: 'Kimi Code', install: 'token-goat install --kimi', harnesses: ['kimi'], entries: wiredKimiHookWords() },
@@ -130,10 +130,12 @@ export function checkNativeHookWiring(wiring: NativeWiring, avail: NativeAvailab
   const row = (status: DoctorResult['status'], text: string): DoctorResult => ({ name, status, message: `${text}; ${tail}` })
   // An entry in the right form can still be an older build's line (one without the exit suffix, or the cmd-style Node form PowerShell cannot parse), which only a rewrite fixes.
   const outdated = wiring.entries.filter((e) => e.current === false).length
-  const settled = (text: string): DoctorResult => (outdated > 0 ? row('warn', `${text}, but ${outdated} of ${total} hook entries are not the command this build writes; ${run} to rewrite them`) : row('ok', text))
+  const unguarded = wiring.entries.filter((e) => e.guarded === false && parseNativeInvocation(e.words) !== undefined).length
+  const settled = (text: string): DoctorResult => (unguarded > 0 ? row('warn', `${text}, but ${unguarded} of ${total} hook entries are not the guarded form, so a missing native client breaks them instead of falling back to Node; ${run} to rewrite them`) : outdated > 0 ? row('warn', `${text}, but ${outdated} of ${total} hook entries are not the command this build writes; ${run} to rewrite them`) : row('ok', text))
 
   if (missing.length > 0) {
-    const broken = bins.filter((b) => missing.includes(b)).length
+    const broken = wiring.entries.filter((e) => e.guarded !== true && missing.includes(parseNativeInvocation(e.words)?.bin ?? '')).length
+    if (broken === 0) return row('warn', `the native hook client at ${missing.map(displaySafeText).join(', ')} no longer exists; the guarded hook entries fall back to the Node shim meanwhile; ${run} to restore the native client`)
     return row('fail', `${broken} of ${total} hook entries run the native hook client at ${missing.map(displaySafeText).join(', ')}, which no longer exists, so those events fail instead of falling back to Node; ${run} to rewrite them`)
   }
   const selfTested = new Set<string>()

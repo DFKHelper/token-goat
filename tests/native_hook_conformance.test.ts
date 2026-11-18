@@ -629,3 +629,95 @@ describe('begun stamp', () => {
     expect(mismatches).toEqual([])
   })
 })
+
+/** Every host and event the installers wire, run through the registered command in the host's shell with the client built by this run: the exe route as registered and the Node route with the client unresolvable. Rows come from what each installer writes, so a new event or host adds a row. */
+const NATIVE_TARGET = WIN || process.platform === 'linux'
+
+describe.runIf(NATIVE_TARGET)('the registered command of every host and event', () => {
+  const realArgv1 = process.argv[1]
+  const realNativeFlag = process.env['TOKEN_GOAT_NATIVE_HOOKS']
+  const rows: Array<{ host: string; label: string; command: string }> = []
+  let registered = ''
+
+  beforeAll(async () => {
+    const { installHooks, settingsPath } = await import('../src/install.js')
+    const { installCodex } = await import('../src/bridges/codex_install.js')
+    const { installGrok } = await import('../src/bridges/grok_install.js')
+    const { installKimi } = await import('../src/bridges/kimi_install.js')
+    const { copilotCliHooksDir, installCopilotHooksFile } = await import('../src/bridges/copilot_cli_install.js')
+    const { HOOKS_CONFIG_FILE } = await import('../src/bridges/copilot_hooks_owners.js')
+    const { codexConfigPath, grokConfigPath, kimiConfigPath } = await import('../src/purge.js')
+    const { guardedCommandsInText } = await import('../src/hook_selftest.js')
+    const { parseGuardedCommand } = await import('../src/hook_guard.js')
+    registered = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-conf-registered-'))
+    const bundle = path.join(registered, 'bundle')
+    const target = path.join(bundle, 'native', `${process.platform}-${process.arch}`)
+    fs.mkdirSync(target, { recursive: true })
+    fs.writeFileSync(path.join(bundle, 'token-goat.mjs'), "process.stdout.write('{}')\n")
+    fs.copyFileSync(bin, path.join(target, WIN ? 'tg-hook.exe' : 'tg-hook'))
+    process.argv[1] = path.join(bundle, 'token-goat.mjs')
+    process.env['TOKEN_GOAT_NATIVE_HOOKS'] = '1'
+    const claudeDir = path.dirname(settingsPath('user'))
+    if (!claudeDir.startsWith(os.tmpdir())) throw new Error(`the Claude config dir is outside the test root: ${claudeDir}`)
+    const hosts: Array<[string, () => unknown, () => string]> = [
+      ['claude', () => installHooks('user', { dev: true }), () => settingsPath('user')],
+      ['codex', installCodex, codexConfigPath],
+      ['grok', installGrok, grokConfigPath],
+      ['kimi', installKimi, kimiConfigPath],
+      ['copilot', () => installCopilotHooksFile(copilotCliHooksDir({}), 'copilot'), () => path.join(copilotCliHooksDir({}), HOOKS_CONFIG_FILE)],
+    ]
+    for (const [host, install, config] of hosts) {
+      fs.rmSync(path.dirname(config()), { recursive: true, force: true })
+      install()
+      for (const command of new Set(guardedCommandsInText(fs.readFileSync(config(), 'utf8')))) {
+        const parsed = parseGuardedCommand(command)
+        if (parsed?.kind !== 'v1') continue
+        const at = (flag: string): string => parsed.native[parsed.native.indexOf(flag) + 1] ?? '?'
+        rows.push({ host, label: `${host} ${at('--harness')} ${at('--event')} ${parsed.shell}`, command })
+      }
+    }
+  }, 600_000)
+
+  afterAll(() => {
+    process.argv[1] = realArgv1!
+    if (realNativeFlag === undefined) delete process.env['TOKEN_GOAT_NATIVE_HOOKS']
+    else process.env['TOKEN_GOAT_NATIVE_HOOKS'] = realNativeFlag
+    if (registered !== '') fs.rmSync(registered, { recursive: true, force: true })
+  })
+
+  it('covers every host that runs hooks through a shell this platform can guard', () => {
+    const hosts = new Set(rows.map((r) => r.host))
+    expect([...hosts].sort()).toEqual(WIN ? ['claude', 'codex', 'copilot', 'grok'] : ['claude', 'codex', 'copilot', 'grok', 'kimi'])
+    expect(rows.length).toBeGreaterThan(20)
+  })
+
+  it('answers a valid hook answer and exits 0 on the exe route and on the Node route, for every row', async () => {
+    const { realShellRunner } = await import('../src/hook_selftest.js')
+    const { buildGuardedCommand, parseGuardedCommand } = await import('../src/hook_guard.js')
+    const problems: string[] = []
+    for (const row of rows) {
+      const parsed = parseGuardedCommand(row.command)
+      if (parsed?.kind !== 'v1') throw new Error(`not a guarded command: ${row.label}`)
+      const event = parsed.native[parsed.native.indexOf('--event') + 1] ?? 'unknown'
+      const input = JSON.stringify({ hook_event_name: event, session_id: 'tg-conformance' })
+      const nowhere = path.join(registered, 'no-such-dir', path.basename(parsed.native[0]!))
+      const viaNode = buildGuardedCommand({ shell: parsed.shell, native: [nowhere, ...parsed.native.slice(1)], safe: parsed.safe, marker: path.join(registered, `marker-${problems.length}-${row.host}`) })
+      for (const [route, command] of [['exe', row.command], ['node', viaNode]] as const) {
+        const run = realShellRunner(parsed.shell, command, input)
+        if (run === null) continue
+        const lines = run.stdout.split(/\r?\n/).filter((l) => l.trim() !== '')
+        const objects = lines.every((l) => {
+          try {
+            const v: unknown = JSON.parse(l)
+            return v !== null && typeof v === 'object' && !Array.isArray(v)
+          } catch {
+            return false
+          }
+        })
+        const answered = lines.length > 0 ? objects : row.host === 'kimi'
+        if (run.status !== 0 || !answered) problems.push(`${row.label} (${route}): exit ${String(run.status)}, stdout ${JSON.stringify(run.stdout.slice(0, 120))}`)
+      }
+    }
+    expect(problems).toEqual([])
+  }, 600_000)
+})

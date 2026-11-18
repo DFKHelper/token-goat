@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { tmpdir } from 'node:os'
 import * as path from 'node:path'
+import { parseGuardedCommand } from '../src/hook_guard.js'
 
 import type * as NodeOs from 'node:os'
 
@@ -184,22 +185,15 @@ describe('installCopilotCli (user scope)', () => {
     expect(entry?.bash).toBe(entry?.command)
   })
 
-  it('writes direct exec entries and recognizes their native argv without syncing during a wiring check', async () => {
+  it('writes guarded command strings for the native client and recognizes their argv without syncing during a wiring check', async () => {
     const nativeBin = path.join(TMP, 'tg-hook.exe')
     const entryPath = process.argv[1]
     if (entryPath === undefined || entryPath === '') throw new Error('the test runner must provide its entry path')
     const nativeHookBinaryMock = vi.fn<typeof NativeHook.nativeHookBinary>((candidate) => (candidate ? nativeBin : undefined))
-    const nativeHookExecPartsMock = vi.fn<typeof NativeHook.nativeHookExecParts>((bin, harness, scriptPath, event, entry = process.argv[1]) =>
-      entry === undefined || entry === '' ? undefined : {
-        command: bin,
-        args: ['--harness', harness, '--', process.execPath, scriptPath, event, entry],
-      },
-    )
     vi.resetModules()
     vi.doMock('../src/native_hook.js', async (importOriginal) => ({
       ...(await importOriginal<typeof NativeHook>()),
       nativeHookBinary: nativeHookBinaryMock,
-      nativeHookExecParts: nativeHookExecPartsMock,
     }))
     try {
       const { installCopilotCli: installWithNative, wiredCopilotHookWords } = await import('../src/bridges/copilot_cli_install.js')
@@ -208,24 +202,18 @@ describe('installCopilotCli (user scope)', () => {
       const config = JSON.parse(fs.readFileSync(result.configPath, 'utf8')) as {
         hooks: Record<string, GeneratedCopilotHookEntry[]>
       }
-      const entry = config.hooks['preToolUse']?.[0]
-      expect(entry).toMatchObject({
-        type: 'command',
-        exec: nativeBin,
-        args: expectedArgs,
-        timeoutSec: 60,
-        allowedEnvVars: expect.arrayContaining(['COPILOT_HOME']),
-      })
-      expect(entry).not.toHaveProperty('command')
-      expect(entry).not.toHaveProperty('bash')
-      expect(entry).not.toHaveProperty('powershell')
+      const entry = config.hooks['preToolUse']?.[0] as Record<string, unknown> | undefined
+      expect(entry).toMatchObject({ type: 'command', timeoutSec: 60, allowedEnvVars: expect.arrayContaining(['COPILOT_HOME']) })
+      expect(entry).not.toHaveProperty('exec')
+      expect(entry).not.toHaveProperty('args')
+      for (const field of ['bash', 'powershell']) {
+        const parsed = parseGuardedCommand(String(entry?.[field]))
+        expect(parsed?.kind, field).toBe('v1')
+        expect(parsed?.kind === 'v1' ? parsed.native.slice(1) : [], field).toEqual(expect.arrayContaining(expectedArgs.slice(0, 4)))
+      }
 
-      expect(wiredCopilotHookWords()).toContainEqual({
-        words: [nativeBin, ...expectedArgs],
-        current: true,
-      })
+      expect(wiredCopilotHookWords().some((w) => w.current && w.words[0] === nativeBin && expectedArgs.every((x) => w.words.includes(x)))).toBe(true)
       expect(nativeHookBinaryMock).toHaveBeenCalledWith(entryPath, { sync: false })
-      expect(nativeHookExecPartsMock).toHaveBeenCalledWith(nativeBin, 'copilot_cli', result.scriptPath, 'preToolUse')
     } finally {
       vi.doUnmock('../src/native_hook.js')
       vi.resetModules()

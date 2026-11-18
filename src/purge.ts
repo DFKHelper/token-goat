@@ -11,6 +11,8 @@ import { HOOKS_CONFIG_FILE } from './bridges/copilot_hooks_owners.js'
 import { claudeConfigDir } from './claude_config_dir.js'
 import { copilotCliUserRoot } from './copilot_home.js'
 import { emitErr } from './emit.js'
+import { stringLiterals } from './hook_guard.js'
+import { parseNativeInvocation, splitHookCommand } from './native_hook.js'
 import { foldPath } from './path_containment.js'
 import { removeFileInScope } from './util.js'
 
@@ -181,7 +183,7 @@ export interface ScanOptions {
 /** The configs a scan read, and why it cannot be trusted to have seen them all. */
 export interface ReferenceScan {
   /** Each readable config with its text in comparison form. */
-  readonly configs: ReadonlyArray<{ readonly path: string; readonly text: string }>
+  readonly configs: ReadonlyArray<ConfigRead>
   /** One reason per config or source that exists but could not be read or parsed; any entry makes every path read as referenced. */
   readonly ambiguous: readonly string[]
 }
@@ -206,8 +208,29 @@ function hostConfigPaths(cwd: string): string[] {
   ]
 }
 
+/** One config as a scan read it: its text, and the paths its token-goat hook commands name, read through the one parser. */
+interface ConfigRead {
+  readonly path: string
+  readonly text: string
+  readonly parsed: readonly string[]
+}
+
+/** The paths every token-goat hook command in a config names, in comparison form, read through the one parser (guarded and older forms alike): spelling-proof where the raw text is not, such as a path whose apostrophe the shell quoting split. */
+function commandPaths(raw: string): string[] {
+  const found: string[] = []
+  for (const lit of stringLiterals(raw)) {
+    if (!lit.includes('tg-hook') && !lit.includes('tg-guard-v')) continue
+    for (const shell of ['sh', 'powershell', 'cmd'] as const) {
+      const native = parseNativeInvocation(splitHookCommand(lit, shell))
+      if (native === undefined) continue
+      for (const w of [native.bin, native.entry, ...native.wrapped]) if (w !== undefined && path.isAbsolute(w)) found.push(comparable(w))
+    }
+  }
+  return found
+}
+
 /** Read one config into `out`. A missing file names nothing; one that exists and cannot be read, or a `.json` one that does not parse, is ambiguous. */
-function readConfig(file: string, out: { configs: Array<{ path: string; text: string }>; ambiguous: string[] }): void {
+function readConfig(file: string, out: { configs: ConfigRead[]; ambiguous: string[] }): void {
   let raw: string
   try {
     raw = fs.readFileSync(file, 'utf8')
@@ -224,12 +247,12 @@ function readConfig(file: string, out: { configs: Array<{ path: string; text: st
       out.ambiguous.push(`${file} is not valid JSON`)
     }
   }
-  out.configs.push({ path: file, text: comparable(raw) })
+  out.configs.push({ path: file, text: comparable(raw), parsed: commandPaths(raw) })
 }
 
 /** Read every config that can name a hook target: each host's user config, the project configs of `cwd`, and every file in the created-configs ledger (a project install records its settings file there). */
 export function scanReferences(opts: ScanOptions = {}): ReferenceScan {
-  const out = { configs: [] as Array<{ path: string; text: string }>, ambiguous: [] as string[] }
+  const out = { configs: [] as ConfigRead[], ambiguous: [] as string[] }
   try {
     const skip = new Set((opts.skipConfigs ?? []).map((p) => foldPath(path.resolve(p))))
     const seen = new Set<string>()
@@ -272,7 +295,7 @@ export function referencedBy(target: string, scan: ReferenceScan): string | unde
   }
   for (const config of scan.configs) {
     for (const needle of needles) {
-      if (config.text.includes(needle)) return `${config.path} still names it`
+      if (config.text.includes(needle) || config.parsed.some((p) => p === needle || p.startsWith(`${needle}/`))) return `${config.path} still names it`
     }
   }
   return undefined

@@ -7,9 +7,11 @@ import * as path from 'node:path'
 import { nativeHooksEnabled } from './config.js'
 import { dataDir } from './constants.js'
 import { emitErr } from './emit.js'
-import { clearHookBroken, writeHookPointer } from './hook_pointer.js'
+import { noopFor } from './hook_adapters.js'
+import { buildGuardedCommand, parseGuardedCommand, HookCommandRewriteError } from './hook_guard.js'
+import { clearHookBroken, hookBrokenPath, writeHookPointer } from './hook_pointer.js'
 import { displaySafeText } from './paths.js'
-import { powershellHookLine, quotePowershellPath, quotePosixShellWord } from './process_util.js'
+import { quotePowershellPath, quotePosixShellWord } from './process_util.js'
 import { registerReset } from './reset.js'
 import { withRetryOnLock } from './util.js'
 
@@ -43,16 +45,9 @@ export function packagedNativeBinary(entryPath: string | undefined = process.arg
   return bin !== undefined && fs.existsSync(bin) ? bin : undefined
 }
 
-/** Where a Windows install runs the binary from: a copy in the data directory, keyed by the bundle directory's real path so each install (global, a dev checkout) keeps one stable path that settings files can name across upgrades. The copy exists because Windows will not delete or replace an executable that is running: a harness mid-hook held the packaged binary open, and `npm install -g` then failed with EBUSY and left a half-upgraded tree (package.json of the new version, binary of the old). A copy outside the package is never in npm's way, and replacing it while it runs is handled by {@link syncNativeCopy}. */
-export function nativeCopyPath(entryPath: string, home: string = dataDir()): string {
-  let bundleDir = path.dirname(entryPath)
-  try {
-    bundleDir = fs.realpathSync.native(bundleDir)
-  } catch {
-    // an unresolvable directory keys by its spelling
-  }
-  const id = crypto.createHash('sha256').update(bundleDir.toLowerCase()).digest('hex').slice(0, 16)
-  return path.join(home, 'native', id, exeName('win32'))
+/** Where a Windows install runs the binary from: the one copy `<dataDir>/native/tg-hook.exe`, a path settings files can name across upgrades, dev checkouts and reinstalls, so a registration never names a directory that a later install replaces. The copy exists because Windows will not delete or replace an executable that is running: a harness mid-hook held the packaged binary open, and `npm install -g` then failed with EBUSY and left a half-upgraded tree. A copy outside the package is never in npm's way, and replacing it while it runs is handled by {@link syncNativeCopy}, which never leaves the path absent. Registrations written by earlier builds name `native/<hash>/tg-hook.exe`; those copies stay while any config references them. */
+export function nativeCopyPath(home: string = dataDir()): string {
+  return path.join(home, 'native', exeName('win32'))
 }
 
 /** Leftovers of earlier replacements in the copy's directory: `.old` files that were running when they were moved aside, and `.new` files a crash left behind. The tag is the writing process's pid as 8 hex digits and 12 random ones; a 12-digit tag is an older build's and names no pid. */
@@ -304,7 +299,7 @@ export function nativeHookBinary(entryPath: string | undefined = process.argv[1]
       why = undefined
       let candidate: string | undefined = packaged
       if (process.platform === 'win32') {
-        const copy = nativeCopyPath(entryPath)
+        const copy = nativeCopyPath()
         const current = sync ? syncNativeCopy(packaged, copy) : nativeCopyCurrent(packaged, copy)
         if (current) candidate = copy
         else {
@@ -367,8 +362,9 @@ function quoteFor(shell: HookShell, text: string): string {
 /** The native command line for a harness that runs hooks through `shell`, or undefined when there is no entry path to name. A PowerShell one is powershellHookLine's, for the call operator and the hook's own exit code. */
 export function nativeHookCommandLine(shell: HookShell, bin: string, harness: NativeHarness, scriptPath: string, event: string, entry: string | undefined = process.argv[1]): string | undefined {
   if (nodeHookArgv(scriptPath, event, entry) === undefined) return undefined
-  const line = nativeWords(bin, harness, scriptPath, event, entry!).map((w) => (w.quote ? quoteFor(shell, w.text) : w.text)).join(' ')
-  return shell === 'powershell' ? powershellHookLine(line) : line
+  const words = nativeWords(bin, harness, scriptPath, event, entry!)
+  if (shell !== 'cmd') return buildGuardedCommand({ shell, native: words.map((w) => w.text), safe: noopFor(harness, event), marker: hookBrokenPath() })
+  return words.map((w) => (w.quote ? quoteFor(shell, w.text) : w.text)).join(' ')
 }
 
 /** The native exec-form entry (Claude Code >= 2.1.139): the binary as `command`, everything else as `args`, with no shell in between. */
@@ -379,6 +375,8 @@ export function nativeHookExecParts(bin: string, harness: NativeHarness, scriptP
 
 /** Split a hook command string into the argv its harness's shell hands the program, for the quoting token-goat writes: single quotes (with `'\''` in a POSIX shell, `''` in PowerShell), double quotes (backslash escapes only in a POSIX shell off Windows, where hookCommandFor writes them), and bare words. A leading PowerShell call operator is dropped, and a PowerShell line ends at its first unquoted `;` (what follows is POWERSHELL_EXIT_SUFFIX, not the program's argv). Not a general shell parser: variables, globs and operators are not expanded, because nothing token-goat writes contains them. */
 export function splitHookCommand(command: string, shell: HookShell): string[] {
+  const guarded = parseGuardedCommand(command)
+  if (guarded !== undefined) return guarded.kind === 'v1' ? guarded.native : []
   const words: string[] = []
   let text = command.trim()
   if (shell === 'powershell' && text.startsWith('& ')) text = text.slice(2)
@@ -421,8 +419,7 @@ export function splitHookCommand(command: string, shell: HookShell): string[] {
   return words
 }
 
-/** Thrown by an installer, before it writes any hook config, when a command it would write contains text the harness rewrites before the command runs, so the hook would run something other than token-goat. */
-export class HookCommandRewriteError extends Error {}
+export { HookCommandRewriteError }
 
 /** The first span of `command` that `reader` replaces before the command runs, or undefined. `cmd`: cmd.exe's `%NAME%`, expanded in its first parsing phase, before it reads a single quote, so no quoting keeps it literal. `grok`: `$NAME` and `${...}`, which Grok CLI substitutes itself when it loads a hook, whatever the quoting and whatever the shell, refusing to run a hook that names an unset variable (grok-build xai-grok-hooks `env_expand.rs` `iter_env_var_references`, which has no escape, and `runner/command.rs` `find_unresolved_env_vars`). */
 export function hookCommandRewrittenSpan(command: string, reader: 'cmd' | 'grok'): string | undefined {
@@ -435,6 +432,8 @@ export interface WiredHookEntry {
   readonly words: string[]
   /** Whether it is exactly a command this build writes for that harness now; undefined where the reader does not judge it. */
   readonly current?: boolean
+  /** Whether the registration is the guarded form, which survives a missing native client; undefined where the reader does not judge it. */
+  readonly guarded?: boolean
 }
 
 /** A native-form invocation read back from a hook's argv. */

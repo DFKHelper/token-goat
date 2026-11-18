@@ -8,7 +8,9 @@ import { removeHookTargetFile } from '../purge.js'
 import { hookCommandFor, hookPowershellCommand, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './copilot_cli.js'
-import { nativeHookBinary, nativeHookCommandLine, nativeHookExecParts, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
+import { guardVersionOf } from '../hook_guard.js'
+import { verifiedInstall } from '../hook_selftest.js'
+import { nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { buildGuidanceBlock } from './guidance_block.js'
 import { projectScopeRoot, withInstallScope } from './project_scope_guard.js'
 import { loadConfig } from '../config.js'
@@ -191,25 +193,16 @@ export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredH
     const known = (COPILOT_CLI_HOOK_EVENTS as readonly string[]).includes(event) || (VSCODE_ONLY_HOOK_EVENTS as readonly string[]).includes(event)
     const hookEvent = known ? event as CopilotCliHookEvent : undefined
     const expected = hookEvent === undefined ? undefined : copilotHookCommandsFor(scriptPath, hookEvent, { sync: false })
-    const nativeBin = hookEvent === undefined ? undefined : nativeHookBinary(process.argv[1], { sync: false })
-    const expectedExec = nativeBin === undefined || hookEvent === undefined ? undefined : nativeHookExecParts(nativeBin, 'copilot_cli', scriptPath, hookEvent)
     for (const h of Array.isArray(entries) ? entries : []) {
       if (typeof h?.exec === 'string') {
         const args = Array.isArray(h.args) && h.args.every((arg: unknown) => typeof arg === 'string') ? h.args : undefined
-        const hasShellFields = h.command !== undefined || h.bash !== undefined || h.powershell !== undefined
-        const current =
-          !hasShellFields &&
-          expectedExec !== undefined &&
-          args !== undefined &&
-          h.exec === expectedExec.command &&
-          args.length === expectedExec.args.length &&
-          args.every((arg, index) => arg === expectedExec.args[index])
-        out.push({ words: [h.exec, ...(args ?? [])], current })
+        // The direct exec form dies with its binary, so it is never what this build writes.
+        out.push({ words: [h.exec, ...(args ?? [])], current: false, guarded: false })
         continue
       }
       if (typeof h?.command !== 'string') continue
       const current = expected !== undefined && h.command === expected.command && h.bash === expected.bash && h.powershell === expected.powershell
-      out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'), current })
+      out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'cmd' : 'sh'), current, guarded: [h.bash, h.powershell].every((c) => typeof c === 'string' && guardVersionOf(c) !== undefined) })
     }
   }
   return out
@@ -218,25 +211,8 @@ export function wiredCopilotHookWords(opts: CopilotCliScopeOptions = {}): WiredH
 function buildConfig(scriptPath: string, owners: ReadonlySet<CopilotHooksOwner>): CopilotCliConfig {
   const hooks: Partial<Record<CopilotCliHookEvent, CopilotHookEntry[]>> = {}
   const events: readonly CopilotCliHookEvent[] = owners.has('vscode') ? [...COPILOT_CLI_HOOK_EVENTS, ...VSCODE_ONLY_HOOK_EVENTS] : COPILOT_CLI_HOOK_EVENTS
-  const nativeBin = nativeHookBinary(process.argv[1])
   for (const event of events) {
-    const parts = nativeBin === undefined ? undefined : nativeHookExecParts(nativeBin, 'copilot_cli', scriptPath, event)
-    hooks[event] = [
-      parts === undefined
-        ? {
-            type: 'command',
-            ...copilotHookCommandsFor(scriptPath, event),
-            timeoutSec: HOOK_TIMEOUT_SEC,
-            allowedEnvVars: [...ALLOWED_ENV_VARS],
-          }
-        : {
-            type: 'command',
-            exec: parts.command,
-            args: parts.args,
-            timeoutSec: HOOK_TIMEOUT_SEC,
-            allowedEnvVars: [...ALLOWED_ENV_VARS],
-          },
-    ]
+    hooks[event] = [{ type: 'command', ...copilotHookCommandsFor(scriptPath, event), timeoutSec: HOOK_TIMEOUT_SEC, allowedEnvVars: [...ALLOWED_ENV_VARS] }]
   }
   return { version: 1, hooks }
 }
@@ -285,6 +261,10 @@ export interface CopilotHooksFileResult {
 
 /** Write the shared hooks config and shim into `hooksDir` and record `owner` as relying on them. */
 export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwner): CopilotHooksFileResult {
+  return verifiedInstall([path.join(hooksDir, HOOKS_CONFIG_FILE)], () => installCopilotHooksFileUnverified(hooksDir, owner))
+}
+
+function installCopilotHooksFileUnverified(hooksDir: string, owner: CopilotHooksOwner): CopilotHooksFileResult {
   const configPath = path.join(hooksDir, HOOKS_CONFIG_FILE)
   const scriptPath = path.join(hooksDir, HOOKS_SCRIPT_FILE)
   const legacyScriptPath = path.join(hooksDir, LEGACY_HOOKS_SCRIPT_FILE)

@@ -592,6 +592,8 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
     'process_util.ts::return `\'${value.replace(/\'/g, "\'\\\\\'\'")}\'`',
     'process_util.ts::return `\'${value.replace(/\'/g, "\'\'")}\'`',
   ].map((key) => ({ key, reason: R.quoter })),
+  // hook_guard.ts quoteWord is the guarded-command quoter itself: one sh quote and one PowerShell quote on the same line.
+  { key: 'hook_guard.ts::return shell === \'sh\' ? `\'${text.replace(/\'/g, "\'\\\\\'\'")}\'` : `\'${text.replace(PS_QUOTES, (q) => q + q)}\'`', reason: R.quoter, count: 2 },
   ...[
     'hooks_bash_commands.ts::.replace(/"((?:[^"\\\\]|\\\\.)*)"/g, (_m, inner: string) => \'"\' + \' \'.repeat(inner.length) + \'"\')',
     'hooks_bash_commands.ts::.replace(/\'([^\']*)\'/g, (_m, inner: string) => "\'" + \' \'.repeat(inner.length) + "\'")',

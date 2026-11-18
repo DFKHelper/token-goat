@@ -12,6 +12,8 @@ import { codexHomeDir, codexConfigPath, removeHookTargetFile } from '../purge.js
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, hookPowershellCommand, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, writeConfigText } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
 import { anchoredMarkerPattern } from '../install.js'
+import { guardVersionOf } from '../hook_guard.js'
+import { verifiedInstall } from '../hook_selftest.js'
 import { nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { CODEX_HOOK_SCRIPT } from './codex.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
@@ -297,7 +299,7 @@ export interface CodexInstallResult {
 
 /** Install the Codex CLI integration. Always additive: never touches Claude Code's `~/.claude/settings.json` (the caller is responsible for also running the base install per README's "patches both Claude Code and Codex CLI in one pass"). Idempotent -- a second call reports `alreadyInstalled: true` and does not duplicate any hook entry or AGENTS.md block. */
 export function installCodex(): CodexInstallResult {
-  return recordCreatedBy(codexArtifactPaths(), installCodexFiles)
+  return verifiedInstall([codexConfigPath()], () => recordCreatedBy(codexArtifactPaths(), installCodexFiles))
 }
 
 /** Every file the Codex integration writes; the directories above them are what the created-configs ledger tracks too. */
@@ -544,7 +546,7 @@ export function wiredCodexHookWords(): WiredHookEntry[] {
     if (event === 'state' || !Array.isArray(groups)) continue
     for (const g of groups) {
       for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
-        if (isCodexTokenGoatCommand(h?.command)) out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'), current: expected.has(h.command) })
+        if (isCodexTokenGoatCommand(h?.command)) out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'), current: expected.has(h.command), guarded: guardVersionOf(h.command) !== undefined })
       }
     }
   }

@@ -12,7 +12,9 @@ import { claudeConfigDir } from './claude_config_dir.js'
 import { compareSemver } from './cli_upgrade.js'
 import { assertHookEntryAllowed } from './install_entry.js'
 import { loadConfig } from './config.js'
-import { nativeHookBinary, nativeHookCommandLine, nativeHookExecParts, parseNativeInvocation, splitHookCommand } from './native_hook.js'
+import { guardVersionOf } from './hook_guard.js'
+import { assertRegisteredCommandsWork } from './hook_selftest.js'
+import { nativeHookBinary, nativeHookCommandLine, parseNativeInvocation, splitHookCommand, type WiredHookEntry } from './native_hook.js'
 import { toolMatcherFor } from './hook_registry.js'
 import { normalizeDarwinSystemAlias } from './paths.js'
 import { resolveOnPath, spawnResolvedSync } from './process_util.js'
@@ -115,8 +117,11 @@ export function execFormSupportedForVersionOutput(stdout: string): boolean {
 /** The hook entry this build wires for `event`: exec-form when {@link claudeExecFormHooksSupported}, string-form otherwise, each with the native client in front of the Node command when {@link nativeHookBinary} names one. The native string form is quoted for a POSIX shell on every platform: Claude Code runs a string-form hook through Git Bash on Windows and /bin/sh elsewhere. */
 export function expectedHookEntryFor(scriptPath: string, event: string, opts: { sync?: boolean } = {}): { command: string; args?: string[] } {
   const bin = nativeHookBinary(process.argv[1], opts)
-  if (claudeExecFormHooksSupported()) return (bin === undefined ? undefined : nativeHookExecParts(bin, 'claudecode', scriptPath, event)) ?? hookExecPartsFor(scriptPath, event)
-  return { command: (bin === undefined ? undefined : nativeHookCommandLine('sh', bin, 'claudecode', scriptPath, event)) ?? hookCommandFor(scriptPath, event) }
+  // The native client is always registered in the guarded string form: no host's exec form survives a missing binary, and a shell can.
+  const guarded = bin === undefined ? undefined : nativeHookCommandLine('sh', bin, 'claudecode', scriptPath, event)
+  if (guarded !== undefined) return { command: guarded }
+  if (claudeExecFormHooksSupported()) return hookExecPartsFor(scriptPath, event)
+  return { command: hookCommandFor(scriptPath, event) }
 }
 
 /** The real location of an absolute path that exists, else null. Relative words (an event name) and missing paths compare by spelling alone. */
@@ -147,6 +152,8 @@ function hookEntryMatches(command: string, args: readonly string[] | undefined, 
   if (!execForm && args !== undefined && args.length > 0) return false
   const a = execForm ? [command, ...(args ?? [])] : stringFormHookWords(command)
   const b = execForm ? [expected.command, ...expected.args!] : stringFormHookWords(expected.command)
+  // The words of an old-form line and its guarded form are the same, so the guard itself is part of what must match.
+  if (!execForm && (guardVersionOf(command) === undefined) !== (guardVersionOf(expected.command) === undefined)) return false
   return a.length === b.length && a.every((v, i) => sameHookWord(v, b[i]!))
 }
 
@@ -261,13 +268,27 @@ function readSettings(p: string, opts: { strict?: boolean; command?: 'install' |
 
 /** The argv words of every token-goat hook entry in the `scope` settings file: an exec-form entry's command and args, a string-form entry split the way the POSIX shell Claude Code runs it in would. */
 export function wiredClaudeHookWords(scope: HookScope): string[][] {
-  const out: string[][] = []
-  for (const groups of Object.values(readSettings(settingsPath(scope)).hooks ?? {})) {
+  return wiredClaudeHookEntries(scope).map((e) => [...e.words])
+}
+
+/** The token-goat hook entries of the `scope` settings file, each with its argv words (read through the one parser), whether it is the command this build writes for its event, and whether it is the guarded form. */
+export function wiredClaudeHookEntries(scope: HookScope): WiredHookEntry[] {
+  const out: WiredHookEntry[] = []
+  const scriptPath = claudeHookScriptPath()
+  const expectedByEvent = new Map<string, { command: string; args?: string[] }>()
+  for (const [eventKey, eventArg] of HOOK_EVENT_MAP) expectedByEvent.set(eventKey, expectedHookEntryFor(scriptPath, eventArg, { sync: false }))
+  for (const [eventKey, groups] of Object.entries(readSettings(settingsPath(scope)).hooks ?? {})) {
+    const expected = expectedByEvent.get(eventKey)
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
         const fields = commandHookFields(h)
         if (fields === undefined || !isTokenGoatHookCommand(fields.command, fields.args)) continue
-        out.push(fields.args !== undefined && fields.args.length > 0 ? [fields.command, ...fields.args] : stringFormHookWords(fields.command))
+        const execForm = fields.args !== undefined && fields.args.length > 0
+        out.push({
+          words: execForm ? [fields.command, ...fields.args!] : stringFormHookWords(fields.command),
+          ...(expected === undefined ? {} : { current: hookEntryMatches(fields.command, fields.args, expected) }),
+          guarded: !execForm && guardVersionOf(fields.command) !== undefined,
+        })
       }
     }
   }
@@ -322,9 +343,11 @@ function installHooksScoped(scope: HookScope): InstallResult {
   })
 
   let settingsChanged = false
+  const registeredCommands: string[] = []
   const skippedEvents: string[] = []
   for (const [eventKey, eventArg] of HOOK_EVENT_MAP) {
     const expected = expectedHookEntryFor(scriptPath, eventArg)
+    registeredCommands.push(expected.command)
     // A non-array value (a string or an object) is the user's own and cannot be merged into; it is left byte-for-byte as it was and the event is skipped, as the settings file is reported at the end.
     const rawGroups: unknown = hooks[eventKey]
     if (rawGroups !== undefined && !Array.isArray(rawGroups)) {
@@ -409,6 +432,8 @@ function installHooksScoped(scope: HookScope): InstallResult {
   // Only touch settings.json when its own content actually changed: a run that merely repaired the shim must not rewrite (and re-timestamp) a file the user may be watching or version-controlling.
   if (settingsChanged) {
     settings.hooks = hooks
+    // The commands are known before the file is written, so a failed self-test leaves the previous registration untouched without a restore.
+    assertRegisteredCommandsWork(registeredCommands, p)
     recordCreatedBy([p], () => writeJsonSettings(p, settings))
   }
   return { scope, settingsPath: p, alreadyInstalled: false, ...(skippedEvents.length > 0 ? { skippedEvents } : {}) }

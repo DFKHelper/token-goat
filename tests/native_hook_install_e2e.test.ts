@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { computeCodexHookHash } from '../src/bridges/codex_install.js'
 import { dataDirForHome } from '../src/constants.js'
 import { endpointFor, readServerKey, type ServerStatus } from '../src/hook_ipc.js'
+import { parseGuardedCommand } from '../src/hook_guard.js'
 import { parseNativeInvocation, splitHookCommand, type HookShell } from '../src/native_hook.js'
 import Database from '../src/sqlite_driver.js'
 import { HARNESS_HOOK_PAYLOADS, type HookPayloadCase, type PayloadHarness } from './fixtures/harness_hook_payloads.js'
@@ -239,11 +240,12 @@ interface Way {
 }
 
 /** How each harness runs a hook command on this platform. */
-function waysFor(harness: PayloadHarness, claudeForm: 'exec' | 'string', entries: readonly Entry[]): Way[] {
+function waysFor(harness: PayloadHarness, entries: readonly Entry[]): Way[] {
   const pwsh = WIN ? whereOnWindows('pwsh') : undefined
   switch (harness) {
     case 'claudecode':
-      if (claudeForm === 'exec') return [{ label: 'exec form, spawned directly', field: 'exec', split: 'sh', run: (_c, e) => ({ file: e.command, args: e.args ?? [] }) }]
+      // The Node form is spawned directly as command and args; the native form is a guarded string run through the shell.
+      if (entries.some((entry) => entry.args !== undefined && entry.args.length > 0)) return [{ label: 'exec form, spawned directly', field: 'exec', split: 'sh', run: (_c, e) => ({ file: e.command, args: e.args ?? [] }) }]
       return [{ label: WIN ? 'string form through Git Bash' : 'string form through /bin/sh', field: 'command', split: 'sh', run: (c) => (WIN ? { file: c, args: [], shell: gitBash() } : sh(c)) }]
     case 'codex':
       return [{ label: WIN ? 'powershell -NoProfile -Command' : 'sh -c', field: 'command', split: WIN ? 'powershell' : 'sh', run: WIN ? powershell('powershell.exe', ['-NoProfile', '-Command']) : sh }]
@@ -256,17 +258,6 @@ function waysFor(harness: PayloadHarness, claudeForm: 'exec' | 'string', entries
     case 'kimi':
       return [{ label: WIN ? 'spawn shell: true (cmd.exe)' : 'spawn shell: true (/bin/sh)', field: 'command', split: WIN ? 'cmd' : 'sh', run: nodeShell }]
     case 'copilot_cli':
-      if (entries.some((entry) => typeof entry.exec === 'string')) {
-        return [{
-          label: 'exec and args fields, spawned directly',
-          field: 'directExec',
-          split: 'sh',
-          run: (_c, e) => {
-            if (e.exec === undefined) throw new Error('Copilot CLI direct entry has no exec field')
-            return { file: e.exec, args: e.args ?? [] }
-          },
-        }]
-      }
       return [
         WIN
           ? { label: 'powershell field via VS Code', field: 'powershell', split: 'powershell', run: powershell('powershell.exe', ['-ExecutionPolicy', 'Bypass', '-NoProfile', '-NoLogo', '-Command']) }
@@ -311,14 +302,14 @@ function wiredFor(entries: readonly Entry[], c: HookPayloadCase, way: Way): { en
 }
 
 /** Served, reference and fallback runs of every way `harness` launches its command, with the counts each must leave in `stats`. */
-async function driveHarness(sb: Sandbox, harness: PayloadHarness, claudeForm: 'exec' | 'string' = 'exec'): Promise<{ native: number; fallback: number }> {
+async function driveHarness(sb: Sandbox, harness: PayloadHarness): Promise<{ native: number; fallback: number }> {
   const c = caseFor(harness)
   const entries = tokenGoatEntries(CONFIG_FILE[harness](sb))
   // The variable Claude Code sets in the processes it starts (tests/helpers/harness-env.ts), so its rows are recorded under its name as a real session's are; the other harnesses' shims and adapters name themselves, or the case carries the harness's own variable.
   const id: Env = harness === 'claudecode' ? { CLAUDE_CODE_SESSION_ID: 'tg-native-e2e' } : {}
   let native = 0
   let fallback = 0
-  for (const way of waysFor(harness, claudeForm, entries)) {
+  for (const way of waysFor(harness, entries)) {
     const { entry, words, cmd } = wiredFor(entries, c, way)
     const inv = parseNativeInvocation(words)
     expect(inv, `${way.label}: not the native form: ${cmd}`).toBeDefined()
@@ -347,7 +338,7 @@ async function driveNodeForm(sb: Sandbox, harness: PayloadHarness): Promise<void
   const c = caseFor(harness)
   const entries = tokenGoatEntries(CONFIG_FILE[harness](sb))
   const id: Env = harness === 'claudecode' ? { CLAUDE_CODE_SESSION_ID: 'tg-node-e2e' } : {}
-  for (const way of waysFor(harness, 'exec', entries)) {
+  for (const way of waysFor(harness, entries)) {
     const { entry, words, cmd } = wiredFor(entries, c, way)
     expect(parseNativeInvocation(words), `${way.label}: not the Node form: ${cmd}`).toBeUndefined()
     expect(words.some((w) => w.includes(specialFor(harness))), words.join(' | ')).toBe(true)
@@ -440,20 +431,13 @@ describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli
   }, 120_000)
 
   it('writes the native form for every event and each way the harness runs it is served, matches the Node command, and falls back to it', async () => {
-    const printed = install(sb, INSTALL_FLAG[harness], harness === 'claudecode' ? { TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS: '1' } : {})
+    const printed = install(sb, INSTALL_FLAG[harness], {})
     const f = forms(CONFIG_FILE[harness](sb), SPLIT[harness])
     expect(f.native, `install printed: ${printed}`).toBeGreaterThan(0)
     expect(f.node).toBe(0)
-    const got = await driveHarness(sb, harness, 'exec')
+    if (harness === 'claudecode') expect(tokenGoatEntries(CONFIG_FILE[harness](sb)).every((e) => e.args === undefined), 'the native form is the guarded string form').toBe(true)
+    const got = await driveHarness(sb, harness)
     expected = { native: expected.native + got.native, fallback: expected.fallback + got.fallback }
-    if (harness === 'claudecode') {
-      install(sb, [], { TOKEN_GOAT_CLAUDE_EXEC_FORM_HOOKS: '0' })
-      const s = forms(CONFIG_FILE[harness](sb), 'sh')
-      expect(s).toEqual({ native: f.native, node: 0 })
-      expect(tokenGoatEntries(CONFIG_FILE[harness](sb)).every((e) => e.args === undefined)).toBe(true)
-      const str = await driveHarness(sb, harness, 'string')
-      expected = { native: expected.native + str.native, fallback: expected.fallback + str.fallback }
-    }
     // One row per call, each under the path it took: `native` from the server, `native-fallback:server-off` from the Node command tg-hook fell back to, and nothing from the reference run of that Node command alone.
     const counts = detailCounts(sb)
     expect(counts['native']).toBe(expected.native)
@@ -552,15 +536,31 @@ describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli
     // Run the broken entries the way the harness does: a binary that cannot start must not read as a hook that exited 0 and allowed the call. Through PowerShell this is POWERSHELL_EXIT_SUFFIX's guard, since LASTEXITCODE is never set when the call operator finds nothing to run.
     const c = caseFor(harness)
     const brokenEntries = tokenGoatEntries(file)
-    for (const way of waysFor(harness, 'exec', brokenEntries)) {
+    let guardedBroken = 0
+    for (const way of waysFor(harness, brokenEntries)) {
       const { entry, cmd } = wiredFor(brokenEntries, c, way)
-      const r = await launch(way.run(cmd, entry), c, sb, 'tg-native-broken', {}).catch((e: unknown) => ({ stdout: '', stderr: String(e), exit: -1 }))
-      expect(r.exit, `${way.label}: ${r.stderr}`).not.toBe(0)
+      const r = await launch(way.run(cmd, entry), c, sb, 'tg-native-broken', { TOKEN_GOAT_HOOK_SERVER: '0' }).catch((e: unknown) => ({ stdout: '', stderr: String(e), exit: -1 }))
+      const guarded = parseGuardedCommand(cmd)
+      if (guarded?.kind !== 'v1') {
+        expect(r.exit, `${way.label}: ${r.stderr}`).not.toBe(0)
+        continue
+      }
+      // A guarded command whose binary is gone runs the Node shim instead and answers what that command answers on its own.
+      guardedBroken++
+      const wrapped = guarded.native.slice(guarded.native.indexOf('--') + 1)
+      const ref = await launch({ file: wrapped[0]!, args: wrapped.slice(1) }, c, sb, 'tg-native-broken-ref', { TOKEN_GOAT_HOOK_SERVER: '0' })
+      expect({ stdout: r.stdout, exit: r.exit }, `${way.label}: ${r.stderr}`).toEqual({ stdout: ref.stdout, exit: ref.exit })
     }
     const broken = row(execEnv)
-    expect(broken.status, broken.message).toBe('fail')
-    expect(broken.message).toContain('which no longer exists, so those events fail instead of falling back to Node')
-    expect(broken.message).toContain(`run \`${run}\` to rewrite them`)
+    if (guardedBroken > 0) {
+      expect(broken.status, broken.message).toBe('warn')
+      expect(broken.message).toContain('fall back to the Node shim meanwhile')
+      expect(broken.message).toContain(`run \`${run}\` to restore the native client`)
+    } else {
+      expect(broken.status, broken.message).toBe('fail')
+      expect(broken.message).toContain('which no longer exists, so those events fail instead of falling back to Node')
+      expect(broken.message).toContain(`run \`${run}\` to rewrite them`)
+    }
     if (harness === 'claudecode') {
       const events = doctorRows(sb, execEnv).find((x) => x.name === 'Claude Code hook events')!
       expect(events.status, events.message).toBe('fail')
@@ -582,7 +582,7 @@ describe.runIf(NATIVE).each(['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli
       fs.renameSync(bin, `${bin}.moved`)
       expect(fs.existsSync(bin), 'moved away before doctor').toBe(false)
       const missing = row(execEnv)
-      expect(missing.status, missing.message).toBe('fail')
+      expect(missing.status, missing.message).toBe(guardedBroken > 0 ? 'warn' : 'fail')
       expect(fs.existsSync(bin)).toBe(false)
       install(sb, INSTALL_FLAG[harness], execEnv)
       expect(fs.existsSync(bin)).toBe(true)

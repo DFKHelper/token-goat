@@ -8,6 +8,8 @@ import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './crea
 import { grokHooksDir, grokConfigPath, removeHookTargetFile } from '../purge.js'
 import { hookCommandFor, hookPowershellCommand, writeIfDifferent } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
+import { guardVersionOf } from '../hook_guard.js'
+import { verifiedInstall } from '../hook_selftest.js'
 import { HookCommandRewriteError, hookCommandRewrittenSpan, nativeHookBinary, nativeHookCommandLine, splitHookCommand, type WiredHookEntry } from '../native_hook.js'
 import { GROK_HOOK_SCRIPT } from './grok.js'
 import { LEGACY_SHIM_FILE, SHIM_FILE, legacyShimForwarder } from './shim_common.js'
@@ -75,7 +77,7 @@ export function wiredGrokHookWords(): WiredHookEntry[] {
   for (const groups of Object.values(config?.hooks ?? {})) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
-        if (typeof h?.command === 'string') out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'), current: expected.has(h.command) })
+        if (typeof h?.command === 'string') out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'), current: expected.has(h.command), guarded: guardVersionOf(h.command) !== undefined })
       }
     }
   }
@@ -102,7 +104,7 @@ export interface GrokInstallResult {
 
 /** Install the Grok CLI integration. Always additive: never touches Claude Code's `~/.claude/settings.json` (the caller is responsible for also running the base install). Idempotent -- a second call reports `alreadyInstalled: true` and does not duplicate any entry. */
 export function installGrok(): GrokInstallResult {
-  return recordCreatedBy(grokArtifactPaths(), installGrokFiles)
+  return verifiedInstall([grokConfigPath()], () => recordCreatedBy(grokArtifactPaths(), installGrokFiles))
 }
 
 /** Every file the Grok integration writes; the directories above them are what the created-configs ledger tracks too. */

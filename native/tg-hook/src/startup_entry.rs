@@ -55,8 +55,12 @@ pub fn run(mut command: Vec<OsString>, started: Instant, call: &Call) -> i32 {
         let (tx, rx) = std::sync::mpsc::channel();
         // The external parent never blocks on input, launch, SQLite or cleanup.
         // Process exit closes every private job even if this worker is blocked.
+        let framed: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>> = Default::default();
+        let framed_here = framed.clone();
+        let worker_command = command.clone();
         std::thread::spawn(move || {
-            let result = execute(&command, epoch, deadline).map(|(candidate, diagnostics, wake)| {
+            let command = worker_command;
+            let result = execute(&command, epoch, deadline, &framed_here).map(|(candidate, diagnostics, wake)| {
                 if wake && Instant::now() < deadline {
                     // This is the existing index daemon, not an unbounded
                     // bootstrap. It claims its own ordinary lifecycle slot.
@@ -78,13 +82,27 @@ pub fn run(mut command: Vec<OsString>, started: Instant, call: &Call) -> i32 {
                     crate::out::emit(&candidate.to_string());
                     return 0;
                 }
-                Ok(Err(error)) => return fail_open(&error),
+                Ok(Err(error)) => return fall_back(&command, &framed, deadline, call, &error),
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => return fail_open("installed startup worker stopped"),
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
             std::thread::sleep(Duration::from_millis(2));
         }
     }
+}
+
+/// The relay failed after the payload was framed: take the same route order as every other hook, the Node argv, then the pointer, then the safe answer.
+#[cfg(windows)]
+fn fall_back(command: &[OsString], framed: &std::sync::Mutex<Option<Vec<u8>>>, deadline: Instant, call: &Call, reason: &str) -> i32 {
+    // A budget the relay spent leaves nothing for a second route: that start is the first tool call's to deliver.
+    if deadline.saturating_duration_since(Instant::now()) <= Duration::from_millis(crate::startup_owner::RESERVE_MS) {
+        return fail_open(reason);
+    }
+    eprintln!("tg-hook: SessionStart relay failed ({reason}); trying the Node route");
+    let Some(bytes) = framed.lock().ok().and_then(|mut slot| slot.take()) else { return fail_open(reason) };
+    let extra = command[command.len() - 1..].to_vec();
+    let opts = crate::fallback::Opts { harness: call.harness.clone(), event: Some(call.event.clone()), deadline: Some(deadline), extra, ..crate::fallback::Opts::bare() };
+    crate::fallback::run(command, crate::fallback::Input::Read { bytes, more: false }, "startup-relay-failed", &opts)
 }
 
 fn fail_open(reason: &str) -> i32 {
@@ -116,7 +134,7 @@ fn frame(mut input: impl std::io::Read) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(windows)]
-fn execute(command: &[OsString], epoch: u64, deadline: Instant) -> Result<(serde_json::Value, Vec<u8>, bool), String> {
+fn execute(command: &[OsString], epoch: u64, deadline: Instant, framed: &std::sync::Mutex<Option<Vec<u8>>>) -> Result<(serde_json::Value, Vec<u8>, bool), String> {
     use crate::startup_owner::{MAX_BYTES, RESERVE_MS, reader};
     use crate::startup_process::{Child, Job};
     use std::io::Write;
@@ -143,6 +161,9 @@ fn execute(command: &[OsString], epoch: u64, deadline: Instant) -> Result<(serde
     // The payload arrived, so this start has an identity: stamp it begun before any relay work, so a start the budget cuts off anywhere after this point is delivered by the first tool call (a start that settles replaces the stamp with its own marker).
     crate::session_begun::stamp(&payload);
     let stamped = payload.clone();
+    if let Ok(mut slot) = framed.lock() {
+        *slot = Some(payload.clone());
+    }
     // The relay itself is atomically owned too: killing the installed entry
     // closes this strict job, including during nested owner/shim creation.
     let job = Job::new().map_err(|e| format!("startup relay job creation failed: {e}"))?;
@@ -235,6 +256,18 @@ mod tests {
         for input in [b"[".as_slice(), b"{}{}", b"{\"x\":}", b""] {
             assert!(frame(input).is_err());
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_failed_relay_replays_the_framed_payload_through_the_node_route() {
+        let call = Call { harness: "copilot_cli".into(), event: "sessionStart".into(), entry: String::new(), script_dir: None, response_timeout: Duration::ZERO };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        // Exit 2 is the one code the chain passes through, so it proves the Node route's own answer came back. With no framed payload the call takes the safe answer, which ends the process and so cannot be asserted in-process.
+        let node_route: Vec<OsString> = ["cmd.exe", "/D", "/C", "echo {}& exit 2"].iter().map(OsString::from).collect();
+        let framed = std::sync::Mutex::new(Some(b"{}".to_vec()));
+        assert_eq!(fall_back(&node_route, &framed, deadline, &call, "relay died"), 2);
+        assert!(framed.lock().unwrap().is_none(), "the payload is taken once");
     }
 }
 
