@@ -19,8 +19,18 @@ pub enum Input {
 /// Names, on the wrapped command's environment, why this call was not served. The Node hook path records it with the call's latency row (`stats.detail`, as `native-fallback:<reason>`), which is how `doctor` counts served and fallen-back calls per harness; the answer on stdout is untouched.
 pub const REASON_ENV: &str = "TOKEN_GOAT_NATIVE_FALLBACK";
 
-/// How long one Node route may run before the next is tried. limit: one budget for every harness; revisit-when: a host documents a hook timeout under this.
-pub const ROUTE_TIMEOUT: Duration = Duration::from_millis(50_000);
+const LIMITS: &str = include_str!("../hook_limits.json");
+
+/// The time one call may take: its host's hook limit from `hook_limits.json`, the smallest when unknown.
+// tests/native_hook_limits.test.ts pins the table to SHIM_FALLBACK_TIMEOUT_MS in src/bridges/shim_common.ts.
+pub fn harness_limit(harness: &str) -> Duration {
+    let table: Option<serde_json::Value> = serde_json::from_str(LIMITS).ok();
+    let ms = |v: &serde_json::Value| v.as_u64().filter(|n| *n > 0);
+    let named = table.as_ref().and_then(|t| t.get(harness)).and_then(ms);
+    let smallest = table.as_ref().and_then(|t| t.as_object()).and_then(|o| o.values().filter_map(ms).min());
+    // limit: used only if the embedded table cannot be read, which a unit test rules out; revisit-when: never
+    Duration::from_millis(named.or(smallest).unwrap_or(3_000))
+}
 
 /// The most stdin read in whole for a payload past the frame limit.
 const MAX_STDIN_BYTES: u64 = 1 << 30;
@@ -30,27 +40,36 @@ pub struct Opts {
     pub harness: String,
     /// The event argument the shim is run with, in the harness's own spelling; `None` when the flags were incomplete.
     pub event: Option<String>,
-    pub route_timeout: Duration,
-    /// No route is started once this has passed, and none runs past it.
+    /// One deadline for every route, taken at the start of the call; none starts or runs past it.
     pub deadline: Option<Instant>,
+    /// Whether the first route takes two thirds of what is left at most, so the second can still answer.
+    pub reserve_second: bool,
     /// Arguments after the entry that the rebuilt command carries too (the startup deadline).
     pub extra: Vec<OsString>,
 }
 
 impl Opts {
     pub fn bare() -> Opts {
-        Opts { harness: String::new(), event: None, route_timeout: ROUTE_TIMEOUT, deadline: None, extra: Vec::new() }
+        Opts { harness: String::new(), event: None, deadline: None, reserve_second: false, extra: Vec::new() }
+    }
+
+    /// A hook call that began at `start`; `limit`, a test seam, replaces the harness's own limit.
+    pub fn for_call(harness: &str, event: &str, start: Instant, limit: Option<Duration>) -> Opts {
+        let deadline = Some(start + limit.unwrap_or_else(|| harness_limit(harness)));
+        let (harness, event) = (harness.to_string(), Some(event.to_string()));
+        Opts { harness, event, deadline, reserve_second: true, ..Opts::bare() }
     }
 }
 
 fn budget(opts: &Opts) -> Option<Duration> {
-    match opts.deadline {
-        None => Some(opts.route_timeout),
-        Some(end) => {
-            let left = end.saturating_duration_since(Instant::now());
-            (!left.is_zero()).then_some(left.min(opts.route_timeout))
-        }
-    }
+    let end = opts.deadline.unwrap_or_else(|| Instant::now() + harness_limit(""));
+    let left = end.saturating_duration_since(Instant::now());
+    (!left.is_zero()).then_some(left)
+}
+
+/// What the first route may take: all that is left, or two thirds of it when a second route is to follow.
+fn first_budget(opts: &Opts) -> Option<Duration> {
+    budget(opts).map(|left| if opts.reserve_second { left * 2 / 3 } else { left })
 }
 
 /// The first part of `argv` that names a file which is not there: what to blame in the notice.
@@ -96,7 +115,7 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
         }
     };
     let mut failed_argv: Option<Vec<OsString>> = None;
-    if let Some(timeout) = budget(opts) {
+    if let Some(timeout) = first_budget(opts) {
         match capture::exec(argv, first_in(), reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or("")) {
             Ok(done) => {
                 if let Some(dir) = &data_dir {
@@ -208,6 +227,28 @@ mod tests {
         assert!(budget(&past).is_none());
         let near = Opts { deadline: Some(Instant::now() + Duration::from_secs(5)), ..Opts::bare() };
         assert!(budget(&near).unwrap() <= Duration::from_secs(5));
-        assert_eq!(budget(&Opts::bare()), Some(ROUTE_TIMEOUT));
+        assert!(budget(&Opts::bare()).unwrap() <= harness_limit(""));
+    }
+
+    #[test]
+    fn the_limits_are_the_table_and_an_unknown_or_missing_harness_gets_the_smallest() {
+        assert_eq!(harness_limit("grok"), Duration::from_millis(3_000));
+        assert_eq!(harness_limit("codex"), Duration::from_millis(45_000));
+        assert_eq!(harness_limit(""), Duration::from_millis(3_000));
+        assert_eq!(harness_limit("some-new-host"), Duration::from_millis(3_000));
+    }
+
+    #[test]
+    fn one_deadline_from_the_start_of_the_call_serves_every_route() {
+        let start = Instant::now() - Duration::from_secs(60);
+        let spent = Opts::for_call("codex", "pre_tool_use", start, None);
+        assert!(budget(&spent).is_none(), "a call that began 60 s ago has nothing left for any route");
+        let fresh = Opts::for_call("codex", "pre_tool_use", Instant::now(), None);
+        assert!(budget(&fresh).unwrap() <= Duration::from_millis(45_000));
+        let seam = Opts::for_call("codex", "pre_tool_use", Instant::now(), Some(Duration::from_millis(500)));
+        assert!(budget(&seam).unwrap() <= Duration::from_millis(500));
+        assert!(first_budget(&seam).unwrap() < budget(&seam).unwrap(), "no share kept for the second route");
+        let whole = first_budget(&Opts::bare()).unwrap();
+        assert!(whole > Duration::from_millis(2_000), "a startup call keeps its whole deadline");
     }
 }

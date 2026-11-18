@@ -55,6 +55,8 @@ const USAGE: &str =
 /// The command line of a hook call: the flags, and the command after `--`.
 struct HookArgs {
     call: Option<client::Call>,
+    /// `--hook-limit-ms`: replaces the harness's limit for the whole call; a test seam.
+    limit: Option<Duration>,
     fallback: Vec<OsString>,
 }
 
@@ -64,6 +66,7 @@ fn parse_hook_args(args: &[OsString]) -> Option<HookArgs> {
     let (flags, fallback) = (&args[..split], args[split + 1..].to_vec());
     let (mut harness, mut event, mut entry, mut script_dir) = (None, None, None, None);
     let mut response_timeout = client::RESPONSE_TIMEOUT;
+    let mut limit = None;
     let mut ok = true;
     let mut it = flags.iter();
     while let Some(flag) = it.next() {
@@ -77,6 +80,10 @@ fn parse_hook_args(args: &[OsString]) -> Option<HookArgs> {
                 Ok(ms) => response_timeout = Duration::from_millis(ms),
                 Err(_) => ok = false,
             },
+            (Some("--hook-limit-ms"), Some(v)) => match v.parse::<u64>() {
+                Ok(ms) if ms > 0 => limit = Some(Duration::from_millis(ms)),
+                _ => ok = false,
+            },
             _ => ok = false,
         }
     }
@@ -84,7 +91,7 @@ fn parse_hook_args(args: &[OsString]) -> Option<HookArgs> {
         (true, Some(harness), Some(event), Some(entry)) => Some(client::Call { harness, event, entry, script_dir, response_timeout }),
         _ => None,
     };
-    Some(HookArgs { call, fallback })
+    Some(HookArgs { call, limit, fallback })
 }
 
 /// A hook call: relay it, or run the wrapped command.
@@ -95,8 +102,11 @@ fn run_hook(hook: HookArgs, main_start: Instant) -> i32 {
     if let Some(call) = hook.call.as_ref().filter(|c| startup_entry::is_startup(c)) {
         return startup_entry::run(hook.fallback.clone(), main_start, call);
     }
-    let Some(call) = hook.call else { return fallback::run(&hook.fallback, fallback::Input::Untouched, "bad-flags", &fallback::Opts::bare()) };
-    let opts = fallback::Opts { harness: call.harness.clone(), event: Some(call.event.clone()), ..fallback::Opts::bare() };
+    let Some(call) = hook.call else {
+        let opts = fallback::Opts { event: None, ..fallback::Opts::for_call("", "", main_start, hook.limit) };
+        return fallback::run(&hook.fallback, fallback::Input::Untouched, "bad-flags", &opts);
+    };
+    let opts = fallback::Opts::for_call(&call.harness, &call.event, main_start, hook.limit);
     let input = fallback::read_stdin(protocol::MAX_FRAME_BYTES);
     let fallback::Input::Read { bytes, more: false } = input else {
         let reason = if matches!(input, fallback::Input::Untouched) { "stdin-error" } else { "stdin-too-large" };

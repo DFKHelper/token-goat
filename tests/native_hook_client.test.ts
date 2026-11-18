@@ -6,7 +6,7 @@ import * as net from 'node:net'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished } from 'vitest'
 
 import { dataDirForHome } from '../src/constants.js'
 import {
@@ -769,6 +769,85 @@ describe('prints the no-op, and never runs the call again, once the request was 
       }),
       { prefix: 'EARLY\n' },
     )
+  })
+})
+
+// ---------- one deadline across the routes ----------
+
+describe('one deadline serves every route', () => {
+  const LIMIT_ARGS = ['--hook-limit-ms', '1500']
+  const NO_SERVER: Env = { TOKEN_GOAT_HOOK_SERVER: '0' }
+  const route2Env = (counter: string, mode: string): Env => ({
+    ...NO_SERVER,
+    TG_ROUTE2_COUNTER: counter,
+    TG_ROUTE2_MODE: mode,
+  })
+  const hangPid = (label: string): string => path.join(sb.base, `hang-${label}-${String(Date.now())}.pid`)
+
+  /** Writes the pointer the second route is rebuilt from: a script that counts runs, then hangs or answers. */
+  function writePointer(): void {
+    const dir = path.join(sb.base, `ptr-${String(Date.now())}`)
+    fs.mkdirSync(dir, { recursive: true })
+    const entry = path.join(dir, 'token-goat.mjs')
+    const lines = [
+      "import fs from 'node:fs'",
+      "fs.appendFileSync(process.env.TG_ROUTE2_COUNTER, 'x')",
+      "if (process.env.TG_ROUTE2_MODE === 'hang') setInterval(() => {}, 1000)",
+      'else process.stdout.write(\'{"second":true}\')',
+      '',
+    ]
+    fs.writeFileSync(entry, lines.join('\n'))
+    const slashed = (p: string): string => p.split(path.sep).join('/')
+    const nativeBin = `${slashed(dir)}/tg-hook${WIN ? '.exe' : ''}`
+    const base = { schema: 1, version: '1', writtenAt: 't', shim: null, nativeBin }
+    const pointer = { ...base, entry: slashed(entry), bundleDir: slashed(dir), node: slashed(process.execPath) }
+    fs.writeFileSync(path.join(sb.dataDir, 'hook-entry.json'), JSON.stringify(pointer))
+  }
+
+  afterEach(() => {
+    fs.rmSync(path.join(sb.dataDir, 'hook-entry.json'), { force: true })
+  })
+
+  it('a first route that hangs leaves the second route time to answer inside the one limit', async () => {
+    writePointer()
+    const counter = path.join(sb.base, 'route2-answer')
+    const args = hookArgs(fbTail(0, 'hang', hangPid('first')), { extra: LIMIT_ARGS })
+    const res = await runNative(args, '{}', route2Env(counter, 'answer'))
+    expect(res.exit, res.stderr).toBe(0)
+    expect(res.stdout.toString('utf8')).toBe('{"second":true}')
+    expect(fs.readFileSync(counter).length).toBe(1)
+  })
+
+  it('both routes hanging end in the safe answer and exit 0 at the limit, each route run once', async () => {
+    writePointer()
+    const counter = path.join(sb.base, 'route2-hang')
+    const args = hookArgs(fbTail(0, 'hang', hangPid('both')), { extra: LIMIT_ARGS })
+    const res = await runNative(args, '{}', route2Env(counter, 'hang'))
+    expect(res.exit, res.stderr).toBe(0)
+    expect(res.stdout.toString('utf8')).toBe('{}')
+    expect(fs.readFileSync(counter).length).toBe(1)
+    expect(res.heldOpen).toBe(false)
+  })
+
+  it('a limit already spent answers the safe no-op and exits 0', async () => {
+    const args = hookArgs(fbTail(0, 'hang', hangPid('spent')), { extra: ['--hook-limit-ms', '1'] })
+    const res = await runNative(args, '{}', NO_SERVER)
+    expect(res.exit, res.stderr).toBe(0)
+    expect(res.stdout.toString('utf8')).toBe('{}')
+  })
+
+  it('a call with no --harness still ends by the smallest table limit with the safe no-op', async () => {
+    const args = ['--event', 'pre_tool_use', '--', ...fbTail(0, 'hang', hangPid('bare'))]
+    const res = await runNative(args, '{}', NO_SERVER)
+    expect(res.exit, res.stderr).toBe(0)
+    expect(res.stdout.toString('utf8')).toBe('{}')
+  })
+
+  it('an unknown harness takes the smallest limit, not the largest', async () => {
+    const flags = ['--harness', 'no-such-host', '--event', 'pre_tool_use', '--entry', sb.fakeEntry]
+    const res = await runNative([...flags, '--', ...fbTail(0, 'hang', hangPid('unknown'))], '{}', NO_SERVER)
+    expect(res.exit, res.stderr).toBe(0)
+    expect(res.stdout.toString('utf8')).toBe('{}')
   })
 })
 
