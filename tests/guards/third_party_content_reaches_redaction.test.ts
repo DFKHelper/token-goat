@@ -125,7 +125,7 @@ describe('every function reaching third-party content is adjudicated for redacti
     const notRedacting = REDACTING_FENCE_HELPERS.filter(({ file, fn }) => {
       const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, file), 'utf8'))
       const helper = fns.find((f) => f.name === fn)
-      return helper === undefined || !reaches(helper, functionMap(fns), (body) => body.includes('redactSecrets('))
+      return helper === undefined || !reaches(helper, functionMap(fns), (body) => body.includes('redactSecrets(') || body.includes('redactCutSecrets('))
     })
     expect(notRedacting.map((h) => `${h.file}::${h.fn}`), 'a helper listed in REDACTING_FENCE_HELPERS no longer redacts, or no longer exists').toEqual([])
   })

@@ -57,14 +57,14 @@ describe('redaction.strict', () => {
   const unlabelled = 'kQ8vN2v_pR7wXz4TmB1cLdF6gH9jY0sA3eU5iO'
 
   it('is off by default, so an unrecognised random-looking string survives', () => {
-    const text = `TOKEN=${unlabelled}`
+    const text = `SESSION_BLOB=${unlabelled}`
     expect(redactSecrets(text, withRedaction({})).text).toBe(text)
   })
 
   it('redacts that same string once strict mode is on', () => {
-    const { text, count } = redactSecrets(`TOKEN=${unlabelled}`, withRedaction({ strict: true }))
+    const { text, count } = redactSecrets(`SESSION_BLOB=${unlabelled}`, withRedaction({ strict: true }))
     expect(count).toBe(1)
-    expect(text).toBe('TOKEN=[REDACTED:high_entropy]')
+    expect(text).toBe('SESSION_BLOB=[REDACTED:high_entropy]')
     expect(text).not.toContain(unlabelled)
   })
 
@@ -80,7 +80,7 @@ describe('redaction.strict', () => {
   })
 
   it('does not re-redact its own placeholders when run over already-redacted text', () => {
-    const once = redactSecrets(`TOKEN=${unlabelled}`, withRedaction({ strict: true })).text
+    const once = redactSecrets(`SESSION_BLOB=${unlabelled}`, withRedaction({ strict: true })).text
     const twice = redactSecrets(once, withRedaction({ strict: true }))
     expect(twice.text).toBe(once)
     expect(twice.count).toBe(0)

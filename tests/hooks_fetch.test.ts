@@ -657,7 +657,7 @@ describe('postFetchHandler', () => {
       const paragraph = '<p>Ordinary filler content that pads this response out.</p>\n'.repeat(400);
       const html =
         `<!DOCTYPE html><html><head><title>Test</title></head><body>` +
-        `<div id="widget" data-config="secret-selector">${paragraph}<script>window.__embedded = {token: "abc123"}</script>${paragraph}</div></body></html>`;
+        `<div id="widget" data-config="secret-selector">${paragraph}<script>window.__embedded = {nonce: "abc123"}</script>${paragraph}</div></body></html>`;
       expect(html.length).toBeGreaterThanOrEqual(16 * 1024);
 
       const result = postFetchHandler({
@@ -699,7 +699,7 @@ describe('postFetchHandler', () => {
       const raw = getWebOutputRaw(cacheId as string);
       expect(raw).not.toBeNull();
       expect(raw).toContain('data-config="secret-selector"');
-      expect(raw).toContain('window.__embedded = {token: "abc123"}');
+      expect(raw).toContain('window.__embedded = {nonce: "abc123"}');
       expect(raw).not.toBe(cleaned);
 
       // Savings stat recorded for the real body-vs-storedBody delta.
