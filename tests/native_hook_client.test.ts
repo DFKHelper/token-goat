@@ -9,6 +9,7 @@ import * as path from 'node:path'
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished } from 'vitest'
 
 import { dataDirForHome } from '../src/constants.js'
+import { queryProcessCommandLine } from '../src/resident_process.js'
 import {
   challengeMacV2,
   doneFrameMac,
@@ -102,17 +103,20 @@ const FALLBACK_SCRIPT = [
   '',
 ].join('\n')
 
-/** Whether `pid` names a live process: ESRCH is dead, EPERM is alive, anything else is not an answer. */
-function isAlive(pid: number): boolean {
+// Whether `pid` still names the process whose command line carried `token`: ESRCH is dead.
+// A readable line without the token is a stranger on a reused number, so the original is gone.
+// EPERM, an unreadable line (a zombie has one) and a failed query stay alive.
+function isAlive(pid: number, token: string): boolean {
   try {
     process.kill(pid, 0)
-    return true
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
     if (code === 'ESRCH') return false
-    if (code === 'EPERM') return true
-    throw e
+    if (code !== 'EPERM') throw e
   }
+  const query = queryProcessCommandLine(pid)
+  if (query.status === 'gone') return false
+  return !(query.status === 'found' && query.commandLine !== '' && !query.commandLine.includes(token))
 }
 
 function fbTail(code = 0, mode = 'echo', pidFile = ''): string[] {
@@ -807,6 +811,45 @@ describe('prints the no-op, and never runs the call again, once the request was 
   })
 })
 
+// A daemon that is slow but inside the limit is waited for: its answer is the one printed.
+describe('a slow daemon inside a generous limit', () => {
+  const SLOW_MS = 2000
+  // Answers SLOW_MS after the request came, and records that it did.
+  const slowServing =
+    (answer: string, state: { sent: boolean }): Script =>
+    async (c, f) => {
+      const s = await handshake(c, f)
+      if (s === undefined || !(await request(c, f, s))) return
+      await sleep(SLOW_MS)
+      state.sent = true
+      c.send(doneFrame(s, answer, 0, 0))
+    }
+
+  it('prints the served answer and adds no fallback answer', async () => {
+    // The claudecode table limit is 20 s, ten times the delay: only a stall of 18 s could flip this row.
+    const runs = fallbackRuns()
+    // Control: a response timeout under the delay cuts the same daemon off, so the delay is real.
+    const early = { sent: false }
+    await withFakes([slowServing('LATE\n', early)], async ([f]) => {
+      const args = hookArgs(fbTail(2), { extra: ['--response-timeout-ms', '300'] })
+      const run = await runNative(args, '{}', {}, { killAfterMs: 60_000 })
+      expect(run.signal, 'the client was still running at the kill bound').toBeNull()
+      expect(run.stdout.toString('utf8'), 'the cut-off call prints the no-op only').toBe(NOOP)
+      expect(f?.requests.length).toBe(1)
+    })
+    const state = { sent: false }
+    await withFakes([slowServing('SLOW-SERVED\n', state)], async ([f]) => {
+      const run = await runNative(hookArgs(fbTail(2)), '{}', {}, { killAfterMs: 60_000 })
+      expect(run.signal, 'the client was still running at the kill bound').toBeNull()
+      expect(run.exit, run.stderr).toBe(0)
+      expect(state.sent, 'the daemon never sent its answer').toBe(true)
+      expect(run.stdout.toString('utf8'), 'exactly the served answer').toBe('SLOW-SERVED\n')
+      expect(f?.requests.length).toBe(1)
+    })
+    expect(fallbackRuns(), 'the fallback command ran').toBe(runs)
+  })
+})
+
 // ---------- one deadline across the routes ----------
 
 describe('one deadline serves every route', () => {
@@ -936,7 +979,7 @@ describe('one deadline serves every route', () => {
     const text = fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf8') : ''
     // No pid written means the route never started: that is unknown, not dead, so it fails here.
     expect(text, 'the hanging route never wrote its pid').not.toBe('')
-    expect(isAlive(Number(text)), `pid ${text} of the hanging route outlived the client`).toBe(false)
+    expect(isAlive(Number(text), pidFile), `pid ${text} of the hanging route outlived the client`).toBe(false)
   })
 
   it('at the 3000 ms limit the answer is out before the client exits, both before the limit', async () => {
@@ -952,6 +995,64 @@ describe('one deadline serves every route', () => {
     expect(res.firstChunkMs, 'no answer reached stdout').toBeDefined()
     expect(res.firstChunkMs ?? Infinity, 'the answer came after the exit').toBeLessThanOrEqual(res.exitMs)
     expect(res.exitMs, 'the client ended after the 3000 ms limit').toBeLessThan(3000)
+  })
+
+  // A route that shrugs off SIGTERM and leaves a grandchild holding the stdout pipe the client reads.
+  const STUBBORN_SCRIPT = [
+    "const fs = require('node:fs')",
+    "const cp = require('node:child_process')",
+    'const [pidFile, gpidFile, mode] = process.argv.slice(2)',
+    "if (mode === 'answer') {",
+    '  process.stdout.write(\'{"routed":true}\')',
+    '  process.exit(0)',
+    '}',
+    "process.on('SIGTERM', () => {})",
+    "const idle = 'setInterval(() => {}, 1000)'",
+    "const g = cp.spawn(process.execPath, ['-e', idle, gpidFile], { stdio: ['ignore', 'inherit', 'ignore'] })",
+    'fs.writeFileSync(gpidFile, String(g.pid))',
+    'fs.writeFileSync(pidFile, String(process.pid))',
+    'setInterval(() => {}, 1000)',
+    '',
+  ]
+  const readPid = (file: string): number => (fs.existsSync(file) ? Number(fs.readFileSync(file, 'utf8')) : 0)
+  // Ends each recorded process tree on any outcome, only while its command line still names its own file.
+  const reapLater = (files: string[]): void => {
+    onTestFinished(() => {
+      for (const file of files) {
+        const pid = readPid(file)
+        if (pid > 0) killIfCommandLine(pid, (cmd) => cmd.includes(file), { tree: true })
+      }
+    })
+  }
+
+  it('a route that ignores the kill while a grandchild holds its stdout still ends by the limit', async () => {
+    const script = path.join(sb.base, 'stubborn.cjs')
+    fs.writeFileSync(script, STUBBORN_SCRIPT.join('\n'))
+    const files = [hangPid('stubborn'), hangPid('stubborn-grand')]
+    reapLater(files)
+    const args = (mode: string): string[] =>
+      hookArgs([process.execPath, script, ...files, mode], { extra: ['--hook-limit-ms', '8000'] })
+    // Control: the same script answering at once is served, so the safe '{}' below is the limit's doing.
+    const control = await runNative(args('answer'), '{}', NO_SERVER, BOUND)
+    expect(control.stdout.toString('utf8')).toBe('{"routed":true}')
+    expect(control.exit, control.stderr).toBe(0)
+    endedOnItsOwn(await runNative(args('stubborn'), '{}', NO_SERVER, BOUND))
+    expect(readPid(files[0] as string), 'the stubborn route never started').toBeGreaterThan(0)
+    expect(readPid(files[1] as string), 'the grandchild holding the pipe never started').toBeGreaterThan(0)
+  })
+
+  // POSIX only (unrun on Windows): a killed shell route is reaped, not left a zombie.
+  it.skipIf(WIN)('a killed shell route is reaped before the client exits, stdout held by a child', async () => {
+    const files = [hangPid('sh'), hangPid('sh-grand')]
+    reapLater(files)
+    const body = '"$1" -e "setInterval(() => {}, 1000)" "$3" & echo $$ > "$2"; echo $! > "$3"; wait'
+    const route = ['/bin/sh', '-c', body, 'sh', process.execPath, ...files]
+    const args = hookArgs(route, { extra: ['--hook-limit-ms', '8000'] })
+    endedOnItsOwn(await runNative(args, '{}', NO_SERVER, BOUND))
+    const pid = readPid(files[0] as string)
+    expect(pid, 'the shell route never wrote its pid').toBeGreaterThan(0)
+    expect(readPid(files[1] as string), 'the descendant never started').toBeGreaterThan(0)
+    expect(isAlive(pid, files[0] as string), `shell route ${String(pid)} outlived the client`).toBe(false)
   })
 })
 
