@@ -166,7 +166,8 @@ fn attempt(endpoint: &str, key: &[u8], call: &Call, body: &str) -> Outcome {
         return Outcome::NoSlotWill;
     }
     // An absurd response timeout (u64::MAX ms) overflows Instant; a day is past every host limit.
-    let response_deadline = cap(Instant::now().checked_add(call.response_timeout).unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400)));
+    let waited_to = Instant::now().checked_add(call.response_timeout);
+    let response_deadline = cap(waited_to.unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400)));
     // A request not written whole never reached the server's handler, which reads the complete frame before it acts, so running it here instead cannot run it twice.
     if conn.send(&request, response_deadline).is_err() {
         return Outcome::Refused;

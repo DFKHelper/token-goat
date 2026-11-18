@@ -28,12 +28,18 @@ pub fn is_startup(call: &Call) -> bool {
     matches!(call.harness.as_str(), "copilot_cli" | "vscode") && matches!(call.event.as_str(), "sessionStart" | "SessionStart" | "session_start")
 }
 
+/// The call's one deadline: the budget, capped by the harness's hook limit (smallest when unknown) and `limit`.
+fn deadline_for(started: Instant, harness: &str, limit: Option<Duration>, budget_ms: u64) -> Instant {
+    let host = crate::fallback::Opts::for_call(harness, "", started, limit).deadline.unwrap_or(started);
+    host.min(started + Duration::from_millis(budget_ms))
+}
+
 #[cfg_attr(windows, allow(unused_variables))]
-pub fn run(mut command: Vec<OsString>, started: Instant, call: &Call) -> i32 {
+pub fn run(mut command: Vec<OsString>, started: Instant, call: &Call, limit: Option<Duration>) -> i32 {
     if command.len() < 4 {
         return fail_open("installed startup command unavailable");
     }
-    let deadline = started + Duration::from_millis(budget_ms());
+    let deadline = deadline_for(started, &call.harness, limit, budget_ms());
     let epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(now) => now.as_millis() as u64 + deadline.saturating_duration_since(Instant::now()).as_millis() as u64,
         Err(error) => return fail_open(&error.to_string()),
@@ -267,7 +273,8 @@ mod tests {
     fn startup_aliases_are_routed_without_changing_other_hooks() {
         for harness in ["copilot_cli", "vscode", "claudecode"] {
             for event in ["sessionStart", "SessionStart", "session_start", "preToolUse"] {
-                let call = Call { harness: harness.into(), event: event.into(), entry: String::new(), script_dir: None, response_timeout: Duration::ZERO, deadline: None };
+                let (h, e) = (harness.into(), event.into());
+                let call = Call { harness: h, event: e, entry: String::new(), script_dir: None, response_timeout: Duration::ZERO, deadline: None };
                 assert_eq!(is_startup(&call), harness != "claudecode" && event != "preToolUse");
             }
         }
@@ -306,6 +313,20 @@ mod tests {
 #[cfg(test)]
 mod budget_tests {
     use super::*;
+
+    #[test]
+    fn the_startup_deadline_never_passes_the_harness_limit_or_the_limit_flag() {
+        let start = Instant::now();
+        let span = |harness: &str, limit: Option<Duration>, budget: u64| deadline_for(start, harness, limit, budget).duration_since(start);
+        let smallest = crate::fallback::harness_limit("");
+        assert_eq!(span("vscode", None, DEFAULT_BUDGET_MS), smallest, "an unknown harness gets the smallest limit");
+        assert_eq!(span("", None, 600_000), smallest, "a seam value above the limit must not raise it");
+        assert_eq!(span("copilot_cli", None, 600_000), crate::fallback::harness_limit("copilot_cli"));
+        assert_eq!(span("copilot_cli", None, DEFAULT_BUDGET_MS), Duration::from_millis(DEFAULT_BUDGET_MS));
+        assert_eq!(span("copilot_cli", Some(Duration::from_millis(500)), DEFAULT_BUDGET_MS), Duration::from_millis(500));
+        assert_eq!(span("copilot_cli", Some(Duration::MAX), DEFAULT_BUDGET_MS), Duration::from_millis(DEFAULT_BUDGET_MS));
+    }
+
     #[test]
     fn only_a_plain_in_range_decimal_replaces_the_budget() {
         assert_eq!(budget_from(None), DEFAULT_BUDGET_MS);

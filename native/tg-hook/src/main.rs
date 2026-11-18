@@ -88,7 +88,10 @@ fn parse_hook_args(args: &[OsString]) -> Option<HookArgs> {
         }
     }
     let call = match (ok, harness, event, entry) {
-        (true, Some(harness), Some(event), Some(entry)) => Some(client::Call { harness, event, entry, script_dir, response_timeout, deadline: None }),
+        (true, Some(harness), Some(event), Some(entry)) => {
+            let call = client::Call { harness, event, entry, script_dir, response_timeout, deadline: None };
+            Some(call)
+        }
         _ => None,
     };
     Some(HookArgs { call, limit, fallback })
@@ -100,7 +103,7 @@ fn run_hook(hook: HookArgs, main_start: Instant) -> i32 {
         out::set_context(&call.harness, &call.event);
     }
     if let Some(call) = hook.call.as_ref().filter(|c| startup_entry::is_startup(c)) {
-        return startup_entry::run(hook.fallback.clone(), main_start, call);
+        return startup_entry::run(hook.fallback.clone(), main_start, call, hook.limit);
     }
     let Some(call) = hook.call else {
         let opts = fallback::Opts { event: None, ..fallback::Opts::for_call("", "", main_start, hook.limit) };
@@ -207,7 +210,10 @@ mod tests {
 
     #[test]
     fn a_hook_limit_flag_parses_to_a_duration_or_leaves_the_wrapped_command_alone() {
-        let with = |v: &str| parse_hook_args(&args(&["--harness", "kimi", "--event", "e", "--entry", "x", "--hook-limit-ms", v, "--", "n"])).unwrap();
+        let with = |v: &str| {
+            let flags = ["--harness", "kimi", "--event", "e", "--entry", "x", "--hook-limit-ms", v, "--", "n"];
+            parse_hook_args(&args(&flags)).unwrap()
+        };
         assert_eq!(with("300").limit, Some(Duration::from_millis(300)));
         assert_eq!(with("18446744073709551615").limit, Some(Duration::from_millis(u64::MAX)));
         for bad in ["0", "-5", "abc", "", "1.5", "18446744073709551616"] {

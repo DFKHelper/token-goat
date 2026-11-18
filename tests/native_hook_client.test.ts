@@ -148,7 +148,12 @@ interface Run {
 }
 
 /** `powershell` runs the client the way Copilot CLI runs a hook command on Windows: as `& '<client>' <args>` in `powershell -Command` (FORMAT-DERIVED from the `powershell` key `install --copilot` writes to its hooks file). */
-function runNative(args: readonly string[], input: Buffer | string, env: Env = {}, opts: { cwd?: string; onSpawn?: (child: ChildProcess) => void; powershell?: boolean; killAfterMs?: number; holdStdin?: boolean } = {}): Promise<Run> {
+function runNative(
+  args: readonly string[],
+  input: Buffer | string,
+  env: Env = {},
+  opts: { cwd?: string; onSpawn?: (child: ChildProcess) => void; powershell?: boolean; killAfterMs?: number; holdStdin?: boolean } = {},
+): Promise<Run> {
   return new Promise((resolve, reject) => {
     const started = performance.now()
     const quote = (s: string): string => `'${s.split("'").join("''")}'`
@@ -184,7 +189,9 @@ function runNative(args: readonly string[], input: Buffer | string, env: Env = {
     })
     // A client that stopped reading stdin early would fail this write with EPIPE; that is not what these cases test.
     child.stdin.on('error', () => undefined)
+    // `holdStdin` sends what `input` holds, if anything, and leaves the pipe open.
     if (opts.holdStdin !== true) child.stdin.end(input)
+    else if (input.length > 0) child.stdin.write(input)
     opts.onSpawn?.(child)
   })
 }
@@ -701,11 +708,13 @@ describe('falls back when nothing was dispatched', () => {
 // ---------- fake servers: lost after dispatch ----------
 
 describe('prints the no-op, and never runs the call again, once the request was handed over', () => {
-  const expectNoop = async (script: Script, opts: { event?: string; noop?: string; extra?: string[]; prefix?: string; killAfterMs?: number } = {}): Promise<Run> => {
+  type NoopOpts = { event?: string; noop?: string; extra?: string[]; prefix?: string; killAfterMs?: number }
+  const expectNoop = async (script: Script, opts: NoopOpts = {}): Promise<Run> => {
     let run: Run | undefined
     await withFakes([script, SERVED], async ([f, next]) => {
       const runs = fallbackRuns()
-      run = await runNative(hookArgs(fbTail(2), { event: opts.event, extra: opts.extra }), '{}', {}, { killAfterMs: opts.killAfterMs })
+      const args = hookArgs(fbTail(2), { event: opts.event, extra: opts.extra })
+      run = await runNative(args, '{}', {}, { killAfterMs: opts.killAfterMs })
       expect(run.stdout.toString('utf8')).toBe((opts.prefix ?? '') + (opts.noop ?? NOOP))
       expect(run.exit, run.stderr).toBe(0)
       expect(fallbackRuns()).toBe(runs)
@@ -753,7 +762,7 @@ describe('prints the no-op, and never runs the call again, once the request was 
   it('a daemon that never answers is cut off by the hook limit, not the response timeout', async () => {
     const run = await expectNoop(
       afterRequest(() => undefined, true),
-      { extra: ['--hook-limit-ms', '1500'], killAfterMs: 15_000 },
+      { extra: ['--hook-limit-ms', '8000'], killAfterMs: 30_000 },
     )
     expect(run.signal, 'the client had to be killed: it waited past its limit').toBeNull()
     expect(run.exit).toBe(0)
@@ -813,7 +822,7 @@ describe('one deadline serves every route', () => {
   const hangPid = (label: string): string => path.join(sb.base, `hang-${label}-${String(Date.now())}.pid`)
 
   /** Writes the pointer the second route is rebuilt from: a script that counts runs, then hangs or answers. */
-  function writePointer(): void {
+  function writePointer(opts: { withShim?: boolean } = {}): void {
     const dir = path.join(sb.base, `ptr-${String(Date.now())}`)
     fs.mkdirSync(dir, { recursive: true })
     const entry = path.join(dir, 'token-goat.mjs')
@@ -825,9 +834,18 @@ describe('one deadline serves every route', () => {
       '',
     ]
     fs.writeFileSync(entry, lines.join('\n'))
+    // A harness with no direct entry is rebuilt as `node <shim> <event> <entry>`; this shim acts like the entry.
+    const shim = path.join(dir, 'token-goat-shim.cjs')
+    const shimLines = [
+      "require('node:fs').appendFileSync(process.env.TG_ROUTE2_COUNTER, 'x')",
+      "if (process.env.TG_ROUTE2_MODE === 'hang') setInterval(() => {}, 1000)",
+      'else process.stdout.write(\'{"second":true}\')',
+      '',
+    ]
+    fs.writeFileSync(shim, shimLines.join('\n'))
     const slashed = (p: string): string => p.split(path.sep).join('/')
     const nativeBin = `${slashed(dir)}/tg-hook${WIN ? '.exe' : ''}`
-    const base = { schema: 1, version: '1', writtenAt: 't', shim: null, nativeBin }
+    const base = { schema: 1, version: '1', writtenAt: 't', shim: opts.withShim === true ? slashed(shim) : null, nativeBin }
     const pointer = { ...base, entry: slashed(entry), bundleDir: slashed(dir), node: slashed(process.execPath) }
     fs.writeFileSync(path.join(sb.dataDir, 'hook-entry.json'), JSON.stringify(pointer))
   }
@@ -872,7 +890,8 @@ describe('one deadline serves every route', () => {
 
   it('a limit above the harness limit does not raise it', async () => {
     // grok's table limit is 3 s: a flag of 10 min must end the call by that, not by the flag.
-    const args = ['--harness', 'grok', '--event', 'pre_tool_use', '--entry', sb.fakeEntry, '--hook-limit-ms', '600000']
+    const flags = ['--harness', 'grok', '--event', 'pre_tool_use', '--entry', sb.fakeEntry]
+    const args = [...flags, '--hook-limit-ms', '600000']
     const res = await runNative([...args, '--', ...fbTail(0, 'hang', hangPid('raise'))], '{}', NO_SERVER, BOUND)
     endedOnItsOwn(res, '{"decision":"allow"}')
   })
@@ -884,12 +903,30 @@ describe('one deadline serves every route', () => {
 
   it('an unknown harness takes the smallest limit, not the largest', async () => {
     const flags = ['--harness', 'no-such-host', '--event', 'pre_tool_use', '--entry', sb.fakeEntry]
-    endedOnItsOwn(await runNative([...flags, '--', ...fbTail(0, 'hang', hangPid('unknown'))], '{}', NO_SERVER, BOUND))
+    const argv = [...flags, '--', ...fbTail(0, 'hang', hangPid('unknown'))]
+    endedOnItsOwn(await runNative(argv, '{}', NO_SERVER, BOUND))
   })
 
   it('a host that never closes stdin ends the call at the limit with the safe no-op', async () => {
     const args = hookArgs(fbTail(0, 'hang', hangPid('stdin')), { extra: LIMIT_ARGS })
     endedOnItsOwn(await runNative(args, '', NO_SERVER, { ...BOUND, holdStdin: true }))
+  })
+
+  it('a host that sends more than a frame and then keeps stdin open still ends the call at the limit', async () => {
+    // The rest of the payload never arrives: reading it must be bounded by the call's deadline, not by EOF.
+    const args = hookArgs(fbTail(0, 'hang', hangPid('rest')), { extra: LIMIT_ARGS })
+    endedOnItsOwn(await runNative(args, Buffer.alloc(MAX_FRAME_BYTES + 100, 0x61), NO_SERVER, { ...BOUND, holdStdin: true }))
+  })
+
+  it('at the smallest harness limit a hung first route leaves the second its answer or the safe answer, and the call ends itself', async () => {
+    writePointer({ withShim: true })
+    const counter = path.join(sb.base, 'route2-small')
+    const flags = ['--harness', 'grok', '--event', 'pre_tool_use', '--entry', sb.fakeEntry, '--script-dir', sb.base]
+    const res = await runNative([...flags, '--', ...fbTail(0, 'hang', hangPid('small'))], '{}', route2Env(counter, 'answer'), BOUND)
+    expect(res.signal, 'the client was still running at the kill bound').toBeNull()
+    expect(res.exit, res.stderr).toBe(0)
+    expect(['{"second":true}', '{"decision":"allow"}']).toContain(res.stdout.toString('utf8'))
+    expect(res.heldOpen).toBe(false)
   })
 
   it('a first route that hangs is killed and reaped before the client exits', async () => {

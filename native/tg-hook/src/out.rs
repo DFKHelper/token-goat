@@ -62,11 +62,16 @@ pub fn finish(code: i32) -> ! {
 
 /// Ends the process with the safe answer and exit 0, unless an answer is already out, which a second one would corrupt.
 pub fn fail_open() -> ! {
+    answer_safely();
+    finish(0)
+}
+
+/// Writes the safe answer for the call in flight unless an answer is already out.
+pub fn answer_safely() {
     if !answered() {
         let (harness, event) = context();
         emit(&safe_answer(&harness, &event));
     }
-    finish(0)
 }
 
 /// Turns a panic anywhere, on any thread, into the safe answer and exit 0. Release builds abort on panic, which the host would see as a crash; this hook runs first and ends the process itself.

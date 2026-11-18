@@ -79,6 +79,23 @@ fn judge(code: Option<i32>, held: &[u8], empty_ok: bool) -> Result<i32, Failure>
     Ok(code)
 }
 
+/// The longest a killed route is waited for; one that outlasts it is left to the job object or PDEATHSIG.
+pub const REAP_BOUND: Duration = Duration::from_millis(100);
+
+/// Calls `probe` until it answers or `bound` has passed; `None` when it never did.
+fn poll_within<T>(bound: Duration, mut probe: impl FnMut() -> Option<T>) -> Option<T> {
+    let end = Instant::now() + bound;
+    loop {
+        if let Some(found) = probe() {
+            return Some(found);
+        }
+        if Instant::now() >= end {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
 fn read_pipe(mut pipe: impl Read, done: mpsc::Sender<Vec<u8>>) {
     let mut all = Vec::new();
     let mut forwarded = 0;
@@ -131,7 +148,7 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
     // Only the direct child is killed and reaped: the hook server it started detached must outlive the call.
     let kill = |child: &mut std::process::Child| {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = poll_within(REAP_BOUND, || matches!(child.try_wait(), Ok(Some(_)) | Err(_)).then_some(()));
     };
     let left = |end: Instant| end.saturating_duration_since(Instant::now());
     let held = match rx.recv_timeout(left(end)) {
@@ -180,5 +197,76 @@ mod tests {
     #[test]
     fn an_empty_answer_serves_only_where_the_safe_answer_is_empty() {
         assert_eq!(judge(Some(0), b"", true).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_probe_that_never_answers_is_given_up_on_within_its_bound() {
+        let (tx, rx) = mpsc::channel();
+        // owner: this test; the thread ends with the test process if the bound were ignored
+        std::thread::spawn(move || {
+            let _ = tx.send(poll_within(Duration::from_millis(50), || None::<()>));
+        });
+        let got = rx.recv_timeout(Duration::from_secs(10)).expect("poll_within outlived its bound");
+        assert!(got.is_none());
+        let mut calls = 0;
+        let third = poll_within(Duration::from_secs(10), || {
+            calls += 1;
+            (calls == 3).then_some(calls)
+        });
+        assert_eq!(third, Some(3));
+    }
+
+    /// The next test's hanging child, run as `--ignored --exact <this> pidfile=<path>`: writes its pid and hangs.
+    #[test]
+    #[ignore = "only runs as the hanging child of a_hung_route_is_dead_and_reaped_before_exec_returns"]
+    fn hang_child() {
+        let Some(path) = std::env::args().find_map(|a| a.strip_prefix("pidfile=").map(String::from)) else { return };
+        std::fs::write(path, std::process::id().to_string()).unwrap();
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    /// Whether no process, not even an unreaped zombie, answers to `pid`.
+    fn process_is_gone(pid: u32) -> bool {
+        #[cfg(unix)]
+        {
+            // SAFETY: signal 0 only checks that the pid exists.
+            let sent = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            sent == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
+            use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+            const STILL_ACTIVE: u32 = 259;
+            // SAFETY: a query-only handle to a pid, closed below; the exit code is one u32 of ours.
+            unsafe {
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                if handle.is_null() {
+                    return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32);
+                }
+                let mut code = 0u32;
+                let known = GetExitCodeProcess(handle, &mut code) != 0;
+                CloseHandle(handle);
+                known && code != STILL_ACTIVE
+            }
+        }
+    }
+
+    #[test]
+    fn a_hung_route_is_dead_and_reaped_before_exec_returns() {
+        let pidfile = std::env::temp_dir().join(format!("tg-cap-{}.pid", std::process::id()));
+        let _ = std::fs::remove_file(&pidfile);
+        let me = std::env::current_exe().unwrap().into_os_string();
+        let argv = [me, "--ignored".into(), "--exact".into(), "capture::tests::hang_child".into(), format!("pidfile={}", pidfile.display()).into()];
+        let limit = Duration::from_millis(2500);
+        let started = Instant::now();
+        let ended = exec(&argv, Stdin::Null, "t", limit, "grok", "pre_tool_use");
+        let took = started.elapsed();
+        assert!(matches!(ended, Err(Failure::Timeout(_))), "the hung route must time out");
+        assert!(took < limit + REAP_BOUND + Duration::from_secs(5), "exec outlived its bound: {took:?}");
+        let text = std::fs::read_to_string(&pidfile).unwrap_or_default();
+        let _ = std::fs::remove_file(&pidfile);
+        let pid: u32 = text.trim().parse().expect("the hung route never wrote its pid");
+        assert!(process_is_gone(pid), "pid {pid} of the hung route was still alive when exec returned");
     }
 }

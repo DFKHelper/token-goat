@@ -64,9 +64,13 @@ impl Opts {
     }
 }
 
+/// What a route leaves of the deadline for its kill and reap and the answer: the reap bound and a margin.
+const REAP_RESERVE: Duration = Duration::from_millis(capture::REAP_BOUND.as_millis() as u64 + 50);
+
+/// What a route may take: the time to the deadline less [`REAP_RESERVE`]; `None` when none is left.
 fn budget(opts: &Opts) -> Option<Duration> {
     let end = opts.deadline.unwrap_or_else(|| Instant::now() + harness_limit(""));
-    let left = end.saturating_duration_since(Instant::now());
+    let left = end.saturating_duration_since(Instant::now()).saturating_sub(REAP_RESERVE);
     (!left.is_zero()).then_some(left)
 }
 
@@ -119,17 +123,29 @@ fn read_rest(first: Vec<u8>, deadline: Option<Instant>) -> Option<Vec<u8>> {
 /// Runs the routes and returns the code to leave with. Never returns a code that would block the call on this process's own account: 0, or 2 only when a command ran and deliberately said so.
 pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
     // A timed-out read leaves no stdin for any route; the deadline has passed, so none starts.
+    let timed_out = matches!(input, Input::TimedOut);
     let bytes = match input {
         Input::Untouched | Input::TimedOut => None,
         Input::Read { bytes, more: false } => Some(bytes),
         Input::Read { bytes, more: true } => read_rest(bytes, opts.deadline),
     };
+    // Out of time: the safe answer goes out before the pointer file is read or any notice written.
+    if timed_out || (opts.deadline.is_some() && budget(opts).is_none()) {
+        out::answer_safely();
+        out::finish(0)
+    }
     let first_in = || bytes.as_deref().map_or(Stdin::Inherit, Stdin::Bytes);
     let later_in = || bytes.as_deref().map_or(Stdin::Null, Stdin::Bytes);
     let data_dir = paths::data_dir();
-    let record = |route: &str, path: &str, error: &str| {
-        if let Some(dir) = &data_dir {
-            notice::record(dir, route, path, error);
+    // Notices are written after the call is answered, so a slow disk never delays the host.
+    let notes = std::cell::RefCell::new(Vec::<(&str, String, String)>::new());
+    let record = |route: &'static str, path: &str, error: &str| notes.borrow_mut().push((route, path.to_string(), error.to_string()));
+    let write_notes = || {
+        let in_time = opts.deadline.is_none_or(|end| Instant::now() < end);
+        if let (Some(dir), true) = (&data_dir, in_time) {
+            for (route, path, error) in notes.borrow().iter() {
+                notice::record(dir, route, path, error);
+            }
         }
     };
     let mut failed_argv: Option<Vec<OsString>> = None;
@@ -154,7 +170,10 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
             Ok(second) if failed_argv.as_deref() != Some(second.as_slice()) => {
                 if let Some(timeout) = budget(opts) {
                     match capture::exec(&second, later_in(), "pointer-route", timeout, &opts.harness, opts.event.as_deref().unwrap_or("")) {
-                        Ok(done) => return finish(done),
+                        Ok(done) => {
+                            write_notes();
+                            return finish(done);
+                        }
                         Err(failure) => record("node-pointer", &missing_piece(&second), &failure.to_string()),
                     }
                 }
@@ -163,8 +182,17 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
             Err(why) => record("pointer", &Path::new(dir).join(pointer::FILE_NAME).to_string_lossy(), &why),
         }
     }
-    record("safe-answer", "", "every route failed; the host was given its safe answer");
-    out::fail_open()
+    answer_then_note(out::answer_safely, || {
+        record("safe-answer", "", "every route failed; the host was given its safe answer");
+        write_notes();
+    });
+    out::finish(0)
+}
+
+/// The answer goes out first and the notices after it, so nothing slow can delay the host's answer.
+fn answer_then_note(answer: impl FnOnce(), note: impl FnOnce()) {
+    answer();
+    note();
 }
 
 /// A route's answer is already on stdout; the exit code that goes with it.
@@ -177,7 +205,8 @@ fn finish(done: Outcome) -> i32 {
 
 /// Reads stdin until EOF, more than `limit` bytes, or `deadline` with stdin still open.
 pub fn read_stdin(limit: usize, deadline: Option<Instant>) -> Input {
-    let Some((bytes, failed)) = read_stdin_by(Vec::new(), limit as u64 + 1, deadline) else { return Input::TimedOut };
+    let read = read_stdin_by(Vec::new(), limit as u64 + 1, deadline);
+    let Some((bytes, failed)) = read else { return Input::TimedOut };
     match failed {
         true if bytes.is_empty() => Input::Untouched,
         // A read error mid-stream leaves the rest for the child to find, exactly as it would have.
@@ -266,7 +295,8 @@ mod tests {
         assert!(budget(&fresh).unwrap() <= Duration::from_millis(45_000));
         let seam = Opts::for_call("codex", "pre_tool_use", Instant::now(), Some(Duration::from_millis(500)));
         assert!(budget(&seam).unwrap() <= Duration::from_millis(500));
-        assert!(first_budget(&seam, true).unwrap() < budget(&seam).unwrap(), "no share kept for the second route");
+        let (shared, whole_left) = (first_budget(&seam, true).unwrap(), budget(&seam).unwrap());
+        assert!(shared < whole_left, "no share kept for the second route");
         let whole = first_budget(&Opts::bare(), true).unwrap();
         assert!(whole > Duration::from_millis(2_000), "a startup call keeps its whole deadline");
     }
@@ -276,7 +306,8 @@ mod tests {
         let opts = Opts::for_call("codex", "pre_tool_use", Instant::now(), None);
         let (alone, shared) = (first_budget(&opts, false).unwrap(), first_budget(&opts, true).unwrap());
         assert!(shared < alone, "a second route follows: {shared:?} must be under {alone:?}");
-        assert!(alone > Duration::from_millis(40_000), "no second route: the first gets the whole limit, got {alone:?}");
+        let why = format!("no second route: the first gets the whole limit, got {alone:?}");
+        assert!(alone > Duration::from_millis(40_000), "{why}");
     }
 
     #[test]
@@ -292,5 +323,22 @@ mod tests {
         assert_eq!(span(Some(table + Duration::from_millis(1))), table, "one past the table must not raise it");
         assert_eq!(span(Some(Duration::from_millis(u64::MAX))), table, "a huge value must not raise or panic");
         assert_eq!(span(Some(Duration::MAX)), table);
+    }
+
+    #[test]
+    fn a_route_stops_a_reserve_before_the_deadline_and_none_starts_inside_the_reserve() {
+        let spare = Duration::from_millis(5_000);
+        let far = Opts { deadline: Some(Instant::now() + spare), ..Opts::bare() };
+        assert!(budget(&far).unwrap() + REAP_RESERVE <= spare, "the route must leave the reserve unspent");
+        assert!(REAP_RESERVE > capture::REAP_BOUND, "the reserve must cover the reap bound");
+        let inside = Opts { deadline: Some(Instant::now() + REAP_RESERVE), ..Opts::bare() };
+        assert!(budget(&inside).is_none(), "a deadline no further than the reserve leaves no route to start");
+    }
+
+    #[test]
+    fn the_safe_answer_is_written_before_any_notice() {
+        let order = std::cell::RefCell::new(Vec::new());
+        answer_then_note(|| order.borrow_mut().push("answer"), || order.borrow_mut().push("notice"));
+        assert_eq!(*order.borrow(), ["answer", "notice"]);
     }
 }
