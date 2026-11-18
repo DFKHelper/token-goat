@@ -59,7 +59,13 @@ function grokLegacyHookScriptPath(): string {
 /** The hook command for `eventArg`: the native client in front of the Node command when this install wires it, quoted for the shell Grok runs a hook command in (PowerShell, `pwsh` or `powershell.exe -NoProfile -NonInteractive -Command`, on Windows; `sh -c` elsewhere), else the Node command alone in that same shell's form. The Windows Node form was once cmd-style (`"node" "shim" ...`), which PowerShell rejects as a ParserError before anything runs, so every Grok hook on Windows failed open and did nothing. */
 export function grokHookCommandFor(scriptPath: string, eventArg: string, opts: { sync?: boolean } = {}): string {
   const bin = nativeHookBinary(process.argv[1], opts)
-  const native = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'powershell' : 'sh', bin, 'grok', scriptPath, eventArg)
+  const native = nativeHookCommandLine(
+    process.platform === 'win32' ? 'powershell' : 'sh',
+    bin,
+    'grok',
+    scriptPath,
+    eventArg,
+  )
   return native ?? (process.platform === 'win32' ? powershellHookLine(hookPowershellCommand(scriptPath, eventArg)) : hookCommandFor(scriptPath, eventArg))
 }
 
@@ -77,7 +83,13 @@ export function wiredGrokHookWords(): WiredHookEntry[] {
   for (const groups of Object.values(config?.hooks ?? {})) {
     for (const g of Array.isArray(groups) ? groups : []) {
       for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
-        if (typeof h?.command === 'string') out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'), current: expected.has(h.command), guarded: guardVersionOf(h.command) !== undefined })
+        if (typeof h?.command === 'string') {
+          out.push({
+            words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'),
+            current: expected.has(h.command),
+            guarded: guardVersionOf(h.command) !== undefined,
+          })
+        }
       }
     }
   }

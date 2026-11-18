@@ -375,7 +375,7 @@ describe('detectUnboundedWalk -- comments, odd quotes and PowerShell assignments
   })
 })
 
-// Provenance: HAND-DERIVED from POSIX shell quoting (a backslash or `$'..'` spells a letter, `'\'' ` is a quote inside single quotes, `eval` runs its joined arguments, `xargs` feeds stdin words to its command, a `$F` head word is whatever F holds) and from the audit probes that were allowed before the fix; none is a wire-format claim.
+// Provenance: HAND-DERIVED from POSIX quoting and pre-fix audit probes; not a wire-format claim.
 describe('detectUnboundedWalk -- nesting, obscured command words and indirection', () => {
   it.each([
     ['cmd /c cmd /c cmd /c cmd /c find / -name x', 'nesting'],

@@ -138,7 +138,13 @@ function anyGroupHasTokenGoat(
 export function codexHookCommandFor(scriptPath: string, eventArg: string, opts: { sync?: boolean } = {}): string {
   // The native client in front, when this install wires it: quoted for PowerShell on Windows (single quotes, so a `$` in a path stays literal) and for the POSIX shell Codex runs hooks with elsewhere. `sync: false` (the installed check) never refreshes the Windows copy.
   const bin = nativeHookBinary(process.argv[1], opts)
-  const native = bin === undefined ? undefined : nativeHookCommandLine(process.platform === 'win32' ? 'powershell' : 'sh', bin, 'codex', scriptPath, eventArg)
+  const native = nativeHookCommandLine(
+    process.platform === 'win32' ? 'powershell' : 'sh',
+    bin,
+    'codex',
+    scriptPath,
+    eventArg,
+  )
   if (native !== undefined) return native
   return process.platform === 'win32' ? powershellHookLine(hookPowershellCommand(scriptPath, eventArg)) : hookCommandFor(scriptPath, eventArg)
 }
@@ -546,7 +552,13 @@ export function wiredCodexHookWords(): WiredHookEntry[] {
     if (event === 'state' || !Array.isArray(groups)) continue
     for (const g of groups) {
       for (const h of Array.isArray(g?.hooks) ? g.hooks : []) {
-        if (isCodexTokenGoatCommand(h?.command)) out.push({ words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'), current: expected.has(h.command), guarded: guardVersionOf(h.command) !== undefined })
+        if (isCodexTokenGoatCommand(h?.command)) {
+          out.push({
+            words: splitHookCommand(h.command, process.platform === 'win32' ? 'powershell' : 'sh'),
+            current: expected.has(h.command),
+            guarded: guardVersionOf(h.command) !== undefined,
+          })
+        }
       }
     }
   }

@@ -123,7 +123,17 @@ fn main() {
         Some("--selftest") => {
             println!(
                 "{}",
-                serde_json::json!({ "ok": true, "name": env!("CARGO_PKG_NAME"), "version": env!("CARGO_PKG_VERSION"), "platform": NODE_PLATFORM, "arch": NODE_ARCH, "protocol": protocol::PROTOCOL_VERSION, "harnessProtocol": protocol::HARNESS_PROTOCOL_VERSION, "slots": protocol::SERVER_SLOTS })
+                serde_json::json!({
+                    "ok": true,
+                    "name": env!("CARGO_PKG_NAME"),
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "build": option_env!("TG_PACKAGE_VERSION").unwrap_or(""),
+                    "platform": NODE_PLATFORM,
+                    "arch": NODE_ARCH,
+                    "protocol": protocol::PROTOCOL_VERSION,
+                    "harnessProtocol": protocol::HARNESS_PROTOCOL_VERSION,
+                    "slots": protocol::SERVER_SLOTS
+                })
             );
             0
         }

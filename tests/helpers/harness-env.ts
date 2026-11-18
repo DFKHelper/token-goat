@@ -20,7 +20,7 @@ export const HARNESS_DETECTION_ENV_KEYS = [
 ] as const
 
 /** The variables Claude Code exports to every Bash call it makes (CAPTURE: `env` in a Bash call of Claude Code 2.1.x on Windows, 2026-10-05), plus CLAUDE_CODE_VERSION, which src/bridges/registry.ts::detectHarness reads as a Claude Code signal (FORMAT-DERIVED). TERM_PROGRAM is handled apart in {@link scrubClaudeSessionEnv}: only its `claude-code` value belongs to the session. */
-export const CLAUDE_SESSION_ENV_KEYS = ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_VERSION', 'CLAUDE_CODE_SESSION_ATTENDED'] as const
+export const CLAUDE_SESSION_ENV_KEYS = ['CLAUDECODE', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_PID', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_VERSION', 'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_GIT_BASH_PATH'] as const
 
 /** Drop the Claude Code session from `env`: every {@link CLAUDE_SESSION_ENV_KEYS} entry, and TERM_PROGRAM when Claude Code set it (another terminal's TERM_PROGRAM is the developer's own and stays). Used by tests/setup/isolate-home.ts, so a suite launched from a Claude Code Bash call runs as it does in CI. */
 export function scrubClaudeSessionEnv(env: NodeJS.ProcessEnv): void {

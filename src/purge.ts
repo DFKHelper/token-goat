@@ -208,14 +208,14 @@ function hostConfigPaths(cwd: string): string[] {
   ]
 }
 
-/** One config as a scan read it: its text, and the paths its token-goat hook commands name, read through the one parser. */
+/** One config as a scan read it: its text and the paths its token-goat hooks name, via the one parser. */
 interface ConfigRead {
   readonly path: string
   readonly text: string
   readonly parsed: readonly string[]
 }
 
-/** The paths every token-goat hook command in a config names, in comparison form, read through the one parser (guarded and older forms alike): spelling-proof where the raw text is not, such as a path whose apostrophe the shell quoting split. */
+/** Spelling-proof comparison paths each token-goat hook names, guarded or older form, via the one parser. */
 function commandPaths(raw: string): string[] {
   const found: string[] = []
   for (const lit of stringLiterals(raw)) {
@@ -223,7 +223,9 @@ function commandPaths(raw: string): string[] {
     for (const shell of ['sh', 'powershell', 'cmd'] as const) {
       const native = parseNativeInvocation(splitHookCommand(lit, shell))
       if (native === undefined) continue
-      for (const w of [native.bin, native.entry, ...native.wrapped]) if (w !== undefined && path.isAbsolute(w)) found.push(comparable(w))
+      for (const w of [native.bin, native.entry, ...native.wrapped]) {
+        if (w !== undefined && path.isAbsolute(w)) found.push(comparable(w))
+      }
     }
   }
   return found
@@ -295,7 +297,8 @@ export function referencedBy(target: string, scan: ReferenceScan): string | unde
   }
   for (const config of scan.configs) {
     for (const needle of needles) {
-      if (config.text.includes(needle) || config.parsed.some((p) => p === needle || p.startsWith(`${needle}/`))) return `${config.path} still names it`
+      const parsedNames = config.parsed.some((p) => p === needle || p.startsWith(`${needle}/`))
+      if (config.text.includes(needle) || parsedNames) return `${config.path} still names it`
     }
   }
   return undefined

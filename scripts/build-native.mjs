@@ -40,7 +40,12 @@ const rustflags = [inherited, ...remap].filter(Boolean).join('\x1f')
 // The artifact path comes from cargo's own JSON messages rather than an assumed target/release/, so a CARGO_TARGET_DIR set in the environment still finds the binary just built.
 const result = spawnSync('cargo', ['build', '--release', '--locked', '--message-format=json-render-diagnostics', ...(target === undefined ? [] : ['--target', target.triple])], {
   cwd: CRATE_DIR,
-  env: { ...process.env, CARGO_ENCODED_RUSTFLAGS: rustflags },
+  // The package version is stamped into the binary (`--selftest` reports it as `build`).
+  env: {
+    ...process.env,
+    CARGO_ENCODED_RUSTFLAGS: rustflags,
+    TG_PACKAGE_VERSION: JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version,
+  },
   encoding: 'utf8',
   stdio: ['ignore', 'pipe', 'inherit'],
   maxBuffer: 64 * 1024 * 1024,

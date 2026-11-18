@@ -563,6 +563,7 @@ const R = {
   sqlConst: 'SQL text around a table name or tokenizer token-goat fixes in a constant (DERIVED_TABLES, FTS_TOKENIZER)',
   generated: 'the source of a script or shim token-goat writes, around its own install paths or a fixed literal; never shown as a message',
   cmdLine: 'a command line handed to cmd.exe /s /c as one quoted string, each argument already quoted by windowsCmdQuoteArg',
+  guardedCmd: 'a guarded cmd form handed to cmd.exe /s /c as one string; the builder refuses a quote or percent',
   regex: 'a regex matching SQL\'s own double-quoted identifier syntax around a name escapeRegExp already escaped',
   jsonPath: 'json-query bracket-key syntax inside a path the caller then quotes whole with quotedArg; a name holding a single quote is refused first',
   sedRewrite: 'an internal rewrite into the `sed -n` form extractSedRange parses, never shown; a path holding a double quote is refused first',
@@ -586,14 +587,19 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
     'hint_suggestion_guard.ts::if (unquotable(value)) return \'"\' + UNQUOTABLE + \'"\'',
     'hint_suggestion_guard.ts::if (REWRITTEN_IN_DOUBLE_QUOTES.test(value)) return "\'" + value + "\'"',
     'hint_suggestion_guard.ts::return \'"\' + value + \'"\'',
-    'native_hook.ts::return `"${text}"`',
     'process_util.ts::if (process.platform === \'win32\') return `"${value}"`',
     'process_util.ts::return `"${value.replace(/[\\\\$`"]/g, \'\\\\$&\')}"`',
     'process_util.ts::return `\'${value.replace(/\'/g, "\'\\\\\'\'")}\'`',
     'process_util.ts::return `\'${value.replace(/\'/g, "\'\'")}\'`',
   ].map((key) => ({ key, reason: R.quoter })),
-  // hook_guard.ts quoteWord is the guarded-command quoter itself: one sh quote and one PowerShell quote on the same line.
-  { key: 'hook_guard.ts::return shell === \'sh\' ? `\'${text.replace(/\'/g, "\'\\\\\'\'")}\'` : `\'${text.replace(PS_QUOTES, (q) => q + q)}\'`', reason: R.quoter, count: 2 },
+  // hook_guard.ts quoteWord is the guarded-command quoter: one sh quote and one PowerShell quote per line.
+  {
+    key:
+      'hook_guard.ts::return shell === \'sh\' ? `\'${word.replace(/\'/g, "\'\\\\\'\'")}\'` : ' +
+      '`\'${text.replace(PS_QUOTES, (q) => q + q)}\'`',
+    reason: R.quoter,
+    count: 2,
+  },
   ...[
     'hooks_bash_commands.ts::.replace(/"((?:[^"\\\\]|\\\\.)*)"/g, (_m, inner: string) => \'"\' + \' \'.repeat(inner.length) + \'"\')',
     'hooks_bash_commands.ts::.replace(/\'([^\']*)\'/g, (_m, inner: string) => "\'" + \' \'.repeat(inner.length) + "\'")',
@@ -614,6 +620,7 @@ const QUOTES_ARE_SYNTAX: ReadonlyArray<{ key: string; reason: string; count?: nu
   ...[
     'bridges/shim_common.ts::try { process.stdout.write(\'${noOp}\') } catch {}`',
   ].map((key) => ({ key, reason: R.generated })),
+  { key: 'hook_selftest.ts::args = [\'/d\', \'/s\', \'/c\', `"${command}"`]', reason: R.guardedCmd },
   { key: 'process_util.ts::return spawnSync(existsSync(comspec) ? comspec : \'cmd.exe\', [\'/d\', \'/s\', \'/c\', `"${line}"`], { ...options, windowsVerbatimArguments: true })', reason: R.cmdLine },
   { key: 'languages/sql_idx.ts::return new RegExp(`(?<![\\\\w$])END\\\\s+(?:"${simple}"|${simple})\\\\s*;`, \'i\')', reason: R.regex },
   ...[

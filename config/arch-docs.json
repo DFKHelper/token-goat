@@ -67,6 +67,8 @@
     ["src/hook_pointer.ts","Hook Subsystem"],
     ["src/hook_guard.ts","Hook Subsystem"],
     ["src/hook_selftest.ts","Hook Subsystem"],
+    ["src/claude_hook_shell.ts","Hook Subsystem"],
+    ["src/native_build_stamp.ts","Hook Subsystem"],
     ["src/hook_registry.ts","Hook Subsystem"],
     ["src/hooks_agent_spawn.ts","Hook Subsystem"],
     ["src/hooks_agent_spawn_register.ts","Hook Subsystem"],

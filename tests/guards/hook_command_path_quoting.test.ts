@@ -117,14 +117,21 @@ describe('the PowerShell hook command line is single-quoted, so nothing in a pat
 describe('the native hook command line quotes every path for the shell that runs it', () => {
   const NATIVE_SITE: Site = { file: 'native_hook.ts', fn: 'nativeHookCommandLine' }
 
-  it('reaches both single-quote helpers from the one builder every installer uses', () => {
+  it('reaches the guarded-command builder, which quotes every word, from every installer', () => {
     expect(siteExists(NATIVE_SITE), `${NATIVE_SITE.file}::${NATIVE_SITE.fn} no longer exists`).toBe(true)
     const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, NATIVE_SITE.file), 'utf8'))
     const byName = functionMap(fns)
     const fn = fns.find((f) => f.name === NATIVE_SITE.fn)!
-    for (const terminal of ['quotePosixShellWord(', 'quotePowershellPath(']) {
-      expect(reachesRaw(fn, byName, (body) => body.includes(terminal)), terminal).toBe(true)
-    }
+    expect(
+      reachesRaw(fn, byName, (body) => body.includes('buildGuardedCommand(')),
+      'buildGuardedCommand(',
+    ).toBe(true)
+    const guard = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'hook_guard.ts'), 'utf8'))
+    const build = guard.find((f) => f.name === 'buildGuardedCommand')!
+    expect(
+      reachesRaw(build, functionMap(guard), (body) => body.includes("'${text.replace(")),
+      'the word quoting in hook_guard.ts',
+    ).toBe(true)
   })
 
   it('leaves $, backquote, double quote and backslash literal inside POSIX single quotes', () => {

@@ -27,6 +27,7 @@ import { hasCreatedConfig } from './bridges/created_configs.js'
 import { COPILOT_CLI_HOOK_SCRIPT } from './bridges/copilot_cli.js'
 import { claudeHookScriptPath, claudeHooksInstalledAnyScope, hookEventGaps, isInstalled, wiredClaudeHookWords } from './install.js'
 import { parseNativeInvocation, splitHookCommand } from './native_hook.js'
+import { powerShellCommandArgs, resolvePowerShell } from './shell.js' // tg-powershell-output-unread: runs the registered hook command, its output is not read as text
 import { CLAUDECODE_HOOK_SCRIPT } from './bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from './bridges/codex.js'
 import { codexHookScriptPath, wiredCodexHookWords } from './bridges/codex_install.js'
@@ -361,7 +362,16 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
   // A config that still runs the .js forwarder (a session started before the rename caches it) fails every call once that file is gone, even with the .cjs it forwards to intact.
   if (named.legacy && !fs.existsSync(legacyPath)) return missingShimResult(name, legacyPath, harness, install)
 
-  let config: { hooks?: Partial<Record<string, Array<{ command?: unknown; exec?: unknown; args?: unknown; timeoutSec?: unknown }>>> }
+  let config: {
+    hooks?: Partial<Record<string, Array<{
+      command?: unknown
+      bash?: unknown
+      powershell?: unknown
+      exec?: unknown
+      args?: unknown
+      timeoutSec?: unknown
+    }>>>
+  }
   try {
     config = JSON.parse(stripBom(fs.readFileSync(configPath, 'utf-8')))
   } catch (err) {
@@ -383,7 +393,10 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
   const directArgs = Array.isArray(argsValue) ? argsValue.filter((arg: unknown): arg is string => typeof arg === 'string') : []
   const hasValidDirectArgs = Array.isArray(argsValue) && directArgs.length === argsValue.length
   const directExec = hasDirectExec && typeof execValue === 'string' && execValue !== '' ? execValue : undefined
+  // A build writes `bash` and `powershell` without `command`, so this platform's field stands in for it.
   const commandValue = preToolUseEntry?.command
+    ?? (process.platform === 'win32' ? preToolUseEntry?.powershell : preToolUseEntry?.bash)
+  const commandRunsInPowershell = preToolUseEntry?.command === undefined && process.platform === 'win32'
   const preToolUseCommand = !hasDirectExec && typeof commandValue === 'string' && commandValue !== '' ? commandValue : undefined
   const hasNulDirectEntry = hasDirectExec && (
     directExec?.includes('\0') === true ||
@@ -407,7 +420,10 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
   const directEntry = directExec === undefined ? undefined : { exec: directExec, args: directArgs }
   // A command entry's first word is the baked process.execPath (see hookCommandFor in copilot_cli_install.ts), or with the native client wired, that binary, and the baked node path is the first word after `--`. A direct exec entry already carries the same argv as separate fields.
   const words = directEntry === undefined
-    ? splitHookCommand(preToolUseCommand ?? '', process.platform === 'win32' ? 'cmd' : 'sh')
+    ? splitHookCommand(
+      preToolUseCommand ?? '',
+      commandRunsInPowershell ? 'powershell' : process.platform === 'win32' ? 'cmd' : 'sh',
+    )
     : [directEntry.exec, ...directEntry.args]
   const native = parseNativeInvocation(words)
   if (native !== undefined && !fs.existsSync(native.bin) && resolveOnPath(native.bin) === null) {
@@ -451,7 +467,11 @@ export function checkCopilotCli(configPath: string, scriptPath: string, scope: '
   const probeEnv = { ...process.env, [HOOK_PROBE_ENV]: '1' }
   // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
   const res = directEntry === undefined
-    ? spawnSync(preToolUseCommand ?? '', {
+    ? commandRunsInPowershell
+      ? spawnSync(resolvePowerShell(), powerShellCommandArgs(preToolUseCommand ?? ''), { // tg-powershell-output-unread: runs the registered hook command, its output is not read as text
+        input: synthetic, encoding: 'utf-8', env: probeEnv, windowsHide: true, timeout: probeBudgetMs,
+      })
+      : spawnSync(preToolUseCommand ?? '', {
         input: synthetic,
         encoding: 'utf-8',
         env: probeEnv,

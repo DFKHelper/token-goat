@@ -1,10 +1,18 @@
-/** The install self-test: run each registered hook command the way its host does, through the same shell, with a harmless payload, then run it again with the native client made unresolvable to prove the Node route. */
+/** Self-test each registered hook: exe route, then Node route with the native client unresolvable. */
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { buildGuardedCommand, guardVersionOf, parseGuardedCommand, stringLiterals, wrappedNodeArgv, type GuardShell } from './hook_guard.js'
+import {
+  buildGuardedCommand,
+  GUARD_VERSION,
+  guardVersionOf,
+  parseGuardedCommand,
+  stringLiterals,
+  wrappedNodeArgv,
+  type GuardShell,
+} from './hook_guard.js'
 import { HOOK_PROBE_ENV } from './stats.js'
 import { resolveWindowsBash } from './shell.js'
 import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
@@ -23,22 +31,38 @@ export type ShellRunner = (shell: GuardShell, command: string, input: string) =>
 
 const SELFTEST_TIMEOUT_MS = 60_000
 
-/** The host's shell run: Git Bash (or `/bin/sh`) for the sh form, Windows PowerShell 5.1 for the other. null when this machine has no such shell. */
+/** Host shell per form: Git Bash or `/bin/sh` (sh), cmd.exe (cmd), PowerShell 5.1 (other); null if absent. */
 export const realShellRunner: ShellRunner = (shell, command, input) => {
   let program: string
   let args: string[]
-  if (shell === 'sh') {
+  let verbatim = false
+  if (shell === 'cmd') {
+    if (process.platform !== 'win32') return null
+    program = process.env['ComSpec'] ?? 'cmd.exe'
+    // `cmd /d /s /c "<command>"` is how a host's own spawn of a command string reaches cmd.exe.
+    args = ['/d', '/s', '/c', `"${command}"`]
+    verbatim = true
+  } else if (shell === 'sh') {
     const bash = process.platform === 'win32' ? resolveWindowsBash() : '/bin/sh'
     if (bash === null) return null
     program = bash
     args = ['-c', command]
   } else {
-    // Windows PowerShell 5.1 is the oldest shell the PowerShell guard must run in; no other platform registers that form.
+    // PowerShell 5.1 is the oldest shell the PowerShell guard must run in; no other platform registers it.
     if (process.platform !== 'win32') return null
     program = windowsPowerShellPath()
     args = powerShellTextQueryArgs(command)
   }
-  const r = spawnSync(program, args, { input, encoding: 'utf8', env: { ...process.env, [HOOK_PROBE_ENV]: '1' }, timeout: SELFTEST_TIMEOUT_MS, windowsHide: true, cwd: os.tmpdir(), maxBuffer: 8 * 1024 * 1024 })
+  const r = spawnSync(program, args, {
+    input,
+    encoding: 'utf8',
+    env: { ...process.env, [HOOK_PROBE_ENV]: '1' },
+    timeout: SELFTEST_TIMEOUT_MS,
+    windowsHide: true,
+    windowsVerbatimArguments: verbatim,
+    cwd: os.tmpdir(),
+    maxBuffer: 8 * 1024 * 1024,
+  })
   if (r.error !== undefined) return { status: null, stdout: '', stderr: String(r.error.message) }
   return { status: r.status, stdout: r.stdout, stderr: r.stderr }
 }
@@ -63,10 +87,13 @@ function flagValue(argv: readonly string[], flag: string): string | undefined {
   return i < 0 ? undefined : argv[i + 1]
 }
 
-/** Whether `stdout` is an answer the host accepts: JSON objects, one per line (an async event answers `{"async":true}` first), or nothing at all for the harnesses whose answer is empty. */
-function validAnswer(harness: string | undefined, stdout: string): boolean {
+/** Host-accepted `stdout`: JSON objects per line (async events send `{"async":true}` first), or empty. */
+function validAnswer(harness: string | undefined, event: string, stdout: string, safe: string): boolean {
   const lines = stdout.split(/\r?\n/).filter((l) => l.trim() !== '')
-  if (lines.length === 0) return harness === 'kimi'
+  // A harness whose own safe answer is empty (Kimi) accepts empty output, a Node-only command included.
+  if (lines.length === 0) return harness === 'kimi' || safe === ''
+  // Claude Code reads a pre_compact hook's raw stdout as the summarizer's instructions, so plain text is its answer.
+  if (event === 'pre_compact' && (harness === 'claudecode' || harness === undefined)) return true
   return lines.every((line) => {
     try {
       const v: unknown = JSON.parse(line)
@@ -77,7 +104,7 @@ function validAnswer(harness: string | undefined, stdout: string): boolean {
   })
 }
 
-/** Whether the notice at `marker` is the guard's own: the client writes the same file (route startup, node-argv) when it ran but its relay failed under load, which is not a fall-through. */
+/** Whether the notice at `marker` is the client's own (its relay failed under load), not a fall-through. */
 function guardWroteNotice(marker: string): boolean {
   try {
     return fs.readFileSync(marker, 'utf8').includes('"route":"guard"')
@@ -86,7 +113,7 @@ function guardWroteNotice(marker: string): boolean {
   }
 }
 
-/** Run each guarded command on the exe route as registered and on the Node route with the client unresolvable, and report what failed. An unguarded command is skipped. */
+/** Run guarded commands on the exe and Node routes (client unresolvable); report failures; skip unguarded. */
 export function selftestRegisteredCommands(commands: readonly string[]): SelftestOutcome {
   const failures: string[] = []
   const skipped: string[] = []
@@ -100,24 +127,44 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
         continue
       }
       const harness = flagValue(parsed.native, '--harness')
-      const event = flagValue(parsed.native, '--event') ?? 'unknown'
+      const nodeArgv = parsed.native.includes('--') ? wrappedNodeArgv(parsed.native) : parsed.native
+      const event = flagValue(parsed.native, '--event') ?? nodeArgv[2] ?? 'unknown'
       const input = JSON.stringify({ hook_event_name: event, session_id: 'tg-selftest' })
       const label = `${harness ?? 'hook'} ${event}`
       const markerBefore = fs.existsSync(parsed.marker)
       const exe = runner(parsed.shell, command, input)
       if (exe === null) {
-        skipped.push(`${label}: no ${parsed.shell === 'sh' ? 'POSIX shell (Git Bash)' : 'PowerShell'} on this machine`)
+        const shellName = parsed.shell === 'sh'
+          ? 'POSIX shell (Git Bash)'
+          : parsed.shell === 'cmd' ? 'cmd.exe' : 'PowerShell'
+        skipped.push(`${label}: no ${shellName} on this machine`)
         continue
       }
       const problem = (run: ShellRun, route: string): string | undefined =>
-        run.status !== 0 ? `${label} (${route}): exit ${String(run.status)}: ${run.stderr.trim().slice(0, 300)}` : validAnswer(harness, run.stdout) ? undefined : `${label} (${route}): not a valid answer: ${run.stdout.trim().slice(0, 200)}`
+        run.status !== 0
+          ? `${label} (${route}): exit ${String(run.status)}: ${run.stderr.trim().slice(0, 300)}`
+          : validAnswer(harness, event, run.stdout, parsed.safe)
+            ? undefined
+            : `${label} (${route}): not a valid answer: ${run.stdout.trim().slice(0, 200)}`
       const exeProblem = problem(exe, 'native client')
       if (exeProblem !== undefined) failures.push(exeProblem)
-      else if (!markerBefore && guardWroteNotice(parsed.marker)) failures.push(`${label}: nothing could run, so the command fell through to the safe answer`)
+      else if (!markerBefore && guardWroteNotice(parsed.marker)) {
+        failures.push(`${label}: nothing could run, so the command fell through to the safe answer`)
+      }
 
+      if (!parsed.native.includes('--')) {
+        // A Node-only registration has no client to make unresolvable: the run above is its Node route.
+        tested++
+        continue
+      }
       const marker = path.join(scratch, `marker-${String(tested)}`)
       const unresolvable = path.join(scratch, 'no-such-dir', path.basename(parsed.native[0]!))
-      const viaNode = buildGuardedCommand({ shell: parsed.shell, native: [unresolvable, ...parsed.native.slice(1)], safe: parsed.safe, marker })
+      const viaNode = buildGuardedCommand({
+        shell: parsed.shell,
+        native: [unresolvable, ...parsed.native.slice(1)],
+        safe: parsed.safe,
+        marker,
+      })
       if (wrappedNodeArgv(parsed.native).length === 0) {
         skipped.push(`${label}: no Node route registered`)
         continue
@@ -126,7 +173,12 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
       if (node === null) continue
       const nodeProblem = problem(node, 'Node route')
       if (nodeProblem !== undefined) failures.push(nodeProblem)
-      else if (fs.existsSync(marker)) failures.push(`${label} (Node route): the Node shim could not run, so the command fell through to the safe answer`)
+      else if (fs.existsSync(marker)) {
+        failures.push(
+          `${label} (Node route): the Node shim could not run, ` +
+            `so the command fell through to the safe answer`,
+        )
+      }
       tested++
     }
   } finally {
@@ -135,11 +187,14 @@ export function selftestRegisteredCommands(commands: readonly string[]): Selftes
   return { failures, tested, skipped }
 }
 
-/** Throw a {@link HookSelftestError} naming every failure when `commands` do not pass the self-test; `where` names the config the caller keeps as it was. */
+/** Throw a {@link HookSelftestError} naming each failure if `commands` fail; `where` names the config kept. */
 export function assertRegisteredCommandsWork(commands: readonly string[], where: string): SelftestOutcome {
   const outcome = selftestRegisteredCommands(commands)
   if (outcome.failures.length > 0) {
-    throw new HookSelftestError(`the hook commands written to ${where} failed their self-test, so the previous registration was kept: ${outcome.failures.join('; ')}`)
+    throw new HookSelftestError(
+      `the hook commands written to ${where} failed their self-test, so the previous registration was kept: ` +
+        `${outcome.failures.join('; ')}`,
+    )
   }
   return outcome
 }
@@ -149,7 +204,15 @@ export function guardedCommandsInText(raw: string): string[] {
   return stringLiterals(raw).filter((lit) => guardVersionOf(lit) !== undefined)
 }
 
-/** A file's bytes, undefined when it is absent, and null when it exists but cannot be read as a file (a directory, no permission): the caller's own error for that case must still be the one raised. */
+/** Newest guard version `raw` holds if newer than {@link GUARD_VERSION}, else undefined. */
+export function newerGuardInText(raw: string): number | undefined {
+  const versions = guardedCommandsInText(raw)
+    .map((c) => guardVersionOf(c) ?? 0)
+    .filter((v) => v > GUARD_VERSION)
+  return versions.length === 0 ? undefined : Math.max(...versions)
+}
+
+/** A file's bytes; undefined if absent, null if unreadable as a file (the caller's own error is raised). */
 function snapshot(file: string): Buffer | undefined | null {
   if (!fs.existsSync(file)) return undefined
   try {
@@ -159,14 +222,30 @@ function snapshot(file: string): Buffer | undefined | null {
   }
 }
 
-/** Run `write`, which writes `files`, then self-test every guarded command they now hold; on a failure put every file back as it was (or absent) and rethrow. A file that cannot be read leaves `write` unverified: it raises its own error. */
+/** Run `write`, self-test its guarded commands; on failure restore every file (or absence) and rethrow. */
 export function verifiedInstall<T>(files: readonly string[], write: () => T): T {
   const before = files.map(snapshot)
   if (before.includes(null)) return write()
   const result = write()
   const after = files.map(snapshot)
-  if (files.every((_f, i) => before[i] !== undefined && after[i] !== undefined && after[i] !== null && before[i]!.equals(after[i]!))) return result
-  const commands = after.flatMap((buf) => (buf === undefined || buf === null ? [] : guardedCommandsInText(buf.toString('utf8'))))
+  // Registrations a newer build wrote stay as it wrote them: this build cannot read their guard.
+  files.forEach((f, i) => {
+    const was = before[i]
+    const newer = was === undefined || was === null ? undefined : newerGuardInText(was.toString('utf8'))
+    if (newer === undefined || was === undefined || was === null
+      || (after[i] !== undefined && after[i] !== null && was.equals(after[i]!))) return
+    fs.writeFileSync(f, was)
+    after[i] = was
+    process.stderr.write(
+      `token-goat: left ${f} as it was: its hooks carry guard version ${String(newer)}, ` +
+        `written by a newer token-goat than this one (guard version ${String(GUARD_VERSION)}). ` +
+        `Upgrade this install to change them.\n`,
+    )
+  })
+  if (files.every((_f, i) => before[i] !== undefined && after[i] !== undefined && after[i] !== null
+    && before[i]!.equals(after[i]!))) return result
+  const commands = after.flatMap((buf) =>
+    buf === undefined || buf === null ? [] : guardedCommandsInText(buf.toString('utf8')))
   try {
     assertRegisteredCommandsWork(commands, files.join(', '))
   } catch (e) {
