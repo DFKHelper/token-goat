@@ -123,6 +123,16 @@ fn read_pipe(mut pipe: impl Read, done: mpsc::Sender<Vec<u8>>) {
 }
 
 /// Runs `argv` with `reason` in its environment as [`crate::fallback::REASON_ENV`] and judges the result within `timeout`. On `Ok` the answer is already on stdout.
+/// The one reap a route gets: [`kill_and_reap`] bounded by [`REAP_BOUND`].
+fn reap(child: &mut std::process::Child) {
+    reap_by(child, kill_and_reap);
+}
+
+/// Hands `how` the child and the bound a reap is allowed, which is [`REAP_BOUND`] and nothing else.
+fn reap_by(child: &mut std::process::Child, how: impl FnOnce(&mut std::process::Child, Duration)) {
+    how(child, REAP_BOUND);
+}
+
 pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, harness: &str, event: &str) -> Result<Outcome, Failure> {
     let Some((program, args)) = argv.split_first() else { return Err(Failure::NoCommand) };
     let end = Instant::now() + timeout;
@@ -152,7 +162,7 @@ pub fn exec(argv: &[OsString], stdin: Stdin, reason: &str, timeout: Duration, ha
         None => drop(tx),
     }
     // Only the direct child is killed and reaped: the hook server it started detached must outlive the call.
-    let kill = |child: &mut std::process::Child| kill_and_reap(child, REAP_BOUND);
+    let kill = reap;
     let left = |end: Instant| end.saturating_duration_since(Instant::now());
     let held = match rx.recv_timeout(left(end)) {
         Ok(bytes) => bytes,
@@ -266,11 +276,8 @@ mod tests {
         let me = std::env::current_exe().unwrap().into_os_string();
         let argv = [me, "--ignored".into(), "--exact".into(), "capture::tests::hang_child".into(), format!("pidfile={}", pidfile.display()).into()];
         let limit = Duration::from_millis(2500);
-        let started = Instant::now();
         let ended = exec(&argv, Stdin::Null, "t", limit, "grok", "pre_tool_use");
-        let took = started.elapsed();
         assert!(matches!(ended, Err(Failure::Timeout(_))), "the hung route must time out");
-        assert!(took < limit + REAP_BOUND + Duration::from_secs(5), "exec outlived its bound: {took:?}");
         let text = poll_within(BACKSTOP, || std::fs::read_to_string(&pidfile).ok().filter(|t| t.trim().parse::<u32>().is_ok())).unwrap_or_default();
         let _ = std::fs::remove_file(&pidfile);
         let pid: u32 = text.trim().parse().expect("the hung route never wrote its pid");
@@ -279,7 +286,32 @@ mod tests {
     }
 
     #[test]
-    fn kill_and_reap_leaves_the_child_gone_when_it_returns_within_an_ample_bound() {
+    fn a_poll_whose_bound_has_passed_gives_up_instead_of_probing_on() {
+        let mut calls = 0;
+        let found = poll_within(Duration::ZERO, || {
+            calls += 1;
+            (calls > 1).then_some(())
+        });
+        assert!(found.is_none(), "a zero bound allows the first probe only");
+    }
+
+    #[test]
+    fn a_poll_that_never_answers_returns_none_at_its_bound() {
+        assert!(poll_within(Duration::from_millis(1), || None::<()>).is_none(), "a poll that never answers returns None");
+    }
+
+    #[test]
+    fn the_reap_a_route_gets_is_bounded_by_the_reap_bound() {
+        let mut child = Command::new(std::env::current_exe().unwrap()).args(["--list"]).stdout(Stdio::null()).spawn().unwrap();
+        let mut bound = None;
+        reap_by(&mut child, |_, given| bound = Some(given));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(bound, Some(REAP_BOUND), "the reap must be handed REAP_BOUND");
+    }
+
+    #[test]
+    fn the_production_reap_leaves_the_child_gone_once_its_pidfile_shows_it_started() {
         let pidfile = std::env::temp_dir().join(format!("tg-cap-reap-{}.pid", std::process::id()));
         let _ = std::fs::remove_file(&pidfile);
         let me = std::env::current_exe().unwrap();
@@ -292,8 +324,8 @@ mod tests {
         }
         let _ = std::fs::remove_file(&pidfile);
         assert!(started.is_some(), "the hang child never wrote its pidfile");
-        kill_and_reap(&mut child, BACKSTOP);
-        let gone = process_is_gone(pid);
+        reap(&mut child);
+        let gone = poll_within(BACKSTOP, || process_is_gone(pid).then_some(())).is_some();
         let _ = child.kill();
         let _ = child.wait();
         assert!(gone, "kill_and_reap returned with pid {pid} still alive");

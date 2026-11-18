@@ -2,13 +2,16 @@
 
 use std::io::Write;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 /// The harness and event of the call in flight, set once the flags are parsed; what a panic or a failure far from the parser answers for.
 static CONTEXT: Mutex<Option<(String, String)>> = Mutex::new(None);
-/// Whether any byte of an answer has been written to stdout.
-static ANSWERED: AtomicBool = AtomicBool::new(false);
+/// Who has claimed the answer: no one yet, the route that served the call (which may stream it in several parts), or the safe answer.
+static ANSWERED: AtomicU8 = AtomicU8::new(UNANSWERED);
+const UNANSWERED: u8 = 0;
+const BY_ROUTE: u8 = 1;
+const BY_SAFE_ANSWER: u8 = 2;
 /// Whether the leading async marker has been written to stdout.
 static MARKER_SENT: AtomicBool = AtomicBool::new(false);
 
@@ -83,20 +86,38 @@ fn write_bounded(data: &str) {
     WRITING.store(false, Ordering::SeqCst);
 }
 
-/// Writes `data` to stdout at once and marks the call answered. A host that has stopped reading is not this client's failure to report, so a write error is dropped.
+/// Writes `data` to stdout at once and marks the call answered; a second answer is dropped. A host that has stopped reading is not this client's failure to report, so a write error is dropped.
 pub fn emit(data: &str) {
+    emit_claimed(&ANSWERED, BY_ROUTE, data, write_bounded);
+}
+
+/// Claims the answer for `by` in one step, then writes `data` with `write`; false when `data` is empty or the claim is held by the other answerer, or by an earlier safe answer.
+fn emit_claimed(answered: &AtomicU8, by: u8, data: &str, write: impl FnOnce(&str)) -> bool {
     if data.is_empty() {
-        return;
+        return false;
     }
-    ANSWERED.store(true, Ordering::SeqCst);
-    write_bounded(data);
+    // A route streams its answer in parts, so it may write again once it holds the claim; the safe answer is a single write.
+    let mine = match answered.compare_exchange(UNANSWERED, by, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => true,
+        Err(held) => held == by && by == BY_ROUTE,
+    };
+    if !mine {
+        return false;
+    }
+    write(data);
+    true
 }
 
 /// Writes a leading part of an answer (the async marker) that the final answer follows; does not mark the call answered. Only the first is written: a later route's marker would be a second one.
 pub fn emit_partial(data: &str) {
-    if claim_marker(&MARKER_SENT) {
+    if marker_allowed(&ANSWERED, &MARKER_SENT) {
         write_bounded(data);
     }
+}
+
+/// Whether the marker may be written now: no final answer is out yet and this is the first claim on `sent`.
+fn marker_allowed(answered: &AtomicU8, sent: &AtomicBool) -> bool {
+    answered.load(Ordering::SeqCst) == UNANSWERED && claim_marker(sent)
 }
 
 /// Whether this is the first claim on `sent`; every later one is not.
@@ -106,7 +127,7 @@ fn claim_marker(sent: &AtomicBool) -> bool {
 
 /// Whether a final answer has been written to stdout.
 pub fn answered() -> bool {
-    ANSWERED.load(Ordering::SeqCst)
+    ANSWERED.load(Ordering::SeqCst) != UNANSWERED
 }
 
 /// Flushes stdout and ends the process with `code`.
@@ -128,11 +149,11 @@ pub fn fail_open() -> ! {
 pub fn answer_safely() {
     if !answered() {
         let (harness, event) = context();
-        emit(&safe_answer(&harness, &event));
+        emit_claimed(&ANSWERED, BY_SAFE_ANSWER, &safe_answer(&harness, &event), write_bounded);
     }
 }
 
-/// Runs `record` on its own thread and waits for it only until `deadline`, so a stalled disk cannot hold the process past the call's limit. With no deadline (the self-tests) it waits for it.
+/// Runs `record` on its own thread and waits for it only until `deadline`, so a stalled disk cannot hold the process past the call's limit. With no deadline set yet it waits at most the smallest hook limit.
 pub fn record_bounded(record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) {
     let (tx, rx) = std::sync::mpsc::channel();
     // owner: this call; dies when the process exits, which a record still blocked at the deadline does not outlast
@@ -140,25 +161,37 @@ pub fn record_bounded(record: impl FnOnce() + Send + 'static, deadline: Option<I
         record();
         let _ = tx.send(());
     });
-    match deadline {
-        Some(end) => {
-            let _ = rx.recv_timeout(end.saturating_duration_since(Instant::now()));
-        }
-        None => {
-            let _ = rx.recv();
-        }
-    }
+    let end = bounded_deadline(deadline, Instant::now());
+    let _ = rx.recv_timeout(end.saturating_duration_since(Instant::now()));
+}
+
+/// The deadline a record waits for: the call's own, or, before it is set, the smallest hook limit in the table from `now`.
+fn bounded_deadline(deadline: Option<Instant>, now: Instant) -> Instant {
+    deadline.unwrap_or_else(|| now + crate::fallback::harness_limit(""))
 }
 
 /// Ends the process with the safe answer and exit 0, then notes `route` failed with `error`: the answer is out before any disk is touched.
 pub fn fail_open_noting(route: &'static str, error: String) -> ! {
     let deadline = DEADLINE.lock().ok().and_then(|slot| *slot);
-    answer_then_record(answer_safely, move || crate::notice::record_current(route, "", &error), deadline);
+    note_once(&NOTING, answer_safely, move || crate::notice::record_current(route, "", &error), deadline);
     finish(0)
 }
 
+/// Whether a note is being recorded; a panic on the record thread re-enters [`fail_open_noting`] and must not start another.
+static NOTING: AtomicBool = AtomicBool::new(false);
+
+/// [`answer_then_record`] for the first entry on `entered`; a later entry only makes sure the answer is out, so a failing record cannot start itself again. True when this entry recorded.
+fn note_once(entered: &AtomicBool, answer: impl FnOnce(), record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) -> bool {
+    if entered.swap(true, Ordering::SeqCst) {
+        answer();
+        return false;
+    }
+    answer_then_record(answer, record, deadline);
+    true
+}
+
 /// Gives the answer first and only then starts `record`, so nothing a disk does can delay the host's answer.
-fn answer_then_record(answer: impl FnOnce(), record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) {
+pub fn answer_then_record(answer: impl FnOnce(), record: impl FnOnce() + Send + 'static, deadline: Option<Instant>) {
     answer();
     record_bounded(record, deadline);
 }
@@ -235,6 +268,85 @@ mod tests {
         let seen = done.clone();
         record_bounded(move || seen.store(true, Ordering::SeqCst), None);
         assert!(done.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_route_and_the_safe_answer_racing_write_exactly_one_answer() {
+        let answered = AtomicU8::new(UNANSWERED);
+        let writes = std::sync::atomic::AtomicUsize::new(0);
+        let start = std::sync::Barrier::new(2);
+        let wrote = std::thread::scope(|scope| {
+            let racers: Vec<_> = [BY_ROUTE, BY_SAFE_ANSWER]
+                .into_iter()
+                .map(|by| {
+                    let (answered, writes, start) = (&answered, &writes, &start);
+                    scope.spawn(move || {
+                        start.wait();
+                        emit_claimed(answered, by, "{}", |_| {
+                            writes.fetch_add(1, Ordering::SeqCst);
+                        })
+                    })
+                })
+                .collect();
+            racers.into_iter().filter_map(|racer| racer.join().ok()).filter(|won| *won).count()
+        });
+        assert_eq!(wrote, 1, "exactly one of the route and the safe answer may claim the write");
+        assert_eq!(writes.load(Ordering::SeqCst), 1, "exactly one answer may reach stdout");
+    }
+
+    #[test]
+    fn a_route_streams_its_parts_but_the_safe_answer_is_written_once_and_never_after_a_route() {
+        let by_route = AtomicU8::new(UNANSWERED);
+        assert!(emit_claimed(&by_route, BY_ROUTE, "a", |_| {}), "a route's first part is written");
+        assert!(emit_claimed(&by_route, BY_ROUTE, "b", |_| {}), "a route's later parts are written");
+        assert!(!emit_claimed(&by_route, BY_SAFE_ANSWER, "{}", |_| {}), "no safe answer follows a route's answer");
+        let by_safe = AtomicU8::new(UNANSWERED);
+        assert!(emit_claimed(&by_safe, BY_SAFE_ANSWER, "{}", |_| {}), "the safe answer is written when no one answered");
+        assert!(!emit_claimed(&by_safe, BY_SAFE_ANSWER, "{}", |_| {}), "a second safe answer is not written");
+        assert!(!emit_claimed(&by_safe, BY_ROUTE, "a", |_| {}), "no route answer follows the safe answer");
+    }
+
+    #[test]
+    fn an_empty_answer_does_not_claim_the_call() {
+        let answered = AtomicU8::new(UNANSWERED);
+        assert!(!emit_claimed(&answered, BY_ROUTE, "", |_| {}));
+        assert_eq!(answered.load(Ordering::SeqCst), UNANSWERED, "an empty answer wrote nothing and must leave the call unanswered");
+    }
+
+    #[test]
+    fn no_async_marker_follows_the_final_answer() {
+        let (answered, sent) = (AtomicU8::new(BY_ROUTE), AtomicBool::new(false));
+        assert!(!marker_allowed(&answered, &sent), "a marker after the final answer must not be written");
+        assert!(!sent.load(Ordering::SeqCst), "a refused marker must not use up the claim");
+        answered.store(UNANSWERED, Ordering::SeqCst);
+        assert!(marker_allowed(&answered, &sent), "before the answer the first marker is written");
+        assert!(!marker_allowed(&answered, &sent), "a second marker is still refused");
+    }
+
+    #[test]
+    fn a_record_with_no_deadline_set_is_bounded_by_the_smallest_hook_limit() {
+        let now = Instant::now();
+        let table: serde_json::Value = serde_json::from_str(include_str!("../hook_limits.json")).unwrap();
+        let smallest = table.as_object().unwrap().values().filter_map(|v| v.as_u64()).min().unwrap();
+        assert_eq!(bounded_deadline(None, now), now + Duration::from_millis(smallest), "no deadline must fall back to the smallest limit");
+        let own = now + Duration::from_millis(7);
+        assert_eq!(bounded_deadline(Some(own), now), own, "a set deadline is the bound");
+    }
+
+    #[test]
+    fn a_second_entry_makes_sure_of_the_answer_and_starts_no_record() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        let entered = AtomicBool::new(false);
+        let (answers, records) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let enter = || {
+            let (a, r) = (answers.clone(), records.clone());
+            note_once(&entered, move || _ = a.fetch_add(1, Ordering::SeqCst), move || _ = r.fetch_add(1, Ordering::SeqCst), None)
+        };
+        assert!(enter(), "the first entry records");
+        assert!(!enter(), "a re-entry from a panic on the record thread must not record again");
+        assert_eq!(records.load(Ordering::SeqCst), 1, "one record in all");
+        assert_eq!(answers.load(Ordering::SeqCst), 2, "each entry makes sure the answer is out");
     }
 
     #[test]

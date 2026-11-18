@@ -142,13 +142,10 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
     // Notices are written after the call is answered, so a slow disk never delays the host.
     let notes = std::cell::RefCell::new(Vec::<(&str, String, String)>::new());
     let record = |route: &'static str, path: &str, error: &str| notes.borrow_mut().push((route, path.to_string(), error.to_string()));
-    let write_notes = || {
-        let in_time = opts.deadline.is_none_or(|end| Instant::now() < end);
-        if let (Some(dir), true) = (&data_dir, in_time) {
-            for (route, path, error) in notes.borrow().iter() {
-                notice::record(dir, route, path, error);
-            }
-        }
+    let notes_writer = |extra: Option<(&'static str, String, String)>| {
+        let mut pending = notes.take();
+        pending.extend(extra);
+        note_writer(data_dir.clone(), pending, opts.deadline)
     };
     let mut failed_argv: Option<Vec<OsString>> = None;
     let second = data_dir.as_ref().map(|dir| rebuilt(opts, dir));
@@ -156,8 +153,8 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
     if let Some(timeout) = first_budget(opts, second_follows) {
         match capture::exec(argv, first_in(), reason, timeout, &opts.harness, opts.event.as_deref().unwrap_or("")) {
             Ok(done) => {
-                if let Some(dir) = &data_dir {
-                    notice::clear(dir);
+                if let Some(dir) = data_dir.clone() {
+                    out::record_bounded(move || notice::clear(&dir), opts.deadline);
                 }
                 return finish(done);
             }
@@ -173,7 +170,7 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
                 if let Some(timeout) = budget(opts) {
                     match capture::exec(&second, later_in(), "pointer-route", timeout, &opts.harness, opts.event.as_deref().unwrap_or("")) {
                         Ok(done) => {
-                            write_notes();
+                            out::record_bounded(notes_writer(None), opts.deadline);
                             return finish(done);
                         }
                         Err(failure) => record("node-pointer", &missing_piece(&second), &failure.to_string()),
@@ -184,17 +181,21 @@ pub fn run(argv: &[OsString], input: Input, reason: &str, opts: &Opts) -> i32 {
             Err(why) => record("pointer", &Path::new(dir).join(pointer::FILE_NAME).to_string_lossy(), &why),
         }
     }
-    answer_then_note(out::answer_safely, || {
-        record("safe-answer", "", "every route failed; the host was given its safe answer");
-        write_notes();
-    });
+    let safe_note = ("safe-answer", String::new(), "every route failed; the host was given its safe answer".to_string());
+    out::answer_then_record(out::answer_safely, notes_writer(Some(safe_note)), opts.deadline);
     out::finish(0)
 }
 
-/// The answer goes out first and the notices after it, so nothing slow can delay the host's answer.
-fn answer_then_note(answer: impl FnOnce(), note: impl FnOnce()) {
-    answer();
-    note();
+/// What writes `notes` into `data_dir`, for [`out::record_bounded`]: nothing once `deadline` has passed, so a late note never outlives the call.
+fn note_writer(data_dir: Option<String>, notes: Vec<(&'static str, String, String)>, deadline: Option<Instant>) -> impl FnOnce() + Send + 'static {
+    move || {
+        let in_time = deadline.is_none_or(|end| Instant::now() < end);
+        if let (Some(dir), true) = (&data_dir, in_time) {
+            for (route, path, error) in &notes {
+                notice::record(dir, route, path, error);
+            }
+        }
+    }
 }
 
 /// A route's answer is already on stdout; the exit code that goes with it.
@@ -344,9 +345,28 @@ mod tests {
     }
 
     #[test]
+    fn a_note_is_written_only_while_the_call_has_time_left() {
+        let dir = std::env::temp_dir().join(format!("tg-fallback-notes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let data_dir = || Some(dir.to_str().unwrap().to_string());
+        let notes = || vec![("node-argv", "p".to_string(), "e".to_string())];
+        let file = dir.join(notice::FILE_NAME);
+        let passed = Instant::now();
+        note_writer(data_dir(), notes(), Some(passed))();
+        let late = file.exists();
+        note_writer(data_dir(), notes(), None)();
+        let on_time = file.exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!late, "a note whose deadline had passed must not be written");
+        assert!(on_time, "a note with no deadline against it must be written");
+    }
+
+    #[test]
     fn the_safe_answer_is_written_before_any_notice() {
-        let order = std::cell::RefCell::new(Vec::new());
-        answer_then_note(|| order.borrow_mut().push("answer"), || order.borrow_mut().push("notice"));
-        assert_eq!(*order.borrow(), ["answer", "notice"]);
+        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (answered, noted) = (order.clone(), order.clone());
+        out::answer_then_record(move || answered.lock().unwrap().push("answer"), move || noted.lock().unwrap().push("notice"), None);
+        assert_eq!(*order.lock().unwrap(), ["answer", "notice"]);
     }
 }
