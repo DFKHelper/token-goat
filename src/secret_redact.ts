@@ -14,8 +14,13 @@ const UNQUOTED_VALUE =
   String.raw`(?:\\[^\n]|[^\s\\&;#,:'"[\]{}]|` +
   String.raw`[&;#,:](?![ \t]*[A-Za-z_][A-Za-z0-9_.-]*[ \t]*[:=])){4,}`
 
-/** A bare `token` value is hidden unless it is a call (`lexer.next()`) or the type `Token`. */
-const BARE_TOKEN_NOT_SOURCE = String.raw`(?!\S*[()])(?!token(?![A-Za-z0-9_]))`
+/** An identifier path ending in a call whose argument is empty or a short number, as in `lexer.next()`. */
+const SOURCE_CALL =
+  String.raw`[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\(\d{0,3}\)` +
+  String.raw`(?:\.[A-Za-z_$][\w$]*(?:\(\d{0,3}\))?)*[;,]?(?!\S)`
+
+/** A bare `token` value is hidden unless it is that call shape (`lexer.next()`) or the type `Token`. */
+const BARE_TOKEN_NOT_SOURCE = String.raw`(?!${SOURCE_CALL})(?!token(?![A-Za-z0-9_]))`
 
 /** Separator between a key name and its value: optional quotes around `:` or `=` and a bounded gap. */
 const SECRET_SEPARATOR = String.raw`["']?[ \t]{0,8}[:=][ \t]{0,8}`
@@ -281,6 +286,9 @@ const KEY_BODY_LINE = /^[A-Za-z0-9+/]{40,}={0,2}$/
 /** A short line that can end a key body: a partly filled last base64 line or a PGP `=xxxx` checksum. */
 const KEY_TAIL_LINE = /^=?[A-Za-z0-9+/]{4,39}={0,2}$/
 
+/** A PGP armor CRC-24 line: `=` and exactly four base64 characters. */
+const KEY_CHECKSUM_LINE = /^=[A-Za-z0-9+/]{4}$/
+
 /** At most the last body line and the checksum, so a short line mid-window is never taken for key. */
 const MAX_KEY_TAIL_LINES = 2
 
@@ -302,6 +310,15 @@ function blankSpan(text: string, from: number, to: number): string {
   return text.slice(0, from) + covered + text.slice(to)
 }
 
+/** Whether `lines` are a mixed-case base64 remainder holding a digit or `+/`, then a CRC-24 line. */
+function isLastBodyLineAndChecksum(lines: readonly string[]): boolean {
+  const [last, checksum] = lines
+  if (lines.length !== 2 || last === undefined || checksum === undefined) return false
+  if (!KEY_CHECKSUM_LINE.test(checksum) || !/^[A-Za-z0-9+/]{8,39}={0,2}$/.test(last)) return false
+  if (!/[a-z]/.test(last) || !/[A-Z]/.test(last) || !/[0-9+/]/.test(last)) return false
+  return new Set(lines.join('')).size >= MIN_KEY_BODY_DISTINCT_CHARACTERS
+}
+
 /** Whether every non-blank line of `text` has the shape of a key body line, which is all a stored chunk wholly inside a key block holds. */
 function isKeyBodyOnly(text: string): boolean {
   const lines = text
@@ -311,6 +328,7 @@ function isKeyBodyOnly(text: string): boolean {
   let long = lines.length
   const isTail = (n: number): boolean => KEY_TAIL_LINE.test(lines[n - 1] as string)
   while (long > 0 && lines.length - long < MAX_KEY_TAIL_LINES && isTail(long)) long--
+  if (long === 0 && isLastBodyLineAndChecksum(lines)) return true
   if (long === 0 || !lines.slice(0, long).every((line) => KEY_BODY_LINE.test(line))) return false
   return new Set(lines.join('')).size >= MIN_KEY_BODY_DISTINCT_CHARACTERS
 }

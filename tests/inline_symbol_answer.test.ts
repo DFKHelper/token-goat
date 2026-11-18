@@ -171,6 +171,16 @@ describe('inlineAnswerDeny', () => {
     expect(message).not.toContain('`token-goat read "' + file)
   })
 
+  // SYNTHETIC: two base64-shaped lines, no real key; a symbol body cut inside a key block has no marker.
+  it('hides key body lines with no BEGIN or END marker in the body and in the match listing', () => {
+    const lines = ['Xk2mQ9vLpR4tZ7wN3bY8cF5hJ1dS6gA0eU+iO/aB2nM4kV7xC9zT3yH5jL8qW1rE', 'Pd6fG0sK3uI9oA2lZ5xC8vB1nM4qW7eR/tY+hJ2kL5mN8bV0cX3zA6sD9fG1jH4u']
+    const out = inlineAnswerDeny({ inline: lines.join('\n'), file: 'src/a.py', symbol: 'load', matches: lines })
+    const message = out.hookType === 'deny' ? out.message : ''
+    for (const line of lines) expect(message).not.toContain(line.slice(0, 24))
+    const hidden = Buffer.byteLength(Array(lines.length).fill('[REDACTED:private_key_block]').join('\n'), 'utf8')
+    expect(message).toContain(`(${hidden} bytes)`)
+  })
+
   it('still wraps an ordinary file name in a code span', () => {
     const out = inlineAnswerDeny({ inline: 'def load(): pass', file: 'src/a.py', symbol: 'load' })
     expect(out.hookType === 'deny' ? out.message : '').toContain('names the one symbol `load` in `src/a.py`, whose')

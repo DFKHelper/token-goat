@@ -50,6 +50,11 @@ describe('a marker-less window of key body is hidden whole', () => {
     expect(out.split('\r\n')).toHaveLength(lines.length)
   })
 
+  it('a window holding only the short last body line and the checksum', () => {
+    const lines = ['Qw7+Xk2LmN9pRt4V', PGP_CHECKSUM]
+    expectHidden(redactReadText(lines.join('\n')), lines)
+  })
+
   it('a window of long lines alone is hidden as before', () => {
     expectHidden(redactReadText(PEM_LINES.join('\n')), PEM_LINES)
   })
@@ -75,6 +80,15 @@ describe('text that is not key body stays readable', () => {
   it('short base64-shaped lines with no long line', () => {
     const words = 'alpha\nbravo\ncharlie\n=aB3d'
     expect(redactReadText(words)).toBe(words)
+  })
+
+  it.each([
+    ['a checksum of the wrong length', 'Qw7+Xk2LmN9pRt4V\n=aB3dE'],
+    ['a last line with no digit or symbol', 'QwXkLmNpRtVabcde\n=aB3d'],
+    ['a last line of one case', 'qwxklmnprtvabcde9\n=aB3d'],
+    ['a third line after the checksum', 'Qw7+Xk2LmN9pRt4V\n=aB3d\nmain'],
+  ])('two short lines with %s', (_name, text) => {
+    expect(redactReadText(text)).toBe(text)
   })
 
   it('a short line between two long ones is not the tail of a key', () => {

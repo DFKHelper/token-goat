@@ -168,6 +168,17 @@ describe('diagnoseEditFailure on a near miss', () => {
     expect(out).not.toContain('AAAAAAAAAA')
   })
 
+  it('measures the byte cap on key body lines cut from a block with no BEGIN or END marker', () => {
+    // SYNTHETIC: 14 base64-shaped lines, no real key; raw span is over MAX_SPAN_BYTES, the hidden one is not.
+    const unit = 'Xk2mQ9vLpR4tZ7wN3bY8cF5hJ1dS6gA0eU+iO/aB2nM4kV7xC9zT3yH5jL8qW1rE'
+    const lines = Array.from({ length: 14 },(_, i) => `${unit}${unit}`.slice(i, i + 130))
+    expect(lines.join('\n').length).toBeGreaterThan(MAX_SPAN_BYTES)
+    const path = fileWith(`${lines.map((line) => `${line}  `).join('\n')}\nnext\n`)
+    const out = diagnoseEditFailure(editEvent('Edit', { file_path: path, old_string: `${lines.join('\n')}\nnext` }), 'String to replace not found in file.')
+    expect(out).toContain('Copy the on-disk text below')
+    for (const line of lines) expect(out).not.toContain(line.slice(0, 24))
+  })
+
   it('leaves the multiple-match advice for the captured payload alone', () => {
     const path = fileWith('x\n        self.assertNotRegex(self.read(), r"(?<!\\r)\\n")\ny\n        self.assertNotRegex(self.read(), r"(?<!\\r)\\n")\n')
     const input = { ...(MULTIPLE['tool_input'] as Record<string, unknown>), file_path: path }

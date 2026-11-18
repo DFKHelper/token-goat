@@ -12,6 +12,7 @@ describe('source that names a variable token stays readable', () => {
     'next_token = parser.advance()',
     'let token = this.scan();',
     'self.token = self.advance(1)',
+    'token = getToken()',
   ])('leaves %s alone', (input) => {
     expect(redactSecrets(input)).toEqual({ text: input, count: 0 })
   })
@@ -25,6 +26,10 @@ describe('a credential behind the token keyword stays hidden', () => {
     ['token=abcdefghijkl', `token=${GENERIC}`],
     ['MY_SERVICE_TOKEN=abc123def456', `MY_SERVICE_TOKEN=${GENERIC}`],
     ['token: string', `token: ${GENERIC}`],
+    ['token=Zx9kQ(2mW7pLr', `token=${GENERIC}`],
+    ['token=Zx9kQ2mW7pLr)', `token=${GENERIC}`],
+    ['token=Zx9kQ(2mW7pLr)', `token=${GENERIC}`],
+    ['token = getToken(ctx)', `token = ${GENERIC}`],
   ])('redacts the value of %s', (input, expected) => {
     expect(redactSecrets(input).text).toBe(expected)
   })

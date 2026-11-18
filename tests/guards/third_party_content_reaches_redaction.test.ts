@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
-import { functionMap, parseTopLevelFunctions, reaches } from './reachability.js'
+import { codeOnly, functionMap, parseTopLevelFunctions, reaches } from './reachability.js'
 import { THIRD_PARTY_SOURCE_CALLS, SOURCE_MODULE_FILES, srcFiles } from './third_party_content_reaches_fence.test.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -137,17 +137,31 @@ describe('every function reaching third-party content is adjudicated for redacti
 
 const REDACTION_CALLS = ['redactSecrets(', 'redactCutSecrets(', 'redactOrWithhold('] as const
 
+/** `body` with block, whole-line and trailing comments and string literals removed, so only code can match. */
+function codeWithoutComments(body: string): string {
+  return codeOnly(body).replace(/\/\/.*$/gm, ' ')
+}
+
 /** Whether a function body calls any redaction entry point. */
 function isRedactionCall(body: string): boolean {
-  return REDACTION_CALLS.some((call) => body.includes(call))
+  const code = codeWithoutComments(body)
+  return REDACTION_CALLS.some((call) => code.includes(call))
+}
+
+/** Whether `fn` in `src` reaches a `terminals` call through same-file calls; a name in a comment is no call. */
+function reachesInSource(src: string, fn: string, terminals: readonly string[]): boolean {
+  const fns = parseTopLevelFunctions(src)
+  const found = fns.find((f) => f.name === fn)
+  if (found === undefined) return false
+  return reaches(found, functionMap(fns), (body) => {
+    const code = codeWithoutComments(body)
+    return terminals.some((t) => code.includes(t))
+  })
 }
 
 /** Whether `fn` in `file` reaches any of `terminals` through same-file calls. */
 function reachesIn(file: string, fn: string, terminals: readonly string[]): boolean {
-  const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, file), 'utf8'))
-  const found = fns.find((f) => f.name === fn)
-  if (found === undefined) return false
-  return reaches(found, functionMap(fns), (body) => terminals.some((t) => body.includes(t)))
+  return reachesInSource(fs.readFileSync(path.join(SRC_DIR, file), 'utf8'), fn, terminals)
 }
 
 /** Output paths for file or image text that no third-party call leads to; rows name their redaction calls. */
@@ -167,7 +181,24 @@ describe('file and image text outputs reach redaction', () => {
 
   it('fenceOcrText redacts on the path that skips the fence, not only through it', () => {
     const fns = parseTopLevelFunctions(fs.readFileSync(path.join(SRC_DIR, 'cli_cmd_formats.ts'), 'utf8'))
-    const body = fns.find((f) => f.name === 'fenceOcrText')?.body ?? ''
+    const body = codeWithoutComments(fns.find((f) => f.name === 'fenceOcrText')?.body ?? '')
     expect(body).toMatch(/injectionFencingEnabled\(\)\)\s*return redactOrWithhold\(/)
+  })
+})
+
+describe('a redaction call named only in a comment does not count', () => {
+  const CALL = ['redactOrWithhold(']
+
+  it('counts a real call', () => {
+    expect(reachesInSource('function f(x: string) {\n  return redactOrWithhold(x, true)\n}', 'f', CALL)).toBe(true)
+  })
+
+  it.each([
+    ['a whole-line comment', 'function f(x: string) {\n  // calls redactOrWithhold(x)\n  return x\n}'],
+    ['a block comment', 'function f(x: string) {\n  /* redactOrWithhold(x) */\n  return x\n}'],
+    ['a trailing comment', 'function f(x: string) {\n  return x // redactOrWithhold(x)\n}'],
+    ['a string literal', "function f(x: string) {\n  return 'redactOrWithhold(' + x\n}"],
+  ])('ignores %s', (_name, src) => {
+    expect(reachesInSource(src, 'f', CALL)).toBe(false)
   })
 })

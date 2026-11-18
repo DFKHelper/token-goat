@@ -1,7 +1,7 @@
 /** Near-miss search for an Edit whose `old_string` is not in the file. The model's copy of the text usually differs from the disk by something invisible in a transcript (trailing blanks, a curly quote, a dash, a non-breaking space, a re-indented block), so the diagnostic that names the exact on-disk lines saves the read-and-retry round trip. findNearMiss is pure; the caller owns the file read and its size cap, and describeNearMiss owns the redaction, caps and fencing of what is printed. */
 
 import { isSecretFileName } from './secret_file_names.js'
-import { redactSecrets } from './secret_redact.js'
+import { redactOrWithhold } from './redact_or_withhold.js'
 import { fenceFileText } from './untrusted_fence.js'
 
 /** The three ladders, in the order they are tried. A later rung is only reached when every earlier one found nothing. */
@@ -156,7 +156,7 @@ export function describeNearMiss(fileText: string, display: string, miss: NearMi
     return `${head}, but ${count} places match, ${note} (lines ${where.join(', ')}). View one range and add surrounding context to old_string.`
   }
   const range = only.startLine === only.endLine ? `line ${only.startLine} matches` : `lines ${only.startLine}-${only.endLine} match`
-  const span = redactSecrets(fileText.slice(only.start, only.end)).text
+  const span = redactOrWithhold(fileText.slice(only.start, only.end), true)
   if (isSecretFileName(display) || only.endLine - only.startLine + 1 > MAX_SPAN_LINES || Buffer.byteLength(span, 'utf8') > MAX_SPAN_BYTES) {
     return `${head}, but ${range}, ${note}. View that range to copy the exact text.`
   }

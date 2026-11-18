@@ -9,7 +9,7 @@ import { displaySafePath, resolveIndexPath } from './paths.js'
 import { isInsideRoot } from './path_containment.js'
 import { resolveProjectRoot } from './project.js'
 import { getReadNavigationEvidence } from './read_navigation_evidence.js'
-import { redactSecrets } from './secret_redact.js'
+import { redactOrWithhold } from './redact_or_withhold.js'
 import { commandPathIsTouchable } from './vscode_path_gate.js'
 import type { HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
@@ -167,10 +167,13 @@ const DISPLAY_SAFE_NAME = /^(?:[A-Za-z]:)?\/?(?:[A-Za-z0-9_@+.,~-]{1,120}\/)*[A-
 
 /** The text a deny delivers, redacted: the optional match listing and the body, each redacted on its own. `bodyBytes` is the redacted body as read, for the size the deny names; `cappedBytes` is what the cap is judged on, both parts as the fence will write them. */
 function deliveredText(answer: { readonly inline: string; readonly matches?: readonly string[] }): { listing: string | null; body: string; count: number; bodyBytes: number; cappedBytes: number } {
-  const body = redactSecrets(answer.inline)
-  const listing = answer.matches === undefined ? null : redactSecrets(answer.matches.join('\n'))
-  const bodyBytes = Buffer.byteLength(body.text, 'utf8')
-  return { listing: listing === null ? null : listing.text, body: body.text, count: body.count + (listing === null ? 0 : listing.count), bodyBytes, cappedBytes: fencedBytes(body.text) + (listing === null ? 0 : fencedBytes(listing.text)) }
+  const body = redactOrWithhold(answer.inline, true)
+  const listingRaw = answer.matches === undefined ? null : answer.matches.join('\n')
+  const listing = listingRaw === null ? null : redactOrWithhold(listingRaw, true)
+  const changed = (before: string | null, after: string | null): number => (before === after ? 0 : 1)
+  const count = changed(answer.inline, body) + changed(listingRaw, listing)
+  const bodyBytes = Buffer.byteLength(body, 'utf8')
+  return { listing, body, count, bodyBytes, cappedBytes: fencedBytes(body) + (listing === null ? 0 : fencedBytes(listing)) }
 }
 
 /** What a Grep scoped to a file or a directory searches, with a way to name each file. */
