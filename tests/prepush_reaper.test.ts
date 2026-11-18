@@ -414,6 +414,62 @@ describe('the pre-push cleanup process', { timeout: ROW_TIMEOUT_MS }, () => {
     expect(got.nolimit, 'a run with no life limit and a live hook must not stop itself').toBe('survived')
   })
 
+  // Two cleanup processes spun a core each for 7 to 13 hours past their hook and life limit (11-11, 11-17).
+  // The tick fix did not end the second pair, so the process is also bounded from outside and by its directory.
+  // The driver stays up as the parent (an orphaned stopped process is continued) and ends the hook last.
+  // `mid` runs once the cleanup process is up, then the driver waits for its exit.
+  const runWatched = (life: number, mid: string[]): number | null => {
+    const lines = [
+      'D="$DRIVER_DIR"',
+      'mkdir -p "$D/rd" "$D/store"; : >"$D/rd/pids"; : >"$D/rd/requests"',
+      `sleep 300.${tag} 9<&- &`,
+      'O=$!',
+      'trap \'kill -KILL "$O" 2>/dev/null\' EXIT',
+      `"$BASH" "$REAPER" $O "$D/rd" "$D/store/reaper-last.txt" ${life} 2 2 </dev/null >/dev/null 2>&1 9<&- &`,
+      'n=0; until [[ -e "$D/rd/up" ]] || (( n >= 100 )); do sleep 0.2; n=$((n + 1)); done',
+      '[[ -e "$D/rd/up" ]] || exit 4',
+      'read -r up_pid w <"$D/rd/up"; echo "$w" >"$D/reaper.winpid"',
+      ...mid,
+      'n=0; while kill -0 "$up_pid" 2>/dev/null && (( n < 120 )); do sleep 0.5; n=$((n + 1)); done',
+      '! kill -0 "$up_pid" 2>/dev/null || exit 5',
+      '',
+    ]
+    writeFileSync(file('watched.sh'), lines.join('\n'))
+    const env: NodeJS.ProcessEnv = { ...process.env, DRIVER_DIR: slash(dir), REAPER: slash(REAPER_SCRIPT) }
+    env.TMPDIR = slash(file('tmp'))
+    const r = spawnSync(GIT_BASH, [slash(file('watched.sh'))], {
+      env,
+      stdio: 'ignore',
+      timeout: SPAWN_TIMEOUT_MS,
+    })
+    if (existsSync(file('reaper.winpid'))) tracked.push({ pid: num('reaper.winpid'), ours: /prepush-reaper/ })
+    return r.status
+  }
+
+  it.skipIf(!bashAvailable)('exits when its own directory is gone, though its hook lives', () => {
+    const status = runWatched(600, ['rm -rf "$D/rd"'])
+    expect(status, 'the cleanup process outlived its removed directory').toBe(0)
+  })
+
+  it.skipIf(!bashAvailable)('is ended from outside when the process itself is wedged', () => {
+    const status = runWatched(8, ['kill -STOP "$up_pid"'])
+    expect(status, 'the wedged cleanup process was never ended from outside').toBe(0)
+    expect(record()).toContain('watchdog: ending the cleanup process')
+  })
+
+  it.skipIf(!bashAvailable)('ends itself when sleep keeps failing and the timed read returns at once', () => {
+    mkdirSync(file('sbin'))
+    writeFileSync(path.join(file('sbin'), 'sleep'), '#!/usr/bin/env bash\nexit 1\n')
+    const got = runLib([
+      'exec 9<&-',
+      'PATH="$(cygpath -u "$DRIVER_DIR/sbin"):$PATH"',
+      '( tick; tick; tick; tick; tick; tick; echo survived=yes )',
+      'echo status=$?',
+    ])
+    expect(got.survived, 'six ticks with a failing sleep went on, so the loop would spin').toBeUndefined()
+    expect(got.status, 'the process did not end with a failure status').toBe('1')
+  })
+
   // Each bounded call replays its own output file: a shared file let a call that ran nothing replay the previous call's output.
   it.skipIf(!bashAvailable)('gives every bounded call its own output file', () => {
     writeFileSync(

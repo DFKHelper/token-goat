@@ -33,6 +33,8 @@ SEL=" "
 F=""
 W=""
 START=$SECONDS
+TICK_FAILS=0
+WD_PID=""
 
 rec() { printf '%s\n' "$*" >>"$RECORD" 2>/dev/null || true; }
 
@@ -52,7 +54,15 @@ tick() {
   local rc=0
   backstop
   read -r -t 1 -u 9 _ 2>/dev/null || rc=$?
-  (( rc > 128 )) || sleep 1 </dev/null 9<&- 2>/dev/null || true
+  if (( rc <= 128 )); then
+    # A sleep that fails cannot pace the loop: five in a row end this process instead of spinning on.
+    if ! sleep 1 </dev/null 9<&- 2>/dev/null; then
+      TICK_FAILS=$((TICK_FAILS + 1))
+      (( TICK_FAILS < 5 )) || exit 1
+      return 0
+    fi
+  fi
+  TICK_FAILS=0
 }
 
 # The reaper's own bounds, checked inside every loop and not only at the top of the main one: a pass that never reaches the main loop's life and grace tests (a stuck or runaway inner loop) must still end this process. The bound is the life limit plus the grace and the kill window plus slack, or, once the hook is gone, the grace plus the kill window plus slack from the stamp of its death.
@@ -294,10 +304,43 @@ note_owner() {
   [[ -n "$GONE_AT" ]] || owner_alive || mark_gone
 }
 
+# A second process that ends this one from outside when its own loop cannot (one clock read, absolute deadline).
+watchdog() {
+  local main=$1 t0=$SECONDS bound gbound gone="" dgone="" w=""
+  trap - EXIT TERM
+  trap '' INT HUP
+  # Bound: life limit plus grace, window and slack (a day with none); the hook gone, the grace past.
+  bound=86400
+  (( LIFE <= 0 )) || bound=$((LIFE + GRACE + WIN + 10))
+  gbound=$((GRACE + WIN + 10))
+  while :; do
+    sleep 1 </dev/null 9<&- 2>/dev/null || exit 0
+    kill -0 "$main" 2>/dev/null || exit 0
+    (( SECONDS - t0 < bound )) || break
+    if [[ -z "$gone" ]] && ! kill -0 "$OWNER" 2>/dev/null; then gone=$SECONDS; fi
+    if [[ -n "$gone" ]] && (( SECONDS - gone >= gbound )); then break; fi
+    if [[ ! -d "$DIR" ]]; then
+      [[ -n "$dgone" ]] || dgone=$SECONDS
+      (( SECONDS - dgone < 10 )) || break
+    fi
+  done
+  rec "watchdog: ending the cleanup process $main"
+  kill -KILL "$main" 2>/dev/null || true
+  sleep 1 </dev/null 9<&- 2>/dev/null || true
+  if kill -0 "$main" 2>/dev/null; then
+    winpid_of "$main"
+    w=$W
+    if [[ -n "$w" ]]; then taskkill //F //PID "$w" &>/dev/null </dev/null 9<&- || true; fi
+  fi
+  rm -rf -- "$DIR" 2>/dev/null || true
+  exit 0
+}
+
 finish() {
   local i
   [[ -z "$FINISHED" ]] || return 0
   FINISHED=1
+  [[ -z "$WD_PID" ]] || kill -KILL "$WD_PID" 2>/dev/null || true
   rec "exit: $SECONDS"
   for (( i = 0; i < K_N; i++ )); do
     if [[ -n "${K_JOB[$i]}" ]] && ent_alive "$i"; then kill -KILL "${K_PID[$i]}" 2>/dev/null || true; fi
@@ -322,7 +365,11 @@ printf '%s %s\n' "$$" "$W" >"$DIR/up" || exit 1
 rec "reaper: pid=$$ winpid=$W owner=$OWNER life=$LIFE grace=$GRACE"
 
 START=$SECONDS
+watchdog "$$" </dev/null >/dev/null 2>&1 9<&- &
+WD_PID=$!
 while :; do
+  # Its own directory gone means nothing can reach it any more, so it ends.
+  [[ -d "$DIR" ]] || exit 0
   tick
   sync_pids
   sync_requests
