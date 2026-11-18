@@ -1,4 +1,5 @@
 /** SECURITY.md tells an evaluator which packages carry the residual `npm audit` findings, that `onnxruntime-node` is opt-in so an install can simply not have it, and that `exceljs` is not installed at all any more. That claim is only true while the manifest agrees. Promoting either one back into a shipped section would silently turn a documented "you can opt out" into a lie, and no other test reads the manifest for this. The two forward-patched majors are pinned here for the same reason: the document says they were moved across a major to clear their advisories, so a revert must fail. */
+import { execSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -154,37 +155,33 @@ describe('dependency advisory disclosure', () => {
 })
 
 /** The "this repository" row is the one claim in the table no other test here re-derives: the rest check package identity and lock-file counts, which is a proxy for what `npm audit` reports, not the audit result itself. A real advisory landing in a dev-only transitive dependency (exactly what happened with adm-zip and hono) can make the row's "clean" claim false without moving anything those other checks look at. `auditReport` is computed once at module load so every test in this file pays for at most one `npm audit` call, not one per assertion. */
-interface AuditReport { auditReportVersion?: number; metadata?: { vulnerabilities?: { info?: number; low?: number; moderate?: number; high?: number; critical?: number; total?: number } }; vulnerabilities?: Record<string, unknown>; error?: unknown }
+interface AuditReport { metadata?: { vulnerabilities?: { total?: number } }; vulnerabilities?: Record<string, unknown>; error?: unknown }
 
-// Stands for the findings `npm audit --json` reports for this tree, as the "this repository" row in SECURITY.md names them (names and count only), so the row runs offline and cannot skip; re-derive it from `npm audit --json` when the lock file or that row moves.
-const auditReport: AuditReport = {
-  auditReportVersion: 2,
-  vulnerabilities: {
-    picomatch: { name: 'picomatch', severity: 'high' },
-    tinyglobby: { name: 'tinyglobby', severity: 'high' },
-    vite: { name: 'vite', severity: 'high' },
-    vitest: { name: 'vitest', severity: 'high' },
-    minimatch: { name: 'minimatch', severity: 'moderate' },
-    '@eslint/config-array': { name: '@eslint/config-array', severity: 'moderate' },
-    '@typescript-eslint/eslint-plugin': { name: '@typescript-eslint/eslint-plugin', severity: 'moderate' },
-    '@typescript-eslint/parser': { name: '@typescript-eslint/parser', severity: 'moderate' },
-    '@typescript-eslint/type-utils': { name: '@typescript-eslint/type-utils', severity: 'moderate' },
-    '@typescript-eslint/typescript-estree': { name: '@typescript-eslint/typescript-estree', severity: 'high' },
-    '@typescript-eslint/utils': { name: '@typescript-eslint/utils', severity: 'moderate' },
-    eslint: { name: 'eslint', severity: 'moderate' },
-    'fast-xml-parser': { name: 'fast-xml-parser', severity: 'low' },
-    hono: { name: 'hono', severity: 'moderate' },
-    'typescript-eslint': { name: 'typescript-eslint', severity: 'moderate' },
-    '@hono/node-server': { name: '@hono/node-server', severity: 'moderate', isDirect: false, via: [{ url: 'https://github.com/advisories/GHSA-rmxm-3fg6-px4f' }], range: '1.19.10 - 2.1.2', fixAvailable: true },
-  },
-  metadata: { vulnerabilities: { info: 0, low: 1, moderate: 10, high: 5, critical: 0, total: 16 } },
+let auditReport: AuditReport | null = null
+try {
+  // execSync, not execFileSync: `npm` is a `.cmd` shim on Windows, and execFileSync fails to spawn one directly (EINVAL) without a shell. The command is a fixed literal with no interpolated input, so a shell string carries no injection risk here.
+  const out = execSync('npm audit --json', { cwd: repoRoot, encoding: 'utf8', maxBuffer: 16e6 })
+  const parsed = JSON.parse(out) as AuditReport
+  auditReport = parsed?.metadata?.vulnerabilities ? parsed : null
+} catch (err) {
+  // `npm audit` exits non-zero the moment it finds anything, which execFileSync treats as a thrown error -- but the JSON report is still on stdout in that case, so try that before giving up.
+  const stdout = (err as { stdout?: Buffer | string } | null)?.stdout
+  if (stdout !== undefined) {
+    try {
+      const parsed = JSON.parse(stdout.toString()) as AuditReport
+      auditReport = parsed?.metadata?.vulnerabilities ? parsed : null
+    } catch {
+      auditReport = null
+    }
+  }
 }
 
-describe('this repository row matches an npm audit report', () => {
-  it('never claims clean while npm audit finds something, or vice versa', () => {
-    const row = security.split('\n').find((line) => line.startsWith('| this repository |'))
-    if (row === undefined) throw new Error('SECURITY.md has no "this repository" table row')
-    const total = auditReport.metadata?.vulnerabilities?.total ?? 0
+describe('this repository row matches a live npm audit', () => {
+  it.skipIf(auditReport === null)('never claims clean while npm audit finds something, or vice versa', () => {
+    const rows = security.split('\n').filter((line) => line.startsWith('| this repository |'))
+    expect(rows, 'SECURITY.md must have exactly one "this repository" table row').toHaveLength(1)
+    const row = rows[0] ?? ''
+    const total = auditReport?.metadata?.vulnerabilities?.total ?? 0
 
     if (total > 0) {
       expect(
@@ -196,7 +193,7 @@ describe('this repository row matches an npm audit report', () => {
       expect(row, `npm audit reports 0 vulnerabilities, so the row should say so:\n${row}`).toMatch(/\bclean\b/)
     }
     // The row itself, not the paragraph below it, must name every package npm audit lists: a finding the row omits is the same false claim by silence.
-    for (const name of Object.keys(auditReport.vulnerabilities ?? {})) {
+    for (const name of Object.keys(auditReport?.vulnerabilities ?? {})) {
       expect(row, `npm audit lists a vulnerability in ${name}, but the "this repository" row does not name ${name}:\n${row}`).toContain(name)
     }
   })
