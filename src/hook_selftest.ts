@@ -93,21 +93,26 @@ export const PARALLEL_HELPER = `
 const { spawn, spawnSync } = require('node:child_process')
 const path = require('node:path')
 const running = new Map()
+const closedChildren = new WeakSet()
 // Ends the job's whole tree: a child's own kill reaches only the shell, leaving what it forked running.
 const killTree = (child) => {
   const pid = child.pid
-  // An exited child's pid may be a stranger's by now: nothing to end, and nothing to signal.
-  if (child.exitCode !== null || child.signalCode !== null) return
+  // A closed child has no member left holding its streams: nothing to end, and its pid may be a stranger's.
+  if (closedChildren.has(child)) return
+  const exited = child.exitCode !== null || child.signalCode !== null
   if (Number.isInteger(pid) && pid > 1) {
     if (process.platform === 'win32') {
-      const root = process.env.SystemRoot || process.env.windir || 'C:/Windows'
-      const taskkill = path.join(root, 'System32', 'taskkill.exe')
-      spawnSync(taskkill, ['/T', '/F', '/PID', String(pid)], { windowsHide: true, timeout: 10000 })
+      // An exited shell's pid may be recycled and Windows has no group handle, so its descendants are left.
+      if (!exited) {
+        const root = process.env.SystemRoot || process.env.windir || 'C:/Windows'
+        const taskkill = path.join(root, 'System32', 'taskkill.exe')
+        spawnSync(taskkill, ['/T', '/F', '/PID', String(pid)], { windowsHide: true, timeout: 10000 })
+      }
     } else {
       try { process.kill(-pid, 'SIGKILL') } catch {}
     }
   }
-  child.kill()
+  if (!exited) child.kill()
 }
 let raw = ''
 process.stdin.setEncoding('utf8')
@@ -115,8 +120,10 @@ process.stdin.on('data', (d) => { raw += d })
 process.stdin.on('end', () => {
   const { jobs, concurrency, timeout, cwd } = JSON.parse(raw)
   const out = new Array(jobs.length)
-  // An owner's abort message ends the running jobs' trees; its SIGTERM (a timeout) ends them and this helper.
+  let aborted = false
+  // The message path is the test's and SIGTERM the owner's (spawnSync has no IPC); an abort stops the queue.
   process.on('message', () => {
+    aborted = true
     for (const [child, abort] of [...running]) { killTree(child); abort('aborted by the owner') }
   })
   process.on('SIGTERM', () => {
@@ -126,6 +133,9 @@ process.stdin.on('end', () => {
   let next = 0
   let active = 0
   const pump = () => {
+    while (aborted && next < jobs.length) {
+      out[next++] = { status: null, stdout: '', stderr: 'aborted by the owner' }
+    }
     while (active < concurrency && next < jobs.length) start(next++)
     if (active === 0 && next >= jobs.length) {
       const body = JSON.stringify(out)
@@ -163,7 +173,10 @@ process.stdin.on('end', () => {
     child.stderr.on('data', (d) => { stderr += d })
     child.stdin.on('error', () => {})
     child.on('error', (e) => finish({ status: null, stdout: '', stderr: String(e.message) }))
-    child.on('close', (code) => finish({ status: code, stdout, stderr }))
+    child.on('close', (code) => {
+      closedChildren.add(child)
+      finish({ status: code, stdout, stderr })
+    })
     child.stdin.end(job.input)
   }
   pump()

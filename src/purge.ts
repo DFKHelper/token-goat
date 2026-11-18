@@ -18,7 +18,7 @@ import { removeFileInScope } from './util.js'
 
 export interface PurgeResult {
   /** Roots that were deleted, with the bytes each held. */
-  removed: Array<{ path: string; bytes: number }>
+  removed: Array<{ path: string; bytes: number; partial?: boolean }>
   /** Roots that did not exist, so there was nothing to delete. */
   absent: string[]
   /** Roots that could not be deleted, with the reason. */
@@ -125,10 +125,11 @@ export function purgeDataDirectories(scan: ReferenceScan = scanReferences()): Pu
         const failedBefore = result.failed.length
         removeUnlessReferenced(root, nativeDir, scan, kept, result.failed)
         const left = [...kept.slice(keptBefore), ...result.failed.slice(failedBefore)]
+        const partial = result.failed.length > failedBefore
         if (left.length === 0) result.removed.push({ path: root, bytes })
         else {
           const leftBytes = left.reduce((n, k) => n + directorySize(k.path), 0)
-          result.removed.push({ path: root, bytes: bytes - leftBytes })
+          result.removed.push({ path: root, bytes: bytes - leftBytes, ...(partial ? { partial } : {}) })
         }
       } else {
         fs.rmSync(root, { recursive: true, force: true })

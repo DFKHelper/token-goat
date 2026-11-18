@@ -22,8 +22,9 @@ export function claudeFindsGitBash(
   exists: (p: string) => boolean = fs.existsSync,
 ): boolean {
   const named = env['CLAUDE_CODE_GIT_BASH_PATH']
-  // Claude Code uses the named path and nothing else: a missing or non-bash file there is no Git Bash.
-  if (named !== undefined && named.trim() !== '') return isBashName(named) && exists(named)
+  const trimmed = named?.trim()
+  // A set path is taken at its word; no PATH lookup.
+  if (named !== undefined && trimmed !== '') return isBashName(trimmed!) && exists(named)
   for (const dir of (env['PATH'] ?? '').split(path.delimiter)) {
     if (dir === '' || !exists(path.join(dir, 'git.exe'))) continue
     const root = path.dirname(dir)

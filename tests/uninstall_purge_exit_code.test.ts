@@ -11,7 +11,11 @@ import type * as Purge from '../src/purge.js'
 import type * as WorkerLifecycle from '../src/worker_lifecycle.js'
 import { BUNDLE } from './helpers/bundle.js'
 
-const state = vi.hoisted(() => ({ workerRunning: false, failed: [] as Array<{ path: string; reason: string }> }))
+const state = vi.hoisted(() => ({
+  workerRunning: false,
+  failed: [] as Array<{ path: string; reason: string }>,
+  removed: [] as Array<{ path: string; bytes: number; partial?: boolean }>,
+}))
 
 vi.mock('../src/worker_lifecycle.js', async (importOriginal) => {
   const actual = await importOriginal<typeof WorkerLifecycle>()
@@ -23,7 +27,8 @@ vi.mock('../src/hook_client.js', async (importOriginal) => {
 })
 vi.mock('../src/purge.js', async (importOriginal) => {
   const actual = await importOriginal<typeof Purge>()
-  return { ...actual, purgeDataDirectories: () => ({ removed: [], absent: [], failed: state.failed }) }
+  const purged = () => ({ removed: state.removed, absent: [], failed: state.failed })
+  return { ...actual, purgeDataDirectories: purged }
 })
 
 const { runPurge } = await import('../src/cli_install.js')
@@ -31,15 +36,21 @@ const { dataDirForHome } = await import('../src/constants.js')
 const { drainHeartbeatPathFor, workerPidPath } = await import('../src/worker_lifecycle.js')
 
 let stderr: string[] = []
+let stdout: string[] = []
 beforeEach(() => {
   stderr = []
   state.workerRunning = false
   state.failed = []
+  state.removed = []
+  stdout = []
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
     stderr.push(String(chunk))
     return true
   })
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
+    stdout.push(String(chunk))
+    return true
+  })
 })
 afterEach(() => {
   vi.restoreAllMocks()
@@ -57,6 +68,20 @@ describe('runPurge exit code', () => {
     state.failed = [{ path: path.join(os.tmpdir(), 'tg-purge-held'), reason: 'EBUSY: resource busy or locked' }]
     expect(await runPurge()).toBe(1)
     expect(stderr.join('')).toMatch(/^token-goat: could not purge /)
+  })
+
+  it('prints "Partially purged" for a root with a refused path and "Purged" for a clean one', async () => {
+    // HAND-DERIVED: the shape purgeDataDirectories reports for a root it only partly removed (src/purge.ts).
+    const held = path.join(os.tmpdir(), 'tg-purge-partial')
+    const clean = path.join(os.tmpdir(), 'tg-purge-clean')
+    state.removed = [{ path: held, bytes: 10, partial: true }, { path: clean, bytes: 20 }]
+    state.failed = [{ path: path.join(held, 'busy.bin'), reason: 'EBUSY: resource busy or locked' }]
+    expect(await runPurge()).toBe(1)
+    const text = stdout.join('')
+    expect(text).toContain('Partially purged ')
+    expect(text).not.toMatch(/(^|\n)Purged [^\n]*tg-purge-partial/)
+    expect(text).toMatch(/(^|\n)Purged [^\n]*tg-purge-clean/)
+    expect(stderr.join('')).toContain('busy.bin')
   })
 
   it('returns 0 when every directory went', async () => {

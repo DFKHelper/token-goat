@@ -130,6 +130,7 @@ const SCOPES: Record<string, ScopeFixture> = {
 interface PointerExtras {
   readonly shims?: Record<string, string>
   readonly noBin?: boolean
+  readonly shim?: string
 }
 
 /** HAND-DERIVED from validateHookPointer in src/hook_pointer.ts: schema 1, token-goat.mjs entry, tg-hook. */
@@ -138,7 +139,7 @@ function withPointerTo(entry: string, run: () => void, extra: PointerExtras = {}
   const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
   const nativeBin = path.join(TMP, 'tg-hook')
   if (extra.noBin !== true) writeText(nativeBin, '')
-  const base = { schema: 1, version: '0', node: null, shim: null, writtenAt: 'now' }
+  const base = { schema: 1, version: '0', node: null, shim: extra.shim ?? null, writtenAt: 'now' }
   const shims = extra.shims === undefined ? {} : { shims: extra.shims }
   const pointer = { ...base, bundleDir: path.dirname(entry), entry, nativeBin, ...shims }
   try {
@@ -320,6 +321,20 @@ describe('checkNativeEntryPaths needs the pointer route to be whole, not only th
     withPointerTo(live(), () => {
       expect(checkNativeEntryPaths(codexWiring(gone()))).toBeNull()
     }, { shims: { codex: shimFile() } })
+  })
+
+  it('fails a Codex entry when a shims map lacks codex, though the single shim is valid', () => {
+    // FORMAT-DERIVED: Pointer::shim_for (native/tg-hook/src/pointer.rs) never falls back to `shim`.
+    withPointerTo(live(), () => {
+      expect(checkNativeEntryPaths(codexWiring(gone()))?.status).toBe('fail')
+    }, { shims: { grok: shimFile() }, shim: shimFile() })
+  })
+
+  it('passes a Codex entry with no shims map and a valid single shim', () => {
+    // FORMAT-DERIVED: Pointer::shim_for (native/tg-hook/src/pointer.rs) answers `shim` when `shims` is absent.
+    withPointerTo(live(), () => {
+      expect(checkNativeEntryPaths(codexWiring(gone()))).toBeNull()
+    }, { shim: shimFile() })
   })
 
   it('fails a Claude Code entry when the native client is missing', () => {

@@ -45,6 +45,8 @@ describe('commandHead', () => {
     'echo$x run',
     'tool`id` run',
     'tool;rm run',
+    '"$(x)" y',
+    'A=1 $(x)',
   ])('collapses the unsafe or empty command %j to other', (cmd) => {
     expect(commandHead(cmd)).toBe('other')
   })
@@ -98,6 +100,11 @@ describe('commandHead', () => {
     const word = 'a'.repeat(2 * 1024 * 1024)
     expect(commandHead(word)).toBe('other')
     expect(commandHead(`"${word}`)).toBe('other')
+  })
+
+  it('returns a string for a 2 MB run of substitution openers and of single quotes', () => {
+    expect(typeof commandHead('$('.repeat(1024 * 1024))).toBe('string')
+    expect(typeof commandHead("'".repeat(2 * 1024 * 1024))).toBe('string')
   })
 
   it('lowercases the head before the length cut', () => {

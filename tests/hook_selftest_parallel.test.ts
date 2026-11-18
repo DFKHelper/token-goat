@@ -17,6 +17,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 
 import { buildGuardedCommand } from '../src/hook_guard.js'
 import { resolveWindowsBash } from '../src/shell.js'
+import { terminateProcessTree } from '../src/resident_process.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 import {
   PARALLEL_HELPER,
@@ -90,19 +91,21 @@ function processCommandLines(): Array<{ pid: number; line: string }> {
 
 const posix = (p: string): string => p.split(path.sep).join('/')
 
-/** Resolves once `file` exists, on the directory's change events; the test's own timeout bounds the wait. */
-function fileAppears(file: string): Promise<void> {
-  return new Promise((resolve) => {
+/** Resolves once `file` exists, on the directory's change events; rejects when the helper ends first. */
+function fileAppears(file: string, helperEnded: Promise<HelperExit>): Promise<void> {
+  return new Promise((resolve, reject) => {
     const watcher = fs.watch(path.dirname(file), () => {
-      if (fs.existsSync(file)) {
-        watcher.close()
-        resolve()
-      }
+      if (fs.existsSync(file)) settle(resolve)
     })
-    if (fs.existsSync(file)) {
+    const settle = (finish: () => void): void => {
       watcher.close()
-      resolve()
+      finish()
     }
+    watcher.on('error', (e) => settle(() => reject(e)))
+    if (fs.existsSync(file)) settle(resolve)
+    void helperEnded.then((h) => {
+      settle(() => reject(new Error(`helper ended (code ${String(h.code)}) before ${file}: ${h.stderr}`)))
+    })
   })
 }
 
@@ -117,22 +120,6 @@ function forkingJob(token: string, ready: string): HelperJob {
   return { program: shell, args: ['-c', forked], verbatim: false, input: '' }
 }
 
-/** A node job that lists every command line and reports those holding the token (given in two halves). */
-function scanJob(token: string): HelperJob {
-  const scan = [
-    "const { spawnSync } = require('node:child_process')",
-    'const token = process.argv[1] + process.argv[2]',
-    "const r = process.platform === 'win32'",
-    "  ? spawnSync('powershell.exe', ['-NoProfile', '-Command', process.argv[3]], { encoding: 'utf8' })",
-    "  : spawnSync('ps', ['-A', '-ww', '-o', 'pid=,args='], { encoding: 'utf8', maxBuffer: 1 << 26 })",
-    "const all = r.status === 0 ? r.stdout.split(/\\r?\\n/).filter((l) => l.trim() !== '') : []",
-    'const hits = all.filter((l) => l.includes(token))',
-    'process.stdout.write(JSON.stringify({ status: r.status, lines: all.length, hits }))',
-  ].join('\n')
-  const halves = [token.slice(0, 12), token.slice(12)]
-  return { program: process.execPath, args: ['-e', scan, ...halves, LIST_PS], verbatim: false, input: '' }
-}
-
 function killLeftovers(token: string): void {
   for (const p of processCommandLines().filter((q) => q.line.includes(token))) {
     killIfCommandLine(p.pid, (line) => line.includes(token), { tree: true })
@@ -143,7 +130,7 @@ type Result = { status: number | null; stdout: string; stderr: string }
 type HelperExit = { code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string }
 
 /** Starts the helper on `jobs` with an IPC channel; `done` resolves with its exit and output once it closes. */
-function startHelper(jobs: HelperJob[]): { child: ChildProcess; done: Promise<HelperExit> } {
+function startHelper(jobs: HelperJob[]): { child: ChildProcess; done: Promise<HelperExit>; stop: () => void } {
   // owner: this test; the helper ends on its abort message or SIGTERM, and killLeftovers in the row's finally
   const child = spawn(process.execPath, ['-e', PARALLEL_HELPER], {
     stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
@@ -169,28 +156,37 @@ function startHelper(jobs: HelperJob[]): { child: ChildProcess; done: Promise<He
     ([[code, signal]]): HelperExit => ({ code, signal, stdout, stderr }),
   )
   child.stdin!.on('error', () => undefined)
-  child.stdin!.end(JSON.stringify({ jobs, concurrency: 1, timeout: 60_000, cwd: os.tmpdir() }))
-  return { child, done }
+  child.stdin!.end(JSON.stringify({ jobs, concurrency: 1, timeout: 6000, cwd: os.tmpdir() }))
+  // The handle holds the pid while the helper has neither exited nor been signalled, so its tree can be ended.
+  const stop = (): void => {
+    const live = child.exitCode === null && child.signalCode === null
+    if (live && child.pid !== undefined) terminateProcessTree(child.pid, true)
+  }
+  return { child, done, stop }
 }
 
 describe.runIf(HAS_SH)('the parallel helper ends a running job together with everything it started', () => {
   it('leaves no process with the owner token once the owner aborts a job with a grandchild', async () => {
     const token = `tg-owner-${randomBytes(8).toString('hex')}`
     const ready = path.join(dir, `ready-${token}`)
+    let stop = (): void => undefined
     try {
-      // The scan job runs after the first ends, while the helper is alive, so a leftover cannot die with it.
-      const { child, done } = startHelper([forkingJob(token, ready), scanJob(token)])
-      await fileAppears(ready)
+      // No queued job starts after an abort, so the scan runs after the exit: a leftover outlives the helper.
+      const started = startHelper([forkingJob(token, ready)])
+      const { child, done } = started
+      stop = started.stop
+      await fileAppears(ready, done)
       child.send('abort')
       const helper = await done
       expect(helper.code, `helper stderr: ${helper.stderr}`).toBe(0)
       const results = JSON.parse(helper.stdout) as Result[]
       expect(results[0]!.stderr).toContain('aborted')
-      expect(results[1]!.status, `scan job: ${results[1]!.stderr}`).toBe(0)
-      const seen = JSON.parse(results[1]!.stdout) as { status: number | null; lines: number; hits: string[] }
-      expect(seen.status === 0 && seen.lines > 0, 'the listing was empty: unknown, not gone').toBe(true)
-      expect(seen.hits, 'processes still carrying the owner token while the helper ran').toEqual([])
+      const listing = processCommandLines()
+      expect(listing.length > 0, 'the listing was empty: unknown, not gone').toBe(true)
+      const hits = listing.filter((q) => q.line.includes(token)).map((q) => q.line)
+      expect(hits, 'processes still carrying the owner token after the helper ended').toEqual([])
     } finally {
+      stop()
       killLeftovers(token)
     }
   })
@@ -198,9 +194,12 @@ describe.runIf(HAS_SH)('the parallel helper ends a running job together with eve
   it.runIf(process.platform !== 'win32')('ends every job tree when the owner sends SIGTERM', async () => {
     const token = `tg-owner-${randomBytes(8).toString('hex')}`
     const ready = path.join(dir, `ready-${token}`)
+    let stop = (): void => undefined
     try {
-      const { child, done } = startHelper([forkingJob(token, ready)])
-      await fileAppears(ready)
+      const started = startHelper([forkingJob(token, ready)])
+      const { child, done } = started
+      stop = started.stop
+      await fileAppears(ready, done)
       child.kill('SIGTERM')
       const helper = await done
       expect(helper.code, `helper signal ${String(helper.signal)}: the SIGTERM handler did not run`).toBe(143)
@@ -209,27 +208,37 @@ describe.runIf(HAS_SH)('the parallel helper ends a running job together with eve
         'processes still carrying the owner token after the helper ended',
       ).toEqual([])
     } finally {
+      stop()
       killLeftovers(token)
     }
   })
 })
 
-/** Runs the helper source under stub `require` and `process` values; resolves with each kill call it made. */
-function helperKillCalls(platform: string, exited: boolean): Promise<string[]> {
+/** `exited`: the shell exited but a descendant holds its streams (no 'close'); `closed`: it also closed. */
+type ChildState = 'running' | 'exited' | 'closed'
+type StubRun = { calls: string[]; spawns: number; body: string }
+
+/** Runs the helper source under stub `require` and `process` values; resolves with its kills and spawns. */
+function runHelperStub(
+  platform: string,
+  state: ChildState,
+  opts: { jobs?: number; abort?: boolean } = {},
+): Promise<StubRun> {
   const calls: string[] = []
+  let spawns = 0
   const quiet = { setEncoding: (): void => undefined }
   const stdin = Object.assign(new EventEmitter(), quiet)
   const stubProc = Object.assign(new EventEmitter(), {
     platform,
     env: { SystemRoot: 'C:/Windows' },
     stdin,
-    stdout: { write: (): boolean => true },
+    stdout: { write: (_body: string): boolean => true },
     kill: (pid: number, sig: string): void => { calls.push(`process.kill ${pid} ${sig}`) },
     exit: (): void => undefined,
   })
   const child = Object.assign(new EventEmitter(), {
     pid: 4242,
-    exitCode: exited ? 0 : null,
+    exitCode: state === 'running' ? null : 0,
     signalCode: null,
     stdout: Object.assign(new EventEmitter(), quiet),
     stderr: Object.assign(new EventEmitter(), quiet),
@@ -240,19 +249,26 @@ function helperKillCalls(platform: string, exited: boolean): Promise<string[]> {
     const stubRequire = (name: string): unknown => {
       if (name === 'node:path') return path
       return {
-        spawn: () => child,
+        spawn: () => {
+          spawns++
+          return child
+        },
         spawnSync: (program: string, args: string[]): void => { calls.push(`${program} ${args.join(' ')}`) },
       }
     }
-    stubProc.stdout.write = (): boolean => {
-      resolve(calls)
+    stubProc.stdout.write = (body: string): boolean => {
+      resolve({ calls, spawns, body })
       return true
     }
     new Function('require', 'process', PARALLEL_HELPER)(stubRequire, stubProc)
-    const jobs = [{ program: 'x', args: [], verbatim: false, input: '' }]
+    const job = { program: 'x', args: [], verbatim: false, input: '' }
+    const jobs = Array.from({ length: opts.jobs ?? 1 }, () => job)
     const payload = { jobs, concurrency: 1, timeout: 1, cwd: '.' }
     stdin.emit('data', JSON.stringify(payload))
     stdin.emit('end')
+    // Both run synchronously after the first job started, so the 1 ms timeout cannot fire before them.
+    if (state === 'closed') child.emit('close', 0)
+    if (opts.abort === true) stubProc.emit('message', 'abort')
   })
 }
 
@@ -269,16 +285,35 @@ describe.runIf(HAS_SH)('a single real shell run goes through the helper that end
   })
 })
 
-describe('the parallel helper never signals a child that has already exited', () => {
-  it.each(['win32', 'linux'])('makes no kill call on %s after its child exited', async (platform) => {
-    expect(await helperKillCalls(platform, true)).toEqual([])
+describe('the parallel helper signals a child by whether it has closed', () => {
+  it.each(['win32', 'linux'])('makes no kill call on %s after its child closed', async (platform) => {
+    expect((await runHelperStub(platform, 'closed')).calls).toEqual([])
+  })
+
+  it('ends the process group on linux when the shell exited but its streams are still open', async () => {
+    const { calls } = await runHelperStub('linux', 'exited')
+    expect(calls, calls.join(' | ')).toContain('process.kill -4242 SIGKILL')
+  })
+
+  it('sends no taskkill and no child.kill on win32 when the shell exited with its streams open', async () => {
+    const { calls } = await runHelperStub('win32', 'exited')
+    expect(calls.filter((c) => /taskkill|child\.kill/.test(c)), calls.join(' | ')).toEqual([])
   })
 
   it.each([
     ['win32', /taskkill\.exe \/T \/F \/PID 4242/],
     ['linux', /process\.kill -4242 SIGKILL/],
-  ])('still ends the tree on %s when the child has not exited', async (platform, want) => {
-    const calls = await helperKillCalls(platform, false)
+  ])('still ends the tree on %s when the child is running', async (platform, want) => {
+    const { calls } = await runHelperStub(platform, 'running')
     expect(calls.some((c) => want.test(c)), calls.join(' | ')).toBe(true)
+  })
+})
+
+describe('the parallel helper stops its queue on an abort', () => {
+  it('starts no queued job after the owner aborts and reports each as aborted', async () => {
+    const { spawns, body } = await runHelperStub('linux', 'running', { jobs: 3, abort: true })
+    expect(spawns, 'jobs started after the abort').toBe(1)
+    const results = JSON.parse(body) as Array<{ status: number | null; stderr: string }>
+    expect(results.map((r) => r.stderr)).toEqual(Array<string>(3).fill('aborted by the owner'))
   })
 })

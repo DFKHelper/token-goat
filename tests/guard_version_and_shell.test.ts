@@ -79,6 +79,13 @@ describe('the shell Claude Code runs a hook in', () => {
     expect(claudeFindsGitBash(spaces), 'whitespace falls back').toBe(true)
   })
 
+  it('judges the name of a set path by its trimmed value, so a trailing space does not hide bash', () => {
+    const padded = { CLAUDE_CODE_GIT_BASH_PATH: `${path.join(root, 'bash.exe')} `, PATH: '' }
+    expect(claudeFindsGitBash(padded, () => true), 'trailing space, file present').toBe(true)
+    const wrong = { CLAUDE_CODE_GIT_BASH_PATH: `${path.join(root, 'notbash.exe')} `, PATH: '' }
+    expect(claudeFindsGitBash(wrong, () => true), 'trailing space, not a bash name').toBe(false)
+  })
+
   it('registers sh with a bash shell field with Git Bash, PowerShell without, no field off Windows', () => {
     expect(claudeHookShell('win32', true)).toEqual({ guard: 'sh', field: 'bash' })
     expect(claudeHookShell('win32', false)).toEqual({ guard: 'powershell', field: 'powershell' })

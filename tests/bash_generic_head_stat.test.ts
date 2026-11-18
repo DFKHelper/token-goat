@@ -59,8 +59,20 @@ describe('bash_generic_head stat', () => {
     expect(leaksSecret(vi.mocked(recordStat).mock.calls)).toBe(false)
   })
 
-  it('the secret check fails on a label built from the raw command, so its pass above is not vacuous', () => {
-    expect(leaksSecret([[`bash_generic_head:API_KEY=${SECRET} rollup -c`]])).toBe(true)
+  it('names no secret when the secret is the head word or an argument, through the same handler', () => {
+    preBashHandler(preEvent(`${SECRET} rollup -c`))
+    preBashHandler(preEvent(`rollup --token ${SECRET}`))
+    expect(headCalls().length).toBeGreaterThan(0)
+    expect(leaksSecret(vi.mocked(recordStat).mock.calls)).toBe(false)
+  })
+
+  it('the secret check goes red on the recorded calls once a raw-command label joins them', () => {
+    const command = `API_KEY=${SECRET} rollup -c`
+    preBashHandler(preEvent(command))
+    const recorded = vi.mocked(recordStat).mock.calls
+    expect(headCalls()).toHaveLength(1)
+    expect(leaksSecret(recorded)).toBe(false)
+    expect(leaksSecret([...recorded, [`bash_generic_head:${command}`]])).toBe(true)
   })
 
   it('records nothing for a command the generic filter never sees', () => {

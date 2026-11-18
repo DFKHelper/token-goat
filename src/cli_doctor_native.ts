@@ -225,14 +225,18 @@ function nodeFormInvocation(words: readonly string[]): { event: string; entry: s
 function pointerRouteLive(harnesses: readonly string[]): boolean {
   const read = readHookPointer()
   if (!read.ok) return false
-  const harness = harnesses.find((h) => h !== 'claudecode')
-  if (harness !== undefined && (read.pointer.shims[harness] ?? read.pointer.shim) === undefined) return false
+  let raw: { nativeBin?: unknown; shims?: unknown }
   try {
-    const bin = (JSON.parse(fs.readFileSync(hookPointerPath(), 'utf8')) as { nativeBin?: unknown }).nativeBin
-    return typeof bin === 'string' && fs.existsSync(bin)
+    raw = JSON.parse(fs.readFileSync(hookPointerPath(), 'utf8')) as typeof raw
   } catch {
     return false
   }
+  const harness = harnesses.find((h) => h !== 'claudecode')
+  // As the native reader (Pointer::shim_for): with a `shims` object only its entry for the harness counts.
+  const mapPresent = typeof raw.shims === 'object' && raw.shims !== null && !Array.isArray(raw.shims)
+  const shim = mapPresent ? read.pointer.shims[harness ?? ''] : read.pointer.shim
+  if (harness !== undefined && shim === undefined) return false
+  return typeof raw.nativeBin === 'string' && fs.existsSync(raw.nativeBin)
 }
 
 /** The FAIL row for a hook whose bundle (native `--entry` or Node-form entry) is gone, or null if none is. */
