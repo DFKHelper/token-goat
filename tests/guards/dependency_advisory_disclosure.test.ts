@@ -160,25 +160,24 @@ interface AuditReport { auditReportVersion?: number; metadata?: { vulnerabilitie
 const auditReport: AuditReport = {
   auditReportVersion: 2,
   vulnerabilities: {
+    picomatch: { name: 'picomatch', severity: 'high' },
+    tinyglobby: { name: 'tinyglobby', severity: 'high' },
+    vite: { name: 'vite', severity: 'high' },
+    vitest: { name: 'vitest', severity: 'high' },
     minimatch: { name: 'minimatch', severity: 'moderate' },
     '@eslint/config-array': { name: '@eslint/config-array', severity: 'moderate' },
     '@typescript-eslint/eslint-plugin': { name: '@typescript-eslint/eslint-plugin', severity: 'moderate' },
     '@typescript-eslint/parser': { name: '@typescript-eslint/parser', severity: 'moderate' },
     '@typescript-eslint/type-utils': { name: '@typescript-eslint/type-utils', severity: 'moderate' },
-    '@typescript-eslint/typescript-estree': { name: '@typescript-eslint/typescript-estree', severity: 'moderate' },
+    '@typescript-eslint/typescript-estree': { name: '@typescript-eslint/typescript-estree', severity: 'high' },
     '@typescript-eslint/utils': { name: '@typescript-eslint/utils', severity: 'moderate' },
-    archiver: { name: 'archiver', severity: 'moderate' },
-    'archiver-utils': { name: 'archiver-utils', severity: 'moderate' },
     eslint: { name: 'eslint', severity: 'moderate' },
-    exceljs: { name: 'exceljs', severity: 'moderate' },
-    glob: { name: 'glob', severity: 'moderate' },
-    'readdir-glob': { name: 'readdir-glob', severity: 'moderate' },
+    'fast-xml-parser': { name: 'fast-xml-parser', severity: 'low' },
+    hono: { name: 'hono', severity: 'moderate' },
     'typescript-eslint': { name: 'typescript-eslint', severity: 'moderate' },
-    'zip-stream': { name: 'zip-stream', severity: 'moderate' },
     '@hono/node-server': { name: '@hono/node-server', severity: 'moderate', isDirect: false, via: [{ url: 'https://github.com/advisories/GHSA-rmxm-3fg6-px4f' }], range: '1.19.10 - 2.1.2', fixAvailable: true },
-    qs: { name: 'qs', severity: 'moderate', isDirect: false, via: [{ url: 'https://github.com/advisories/GHSA-6pq8-jhm2-2vcw' }], range: '6.7.0 - 6.16.0', fixAvailable: true },
   },
-  metadata: { vulnerabilities: { info: 0, low: 0, moderate: 17, high: 0, critical: 0, total: 17 } },
+  metadata: { vulnerabilities: { info: 0, low: 1, moderate: 10, high: 5, critical: 0, total: 16 } },
 }
 
 describe('this repository row matches an npm audit report', () => {
