@@ -236,6 +236,7 @@ describe('an environment variable that reopens a project-locked security setting
     ['mcp.confine_reads_to_project_root', 'TOKEN_GOAT_MCP_CONFINE_READS', 'false', 'weakened'],
     ['screenshot.block_private_targets', 'TOKEN_GOAT_SCREENSHOT_BLOCK_PRIVATE_TARGETS', 'false', 'weakened'],
     ['network.offline', 'TOKEN_GOAT_OFFLINE', 'false', 'weakened'],
+    ['reads.honor_host_deny', 'TOKEN_GOAT_READS_HONOR_HOST_DENY', 'false', 'weakened'],
     ['indexing.cross_project_symbols', 'TOKEN_GOAT_CROSS_PROJECT_SYMBOLS', 'true', 'weakened'],
     // An enum and a size, not a boolean, so there is no safe direction: any value an environment sets is reported as replacing the default.
     ['hints.first_read_symbol_bytes', 'TOKEN_GOAT_FIRST_READ_SYMBOL_BYTES', '25000', 'replaced'],

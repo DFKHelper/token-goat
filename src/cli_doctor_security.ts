@@ -15,6 +15,7 @@ export const LOCKED_BOOLEAN_SAFE_VALUE: Readonly<Record<string, boolean>> = {
   'mcp.confine_reads_to_project_root': true,
   'screenshot.block_private_targets': true,
   'network.offline': true,
+  'reads.honor_host_deny': true,
   'indexing.cross_project_symbols': false,
   'webfetch.compress_bodies': true,
 }
