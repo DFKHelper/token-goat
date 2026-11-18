@@ -22,19 +22,30 @@ import { codexConfigPath, codexHookScriptPath, computeCodexHookHash, installCode
 import { copilotCliConfigPath, copilotCliScriptPath, installCopilotCli, wiredCopilotHookWords } from '../src/bridges/copilot_cli_install.js'
 import { grokConfigPath, grokHookScriptPath, installGrok, wiredGrokHookWords } from '../src/bridges/grok_install.js'
 import { checkNativeHookWiring, checkNativeHooks, type NativeAvailability, type NativeWiring } from '../src/cli_doctor_native.js'
+import { parseGuardedCommand } from '../src/hook_guard.js'
 import type { NativeHookCounts } from '../src/hook_latency.js'
 
 /** Hook entries the previous build wrote on Windows read back as not current, which doctor's native rows report as outdated rather than as missing or fine, and a reinstall rewrites every one of them in place. FORMAT-DERIVED: the old command lines are the formulas of commit 0c01d686 (`git show 0c01d686:src/bridges/codex_install.ts` codexHookCommandFor, `:src/bridges/grok_install.ts` grokHookCommandFor, `:src/bridges/copilot_cli_install.ts` hookPowershellCommandFor, `:src/util.ts` hookCommandFor and hookPowershellCommand), typed out here rather than produced by today's source: Codex `& "node" "shim" event "entry"`, Grok's cmd-style `"node" "shim" event "entry"`, which PowerShell rejects as a ParserError, and Copilot's `powershell` field `& 'node' 'shim' event 'entry'` with no exit suffix. */
 
-const WIN_EXIT_SUFFIX = '; if (Get-Variable LASTEXITCODE -ErrorAction Ignore) { exit (Get-Variable LASTEXITCODE -ValueOnly) }; exit 1'
 const realPlatform = process.platform
 let TMP: string
 
+/** The words a guarded PowerShell command this build wrote runs: node, the shim, the event, the bundle. */
+function nativeWordsOf(command: string): string[] {
+  const parsed = parseGuardedCommand(command)
+  if (parsed?.kind !== 'v1' || parsed.shell !== 'powershell') {
+    throw new Error(`not a guarded PowerShell command: ${command}`)
+  }
+  return parsed.native
+}
+
 /** The event argument of a command this build wrote: the word after the shim path. */
 function eventArgOf(command: string): string {
-  const m = /token-goat-shim\.cjs['"] (\S+)/.exec(command)
-  if (m?.[1] === undefined) throw new Error(`no event argument in ${command}`)
-  return m[1]
+  const words = nativeWordsOf(command)
+  const at = words.findIndex((w) => w.endsWith('token-goat-shim.cjs'))
+  const ev = words[at + 1]
+  if (at < 0 || ev === undefined) throw new Error(`no event argument in ${command}`)
+  return ev
 }
 
 const entry = (): string => process.argv[1] ?? ''
@@ -100,7 +111,7 @@ describe('native hook doctor validates foreign executables without running them'
 })
 
 describe('hook entries an older build wrote are rewritten by a reinstall', () => {
-  it('Codex: the unsuffixed PowerShell Node form reads as outdated, and a reinstall writes the suffixed form with a trust hash for it at the same positions', () => {
+  it('Codex: the unsuffixed form reads as outdated, and a reinstall writes the guarded form and hash', () => {
     installCodex()
     const configPath = codexConfigPath()
     const config = parse(fs.readFileSync(configPath, 'utf8')) as { hooks: Record<string, unknown> }
@@ -134,9 +145,8 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
       if (event === 'state') continue
       ;(groups as Array<{ matcher?: string; hooks: Array<{ command: string }> }>).forEach((g, gi) => {
         g.hooks.forEach((h, hi) => {
-          expect(h.command.startsWith('& ')).toBe(true)
-          expect(h.command.endsWith(WIN_EXIT_SUFFIX)).toBe(true)
           const ev = eventArgOf(h.command)
+          expect(nativeWordsOf(h.command)).toEqual([process.execPath, codexHookScriptPath(), ev, entry()])
           expect(afterState[`${configPath}:${ev}:${gi}:${hi}`]?.trusted_hash).toBe(computeCodexHookHash(ev, h.command, g.matcher))
           rewritten++
         })
@@ -148,7 +158,7 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
     expect(doctorRow('Codex').status).toBe('ok')
   })
 
-  it("Grok: the cmd-style Node form PowerShell cannot parse reads as outdated, and a reinstall writes the PowerShell call, one entry per event", () => {
+  it("Grok: the cmd-style form reads as outdated, and a reinstall writes the guarded call per event", () => {
     installGrok()
     const configPath = grokConfigPath()
     const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> }
@@ -167,8 +177,8 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
     for (const groups of Object.values(after.hooks)) {
       const commands = groups.flatMap((g) => g.hooks.map((h) => h.command))
       expect(commands).toHaveLength(1)
-      expect(commands[0]!.startsWith('& ')).toBe(true)
-      expect(commands[0]!.endsWith(WIN_EXIT_SUFFIX)).toBe(true)
+      const words = [process.execPath, grokHookScriptPath(), eventArgOf(commands[0]!), entry()]
+      expect(nativeWordsOf(commands[0]!)).toEqual(words)
     }
     expect(wiredGrokHookWords().every((e) => e.current === true)).toBe(true)
     expect(doctorRow('Grok CLI').status).toBe('ok')
@@ -193,7 +203,8 @@ describe('hook entries an older build wrote are rewritten by a reinstall', () =>
     expect(Object.keys(after.hooks)).toEqual(events)
     for (const [event, entries] of Object.entries(after.hooks)) {
       expect(entries).toHaveLength(1)
-      expect(entries[0]!.powershell).toBe(`${oldCopilotPowershell(event)}${WIN_EXIT_SUFFIX}`)
+      const words = [process.execPath, copilotCliScriptPath(), event, entry()]
+      expect(nativeWordsOf(entries[0]!.powershell)).toEqual(words)
     }
     expect(wiredCopilotHookWords().every((e) => e.current === true)).toBe(true)
     expect(doctorRow('Copilot CLI (user)').status).toBe('ok')
