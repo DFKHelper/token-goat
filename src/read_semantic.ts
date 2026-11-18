@@ -483,7 +483,10 @@ export async function runSemantic(query: string, opts: SemanticOptions): Promise
       }
       const text = guardText(
         evidenceHits
-          .map((entry) => `# cached ${entry.representation} evidence — ${toDisplayPath(rootDir, entry.source)}\n${previewLines(redactReadText(entry.text), 3)}`)
+          .map((entry) => {
+            const head = `# cached ${entry.representation} evidence — ${toDisplayPath(rootDir, entry.source)}`
+            return `${head}\n${previewLines(redactReadText(entry.text), 3)}`
+          })
           .join('\n\n'),
         'semantic',
       )

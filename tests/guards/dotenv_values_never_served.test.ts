@@ -22,6 +22,7 @@ import { runSymbol } from '../../src/read_symbol.js'
 import { clearModuleCaches } from '../../src/reset.js'
 import { readSection } from '../../src/section_reader.js'
 import Database from '../../src/sqlite_driver.js'
+import { buildContextWindow } from '../../src/util_context.js'
 
 /** Fake secrets, built by concatenation so a secrets scanner does not read them as real. */
 const DB_SECRET = 'postgres://admin:' + 'hunter2pw' + '@db.internal:5432/app'
@@ -394,6 +395,24 @@ function vec0Working(): boolean {
     return false
   }
 }
+
+describe('context window: no dotenv value is shown', () => {
+  it('shows the key and the placeholder for a .env line, never the value', () => {
+    // A value no secret pattern knows, so only the dotenv rule can hide it.
+    const plain = 'tanger' + 'ine-4471'
+    withEnvFile('.env', `${ENV_FILE}PLAIN_SALT=${plain}\n`, (file) => {
+      const window = buildContextWindow(file, 2, 6)
+      const shown = (window ?? []).map((l) => l.text).join('\n')
+      expect(shown).not.toContain(DB_SECRET)
+      expect(shown).not.toContain(KEY_SECRET)
+      expect(shown).not.toContain('hunter2pw')
+      expect(shown).not.toContain(plain)
+      // Asserting the keys stay visible stops a fix that passes by returning no window at all.
+      expect(shown).toContain('DATABASE_URL')
+      expect(shown).toContain(DOTENV_VALUE_PLACEHOLDER)
+    })
+  })
+})
 
 // Skips cleanly rather than silently when the optional native extension is absent, mirroring the gate tests/semantic_project_scope.test.ts already uses. The display tests above are dependency-free and cover the same defect from the other side, so a machine without sqlite-vec is not left with no coverage of this at all.
 const canExerciseVec0 = vec0Working()
