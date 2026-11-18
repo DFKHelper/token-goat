@@ -28,6 +28,10 @@ interface Segment {
   readonly parentGroup: number
   /** The operator that ended this command when a `cd` before it cannot change the directory of what follows: `|` or a single `&` (its own process) or `||` (what follows runs only if the `cd` failed); otherwise an empty string. */
   readonly endOp: '' | '|' | '&' | '||'
+  /** Standard-input text from a heredoc body or a `<<<` string; `literal` marks it unexpanded. */
+  readonly stdin: { text: string; literal: boolean }[]
+  /** Scripts run to build a word or heredoc body: the inside of `$(...)` and backticks in double quotes. */
+  readonly subs: string[]
 }
 
 const MAX_NESTING = 3
@@ -52,13 +56,28 @@ const FORMS = {
   rg: walkMessage('rg', 'starts at a filesystem root or the home directory with no `--max-depth`', 'Add `--max-depth N`, or start in the project directory.'),
   grep: walkMessage('grep -r', 'starts at a filesystem root or the home directory, and grep has no depth limit', ''),
   ls: walkMessage('ls -R', 'starts at a filesystem root or the home directory, and a recursive listing has no depth limit', 'List one directory, or use `rg --files --max-depth N <dir>`.'),
-  du: walkMessage('du', 'starts at a filesystem root or the home directory with no `-d`/`--max-depth`', 'Add `-d N`, or measure a project directory.'),
+  du: walkMessage(
+    'du',
+    'starts at a filesystem root or the home directory and reads everything below it, ' +
+      'whatever `-s` or `-d` says',
+    'Measure a project directory.',
+  ),
   tree: walkMessage('tree', 'starts at a filesystem root or the home directory with no `-L`', 'Add `-L N`, or start in the project directory.'),
   dir: walkMessage('dir /s', 'starts at a drive root or the home directory, and has no depth limit', 'List one directory, or use `rg --files --max-depth N <dir>`.'),
   findstr: walkMessage('findstr /s', 'starts at a drive root or the home directory, and has no depth limit', ''),
   gci: walkMessage('Get-ChildItem -Recurse', 'starts at a drive root or the home directory with no `-Depth`', 'Add `-Depth N`, or start in the project directory.'),
   nesting: unreadable('Shells are nested deeper than the walk check follows', 'Run the inner command directly'),
   obscured: unreadable('The command word is a variable or expansion', 'Write the command name out'),
+  unparsed: unreadable('The inner command of a shell wrapper does not parse', 'Write it so it parses'),
+  'rg-pre': unreadable(
+    '`rg --pre` and `--pre-glob` run a command the check cannot read on every file',
+    'Drop the option',
+  ),
+  recurse: walkMessage(
+    'This recursive command',
+    'starts at a filesystem root or the home directory and reads everything below it',
+    'Name a project directory instead.',
+  ),
   xargs: walkMessage(
     'xargs',
     'takes its start paths from standard input, which can be a filesystem root, with no depth bound',
@@ -77,11 +96,17 @@ function refuse(form: Form): WalkRefusal {
 interface Heredoc {
   readonly delim: string
   readonly stripTabs: boolean
+  /** The delimiter was quoted or escaped, so the body is plain text: the shell expands nothing in it. */
+  readonly literal: boolean
 }
 
 /** The delimiter of the heredoc whose `<<` ends just before `from`, and the index after it. */
-function readHeredocMarker(command: string, from: number): { delim: string; stripTabs: boolean; end: number } {
+function readHeredocMarker(
+  command: string,
+  from: number,
+): { delim: string; stripTabs: boolean; end: number; literal: boolean } {
   let j = from
+  let literal = false
   let stripTabs = false
   if (command[j] === '-') {
     stripTabs = true
@@ -97,19 +122,26 @@ function readHeredocMarker(command: string, from: number): { delim: string; stri
       else delim += c
     } else if (c === '"' || c === "'") {
       quote = c
+      literal = true
     } else if (c !== '\\') {
       if (/[\s;|&<>()]/.test(c)) break
       delim += c
-    }
+    } else literal = true
     j++
   }
-  return { delim, stripTabs, end: j }
+  return { delim, stripTabs, end: j, literal }
 }
 
 /** The index of the line after the last heredoc terminator, reading each body from `from`. */
-function skipHeredocBodies(command: string, from: number, heredocs: readonly Heredoc[]): number {
+function skipHeredocBodies(
+  command: string,
+  from: number,
+  heredocs: readonly Heredoc[],
+  bodies: string[] = [],
+): number {
   let pos = from
   for (const { delim, stripTabs } of heredocs) {
+    const start = pos
     while (pos < command.length) {
       let eol = command.indexOf('\n', pos)
       if (eol === -1) eol = command.length
@@ -118,13 +150,37 @@ function skipHeredocBodies(command: string, from: number, heredocs: readonly Her
       pos = Math.min(eol + 1, command.length)
       if ((stripTabs ? line.replace(/^\t+/, '') : line) === delim) break
     }
+    bodies.push(command.slice(start, pos))
   }
   return pos
 }
 
+/** The scripts of the command substitutions (`$(...)` and backticks) in text a shell expands. */
+function substitutions(text: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\\') i++
+    else if (text[i] === '`') {
+      const end = text.indexOf('`', i + 1)
+      out.push(text.slice(i + 1, end < 0 ? undefined : end))
+      i = end < 0 ? text.length : end
+    } else if (text[i] === '$' && text[i + 1] === '(') {
+      let open = 1
+      let j = i + 2
+      for (; j < text.length && open > 0; j++) open += text[j] === '(' ? 1 : text[j] === ')' ? -1 : 0
+      out.push(text.slice(i + 2, open === 0 ? j - 1 : j))
+      i = j - 1
+    }
+  }
+  return out
+}
+
 /** Split into statements of words; `posix` decodes backslash escapes, else literal (Windows paths). */
-function scan(command: string, posix: boolean): Segment[] {
+function scan(command: string, posix: boolean, psEscape: boolean): { segments: Segment[]; open: boolean } {
   const segments: Segment[] = []
+  const owners: Segment[] = []
+  let subs: string[] = []
+  let dqFrom = 0
   let ansi = false
   let words: Word[] = []
   let text = ''
@@ -148,7 +204,26 @@ function scan(command: string, posix: boolean): Segment[] {
     endWord()
     if (words.length > 0) {
       const redirectedIn = words.some((w) => !w.quoted && /^\d*</.test(w.text))
-      segments.push({ words: withoutRedirects(words), pipedIn: piped, redirectedIn, group: groups[groups.length - 1]!, parentGroup: groups[groups.length - 2] ?? 0, endOp })
+      const stdin: Segment['stdin'] = []
+      words.forEach((w, k) => {
+        if (w.quoted) return
+        const here =
+          w.text === '<<<' ? words[k + 1]?.text : w.text.startsWith('<<<') ? w.text.slice(3) : undefined
+        if (here !== undefined) stdin.push({ text: here, literal: false })
+      })
+      const seg: Segment = {
+        words: withoutRedirects(words),
+        pipedIn: piped,
+        redirectedIn,
+        group: groups[groups.length - 1]!,
+        parentGroup: groups[groups.length - 2] ?? 0,
+        endOp,
+        stdin,
+        subs,
+      }
+      subs = []
+      segments.push(seg)
+      for (const w of words) if (!w.quoted && w.text === '<<H') owners.push(seg)
     }
     words = []
     piped = nextPiped
@@ -156,6 +231,10 @@ function scan(command: string, posix: boolean): Segment[] {
   for (let i = 0; i < command.length; i++) {
     const ch = command[i]!
     if (quote !== null) {
+      if (psEscape && quote === '"' && ch === '`' && i + 1 < command.length) {
+        text += command[++i]!
+        continue
+      }
       if (posix && ch === '\\' && i + 1 < command.length
         && (ansi || (quote === '"' && '$`"\\'.includes(command[i + 1]!)))) {
         // `$'...'` escapes are not decoded: the word is unknown, which a `$` in a command word reports.
@@ -169,7 +248,9 @@ function scan(command: string, posix: boolean): Segment[] {
         else if (ch === ')' && subshells > 0) subshells--
         else if (subshells > 0 && ch === '<' && command[i + 1] === '<' && command[i + 2] !== '<' && command[i - 1] !== '<') {
           const marker = readHeredocMarker(command, i + 2)
-          if (marker.delim !== '') quotedHeredocs.push({ delim: marker.delim, stripTabs: marker.stripTabs })
+          if (marker.delim !== '') {
+            quotedHeredocs.push({ delim: marker.delim, stripTabs: marker.stripTabs, literal: marker.literal })
+          }
           i = marker.end - 1
           continue
         } else if (subshells > 0 && ch === '\n' && quotedHeredocs.length > 0) {
@@ -179,6 +260,7 @@ function scan(command: string, posix: boolean): Segment[] {
         }
       }
       if (ch === quote) {
+        if (quote === '"') subs.push(...substitutions(text.slice(dqFrom)))
         quote = null
         ansi = false
         subshells = 0
@@ -202,6 +284,7 @@ function scan(command: string, posix: boolean): Segment[] {
     if (ch === '$' && (command[i + 1] === "'" || command[i + 1] === '"')) {
       quote = command[i + 1]!
       ansi = posix && quote === "'"
+      dqFrom = text.length
       i++
       has = true
       quoted = true
@@ -209,6 +292,7 @@ function scan(command: string, posix: boolean): Segment[] {
     }
     if (ch === '"' || ch === "'") {
       quote = ch
+      dqFrom = text.length
       has = true
       quoted = true
       continue
@@ -219,7 +303,9 @@ function scan(command: string, posix: boolean): Segment[] {
     }
     if (ch === '<' && command[i + 1] === '<' && command[i + 2] !== '<' && command[i - 1] !== '<') {
       const marker = readHeredocMarker(command, i + 2)
-      if (marker.delim !== '') heredocs.push({ delim: marker.delim, stripTabs: marker.stripTabs })
+      if (marker.delim !== '') {
+        heredocs.push({ delim: marker.delim, stripTabs: marker.stripTabs, literal: marker.literal })
+      }
       endWord()
       text = '<<H'
       has = true
@@ -231,9 +317,23 @@ function scan(command: string, posix: boolean): Segment[] {
       endSegment(false)
       // A heredoc body is data for the command that opened it, so a `find /` written inside one is text, not a command.
       if (heredocs.length > 0) {
-        i = skipHeredocBodies(command, i + 1, heredocs) - 1
+        const bodies: string[] = []
+        i = skipHeredocBodies(command, i + 1, heredocs, bodies) - 1
+        heredocs.forEach((h, k) => {
+          owners[k]?.stdin.push({ text: bodies[k]!, literal: h.literal })
+          if (!h.literal) owners[k]?.subs.push(...substitutions(bodies[k]!))
+        })
         heredocs.length = 0
+        owners.length = 0
       }
+      continue
+    }
+    if (psEscape && ch === '`' && i + 1 < command.length) {
+      // In PowerShell a backtick escapes the next character or line break; it never splits or ends a word.
+      i++
+      if (command[i] === '\r' && command[i + 1] === '\n') i++
+      else if (command[i] !== '\n') text += command[i]!
+      has ||= command[i] !== '\n'
       continue
     }
     if (ch === ';' || ch === '`') {
@@ -267,8 +367,9 @@ function scan(command: string, posix: boolean): Segment[] {
     text += ch
     has = true
   }
+  if (quote === '"') subs.push(...substitutions(text.slice(dqFrom)))
   endSegment(false)
-  return segments
+  return { segments, open: quote !== null }
 }
 
 function withoutRedirects(words: readonly Word[]): Word[] {
@@ -340,7 +441,19 @@ function commandName(text: string): { name: string; dir: string } {
   return { name: text.slice(cut).toLowerCase().replace(/\.exe$/, ''), dir: text.slice(0, cut) }
 }
 
-const SKIPPED_KEYWORDS = new Set(['{', '!', 'then', 'do', 'else', 'elif', 'if', 'while', 'until', 'time', 'command', 'builtin', 'exec', 'nohup', 'setsid', 'call', 'stdbuf'])
+const SKIPPED_KEYWORDS = new Set([
+  '{', '!', 'then', 'do', 'else', 'elif', 'if', 'while', 'until',
+  'time', 'command', 'builtin', 'exec', 'nohup', 'setsid', 'call', 'stdbuf', 'busybox',
+])
+/** The options a wrapper keyword takes before its command: each name lists those with a separate value. */
+const KEYWORD_OPTIONS = new Map<string, readonly string[]>([
+  ['time', ['-f', '-o', '--format', '--output']], ['command', []], ['exec', ['-a']], ['setsid', []],
+  ['stdbuf', ['-i', '-o', '-e', '--input', '--output', '--error']],
+])
+const ENV_VALUED = ['-u', '-C', '-S', '-P', '-a', '--unset', '--chdir', '--split-string', '--argv0']
+const SUDO_VALUED = [
+  '-u', '-g', '-C', '-h', '-p', '-U', '-D', '-R', '-T', '--user', '--group', '--host', '--prompt',
+  '--chdir', '--chroot', '--role', '--type', '--other-user', '--close-from', '--command-timeout']
 
 /** The index of the command a segment runs, past the words that only prefix it: assignments, keywords, and wrappers such as `sudo`, `env`, `nice`, `timeout` and `wsl`. */
 function commandIndex(words: readonly Word[]): number {
@@ -353,7 +466,7 @@ function commandIndex(words: readonly Word[]): number {
     const { name } = commandName(text)
     if (/^[A-Za-z_]\w*=/.test(text) || SKIPPED_KEYWORDS.has(name)) {
       i++
-      if (name === 'stdbuf') skipOptions([])
+      if (KEYWORD_OPTIONS.has(name)) skipOptions(KEYWORD_OPTIONS.get(name)!)
     } else if (/^\$\{?[\w:]+\}?[-+*/%]?=$/.test(text)) {
       // A PowerShell assignment, `$x= cmd`, runs the command that follows it.
       i++
@@ -362,14 +475,15 @@ function commandIndex(words: readonly Word[]): number {
       i += 2
     } else if (name === 'sudo' || name === 'doas') {
       i++
-      skipOptions(['-u', '-g', '-C', '-h', '-p', '-U', '-D', '-R', '-T'])
+      skipOptions(SUDO_VALUED)
     } else if (name === 'env') {
       i++
-      while (i < words.length && (words[i]!.text.startsWith('-') || words[i]!.text.includes('='))) i += words[i]!.text === '-u' ? 2 : 1
+      while (i < words.length && (words[i]!.text.startsWith('-') || words[i]!.text.includes('='))) {
+        i += ENV_VALUED.includes(words[i]!.text) ? 2 : 1
+      }
     } else if (name === 'nice') {
       i++
-      if (words[i]?.text === '-n') i += 2
-      else if (/^-\d+$/.test(words[i]?.text ?? '')) i++
+      skipOptions(['-n', '--adjustment'])
     } else if (name === 'ionice') {
       i++
       skipOptions(['-c', '-n', '-p', '-P', '-u'])
@@ -442,7 +556,23 @@ function clusterHas(t: string, letters: string): boolean {
   return /^-[A-Za-z0-9]+$/.test(t) && !t.startsWith('--') && [...t.slice(1)].some((c) => letters.includes(c))
 }
 
-function inspectFind(args: readonly Word[], dir: string, seg: Segment, ctx: WalkContext, fromRoot: boolean): WalkRefusal | null {
+/** The primaries that take a value, so a `-maxdepth` right after one is that value and no bound. */
+const VALUED_PRIMARY = new RegExp(
+  '^-(i?(name|path|wholename|regex|lname)|x?type|newer.*|[acm](time|min)|user|group|perm|size|links|' +
+    'inum|fstype|printf|samefile|uid|gid|used|context)$',
+)
+const EXEC_PRIMARY = /^-(exec|execdir|ok|okdir)$/
+/** Words that end a `-exec` payload: `;`, an escaped `;` (a lone backslash word when read literally), `+`. */
+const EXEC_END = new Set([';', '\\;', '+', '\\'])
+
+function inspectFind(
+  args: readonly Word[],
+  dir: string,
+  seg: Segment,
+  ctx: WalkContext,
+  fromRoot: boolean,
+  depth: number,
+): WalkRefusal | null {
   const t = texts(args)
   const system32 = /[\\/](system32|syswow64|windows)[\\/]$/i.test(dir)
   const qualified = dir !== '' && !system32
@@ -456,37 +586,90 @@ function inspectFind(args: readonly Word[], dir: string, seg: Segment, ctx: Walk
     return given.length <= 1 && !seg.pipedIn && !seg.redirectedIn ? refuse('find-stdin') : null
   }
   const starts: string[] = []
-  for (let i = 0; i < t.length; i++) {
-    const x = t[i]!
-    if (x === '-H' || x === '-L' || x === '-P' || /^-O\d$/.test(x)) continue
-    if (x === '-D') {
-      i++
+  let at = 0
+  for (; at < t.length; at++) {
+    const x = t[at]!
+    // BSD find: `-E -s -X -x -d` are flags before the paths, and `-f path` names one.
+    if (/^-([HLPEXsxd]|O\d)$/.test(x)) continue
+    if (x === '-D' || x === '-f') {
+      if (x === '-f' && t[at + 1] !== undefined) starts.push(t[++at]!)
+      else at++
       continue
     }
     if (x.startsWith('-') || x === '!' || x.startsWith('\\(')) break
     starts.push(x)
   }
+  // A bound is `-maxdepth` with digits, outside an `-exec` payload and not another primary's value.
+  let bounded = false
+  const payloads: Word[][] = []
+  for (let i = at; i < t.length; i++) {
+    if (EXEC_PRIMARY.test(t[i]!)) {
+      let end = i + 1
+      while (end < t.length && !EXEC_END.has(t[end]!)) end++
+      payloads.push(args.slice(i + 1, end))
+      i = end
+    } else if (t[i] === '-maxdepth' && !VALUED_PRIMARY.test(t[i - 1] ?? '') && DIGITS.test(t[i + 1] ?? '')) {
+      bounded = true
+    }
+  }
   // After `cd /` a find with no path, or a `.`-relative one, starts at that root.
-  if ((starts.some((s) => isRoot(s)) || (fromRoot && (starts.length === 0 || starts.some(isRelativeStart)))) && !t.includes('-maxdepth')) return refuse('find')
+  const atRoot = starts.some((s) => isRoot(s))
+  const afterCd = fromRoot && (starts.length === 0 || starts.some(isRelativeStart))
+  if ((atRoot || afterCd) && !bounded) return refuse('find')
+  // The `-exec` command runs once per start path in the walk, with `{}` standing for it.
+  for (const payload of payloads) {
+    for (const target of starts.length > 0 ? starts : ['.']) {
+      const words = payload.map((w) => ({ text: w.text.split('{}').join(target), quoted: w.quoted }))
+      const hit = inspectSegment({ ...seg, words, pipedIn: false, stdin: [], subs: [] }, ctx, depth, fromRoot)
+      if (hit !== null) return hit
+    }
+  }
   // PowerShell runs a bare `find "text"` as the Windows find.exe, which reads standard input when it is given no file.
   const sole = args.length === 1 ? args[0]! : null
   if (ctx.powershell && !primary && !winOption && !qualified && sole !== null && sole.quoted && !seg.pipedIn && !seg.redirectedIn) return refuse('find-stdin')
   return null
 }
 
-function inspectFd(args: readonly Word[]): WalkRefusal | null {
-  if (args.some((w) => /^(-d\d*|--max-depth(=.*)?|--maxdepth(=.*)?|--exact-depth(=.*)?)$/.test(w.text))) return null
-  const searchPaths = args.filter((w, i) => ['--search-path', '--base-directory'].includes(args[i - 1]?.text ?? '') || /^--(search-path|base-directory)=/.test(w.text)).map((w) => ({ text: w.text.replace(/^--[a-z-]+=/, ''), quoted: w.quoted }))
-  const rest = positionals(args, FD_VALUED).slice(1)
-  return anyRoot(rest) || anyRoot(searchPaths) ? refuse('fd') : null
+/** A path operand that starts a walk at a root or home, or none (or `.`) after a `cd` to a root. */
+const rootIn = (pos: readonly Word[], fromRoot: boolean, glob = false, winOptions = false): boolean =>
+  anyRoot(pos, glob, winOptions) || (fromRoot && pos.some((w) => isRelativeStart(w.text)))
+const rootOperand = (pos: readonly Word[], fromRoot: boolean, glob = false, winOptions = false): boolean =>
+  rootIn(pos, fromRoot, glob, winOptions) || (fromRoot && pos.length === 0)
+
+const DIGITS = /^[0-9]+$/
+// A depth bound is `-d N`, `--max-depth N`, `-LN` or `-Depth N` with ASCII digits; other values are no bound.
+const FD_DEPTH = /^(?:-d|--max-?depth|--exact-depth)(?:=(.*)|([0-9]+))?$/
+const TREE_DEPTH = /^-[A-Za-z]*L([0-9]+)?$/
+const PS_DEPTH = /^-de(?:p(?:t(?:h)?)?)?(?::(.*))?$/i
+/** Valued options minus the depth ones: with no valid bound, a depth flag's value is a path operand. */
+const withoutDepth = (valued: ReadonlySet<string>): Set<string> =>
+  new Set([...valued].filter((x) => !['-d', '--max-depth', '--maxdepth', '--exact-depth', '-L'].includes(x)))
+const FD_FREE = withoutDepth(FD_VALUED)
+const RG_FREE = withoutDepth(RG_VALUED)
+const TREE_FREE = withoutDepth(TREE_VALUED)
+function depthBounded(args: readonly Word[], flag: RegExp): boolean {
+  return args.some((w, i) => {
+    const m = flag.exec(w.text)
+    const value = m === null ? undefined : m[1] ?? m[2] ?? args[i + 1]?.text
+    return value !== undefined && DIGITS.test(value)
+  })
 }
 
-function inspectRg(args: readonly Word[]): WalkRefusal | null {
-  if (args.some((w) => /^(--max-?depth(=.*)?|-d\d*)$/.test(w.text))) return null
+function inspectFd(args: readonly Word[], fromRoot: boolean): WalkRefusal | null {
+  if (depthBounded(args, FD_DEPTH)) return null
+  const searchPaths = args.filter((w, i) => ['--search-path', '--base-directory'].includes(args[i - 1]?.text ?? '') || /^--(search-path|base-directory)=/.test(w.text)).map((w) => ({ text: w.text.replace(/^--[a-z-]+=/, ''), quoted: w.quoted }))
+  const rest = positionals(args, FD_FREE).slice(1)
+  return rootOperand(rest, fromRoot) || anyRoot(searchPaths) ? refuse('fd') : null
+}
+
+function inspectRg(args: readonly Word[], fromRoot: boolean): WalkRefusal | null {
+  // Policy: `--pre` and `--pre-glob` run a command on every file that this check cannot read; refused.
+  if (args.some((w) => /^--pre(-glob)?(=|$)/.test(w.text))) return refuse('rg-pre')
+  if (depthBounded(args, FD_DEPTH)) return null
   const t = texts(args)
   const patternGiven = t.some((x) => x === '--files' || x === '-e' || x === '--regexp' || x === '-f' || x === '--file' || /^--(regexp|file)=/.test(x))
-  const pos = positionals(args, RG_VALUED)
-  return anyRoot(patternGiven ? pos : pos.slice(1)) ? refuse('rg') : null
+  const pos = positionals(args, RG_FREE)
+  return rootOperand(patternGiven ? pos : pos.slice(1), fromRoot) ? refuse('rg') : null
 }
 
 /** GNU getopt takes any unique prefix of a long option; a word of `min` or more characters that is one. */
@@ -514,28 +697,33 @@ function grepRecurses(t: readonly string[]): boolean {
   })
 }
 
-function inspectGrep(args: readonly Word[]): WalkRefusal | null {
+function inspectGrep(args: readonly Word[], fromRoot: boolean): WalkRefusal | null {
   const t = texts(args)
   if (!grepRecurses(t)) return null
   const patternGiven = t.some((x) => x === '-e' || x === '-f' || /^-[A-Za-z]*[ef]$/.test(x)
     || abbreviates(x, '--regexp', 4) || abbreviates(x, '--file', 4))
   const pos = positionals(args, GREP_VALUED)
-  return anyRoot(patternGiven ? pos : pos.slice(1)) ? refuse('grep') : null
+  return rootOperand(patternGiven ? pos : pos.slice(1), fromRoot) ? refuse('grep') : null
 }
 
-function inspectDu(args: readonly Word[]): WalkRefusal | null {
-  const t = texts(args)
-  if (t.some((x) => x === '--summarize' || /^--max-depth(=.*)?$/.test(x) || (/^-[A-Za-z0-9]+$/.test(x) && /^-[A-Za-z]*[ds]/.test(x)))) return null
-  return anyRoot(positionals(args, DU_VALUED)) ? refuse('du') : null
+// Policy: du reads everything below a root or home operand whatever `-s`, `-d` or `--max-depth` says; refused.
+function inspectDu(args: readonly Word[], fromRoot: boolean): WalkRefusal | null {
+  return rootOperand(positionals(args, DU_VALUED), fromRoot, true) ? refuse('du') : null
 }
 
-function inspectTree(args: readonly Word[], ctx: WalkContext): WalkRefusal | null {
-  if (texts(args).some((x) => /^-[A-Za-z]*L\d*$/.test(x))) return null
-  return anyRoot(positionals(args, TREE_VALUED, ctx.windows), false, ctx.windows) ? refuse('tree') : null
+function inspectTree(args: readonly Word[], ctx: WalkContext, fromRoot: boolean): WalkRefusal | null {
+  if (depthBounded(args, TREE_DEPTH)) return null
+  const operands = positionals(args, TREE_FREE, ctx.windows)
+  return rootOperand(operands, fromRoot, false, ctx.windows) ? refuse('tree') : null
 }
 
 /** `ls`, `dir`, `gci` and `Get-ChildItem`: recursive with `-R` (POSIX), `/s` (cmd `dir`) or `-Recurse` and its abbreviations (PowerShell). */
-function inspectListing(name: string, args: readonly Word[], ctx: WalkContext): WalkRefusal | null {
+function inspectListing(
+  name: string,
+  args: readonly Word[],
+  ctx: WalkContext,
+  fromRoot: boolean,
+): WalkRefusal | null {
   const t = texts(args)
   const psFlavor = name === 'gci' || name === 'get-childitem' || (ctx.powershell && (name === 'ls' || name === 'dir'))
   const psRecurse = psFlavor && t.some((x) => /^-r(e(c(u(r(se?)?)?)?)?)?(:.*)?$/i.test(x))
@@ -543,9 +731,9 @@ function inspectListing(name: string, args: readonly Word[], ctx: WalkContext): 
     && t.some((x) => abbreviates(x, '--recursive', 3) || clusterHas(x, 'R'))
   const cmdRecurse = name === 'dir' && ctx.windows && t.some((x) => /^\/s$/i.test(x))
   if (!psRecurse && !posixRecurse && !cmdRecurse) return null
-  if (psRecurse && t.some((x) => /^-de(p(t(h)?)?)?(:.*)?$/i.test(x))) return null
+  if (psRecurse && depthBounded(args, PS_DEPTH)) return null
   const pos = positionals(args, name === 'ls' || name === 'dir' ? LS_VALUED : PS_LISTING_VALUED, name === 'dir')
-  if (!anyRoot(pos, true, name === 'dir')) return null
+  if (!rootOperand(pos, fromRoot, true, name === 'dir')) return null
   return refuse(psRecurse ? 'gci' : name === 'dir' && cmdRecurse ? 'dir' : 'ls')
 }
 
@@ -558,11 +746,19 @@ function inspectFindstr(args: readonly Word[]): WalkRefusal | null {
   return anyRoot(bySearchString ? pos : pos.slice(1), true, true) || anyRoot(dirList, true, true) ? refuse('findstr') : null
 }
 
+const POSIX_SHELLS = new Set(['sh', 'ash', 'bash', 'zsh', 'dash', 'ksh', 'csh', 'tcsh', 'fish'])
+const SHELLS = new Set([...POSIX_SHELLS, 'cmd', 'pwsh', 'powershell'])
+
 /** The script a shell wrapper runs (`bash -c`, `cmd /c`, `powershell -Command`), or null when the command is not one. */
 function nestedScript(name: string, args: readonly Word[]): string | null {
-  if (['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(name)) {
+  if (POSIX_SHELLS.has(name)) {
     const at = args.findIndex((w) => /^-[A-Za-z]+$/.test(w.text) && w.text.includes('c'))
-    return at >= 0 && args[at + 1] !== undefined ? args[at + 1]!.text : null
+    if (at < 0 || args[at + 1] === undefined) return null
+    // The words after the script are `$0`, `$1`, ...: `sh -c 'find "$1"' _ /` runs `find "/"`.
+    const [script, ...params] = args.slice(at + 1).map((w) => w.text)
+    return script!.replace(/\$\{?([0-9])\}?|\$[@*]/g, (m, d?: string) =>
+      d === undefined ? params.slice(1).join(' ') : (params[Number(d)] ?? m),
+    )
   }
   if (name === 'eval') return args.length > 0 ? args.map((w) => w.text).join(' ') : null
   if (name === 'cmd') {
@@ -570,8 +766,19 @@ function nestedScript(name: string, args: readonly Word[]): string | null {
     return at >= 0 ? args.slice(at + 1).map((w) => w.text).join(' ') : null
   }
   if (name === 'powershell' || name === 'pwsh') {
-    const at = args.findIndex((w) => /^-(c|command)$/i.test(w.text))
-    return at >= 0 ? args.slice(at + 1).map((w) => w.text).join(' ') : null
+    // `-c` or a prefix of `-Command`; `-e`, `-ec` or a prefix of `-EncodedCommand` carry UTF-16LE base64.
+    const psFlag = (t: string, full: string): boolean =>
+      /^-[A-Za-z]+$/.test(t) && full.startsWith(t.slice(1).toLowerCase())
+    const at = args.findIndex(
+      (w) => psFlag(w.text, 'command') || psFlag(w.text, 'encodedcommand') || /^-ec$/i.test(w.text),
+    )
+    if (at < 0) return null
+    const rest = args.slice(at + 1).map((w) => w.text)
+    if (psFlag(args[at]!.text, 'command')) return rest.join(' ')
+    // A value that is not base64 returns an unterminated quote, which the caller refuses as unparsed.
+    const b64 = rest[0] ?? ''
+    const valid = /^[A-Za-z0-9+/]+={0,2}$/.test(b64) && b64.length % 4 === 0
+    return valid ? Buffer.from(b64, 'base64').toString('utf16le') : "'"
   }
   return null
 }
@@ -593,7 +800,6 @@ const STDIN_ROOT: Word = { text: '/', quoted: false }
 /** A relative path under the working directory: no leading `/`, `~`, `.` or `-`, no `..` segment, no `:`. */
 const PLAIN_PATH = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*(\/[A-Za-z0-9_][A-Za-z0-9_.+-]*)*\/?$/
 const PLAIN_VALUE = /^[A-Za-z0-9_+][A-Za-z0-9_.+-]*$/
-const DIGITS = /^[0-9]+$/
 const TYPE_LETTER = /^[a-z]$/
 const NAME_VALUE = /^[A-Za-z0-9_.+-]+$/
 
@@ -671,18 +877,32 @@ function isBoundedLister(left: Segment): boolean {
 }
 
 /** Rule 3: only an exact set of short xargs options; the words from the first non-option on are the command. */
-function xargsCommand(args: readonly Word[]): readonly Word[] | null {
+function xargsCommand(args: readonly Word[]): { words: readonly Word[]; replace: string | null } | null {
   let i = 0
+  let replace: string | null = null
   while (i < args.length && args[i]!.text.startsWith('-')) {
     const t = args[i]!.text
     const value = args[i + 1]?.text ?? ''
-    if (t === '-0' || t === '-r' || t === '-t') i += 1
+    const attached = /^(?:-I|--replace=)(.+)$/.exec(t)?.[1]
+    const flagOnly = new RegExp(
+      '^(-0|-r|-t|--null|--no-run-if-empty|--verbose|-[nPL][0-9]+|--max-(args|procs|lines)=[0-9]+)$',
+    )
+    if (flagOnly.test(t)) i += 1
     else if ((t === '-n' || t === '-P' || t === '-L') && DIGITS.test(value)) i += 2
     else if (t === '-d' && /^(\\[n0]|[A-Za-z0-9,;])$/.test(value)) i += 2
-    else return null
+    else if (attached !== undefined && XARGS_REPLACE.test(attached)) {
+      replace = attached
+      i += 1
+    } else if (t === '-I' && XARGS_REPLACE.test(value)) {
+      replace = value
+      i += 2
+    } else return null
   }
-  return args.slice(i)
+  return { words: args.slice(i), replace }
 }
+
+/** The replace string of `-I`: plain characters and braces, which stands for one name from the lister. */
+const XARGS_REPLACE = /^[A-Za-z0-9_{}@%+-]+$/
 
 /** The command names the direct-form guard (`inspectWalker`) treats as a walker, plus `vdir`. */
 const WALKER_NAMES = [
@@ -703,16 +923,23 @@ const PLAIN_COMMAND = /^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/
 const PLAIN_COMMAND_DIR = /^[A-Za-z0-9_.+/:~-]*$/
 
 /** Class C only: whether a walker word among the xargs words would walk a root on stdin; each is tried. */
-function xargsStdinWalks(args: readonly Word[], seg: Segment, ctx: WalkContext): boolean {
+function xargsStdinWalks(
+  args: readonly Word[],
+  seg: Segment,
+  ctx: WalkContext,
+  proven: boolean,
+  depth: number,
+): boolean {
   for (let j = 0; j < args.length; j++) {
     const { name } = commandName(args[j]!.text)
     const own = args.slice(j + 1)
     const script = own.map((w) => w.text).join(' ').replace(/[\\'"]/g, '')
     if (XARGS_SHELL_NAMES.has(name) && WALKER_WORD.test(script)) return true
-    if (!WALKER_NAMES.includes(name)) continue
+    // The other recursive commands are tried only when no proven lister vouches for what they are given.
+    if (!WALKER_NAMES.includes(name) && !(EXTRA_WALKERS.has(name) && !proven)) continue
     // A `find` and an `rg` always count: an own start path is no proof, stdin words may add start paths.
     if (name === 'find' || name === 'rg') return true
-    if (inspectWalker(name, '', [...own, STDIN_ROOT, STDIN_ROOT], seg, ctx, false) !== null) return true
+    if (inspectWalker(name, '', [...own, STDIN_ROOT, STDIN_ROOT], seg, ctx, false, depth) !== null) return true
   }
   return false
 }
@@ -727,7 +954,7 @@ interface WalkerSpec {
   readonly words: number
 }
 
-const PATTERN_WORD = /^[A-Za-z0-9_.+][A-Za-z0-9_. +-]*$/
+const PATTERN_WORD = /^[A-Za-z0-9_.+](?:[A-Za-z0-9_. +-]|\\[|()])*$/
 const CONTEXT_FLAGS: ReadonlyArray<readonly [string, RegExp]> = [
   ['-m', DIGITS], ['-A', DIGITS], ['-B', DIGITS], ['-C', DIGITS], ['-e', PATTERN_WORD],
 ]
@@ -782,11 +1009,13 @@ const clusterOf = (t: string, letters: string): boolean =>
   /^-[A-Za-z0-9]+$/.test(t) && [...t.slice(1)].every((c) => letters.includes(c))
 
 /** Rule 4: a bare walker name with exact flags (and their values) only: no path, no placeholder. */
-function walkerWithFlagsOnly(command: readonly Word[], spec: WalkerSpec): boolean {
+function walkerWithFlagsOnly(command: readonly Word[], spec: WalkerSpec, replace: string | null): boolean {
   let words = 0
   let patternGiven = false
   for (let i = 1; i < command.length; i++) {
     const t = command[i]!.text
+    // The `-I` replace string stands for one plain name from the proven lister.
+    if (t === replace) continue
     const eq = t.startsWith('--') ? t.indexOf('=') : -1
     const key = eq > 0 ? t.slice(0, eq) : t
     const value = spec.valued.get(key)
@@ -854,11 +1083,15 @@ function inspectXargs(
   if (rest.length === 0) return listerProven(seg, prev, fromRoot) ? null : refuse('xargs')
   // A list read from a file is not the lister's output, so no lister can vouch for it.
   if (args.slice(0, i).some((w) => XARGS_FILE_OPTION.test(w.text))) return refuse('xargs')
-  const inner: Segment = { ...seg, words: rest, pipedIn: true }
-  const hit = inspectSegment(inner, ctx, depth + 1, fromRoot)
+  const inner: Segment = { ...seg, words: rest, pipedIn: true, stdin: [], subs: [] }
+  const hit = inspectSegment(inner, ctx, depth + 1, false)
   if (hit !== null) return hit
   const proven = listerProven(seg, prev, fromRoot)
-  const command = xargsCommand(args)
+  const parsed = xargsCommand(args)
+  // A replace string (`-I{}`) is understood only for grep behind a proven lister; otherwise it is unparsed.
+  const replaceOk = parsed?.replace == null
+    || (proven && ['grep', 'egrep', 'fgrep'].includes(commandName(parsed.words[0]?.text ?? '').name))
+  const command = replaceOk ? parsed?.words ?? null : null
   if (command === null || command.length === 0) {
     // The options do not parse, so the command word is unknown: refuse when any word names the family.
     if (args.some((w) => WALKER_FAMILY.has(commandName(w.text).name))) return refuse('xargs')
@@ -869,13 +1102,16 @@ function inspectXargs(
   if (WALKER_FAMILY.has(name)) {
     const spec = head.text === name && !head.quoted ? XARGS_WALKERS.get(name) : undefined
     if (spec === undefined) return refuse('xargs')
-    return (proven ? walkerWithFlagsOnly(command, spec) : nonRecursiveUnderUnprovenLister(command))
+    const allowed = proven
+      ? walkerWithFlagsOnly(command, spec, parsed!.replace)
+      : nonRecursiveUnderUnprovenLister(command)
+    return allowed
       ? null
       : refuse('xargs')
   }
   const plain = !head.quoted && PLAIN_COMMAND.test(name) && PLAIN_COMMAND_DIR.test(dir)
   if (!plain) return proven ? null : refuse('xargs')
-  return xargsStdinWalks(args, seg, ctx) ? refuse('xargs') : null
+  return xargsStdinWalks(args, seg, ctx, proven, depth) ? refuse('xargs') : null
 }
 
 function inspectSegment(
@@ -887,24 +1123,119 @@ function inspectSegment(
   prev?: Segment,
 ): WalkRefusal | null {
   const at = commandIndex(seg.words)
+  const env = envOptions(seg.words, at)
+  const root = fromRoot || (env.chdir !== undefined && isRoot(env.chdir))
+  const sub = (script: string): WalkRefusal | null =>
+    depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1, root) : atNestingLimit(script)
+  // Scripts from `$(...)`, backticks in double quotes, heredocs and `env -S` run whatever the command is.
+  for (const script of [...seg.subs, ...(env.split === undefined ? [] : [env.split])]) {
+    const hit = sub(script)
+    if (hit !== null) return hit
+  }
   const head = seg.words[at]
   if (head === undefined) return null
   const { name, dir } = commandName(head.text)
   const args = seg.words.slice(at + 1)
   const script = nestedScript(name, args)
-  // A variable command word (`$F /`) cannot be read statically; a lone `$` is left of `$(`.
-  // A variable head is refused when its args could walk: none, a root or home start, or relative after cd.
+  // A shell reads a script from a heredoc, a `<<<` string or a pipe from `echo`, `printf` or `cat`.
+  if (SHELLS.has(name) && script === null) {
+    const fed = seg.pipedIn && prev !== undefined ? fedText(prev) : []
+    for (const text of [...seg.stdin.map((s) => s.text), ...fed]) {
+      const hit = sub(text)
+      if (hit !== null) return hit
+    }
+  }
+  // A variable command word (`$F /`) cannot be read statically; refused when its args could walk.
   const headVariable = name.includes('$') && name !== '$'
     && !(ctx.powershell && (seg.group !== 0 || /[.[(]/.test(name) || args.every((w) => w.text === '}')))
     && !(args.length === 0 && seg.endOp === '|'
       && /^([%?]|[A-Z][A-Za-z]+-[A-Z][A-Za-z]+)$/.test(next?.words[commandIndex(next.words)]?.text ?? ''))
   if (headVariable && (args.length === 0 || anyRoot(args)
-    || (fromRoot && args.some((w) => isRelativeStart(w.text))))) return refuse('obscured')
+    || (root && args.some((w) => isRelativeStart(w.text))))) return refuse('obscured')
   if (script !== null) {
-    return depth < MAX_NESTING ? detectUnboundedWalk(script, ctx, depth + 1, fromRoot) : atNestingLimit(script)
+    const hit = sub(script)
+    if (hit !== null) return hit
+    // A script that leaves a quote open in both readings is not one the check can vouch for.
+    const open = scan(script, true, ctx.powershell).open && scan(script, false, ctx.powershell).open
+    return open ? refuse('unparsed') : null
   }
-  if (name === 'xargs') return inspectXargs(args, seg, ctx, depth, fromRoot, prev)
-  return inspectWalker(name, dir, args, seg, ctx, fromRoot)
+  if (name === 'xargs') return inspectXargs(args, seg, ctx, depth, root, prev)
+  return inspectWalker(name, dir, args, seg, ctx, root, depth)
+}
+
+/** What a command writes to a pipe that a shell on the other end reads as a script. */
+function fedText(prev: Segment): string[] {
+  const at = commandIndex(prev.words)
+  const rest = prev.words.slice(at + 1).map((w) => w.text)
+  switch (commandName(prev.words[at]?.text ?? '').name) {
+    case 'cat':
+      return prev.stdin.map((s) => s.text)
+    case 'echo':
+      return [rest.filter((x) => !/^-[neE]+$/.test(x)).join(' ')]
+    case 'printf':
+      return [(rest.length > 1 ? rest.slice(1) : rest).join(' ')]
+    default:
+      return []
+  }
+}
+
+/** An `env`'s `-C` / `--chdir` directory and `-S` / `--split-string` script before the command at `end`. */
+function envOptions(
+  words: readonly Word[],
+  end: number,
+): { chdir?: string | undefined; split?: string | undefined } {
+  const out: { chdir?: string | undefined; split?: string | undefined } = {}
+  const from = words.slice(0, end).findIndex((w) => commandName(w.text).name === 'env')
+  for (let i = from + 1; from >= 0 && i < end; i++) {
+    const m = /^(-C|--chdir|-S|--split-string)(?:=(.*))?$/.exec(words[i]!.text)
+    if (m === null) continue
+    if (m[1] === '-C' || m[1] === '--chdir') out.chdir = m[2] ?? words[i + 1]?.text
+    else out.split = m[2] ?? words[i + 1]?.text
+  }
+  return out
+}
+
+/** Commands beyond the search tools that read or change all below a root or home operand; depth is no bound. */
+const EXTRA_WALKERS = new Set([
+  'where', 'forfiles', 'chmod', 'chown', 'chgrp', 'cp', 'ag', 'ack', 'dust', 'ncdu', 'eza', 'exa',
+])
+const AG_VALUED = [
+  '-G', '--depth', '-A', '-B', '-C', '-m', '--max-count',
+  '--ignore', '--ignore-dir', '--pager', '--workers', '-g',
+]
+
+function inspectRecursive(name: string, args: readonly Word[], fromRoot: boolean): WalkRefusal | null {
+  const t = texts(args)
+  const clusterFlags = name === 'cp' ? 'rRa' : 'R'
+  const recursive = t.some(
+    (x) => x === '--recursive' || abbreviates(x, '--recursive', 3) || clusterHas(x, clusterFlags),
+  )
+  const agLike = name === 'ag' || name === 'ack'
+  const valued = name === 'cp' ? ['-t', '--target-directory', '-S', '--suffix'] : agLike ? AG_VALUED : []
+  const pos = positionals(args, new Set(valued))
+  let hit: boolean
+  if (name === 'where') {
+    const at = t.findIndex((x) => /^\/r$/i.test(x))
+    hit = at >= 0 && isRoot(t[at + 1] ?? '', true, true)
+  } else if (name === 'forfiles') {
+    const at = t.findIndex((x) => /^\/p(:|$)/i.test(x))
+    const path = at < 0 ? undefined : t[at]!.length > 2 ? t[at]!.slice(3) : t[at + 1]
+    hit = t.some((x) => /^\/s$/i.test(x)) && (path === undefined ? fromRoot : isRoot(path, true, true))
+  } else if (name === 'chmod' || name === 'chown' || name === 'chgrp') {
+    hit = recursive && rootIn(pos.slice(1), fromRoot)
+  } else if (name === 'cp') {
+    const targeted = t.some((x) => /^(-t|--target-directory)/.test(x))
+    hit = recursive && rootIn(targeted ? pos : pos.slice(0, -1), fromRoot)
+  } else if (name === 'ag' || name === 'ack') {
+    const noPattern = t.includes('-g') || (name === 'ack' && t.includes('-f'))
+    hit = rootOperand(noPattern ? pos : pos.slice(1), fromRoot)
+  } else if (name === 'eza' || name === 'exa') {
+    const recurses = t.some(
+      (x) => clusterHas(x, 'RT') || abbreviates(x, '--recurse', 3) || abbreviates(x, '--tree', 3),
+    )
+    hit = recurses && rootIn(pos, fromRoot)
+  } else hit = rootOperand(pos, fromRoot)
+  return hit ? refuse('recurse') : null
 }
 
 function inspectWalker(
@@ -914,32 +1245,33 @@ function inspectWalker(
   seg: Segment,
   ctx: WalkContext,
   fromRoot: boolean,
+  depth: number,
 ): WalkRefusal | null {
   switch (name) {
     case 'find':
-      return inspectFind(args, dir, seg, ctx, fromRoot)
+      return inspectFind(args, dir, seg, ctx, fromRoot, depth)
     case 'fd':
     case 'fdfind':
-      return inspectFd(args)
+      return inspectFd(args, fromRoot)
     case 'rg':
-      return inspectRg(args)
+      return inspectRg(args, fromRoot)
     case 'grep':
     case 'egrep':
     case 'fgrep':
-      return inspectGrep(args)
+      return inspectGrep(args, fromRoot)
     case 'du':
-      return inspectDu(args)
+      return inspectDu(args, fromRoot)
     case 'tree':
-      return inspectTree(args, ctx)
+      return inspectTree(args, ctx, fromRoot)
     case 'ls':
     case 'dir':
     case 'gci':
     case 'get-childitem':
-      return inspectListing(name, args, ctx)
+      return inspectListing(name, args, ctx, fromRoot)
     case 'findstr':
       return inspectFindstr(args)
     default:
-      return null
+      return EXTRA_WALKERS.has(name) ? inspectRecursive(name, args, fromRoot) : null
   }
 }
 
@@ -950,8 +1282,14 @@ const XARGS_SUBSTITUTION = /(?:^|[\s;&|(])xargs(?=\s)[^|;&\n]*(?:`|\$\()/
 export function detectUnboundedWalk(command: string, ctx: WalkContext, depth = 0, startsAtRoot = false): WalkRefusal | null {
   // The scanner cuts a segment at a backtick or `$(`, so a substituted xargs command word is only visible here.
   if (XARGS_SUBSTITUTION.test(command)) return refuse('xargs')
-  // Read twice: backslashes literal (Windows path) and as POSIX escapes (`f\ind`); refused if either walks.
-  return walkScan(command, ctx, depth, startsAtRoot, false) ?? walkScan(command, ctx, depth, startsAtRoot, true)
+  // Literal backslashes, POSIX escapes (`f\ind`) and, in PowerShell, backticks are all read; any walk refuses.
+  const readings: [boolean, boolean][] = [[false, false], [true, false]]
+  if (ctx.powershell) readings.push([false, true], [true, true])
+  for (const [posix, psEscape] of readings) {
+    const hit = walkScan(command, ctx, depth, startsAtRoot, posix, psEscape)
+    if (hit !== null) return hit
+  }
+  return null
 }
 
 function walkScan(
@@ -960,10 +1298,11 @@ function walkScan(
   depth: number,
   startsAtRoot: boolean,
   posix: boolean,
+  psEscape: boolean,
 ): WalkRefusal | null {
   // Whether the shell sits in a root or the home directory, per `( ... )` group: a subshell starts from its parent's state and its `cd` does not reach the commands after it.
   const atRoot = new Map<number, boolean>([[0, startsAtRoot]])
-  const segments = scan(command, posix)
+  const { segments } = scan(command, posix, psEscape)
   for (const [n, seg] of segments.entries()) {
     if (!atRoot.has(seg.group)) atRoot.set(seg.group, atRoot.get(seg.parentGroup) ?? startsAtRoot)
     const fromRoot = atRoot.get(seg.group)!
@@ -975,3 +1314,13 @@ function walkScan(
   }
   return null
 }
+
+/** Every command name the guard acts on, so a test can hold hooks_bash.ts's load prefilter to it. */
+export const WALK_TRIGGER_NAMES: readonly string[] = [
+  ...WALKER_NAMES,
+  ...WRAPPER_NAMES,
+  ...XARGS_WALKERS.keys(),
+  ...EXTRA_WALKERS,
+  ...[...SKIPPED_KEYWORDS].filter((k) => !/^(if|then|do|else|elif|while|until)$/.test(k)),
+  ...SHELLS,
+]

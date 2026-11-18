@@ -138,10 +138,13 @@ describe('dist chunks are shared, not duplicated', () => {
     // CAPTURE: markers read from the built bundle. A hook that wants git loads git_async.ts on demand, and that is where process_tree.ts belongs; a static import of bash_runner.ts (once for a constant) or a re-export from util.ts put it, and the filter pipeline under it, into every hook process.
     const eager = [HOOK_BUNDLE, ...[...closure(HOOK_BUNDLE, 'static')].map((c) => path.join(DIST, c))]
     const deferred = [...closure(HOOK_BUNDLE, 'any')].map((c) => path.join(DIST, c)).filter((c) => !eager.includes(c))
-    const wanted = ['src/process_tree.ts', 'src/bash_runner.ts', 'src/git_async.ts']
+    const wanted = ['src/process_tree.ts', 'src/bash_runner.ts', 'src/git_async.ts', 'src/unbounded_walk.ts']
     const held = (files: string[]): string[] => wanted.filter((m) => modulesIn(files).has(m))
     expect(held(eager), 'a module that belongs behind a dynamic import is compiled eagerly').toEqual([])
-    expect(held(deferred), 'no deferred chunk holds git_async.ts and process_tree.ts, so the check above reads nothing').toEqual(expect.arrayContaining(['src/git_async.ts', 'src/process_tree.ts']))
+    expect(
+      held(deferred),
+      'no deferred chunk holds git_async.ts and process_tree.ts, so the check above reads nothing',
+    ).toEqual(expect.arrayContaining(['src/git_async.ts', 'src/process_tree.ts', 'src/unbounded_walk.ts']))
   })
 
   it('reaches a regex adapter only through a deferred chunk', () => {

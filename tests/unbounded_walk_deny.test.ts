@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { preBashHandler } from '../src/hooks_bash.js'
+import { walkRefusal } from '../src/hooks_bash.js'
 import { relayInProcess } from '../src/relay.js'
 import { makeHookEvent } from './helpers/hook-event.js'
 import { detectUnboundedWalk, type WalkContext } from '../src/unbounded_walk.js'
@@ -268,9 +268,7 @@ describe('detectUnboundedWalk -- other recursive tools', () => {
     ['ls /'],
     ['ls -la ~'],
     ['ls -R src'],
-    ['du -sh /'],
-    ['du -d 1 /'],
-    ['du --max-depth=1 ~'],
+    // `du -sh /`, `du -d 1 /` and `du --max-depth=1 ~` are refused now; see unbounded_walk_wrappers.test.ts
     ['du -h src'],
     ['tree -L 2 /'],
     ['tree src'],
@@ -497,7 +495,7 @@ describe('detectUnboundedWalk -- xargs fed by a bounded lister or by an unknown 
     ['find /tmp/proj -name x | xargs tree', 'xargs'],
     ['printf "a\\nb\\n" | xargs ls -R', 'xargs'],
     ["printf 'a\\nb\\n' | xargs du", 'xargs'],
-    ['git ls-files | xargs -n1 du -h', 'xargs'],
+    // `xargs -n1 du` behind a proven lister is allowed now; see unbounded_walk_wrappers.test.ts
     ['git ls-files | xargs -0n 1 du', 'xargs'],
     ['git ls-files | xargs -P4 -I{} du {}', 'xargs'],
     ['echo ~ | xargs du', 'xargs'],
@@ -741,12 +739,20 @@ describe('the pre_tool_use hook entry', () => {
     expect(denied(await relayInProcess('pre_tool_use', copilotPayload('find "x" file.txt')))).toBe(false)
   })
 
-  it('reads a payload tool name of powershell in any case as the PowerShell shell', () => {
+  it('reads a payload tool name of powershell in any case as the PowerShell shell', async () => {
     setPlatform('win32')
-    const run = (toolName: string): string => preBashHandler(makeHookEvent({ toolName: 'Bash', toolInput: { command: 'find /i "x"' }, sessionId: session(), raw: { cwd: project, tool_name: toolName } })).hookType
-    expect(run('powershell')).toBe('deny')
-    expect(run('PowerShell')).toBe('deny')
-    expect(run('Bash')).not.toBe('deny')
+    const run = async (toolName: string): Promise<string> => {
+      const event = makeHookEvent({
+        toolName: 'Bash',
+        toolInput: { command: 'find /i "x"' },
+        sessionId: session(),
+        raw: { cwd: project, tool_name: toolName },
+      })
+      return (await walkRefusal(event))?.hookType ?? 'pass'
+    }
+    expect(await run('powershell')).toBe('deny')
+    expect(await run('PowerShell')).toBe('deny')
+    expect(await run('Bash')).not.toBe('deny')
   })
 
   it('treats a bare find as the Windows one only when the shell is PowerShell, so Claude Code on Windows keeps Git find', async () => {

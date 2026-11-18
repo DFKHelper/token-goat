@@ -55,7 +55,6 @@ describe('xargs gate -- class A: an obscured or unknown command word needs a pro
     ['git ls-files | xargs --a=rootlist rm', 'xargs'],
     ['git ls-files | xargs -0a rootlist rm', 'xargs'],
     ['git ls-files | xargs --max-chars 100 du /', 'xargs'],
-    ['git ls-files | xargs -n1 du', 'xargs'],
   ])('refuses %s', (command, expected) => {
     expect(form(command, POSIX)).toBe(expected)
     expect(form(command, GIT_BASH_ON_WINDOWS)).toBe(expected)

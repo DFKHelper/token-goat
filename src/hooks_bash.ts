@@ -19,7 +19,6 @@ import { canRunWrappedShell, canRunPowerShell } from './shell.js'
 import { detectStructuralIndexRewrite } from './bash_structural_index.js'
 import { agentTypeOf, loadCodexRules, loadingHiddenRuleCheck, permissionNeutralRewrite, readHintCrossesRule, shellPathWords } from './rewrite_permission.js'
 import { rangeSubstituteFor } from './bash_range_savings.js'
-import { detectUnboundedWalk } from './unbounded_walk.js'
 import { hasHalvedRun, msysDamagesCommand, REPAIR_DECLINE_TEXT, repairByScriptFile } from './bash_backslash_repair.js'
 import { hintTarget, sliceCommand, sliceForPath, type HintSlice, type HintTarget } from './hint_target.js'
 import { statSync, existsSync, readFileSync } from 'node:fs'
@@ -280,15 +279,6 @@ function preBashHandlerInner(event: HookEvent): HookOutput {
   }
 
   const cfg = loadConfig()
-  // A walk of a whole filesystem root or the home directory with no depth bound outlives the shell that timed out and keeps burning CPU, so it is refused here before it starts; the harness decides whether a bare `find` is Git's or the Windows text-search one. There is no config switch for it on purpose: a switch nobody has asked for is a rule that can be left off.
-  const walk = detectUnboundedWalk(rawCmd, {
-    windows: process.platform === 'win32',
-    powershell: isPwshHarness(event),
-  })
-  if (walk !== null) {
-    recordStat('session_hint', 0, 0)
-    return syntaxOutput(denyOutput(walk.message))
-  }
   // The script holds the command exactly as typed, where rawCmd has its surrounding whitespace trimmed.
   const typedCmd = event.toolInput['command'] as string
   // Claude Code's Bash tool on Windows passes the command to Git Bash as a `-c` argument, and the argv quoting plus the MSYS2 runtime's decoding halve every run of two or more backslashes not directly before a double quote, and cut the command off near 8,186 characters, so the command that runs is not the one written and nothing reports the difference (anthropics/claude-code#85856). A command Claude Code would run with no prompt is run from a script file instead, rewritten through the permission check like any shell rewrite; any other is refused when a backslash run damages it, and left as it was when only its length is over the bound, since the cut-off sits well above that bound. This comes after the walk refusal so that judges the command as written, and returns before the compress wrapper so a repaired command is not wrapped twice. `_tg_harness` is 'claude' for every harness relay.ts does not map, so detectHarness() is what pins this to Claude Code; the hook server answers under the caller's own environment, so it sees the same variables here.
@@ -838,7 +828,41 @@ export function preBashHandler(event: HookEvent): HookOutput {
   return applyHintTracking(event, output, classifyBashHint)
 }
 
+// No quote, `$`, backtick, backslash or walker name means the guard cannot refuse it, so it is never loaded.
+const PREFILTER_CHARS = /[$`'"\\]/.source
+const PREFILTER_NAMES = [
+  'fd|fdfind|find|findstr|rg|[efz]?grep|du|tree|v?dir|ls|gci|get-childitem|xargs|eval|where|forfiles',
+  'ch(?:mod|own|grp)|cp|ag|ack|dust|ncdu|exa|eza|[a-z]{0,2}a?sh|cmd|pwsh|powershell',
+  'env|nice|ionice|timeout|sudo|doas|wsl|time|command|builtin|exec|nohup|setsid|call|stdbuf|busybox|source',
+].join('|')
+const PREFILTER_WORD = `(?<![A-Za-z0-9_-])(?:${PREFILTER_NAMES})(?![A-Za-z0-9_-])`
+export const WALK_PREFILTER = new RegExp(`${PREFILTER_CHARS}|${PREFILTER_WORD}`, 'i')
+
+// Refuses an unbounded root or home walk; loaded on demand (off the eager set); a failed load allows it.
+export async function walkRefusal(event: HookEvent): Promise<HookOutput | null> {
+  const rawCmd = extractCommand(event)
+  if (rawCmd === undefined || !WALK_PREFILTER.test(rawCmd)) return null
+  try {
+    const { detectUnboundedWalk } = await import('./unbounded_walk.js')
+    const walk = detectUnboundedWalk(rawCmd, {
+      windows: process.platform === 'win32',
+      powershell: isPwshHarness(event),
+    })
+    if (walk === null) return null
+    recordStat('session_hint', 0, 0)
+    return syntaxOutput(denyOutput(walk.message))
+  } catch {
+    return null
+  }
+}
+
 // A Codex call loads Codex's rules check first, and a bypassPermissions call the hidden rule check, which rewrite_permission.ts needs before it lets a rewrite ship there. Claude Code's PowerShell tool carries the same `command` field as Bash (https://code.claude.com/docs/en/hooks.md, PowerShell section), so it takes the same pre path.
-const preShell = loadingHiddenRuleCheck((event: HookEvent) => (detectHarness() === 'codex' ? loadCodexRules().then(() => preBashHandler(event)) : preBashHandler(event)))
+const preShell = loadingHiddenRuleCheck(
+  async (event: HookEvent) =>
+    (await walkRefusal(event)) ??
+    (detectHarness() === 'codex'
+      ? await loadCodexRules().then(() => preBashHandler(event))
+      : preBashHandler(event)),
+)
 registerHook('pre_tool_use', preShell, { toolName: 'Bash' })
 registerHook('pre_tool_use', preShell, { toolName: 'PowerShell' })

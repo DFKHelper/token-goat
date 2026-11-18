@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { hasHalvedRun, MSYS_SAFE_COMMAND_CHARS, msysDamagesCommand, msysPathOf, planRepair, repairIsUnsafe, writeRepairScript } from '../src/bash_backslash_repair.js'
 import { defaultConfig, invalidateConfigCache, saveConfig } from '../src/config.js'
 import type { HookEvent } from '../src/hook_registry.js'
-import { preBashHandler } from '../src/hooks_bash.js'
+import { preBashHandler, walkRefusal } from '../src/hooks_bash.js'
 import { postBashHandler } from '../src/hooks_bash_post.js'
 import { normalizePath, shellMountToWindowsPath } from '../src/paths.js'
 import { clearModuleCaches } from '../src/reset.js'
@@ -302,11 +302,13 @@ describe.skipIf(process.platform !== 'win32')('preBashHandler -- repairs a damag
     expect(sourced).not.toContain('compress')
   })
 
-  it('the unbounded-walk refusal judges the command as written, before any repair', () => {
+  it('the unbounded-walk refusal judges the command as written, before any repair', async () => {
     const command = String.raw`find / -name 'a\\b'`
     const walk = detectUnboundedWalk(command, { windows: true, powershell: false })
     expect(walk).not.toBeNull()
-    const result = preBashHandler(bashEvent(box, command))
+    const event = bashEvent(box, command)
+    // The registered handler runs the walk refusal first, then preBashHandler's repair.
+    const result = (await walkRefusal(event)) ?? preBashHandler(event)
     expect(result.hookType).toBe('deny')
     if (result.hookType === 'deny') expect(result.message).toContain((walk as { message: string }).message)
     expect(listScripts(box)).toEqual([])
