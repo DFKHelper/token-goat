@@ -15,6 +15,10 @@ const limits = JSON.parse(fs.readFileSync(LIMITS_FILE, 'utf8')) as Record<string
 const NATIVE_TO_SHIM: Record<string, keyof typeof SHIM_FALLBACK_TIMEOUT_MS> = { copilot_cli: 'copilot' }
 const shimName = (native: string): string => NATIVE_TO_SHIM[native] ?? native
 
+// Installer harness names: NativeHarness (src/native_hook.ts:19) plus vscode, aliased in fallback.rs.
+const INSTALLER_NATIVE_NAMES = ['claudecode', 'codex', 'grok', 'kimi', 'copilot_cli', 'vscode']
+const NATIVE_ALIAS: Record<string, string> = { vscode: 'copilot_cli' }
+
 describe('the native client limit table', () => {
   it('names every harness of the shim table with the same milliseconds', () => {
     const asShim = Object.fromEntries(Object.entries(limits).map(([name, ms]) => [shimName(name), ms]))
@@ -24,6 +28,13 @@ describe('the native client limit table', () => {
   it('holds positive integers only, so a bad entry cannot become a zero or negative limit', () => {
     for (const [name, ms] of Object.entries(limits)) {
       expect(Number.isInteger(ms) && ms > 0, `${name}: ${String(ms)}`).toBe(true)
+    }
+  })
+
+  it('gives every harness an installer passes a named limit or an alias to one', () => {
+    for (const name of INSTALLER_NATIVE_NAMES) {
+      const key = NATIVE_ALIAS[name] ?? name
+      expect(Object.keys(limits), `${name} -> ${key}`).toContain(key)
     }
   })
 

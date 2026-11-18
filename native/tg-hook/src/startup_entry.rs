@@ -319,7 +319,10 @@ mod budget_tests {
         let start = Instant::now();
         let span = |harness: &str, limit: Option<Duration>, budget: u64| deadline_for(start, harness, limit, budget).duration_since(start);
         let smallest = crate::fallback::harness_limit("");
-        assert_eq!(span("vscode", None, DEFAULT_BUDGET_MS), smallest, "an unknown harness gets the smallest limit");
+        let unknown = span("no-such-host", None, DEFAULT_BUDGET_MS);
+        assert_eq!(unknown, smallest, "an unknown harness gets the smallest limit");
+        let vscode = span("vscode", None, DEFAULT_BUDGET_MS);
+        assert_eq!(vscode, Duration::from_millis(DEFAULT_BUDGET_MS), "vscode takes the default budget");
         assert_eq!(span("", None, 600_000), smallest, "a seam value above the limit must not raise it");
         assert_eq!(span("copilot_cli", None, 600_000), crate::fallback::harness_limit("copilot_cli"));
         assert_eq!(span("copilot_cli", None, DEFAULT_BUDGET_MS), Duration::from_millis(DEFAULT_BUDGET_MS));
