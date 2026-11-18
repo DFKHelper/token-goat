@@ -37,8 +37,6 @@ const FILES: Record<string, string> = {
   'gardening.md': '# Gardening\n\nTomatoes need full sun and deep watering twice a week.\n',
 }
 const QUERY = 'how long should iced coffee soak'
-/** The NODE_OPTIONS of a run without the WebAssembly runtime: this run's own value (tests/setup/isolate-home.ts adds the permission-source filter preload) with `--jitless` after it, so a child never loses a preload the suite relies on. */
-const JITLESS = [process.env['NODE_OPTIONS'], '--jitless'].filter(Boolean).join(' ')
 
 let root: string
 let pkg: string
@@ -148,7 +146,7 @@ describe.skipIf(!canRun)('semantic on the bundled WebAssembly runtime, from an i
     // `--jitless` turns WebAssembly off, so the bundled runtime cannot start, while every other step (the copy of the pinned binary, the model) succeeds. Its own data root, so nothing the test above stored is in play. CAPTURE: "no available backend found" is the prefix of what onnxruntime-web 1.30.0 threw when `node --jitless` created a session on this machine ("no available backend found. ERR: [wasm] Error: WebAssembly SIMD is not supported in the current environment., [cpu] Error: previous call to 'initWasm()' failed."), not a string read off our own matcher.
     const failedHome = path.join(root, 'home-jitless')
     fs.mkdirSync(failedHome, { recursive: true })
-    const jitless = { NODE_OPTIONS: JITLESS }
+    const jitless = { NODE_OPTIONS: '--jitless' }
 
     const idx = run(['index', '.', '--walk'], jitless, failedHome)
     expect(idx.status, idx.stderr).toBe(0)
@@ -180,7 +178,7 @@ describe.skipIf(!canRun)('semantic on the bundled WebAssembly runtime, from an i
     // A record under this run's own key that has outlived its day is not held against it, and the start that follows removes it. The key is rewritten to the one a run without the flag presents: NODE_OPTIONS is its last element (startFailureKey in src/embed_runtime.ts), and a run without the flag still carries whatever NODE_OPTIONS this test process was given (tests/setup/isolate-home.ts adds a --require preload), so that is the value to write, not an empty string.
     const stored = JSON.parse(fs.readFileSync(record!, 'utf8')) as { key: string; message: string; at: number }
     const key = JSON.parse(stored.key) as unknown[]
-    expect(key.at(-1)).toBe(JITLESS)
+    expect(key.at(-1)).toBe('--jitless')
     key[key.length - 1] = process.env['NODE_OPTIONS'] ?? ''
     const dayAndAnHourAgo = Date.now() - 25 * 60 * 60 * 1000
     fs.writeFileSync(record!, JSON.stringify({ ...stored, key: JSON.stringify(key), at: dayAndAnHourAgo }))
@@ -197,7 +195,7 @@ describe.skipIf(!canRun)('semantic on the bundled WebAssembly runtime, from an i
     // `semantic` on an empty index stops at "no files indexed" before it reaches the runtime, so the project is indexed (and embedded, by a process without the flag) first. This data root's index then holds vectors, and only the server's query embedding has to start the runtime.
     const seeded = run(['index', '.', '--walk'], {}, serverHome)
     expect(seeded.status, seeded.stderr).toBe(0)
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: serverHome, USERPROFILE: serverHome, LOCALAPPDATA: serverHome, XDG_DATA_HOME: serverHome, TOKEN_GOAT_HOME: path.join(serverHome, '.token-goat'), CLAUDE_CONFIG_DIR: path.join(serverHome, '.claude'), TOKEN_GOAT_NO_WORKER: '1', TOKEN_GOAT_OFFLINE: '1', TOKEN_GOAT_MODEL_CACHE_DIR: SHARED_CACHE, TOKEN_GOAT_EMBEDDINGS_ENABLED: 'true', NODE_OPTIONS: JITLESS, ...on }
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: serverHome, USERPROFILE: serverHome, LOCALAPPDATA: serverHome, XDG_DATA_HOME: serverHome, TOKEN_GOAT_HOME: path.join(serverHome, '.token-goat'), CLAUDE_CONFIG_DIR: path.join(serverHome, '.claude'), TOKEN_GOAT_NO_WORKER: '1', TOKEN_GOAT_OFFLINE: '1', TOKEN_GOAT_MODEL_CACHE_DIR: SHARED_CACHE, TOKEN_GOAT_EMBEDDINGS_ENABLED: 'true', NODE_OPTIONS: '--jitless', ...on }
     delete env['NODE_PATH']
     const server = spawn(process.execPath, [path.join(pkg, 'dist', 'token-goat.mjs'), 'hook-server', 'run', '--slot', '0'], { cwd: project, env, stdio: 'ignore' })
     const exited = new Promise((resolve) => server.once('exit', resolve))
