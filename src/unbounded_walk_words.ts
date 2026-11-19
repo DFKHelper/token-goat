@@ -162,7 +162,19 @@ export function cdLandsAtRoot(seg: Segment, wasRoot: boolean, ctx: WalkContext):
 }
 
 /** A find start that is the working directory itself or only steps up from it (`.`, `./`, `..`, `../..`), as opposed to a subdirectory of it. */
-export const isRelativeStart = (start: string): boolean => /^\.\.?([\\/]+\.\.?)*[\\/]*$/.test(start)
+export const isRelativeStart = (start: string): boolean => {
+  if (/^[\\/~$%]|^[A-Za-z]:/.test(start)) return false
+  const kept: string[] = []
+  let segments = 0
+  for (const part of start.split(/[\\/]+/)) {
+    if (part === '' || part === '.') continue
+    segments++
+    if (part !== '..') kept.push(part)
+    else if (kept.length > 0) kept.pop()
+  }
+  // Lexical only: the start names the working directory or an ancestor when no named directory is left.
+  return kept.length === 0 && (segments > 0 || /^\.[\\/]*$/.test(start))
+}
 
 export const texts = (words: readonly Word[]): string[] => words.map((w) => w.text)
 export const anyRoot = (words: readonly Word[], glob = false, winOptions = false): boolean => words.some((w) => isRoot(w.text, glob, winOptions))
