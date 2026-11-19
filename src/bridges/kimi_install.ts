@@ -6,7 +6,7 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
+import { recordCreatedBy, removeCreatedBackups, removeCreatedTree, undoCreatedOnFailure } from './created_configs.js'
 import { kimiHome, kimiConfigPath, removeHookTargetFile } from '../purge.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, stripDelimitedBlock, upsertDelimitedBlock, writeConfigText, writeIfDifferent } from '../util.js'
 import { anchoredMarkerPattern } from '../install.js'
@@ -168,7 +168,8 @@ function kimiArtifactPaths(): string[] {
 
 /** Install the Kimi Code CLI integration. */
 export function installKimi(): KimiInstallResult {
-  return recordCreatedBy(kimiArtifactPaths(), () => verifiedInstall([kimiConfigPath()], installKimiFiles))
+  const paths = kimiArtifactPaths()
+  return recordCreatedBy(paths, () => undoCreatedOnFailure(paths, () => verifiedInstall([kimiConfigPath()], installKimiFiles)))
 }
 
 function kimiRewriteRefusal(span: string, command: string): HookCommandRewriteError {

@@ -230,6 +230,47 @@ export function recordCreatedBy<T>(targets: readonly string[], work: () => T): T
   }
 }
 
+/** On a throw, undo what `work` alone made (absent targets and parent dirs, new backups, ledger entries). */
+// A file that was already there stays with its entry, and the error is rethrown as it was.
+// limit: a file a concurrent install creates meanwhile is undone too; revisit-when: installs overlap by design
+export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => T): T {
+  const absent = new Set<string>()
+  for (const target of targets) {
+    for (let p = path.resolve(target); !fs.existsSync(p) && !absent.has(p); p = path.dirname(p)) absent.add(p)
+  }
+  const recordedBefore = new Set([...absent, ...targets.map((t) => path.resolve(t))].filter(hasCreatedConfig))
+  const backupsBefore = new Set(targets.flatMap(createdBackupsFor))
+  try {
+    return work()
+  } catch (error) {
+    undoQuietly(() => {
+      for (const p of [...absent].sort((a, b) => b.length - a.length)) {
+        if (!fs.existsSync(p)) continue
+        if (fs.lstatSync(p).isDirectory()) removeEmptyDirInScope(p)
+        else removeFileInScope(p)
+      }
+    })
+    for (const backup of targets.flatMap(createdBackupsFor).filter((b) => !backupsBefore.has(b))) {
+      undoQuietly(() => {
+        removeFileInScope(backup)
+        forgetCreatedBackup(backup)
+      })
+    }
+    for (const p of [...absent, ...targets.map((t) => path.resolve(t))]) {
+      if (!recordedBefore.has(p)) undoQuietly(() => void takeCreatedConfig(p))
+    }
+    throw error
+  }
+}
+
+function undoQuietly(step: () => void): void {
+  try {
+    step()
+  } catch {
+    // The install already failed with its own error; an undo that fails leaves litter, never a second error.
+  }
+}
+
 /** The uninstall half of {@link recordCreatedBy}: walk `targets` and every directory above them, deepest first, deleting what the ledger says an install created and that now holds nothing, and forgetting an entry whose path is already gone. The ledger decides, never emptiness alone, so a pre-existing file or directory and anything holding user content stay. */
 export function removeCreatedTree(targets: readonly string[]): void {
   const paths = new Set<string>()

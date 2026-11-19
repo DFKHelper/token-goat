@@ -37,6 +37,7 @@ import { recordStat } from './stats.js'
 import { CLAUDE_HOOKS_UNINSTALLED_KIND } from './hook_latency.js'
 import { err, formatCommandError, out } from './cli.js'
 import { HookCommandRewriteError } from './hook_guard.js'
+import { HookSelftestError } from './hook_selftest.js'
 import { formatInstallIndexResult, queueInstallIndex } from './install_index.js'
 import { fencedCommand } from './hint_suggestion_guard.js'
 
@@ -311,8 +312,8 @@ export async function cmdInstall(opts: {
     try {
       kimiResult = installKimi()
     } catch (e) {
-      if (!(e instanceof HookCommandRewriteError)) throw e
-      // A path cmd.exe would rewrite refuses this host alone: one line, exit 1, the other hosts still install.
+      if (!(e instanceof HookCommandRewriteError || e instanceof HookSelftestError)) throw e
+      // A refusal (a cmd.exe-rewritten path, hooks failing their probe) stops this host alone: exit 1.
       err(formatCommandError(`Kimi Code was not installed: ${e.message}`))
       process.exitCode = 1
     }

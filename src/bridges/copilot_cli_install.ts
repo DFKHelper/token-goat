@@ -3,7 +3,7 @@ import { registerHookShim } from '../hook_pointer.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig } from './created_configs.js'
+import { ensureDirRecordingCreation, recordCreatedConfig, removeCreatedBackups, removeCreatedIfEmpty, takeCreatedConfig, undoCreatedOnFailure } from './created_configs.js'
 import { removeHookTargetFile } from '../purge.js'
 import { hookCommandFor, hookPowershellCommand, removeFileInScope, stripDelimitedBlock, upsertDelimitedBlock, writeIfDifferent } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
@@ -288,10 +288,10 @@ export interface CopilotHooksFileResult {
 
 /** Write the shared hooks config and shim into `hooksDir` and record `owner` as relying on them. */
 export function installCopilotHooksFile(hooksDir: string, owner: CopilotHooksOwner): CopilotHooksFileResult {
-  return verifiedInstall(
+  return undoCreatedOnFailure(copilotHooksFilePaths(hooksDir), () => verifiedInstall(
     [path.join(hooksDir, HOOKS_CONFIG_FILE)],
     () => installCopilotHooksFileUnverified(hooksDir, owner),
-  )
+  ))
 }
 
 function installCopilotHooksFileUnverified(hooksDir: string, owner: CopilotHooksOwner): CopilotHooksFileResult {
