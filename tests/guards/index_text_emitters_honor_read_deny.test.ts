@@ -73,7 +73,8 @@ export type ReaderTable = Readonly<Record<string, ReaderEntry>>
 
 /**
  * The kinds a reason may start with. `guarded at <file>:<symbol>:` names where the check lives; that file must
- * call a deny helper. `unreviewed` is not accepted once the table has been reviewed (see REVIEWED).
+ * call a deny helper; `file:a+b` names several symbols of one file. `unreviewed` is not accepted once the
+ * table has been reviewed (see REVIEWED).
  */
 export const KINDS = [
   'own state:',
@@ -83,7 +84,8 @@ export const KINDS = [
   'count only:',
   'no source path:',
 ] as const
-const GUARDED_AT = /^guarded at ([\w./]+:[\w.$]+(?:, [\w./]+:[\w.$]+)*): \S/
+const SITE = String.raw`[\w./]+:[\w.$]+(?:\+[\w.$]+)*`
+const GUARDED_AT = new RegExp(String.raw`^guarded at (${SITE}(?:, ${SITE})*): \S`)
 /** Set once every entry carries a reviewed reason; until then `unreviewed:` entries are tolerated. */
 const REVIEWED = true
 
@@ -106,13 +108,17 @@ function reasonProblem(reason: string, files: ReadonlyMap<string, string>): stri
   if (KINDS.some((k) => reason.startsWith(k) && reason.length > k.length + 8)) return null
   const m = GUARDED_AT.exec(reason)
   if (m === null) return 'has a reason that starts with no known kind'
-  for (const site of m[1]!.split(', ')) {
-    const [file, symbol] = site.split(':') as [string, string]
+  for (const listed of m[1]!.split(', ')) {
+    const [file, symbols] = listed.split(':') as [string, string]
     const target = files.get(file)
     if (target === undefined) return `names a guard file that does not exist (${file})`
-    const verdict = symbolCallsDenyHelper(target, symbol.split('.').pop()!)
-    if (verdict === 'absent') return `names ${site} as its guard but that symbol is not in the file`
-    if (verdict === 'no call') return `names ${site} as its guard but no deny call sits inside that symbol`
+    // `file:a+b` is the short form of `file:a, file:b`: each symbol is checked on its own.
+    for (const symbol of symbols.split('+')) {
+      const site = `${file}:${symbol}`
+      const verdict = symbolCallsDenyHelper(target, symbol.split('.').pop()!)
+      if (verdict === 'absent') return `names ${site} as its guard but that symbol is not in the file`
+      if (verdict === 'no call') return `names ${site} as its guard but no deny call sits inside that symbol`
+    }
   }
   return null
 }
@@ -292,6 +298,56 @@ describe('index text emitters honor the host Read deny rules', () => {
     expect(violations(planted.files, planted.counts)).toContain(
       `${file}: reason names ${guardFile}:${symbol} as its guard but no deny call sits inside that symbol`,
     )
+  })
+
+  describe('the short form guarded at file:a+b', () => {
+    const file = 'graph_inspection.ts'
+    const reasonOf = (list: string): ReaderTable => ({
+      ...TABLE,
+      [file]: { ...TABLE[file]!, reason: `guarded at ${list}: the deny check runs first` },
+    })
+    const names = (list: string[]): string => list.map((s) => `${file}:${s}`).join(', ')
+
+    it('passes when every named function carries a deny call', () => {
+      expect(violations(files, counts, reasonOf(`${file}:runDeps+runTypes+runScope+runDead`))).toEqual([])
+    })
+
+    it('still passes the comma form unchanged', () => {
+      const listed = names(['runDeps', 'runTypes', 'runScope', 'runDead'])
+      expect(violations(files, counts, reasonOf(listed))).toEqual([])
+    })
+
+    it('refuses one name that is not in the file, however many are fine', () => {
+      expect(violations(files, counts, reasonOf(`${file}:runDeps+runNoSuchFn+runTypes`))).toEqual([
+        `${file}: reason names ${file}:runNoSuchFn as its guard but that symbol is not in the file`,
+      ])
+    })
+
+    it('refuses one name whose body has no deny call, however many are fine', () => {
+      const extra = '\nexport function plantedNoDeny(): number {\n  return 1\n}\n'
+      const planted = plant(file, files.get(file)! + extra)
+      const table = reasonOf(`${file}:runDeps+plantedNoDeny+runTypes`)
+      expect(violations(planted.files, planted.counts, table)).toEqual([
+        `${file}: reason names ${file}:plantedNoDeny as its guard but no deny call sits inside that symbol`,
+      ])
+    })
+
+    it('refuses a deny call taken out of a short-form function', () => {
+      const denyCall = /\b(?:readDenial|assertReadAllowed|dropDeniedRows)\(/g
+      const planted = plant(file, files.get(file)!.replace(denyCall, 'noop('))
+      const table = reasonOf(`${file}:runDeps+runTypes`)
+      expect(violations(planted.files, planted.counts, table)).toEqual([
+        `${file}: reason names ${file}:runDeps as its guard but no deny call sits inside that symbol`,
+      ])
+    })
+
+    it('refuses a dangling or doubled plus as no known kind', () => {
+      for (const list of [`${file}:runDeps+`, `${file}:runDeps++runTypes`, `${file}:+runDeps`]) {
+        expect(violations(files, counts, reasonOf(list)), list).toEqual([
+          `${file}: reason has a reason that starts with no known kind`,
+        ])
+      }
+    })
   })
 
   it('counts a database opened from a caller path, a direct driver open and an indexFileSync call', () => {
