@@ -556,15 +556,22 @@ export interface VerificationRun {
   readonly command: string
   readonly exitCode: number | null
   readonly at: number
+  /** The commit HEAD named when the run was recorded; absent when unreadable or an older build wrote it. */
+  readonly head?: string
 }
 
 /** Upper bound on distinct verification commands remembered per session. */
 export const MAX_VERIFICATION_RUNS = 8
 
 /** Remember a verification run, replacing an earlier run of the same command so only its latest verdict counts, and evicting the oldest past {@link MAX_VERIFICATION_RUNS}. */
-export function recordVerificationRun(command: string, exitCode: number | null, at: number = Date.now()): void {
+export function recordVerificationRun(
+  command: string,
+  exitCode: number | null,
+  at: number = Date.now(),
+  head?: string,
+): void {
   _verificationRuns = _verificationRuns.filter((r) => r.command !== command)
-  _verificationRuns.push({ command, exitCode, at })
+  _verificationRuns.push({ command, exitCode, at, ...(head !== undefined ? { head } : {}) })
   if (_verificationRuns.length > MAX_VERIFICATION_RUNS) _verificationRuns = _verificationRuns.slice(-MAX_VERIFICATION_RUNS)
 }
 

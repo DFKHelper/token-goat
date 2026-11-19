@@ -3,7 +3,7 @@
 import { registerHook, type HookEvent } from './hook_registry.js'
 import type { HookOutput } from './types.js'
 import { unwrapCompressCommand } from './hooks_bash_commands.js'
-import { getToolInput, getToolName, passOutput } from './hooks_common.js'
+import { getCwd, getToolInput, getToolName, passOutput } from './hooks_common.js'
 
 /** Every test, lint, typecheck and build command verification_state.ts accepts carries one of these words (a script check by its file name or `--self-test`), so a command without one can skip the load. A superset on purpose: tests/hooks_stop.test.ts pins that it never misses a command isVerificationCommand accepts. */
 const VERIFICATION_WORD = /test|jest|lint|check|build|compile|verify|tsc|ruff|clippy|mypy|pyright|\bvet\b|validat/i
@@ -23,7 +23,8 @@ export async function noteFailedVerificationHandler(event: HookEvent): Promise<H
   if (getToolName(event)?.toLowerCase() === 'bash' && command !== null && mayBeVerificationCommand(command)) {
     const [failure, verification] = await Promise.all([import('./hooks_tool_failure.js'), import('./verification_state.js')])
     const errorText = failure.extractFailureText(event.raw)
-    if (errorText !== '') verification.noteFailedVerificationRun(command, errorText, event.raw['is_interrupt'] === true)
+    const interrupted = event.raw['is_interrupt'] === true
+    if (errorText !== '') verification.noteFailedVerificationRun(command, errorText, interrupted, getCwd(event))
   }
   return passOutput()
 }

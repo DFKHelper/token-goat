@@ -405,7 +405,7 @@
     "reason": "names only: line spans, names and locations; the text came from a guarded read"
   },
   "git_hint.ts": {
-    "reads": 3,
+    "reads": 4,
     "accessors": 0,
     "reason": "names only: git ref and pack files are read to name a branch or commit"
   },

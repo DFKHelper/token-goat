@@ -38,6 +38,50 @@ export function isScriptCheckSegment(segment: string): boolean {
   return run !== null && run.words.every(isCheckArgument) && isCheckingScript(run.script, run.words)
 }
 
+const LAUNCHER_RUN = /^(?:python3?|node)\s+(?:-[\w-]+\s+)*[\w./@~:\\-]+\.(?:py|mjs|cjs|js)\s+(\S[\s\S]*)$/i
+/** A launcher's own word: a bare name or switch, never a quote or expansion. */
+const LAUNCHER_WORD = /^[\w./=:@-]+$/
+/** A launcher word saying the check runs on without the launcher waiting, so its status is not the check's. */
+const DETACHING_WORD = /^(?:start|bg|background|detach|daemon|spawn|nohup|enqueue|queue)$/i
+const MAX_LAUNCHER_WORDS = 3
+const SHELL_EXPANSION = /[`$]/
+
+/** The words of `rest` with their offsets, split on whitespace outside quotes; null on an unclosed quote. */
+function launcherWords(rest: string): Array<{ word: string; at: number }> | null {
+  const words: Array<{ word: string; at: number }> = []
+  let quote = ''
+  let start = -1
+  for (let i = 0; i <= rest.length; i++) {
+    const ch = rest[i] ?? ' '
+    if (quote !== '') {
+      if (ch === quote) quote = ''
+    } else if (/\s/.test(ch)) {
+      if (start >= 0) words.push({ word: rest.slice(start, i), at: start })
+      start = -1
+      continue
+    } else if (ch === '"' || ch === "'") quote = ch
+    if (start < 0) start = i
+  }
+  return quote === '' ? words : null
+}
+
+// False-accept risk: a script taking a command as plain arguments (`python notes.py add npm test`) counts.
+/** The check a launcher run carries in its first words (`python launch.py npx vitest run x`), per `isCheck`. */
+export function launcherCarriedCheck(segment: string, isCheck: (candidate: string) => boolean): string | null {
+  const rest = LAUNCHER_RUN.exec(segment.trim())?.[1]
+  if (rest === undefined || SHELL_EXPANSION.test(rest)) return null
+  const words = launcherWords(rest)
+  if (words === null) return null
+  for (let i = 0; i < Math.min(words.length, MAX_LAUNCHER_WORDS); i++) {
+    const own = words.slice(0, i).map((w) => w.word)
+    const plain = own.every((word) => LAUNCHER_WORD.test(word))
+    if (!plain || own.some((word) => DETACHING_WORD.test(word))) return null
+    const candidate = rest.slice(words[i]?.at ?? 0)
+    if (isCheck(candidate)) return candidate
+  }
+  return null
+}
+
 /** True when `segment` is a checking script run ({@link isScriptCheckSegment}) whose only arguments besides the check ones are `.md` documents. The documents are not check inputs, so the run is judged as if they were absent: a verdict only when it fails, since a pass on a document names nothing the run verified. Without a `.md` argument it is {@link isScriptCheckSegment}'s run, and a non-checking script is never one. */
 export function isDocumentOnlyScriptCheckSegment(segment: string): boolean {
   const run = pythonScriptRun(segment)

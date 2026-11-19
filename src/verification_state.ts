@@ -9,7 +9,12 @@ import { recordVerificationRun, type VerificationRun } from './session.js'
 import { readSessionStateFile } from './session_store.js'
 import { displaySafePath } from './paths.js'
 import { redactSecrets } from './secret_redact.js'
-import { isDocumentOnlyScriptCheckSegment, isScriptCheckSegment } from './verification_commands.js'
+import {
+  isDocumentOnlyScriptCheckSegment,
+  isScriptCheckSegment,
+  launcherCarriedCheck,
+} from './verification_commands.js'
+import { readHeadCommit } from './git_hint.js'
 import * as os from 'node:os'
 import { canonicalize, foldPath, isInsideRoot } from './path_containment.js'
 import { findProject, isUnderSystemTemp } from './project.js'
@@ -29,14 +34,35 @@ const ENV_ASSIGNMENT_PREFIX = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/
 // A lone `&` backgrounds what precedes it; `2>&1`, `&>log`, `>&2`, `|&` and `&&` are not that.
 const COMMAND_SEPARATOR = /(&&|\|\||[;|\n]|(?<![>&|])&(?![>&]))/
 
+function isRunnerCheck(trimmed: string): boolean {
+  if (isTestRunnerCommand(trimmed) || isLintCommand(trimmed)) return true
+  return OTHER_VERIFICATION_PATTERNS.some((re) => re.test(trimmed))
+}
+
 function isVerificationSegment(segment: string): boolean {
   const trimmed = segment.trim().replace(ENV_ASSIGNMENT_PREFIX, '')
-  return trimmed !== '' && (isTestRunnerCommand(trimmed) || isLintCommand(trimmed) || OTHER_VERIFICATION_PATTERNS.some((re) => re.test(trimmed)) || isScriptCheckSegment(trimmed))
+  if (trimmed === '') return false
+  if (isRunnerCheck(trimmed) || isScriptCheckSegment(trimmed)) return true
+  return launcherCarriedCheck(trimmed, isRunnerCheck) !== null
+}
+
+// An interpreter's inline code string (`python -c "..."`, `node -e '...'`) is program text, not a command line.
+const INLINE_SWITCH = '(?:python3?|node|perl|ruby)(?:\\s+-[\\w-]+)*?\\s+(?:-c|-e|-E|-p|--eval|--print)'
+const INLINE_SCRIPT_BODY = new RegExp(`\\b(${INLINE_SWITCH})(\\s+)("(?:[^"\\\\]|\\\\[\\s\\S])*"|'[^']*')`, 'g')
+
+/** The command with each inline interpreter body emptied, so a check word inside one is not read as a run. */
+function withoutInlineScriptBodies(command: string): string {
+  return command.replace(INLINE_SCRIPT_BODY, "$1$2''")
+}
+
+/** The command as the verdict code reads it: no file-writing heredoc body, no inline interpreter body. */
+function checkableText(typed: string): string {
+  return withoutInlineScriptBodies(withoutFileHeredocBodies(typed))
 }
 
 /** True when any segment of `command` is a test, lint, typecheck or build invocation. */
 export function isVerificationCommand(command: string): boolean {
-  return command.split(COMMAND_SEPARATOR).some(isVerificationSegment)
+  return withoutInlineScriptBodies(command).split(COMMAND_SEPARATOR).some(isVerificationSegment)
 }
 
 /** A real `set` statement that turns pipefail on or off: `set -o pipefail`, `set -eo pipefail`, `set -euo pipefail`, `set -e -o pipefail`, `set +o pipefail`. Group 1 is the sign. */
@@ -65,6 +91,12 @@ function successImpliedWithoutStatus(): boolean {
 
 const STORED_COMMAND_MAX_CHARS = 200
 
+/** The check a launcher segment carries, else the segment: a launched check is stored and keyed as itself. */
+function carriedOrSelf(segment: string): string {
+  if (isScriptCheckSegment(segment)) return segment
+  return launcherCarriedCheck(segment, isRunnerCheck) ?? segment
+}
+
 /** The command as the session blob keeps it: only the check segments, without their leading `NAME=value` assignments, whitespace collapsed, each cut down to what {@link allowListed} lets through, then capped. The rest of the line (`export GH_PAT=...`, `mysqldump -p...`, `sshpass -p ...`, a curl header) and every argument the allow-list does not know never reach disk or the model, whatever their spelling, which a list of secret shapes cannot promise. redactSecrets still runs last over what was kept, for a path-like word shaped like a known token. Two runs of one command must collapse to one entry, so this is also the identity. */
 function storedCommand(command: string, isCheck: (segment: string) => boolean = isVerificationSegment): string {
   const checks = command
@@ -72,7 +104,10 @@ function storedCommand(command: string, isCheck: (segment: string) => boolean = 
     .filter((_part, i) => i % 2 === 0)
     .map((segment) => segment.trim())
     .filter(isCheck)
-    .map((segment) => segment.replace(ENV_ASSIGNMENT_PREFIX, '').replace(/\s+/g, ' '))
+    .map((segment) => segment.replace(ENV_ASSIGNMENT_PREFIX, ''))
+    .map(carriedOrSelf)
+
+    .map((segment) => segment.replace(/\s+/g, ' '))
     .map((segment) => redactSecrets(allowListed(segment)).text)
   return checks.join('; ').slice(0, STORED_COMMAND_MAX_CHARS)
 }
@@ -181,25 +216,47 @@ function withoutFileHeredocBodies(command: string): string {
 }
 
 /** Record a finished Bash call if it was a verification command. A background launch has not finished, so it is not a verdict, and neither is a call whose exit status something around the check decided ({@link exitStatusIsCheckVerdict}): that call is left unrecorded, so it neither clears the edits made since the last pass nor counts as a failure. An unknown status is not recorded as null here because evaluateVerification reads null as a pass. A failing document-only check is recorded too ({@link isDocumentOnlyFailure}). */
-export function noteVerificationRun(typed: string, exitCode: number | null, runInBackground: boolean): void {
+export function noteVerificationRun(
+  typed: string,
+  exitCode: number | null,
+  runInBackground: boolean,
+  cwd?: string,
+): void {
   if (runInBackground) return
-  const command = withoutFileHeredocBodies(typed)
+  const command = checkableText(typed)
   if (isVerificationCommand(command) && exitStatusIsCheckVerdict(command)) {
-    recordVerificationRun(storedCommand(command), exitCode ?? (successImpliedWithoutStatus() ? 0 : null))
+    const status = exitCode ?? (successImpliedWithoutStatus() ? 0 : null)
+    recordVerificationRun(storedCommand(command), status, Date.now(), headAt(cwd))
     return
   }
-  if (exitCode !== null && exitCode !== 0 && isDocumentOnlyFailure(command)) recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode)
+  if (exitCode !== null && exitCode !== 0 && isDocumentOnlyFailure(command)) {
+    recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode, Date.now(), headAt(cwd))
+  }
 }
 
-const EXIT_CODE_IN_ERROR = /^Exit code (\d+)/
+/** The commit HEAD names in `cwd` now, or undefined when there is no cwd or it cannot be read. */
+function headAt(cwd: string | undefined): string | undefined {
+  return cwd === undefined ? undefined : (readHeadCommit(cwd) ?? undefined)
+}
+
+const OPAQUE_STRUCTURE = /<<|[<>]\(/
+const EXIT_CODE_IN_ERROR =/^Exit code (\d+)/
 
 /** Record a Bash call that failed, from the failure event's error text (Claude Code opens it with `Exit code N`; the status is 1 when the text carries none). An interrupt has no verdict. */
-export function noteFailedVerificationRun(typed: string, errorText: string, isInterrupt: boolean): void {
-  const command = withoutFileHeredocBodies(typed)
-  if (isInterrupt || !(isVerificationCommand(command) || isDocumentOnlyFailure(command))) return
+export function noteFailedVerificationRun(
+  typed: string,
+  errorText: string,
+  isInterrupt: boolean,
+  cwd?: string,
+): void {
+  const command = checkableText(typed)
+  // limit: a heredoc or process substitution has no statement list to judge revisit-when: one mis-records
+  const judged = OPAQUE_STRUCTURE.test(command) || exitStatusIsCheckVerdict(command)
+  const isVerdict = isVerificationCommand(command) && judged
+  if (isInterrupt || !(isVerdict || isDocumentOnlyFailure(command))) return
   const status = EXIT_CODE_IN_ERROR.exec(errorText)
   const exitCode = status !== null && Number(status[1]) !== 0 ? Number(status[1]) : 1
-  recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode)
+  recordVerificationRun(storedCommand(command, isFailureCheckSegment), exitCode, Date.now(), headAt(cwd))
 }
 
 export interface VerificationState {
@@ -221,12 +278,14 @@ export interface VerificationState {
 export interface VerificationScope {
   /** The session's project root. An edit inside it always needs a check; one outside it is dismissed only when it sits under the OS temp dir (throwaway probes, the harness scratchpad), and a sibling package, another repo or a sibling worktree still counts. Absent, only an edit under the OS temp dir is dismissed. */
   readonly projectRoot?: string
+  /** The session's cwd (null: none known). When set, a failed run counts only while HEAD there is unchanged. */
+  readonly cwd?: string | null
 }
 
 /** The project root a session working in `cwd` is judged against: the nearest project marker above it, else `cwd` itself. */
 export function verificationScopeFor(cwd: string | undefined): VerificationScope {
-  if (cwd === undefined) return {}
-  return { projectRoot: findProject(cwd)?.root ?? cwd }
+  if (cwd === undefined) return { cwd: null }
+  return { projectRoot: findProject(cwd)?.root ?? cwd, cwd }
 }
 
 /** Whether an edit needs a project check. One inside the session's project root always does, even a project that itself lives under the OS temp dir. Outside the root it is dismissed only when it is under the OS temp dir: a sibling package, another repo or a sibling worktree is still work nothing verified. With no root known, the same temp-dir test alone decides. A path that cannot be judged stays in scope. Both tests also follow links, so a link or junction under the temp dir that leads into the project is a project edit, and a path whose links cannot be resolved is not dismissed. */
@@ -244,18 +303,26 @@ function inScope(filePath: string, scope: VerificationScope): boolean {
   }
 }
 
+/** With a session cwd, a failed run stands only while HEAD there is the stored one; no evidence expires it. */
+function failureIsCurrent(run: VerificationRun, scope: VerificationScope | undefined): boolean {
+  if (scope?.cwd === undefined) return true
+  const now = scope.cwd === null ? null : readHeadCommit(scope.cwd)
+  return run.head !== undefined && now !== null && run.head === now
+}
+
 /** The verification verdict for one session-state key. An unreadable or absent state is an empty verdict, which never claims an edit. Without a `scope` every source edit counts, which is how the subagent report receipt reads it; the Stop advisory passes the session scope ({@link verificationScopeFor}). */
 export function evaluateVerification(stateKey: string, scope?: VerificationScope): VerificationState {
   const state = readSessionStateFile(stateKey)
   const runs = state?.verificationRuns ?? []
   const latestRun = runs.reduce<VerificationRun | undefined>((latest, run) => (latest === undefined || run.at >= latest.at ? run : latest), undefined)
+  const latestFailed = latestRun !== undefined && latestRun.exitCode !== null && latestRun.exitCode !== 0
   const lastPassAt = runs.reduce((at, run) => (run.exitCode === null || run.exitCode === 0 ? Math.max(at, run.at) : at), -1)
   const edited = (state?.files ?? []).filter((f) => f.wasEdited && f.lastEditedAt !== undefined && languageHasFlag(detectLanguage(f.path), 'sourceHints') && (scope === undefined || inScope(f.path, scope)))
   const names = (files: typeof edited): string[] => [...new Set(files.map((f) => displaySafePath(f.path.split(/[/\\]/).pop() ?? f.path)))].sort()
   return {
     runs,
     ...(latestRun !== undefined ? { latestRun } : {}),
-    failingUnresolved: latestRun !== undefined && latestRun.exitCode !== null && latestRun.exitCode !== 0,
+    failingUnresolved: latestFailed && failureIsCurrent(latestRun, scope),
     editedFiles: names(edited),
     editedAnyFile: (state?.files ?? []).some((f) => f.wasEdited),
     editedSinceLastPass: names(edited.filter((f) => (f.lastEditedAt ?? 0) > lastPassAt)),

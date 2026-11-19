@@ -32,6 +32,18 @@ function inSession(key: string, work: () => void): void {
   }
 }
 
+/** A repository with one commit at `dir`: a failed run is reported only while HEAD is its stored one. */
+function initRepo(dir: string): void {
+  const env = { ...process.env }
+  for (const name of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_CEILING_DIRECTORIES']) delete env[name]
+  const settings = ['user.name=t', 'user.email=t@example.invalid', 'commit.gpgsign=false', 'gc.auto=0']
+  const flags = [...settings, 'maintenance.auto=false', 'core.hooksPath='].flatMap((s) => ['-c', s])
+  for (const args of [['init', '-q'], ['commit', '-q', '--allow-empty', '-m', 'one']]) {
+    const res = spawnSync('git', [...flags, ...args], { cwd: dir, env, encoding: 'utf8', timeout: 30000 })
+    expect(res.status, `git ${args.join(' ')}: ${res.stderr}`).toBe(0)
+  }
+}
+
 const stopEvent = (sessionId: string, raw: Record<string, unknown> = {}, agentId?: string) =>
   makeHookEvent({ eventName: 'stop', toolName: undefined, sessionId, agentId, raw: { hook_event_name: 'Stop', stop_hook_active: false, last_assistant_message: 'Done.', ...raw } })
 
@@ -467,9 +479,15 @@ describe('stopHandler', () => {
 
   it('says the last check failed, with its command and status', () => {
     const sid = newSession()
-    inSession(sid, () => recordVerificationRun('npm test', 1))
-    const out = stopHandler(stopEvent(sid))
-    expect(out.hookType === 'context' ? out.context : '').toContain('exit 1')
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'tg-stop-head-'))
+    try {
+      initRepo(repo)
+      inSession(sid, () => noteFailedVerificationRun('npm test', 'Exit code 1', false, repo))
+      const out = stopHandler(stopEvent(sid, { cwd: repo }))
+      expect(out.hookType === 'context' ? out.context : '').toContain('exit 1')
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true })
+    }
   })
 
   it('stays silent when everything edited was verified', () => {
@@ -649,6 +667,7 @@ describe('the built hook entry, per host', () => {
     const file = `${project.replaceAll(path.sep, '/')}/src/widget.ts`
     fs.mkdirSync(path.join(project, 'src'), { recursive: true })
     fs.writeFileSync(path.join(project, 'src', 'widget.ts'), 'export const w = 1\n')
+    initRepo(project)
     const base = { session_id: sid, permission_mode: 'default' }
     setUpHook('post_tool_use', harness, { ...base, hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: { file_path: file, content: 'export const w = 1\n' }, tool_response: { filePath: file, success: true } })
     setUpHook('post_tool_use_failure', harness, { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_use_id: 'toolu_1', error: 'Exit code 1\nFAIL', is_interrupt: false })

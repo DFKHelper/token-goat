@@ -79,6 +79,44 @@ export function readBranchWithoutSpawn(cwd: string): string | null {
   return /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(line) ? 'HEAD' : null
 }
 
+const COMMIT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
+
+/** The object id `ref` names: a loose file in the worktree's or shared git dir, else a packed-refs line. */
+function resolveRef(dir: string, ref: string): string | null {
+  if (!/^refs\/[\w./+@#%=,-]+$/.test(ref) || ref.includes('..')) return null
+  const common = resolve(dir, readPrefix(resolve(dir, 'commondir'))?.trim() ?? '.')
+  for (const base of [dir, common]) {
+    const loose = firstLine(resolve(base, ref))
+    if (COMMIT_ID.test(loose)) return loose
+  }
+  try {
+    const packed = resolve(common, 'packed-refs')
+    if (statSync(packed).size > 8e6) return null
+    for (const line of readFileSync(packed, 'utf8').split(/\r?\n/)) {
+      const [id, name] = line.split(' ')
+      if (name === ref && id !== undefined && COMMIT_ID.test(id)) return id
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+// limit: a reftable repository reads null, so its failed runs go unreported revisit-when: one is reported
+/** The commit HEAD names around `cwd`, read from files with no spawn; null when it cannot be told. */
+export function readHeadCommit(cwd: string): string | null {
+  try {
+    const dir = repositoryDir(cwd)
+    if (dir === null) return null
+    const line = firstLine(resolve(dir, 'HEAD'))
+    if (COMMIT_ID.test(line)) return line
+    const ref = /^ref:[ \t]*(refs\/.+)$/.exec(line)?.[1]
+    return ref === undefined ? null : resolveRef(dir, ref)
+  } catch {
+    return null
+  }
+}
+
 /** What a git query that prints one line per finding answered: `clean` (ran, printed nothing), `dirty` (printed something), `timed-out` (killed at `timeoutMs`: unknown, neither of the others), or `refused` (git exited non-zero or never ran: not a repository, a missing git). */
 export type GitFindings = 'clean' | 'dirty' | 'timed-out' | 'refused'
 
