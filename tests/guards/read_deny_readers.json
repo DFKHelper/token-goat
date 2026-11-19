@@ -1,0 +1,892 @@
+{
+ "agent_receipt.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "answer_router.ts": {
+  "reads": 0,
+  "accessors": 3,
+  "reason": "unreviewed: routes a question to a command by symbol names; no stored te"
+ },
+ "baseline.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "bash_extractors.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "bash_output_cache.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bash_range_savings.ts": {
+  "reads": 1,
+  "accessors": 1,
+  "reason": "unreviewed: counts symbol lines to estimate savings; prints numbers only"
+ },
+ "bridges/aider_install.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/antigravity_install.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/claudecode.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads the hook payload from stdin (fd 0), not a project file"
+ },
+ "bridges/codex.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads the hook payload from stdin (fd 0), not a project file"
+ },
+ "bridges/codex_install.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/commented_settings.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/copilot_cli.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "bridges/copilot_cli_install.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: reads the Copilot CLI config and instructions files in the u"
+ },
+ "bridges/copilot_hooks_owners.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/created_configs.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/gemini_install.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/grok.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads the hook payload from stdin (fd 0), not a project file"
+ },
+ "bridges/grok_install.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/jetbrains_install.ts": {
+  "reads": 5,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/kimi.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads the hook payload from stdin (fd 0), not a project file"
+ },
+ "bridges/kimi_install.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/mcp_servers_json.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/neovim_install.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/openclaw_install.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/pi.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/qwen_install.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/relay_block.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/shim_fail_open.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads token-goat own pointer file"
+ },
+ "bridges/visualstudio_install.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/vscode_install.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "bridges/zed_install.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "build_stamp.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "call_streak.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "claude_hidden_rules.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "cli_bench.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli_bootstrap_audit.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads frontmatter of token-goat own agent files"
+ },
+ "cli_cached_output.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "cli_context_stats.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads token-goat own memory report path"
+ },
+ "cli_diagnostics.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "cli_dispatch.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli_doctor.ts": {
+  "reads": 5,
+  "accessors": 0,
+  "reason": "unreviewed: reads token-goat own config, scripts and pregenerated name l"
+ },
+ "cli_doctor_build.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli_doctor_guidance.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli_doctor_hooks.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli_doctor_index.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "cli_doctor_native.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli_doctor_platforms.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli_file_ops.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "cli_install.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli_mcp_audit.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: reads MCP config files (claude.json and the project mcp conf"
+ },
+ "cli_memory.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads token-goat own memory report"
+ },
+ "cli_payloads.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads token-goat own payload cache files"
+ },
+ "cli_skills.ts": {
+  "reads": 7,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "cli_stats.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads token-goat own stats files"
+ },
+ "cli_upgrade.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: reads token-goat own update cache and its own install packag"
+ },
+ "codex_rules.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "compact.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "compact_dropped.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "config_commands.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "config_project.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "copilot_mcp_tools.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "copilot_waste.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "db.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "db_integrity.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "dep_docs.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "dirty_queue.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "disk_cache.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "doc_compact.ts": {
+  "reads": 5,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "doc_embed_extract.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "embed_model.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "embed_runtime.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "embed_runtime_web.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "embedding_boundaries.ts": {
+  "reads": 0,
+  "accessors": 1,
+  "reason": "unreviewed: line spans that cut a file into chunks; text is read elsewhe"
+ },
+ "embeddings.ts": {
+  "reads": 0,
+  "accessors": 1,
+  "reason": "unreviewed: defines searchSemantic; callers that print a hit use dropDen"
+ },
+ "evidence_cache.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "failures_state.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "filter_counts.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "fingerprint.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "fold_delivery.ts": {
+  "reads": 1,
+  "accessors": 1,
+  "reason": "unreviewed: line spans to fold delivered text; that text came from a gua"
+ },
+ "git_hint.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "graph_analysis.ts": {
+  "reads": 1,
+  "accessors": 9,
+  "reason": "unreviewed: prints names and locations; the body is only sized for a tok"
+ },
+ "graph_commands.ts": {
+  "reads": 1,
+  "accessors": 16,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "graph_inspection.ts": {
+  "reads": 1,
+  "accessors": 7,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "graph_traversal.ts": {
+  "reads": 0,
+  "accessors": 8,
+  "reason": "unreviewed: walks caller and callee names and locations; no stored text"
+ },
+ "handle_stat.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "hint_target.ts": {
+  "reads": 2,
+  "accessors": 1,
+  "reason": "unreviewed: reads names and heading levels to name a hint target; no bod"
+ },
+ "hook_ipc.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "hook_pointer.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "hook_selftest.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: reads its own marker and fixture files"
+ },
+ "hooks_agent_spawn.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "hooks_bash.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "hooks_bash_post.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "hooks_read.ts": {
+  "reads": 7,
+  "accessors": 4,
+  "reason": "unreviewed: hook hint from names and line ranges only; a hook never thro"
+ },
+ "hooks_read_override.ts": {
+  "reads": 5,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "hooks_read_post.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "hooks_read_slice.ts": {
+  "reads": 6,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "hooks_read_window_stream.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "hooks_skill.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "hooks_stop.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "hooks_tool_failure.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "host_file_limits.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "image_ocr.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: hashes the OCR model asset files; prints nothing from them"
+ },
+ "image_shrink.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "image_slice.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "import_graph.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "index_reader.ts": {
+  "reads": 0,
+  "accessors": 5,
+  "reason": "unreviewed: defines the accessors; emitters that print rows are checked "
+ },
+ "inline_grep_scan.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "inline_symbol_answer.ts": {
+  "reads": 1,
+  "accessors": 1,
+  "reason": "unreviewed: body comes through resolveBody, which asserts; a denial give"
+ },
+ "install.ts": {
+  "reads": 5,
+  "accessors": 0,
+  "reason": "unreviewed: reads the user CLAUDE.md, skill and settings files it instal"
+ },
+ "listing_size.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "manifest_sweep.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "memory_prune.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "model_download_gate.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "native_hook.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: compares its own hook binary with the installed copy"
+ },
+ "nested_worktrees.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "notes.ts": {
+  "reads": 1,
+  "accessors": 3,
+  "reason": "unreviewed: the body is hashed into a staleness fingerprint and never pr"
+ },
+ "ooxml_extract.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "pack.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "parser.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "parser_types.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "path_miss.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "path_suggest.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "pdf_extract.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "pending_context.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "pinned_fetch.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "project_memory.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "purge.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads token-goat own state file before deleting it"
+ },
+ "read_commands.ts": {
+  "reads": 7,
+  "accessors": 2,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "read_git.ts": {
+  "reads": 0,
+  "accessors": 1,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "read_inspect.ts": {
+  "reads": 0,
+  "accessors": 1,
+  "reason": "unreviewed: names and locations for lookups; a body is only tested for a"
+ },
+ "read_outline.ts": {
+  "reads": 1,
+  "accessors": 1,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "read_outline_cache.ts": {
+  "reads": 0,
+  "accessors": 1,
+  "reason": "unreviewed: caches listings built after prepareSymbolListing asserted th"
+ },
+ "read_refs.ts": {
+  "reads": 0,
+  "accessors": 5,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "read_section.ts": {
+  "reads": 0,
+  "accessors": 1,
+  "reason": "unreviewed: html id span lookup; text is read through readFileText, whic"
+ },
+ "read_semantic.ts": {
+  "reads": 0,
+  "accessors": 5,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "read_shape.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "read_spec.ts": {
+  "reads": 0,
+  "accessors": 6,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "read_structured_data.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: reads through readFileText, which asserts the Read rules; st"
+ },
+ "read_suggest.ts": {
+  "reads": 0,
+  "accessors": 2,
+  "reason": "unreviewed: suggests symbol names for a typo; names and locations only"
+ },
+ "read_symbol.ts": {
+  "reads": 0,
+  "accessors": 4,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "reconcile_requests.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "recovery_pairs.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "resident_context.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "resident_process.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "resume.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "rewrite_permission.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "search/parallel_search.ts": {
+  "reads": 1,
+  "accessors": 3,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "search/symbol_fts.ts": {
+  "reads": 0,
+  "accessors": 1,
+  "reason": "unreviewed: defines the FTS accessors; emitters that print a hit use dro"
+ },
+ "section_reader.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "served_extent.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "session_audit.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "session_read.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "session_start_owed.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "session_store.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "shell_writes.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "skill_cache.ts": {
+  "reads": 10,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "snapshots.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "spooled_output.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "sqlite_query.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "stats.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "text_commands.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "text_logfold.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "text_todo.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "text_trace.ts": {
+  "reads": 2,
+  "accessors": 1,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "tool_filters/helpers.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "transcript_extract.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "ts_refs.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "util.ts": {
+  "reads": 7,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "util_config.ts": {
+  "reads": 5,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ },
+ "util_context.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "vscode_duplicate.ts": {
+  "reads": 1,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "waste.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "worker.ts": {
+  "reads": 3,
+  "accessors": 0,
+  "reason": "unreviewed: calls a deny check"
+ },
+ "worker_lifecycle.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: reads token-goat own worker pid, heartbeat and stamp files"
+ },
+ "write_guard_hooks.ts": {
+  "reads": 4,
+  "accessors": 0,
+  "reason": "unreviewed: no old entry"
+ },
+ "write_target.ts": {
+  "reads": 2,
+  "accessors": 0,
+  "reason": "unreviewed: quiet reader from the old list"
+ }
+}

@@ -383,7 +383,7 @@ export function hookReadDenied(target: string, cwd: string | undefined): boolean
   return readDenial(target, cwd === undefined ? {} : { cwd }) !== null
 }
 
-/** Compare prior snapshot to the file's current content; a host-denied file has none, nothing stored is read */
+/** Compare prior snapshot to the file's current content; a denied file has none, nothing stored is read. */
 export function loadSnapshotDiff(sessionId: string, normalized: string, basename: string): SnapshotDiffResult {
   if (hookReadDenied(hostPathOfIndexKey(normalized), undefined)) return { kind: 'none' }
   const oldSnap = snapshotLoad(sessionId, normalized)
