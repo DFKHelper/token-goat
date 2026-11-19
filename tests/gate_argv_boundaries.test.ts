@@ -84,6 +84,11 @@ describe('gateCommandLine', () => {
     expect(gateCommandLine(['echo', '', '&&'])).toBe("echo '' '&&'")
   })
 
+  it('keeps a leading NAME=value word as an environment prefix, ahead of the command word', () => {
+    const line = gateCommandLine(['NAME=value', 'node', 'a b.js'], '/bin/sh', 'linux')
+    expect(line).toBe("NAME=value node 'a b.js'")
+  })
+
   it('is empty for no arguments', () => {
     expect(gateCommandLine([])).toBe('')
   })
