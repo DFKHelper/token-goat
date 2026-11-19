@@ -123,6 +123,16 @@ describe('rule forms', () => {
     expect(verdict(settings, () => path.join(tmp(), '.env'))).toBeNull()
   })
 
+  it('a bare filename rule does not match a file above the project root', () => {
+    const settings = { deny: ['Read(.env)'] }
+    const above = (p: string): string => path.join(path.dirname(p), '.env')
+    const sub = (p: string): Partial<ReadDenyContext> => ({ cwd: path.join(p, 'sub') })
+    expect(verdict(settings, above), 'cwd at the project root').toBeNull()
+    expect(verdict(settings, above, sub), 'cwd in a subdirectory').toBeNull()
+    const inside = (p: string): string => path.join(p, 'sub', '.env')
+    expect(verdict(settings, inside, sub), 'a file under the anchors is denied').toContain('.env')
+  })
+
   it('a bare filename rule does not match a file outside the cwd', () => {
     expect(verdict({ deny: ['Read(.env)'] }, () => path.join(tmp(), '.env'))).toBeNull()
   })

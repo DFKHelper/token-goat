@@ -175,9 +175,9 @@
     "reason": "names only: rule file heads are parsed for a verdict and only file paths are named"
   },
   "cli.ts": {
-    "reads": 1,
+    "reads": 2,
     "accessors": 0,
-    "reason": "guarded at cli.ts:readBoundedText: assertReadAllowed runs before the read of the named file"
+    "reason": "guarded at cli.ts:readBoundedText, cli.ts:cmdIndex: both ask before the read or index"
   },
   "cli_bench.ts": {
     "reads": 2,
@@ -320,14 +320,14 @@
     "reason": "fixed path: the host session transcript or event log, not a project file"
   },
   "db.ts": {
-    "reads": 1,
+    "reads": 4,
     "accessors": 0,
-    "reason": "count only: the SQLite header bytes are checked and no content is shown"
+    "reason": "own state: the index database is opened here and only header bytes are checked"
   },
   "db_integrity.ts": {
-    "reads": 2,
+    "reads": 3,
     "accessors": 0,
-    "reason": "count only: the SQLite header bytes are checked and no content is shown"
+    "reason": "count only: quick_check on the own index database shows its verdict, never content"
   },
   "dep_docs.ts": {
     "reads": 2,
@@ -352,7 +352,7 @@
   "doc_embed_extract.ts": {
     "reads": 2,
     "accessors": 0,
-    "reason": "in-process: the indexer reads project files into the index and prints nothing"
+    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
   },
   "embed_model.ts": {
     "reads": 1,
@@ -432,7 +432,7 @@
   "handle_stat.ts": {
     "reads": 1,
     "accessors": 0,
-    "reason": "no source path: it reads only its own marker, stat or stats files, or names from the index"
+    "reason": "no source path: reads only its own marker, stat and stats files and the stats database"
   },
   "hint_target.ts": {
     "reads": 2,
@@ -452,7 +452,7 @@
   "hook_selftest.ts": {
     "reads": 2,
     "accessors": 0,
-    "reason": "no source path: it reads only its own marker, stat or stats files, or names from the index"
+    "reason": "no source path: reads only its own marker, stat and stats files and the stats database"
   },
   "hooks_agent_spawn.ts": {
     "reads": 2,
@@ -472,27 +472,27 @@
   "hooks_read.ts": {
     "reads": 7,
     "accessors": 4,
-    "reason": "guarded at hooks_read_slice.ts:hookReadDenied: the read hook refuses a denied file first"
+    "reason": "guarded at hooks_read.ts:preReadHandler: asks hookReadDenied before preReadHandlerInner"
   },
   "hooks_read_override.ts": {
     "reads": 5,
     "accessors": 0,
-    "reason": "guarded at hooks_read_slice.ts:hookReadDenied: the read hook refuses a denied file first"
+    "reason": "guarded at hooks_read.ts:preReadHandler: its only caller runs after that check"
   },
   "hooks_read_post.ts": {
     "reads": 2,
     "accessors": 0,
-    "reason": "guarded at hooks_read_slice.ts:hookReadDenied: the read hook refuses a denied file first"
+    "reason": "guarded at hooks_read_post.ts:postReadHandlerInner: asks hookReadDenied before each read"
   },
   "hooks_read_slice.ts": {
     "reads": 6,
     "accessors": 0,
-    "reason": "guarded at hooks_read_slice.ts:hookReadDenied: it is the hook deny check"
+    "reason": "guarded at hooks_read_slice.ts:loadSnapshotDiff: asks hookReadDenied; the rest run after it"
   },
   "hooks_read_window_stream.ts": {
     "reads": 3,
     "accessors": 0,
-    "reason": "guarded at hooks_read_slice.ts:hookReadDenied: the read hook refuses a denied file first"
+    "reason": "guarded at hooks_read.ts:preReadHandler: its only caller runs after the pre and post checks"
   },
   "hooks_skill.ts": {
     "reads": 2,
@@ -532,7 +532,7 @@
   "import_graph.ts": {
     "reads": 1,
     "accessors": 0,
-    "reason": "in-process: the indexer reads project files into the index and prints nothing"
+    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
   },
   "index_reader.ts": {
     "reads": 0,
@@ -567,7 +567,7 @@
   "memory_prune.ts": {
     "reads": 3,
     "accessors": 0,
-    "reason": "guarded at memory_prune.ts:auditClaudeMd: readDenial runs before the CLAUDE.md read"
+    "reason": "guarded at memory_prune.ts:auditClaudeMd: readDenial first; prints counts and basenames only"
   },
   "model_download_gate.ts": {
     "reads": 1,
@@ -592,7 +592,7 @@
   "ooxml_extract.ts": {
     "reads": 1,
     "accessors": 0,
-    "reason": "in-process: the indexer reads project files into the index and prints nothing"
+    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
   },
   "pack.ts": {
     "reads": 4,
@@ -600,14 +600,14 @@
     "reason": "guarded at pack.ts:collectFiles: readDenial runs before a collected file is opened"
   },
   "parser.ts": {
-    "reads": 3,
+    "reads": 4,
     "accessors": 0,
-    "reason": "in-process: the indexer reads project files into the index and prints nothing"
+    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
   },
   "parser_types.ts": {
     "reads": 2,
     "accessors": 0,
-    "reason": "in-process: the indexer reads project files into the index and prints nothing"
+    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
   },
   "path_miss.ts": {
     "reads": 1,
@@ -622,7 +622,7 @@
   "pdf_extract.ts": {
     "reads": 4,
     "accessors": 0,
-    "reason": "in-process: the indexer reads project files into the index and prints nothing"
+    "reason": "in-process: the indexer prints nothing; its callers ask indexVerdict before indexFileSync"
   },
   "pending_context.ts": {
     "reads": 1,
@@ -645,9 +645,9 @@
     "reason": "own state: token-goat install, hook and host config files that doctor checks"
   },
   "read_commands.ts": {
-    "reads": 7,
+    "reads": 9,
     "accessors": 2,
-    "reason": "guarded at read_commands.ts:readFileText: it, the byte, pdf and image readers assert first"
+    "reason": "guarded at read_commands.ts:readFileText, read_commands.ts:indexFileSyncPinned: assert first"
   },
   "read_git.ts": {
     "reads": 0,
@@ -672,7 +672,7 @@
   "read_refs.ts": {
     "reads": 0,
     "accessors": 5,
-    "reason": "guarded at read_refs.ts:runRefs: dropDeniedRows filters the scanned rows"
+    "reason": "guarded at read_refs.ts:collectRefs: dropDeniedRows filters rows; probes print path, name, kinds"
   },
   "read_section.ts": {
     "reads": 0,
@@ -779,6 +779,11 @@
     "accessors": 0,
     "reason": "own state: ledger files in the token-goat data directory"
   },
+  "shared_memory_db.ts": {
+    "reads": 1,
+    "accessors": 0,
+    "reason": "own state: the shared-memory database in the token-goat data directory, never a caller path"
+  },
   "shell_writes.ts": {
     "reads": 2,
     "accessors": 0,
@@ -800,14 +805,14 @@
     "reason": "own state: cache and spool files in the token-goat data directory"
   },
   "sqlite_query.ts": {
-    "reads": 2,
+    "reads": 7,
     "accessors": 0,
     "reason": "guarded at sqlite_query.ts:openReadonlySqlite: every schema, table and query opens through it"
   },
   "stats.ts": {
-    "reads": 4,
+    "reads": 6,
     "accessors": 0,
-    "reason": "no source path: it reads only its own marker, stat or stats files, or names from the index"
+    "reason": "no source path: reads only its own marker, stat and stats files and the stats database"
   },
   "text_commands.ts": {
     "reads": 4,
@@ -832,7 +837,7 @@
   "tool_filters/helpers.ts": {
     "reads": 1,
     "accessors": 0,
-    "reason": "in-process: the text is parsed, hashed or listed in memory and never printed"
+    "reason": "in-process: package.json scripts pick a filter in dispatch.ts via matches(), never printed"
   },
   "transcript_extract.ts": {
     "reads": 1,
@@ -870,9 +875,9 @@
     "reason": "guarded at cli_waste.ts:runWasteCommand: the transcript path asserts before waste.ts reads it"
   },
   "worker.ts": {
-    "reads": 3,
+    "reads": 4,
     "accessors": 0,
-    "reason": "own state: the draining and claimed queue files in the data directory"
+    "reason": "guarded at worker.ts:makeIndexer: indexVerdict runs before indexFileSync; rest is queue files"
   },
   "worker_lifecycle.ts": {
     "reads": 4,

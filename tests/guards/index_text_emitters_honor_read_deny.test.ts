@@ -3,6 +3,7 @@ import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 import { pinnedPopulation } from './population.js'
@@ -12,8 +13,53 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const SRC = path.join(HERE, '..', '..', 'src')
 const TABLE_JSON = path.join(HERE, 'read_deny_readers.json')
 
-/** A file counts as checked when it calls a deny helper (a bare mention in a comment does not count). */
-const DENY_CALL = /\b(?:dropDeniedRows|readDenial|assertReadAllowed)\(/
+const DENY_HELPERS: ReadonlySet<string> = new Set([
+  'dropDeniedRows',
+  'readDenial',
+  'assertReadAllowed',
+  'indexVerdict',
+  // the hook wrapper: its own body (hooks_read_slice.ts:hookReadDenied) is pinned to call readDenial
+  'hookReadDenied',
+])
+
+/** The declarations of `name` in a source: functions, methods, and variables or properties bound to a value. */
+function declarationsNamed(sf: ts.SourceFile, name: string): ts.Node[] {
+  const found: ts.Node[] = []
+  const visit = (node: ts.Node): void => {
+    const named =
+      (ts.isFunctionDeclaration(node) ||
+        ts.isMethodDeclaration(node) ||
+        ts.isVariableDeclaration(node) ||
+        ts.isPropertyAssignment(node) ||
+        ts.isPropertyDeclaration(node)) &&
+      node.name !== undefined &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === name
+    if (named) found.push(node)
+    ts.forEachChild(node, visit)
+  }
+  visit(sf)
+  return found
+}
+
+/** Whether a deny helper is called inside the body of a declaration named `name` (comments never count). */
+export function symbolCallsDenyHelper(source: string, name: string): 'absent' | 'no call' | 'ok' {
+  const sf = ts.createSourceFile('guard.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const decls = declarationsNamed(sf, name)
+  if (decls.length === 0) return 'absent'
+  let called = false
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression
+      const named = ts.isPropertyAccessExpression(callee) ? callee.name.text : ''
+      const id = ts.isIdentifier(callee) ? callee.text : named
+      if (DENY_HELPERS.has(id)) called = true
+    }
+    ts.forEachChild(node, visit)
+  }
+  for (const decl of decls) visit(decl)
+  return called ? 'ok' : 'no call'
+}
 
 export interface ReaderEntry {
   /** Raw file-text read sites in the file, aliased imports and destructured aliases included. */
@@ -37,7 +83,7 @@ export const KINDS = [
   'count only:',
   'no source path:',
 ] as const
-const GUARDED_AT = /^guarded at ([\w./]+):([\w.$]+): \S/
+const GUARDED_AT = /^guarded at ([\w./]+:[\w.$]+(?:, [\w./]+:[\w.$]+)*): \S/
 /** Set once every entry carries a reviewed reason; until then `unreviewed:` entries are tolerated. */
 const REVIEWED = true
 
@@ -60,12 +106,13 @@ function reasonProblem(reason: string, files: ReadonlyMap<string, string>): stri
   if (KINDS.some((k) => reason.startsWith(k) && reason.length > k.length + 8)) return null
   const m = GUARDED_AT.exec(reason)
   if (m === null) return 'has a reason that starts with no known kind'
-  const target = files.get(m[1]!)
-  if (target === undefined) return `names a guard file that does not exist (${m[1]})`
-  const code = withoutComments(target)
-  if (!DENY_CALL.test(code)) return `names ${m[1]} as its guard but that file calls no deny helper`
-  if (!new RegExp(`(?<![\\w$])${m[2]!.split('.').pop()!.replace(/\$/g, '\\$')}(?![\\w$])`).test(code)) {
-    return `names ${m[1]}:${m[2]} as its guard but that symbol is not in the file`
+  for (const site of m[1]!.split(', ')) {
+    const [file, symbol] = site.split(':') as [string, string]
+    const target = files.get(file)
+    if (target === undefined) return `names a guard file that does not exist (${file})`
+    const verdict = symbolCallsDenyHelper(target, symbol.split('.').pop()!)
+    if (verdict === 'absent') return `names ${site} as its guard but that symbol is not in the file`
+    if (verdict === 'no call') return `names ${site} as its guard but no deny call sits inside that symbol`
   }
   return null
 }
@@ -220,6 +267,44 @@ describe('index text emitters honor the host Read deny rules', () => {
       'text_trace.ts: reason has a reason that starts with no known kind',
     ])
     const badGuard = { ...TABLE, 'text_trace.ts': { ...was, reason: 'guarded at util.ts:x: not true' } }
-    expect(violations(files, counts, badGuard)[0]).toContain('text_trace.ts: reason')
+    expect(violations(files, counts, badGuard)).toEqual([
+      'text_trace.ts: reason names util.ts:x as its guard but that symbol is not in the file',
+    ])
+    const noFile = { ...TABLE, 'text_trace.ts': { ...was, reason: 'guarded at nowhere.ts:x: not true' } }
+    expect(violations(files, counts, noFile)).toEqual([
+      'text_trace.ts: reason names a guard file that does not exist (nowhere.ts)',
+    ])
+  })
+
+  it('fails by name when the symbol is present but its deny call was moved to a sibling', () => {
+    const file = 'text_trace.ts'
+    const was = TABLE[file]!
+    const m = /^guarded at ([\w./]+):([\w.$]+):/.exec(was.reason)
+    expect(m, 'text_trace.ts keeps a single-symbol guard reason').not.toBeNull()
+    const [guardFile, symbol] = [m![1]!, m![2]!]
+    expect(symbolCallsDenyHelper(files.get(guardFile)!, symbol)).toBe('ok')
+    const denyCall = /\b(?:readDenial|assertReadAllowed|dropDeniedRows)\(/g
+    const stripped = files.get(guardFile)!.replace(denyCall, 'noop(')
+    const extra = 'export function plantedSibling(p: string): void {\n  assertReadAllowed(p)\n}\n'
+    const sibling = `${stripped}\n${extra}`
+    expect(symbolCallsDenyHelper(sibling, symbol)).toBe('no call')
+    const planted = plant(guardFile, sibling)
+    expect(violations(planted.files, planted.counts)).toContain(
+      `${file}: reason names ${guardFile}:${symbol} as its guard but no deny call sits inside that symbol`,
+    )
+  })
+
+  it('counts a database opened from a caller path, a direct driver open and an indexFileSync call', () => {
+    const cases: Array<[string, string]> = [
+      ['planted_sqlite.ts', 'export const f = (p: string) => openReadonlySqlite(p)\n'],
+      ['planted_driver.ts', 'export const f = (p: string) => new Database(p)\n'],
+      ['planted_index.ts', 'export const f = (p: string) => indexFileSync(p)\n'],
+    ]
+    for (const [name, source] of cases) {
+      const p = plant(name, source)
+      expect(violations(p.files, p.counts), name).toEqual([
+        `${name}: 1 read site(s) and 0 accessor use(s) with no table entry`,
+      ])
+    }
   })
 })
