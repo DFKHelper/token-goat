@@ -116,7 +116,7 @@ export interface GrokInstallResult {
 
 /** Install the Grok CLI integration. Always additive: never touches Claude Code's `~/.claude/settings.json` (the caller is responsible for also running the base install). Idempotent -- a second call reports `alreadyInstalled: true` and does not duplicate any entry. */
 export function installGrok(): GrokInstallResult {
-  return verifiedInstall([grokConfigPath()], () => recordCreatedBy(grokArtifactPaths(), installGrokFiles))
+  return recordCreatedBy(grokArtifactPaths(), () => verifiedInstall([grokConfigPath()], installGrokFiles))
 }
 
 /** Every file the Grok integration writes; the directories above them are what the created-configs ledger tracks too. */

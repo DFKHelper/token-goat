@@ -305,7 +305,7 @@ export interface CodexInstallResult {
 
 /** Install the Codex CLI integration. Always additive: never touches Claude Code's `~/.claude/settings.json` (the caller is responsible for also running the base install per README's "patches both Claude Code and Codex CLI in one pass"). Idempotent -- a second call reports `alreadyInstalled: true` and does not duplicate any hook entry or AGENTS.md block. */
 export function installCodex(): CodexInstallResult {
-  return verifiedInstall([codexConfigPath()], () => recordCreatedBy(codexArtifactPaths(), installCodexFiles))
+  return recordCreatedBy(codexArtifactPaths(), () => verifiedInstall([codexConfigPath()], installCodexFiles))
 }
 
 /** Every file the Codex integration writes; the directories above them are what the created-configs ledger tracks too. */

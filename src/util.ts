@@ -266,9 +266,39 @@ function resolveSymlinkChain(p: string): string {
   throw Object.assign(new Error(`ELOOP: too many levels of symbolic links, resolving ${p}`), { code: 'ELOOP' })
 }
 
+/** Files whose writes are held in memory while an install is probed; undefined when nothing is staged. */
+let stagedWrites: Map<string, { bytes?: Buffer }> | undefined
+
+/** Run `work` with atomic writes to `files` held back; returns the bytes each file was last given. */
+export function withStagedWrites<T>(
+  files: readonly string[],
+  work: () => T,
+): { result: T; staged: Map<string, Buffer> } {
+  const stageKey = (f: string): string => foldPath(path.resolve(f))
+  const held = new Map<string, { bytes?: Buffer }>(files.map((f) => [stageKey(f), {}]))
+  const outer = stagedWrites
+  stagedWrites = held
+  try {
+    const result = work()
+    const staged = new Map<string, Buffer>()
+    for (const f of files) {
+      const bytes = held.get(stageKey(f))?.bytes
+      if (bytes !== undefined) staged.set(f, bytes)
+    }
+    return { result, staged }
+  } finally {
+    stagedWrites = outer
+  }
+}
+
 /** Shared atomic-write core for text and bytes. Writes `content` to a sibling temp file (created with 0o600 so it is never world-readable even transiently on POSIX), then renames over `dest`. On Windows a brief exclusive-lock window can make the rename fail with EPERM/EBUSY/ETXTBSY; we retry up to 5 times with a `50 * attempt` ms backoff. Any failure past this point -- a failed write (ENOSPC, EIO, ...) just as much as a failed rename -- cleans up the temp file before the error propagates, so a partial write never leaks a `.tmp` file next to `dest`. */
 function atomicWriteCore(requested: string, content: string | Uint8Array): void {
   assertWriteInScope(requested)
+  const held = stagedWrites?.get(foldPath(path.resolve(requested)))
+  if (held !== undefined) {
+    held.bytes = typeof content === 'string' ? Buffer.from(content, 'utf-8') : Buffer.from(content)
+    return
+  }
   // Write through a symlinked destination (a dotfiles setup) so the link survives: renaming the temp file over the link itself would replace the link with a regular file and leave its target untouched. Scope is checked again on the real file, so a project-scope link is followed only where it stays inside the project.
   const dest = resolveSymlinkChain(requested)
   if (dest !== requested) assertWriteInScope(dest)

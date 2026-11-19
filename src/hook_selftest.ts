@@ -15,7 +15,7 @@ import {
 } from './hook_guard.js'
 import { HOOK_PROBE_ENV } from './stats.js'
 import { resolveWindowsBash } from './shell.js'
-import { atomicWriteBytes } from './util.js'
+import { atomicWriteBytes, withStagedWrites } from './util.js'
 import { powerShellTextQueryArgs, windowsPowerShellPath } from './windows_powershell.js'
 
 /** Thrown by an install whose registered commands failed the self-test; the previous registration was kept. */
@@ -419,19 +419,29 @@ function snapshot(file: string): Buffer | undefined | null {
   }
 }
 
-/** Run `write`, self-test its guarded commands; on failure restore every file (or absence) and rethrow. */
+/** Run `write` with `files` held back, self-test the commands they carry, then publish them. */
 export function verifiedInstall<T>(files: readonly string[], write: () => T): T {
   const before = files.map(snapshot)
   if (before.includes(null)) return write()
-  const result = write()
-  const after = files.map(snapshot)
+  const { result, staged } = withStagedWrites(files, write)
+  // A held file is probed from the bytes it was given; a file `write` changed some other way is read off disk.
+  const after = files.map((f) => staged.get(f) ?? snapshot(f))
+  const publish = (): void => {
+    files.forEach((f, i) => {
+      const bytes = staged.get(f)
+      const was = before[i] ?? undefined
+      if (bytes !== undefined && !(was !== undefined && bytes.equals(was))) atomicWriteBytes(f, bytes)
+    })
+  }
   // Registrations a newer build wrote stay as it wrote them: this build cannot read their guard.
   files.forEach((f, i) => {
     const was = before[i]
     const newer = was === undefined || was === null ? undefined : newerGuardInText(was.toString('utf8'))
     if (newer === undefined || was === undefined || was === null
       || (after[i] !== undefined && after[i] !== null && was.equals(after[i]!))) return
-    atomicWriteBytes(f, was)
+    // A held write is dropped; a file `write` changed directly is put back.
+    if (staged.has(f)) staged.delete(f)
+    else atomicWriteBytes(f, was)
     after[i] = was
     process.stderr.write(
       `token-goat: left ${f} as it was: its hooks carry guard version ${String(newer)}, ` +
@@ -440,13 +450,18 @@ export function verifiedInstall<T>(files: readonly string[], write: () => T): T 
     )
   })
   if (files.every((_f, i) => before[i] !== undefined && after[i] !== undefined && after[i] !== null
-    && before[i]!.equals(after[i]!))) return result
+    && before[i]!.equals(after[i]!))) {
+    publish()
+    return result
+  }
   const commands = after.flatMap((buf) =>
     buf === undefined || buf === null ? [] : guardedCommandsInText(buf.toString('utf8')))
   try {
     assertRegisteredCommandsWork(commands, files.join(', '))
   } catch (e) {
     files.forEach((f, i) => {
+      // A held write was never published, so there is nothing of this install on disk to take back.
+      if (staged.has(f)) return
       // Only a file still holding the bytes this install wrote is rolled back: another may have replaced it.
       const now = snapshot(f)
       const wrote = after[i]
@@ -460,5 +475,6 @@ export function verifiedInstall<T>(files: readonly string[], write: () => T): T 
     })
     throw e
   }
+  publish()
   return result
 }

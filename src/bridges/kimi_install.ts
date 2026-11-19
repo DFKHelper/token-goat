@@ -168,7 +168,7 @@ function kimiArtifactPaths(): string[] {
 
 /** Install the Kimi Code CLI integration. */
 export function installKimi(): KimiInstallResult {
-  return verifiedInstall([kimiConfigPath()], () => recordCreatedBy(kimiArtifactPaths(), installKimiFiles))
+  return recordCreatedBy(kimiArtifactPaths(), () => verifiedInstall([kimiConfigPath()], installKimiFiles))
 }
 
 function kimiRewriteRefusal(span: string, command: string): HookCommandRewriteError {

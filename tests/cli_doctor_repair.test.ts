@@ -9,6 +9,7 @@ import * as embedRuntime from '../src/embed_runtime.js'
 import * as cliUpgrade from '../src/cli_upgrade.js'
 import * as configModule from '../src/config.js'
 import { recordCreatedConfig, takeCreatedConfig } from '../src/bridges/created_configs.js'
+import { setHookSelftestRunnerForTesting } from '../src/hook_selftest.js'
 import { claudeHookScriptPath, installHooks } from '../src/install.js'
 import { CLAUDECODE_HOOK_SCRIPT } from '../src/bridges/claudecode.js'
 import { CODEX_HOOK_SCRIPT } from '../src/bridges/codex.js'
@@ -50,9 +51,12 @@ describe('doctor auto-repair and embedding model checks', () => {
     fs.writeFileSync(path.join(userHome, '.claude', 'CLAUDE.md'), `${INSTRUCTION_GATE_BEGIN}\nGate body\n${INSTRUCTION_GATE_END}\n`)
     // Step 7 reads the update check from the cache, so no test asks a registry and none changes its result the day npm serves a newer version.
     seedUpdateCheck()
+    // These rows prove what a repair rewrites; the real probe per host is in install_selftest_registered_command.
+    setHookSelftestRunnerForTesting(() => ({ status: 0, stdout: '{}', stderr: '' }))
   })
 
   afterEach(() => {
+    setHookSelftestRunnerForTesting(undefined)
     clearUpdateCheck()
     vi.unstubAllEnvs()
     fs.rmSync(userHome, { recursive: true, force: true })
