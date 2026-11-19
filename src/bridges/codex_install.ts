@@ -7,7 +7,9 @@ import * as path from 'node:path'
 
 import { parse, stringify } from 'smol-toml'
 
-import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
+import {
+  recordCreatedBy, removeCreatedBackups, removeCreatedTree, undoCreatedOnFailure,
+} from './created_configs.js'
 import { codexHomeDir, codexConfigPath, removeHookTargetFile } from '../purge.js'
 import { atomicWriteText, backupFile, ensureDirSync, extractErrorMessage, hookCommandFor, hookPowershellCommand, stripDelimitedBlock, stripOwnHooksFromMap, stripStaleGroupHooks, upsertDelimitedBlock, writeConfigText } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
@@ -305,7 +307,10 @@ export interface CodexInstallResult {
 
 /** Install the Codex CLI integration. Always additive: never touches Claude Code's `~/.claude/settings.json` (the caller is responsible for also running the base install per README's "patches both Claude Code and Codex CLI in one pass"). Idempotent -- a second call reports `alreadyInstalled: true` and does not duplicate any hook entry or AGENTS.md block. */
 export function installCodex(): CodexInstallResult {
-  return recordCreatedBy(codexArtifactPaths(), () => verifiedInstall([codexConfigPath()], installCodexFiles))
+  const paths = codexArtifactPaths()
+  // The probe runs the commands at the shim's final path, so a failed one puts the earlier shim bytes back.
+  return recordCreatedBy(paths, () =>
+    undoCreatedOnFailure(paths, () => verifiedInstall([codexConfigPath()], installCodexFiles)))
 }
 
 /** Every file the Codex integration writes; the directories above them are what the created-configs ledger tracks too. */

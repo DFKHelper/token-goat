@@ -35,6 +35,7 @@ import {
   removeCreatedIfEmpty,
   removeCreatedTree,
   takeHookConfig,
+  tracedFileWrites,
 } from './bridges/created_configs.js'
 import { isReferenced, removeHookTargetFile } from './purge.js'
 import { assertWriteInScope, withInstallScope } from './bridges/project_scope_guard.js'
@@ -372,12 +373,15 @@ function installHooksScoped(scope: HookScope): InstallResult {
   // The shim is a generated, never-user-edited file: refresh it on every install call so it tracks the running token-goat version, independent of whether the settings.json wiring itself needs any change. Mirrors bridges/codex_install.ts. writeIfDifferent rather than an unconditional atomicWriteText so a genuine no-op install touches nothing on disk, and so a repaired shim (user deleted ~/.claude/hooks, or an older build left stale content) counts as a real change via `scriptChanged` -- reporting "already installed" while having just rewritten the file the hooks depend on would be a lie to anyone running install precisely to repair it.
   const scriptPath = claudeHookScriptPath()
   // The shim is home-scoped even on a project-scope install -- BOTH scopes share the one copy at `~/.claude/hooks/token-goat-shim.cjs` (see uninstallHooks' anyScopeReferencesShim) -- so this write is declared user scope explicitly rather than inheriting the project confinement, which would otherwise refuse it. Written down rather than exempted by path: `~/.claude` is the user's own directory, and a dotfiles symlink pointing it elsewhere is the setup bridges/project_scope_guard.ts deliberately allows.
-  const scriptChanged = withInstallScope(undefined, () => {
+  // limit: shim goes live before its probe, put back on failure; revisit-when: the probe runs staged files
+  const shimPaths = [claudeLegacyHookScriptPath(), scriptPath]
+  const shimWrite = tracedFileWrites(shimPaths, () => withInstallScope(undefined, () => {
     ensureDirRecordingCreation(path.dirname(scriptPath))
     const forwarderChanged = writeIfDifferent(claudeLegacyHookScriptPath(), legacyShimForwarder('{}'))
     const scriptChanged = writeIfDifferent(scriptPath, CLAUDECODE_HOOK_SCRIPT)
     return scriptChanged || forwarderChanged
-  })
+  }))
+  const scriptChanged = shimWrite.result
 
   let settingsChanged = false
   const registeredCommands: string[] = []
@@ -508,7 +512,13 @@ function installHooksScoped(scope: HookScope): InstallResult {
   if (settingsChanged) {
     settings.hooks = hooks
     // Commands are known before the write, so a failed self-test leaves the old registration untouched.
-    assertRegisteredCommandsWork(registeredCommands, p)
+    try {
+      assertRegisteredCommandsWork(registeredCommands, p)
+    } catch (error) {
+      // The probe needed the new shim in place; the old registration still runs these paths, so they go back.
+      withInstallScope(undefined, () => shimWrite.revert(error))
+      throw error
+    }
     recordCreatedBy([p], () => writeJsonSettings(p, settings))
   }
   return { scope, settingsPath: p, alreadyInstalled: false, ...(skippedEvents.length > 0 ? { skippedEvents } : {}) }

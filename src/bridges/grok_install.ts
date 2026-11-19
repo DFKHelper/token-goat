@@ -4,7 +4,9 @@ import { registerHookShim } from '../hook_pointer.js'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-import { recordCreatedBy, removeCreatedBackups, removeCreatedTree } from './created_configs.js'
+import {
+  recordCreatedBy, removeCreatedBackups, removeCreatedTree, undoCreatedOnFailure,
+} from './created_configs.js'
 import { grokHooksDir, grokConfigPath, removeHookTargetFile } from '../purge.js'
 import { hookCommandFor, hookPowershellCommand, writeIfDifferent } from '../util.js'
 import { powershellHookLine } from '../process_util.js'
@@ -116,7 +118,10 @@ export interface GrokInstallResult {
 
 /** Install the Grok CLI integration. Always additive: never touches Claude Code's `~/.claude/settings.json` (the caller is responsible for also running the base install). Idempotent -- a second call reports `alreadyInstalled: true` and does not duplicate any entry. */
 export function installGrok(): GrokInstallResult {
-  return recordCreatedBy(grokArtifactPaths(), () => verifiedInstall([grokConfigPath()], installGrokFiles))
+  const paths = grokArtifactPaths()
+  // The probe runs the commands at the shim's final path, so a failed one puts the earlier shim bytes back.
+  return recordCreatedBy(paths, () =>
+    undoCreatedOnFailure(paths, () => verifiedInstall([grokConfigPath()], installGrokFiles)))
 }
 
 /** Every file the Grok integration writes; the directories above them are what the created-configs ledger tracks too. */

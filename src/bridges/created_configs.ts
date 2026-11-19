@@ -273,6 +273,28 @@ export function undoCreatedOnFailure<T>(targets: readonly string[], work: () => 
   }
 }
 
+/** Run `write`, noting what it published to `paths`; `revert` undoes only what still holds those bytes. */
+export function tracedFileWrites<T>(
+  paths: readonly string[],
+  write: () => T,
+): { result: T; revert: (error: unknown) => void } {
+  const earlier = earlierBytes(paths)
+  const wrote = new Map<string, Buffer>()
+  const result = tracingWrites(wrote, write)
+  const revert = (error: unknown): void => {
+    const left: string[] = []
+    undoQuietly(() => restoreEarlierBytes(earlier, wrote, left))
+    for (const p of paths.map((t) => path.resolve(t)).filter((t) => !earlier.has(t) && fs.existsSync(t))) {
+      if (holdsBytesWritten(p, wrote)) undoQuietly(() => removeFileInScope(p))
+      else left.push(p)
+    }
+    if (left.length > 0 && error instanceof Error) {
+      error.message += `\nchanged by another program, left as found: ${left.join(', ')}`
+    }
+  }
+  return { result, revert }
+}
+
 /** The bytes of each of `targets` that is a file now (or a link to one), for a failed install to restore. */
 function earlierBytes(targets: readonly string[]): Map<string, Buffer> {
   const earlier = new Map<string, Buffer>()
