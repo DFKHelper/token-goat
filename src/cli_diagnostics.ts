@@ -24,6 +24,7 @@ import { sourceLines } from './source_lines.js'
 import { DEFAULT_FAILURES_STATE_KEY, loadFailureSnapshot, saveFailureSnapshot } from './failures_state.js'
 import { DEFAULT_TIMEOUT_SECONDS, run } from './bash_runner.js'
 import { redactSecrets } from './secret_redact.js'
+import { quotePosixShellWord } from './process_util.js'
 import { assertReadAllowed } from './read_deny.js'
 
 export function cmdCoverageReportGaps(file: string, opts: { file?: string; json?: boolean }): void {
@@ -267,6 +268,12 @@ const GATE_FILTER = 'passthrough'
 export interface GateOptions {
   /** Wall-clock limit for the wrapped command, in seconds; the runner kills the whole tree on expiry. */
   timeout?: number
+}
+
+/** The command line `gate` runs: one word is a shell line, several are a quoted program and arguments. */
+export function gateCommandLine(words: readonly string[]): string {
+  if (words.length <= 1) return words[0] ?? ''
+  return words.map((w) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(w) ? w : quotePosixShellWord(w))).join(' ')
 }
 
 /** Run `command` and return the gate verdict: 0 when it exits 0, GATE_FAIL_EXIT for any other outcome. */

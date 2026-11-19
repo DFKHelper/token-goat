@@ -4,7 +4,7 @@ import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
-import { GATE_FAIL_EXIT, runGate } from '../src/cli_diagnostics.js'
+import { runGate } from '../src/cli_diagnostics.js'
 import { killIfCommandLine } from './helpers/kill_if_command_line.js'
 
 // Provenance: FORMAT-DERIVED from src/failures.ts (VITEST_BANNER, VITEST_FAIL_HEADER), vitest failure layout.
@@ -61,7 +61,7 @@ afterEach(() => {
 describe('token-goat gate verdicts', () => {
   it('a failing command exits exactly 2 and stderr names the first failing test', async () => {
     const code = await runGate(`node "${writeScript('fail.js', VITEST_FAILURE_SCRIPT)}"`)
-    expect(code, 'a failing wrapped command must exit 2, not the child code 1').toBe(GATE_FAIL_EXIT)
+    expect(code, 'a failing wrapped command must exit 2, not the child code 1').toBe(2)
     const named = 'tests/b.test.ts > suite > the broken case'
     expect(stderr.join(''), 'stderr must name the first failing test').toContain(named)
   })
@@ -76,7 +76,7 @@ describe('token-goat gate verdicts', () => {
     const rows = Array.from({ length: 30 }, (_, i) => `process.stdout.write('row-${i + 1}\\n')`).join('\n')
     const code = await runGate(`node "${writeScript('rows.js', `${rows}\nprocess.exitCode = 3\n`)}"`)
     const text = stderr.join('')
-    expect(code, 'an unparseable failure must still exit 2').toBe(GATE_FAIL_EXIT)
+    expect(code, 'an unparseable failure must still exit 2').toBe(2)
     expect(text, 'the child exit code must be named').toContain('exit 3')
     expect(text, 'the last line of output must be printed').toMatch(/\brow-30\b/)
     expect(text, 'the 20th-from-last line must be the first printed line').toMatch(/\brow-11\b/)
@@ -95,7 +95,7 @@ describe('token-goat gate verdicts', () => {
     const pids: number[] = []
     try {
       const code = await runGate(`node "${writeScript('hang.js', hang)}"`, { timeout: 2 })
-      expect(code, 'a timed-out command must exit 2, not the runner\'s 124').toBe(GATE_FAIL_EXIT)
+      expect(code, 'a timed-out command must exit 2, not the runner\'s 124').toBe(2)
       const recorded = JSON.parse(fs.readFileSync(pidFile, 'utf8')) as { parent: number; grandchild: number }
       pids.push(recorded.parent, recorded.grandchild)
       const survivors = pids.filter((pid) => isAlive(pid))
@@ -108,12 +108,12 @@ describe('token-goat gate verdicts', () => {
 
   it('a command that cannot be started exits 2', async () => {
     const code = await runGate('token-goat-no-such-program-c4 --probe')
-    expect(code, 'a command the shell cannot find must exit 2').toBe(GATE_FAIL_EXIT)
+    expect(code, 'a command the shell cannot find must exit 2').toBe(2)
   })
 
   it('no command given exits 2 with a usage line', async () => {
     const code = await runGate('   ')
-    expect(code, 'an empty command must exit 2').toBe(GATE_FAIL_EXIT)
+    expect(code, 'an empty command must exit 2').toBe(2)
     const usage = 'usage: token-goat gate -- <command>'
     expect(stderr.join(''), 'the usage line must name the command form').toContain(usage)
   })
@@ -123,7 +123,7 @@ describe('token-goat gate verdicts', () => {
     const named = VITEST_FAILURE_SCRIPT.replace('the broken case', `the broken case ${token}`)
     const code = await runGate(`node "${writeScript('named.js', named)}"`)
     const text = stderr.join('')
-    expect(code, 'a failing command must still exit 2').toBe(GATE_FAIL_EXIT)
+    expect(code, 'a failing command must still exit 2').toBe(2)
     expect(text, 'the raw token in the failing test name must not reach stderr').not.toContain(token)
     expect(text, 'the failing test name must show the redaction marker').toContain(MARKER)
   })
@@ -135,7 +135,7 @@ describe('token-goat gate verdicts', () => {
     const script = writeScript('tail-secret.js', `${rows.join('\n')}\nprocess.exitCode = 3\n`)
     const code = await runGate(`node "${script}"`)
     const text = stderr.join('')
-    expect(code, 'an unparseable failure must still exit 2').toBe(GATE_FAIL_EXIT)
+    expect(code, 'an unparseable failure must still exit 2').toBe(2)
     expect(text, 'the secret-shaped tail line must be printed, so redaction is observed').toMatch(/\brow-30\b/)
     expect(text, 'the raw token in the tail must not reach stderr').not.toContain(token)
     expect(text, 'the tail must show the redaction marker').toContain(MARKER)

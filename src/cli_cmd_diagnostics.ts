@@ -17,12 +17,13 @@ export function registerCheckCommands(program: Command, guard: GuardFn): void {
   program
     .command('gate [command...]')
     .description('run one check and exit 2 on any failure, naming the first failing test ' +
-      '(exit 0 only when the command exits 0)')
+      '(exit 0 only when the command exits 0); words after -- are one program and its arguments, ' +
+      'a single quoted string is a shell command line')
     .allowUnknownOption(true)
     .action(
       guard(async (commandArgs: string[] | undefined) => {
-        const { runGate } = await import('./cli_diagnostics.js')
-        process.exitCode = await runGate((commandArgs ?? []).join(' '))
+        const { gateCommandLine, runGate } = await import('./cli_diagnostics.js')
+        process.exitCode = await runGate(gateCommandLine(commandArgs ?? []))
       }),
     )
   const permissions = program
